@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	"github.com/Timwood0x10/goagent/internal/core/models"
 )
 
 // =====================================================

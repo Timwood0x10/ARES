@@ -3,7 +3,7 @@
 package experience
 
 import (
-	"goagent/internal/experience"
+	"github.com/Timwood0x10/goagent/internal/experience"
 )
 
 // RankedExperience re-exports from internal/experience.

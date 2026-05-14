@@ -13,10 +13,10 @@ import (
 	"log/slog"
 	"time"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres/adapters"
-	storage_models "goagent/internal/storage/postgres/models"
+	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/adapters"
+	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
 )
 
 // SecretRepository provides data access for encrypted sensitive data.

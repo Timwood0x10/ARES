@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"sync"
 
-	apperrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/protocol/ahp"
+	apperrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/llm/output"
-	"goagent/internal/workflow/engine"
+	"github.com/Timwood0x10/goagent/internal/llm/output"
+	"github.com/Timwood0x10/goagent/internal/workflow/engine"
 )
 
 // setOutputDir sets the output directory for testing.

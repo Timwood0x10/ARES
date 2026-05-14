@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // TestNewCodeRunner tests creating a new CodeRunner.

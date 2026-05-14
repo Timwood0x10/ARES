@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // TestNewCalculator tests creating a new Calculator tool.

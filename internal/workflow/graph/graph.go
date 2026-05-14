@@ -5,8 +5,8 @@ package graph
 import (
 	"time"
 
-	"goagent/internal/observability"
-	"goagent/internal/ratelimit"
+	"github.com/Timwood0x10/goagent/internal/observability"
+	"github.com/Timwood0x10/goagent/internal/ratelimit"
 )
 
 // Edge represents a connection between two nodes with optional condition.

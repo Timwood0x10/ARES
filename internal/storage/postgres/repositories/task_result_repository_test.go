@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/core/errors"
-	storage_models "goagent/internal/storage/postgres/models"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
+	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
 )
 
 // TestTaskResultRepository_Create tests creating a task result.

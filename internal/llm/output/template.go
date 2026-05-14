@@ -7,7 +7,7 @@ import (
 	"sync"
 	"text/template"
 
-	"goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/errors"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"

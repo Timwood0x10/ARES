@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
+	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
 )
 
 // RecommendRepository handles recommendation persistence.

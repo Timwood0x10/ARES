@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/storage/postgres"
-	storage_models "goagent/internal/storage/postgres/models"
-	"goagent/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres"
+	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
 )
 
 // getTestDB returns a test database connection for integration tests.

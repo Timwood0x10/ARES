@@ -5,8 +5,9 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
+
+	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 
 	"strings"
 )

@@ -6,9 +6,9 @@ import (
 	"context"
 	"fmt"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/errors"
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // Node represents an executable unit in the graph.

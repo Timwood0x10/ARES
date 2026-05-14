@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
-	"goagent/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
 )
 
 // TestDefaultRetrievalPlan tests the default retrieval plan configuration.

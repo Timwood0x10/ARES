@@ -8,10 +8,10 @@ import (
 	"log"
 	"time"
 
-	"goagent/api/service/graph"
-	"goagent/internal/core/models"
-	"goagent/internal/observability"
-	wfgraph "goagent/internal/workflow/graph"
+	"github.com/Timwood0x10/goagent/api/service/graph"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/observability"
+	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
 )
 
 // SupportTicket represents a customer support ticket

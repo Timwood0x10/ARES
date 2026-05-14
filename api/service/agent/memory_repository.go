@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"goagent/api/core"
+	"github.com/Timwood0x10/goagent/api/core"
 )
 
 // MemoryRepository provides an in-memory implementation of AgentRepository.

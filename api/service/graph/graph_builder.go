@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/errors"
-	"goagent/internal/observability"
-	"goagent/internal/tools/resources/core"
-	wfgraph "goagent/internal/workflow/graph"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/observability"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
 )
 
 // GraphBuilder builds graph instances from configuration.

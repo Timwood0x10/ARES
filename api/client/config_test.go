@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"goagent/api/core"
+	"github.com/Timwood0x10/goagent/api/core"
 )
 
 // TestNewConfigLoader tests the creation of a new config loader.

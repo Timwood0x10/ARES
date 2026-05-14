@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/agents/base"
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/memory"
-	"goagent/internal/protocol/ahp"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/memory"
+	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )

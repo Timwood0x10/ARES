@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/core/models"
 )
 
 // mockAgent is a test agent implementation.

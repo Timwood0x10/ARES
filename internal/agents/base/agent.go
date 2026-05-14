@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/protocol/ahp"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
 )
 
 // Agent represents the base interface for all agents.

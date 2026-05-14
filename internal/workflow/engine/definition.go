@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/errors"
 )
 
 // Definition errors.

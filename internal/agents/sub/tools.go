@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // toolBinder binds and calls tools.

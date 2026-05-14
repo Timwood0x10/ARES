@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"goagent/internal/errors"
-	"goagent/internal/memory"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/memory"
 )
 
 // Service provides memory management operations.

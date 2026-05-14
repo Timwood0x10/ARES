@@ -10,8 +10,8 @@ import (
 	"log/slog"
 	"time"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
+	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/errors"
 )
 
 // EmbeddingQueue manages async embedding tasks with idempotency and retry logic.

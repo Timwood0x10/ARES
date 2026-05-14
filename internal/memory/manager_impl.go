@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	memctx "goagent/internal/memory/context"
-	"goagent/internal/memory/distillation"
-	"goagent/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	memctx "github.com/Timwood0x10/goagent/internal/memory/context"
+	"github.com/Timwood0x10/goagent/internal/memory/distillation"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
 )
 
 // memoryManager implements MemoryManager interface.

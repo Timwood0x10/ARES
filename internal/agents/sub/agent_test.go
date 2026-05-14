@@ -5,9 +5,9 @@ import (
 	"context"
 	"testing"
 
-	"goagent/internal/core/models"
-	"goagent/internal/llm/output"
-	"goagent/internal/protocol/ahp"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/llm/output"
+	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

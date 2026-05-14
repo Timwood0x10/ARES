@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // TestNewFileTools tests creating a new FileTools.

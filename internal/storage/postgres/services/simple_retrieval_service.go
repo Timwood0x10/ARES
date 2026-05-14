@@ -8,9 +8,9 @@ import (
 	"math"
 	"strings"
 
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres/embedding"
-	"goagent/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
 )
 
 // SimpleRetrievalConfig configuration for simple retrieval service

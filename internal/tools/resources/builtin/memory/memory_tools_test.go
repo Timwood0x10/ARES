@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/memory"
-	"goagent/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/memory"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
 )
 
 // MockMemoryManager is a mock implementation of memory.MemoryManager for testing.

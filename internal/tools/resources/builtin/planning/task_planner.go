@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"goagent/internal/errors"
-	"goagent/internal/llm"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/llm"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // TaskPlanner provides task planning and decomposition capabilities.

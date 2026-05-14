@@ -4,10 +4,10 @@ import (
 	"context"
 	"sync"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/protocol/ahp"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
 )
 
 // Agent represents the Sub Agent interface.

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"goagent/internal/errors"
-	storage_models "goagent/internal/storage/postgres/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
 )
 
 // SecretFormat defines supported import/export formats.

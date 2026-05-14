@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )

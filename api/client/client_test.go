@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"goagent/api/core"
-	agentSvc "goagent/api/service/agent"
-	llmSvc "goagent/api/service/llm"
-	memorySvc "goagent/api/service/memory"
-	retrievalSvc "goagent/api/service/retrieval"
+	"github.com/Timwood0x10/goagent/api/core"
+	agentSvc "github.com/Timwood0x10/goagent/api/service/agent"
+	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
+	memorySvc "github.com/Timwood0x10/goagent/api/service/memory"
+	retrievalSvc "github.com/Timwood0x10/goagent/api/service/retrieval"
 )
 
 // TestNewClient tests the creation of a new client instance.

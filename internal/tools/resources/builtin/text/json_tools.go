@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
 	"strconv"
 	"strings"
+
+	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // JSONTools provides JSON processing operations.

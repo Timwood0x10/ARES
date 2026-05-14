@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
 )
 
 // DistillationConfig holds configuration for the distillation process.

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"goagent/api/client"
-	"goagent/api/core"
-	"goagent/internal/llm/output"
-	"goagent/internal/workflow/engine"
+	"github.com/Timwood0x10/goagent/api/client"
+	"github.com/Timwood0x10/goagent/api/core"
+	"github.com/Timwood0x10/goagent/internal/llm/output"
+	"github.com/Timwood0x10/goagent/internal/workflow/engine"
 )
 
 const (

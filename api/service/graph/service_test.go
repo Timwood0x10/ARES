@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/observability"
-	wfgraph "goagent/internal/workflow/graph"
+	"github.com/Timwood0x10/goagent/internal/observability"
+	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
 )
 
 func TestNewService(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
 )
 
 // Protocol represents the AHP protocol manager.

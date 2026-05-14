@@ -3,7 +3,7 @@ package base
 import (
 	"context"
 
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // BaseTool provides common tool functionality.

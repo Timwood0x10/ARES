@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"goagent/api/client"
+	"github.com/Timwood0x10/goagent/api/client"
 )
 
 func main() {

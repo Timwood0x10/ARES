@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // LogAnalyzer provides log parsing and analysis capabilities.

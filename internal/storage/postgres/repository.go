@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"log/slog"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
+	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
 )
 
 // DBTX is an interface that both *sql.DB and *sql.Tx satisfy.

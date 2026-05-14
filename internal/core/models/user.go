@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/errors"
 )
 
 // UserProfile represents user profile information.

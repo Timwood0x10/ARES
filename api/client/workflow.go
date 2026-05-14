@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	llmSvc "goagent/api/service/llm"
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/workflow/engine"
+	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
+	"github.com/Timwood0x10/goagent/internal/agents/base"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/workflow/engine"
 )
 
 // WorkflowClient provides workflow orchestration capabilities.

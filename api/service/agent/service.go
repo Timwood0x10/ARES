@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"goagent/api/core"
-	"goagent/internal/errors"
-	"goagent/internal/memory"
+	"github.com/Timwood0x10/goagent/api/core"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/memory"
 )
 
 // Service provides agent management operations.

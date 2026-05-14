@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // TestNewBaseTool tests creating a new BaseTool.

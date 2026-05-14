@@ -8,14 +8,14 @@ import (
 	"context"
 	"time"
 
-	"goagent/api/agent"
-	"goagent/api/memory"
-	"goagent/api/retrieval"
-	"goagent/internal/errors"
-	internalmemory "goagent/internal/memory"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
-	"goagent/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/goagent/api/agent"
+	"github.com/Timwood0x10/goagent/api/memory"
+	"github.com/Timwood0x10/goagent/api/retrieval"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	internalmemory "github.com/Timwood0x10/goagent/internal/memory"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
 )
 
 // Client provides unified client interface for all GoAgent modules.

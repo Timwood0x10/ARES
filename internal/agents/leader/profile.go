@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	apperrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/llm/output"
+	apperrors "github.com/Timwood0x10/goagent/internal/core/errors"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/errors"
+	"github.com/Timwood0x10/goagent/internal/llm/output"
 )
 
 // profileParser parses user profile from natural language input.

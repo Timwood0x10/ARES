@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/tools/resources/core"
+	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // mockTool is a simple mock tool for testing.

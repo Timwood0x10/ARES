@@ -2,11 +2,12 @@
 package postgres
 
 import (
-	"goagent/internal/core/errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Timwood0x10/goagent/internal/core/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker.
