@@ -1,4 +1,4 @@
-module goagent
+module github.com/Timwood0x10/goagent
 
 go 1.26.1
 
