@@ -4,6 +4,8 @@ package distillation
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewDistiller(t *testing.T) {
@@ -13,9 +15,7 @@ func TestNewDistiller(t *testing.T) {
 
 	distiller := NewDistiller(config, embedder, repo)
 
-	if distiller == nil {
-		t.Fatal("NewDistiller() returned nil")
-	}
+	require.NotNil(t, distiller)
 
 	if distiller.config != config {
 		t.Error("Distiller config not set correctly")
@@ -77,9 +77,7 @@ func TestDistiller_GetMetrics(t *testing.T) {
 
 	metrics := distiller.GetMetrics()
 
-	if metrics == nil {
-		t.Fatal("GetMetrics() returned nil")
-	}
+	require.NotNil(t, metrics)
 
 	// Verify metrics structure
 	if metrics.AttemptTotal < 0 {
@@ -124,9 +122,7 @@ func TestDistiller_ResetMetrics(t *testing.T) {
 func TestDefaultDistillationConfig(t *testing.T) {
 	config := DefaultDistillationConfig()
 
-	if config == nil {
-		t.Fatal("DefaultDistillationConfig() returned nil")
-	}
+	require.NotNil(t, config)
 
 	// Verify default values
 	if config.MinImportance != 0.6 {

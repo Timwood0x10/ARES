@@ -18,4 +18,7 @@ var (
 
 	// ErrLLMNotConfigured is returned when LLM service is not configured.
 	ErrLLMNotConfigured = errors.New("LLM service not configured")
+
+	// ErrWorkflowNotConfigured is returned when workflow service is not configured.
+	ErrWorkflowNotConfigured = errors.New("workflow service not configured")
 )

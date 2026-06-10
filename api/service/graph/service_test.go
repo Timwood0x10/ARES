@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/observability"
 	wfgraph "goagent/internal/workflow/graph"
 )
@@ -114,9 +116,7 @@ func TestExecuteWithTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if response == nil {
-		t.Fatal("expected non-nil response")
-	}
+	require.NotNil(t, response)
 	if response.Error == "" {
 		t.Error("expected error message in response")
 	}

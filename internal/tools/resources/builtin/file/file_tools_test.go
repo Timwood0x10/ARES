@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/tools/resources/core"
 )
 
 // TestNewFileTools tests creating a new FileTools.
 func TestNewFileTools(t *testing.T) {
 	tools := NewFileTools()
-	if tools == nil {
-		t.Fatal("NewFileTools() should not return nil")
-	}
+	require.NotNil(t, tools)
 	if tools.Name() != "file_tools" {
 		t.Errorf("Name() = %q, want 'file_tools'", tools.Name())
 	}

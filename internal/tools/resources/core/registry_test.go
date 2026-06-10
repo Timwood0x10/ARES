@@ -5,15 +5,15 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewRegistry tests creating a new Registry.
 func TestNewRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	if registry == nil {
-		t.Fatal("NewRegistry() should not return nil")
-	}
+	require.NotNil(t, registry)
 
 	if registry.tools == nil {
 		t.Error("tools map should be initialized")

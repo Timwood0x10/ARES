@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/tools/resources/core"
 )
 
@@ -299,9 +301,7 @@ func TestNewToolFunc(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := NewToolFunc(tt.toolName, tt.description, tt.params, tt.fn)
 
-			if tool == nil {
-				t.Fatal("NewToolFunc() should not return nil")
-			}
+			require.NotNil(t, tool)
 
 			if tool.Name() != tt.toolName {
 				t.Errorf("Name() = %q, want %q", tool.Name(), tt.toolName)

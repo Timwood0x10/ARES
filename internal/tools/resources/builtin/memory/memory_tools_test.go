@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/core/models"
 	"goagent/internal/memory"
 	"goagent/internal/storage/postgres/repositories"
@@ -132,9 +134,7 @@ func TestNewMemorySearch(t *testing.T) {
 	memoryMgr := &MockMemoryManager{}
 	search := NewMemorySearch(memoryMgr)
 
-	if search == nil {
-		t.Fatal("NewMemorySearch() should not return nil")
-	}
+	require.NotNil(t, search)
 	if search.Name() != "memory_search" {
 		t.Errorf("Name() = %q, want 'memory_search'", search.Name())
 	}
@@ -354,9 +354,7 @@ func TestNewUserProfile(t *testing.T) {
 	distilledRepo := &MockDistilledMemoryRepository{}
 	profile := NewUserProfile(memoryMgr, distilledRepo)
 
-	if profile == nil {
-		t.Fatal("NewUserProfile() should not return nil")
-	}
+	require.NotNil(t, profile)
 	if profile.Name() != "user_profile" {
 		t.Errorf("Name() = %q, want 'user_profile'", profile.Name())
 	}

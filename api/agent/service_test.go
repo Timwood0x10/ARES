@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/core/models"
 	"goagent/internal/memory"
 )
@@ -114,9 +116,7 @@ func TestNewService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := NewService(tt.memoryMgr)
 
-			if svc == nil {
-				t.Fatal("NewService() should not return nil")
-			}
+			require.NotNil(t, svc)
 			if svc.memoryMgr != tt.memoryMgr {
 				t.Errorf("NewService().memoryMgr = %v, want %v", svc.memoryMgr, tt.memoryMgr)
 			}

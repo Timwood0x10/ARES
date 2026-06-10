@@ -10,6 +10,7 @@ import (
 	llmSvc "goagent/api/service/llm"
 	memorySvc "goagent/api/service/memory"
 	retrievalSvc "goagent/api/service/retrieval"
+	workflowSvc "goagent/api/service/workflow"
 	"goagent/internal/errors"
 )
 
@@ -19,6 +20,7 @@ type Client struct {
 	memoryService    *memorySvc.Service
 	retrievalService *retrievalSvc.Service
 	llmService       *llmSvc.Service
+	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
 }
@@ -30,6 +32,7 @@ type Config struct {
 	Memory     *memorySvc.Config    // Memory service configuration
 	Retrieval  *retrievalSvc.Config // Retrieval service configuration
 	LLM        *llmSvc.Config       // LLM service configuration
+	Workflow   *workflowSvc.Config  // Workflow service configuration
 }
 
 // NewClient creates a new GoAgent client instance.
@@ -86,6 +89,14 @@ func NewClient(config *Config) (*Client, error) {
 		client.llmService = llmService
 	}
 
+	if config.Workflow != nil {
+		workflowService, err := workflowSvc.NewService(config.Workflow)
+		if err != nil {
+			return nil, errors.Wrap(err, "create workflow service")
+		}
+		client.workflowService = workflowService
+	}
+
 	return client, nil
 }
 
@@ -123,6 +134,15 @@ func (c *Client) LLM() (*llmSvc.Service, error) {
 		return nil, ErrLLMNotConfigured
 	}
 	return c.llmService, nil
+}
+
+// Workflow returns the workflow service.
+// Returns the workflow service or an error if not configured.
+func (c *Client) Workflow() (*workflowSvc.Service, error) {
+	if c.workflowService == nil {
+		return nil, ErrWorkflowNotConfigured
+	}
+	return c.workflowService, nil
 }
 
 // Close closes the client and cleans up resources.

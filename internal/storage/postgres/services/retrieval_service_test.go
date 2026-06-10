@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/core/errors"
 	"goagent/internal/storage/postgres"
 	"goagent/internal/storage/postgres/embedding"
@@ -160,11 +162,7 @@ func TestMergeAndRank(t *testing.T) {
 
 	result2 := findResultByID(merged, "2")
 
-	if result2 == nil {
-
-		t.Fatal("result with ID 2 should exist")
-
-	}
+	require.NotNil(t, result2)
 
 	// Score should reflect combination from both sources
 

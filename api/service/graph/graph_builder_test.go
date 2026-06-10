@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/agents/base"
 	"goagent/internal/core/models"
 )
@@ -51,9 +53,7 @@ func (m *mockAgent) Stop(ctx context.Context) error {
 
 func TestNewGraphBuilder(t *testing.T) {
 	builder := NewGraphBuilder()
-	if builder == nil {
-		t.Fatal("NewGraphBuilder() returned nil")
-	}
+	require.NotNil(t, builder)
 
 	if builder.agentRegistry == nil {
 		t.Error("agentRegistry not initialized")

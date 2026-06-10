@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/api/core"
 	agentSvc "goagent/api/service/agent"
 	llmSvc "goagent/api/service/llm"
@@ -398,9 +400,7 @@ func TestNewClientWithConfigFile(t *testing.T) {
 		t.Fatalf("NewClientWithConfigFile() error = %v", err)
 	}
 
-	if client == nil {
-		t.Fatal("expected client to be non-nil")
-	}
+	require.NotNil(t, client)
 
 	if client.configFile == nil {
 		t.Errorf("expected configFile to be set")
