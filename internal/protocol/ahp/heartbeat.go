@@ -2,6 +2,7 @@ package ahp
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -25,11 +26,15 @@ func DefaultHeartbeatConfig() *HeartbeatConfig {
 	}
 }
 
+// TimeoutCallback is invoked when an agent is marked offline by CheckTimeouts.
+type TimeoutCallback func(agentID string)
+
 // HeartbeatMonitor monitors heartbeat signals from agents.
 type HeartbeatMonitor struct {
 	mu          sync.RWMutex
 	agentStatus map[string]*AgentHeartbeat
 	config      *HeartbeatConfig
+	callbacks   []TimeoutCallback
 }
 
 // AgentHeartbeat holds the heartbeat state for an agent.
@@ -53,6 +58,9 @@ func NewHeartbeatMonitor(config *HeartbeatConfig) *HeartbeatMonitor {
 
 // RecordHeartbeat records a heartbeat from an agent.
 func (m *HeartbeatMonitor) RecordHeartbeat(agentID string) {
+	if agentID == "" {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -81,7 +89,21 @@ func (m *HeartbeatMonitor) GetStatus(agentID string) (models.AgentStatus, bool) 
 }
 
 // CheckTimeouts checks for agents that have missed heartbeats.
+// Returns a list of agent IDs that were just marked offline.
+// Invokes registered callbacks for each timed-out agent (outside the lock).
 func (m *HeartbeatMonitor) CheckTimeouts() []string {
+	timedOut := m.checkAndMarkOffline()
+
+	// Notify callbacks outside the lock to prevent deadlocks.
+	for _, agentID := range timedOut {
+		m.notifyCallbacks(agentID)
+	}
+
+	return timedOut
+}
+
+// checkAndMarkOffline marks timed-out agents as offline under the write lock.
+func (m *HeartbeatMonitor) checkAndMarkOffline() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -123,6 +145,34 @@ func (m *HeartbeatMonitor) ListAgents() []string {
 		agents = append(agents, agentID)
 	}
 	return agents
+}
+
+// RegisterCallback adds a callback that is invoked when an agent times out.
+//
+// Args:
+//
+//	fn - callback function, must be non-blocking.
+func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callbacks = append(m.callbacks, fn)
+}
+
+// notifyCallbacks invokes all registered callbacks for a timed-out agent.
+// Caller must NOT hold m.mu (callbacks may re-register or inspect state).
+func (m *HeartbeatMonitor) notifyCallbacks(agentID string) {
+	// Copy callbacks under read lock to avoid holding lock during callback execution.
+	m.mu.RLock()
+	callbacks := make([]TimeoutCallback, len(m.callbacks))
+	copy(callbacks, m.callbacks)
+	m.mu.RUnlock()
+
+	for _, fn := range callbacks {
+		fn(agentID)
+	}
 }
 
 // HeartbeatSender sends periodic heartbeat messages.
@@ -198,11 +248,12 @@ func (s *HeartbeatSender) run() {
 // sendHeartbeat sends a heartbeat message.
 func (s *HeartbeatSender) sendHeartbeat() {
 	if s.queue == nil {
+		slog.Error("heartbeat sender queue is nil", "agent_id", s.agentID)
 		return
 	}
 	msg := NewHeartbeatMessage(s.agentID)
 	if err := s.queue.Enqueue(s.ctx, msg); err != nil {
-		return
+		slog.Warn("heartbeat send failed", "agent_id", s.agentID, "error", err)
 	}
 }
 

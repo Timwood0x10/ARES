@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -699,4 +700,30 @@ func (m *ProductionMemoryManager) getCurrentTenantID() string {
 	}
 
 	return "default" // Fallback to default tenant
+}
+
+// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
+// Returns ("", nil) if no checkpoint exists.
+func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
+	if leaderID == "" {
+		return "", nil
+	}
+
+	tenantID := m.getCurrentTenantID()
+	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
+		return "", errors.Wrap(err, "get latest session for leader: set tenant context")
+	}
+
+	query := `SELECT session_id FROM leader_checkpoints WHERE leader_id = $1 ORDER BY updated_at DESC LIMIT 1`
+	row := m.dbPool.QueryRow(ctx, query, leaderID)
+
+	var sessionID string
+	if err := row.Scan(&sessionID); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", errors.Wrap(err, "get latest session for leader")
+	}
+
+	return sessionID, nil
 }

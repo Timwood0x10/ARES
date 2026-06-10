@@ -46,6 +46,16 @@ type ResultAggregator interface {
 	Aggregate(ctx context.Context, results []*models.TaskResult, tasks []*models.Task) (*models.RecommendResult, error)
 }
 
+// LeaderOption configures a leaderAgent instance.
+type LeaderOption func(*leaderAgent)
+
+// WithCheckpoint sets the checkpoint repository for failover recovery.
+func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
+	return func(a *leaderAgent) {
+		a.checkpoint = cp
+	}
+}
+
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
 	mu            sync.RWMutex
@@ -61,11 +71,14 @@ type leaderAgent struct {
 	heartbeatMon  *ahp.HeartbeatMonitor
 	memoryManager memory.MemoryManager
 	sessionID     string
+	checkpoint    *CheckpointRepository
 
 	// Lifecycle management
-	stopCh      chan struct{}  // Channel to signal shutdown
-	distillWg   sync.WaitGroup // WaitGroup for distillation goroutines
-	cleanupOnce sync.Once      // Ensure cleanup runs only once
+	stopCh      chan struct{}   // Channel to signal shutdown
+	distillWg   sync.WaitGroup  // WaitGroup for distillation goroutines
+	distillEg   *errgroup.Group // Errgroup for distillation goroutines
+	streamEg    *errgroup.Group // Errgroup for streaming pipeline goroutines
+	cleanupOnce sync.Once       // Ensure cleanup runs only once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.
@@ -74,6 +87,7 @@ type LeaderAgentConfig struct {
 	MaxParallelTasks int
 	MaxSteps         int
 	EnableCache      bool
+	UserID           string // UserID for session and task creation. Defaults to "default_user" if empty.
 	Loop             LoopConfig
 }
 
@@ -102,6 +116,7 @@ func New(
 	hbMon *ahp.HeartbeatMonitor,
 	memMgr memory.MemoryManager,
 	cfg *LeaderAgentConfig,
+	opts ...LeaderOption,
 ) Agent {
 	if cfg == nil {
 		cfg = DefaultLeaderAgentConfig()
@@ -109,7 +124,7 @@ func New(
 	cfg.ID = id
 	cfg.Type = models.AgentTypeLeader
 
-	return &leaderAgent{
+	a := &leaderAgent{
 		id:            id,
 		agentType:     models.AgentTypeLeader,
 		status:        models.AgentStatusOffline,
@@ -122,6 +137,12 @@ func New(
 		heartbeatMon:  hbMon,
 		memoryManager: memMgr,
 	}
+
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	return a
 }
 
 // DefaultLeaderAgentConfig returns default configuration.
@@ -186,8 +207,10 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 		return coreerrors.ErrResultAggNotInitialized
 	}
 
-	// Initialize lifecycle channels
+	// Initialize lifecycle channels and errgroups.
 	a.stopCh = make(chan struct{})
+	a.distillEg = &errgroup.Group{}
+	a.streamEg = &errgroup.Group{}
 
 	// Initialize heartbeat monitor if provided
 	if a.heartbeatMon != nil {
@@ -222,29 +245,36 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 		return coreerrors.ErrAgentNotRunning
 	}
 
+	a.setStatus(models.AgentStatusStopping)
+
 	a.cleanupOnce.Do(func() {
-		// Signal all goroutines to stop
+		// Signal all goroutines to stop.
 		close(a.stopCh)
 
-		// Wait for distillation goroutines to complete
+		// Wait for background goroutines to complete.
 		a.distillWg.Wait()
+		if a.streamEg != nil {
+			_ = a.streamEg.Wait()
+		}
 
-		// Note: MessageQueue does not have a Drain method. Messages in the queue
-		// will be naturally drained by consumers or discarded when the queue is closed.
-		// If needed, consumers should handle remaining messages before stopping.
-
-		// Cleanup heartbeat monitor if provided
+		// Cleanup heartbeat monitor if provided.
 		if a.heartbeatMon != nil {
-			// Remove agent from heartbeat monitoring
 			a.heartbeatMon.RemoveAgent(a.id)
 		}
 
 		slog.Info("Leader agent stopped successfully", "agent_id", a.id)
 	})
 
-	a.setStatus(models.AgentStatusStopping)
 	a.setStatus(models.AgentStatusOffline)
 	return nil
+}
+
+// getUserID returns the configured user ID, defaulting to "default_user" if empty.
+func (a *leaderAgent) getUserID() string {
+	if a.config != nil && a.config.UserID != "" {
+		return a.config.UserID
+	}
+	return "default_user"
 }
 
 // initMemoryContext initializes session, records user message, builds context with
@@ -254,19 +284,51 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 		return strInput, "", ""
 	}
 
-	// Ensure session exists.
-	a.mu.Lock()
+	// Ensure session exists, attempting checkpoint recovery first.
+	// Read sessionID under read lock to avoid holding write lock during DB calls.
+	a.mu.RLock()
 	sessionID = a.sessionID
+	checkpoint := a.checkpoint
+	leaderID := a.id
+	a.mu.RUnlock()
+
 	if sessionID == "" {
-		newSessionID, err := a.memoryManager.CreateSession(ctx, "default_user")
-		if err != nil {
-			slog.Warn("Failed to create session", "error", err)
-		} else {
-			sessionID = newSessionID
+		recovered := false
+		if checkpoint != nil {
+			cp, err := checkpoint.GetLatest(ctx, leaderID)
+			if err != nil {
+				slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
+			} else if cp != nil && cp.SessionID != "" {
+				sessionID = cp.SessionID
+				recovered = true
+				slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
+			}
+		}
+		if !recovered {
+			newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
+			if err != nil {
+				slog.Warn("Failed to create session", "error", err)
+			} else {
+				sessionID = newSessionID
+			}
+		}
+		// Take write lock only to persist the sessionID.
+		if sessionID != "" {
+			a.mu.Lock()
 			a.sessionID = sessionID
+			a.mu.Unlock()
+
+			if checkpoint != nil {
+				if err := checkpoint.Save(ctx, &LeaderCheckpoint{
+					LeaderID:  leaderID,
+					SessionID: sessionID,
+					Status:    "active",
+				}); err != nil {
+					slog.Warn("Failed to save checkpoint", "error", err)
+				}
+			}
 		}
 	}
-	a.mu.Unlock()
 
 	// Record user message.
 	if err := a.memoryManager.AddMessage(ctx, sessionID, "user", strInput); err != nil {
@@ -297,7 +359,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	}
 
 	// Create task record for tracking and distillation.
-	if tID, err := a.memoryManager.CreateTask(ctx, sessionID, "default_user", enrichedInput); err != nil {
+	if tID, err := a.memoryManager.CreateTask(ctx, sessionID, a.getUserID(), enrichedInput); err != nil {
 		slog.Warn("Failed to create task - proceeding without task tracking",
 			"error", err, "session_id", sessionID,
 			"impact", "task will not be tracked for distillation")
@@ -347,13 +409,11 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	}
 
 	a.distillWg.Add(1)
-	go func() { // #nosec G118 -- Background context needed for async distillation after client disconnects
+	a.distillEg.Go(func() error {
 		defer a.distillWg.Done()
 
-		// Create a detached context with its own timeout so distillation
-		// continues even if the parent request is cancelled.
-		// Must use context.Background() — using ctx as parent would cause
-		// distillation to abort when the client disconnects.
+		// Detached context with own timeout — distillation continues
+		// even if the parent request is cancelled.
 		distillCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -370,7 +430,8 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		if err := g.Wait(); err != nil {
 			slog.Error("Error in async distillation", "error", err, "task_id", taskID)
 		}
-	}()
+		return nil
+	})
 }
 
 // Process handles user input and orchestrates the recommendation workflow with automatic memory management.
@@ -526,37 +587,37 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 	ch := make(chan base.AgentEvent, 64)
 
-	go func() {
+	a.streamEg.Go(func() error {
 		defer close(ch)
 
 		a.setStatus(models.AgentStatusBusy)
 		defer a.setStatus(models.AgentStatusReady)
 
-		// Send planning event
+		// Send planning event.
 		select {
 		case ch <- base.AgentEvent{Type: base.EventPlanning, Source: a.id, Data: strInput}:
 		case <-ctx.Done():
-			return
+			return nil
 		}
 
-		// Parse profile
+		// Parse profile.
 		profile, err := a.parser.Parse(ctx, strInput)
 		if err != nil {
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
 			}
-			return
+			return nil
 		}
 
-		// Plan tasks
+		// Plan tasks.
 		tasks, err := a.planner.Plan(ctx, profile, strInput)
 		if err != nil {
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
 			}
-			return
+			return nil
 		}
 		slog.Info("Leader tasks created", "module", "leader", "count", len(tasks))
 
@@ -564,7 +625,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			select {
 			case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
 
@@ -574,10 +635,10 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 				select {
 				case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: &models.TaskResult{TaskID: task.TaskID, Success: false, Error: err.Error()}}:
 				case <-ctx.Done():
-					return
+					return nil
 				}
 			}
-			return
+			return nil
 		}
 
 		var allResults []*models.TaskResult
@@ -586,15 +647,15 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			select {
 			case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
 
-		// Aggregate results
+		// Aggregate results.
 		select {
 		case ch <- base.AgentEvent{Type: base.EventAggregating, Source: a.id}:
 		case <-ctx.Done():
-			return
+			return nil
 		}
 
 		result, err := a.aggregator.Aggregate(ctx, allResults, tasks)
@@ -603,18 +664,19 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
 			}
-			return
+			return nil
 		}
 
 		// Finalize memory (update task, record assistant message, distill).
 		a.finalizeMemory(ctx, sessionID, taskID, result)
 
-		// Send final result
+		// Send final result.
 		select {
 		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
 		case <-ctx.Done():
 		}
-	}()
+		return nil
+	})
 
 	return ch, nil
 }

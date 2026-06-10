@@ -2,6 +2,9 @@
 
 .vscode
 
+.claude/
+.codegraph/
+
 plan/
 
 bin/

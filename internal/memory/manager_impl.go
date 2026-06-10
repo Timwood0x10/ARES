@@ -790,6 +790,12 @@ func (m *memoryManager) cosineSimilarity(v1, v2 []float64) float64 {
 	return result
 }
 
+// GetLatestSessionForLeader returns an empty session ID for in-memory implementation.
+// Session recovery requires persistent storage; use ProductionMemoryManager for that.
+func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 // truncate truncates a string to the maximum length (in runes) and adds "..." if truncated.
 // This correctly handles multi-byte UTF-8 characters by using runes instead of bytes.
 func truncate(s string, maxLen int) string {

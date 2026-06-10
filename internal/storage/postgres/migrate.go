@@ -68,6 +68,17 @@ func Migrate(ctx context.Context, pool *Pool) error {
 		)`,
 
 		`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
+
+		`CREATE TABLE IF NOT EXISTS leader_checkpoints (
+			leader_id VARCHAR(255) NOT NULL,
+			session_id VARCHAR(255) NOT NULL,
+			status VARCHAR(50) NOT NULL DEFAULT 'active',
+			metadata JSONB DEFAULT '{}'::jsonb,
+			updated_at TIMESTAMP DEFAULT NOW(),
+			PRIMARY KEY (leader_id)
+		)`,
+
+		`CREATE INDEX IF NOT EXISTS idx_leader_checkpoints_status ON leader_checkpoints(status)`,
 	}
 
 	for i, migration := range migrations {

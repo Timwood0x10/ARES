@@ -126,6 +126,10 @@ func (m *mockMemoryManager) SearchSimilarTasks(ctx context.Context, query string
 	}, nil
 }
 
+func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 func (m *mockMemoryManager) Start(ctx context.Context) error {
 	return nil
 }
