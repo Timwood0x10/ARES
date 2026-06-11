@@ -142,3 +142,172 @@ type DLQMessage struct {
 | message_timeout | 30s | Message timeout |
 | heartbeat_interval | 10s | Heartbeat interval |
 | max_retries | 3 | Max retry attempts |
+
+## 10. Callback Mechanism (v2)
+
+The `HeartbeatMonitor` supports registering callbacks that fire when an agent is marked offline by `CheckTimeouts`. This decouples the timeout detection logic from downstream recovery actions.
+
+### TimeoutCallback Type
+
+```go
+// TimeoutCallback is invoked when an agent is marked offline by CheckTimeouts.
+type TimeoutCallback func(agentID string)
+```
+
+### RegisterCallback
+
+```go
+func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
+    if fn == nil {
+        return
+    }
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.callbacks = append(m.callbacks, fn)
+}
+```
+
+### Callback Invocation Flow
+
+`CheckTimeouts` splits the work into two phases to avoid holding the write lock during callback execution:
+
+```go
+func (m *HeartbeatMonitor) CheckTimeouts() []string {
+    // Phase 1: mark agents offline under write lock
+    timedOut := m.checkAndMarkOffline()
+
+    // Phase 2: invoke callbacks outside the lock (prevents deadlocks)
+    for _, agentID := range timedOut {
+        m.notifyCallbacks(agentID)
+    }
+    return timedOut
+}
+```
+
+`notifyCallbacks` copies the callback slice under a read lock before calling each function, so callbacks may safely re-register or inspect monitor state:
+
+```go
+func (m *HeartbeatMonitor) notifyCallbacks(agentID string) {
+    m.mu.RLock()
+    callbacks := make([]TimeoutCallback, len(m.callbacks))
+    copy(callbacks, m.callbacks)
+    m.mu.RUnlock()
+
+    for _, fn := range callbacks {
+        fn(agentID)
+    }
+}
+```
+
+## 11. Supervisor Integration
+
+`LeaderSupervisor` uses the callback mechanism to trigger failover when a leader's heartbeat times out. During `Start`, it registers its `handleFailover` method as a callback:
+
+```go
+// LeaderSupervisor.Start
+s.heartbeatMon.RegisterCallback(s.handleFailover)
+
+s.g.Go(func() error {
+    ticker := time.NewTicker(s.config.CheckInterval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-s.gctx.Done():
+            return nil
+        case <-ticker.C:
+            s.heartbeatMon.CheckTimeouts()
+        }
+    }
+})
+```
+
+The `handleFailover` callback launches an asynchronous failover via `errgroup`:
+
+```go
+func (s *LeaderSupervisor) handleFailover(leaderID string) {
+    s.mu.RLock()
+    stopped := s.stopped
+    g := s.g
+    gctx := s.gctx
+    s.mu.RUnlock()
+
+    if stopped || g == nil {
+        return
+    }
+    g.Go(func() error {
+        s.doFailover(gctx, leaderID)
+        return nil
+    })
+}
+```
+
+The failover sequence in `doFailover`:
+1. Stop the old leader agent
+2. Retrieve the latest checkpoint for the leader
+3. Invoke the `FailoverStrategy` (up to `MaxFailoverAttempts` times)
+4. Register the new leader agent
+5. Recover stale tasks from the checkpoint session
+
+### ColdRestartStrategy
+
+The default `FailoverStrategy` creates a fresh leader instance via a factory function:
+
+```go
+type ColdRestartStrategy struct {
+    factory     func(ctx context.Context, config interface{}) (base.Agent, error)
+    agentConfig interface{}
+}
+
+func (s *ColdRestartStrategy) HandleFailover(
+    ctx context.Context,
+    leaderID string,
+    checkpoint *LeaderCheckpoint,
+) (base.Agent, error) {
+    config := s.agentConfig
+    if config == nil && checkpoint != nil && len(checkpoint.Metadata) > 0 {
+        config = checkpoint.Metadata
+    }
+
+    agent, err := s.factory(ctx, config)
+    if err != nil {
+        return nil, errors.Wrap(err, "cold restart strategy: create agent")
+    }
+    if err := agent.Start(ctx); err != nil {
+        return nil, errors.Wrap(err, "cold restart strategy: start agent")
+    }
+    return agent, nil
+}
+```
+
+## 12. HeartbeatSender
+
+`HeartbeatSender` runs a background goroutine that periodically enqueues `HEARTBEAT` messages into the agent's `MessageQueue`.
+
+```go
+type HeartbeatSender struct {
+    agentID  string
+    interval time.Duration
+    queue    *MessageQueue
+    ctx      context.Context
+    cancel   context.CancelFunc
+    wg       sync.WaitGroup
+    stopOnce sync.Once
+    started  bool
+    stopped  bool
+    mu       sync.Mutex
+}
+```
+
+### Usage
+
+```go
+sender := ahp.NewHeartbeatSender(agentID, 5*time.Second, queue)
+if err := sender.Validate(); err != nil {
+    log.Fatal(err)
+}
+sender.Start(ctx)
+// ... agent runs ...
+sender.Stop() // graceful shutdown, waits for goroutine
+```
+
+`Start` can be called again after `Stop`, making the sender reusable across restart cycles. `Stop` uses `sync.Once` to ensure the cancel/wait sequence runs exactly once even under concurrent calls.

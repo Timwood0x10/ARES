@@ -2,21 +2,95 @@
 
 ## 1. Overview
 
-The Storage module is a production-grade AI Memory & Retrieval System built on PostgreSQL 16 + pgvector, providing multi-tenant support, asynchronous embedding pipeline, and enterprise-grade security for the Agent Framework.
+The Storage module is a production-grade AI Memory & Retrieval System providing multi-tenant support, asynchronous embedding pipeline, and enterprise-grade security for the Agent Framework.
 
 ### Architecture Level
 - **L3 - Infra Agent (Production Ready)**
-- **Core Features**: Multi-tenant isolation, vector search, hybrid retrieval, secret management
+- **Core Features**: Pluggable vector backend, multi-tenant isolation, vector search, hybrid retrieval, secret management
 
 ### Key Design Principles
-1. **Vector Dimension Segmentation**: Separate tables for each vector dimension (avoids mixing vector spaces)
-2. **Deduplication**: Hash-based deduplication + async embedding deduplication
-3. **Graceful Degradation**: Complete fallback mechanisms for all critical paths
-4. **Multi-Tenancy**: RLS (Row Level Security) + Tenant Guard dual-layer protection
+1. **Pluggable VectorStore**: A single interface (`storage.VectorStore`) abstracts all vector backends -- swap PostgreSQL, Qdrant, Milvus, or in-memory without touching business logic
+2. **Vector Dimension Segmentation**: Separate tables for each vector dimension (avoids mixing vector spaces)
+3. **Deduplication**: Hash-based deduplication + async embedding deduplication
+4. **Graceful Degradation**: Complete fallback mechanisms for all critical paths
+5. **Multi-Tenancy**: RLS (Row Level Security) + Tenant Guard dual-layer protection
 
-## 2. Architecture Components
+## 2. Pluggable VectorStore Interface
 
-### 2.1 Database Schema
+The vector storage layer is defined by a single interface in `internal/storage/vector.go`. Every vector backend -- PostgreSQL + pgvector, Qdrant, Milvus, SQLite-vec, or in-memory -- implements this contract.
+
+### 2.1 Interface Definition
+
+```go
+// internal/storage/vector.go
+
+// VectorStore defines the interface for vector similarity search.
+// Implement this interface to add a new vector backend.
+type VectorStore interface {
+    // Search performs vector similarity search and returns results ordered by distance.
+    Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error)
+
+    // AddEmbedding stores a vector with associated metadata.
+    AddEmbedding(ctx context.Context, table, id string, embedding []float64, metadata map[string]any) error
+
+    // CreateCollection creates a vector collection/table if it doesn't exist.
+    CreateCollection(ctx context.Context, name string, dimension int) error
+}
+
+// SearchResult represents a single vector search result.
+type SearchResult struct {
+    ID       string         `json:"id"`
+    Score    float64        `json:"score"`
+    Metadata map[string]any `json:"metadata,omitempty"`
+}
+```
+
+### 2.2 Built-in Implementations
+
+| Backend | Package | Use Case |
+|---------|---------|----------|
+| PostgreSQL + pgvector | `internal/storage/postgres` | Production, full SQL features, IVFFlat index |
+| In-memory | `internal/storage/memory` | Development, testing, prototyping |
+
+**PostgreSQL implementation** (`VectorSearcher`): Uses pgvector's `<=>` cosine distance operator with IVFFlat indexing. Validates table names to prevent SQL injection, enforces configurable search limits, and creates `VECTOR(N)` columns with JSONB metadata.
+
+**In-memory implementation**: Thread-safe (uses `sync.RWMutex`), brute-force cosine similarity search, zero external dependencies. Ideal for unit tests and local development.
+
+### 2.3 Repository Integration
+
+The `Repository` struct holds a `Vector` field typed as `storage.VectorStore`, making the backend swappable at construction time or at runtime:
+
+```go
+// internal/storage/postgres/repository.go
+type Repository struct {
+    Session   *SessionRepository
+    Recommend *RecommendRepository
+    Profile   *ProfileRepository
+    Vector    storage.VectorStore  // <-- pluggable
+    // ...
+}
+```
+
+Swap the vector backend in two lines:
+
+```go
+// Production: PostgreSQL + pgvector (default)
+repo := postgres.NewRepository(pool)
+
+// Development/testing: in-memory
+repo.Vector = memory.NewVectorStore()
+
+// Custom backend: any implementation of storage.VectorStore
+repo.Vector = myqdrant.New("localhost", 6333)
+```
+
+### 2.4 Adding a Custom Backend
+
+See [Custom Vector Store Guide](../../en/development/custom-vector-store.md) for a complete walkthrough with examples for Qdrant, Milvus, Elasticsearch, and SQLite-vec.
+
+## 3. Architecture Components
+
+### 3.1 Database Schema
 
 #### Core Tables
 
@@ -38,7 +112,7 @@ The Storage module is a production-grade AI Memory & Retrieval System built on P
 - **Row Level Security**: RLS policies for tenant isolation
 - **Asynchronous Embedding**: Queue-based embedding pipeline with retry mechanism
 
-### 2.2 System Architecture
+### 3.2 System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -77,9 +151,9 @@ The Storage module is a production-grade AI Memory & Retrieval System built on P
 └─────────────────────────────────────────────────────────┘
 ```
 
-## 3. Core Components
+## 4. Core Components
 
-### 3.1 Repository Layer
+### 4.1 Repository Layer
 
 #### KnowledgeRepository
 ```go
@@ -116,7 +190,7 @@ type SecretRepository interface {
 }
 ```
 
-### 3.2 Service Layer
+### 4.2 Service Layer
 
 #### RetrievalService
 Implements hybrid retrieval pipeline with multiple strategies:
@@ -146,35 +220,17 @@ Implements intelligent data filtering:
 - Conversations with system role are not stored
 - Experiences have 30-day TTL (success) or 7-day TTL (failure)
 
-### 3.3 Adapter Layer
+### 4.3 Adapter Layer
 
 #### SecretAdapter
-Format conversion for secret import/export:
-
-**Supported Formats:**
-- JSON: Standard JSON format
-- YAML: YAML format with key-value pairs
-- CSV: CSV format with columns (key, value, expires_at)
-
-**Auto-Detection:**
-Automatically detects input format based on content analysis.
+Format conversion for secret import/export (JSON, YAML, CSV). Auto-detects input format based on content analysis.
 
 #### EmbeddingCache
-Multi-level caching for embeddings:
+Multi-level caching for embeddings: local LRU (in-memory) -> Redis (distributed) -> embedding service (remote). Cache keys use Unicode normalization (NFKC), case folding, and whitespace normalization.
 
-**Cache Hierarchy:**
-1. Local LRU cache (in-memory)
-2. Redis cache (distributed)
-3. Embedding service (remote)
+## 5. Asynchronous Embedding Pipeline
 
-**Cache Key Normalization:**
-- Unicode normalization (NFKC)
-- Case folding
-- Whitespace normalization
-
-## 4. Asynchronous Embedding Pipeline
-
-### 4.1 Pipeline Design
+### 5.1 Pipeline Design
 
 ```
 Write Data (without embedding)
@@ -194,7 +250,7 @@ Retry on failure (max 3 retries, exponential backoff)
 Final failure → status='failed' + dead letter queue
 ```
 
-### 4.2 Queue Table Structure
+### 5.2 Queue Table Structure
 
 ```sql
 CREATE TABLE embedding_queue (
@@ -215,11 +271,11 @@ CREATE TABLE embedding_queue (
 );
 ```
 
-### 4.3 Concurrency Control
+### 5.3 Concurrency Control
 
 **FOR UPDATE SKIP LOCKED:**
 ```sql
-SELECT id, task_id, table_name, content, tenant_id, 
+SELECT id, task_id, table_name, content, tenant_id,
        embedding_model, embedding_version, retry_count
 FROM embedding_queue
 WHERE status = 'pending'
@@ -228,11 +284,10 @@ FOR UPDATE SKIP LOCKED
 LIMIT $1
 ```
 
-### 4.4 Reconciler
+### 5.4 Reconciler
 
-**Purpose:** Find and re-queue missing embedding tasks
+**Purpose:** Find and re-queue missing embedding tasks.
 
-**Logic:**
 ```sql
 SELECT id, tenant_id, content, embedding_model, embedding_version
 FROM knowledge_chunks_1024
@@ -242,15 +297,14 @@ WHERE embedding_status = 'pending'
 LIMIT 1000
 ```
 
-## 5. Security Features
+## 6. Security Features
 
-### 5.1 Multi-Tenant Isolation
+### 6.1 Multi-Tenant Isolation
 
 **Dual-Layer Protection:**
 1. **RLS (Row Level Security)**: Database-level logical isolation
 2. **Tenant Guard**: Application-level physical isolation
 
-**Implementation:**
 ```go
 // Tenant Guard
 func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) error {
@@ -263,283 +317,69 @@ CREATE POLICY tenant_isolation ON knowledge_chunks_1024
 FOR ALL USING (tenant_id = current_setting('app.tenant_id')::TEXT);
 ```
 
-### 5.2 Secret Management
+### 6.2 Secret Management
 
-**Encryption:**
-- Algorithm: AES-256-GCM
-- Key rotation support
-- Per-secret key versioning
+- **Encryption**: AES-256-GCM with key rotation and per-secret key versioning
+- **Import/Export**: Multi-format support (JSON/YAML/CSV), metadata-only export
+- **Key Rotation**: Atomic transaction-based re-encryption
 
-**Import/Export:**
-- Export: Metadata only (no encrypted values)
-- Import: Multi-format support (JSON/YAML/CSV)
-- Key rotation: Atomic transaction-based re-encryption
+### 6.3 Input Validation
 
-### 5.3 Input Validation
-
-**Sanitization:**
 - SQL injection prevention (parameterized queries)
 - XSS prevention (output encoding)
 - Input length limits
 
-## 6. Performance Optimization
+## 7. Performance & Resilience
 
-### 6.1 Write Buffer
+- **Write Buffer**: Batching reduces DB QPS by ~80% and embedding calls by ~50%
+- **Query Cache**: SHA-256 hash of tenant + query + filters as key, reduces latency by ~70%
+- **Time Decay**: `final_score = base_score * time_decay` prevents old data from dominating
+- **Circuit Breaker**: 5 consecutive failures -> open (2s timeout), half-open after 10s
+- **Rate Limiting**: Token bucket + sliding window + semaphore
+- **Timeouts**: DB 2s, embedding 5s, vector search 2s, overall request 10s
 
-**Purpose:** Reduce DB QPS and embedding service load
+## 8. Monitoring
 
-**Implementation:**
-```go
-type WriteBuffer struct {
-    buffer chan *WriteItem
-    batchSize int
-    flushInterval time.Duration
-}
-```
-
-**Performance Impact:**
-- DB QPS: ↓ 80%
-- Embedding calls: ↓ 50%
-- Latency: More stable
-
-### 6.2 Query Cache
-
-**Purpose:** Cache query results to bypass DB + embedding
-
-**Cache Key:**
-```go
-func (c *QueryCache) GetCacheKey(query string, tenantID string, filters map[string]interface{}) string {
-    keyData := fmt.Sprintf("query:%s:%s:%v", tenantID, query, filters)
-    hash := sha256.Sum256([]byte(keyData))
-    return fmt.Sprintf("query_cache:%x", hash[:16])
-}
-```
-
-**Performance Impact:**
-- Latency: ↓ 70%
-- DB QPS: ↓
-- Embedding QPS: ↓
-
-### 6.3 Time Decay Scoring
-
-**Formula:**
-```go
-final_score = base_score * time_decay
-```
-
-**Purpose:** Prevent old data from dominating results
-
-## 7. Error Handling & Resilience
-
-### 7.1 Circuit Breaker
-
-**Purpose:** Prevent cascading failures
-
-**Configuration:**
-- Failure threshold: 5 consecutive failures
-- Timeout: 2s
-- Half-open timeout: 10s
-
-### 7.2 Rate Limiting
-
-**Strategies:**
-- Token bucket rate limiter
-- Sliding window rate limiter
-- Semaphore for concurrent operations
-
-### 7.3 Timeout Protection
-
-**Timeouts:**
-- DB operations: 2s
-- Embedding calls: 5s
-- Vector search: 2s
-- Overall request: 10s
-
-## 8. Monitoring & Observability
-
-### 8.1 Logging
-
-**Structured Logging:**
-- Use `slog` for structured logging
-- Include `tenant_id` and `trace_id` in all log entries
-- Do not log raw LLM inputs/outputs in production
-
-### 8.2 Metrics
-
-**Key Metrics:**
-- Embedding queue length
-- Cache hit rates
-- Retrieval latency
-- Error rates
-- Resource usage
-
-### 8.3 Tracing
-
-**Retrieval Trace:**
-```go
-type RetrievalTrace struct {
-    OriginalQuery    string
-    RewrittenQuery   string
-    RewriteUsed      bool
-    VectorResults    int
-    KeywordResults   int
-    FinalResults     int
-    ExecutionTime    time.Duration
-    VectorError      error
-}
-```
+- **Logging**: `slog` structured logging with `tenant_id` and `trace_id`
+- **Key Metrics**: Embedding queue length, cache hit rates, retrieval latency, error rates
+- **Tracing**: `RetrievalTrace` struct captures query rewriting, result counts, execution time
 
 ## 9. Configuration
-
-### 9.1 Database Configuration
 
 ```yaml
 database:
   host: localhost
   port: 5432
-  user: postgres
-  password: postgres
-  database: goagent
   max_open_conns: 25
   max_idle_conns: 10
-  conn_max_lifetime: 5m
-  conn_max_idle_time: 1m
-```
-
-### 9.2 Embedding Configuration
-
-```yaml
 embedding:
-  service_url: http://localhost:8000
   model: intfloat/e5-large
   dimension: 1024
   timeout: 5s
   cache_ttl: 24h
-  batch_size: 32
-```
-
-### 9.3 Retrieval Configuration
-
-```yaml
 retrieval:
   vector_search_timeout: 2s
-  keyword_search_timeout: 1s
   max_results: 20
-  enable_query_rewrite: false
   enable_hybrid_search: true
-  time_decay_enabled: true
 ```
 
-## 10. Testing
+## 10. Deployment
 
-### 10.1 Test Coverage
+**Prerequisites**: PostgreSQL 16+ with pgvector (0.5.0+), Python embedding service, Redis (optional).
 
-**Current Coverage:**
-- Models: 100%
-- Adapters: 85%
-- Query: 75%
-- Embedding: 25.8%
-- Services: 25.8%
-- Repositories: 0% (needs completion)
+```bash
+go run cmd/migrate/main.go   # Database migration
+go run cmd/server/main.go     # Start application
+```
 
-### 10.2 Test Requirements
+**Health checks**: `/health`, `/health/db`, `/health/embedding`
 
-**Mandatory Tests:**
-- Unit tests for all public methods
-- Integration tests for critical paths
-- Race condition detection (`go test -race`)
-- Boundary condition tests
-- Error scenario tests
+## 11. Troubleshooting
 
+**High embedding queue length**: Embedding service slow or down -- check health, scale workers.
 
-## 11. Deployment
+**Poor retrieval quality**: Incorrect vector dimensions or outdated embeddings -- verify model, re-embed.
 
-### 11.1 Prerequisites
+**Cross-tenant data access**: Tenant Guard misconfigured -- verify tenant context in all operations.
 
-- PostgreSQL 16+
-- pgvector extension (version 0.5.0+)
-- Python embedding service
-- Redis (optional, for caching)
-
-### 11.2 Migration Steps
-
-1. **Database Migration:**
-   ```bash
-   go run cmd/migrate/main.go
-   ```
-
-2. **Start Embedding Service:**
-   ```bash
-   cd services/embedding
-   ./start.sh
-   ```
-
-3. **Start Application:**
-   ```bash
-   go run cmd/server/main.go
-   ```
-
-### 11.3 Health Checks
-
-**Endpoints:**
-- `/health`: Application health
-- `/health/db`: Database connectivity
-- `/health/embedding`: Embedding service availability
-
-## 12. Troubleshooting
-
-### 12.1 Common Issues
-
-**Issue: High embedding queue length**
-- Cause: Embedding service slow or down
-- Solution: Check embedding service health, scale workers
-
-**Issue: Poor retrieval quality**
-- Cause: Incorrect vector dimensions or outdated embeddings
-- Solution: Verify embedding model, re-embed if needed
-
-**Issue: Cross-tenant data access**
-- Cause: Tenant Guard not properly configured
-- Solution: Verify tenant context is set in all operations
-
-### 12.2 Performance Tuning
-
-**Database Tuning:**
-- Increase `work_mem` for vector operations
-- Adjust `effective_cache_size` based on available RAM
-- Use connection pooling
-
-**Embedding Tuning:**
-- Increase batch size for bulk operations
-- Enable caching for frequently queried texts
-- Scale embedding service horizontally
-
-## 13. Future Enhancements
-
-### 13.1 Planned Features
-
-- **Query Rewrite**: LLM-based query expansion and refinement
-- **Advanced Vector Indexing**: HNSW index for better performance
-- **Multi-Model Support**: Support multiple embedding models
-- **Streaming Retrieval**: Real-time result streaming
-
-### 13.2 Performance Improvements
-
-- **GPU Acceleration**: GPU-based embedding computation
-- **Distributed Caching**: Multi-node caching layer
-- **Read Replicas**: Database read scaling
-
-## 14. References
-
-- [Effective Go](https://go.dev/doc/effective_go)
-- [pgvector Documentation](https://github.com/pgvector/pgvector)
-- [PostgreSQL Row Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
-- [AES-GCM Encryption](https://en.wikipedia.org/wiki/Galois/Counter_Mode)
-
-## 15. Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0.0 | 2026-03-18 | Initial production release |
-| 1.0.1 | 2026-03-18 | Added secret import adapter layer |
-| 1.0.2 | 2026-03-18 | Completed models test coverage (100%) |
+**Database tuning**: Increase `work_mem` for vector operations, adjust `effective_cache_size`, use connection pooling.

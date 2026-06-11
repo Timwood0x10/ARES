@@ -16,13 +16,14 @@ Graph provides Go code-based dynamic DAG execution capabilities with support for
 
 ### Comparison with Workflow Engine
 
-| Dimension | Workflow Engine | Graph |
-|-----------|----------------|-------|
-| **Definition Method** | YAML/JSON Configuration | Go Code |
-| **Execution Unit** | Step (Agent) | Node (Tool/Agent) |
-| **Flow Type** | Static, Predefined | Dynamic, Runtime Decision |
-| **Use Cases** | Predefined Workflows | Tool Composition, Conditional Branching |
-| **Scheduling Strategy** | Dependency-Driven + FIFO | Pluggable Scheduler |
+| Dimension | Workflow Engine | Workflow Engine v2 (MutableDAG) | Graph |
+|-----------|----------------|-------------------------------|-------|
+| **Definition Method** | YAML/JSON Configuration | YAML/JSON + runtime mutation | Go Code |
+| **Execution Unit** | Step (Agent) | Step (Agent) | Node (Tool/Agent) |
+| **Flow Type** | Static, Predefined | Mutable at runtime | Dynamic, Runtime Decision |
+| **Use Cases** | Predefined Workflows | Workflows that evolve mid-flight | Tool Composition, Conditional Branching |
+| **Scheduling Strategy** | Dependency-Driven + FIFO | Dependency-Driven + FIFO + recompute on mutation | Pluggable Scheduler |
+| **Conditional Branching** | No | No | Yes (`Edge.Condition`) |
 
 ## Core Concepts
 
@@ -292,9 +293,11 @@ func (s *Service) GetGraphInfo(g *wfgraph.Graph) *GraphInfo
 
 ### Why Not Depend on Workflow Engine?
 
-1. **Static vs Dynamic**: Workflow Engine is a static DAG, cannot support dynamic conditional branching
-2. **Conditional Branch Loss**: Converting to Workflow loses `Edge.Condition` information
-3. **Different Scheduling Strategy**: Graph needs to support runtime scheduling decisions
+1. **Conditional Branch Loss**: Converting to Workflow loses `Edge.Condition` information -- Graph natively supports `IfFunc` conditions on edges, which the engine lacks entirely.
+2. **Different Scheduling Strategy**: Graph needs to support pluggable runtime scheduling decisions (priority, short-job-first), not just dependency-driven ordering.
+3. **Different Execution Model**: Graph uses single-threaded BFS with a `readySet`; the engine uses `errgroup` with semaphore-based parallelism.
+
+> **Note**: Workflow Engine v2 (MutableDAG + DynamicExecutor) now supports runtime graph mutation, narrowing the gap for use cases that only need dynamic node/edge addition without conditional branching.
 
 ### Why State is Lock-Free?
 

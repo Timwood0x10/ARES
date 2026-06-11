@@ -7,6 +7,7 @@ import (
 
 	coreerrors "goagent/internal/core/errors"
 	"goagent/internal/errors"
+	"goagent/internal/storage"
 )
 
 // VectorSearcher handles vector similarity search.
@@ -45,12 +46,9 @@ func NewVectorSearcherWithDB(db DBTX, embeddingConfig *EmbeddingConfig) *VectorS
 	}
 }
 
-// SearchResult represents a vector search result.
-type SearchResult struct {
-	ID       string
-	Score    float64
-	Metadata map[string]any
-}
+// SearchResult is an alias for storage.SearchResult.
+// Deprecated: Use storage.SearchResult directly.
+type SearchResult = storage.SearchResult
 
 // Search performs a vector similarity search.
 // This is a simplified implementation that uses pgvector if available.
@@ -213,6 +211,40 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 	_, err := v.db.ExecContext(ctx, query)
 	if err != nil {
 		return errors.Wrap(err, "create vector table")
+	}
+
+	return nil
+}
+
+// CreateCollection creates a vector collection. Implements storage.VectorStore.
+func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dimension int) error {
+	if err := sanitizeSQLTable(name); err != nil {
+		return errors.Wrap(err, "invalid collection name")
+	}
+	if dimension < 1 || dimension > 2000 {
+		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
+	}
+
+	query := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id VARCHAR(255) PRIMARY KEY,
+			embedding VECTOR(%d),
+			metadata JSONB,
+			created_at TIMESTAMP DEFAULT NOW()
+		)
+	`, safeFormatTable(name), dimension)
+
+	if _, err := v.db.ExecContext(ctx, query); err != nil {
+		return errors.Wrap(err, "create collection")
+	}
+
+	indexQuery := fmt.Sprintf(`
+		CREATE INDEX IF NOT EXISTS %s_embedding_idx
+		ON %s USING ivfflat (embedding vector_cosine_ops)
+	`, safeFormatTable(name), safeFormatTable(name))
+
+	if _, err := v.db.ExecContext(ctx, indexQuery); err != nil {
+		return errors.Wrap(err, "create vector index")
 	}
 
 	return nil
