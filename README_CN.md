@@ -13,8 +13,6 @@
 
 Go 语言多 Agent 框架，支持 DAG 工作流编排、记忆蒸馏、AHP 协议通信。
 
-**v2.0.0** -- [更新日志](CHANGELOG.md)
-
 ## 架构
 
 ```mermaid

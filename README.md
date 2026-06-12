@@ -14,8 +14,6 @@
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
-**v2.0.0** -- [Changelog](CHANGELOG.md)
-
 ## Architecture 
 
 ```mermaid
@@ -85,7 +83,7 @@ graph TB
     Registry --> VS
 ```
 
-### Memory Distillation Pipeline / 记忆蒸馏管线
+### Memory Distillation Pipeline
 
 ```mermaid
 flowchart LR
@@ -322,7 +320,7 @@ See `examples/travel/config.yaml` for a complete example.
 - [Architecture](docs/en/architecture/arch.md)
 - [Runtime Layer](docs/en/architecture/runtime.md)
 - [Quick Start](docs/en/guides/quick-start.md)
-- [FAQ / 常见问题](docs/en/guides/faq.md)
+- [FAQ](docs/en/guides/faq.md)
 - [Integration Guide](docs/en/development/integration-guide.md)
 - [Custom Vector Store](docs/en/development/custom-vector-store.md)
 - [Leader Failover](docs/en/features/leader-failover.md)
