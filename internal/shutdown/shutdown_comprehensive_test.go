@@ -495,22 +495,22 @@ func TestPhaseExecutor_Execute_AlreadyRunning(t *testing.T) {
 	executor := NewPhaseExecutor(PhaseGraceful, 3)
 
 	ctx := context.Background()
-	firstExecStarted := make(chan struct{})
+	firstExecRunning := make(chan struct{})
 	firstExecComplete := make(chan struct{})
 	errChan := make(chan error, 2)
 
 	// Start first execution that takes some time
 	go func() {
-		close(firstExecStarted)
 		errChan <- executor.Execute(ctx, func(ctx context.Context) error {
+			close(firstExecRunning)
 			time.Sleep(200 * time.Millisecond)
 			close(firstExecComplete)
 			return nil
 		})
 	}()
 
-	// Wait for first execution to start
-	<-firstExecStarted
+	// Wait for first execution to actually be running inside Execute
+	<-firstExecRunning
 
 	// Try to execute again immediately while first is still running
 	err := executor.Execute(ctx, func(ctx context.Context) error {
