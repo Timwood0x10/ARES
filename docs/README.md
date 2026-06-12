@@ -2,7 +2,13 @@
 
 Welcome to the GoAgent framework documentation center.
 
-## Documentation Languages
+## Release Notes / 发布说明
+
+| Version | 中文 | English |
+|---------|------|---------|
+| v0.2.0 | [发布说明](./zh/releases/v0.2.0.md) | [Release Notes](./en/releases/v0.2.0.md) |
+
+## Documentation Languages / 文档语言
 
 - **[中文文档](./zh/)** — Chinese documentation
 - **[English Docs](./en/)** — English documentation

@@ -18,7 +18,7 @@ func TestNewEventRecovery_NilStore(t *testing.T) {
 
 func TestNewEventRecovery_NonNilStore(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
 	require.NotNil(t, r)
@@ -33,7 +33,7 @@ func TestEventRecovery_RecoverFromEvents_NilReceiver(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_EmptyLeaderID(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
 	_, err := r.RecoverFromEvents(context.Background(), "")
@@ -43,7 +43,7 @@ func TestEventRecovery_RecoverFromEvents_EmptyLeaderID(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_NoEvents(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
 	state, err := r.RecoverFromEvents(context.Background(), "leader-1")
@@ -57,7 +57,7 @@ func TestEventRecovery_RecoverFromEvents_NoEvents(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_SessionCreated(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	err := store.Append(context.Background(), leaderID, []*events.Event{
@@ -80,7 +80,7 @@ func TestEventRecovery_RecoverFromEvents_SessionCreated(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_TaskTracking(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	err := store.Append(context.Background(), leaderID, []*events.Event{
@@ -126,7 +126,7 @@ func TestEventRecovery_RecoverFromEvents_TaskTracking(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_FailoverDetection(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	failoverTime := time.Date(2026, 6, 11, 10, 30, 0, 0, time.UTC)
@@ -150,7 +150,7 @@ func TestEventRecovery_RecoverFromEvents_FailoverDetection(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	baseTime := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
@@ -243,7 +243,7 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 
@@ -277,7 +277,7 @@ func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_NilEventsSkipped(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 
@@ -301,7 +301,7 @@ func TestEventRecovery_RecoverFromEvents_NilEventsSkipped(t *testing.T) {
 
 func TestEventRecovery_RecoverFromEvents_CancelledContext(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -1123,7 +1123,7 @@ func TestReplayEvents_NilStore(t *testing.T) {
 
 func TestReplayEvents_NoEvents(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	health := newMockHealthChecker()
 	sup, err := New(health, Config{CheckInterval: 1 * time.Second}, store)
@@ -1135,7 +1135,7 @@ func TestReplayEvents_NoEvents(t *testing.T) {
 
 func TestReplayEvents_WithSessionCreatedEvent(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*events.Event{
@@ -1160,7 +1160,7 @@ func TestReplayEvents_WithSessionCreatedEvent(t *testing.T) {
 
 func TestReplayEvents_WithMultipleSessionEvents(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*events.Event{
@@ -1191,7 +1191,7 @@ func TestReplayEvents_WithMultipleSessionEvents(t *testing.T) {
 
 func TestReplayEvents_WithNonSessionEvents(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*events.Event{
@@ -1223,7 +1223,7 @@ func TestReplayEvents_WithNonSessionEvents(t *testing.T) {
 
 func TestReplayEvents_FullScenario(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*events.Event{

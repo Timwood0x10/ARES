@@ -44,12 +44,10 @@ func getTestPool(t *testing.T) *postgres.Pool {
 	// Create the events table for testing.
 	createEventsTable(t, db)
 
-	pool := &postgres.Pool{}
-	// Use the pool's exported constructor path by closing the raw db
-	// and re-opening through the config. For tests we wrap the raw db.
+	// Close the raw db and re-open through the pool constructor.
 	_ = db.Close()
 
-	pool, err = postgres.NewPool(cfg)
+	pool, err := postgres.NewPool(cfg)
 	if err != nil {
 		t.Skipf("failed to create test pool: %v", err)
 		return nil
@@ -102,7 +100,7 @@ func newTestEvent(evtType EventType, key string, value any) *Event {
 // TestPostgresEventStore_AppendAndRead verifies the basic append-then-read round-trip.
 func TestPostgresEventStore_AppendAndRead(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -135,7 +133,7 @@ func TestPostgresEventStore_AppendAndRead(t *testing.T) {
 // TestPostgresEventStore_VersionConflict verifies optimistic concurrency detection.
 func TestPostgresEventStore_VersionConflict(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -164,7 +162,7 @@ func TestPostgresEventStore_VersionConflict(t *testing.T) {
 // TestPostgresEventStore_ReadWithFilters verifies FromVersion, Since, Limit, and Direction.
 func TestPostgresEventStore_ReadWithFilters(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -227,7 +225,7 @@ func TestPostgresEventStore_ReadWithFilters(t *testing.T) {
 // TestPostgresEventStore_ReadAll verifies cross-stream reading.
 func TestPostgresEventStore_ReadAll(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -259,7 +257,7 @@ func TestPostgresEventStore_ReadAll(t *testing.T) {
 // TestPostgresEventStore_StreamVersion verifies version querying.
 func TestPostgresEventStore_StreamVersion(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -285,7 +283,7 @@ func TestPostgresEventStore_StreamVersion(t *testing.T) {
 // TestPostgresEventStore_Subscribe verifies polling-based subscription.
 func TestPostgresEventStore_Subscribe(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -325,7 +323,7 @@ func TestPostgresEventStore_Subscribe(t *testing.T) {
 // TestPostgresEventStore_ConcurrentAppend verifies no data races under concurrent writes.
 func TestPostgresEventStore_ConcurrentAppend(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -399,7 +397,7 @@ func TestPostgresEventStore_NilPoolSafety(t *testing.T) {
 // TestPostgresEventStore_EmptyInputs verifies edge cases with empty inputs.
 func TestPostgresEventStore_EmptyInputs(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 
 	store := NewPostgresEventStore(pool)
 	ctx := context.Background()
@@ -422,7 +420,7 @@ func TestPostgresEventStore_EmptyInputs(t *testing.T) {
 // TestPostgresEventStore_MetadataPreserved verifies metadata round-trips correctly.
 func TestPostgresEventStore_MetadataPreserved(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)
@@ -452,7 +450,7 @@ func TestPostgresEventStore_MetadataPreserved(t *testing.T) {
 // TestPostgresEventStore_AppendNilEvent verifies that nil events in the slice are rejected.
 func TestPostgresEventStore_AppendNilEvent(t *testing.T) {
 	pool := getTestPool(t)
-	defer pool.Close()
+	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
 	store := NewPostgresEventStore(pool)

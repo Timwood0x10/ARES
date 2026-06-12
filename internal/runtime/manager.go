@@ -205,6 +205,16 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
+// GetAgent returns the current instance of a managed agent, or nil if not found.
+func (m *Manager) GetAgent(agentID string) base.Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if ma, ok := m.agents[agentID]; ok {
+		return ma.agent
+	}
+	return nil
+}
+
 // RestartAgent stops and restarts an agent with fresh state.
 func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	// Use write lock for entire check-and-mutate to prevent NotifyAgentDead race.
@@ -558,8 +568,8 @@ func (m *Manager) Stop() error {
 
 	// Snapshot agents under write lock and mark all as stopped before launching goroutines.
 	type agentStopInfo struct {
-		id    string
-		agent base.Agent
+		id     string
+		agent  base.Agent
 		cancel context.CancelFunc
 	}
 	var toStop []agentStopInfo

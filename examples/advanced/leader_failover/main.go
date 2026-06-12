@@ -310,9 +310,9 @@ func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType,
 
 // FailoverTimer records timestamps for each phase of failover.
 type FailoverTimer struct {
-	mu         sync.Mutex
-	crashTime  time.Time
-	detectTime time.Time
+	mu          sync.Mutex
+	crashTime   time.Time
+	detectTime  time.Time
 	factoryTime time.Time
 	replayTime  time.Time
 	startTime   time.Time

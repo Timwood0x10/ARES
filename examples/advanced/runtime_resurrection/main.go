@@ -280,10 +280,10 @@ func (w *workerAgent) Snapshot() (map[string]any, error) {
 	defer w.mu.Unlock()
 
 	return map[string]any{
-		"agent_id":   w.id,
-		"session_id": w.sessionID,
-		"task_count": w.taskCount.Load(),
-		"status":     string(w.status),
+		"agent_id":    w.id,
+		"session_id":  w.sessionID,
+		"task_count":  w.taskCount.Load(),
+		"status":      string(w.status),
 		"snapshot_at": time.Now().Format(time.RFC3339),
 	}, nil
 }
@@ -465,6 +465,14 @@ func main() {
 		Direction: events.ReadAscending,
 	})
 	fmt.Printf("  Total events for worker-1: %d\n", len(replayedEvents))
+
+	// Verify restored agent state.
+	if restored := rt.GetAgent("worker-1"); restored != nil {
+		if w, ok := restored.(*workerAgent); ok {
+			verified := verifyRestoredState(w, 1)
+			fmt.Printf("  Restored state verified: %v\n", verified)
+		}
+	}
 
 	// Check cognitive memory (simulated).
 	messages := cogMemory.GetMessages(preCrashSession)

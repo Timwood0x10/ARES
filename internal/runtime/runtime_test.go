@@ -495,7 +495,8 @@ func TestManager_Stats(t *testing.T) {
 func TestManager_Start_NilContext(t *testing.T) {
 	m := New(nil, nil, nil)
 
-	err := m.Start(nil)
+	var ctx context.Context // nil context
+	err := m.Start(ctx)     //nolint:staticcheck // Intentionally testing nil context guard.
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "context must not be nil")
 }

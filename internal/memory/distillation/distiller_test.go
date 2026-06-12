@@ -164,7 +164,7 @@ func TestSubscribeAndDistill_NilStore(t *testing.T) {
 
 func TestSubscribeAndDistill_CancelledContext(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
 	embedder := NewMockEmbeddingService()
@@ -180,7 +180,7 @@ func TestSubscribeAndDistill_CancelledContext(t *testing.T) {
 
 func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
 	embedder := NewMockEmbeddingService()
@@ -281,7 +281,7 @@ func TestProcessEvent_UnknownEventType(t *testing.T) {
 
 func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
 	embedder := NewMockEmbeddingService()
