@@ -168,10 +168,10 @@ func indexOf(s, substr string) int {
 }
 
 // safeFormatTable safely formats a table name into SQL.
-// This is a replacement for fmt.Sprintf that ensures the table name is valid.
-func safeFormatTable(table string) string {
+// Returns the validated table name or an error if the name is invalid.
+func safeFormatTable(table string) (string, error) {
 	if err := sanitizeSQLTable(table); err != nil {
-		return ""
+		return "", err
 	}
-	return table
+	return table, nil
 }

@@ -1,4 +1,3 @@
-// nolint: errcheck // Test code may ignore return values
 // Package memory provides unified memory management for the StyleAgent framework.
 package memory
 
@@ -8,15 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"goagent/internal/core/models"
 )
 
 func TestDefaultMemoryConfig(t *testing.T) {
 	config := DefaultMemoryConfig()
-
-	if config == nil {
-		t.Fatal("DefaultMemoryConfig returned nil")
-	}
+	require.NotNil(t, config, "DefaultMemoryConfig returned nil")
 
 	if !config.Enabled {
 		t.Error("Expected Enabled to be true")
@@ -108,7 +106,7 @@ func TestMemoryManager_CreateSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -127,7 +125,7 @@ func TestMemoryManager_AddMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -147,7 +145,7 @@ func TestMemoryManager_GetMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -176,7 +174,7 @@ func TestMemoryManager_BuildContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -215,7 +213,7 @@ func TestMemoryManager_CreateTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -239,7 +237,7 @@ func TestMemoryManager_UpdateTaskOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -264,7 +262,7 @@ func TestMemoryManager_DistillTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -307,7 +305,7 @@ func TestMemoryManager_StoreDistilledTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -341,7 +339,7 @@ func TestMemoryManager_SearchSimilarTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {
@@ -389,7 +387,7 @@ func TestMemoryManager_MultipleSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	// Create multiple sessions
 	sessionID1, err := mgr.CreateSession(ctx, "user1")
@@ -437,7 +435,7 @@ func TestMemoryManager_ContextLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	defer mgr.Stop(ctx)
+	defer func() { _ = mgr.Stop(ctx) }()
 
 	sessionID, err := mgr.CreateSession(ctx, "test_user")
 	if err != nil {

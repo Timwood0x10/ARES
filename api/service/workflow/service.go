@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"goagent/api/core"
 	"goagent/internal/workflow/engine"
 )
@@ -199,38 +201,46 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		// Subscribe to graph mutation events for step tracking.
 		graphEvents := mutableDAG.Subscribe()
 
-		// Run execution in a goroutine.
+		// Run execution and event forwarding via errgroup.
 		type execResult struct {
 			result *engine.WorkflowResult
 			err    error
 		}
 		resultCh := make(chan execResult, 1)
-		go func() {
-			r, e := executor.ExecuteDynamic(ctx, wf, req.Input, mutableDAG)
-			resultCh <- execResult{result: r, err: e}
-		}()
 
-		// Forward graph events as step events.
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
+		g, gctx := errgroup.WithContext(ctx)
+
+		// Goroutine 1: run execution.
+		g.Go(func() error {
+			r, e := executor.ExecuteDynamic(gctx, wf, req.Input, mutableDAG)
+			resultCh <- execResult{result: r, err: e}
+			return nil
+		})
+
+		// Goroutine 2: forward graph events as step events.
+		g.Go(func() error {
 			for ev := range graphEvents {
 				if ev.Success && ev.Change.Step != nil {
-					events <- core.WorkflowEvent{
+					select {
+					case events <- core.WorkflowEvent{
 						Type:       core.WorkflowEventStepStarted,
 						WorkflowID: req.WorkflowID,
 						StepID:     ev.Change.NodeID,
 						StepName:   ev.Change.Step.Name,
 						Status:     core.WorkflowStatusRunning,
 						Timestamp:  ev.Change.Timestamp,
+					}:
+					case <-gctx.Done():
+						return nil
 					}
 				}
 			}
-		}()
+			return nil
+		})
 
 		// Wait for execution to complete.
 		res := <-resultCh
-		<-done
+		_ = g.Wait()
 
 		if res.err != nil || res.result == nil {
 			errMsg := ""

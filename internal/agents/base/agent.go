@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"goagent/internal/core/models"
+	"goagent/internal/events"
 	"goagent/internal/protocol/ahp"
 )
 
@@ -74,6 +75,21 @@ type Heartbeater interface {
 	Heartbeat(ctx context.Context) error
 	// IsAlive checks if the agent is alive.
 	IsAlive() bool
+}
+
+// StatefulAgent can be restored from persisted state and events.
+// Agents that support resurrection should implement this interface.
+type StatefulAgent interface {
+	// RestoreState restores the agent's state from a snapshot map.
+	// Called after factory creation during resurrection.
+	RestoreState(state map[string]any) error
+
+	// ReplayEvents replays a sequence of events to reconstruct state.
+	// Called after RestoreState to apply incremental changes.
+	ReplayEvents(events []*events.Event) error
+
+	// Snapshot returns a serializable snapshot of current state.
+	Snapshot() (map[string]any, error)
 }
 
 // Config holds common agent configuration.

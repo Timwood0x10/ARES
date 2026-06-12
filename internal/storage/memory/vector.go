@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -88,7 +89,7 @@ func (v *VectorStore) AddEmbedding(_ context.Context, table, id string, embeddin
 
 	col, ok := v.collections[table]
 	if !ok {
-		return nil // collection doesn't exist
+		return fmt.Errorf("collection %q not found", table)
 	}
 
 	col.vectors[id] = &vectorEntry{

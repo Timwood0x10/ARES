@@ -32,6 +32,15 @@ v1 的局限：
 
 ```mermaid
 graph TB
+    App["应用"] --> RT
+
+    subgraph RuntimeLayer["Runtime 层（新增）"]
+        RT["Runtime (Manager)"]
+        RT -->|"监控"| Agents["受管 Agent"]
+        RT -->|"回放"| ES["EventStore"]
+        RT -->|"恢复"| MM["MemoryStore"]
+    end
+
     subgraph v2Additions["v2 新增组件"]
         HB["HeartbeatMonitor<br/>心跳检测"]
         LS["LeaderSupervisor<br/>故障转移编排"]
@@ -51,6 +60,9 @@ graph TB
         Executor["Executor"]
         PG["PostgreSQL"]
     end
+
+    RT -->|"生命周期"| Leader
+    RT -->|"生命周期"| SubAgents
 
     HB -->|"超时回调"| LS
     LS --> CR
@@ -143,6 +155,43 @@ graph TB
 4. 根据 `ApplyMode` 在检查点或立即重算执行顺序
 5. 新增步骤自动追加到执行队列
 
+## Runtime 层
+
+Runtime 层管理 Agent 生命周期。Agent 是可丢弃的执行器；Runtime 拥有它们的诞生、死亡和复活。
+
+```mermaid
+graph LR
+    subgraph Runtime["Runtime (Manager)"]
+        Reg["RegisterAgent"]
+        Start["StartAgent"]
+        Health["HealthCheck"]
+        Notify["NotifyAgentDead"]
+        Restore["RestoreAgent"]
+    end
+
+    subgraph Recovery["恢复"]
+        ES["EventStore<br/>运维恢复"]
+        MM["MemoryStore<br/>认知恢复"]
+    end
+
+    Reg --> Start
+    Start --> Health
+    Health -->|"Agent 死亡"| Notify
+    Notify --> Restore
+    Restore --> ES
+    Restore --> MM
+    Restore -->|"新实例"| Start
+```
+
+核心行为：
+- **注册**：Agent 通过 Factory 函数注册，用于复活
+- **健康监控**：后台循环通过心跳或状态检查 Agent 存活性
+- **自动恢复**：崩溃时，Runtime 创建新实例、回放事件、恢复记忆并重启
+- **两个恢复维度**：EventStore 用于运维状态（"执行到哪一步？"），MemoryStore 用于认知状态（"我是谁？"）
+- **优雅关闭**：Stop 取消所有 Agent 并等待 goroutine 完成
+
+详见 [Runtime 层详解](./runtime.md)。
+
 ## 组件交互
 
 ```mermaid
@@ -183,14 +232,17 @@ v2 完全向后兼容 v1。新增组件均为可选：
 | DAG | MutableDAG | 可选 |
 | Executor | DynamicExecutor | 可选 |
 | AHP Protocol | + HeartbeatMonitor | 可选 |
+| （无） | Runtime (Manager) | 可选 |
 
 最小迁移步骤：
 1. 引入 `HeartbeatMonitor` 和 `LeaderSupervisor` 获得故障转移能力
 2. 将 `DAG` 替换为 `MutableDAG` 获得动态图能力
 3. 将 `Executor` 替换为 `DynamicExecutor` 获得运行时重排能力
+4. 使用 `Runtime` 包装 Agent，获得生命周期管理和自动恢复能力
 
 ## 相关文档
 
+- [Runtime 层详解](./runtime.md)
 - [Leader Failover 详解](../features/leader-failover.md)
 - [Runtime Dynamic Graph 详解](../features/dynamic-graph.md)
 - [v1 架构设计](./arch.md)

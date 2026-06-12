@@ -8,10 +8,15 @@ import (
 
 	apperrors "goagent/internal/core/errors"
 	"goagent/internal/core/models"
+	"goagent/internal/errors"
 	"goagent/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
+
+// ErrTaskNotStarted indicates a task was never attempted, typically because a
+// concurrent task failure cancelled the errgroup context before execution began.
+var ErrTaskNotStarted = errors.New("task not started: cancelled by concurrent task failure")
 
 // TaskExecutorFunc is a function type for executing tasks directly.
 type TaskExecutorFunc func(ctx context.Context, task *models.Task) (*models.TaskResult, error)
@@ -132,7 +137,7 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 		for i, r := range results {
 			if r == nil && i < len(tasks) && tasks[i] != nil {
 				results[i] = models.NewTaskResult(tasks[i].TaskID, tasks[i].AgentType)
-				results[i].SetError("task failed: " + err.Error())
+				results[i].SetError(ErrTaskNotStarted.Error())
 			}
 		}
 		return results, fmt.Errorf("%w: %v", apperrors.ErrDispatchFailed, err)

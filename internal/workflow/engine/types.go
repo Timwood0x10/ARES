@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"goagent/internal/core/models"
@@ -17,6 +18,11 @@ var (
 	ErrWorkflowIncomplete  = errors.New("workflow incomplete")
 	ErrInvalidLoader       = errors.New("invalid loader type")
 	ErrDuplicateID         = errors.New("duplicate ID")
+	ErrInterruptRejected   = errors.New("interrupt rejected by human")
+	ErrInterruptStoreNil   = errors.New("interrupt store is nil")
+	ErrInterruptHandlerNil = errors.New("interrupt handler is nil")
+	ErrInterruptNotFound   = errors.New("interrupt result not found")
+	ErrInterruptPointNil   = errors.New("interrupt point is nil")
 )
 
 // WorkflowStatus represents the execution status of a workflow.
@@ -50,12 +56,19 @@ type Step struct {
 	DependsOn   []string          `json:"depends_on"`
 	Timeout     time.Duration     `json:"timeout"`
 	RetryPolicy *RetryPolicy      `json:"retry_policy,omitempty"`
+	Interrupt   *InterruptConfig  `json:"interrupt,omitempty"`
 	Status      StepStatus        `json:"status"`
 	Output      string            `json:"output,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	StartedAt   time.Time         `json:"started_at,omitempty"`
 	FinishedAt  time.Time         `json:"finished_at,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// InterruptConfig marks a step as requiring human approval before execution.
+type InterruptConfig struct {
+	Message string         `json:"message"`
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 // RetryPolicy defines retry behavior for a step.
@@ -146,6 +159,10 @@ func NewDAG(steps []*Step) (*DAG, error) {
 	}
 
 	for _, step := range steps {
+		// H4 fix: check for duplicate step IDs instead of silently overwriting.
+		if _, exists := dag.Nodes[step.ID]; exists {
+			return nil, fmt.Errorf("duplicate step ID %q: %w", step.ID, ErrDuplicateID)
+		}
 		dag.Nodes[step.ID] = &DAGNode{
 			StepID:    step.ID,
 			InDegree:  0,

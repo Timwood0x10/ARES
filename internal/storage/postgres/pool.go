@@ -237,7 +237,16 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 	}
 
 	row := conn.QueryRowContext(ctx, query, args...)
-	return &ManagedRow{Row: row, conn: conn, pool: p}
+	mr := &ManagedRow{Row: row, conn: conn, pool: p}
+	// Set finalizer to release connection if caller never calls Scan().
+	runtime.SetFinalizer(mr, func(m *ManagedRow) {
+		if m.conn != nil {
+			slog.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
+			m.pool.Release(m.conn)
+			m.conn = nil
+		}
+	})
+	return mr
 }
 
 // ManagedRow wraps sql.Row and manages connection lifecycle.
@@ -254,6 +263,7 @@ func (m *ManagedRow) Scan(dest ...any) error {
 	if m.conn != nil {
 		m.pool.Release(m.conn)
 		m.conn = nil
+		runtime.SetFinalizer(m, nil)
 	}
 	return err
 }

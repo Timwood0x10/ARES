@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"goagent/internal/agents/base"
 	"goagent/internal/core/models"
 	"goagent/internal/llm/output"
 	"goagent/internal/protocol/ahp"
@@ -463,6 +464,102 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 
 	if !leader.IsAlive() {
 		t.Error("IsAlive() should return true after heartbeat")
+	}
+}
+
+// --- RestoreState tests ---
+
+func TestRestoreState_NilState(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(nil)
+	if err != nil {
+		t.Errorf("RestoreState(nil) should return nil error, got %v", err)
+	}
+}
+
+func TestRestoreState_EmptyState(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(map[string]any{})
+	if err != nil {
+		t.Errorf("RestoreState(empty) should return nil error, got %v", err)
+	}
+}
+
+func TestRestoreState_WithSessionID(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(map[string]any{
+		"session_id": "session-abc",
+	})
+	if err != nil {
+		t.Errorf("RestoreState should return nil error, got %v", err)
+	}
+
+	// Verify sessionID was restored by reading it from the concrete type.
+	la := agent.(*leaderAgent)
+	la.mu.RLock()
+	sid := la.sessionID
+	la.mu.RUnlock()
+	if sid != "session-abc" {
+		t.Errorf("expected sessionID 'session-abc', got '%s'", sid)
+	}
+}
+
+func TestRestoreState_InvalidSessionIDType(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	// Non-string session_id should be silently ignored.
+	err := sa.RestoreState(map[string]any{
+		"session_id": 12345,
+	})
+	if err != nil {
+		t.Errorf("RestoreState should return nil error, got %v", err)
+	}
+
+	la := agent.(*leaderAgent)
+	la.mu.RLock()
+	sid := la.sessionID
+	la.mu.RUnlock()
+	if sid != "" {
+		t.Errorf("expected empty sessionID, got '%s'", sid)
 	}
 }
 

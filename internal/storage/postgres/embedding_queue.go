@@ -5,7 +5,9 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,6 +15,10 @@ import (
 	coreerrors "goagent/internal/core/errors"
 	"goagent/internal/errors"
 )
+
+// ErrDuplicateTask is returned when Enqueue or EnqueueTx detects a duplicate
+// task (same dedupe_key already exists in the queue).
+var ErrDuplicateTask = stderrors.New("duplicate embedding task")
 
 // EmbeddingQueue manages async embedding tasks with idempotency and retry logic.
 // This provides eventual consistency for embedding operations using a database-backed queue.
@@ -48,20 +54,21 @@ func NewEmbeddingQueue(pool *Pool, embeddingConfig *EmbeddingConfig) *EmbeddingQ
 
 // Enqueue adds an embedding task to the queue with idempotency protection.
 // This uses dedupe_key to prevent duplicate tasks for the same content.
+// Returns ErrDuplicateTask if the task already exists (same dedupe_key).
 // Args:
 // ctx - database operation context.
 // task - embedding task to enqueue.
-// Returns error if enqueue operation fails.
+// Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
 func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error {
 	if task == nil {
 		return coreerrors.ErrInvalidArgument
 	}
 
-	// Generate dedupe key for idempotency
+	// Generate dedupe key for idempotency.
 	dedupeKey := q.generateDedupeKey(task.Content, task.Model, task.Version)
 
-	_, err := q.db.Exec(ctx, `
-		INSERT INTO embedding_queue 
+	result, err := q.db.Exec(ctx, `
+		INSERT INTO embedding_queue
 		(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
 		ON CONFLICT (dedupe_key) DO NOTHING
@@ -69,6 +76,58 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 
 	if err != nil {
 		return errors.Wrap(err, "enqueue embedding task")
+	}
+
+	// RowsAffected == 0 means the dedupe_key already existed (duplicate).
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return errors.Wrap(err, "check rows affected")
+	}
+	if rows == 0 {
+		return ErrDuplicateTask
+	}
+
+	return nil
+}
+
+// EnqueueTx adds an embedding task to the queue within an existing transaction.
+// This ensures the enqueue is committed atomically with the caller's transaction,
+// preventing orphaned tasks if the transaction rolls back.
+// Returns ErrDuplicateTask if the task already exists (same dedupe_key).
+// Args:
+// ctx - database operation context.
+// tx - active database transaction.
+// task - embedding task to enqueue.
+// Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
+func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *EmbeddingTask) error {
+	if task == nil {
+		return coreerrors.ErrInvalidArgument
+	}
+	if tx == nil {
+		return fmt.Errorf("transaction is nil: %w", coreerrors.ErrInvalidArgument)
+	}
+
+	// Generate dedupe key for idempotency.
+	dedupeKey := q.generateDedupeKey(task.Content, task.Model, task.Version)
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO embedding_queue
+		(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW())
+		ON CONFLICT (dedupe_key) DO NOTHING
+	`, task.TaskID, task.Table, task.Content, task.TenantID, task.Model, task.Version, dedupeKey)
+
+	if err != nil {
+		return errors.Wrap(err, "enqueue embedding task in transaction")
+	}
+
+	// RowsAffected == 0 means the dedupe_key already existed (duplicate).
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return errors.Wrap(err, "check rows affected")
+	}
+	if rows == 0 {
+		return ErrDuplicateTask
 	}
 
 	return nil
@@ -87,13 +146,32 @@ func (q *EmbeddingQueue) generateDedupeKey(content, model string, version int) s
 }
 
 // FetchPendingTasks retrieves pending embedding tasks with locking.
-// This uses FOR UPDATE SKIP LOCKED to enable multiple concurrent workers.
+// Uses FOR UPDATE SKIP LOCKED inside a transaction so the row-level lock
+// is held until the transaction commits, preventing other workers from
+// picking up the same tasks.
 // Args:
 // ctx - database operation context.
 // limit - maximum number of tasks to fetch.
 // Returns list of pending tasks or error if fetch fails.
 func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*EmbeddingTask, error) {
-	query := `
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive: %w", coreerrors.ErrInvalidArgument)
+	}
+
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "begin fetch transaction")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				slog.Error("Failed to rollback fetch transaction", "error", rbErr)
+			}
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version
 		FROM embedding_queue
 		WHERE status = 'pending'
@@ -101,9 +179,7 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 		ORDER BY queued_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
-	`
-
-	rows, err := q.db.Query(ctx, query, limit)
+	`, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetch pending tasks")
 	}
@@ -120,9 +196,26 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate embedding tasks", "error", err)
 		return nil, errors.Wrap(err, "iterate embedding tasks")
 	}
+
+	// Mark fetched tasks as processing within the same transaction.
+	for _, task := range tasks {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE embedding_queue
+			SET status = 'processing', processing_at = NOW()
+			WHERE task_id = $1
+		`, task.TaskID)
+		if err != nil {
+			return nil, errors.Wrap(err, "mark task processing")
+		}
+	}
+
+	// Commit to release the locks and persist the processing status.
+	if err := tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit fetch transaction")
+	}
+	committed = true
 
 	return tasks, nil
 }
@@ -224,25 +317,80 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 // threshold - time threshold to consider a task orphaned.
 // Returns error if reconciliation fails.
 func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration) error {
-	// Use configured default model and version
+	if threshold <= 0 {
+		return fmt.Errorf("threshold must be positive: %w", coreerrors.ErrInvalidArgument)
+	}
+
+	// Use configured default model and version.
 	defaultModel := q.embeddingConfig.DefaultModel
 	defaultVersion := q.embeddingConfig.DefaultVersion
 
-	// Find knowledge chunks with pending embedding status that haven't been processed recently
-	_, err := q.db.Exec(ctx, `
-		INSERT INTO embedding_queue (task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
-		SELECT id, 'knowledge_chunks_1024', content, tenant_id, $2, $3, 
-		       md5(content || $2 || $3), 'pending', NOW()
+	// Convert threshold to microseconds for PostgreSQL interval arithmetic.
+	thresholdMicros := threshold.Microseconds()
+
+	// Fetch orphaned chunks, compute dedupe key in Go (same logic as generateDedupeKey),
+	// then insert into the queue. We use a transaction to ensure atomicity.
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return errors.Wrap(err, "begin reconcile transaction")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				slog.Error("Failed to rollback reconcile transaction", "error", rbErr)
+			}
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, content, tenant_id
 		FROM knowledge_chunks_1024
 		WHERE embedding_status = 'pending'
-		  AND embedding_queued_at < NOW() - $1
+		  AND embedding_queued_at < NOW() - ($1 * INTERVAL '1 microsecond')
 		  AND embedding_processed_at IS NULL
-		ON CONFLICT (dedupe_key) DO NOTHING
-	`, threshold, defaultModel, defaultVersion)
-
+	`, thresholdMicros)
 	if err != nil {
-		return errors.Wrap(err, "reconcile orphaned embeddings")
+		return errors.Wrap(err, "query orphaned embeddings")
 	}
+	defer rows.Close()
+
+	type orphanedChunk struct {
+		ID       string
+		Content  string
+		TenantID string
+	}
+	var chunks []orphanedChunk
+	for rows.Next() {
+		var chunk orphanedChunk
+		if err := rows.Scan(&chunk.ID, &chunk.Content, &chunk.TenantID); err != nil {
+			slog.Error("Failed to scan orphaned chunk row", "error", err)
+			continue
+		}
+		chunks = append(chunks, chunk)
+	}
+	if err := rows.Err(); err != nil {
+		return errors.Wrap(err, "iterate orphaned chunks")
+	}
+
+	// Insert each orphaned chunk into the queue with Go-computed dedupe key.
+	for _, chunk := range chunks {
+		dedupeKey := q.generateDedupeKey(chunk.Content, defaultModel, defaultVersion)
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO embedding_queue
+			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
+			VALUES ($1, 'knowledge_chunks_1024', $2, $3, $4, $5, $6, 'pending', NOW())
+			ON CONFLICT (dedupe_key) DO NOTHING
+		`, chunk.ID, chunk.Content, chunk.TenantID, defaultModel, defaultVersion, dedupeKey)
+		if err != nil {
+			return errors.Wrap(err, "insert orphaned task into queue")
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return errors.Wrap(err, "commit reconcile transaction")
+	}
+	committed = true
 
 	return nil
 }

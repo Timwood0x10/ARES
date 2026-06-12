@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,7 +44,9 @@ func WithStepTimeout(d time.Duration) ExecutorOption {
 // DynamicExecutor extends Executor to support mid-execution graph mutations.
 type DynamicExecutor struct {
 	*Executor
-	applyMode ApplyMode
+	applyMode   ApplyMode
+	hitlHandler InterruptHandler
+	hitlStore   InterruptStore
 }
 
 // NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
@@ -60,6 +63,18 @@ func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...Ex
 		Executor:  executor,
 		applyMode: applyMode,
 	}
+}
+
+// WithHitlHandler sets the interrupt handler for human-in-the-loop support.
+func (e *DynamicExecutor) WithHitlHandler(handler InterruptHandler) *DynamicExecutor {
+	e.hitlHandler = handler
+	return e
+}
+
+// WithHitlStore sets the interrupt store for crash recovery.
+func (e *DynamicExecutor) WithHitlStore(store InterruptStore) *DynamicExecutor {
+	e.hitlStore = store
+	return e
 }
 
 // dynamicExecIDCounter is an atomic counter for dynamic execution IDs.
@@ -298,6 +313,10 @@ func (e *DynamicExecutor) runDynamicSteps(
 ) {
 	stepIndex := 0
 
+	// H3 fix: use a dedicated stepDone channel for dependency waiting
+	// instead of stepEg.Wait() which races with stepEg.Go().
+	stepDone := make(chan struct{}, 1)
+
 	for {
 		mu.Lock()
 		orderLen := len(*currentOrder)
@@ -324,10 +343,20 @@ func (e *DynamicExecutor) runDynamicSteps(
 		stepID := order[stepIndex]
 		step := e.findStepInDAG(mutableDAG, stepID)
 		if step == nil {
-			// Step was removed from DAG via mutation. Skip it.
+			// H2 fix: send synthetic result so the collection loop does not hang.
 			mu.Lock()
 			processed[stepID] = true
 			mu.Unlock()
+			select {
+			case resultChan <- &StepResult{
+				StepID: stepID,
+				Status: StepStatusSkipped,
+			}:
+			case <-ctx.Done():
+				_ = stepEg.Wait()
+				close(resultChan)
+				return
+			}
 			stepIndex++
 			continue
 		}
@@ -342,27 +371,21 @@ func (e *DynamicExecutor) runDynamicSteps(
 				continue
 			}
 
-			// Wait for some goroutines to complete.
-			waitG, _ := errgroup.WithContext(ctx)
-			waitDone := make(chan struct{})
-			waitG.Go(func() error {
-				defer close(waitDone)
-				_ = stepEg.Wait()
-				return nil
-			})
-
+			// H3 fix: wait for any step goroutine to complete via stepDone channel,
+			// instead of stepEg.Wait() which blocks until ALL goroutines finish
+			// and races with concurrent stepEg.Go() calls.
 			select {
-			case <-waitDone:
+			case <-stepDone:
+				// Some goroutine completed, re-check dependencies.
 				continue
 			case <-time.After(5 * time.Second):
+				// Timeout: potential deadlock detected.
 				errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies", stepID)
 				_ = stepEg.Wait()
-				_ = waitG.Wait()
 				close(resultChan)
 				return
 			case <-ctx.Done():
 				_ = stepEg.Wait()
-				_ = waitG.Wait()
 				close(resultChan)
 				return
 			}
@@ -373,6 +396,22 @@ func (e *DynamicExecutor) runDynamicSteps(
 		stepIndex++
 
 		sid := stepID
+
+		// Check for HITL interrupt before dispatching the step goroutine.
+		if step.Interrupt != nil && e.hitlHandler == nil {
+			slog.Warn("step has interrupt config but no HITL handler, skipping interrupt check",
+				"step_id", step.ID)
+		}
+		if step.Interrupt != nil && e.hitlHandler != nil {
+			if handled := e.handleDynamicInterrupt(
+				ctx, execution.ID, step, resultChan, mu, processed,
+			); handled {
+				// stepIndex already incremented above; release semaphore and continue.
+				<-sem
+				continue
+			}
+		}
+
 		stepEg.Go(func() error {
 			defer func() {
 				<-sem
@@ -392,9 +431,16 @@ func (e *DynamicExecutor) runDynamicSteps(
 					case <-ctx.Done():
 					}
 				}
+
+				// H3 fix: signal stepDone so the scheduler can re-check dependencies.
+				select {
+				case stepDone <- struct{}{}:
+				default:
+				}
 			}()
 
-			result := e.executeStep(ctx, workflow, sid, initialInput, completed, outputStore, mu)
+			startTime := time.Now()
+			result := e.executeStepCore(ctx, step, sid, initialInput, completed, outputStore, mu, startTime)
 
 			mu.Lock()
 			processed[sid] = true
@@ -447,6 +493,85 @@ func (e *DynamicExecutor) runDynamicSteps(
 	close(resultChan)
 }
 
+// handleDynamicInterrupt processes HITL interrupt for a step in the dynamic
+// executor. It blocks until the human responds. Returns true if the step was
+// handled (approved, rejected, or errored) and should be skipped by the caller.
+// Returns false if the step has no interrupt configured.
+func (e *DynamicExecutor) handleDynamicInterrupt(
+	ctx context.Context,
+	executionID string,
+	step *Step,
+	resultChan chan *StepResult,
+	mu *sync.Mutex,
+	processed map[string]bool,
+) bool {
+	if step.Interrupt == nil || e.hitlHandler == nil {
+		return false
+	}
+
+	point := &InterruptPoint{
+		StepID:  step.ID,
+		Message: step.Interrupt.Message,
+		Payload: step.Interrupt.Payload,
+	}
+
+	// Save to store for crash recovery.
+	if e.hitlStore != nil {
+		if err := e.hitlStore.Save(ctx, executionID, point); err != nil {
+			slog.Warn("failed to save interrupt point", "error", err, "step_id", step.ID)
+		}
+	}
+
+	// Call handler (blocks until human responds).
+	result, err := e.hitlHandler(ctx, point)
+	if err != nil {
+		// Handler error -> fail the step.
+		select {
+		case resultChan <- &StepResult{
+			StepID: step.ID,
+			Name:   step.Name,
+			Status: StepStatusFailed,
+			Error:  err.Error(),
+		}:
+		case <-ctx.Done():
+		}
+		mu.Lock()
+		processed[step.ID] = true
+		mu.Unlock()
+		return true
+	}
+
+	if result != nil && !result.Approved {
+		// Human rejected -> skip the step.
+		select {
+		case resultChan <- &StepResult{
+			StepID: step.ID,
+			Name:   step.Name,
+			Status: StepStatusSkipped,
+			Error:  "rejected by human",
+		}:
+		case <-ctx.Done():
+		}
+		mu.Lock()
+		processed[step.ID] = true
+		mu.Unlock()
+
+		// Clean up interrupt from store on rejection.
+		if e.hitlStore != nil {
+			_ = e.hitlStore.Delete(ctx, executionID, step.ID)
+		}
+		return true
+	}
+
+	// Approved: clean up interrupt from store.
+	if e.hitlStore != nil {
+		_ = e.hitlStore.Delete(ctx, executionID, step.ID)
+	}
+
+	// Return false to let the step proceed to execution.
+	return false
+}
+
 // recomputeOrder checks if the DAG version changed and appends new steps to the order.
 func (e *DynamicExecutor) recomputeOrder(
 	mutableDAG *MutableDAG,
@@ -456,23 +581,28 @@ func (e *DynamicExecutor) recomputeOrder(
 	processed map[string]bool,
 	mu *sync.Mutex,
 ) {
-	currentVersion := mutableDAG.Version()
-
+	// M9 fix: hold mu across the entire version-check-and-update operation
+	// to prevent concurrent recomputeOrder calls from both detecting the
+	// same version change and appending duplicate steps.
 	mu.Lock()
-	versionChanged := *lastVersion != currentVersion
-	mu.Unlock()
+	defer mu.Unlock()
 
-	if !versionChanged {
+	currentVersion := mutableDAG.Version()
+	if *lastVersion == currentVersion {
 		return
 	}
 
 	newOrder, err := mutableDAG.GetExecutionOrder()
 	if err != nil {
-		// If reordering fails, keep the existing order.
+		slog.Warn("recomputeOrder failed, keeping existing order",
+			"error", err,
+			"version", currentVersion,
+		)
+		// Update lastVersion to prevent repeated detection of the same cycle.
+		*lastVersion = currentVersion
 		return
 	}
 
-	mu.Lock()
 	*lastVersion = currentVersion
 
 	// Find steps in newOrder not yet in currentOrder.
@@ -486,7 +616,6 @@ func (e *DynamicExecutor) recomputeOrder(
 			*currentOrder = append(*currentOrder, id)
 		}
 	}
-	mu.Unlock()
 }
 
 // findStepInDAG finds a step by ID in the MutableDAG.

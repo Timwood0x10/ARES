@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
 	"goagent/internal/errors"
+	"goagent/internal/events"
 	"goagent/internal/storage/postgres/embedding"
 )
 
@@ -127,7 +129,8 @@ type Distiller struct {
 	noiseFilter *NoiseFilter
 	embedder    embedding.EmbeddingService
 	repo        ExperienceRepository
-	metrics     atomicMetrics // Thread-safe atomic counters
+	metrics     atomicMetrics  // Thread-safe atomic counters
+	distillWg   sync.WaitGroup // Tracks event subscription goroutines
 }
 
 // NewDistiller creates a new Distiller instance.
@@ -585,6 +588,65 @@ func (d *Distiller) ResetMetrics() {
 	d.metrics.FilteredSecurity.Store(0)
 	d.metrics.ConflictResolved.Store(0)
 	d.metrics.MemoriesCreated.Store(0)
+}
+
+// SubscribeAndDistill subscribes to an EventStore and automatically
+// distills memories from incoming events.
+//
+// Args:
+//
+//	ctx - operation context. Cancelling it closes the subscription.
+//	store - the event store to subscribe to. If nil, this method is a no-op.
+func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventStore) {
+	if store == nil {
+		return
+	}
+	ch, err := store.Subscribe(ctx, events.EventFilter{
+		Types: []events.EventType{
+			events.EventMessageAdded,
+			events.EventTaskCompleted,
+		},
+	})
+	if err != nil {
+		slog.Error("failed to subscribe to events for distillation", "error", err)
+		return
+	}
+
+	// Track goroutine lifecycle so callers can wait for drain.
+	d.distillWg.Add(1)
+	go func() {
+		defer d.distillWg.Done()
+		for event := range ch {
+			d.processEvent(ctx, event)
+		}
+	}()
+}
+
+// processEvent handles a single event for distillation.
+//
+// Args:
+//
+//	ctx - operation context.
+//	event - the event to process. If nil, this method is a no-op.
+func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
+	if event == nil {
+		return
+	}
+	switch event.Type {
+	case events.EventMessageAdded:
+		slog.Debug("distiller received message event",
+			"stream_id", event.StreamID,
+			"role", event.Payload["role"],
+		)
+	case events.EventTaskCompleted:
+		slog.Debug("distiller received task completion",
+			"stream_id", event.StreamID,
+			"task_id", event.Payload["task_id"],
+		)
+		// TODO: trigger distillation from event payload (expected by 2026-07-01)
+	default:
+		slog.Debug("distiller ignoring event type", "type", event.Type)
+	}
 }
 
 // truncateString truncates a string to the specified maximum length.

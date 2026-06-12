@@ -210,7 +210,7 @@ Event types:
 
 ## Complete Example
 
-See `examples/v2_demo/mutable_dag/main.go`:
+See `examples/advanced/mutable_dag/main.go`:
 
 ```go
 ctx := context.Background()

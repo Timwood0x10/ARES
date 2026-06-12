@@ -152,7 +152,7 @@ staleTasks, err := recovery.RecoverStaleTasks(ctx, sessionID)
 
 ## 完整示例
 
-参考 `examples/v2_demo/leader_failover/main.go`：
+参考 `examples/advanced/leader_failover/main.go`：
 
 ```go
 // 1. 创建心跳监控

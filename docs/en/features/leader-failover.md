@@ -152,7 +152,7 @@ staleTasks, err := recovery.RecoverStaleTasks(ctx, sessionID)
 
 ## Complete Example
 
-See `examples/v2_demo/leader_failover/main.go`:
+See `examples/advanced/leader_failover/main.go`:
 
 ```go
 // 1. Create heartbeat monitor

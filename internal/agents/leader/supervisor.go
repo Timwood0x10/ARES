@@ -10,6 +10,7 @@ import (
 	coreerrors "goagent/internal/core/errors"
 	"goagent/internal/core/models"
 	"goagent/internal/errors"
+	"goagent/internal/events"
 	"goagent/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
@@ -44,6 +45,7 @@ type LeaderSupervisor struct {
 	strategy     FailoverStrategy
 	recovery     *TaskRecovery
 	checkpoint   *CheckpointRepository
+	eventStore   events.EventStore
 	config       *LeaderSupervisorConfig
 	g            *errgroup.Group
 	ctx          context.Context
@@ -59,6 +61,7 @@ func NewLeaderSupervisor(
 	strategy FailoverStrategy,
 	recovery *TaskRecovery,
 	checkpoint *CheckpointRepository,
+	eventStore events.EventStore,
 	config *LeaderSupervisorConfig,
 ) (*LeaderSupervisor, error) {
 	if heartbeatMon == nil {
@@ -76,6 +79,7 @@ func NewLeaderSupervisor(
 		strategy:     strategy,
 		recovery:     recovery,
 		checkpoint:   checkpoint,
+		eventStore:   eventStore,
 		config:       config,
 	}, nil
 }
@@ -172,6 +176,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 
 	s.mu.RLock()
 	agent, exists := s.leaders[leaderID]
+	eventStore := s.eventStore
 	s.mu.RUnlock()
 	if !exists {
 		slog.Warn("leader not registered, skipping failover", "leader_id", leaderID)
@@ -182,9 +187,28 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		return
 	}
 
-	if err := agent.Stop(ctx); err != nil {
+	// Emit failover triggered event for event sourcing.
+	if eventStore != nil {
+		if err := eventStore.Append(ctx, leaderID, []*events.Event{
+			{
+				Type: events.EventFailoverTriggered,
+				Payload: map[string]any{
+					"leader_id": leaderID,
+				},
+			},
+		}, 0); err != nil {
+			slog.Warn("Failed to emit failover triggered event", "error", err)
+		}
+	}
+
+	// Use a detached context for Stop because the incoming ctx (gctx) may already
+	// be cancelled during supervisor shutdown, which would cause Stop to fail
+	// immediately without actually cleaning up the agent.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := agent.Stop(stopCtx); err != nil {
 		slog.Error("failed to stop old leader", "leader_id", leaderID, "error", err)
 	}
+	stopCancel()
 
 	var cp *LeaderCheckpoint
 	if s.checkpoint != nil {
@@ -194,6 +218,26 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 			slog.Error("failed to retrieve checkpoint for leader", "leader_id", leaderID, "error", err)
 		}
 	}
+
+	// Attempt event-based recovery when checkpoint is missing or incomplete.
+	if eventStore != nil && (cp == nil || cp.SessionID == "") {
+		recovery := NewEventRecovery(eventStore)
+		state, err := recovery.RecoverFromEvents(ctx, leaderID)
+		if err != nil {
+			slog.Warn("event recovery failed", "leader_id", leaderID, "error", err)
+		} else if state != nil && state.SessionID != "" {
+			if cp == nil {
+				cp = &LeaderCheckpoint{LeaderID: leaderID}
+			}
+			cp.SessionID = state.SessionID
+			slog.Info("session recovered from events",
+				"leader_id", leaderID,
+				"session_id", state.SessionID,
+				"last_version", state.LastVersion,
+			)
+		}
+	}
+
 	if cp == nil {
 		cp = &LeaderCheckpoint{LeaderID: leaderID}
 	}
@@ -223,15 +267,8 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		return
 	}
 
-	s.mu.Lock()
-	s.leaders[leaderID] = newAgent
-	s.mu.Unlock()
-
-	slog.Info("failover completed, new leader registered",
-		"leader_id", leaderID,
-		"new_agent_id", newAgent.ID(),
-	)
-
+	// Recover stale tasks BEFORE registering the new leader,
+	// so the new leader doesn't receive requests while stale tasks are unresolved.
 	if s.recovery != nil && cp.SessionID != "" {
 		staleTasks, err := s.recovery.RecoverStaleTasks(ctx, cp.SessionID)
 		if err != nil {
@@ -248,18 +285,44 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 			)
 		}
 	}
+
+	s.mu.Lock()
+	s.leaders[leaderID] = newAgent
+	s.mu.Unlock()
+
+	// Emit failover completed event for event sourcing.
+	if eventStore != nil {
+		if err := eventStore.Append(ctx, leaderID, []*events.Event{
+			{
+				Type: events.EventFailoverCompleted,
+				Payload: map[string]any{
+					"leader_id":    leaderID,
+					"new_agent_id": newAgent.ID(),
+				},
+			},
+		}, 0); err != nil {
+			slog.Warn("Failed to emit failover completed event", "error", err)
+		}
+	}
+
+	slog.Info("failover completed, new leader registered",
+		"leader_id", leaderID,
+		"new_agent_id", newAgent.ID(),
+	)
 }
 
 // ColdRestartStrategy replaces a failed leader by creating a new instance via factory.
 type ColdRestartStrategy struct {
 	factory     func(ctx context.Context, config interface{}) (base.Agent, error)
 	agentConfig interface{}
+	checkpoint  *CheckpointRepository
 }
 
 // NewColdRestartStrategy creates a ColdRestartStrategy.
 func NewColdRestartStrategy(
 	factory func(ctx context.Context, config interface{}) (base.Agent, error),
 	agentConfig interface{},
+	checkpoint *CheckpointRepository,
 ) (*ColdRestartStrategy, error) {
 	if factory == nil {
 		return nil, errors.New("cold restart strategy: factory is required")
@@ -267,10 +330,12 @@ func NewColdRestartStrategy(
 	return &ColdRestartStrategy{
 		factory:     factory,
 		agentConfig: agentConfig,
+		checkpoint:  checkpoint,
 	}, nil
 }
 
 // HandleFailover creates a new leader instance and starts it.
+// Injects checkpoint into the new agent so session recovery works.
 func (s *ColdRestartStrategy) HandleFailover(
 	ctx context.Context,
 	leaderID string,
@@ -288,6 +353,13 @@ func (s *ColdRestartStrategy) HandleFailover(
 	agent, err := s.factory(ctx, config)
 	if err != nil {
 		return nil, errors.Wrap(err, "cold restart strategy: create agent")
+	}
+
+	// Inject checkpoint repository so the new agent can recover session from checkpoint.
+	if s.checkpoint != nil {
+		if la, ok := agent.(*leaderAgent); ok {
+			la.checkpoint = s.checkpoint
+		}
 	}
 
 	if err := agent.Start(ctx); err != nil {

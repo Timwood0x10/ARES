@@ -172,9 +172,19 @@ func TestSafeFormatTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := safeFormatTable(tt.table)
-			if result != tt.expected {
-				t.Errorf("Expected %s, got %s", tt.expected, result)
+			result, err := safeFormatTable(tt.table)
+			if tt.expected == "" {
+				// Invalid input should return error.
+				if err == nil {
+					t.Errorf("Expected error for invalid table %q, got nil", tt.table)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for table %q: %v", tt.table, err)
+				}
+				if result != tt.expected {
+					t.Errorf("Expected %s, got %s", tt.expected, result)
+				}
 			}
 		})
 	}

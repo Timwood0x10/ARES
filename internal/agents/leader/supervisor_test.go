@@ -108,6 +108,7 @@ func TestNewLeaderSupervisor_NilHeartbeatMon(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	require.Error(t, err, "should error with nil heartbeat monitor")
 	assert.Nil(t, sup)
@@ -121,6 +122,7 @@ func TestNewLeaderSupervisor_NilStrategy(t *testing.T) {
 
 	sup, err := NewLeaderSupervisor(
 		hbMon,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -142,6 +144,7 @@ func TestNewLeaderSupervisor_NilConfig(t *testing.T) {
 		strategy,
 		nil,
 		nil,
+		nil,
 		nil, // nil config -> defaults.
 	)
 	require.NoError(t, err)
@@ -158,7 +161,7 @@ func TestNewLeaderSupervisor_NilConfig(t *testing.T) {
 func TestLeaderSupervisor_RegisterLeader_NilAgent(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	strategy := &mockFailoverStrategy{}
-	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, nil)
 
 	sup.RegisterLeader("leader-1", nil)
 
@@ -172,7 +175,7 @@ func TestLeaderSupervisor_RegisterLeader_NilAgent(t *testing.T) {
 func TestLeaderSupervisor_RegisterLeader_EmptyID(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	strategy := &mockFailoverStrategy{}
-	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, nil)
 
 	agent := newMockAgent("agent-1", models.AgentStatusReady)
 	sup.RegisterLeader("", agent)
@@ -190,7 +193,7 @@ func TestLeaderSupervisor_StartStop_Lifecycle(t *testing.T) {
 		FailoverTimeout:     5 * time.Second,
 		MaxFailoverAttempts: 1,
 	}
-	sup, err := NewLeaderSupervisor(hbMon, strategy, nil, nil, cfg)
+	sup, err := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, cfg)
 	require.NoError(t, err)
 
 	// Start.
@@ -216,7 +219,7 @@ func TestLeaderSupervisor_StartStop_Lifecycle(t *testing.T) {
 func TestLeaderSupervisor_Start_NilContext(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	strategy := &mockFailoverStrategy{}
-	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, nil)
 
 	var ctx context.Context // nil context
 	err := sup.Start(ctx)   //nolint:staticcheck // Intentionally testing nil context guard.
@@ -228,7 +231,7 @@ func TestLeaderSupervisor_Start_NilContext(t *testing.T) {
 func TestLeaderSupervisor_StopBeforeStart(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	strategy := &mockFailoverStrategy{}
-	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, nil)
 
 	err := sup.Stop()
 	assert.NoError(t, err, "Stop before Start should not error")
@@ -237,7 +240,7 @@ func TestLeaderSupervisor_StopBeforeStart(t *testing.T) {
 // TestColdRestartStrategy_New_NilFactory verifies that a nil factory returns
 // an error.
 func TestColdRestartStrategy_New_NilFactory(t *testing.T) {
-	strategy, err := NewColdRestartStrategy(nil, nil)
+	strategy, err := NewColdRestartStrategy(nil, nil, nil)
 	require.Error(t, err, "should error with nil factory")
 	assert.Nil(t, strategy)
 	assert.Contains(t, err.Error(), "factory is required")
@@ -249,7 +252,7 @@ func TestColdRestartStrategy_HandleFailover_EmptyLeaderID(t *testing.T) {
 	factory := func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return newMockAgent("new-leader", models.AgentStatusReady), nil
 	}
-	strategy, err := NewColdRestartStrategy(factory, nil)
+	strategy, err := NewColdRestartStrategy(factory, nil, nil)
 	require.NoError(t, err)
 
 	agent, err := strategy.HandleFailover(context.Background(), "", nil)
@@ -265,7 +268,7 @@ func TestColdRestartStrategy_HandleFailover_Normal(t *testing.T) {
 	factory := func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return mock, nil
 	}
-	strategy, err := NewColdRestartStrategy(factory, map[string]string{"key": "val"})
+	strategy, err := NewColdRestartStrategy(factory, map[string]string{"key": "val"}, nil)
 	require.NoError(t, err)
 
 	agent, err := strategy.HandleFailover(
@@ -286,7 +289,7 @@ func TestColdRestartStrategy_HandleFailover_FactoryError(t *testing.T) {
 	factory := func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return nil, assert.AnError
 	}
-	strategy, _ := NewColdRestartStrategy(factory, nil)
+	strategy, _ := NewColdRestartStrategy(factory, nil, nil)
 
 	agent, err := strategy.HandleFailover(
 		context.Background(),
@@ -306,7 +309,7 @@ func TestColdRestartStrategy_HandleFailover_StartError(t *testing.T) {
 	factory := func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return mock, nil
 	}
-	strategy, _ := NewColdRestartStrategy(factory, nil)
+	strategy, _ := NewColdRestartStrategy(factory, nil, nil)
 
 	agent, err := strategy.HandleFailover(
 		context.Background(),
@@ -333,7 +336,7 @@ func TestDefaultLeaderSupervisorConfig(t *testing.T) {
 func TestLeaderSupervisor_ConcurrentRegisterAndStart(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 	strategy := &mockFailoverStrategy{}
-	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, strategy, nil, nil, nil, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -366,7 +369,7 @@ func TestLeaderSupervisor_doFailover_AlreadyOffline(t *testing.T) {
 	mockStrategy := &mockFailoverStrategy{
 		returnAgent: newMockAgent("new-agent", models.AgentStatusReady),
 	}
-	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, nil, nil)
 
 	// Register an already-offline agent.
 	agent := newMockAgent("leader-1", models.AgentStatusOffline)
@@ -389,7 +392,7 @@ func TestLeaderSupervisor_doFailover_UnregisteredLeader(t *testing.T) {
 	mockStrategy := &mockFailoverStrategy{
 		returnAgent: newMockAgent("new-agent", models.AgentStatusReady),
 	}
-	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, nil)
+	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, nil, nil)
 
 	setupSupervisorForDoFailover(t, sup)
 
@@ -418,7 +421,7 @@ func TestLeaderSupervisor_doFailover_ReplacesLeader(t *testing.T) {
 		FailoverTimeout:     5 * time.Second,
 		MaxFailoverAttempts: 1,
 	}
-	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, cfg)
+	sup, _ := NewLeaderSupervisor(hbMon, mockStrategy, nil, nil, nil, cfg)
 	sup.RegisterLeader("leader-1", oldAgent)
 
 	setupSupervisorForDoFailover(t, sup)

@@ -50,15 +50,25 @@ func NewMessageQueue(agentID string, opts *QueueOptions) *MessageQueue {
 }
 
 // Enqueue adds a message to the queue.
-func (q *MessageQueue) Enqueue(ctx context.Context, msg *AHPMessage) error {
+// A recover guard protects against the race where Close() runs between
+// the closed check and the channel send.
+func (q *MessageQueue) Enqueue(ctx context.Context, msg *AHPMessage) (retErr error) {
 	if q.closed.Load() {
 		return errors.ErrQueueClosed
 	}
+
+	// Guard against send-on-closed-channel panic when Close() races.
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = errors.ErrQueueClosed
+		}
+	}()
+
+	// Non-blocking send: the default branch makes this non-blocking,
+	// so ctx.Done() would never be selected even if present.
 	select {
 	case q.messages <- msg:
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	default:
 		return errors.ErrQueueFull
 	}
@@ -113,38 +123,38 @@ func (q *MessageQueue) DequeueWithTimeout(timeout time.Duration) (*AHPMessage, e
 // Peek returns the first message without removing it.
 // Returns nil if the queue is empty or closed.
 //
-// This method uses a backup buffer to ensure messages are never lost.
-// If the message cannot be put back into the queue immediately, it is
-// stored in a backup buffer and will be prioritized for the next Dequeue.
+// This method holds backupMu across the entire operation so that
+// the read-from-channel and write-back sequence is atomic with respect
+// to concurrent Dequeue / Peek callers.
 //
 // Returns:
 //   - (*AHPMessage, nil): successfully peeked message
 //   - (nil, nil): queue is empty
+//   - (nil, ErrQueueClosed): queue has been closed
 func (q *MessageQueue) Peek() (*AHPMessage, error) {
 	if q.closed.Load() {
 		return nil, errors.ErrQueueClosed
 	}
 
 	q.backupMu.Lock()
+	defer q.backupMu.Unlock()
+
 	if len(q.backupBuffer) > 0 {
-		msg := q.backupBuffer[0]
-		q.backupMu.Unlock()
-		return msg, nil
+		return q.backupBuffer[0], nil
 	}
-	q.backupMu.Unlock()
 
 	select {
 	case msg, ok := <-q.messages:
 		if !ok {
 			return nil, errors.ErrQueueClosed
 		}
+		// Try to put the message back immediately.
 		select {
 		case q.messages <- msg:
 			return msg, nil
 		default:
-			q.backupMu.Lock()
+			// Channel full; store in backup buffer.
 			q.backupBuffer = append(q.backupBuffer, msg)
-			q.backupMu.Unlock()
 			return msg, nil
 		}
 	default:

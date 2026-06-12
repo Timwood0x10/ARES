@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,8 @@ type Executor struct {
 	registry    *AgentRegistry
 	maxParallel int
 	stepTimeout time.Duration
+	hitlHandler InterruptHandler
+	hitlStore   InterruptStore
 }
 
 // NewExecutor creates a new Executor.
@@ -31,6 +34,18 @@ func NewExecutor(registry *AgentRegistry) *Executor {
 		maxParallel: DefaultMaxParallel,
 		stepTimeout: 5 * time.Minute,
 	}
+}
+
+// WithHitlHandler sets the interrupt handler for human-in-the-loop support.
+func (e *Executor) WithHitlHandler(handler InterruptHandler) *Executor {
+	e.hitlHandler = handler
+	return e
+}
+
+// WithHitlStore sets the interrupt store for crash recovery.
+func (e *Executor) WithHitlStore(store InterruptStore) *Executor {
+	e.hitlStore = store
+	return e
 }
 
 // Execute executes a workflow.
@@ -165,6 +180,10 @@ func (e *Executor) runSteps(
 
 	sem := make(chan struct{}, e.maxParallel)
 
+	// stepDone signals when any step goroutine completes, allowing
+	// the scheduler to re-check dependencies without false deadlock detection.
+	stepDone := make(chan struct{}, 1)
+
 	for stepIndex < len(executionOrder) {
 		select {
 		case <-ctx.Done():
@@ -193,32 +212,20 @@ func (e *Executor) runSteps(
 				continue
 			}
 
-			// Wait for some goroutines to complete, but with timeout to avoid deadlock
-			// Use errgroup to manage the wait goroutine
-			waitG, _ := errgroup.WithContext(ctx)
-			waitDone := make(chan struct{})
-			waitG.Go(func() error {
-				defer close(waitDone)
-				wg.Wait()
-				return nil
-			})
-
+			// Wait for any step goroutine to complete via stepDone channel,
+			// instead of wg.Wait() which blocks until ALL goroutines finish.
 			select {
-			case <-waitDone:
-				// Some goroutines completed, retry
+			case <-stepDone:
+				// Some goroutine completed, re-check dependencies.
 				continue
 			case <-time.After(5 * time.Second):
-				// Timeout: potential deadlock detected, abort workflow
+				// Timeout: potential deadlock detected, abort workflow.
 				errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies that may never complete", stepID)
 				wg.Wait()
-				// Wait for waitG to complete
-				_ = waitG.Wait()
 				close(resultChan)
 				return
 			case <-ctx.Done():
 				wg.Wait()
-				// Wait for waitG to complete
-				_ = waitG.Wait()
 				close(resultChan)
 				return
 			}
@@ -228,15 +235,16 @@ func (e *Executor) runSteps(
 
 		stepIndex++
 
-		// Capture current stepID for goroutine
+		// Capture current stepID for goroutine.
 		sid := stepID
 
 		wg.Add(1)
 		go func() {
 			defer func() {
 				<-sem
-				wg.Done()
 
+				// C6 fix: recover BEFORE wg.Done() so the main goroutine
+				// cannot close resultChan before recovery sends on it.
 				if r := recover(); r != nil {
 					mu.Lock()
 					processed[sid] = true
@@ -251,6 +259,14 @@ func (e *Executor) runSteps(
 					case resultChan <- result:
 					case <-ctx.Done():
 					}
+				}
+
+				wg.Done()
+
+				// Signal stepDone so the scheduler can re-check dependencies.
+				select {
+				case stepDone <- struct{}{}:
+				default:
 				}
 			}()
 
@@ -269,10 +285,10 @@ func (e *Executor) runSteps(
 			}
 		}()
 
-		// Don't wait for individual step, continue to next step
+		// Don't wait for individual step, continue to next step.
 	}
 
-	// Wait for all step goroutines to complete
+	// Wait for all step goroutines to complete.
 	wg.Wait()
 
 	select {
@@ -337,7 +353,7 @@ func (e *Executor) findStep(steps []*Step, stepID string) *Step {
 	return nil
 }
 
-// executeStep executes a single step.
+// executeStep executes a single step with HITL interrupt handling.
 func (e *Executor) executeStep(
 	ctx context.Context,
 	workflow *Workflow,
@@ -358,6 +374,42 @@ func (e *Executor) executeStep(
 
 	startTime := time.Now()
 
+	// HITL: check if this step requires human approval.
+	if err := e.handleInterrupt(ctx, workflow, step); err != nil {
+		if err == ErrInterruptRejected {
+			return &StepResult{
+				StepID:   stepID,
+				Name:     step.Name,
+				Status:   StepStatusSkipped,
+				Error:    "rejected by human",
+				Duration: time.Since(startTime),
+			}
+		}
+		return &StepResult{
+			StepID:   stepID,
+			Name:     step.Name,
+			Status:   StepStatusFailed,
+			Error:    err.Error(),
+			Duration: time.Since(startTime),
+		}
+	}
+
+	return e.executeStepCore(ctx, step, stepID, initialInput, completed, outputStore, mu, startTime)
+}
+
+// executeStepCore executes the core step logic (input resolution, agent call,
+// retry) without HITL interrupt handling. Used by DynamicExecutor which handles
+// HITL at the scheduling level.
+func (e *Executor) executeStepCore(
+	ctx context.Context,
+	step *Step,
+	stepID string,
+	initialInput string,
+	completed map[string]bool,
+	outputStore *OutputStore,
+	mu *sync.Mutex,
+	startTime time.Time,
+) *StepResult {
 	// Copy completed map under lock to avoid data race with main loop.
 	mu.Lock()
 	completedCopy := make(map[string]bool, len(completed))
@@ -460,6 +512,12 @@ func (e *Executor) executeWithRetry(ctx context.Context, step *Step, input strin
 		initialDelay = step.RetryPolicy.InitialDelay
 	}
 
+	// M5 fix: clamp maxAttempts to minimum 1 so that MaxAttempts=0
+	// does not skip execution entirely.
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
 	var lastErr error
 	delay := initialDelay
 
@@ -509,4 +567,51 @@ var executionIDCounter uint64
 func generateExecutionID() string {
 	id := atomic.AddUint64(&executionIDCounter, 1)
 	return fmt.Sprintf("exec-%d-%d", time.Now().UnixNano(), id)
+}
+
+// handleInterrupt checks if a step requires human approval and processes it.
+// Returns nil if no interrupt is configured or the human approved.
+// Returns ErrInterruptRejected if the human rejected.
+// Returns an error if the handler failed.
+func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step *Step) error {
+	if step.Interrupt == nil {
+		return nil
+	}
+	if e.hitlHandler == nil {
+		return ErrInterruptHandlerNil
+	}
+
+	point := &InterruptPoint{
+		StepID:  step.ID,
+		Message: step.Interrupt.Message,
+		Payload: step.Interrupt.Payload,
+	}
+
+	// Persist interrupt point for crash recovery if store is available.
+	if e.hitlStore != nil {
+		if err := e.hitlStore.Save(ctx, workflow.ID, point); err != nil {
+			return fmt.Errorf("save interrupt point: %w", err)
+		}
+	}
+
+	result, err := e.hitlHandler(ctx, point)
+	if err != nil {
+		return fmt.Errorf("interrupt handler: %w", err)
+	}
+	if result == nil {
+		return fmt.Errorf("interrupt handler returned nil result")
+	}
+	if !result.Approved {
+		return ErrInterruptRejected
+	}
+
+	// Clean up the interrupt state after approval.
+	if e.hitlStore != nil {
+		if err := e.hitlStore.Delete(ctx, workflow.ID, step.ID); err != nil {
+			// Log but do not fail the step on cleanup error.
+			slog.Warn("failed to cleanup interrupt store", "error", err, "step_id", step.ID)
+		}
+	}
+
+	return nil
 }

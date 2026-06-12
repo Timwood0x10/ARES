@@ -65,12 +65,17 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 		return nil, fmt.Errorf("invalid limit: %d (must be 1-%d)", limit, maxLimit)
 	}
 
+	safeTable, err := safeFormatTable(table)
+	if err != nil {
+		return nil, errors.Wrap(err, "format table name")
+	}
+
 	query := fmt.Sprintf(`
 		SELECT id, 1 - (embedding <=> $1) as distance, metadata
 		FROM %s
 		ORDER BY embedding <=> $1
 		LIMIT $2
-	`, safeFormatTable(table))
+	`, safeTable)
 
 	embeddingJSON, err := json.Marshal(embedding)
 	if err != nil {
@@ -117,17 +122,12 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 		return errors.Wrap(err, "invalid table name")
 	}
 
-	// Validate embedding dimensions
-	// Use configured max dimension or default to 2000
-	maxDimension := 2000
-	if v.embeddingConfig != nil && v.embeddingConfig.MaxVectorSearchLimit > 0 {
-		// Use a reasonable multiple of search limit as max dimension
-		maxDimension = v.embeddingConfig.MaxVectorSearchLimit * 2
-	}
+	// Validate embedding dimensions.
+	// Maximum supported dimension for pgvector is 2000.
+	const maxDimension = 2000
 	if len(embedding) == 0 {
 		return fmt.Errorf("embedding cannot be empty")
 	}
-
 	if len(embedding) > maxDimension {
 		return fmt.Errorf("embedding dimension too large: %d (max %d)", len(embedding), maxDimension)
 	}
@@ -147,10 +147,15 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 		return errors.Wrap(err, "marshal metadata")
 	}
 
+	safeTable, err := safeFormatTable(table)
+	if err != nil {
+		return errors.Wrap(err, "format table name")
+	}
+
 	query := fmt.Sprintf(`
 		INSERT INTO %s (id, embedding, metadata)
 		VALUES ($1, $2, $3)
-	`, safeFormatTable(table))
+	`, safeTable)
 
 	_, err = v.db.ExecContext(ctx, query, id, embeddingJSON, metadataJSON)
 	if err != nil {
@@ -172,9 +177,14 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 		return errors.Wrap(err, "invalid id")
 	}
 
-	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, safeFormatTable(table))
+	safeTable, err := safeFormatTable(table)
+	if err != nil {
+		return errors.Wrap(err, "format table name")
+	}
 
-	_, err := v.db.ExecContext(ctx, query, id)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, safeTable)
+
+	_, err = v.db.ExecContext(ctx, query, id)
 	if err != nil {
 		return errors.Wrap(err, "delete embedding")
 	}
@@ -198,6 +208,11 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
 	}
 
+	safeTable, err := safeFormatTable(table)
+	if err != nil {
+		return errors.Wrap(err, "format table name")
+	}
+
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id VARCHAR(255) PRIMARY KEY,
@@ -206,9 +221,9 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 			created_at TIMESTAMP DEFAULT NOW()
 		);
 		CREATE INDEX IF NOT EXISTS %s_embedding_idx ON %s USING ivfflat (embedding vector_cosine_ops);
-	`, safeFormatTable(table), dim, safeFormatTable(table), safeFormatTable(table)) // Default dimension for common embedding models
+	`, safeTable, dim, safeTable, safeTable)
 
-	_, err := v.db.ExecContext(ctx, query)
+	_, err = v.db.ExecContext(ctx, query)
 	if err != nil {
 		return errors.Wrap(err, "create vector table")
 	}
@@ -225,6 +240,11 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
 	}
 
+	safeName, err := safeFormatTable(name)
+	if err != nil {
+		return errors.Wrap(err, "format collection name")
+	}
+
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id VARCHAR(255) PRIMARY KEY,
@@ -232,7 +252,7 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 			metadata JSONB,
 			created_at TIMESTAMP DEFAULT NOW()
 		)
-	`, safeFormatTable(name), dimension)
+	`, safeName, dimension)
 
 	if _, err := v.db.ExecContext(ctx, query); err != nil {
 		return errors.Wrap(err, "create collection")
@@ -241,7 +261,7 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 	indexQuery := fmt.Sprintf(`
 		CREATE INDEX IF NOT EXISTS %s_embedding_idx
 		ON %s USING ivfflat (embedding vector_cosine_ops)
-	`, safeFormatTable(name), safeFormatTable(name))
+	`, safeName, safeName)
 
 	if _, err := v.db.ExecContext(ctx, indexQuery); err != nil {
 		return errors.Wrap(err, "create vector index")

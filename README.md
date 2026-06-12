@@ -15,13 +15,22 @@
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
+**v2.0.0** -- [Changelog](CHANGELOG.md)
+
 ## Architecture 
 
 ```mermaid
 graph TB
-    User[User Request] --> Leader
+    User[User Request] --> RT
 
-    subgraph Agent System
+    subgraph runtime [Runtime Layer]
+        RT[Runtime Manager]
+        RT -->|"manages lifecycle"| Leader
+        RT -->|"replays"| ES[EventStore]
+        RT -->|"restores"| MM[MemoryStore]
+    end
+
+    subgraph agents [Agent System]
         Leader[Leader Agent]
         Leader -->|AHP Protocol| SubA[Sub Agent A]
         Leader -->|AHP Protocol| SubB[Sub Agent B]
@@ -29,7 +38,7 @@ graph TB
         Leader -.->|Checkpoint Recovery| Supervisor[Supervisor]
     end
 
-    subgraph Workflow Engine
+    subgraph workflow [Workflow Engine]
         MutableDAG[MutableDAG]
         DynamicExec[DynamicExecutor]
         MutableDAG --> DynamicExec
@@ -37,7 +46,7 @@ graph TB
         DynamicExec --> CycleDetect[Cycle Detection]
     end
 
-    subgraph Memory Manager
+    subgraph memory [Memory Manager]
         Session[Session Memory]
         Task[Task Memory]
         Distilled[Distilled Memory]
@@ -46,8 +55,8 @@ graph TB
         Pipeline --> Distilled
     end
 
-    subgraph Storage Layer
-        VS["VectorStore Interface"]
+    subgraph storage [Storage Layer]
+        VS[VectorStore Interface]
         PG[(PostgreSQL + pgvector)]
         MEM[(In-Memory)]
         QD[(Qdrant)]
@@ -64,17 +73,17 @@ graph TB
         Cache --> CB
     end
 
-    subgraph Tool System
+    subgraph tools [Tool System]
         Registry[Tool Registry]
         Matcher[Capability Matcher]
         Validator[Parameter Validator]
     end
 
-    Leader --> Workflow Engine
-    Leader --> Memory Manager
-    Leader --> Tool System
-    Memory Manager --> Storage Layer
-    Tool System --> Storage Layer
+    Leader --> MutableDAG
+    Leader --> Session
+    Leader --> Registry
+    Session --> VS
+    Registry --> VS
 ```
 
 ### Memory Distillation Pipeline / 记忆蒸馏管线
@@ -125,6 +134,27 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - AHP protocol for structured communication (heartbeat, DLQ, progress)
 - Leader failover with checkpoint recovery
 - Parallel task execution with configurable concurrency
+- Agent resurrection plugin with pluggable health checking
+
+**Runtime Layer**
+- Agent lifecycle management: register, start, stop, restart, restore
+- Automatic crash detection and resurrection via AgentFactory
+- Two recovery dimensions: EventStore (operational) + MemoryStore (cognitive)
+- Health monitoring with heartbeat and status-based checks
+- Structured concurrency via errgroup with graceful shutdown
+
+**Event Sourcing**
+- EventStore interface with optimistic concurrency control
+- MemoryEventStore for dev/test, PostgresEventStore for production
+- 17 event types covering agent lifecycle, tasks, sessions, workflows, failover
+- Pub/sub via Subscribe with filtered event channels
+- DLQ auto-retry with configurable retry budgets
+
+**Human-in-the-Loop**
+- Pause workflow steps for human approval before execution
+- InterruptConfig on any step, InterruptHandler for blocking approval
+- InterruptStore for crash recovery of pending approvals
+- Approval workflows and review gates
 
 **Tool System**
 - Dynamic tool registration and discovery
@@ -133,38 +163,32 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 
 ## Benchmark Highlights
 
-54 benchmarks total. 589 tests pass with `-race`.
+32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
 
 Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 
 | Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
 |----------|-------|---------------|--------------------|--------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| Distillation | 8 | 3 | 3 | 2 |
+| Distillation | 9 | 3 | 4 | 2 |
 | Tools/Core | 8 | 4 | 3 | 1 |
 | Errors | 4 | 4 | 0 | 0 |
-| Handler | 3 | 1 | 2 | 0 |
-| Workflow Engine | 12 | 8 | 3 | 1 |
-| AHP Protocol | 6 | 4 | 2 | 0 |
-| Leader Agent | 8 | 5 | 2 | 1 |
-| **Total** | **54** | **31** | **17** | **6** |
+| Event Sourcing | 6 | 1 | 3 | 2 |
+| **Total** | **32** | **14** | **12** | **6** |
 
 Selected hot-path results:
 
 | Operation | ns/op | allocs/op |
 |-----------|-------|-----------|
-| ExactMatchEvaluator | 3.13 | 0 |
-| ToolExecution | 15.21 | 0 |
-| ResultCreation | 0.27 | 0 |
-| ParameterValidation | 7.40 | 0 |
-| ConflictDetection | 1,181 | 0 |
-| MutableDAG_RemoveEdge | ~200 | 1 |
-| MutableDAG_Version | ~10 | 0 |
-| AHP NewMessage | ~200 | 2 |
-| AHP QueueEnqueue | ~300 | 1 |
-| AHP HeartbeatMonitor_Record | ~100 | 1 |
+| ExactMatchEvaluator | 2.90 | 0 |
+| ToolExecution | 14.48 | 0 |
+| ResultCreation | 0.25 | 0 |
+| ParameterValidation | 7.22 | 0 |
+| ConflictDetection | 988 | 0 |
+| Wrap (error) | 0.25 | 0 |
+| MemoryOperations/Create | 87.57 | 0 |
 
-31 of 54 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, and conflict detection.
+14 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and conflict detection.
 
 Full benchmark report: `benchmarks/benchmark_report.md`
 
@@ -203,7 +227,16 @@ cd examples/travel && go run main.go
 cd examples/knowledge-base
 go run main.go --save README.md   # Import document
 go run main.go --chat              # Start Q&A
+
+# Advanced examples (v2 features)
+go run ./examples/advanced/leader_failover/
+go run ./examples/advanced/agent_resurrection/
+go run ./examples/advanced/runtime_resurrection/
+go run ./examples/advanced/dynamic_executor/
+go run ./examples/advanced/mutable_dag/
 ```
+
+See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
 
 ### 4. Run Tests
 
@@ -219,8 +252,10 @@ go test -bench=. ./...             # Benchmarks
 goagent/
 ├── internal/
 │   ├── agents/          # Leader/Sub agent system
+│   ├── runtime/         # Runtime lifecycle management
 │   ├── protocol/ahp/    # AHP inter-agent protocol
 │   ├── memory/          # Memory system + distillation
+│   ├── events/          # EventStore interface + implementations
 │   ├── workflow/engine/  # DAG workflow engine
 │   ├── storage/          # VectorStore interface + implementations
 │   │   ├── postgres/     # PostgreSQL + pgvector (production)
@@ -284,13 +319,19 @@ See `examples/travel/config.yaml` for a complete example.
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [Architecture](docs/en/architecture/arch.md)
+- [Runtime Layer](docs/en/architecture/runtime.md)
 - [Quick Start](docs/en/guides/quick-start.md)
 - [FAQ / 常见问题](docs/en/guides/faq.md)
 - [Integration Guide](docs/en/development/integration-guide.md)
 - [Custom Vector Store](docs/en/development/custom-vector-store.md)
 - [Leader Failover](docs/en/features/leader-failover.md)
 - [Dynamic Graph](docs/en/features/dynamic-graph.md)
+- [Human-in-the-Loop](docs/en/features/hitl.md)
+- [Agent Resurrection](docs/en/features/resurrection.md)
+- [Integration Testing](docs/en/development/integration-testing.md)
+- [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)
 - [Benchmark Report](benchmarks/benchmark_report.md)
 

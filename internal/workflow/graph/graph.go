@@ -3,6 +3,7 @@
 package graph
 
 import (
+	"fmt"
 	"time"
 
 	"goagent/internal/observability"
@@ -143,15 +144,18 @@ func (g *Graph) Node(id string, node Node) *Graph {
 
 // Edge adds an edge from one node to another with optional condition.
 //
-// NOTE: This method will panic if graph is nil, from id is empty, or to id is empty.
-// This is intentional as it indicates a programming error in the calling code.
-// These methods are used during workflow graph initialization (startup phase),
-// and invalid parameters represent fatal startup failures that should prevent
-// application launch. This follows the coding standard allowing panic for fatal startup errors.
+// NOTE: This method will panic if graph is nil, from/to id is empty, or if
+// the referenced nodes have not been added via Node(). This is intentional as
+// it indicates a programming error in the calling code. These methods are used
+// during workflow graph initialization (startup phase), and invalid parameters
+// represent fatal startup failures that should prevent application launch. This
+// follows the coding standard allowing panic for fatal startup errors.
+//
+// M8 fix: validate that both from and to nodes exist in the graph.
 //
 // Args:
-// from - source node ID, must not be empty.
-// to - target node ID, must not be empty.
+// from - source node ID, must not be empty and must exist in the graph.
+// to - target node ID, must not be empty and must exist in the graph.
 // cond - optional edge traversal condition.
 // Returns graph for method chaining.
 func (g *Graph) Edge(from, to string, cond ...Condition) *Graph {
@@ -163,6 +167,12 @@ func (g *Graph) Edge(from, to string, cond ...Condition) *Graph {
 	}
 	if to == "" {
 		panic("to node ID cannot be empty: empty id is a programming error")
+	}
+	if _, ok := g.nodes[from]; !ok {
+		panic(fmt.Sprintf("from node %q not found: node must be added via Node() before Edge()", from))
+	}
+	if _, ok := g.nodes[to]; !ok {
+		panic(fmt.Sprintf("to node %q not found: node must be added via Node() before Edge()", to))
 	}
 
 	edge := &Edge{from: from, to: to}

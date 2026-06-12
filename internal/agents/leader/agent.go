@@ -11,6 +11,7 @@ import (
 	coreerrors "goagent/internal/core/errors"
 	"goagent/internal/core/models"
 	"goagent/internal/errors"
+	"goagent/internal/events"
 	"goagent/internal/memory"
 	"goagent/internal/protocol/ahp"
 
@@ -21,6 +22,9 @@ import (
 type Agent interface {
 	base.Agent
 }
+
+// Compile-time check: leaderAgent must satisfy base.StatefulAgent.
+var _ base.StatefulAgent = (*leaderAgent)(nil)
 
 // ProfileParser parses user profile from input.
 type ProfileParser interface {
@@ -56,6 +60,13 @@ func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
 	}
 }
 
+// WithEventStore sets the event store for event sourcing.
+func WithEventStore(store events.EventStore) LeaderOption {
+	return func(a *leaderAgent) {
+		a.eventStore = store
+	}
+}
+
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
 	mu            sync.RWMutex
@@ -72,13 +83,16 @@ type leaderAgent struct {
 	memoryManager memory.MemoryManager
 	sessionID     string
 	checkpoint    *CheckpointRepository
+	eventStore    events.EventStore
 
 	// Lifecycle management
-	stopCh      chan struct{}   // Channel to signal shutdown
-	distillWg   sync.WaitGroup  // WaitGroup for distillation goroutines
-	distillEg   *errgroup.Group // Errgroup for distillation goroutines
-	streamEg    *errgroup.Group // Errgroup for streaming pipeline goroutines
-	cleanupOnce sync.Once       // Ensure cleanup runs only once
+	stopCh       chan struct{}   // Channel to signal shutdown
+	distillMu    sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
+	distillWg    sync.WaitGroup  // WaitGroup for distillation goroutines
+	distillEg    *errgroup.Group // Errgroup for distillation goroutines
+	streamEg     *errgroup.Group // Errgroup for streaming pipeline goroutines
+	processingMu sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
+	cleanupOnce  sync.Once       // Ensure cleanup runs only once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.
@@ -186,12 +200,21 @@ func (a *leaderAgent) setStatus(status models.AgentStatus) {
 }
 
 // Start starts the leader agent.
-func (a *leaderAgent) Start(ctx context.Context) error {
-	if a.Status() != models.AgentStatusOffline {
+func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
+	a.mu.Lock()
+	if a.status != models.AgentStatusOffline {
+		a.mu.Unlock()
 		return coreerrors.ErrAgentAlreadyStarted
 	}
+	a.status = models.AgentStatusStarting
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusStarting)
+	// Reset status to Offline if startup fails for any reason.
+	defer func() {
+		if startErr != nil {
+			a.setStatus(models.AgentStatusOffline)
+		}
+	}()
 
 	// Validate and initialize dependencies
 	if a.parser == nil {
@@ -241,18 +264,25 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 
 // Stop stops the leader agent and cleans up resources.
 func (a *leaderAgent) Stop(ctx context.Context) error {
-	if a.Status() == models.AgentStatusOffline {
+	a.mu.Lock()
+	if a.status == models.AgentStatusOffline {
+		a.mu.Unlock()
 		return coreerrors.ErrAgentNotRunning
 	}
-
-	a.setStatus(models.AgentStatusStopping)
+	a.status = models.AgentStatusStopping
+	a.mu.Unlock()
 
 	a.cleanupOnce.Do(func() {
 		// Signal all goroutines to stop.
+		a.distillMu.Lock()
 		close(a.stopCh)
+		a.distillMu.Unlock()
 
 		// Wait for background goroutines to complete.
 		a.distillWg.Wait()
+		if a.distillEg != nil {
+			_ = a.distillEg.Wait()
+		}
 		if a.streamEg != nil {
 			_ = a.streamEg.Wait()
 		}
@@ -277,6 +307,20 @@ func (a *leaderAgent) getUserID() string {
 	return "default_user"
 }
 
+// parseInput coerces the input to a string. Accepts string, []byte, or fmt.Stringer.
+func parseInput(input any) (string, error) {
+	switch v := input.(type) {
+	case string:
+		return v, nil
+	case []byte:
+		return string(v), nil
+	case fmt.Stringer:
+		return v.String(), nil
+	default:
+		return "", errors.Wrapf(coreerrors.ErrInvalidInput, "expected string, []byte, or fmt.Stringer, got %T", input)
+	}
+}
+
 // initMemoryContext initializes session, records user message, builds context with
 // similar tasks, and creates a task record. Returns the enriched input, sessionID, and taskID.
 func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (enrichedInput string, sessionID string, taskID string) {
@@ -289,6 +333,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	a.mu.RLock()
 	sessionID = a.sessionID
 	checkpoint := a.checkpoint
+	eventStore := a.eventStore
 	leaderID := a.id
 	a.mu.RUnlock()
 
@@ -327,12 +372,42 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 					slog.Warn("Failed to save checkpoint", "error", err)
 				}
 			}
+
+			// Emit session created event for event sourcing.
+			if eventStore != nil {
+				if err := eventStore.Append(ctx, leaderID, []*events.Event{
+					{
+						Type: events.EventSessionCreated,
+						Payload: map[string]any{
+							"session_id": sessionID,
+							"user_id":    a.getUserID(),
+						},
+					},
+				}, 0); err != nil {
+					slog.Warn("Failed to emit session created event", "error", err)
+				}
+			}
 		}
 	}
 
 	// Record user message.
 	if err := a.memoryManager.AddMessage(ctx, sessionID, "user", strInput); err != nil {
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
+	}
+
+	// Emit message added event for event sourcing.
+	if eventStore != nil && sessionID != "" {
+		if err := eventStore.Append(ctx, leaderID, []*events.Event{
+			{
+				Type: events.EventMessageAdded,
+				Payload: map[string]any{
+					"session_id": sessionID,
+					"role":       "user",
+				},
+			},
+		}, 0); err != nil {
+			slog.Warn("Failed to emit message added event", "error", err)
+		}
 	}
 
 	// Build input with conversation context.
@@ -365,15 +440,46 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 			"impact", "task will not be tracked for distillation")
 	} else {
 		taskID = tID
+
+		// Emit task created event for event sourcing.
+		if eventStore != nil {
+			if err := eventStore.Append(ctx, leaderID, []*events.Event{
+				{
+					Type: events.EventTaskCreated,
+					Payload: map[string]any{
+						"task_id":    taskID,
+						"session_id": sessionID,
+					},
+				},
+			}, 0); err != nil {
+				slog.Warn("Failed to emit task created event", "error", err)
+			}
+		}
 	}
 
 	return enrichedInput, sessionID, taskID
 }
 
+// emitEvent appends a single event to the event store.
+// No-op if eventStore is nil.
+func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if a.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: a.id,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
+		slog.Warn("failed to emit event", "type", eventType, "error", err)
+	}
+}
+
 // finalizeMemory updates task output, records assistant message, and triggers
 // background distillation. Must be called after aggregation succeeds.
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-	if a.memoryManager == nil {
+	if a.memoryManager == nil || result == nil {
 		return
 	}
 
@@ -391,6 +497,33 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
+	// Emit assistant message added event for event sourcing.
+	a.mu.RLock()
+	eventStore := a.eventStore
+	leaderID := a.id
+	a.mu.RUnlock()
+	if eventStore != nil && sessionID != "" {
+		if err := eventStore.Append(ctx, leaderID, []*events.Event{
+			{
+				Type: events.EventMessageAdded,
+				Payload: map[string]any{
+					"session_id": sessionID,
+					"role":       "assistant",
+				},
+			},
+		}, 0); err != nil {
+			slog.Warn("Failed to emit message added event", "error", err)
+		}
+	}
+
+	// Emit task completed event for event sourcing.
+	if taskID != "" {
+		a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			"task_id": taskID,
+			"status":  "completed",
+		})
+	}
+
 	// Run distillation in background goroutine with proper lifecycle management.
 	// Context is created inside the goroutine to avoid race: defer cancel() in the
 	// parent function would cancel the context before the goroutine starts.
@@ -401,14 +534,17 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	// Check if agent is stopped BEFORE adding to WaitGroup.
 	// If agent is stopped, distillWg.Wait() may have already returned;
 	// calling Add(1) after Wait() returns causes a panic.
+	// Lock distillMu to make the stopCh check and Add(1) atomic.
+	a.distillMu.Lock()
 	select {
 	case <-a.stopCh:
+		a.distillMu.Unlock()
 		slog.Debug("Distillation skipped: agent stopping", "task_id", taskID)
 		return
 	default:
 	}
-
 	a.distillWg.Add(1)
+	a.distillMu.Unlock()
 	a.distillEg.Go(func() error {
 		defer a.distillWg.Done()
 
@@ -429,6 +565,26 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 		if err := g.Wait(); err != nil {
 			slog.Error("Error in async distillation", "error", err, "task_id", taskID)
+			return nil
+		}
+
+		// Emit memory distilled event for event sourcing.
+		a.mu.RLock()
+		es := a.eventStore
+		lid := a.id
+		a.mu.RUnlock()
+		if es != nil {
+			if emitErr := es.Append(distillCtx, lid, []*events.Event{
+				{
+					Type: events.EventMemoryDistilled,
+					Payload: map[string]any{
+						"task_id":    taskID,
+						"session_id": sessionID,
+					},
+				},
+			}, 0); emitErr != nil {
+				slog.Warn("Failed to emit memory distilled event", "error", emitErr)
+			}
 		}
 		return nil
 	})
@@ -436,16 +592,25 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 // Process handles user input and orchestrates the recommendation workflow with automatic memory management.
 func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
-	status := a.Status()
-	if status != models.AgentStatusReady && status != models.AgentStatusOffline {
-		return nil, coreerrors.ErrAgentNotReady
-	}
+	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
+	a.processingMu.Lock()
+	defer a.processingMu.Unlock()
 
-	if status == models.AgentStatusOffline {
+	// Atomically check status and transition to Busy.
+	a.mu.Lock()
+	if a.status == models.AgentStatusOffline {
+		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil {
 			return nil, err
 		}
+		a.mu.Lock()
 	}
+	if a.status != models.AgentStatusReady {
+		a.mu.Unlock()
+		return nil, coreerrors.ErrAgentNotReady
+	}
+	a.status = models.AgentStatusBusy
+	a.mu.Unlock()
 
 	stepCount := 0
 	maxSteps := a.config.MaxSteps
@@ -453,19 +618,11 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		maxSteps = DefaultMaxSteps
 	}
 
-	a.setStatus(models.AgentStatusBusy)
 	defer a.setStatus(models.AgentStatusReady)
 
-	var strInput string
-	switch v := input.(type) {
-	case string:
-		strInput = v
-	case []byte:
-		strInput = string(v)
-	case fmt.Stringer:
-		strInput = v.String()
-	default:
-		return nil, errors.Wrapf(coreerrors.ErrInvalidInput, "expected string, []byte, or fmt.Stringer, got %T", input)
+	strInput, err := parseInput(input)
+	if err != nil {
+		return nil, err
 	}
 
 	// Initialize memory context (session, messages, similar tasks, task record).
@@ -475,6 +632,12 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		return nil, coreerrors.ErrMaxStepsExceeded
+	}
+
+	select {
+	case <-a.stopCh:
+		return nil, coreerrors.ErrAgentNotRunning
+	default:
 	}
 
 	profile, err := a.parser.Parse(ctx, strInput)
@@ -488,6 +651,12 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, coreerrors.ErrMaxStepsExceeded
 	}
 
+	select {
+	case <-a.stopCh:
+		return nil, coreerrors.ErrAgentNotRunning
+	default:
+	}
+
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
 		return nil, err
@@ -498,6 +667,12 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		return nil, coreerrors.ErrMaxStepsExceeded
+	}
+
+	select {
+	case <-a.stopCh:
+		return nil, coreerrors.ErrAgentNotRunning
+	default:
 	}
 
 	slog.Info("Leader dispatching tasks", "module", "leader")
@@ -514,6 +689,12 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		return nil, coreerrors.ErrMaxStepsExceeded
+	}
+
+	select {
+	case <-a.stopCh:
+		return nil, coreerrors.ErrAgentNotRunning
+	default:
 	}
 
 	result, err := a.aggregator.Aggregate(ctx, results, tasks)
@@ -557,29 +738,88 @@ func (a *leaderAgent) IsAlive() bool {
 	return a.Status() == models.AgentStatusReady || a.Status() == models.AgentStatusBusy
 }
 
+// RestoreState restores the leader agent's state from persisted data.
+// Implements base.StatefulAgent for resurrection support.
+func (a *leaderAgent) RestoreState(state map[string]any) error {
+	if state == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if sid, ok := state["session_id"].(string); ok && sid != "" {
+		a.sessionID = sid
+		slog.Info("state restored from event replay",
+			"agent_id", a.id,
+			"session_id", sid,
+		)
+	}
+	return nil
+}
+
+// ReplayEvents replays a sequence of events to reconstruct state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
+	if len(evts) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, ev := range evts {
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case events.EventSessionCreated:
+			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
+				a.sessionID = sid
+			}
+		}
+	}
+	return nil
+}
+
+// Snapshot returns a serializable snapshot of the leader agent's current state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *leaderAgent) Snapshot() (map[string]any, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return map[string]any{
+		"session_id": a.sessionID,
+		"agent_id":   a.id,
+		"status":     string(a.status),
+	}, nil
+}
+
 // ProcessStream handles user input and returns a stream of events.
 // It follows the same workflow as Process but emits events at each phase.
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
-		return nil, coreerrors.ErrAgentNotReady
-	}
+	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
+	a.processingMu.Lock()
 
-	if a.Status() == models.AgentStatusOffline {
+	// Atomically check status and transition to Busy.
+	a.mu.Lock()
+	if a.status == models.AgentStatusOffline {
+		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil {
+			a.processingMu.Unlock()
 			return nil, err
 		}
+		a.mu.Lock()
 	}
+	if a.status != models.AgentStatusReady {
+		a.mu.Unlock()
+		a.processingMu.Unlock()
+		return nil, coreerrors.ErrAgentNotReady
+	}
+	a.status = models.AgentStatusBusy
+	a.mu.Unlock()
+	a.processingMu.Unlock()
 
-	var strInput string
-	switch v := input.(type) {
-	case string:
-		strInput = v
-	case []byte:
-		strInput = string(v)
-	case fmt.Stringer:
-		strInput = v.String()
-	default:
-		return nil, errors.Wrapf(coreerrors.ErrInvalidInput, "expected string, []byte, or fmt.Stringer, got %T", input)
+	strInput, err := parseInput(input)
+	if err != nil {
+		a.setStatus(models.AgentStatusReady)
+		return nil, err
 	}
 
 	// Initialize memory context (session, messages, similar tasks, task record).
@@ -589,14 +829,14 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 	a.streamEg.Go(func() error {
 		defer close(ch)
-
-		a.setStatus(models.AgentStatusBusy)
 		defer a.setStatus(models.AgentStatusReady)
 
 		// Send planning event.
 		select {
 		case ch <- base.AgentEvent{Type: base.EventPlanning, Source: a.id, Data: strInput}:
 		case <-ctx.Done():
+			return nil
+		case <-a.stopCh:
 			return nil
 		}
 
@@ -606,6 +846,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
+			case <-a.stopCh:
 			}
 			return nil
 		}
@@ -616,6 +857,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
+			case <-a.stopCh:
 			}
 			return nil
 		}
@@ -626,6 +868,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
 			case <-ctx.Done():
 				return nil
+			case <-a.stopCh:
+				return nil
 			}
 		}
 
@@ -635,6 +879,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 				select {
 				case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: &models.TaskResult{TaskID: task.TaskID, Success: false, Error: err.Error()}}:
 				case <-ctx.Done():
+					return nil
+				case <-a.stopCh:
 					return nil
 				}
 			}
@@ -648,6 +894,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
 			case <-ctx.Done():
 				return nil
+			case <-a.stopCh:
+				return nil
 			}
 		}
 
@@ -656,6 +904,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		case ch <- base.AgentEvent{Type: base.EventAggregating, Source: a.id}:
 		case <-ctx.Done():
 			return nil
+		case <-a.stopCh:
+			return nil
 		}
 
 		result, err := a.aggregator.Aggregate(ctx, allResults, tasks)
@@ -663,6 +913,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
+			case <-a.stopCh:
 			}
 			return nil
 		}
@@ -674,6 +925,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		select {
 		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
 		case <-ctx.Done():
+		case <-a.stopCh:
 		}
 		return nil
 	})

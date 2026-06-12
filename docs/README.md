@@ -18,8 +18,11 @@ Welcome to the GoAgent framework documentation center.
 | Architecture | [架构设计](./zh/architecture/arch.md) | [Architecture](./en/architecture/arch.md) |
 | Integration | [集成指南](./zh/development/integration-guide.md) | [Integration Guide](./en/development/integration-guide.md) |
 | Testing | [测试指南](./zh/development/testing-guide.md) | [Testing Guide](./en/development/testing-guide.md) |
+| Integration Testing | [集成测试](./zh/development/integration-testing.md) | [Integration Testing](./en/development/integration-testing.md) |
+| CI/CD | [CI/CD 管线](./zh/development/ci-cd.md) | [CI/CD Pipeline](./en/development/ci-cd.md) |
 | Performance | [性能调优](./zh/development/performance-tuning.md) | [Performance Tuning](./en/development/performance-tuning.md) |
 | API Reference | — | [API Reference](./en/api-reference.md) |
+| Examples | [示例](./zh/development/examples.md) | [Examples](./en/development/examples.md) |
 
 ---
 
@@ -29,7 +32,11 @@ Welcome to the GoAgent framework documentation center.
 |---------|------|---------|
 | Leader Failover | [Leader 故障转移](./zh/features/leader-failover.md) | [Leader Failover](./en/features/leader-failover.md) |
 | Runtime Dynamic Graph | [运行时动态图](./zh/features/dynamic-graph.md) | [Dynamic Graph](./en/features/dynamic-graph.md) |
+| Runtime Layer | [Runtime 层](./zh/architecture/runtime.md) | [Runtime Layer](./en/architecture/runtime.md) |
+| Human-in-the-Loop | [人机协作](./zh/features/hitl.md) | [Human-in-the-Loop](./en/features/hitl.md) |
+| Agent Resurrection | [Agent 复活](./zh/features/resurrection.md) | [Agent Resurrection](./en/features/resurrection.md) |
 | v2 Architecture | [v2 架构](./zh/architecture/v2-architecture.md) | [v2 Architecture](./en/architecture/v2-architecture.md) |
+| Event Sourcing | [事件溯源](./zh/features/event-sourcing.md) | [Event Sourcing](./en/features/event-sourcing.md) |
 | Framework Comparison | — | [Framework Comparison](./en/framework-comparison.md) |
 
 ---
@@ -51,6 +58,7 @@ Welcome to the GoAgent framework documentation center.
 | Agents | [Agent 定义](./zh/components/agents-definition.md) | [Agent Definition](./en/components/agents-definition.md) |
 | Leader Agent | [Leader Agent](./zh/components/agents-leader.md) | [Leader Agent](./en/components/agents-leader.md) |
 | Sub Agent | [Sub Agent](./zh/components/agents-sub.md) | [Sub Agent](./en/components/agents-sub.md) |
+| Runtime | [Runtime 层](./zh/architecture/runtime.md) | [Runtime Layer](./en/architecture/runtime.md) |
 | Memory | [记忆组件](./zh/components/memory.md) | [Memory](./en/components/memory.md) |
 | LLM | [LLM 组件](./zh/components/llm.md) | [LLM](./en/components/llm.md) |
 | Storage | [存储组件](./zh/components/storage.md) | [Storage](./en/components/storage.md) |
@@ -86,4 +94,4 @@ docs/
 
 ---
 
-**Last Updated**: 2026-06-10
+**Last Updated**: 2026-06-12

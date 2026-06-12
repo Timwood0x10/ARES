@@ -16,5 +16,4 @@ bin/
 *.excalidraw
 
 *.log
-
-coverage.out
+**/logs/

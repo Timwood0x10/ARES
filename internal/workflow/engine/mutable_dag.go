@@ -314,6 +314,28 @@ func (m *MutableDAG) Snapshot() *DAG {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return m.snapshotDAGLocked()
+}
+
+// SnapshotWithSteps returns a copy of the current DAG topology (deep copy) and step
+// references (shallow copy — same Step pointers) atomically under a single read lock.
+// Callers must treat the returned Steps as read-only to avoid corrupting internal state.
+func (m *MutableDAG) SnapshotWithSteps() (*DAG, map[string]*Step) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	dagCopy := m.snapshotDAGLocked()
+
+	stepsCopy := make(map[string]*Step, len(m.steps))
+	for id, step := range m.steps {
+		stepsCopy[id] = step
+	}
+
+	return dagCopy, stepsCopy
+}
+
+// snapshotDAGLocked returns a deep copy of the DAG. Must be called with m.mu held.
+func (m *MutableDAG) snapshotDAGLocked() *DAG {
 	nodesCopy := make(map[string]*DAGNode, len(m.dag.Nodes))
 	for id, node := range m.dag.Nodes {
 		nodeCopy := *node

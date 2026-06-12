@@ -210,7 +210,7 @@ hub.Unsubscribe(id)
 
 ## 完整示例
 
-参考 `examples/v2_demo/mutable_dag/main.go`：
+参考 `examples/advanced/mutable_dag/main.go`：
 
 ```go
 ctx := context.Background()

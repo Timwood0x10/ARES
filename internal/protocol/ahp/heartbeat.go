@@ -176,6 +176,8 @@ func (m *HeartbeatMonitor) notifyCallbacks(agentID string) {
 }
 
 // HeartbeatSender sends periodic heartbeat messages.
+// Start and Stop are safe to call from multiple goroutines and the sender
+// can be restarted after a Stop.
 type HeartbeatSender struct {
 	agentID  string
 	interval time.Duration
@@ -183,9 +185,7 @@ type HeartbeatSender struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
-	stopOnce sync.Once
 	started  bool
-	stopped  bool
 	mu       sync.Mutex
 }
 
@@ -219,12 +219,11 @@ func (s *HeartbeatSender) Start(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
-	s.started = true
-	s.stopped = false
-	s.mu.Unlock()
-
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.wg.Add(1)
+	s.started = true
+	s.mu.Unlock()
+
 	go s.run()
 }
 
@@ -257,19 +256,17 @@ func (s *HeartbeatSender) sendHeartbeat() {
 	}
 }
 
-// Stop stops sending heartbeats.
+// Stop stops sending heartbeats and waits for the run goroutine to exit.
 func (s *HeartbeatSender) Stop() {
 	s.mu.Lock()
-	if !s.started || s.stopped {
+	if !s.started {
 		s.mu.Unlock()
 		return
 	}
-	s.stopped = true
 	s.started = false
+	cancel := s.cancel
 	s.mu.Unlock()
 
-	s.stopOnce.Do(func() {
-		s.cancel()
-		s.wg.Wait()
-	})
+	cancel()
+	s.wg.Wait()
 }

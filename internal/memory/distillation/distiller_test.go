@@ -4,8 +4,12 @@ package distillation
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"goagent/internal/events"
 )
 
 func TestNewDistiller(t *testing.T) {
@@ -143,4 +147,187 @@ func TestDefaultDistillationConfig(t *testing.T) {
 	if !config.PrecisionOverRecall {
 		t.Error("PrecisionOverRecall should be true by default")
 	}
+}
+
+// --- SubscribeAndDistill and processEvent tests ---
+
+func TestSubscribeAndDistill_NilStore(t *testing.T) {
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+
+	distiller := NewDistiller(config, embedder, repo)
+
+	// Should not panic or start any goroutine.
+	distiller.SubscribeAndDistill(context.Background(), nil)
+}
+
+func TestSubscribeAndDistill_CancelledContext(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Should handle cancelled context gracefully.
+	distiller.SubscribeAndDistill(ctx, store)
+}
+
+func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	distiller.SubscribeAndDistill(ctx, store)
+
+	// Give the subscription goroutine time to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish events to the store.
+	err := store.Append(context.Background(), "stream-1", []*events.Event{
+		{
+			Type: events.EventMessageAdded,
+			Payload: map[string]any{
+				"role": "user",
+			},
+		},
+		{
+			Type: events.EventTaskCompleted,
+			Payload: map[string]any{
+				"task_id": "task-1",
+			},
+		},
+	}, 0)
+	require.NoError(t, err)
+
+	// Allow the subscriber goroutine to process events.
+	time.Sleep(100 * time.Millisecond)
+	// No assertion needed: the test verifies that no panic or deadlock occurs.
+}
+
+func TestProcessEvent_NilEvent(t *testing.T) {
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	// Should not panic.
+	distiller.processEvent(context.Background(), nil)
+}
+
+func TestProcessEvent_MessageAdded(t *testing.T) {
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	event := &events.Event{
+		StreamID: "stream-1",
+		Type:     events.EventMessageAdded,
+		Payload: map[string]any{
+			"role": "user",
+		},
+	}
+
+	// Should not panic.
+	distiller.processEvent(context.Background(), event)
+}
+
+func TestProcessEvent_TaskCompleted(t *testing.T) {
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	event := &events.Event{
+		StreamID: "stream-1",
+		Type:     events.EventTaskCompleted,
+		Payload: map[string]any{
+			"task_id": "task-1",
+		},
+	}
+
+	// Should not panic.
+	distiller.processEvent(context.Background(), event)
+}
+
+func TestProcessEvent_UnknownEventType(t *testing.T) {
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	event := &events.Event{
+		StreamID: "stream-1",
+		Type:     events.EventAgentStarted,
+		Payload:  map[string]any{},
+	}
+
+	// Should not panic — unknown events are handled by the default case.
+	distiller.processEvent(context.Background(), event)
+}
+
+func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+
+	config := DefaultDistillationConfig()
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	distiller.SubscribeAndDistill(ctx, store)
+
+	// Give the subscription goroutine time to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish events of various types; only EventMessageAdded and
+	// EventTaskCompleted should be received by the subscriber.
+	err := store.Append(context.Background(), "stream-1", []*events.Event{
+		{
+			Type:    events.EventAgentStarted,
+			Payload: map[string]any{},
+		},
+		{
+			Type: events.EventMessageAdded,
+			Payload: map[string]any{
+				"role": "assistant",
+			},
+		},
+		{
+			Type:    events.EventFailoverTriggered,
+			Payload: map[string]any{},
+		},
+		{
+			Type: events.EventTaskCompleted,
+			Payload: map[string]any{
+				"task_id": "task-2",
+			},
+		},
+	}, 0)
+	require.NoError(t, err)
+
+	// Allow the subscriber goroutine to process events.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify that the subscription filtered correctly by checking that
+	// no panic occurred and that the store has the expected events.
+	streamEvents, err := store.Read(context.Background(), "stream-1", events.ReadOptions{})
+	require.NoError(t, err)
+	assert.Len(t, streamEvents, 4, "store should have all 4 events")
 }

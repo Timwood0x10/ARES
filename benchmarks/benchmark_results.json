@@ -1,88 +1,325 @@
 {
   "metadata": {
-    "date": "2026-04-30",
+    "date": "2026-06-11",
+    "run_type": "final",
     "platform": "darwin/arm64",
     "cpu": "Apple M3 Max",
-    "go_version": "go1.24"
+    "go_version": "go1.26.4",
+    "os": "Darwin 24.6.0",
+    "count": 3,
+    "statistic": "median"
   },
   "benchmarks": {
     "evaluation_framework": {
       "exact_match_evaluator": {
         "name": "ExactMatchEvaluator_Evaluate",
-        "ops_per_sec": 388681486,
-        "ns_per_op": 2.856,
+        "ns_per_op": 3.11,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
-        "rating": "excellent"
+        "rating": "excellent",
+        "tier": "hot"
       },
       "tool_usage_evaluator": {
         "name": "ToolUsageEvaluator_Evaluate",
-        "ops_per_sec": 46017416,
-        "ns_per_op": 26.06,
+        "ns_per_op": 28.05,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
-        "rating": "excellent"
+        "rating": "excellent",
+        "tier": "hot"
       },
       "agent_test_runner": {
         "name": "AgentTestRunner_RunSingle",
-        "ops_per_sec": 4197496,
-        "ns_per_op": 291.0,
+        "ns_per_op": 323.2,
         "bytes_per_op": 320,
         "allocs_per_op": 5,
-        "rating": "good"
+        "rating": "good",
+        "tier": "normal"
       },
       "report_generator": {
         "name": "ReportGenerator_GenerateMarkdown",
-        "ops_per_sec": 375682,
-        "ns_per_op": 3076,
-        "bytes_per_op": 3642,
-        "allocs_per_op": 73,
-        "rating": "acceptable"
+        "ns_per_op": 3431,
+        "bytes_per_op": 4258,
+        "allocs_per_op": 76,
+        "rating": "acceptable",
+        "tier": "normal"
       },
       "loader": {
         "name": "Loader_Load",
-        "ops_per_sec": 26883,
-        "ns_per_op": 44602,
-        "bytes_per_op": 33181,
-        "allocs_per_op": 586,
-        "rating": "acceptable"
+        "ns_per_op": 48694,
+        "bytes_per_op": 34062,
+        "allocs_per_op": 601,
+        "rating": "acceptable",
+        "tier": "cold"
       }
     },
     "streaming_handler": {
-      "handle_stream": {
-        "name": "StreamHandler_HandleStream",
-        "ops_per_sec": 326365,
-        "ns_per_op": 3701,
-        "bytes_per_op": 9314,
-        "allocs_per_op": 62,
-        "rating": "good"
-      },
       "convert_event": {
         "name": "StreamHandler_ConvertEvent",
-        "ops_per_sec": 254292465,
-        "ns_per_op": 4.678,
+        "ns_per_op": 4.89,
         "bytes_per_op": 0,
         "allocs_per_op": 0,
-        "rating": "excellent"
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "handle_stream": {
+        "name": "StreamHandler_HandleStream",
+        "ns_per_op": 3820,
+        "bytes_per_op": 9418,
+        "allocs_per_op": 69,
+        "rating": "good",
+        "tier": "normal"
       },
       "multiple_events_100": {
         "name": "StreamHandler_MultipleEvents",
-        "ops_per_sec": 51309,
-        "ns_per_op": 23352,
-        "bytes_per_op": 37408,
-        "allocs_per_op": 358,
-        "rating": "good"
+        "ns_per_op": 30369,
+        "bytes_per_op": 38290,
+        "allocs_per_op": 462,
+        "rating": "good",
+        "tier": "normal"
+      }
+    },
+    "tools_core": {
+      "tool_registration": {
+        "name": "ToolRegistration",
+        "ns_per_op": 4503,
+        "bytes_per_op": 9400,
+        "allocs_per_op": 12,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "tool_execution": {
+        "name": "ToolExecution",
+        "ns_per_op": 14.66,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "capability_detection": {
+        "name": "CapabilityDetection",
+        "ns_per_op": 7988,
+        "bytes_per_op": 1024,
+        "allocs_per_op": 8,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "capability_matching": {
+        "name": "CapabilityMatching",
+        "ns_per_op": 4324,
+        "bytes_per_op": 600,
+        "allocs_per_op": 9,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "tool_filtering": {
+        "name": "ToolFiltering",
+        "ns_per_op": 2412,
+        "bytes_per_op": 4504,
+        "allocs_per_op": 10,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "result_creation_success": {
+        "name": "ResultCreation_Success",
+        "ns_per_op": 0.268,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "result_creation_error": {
+        "name": "ResultCreation_Error",
+        "ns_per_op": 0.268,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "parameter_validation": {
+        "name": "ParameterValidation",
+        "ns_per_op": 7.264,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "concurrent_tool_execution": {
+        "name": "ConcurrentToolExecution",
+        "ns_per_op": 136.5,
+        "bytes_per_op": 8,
+        "allocs_per_op": 1,
+        "rating": "good",
+        "tier": "hot"
+      }
+    },
+    "memory_distillation": {
+      "score_memory": {
+        "name": "ScoreMemory",
+        "ns_per_op": 3036,
+        "bytes_per_op": 2592,
+        "allocs_per_op": 20,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "conflict_detection": {
+        "name": "ConflictDetection",
+        "ns_per_op": 1067,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "noise_filter": {
+        "name": "NoiseFilter",
+        "ns_per_op": 6984,
+        "bytes_per_op": 592,
+        "allocs_per_op": 11,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "memory_classification": {
+        "name": "MemoryClassification",
+        "ns_per_op": 1951,
+        "bytes_per_op": 592,
+        "allocs_per_op": 15,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "experience_extraction": {
+        "name": "ExperienceExtraction",
+        "ns_per_op": 147127,
+        "bytes_per_op": 21200,
+        "allocs_per_op": 267,
+        "rating": "acceptable",
+        "tier": "cold"
+      },
+      "topn_filter": {
+        "name": "TopNFilter",
+        "ns_per_op": 2918,
+        "bytes_per_op": 5896,
+        "allocs_per_op": 9,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "memory_operations_create": {
+        "name": "MemoryOperations/Create",
+        "ns_per_op": 89.71,
+        "bytes_per_op": 24,
+        "allocs_per_op": 2,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "memory_operations_classification": {
+        "name": "MemoryOperations/Classification",
+        "ns_per_op": 291.2,
+        "bytes_per_op": 64,
+        "allocs_per_op": 3,
+        "rating": "good",
+        "tier": "normal"
+      },
+      "string_operations_format": {
+        "name": "StringOperations/Format",
+        "ns_per_op": 73.05,
+        "bytes_per_op": 64,
+        "allocs_per_op": 3,
+        "rating": "excellent",
+        "tier": "hot"
+      }
+    },
+    "errors": {
+      "wrap": {
+        "name": "Wrap",
+        "ns_per_op": 0.279,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "fmt_errorf_w": {
+        "name": "FmtErrorfW",
+        "ns_per_op": 90.08,
+        "bytes_per_op": 64,
+        "allocs_per_op": 2,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "wrap_multiple_wraps": {
+        "name": "WrapMultipleWraps",
+        "ns_per_op": 0.633,
+        "bytes_per_op": 0,
+        "allocs_per_op": 0,
+        "rating": "excellent",
+        "tier": "hot"
+      },
+      "fmt_errorf_multiple_wraps": {
+        "name": "FmtErrorfMultipleWraps",
+        "ns_per_op": 297.3,
+        "bytes_per_op": 216,
+        "allocs_per_op": 6,
+        "rating": "good",
+        "tier": "hot"
+      }
+    },
+    "event_sourcing": {
+      "memory_store_append": {
+        "name": "MemoryStore_Append",
+        "ns_per_op": 563.6,
+        "bytes_per_op": 598,
+        "allocs_per_op": 7,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "memory_store_append_batch": {
+        "name": "MemoryStore_AppendBatch",
+        "ns_per_op": 3999,
+        "bytes_per_op": 9114,
+        "allocs_per_op": 1,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "memory_store_concurrent_append": {
+        "name": "MemoryStore_ConcurrentAppend",
+        "ns_per_op": 707.4,
+        "bytes_per_op": 608,
+        "allocs_per_op": 6,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "memory_store_read": {
+        "name": "MemoryStore_Read",
+        "ns_per_op": 6607,
+        "bytes_per_op": 17528,
+        "allocs_per_op": 11,
+        "rating": "good",
+        "tier": "hot"
+      },
+      "memory_store_read_all": {
+        "name": "MemoryStore_ReadAll",
+        "ns_per_op": 38358,
+        "bytes_per_op": 81976,
+        "allocs_per_op": 3,
+        "rating": "acceptable",
+        "tier": "normal"
+      },
+      "memory_store_subscribe": {
+        "name": "MemoryStore_Subscribe",
+        "ns_per_op": 138851,
+        "bytes_per_op": 145424,
+        "allocs_per_op": 799,
+        "rating": "acceptable",
+        "tier": "cold"
       }
     }
   },
   "summary": {
-    "total_benchmarks": 8,
-    "excellent_count": 3,
-    "good_count": 3,
-    "acceptable_count": 2,
-    "zero_allocation_count": 3,
-    "avg_evaluator_latency_ns": 14.46,
-    "avg_streaming_latency_ns": 9008.89
+    "total_benchmarks": 36,
+    "excellent_count": 13,
+    "good_count": 17,
+    "acceptable_count": 6,
+    "zero_allocation_count": 10,
+    "hot_count": 21,
+    "normal_count": 12,
+    "cold_count": 3
   },
   "performance_tiers": {
     "excellent": {

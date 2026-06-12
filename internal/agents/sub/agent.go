@@ -2,11 +2,13 @@ package sub
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"goagent/internal/agents/base"
 	"goagent/internal/core/errors"
 	"goagent/internal/core/models"
+	"goagent/internal/events"
 	"goagent/internal/protocol/ahp"
 )
 
@@ -33,6 +35,19 @@ type ToolBinder interface {
 	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
 }
 
+// Compile-time check: subAgent must satisfy base.StatefulAgent.
+var _ base.StatefulAgent = (*subAgent)(nil)
+
+// SubAgentOption configures a subAgent instance.
+type SubAgentOption func(*subAgent)
+
+// WithEventStore sets the event store for event sourcing.
+func WithEventStore(store events.EventStore) SubAgentOption {
+	return func(a *subAgent) {
+		a.eventStore = store
+	}
+}
+
 // subAgent implements a Sub Agent.
 type subAgent struct {
 	mu           sync.RWMutex
@@ -45,6 +60,11 @@ type subAgent struct {
 	tools        map[string]func(ctx context.Context, args map[string]any) (any, error)
 	messageQueue *ahp.MessageQueue
 	heartbeatMon *ahp.HeartbeatMonitor
+	eventStore   events.EventStore
+
+	// Lifecycle management
+	stopCh   chan struct{}  // Signals goroutines to stop.
+	streamWg sync.WaitGroup // Tracks active ProcessStream goroutines.
 }
 
 // SubAgentConfig holds configuration for SubAgent.
@@ -62,6 +82,7 @@ func New(
 	msgQueue *ahp.MessageQueue,
 	hbMon *ahp.HeartbeatMonitor,
 	cfg *SubAgentConfig,
+	opts ...SubAgentOption,
 ) Agent {
 	if cfg == nil {
 		cfg = DefaultSubAgentConfig(agentType)
@@ -69,7 +90,7 @@ func New(
 	cfg.ID = id
 	cfg.Type = agentType
 
-	return &subAgent{
+	a := &subAgent{
 		id:           id,
 		agentType:    agentType,
 		status:       models.AgentStatusOffline,
@@ -80,6 +101,12 @@ func New(
 		messageQueue: msgQueue,
 		heartbeatMon: hbMon,
 	}
+
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	return a
 }
 
 // DefaultSubAgentConfig returns default configuration.
@@ -115,22 +142,36 @@ func (a *subAgent) setStatus(status models.AgentStatus) {
 
 // Start starts the sub agent.
 func (a *subAgent) Start(ctx context.Context) error {
-	if a.Status() != models.AgentStatusOffline {
+	a.mu.Lock()
+	if a.status != models.AgentStatusOffline {
+		a.mu.Unlock()
 		return errors.ErrAgentAlreadyStarted
 	}
+	a.status = models.AgentStatusStarting
+	a.stopCh = make(chan struct{})
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusStarting)
 	a.setStatus(models.AgentStatusReady)
 	return nil
 }
 
-// Stop stops the sub agent.
+// Stop stops the sub agent and waits for active stream goroutines.
 func (a *subAgent) Stop(ctx context.Context) error {
-	if a.Status() == models.AgentStatusOffline {
+	a.mu.Lock()
+	if a.status == models.AgentStatusOffline {
+		a.mu.Unlock()
 		return errors.ErrAgentNotRunning
 	}
+	a.status = models.AgentStatusStopping
+	stopCh := a.stopCh
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusStopping)
+	// Signal all goroutines to stop and wait for them.
+	if stopCh != nil {
+		close(stopCh)
+	}
+	a.streamWg.Wait()
+
 	a.setStatus(models.AgentStatusOffline)
 	return nil
 }
@@ -223,8 +264,14 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 
 	ch := make(chan base.AgentEvent, 64)
 
+	a.mu.RLock()
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+
+	a.streamWg.Add(1)
 	go func() {
 		defer close(ch)
+		defer a.streamWg.Done()
 
 		a.setStatus(models.AgentStatusBusy)
 		defer a.setStatus(models.AgentStatusReady)
@@ -234,6 +281,8 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
 		case <-ctx.Done():
 			return
+		case <-stopCh:
+			return
 		}
 
 		// Execute task
@@ -242,6 +291,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
+			case <-stopCh:
 			}
 			return
 		}
@@ -251,14 +301,81 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
 		case <-ctx.Done():
 			return
+		case <-stopCh:
+			return
 		}
 
 		// Send final result
 		select {
 		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
 		case <-ctx.Done():
+		case <-stopCh:
 		}
 	}()
 
 	return ch, nil
+}
+
+// RestoreState restores the sub-agent's state from persisted data.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) RestoreState(state map[string]any) error {
+	if state == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Sub-agents are simpler than leaders — just restore status if needed.
+	if status, ok := state["status"].(string); ok && status != "" {
+		a.status = models.AgentStatus(status)
+	}
+	return nil
+}
+
+// ReplayEvents replays events to reconstruct sub-agent state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) ReplayEvents(evts []*events.Event) error {
+	if len(evts) == 0 {
+		return nil
+	}
+	// Sub-agents track task completion for operational recovery.
+	for _, ev := range evts {
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case events.EventTaskCompleted:
+			slog.Debug("sub-agent replayed task completion",
+				"agent_id", a.id,
+				"task_id", ev.Payload["task_id"],
+			)
+		}
+	}
+	return nil
+}
+
+// Snapshot returns a serializable snapshot of the sub-agent's state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) Snapshot() (map[string]any, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return map[string]any{
+		"agent_id": a.id,
+		"status":   string(a.status),
+	}, nil
+}
+
+// emitEvent appends a single event to the event store.
+// No-op if eventStore is nil.
+func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if a.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: a.id,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
+		slog.Warn("failed to emit event", "type", eventType, "error", err)
+	}
 }

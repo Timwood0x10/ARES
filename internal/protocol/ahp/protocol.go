@@ -2,9 +2,10 @@ package ahp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"goagent/internal/core/errors"
+	apperrors "goagent/internal/core/errors"
 	"goagent/internal/core/models"
 )
 
@@ -72,7 +73,7 @@ func (p *Protocol) GetQueue(agentID string) *MessageQueue {
 // SendMessage sends a message to a target agent.
 func (p *Protocol) SendMessage(ctx context.Context, msg *AHPMessage) error {
 	if msg == nil {
-		return errors.ErrInvalidMessage
+		return apperrors.ErrInvalidMessage
 	}
 
 	queue := p.GetQueue(msg.TargetAgent)
@@ -81,10 +82,11 @@ func (p *Protocol) SendMessage(ctx context.Context, msg *AHPMessage) error {
 	// where the queue fills up between the check and the actual enqueue.
 	err := queue.Enqueue(ctx, msg)
 	if err != nil {
+		reason := classifyEnqueueError(err)
 		if p.dlq != nil {
-			p.dlq.Add(msg, err, "queue_full")
+			p.dlq.Add(msg, err, reason)
 		}
-		return errors.ErrTaskQueueFull
+		return fmt.Errorf("send message to %s: %w", msg.TargetAgent, err)
 	}
 
 	return nil
@@ -94,7 +96,7 @@ func (p *Protocol) SendMessage(ctx context.Context, msg *AHPMessage) error {
 func (p *Protocol) ReceiveMessage(ctx context.Context, agentID string) (*AHPMessage, error) {
 	queue, ok := p.registry.Get(agentID)
 	if !ok {
-		return nil, errors.ErrAgentNotFound
+		return nil, apperrors.ErrAgentNotFound
 	}
 
 	return queue.Dequeue(ctx)
@@ -140,6 +142,29 @@ func (p *Protocol) EncodeMessage(msg *AHPMessage) ([]byte, error) {
 // DecodeMessage decodes a message using the configured codec.
 func (p *Protocol) DecodeMessage(data []byte) (*AHPMessage, error) {
 	return p.codec.Decode(data)
+}
+
+// Close closes all agent queues managed by this protocol.
+func (p *Protocol) Close() {
+	for _, agentID := range p.registry.ListAgents() {
+		p.registry.Delete(agentID)
+	}
+}
+
+// classifyEnqueueError maps an enqueue error to a short DLQ reason string.
+func classifyEnqueueError(err error) string {
+	switch {
+	case errors.Is(err, apperrors.ErrQueueClosed):
+		return "queue_closed"
+	case errors.Is(err, apperrors.ErrQueueFull):
+		return "queue_full"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline"
+	default:
+		return "unknown"
+	}
 }
 
 // Stats returns protocol statistics.

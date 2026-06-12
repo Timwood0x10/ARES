@@ -14,48 +14,57 @@
 
 Go 语言多 Agent 框架，支持 DAG 工作流编排、记忆蒸馏、AHP 协议通信。
 
+**v2.0.0** -- [更新日志](CHANGELOG.md)
+
 ## 架构
 
 ```mermaid
 graph TB
-    User[用户请求] --> Leader
+    User["用户请求"] --> RT
 
-    subgraph Agent 系统
-        Leader[Leader Agent]
-        Leader -->|AHP 协议| SubA[Sub Agent A]
-        Leader -->|AHP 协议| SubB[Sub Agent B]
-        Leader -->|AHP 协议| SubC[Sub Agent C]
-        Leader -.->|Checkpoint 恢复| Supervisor[Supervisor]
+    subgraph runtime ["Runtime 层"]
+        RT["Runtime Manager"]
+        RT -->|"管理生命周期"| Leader
+        RT -->|"回放"| ES["EventStore"]
+        RT -->|"恢复"| MM["MemoryStore"]
     end
 
-    subgraph 工作流引擎
+    subgraph agents ["Agent 系统"]
+        Leader[Leader Agent]
+        Leader -->|"AHP 协议"| SubA[Sub Agent A]
+        Leader -->|"AHP 协议"| SubB[Sub Agent B]
+        Leader -->|"AHP 协议"| SubC[Sub Agent C]
+        Leader -.->|"Checkpoint 恢复"| Supervisor[Supervisor]
+    end
+
+    subgraph workflow ["工作流引擎"]
         MutableDAG[MutableDAG]
         DynamicExec[DynamicExecutor]
         MutableDAG --> DynamicExec
-        DynamicExec --> TopoSort[拓扑排序]
-        DynamicExec --> CycleDetect[环检测]
+        DynamicExec --> TopoSort["拓扑排序"]
+        DynamicExec --> CycleDetect["环检测"]
     end
 
-    subgraph 记忆管理
-        Session[会话记忆]
-        Task[任务记忆]
-        Distilled[蒸馏记忆]
-        Session --> Pipeline[蒸馏管线]
+    subgraph mem ["记忆管理"]
+        Session["会话记忆"]
+        Task["任务记忆"]
+        Distilled["蒸馏记忆"]
+        Session --> Pipeline["蒸馏管线"]
         Task --> Pipeline
         Pipeline --> Distilled
     end
 
-    subgraph 存储层
+    subgraph stor ["存储层"]
         VS["VectorStore 接口"]
         PG[(PostgreSQL + pgvector)]
-        MEM[(纯内存)]
+        MEM2[(纯内存)]
         QD[(Qdrant)]
         SQL[(SQLite + sqlite-vec)]
         CUSTOM[(你的后端)]
-        Cache[缓存]
-        CB[熔断器]
+        Cache["缓存"]
+        CB["熔断器"]
         VS --> PG
-        VS --> MEM
+        VS --> MEM2
         VS --> QD
         VS --> SQL
         VS --> CUSTOM
@@ -63,29 +72,29 @@ graph TB
         Cache --> CB
     end
 
-    subgraph 工具系统
-        Registry[工具注册]
-        Matcher[能力匹配]
-        Validator[参数校验]
+    subgraph tools ["工具系统"]
+        Registry["工具注册"]
+        Matcher["能力匹配"]
+        Validator["参数校验"]
     end
 
-    Leader --> 工作流引擎
-    Leader --> 记忆管理
-    Leader --> 工具系统
-    记忆管理 --> 存储层
-    工具系统 --> 存储层
+    Leader --> MutableDAG
+    Leader --> Session
+    Leader --> Registry
+    Session --> VS
+    Registry --> VS
 ```
 
 ### 记忆蒸馏管线
 
 ```mermaid
 flowchart LR
-    A[提取] --> B[分类]
-    B --> C[评分]
-    C --> D[去噪]
-    D --> E[冲突检测]
-    E --> F[容量上限]
-    F --> Distilled[(蒸馏记忆)]
+    A["提取"] --> B["分类"]
+    B --> C["评分"]
+    C --> D["去噪"]
+    D --> E["冲突检测"]
+    E --> F["容量上限"]
+    F --> Distilled[("蒸馏记忆")]
 ```
 
 6 步管线：从原始交互中提取经验 → 按类型分类 → 评分 → 过滤噪声 → 与已有记忆做冲突检测 → 强制容量上限。
@@ -124,6 +133,27 @@ flowchart LR
 - AHP 协议通信（心跳、DLQ、进度）
 - Leader 故障转移 + Checkpoint 恢复
 - 可配置并发的并行任务执行
+- 可插拔健康检测的 Agent 复活插件
+
+**Runtime 层**
+- Agent 生命周期管理：注册、启动、停止、重启、恢复
+- 通过 AgentFactory 实现自动崩溃检测和复活
+- 两个恢复维度：EventStore（运维恢复）+ MemoryStore（认知恢复）
+- 基于心跳和状态的健康监控
+- 通过 errgroup 实现结构化并发和优雅关闭
+
+**Event Sourcing（事件溯源）**
+- EventStore 接口，支持乐观并发控制
+- MemoryEventStore 用于开发测试，PostgresEventStore 用于生产
+- 17 种事件类型，覆盖 Agent 生命周期、任务、会话、工作流、故障转移
+- 通过 Subscribe 实现 Pub/Sub，支持事件过滤
+- DLQ 自动重试，可配置重试预算
+
+**Human-in-the-Loop（人机协作）**
+- 工作流步骤暂停等待人工审批
+- 任意步骤配置 InterruptConfig，InterruptHandler 阻塞审批
+- InterruptStore 支持崩溃恢复
+- 审批工作流和审查门禁
 
 **工具系统**
 - 动态工具注册与发现
@@ -132,38 +162,32 @@ flowchart LR
 
 ## 性能数据
 
-54 个 benchmark，589 测试通过（`-race`）。
+32 个 benchmark，2573 测试通过（`-race`），覆盖 49 个包。
 
 平台：darwin/arm64, Apple M3 Max, Go 1.26.4
 
 | 类别 | 数量 | 热路径 (< 1μs) | 正常 (1-100μs) | 冷路径 (> 100μs) |
 |------|------|----------------|----------------|------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| 蒸馏 | 8 | 3 | 3 | 2 |
+| 蒸馏 | 9 | 3 | 4 | 2 |
 | 工具 | 8 | 4 | 3 | 1 |
 | 错误处理 | 4 | 4 | 0 | 0 |
-| Handler | 3 | 1 | 2 | 0 |
-| 工作流引擎 | 12 | 8 | 3 | 1 |
-| AHP 协议 | 6 | 4 | 2 | 0 |
-| Leader Agent | 8 | 5 | 2 | 1 |
-| **合计** | **54** | **31** | **17** | **6** |
+| 事件溯源 | 6 | 1 | 3 | 2 |
+| **合计** | **32** | **14** | **12** | **6** |
 
 热路径实测：
 
 | 操作 | ns/op | allocs/op |
 |------|-------|-----------|
-| ExactMatchEvaluator | 3.13 | 0 |
-| ToolExecution | 15.21 | 0 |
-| ResultCreation | 0.27 | 0 |
-| ParameterValidation | 7.40 | 0 |
-| ConflictDetection | 1,181 | 0 |
-| MutableDAG_RemoveEdge | ~200 | 1 |
-| MutableDAG_Version | ~10 | 0 |
-| AHP NewMessage | ~200 | 2 |
-| AHP QueueEnqueue | ~300 | 1 |
-| AHP HeartbeatMonitor_Record | ~100 | 1 |
+| ExactMatchEvaluator | 2.90 | 0 |
+| ToolExecution | 14.48 | 0 |
+| ResultCreation | 0.25 | 0 |
+| ParameterValidation | 7.22 | 0 |
+| ConflictDetection | 988 | 0 |
+| Wrap (error) | 0.25 | 0 |
+| MemoryOperations/Create | 87.57 | 0 |
 
-54 个 benchmark 中 31 个在 1μs 以内。评估、工具执行、结果创建、冲突检测均为零分配路径。
+32 个 benchmark 中 14 个在 1μs 以内。评估、工具执行、结果创建、错误包装、冲突检测均为零分配路径。
 
 完整报告：`benchmarks/benchmark_report.md`
 
@@ -203,9 +227,15 @@ cd examples/knowledge-base
 go run main.go --save README.md   # 导入文档
 go run main.go --chat             # 开始问答
 
-# Agent 秩土转生（任意 Agent 故障恢复）
-cd examples/v2_demo/agent_resurrection && go run main.go
+# Advanced examples（v2 功能）
+go run ./examples/advanced/leader_failover/
+go run ./examples/advanced/agent_resurrection/
+go run ./examples/advanced/runtime_resurrection/
+go run ./examples/advanced/dynamic_executor/
+go run ./examples/advanced/mutable_dag/
 ```
+
+详见 [示例文档](docs/zh/development/examples.md)。
 
 ### 4. 运行测试
 
@@ -268,13 +298,19 @@ memory:
 
 ## 文档
 
+- [更新日志](CHANGELOG.md)
 - [架构设计](docs/zh/architecture/arch.md)
+- [Runtime 层](docs/zh/architecture/runtime.md)
 - [快速开始](docs/zh/guides/quick-start.md)
 - [常见问题](docs/zh/guides/faq.md)
 - [集成指南](docs/zh/development/integration-guide.md)
 - [自定义向量存储](docs/zh/development/custom-vector-store.md)
 - [Leader 故障转移](docs/zh/features/leader-failover.md)
 - [动态图](docs/zh/features/dynamic-graph.md)
+- [人机协作](docs/zh/features/hitl.md)
+- [Agent 复活](docs/zh/features/resurrection.md)
+- [集成测试](docs/zh/development/integration-testing.md)
+- [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)
 - [性能报告](benchmarks/benchmark_report.md)
 

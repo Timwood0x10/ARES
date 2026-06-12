@@ -32,6 +32,15 @@ v1 limitations:
 
 ```mermaid
 graph TB
+    App["Application"] --> RT
+
+    subgraph RuntimeLayer["Runtime Layer (NEW)"]
+        RT["Runtime (Manager)"]
+        RT -->|"monitors"| Agents["Managed Agents"]
+        RT -->|"replays"| ES["EventStore"]
+        RT -->|"restores"| MM["MemoryStore"]
+    end
+
     subgraph v2Additions["v2 New Components"]
         HB["HeartbeatMonitor<br/>Heartbeat detection"]
         LS["LeaderSupervisor<br/>Failover orchestration"]
@@ -51,6 +60,9 @@ graph TB
         Executor["Executor"]
         PG["PostgreSQL"]
     end
+
+    RT -->|"lifecycle"| Leader
+    RT -->|"lifecycle"| SubAgents
 
     HB -->|"timeout callback"| LS
     LS --> CR
@@ -143,6 +155,43 @@ Data flow:
 4. Based on `ApplyMode`, recomputes execution order at checkpoints or immediately
 5. Newly added steps are automatically appended to the execution queue
 
+## Runtime Layer
+
+The Runtime layer manages agent lifecycle. Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
+
+```mermaid
+graph LR
+    subgraph Runtime["Runtime (Manager)"]
+        Reg["RegisterAgent"]
+        Start["StartAgent"]
+        Health["HealthCheck"]
+        Notify["NotifyAgentDead"]
+        Restore["RestoreAgent"]
+    end
+
+    subgraph Recovery["Recovery"]
+        ES["EventStore<br/>operational recovery"]
+        MM["MemoryStore<br/>cognitive recovery"]
+    end
+
+    Reg --> Start
+    Start --> Health
+    Health -->|"agent dead"| Notify
+    Notify --> Restore
+    Restore --> ES
+    Restore --> MM
+    Restore -->|"new instance"| Start
+```
+
+Key behaviors:
+- **Registration**: Agents are registered with a factory function for resurrection
+- **Health monitoring**: Background loop checks agent liveness via heartbeat or status
+- **Automatic recovery**: On crash, Runtime creates a new instance, replays events, restores memory, and restarts
+- **Two recovery dimensions**: EventStore for operational state ("what step?"), MemoryStore for cognitive state ("who am I?")
+- **Graceful shutdown**: Stop cancels all agents and waits for goroutines to finish
+
+See [Runtime Layer Details](./runtime.md) for full documentation.
+
 ## Component Interaction
 
 ```mermaid
@@ -183,14 +232,17 @@ v2 is fully backward compatible with v1. All new components are optional:
 | DAG | MutableDAG | Optional |
 | Executor | DynamicExecutor | Optional |
 | AHP Protocol | + HeartbeatMonitor | Optional |
+| (none) | Runtime (Manager) | Optional |
 
 Minimal migration steps:
 1. Add `HeartbeatMonitor` and `LeaderSupervisor` for failover capability
 2. Replace `DAG` with `MutableDAG` for dynamic graph capability
 3. Replace `Executor` with `DynamicExecutor` for runtime reordering capability
+4. Wrap agents with `Runtime` for lifecycle management and automatic recovery
 
 ## Related Documents
 
+- [Runtime Layer](./runtime.md)
 - [Leader Failover Details](../features/leader-failover-en.md)
 - [Runtime Dynamic Graph Details](../features/dynamic-graph-en.md)
 - [v1 Architecture Design](./arch_en.md)
