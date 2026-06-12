@@ -13,7 +13,7 @@ import (
 func main() {
 	// connect to PostgreSQL database
 	connStr := "host=localhost port=5433 user=postgres password=postgres dbname=goagent sslmode=disable"
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		slog.Error("Failed to connect to database:", "error", err)
 		os.Exit(1)
