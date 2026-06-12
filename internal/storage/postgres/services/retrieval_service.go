@@ -17,14 +17,14 @@ import (
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/experience"
-	"github.com/Timwood0x10/goagent/internal/llm"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/experience"
+	"goagentx/internal/llm"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	storage_models "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 var allowedSynonymDir string
@@ -484,7 +484,7 @@ func (s *RetrievalService) searchKeyword(ctx context.Context, req *SearchRequest
 func (s *RetrievalService) searchVector(ctx context.Context, req *SearchRequest) ([]*SearchResult, error) {
 	s.logger.Debug("Running vector search", "query", req.Query)
 
-	embedding := s.getEmbedding(ctx, req.Query)
+	embedding := s.getEmbeddingCached(ctx, req.Query)
 	if len(embedding) == 0 {
 		s.logger.Warn("No embedding available for vector search")
 		return []*SearchResult{}, nil

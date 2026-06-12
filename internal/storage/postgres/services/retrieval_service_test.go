@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/core/errors"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // TestDefaultRetrievalPlan tests the default retrieval plan configuration.
@@ -160,11 +162,7 @@ func TestMergeAndRank(t *testing.T) {
 
 	result2 := findResultByID(merged, "2")
 
-	if result2 == nil {
-
-		t.Fatal("result with ID 2 should exist")
-
-	}
+	require.NotNil(t, result2)
 
 	// Score should reflect combination from both sources
 

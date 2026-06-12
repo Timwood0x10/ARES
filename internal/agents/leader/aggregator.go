@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // SortByNone disables sorting; items remain in their original order.

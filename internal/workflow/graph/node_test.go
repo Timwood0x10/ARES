@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/tools/resources/core"
 )
 
 // mockTool is a simple mock tool for testing.
@@ -74,6 +75,15 @@ func (m *mockAgent) Stop(ctx context.Context) error {
 
 func (m *mockAgent) Process(ctx context.Context, input any) (any, error) {
 	return m.processFn(ctx, input)
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (m *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	result, err := m.Process(ctx, input)
+	ch := make(chan base.AgentEvent, 1)
+	ch <- base.AgentEvent{Type: base.EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
 }
 
 func TestFuncNode(t *testing.T) {
@@ -271,6 +281,7 @@ func TestAgentNodeWithError(t *testing.T) {
 
 	node := NewAgentNode(agent)
 	state := NewState()
+	state.Set("input", "test input")
 	err := node.Execute(context.Background(), state)
 	if err == nil {
 		t.Error("expected error")

@@ -1,0 +1,43 @@
+name: Tool Usage Evaluation
+description: Test cases focused on tool usage verification
+tags:
+  - tools
+
+test_cases:
+  - id: tool-001
+    name: Calculator Tool
+    input: "What is 123 * 456?"
+    expected_tools:
+      - calculator
+    timeout: 30s
+    tags:
+      - math
+
+  - id: tool-002
+    name: Web Search Tool
+    input: "Search for the latest news about AI"
+    expected_tools:
+      - web_search
+    timeout: 60s
+    tags:
+      - search
+
+  - id: tool-003
+    name: File Operations
+    input: "Read the file /tmp/test.txt and summarize its contents"
+    expected_tools:
+      - file_read
+    timeout: 30s
+    tags:
+      - file
+
+  - id: tool-004
+    name: Multiple Tools
+    input: "Search for Python tutorials, calculate how many hours needed to learn, and save the plan to a file"
+    expected_tools:
+      - web_search
+      - calculator
+      - file_write
+    timeout: 90s
+    tags:
+      - multi-tool

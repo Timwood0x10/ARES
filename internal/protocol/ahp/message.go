@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // messageIDCounter is used to generate unique message IDs.
@@ -52,9 +52,12 @@ func NewMessage(method AHPMethod, agentID, targetAgent, taskID, sessionID string
 }
 
 // NewTaskMessage creates a new TASK message.
+// If payload is nil, the message keeps its default empty map.
 func NewTaskMessage(agentID, targetAgent, taskID, sessionID string, payload map[string]any) *AHPMessage {
 	msg := NewMessage(AHPMethodTask, agentID, targetAgent, taskID, sessionID)
-	msg.Payload = payload
+	if payload != nil {
+		msg.Payload = payload
+	}
 	return msg
 }
 
@@ -186,10 +189,14 @@ func (m *AHPMessage) GetProgress() (float64, bool) {
 	return progress, ok
 }
 
-// getRandomSuffix returns a random suffix for extra uniqueness.
+// getRandomSuffix returns a random numeric suffix for extra uniqueness.
+// Returns "000000" if the crypto/rand read fails.
 func getRandomSuffix() string {
-	n, _ := rand.Int(rand.Reader, big.NewInt(10000))
-	return fmt.Sprintf("%04d", n.Int64())
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		return "000000"
+	}
+	return fmt.Sprintf("%06d", n.Int64())
 }
 
 func generateMessageID() string {

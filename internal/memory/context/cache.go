@@ -126,7 +126,11 @@ func (c *Cache) evictOldest() {
 
 // cleanupLoop periodically removes expired items.
 func (c *Cache) cleanupLoop() {
-	ticker := time.NewTicker(c.ttl / 2)
+	interval := c.ttl / 2
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -228,10 +232,6 @@ func (c *CacheWithTTL) Get(ctx context.Context, key string) (interface{}, bool) 
 
 	if time.Now().After(item.Expiration) {
 		c.mu.RUnlock()
-		// Delete expired item to prevent memory leak
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
 		return nil, false
 	}
 

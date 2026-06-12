@@ -13,10 +13,10 @@ import (
 	"log/slog"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/adapters"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres/adapters"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // SecretRepository provides data access for encrypted sensitive data.
@@ -31,11 +31,14 @@ type SecretRepository struct {
 // db - database connection.
 // encryptionKey - encryption key (32 bytes for AES-256).
 // Returns new SecretRepository instance.
-func NewSecretRepository(db *sql.DB, encryptionKey []byte) *SecretRepository {
+func NewSecretRepository(db *sql.DB, encryptionKey []byte) (*SecretRepository, error) {
+	if len(encryptionKey) != 32 {
+		return nil, fmt.Errorf("encryption key must be 32 bytes for AES-256-GCM, got %d bytes", len(encryptionKey))
+	}
 	return &SecretRepository{
 		db:            db,
 		encryptionKey: encryptionKey,
-	}
+	}, nil
 }
 
 // Set stores a secret value with encryption.
@@ -535,10 +538,12 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	if err != nil {
 		return 0, errors.Wrap(err, "begin transaction")
 	}
+	committed := false
 	defer func() {
-		if err := tx.Rollback(); err != nil {
-			// nolint: errcheck // Transaction rollback error is logged but not critical
-			slog.Error("Failed to rollback transaction", "error", err)
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				slog.Error("Failed to rollback transaction", "error", rbErr)
+			}
 		}
 	}()
 
@@ -577,11 +582,11 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 
 		// Insert secret into database with proper tenant isolation
 		insertQuery := `
-			INSERT INTO secrets
-			(id, tenant_id, key, value, key_version, algorithm, expires_at, created_at)
-			VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, NOW())
-			RETURNING id
-		`
+            INSERT INTO secrets
+            (id, tenant_id, key, value, key_version, algorithm, expires_at, created_at)
+            VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, NOW())
+            RETURNING id
+        `
 
 		var expiresAt interface{}
 		if item.ExpiresAt != "" {
@@ -609,20 +614,19 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		slog.Warn("Secret import completed with errors", "imported_count", importedCount, "error_count", len(importErrors), "errors", importErrors)
 	}
 
-	// Commit transaction if at least one secret was imported (per design standard)
-	if importedCount > 0 {
-		if err := tx.Commit(); err != nil {
-			return 0, errors.Wrap(err, "commit transaction")
-		}
-
-		// Add audit logging for import events (per design standard)
-		slog.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
-	}
-
-	// Return error if no secrets were imported
+	// Return error if no secrets were imported (atomicity: all-or-nothing)
 	if importedCount == 0 {
 		return 0, fmt.Errorf("no secrets imported, errors: %v", importErrors)
 	}
+
+	// Commit transaction (per design standard)
+	if err := tx.Commit(); err != nil {
+		return 0, errors.Wrap(err, "commit transaction")
+	}
+	committed = true
+
+	// Add audit logging for import events (per design standard)
+	slog.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
 
 	return importedCount, nil
 }

@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // MemoryManager provides unified memory management.
@@ -43,6 +43,10 @@ type MemoryManager interface {
 
 	// SearchSimilarTasks searches for similar tasks using local cosine similarity.
 	SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error)
+
+	// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
+	// Returns ("", nil) if no checkpoint exists.
+	GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error)
 
 	// Start starts the memory manager and background workers.
 	Start(ctx context.Context) error

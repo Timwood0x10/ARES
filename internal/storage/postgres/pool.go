@@ -11,8 +11,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // Pool represents a database connection pool with "get usage release" pattern.
@@ -30,7 +30,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 		return nil, errors.Wrap(err, "invalid config")
 	}
 
-	db, err := sql.Open("postgres", cfg.DSN())
+	db, err := sql.Open("pgx", cfg.DSN())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to open database")
 	}
@@ -123,10 +123,11 @@ type PoolStats struct {
 	MaxOpenConns     int
 }
 
-// IsHealthy checks if the pool is healthy.
+// IsHealthy checks if the pool is healthy by pinging the database.
 func (p *Pool) IsHealthy() bool {
-	stats := p.Stats()
-	return stats.OpenConnections > 0 && stats.OpenConnections < stats.MaxOpenConns
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return p.db.PingContext(ctx) == nil
 }
 
 // Ping pings the database to check connectivity.
@@ -217,39 +218,54 @@ func (m *ManagedRows) Close() error {
 }
 
 // QueryRow executes a query and returns a single row.
-func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
-	// Add query timeout if not already set in context
+// The connection is held until the row is fully consumed by Scan.
+// This avoids the data race that would occur if the connection were released
+// before the caller finishes reading the row data.
+func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *ManagedRow {
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.cfg.QueryTimeout)
 		defer cancel()
 	}
 
-	var (
-		row     *sql.Row
-		connErr error
-	)
-
-	connErr = p.WithConnection(ctx, func(conn *sql.Conn) error {
-		row = conn.QueryRowContext(ctx, query, args...)
-		return nil
-	})
-
-	// If connection acquisition failed, return a row that produces a clear error on Scan.
-	// We use a cancelled context with a descriptive query to help identify the error source.
-	// The caller should check the error from Scan to detect connection failures.
-	if connErr != nil || row == nil {
-		if connErr != nil {
-			slog.Error("Failed to acquire database connection for QueryRow", "error", connErr)
-		}
+	conn, err := p.Get(ctx)
+	if err != nil {
+		slog.Error("Failed to acquire database connection for QueryRow", "error", err)
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		// Return a row that will fail on Scan with "context canceled" error.
-		// The log above provides the actual error reason for debugging.
-		return p.db.QueryRowContext(cancelCtx, "SELECT 1 WHERE 1=0")
+		return &ManagedRow{Row: p.db.QueryRowContext(cancelCtx, "SELECT 1 WHERE 1=0"), conn: nil, pool: p}
 	}
 
-	return row
+	row := conn.QueryRowContext(ctx, query, args...)
+	mr := &ManagedRow{Row: row, conn: conn, pool: p}
+	// Set finalizer to release connection if caller never calls Scan().
+	runtime.SetFinalizer(mr, func(m *ManagedRow) {
+		if m.conn != nil {
+			slog.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
+			m.pool.Release(m.conn)
+			m.conn = nil
+		}
+	})
+	return mr
+}
+
+// ManagedRow wraps sql.Row and manages connection lifecycle.
+// The caller MUST call Scan to consume the row, which releases the connection.
+type ManagedRow struct {
+	*sql.Row
+	conn *sql.Conn
+	pool *Pool
+}
+
+// Scan scans the row and releases the connection.
+func (m *ManagedRow) Scan(dest ...any) error {
+	err := m.Row.Scan(dest...)
+	if m.conn != nil {
+		m.pool.Release(m.conn)
+		m.conn = nil
+		runtime.SetFinalizer(m, nil)
+	}
+	return err
 }
 
 // Begin starts a new transaction.

@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/core"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/api/core"
 )
 
 // TestNewConfigLoader tests the creation of a new config loader.
@@ -404,13 +406,9 @@ func TestConfigFileToClientConfig(t *testing.T) {
 
 	clientConfig := cfg.ToClientConfig()
 
-	if clientConfig == nil {
-		t.Fatal("expected client config to be non-nil")
-	}
+	require.NotNil(t, clientConfig)
 
-	if clientConfig.BaseConfig == nil {
-		t.Fatal("expected BaseConfig to be non-nil")
-	}
+	require.NotNil(t, clientConfig.BaseConfig)
 
 	if clientConfig.BaseConfig.RequestTimeout != 30*time.Second {
 		t.Errorf("expected RequestTimeout to be 30s, got %v", clientConfig.BaseConfig.RequestTimeout)

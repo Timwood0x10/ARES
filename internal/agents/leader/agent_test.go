@@ -5,9 +5,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/llm/output"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/llm/output"
+	"goagentx/internal/protocol/ahp"
 )
 
 func TestProfileParser_Parse(t *testing.T) {
@@ -189,6 +190,17 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 	}
 	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
 
+	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
+		result := models.NewTaskResult(task.TaskID, task.AgentType)
+		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
+		return result, nil
+	})
+	dispatcher.RegisterExecutor(models.AgentTypeBottom, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
+		result := models.NewTaskResult(task.TaskID, task.AgentType)
+		result.SetSuccess([]*models.RecommendItem{{ItemID: "item2", Name: "test item"}}, "ok")
+		return result, nil
+	})
+
 	profile := &models.UserProfile{
 		Style:     []models.StyleTag{models.StyleTag("casual")},
 		Occasions: []models.Occasion{models.Occasion("daily")},
@@ -312,8 +324,15 @@ func TestLeaderAgent_Process(t *testing.T) {
 		3,
 	)
 	planner := NewTaskPlanner(3)
-	registry := map[models.AgentType]string{}
+	registry := map[models.AgentType]string{
+		models.AgentTypeTop: "agent_top",
+	}
 	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
+		result := models.NewTaskResult(task.TaskID, task.AgentType)
+		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
+		return result, nil
+	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
 	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
@@ -335,8 +354,15 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 		3,
 	)
 	planner := NewTaskPlanner(3)
-	registry := map[models.AgentType]string{}
+	registry := map[models.AgentType]string{
+		models.AgentTypeTop: "agent_top",
+	}
 	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
+		result := models.NewTaskResult(task.TaskID, task.AgentType)
+		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
+		return result, nil
+	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
 	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
@@ -438,6 +464,102 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 
 	if !leader.IsAlive() {
 		t.Error("IsAlive() should return true after heartbeat")
+	}
+}
+
+// --- RestoreState tests ---
+
+func TestRestoreState_NilState(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(nil)
+	if err != nil {
+		t.Errorf("RestoreState(nil) should return nil error, got %v", err)
+	}
+}
+
+func TestRestoreState_EmptyState(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(map[string]any{})
+	if err != nil {
+		t.Errorf("RestoreState(empty) should return nil error, got %v", err)
+	}
+}
+
+func TestRestoreState_WithSessionID(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	err := sa.RestoreState(map[string]any{
+		"session_id": "session-abc",
+	})
+	if err != nil {
+		t.Errorf("RestoreState should return nil error, got %v", err)
+	}
+
+	// Verify sessionID was restored by reading it from the concrete type.
+	la := agent.(*leaderAgent)
+	la.mu.RLock()
+	sid := la.sessionID
+	la.mu.RUnlock()
+	if sid != "session-abc" {
+		t.Errorf("expected sessionID 'session-abc', got '%s'", sid)
+	}
+}
+
+func TestRestoreState_InvalidSessionIDType(t *testing.T) {
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+
+	// Non-string session_id should be silently ignored.
+	err := sa.RestoreState(map[string]any{
+		"session_id": 12345,
+	})
+	if err != nil {
+		t.Errorf("RestoreState should return nil error, got %v", err)
+	}
+
+	la := agent.(*leaderAgent)
+	la.mu.RLock()
+	sid := la.sessionID
+	la.mu.RUnlock()
+	if sid != "" {
+		t.Errorf("expected empty sessionID, got '%s'", sid)
 	}
 }
 

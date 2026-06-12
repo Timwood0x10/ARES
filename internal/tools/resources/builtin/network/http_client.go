@@ -54,7 +54,7 @@ type WebFetcher struct {
 func NewWebFetcher(client HTTPClient) *WebFetcher {
 	return &WebFetcher{
 		client:    client,
-		userAgent: "Mozilla/5.0 (compatible; GoAgent/1.0; +https://github.com/goagent)",
+		userAgent: "Mozilla/5.0 (compatible; GoAgent/1.0; +https://github.com/Timwood0x10/GoAgentX)",
 	}
 }
 

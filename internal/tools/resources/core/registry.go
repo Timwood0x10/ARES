@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	gerr "github.com/Timwood0x10/goagent/internal/errors"
+	gerr "goagentx/internal/errors"
 )
 
 // Registry manages tool registration and lookup.

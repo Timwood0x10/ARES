@@ -6,17 +6,91 @@
 
 ### 架构级别
 - **L3 - Infra Agent (生产就绪)**
-- **核心功能**: 多租户隔离、向量搜索、混合检索、密钥管理
+- **核心功能**: 可插拔 VectorStore 后端、多租户隔离、向量搜索、混合检索、密钥管理
 
 ### 核心设计原则
-1. **向量维度隔离**: 按维度分表（避免混合向量空间）
-2. **去重**: 基于 hash 的实时去重 + 异步嵌入去重
-3. **优雅降级**: 所有关键路径都有完整的降级机制
-4. **多租户**: RLS（行级安全）+ Tenant Guard 双层保护
+1. **可插拔 VectorStore**: 单一接口 (`storage.VectorStore`) 抽象所有向量后端 -- 无需修改业务逻辑即可切换 PostgreSQL、Qdrant、Milvus 或内存实现
+2. **向量维度隔离**: 按维度分表（避免混合向量空间）
+3. **去重**: 基于 hash 的实时去重 + 异步嵌入去重
+4. **优雅降级**: 所有关键路径都有完整的降级机制
+5. **多租户**: RLS（行级安全）+ Tenant Guard 双层保护
 
-## 2. 架构组件
+## 2. 可插拔 VectorStore 接口
 
-### 2.1 数据库架构
+向量存储层由 `internal/storage/vector.go` 中的单一接口定义。每个向量后端 -- PostgreSQL + pgvector、Qdrant、Milvus、SQLite-vec 或内存实现 -- 都实现此契约。
+
+### 2.1 接口定义
+
+```go
+// internal/storage/vector.go
+
+// VectorStore defines the interface for vector similarity search.
+// Implement this interface to add a new vector backend.
+type VectorStore interface {
+    // Search performs vector similarity search and returns results ordered by distance.
+    Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error)
+
+    // AddEmbedding stores a vector with associated metadata.
+    AddEmbedding(ctx context.Context, table, id string, embedding []float64, metadata map[string]any) error
+
+    // CreateCollection creates a vector collection/table if it doesn't exist.
+    CreateCollection(ctx context.Context, name string, dimension int) error
+}
+
+// SearchResult represents a single vector search result.
+type SearchResult struct {
+    ID       string         `json:"id"`
+    Score    float64        `json:"score"`
+    Metadata map[string]any `json:"metadata,omitempty"`
+}
+```
+
+### 2.2 内置实现
+
+| 后端 | 包路径 | 适用场景 |
+|------|--------|---------|
+| PostgreSQL + pgvector | `internal/storage/postgres` | 生产环境，完整 SQL 支持，IVFFlat 索引 |
+| 纯内存 | `internal/storage/memory` | 开发、测试、原型验证 |
+
+**PostgreSQL 实现** (`VectorSearcher`): 使用 pgvector 的 `<=>` 余弦距离运算符和 IVFFlat 索引。验证表名以防止 SQL 注入，强制可配置的搜索限制，创建 `VECTOR(N)` 列和 JSONB 元数据。
+
+**内存实现**: 线程安全（使用 `sync.RWMutex`），暴力余弦相似度搜索，零外部依赖。适合单元测试和本地开发。
+
+### 2.3 Repository 集成
+
+`Repository` 结构体持有类型为 `storage.VectorStore` 的 `Vector` 字段，使后端可在构造时或运行时替换：
+
+```go
+// internal/storage/postgres/repository.go
+type Repository struct {
+    Session   *SessionRepository
+    Recommend *RecommendRepository
+    Profile   *ProfileRepository
+    Vector    storage.VectorStore  // <-- 可插拔
+    // ...
+}
+```
+
+两行代码替换向量后端：
+
+```go
+// 生产环境：PostgreSQL + pgvector（默认）
+repo := postgres.NewRepository(pool)
+
+// 开发/测试：内存实现
+repo.Vector = memory.NewVectorStore()
+
+// 自定义后端：任何实现 storage.VectorStore 的类型
+repo.Vector = myqdrant.New("localhost", 6333)
+```
+
+### 2.4 添加自定义后端
+
+参见[自定义向量存储指南](../../zh/development/custom-vector-store.md)，包含 Qdrant、Milvus、Elasticsearch 和 SQLite-vec 的完整示例。
+
+## 3. 架构组件
+
+### 3.1 数据库架构
 
 #### 核心表
 
@@ -38,7 +112,7 @@
 - **行级安全**: RLS 策略用于租户隔离
 - **异步嵌入**: 基于队列的嵌入流程，带重试机制
 
-### 2.2 系统架构
+### 3.2 系统架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -77,9 +151,9 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
-## 3. 核心组件
+## 4. 核心组件
 
-### 3.1 仓储层
+### 4.1 仓储层
 
 #### KnowledgeRepository
 ```go
@@ -116,7 +190,7 @@ type SecretRepository interface {
 }
 ```
 
-### 3.2 服务层
+### 4.2 服务层
 
 #### RetrievalService
 实现混合检索流程，支持多种策略：
@@ -146,35 +220,17 @@ type SecretRepository interface {
 - 系统角色的对话不存储
 - 经验的 TTL：成功经验 30 天，失败经验 7 天
 
-### 3.3 适配层
+### 4.3 适配层
 
 #### SecretAdapter
-密钥导入/导出的格式转换：
-
-**支持的格式：**
-- JSON：标准 JSON 格式
-- YAML：键值对形式的 YAML 格式
-- CSV：CSV 格式，列包括（key, value, expires_at）
-
-**自动检测：**
-基于内容分析自动检测输入格式。
+密钥导入/导出的格式转换（JSON、YAML、CSV）。基于内容分析自动检测输入格式。
 
 #### EmbeddingCache
-嵌入的多级缓存：
+嵌入的多级缓存：本地 LRU（内存）-> Redis（分布式）-> 嵌入服务（远程）。缓存键使用 Unicode 归一化（NFKC）、大小写折叠和空白字符归一化。
 
-**缓存层次：**
-1. 本地 LRU 缓存（内存）
-2. Redis 缓存（分布式）
-3. 嵌入服务（远程）
+## 5. 异步嵌入流程
 
-**缓存键归一化：**
-- Unicode 归一化（NFKC）
-- 大小写折叠
-- 空白字符归一化
-
-## 4. 异步嵌入流程
-
-### 4.1 流程设计
+### 5.1 流程设计
 
 ```
 写入数据（无嵌入）
@@ -194,7 +250,7 @@ Embedding Worker 轮询任务
 最终失败 → status='failed' + 死信队列
 ```
 
-### 4.2 队列表结构
+### 5.2 队列表结构
 
 ```sql
 CREATE TABLE embedding_queue (
@@ -215,11 +271,11 @@ CREATE TABLE embedding_queue (
 );
 ```
 
-### 4.3 并发控制
+### 5.3 并发控制
 
 **FOR UPDATE SKIP LOCKED：**
 ```sql
-SELECT id, task_id, table_name, content, tenant_id, 
+SELECT id, task_id, table_name, content, tenant_id,
        embedding_model, embedding_version, retry_count
 FROM embedding_queue
 WHERE status = 'pending'
@@ -228,11 +284,10 @@ FOR UPDATE SKIP LOCKED
 LIMIT $1
 ```
 
-### 4.4 Reconciler（巡检器）
+### 5.4 Reconciler（巡检器）
 
-**目的：** 查找并重新入队缺失的嵌入任务
+**目的：** 查找并重新入队缺失的嵌入任务。
 
-**逻辑：**
 ```sql
 SELECT id, tenant_id, content, embedding_model, embedding_version
 FROM knowledge_chunks_1024
@@ -242,15 +297,14 @@ WHERE embedding_status = 'pending'
 LIMIT 1000
 ```
 
-## 5. 安全特性
+## 6. 安全特性
 
-### 5.1 多租户隔离
+### 6.1 多租户隔离
 
 **双层保护：**
 1. **RLS（行级安全）**：数据库级别的逻辑隔离
 2. **Tenant Guard**：应用级别的物理隔离
 
-**实现：**
 ```go
 // Tenant Guard
 func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) error {
@@ -263,282 +317,69 @@ CREATE POLICY tenant_isolation ON knowledge_chunks_1024
 FOR ALL USING (tenant_id = current_setting('app.tenant_id')::TEXT);
 ```
 
-### 5.2 密钥管理
+### 6.2 密钥管理
 
-**加密：**
-- 算法：AES-256-GCM
-- 支持密钥轮换
-- 每个密钥的版本控制
+- **加密**: AES-256-GCM，支持密钥轮换和每个密钥的版本控制
+- **导入/导出**: 多格式支持（JSON/YAML/CSV），仅导出元数据
+- **密钥轮换**: 基于事务的原子重新加密
 
-**导入/导出：**
-- 导出：仅元数据（无加密值）
-- 导入：多格式支持（JSON/YAML/CSV）
-- 密钥轮换：基于事务的原子重新加密
+### 6.3 输入验证
 
-### 5.3 输入验证
-
-**清理：**
 - SQL 注入防护（参数化查询）
 - XSS 防护（输出编码）
 - 输入长度限制
 
-## 6. 性能优化
+## 7. 性能与弹性
 
-### 6.1 写入缓冲区
+- **写入缓冲区**: 批处理将 DB QPS 降低约 80%，嵌入调用降低约 50%
+- **查询缓存**: 使用 tenant + query + filters 的 SHA-256 哈希作为缓存键，延迟降低约 70%
+- **时间衰减**: `final_score = base_score * time_decay` 防止旧数据主导结果
+- **熔断器**: 5 次连续失败 -> 打开（2s 超时），10s 后半开
+- **限流**: 令牌桶 + 滑动窗口 + 信号量
+- **超时保护**: DB 2s，嵌入 5s，向量搜索 2s，整体请求 10s
 
-**目的：** 减少 DB QPS 和嵌入服务负载
+## 8. 监控
 
-**实现：**
-```go
-type WriteBuffer struct {
-    buffer chan *WriteItem
-    batchSize int
-    flushInterval time.Duration
-}
-```
-
-**性能影响：**
-- DB QPS：↓ 80%
-- 嵌入调用：↓ 50%
-- 延迟：更稳定
-
-### 6.2 查询缓存
-
-**目的：** 缓存查询结果以绕过 DB + 嵌入
-
-**缓存键：**
-```go
-func (c *QueryCache) GetCacheKey(query string, tenantID string, filters map[string]interface{}) string {
-    keyData := fmt.Sprintf("query:%s:%s:%v", tenantID, query, filters)
-    hash := sha256.Sum256([]byte(keyData))
-    return fmt.Sprintf("query_cache:%x", hash[:16])
-}
-```
-
-**性能影响：**
-- 延迟：↓ 70%
-- DB QPS：↓
-- 嵌入 QPS：↓
-
-### 6.3 时间衰减评分
-
-**公式：**
-```go
-final_score = base_score * time_decay
-```
-
-**目的：** 防止旧数据主导结果
-
-## 7. 错误处理和弹性
-
-### 7.1 熔断器
-
-**目的：** 防止级联故障
-
-**配置：**
-- 失败阈值：5 次连续失败
-- 超时：2s
-- 半开超时：10s
-
-### 7.2 限流
-
-**策略：**
-- 令牌桶限流器
-- 滑动窗口限流器
-- 并发操作的信号量
-
-### 7.3 超时保护
-
-**超时设置：**
-- DB 操作：2s
-- 嵌入调用：5s
-- 向量搜索：2s
-- 整体请求：10s
-
-## 8. 监控和可观测性
-
-### 8.1 日志
-
-**结构化日志：**
-- 使用 `slog` 进行结构化日志记录
-- 所有日志条目都包含 `tenant_id` 和 `trace_id`
-- 生产环境中不记录原始 LLM 输入/输出
-
-### 8.2 指标
-
-**关键指标：**
-- 嵌入队列长度
-- 缓存命中率
-- 检索延迟
-- 错误率
-- 资源使用情况
-
-### 8.3 追踪
-
-**检索追踪：**
-```go
-type RetrievalTrace struct {
-    OriginalQuery    string
-    RewrittenQuery   string
-    RewriteUsed      bool
-    VectorResults    int
-    KeywordResults   int
-    FinalResults     int
-    ExecutionTime    time.Duration
-    VectorError      error
-}
-```
+- **日志**: `slog` 结构化日志，包含 `tenant_id` 和 `trace_id`
+- **关键指标**: 嵌入队列长度、缓存命中率、检索延迟、错误率
+- **追踪**: `RetrievalTrace` 结构体记录查询重写、结果数、执行时间
 
 ## 9. 配置
-
-### 9.1 数据库配置
 
 ```yaml
 database:
   host: localhost
   port: 5432
-  user: postgres
-  password: postgres
-  database: goagent
   max_open_conns: 25
   max_idle_conns: 10
-  conn_max_lifetime: 5m
-  conn_max_idle_time: 1m
-```
-
-### 9.2 嵌入配置
-
-```yaml
 embedding:
-  service_url: http://localhost:8000
   model: intfloat/e5-large
   dimension: 1024
   timeout: 5s
   cache_ttl: 24h
-  batch_size: 32
-```
-
-### 9.3 检索配置
-
-```yaml
 retrieval:
   vector_search_timeout: 2s
-  keyword_search_timeout: 1s
   max_results: 20
-  enable_query_rewrite: false
   enable_hybrid_search: true
-  time_decay_enabled: true
 ```
 
-## 10. 测试
+## 10. 部署
 
-### 10.1 测试覆盖率
+**前置条件**: PostgreSQL 16+ 安装 pgvector 扩展（0.5.0+），Python 嵌入服务，Redis（可选）。
 
-**当前覆盖率：**
-- Models：100%
-- Adapters：85%
-- Query：75%
-- Embedding：25.8%
-- Services：25.8%
-- Repositories：0%（需要完成）
+```bash
+go run cmd/migrate/main.go   # 数据库迁移
+go run cmd/server/main.go     # 启动应用
+```
 
-### 10.2 测试要求
+**健康检查**: `/health`、`/health/db`、`/health/embedding`
 
-**强制测试：**
-- 所有公共方法的单元测试
-- 关键路径的集成测试
-- 竞争条件检测（`go test -race`）
-- 边界条件测试
-- 错误场景测试
+## 11. 故障排除
 
-## 11. 部署
+**高嵌入队列长度**: 嵌入服务缓慢或宕机 -- 检查健康状态，扩展 Worker。
 
-### 11.1 前置条件
+**检索质量差**: 向量维度不正确或嵌入过时 -- 验证模型，必要时重新嵌入。
 
-- PostgreSQL 16+
-- pgvector 扩展（版本 0.5.0+）
-- Python 嵌入服务
-- Redis（可选，用于缓存）
+**跨租户数据访问**: Tenant Guard 配置不正确 -- 验证所有操作中都设置了租户上下文。
 
-### 11.2 迁移步骤
-
-1. **数据库迁移：**
-   ```bash
-   go run cmd/migrate/main.go
-   ```
-
-2. **启动嵌入服务：**
-   ```bash
-   cd services/embedding
-   ./start.sh
-   ```
-
-3. **启动应用：**
-   ```bash
-   go run cmd/server/main.go
-   ```
-
-### 11.3 健康检查
-
-**端点：**
-- `/health`：应用健康状态
-- `/health/db`：数据库连接状态
-- `/health/embedding`：嵌入服务可用性
-
-## 12. 故障排除
-
-### 12.1 常见问题
-
-**问题：高嵌入队列长度**
-- 原因：嵌入服务缓慢或宕机
-- 解决方案：检查嵌入服务健康状态，扩展 Worker
-
-**问题：检索质量差**
-- 原因：向量维度不正确或嵌入过时
-- 解决方案：验证嵌入模型，必要时重新嵌入
-
-**问题：跨租户数据访问**
-- 原因：Tenant Guard 配置不正确
-- 解决方案：验证所有操作中都设置了租户上下文
-
-### 12.2 性能调优
-
-**数据库调优：**
-- 增加向量操作的 `work_mem`
-- 根据可用 RAM 调整 `effective_cache_size`
-- 使用连接池
-
-**嵌入调优：**
-- 增加批量操作的批次大小
-- 为频繁查询的文本启用缓存
-- 水平扩展嵌入服务
-
-## 13. 未来增强
-
-### 13.1 计划功能
-
-- **查询重写**：基于 LLM 的查询扩展和细化
-- **高级向量索引**：HNSW 索引以获得更好的性能
-- **多模型支持**：支持多个嵌入模型
-- **流式检索**：实时结果流
-
-### 13.2 性能改进
-
-- **GPU 加速**：基于 GPU 的嵌入计算
-- **分布式缓存**：多节点缓存层
-- **读取副本**：数据库读取扩展
-
-## 14. 参考
-
-- [Effective Go](https://go.dev/doc/effective-go)
-- [pgvector 文档](https://github.com/pgvector/pgvector)
-- [PostgreSQL 行级安全](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
-- [AES-GCM 加密](https://en.wikipedia.org/wiki/Galois/Counter_Mode)
-
-## 15. 版本历史
-
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| 1.0.0 | 2026-03-18 | 初始生产版本 |
-| 1.0.1 | 2026-03-18 | 添加密钥导入适配层 |
-| 1.0.2 | 2026-03-18 | 完成 models 测试覆盖率（100%） |
+**数据库调优**: 增加向量操作的 `work_mem`，调整 `effective_cache_size`，使用连接池。

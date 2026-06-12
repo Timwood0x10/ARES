@@ -1,6 +1,6 @@
 // Package api provides legacy unified client interface for GoAgent framework.
 //
-// DEPRECATED: This package is deprecated. Please use goagent/api/client package for new code.
+// DEPRECATED: This package is deprecated. Please use goagentx/api/client package for new code.
 // This package is maintained for backward compatibility only.
 package api
 
@@ -8,19 +8,19 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/agent"
-	"github.com/Timwood0x10/goagent/api/memory"
-	"github.com/Timwood0x10/goagent/api/retrieval"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	internalmemory "github.com/Timwood0x10/goagent/internal/memory"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
+	"goagentx/api/agent"
+	"goagentx/api/memory"
+	"goagentx/api/retrieval"
+	"goagentx/internal/errors"
+	internalmemory "goagentx/internal/memory"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // Client provides unified client interface for all GoAgent modules.
 //
-// DEPRECATED: Use goagent/api/client.NewClient instead.
+// DEPRECATED: Use goagentx/api/client.NewClient instead.
 type Client struct {
 	agentService     *agent.Service
 	memoryService    *memory.Service
@@ -78,7 +78,7 @@ type MemoryConfig struct {
 
 // NewClient creates a new GoAgent client instance with simplified initialization.
 //
-// DEPRECATED: This method is deprecated. Use goagent/api/client.NewClient instead.
+// DEPRECATED: This method is deprecated. Use goagentx/api/client.NewClient instead.
 // Args:
 // config - client configuration.
 // Returns new client instance or error if initialization fails.
@@ -154,21 +154,21 @@ func NewClient(config *Config) (*Client, error) {
 
 // Agent returns the agent API.
 //
-// DEPRECATED: Use goagent/api/client.Client.Agent instead.
+// DEPRECATED: Use goagentx/api/client.Client.Agent instead.
 func (c *Client) Agent() *agent.Service {
 	return c.agentService
 }
 
 // Memory returns the memory API.
 //
-// DEPRECATED: Use goagent/api/client.Client.Memory instead.
+// DEPRECATED: Use goagentx/api/client.Client.Memory instead.
 func (c *Client) Memory() *memory.Service {
 	return c.memoryService
 }
 
 // Retrieval returns the retrieval API.
 //
-// DEPRECATED: Use goagent/api/client.Client.Retrieval instead.
+// DEPRECATED: Use goagentx/api/client.Client.Retrieval instead.
 func (c *Client) Retrieval() *retrieval.Service {
 	return c.retrievalService
 }

@@ -6,10 +6,11 @@ import (
 	"log/slog"
 	"time"
 
-	apperrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/llm/output"
+	apperrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
+	"goagentx/internal/llm/output"
 )
 
 // taskExecutor executes recommendation tasks.
@@ -23,15 +24,8 @@ type taskExecutor struct {
 	retryOnFail bool // Retry LLM call when validation fails
 	strictMode  bool // Return error on validation failure
 	logger      *slog.Logger
-}
-
-// ValidationConfig holds validation configuration for executor.
-type ValidationConfig struct {
-	Enabled     bool
-	SchemaType  string
-	RetryOnFail bool
-	MaxRetries  int
-	StrictMode  bool
+	eventStore  events.EventStore // Optional: emits events for tool/LLM calls
+	agentID     string            // Agent ID for event emission
 }
 
 // NewTaskExecutor creates a new TaskExecutor with LLM support.
@@ -70,6 +64,27 @@ func NewTaskExecutorWithValidation(
 		retryOnFail: retryOnFail,
 		strictMode:  strictMode,
 		logger:      slog.Default(),
+	}
+}
+
+// SetEventStore configures the executor to emit events for tool/LLM calls.
+func (e *taskExecutor) SetEventStore(store events.EventStore, agentID string) {
+	e.eventStore = store
+	e.agentID = agentID
+}
+
+// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+func (e *taskExecutor) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if e.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: e.agentID,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := e.eventStore.Append(ctx, e.agentID, []*events.Event{event}, 0); err != nil {
+		e.logger.Warn("failed to emit event", "agent_id", e.agentID, "type", eventType, "error", err)
 	}
 }
 
@@ -213,8 +228,17 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	slog.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
 
 	// Call LLM
+	e.emitEvent(ctx, events.EventLLMCall, map[string]any{
+		"agent_id": e.agentID,
+		"prompt":   prompt[:min(200, len(prompt))],
+	})
 	response, err := e.llmAdapter.Generate(ctx, prompt)
 	if err != nil {
+		e.emitEvent(ctx, events.EventLLMCall, map[string]any{
+			"agent_id": e.agentID,
+			"error":    err.Error(),
+			"status":   "failed",
+		})
 		return nil, errors.Wrap(err, "LLM call failed")
 	}
 	slog.Debug("LLM response", "preview", response[:min(500, len(response))])

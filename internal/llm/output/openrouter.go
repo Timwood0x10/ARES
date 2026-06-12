@@ -1,15 +1,18 @@
 package output
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // OpenRouterAdapter implements LLMAdapter for OpenRouter.
@@ -62,7 +65,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
-	req.Header.Set("HTTP-Referer", "https://github.com/goagent")
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
 	req.Header.Set("X-Title", "Agent Framework")
 
 	resp, err := a.client.Do(req)
@@ -73,7 +76,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", errors.Newf("openrouter error: %s", respBody)
+		return "", errors.Newf("API request failed with status %d: %s", resp.StatusCode, respBody)
 	}
 
 	var result OpenAIChatResponse
@@ -120,7 +123,7 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
-	req.Header.Set("HTTP-Referer", "https://github.com/goagent")
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
 	req.Header.Set("X-Title", "Agent Framework")
 
 	resp, err := a.client.Do(req)
@@ -150,4 +153,111 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 // GetModel returns the model name.
 func (a *OpenRouterAdapter) GetModel() string {
 	return a.config.Model
+}
+
+// GenerateStream generates text as a stream of chunks using OpenRouter API.
+func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	if prompt == "" {
+		return nil, errors.New("empty prompt")
+	}
+
+	reqBody := map[string]interface{}{
+		"model":       a.config.Model,
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens":  a.config.MaxTokens,
+		"temperature": a.config.Temperature,
+		"stream":      true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal stream request")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		a.config.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.Wrap(err, "create stream request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
+	req.Header.Set("X-Title", "Agent Framework")
+
+	// Use a client without Timeout for streaming: http.Client.Timeout covers
+	// the entire response body read, which would kill long-running streams.
+	// Instead, timeout is controlled via the request context.
+	streamClient := &http.Client{Transport: http.DefaultTransport}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send stream request")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, errors.Newf("openrouter stream error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk, 64)
+
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				slog.Error("Failed to close stream response body", "error", err)
+			}
+		}()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line for large SSE chunks
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Skip empty lines.
+			if line == "" {
+				continue
+			}
+
+			// Check for stream termination.
+			if line == "data: [DONE]" {
+				return
+			}
+
+			// Strip "data: " prefix.
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+
+			var chunk OpenAIChatResponse
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				// Log and skip malformed chunks instead of aborting.
+				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				continue
+			}
+
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+
+			content := chunk.Choices[0].Delta.Content
+
+			select {
+			case ch <- StreamChunk{Content: content}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "read stream")}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return ch, nil
 }

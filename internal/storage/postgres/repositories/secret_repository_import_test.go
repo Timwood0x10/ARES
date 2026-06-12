@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/adapters"
+	"goagentx/internal/storage/postgres/adapters"
 )
 
 func TestSecretRepository_Import_JSON(t *testing.T) {
@@ -28,7 +28,8 @@ func TestSecretRepository_Import_JSON(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Test JSON format import
@@ -74,7 +75,8 @@ func TestSecretRepository_Import_YAML(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Test YAML format import
@@ -114,7 +116,8 @@ func TestSecretRepository_Import_CSV(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Test CSV format import
@@ -151,7 +154,8 @@ func TestSecretRepository_Import_DuplicateKeys(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// First import
@@ -193,11 +197,12 @@ func TestSecretRepository_Import_InvalidFormat(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Test unsupported format
-	_, err := repo.Import(ctx, "tenant-5", []byte("test"), "xml")
+	_, err = repo.Import(ctx, "tenant-5", []byte("test"), "xml")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported format")
 }
@@ -216,11 +221,12 @@ func TestSecretRepository_Import_EmptyData(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Test empty data
-	_, err := repo.Import(ctx, "tenant-6", []byte(""), "json")
+	_, err = repo.Import(ctx, "tenant-6", []byte(""), "json")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be empty")
 }
@@ -239,7 +245,8 @@ func TestSecretRepository_Import_EmptyTenantID(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	jsonData := `{
@@ -252,7 +259,7 @@ func TestSecretRepository_Import_EmptyTenantID(t *testing.T) {
 	}`
 
 	// Test empty tenant ID
-	_, err := repo.Import(ctx, "", []byte(jsonData), "json")
+	_, err = repo.Import(ctx, "", []byte(jsonData), "json")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID cannot be empty")
 }
@@ -271,7 +278,8 @@ func TestSecretRepository_Import_EmptySecretKey(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	jsonData := `{
@@ -284,7 +292,7 @@ func TestSecretRepository_Import_EmptySecretKey(t *testing.T) {
 	}`
 
 	// Test empty secret key
-	_, err := repo.Import(ctx, "tenant-7", []byte(jsonData), "json")
+	_, err = repo.Import(ctx, "tenant-7", []byte(jsonData), "json")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no secrets imported")
 }
@@ -303,7 +311,8 @@ func TestSecretRepository_Import_EmptySecretValue(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	jsonData := `{
@@ -316,7 +325,7 @@ func TestSecretRepository_Import_EmptySecretValue(t *testing.T) {
 	}`
 
 	// Test empty secret value
-	_, err := repo.Import(ctx, "tenant-8", []byte(jsonData), "json")
+	_, err = repo.Import(ctx, "tenant-8", []byte(jsonData), "json")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no secrets imported")
 }
@@ -335,7 +344,8 @@ func TestSecretRepository_Import_InvalidExpiresAt(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	jsonData := `{
@@ -349,7 +359,7 @@ func TestSecretRepository_Import_InvalidExpiresAt(t *testing.T) {
 	}`
 
 	// Test invalid expires_at format
-	_, err := repo.Import(ctx, "tenant-9", []byte(jsonData), "json")
+	_, err = repo.Import(ctx, "tenant-9", []byte(jsonData), "json")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no secrets imported")
 }
@@ -368,7 +378,8 @@ func TestSecretRepository_Import_WithExpiration(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Import secret with expiration
@@ -407,7 +418,8 @@ func TestSecretRepository_Import_MixedValidAndInvalid(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Import mixed valid and invalid secrets
@@ -460,7 +472,8 @@ func TestSecretRepository_Import_AutoDetectFormat(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Create adapter for format detection

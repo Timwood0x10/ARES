@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // ToolRepository provides data access for tool definitions.
@@ -192,7 +192,7 @@ func (r *ToolRepository) GetByID(ctx context.Context, id string) (*storage_model
 	}
 
 	// Parse embedding string to float64 array
-	tool.Embedding, err = parseVectorString(embeddingStr)
+	tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse embedding")
 	}
@@ -238,7 +238,7 @@ func (r *ToolRepository) GetByName(ctx context.Context, name, tenantID string) (
 	}
 
 	// Parse embedding string to float64 array
-	tool.Embedding, err = parseVectorString(embeddingStr)
+	tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse embedding")
 	}
@@ -363,7 +363,7 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 		}
 
 		// Parse embedding string to float64 array
-		tool.Embedding, err = parseVectorString(embeddingStr)
+		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -400,17 +400,19 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 // limit - maximum number of results to return.
 // Returns list of matching tools ordered by relevance.
 func (r *ToolRepository) SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.Tool, error) {
-	sqlQuery := `
-		SELECT id, tenant_id, name, description, embedding::text, embedding_model, embedding_version,
-			   agent_type, tags, usage_count, success_rate, last_used_at, metadata::text, created_at
-		FROM tools
-		WHERE (name ILIKE '%' || $1 || '%' OR description ILIKE '%' || $1 || '%')
-		  AND tenant_id = $2
-		ORDER BY usage_count DESC, success_rate DESC
-		LIMIT $3
-	`
+	escapedQuery := postgres.EscapeILIKEPattern(query)
 
-	rows, err := r.db.QueryContext(ctx, sqlQuery, query, tenantID, limit)
+	sqlQuery := `
+        SELECT id, tenant_id, name, description, embedding::text, embedding_model, embedding_version,
+               agent_type, tags, usage_count, success_rate, last_used_at, metadata::text, created_at
+        FROM tools
+        WHERE (name ILIKE '%' || $1 || '%' ESCAPE '\' OR description ILIKE '%' || $1 || '%' ESCAPE '\')
+          AND tenant_id = $2
+        ORDER BY usage_count DESC, success_rate DESC
+        LIMIT $3
+    `
+
+	rows, err := r.db.QueryContext(ctx, sqlQuery, escapedQuery, tenantID, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "keyword search")
 	}
@@ -431,7 +433,7 @@ func (r *ToolRepository) SearchByKeyword(ctx context.Context, query, tenantID st
 		}
 
 		// Parse embedding string to float64 array
-		tool.Embedding, err = parseVectorString(embeddingStr)
+		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -491,7 +493,7 @@ func (r *ToolRepository) ListAll(ctx context.Context, tenantID string, limit int
 		}
 
 		// Parse embedding string to float64 array
-		tool.Embedding, err = parseVectorString(embeddingStr)
+		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -552,7 +554,7 @@ func (r *ToolRepository) ListByAgentType(ctx context.Context, agentType, tenantI
 		}
 
 		// Parse embedding string to float64 array
-		tool.Embedding, err = parseVectorString(embeddingStr)
+		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -682,7 +684,7 @@ func (r *ToolRepository) ListByTags(ctx context.Context, tags []string, tenantID
 		}
 
 		// Parse embedding string to float64 array
-		tool.Embedding, err = parseVectorString(embeddingStr)
+		tool.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}

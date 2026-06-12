@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // SimpleRetrievalConfig configuration for simple retrieval service
@@ -35,6 +36,7 @@ type SimpleSearchResult struct {
 // - No query rewrites
 // - Simple and effective for single knowledge base scenarios
 type SimpleRetrievalService struct {
+	mu        sync.RWMutex
 	repo      *repositories.KnowledgeRepository
 	embedding *embedding.EmbeddingClient
 	config    *SimpleRetrievalConfig
@@ -151,7 +153,7 @@ func (s *SimpleRetrievalService) isPrecisionMode(query string) bool {
 	}
 
 	// Core expression patterns: containing equals sign or mathematical operators
-	if strings.ContainsAny(query, "=+-*/:") {
+	if strings.ContainsAny(query, "=+-*/") {
 		return true
 	}
 
@@ -301,10 +303,14 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 
 // SetConfig updates the retrieval configuration
 func (s *SimpleRetrievalService) SetConfig(config *SimpleRetrievalConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.config = config
 }
 
 // GetConfig returns the current configuration
 func (s *SimpleRetrievalService) GetConfig() *SimpleRetrievalConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.config
 }

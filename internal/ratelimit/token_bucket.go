@@ -19,6 +19,9 @@ type TokenBucketLimiter struct {
 
 // NewTokenBucketLimiter creates a new TokenBucketLimiter.
 func NewTokenBucketLimiter(config *LimiterConfig) *TokenBucketLimiter {
+	if config == nil {
+		config = &LimiterConfig{Rate: 1, Burst: 1}
+	}
 	limiter := &TokenBucketLimiter{
 		tokens:    float64(config.Burst),
 		maxTokens: float64(config.Burst),

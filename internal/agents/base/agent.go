@@ -2,11 +2,45 @@ package base
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 )
+
+// EventType represents the type of agent event.
+type EventType int
+
+const (
+	// EventPlanning indicates the agent is planning.
+	EventPlanning EventType = iota
+	// EventTaskStart indicates a task has started.
+	EventTaskStart
+	// EventTaskProgress indicates progress on a task.
+	EventTaskProgress
+	// EventTaskComplete indicates a task has completed.
+	EventTaskComplete
+	// EventAggregating indicates the agent is aggregating results.
+	EventAggregating
+	// EventComplete indicates the agent has completed processing.
+	EventComplete
+	// EventError indicates an error occurred during processing.
+	EventError
+)
+
+// AgentEvent represents an event emitted during agent processing.
+type AgentEvent struct {
+	// Type is the type of event.
+	Type EventType
+	// Source is the agent ID that emitted this event.
+	Source string
+	// Data is the event payload. Type depends on the event type.
+	Data any
+	// Err contains any error that occurred. Non-nil only for error events.
+	Err error
+}
 
 // Agent represents the base interface for all agents.
 type Agent interface {
@@ -22,6 +56,9 @@ type Agent interface {
 	Stop(ctx context.Context) error
 	// Process handles input and returns result.
 	Process(ctx context.Context, input any) (any, error)
+	// ProcessStream handles input and returns a stream of events.
+	// The returned channel is closed when processing completes.
+	ProcessStream(ctx context.Context, input any) (<-chan AgentEvent, error)
 }
 
 // Messenger defines message passing capabilities.
@@ -40,6 +77,22 @@ type Heartbeater interface {
 	IsAlive() bool
 }
 
+// StatefulAgent can be restored from persisted state and events.
+// Agents that support resurrection should implement this interface.
+type StatefulAgent interface {
+	// RestoreState restores the agent's state from a snapshot map.
+	// Called after factory creation during resurrection.
+	RestoreState(state map[string]any) error
+
+	// ReplayEvents replays a sequence of events to reconstruct state.
+	// Called after RestoreState to apply incremental changes.
+	ReplayEvents(events []*events.Event) error
+
+	// Snapshot returns a serializable snapshot of current state.
+	// NOTE: Not yet wired into the resurrection flow; will be used when snapshot-based recovery is implemented.
+	Snapshot() (map[string]any, error)
+}
+
 // Config holds common agent configuration.
 type Config struct {
 	ID                string
@@ -52,6 +105,7 @@ type Config struct {
 // DefaultConfig returns default agent configuration.
 func DefaultConfig(agentType models.AgentType) *Config {
 	return &Config{
+		ID:                fmt.Sprintf("agent-%d", time.Now().UnixNano()),
 		Type:              agentType,
 		HeartbeatInterval: 30 * time.Second,
 		MaxRetries:        3,

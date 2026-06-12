@@ -120,12 +120,12 @@ import (
     "context"
     "log"
     
-    "goagent/api/client"
-    "goagent/api/core"
-    "goagent/api/service/agent"
-    "goagent/api/service/memory"
-    "goagent/api/service/retrieval"
-    "goagent/api/service/llm"
+    "goagentx/api/client"
+    "goagentx/api/core"
+    "goagentx/api/service/agent"
+    "goagentx/api/service/memory"
+    "goagentx/api/service/retrieval"
+    "goagentx/api/service/llm"
 )
 
 func main() {

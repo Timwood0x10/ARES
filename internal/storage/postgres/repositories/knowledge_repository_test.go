@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // createTestEmbedding creates a 1024-dimensional test embedding vector.

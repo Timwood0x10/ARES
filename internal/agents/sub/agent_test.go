@@ -3,11 +3,13 @@ package sub
 
 import (
 	"context"
+	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/llm/output"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/llm/output"
+	"goagentx/internal/protocol/ahp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -376,6 +378,577 @@ func TestMessageHandler_HandleAckMessage(t *testing.T) {
 	if err != nil {
 		t.Errorf("Handle() error = %v", err)
 	}
+}
+
+// --- StatefulAgent implementation tests ---
+
+func TestSubAgent_ImplementsStatefulAgent(t *testing.T) {
+	// Compile-time check is enforced by the package-level var declaration.
+	// This test verifies the interface at runtime as well.
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+
+	_, ok := agent.(interface {
+		RestoreState(map[string]any) error
+		ReplayEvents([]*events.Event) error
+		Snapshot() (map[string]any, error)
+	})
+	assert.True(t, ok, "subAgent should implement StatefulAgent methods")
+}
+
+func TestSubAgent_RestoreState_NilState(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(nil)
+	assert.NoError(t, err, "RestoreState with nil should not error")
+	assert.Equal(t, models.AgentStatusOffline, a.Status())
+}
+
+func TestSubAgent_RestoreState_ValidStatus(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(map[string]any{
+		"status": string(models.AgentStatusReady),
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, models.AgentStatusReady, a.Status())
+}
+
+func TestSubAgent_RestoreState_EmptyStatusIgnored(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(map[string]any{
+		"status": "",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, models.AgentStatusOffline, a.Status(),
+		"empty status should not overwrite current status")
+}
+
+func TestSubAgent_RestoreState_IgnoresNonStringStatus(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(map[string]any{
+		"status": 12345, // not a string
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, models.AgentStatusOffline, a.Status(),
+		"non-string status should be ignored")
+}
+
+func TestSubAgent_RestoreState_IgnoresExtraKeys(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(map[string]any{
+		"status":      string(models.AgentStatusBusy),
+		"unknown_key": "value",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, models.AgentStatusBusy, a.Status())
+}
+
+func TestSubAgent_RestoreState_EmptyMap(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.RestoreState(map[string]any{})
+	assert.NoError(t, err)
+	assert.Equal(t, models.AgentStatusOffline, a.Status())
+}
+
+func TestSubAgent_ReplayEvents_Empty(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.ReplayEvents(nil)
+	assert.NoError(t, err, "ReplayEvents with nil should not error")
+
+	err = a.ReplayEvents([]*events.Event{})
+	assert.NoError(t, err, "ReplayEvents with empty slice should not error")
+}
+
+func TestSubAgent_ReplayEvents_NilEventSkipped(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	err := a.ReplayEvents([]*events.Event{nil, nil})
+	assert.NoError(t, err, "nil events should be skipped without panic")
+}
+
+func TestSubAgent_ReplayEvents_TaskCompleted(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	evts := []*events.Event{
+		{
+			Type: events.EventTaskCompleted,
+			Payload: map[string]any{
+				"task_id": "task-1",
+			},
+		},
+		{
+			Type: events.EventTaskCompleted,
+			Payload: map[string]any{
+				"task_id": "task-2",
+			},
+		},
+	}
+
+	err := a.ReplayEvents(evts)
+	assert.NoError(t, err, "ReplayEvents should succeed for task completion events")
+}
+
+func TestSubAgent_ReplayEvents_UnknownEventTypeIgnored(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventAgentStarted,
+			Payload: map[string]any{},
+		},
+		{
+			Type: events.EventTaskCreated,
+			Payload: map[string]any{
+				"task_id": "task-1",
+			},
+		},
+	}
+
+	err := a.ReplayEvents(evts)
+	assert.NoError(t, err, "unknown event types should be silently ignored")
+}
+
+func TestSubAgent_Snapshot_OfflineStatus(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	snap, err := a.Snapshot()
+	require.NoError(t, err)
+	assert.Equal(t, "sub1", snap["agent_id"])
+	assert.Equal(t, string(models.AgentStatusOffline), snap["status"])
+}
+
+func TestSubAgent_Snapshot_ReadyStatus(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	_ = a.Start(context.Background())
+
+	snap, err := a.Snapshot()
+	require.NoError(t, err)
+	assert.Equal(t, "sub1", snap["agent_id"])
+	assert.Equal(t, string(models.AgentStatusReady), snap["status"])
+}
+
+func TestSubAgent_Snapshot_ReturnsCopy(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	snap1, _ := a.Snapshot()
+	snap2, _ := a.Snapshot()
+
+	// Mutate snap1 and verify snap2 is unaffected.
+	snap1["status"] = "mutated"
+	assert.NotEqual(t, snap1["status"], snap2["status"],
+		"Snapshot should return independent copies")
+}
+
+func TestSubAgent_WithEventStore(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+	a := agent.(*subAgent)
+
+	assert.NotNil(t, a.eventStore, "WithEventStore should set eventStore")
+}
+
+func TestSubAgent_EmitEvent_WithStore(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+	a := agent.(*subAgent)
+
+	a.emitEvent(context.Background(), events.EventTaskCompleted, map[string]any{
+		"task_id": "task-1",
+	})
+
+	// Verify the event was stored.
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 1)
+	assert.Equal(t, events.EventTaskCompleted, evts[0].Type)
+	assert.Equal(t, "task-1", evts[0].Payload["task_id"])
+	assert.Equal(t, "sub1", evts[0].StreamID)
+}
+
+func TestSubAgent_EmitEvent_NilStore(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	// Should not panic when eventStore is nil.
+	a.emitEvent(context.Background(), events.EventTaskCompleted, map[string]any{
+		"task_id": "task-1",
+	})
+}
+
+func TestSubAgent_EmitEvent_NilPayload(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+	a := agent.(*subAgent)
+
+	// Should handle nil payload without panic.
+	a.emitEvent(context.Background(), events.EventAgentStarted, nil)
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 1)
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Nil(t, evts[0].Payload)
+}
+
+func TestSubAgent_RestoreAndSnapshot_Roundtrip(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	a := agent.(*subAgent)
+
+	// Restore state.
+	err := a.RestoreState(map[string]any{
+		"status": string(models.AgentStatusBusy),
+	})
+	require.NoError(t, err)
+
+	// Take snapshot and verify roundtrip.
+	snap, err := a.Snapshot()
+	require.NoError(t, err)
+	assert.Equal(t, string(models.AgentStatusBusy), snap["status"])
+	assert.Equal(t, "sub1", snap["agent_id"])
+}
+
+func TestSubAgent_StatefulAgent_ConcurrentAccess(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+	a := agent.(*subAgent)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_ = a.RestoreState(map[string]any{
+				"status": string(models.AgentStatusReady),
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = a.Snapshot()
+		}()
+		go func() {
+			defer wg.Done()
+			a.emitEvent(context.Background(), events.EventTaskCompleted, map[string]any{
+				"task_id": "task-concurrent",
+			})
+		}()
+	}
+	wg.Wait()
+}
+
+// failingExecutor is a TaskExecutor that always returns an error.
+type failingExecutor struct {
+	err error
+}
+
+func (e *failingExecutor) Execute(_ context.Context, _ *models.Task) (*models.TaskResult, error) {
+	return nil, e.err
+}
+
+func TestSubAgent_Start_EmitsAgentStartedEvent(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	err := agent.Start(context.Background())
+	require.NoError(t, err)
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 1)
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Equal(t, "sub1", evts[0].Payload["agent_id"])
+	assert.Equal(t, string(models.AgentTypeTop), evts[0].Payload["type"])
+}
+
+func TestSubAgent_Stop_EmitsAgentStoppedEvent(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	require.NoError(t, agent.Start(context.Background()))
+
+	err := agent.Stop(context.Background())
+	require.NoError(t, err)
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	// Should have EventAgentStarted and EventAgentStopped.
+	require.Len(t, evts, 2)
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Equal(t, events.EventAgentStopped, evts[1].Type)
+	assert.Equal(t, "sub1", evts[1].Payload["agent_id"])
+}
+
+func TestSubAgent_Execute_Success_EmitsTaskEvents(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	task := models.NewTask("task-1", models.AgentTypeTop, &models.UserProfile{})
+	_, err := agent.Execute(context.Background(), task)
+	require.NoError(t, err)
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 2)
+
+	assert.Equal(t, events.EventTaskCreated, evts[0].Type)
+	assert.Equal(t, "task-1", evts[0].Payload["task_id"])
+	assert.Equal(t, "sub1", evts[0].Payload["agent_id"])
+
+	assert.Equal(t, events.EventTaskCompleted, evts[1].Type)
+	assert.Equal(t, "task-1", evts[1].Payload["task_id"])
+	assert.Equal(t, "sub1", evts[1].Payload["agent_id"])
+}
+
+func TestSubAgent_Execute_Failure_EmitsTaskFailedEvent(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	exec := &failingExecutor{err: assert.AnError}
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, exec, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	task := models.NewTask("task-1", models.AgentTypeTop, &models.UserProfile{})
+	_, err := agent.Execute(context.Background(), task)
+	require.Error(t, err)
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 2)
+
+	assert.Equal(t, events.EventTaskCreated, evts[0].Type)
+	assert.Equal(t, "task-1", evts[0].Payload["task_id"])
+
+	assert.Equal(t, events.EventTaskFailed, evts[1].Type)
+	assert.Equal(t, "task-1", evts[1].Payload["task_id"])
+	assert.Equal(t, "sub1", evts[1].Payload["agent_id"])
+	assert.NotEmpty(t, evts[1].Payload["error"])
+}
+
+func TestSubAgent_ProcessStream_EmitsTaskEvents(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	// Start agent first so ProcessStream does not auto-start (which adds an extra event).
+	require.NoError(t, agent.Start(context.Background()))
+
+	task := models.NewTask("task-stream-1", models.AgentTypeTop, &models.UserProfile{})
+	ch, err := agent.ProcessStream(context.Background(), task)
+	require.NoError(t, err)
+
+	// Drain the channel.
+	for range ch {
+	}
+
+	// Events: EventAgentStarted (from Start), EventTaskCreated, EventTaskCompleted.
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 3)
+
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Equal(t, events.EventTaskCreated, evts[1].Type)
+	assert.Equal(t, "task-stream-1", evts[1].Payload["task_id"])
+	assert.Equal(t, "sub1", evts[1].Payload["agent_id"])
+
+	assert.Equal(t, events.EventTaskCompleted, evts[2].Type)
+	assert.Equal(t, "task-stream-1", evts[2].Payload["task_id"])
+}
+
+func TestSubAgent_ProcessStream_Failure_EmitsTaskFailedEvent(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	exec := &failingExecutor{err: assert.AnError}
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, exec, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	// Start agent first so ProcessStream does not auto-start (which adds an extra event).
+	require.NoError(t, agent.Start(context.Background()))
+
+	task := models.NewTask("task-stream-fail", models.AgentTypeTop, nil)
+	ch, err := agent.ProcessStream(context.Background(), task)
+	require.NoError(t, err)
+
+	// Drain the channel.
+	for range ch {
+	}
+
+	// Events: EventAgentStarted (from Start), EventTaskCreated, EventTaskFailed.
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 3)
+
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Equal(t, events.EventTaskCreated, evts[1].Type)
+	assert.Equal(t, "task-stream-fail", evts[1].Payload["task_id"])
+
+	assert.Equal(t, events.EventTaskFailed, evts[2].Type)
+	assert.Equal(t, "task-stream-fail", evts[2].Payload["task_id"])
+	assert.NotEmpty(t, evts[2].Payload["error"])
+}
+
+func TestSubAgent_Execute_NilEventStore_NoPanic(t *testing.T) {
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	// No WithEventStore — eventStore is nil.
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+
+	task := models.NewTask("task-1", models.AgentTypeTop, &models.UserProfile{})
+	_, err := agent.Execute(context.Background(), task)
+	require.NoError(t, err, "Execute should succeed even without event store")
+}
+
+func TestSubAgent_FullLifecycle_EmitsAllEvents(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	executor := NewTaskExecutor(nil, nil, output.NewTemplateEngine(),
+		"{{.category}}", output.NewValidator(), 3)
+	handler := NewMessageHandler("sub1")
+
+	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+		WithEventStore(store))
+
+	// Start.
+	require.NoError(t, agent.Start(context.Background()))
+
+	// Execute a task.
+	task := models.NewTask("task-lifecycle", models.AgentTypeTop, &models.UserProfile{})
+	_, err := agent.Execute(context.Background(), task)
+	require.NoError(t, err)
+
+	// Stop.
+	require.NoError(t, agent.Stop(context.Background()))
+
+	evts, err := store.Read(context.Background(), "sub1", events.ReadOptions{})
+	require.NoError(t, err)
+	require.Len(t, evts, 4)
+
+	assert.Equal(t, events.EventAgentStarted, evts[0].Type)
+	assert.Equal(t, events.EventTaskCreated, evts[1].Type)
+	assert.Equal(t, events.EventTaskCompleted, evts[2].Type)
+	assert.Equal(t, events.EventAgentStopped, evts[3].Type)
 }
 
 // nolint: errcheck // Test code may ignore return values

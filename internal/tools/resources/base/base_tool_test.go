@@ -5,7 +5,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestNewBaseTool tests creating a new BaseTool.
@@ -299,9 +301,7 @@ func TestNewToolFunc(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tool := NewToolFunc(tt.toolName, tt.description, tt.params, tt.fn)
 
-			if tool == nil {
-				t.Fatal("NewToolFunc() should not return nil")
-			}
+			require.NotNil(t, tool)
 
 			if tool.Name() != tt.toolName {
 				t.Errorf("Name() = %q, want %q", tool.Name(), tt.toolName)

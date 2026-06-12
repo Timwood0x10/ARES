@@ -3,7 +3,7 @@ package output
 import (
 	"context"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // LLMAdapter defines the interface for LLM providers.
@@ -12,8 +12,21 @@ type LLMAdapter interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	// GenerateStructured generates structured output.
 	GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error)
+	// GenerateStream generates text as a stream of chunks.
+	// Returns a channel of StreamChunk. The channel is closed when streaming completes.
+	GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error)
 	// GetModel returns the model name.
 	GetModel() string
+}
+
+// StreamChunk represents a single chunk in a streaming response.
+type StreamChunk struct {
+	// Content is the text content of this chunk. May be empty for final chunk.
+	Content string
+	// Done indicates this is the final chunk. When true, Err should be checked.
+	Done bool
+	// Err contains any error that occurred during streaming. Non-nil only on final chunk.
+	Err error
 }
 
 // Config holds LLM configuration.

@@ -18,6 +18,9 @@ type SlidingWindowLimiter struct {
 
 // NewSlidingWindowLimiter creates a new SlidingWindowLimiter.
 func NewSlidingWindowLimiter(config *LimiterConfig) Limiter {
+	if config == nil {
+		config = &LimiterConfig{Rate: 1, Burst: 1}
+	}
 	maxRequests := int(math.Ceil(config.Rate))
 	return &SlidingWindowLimiter{
 		requests:    make([]time.Time, 0),

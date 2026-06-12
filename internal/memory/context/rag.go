@@ -3,9 +3,10 @@ package context
 import (
 	"context"
 	"math"
+	"sort"
 	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
+	"goagentx/internal/storage/postgres"
 )
 
 // VectorSearcher defines the interface for vector storage operations.
@@ -85,23 +86,22 @@ func NewVectorIndex() *VectorIndex {
 
 // Add adds a knowledge entry.
 func (r *RAG) Add(ctx context.Context, entry *KnowledgeEntry) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if len(r.entries) >= r.maxSize {
 		r.evictOldest()
 	}
 
-	r.entries[entry.ID] = entry
-	r.index.entries = append(r.index.entries, entry)
-
-	// If using persistent storage, also save to pgvector
+	// Persist to pgvector first to ensure consistency
 	if r.usePersistent && r.vectorSearch != nil {
 		if err := r.vectorSearch.AddEmbedding(ctx, r.tableName, entry.ID, entry.Embedding, entry.Metadata); err != nil {
-			// Log error but don't fail - in-memory is primary
 			return err
 		}
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.entries[entry.ID] = entry
+	r.index.entries = append(r.index.entries, entry)
 
 	return nil
 }
@@ -117,27 +117,27 @@ func (r *RAG) Get(ctx context.Context, id string) (*KnowledgeEntry, bool) {
 
 // Search searches for similar entries using simple cosine similarity.
 func (r *RAG) Search(ctx context.Context, query []float64, topK int) ([]*KnowledgeEntry, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// If using persistent storage, use pgvector search
+	// If using persistent storage, use pgvector search (outside lock)
 	if r.usePersistent && r.vectorSearch != nil {
 		results, err := r.vectorSearch.Search(ctx, r.tableName, query, topK)
 		if err != nil {
 			return nil, err
 		}
 
+		r.mu.RLock()
 		entries := make([]*KnowledgeEntry, 0, len(results))
 		for _, result := range results {
-			// Get full entry from memory cache
 			if entry, exists := r.entries[result.ID]; exists {
 				entries = append(entries, entry)
 			}
 		}
+		r.mu.RUnlock()
 		return entries, nil
 	}
 
 	// Fallback to in-memory search
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if len(r.index.entries) == 0 {
 		return nil, nil
 	}
@@ -156,13 +156,9 @@ func (r *RAG) Search(ctx context.Context, query []float64, topK int) ([]*Knowled
 	}
 
 	// Sort by score descending
-	for i := 0; i < len(scores)-1; i++ {
-		for j := i + 1; j < len(scores); j++ {
-			if scores[j].score > scores[i].score {
-				scores[i], scores[j] = scores[j], scores[i]
-			}
-		}
-	}
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[j].score < scores[i].score
+	})
 
 	result := make([]*KnowledgeEntry, 0, topK)
 	for i := 0; i < topK && i < len(scores); i++ {
@@ -194,22 +190,21 @@ func (r *RAG) SearchByText(ctx context.Context, query string, topK int) ([]*Know
 
 // Delete removes a knowledge entry.
 func (r *RAG) Delete(ctx context.Context, id string) error {
+	// Delete from persistent storage first
+	if r.usePersistent && r.vectorSearch != nil {
+		if err := r.vectorSearch.DeleteEmbedding(ctx, r.tableName, id); err != nil {
+			return err
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	delete(r.entries, id)
 
-	// Rebuild index
 	r.index.entries = make([]*KnowledgeEntry, 0)
 	for _, entry := range r.entries {
 		r.index.entries = append(r.index.entries, entry)
-	}
-
-	// If using persistent storage, also delete from pgvector
-	if r.usePersistent && r.vectorSearch != nil {
-		if err := r.vectorSearch.DeleteEmbedding(ctx, r.tableName, id); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -240,18 +235,13 @@ func (r *RAG) IsPersistent() bool {
 
 // evictOldest removes entries when capacity is reached.
 func (r *RAG) evictOldest() {
-	for id := range r.entries {
-		entry := r.entries[id]
-		delete(r.entries, id)
-
-		for i, e := range r.index.entries {
-			if e.ID == entry.ID {
-				r.index.entries = append(r.index.entries[:i], r.index.entries[i+1:]...)
-				break
-			}
-		}
-		break
+	if len(r.index.entries) == 0 {
+		return
 	}
+
+	oldest := r.index.entries[0]
+	delete(r.entries, oldest.ID)
+	r.index.entries = r.index.entries[1:]
 }
 
 // cosineSimilarity calculates cosine similarity between two vectors.
@@ -278,10 +268,9 @@ func cosineSimilarity(a, b []float64) float64 {
 
 // contains checks if text contains substring (simple implementation).
 func contains(text, substr string) bool {
-	return len(text) >= len(substr) && (text == substr || len(text) > 0 && containsHelper(text, substr))
-}
-
-func containsHelper(text, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
 	for i := 0; i <= len(text)-len(substr); i++ {
 		if text[i:i+len(substr)] == substr {
 			return true

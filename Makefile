@@ -1,6 +1,6 @@
 # Makefile for GO Agent Framework
 
-.PHONY: all lint test test-race check check-core check-tools help clean install ci
+.PHONY: all lint test test-race check check-core check-tools help clean install ci benchmark
 
 # Default target
 all: lint test
@@ -150,6 +150,51 @@ clean:
 	rm -rf bin/
 	rm -f coverage.out
 
+# Benchmark targets
+benchmark:
+	@echo "Running benchmarks..."
+	@echo ""
+	@echo "=== Evaluation Framework Benchmarks ==="
+	@go test -bench=. -benchmem ./internal/eval/...
+	@echo ""
+	@echo "=== Streaming Handler Benchmarks ==="
+	@go test -bench=. -benchmem ./api/handler/...
+	@echo ""
+	@echo "=== Plugin System Benchmarks ==="
+	@go test -bench=. -benchmem ./internal/tools/resources/core/...
+	@echo ""
+	@echo "=== Agent Benchmarks ==="
+	@go test -bench=. -benchmem ./internal/agents/leader/...
+	@echo ""
+	@echo "✅ All benchmarks completed"
+
+benchmark-quick:
+	@echo "Running quick benchmarks (1s each)..."
+	@go test -bench=. -benchtime=1s ./internal/eval/... ./api/handler/... ./internal/tools/resources/core/...
+
+benchmark-profile:
+	@echo "Running benchmarks with CPU profile..."
+	@go test -bench=. -cpuprofile=cpu.prof ./internal/eval/...
+	@go tool pprof -top cpu.prof
+
+benchmark-save:
+	@echo "Running benchmarks and saving results..."
+	@mkdir -p benchmarks
+	@echo "# GoAgent Performance Benchmark Report" > benchmarks/benchmark_report.md
+	@echo "" >> benchmarks/benchmark_report.md
+	@echo "**Date:** $(date +%Y-%m-%d)" >> benchmarks/benchmark_report.md
+	@echo "**Platform:** $(uname -s)/$(uname -m)" >> benchmarks/benchmark_report.md
+	@echo "" >> benchmarks/benchmark_report.md
+	@echo "---" >> benchmarks/benchmark_report.md
+	@echo "" >> benchmarks/benchmark_report.md
+	@echo "## Evaluation Framework Benchmarks" >> benchmarks/benchmark_report.md
+	@go test -bench=. -benchmem ./internal/eval/... >> benchmarks/benchmark_report.md 2>&1
+	@echo "" >> benchmarks/benchmark_report.md
+	@echo "## Streaming Handler Benchmarks" >> benchmarks/benchmark_report.md
+	@go test -bench=. -benchmem ./api/handler/... >> benchmarks/benchmark_report.md 2>&1
+	@echo "" >> benchmarks/benchmark_report.md
+	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
+
 # Help
 help:
 	@echo "Available targets:"
@@ -163,6 +208,10 @@ help:
 	@echo "  test-race     - Run tests with race detection"
 	@echo "  test-core     - Run tests for core modules (requires 90%+ coverage)"
 	@echo "  test-tools    - Run tests for tools modules (requires 80%+ coverage)"
+	@echo "  benchmark     - Run all benchmarks"
+	@echo "  benchmark-quick - Run quick benchmarks (1s each)"
+	@echo "  benchmark-profile - Run benchmarks with CPU profiling"
+	@echo "  benchmark-save - Run benchmarks and save results to file"
 	@echo "  check         - Run lint and test"
 	@echo "  check-all     - Run lint, tests with race detection, and coverage checks"
 	@echo "  check-quick   - Quick check (lint + basic test)"

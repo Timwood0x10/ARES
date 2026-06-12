@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // SessionRepository handles session persistence.

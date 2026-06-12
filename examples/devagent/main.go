@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/agents/base"
-	"github.com/Timwood0x10/goagent/internal/agents/leader"
-	"github.com/Timwood0x10/goagent/internal/agents/sub"
-	"github.com/Timwood0x10/goagent/internal/config"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/llm/output"
-	"github.com/Timwood0x10/goagent/internal/memory"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/agents/leader"
+	"goagentx/internal/agents/sub"
+	"goagentx/internal/config"
+	"goagentx/internal/core/models"
+	"goagentx/internal/llm/output"
+	"goagentx/internal/memory"
+	"goagentx/internal/protocol/ahp"
 )
 
 /*

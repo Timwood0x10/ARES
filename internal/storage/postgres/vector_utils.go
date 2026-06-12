@@ -2,9 +2,12 @@
 package postgres
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
+
+	"goagentx/internal/errors"
 )
 
 // FormatVector converts []float64 to pgvector format string.
@@ -58,4 +61,30 @@ func NormalizeVector(embedding []float64) []float64 {
 	}
 
 	return normalized
+}
+
+// ParseVectorString converts pgvector string format to []float64.
+func ParseVectorString(vecStr string) ([]float64, error) {
+	if len(vecStr) == 0 {
+		return []float64{}, nil
+	}
+
+	vecStr = strings.Trim(vecStr, "[]")
+	if vecStr == "" {
+		return []float64{}, nil
+	}
+
+	parts := strings.Split(vecStr, ",")
+	result := make([]float64, len(parts))
+	for i, part := range parts {
+		val, err := fmt.Sscanf(strings.TrimSpace(part), "%f", &result[i])
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse vector component")
+		}
+		if val != 1 {
+			return nil, fmt.Errorf("failed to parse vector component: expected 1 match, got %d", val)
+		}
+	}
+
+	return result, nil
 }

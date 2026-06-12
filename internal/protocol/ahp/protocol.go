@@ -2,10 +2,11 @@ package ahp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	apperrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
 )
 
 // Protocol represents the AHP protocol manager.
@@ -72,25 +73,30 @@ func (p *Protocol) GetQueue(agentID string) *MessageQueue {
 // SendMessage sends a message to a target agent.
 func (p *Protocol) SendMessage(ctx context.Context, msg *AHPMessage) error {
 	if msg == nil {
-		return errors.ErrInvalidMessage
+		return apperrors.ErrInvalidMessage
 	}
 
 	queue := p.GetQueue(msg.TargetAgent)
-	if queue.IsFull() {
+
+	// Try Enqueue directly — do NOT check IsFull first to avoid TOCTOU race
+	// where the queue fills up between the check and the actual enqueue.
+	err := queue.Enqueue(ctx, msg)
+	if err != nil {
+		reason := classifyEnqueueError(err)
 		if p.dlq != nil {
-			p.dlq.Add(msg, errors.ErrQueueFull, "queue_full")
+			p.dlq.Add(msg, err, reason)
 		}
-		return errors.ErrTaskQueueFull
+		return fmt.Errorf("send message to %s: %w", msg.TargetAgent, err)
 	}
 
-	return queue.Enqueue(ctx, msg)
+	return nil
 }
 
 // ReceiveMessage receives a message for an agent.
 func (p *Protocol) ReceiveMessage(ctx context.Context, agentID string) (*AHPMessage, error) {
 	queue, ok := p.registry.Get(agentID)
 	if !ok {
-		return nil, errors.ErrAgentNotFound
+		return nil, apperrors.ErrAgentNotFound
 	}
 
 	return queue.Dequeue(ctx)
@@ -136,6 +142,29 @@ func (p *Protocol) EncodeMessage(msg *AHPMessage) ([]byte, error) {
 // DecodeMessage decodes a message using the configured codec.
 func (p *Protocol) DecodeMessage(data []byte) (*AHPMessage, error) {
 	return p.codec.Decode(data)
+}
+
+// Close closes all agent queues managed by this protocol.
+func (p *Protocol) Close() {
+	for _, agentID := range p.registry.ListAgents() {
+		p.registry.Delete(agentID)
+	}
+}
+
+// classifyEnqueueError maps an enqueue error to a short DLQ reason string.
+func classifyEnqueueError(err error) string {
+	switch {
+	case errors.Is(err, apperrors.ErrQueueClosed):
+		return "queue_closed"
+	case errors.Is(err, apperrors.ErrQueueFull):
+		return "queue_full"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline"
+	default:
+		return "unknown"
+	}
 }
 
 // Stats returns protocol statistics.

@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/core"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/llm"
+	"goagentx/api/core"
+	"goagentx/internal/errors"
+	"goagentx/internal/llm"
 )
 
 // Service provides LLM operations.

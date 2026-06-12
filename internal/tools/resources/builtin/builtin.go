@@ -3,18 +3,18 @@ package builtin
 import (
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	builtin_execution "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/execution"
-	builtin_file "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/file"
-	builtin_knowledge "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/knowledge"
-	builtin_math "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/math"
-	builtin_memory "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/memory"
-	builtin_network "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/network"
-	builtin_planning "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/planning"
-	builtin_system "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/system"
-	builtin_text "github.com/Timwood0x10/goagent/internal/tools/resources/builtin/text"
+	"goagentx/internal/errors"
+	builtin_execution "goagentx/internal/tools/resources/builtin/execution"
+	builtin_file "goagentx/internal/tools/resources/builtin/file"
+	builtin_knowledge "goagentx/internal/tools/resources/builtin/knowledge"
+	builtin_math "goagentx/internal/tools/resources/builtin/math"
+	builtin_memory "goagentx/internal/tools/resources/builtin/memory"
+	builtin_network "goagentx/internal/tools/resources/builtin/network"
+	builtin_planning "goagentx/internal/tools/resources/builtin/planning"
+	builtin_system "goagentx/internal/tools/resources/builtin/system"
+	builtin_text "goagentx/internal/tools/resources/builtin/text"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // RegisterGeneralTools registers all general-purpose tools.

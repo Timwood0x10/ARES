@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/core"
-	agentSvc "github.com/Timwood0x10/goagent/api/service/agent"
-	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
-	memorySvc "github.com/Timwood0x10/goagent/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/goagent/api/service/retrieval"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/api/core"
+	agentSvc "goagentx/api/service/agent"
+	llmSvc "goagentx/api/service/llm"
+	memorySvc "goagentx/api/service/memory"
+	retrievalSvc "goagentx/api/service/retrieval"
+	"goagentx/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 )
 
 // CorrectKnowledge corrects knowledge base content.

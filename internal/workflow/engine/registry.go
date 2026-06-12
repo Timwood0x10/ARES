@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/agents/base"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // AgentFactory creates agent instances.
@@ -95,7 +95,7 @@ func NewAgentExecutor(registry *AgentRegistry) *AgentExecutor {
 
 // Execute executes a step using the appropriate agent.
 func (e *AgentExecutor) Execute(ctx context.Context, step *Step, input string, taskCtx *models.TaskContext) (string, error) {
-	agent, err := e.registry.CreateAgent(ctx, step.AgentType, nil)
+	agent, err := e.registry.CreateAgent(ctx, step.AgentType, step.Input)
 	if err != nil {
 		return "", err
 	}

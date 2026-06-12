@@ -4,11 +4,11 @@ package retrieval
 import (
 	"context"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/services"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/storage/postgres/services"
 )
 
 // Service provides retrieval operations for knowledge base.

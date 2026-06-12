@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Timwood0x10/goagent/api/core"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/api/core"
+	"goagentx/internal/errors"
 )
 
 // SimpleClient provides the simplest possible API for GoAgent.

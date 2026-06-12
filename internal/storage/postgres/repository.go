@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage"
 )
 
 // DBTX is an interface that both *sql.DB and *sql.Tx satisfy.
@@ -23,7 +24,7 @@ type Repository struct {
 	Session   *SessionRepository
 	Recommend *RecommendRepository
 	Profile   *ProfileRepository
-	Vector    *VectorSearcher
+	Vector    storage.VectorStore
 	pool      *Pool
 	tx        *sql.Tx
 	close     func()

@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/memory"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/core/models"
+	"goagentx/internal/memory"
 )
 
 // mockMemoryManager is a mock implementation of memory.MemoryManager for testing.
@@ -126,6 +128,10 @@ func (m *mockMemoryManager) SearchSimilarTasks(ctx context.Context, query string
 	}, nil
 }
 
+func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 func (m *mockMemoryManager) Start(ctx context.Context) error {
 	return nil
 }
@@ -154,9 +160,7 @@ func TestNewService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := NewService(tt.memoryMgr)
 
-			if svc == nil {
-				t.Fatal("NewService() should not return nil")
-			}
+			require.NotNil(t, svc)
 			if svc.memoryMgr != tt.memoryMgr {
 				t.Errorf("NewService().memoryMgr = %v, want %v", svc.memoryMgr, tt.memoryMgr)
 			}

@@ -4,15 +4,15 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestNewCalculator tests creating a new Calculator tool.
 func TestNewCalculator(t *testing.T) {
 	calculator := NewCalculator()
-	if calculator == nil {
-		t.Fatal("NewCalculator() should not return nil")
-	}
+	require.NotNil(t, calculator)
 	if calculator.Name() != "calculator" {
 		t.Errorf("Name() = %q, want 'calculator'", calculator.Name())
 	}
@@ -357,9 +357,7 @@ func TestCalculatorCapabilities(t *testing.T) {
 	}
 
 	parameters := calculator.Parameters()
-	if parameters == nil {
-		t.Fatal("Parameters() should not be nil")
-	}
+	require.NotNil(t, parameters)
 
 	if parameters.Type != "object" {
 		t.Errorf("Parameters.Type = %q, want 'object'", parameters.Type)
@@ -382,9 +380,7 @@ func TestCalculatorCapabilities(t *testing.T) {
 // TestNewDateTime tests creating a new DateTime tool.
 func TestNewDateTime(t *testing.T) {
 	dateTime := NewDateTime()
-	if dateTime == nil {
-		t.Fatal("NewDateTime() should not return nil")
-	}
+	require.NotNil(t, dateTime)
 	if dateTime.Name() != "datetime" {
 		t.Errorf("Name() = %q, want 'datetime'", dateTime.Name())
 	}
@@ -572,9 +568,7 @@ func TestDateTimeExecute_InvalidInput(t *testing.T) {
 // TestNewTextProcessor tests creating a new TextProcessor tool.
 func TestNewTextProcessor(t *testing.T) {
 	textProcessor := NewTextProcessor()
-	if textProcessor == nil {
-		t.Fatal("NewTextProcessor() should not return nil")
-	}
+	require.NotNil(t, textProcessor)
 	if textProcessor.Name() != "text_processor" {
 		t.Errorf("Name() = %q, want 'text_processor'", textProcessor.Name())
 	}

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // ConfigFile defines the structure for error strategy configuration file.

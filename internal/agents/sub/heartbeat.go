@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/protocol/ahp"
 )
 
 // heartbeatSender sends heartbeat to leader.

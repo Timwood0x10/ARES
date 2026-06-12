@@ -2,11 +2,12 @@ package ahp
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
 )
 
 // HeartbeatConfig holds the configuration for heartbeat mechanism.
@@ -25,11 +26,15 @@ func DefaultHeartbeatConfig() *HeartbeatConfig {
 	}
 }
 
+// TimeoutCallback is invoked when an agent is marked offline by CheckTimeouts.
+type TimeoutCallback func(agentID string)
+
 // HeartbeatMonitor monitors heartbeat signals from agents.
 type HeartbeatMonitor struct {
 	mu          sync.RWMutex
 	agentStatus map[string]*AgentHeartbeat
 	config      *HeartbeatConfig
+	callbacks   []TimeoutCallback
 }
 
 // AgentHeartbeat holds the heartbeat state for an agent.
@@ -53,6 +58,9 @@ func NewHeartbeatMonitor(config *HeartbeatConfig) *HeartbeatMonitor {
 
 // RecordHeartbeat records a heartbeat from an agent.
 func (m *HeartbeatMonitor) RecordHeartbeat(agentID string) {
+	if agentID == "" {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -81,7 +89,21 @@ func (m *HeartbeatMonitor) GetStatus(agentID string) (models.AgentStatus, bool) 
 }
 
 // CheckTimeouts checks for agents that have missed heartbeats.
+// Returns a list of agent IDs that were just marked offline.
+// Invokes registered callbacks for each timed-out agent (outside the lock).
 func (m *HeartbeatMonitor) CheckTimeouts() []string {
+	timedOut := m.checkAndMarkOffline()
+
+	// Notify callbacks outside the lock to prevent deadlocks.
+	for _, agentID := range timedOut {
+		m.notifyCallbacks(agentID)
+	}
+
+	return timedOut
+}
+
+// checkAndMarkOffline marks timed-out agents as offline under the write lock.
+func (m *HeartbeatMonitor) checkAndMarkOffline() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -89,6 +111,10 @@ func (m *HeartbeatMonitor) CheckTimeouts() []string {
 	now := time.Now()
 
 	for agentID, hb := range m.agentStatus {
+		// Skip agents already marked offline to avoid repeated timeout reporting.
+		if hb.Status == models.AgentStatusOffline {
+			continue
+		}
 		if now.Sub(hb.LastSeen) > m.config.Timeout {
 			hb.MissedCount++
 			if hb.MissedCount >= m.config.MaxMissed {
@@ -121,18 +147,46 @@ func (m *HeartbeatMonitor) ListAgents() []string {
 	return agents
 }
 
-// HeartbeatSender sends periodic heartbeats.
+// RegisterCallback adds a callback that is invoked when an agent times out.
+//
+// Args:
+//
+//	fn - callback function, must be non-blocking.
+func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callbacks = append(m.callbacks, fn)
+}
+
+// notifyCallbacks invokes all registered callbacks for a timed-out agent.
+// Caller must NOT hold m.mu (callbacks may re-register or inspect state).
+func (m *HeartbeatMonitor) notifyCallbacks(agentID string) {
+	// Copy callbacks under read lock to avoid holding lock during callback execution.
+	m.mu.RLock()
+	callbacks := make([]TimeoutCallback, len(m.callbacks))
+	copy(callbacks, m.callbacks)
+	m.mu.RUnlock()
+
+	for _, fn := range callbacks {
+		fn(agentID)
+	}
+}
+
+// HeartbeatSender sends periodic heartbeat messages.
+// Start and Stop are safe to call from multiple goroutines and the sender
+// can be restarted after a Stop.
 type HeartbeatSender struct {
-	agentID   string
-	interval  time.Duration
-	queue     *MessageQueue
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	stopOnce  sync.Once
-	startOnce sync.Once
-	started   bool
-	mu        sync.Mutex
+	agentID  string
+	interval time.Duration
+	queue    *MessageQueue
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	started  bool
+	mu       sync.Mutex
 }
 
 // NewHeartbeatSender creates a new HeartbeatSender.
@@ -158,17 +212,19 @@ func (s *HeartbeatSender) Validate() error {
 }
 
 // Start starts sending heartbeats.
-// This method is idempotent - calling it multiple times has no additional effect.
+// This method can be called again after Stop.
 func (s *HeartbeatSender) Start(ctx context.Context) {
-	s.startOnce.Do(func() {
-		s.mu.Lock()
-		s.ctx, s.cancel = context.WithCancel(ctx)
-		s.started = true
+	s.mu.Lock()
+	if s.started {
 		s.mu.Unlock()
+		return
+	}
+	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.wg.Add(1)
+	s.started = true
+	s.mu.Unlock()
 
-		s.wg.Add(1)
-		go s.run()
-	})
+	go s.run()
 }
 
 // run is the main heartbeat sending loop.
@@ -191,26 +247,26 @@ func (s *HeartbeatSender) run() {
 // sendHeartbeat sends a heartbeat message.
 func (s *HeartbeatSender) sendHeartbeat() {
 	if s.queue == nil {
+		slog.Error("heartbeat sender queue is nil", "agent_id", s.agentID)
 		return
 	}
 	msg := NewHeartbeatMessage(s.agentID)
 	if err := s.queue.Enqueue(s.ctx, msg); err != nil {
-		return
+		slog.Warn("heartbeat send failed", "agent_id", s.agentID, "error", err)
 	}
 }
 
-// Stop stops sending heartbeats.
-// This method is idempotent - calling it multiple times has no additional effect.
+// Stop stops sending heartbeats and waits for the run goroutine to exit.
 func (s *HeartbeatSender) Stop() {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
 		return
 	}
+	s.started = false
+	cancel := s.cancel
 	s.mu.Unlock()
 
-	s.stopOnce.Do(func() {
-		s.cancel()
-		s.wg.Wait()
-	})
+	cancel()
+	s.wg.Wait()
 }

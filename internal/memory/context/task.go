@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // TaskMemory stores task-specific context and distillation.
@@ -16,6 +16,7 @@ type TaskMemory struct {
 	ttl            time.Duration
 	cleanupStopCh  chan struct{}
 	cleanupOnce    sync.Once
+	cleanupWg      sync.WaitGroup
 	cleanupRunning bool
 }
 
@@ -73,6 +74,7 @@ func (m *TaskMemory) Start(ctx context.Context) {
 	m.cleanupRunning = true
 	m.mu.Unlock()
 
+	m.cleanupWg.Add(1)
 	go m.cleanupLoop(ctx)
 }
 
@@ -82,11 +84,13 @@ func (m *TaskMemory) Stop() {
 	m.cleanupOnce.Do(func() {
 		close(m.cleanupStopCh)
 	})
+	m.cleanupWg.Wait()
 }
 
 // cleanupLoop runs periodic cleanup of expired tasks.
 func (m *TaskMemory) cleanupLoop(ctx context.Context) {
-	// Run cleanup every 5 minutes
+	defer m.cleanupWg.Done()
+
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -211,7 +215,9 @@ func (m *TaskMemory) GetSteps(ctx context.Context, taskID string) ([]StepRecord,
 		return nil, ErrTaskNotFound
 	}
 
-	return task.Steps, nil
+	steps := make([]StepRecord, len(task.Steps))
+	copy(steps, task.Steps)
+	return steps, nil
 }
 
 // AddResult adds a result record.
@@ -241,7 +247,9 @@ func (m *TaskMemory) GetResults(ctx context.Context, taskID string) ([]ResultRec
 		return nil, ErrTaskNotFound
 	}
 
-	return task.Results, nil
+	results := make([]ResultRecord, len(task.Results))
+	copy(results, task.Results)
+	return results, nil
 }
 
 // SetContext sets a context value.
@@ -312,27 +320,30 @@ func (m *TaskMemory) evictOldest() {
 func (m *TaskMemory) Distill(ctx context.Context, taskID string) (*models.Task, error) {
 	m.mu.RLock()
 	task, exists := m.tasks[taskID]
-	m.mu.RUnlock()
-
 	if !exists {
+		m.mu.RUnlock()
 		return nil, ErrTaskNotFound
 	}
 
-	// Deep copy context to prevent external modification of internal state
+	taskInput := task.Input
+	taskOutput := task.Output
+	taskCreatedAt := task.CreatedAt
+
 	contextCopy := make(map[string]interface{}, len(task.Context))
 	for k, v := range task.Context {
 		contextCopy[k] = v
 	}
+	m.mu.RUnlock()
 
 	distilled := &models.Task{
 		TaskID:   taskID,
 		Priority: 0,
 		Payload: map[string]any{
-			"input":   task.Input,
-			"output":  task.Output,
+			"input":   taskInput,
+			"output":  taskOutput,
 			"context": contextCopy,
 		},
-		CreatedAt: task.CreatedAt,
+		CreatedAt: taskCreatedAt,
 	}
 
 	return distilled, nil

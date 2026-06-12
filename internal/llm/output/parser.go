@@ -7,18 +7,14 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	gerr "github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/core/models"
+	gerr "goagentx/internal/errors"
 )
 
 // Pre-compiled regular expressions for better performance.
 var (
-	markdownPattern   = regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)\\s*```")
-	trailingComma     = regexp.MustCompile(`,\s*([\}\]])`)
-	singleLineComment = regexp.MustCompile("//.*$")
-	multiLineComment  = regexp.MustCompile(`/\*[\s\S]*?\*/`)
-	unquotedKey       = regexp.MustCompile(`([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:`)
-	singleQuote       = regexp.MustCompile("'([^']*)'")
+	markdownPattern = regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)\\s*```")
+	trailingComma   = regexp.MustCompile(`,\s*([\}\]])`)
 )
 
 // Parser parses LLM output into structured types.
@@ -117,88 +113,195 @@ func (p *Parser) parseArrayFormat(jsonStr string) (*models.RecommendResult, erro
 }
 
 // extractJSON extracts JSON from output.
+// It uses string-aware brace/bracket matching so that { } inside
+// JSON string values do not corrupt depth tracking.
 func (p *Parser) extractJSON(output string) string {
 	output = strings.TrimSpace(output)
 
-	// Try to find JSON in markdown code blocks
 	matches := markdownPattern.FindStringSubmatch(output)
 	if len(matches) > 1 {
 		result := strings.TrimSpace(matches[1])
-		// Check if it's a valid JSON (object or array)
 		if strings.HasPrefix(result, "{") || strings.HasPrefix(result, "[") {
 			return result
 		}
 	}
 
-	// Try to find JSON object directly
 	start := strings.Index(output, "{")
-	end := -1
-
-	// If no object found, try array
 	if start == -1 {
 		start = strings.Index(output, "[")
 		if start == -1 {
 			return ""
 		}
-		// Find matching closing bracket
-		depth := 0
-		for i := start; i < len(output); i++ {
-			if output[i] == '[' {
-				depth++
-			} else if output[i] == ']' {
-				depth--
-				if depth == 0 {
-					end = i + 1
-					break
-				}
-			}
+		end := findMatchingBracket(output, start, '[', ']')
+		if end == -1 {
+			return ""
 		}
-	} else {
-		// Find matching closing brace
-		depth := 0
-		for i := start; i < len(output); i++ {
-			if output[i] == '{' {
-				depth++
-			} else if output[i] == '}' {
-				depth--
-				if depth == 0 {
-					end = i + 1
-					break
-				}
-			}
-		}
+		return output[start:end]
 	}
 
+	end := findMatchingBracket(output, start, '{', '}')
 	if end == -1 {
 		return ""
 	}
-
 	return output[start:end]
 }
 
+// findMatchingBracket scans from start position looking for the closing bracket,
+// respecting JSON string boundaries and escape sequences.
+func findMatchingBracket(s string, start int, open, close byte) int {
+	depth := 0
+	inString := false
+
+	for i := start; i < len(s); i++ {
+		c := s[i]
+
+		if inString {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			continue
+		}
+
+		switch c {
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
 // fixJSONString attempts to fix common JSON errors.
+// It uses a state-machine scanner that respects JSON string boundaries,
+// so regex-based fixes are never applied inside string values.
 func (p *Parser) fixJSONString(jsonStr string) (string, error) {
-	fixed := jsonStr
+	if json.Valid([]byte(jsonStr)) {
+		return jsonStr, nil
+	}
 
-	// Remove trailing commas
-	fixed = trailingComma.ReplaceAllString(fixed, "$1")
+	fixed := trailingComma.ReplaceAllString(jsonStr, "$1")
 
-	// Remove comments
-	fixed = singleLineComment.ReplaceAllString(fixed, "")
-	fixed = multiLineComment.ReplaceAllString(fixed, "")
+	if json.Valid([]byte(fixed)) {
+		return fixed, nil
+	}
 
-	// Fix unquoted keys
-	fixed = unquotedKey.ReplaceAllString(fixed, "$1\"$2\":")
+	fixed = scanFixJSON(fixed)
 
-	// Fix single-quoted strings
-	fixed = singleQuote.ReplaceAllString(fixed, "\"$1\"")
-
-	// Check if it's valid JSON
 	if !json.Valid([]byte(fixed)) {
 		return "", errors.New("failed to fix JSON")
 	}
-
 	return fixed, nil
+}
+
+// scanFixJSON applies comment removal, unquoted-key fixing, and single-quote
+// fixing using a character-level state machine that tracks string boundaries.
+func scanFixJSON(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+
+	inString := false
+	i := 0
+	for i < len(s) {
+		c := s[i]
+
+		if inString {
+			buf.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				buf.WriteByte(s[i])
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			buf.WriteByte(c)
+			i++
+			continue
+		}
+
+		if c == '/' && i+1 < len(s) {
+			next := s[i+1]
+			if next == '/' {
+				for i < len(s) && s[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if next == '*' {
+				endIdx := strings.Index(s[i:], "*/")
+				if endIdx == -1 {
+					i = len(s)
+				} else {
+					i += endIdx + 2
+				}
+				continue
+			}
+		}
+
+		if (c == '{' || c == ',') && i+1 < len(s) && isAlpha(s[i+1]) {
+			j := i + 1
+			for j < len(s) && isAlphaNum(s[j]) {
+				j++
+			}
+			if j < len(s) && s[j] == ':' {
+				buf.WriteByte(c)
+				buf.WriteByte('"')
+				buf.WriteString(s[i+1 : j])
+				buf.WriteString("\":")
+				i = j + 1
+				continue
+			}
+		}
+
+		if c == '\'' {
+			endSingle := strings.IndexByte(s[i+1:], '\'')
+			if endSingle != -1 {
+				buf.WriteByte('"')
+				writeEscaped(&buf, s[i+1:i+1+endSingle])
+				buf.WriteByte('"')
+				i = i + 2 + endSingle
+				continue
+			}
+		}
+
+		buf.WriteByte(c)
+		i++
+	}
+	return buf.String()
+}
+
+func isAlpha(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isAlphaNum(c byte) bool {
+	return isAlpha(c) || (c >= '0' && c <= '9')
+}
+
+func writeEscaped(buf *strings.Builder, s string) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' || s[i] == '\\' {
+			buf.WriteByte('\\')
+		}
+		buf.WriteByte(s[i])
+	}
 }
 
 // ParseGeneric parses generic JSON output.

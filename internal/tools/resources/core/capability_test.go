@@ -2,6 +2,8 @@ package core
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCapabilityConstants tests all capability constants.
@@ -85,9 +87,7 @@ func TestCapabilityEngineNew(t *testing.T) {
 	registry := NewRegistry()
 	engine := NewCapabilityEngine(registry)
 
-	if engine == nil {
-		t.Fatal("engine should not be nil")
-	}
+	require.NotNil(t, engine)
 
 	if engine.registry != registry {
 		t.Error("engine registry should match the provided registry")

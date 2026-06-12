@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/core/models"
+	"goagentx/internal/protocol/ahp"
 )
 
 // mockAgent implements the Agent interface for testing.
@@ -66,6 +66,15 @@ func (m *mockAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, errors.New("process failed")
 	}
 	return "processed: " + input.(string), nil
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (m *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan AgentEvent, error) {
+	result, err := m.Process(ctx, input)
+	ch := make(chan AgentEvent, 1)
+	ch <- AgentEvent{Type: EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
 }
 
 // mockMessenger implements the Messenger interface for testing.

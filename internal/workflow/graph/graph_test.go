@@ -241,9 +241,11 @@ func TestGraphWithPriorityScheduler(t *testing.T) {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	// With priority scheduler, node2 should execute before node1 when both are ready
-	if executionOrder[0] != "node1" {
-		t.Errorf("expected node1 first (start node), got %s", executionOrder[0])
+	// With priority scheduler and in-degree tracking, both node1 and node2 have
+	// in-degree 0 so both are ready at start. The priority scheduler picks
+	// node2 (priority 10) before node1 (priority 1).
+	if executionOrder[0] != "node2" {
+		t.Errorf("expected node2 first (highest priority), got %s", executionOrder[0])
 	}
 }
 

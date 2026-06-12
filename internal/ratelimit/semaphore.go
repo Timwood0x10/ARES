@@ -17,6 +17,9 @@ type SemaphoreLimiter struct {
 
 // NewSemaphoreLimiter creates a new SemaphoreLimiter.
 func NewSemaphoreLimiter(config *LimiterConfig) *SemaphoreLimiter {
+	if config == nil {
+		config = &LimiterConfig{Burst: 1}
+	}
 	return &SemaphoreLimiter{
 		sem:      make(chan struct{}, config.Burst),
 		acquired: make(map[string]int),
@@ -54,17 +57,14 @@ func (l *SemaphoreLimiter) Release(key string) {
 	}
 }
 
-// Allow checks if a request is allowed without blocking.
+// Allow checks if a request is allowed without blocking or acquiring a slot.
 func (l *SemaphoreLimiter) Allow(ctx context.Context) (bool, error) {
 	select {
-	case l.sem <- struct{}{}:
-		l.mu.Lock()
-		l.acquired["default"]++
-		l.mu.Unlock()
-		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
 	default:
-		return false, nil
 	}
+	return len(l.sem) < cap(l.sem), nil
 }
 
 // Wait blocks until a request can be processed.
@@ -97,7 +97,7 @@ func (l *SemaphoreLimiter) Rate() float64 {
 
 // Available returns the number of available slots.
 func (l *SemaphoreLimiter) Available() int {
-	return len(l.sem)
+	return cap(l.sem) - len(l.sem)
 }
 
 // Acquired returns the number of acquired slots for a key.
@@ -120,6 +120,9 @@ type WeightedSemaphoreLimiter struct {
 
 // NewWeightedSemaphoreLimiter creates a new WeightedSemaphoreLimiter.
 func NewWeightedSemaphoreLimiter(config *LimiterConfig) *WeightedSemaphoreLimiter {
+	if config == nil {
+		config = &LimiterConfig{Burst: 1}
+	}
 	limiter := &WeightedSemaphoreLimiter{
 		available: config.Burst,
 		weighted:  make(map[string]int),
@@ -131,9 +134,8 @@ func NewWeightedSemaphoreLimiter(config *LimiterConfig) *WeightedSemaphoreLimite
 
 // Acquire acquires weighted slots.
 // Uses sync.Cond for efficient waiting without busy-looping.
-// Context cancellation is checked at each wake-up.
+// Context cancellation is propagated via context.AfterFunc to wake cond.Wait().
 func (l *WeightedSemaphoreLimiter) Acquire(ctx context.Context, key string, weight int) error {
-	// Validate weight to prevent semaphore violation
 	if weight <= 0 {
 		return fmt.Errorf("weight must be positive, got %d", weight)
 	}
@@ -142,18 +144,21 @@ func (l *WeightedSemaphoreLimiter) Acquire(ctx context.Context, key string, weig
 	defer l.mu.Unlock()
 
 	for l.available < weight {
-		// Check context cancellation before waiting
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		// Wait() releases the lock and waits for signal, then reacquires lock on wake-up
+		stop := context.AfterFunc(ctx, func() {
+			l.mu.Lock()
+			l.cond.Broadcast()
+			l.mu.Unlock()
+		})
 		l.cond.Wait()
-	}
+		stop()
 
-	// Check context one more time after acquiring the lock
-	if err := ctx.Err(); err != nil {
-		return err
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	l.available -= weight

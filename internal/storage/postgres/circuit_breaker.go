@@ -2,12 +2,11 @@
 package postgres
 
 import (
+	"goagentx/internal/core/errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/Timwood0x10/goagent/internal/core/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker.
@@ -31,6 +30,7 @@ type CircuitBreaker struct {
 	openTimeout      time.Duration
 	halfOpenSuccess  int
 	halfOpenInflight atomic.Int32
+	lastProbeTime    time.Time // Tracks when the last half-open probe was allowed.
 	lastCleanupTime  time.Time
 	stopCh           chan struct{}
 	cleanupStopped   atomic.Bool
@@ -73,6 +73,7 @@ func (cb *CircuitBreaker) AllowRequest() error {
 			cb.state = CircuitBreakerStateHalfOpen
 			cb.halfOpenSuccess = 0
 			cb.halfOpenInflight.Store(1) // Reserve the single half-open slot.
+			cb.lastProbeTime = time.Now()
 			return nil
 		}
 		return errors.ErrCircuitBreakerOpen
@@ -81,6 +82,7 @@ func (cb *CircuitBreaker) AllowRequest() error {
 		if !cb.halfOpenInflight.CompareAndSwap(0, 1) {
 			return errors.ErrCircuitBreakerOpen
 		}
+		cb.lastProbeTime = time.Now()
 		return nil
 
 	default:
@@ -107,20 +109,25 @@ func (cb *CircuitBreaker) RecordSuccess() {
 }
 
 // cleanupHalfOpenInflight cleans up leaked inflight counters.
-// This should be called periodically to prevent counter leaks.
+// Only resets the counter if the last probe has been pending longer than
+// the open timeout, indicating the probe likely leaked.
 func (cb *CircuitBreaker) cleanupHalfOpenInflight() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	// If we're in half-open state and have inflight operations that haven't been
-	// properly accounted for, reset the counter to prevent leaks
-	if cb.state == CircuitBreakerStateHalfOpen {
-		current := cb.halfOpenInflight.Load()
-		if current > 0 {
-			slog.Warn("Detected halfOpenInflight leak, resetting counter",
-				"current_count", current)
-			cb.halfOpenInflight.Store(0)
-		}
+	if cb.state != CircuitBreakerStateHalfOpen {
+		return
+	}
+
+	if cb.halfOpenInflight.Load() <= 0 {
+		return
+	}
+
+	// Only reset if the last probe has been pending longer than openTimeout.
+	if time.Since(cb.lastProbeTime) > cb.openTimeout {
+		slog.Warn("Detected halfOpenInflight leak, resetting counter",
+			"current_count", cb.halfOpenInflight.Load())
+		cb.halfOpenInflight.Store(0)
 	}
 }
 

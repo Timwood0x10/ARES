@@ -49,6 +49,9 @@ func (t *NoopTracer) GetTraceID(ctx context.Context) string {
 
 // WithTrace returns a new context with a generated trace ID.
 func (t *NoopTracer) WithTrace(ctx context.Context) context.Context {
+	if existingID, ok := ctx.Value(defaultTraceID).(string); ok && existingID != "" {
+		return ctx
+	}
 	return context.WithValue(ctx, defaultTraceID, generateTraceID())
 }
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
 )
 
 // TestRepository_NewRepository tests creating a new Repository.

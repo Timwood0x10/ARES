@@ -2,6 +2,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,10 +11,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // HTTPError represents an HTTP request error.
@@ -59,8 +61,9 @@ type Config struct {
 
 // Client represents an LLM client that supports multiple providers.
 type Client struct {
-	config     *Config
-	httpClient *http.Client
+	config       *Config
+	httpClient   *http.Client
+	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
 }
 
 // NewClient creates a new LLM client.
@@ -77,6 +80,12 @@ func NewClient(config *Config) (*Client, error) {
 		config: config,
 		httpClient: &http.Client{
 			Timeout: time.Duration(config.Timeout) * time.Second,
+		},
+		// streamClient has no Timeout: for streaming, timeout is controlled
+		// entirely via context so that the goroutine reading the body is
+		// properly cancelled when the context expires.
+		streamClient: &http.Client{
+			Transport: http.DefaultTransport,
 		},
 	}, nil
 }
@@ -301,4 +310,220 @@ func NewClientFromEnv() (*Client, error) {
 	}
 
 	return NewClient(config)
+}
+
+// StreamChunk represents a single chunk in a streaming response.
+type StreamChunk struct {
+	Content string
+	Done    bool
+	Err     error
+}
+
+// GenerateStream sends a streaming text generation request.
+// Returns a channel of StreamChunk that is closed when streaming completes.
+func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	if prompt == "" {
+		return nil, coreerrors.ErrInvalidArgument
+	}
+
+	trimmed := []byte(prompt)
+	trimmed = bytes.TrimSpace(trimmed)
+	if len(trimmed) == 0 {
+		return nil, coreerrors.ErrInvalidArgument
+	}
+
+	const maxPromptLength = 8192
+	if len(prompt) > maxPromptLength {
+		return nil, fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+	}
+
+	switch ProviderType(c.config.Provider) {
+	case ProviderOpenRouter:
+		return c.streamOpenRouter(ctx, prompt)
+	case ProviderOllama:
+		return c.streamOllama(ctx, prompt)
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", c.config.Provider)
+	}
+}
+
+// streamOllama streams text generation using Ollama API.
+func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	requestBody := map[string]interface{}{
+		"model":  c.config.Model,
+		"prompt": prompt,
+		"stream": true,
+		"options": map[string]interface{}{
+			"temperature": 0.7,
+			"num_predict": 4096,
+		},
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal stream request")
+	}
+
+	baseURL := c.config.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultOllamaBaseURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/generate", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, errors.Wrap(err, "create stream request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send stream request")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("ollama stream error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	ch := make(chan StreamChunk, 64)
+
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				slog.Error("Failed to close stream response body", "error", err)
+			}
+		}()
+
+		decoder := json.NewDecoder(resp.Body)
+		for {
+			var result struct {
+				Response string `json:"response"`
+				Done     bool   `json:"done"`
+			}
+			if err := decoder.Decode(&result); err != nil {
+				if err != io.EOF {
+					select {
+					case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "decode stream chunk")}:
+					case <-ctx.Done():
+					}
+				}
+				return
+			}
+
+			if result.Done {
+				return
+			}
+
+			select {
+			case ch <- StreamChunk{Content: result.Response}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// streamOpenRouter streams text generation using OpenRouter API.
+func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	if c.config.APIKey == "" {
+		return nil, fmt.Errorf("API key is required for OpenRouter streaming")
+	}
+
+	requestBody := map[string]interface{}{
+		"model": c.config.Model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"temperature": 0.7,
+		"max_tokens":  4096,
+		"stream":      true,
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal stream request")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.config.BaseURL+"/chat/completions", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, errors.Wrap(err, "create stream request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	req.Header.Set("X-Title", "GoAgent")
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send stream request")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	ch := make(chan StreamChunk, 64)
+
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				slog.Error("Failed to close stream response body", "error", err)
+			}
+		}()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line for large SSE chunks
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			if line == "data: [DONE]" {
+				return
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+
+			var result struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(data), &result); err != nil {
+				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				continue
+			}
+
+			if len(result.Choices) == 0 {
+				continue
+			}
+
+			select {
+			case ch <- StreamChunk{Content: result.Choices[0].Delta.Content}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "read stream")}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return ch, nil
 }

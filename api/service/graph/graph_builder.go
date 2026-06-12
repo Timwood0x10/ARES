@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/agents/base"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/observability"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
-	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/errors"
+	"goagentx/internal/observability"
+	"goagentx/internal/tools/resources/core"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 // GraphBuilder builds graph instances from configuration.
@@ -199,7 +199,8 @@ func (b *GraphBuilder) parseCondition(condition string) (wfgraph.Condition, erro
 		}
 	}
 
-	for _, op := range []string{"==", "!=", ">=", "<=", ">", "<"} {
+	// Try multi-character operators first to avoid "==" matching inside ">=" or "<=".
+	for _, op := range []string{">=", "<=", "!=", "==", ">", "<"} {
 		parts := strings.SplitN(condition, op, 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])

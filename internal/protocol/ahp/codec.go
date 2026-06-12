@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // Codec handles serialization and deserialization of AHP messages.

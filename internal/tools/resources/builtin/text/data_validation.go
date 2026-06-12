@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 	"regexp"
 	"strings"
-
-	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
 )
 
 // DataValidation provides data validation operations.

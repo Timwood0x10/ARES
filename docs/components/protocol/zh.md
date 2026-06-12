@@ -142,3 +142,172 @@ type DLQMessage struct {
 | message_timeout | 30s | 消息超时时间 |
 | heartbeat_interval | 10s | 心跳间隔 |
 | max_retries | 3 | 最大重试次数 |
+
+## 10. Callback 机制 (v2)
+
+`HeartbeatMonitor` 支持注册 callback，当 `CheckTimeouts` 判定某 agent 离线时自动触发。这将超时检测逻辑与下游恢复动作解耦。
+
+### TimeoutCallback 类型
+
+```go
+// TimeoutCallback 在 agent 被 CheckTimeouts 标记为离线时调用。
+type TimeoutCallback func(agentID string)
+```
+
+### RegisterCallback
+
+```go
+func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
+    if fn == nil {
+        return
+    }
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.callbacks = append(m.callbacks, fn)
+}
+```
+
+### Callback 调用流程
+
+`CheckTimeouts` 将工作分为两个阶段，避免在 callback 执行期间持有写锁：
+
+```go
+func (m *HeartbeatMonitor) CheckTimeouts() []string {
+    // 阶段 1: 在写锁下标记 agent 离线
+    timedOut := m.checkAndMarkOffline()
+
+    // 阶段 2: 在锁外调用 callback（防止死锁）
+    for _, agentID := range timedOut {
+        m.notifyCallbacks(agentID)
+    }
+    return timedOut
+}
+```
+
+`notifyCallbacks` 在读锁下复制 callback 切片后再逐个调用，因此 callback 可以安全地重新注册或检查 monitor 状态：
+
+```go
+func (m *HeartbeatMonitor) notifyCallbacks(agentID string) {
+    m.mu.RLock()
+    callbacks := make([]TimeoutCallback, len(m.callbacks))
+    copy(callbacks, m.callbacks)
+    m.mu.RUnlock()
+
+    for _, fn := range callbacks {
+        fn(agentID)
+    }
+}
+```
+
+## 11. Supervisor 集成
+
+`LeaderSupervisor` 使用 callback 机制在 leader 心跳超时时触发 failover。在 `Start` 期间注册 `handleFailover` 方法作为 callback：
+
+```go
+// LeaderSupervisor.Start
+s.heartbeatMon.RegisterCallback(s.handleFailover)
+
+s.g.Go(func() error {
+    ticker := time.NewTicker(s.config.CheckInterval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-s.gctx.Done():
+            return nil
+        case <-ticker.C:
+            s.heartbeatMon.CheckTimeouts()
+        }
+    }
+})
+```
+
+`handleFailover` callback 通过 `errgroup` 异步启动 failover：
+
+```go
+func (s *LeaderSupervisor) handleFailover(leaderID string) {
+    s.mu.RLock()
+    stopped := s.stopped
+    g := s.g
+    gctx := s.gctx
+    s.mu.RUnlock()
+
+    if stopped || g == nil {
+        return
+    }
+    g.Go(func() error {
+        s.doFailover(gctx, leaderID)
+        return nil
+    })
+}
+```
+
+`doFailover` 中的 failover 流程：
+1. 停止旧 leader agent
+2. 获取该 leader 的最新 checkpoint
+3. 调用 `FailoverStrategy`（最多 `MaxFailoverAttempts` 次）
+4. 注册新 leader agent
+5. 从 checkpoint session 恢复 stale tasks
+
+### ColdRestartStrategy
+
+默认的 `FailoverStrategy` 通过工厂函数创建全新的 leader 实例：
+
+```go
+type ColdRestartStrategy struct {
+    factory     func(ctx context.Context, config interface{}) (base.Agent, error)
+    agentConfig interface{}
+}
+
+func (s *ColdRestartStrategy) HandleFailover(
+    ctx context.Context,
+    leaderID string,
+    checkpoint *LeaderCheckpoint,
+) (base.Agent, error) {
+    config := s.agentConfig
+    if config == nil && checkpoint != nil && len(checkpoint.Metadata) > 0 {
+        config = checkpoint.Metadata
+    }
+
+    agent, err := s.factory(ctx, config)
+    if err != nil {
+        return nil, errors.Wrap(err, "cold restart strategy: create agent")
+    }
+    if err := agent.Start(ctx); err != nil {
+        return nil, errors.Wrap(err, "cold restart strategy: start agent")
+    }
+    return agent, nil
+}
+```
+
+## 12. HeartbeatSender
+
+`HeartbeatSender` 运行一个后台 goroutine，定期将 `HEARTBEAT` 消息入队到 agent 的 `MessageQueue`。
+
+```go
+type HeartbeatSender struct {
+    agentID  string
+    interval time.Duration
+    queue    *MessageQueue
+    ctx      context.Context
+    cancel   context.CancelFunc
+    wg       sync.WaitGroup
+    stopOnce sync.Once
+    started  bool
+    stopped  bool
+    mu       sync.Mutex
+}
+```
+
+### 使用方式
+
+```go
+sender := ahp.NewHeartbeatSender(agentID, 5*time.Second, queue)
+if err := sender.Validate(); err != nil {
+    log.Fatal(err)
+}
+sender.Start(ctx)
+// ... agent 运行中 ...
+sender.Stop() // 优雅关闭，等待 goroutine 退出
+```
+
+`Stop` 之后可以再次调用 `Start`，使 sender 可在重启周期间复用。`Stop` 使用 `sync.Once` 确保 cancel/wait 序列即使在并发调用下也只执行一次。

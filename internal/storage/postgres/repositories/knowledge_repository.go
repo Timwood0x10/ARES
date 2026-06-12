@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // KnowledgeRepository provides data access for knowledge chunks.
@@ -49,32 +49,6 @@ func float64ToVectorString(vec []float64) string {
 		strs[i] = fmt.Sprintf("%.6f", v)
 	}
 	return "[" + strings.Join(strs, ",") + "]"
-}
-
-// parseVectorString converts pgvector string format to []float64.
-func parseVectorString(vecStr string) ([]float64, error) {
-	// pgvector stores vectors in text format like "[0.1,0.2,0.3,...]"
-	// or in binary format which needs special handling
-	if len(vecStr) == 0 {
-		return []float64{}, nil
-	}
-
-	// Remove brackets and split by comma
-	vecStr = strings.Trim(vecStr, "[]")
-	if vecStr == "" {
-		return []float64{}, nil
-	}
-
-	parts := strings.Split(vecStr, ",")
-	result := make([]float64, len(parts))
-	for i, part := range parts {
-		val, err := fmt.Sscanf(strings.TrimSpace(part), "%f", &result[i])
-		if err != nil || val != 1 {
-			return nil, errors.Wrap(err, "failed to parse vector component")
-		}
-	}
-
-	return result, nil
 }
 
 // Create inserts a new knowledge chunk into the database.
@@ -327,7 +301,7 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	}
 
 	// Parse embedding string to float64 array
-	chunk.Embedding, err = parseVectorString(embeddingStr)
+	chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse embedding")
 	}
@@ -488,7 +462,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 		}
 
 		// Parse embedding string to []float64
-		chunk.Embedding, err = parseVectorString(embeddingStr)
+		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			slog.Warn("Failed to parse embedding", "row", rowCount, "error", err)
 			continue
@@ -536,17 +510,17 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 // Returns list of matching knowledge chunks ordered by relevance.
 func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	sqlQuery := `
-		SELECT id, tenant_id, content, embedding, embedding_model, embedding_version,
-			   embedding_status, source_type, source, metadata, document_id,
-			   chunk_index, content_hash, access_count, created_at, updated_at,
-			   ts_rank(tsv, plainto_tsquery('simple', $1)) as score
-		FROM knowledge_chunks_1024
-		WHERE tsv @@ plainto_tsquery('simple', $1)
-		  AND tenant_id = $2
-		  AND embedding_status = 'completed'
-		ORDER BY ts_rank(tsv, plainto_tsquery('simple', $1)) DESC
-		LIMIT $3
-	`
+        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+               embedding_status, source_type, source, metadata::text, document_id,
+               chunk_index, content_hash, access_count, created_at, updated_at,
+               ts_rank(tsv, plainto_tsquery('simple', $1)) as score
+        FROM knowledge_chunks_1024
+        WHERE tsv @@ plainto_tsquery('simple', $1)
+          AND tenant_id = $2
+          AND embedding_status = 'completed'
+        ORDER BY ts_rank(tsv, plainto_tsquery('simple', $1)) DESC
+        LIMIT $3
+    `
 
 	rows, err := r.db.QueryContext(ctx, sqlQuery, query, tenantID, limit)
 	if err != nil {
@@ -558,16 +532,35 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
 		var score float64
+		var embeddingStr, metadataStr string
+		var documentID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &chunk.Embedding,
+			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
-			&chunk.SourceType, &chunk.Source, &chunk.Metadata, &chunk.DocumentID,
+			&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt, &score,
 		)
 		if err != nil {
 			continue
 		}
+
+		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to parse embedding in keyword search", "error", err)
+			continue
+		}
+
+		if metadataStr != "" {
+			if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
+				chunk.Metadata = make(map[string]interface{})
+			}
+		}
+
+		if documentID.Valid {
+			chunk.DocumentID = documentID.String
+		}
+
 		if chunk.Metadata == nil {
 			chunk.Metadata = make(map[string]interface{})
 		}
@@ -591,13 +584,13 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
 // Returns list of knowledge chunks ordered by chunk index.
 func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, tenantID string) ([]*storage_models.KnowledgeChunk, error) {
 	query := `
-		SELECT id, tenant_id, content, embedding, embedding_model, embedding_version,
-			   embedding_status, source_type, source, metadata, document_id,
-			   chunk_index, content_hash, access_count, created_at, updated_at
-		FROM knowledge_chunks_1024
-		WHERE document_id = $1 AND tenant_id = $2
-		ORDER BY chunk_index ASC
-	`
+        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+               embedding_status, source_type, source, metadata::text, document_id,
+               chunk_index, content_hash, access_count, created_at, updated_at
+        FROM knowledge_chunks_1024
+        WHERE document_id = $1 AND tenant_id = $2
+        ORDER BY chunk_index ASC
+    `
 
 	rows, err := r.db.QueryContext(ctx, query, documentID, tenantID)
 	if err != nil {
@@ -608,16 +601,35 @@ func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, te
 	chunks := make([]*storage_models.KnowledgeChunk, 0)
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
+		var embeddingStr, metadataStr string
+		var docID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &chunk.Embedding,
+			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
-			&chunk.SourceType, &chunk.Source, &chunk.Metadata, &chunk.DocumentID,
+			&chunk.SourceType, &chunk.Source, &metadataStr, &docID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt,
 		)
 		if err != nil {
 			continue
 		}
+
+		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to parse embedding in ListByDocument", "error", err)
+			continue
+		}
+
+		if metadataStr != "" {
+			if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
+				chunk.Metadata = make(map[string]interface{})
+			}
+		}
+
+		if docID.Valid {
+			chunk.DocumentID = docID.String
+		}
+
 		chunks = append(chunks, chunk)
 	}
 
@@ -645,19 +657,21 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 		limit = 100
 	}
 
-	sqlQuery := `
-		SELECT id, tenant_id, content, embedding, embedding_model, embedding_version,
-			   embedding_status, source_type, source, metadata, document_id,
-			   chunk_index, content_hash, access_count, created_at, updated_at
-		FROM knowledge_chunks_1024
-		WHERE content ILIKE '%' || $1 || '%'
-		  AND tenant_id = $2
-		  AND embedding_status = 'completed'
-		ORDER BY created_at DESC
-		LIMIT $3
-	`
+	escapedQuery := postgres.EscapeILIKEPattern(query)
 
-	rows, err := r.db.QueryContext(ctx, sqlQuery, query, tenantID, limit)
+	sqlQuery := `
+        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+               embedding_status, source_type, source, metadata::text, document_id,
+               chunk_index, content_hash, access_count, created_at, updated_at
+        FROM knowledge_chunks_1024
+        WHERE content ILIKE '%' || $1 || '%' ESCAPE '\'
+          AND tenant_id = $2
+          AND embedding_status = 'completed'
+        ORDER BY created_at DESC
+        LIMIT $3
+    `
+
+	rows, err := r.db.QueryContext(ctx, sqlQuery, escapedQuery, tenantID, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "substring search")
 	}
@@ -666,16 +680,35 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 	chunks := make([]*storage_models.KnowledgeChunk, 0)
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
+		var embeddingStr, metadataStr string
+		var documentID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &chunk.Embedding,
+			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
-			&chunk.SourceType, &chunk.Source, &chunk.Metadata, &chunk.DocumentID,
+			&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt,
 		)
 		if err != nil {
 			continue
 		}
+
+		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to parse embedding in SearchBySubstring", "error", err)
+			continue
+		}
+
+		if metadataStr != "" {
+			if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
+				chunk.Metadata = make(map[string]interface{})
+			}
+		}
+
+		if documentID.Valid {
+			chunk.DocumentID = documentID.String
+		}
+
 		chunks = append(chunks, chunk)
 	}
 
@@ -696,15 +729,17 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 // version - embedding model version.
 // Returns error if update operation fails.
 func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
-	query := `
-		UPDATE knowledge_chunks_1024
-		SET embedding = $2, embedding_model = $3, embedding_version = $4,
-			embedding_status = 'completed', embedding_processed_at = NOW(),
-			updated_at = NOW()
-		WHERE id = $1
-	`
+	embeddingStr := postgres.FormatVector(embedding)
 
-	result, err := r.db.ExecContext(ctx, query, id, embedding, model, version)
+	query := `
+        UPDATE knowledge_chunks_1024
+        SET embedding = $2::vector, embedding_model = $3, embedding_version = $4,
+            embedding_status = 'completed', embedding_processed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+    `
+
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}

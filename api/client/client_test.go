@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/core"
-	agentSvc "github.com/Timwood0x10/goagent/api/service/agent"
-	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
-	memorySvc "github.com/Timwood0x10/goagent/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/goagent/api/service/retrieval"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/api/core"
+	agentSvc "goagentx/api/service/agent"
+	llmSvc "goagentx/api/service/llm"
+	memorySvc "goagentx/api/service/memory"
+	retrievalSvc "goagentx/api/service/retrieval"
 )
 
 // TestNewClient tests the creation of a new client instance.
@@ -398,9 +400,7 @@ func TestNewClientWithConfigFile(t *testing.T) {
 		t.Fatalf("NewClientWithConfigFile() error = %v", err)
 	}
 
-	if client == nil {
-		t.Fatal("expected client to be non-nil")
-	}
+	require.NotNil(t, client)
 
 	if client.configFile == nil {
 		t.Errorf("expected configFile to be set")

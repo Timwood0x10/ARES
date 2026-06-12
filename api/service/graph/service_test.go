@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/observability"
-	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/observability"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 func TestNewService(t *testing.T) {
@@ -111,12 +113,12 @@ func TestExecuteWithTimeout(t *testing.T) {
 	}
 
 	response, err := service.Execute(context.Background(), g, request)
-	if err != nil {
-		t.Fatalf("execution failed: %v", err)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
 	}
-
+	require.NotNil(t, response)
 	if response.Error == "" {
-		t.Error("expected timeout error")
+		t.Error("expected error message in response")
 	}
 }
 

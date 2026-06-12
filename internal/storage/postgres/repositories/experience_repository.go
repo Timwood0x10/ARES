@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // ExperienceRepository provides data access for agent experiences.
@@ -159,7 +159,7 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 	}
 
 	// Parse embedding string to float64 array
-	exp.Embedding, err = parseVectorString(embeddingStr)
+	exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse embedding")
 	}
@@ -287,7 +287,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 		}
 
 		// Parse embedding string to float64 array
-		exp.Embedding, err = parseVectorString(embeddingStr)
+		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -329,18 +329,20 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 		return []*storage_models.Experience{}, nil
 	}
 
-	sqlQuery := `
-		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
-		FROM experiences_1024
-		WHERE (input ILIKE '%' || $1 || '%' OR output ILIKE '%' || $1 || '%')
-		  AND tenant_id = $2
-		  AND (decay_at IS NULL OR decay_at > NOW())
-		ORDER BY score DESC, created_at DESC
-		LIMIT $3
-	`
+	escapedQuery := postgres.EscapeILIKEPattern(query)
 
-	rows, err := r.db.QueryContext(ctx, sqlQuery, query, tenantID, limit)
+	sqlQuery := `
+        SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+               score, success, agent_id, metadata::text, decay_at, created_at
+        FROM experiences_1024
+        WHERE (input ILIKE '%' || $1 || '%' ESCAPE '\' OR output ILIKE '%' || $1 || '%' ESCAPE '\')
+          AND tenant_id = $2
+          AND (decay_at IS NULL OR decay_at > NOW())
+        ORDER BY score DESC, created_at DESC
+        LIMIT $3
+    `
+
+	rows, err := r.db.QueryContext(ctx, sqlQuery, escapedQuery, tenantID, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "keyword search")
 	}
@@ -361,7 +363,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 		}
 
 		// Parse embedding string to float64 array
-		exp.Embedding, err = parseVectorString(embeddingStr)
+		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -424,7 +426,7 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 		}
 
 		// Parse embedding string to float64 array
-		exp.Embedding, err = parseVectorString(embeddingStr)
+		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -517,7 +519,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 		}
 
 		// Parse embedding string to float64 array
-		exp.Embedding, err = parseVectorString(embeddingStr)
+		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}

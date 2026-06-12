@@ -5,13 +5,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
-	"github.com/Timwood0x10/goagent/internal/agents/base"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/workflow/engine"
+	llmSvc "goagentx/api/service/llm"
+	"goagentx/internal/agents/base"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	gerr "goagentx/internal/errors"
+	"goagentx/internal/workflow/engine"
 )
 
 // WorkflowClient provides workflow orchestration capabilities.
@@ -75,7 +77,7 @@ func (w *WorkflowClient) Execute(ctx context.Context, workflow *engine.Workflow,
 func (w *WorkflowClient) ExecuteFromFile(ctx context.Context, path, input string) (*engine.WorkflowResult, error) {
 	workflow, err := w.LoadWorkflow(ctx, path)
 	if err != nil {
-		return nil, errors.Wrap(err, "load workflow")
+		return nil, gerr.Wrap(err, "load workflow")
 	}
 
 	return w.Execute(ctx, workflow, input)
@@ -125,6 +127,9 @@ type WorkflowAgentExecutor struct {
 	maxRetries int
 
 	category string
+
+	mu      sync.RWMutex
+	started bool
 }
 
 // ID returns the agent ID.
@@ -146,81 +151,64 @@ func (e *WorkflowAgentExecutor) Type() models.AgentType {
 // Status returns the agent status.
 
 func (e *WorkflowAgentExecutor) Status() models.AgentStatus {
-
-	return models.AgentStatusReady
-
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.started {
+		return models.AgentStatusReady
+	}
+	return models.AgentStatusOffline
 }
 
 // Start starts the agent.
-
 func (e *WorkflowAgentExecutor) Start(ctx context.Context) error {
-
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.started {
+		return coreerrors.ErrAgentAlreadyStarted
+	}
+	if e.llmService == nil {
+		return fmt.Errorf("llmService is not configured for agent %s", e.agentID)
+	}
+	e.started = true
 	return nil
-
 }
 
 // Stop stops the agent.
-
 func (e *WorkflowAgentExecutor) Stop(ctx context.Context) error {
-
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.started {
+		return coreerrors.ErrAgentNotRunning
+	}
+	e.started = false
 	return nil
-
 }
 
 // Process executes a workflow step.
 
 func (e *WorkflowAgentExecutor) Process(ctx context.Context, input any) (any, error) {
+	if e.llmService == nil {
+		return nil, fmt.Errorf("llmService is not configured for agent %s", e.agentID)
+	}
 
 	inputStr, ok := input.(string)
-
 	if !ok {
-
 		return nil, fmt.Errorf("input must be string")
-
 	}
-
-	// Build prompt based on agent type and configured prompts
 
 	var prompt string
-
-	// Check if we have configured prompts
-
 	if e.prompts != nil {
-
-		// Use recommendation template if available
-
 		if e.prompts.Recommendation != "" {
-
-			// Replace template variables
-
 			prompt = e.prompts.Recommendation
-
-			// Replace category
-
 			if e.category != "" {
-
 				prompt = strings.ReplaceAll(prompt, "{{.category}}", e.category)
-
 			}
-
-			// Replace {{.input}} with actual user input
-
 			prompt = strings.ReplaceAll(prompt, "{{.input}}", inputStr)
-
-			// Replace requirements with user input as fallback.
 			prompt = strings.ReplaceAll(prompt, "{{.requirements}}", inputStr)
-
 		} else if e.prompts.ProfileExtraction != "" && strings.Contains(strings.ToLower(inputStr), "extract") {
-
-			// Use profile extraction template
-
 			prompt = strings.ReplaceAll(e.prompts.ProfileExtraction, "{{.user_input}}", inputStr)
-
 		}
-
 	}
-
-	// Fallback prompt if no template was used.
 	if prompt == "" {
 		prompt = fmt.Sprintf(
 			"You are a professional assistant acting as %s agent.\n\nTask: %s\n\nProvide your output in JSON format.",
@@ -228,33 +216,78 @@ func (e *WorkflowAgentExecutor) Process(ctx context.Context, input any) (any, er
 		)
 	}
 
-	// Execute with LLM
-
-	result, err := e.llmService.GenerateSimple(ctx, prompt)
-
-	if err != nil {
-
-		return nil, errors.Wrapf(err, "execute agent %s", e.agentID)
-
+	retries := e.maxRetries
+	if retries <= 0 {
+		retries = 1
 	}
 
-	// Return a simple recommend result
+	var lastErr error
+	for attempt := 0; attempt < retries; attempt++ {
+		callCtx := ctx
+		var cancel context.CancelFunc
+		if e.timeout > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, e.timeout)
+		}
 
-	return &models.RecommendResult{
+		result, err := e.llmService.GenerateSimple(callCtx, prompt)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{
+					{
+						ItemID:      e.agentID,
+						Name:        e.agentName,
+						Category:    e.agentType,
+						Description: result,
+					},
+				},
+			}, nil
+		}
+		lastErr = err
+	}
 
-		Items: []*models.RecommendItem{
+	return nil, gerr.Wrapf(lastErr, "execute agent %s after %d retries", e.agentID, retries)
+}
 
-			{
+// ProcessStream executes a workflow step and returns a stream of events.
+func (e *WorkflowAgentExecutor) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	ch := make(chan base.AgentEvent, 64)
 
-				ItemID: e.agentID,
+	go func() {
+		defer close(ch)
 
-				Name: e.agentName,
+		// Send task start event
+		select {
+		case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: e.agentID, Data: input}:
+		case <-ctx.Done():
+			return
+		}
 
-				Category: e.agentType,
+		// Execute the task
+		result, err := e.Process(ctx, input)
+		if err != nil {
+			select {
+			case ch <- base.AgentEvent{Type: base.EventComplete, Source: e.agentID, Err: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
 
-				Description: result,
-			},
-		},
-	}, nil
+		// Send task complete event with result data
+		select {
+		case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: e.agentID, Data: result}:
+		case <-ctx.Done():
+			return
+		}
 
+		// Send final completion event (no data — result already in EventTaskComplete)
+		select {
+		case ch <- base.AgentEvent{Type: base.EventComplete, Source: e.agentID}:
+		case <-ctx.Done():
+		}
+	}()
+
+	return ch, nil
 }

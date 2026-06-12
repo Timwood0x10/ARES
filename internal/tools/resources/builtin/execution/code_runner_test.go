@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestNewCodeRunner tests creating a new CodeRunner.
 func TestNewCodeRunner(t *testing.T) {
 	runner := NewCodeRunner()
-	if runner == nil {
-		t.Fatal("NewCodeRunner() should not return nil")
-	}
+	require.NotNil(t, runner)
 	if runner.Name() != "code_runner" {
 		t.Errorf("Name() = %q, want 'code_runner'", runner.Name())
 	}
@@ -77,9 +77,7 @@ func TestNewCodeRunnerWithOptions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := NewCodeRunnerWithOptions(tt.enablePython, tt.enableJS, tt.timeout, tt.maxOutputSize)
-			if runner == nil {
-				t.Fatal("NewCodeRunnerWithOptions() should not return nil")
-			}
+			require.NotNil(t, runner)
 			if runner.enablePython != tt.enablePython {
 				t.Errorf("enablePython = %v, want %v", runner.enablePython, tt.enablePython)
 			}
@@ -622,9 +620,7 @@ func TestCodeRunnerCapabilities(t *testing.T) {
 	}
 
 	parameters := runner.Parameters()
-	if parameters == nil {
-		t.Fatal("Parameters() should not be nil")
-	}
+	require.NotNil(t, parameters)
 
 	if parameters.Type != "object" {
 		t.Errorf("Parameters.Type = %q, want 'object'", parameters.Type)

@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	memctx "github.com/Timwood0x10/goagent/internal/memory/context"
-	"github.com/Timwood0x10/goagent/internal/memory/distillation"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	memctx "goagentx/internal/memory/context"
+	"goagentx/internal/memory/distillation"
+	"goagentx/internal/storage/postgres/embedding"
 )
 
 // memoryManager implements MemoryManager interface.
@@ -156,6 +156,8 @@ func (m *memoryManager) Stop(ctx context.Context) error {
 		m.cleanupCancel()
 		m.cleanupCancel = nil
 	}
+
+	m.taskMemory.Stop()
 
 	if err := m.sessionMemory.Close(ctx); err != nil {
 		slog.Warn("Failed to close session memory", "error", err)
@@ -786,6 +788,12 @@ func (m *memoryManager) cosineSimilarity(v1, v2 []float64) float64 {
 	}
 
 	return result
+}
+
+// GetLatestSessionForLeader returns an empty session ID for in-memory implementation.
+// Session recovery requires persistent storage; use ProductionMemoryManager for that.
+func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", nil
 }
 
 // truncate truncates a string to the maximum length (in runes) and adds "..." if truncated.

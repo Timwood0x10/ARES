@@ -8,10 +8,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/service/graph"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/observability"
-	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
+	"goagentx/api/service/graph"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/observability"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 // SupportTicket represents a customer support ticket
@@ -45,6 +46,15 @@ func (t *TicketClassifier) Process(ctx context.Context, input any) (any, error) 
 
 	ticket.Category = category
 	return ticket, nil
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (t *TicketClassifier) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	result, err := t.Process(ctx, input)
+	ch := make(chan base.AgentEvent, 1)
+	ch <- base.AgentEvent{Type: base.EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
 }
 
 func (t *TicketClassifier) ID() string {
@@ -90,6 +100,15 @@ func (p *PriorityAnalyzer) Process(ctx context.Context, input any) (any, error) 
 	return ticket, nil
 }
 
+// ProcessStream handles input and returns a stream of events.
+func (p *PriorityAnalyzer) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	result, err := p.Process(ctx, input)
+	ch := make(chan base.AgentEvent, 1)
+	ch <- base.AgentEvent{Type: base.EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
+}
+
 func (p *PriorityAnalyzer) ID() string {
 	return p.id
 }
@@ -132,6 +151,15 @@ func (r *TicketRouter) Process(ctx context.Context, input any) (any, error) {
 	}
 
 	return fmt.Sprintf("Ticket %s routed to %s (priority: %s)", ticket.ID, handler, ticket.Priority), nil
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (r *TicketRouter) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	result, err := r.Process(ctx, input)
+	ch := make(chan base.AgentEvent, 1)
+	ch <- base.AgentEvent{Type: base.EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
 }
 
 func (r *TicketRouter) ID() string {

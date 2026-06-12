@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"sync"
 
-	apperrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	apperrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
+
+// ErrTaskNotStarted indicates a task was never attempted, typically because a
+// concurrent task failure cancelled the errgroup context before execution began.
+var ErrTaskNotStarted = errors.New("task not started: cancelled by concurrent task failure")
 
 // TaskExecutorFunc is a function type for executing tasks directly.
 type TaskExecutorFunc func(ctx context.Context, task *models.Task) (*models.TaskResult, error)
@@ -56,6 +61,7 @@ func (s *LocalMessageSender) Send(ctx context.Context, agentAddr string, msg *ah
 
 // taskDispatcher dispatches tasks to sub-agents.
 type taskDispatcher struct {
+	mu            sync.RWMutex
 	agentRegistry map[models.AgentType]string
 	executorFuncs map[models.AgentType]TaskExecutorFunc
 	messageSender MessageSender
@@ -83,6 +89,8 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 
 // RegisterExecutor registers an executor function for a specific agent type.
 func (d *taskDispatcher) RegisterExecutor(agentType models.AgentType, fn func(ctx context.Context, task *models.Task) (*models.TaskResult, error)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.executorFuncs[agentType] = fn
 }
 
@@ -118,6 +126,9 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 			resultsMu.Lock()
 			results[i] = execResult
 			resultsMu.Unlock()
+			if !execResult.Success {
+				return fmt.Errorf("task %s failed: %s", task.TaskID, execResult.Error)
+			}
 			return nil
 		})
 	}
@@ -126,7 +137,7 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 		for i, r := range results {
 			if r == nil && i < len(tasks) && tasks[i] != nil {
 				results[i] = models.NewTaskResult(tasks[i].TaskID, tasks[i].AgentType)
-				results[i].SetError("task failed: " + err.Error())
+				results[i].SetError(ErrTaskNotStarted.Error())
 			}
 		}
 		return results, fmt.Errorf("%w: %v", apperrors.ErrDispatchFailed, err)
@@ -139,7 +150,11 @@ func (d *taskDispatcher) executeTask(ctx context.Context, task *models.Task) *mo
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 
 	// Get agent address from registry
+	d.mu.RLock()
 	agentAddr, ok := d.agentRegistry[task.AgentType]
+	fn, hasExecutor := d.executorFuncs[task.AgentType]
+	d.mu.RUnlock()
+
 	if !ok {
 		result.SetError("agent not found in registry")
 		return result
@@ -148,7 +163,7 @@ func (d *taskDispatcher) executeTask(ctx context.Context, task *models.Task) *mo
 	slog.Debug("Executing task", "task_id", task.TaskID, "agent_type", task.AgentType, "agent_addr", agentAddr)
 
 	// Check if we have a direct executor registered
-	if fn, exists := d.executorFuncs[task.AgentType]; exists {
+	if hasExecutor {
 		slog.Debug("Calling executor", "agent_type", task.AgentType)
 		execResult, err := fn(ctx, task)
 		if err != nil {

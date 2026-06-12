@@ -5,7 +5,12 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
+
+// MaxRetriesUnlimited indicates that a DLQ entry should be retried indefinitely.
+const MaxRetriesUnlimited = 0
 
 // DLQ represents a Dead Letter Queue for failed messages.
 type DLQ struct {
@@ -16,11 +21,12 @@ type DLQ struct {
 
 // DLQEntry represents an entry in the dead letter queue.
 type DLQEntry struct {
-	Message   *AHPMessage
-	Error     error
-	Reason    string
-	Timestamp time.Time
-	Retries   int
+	Message    *AHPMessage
+	Error      error
+	Reason     string
+	Timestamp  time.Time
+	Retries    int
+	MaxRetries int `json:"max_retries"`
 }
 
 // NewDLQ creates a new DLQ.
@@ -49,6 +55,7 @@ func (d *DLQ) Add(msg *AHPMessage, err error, reason string) {
 
 	// Remove oldest if full
 	if len(d.messages) >= d.maxSize {
+		d.messages[0] = nil
 		d.messages = d.messages[1:]
 	}
 
@@ -101,22 +108,25 @@ func (d *DLQ) Size() int {
 	return len(d.messages)
 }
 
-// Clear removes all entries from the DLQ.
+// Clear removes all entries from the DLQ and releases the backing array.
 func (d *DLQ) Clear() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.messages = d.messages[:0]
+	d.messages = make([]*DLQEntry, 0, d.maxSize)
 }
 
-// Remove removes an entry from the DLQ.
+// Remove removes an entry from the DLQ and nils the trailing slot
+// to avoid leaking the pointer through the underlying array.
 func (d *DLQ) Remove(entry *DLQEntry) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	for i, e := range d.messages {
 		if e == entry {
-			d.messages = append(d.messages[:i], d.messages[i+1:]...)
+			copy(d.messages[i:], d.messages[i+1:])
+			d.messages[len(d.messages)-1] = nil
+			d.messages = d.messages[:len(d.messages)-1]
 			return
 		}
 	}
@@ -138,11 +148,12 @@ func (d *DLQ) RemoveBySession(sessionID string) {
 
 // DLQProcessor handles processing of dead letter queue messages.
 type DLQProcessor struct {
-	dlq       *DLQ
-	handlers  map[string]DLQHandler
-	mu        sync.RWMutex
-	processed int
-	failed    int
+	dlq           *DLQ
+	handlers      map[string]DLQHandler
+	mu            sync.RWMutex
+	processed     int
+	failed        int
+	retryInterval time.Duration
 }
 
 // DLQHandler handles a dead letter queue entry.
@@ -169,6 +180,13 @@ func (p *DLQProcessor) Process(ctx context.Context) error {
 	entries := p.dlq.GetAll()
 
 	for _, entry := range entries {
+		// Skip entries that have exhausted their retry budget.
+		if entry.MaxRetries > 0 && entry.Retries >= entry.MaxRetries {
+			continue
+		}
+
+		entry.Retries++
+
 		if err := p.processEntry(ctx, entry); err != nil {
 			p.mu.Lock()
 			p.failed++
@@ -184,6 +202,35 @@ func (p *DLQProcessor) Process(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// StartAutoRetry starts a background loop that retries all pending DLQ entries
+// at the given interval. It exits when ctx is cancelled. The caller must use
+// errgroup or a cancellable context to manage the goroutine lifecycle.
+func (p *DLQProcessor) StartAutoRetry(ctx context.Context, interval time.Duration) {
+	p.retryInterval = interval
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-gCtx.Done():
+				return nil
+			case <-ticker.C:
+				if err := p.Process(gCtx); err != nil {
+					slog.Error("DLQ auto-retry tick failed", "error", err)
+				}
+			}
+		}
+	})
+
+	// Block until context is cancelled; ignore the error since the
+	// goroutine returns nil on context cancellation.
+	_ = g.Wait()
 }
 
 // processEntry processes a single DLQ entry.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestBaseConfig tests BaseConfig initialization and fields.
@@ -300,9 +302,7 @@ func TestNewRequestContext(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rc := NewRequestContext(tt.ctx, tt.tenantID)
 
-			if rc == nil {
-				t.Fatal("NewRequestContext() should not return nil")
-			}
+			require.NotNil(t, rc)
 
 			if rc.Context != tt.ctx {
 				t.Errorf("NewRequestContext().Context = %v, want %v", rc.Context, tt.ctx)

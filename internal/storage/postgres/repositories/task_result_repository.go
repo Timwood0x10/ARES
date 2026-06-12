@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // TaskResultRepository provides data access for task execution results.
@@ -175,7 +175,7 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 	}
 
 	// Parse embedding string to float64 array
-	result.Embedding, err = parseVectorString(embeddingStr)
+	result.Embedding, err = postgres.ParseVectorString(embeddingStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse embedding")
 	}
@@ -343,7 +343,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 		}
 
 		// Parse embedding string to float64 array
-		result.Embedding, err = parseVectorString(embeddingStr)
+		result.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			slog.Error("Failed to parse embedding vector", "task_id", result.ID, "error", err)
 			skippedCount++
@@ -444,7 +444,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 		}
 
 		// Parse embedding string to float64 array
-		result.Embedding, err = parseVectorString(embeddingStr)
+		result.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			slog.Error("Failed to parse embedding vector", "task_id", result.ID, "error", err)
 			skippedCount++
@@ -535,7 +535,7 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 		}
 
 		// Parse embedding string to float64 array
-		result.Embedding, err = parseVectorString(embeddingStr)
+		result.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}

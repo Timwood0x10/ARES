@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/memory"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/core/models"
+	"goagentx/internal/memory"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // MockMemoryManager is a mock implementation of memory.MemoryManager for testing.
@@ -61,6 +63,10 @@ func (m *MockMemoryManager) DistillTask(ctx context.Context, taskID string) (*mo
 
 func (m *MockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
 	return nil
+}
+
+func (m *MockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", nil
 }
 
 func (m *MockMemoryManager) Start(ctx context.Context) error {
@@ -128,9 +134,7 @@ func TestNewMemorySearch(t *testing.T) {
 	memoryMgr := &MockMemoryManager{}
 	search := NewMemorySearch(memoryMgr)
 
-	if search == nil {
-		t.Fatal("NewMemorySearch() should not return nil")
-	}
+	require.NotNil(t, search)
 	if search.Name() != "memory_search" {
 		t.Errorf("Name() = %q, want 'memory_search'", search.Name())
 	}
@@ -350,9 +354,7 @@ func TestNewUserProfile(t *testing.T) {
 	distilledRepo := &MockDistilledMemoryRepository{}
 	profile := NewUserProfile(memoryMgr, distilledRepo)
 
-	if profile == nil {
-		t.Fatal("NewUserProfile() should not return nil")
-	}
+	require.NotNil(t, profile)
 	if profile.Name() != "user_profile" {
 		t.Errorf("Name() = %q, want 'user_profile'", profile.Name())
 	}

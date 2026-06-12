@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -48,6 +49,7 @@ const (
 
 // Factory creates limiters based on type.
 type Factory struct {
+	mu       sync.RWMutex
 	creators map[LimiterType]func(*LimiterConfig) Limiter
 }
 
@@ -75,10 +77,9 @@ func NewFactory() *Factory {
 }
 
 // Register registers a limiter creator function for a specific limiter type.
-// Args:
-// limiterType - the type identifier for the limiter.
-// creator - function that creates a limiter instance from configuration.
 func (f *Factory) Register(limiterType LimiterType, creator func(*LimiterConfig) Limiter) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.creators[limiterType] = creator
 }
 
@@ -90,7 +91,9 @@ func (f *Factory) Register(limiterType LimiterType, creator func(*LimiterConfig)
 // Limiter - the created limiter instance.
 // error - ErrUnsupportedLimiterType if limiter type is not registered.
 func (f *Factory) Create(limiterType LimiterType, config *LimiterConfig) (Limiter, error) {
+	f.mu.RLock()
 	creator, exists := f.creators[limiterType]
+	f.mu.RUnlock()
 	if !exists {
 		return nil, ErrUnsupportedLimiterType
 	}

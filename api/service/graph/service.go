@@ -4,12 +4,13 @@ package graph
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/observability"
-	"github.com/Timwood0x10/goagent/internal/ratelimit"
-	wfgraph "github.com/Timwood0x10/goagent/internal/workflow/graph"
+	"goagentx/internal/observability"
+	"goagentx/internal/ratelimit"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 // Service provides graph orchestration operations.
@@ -142,7 +143,7 @@ func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *Execut
 			State:    state.ToParams(),
 			Duration: time.Duration(0),
 			Error:    err.Error(),
-		}, nil
+		}, fmt.Errorf("execute graph %s: %w", g.ID(), err)
 	}
 
 	slog.InfoContext(ctx, "graph execution completed",

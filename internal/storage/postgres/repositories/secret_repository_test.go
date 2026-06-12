@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/adapters"
+	"goagentx/internal/storage/postgres/adapters"
 )
 
 // TestSecretRepository_Set tests storing a secret value.
@@ -32,11 +32,12 @@ func TestSecretRepository_Set(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret
-	err := repo.Set(ctx, "test_key", "test_secret_value", "tenant-1")
+	err = repo.Set(ctx, "test_key", "test_secret_value", "tenant-1")
 	require.NoError(t, err)
 }
 
@@ -55,11 +56,12 @@ func TestSecretRepository_Set_Update(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store initial secret
-	err := repo.Set(ctx, "update_key", "initial_value", "tenant-1")
+	err = repo.Set(ctx, "update_key", "initial_value", "tenant-1")
 	require.NoError(t, err)
 
 	// Update the secret
@@ -87,11 +89,12 @@ func TestSecretRepository_Get(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret
-	err := repo.Set(ctx, "get_key", "get_secret_value", "tenant-1")
+	err = repo.Set(ctx, "get_key", "get_secret_value", "tenant-1")
 	require.NoError(t, err)
 
 	// Retrieve the secret
@@ -115,7 +118,8 @@ func TestSecretRepository_Get_NotFound(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Try to retrieve non-existent secret
@@ -139,11 +143,12 @@ func TestSecretRepository_Get_TenantIsolation(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store secret for tenant-1
-	err := repo.Set(ctx, "isolation_key", "tenant1_value", "tenant-1")
+	err = repo.Set(ctx, "isolation_key", "tenant1_value", "tenant-1")
 	require.NoError(t, err)
 
 	// Try to retrieve with tenant-2 (should fail)
@@ -167,11 +172,12 @@ func TestSecretRepository_Delete(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret
-	err := repo.Set(ctx, "delete_key", "delete_value", "tenant-1")
+	err = repo.Set(ctx, "delete_key", "delete_value", "tenant-1")
 	require.NoError(t, err)
 
 	// Delete the secret
@@ -199,11 +205,12 @@ func TestSecretRepository_Delete_NotFound(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Try to delete non-existent secret
-	err := repo.Delete(ctx, "non_existent_key", "tenant-1")
+	err = repo.Delete(ctx, "non_existent_key", "tenant-1")
 	assert.Error(t, err, "Should return error for non-existent secret")
 }
 
@@ -222,7 +229,8 @@ func TestSecretRepository_List(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store multiple secrets and verify each one.
@@ -277,7 +285,8 @@ func TestSecretRepository_List_Empty(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// List secrets for tenant with no secrets
@@ -301,12 +310,13 @@ func TestSecretRepository_SetWithExpiration(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret with expiration
 	expiresAt := time.Now().Add(1 * time.Hour)
-	err := repo.SetWithExpiration(ctx, "expire_key", "expire_value", "tenant-1", expiresAt)
+	err = repo.SetWithExpiration(ctx, "expire_key", "expire_value", "tenant-1", expiresAt)
 	require.NoError(t, err)
 
 	// Retrieve the secret (should work before expiration)
@@ -330,12 +340,13 @@ func TestSecretRepository_SetWithExpiration_Expired(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret with past expiration (use UTC time to avoid timezone issues)
 	expiresAt := time.Now().UTC().Add(-1 * time.Hour)
-	err := repo.SetWithExpiration(ctx, "expired_key", "expired_value", "tenant-1", expiresAt)
+	err = repo.SetWithExpiration(ctx, "expired_key", "expired_value", "tenant-1", expiresAt)
 	require.NoError(t, err)
 
 	// Try to retrieve the expired secret
@@ -359,11 +370,12 @@ func TestSecretRepository_UpdateMetadata(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret.
-	err := repo.Set(ctx, "metadata_test_key", "metadata_value", "tenant-meta-test")
+	err = repo.Set(ctx, "metadata_test_key", "metadata_value", "tenant-meta-test")
 	require.NoError(t, err)
 
 	// Update metadata.
@@ -417,12 +429,13 @@ func TestSecretRepository_UpdateMetadata_NotFound(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Try to update metadata for non-existent secret
 	metadata := map[string]interface{}{"test": "value"}
-	err := repo.UpdateMetadata(ctx, "non_existent_key", "tenant-1", metadata)
+	err = repo.UpdateMetadata(ctx, "non_existent_key", "tenant-1", metadata)
 	assert.Error(t, err, "Should return error for non-existent secret")
 }
 
@@ -441,12 +454,13 @@ func TestSecretRepository_CleanupExpired(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store an expired secret (use UTC time to avoid timezone issues)
 	expiresAt := time.Now().UTC().Add(-2 * time.Hour)
-	err := repo.SetWithExpiration(ctx, "cleanup_expired_key_test", "cleanup_expired_value", "tenant-1", expiresAt)
+	err = repo.SetWithExpiration(ctx, "cleanup_expired_key_test", "cleanup_expired_value", "tenant-1", expiresAt)
 	require.NoError(t, err)
 
 	// Store a non-expired secret
@@ -483,7 +497,8 @@ func TestSecretRepository_RotateKey(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store secrets with initial key
@@ -510,7 +525,8 @@ func TestSecretRepository_RotateKey(t *testing.T) {
 	assert.Equal(t, int64(3), updated, "Should update 3 secrets")
 
 	// Verify secrets can still be decrypted with new key
-	newRepo := NewSecretRepository(db, newKey)
+	newRepo, err := NewSecretRepository(db, newKey)
+	require.NoError(t, err)
 	for key, expectedValue := range secrets {
 		value, err := newRepo.Get(ctx, key, "tenant-1")
 		require.NoError(t, err, "Should be able to decrypt with new key")
@@ -533,12 +549,13 @@ func TestSecretRepository_RotateKey_InvalidKey(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Try to rotate with invalid key length
 	invalidKey := make([]byte, 16)
-	_, err := repo.RotateKey(ctx, "tenant-1", invalidKey)
+	_, err = repo.RotateKey(ctx, "tenant-1", invalidKey)
 	assert.Error(t, err, "Should return error for invalid key length")
 }
 
@@ -557,11 +574,12 @@ func TestSecretRepository_Export(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store secrets
-	err := repo.Set(ctx, "export_key1", "export_value1", "tenant-1")
+	err = repo.Set(ctx, "export_key1", "export_value1", "tenant-1")
 	require.NoError(t, err)
 	err = repo.Set(ctx, "export_key2", "export_value2", "tenant-1")
 	require.NoError(t, err)
@@ -587,7 +605,8 @@ func TestSecretRepository_Export_Empty(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Export secrets for tenant with no secrets
@@ -611,7 +630,8 @@ func TestSecretRepository_Import(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Import secrets using JSON format
@@ -657,11 +677,12 @@ func TestSecretRepository_GetKeyVersion(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Store a secret
-	err := repo.Set(ctx, "version_key", "version_value", "tenant-1")
+	err = repo.Set(ctx, "version_key", "version_value", "tenant-1")
 	require.NoError(t, err)
 
 	// Get key version
@@ -694,7 +715,8 @@ func TestSecretRepository_GetKeyVersion_NotFound(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Try to get key version for non-existent secret
@@ -718,7 +740,8 @@ func TestSecretRepository_ConcurrentOperations(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Perform concurrent operations
@@ -759,7 +782,8 @@ func TestSecretRepository_LargeSecret(t *testing.T) {
 		encryptionKey[i] = byte(i)
 	}
 
-	repo := NewSecretRepository(db, encryptionKey)
+	repo, err := NewSecretRepository(db, encryptionKey)
+	require.NoError(t, err)
 	ctx := context.Background()
 
 	// Create a large secret (10KB)
@@ -769,7 +793,7 @@ func TestSecretRepository_LargeSecret(t *testing.T) {
 	}
 
 	// Store large secret
-	err := repo.Set(ctx, "large_key", string(largeValue), "tenant-1")
+	err = repo.Set(ctx, "large_key", string(largeValue), "tenant-1")
 	require.NoError(t, err)
 
 	// Retrieve large secret

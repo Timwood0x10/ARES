@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestNewResultFormatter tests creating a new ResultFormatter.

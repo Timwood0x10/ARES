@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -198,14 +198,20 @@ func (w *FileWatcher) Close() {
 }
 
 // scanAndLoad scans and loads workflows from directory.
+// M6 fix: hold Lock across the entire compare-and-swap cycle to prevent
+// TOCTOU race where concurrent scanAndLoad calls interleave read and write.
 func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return errors.Wrap(err, "read directory")
 	}
 
-	newWorkflows := make(map[string]*Workflow)
-	modified := false
+	// Build loaded workflows outside the lock (I/O is slow).
+	type loadedEntry struct {
+		workflow *Workflow
+		modTime  time.Time
+	}
+	loaded := make(map[string]loadedEntry)
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -228,22 +234,29 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 			continue
 		}
 
-		newWorkflows[workflow.ID] = workflow
-
-		w.mu.RLock()
-		oldWorkflow, exists := w.workflows[workflow.ID]
-		w.mu.RUnlock()
-
-		if !exists || stat.ModTime().After(oldWorkflow.UpdatedAt) {
-			modified = true
-		}
+		loaded[workflow.ID] = loadedEntry{workflow: workflow, modTime: stat.ModTime()}
 	}
 
+	// Hold Lock for the entire compare-and-swap to prevent interleaving.
+	w.mu.Lock()
+	modified := false
+	for id, le := range loaded {
+		oldWF, exists := w.workflows[id]
+		if !exists || le.modTime.After(oldWF.UpdatedAt) {
+			modified = true
+			break
+		}
+	}
 	if modified {
-		w.mu.Lock()
+		newWorkflows := make(map[string]*Workflow, len(loaded))
+		for id, le := range loaded {
+			newWorkflows[id] = le.workflow
+		}
 		w.workflows = newWorkflows
-		w.mu.Unlock()
+	}
+	w.mu.Unlock()
 
+	if modified {
 		w.notifyCallbacks()
 	}
 
@@ -251,14 +264,19 @@ func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
 }
 
 // notifyCallbacks notifies all registered callbacks.
+// M7 fix: deep-copy the workflows map before passing to callbacks so that
+// callbacks cannot mutate the shared map or see inconsistent state.
 func (w *FileWatcher) notifyCallbacks() {
 	w.mu.RLock()
-	workflows := w.workflows
+	workflowsCopy := make(map[string]*Workflow, len(w.workflows))
+	for k, v := range w.workflows {
+		workflowsCopy[k] = v
+	}
 	callbacks := w.callbacks
 	w.mu.RUnlock()
 
 	for _, cb := range callbacks {
-		cb.fn(workflows)
+		cb.fn(workflowsCopy)
 	}
 }
 
@@ -373,9 +391,14 @@ func (r *WorkflowReloader) onReload(workflows map[string]*Workflow) {
 }
 
 // notifyCallbacks notifies all registered callbacks.
+// M7 fix: deep-copy the workflows map before passing to callbacks so that
+// callbacks cannot mutate the shared map or see inconsistent state.
 func (r *WorkflowReloader) notifyCallbacks() {
 	r.mu.RLock()
-	workflows := r.workflows
+	workflowsCopy := make(map[string]*Workflow, len(r.workflows))
+	for k, v := range r.workflows {
+		workflowsCopy[k] = v
+	}
 	callbacksCopy := make(map[string]ReloadCallback, len(r.callbacks))
 	for k, v := range r.callbacks {
 		callbacksCopy[k] = v
@@ -383,7 +406,7 @@ func (r *WorkflowReloader) notifyCallbacks() {
 	r.mu.RUnlock()
 
 	for _, callback := range callbacksCopy {
-		callback(workflows)
+		callback(workflowsCopy)
 	}
 }
 

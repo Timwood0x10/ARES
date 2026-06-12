@@ -136,6 +136,18 @@ func (bp *Backpressure) Start(ctx context.Context, handler func(context.Context,
 		defer bp.wg.Done()
 		bp.processLoop(processCtx, handler)
 	}()
+
+	numWorkers := bp.maxActive
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+	for w := 1; w < numWorkers; w++ {
+		bp.wg.Add(1)
+		go func() {
+			defer bp.wg.Done()
+			bp.processLoop(processCtx, handler)
+		}()
+	}
 }
 
 // Stop gracefully stops the processing loop and waits for it to exit.
@@ -314,13 +326,9 @@ func (a *AdaptiveLimiter) Increase() {
 		a.currentRate = a.maxRate
 	}
 
-	// Update limiter rate
-	config := &LimiterConfig{
-		Rate:    a.currentRate,
-		Burst:   int(a.currentRate),
-		Timeout: 30 * time.Second,
+	if a.limiter != nil {
+		a.limiter.SetRate(a.currentRate)
 	}
-	a.limiter = NewTokenBucketLimiter(config)
 }
 
 // Decrease decreases the rate.
@@ -333,11 +341,7 @@ func (a *AdaptiveLimiter) Decrease() {
 		a.currentRate = a.minRate
 	}
 
-	// Update limiter rate
-	config := &LimiterConfig{
-		Rate:    a.currentRate,
-		Burst:   int(a.currentRate),
-		Timeout: 30 * time.Second,
+	if a.limiter != nil {
+		a.limiter.SetRate(a.currentRate)
 	}
-	a.limiter = NewTokenBucketLimiter(config)
 }

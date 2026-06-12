@@ -380,14 +380,14 @@ func TestSemaphoreLimiter(t *testing.T) {
 		limiter := NewSemaphoreLimiter(config)
 
 		available := limiter.Available()
-		if available != 0 {
-			t.Errorf("expected 0 available, got %d", available)
+		if available != 5 {
+			t.Errorf("expected 5 available, got %d", available)
 		}
 
 		limiter.Acquire(context.Background(), "test")
 		available = limiter.Available()
-		if available != 1 {
-			t.Errorf("expected 1 available, got %d", available)
+		if available != 4 {
+			t.Errorf("expected 4 available, got %d", available)
 		}
 	})
 
@@ -412,8 +412,8 @@ func TestSemaphoreLimiter(t *testing.T) {
 		limiter.Reset()
 
 		available := limiter.Available()
-		if available != 0 {
-			t.Errorf("expected 0 available after reset, got %d", available)
+		if available != 5 {
+			t.Errorf("expected 5 available after reset, got %d", available)
 		}
 	})
 

@@ -2,6 +2,9 @@
 
 .vscode
 
+.claude/
+.codegraph/
+
 plan/
 
 bin/
@@ -13,5 +16,4 @@ bin/
 *.excalidraw
 
 *.log
-
-coverage.out
+**/logs/

@@ -6,7 +6,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
 )
 
 // mockAgent is a test agent implementation.
@@ -17,6 +20,15 @@ type mockAgent struct {
 
 func (m *mockAgent) Process(ctx context.Context, input any) (any, error) {
 	return "processed", nil
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (m *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	result, err := m.Process(ctx, input)
+	ch := make(chan base.AgentEvent, 1)
+	ch <- base.AgentEvent{Type: base.EventComplete, Data: result, Err: err}
+	close(ch)
+	return ch, nil
 }
 
 func (m *mockAgent) ID() string {
@@ -41,9 +53,7 @@ func (m *mockAgent) Stop(ctx context.Context) error {
 
 func TestNewGraphBuilder(t *testing.T) {
 	builder := NewGraphBuilder()
-	if builder == nil {
-		t.Fatal("NewGraphBuilder() returned nil")
-	}
+	require.NotNil(t, builder)
 
 	if builder.agentRegistry == nil {
 		t.Error("agentRegistry not initialized")

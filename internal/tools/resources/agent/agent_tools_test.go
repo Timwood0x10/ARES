@@ -4,16 +4,16 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"github.com/stretchr/testify/require"
+
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestDefaultAgentToolConfig tests default configuration.
 func TestDefaultAgentToolConfig(t *testing.T) {
 	config := DefaultAgentToolConfig()
 
-	if config == nil {
-		t.Fatal("DefaultAgentToolConfig() should not return nil")
-	}
+	require.NotNil(t, config)
 
 	if config.Enabled != nil {
 		t.Error("Enabled should be nil for default config")
@@ -66,9 +66,7 @@ func TestNewAgentTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			agentTools := NewAgentTools(tt.config)
 
-			if agentTools == nil {
-				t.Fatal("NewAgentTools() should not return nil")
-			}
+			require.NotNil(t, agentTools)
 
 			if agentTools.registry == nil {
 				t.Error("registry should not be nil")
@@ -317,9 +315,7 @@ func TestAgentToolsGetCapabilityExport(t *testing.T) {
 
 	export := agentTools.GetCapabilityExport("test_agent")
 
-	if export == nil {
-		t.Fatal("export should not be nil")
-	}
+	require.NotNil(t, export)
 
 	if export.AgentName != "test_agent" {
 		t.Errorf("export agent name = %q, want %q", export.AgentName, "test_agent")

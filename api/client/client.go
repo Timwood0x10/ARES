@@ -5,12 +5,15 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/goagent/api/core"
-	agentSvc "github.com/Timwood0x10/goagent/api/service/agent"
-	llmSvc "github.com/Timwood0x10/goagent/api/service/llm"
-	memorySvc "github.com/Timwood0x10/goagent/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/goagent/api/service/retrieval"
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/api/core"
+	agentSvc "goagentx/api/service/agent"
+	llmSvc "goagentx/api/service/llm"
+	memorySvc "goagentx/api/service/memory"
+	retrievalSvc "goagentx/api/service/retrieval"
+	runtimeSvc "goagentx/api/service/runtime"
+	workflowSvc "goagentx/api/service/workflow"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
 )
 
 // Client provides a unified client interface for all GoAgent modules.
@@ -19,6 +22,7 @@ type Client struct {
 	memoryService    *memorySvc.Service
 	retrievalService *retrievalSvc.Service
 	llmService       *llmSvc.Service
+	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
 }
@@ -30,6 +34,7 @@ type Config struct {
 	Memory     *memorySvc.Config    // Memory service configuration
 	Retrieval  *retrievalSvc.Config // Retrieval service configuration
 	LLM        *llmSvc.Config       // LLM service configuration
+	Workflow   *workflowSvc.Config  // Workflow service configuration
 }
 
 // NewClient creates a new GoAgent client instance.
@@ -86,6 +91,14 @@ func NewClient(config *Config) (*Client, error) {
 		client.llmService = llmService
 	}
 
+	if config.Workflow != nil {
+		workflowService, err := workflowSvc.NewService(config.Workflow)
+		if err != nil {
+			return nil, errors.Wrap(err, "create workflow service")
+		}
+		client.workflowService = workflowService
+	}
+
 	return client, nil
 }
 
@@ -123,6 +136,35 @@ func (c *Client) LLM() (*llmSvc.Service, error) {
 		return nil, ErrLLMNotConfigured
 	}
 	return c.llmService, nil
+}
+
+// Workflow returns the workflow service.
+// Returns the workflow service or an error if not configured.
+func (c *Client) Workflow() (*workflowSvc.Service, error) {
+	if c.workflowService == nil {
+		return nil, ErrWorkflowNotConfigured
+	}
+	return c.workflowService, nil
+}
+
+// Runtime creates a new runtime service for agent lifecycle management.
+// This is a convenience method that wires up EventStore + HeartbeatMonitor + Resurrection.
+//
+// Args:
+//
+//	config - runtime configuration. Uses defaults if nil.
+//	eventStore - optional event store. If nil, uses in-memory store.
+//
+// Returns:
+//
+//	service - the runtime service.
+//	err - if creation fails.
+func (c *Client) Runtime(config *runtimeSvc.Config, eventStore events.EventStore) (*runtimeSvc.Service, error) {
+	if config == nil {
+		defaultCfg := runtimeSvc.DefaultConfig()
+		config = &defaultCfg
+	}
+	return runtimeSvc.NewService(*config, eventStore)
 }
 
 // Close closes the client and cleans up resources.

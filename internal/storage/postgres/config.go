@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // Config represents the database configuration.
@@ -102,10 +103,15 @@ func DefaultConfig() *Config {
 	}
 }
 
-// DSN returns the connection string.
+// DSN returns the connection string in PostgreSQL URI format.
+// URI format with URL encoding handles all special characters safely.
 func (c *Config) DSN() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable client_encoding=UTF8",
-		c.Host, c.Port, c.User, c.Password, c.Database)
+	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=disable&client_encoding=UTF8",
+		url.QueryEscape(c.User),
+		url.QueryEscape(c.Password),
+		url.QueryEscape(c.Host),
+		c.Port,
+		c.Database)
 }
 
 // Validate validates the configuration.

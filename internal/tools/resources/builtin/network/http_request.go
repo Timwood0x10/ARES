@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/tools/resources/base"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 )
 
 // HTTPRequest performs HTTP requests to external APIs.

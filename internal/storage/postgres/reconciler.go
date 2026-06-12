@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // EmbeddingReconciler provides eventual consistency for embedding operations.
@@ -118,6 +118,10 @@ func (r *EmbeddingReconciler) Reconcile(ctx context.Context) error {
 		}
 
 		if err := r.queue.Enqueue(ctx, task); err != nil {
+			if err == ErrDuplicateTask {
+				slog.Debug("Task already queued, skipping duplicate", "task_id", id)
+				continue
+			}
 			slog.Error("Failed to re-enqueue orphaned task", "task_id", id, "error", err)
 			continue
 		}

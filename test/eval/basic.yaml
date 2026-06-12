@@ -1,0 +1,49 @@
+name: Basic Agent Evaluation
+description: Basic test cases for agent evaluation
+tags:
+  - basic
+  - smoke
+
+test_cases:
+  - id: tc-001
+    name: Simple Query
+    input: "What is the capital of France?"
+    expected_output: "Paris"
+    timeout: 30s
+    tags:
+      - simple
+
+  - id: tc-002
+    name: Multi-Tool Query
+    input: "Calculate 25 * 4 and then search for information about the result"
+    expected_tools:
+      - calculator
+      - web_search
+    timeout: 60s
+    tags:
+      - multi-tool
+
+  - id: tc-003
+    name: Empty Result Handling
+    input: "Find information about a non-existent topic xyz123abc"
+    timeout: 30s
+    tags:
+      - edge-case
+
+  - id: tc-004
+    name: Chinese Input
+    input: "请分析人工智能领域的最新趋势"
+    timeout: 60s
+    tags:
+      - i18n
+      - chinese
+
+  - id: tc-005
+    name: Complex Analysis
+    input: "Analyze the latest tech trends in AI and cloud computing, summarize key findings with priorities"
+    expected_tools:
+      - web_search
+      - analyzer
+    timeout: 120s
+    tags:
+      - complex

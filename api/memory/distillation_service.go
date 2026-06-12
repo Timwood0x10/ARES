@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/memory/distillation"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
+	"goagentx/internal/errors"
+	"goagentx/internal/memory/distillation"
+	"goagentx/internal/storage/postgres/embedding"
 )
 
 // DistillationServiceImpl implements the DistillationService interface.

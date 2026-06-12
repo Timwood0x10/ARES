@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/observability"
+	"goagentx/internal/errors"
+	"goagentx/internal/observability"
 )
 
 // Execute runs the graph with the given state.
@@ -33,9 +33,27 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	// Initialize execution
 	startTime := time.Now()
 	executed := make(map[string]bool) // nodes that have been executed
-	readySet := make(map[string]bool) // nodes ready for execution
-	readyQueue := []string{g.start}   // ordered queue of ready nodes
-	readySet[g.start] = true
+
+	// Build in-degree map so nodes with multiple predecessors
+	// are only added to the ready queue when ALL predecessors have completed.
+	inDegree := make(map[string]int, len(g.nodes))
+	for id := range g.nodes {
+		inDegree[id] = 0
+	}
+	for _, edges := range g.edges {
+		for _, edge := range edges {
+			inDegree[edge.to]++
+		}
+	}
+	// Seed the ready queue with ALL nodes that have no predecessors.
+	readyQueue := make([]string, 0)
+	readySet := make(map[string]bool)
+	for id, deg := range inDegree {
+		if deg == 0 {
+			readyQueue = append(readyQueue, id)
+			readySet[id] = true
+		}
+	}
 	// Execute graph using BFS with scheduler
 	for len(readyQueue) > 0 {
 		// Select next node using scheduler
@@ -80,12 +98,19 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		// Mark as executed
 		executed[nodeID] = true
 
-		// Check edges and add next nodes to ready queue
+		// C7 fix: decrement in-degree for successor nodes.
+		// Decrement unconditionally (structural dependency satisfied),
+		// but only enqueue when inDegree reaches 0 AND at least one
+		// incoming edge has a satisfied condition. This prevents:
+		//   - Silent node loss: a node with multiple predecessors where
+		//     some conditional edges are false still gets enqueued as
+		//     long as ONE edge condition is satisfied.
+		//   - Ghost execution: a node whose ALL conditional edges are
+		//     false is correctly skipped.
 		for _, edge := range g.edges[nodeID] {
-			// Only add nodes that are not executed and not already ready
-			if !executed[edge.to] && !readySet[edge.to] {
-				// Check edge condition if present
-				if edge.cond == nil || edge.cond(state) {
+			inDegree[edge.to]--
+			if inDegree[edge.to] == 0 && !executed[edge.to] && !readySet[edge.to] {
+				if hasAnySatisfiedEdge(g, edge.to, state) {
 					readyQueue = append(readyQueue, edge.to)
 					readySet[edge.to] = true
 				}
@@ -109,4 +134,23 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		State:    state,
 		Duration: time.Since(startTime),
 	}, nil
+}
+
+// hasAnySatisfiedEdge checks if node targetID has at least one incoming edge
+// whose condition is satisfied (or has no condition). This is used when
+// inDegree reaches 0 to determine if the node should be enqueued: a node
+// with only unsatisfied conditional edges is considered unreachable and is
+// skipped rather than silently lost.
+func hasAnySatisfiedEdge(g *Graph, targetID string, state *State) bool {
+	for _, edges := range g.edges {
+		for _, edge := range edges {
+			if edge.to == targetID {
+				if edge.cond == nil || edge.cond(state) {
+					return true
+				}
+			}
+		}
+	}
+	// No incoming edges at all, or all conditions are false.
+	return false
 }

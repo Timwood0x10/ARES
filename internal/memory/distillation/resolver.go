@@ -5,7 +5,7 @@ import (
 	"context"
 	"math"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // ConflictResolver detects and resolves memory conflicts.

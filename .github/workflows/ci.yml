@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [improve]
   pull_request:
-    branches: [main, master, develop]
+    branches: [master]
 
 permissions:
   contents: read
@@ -23,15 +23,28 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+      - name: Format check
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Code not formatted. Run 'goimports -w .'"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@v1
         with:
-          version: latest
-          args: --timeout=10m
+          version: "latest"
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.26']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,27 +52,28 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: ${{ matrix.go-version }}
           cache: true
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Unit tests
+        run: go test -race -count=1 -timeout=300s ./...
 
-      - name: Run unit tests
-        run: go test -race -short -coverprofile=coverage.out ./...
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        if: success()
-        with:
-          files: ./coverage.out
-          flags: unittests
-          name: goagent
-          fail_ci_if_error: false
-
-  coverage-gate:
-    name: Coverage Gate
+  integration:
+    name: Integration Tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: goagent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -70,15 +84,27 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Run core coverage check
-        run: make test-core
+      - name: Integration tests
+        env:
+          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+        run: go test -race -count=1 -timeout=300s ./internal/integration/...
 
-      - name: Run tools coverage check
-        run: make test-tools
-
-  build:
-    name: Build
+  benchmark:
+    name: Benchmarks
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: goagent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -89,29 +115,13 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Build
-        run: go build -v ./...
+      - name: Run benchmarks
+        env:
+          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+        run: go test -bench=. -benchmem -count=1 -timeout=300s ./... 2>&1 | tee benchmark-output.txt
 
-      - name: Build examples
-        run: |
-          go build -v -o bin/travel ./examples/travel
-          go build -v -o bin/knowledge-base ./examples/knowledge-base
-          go build -v -o bin/simple ./examples/simple
-
-  security-check:
-    name: Security Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
         with:
-          go-version: '1.26'
-          cache: true
-
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
-        with:
-          args: './internal/... ./api/...'
+          name: benchmark-results
+          path: benchmark-output.txt

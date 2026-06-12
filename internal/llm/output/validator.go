@@ -7,11 +7,12 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // Validator validates data against schemas.
 type Validator struct {
+	mu               sync.RWMutex
 	customValidators map[string]ValidatorFunc
 	schemaType       string   // Schema type for validation (e.g., "default", "travel", "custom")
 	regexCache       sync.Map // Cache compiled regex patterns
@@ -59,6 +60,8 @@ func (v *Validator) registerDefaults() {
 
 // RegisterValidator registers a custom validator.
 func (v *Validator) RegisterValidator(name string, fn ValidatorFunc) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.customValidators[name] = fn
 }
 
@@ -103,11 +106,23 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 			return fmt.Errorf("%s: length %d exceeds maximum %d", path, len(str), *schema.MaxLength)
 		}
 		if schema.Pattern != "" {
-			// Use cached regex pattern for better performance
-			re, _ := v.regexCache.LoadOrStore(schema.Pattern, regexp.MustCompile(schema.Pattern))
-			regex := re.(*regexp.Regexp)
-			if !regex.MatchString(str) {
-				return fmt.Errorf("%s: does not match pattern %s", path, schema.Pattern)
+			// Use cached regex pattern for better performance.
+			// regexp.Compile is used instead of MustCompile to avoid panic on invalid patterns.
+			if re, ok := v.regexCache.Load(schema.Pattern); ok {
+				regex := re.(*regexp.Regexp)
+				if !regex.MatchString(str) {
+					return fmt.Errorf("%s: does not match pattern %s", path, schema.Pattern)
+				}
+			} else {
+				compiled, err := regexp.Compile(schema.Pattern)
+				if err != nil {
+					return fmt.Errorf("%s: invalid pattern %q: %w", path, schema.Pattern, err)
+				}
+				actual, _ := v.regexCache.LoadOrStore(schema.Pattern, compiled)
+				regex := actual.(*regexp.Regexp)
+				if !regex.MatchString(str) {
+					return fmt.Errorf("%s: does not match pattern %s", path, schema.Pattern)
+				}
 			}
 		}
 	}
@@ -161,7 +176,10 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 
 	// Custom validator
 	if schema.Type != "" {
-		if fn, exists := v.customValidators[schema.Type]; exists {
+		v.mu.RLock()
+		fn, exists := v.customValidators[schema.Type]
+		v.mu.RUnlock()
+		if exists {
 			if err := fn(data); err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
@@ -271,6 +289,9 @@ func (v *Validator) ValidateRecommendResult(result *models.RecommendResult) erro
 	// Convert RecommendResult items to []interface{} for validation
 	itemsInterface := make([]interface{}, len(result.Items))
 	for i, item := range result.Items {
+		if item == nil {
+			return fmt.Errorf("items[%d] is nil", i)
+		}
 		// Convert AgentPreferences []string to []interface{}
 		agentPreferencesInterface := make([]interface{}, len(item.AgentPreferences))
 		for j, s := range item.AgentPreferences {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )

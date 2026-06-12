@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/builtin"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/core"
-	"github.com/Timwood0x10/goagent/internal/tools/resources/formatter"
+	"goagentx/internal/errors"
+	"goagentx/internal/tools/resources/builtin"
+	"goagentx/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/formatter"
 )
 
 // AgentToolConfig defines tool configuration for an agent.

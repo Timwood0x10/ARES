@@ -4,7 +4,7 @@ package repositories
 import (
 	"context"
 
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // KnowledgeRepositoryInterface defines the interface for knowledge base data access.

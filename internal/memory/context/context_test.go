@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 func TestSessionMemory(t *testing.T) {

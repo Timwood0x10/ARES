@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Timwood0x10/goagent/internal/errors"
+	"goagentx/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )
@@ -385,6 +385,10 @@ func (c *Config) setDefaults() {
 	}
 	if c.Validation.MaxRetries == 0 {
 		c.Validation.MaxRetries = 3
+	}
+	// Workflow defaults
+	if c.Workflow.ReloadInterval == 0 && c.Workflow.AutoReload {
+		c.Workflow.ReloadInterval = 30 // seconds
 	}
 }
 

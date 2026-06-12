@@ -4,19 +4,22 @@ package memory
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/errors"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/embedding"
-	storage_models "github.com/Timwood0x10/goagent/internal/storage/postgres/models"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/goagent/internal/storage/postgres/services"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	storage_models "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/storage/postgres/services"
 )
 
 // ProductionMemoryManager implements MemoryManager interface with production-grade storage.
@@ -61,6 +64,15 @@ type SessionData struct {
 	MessageCount int
 }
 
+// generateSessionID creates a cryptographically random session ID.
+func generateSessionID() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("session_%d", time.Now().UnixNano())
+	}
+	return "sess_" + hex.EncodeToString(b)
+}
+
 // NewProductionMemoryManager creates a new production-grade MemoryManager.
 // Args:
 // dbPool - PostgreSQL connection pool
@@ -78,6 +90,10 @@ func NewProductionMemoryManager(
 
 	if dbPool == nil {
 		return nil, fmt.Errorf("database pool is required")
+	}
+
+	if embeddingClient == nil {
+		return nil, fmt.Errorf("embedding client is required")
 	}
 
 	// Create tenant guard
@@ -188,6 +204,11 @@ func (m *ProductionMemoryManager) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// Allow restart after stop by resetting the stopped flag
+	if m.stopped {
+		m.stopped = false
+	}
+
 	// Create a new context for the memory manager lifecycle
 	// This allows us to cancel all operations during shutdown
 	m.baseCtx, m.cancel = context.WithCancel(ctx)
@@ -245,7 +266,7 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 // userID - user identifier.
 // Returns session ID or error if creation fails.
 func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID string) (string, error) {
-	sessionID := fmt.Sprintf("session_%d", time.Now().UnixNano())
+	sessionID := generateSessionID()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -319,6 +340,8 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 	// If user ID not found in cache, use a default value
 	// In production, you might want to extract this from context or other sources
 	if userID == "" {
+		slog.Warn("session not found in cache, message assigned to anonymous user",
+			"session_id", sessionID)
 		userID = "anonymous"
 	}
 
@@ -677,4 +700,30 @@ func (m *ProductionMemoryManager) getCurrentTenantID() string {
 	}
 
 	return "default" // Fallback to default tenant
+}
+
+// GetLatestSessionForLeader retrieves the most recent session ID for a leader from checkpoint.
+// Returns ("", nil) if no checkpoint exists.
+func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
+	if leaderID == "" {
+		return "", nil
+	}
+
+	tenantID := m.getCurrentTenantID()
+	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
+		return "", errors.Wrap(err, "get latest session for leader: set tenant context")
+	}
+
+	query := `SELECT session_id FROM leader_checkpoints WHERE leader_id = $1 ORDER BY updated_at DESC LIMIT 1`
+	row := m.dbPool.QueryRow(ctx, query, leaderID)
+
+	var sessionID string
+	if err := row.Scan(&sessionID); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", errors.Wrap(err, "get latest session for leader")
+	}
+
+	return sessionID, nil
 }

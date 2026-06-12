@@ -3,7 +3,7 @@
 package experience
 
 import (
-	"github.com/Timwood0x10/goagent/internal/experience"
+	"goagentx/internal/experience"
 )
 
 // ConflictResolver re-exports from internal/experience.

@@ -1,338 +1,336 @@
-# GoAgent
+# GoAgentX
 
-GoAgent is a generic multi-agent framework implemented in Go, supporting multi-agent collaboration, memory management, and tool invocation.
-
-## Architecture Diagram
-
-![archs](./images/go-agent-arch-en.png)
-
-### Embedding Gateway Service (FastAPI)
-
-The Embedding Service is a standalone vector embedding service for GoAgent, supporting multiple backends:
-
-![embedding](./images/embedding_server.png)
-
-**Embedding Service Features**:
-
-- **High Performance**: Supports Ollama local deployment and SentenceTransformers cloud deployment
-- **Smart Caching**: Redis cache + text normalization to avoid cache misses
-- **Batch Processing**: Supports batch vector generation for improved efficiency
-- **Auto Normalization**: Vectors automatically normalized to unit vectors for accurate cosine similarity
-- **Health Check**: Built-in health check endpoint
-
-**Configuration File**: `services/embedding/.env`
-
-```env
-BACKEND_TYPE=ollama              # Backend type: ollama / transformers
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen3-embedding:0.6b
-MODEL_NAME=qwen3-embedding:0.6b
-EMBEDDING_DIM=1024
-REDIS_URL=redis://localhost:6379
-CACHE_TTL=86400
-HOST=0.0.0.0
-PORT=8000
+```shell
+   _____                               _  __   __
+  / ____|        /\                   | | \ \ / /
+ | |  __  ___   /  \   __ _  ___ _ __ | |_ \ V / 
+ | | |_ |/ _ \ / /\ \ / _` |/ _ \ '_ \| __| > <  
+ | |__| | (_) / ____ \ (_| |  __/ | | | |_ / . \ 
+  \_____|\___/_/    \_\__, |\___|_| |_|\__/_/ \_\
+                       __/ |                     
+                      |___/                      
 ```
 
-**Code Locations**:
 
-- `services/embedding/app.py` - Service main program
-- `services/embedding/config.py` - Configuration management
-- `internal/storage/postgres/embedding/client.go` - Go client
+Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
-### Memory Distillation model
+## Architecture 
 
-![distillation](./images/memory_distill.png)
+```mermaid
+graph TB
+    User[User Request] --> RT
 
-## Tech Stack
+    subgraph runtime [Runtime Layer]
+        RT[Runtime Manager]
+        RT -->|"manages lifecycle"| Leader
+        RT -->|"replays"| ES[EventStore]
+        RT -->|"restores"| MM[MemoryStore]
+    end
 
-### Core Technologies
+    subgraph agents [Agent System]
+        Leader[Leader Agent]
+        Leader -->|AHP Protocol| SubA[Sub Agent A]
+        Leader -->|AHP Protocol| SubB[Sub Agent B]
+        Leader -->|AHP Protocol| SubC[Sub Agent C]
+        Leader -.->|Checkpoint Recovery| Supervisor[Supervisor]
+    end
 
-- **Language**: Go 1.26+
-- **Database**: PostgreSQL 15+ with pgvector extension
-- **Concurrency**: errgroup, sync
-- **Protocol**: Custom AHP Protocol
-- **Embedding Service**: FastAPI + Ollama/SentenceTransformers
-- **Cache**: Redis
+    subgraph workflow [Workflow Engine]
+        MutableDAG[MutableDAG]
+        DynamicExec[DynamicExecutor]
+        MutableDAG --> DynamicExec
+        DynamicExec --> TopoSort[Topological Sort]
+        DynamicExec --> CycleDetect[Cycle Detection]
+    end
 
-### Main Components
+    subgraph memory [Memory Manager]
+        Session[Session Memory]
+        Task[Task Memory]
+        Distilled[Distilled Memory]
+        Session --> Pipeline[Distillation Pipeline]
+        Task --> Pipeline
+        Pipeline --> Distilled
+    end
 
-| Component             | Purpose                                 | Code Location                |
-| --------------------- | --------------------------------------- | ---------------------------- |
-| **Agent System**      | Leader/Sub Agent collaboration          | `internal/agents/`           |
-| **Protocol Layer**    | Inter-agent communication and heartbeat | `internal/protocol/ahp/`     |
-| **Memory System**     | Session, task, and distilled memory     | `internal/memory/`           |
-| **Storage Layer**     | PostgreSQL + pgvector                   | `internal/storage/postgres/` |
-| **Tool System**       | Tool registry and invocation            | `internal/tools/`            |
-| **Workflow Engine**   | DAG workflow orchestration              | `internal/workflow/engine/`  |
-| **Embedding Service** | Vector embedding generation             | `services/embedding/`        |
+    subgraph storage [Storage Layer]
+        VS[VectorStore Interface]
+        PG[(PostgreSQL + pgvector)]
+        MEM[(In-Memory)]
+        QD[(Qdrant)]
+        SQL[(SQLite + sqlite-vec)]
+        CUSTOM[(Your Backend)]
+        Cache[Cache]
+        CB[Circuit Breaker]
+        VS --> PG
+        VS --> MEM
+        VS --> QD
+        VS --> SQL
+        VS --> CUSTOM
+        PG --> Cache
+        Cache --> CB
+    end
 
-### Dependencies
+    subgraph tools [Tool System]
+        Registry[Tool Registry]
+        Matcher[Capability Matcher]
+        Validator[Parameter Validator]
+    end
 
-- `github.com/jackc/pgx/v5` - PostgreSQL driver
-- `github.com/google/uuid` - UUID generation
-- `github.com/stretchr/testify` - Testing framework
-- `golang.org/x/sync` - Concurrent extensions
-- `gopkg.in/yaml.v3` - YAML parsing
-- `fastapi` - Embedding service framework
-- `redis` - Cache support
-
-## Configuration
-
-### 1. LLM Configuration
-
-**Config File**: `examples/travel/config.yaml`
-
-```yaml
-llm:
-  provider: openrouter        # LLM provider: openai / ollama / openrouter
-  api_key: ""                  # API Key (recommended: use env var OPENROUTER_API_KEY)
-  base_url: https://openrouter.ai/api/v1
-  model: meta-llama/llama-3.1-8b-instruct
-  timeout: 60                  # Request timeout (seconds)
-  max_tokens: 2048              # Max response tokens
+    Leader --> MutableDAG
+    Leader --> Session
+    Leader --> Registry
+    Session --> VS
+    Registry --> VS
 ```
 
-**Code Location**: `internal/llm/client.go:80-100`
+### Memory Distillation Pipeline
 
-### 2. Agent Configuration
-
-```yaml
-agents:
-  leader:
-    id: leader-travel
-    max_steps: 10              # Max execution steps
-    max_parallel_tasks: 4      # Max parallel tasks
-    enable_cache: true          # Enable caching
-
-  sub:
-    - id: agent-destination
-      type: destination         # Agent type: destination/food/hotel/itinerary
-      triggers: [destination]   # Trigger keywords
-      max_retries: 3             # Max retry attempts
-      timeout: 30                # Timeout (seconds)
+```mermaid
+flowchart LR
+    A[Extract] --> B[Classify]
+    B --> C[Score]
+    C --> D[Denoise]
+    D --> E[Conflict Resolution]
+    E --> F[Capacity Cap]
+    F --> Distilled[(Distilled Memory)]
 ```
 
-**Code Location**: `internal/agents/leader/agent.go:30-50`
+6-step pipeline: extract experiences from raw interactions, classify by type, score relevance, filter noise, resolve conflicts with existing memories, and enforce capacity limits.
 
-### 3. Database Configuration
+### AHP Protocol
 
-```yaml
-storage:
-  enabled: true               # Enable PostgreSQL storage
-  type: postgres
-  host: localhost
-  port: 5433                # Docker default port is 5433
-  user: postgres
-  password: postgres
-  database: goagent
-  
-  pgvector:
-    enabled: true             # Enable pgvector
-    dimension: 1024           # Vector dimension
-```
+Custom Agent Hosting Protocol handling inter-agent communication with heartbeat monitoring, dead-letter queue (DLQ), and progress tracking. All protocol operations benchmark under 1 us.
 
-**Code Location**: `internal/storage/postgres/pool.go:35-50`
+### Leader Failover
 
-### 4. Embedding Service Configuration
+Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tasks from last checkpoint, and reassigns work to available sub-agents.
 
-```yaml
-embedding:
-  service_url: http://localhost:8000    # Embedding service address
-  model: qwen3-embedding:0.6b          # Model name
-  dimension: 1024                       # Vector dimension
-  timeout: 30                           # Request timeout (seconds)
-```
+## Key Features
 
-**Code Location**: `internal/storage/postgres/embedding/client.go:30-50`
+**DAG Workflow Engine**
+- MutableDAG: runtime graph mutation (add/remove nodes and edges) all under 1 us
+- DynamicExecutor: executes DAG with topological sort
+- Incremental cycle detection on edge insertion
+- Hot reload and runtime mutation without stopping execution
 
-### 5. Memory Configuration
+**Memory System**
+- Session memory: short-term conversation context
+- Task memory: per-task working memory
+- Distilled memory: long-term compressed knowledge via 6-step pipeline
+- pgvector-backed semantic search
 
-```yaml
-memory:
-  enabled: true               # Enable memory system
-  enable_distillation: true   # Enable memory distillation
-  distillation_threshold: 3   # Trigger distillation every N rounds
-```
+**Storage Layer**
+- Pluggable vector store interface — swap PostgreSQL for Qdrant, Milvus, SQLite, or your own backend
+- Built-in implementations: PostgreSQL + pgvector (production), in-memory (dev/test)
+- Repository pattern abstraction
+- Built-in cache layer + circuit breaker for fault tolerance
+- See [Custom Vector Store Guide](docs/en/development/custom-vector-store.md)
 
-**Code Location**: `examples/knowledge-base/main.go:750-760`
+**Agent System**
+- Leader/Sub agent architecture
+- AHP protocol for structured communication (heartbeat, DLQ, progress)
+- Leader failover with checkpoint recovery
+- Parallel task execution with configurable concurrency
+- Agent resurrection plugin with pluggable health checking
 
-### 6. Retrieval Configuration
+**Runtime Layer**
+- Agent lifecycle management: register, start, stop, restart, restore
+- Automatic crash detection and resurrection via AgentFactory
+- Two recovery dimensions: EventStore (operational) + MemoryStore (cognitive)
+- Health monitoring with heartbeat and status-based checks
+- Structured concurrency via errgroup with graceful shutdown
 
-```yaml
-knowledge:
-  chunk_size: 1000             # Document chunk size
-  chunk_overlap: 100            # Chunk overlap
-  top_k: 10                    # Return top K results
-  min_score: 0.6               # Minimum similarity threshold
-```
+**Event Sourcing**
+- EventStore interface with optimistic concurrency control
+- MemoryEventStore for dev/test, PostgresEventStore for production
+- 17 event types covering agent lifecycle, tasks, sessions, workflows, failover
+- Pub/sub via Subscribe with filtered event channels
+- DLQ auto-retry with configurable retry budgets
 
-**Code Location**: `internal/storage/postgres/repositories/knowledge_repository.go:100-120`
+**Human-in-the-Loop**
+- Pause workflow steps for human approval before execution
+- InterruptConfig on any step, InterruptHandler for blocking approval
+- InterruptStore for crash recovery of pending approvals
+- Approval workflows and review gates
+
+**Tool System**
+- Dynamic tool registration and discovery
+- Capability matching between agents and tools
+- Parameter validation with schema support
+
+## Benchmark Highlights
+
+32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
+
+Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
+
+| Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
+|----------|-------|---------------|--------------------|--------------------|
+| Eval | 5 | 2 | 2 | 1 |
+| Distillation | 9 | 3 | 4 | 2 |
+| Tools/Core | 8 | 4 | 3 | 1 |
+| Errors | 4 | 4 | 0 | 0 |
+| Event Sourcing | 6 | 1 | 3 | 2 |
+| **Total** | **32** | **14** | **12** | **6** |
+
+Selected hot-path results:
+
+| Operation | ns/op | allocs/op |
+|-----------|-------|-----------|
+| ExactMatchEvaluator | 2.90 | 0 |
+| ToolExecution | 14.48 | 0 |
+| ResultCreation | 0.25 | 0 |
+| ParameterValidation | 7.22 | 0 |
+| ConflictDetection | 988 | 0 |
+| Wrap (error) | 0.25 | 0 |
+| MemoryOperations/Create | 87.57 | 0 |
+
+14 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and conflict detection.
+
+Full benchmark report: `benchmarks/benchmark_report.md`
 
 ## Quick Start
 
-### 1. Set Environment
+### Prerequisites
+
+- Go 1.26+
+- PostgreSQL 15+ with pgvector (optional, for persistence)
+- Docker (optional, for database)
+
+### 1. Set API Key
 
 ```bash
-# Set API Key (recommended: use environment variable)
 export OPENROUTER_API_KEY="your-api-key"
-
-# Or set in config file (not recommended)
 ```
 
-### 2. Start Database (Optional, for persistence)
+### 2. Start Database (Optional)
 
 ```bash
-# Quick start PostgreSQL + pgvector with Docker
 docker run -d \
-  --name goagent-db \
+  --name goagentx-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
   pgvector/pgvector:pg15
-
-# Verify connection
-docker exec -it goagent-db psql -U postgres -d goagent -c "SELECT version();"
 ```
 
-### 3. Start Embedding Service (for vector retrieval)
+### 3. Run Examples
 
 ```bash
-# Navigate to embedding service directory
-cd services/embedding
+# Travel planning (multi-agent collaboration)
+cd examples/travel && go run main.go
 
-# Run setup script (install dependencies and model)
-./setup.sh
-
-# Start service
-./start.sh
-
-# Verify service
-curl http://localhost:8000/health
-```
-
-### 4. Run Examples
-
-```bash
-# Travel planning example
-cd examples/travel
-go run main.go
-
-# Knowledge base Q&A example (requires database + embedding service)
+# Knowledge base Q&A (requires database + embedding service)
 cd examples/knowledge-base
-go run main.go --save README.md  # Import document
-go run main.go --chat             # Start Q&A
+go run main.go --save README.md   # Import document
+go run main.go --chat              # Start Q&A
+
+# Advanced examples (v2 features)
+go run ./examples/advanced/leader_failover/
+go run ./examples/advanced/agent_resurrection/
+go run ./examples/advanced/runtime_resurrection/
+go run ./examples/advanced/dynamic_executor/
+go run ./examples/advanced/mutable_dag/
+```
+
+See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
+
+### 4. Run Tests
+
+```bash
+go test ./...                      # All tests
+go test -race ./...                # With race detector
+go test -bench=. ./...             # Benchmarks
 ```
 
 ## Project Structure
 
 ```
-goagent/
-├── examples/               # Example applications
-│   ├── travel/              # Travel planning
-│   ├── knowledge-base/       # Knowledge base Q&A
-│   └── simple/              # Simple example
-├── internal/                # Core implementation
-│   ├── agents/              # Agent system
-│   │   ├── base/            # Agent base interfaces
-│   │   ├── leader/          # Leader Agent
-│   │   └── sub/             # Sub Agent
-│   ├── protocol/             # AHP protocol
-│   ├── storage/              # PostgreSQL + pgvector
-│   ├── memory/               # Memory system
-│   └── workflow/             # Workflow engine
-├── services/                # Standalone services
-│   └── embedding/           # Embedding service
-│       ├── app.py           # FastAPI service
-│       ├── config.py        # Configuration management
-│       └── requirements.txt # Python dependencies
-├── api/                     # API layer
-│   ├── service/             # Service interfaces
-│   └── client/              # Client
-└── docs/                    # Documentation
+GoAgentX/
+├── internal/
+│   ├── agents/          # Leader/Sub agent system
+│   ├── runtime/         # Runtime lifecycle management
+│   ├── protocol/ahp/    # AHP inter-agent protocol
+│   ├── memory/          # Memory system + distillation
+│   ├── events/          # EventStore interface + implementations
+│   ├── workflow/engine/  # DAG workflow engine
+│   ├── storage/          # VectorStore interface + implementations
+│   │   ├── postgres/     # PostgreSQL + pgvector (production)
+│   │   └── memory/       # In-memory (dev/test)
+│   └── tools/           # Tool registry and invocation
+├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
+├── examples/            # Travel, knowledge-base, simple demos
+├── api/                 # Service interfaces and client
+└── benchmarks/          # Benchmark reports and logs
 ```
+
+## Configuration
+
+Configuration is YAML-based. Key sections:
+
+```yaml
+llm:
+  provider: openrouter
+  api_key: "${OPENROUTER_API_KEY}"
+  model: meta-llama/llama-3.1-8b-instruct
+  timeout: 60
+
+agents:
+  leader:
+    id: leader-main
+    max_steps: 10
+    max_parallel_tasks: 4
+  sub:
+    - id: agent-a
+      type: research
+      max_retries: 3
+      timeout: 30
+
+storage:
+  type: postgres
+  host: localhost
+  port: 5433
+  database: goagent
+  pgvector:
+    enabled: true
+    dimension: 1024
+
+memory:
+  enabled: true
+  enable_distillation: true
+  distillation_threshold: 3
+```
+
+See `examples/travel/config.yaml` for a complete example.
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Go 1.26+ |
+| Database | PostgreSQL 15+ with pgvector (pluggable: Qdrant, Milvus, SQLite, or custom) |
+| Protocol | Custom AHP (Agent Hosting Protocol) |
+| Embedding | FastAPI + Ollama/SentenceTransformers |
+| Cache | Redis |
+| Concurrency | errgroup, sync |
 
 ## Documentation
 
-- [Quick Start Guide](docs/quick_start_en.md) - Detailed installation and configuration guide
-- [FAQ](docs/faq_en.md) - Common issues and solutions
-- [Architecture Documentation](docs/arch.md) - Complete architecture design
-- [Embedding Service Documentation](services/embedding/README.md) - Embedding service details
-- [Integration Guide](docs/integration_guide.md) - How to integrate into existing projects
+- [Changelog](CHANGELOG.md)
+- [Architecture](docs/en/architecture/arch.md)
+- [Runtime Layer](docs/en/architecture/runtime.md)
+- [Quick Start](docs/en/guides/quick-start.md)
+- [FAQ](docs/en/guides/faq.md)
+- [Integration Guide](docs/en/development/integration-guide.md)
+- [Custom Vector Store](docs/en/development/custom-vector-store.md)
+- [Leader Failover](docs/en/features/leader-failover.md)
+- [Dynamic Graph](docs/en/features/dynamic-graph.md)
+- [Human-in-the-Loop](docs/en/features/hitl.md)
+- [Agent Resurrection](docs/en/features/resurrection.md)
+- [Integration Testing](docs/en/development/integration-testing.md)
+- [CI/CD Pipeline](docs/en/development/ci-cd.md)
+- [Framework Comparison](docs/en/framework-comparison.md)
+- [Benchmark Report](benchmarks/benchmark_report.md)
 
-## Migration Guide (v0.2)
-
-### Breaking Changes
-
-1. **`TaskPlanner.Plan()` signature changed**
-   - Before: `Plan(ctx, profile)` (2 args)
-   - After: `Plan(ctx, profile, inputText)` (3 args)
-   - Fix: Add `inputText` parameter to all `Plan()` calls.
-
-2. **`NewResultAggregator()` requires `sortBy` parameter**
-   - Before: `NewResultAggregator(enableDedupe, maxItems)`
-   - After: `NewResultAggregator(enableDedupe, maxItems, sortBy)`
-   - Fix: Add `leader.SortByNone` (or `SortByPriority` / `SortByCreatedAt`) as third argument.
-
-3. **Fashion-specific constants removed**
-   - Removed: `AgentTypeShoes`, `AgentTypeHead`, `AgentTypeAccessory`, `StyleCasual`, `StyleFormal`, `StyleStreet`, `OccasionDaily`, `OccasionParty`, `OccasionDate`
-   - Fix: Replace with `models.StyleTag("...")` and `models.Occasion("...")` string types.
-
-4. **Domain types renamed** (`internal/tools/resources/types/`)
-   - `FashionFilters` → `ResourceFilters`
-   - `FashionItem` → `ResourceItem`
-   - `AgentProfile` → `AgentUserProfile`
-   - `AgentRecommendation` → `TaskRecommendation`
-   - `OutfitSuggestion` → `Suggestion`
-   - `AgentTrend` → `Trend`
-
-5. **Validation default schema type changed**
-   - Before: `"fashion"`
-   - After: `"default"`
-   - Fix: Update config if explicitly setting `validation.schema_type`.
-
-## Examples
-
-- [Travel Planning](examples/travel/) - Multi-agent collaboration
-- [Knowledge Base Q\&A](examples/knowledge-base/) - Vector search
-- [Simple Example](examples/simple/) - Basic usage
-- [Capability Demo](examples/capability-demo/) - Full feature showcase
-
-## Development Guide
-
-### Running Tests
-
-```bash
-# Run all tests
-go test ./...
-
-# Run tests for specific package
-go test ./internal/agents/...
-
-# Run tests with coverage
-go test -cover ./...
-```
-
-### Building Project
-
-```bash
-# Build examples
-go build -o bin/simple ./examples/simple
-go build -o bin/travel ./examples/travel
-
-# Build CLI tools
-go build -o bin/migrate ./cmd/migrate_goagent
-```
-
-### Code Standards
-
-```bash
-# Format code
-go fmt ./...
-
-# Run linter
-golangci-lint run
-```
-
-***
-
+## LICENSE
+Apache 2.0

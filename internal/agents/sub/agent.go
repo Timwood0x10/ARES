@@ -2,12 +2,14 @@ package sub
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	"github.com/Timwood0x10/goagent/internal/agents/base"
-	"github.com/Timwood0x10/goagent/internal/core/errors"
-	"github.com/Timwood0x10/goagent/internal/core/models"
-	"github.com/Timwood0x10/goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 )
 
 // Agent represents the Sub Agent interface.
@@ -33,6 +35,19 @@ type ToolBinder interface {
 	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
 }
 
+// Compile-time check: subAgent must satisfy base.StatefulAgent.
+var _ base.StatefulAgent = (*subAgent)(nil)
+
+// SubAgentOption configures a subAgent instance.
+type SubAgentOption func(*subAgent)
+
+// WithEventStore sets the event store for event sourcing.
+func WithEventStore(store events.EventStore) SubAgentOption {
+	return func(a *subAgent) {
+		a.eventStore = store
+	}
+}
+
 // subAgent implements a Sub Agent.
 type subAgent struct {
 	mu           sync.RWMutex
@@ -45,6 +60,11 @@ type subAgent struct {
 	tools        map[string]func(ctx context.Context, args map[string]any) (any, error)
 	messageQueue *ahp.MessageQueue
 	heartbeatMon *ahp.HeartbeatMonitor
+	eventStore   events.EventStore
+
+	// Lifecycle management
+	stopCh   chan struct{}  // Signals goroutines to stop.
+	streamWg sync.WaitGroup // Tracks active ProcessStream goroutines.
 }
 
 // SubAgentConfig holds configuration for SubAgent.
@@ -62,6 +82,7 @@ func New(
 	msgQueue *ahp.MessageQueue,
 	hbMon *ahp.HeartbeatMonitor,
 	cfg *SubAgentConfig,
+	opts ...SubAgentOption,
 ) Agent {
 	if cfg == nil {
 		cfg = DefaultSubAgentConfig(agentType)
@@ -69,7 +90,7 @@ func New(
 	cfg.ID = id
 	cfg.Type = agentType
 
-	return &subAgent{
+	a := &subAgent{
 		id:           id,
 		agentType:    agentType,
 		status:       models.AgentStatusOffline,
@@ -80,6 +101,12 @@ func New(
 		messageQueue: msgQueue,
 		heartbeatMon: hbMon,
 	}
+
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	return a
 }
 
 // DefaultSubAgentConfig returns default configuration.
@@ -115,22 +142,55 @@ func (a *subAgent) setStatus(status models.AgentStatus) {
 
 // Start starts the sub agent.
 func (a *subAgent) Start(ctx context.Context) error {
-	if a.Status() != models.AgentStatusOffline {
+	a.mu.Lock()
+	if a.status != models.AgentStatusOffline {
+		a.mu.Unlock()
 		return errors.ErrAgentAlreadyStarted
 	}
+	a.status = models.AgentStatusStarting
+	a.stopCh = make(chan struct{})
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusStarting)
 	a.setStatus(models.AgentStatusReady)
+
+	// Wire event store to executor for tool/LLM call events.
+	if a.eventStore != nil {
+		if setter, ok := a.executor.(interface {
+			SetEventStore(events.EventStore, string)
+		}); ok {
+			setter.SetEventStore(a.eventStore, a.id)
+		}
+	}
+
+	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+		"agent_id": a.id,
+		"type":     string(a.agentType),
+	})
+
 	return nil
 }
 
-// Stop stops the sub agent.
+// Stop stops the sub agent and waits for active stream goroutines.
 func (a *subAgent) Stop(ctx context.Context) error {
-	if a.Status() == models.AgentStatusOffline {
+	a.mu.Lock()
+	if a.status == models.AgentStatusOffline {
+		a.mu.Unlock()
 		return errors.ErrAgentNotRunning
 	}
+	a.status = models.AgentStatusStopping
+	stopCh := a.stopCh
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusStopping)
+	// Signal all goroutines to stop and wait for them.
+	if stopCh != nil {
+		close(stopCh)
+	}
+	a.streamWg.Wait()
+
+	a.emitEvent(ctx, events.EventAgentStopped, map[string]any{
+		"agent_id": a.id,
+	})
+
 	a.setStatus(models.AgentStatusOffline)
 	return nil
 }
@@ -197,5 +257,183 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	if a.executor == nil {
 		return nil, errors.ErrNilPointer
 	}
-	return a.executor.Execute(ctx, task)
+
+	a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		"task_id":  task.TaskID,
+		"agent_id": a.id,
+	})
+
+	result, err := a.executor.Execute(ctx, task)
+	if err != nil {
+		a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+			"error":    err.Error(),
+		})
+		return nil, err
+	}
+
+	a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+		"task_id":  task.TaskID,
+		"agent_id": a.id,
+	})
+
+	return result, nil
+}
+
+// ProcessStream handles input and returns a stream of events.
+func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
+		return nil, errors.ErrAgentNotReady
+	}
+
+	if a.Status() == models.AgentStatusOffline {
+		if err := a.Start(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	task, ok := input.(*models.Task)
+	if !ok {
+		return nil, errors.ErrInvalidInput
+	}
+
+	if a.executor == nil {
+		return nil, errors.ErrInvalidState
+	}
+
+	ch := make(chan base.AgentEvent, 64)
+
+	a.mu.RLock()
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+
+	a.streamWg.Add(1)
+	go func() {
+		defer close(ch)
+		defer a.streamWg.Done()
+
+		a.setStatus(models.AgentStatusBusy)
+		defer a.setStatus(models.AgentStatusReady)
+
+		// Send task start event
+		select {
+		case ch <- base.AgentEvent{Type: base.EventTaskStart, Source: a.id, Data: task}:
+		case <-ctx.Done():
+			return
+		case <-stopCh:
+			return
+		}
+
+		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+		})
+
+		// Execute task
+		result, err := a.executor.Execute(ctx, task)
+		if err != nil {
+			a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+				"task_id":  task.TaskID,
+				"agent_id": a.id,
+				"error":    err.Error(),
+			})
+
+			select {
+			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
+			case <-ctx.Done():
+			case <-stopCh:
+			}
+			return
+		}
+
+		a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+		})
+
+		// Send task complete event
+		select {
+		case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: result}:
+		case <-ctx.Done():
+			return
+		case <-stopCh:
+			return
+		}
+
+		// Send final result
+		select {
+		case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Data: result}:
+		case <-ctx.Done():
+		case <-stopCh:
+		}
+	}()
+
+	return ch, nil
+}
+
+// RestoreState restores the sub-agent's state from persisted data.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) RestoreState(state map[string]any) error {
+	if state == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Sub-agents are simpler than leaders — just restore status if needed.
+	if status, ok := state["status"].(string); ok && status != "" {
+		a.status = models.AgentStatus(status)
+	}
+	return nil
+}
+
+// ReplayEvents replays events to reconstruct sub-agent state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) ReplayEvents(evts []*events.Event) error {
+	if len(evts) == 0 {
+		return nil
+	}
+	// Sub-agents track task completion for operational recovery.
+	for _, ev := range evts {
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case events.EventTaskCompleted:
+			slog.Debug("sub-agent replayed task completion",
+				"agent_id", a.id,
+				"task_id", ev.Payload["task_id"],
+			)
+		}
+	}
+	return nil
+}
+
+// Snapshot returns a serializable snapshot of the sub-agent's state.
+// Implements base.StatefulAgent for resurrection support.
+func (a *subAgent) Snapshot() (map[string]any, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return map[string]any{
+		"agent_id": a.id,
+		"status":   string(a.status),
+	}, nil
+}
+
+// emitEvent appends a single event to the event store.
+// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if a.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: a.id,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
+		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
+	} else {
+		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
+	}
 }

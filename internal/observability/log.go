@@ -29,6 +29,9 @@ func NewLogTracer(cfg *LogTracerConfig) Tracer {
 
 // RecordLLMCall implements Tracer.
 func (t *LogTracer) RecordLLMCall(ctx context.Context, call *LLMCall) {
+	if call == nil {
+		return
+	}
 	if call.Error != nil {
 		t.logger.ErrorContext(ctx, "LLM call failed",
 			"trace_id", call.TraceID,
@@ -53,6 +56,9 @@ func (t *LogTracer) RecordLLMCall(ctx context.Context, call *LLMCall) {
 
 // RecordToolCall implements Tracer.
 func (t *LogTracer) RecordToolCall(ctx context.Context, call *ToolCall) {
+	if call == nil {
+		return
+	}
 	if call.Error != nil {
 		t.logger.ErrorContext(ctx, "Tool call failed",
 			"trace_id", call.TraceID,
@@ -75,6 +81,9 @@ func (t *LogTracer) RecordToolCall(ctx context.Context, call *ToolCall) {
 
 // RecordAgentStep implements Tracer.
 func (t *LogTracer) RecordAgentStep(ctx context.Context, step *AgentStep) {
+	if step == nil {
+		return
+	}
 	if step.Error != nil {
 		t.logger.ErrorContext(ctx, "Agent step failed",
 			"trace_id", step.TraceID,
@@ -97,6 +106,9 @@ func (t *LogTracer) RecordAgentStep(ctx context.Context, step *AgentStep) {
 
 // RecordError implements Tracer.
 func (t *LogTracer) RecordError(ctx context.Context, err *AgentError) {
+	if err == nil {
+		return
+	}
 	t.logger.ErrorContext(ctx, "Agent error",
 		"trace_id", err.TraceID,
 		"agent_id", err.AgentID,
@@ -116,6 +128,9 @@ func (t *LogTracer) GetTraceID(ctx context.Context) string {
 
 // WithTrace returns a new context with a new trace ID.
 func (t *LogTracer) WithTrace(ctx context.Context) context.Context {
+	if existingID, ok := ctx.Value(defaultTraceID).(string); ok && existingID != "" {
+		return ctx
+	}
 	traceID := generateTraceID()
 	return context.WithValue(ctx, defaultTraceID, traceID)
 }
