@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"goagent/internal/workflow/engine"
+	"goagentx/internal/workflow/engine"
 )
 
 func main() {
@@ -45,19 +45,13 @@ func main() {
 	fmt.Printf("After adding D: %v\n", order)
 	fmt.Printf("Version: %d\n", dag.Version())
 
-	// Add edge C → D (creates diamond: A → B → C → D, B → D).
-	err = dag.AddEdge(ctx, "C", "D")
-	if err != nil {
-		fmt.Printf("AddEdge C→D failed (expected if cycle): %v\n", err)
-	}
-
 	// Try to add a cycle: D → A (should fail).
 	err = dag.AddEdge(ctx, "D", "A")
 	if err != nil {
 		fmt.Printf("AddEdge D→A rejected: %v\n", err)
 	}
 
-	// Remove node C.
+	// Remove node C (has no dependents, so removal succeeds).
 	err = dag.RemoveNode(ctx, "C")
 	if err != nil {
 		fmt.Printf("RemoveNode C failed: %v\n", err)

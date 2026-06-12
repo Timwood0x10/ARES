@@ -311,7 +311,7 @@ result, _ := registry.Execute(ctx, "file_tools", map[string]interface{}{
 ### 5.1 Global Registration
 
 ```go
-import "goagent/internal/tools/resources"
+import "goagentx/internal/tools/resources"
 
 // Register all built-in tools
 resources.RegisterGeneralTools()

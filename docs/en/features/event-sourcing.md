@@ -65,7 +65,7 @@ graph LR
 
 ## Event Types
 
-17 event types organized by domain:
+20 event types organized by domain:
 
 ### Agent Lifecycle
 
@@ -101,6 +101,14 @@ graph LR
 | Step Completed | `step.completed` | Workflow step finished |
 | Step Failed | `step.failed` | Workflow step failed |
 | Step Skipped | `step.skipped` | Workflow step skipped (dependency failed) |
+
+### Tool & LLM
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Tool Called | `tool.called` | Emitted when a tool is invoked |
+| Tool Failed | `tool.failed` | Emitted when a tool call fails |
+| LLM Call | `llm.call` | Emitted when LLM is called |
 
 ### Failover
 

@@ -9,10 +9,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/memory"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/memory"
 )
 
 // managedAgent holds an agent and its lifecycle metadata.

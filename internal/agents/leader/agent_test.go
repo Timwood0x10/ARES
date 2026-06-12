@@ -5,10 +5,10 @@ import (
 	"context"
 	"testing"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/llm/output"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/llm/output"
+	"goagentx/internal/protocol/ahp"
 )
 
 func TestProfileParser_Parse(t *testing.T) {

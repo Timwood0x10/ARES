@@ -53,9 +53,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Timwood0x10/go-agent/goagent"
-Documentation = "https://github.com/Timwood0x10/go-agent/goagent/docs"
-Repository = "https://github.com/Timwood0x10/go-agent"
+Homepage = "https://github.com/Timwood0x10/GoAgentX"
+Documentation = "https://github.com/Timwood0x10/GoAgentX/docs"
+Repository = "https://github.com/Timwood0x10/GoAgentX"
 
 [build-system]
 requires = ["hatchling"]

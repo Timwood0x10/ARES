@@ -3,18 +3,18 @@ package builtin
 import (
 	"time"
 
-	"goagent/internal/errors"
-	builtin_execution "goagent/internal/tools/resources/builtin/execution"
-	builtin_file "goagent/internal/tools/resources/builtin/file"
-	builtin_knowledge "goagent/internal/tools/resources/builtin/knowledge"
-	builtin_math "goagent/internal/tools/resources/builtin/math"
-	builtin_memory "goagent/internal/tools/resources/builtin/memory"
-	builtin_network "goagent/internal/tools/resources/builtin/network"
-	builtin_planning "goagent/internal/tools/resources/builtin/planning"
-	builtin_system "goagent/internal/tools/resources/builtin/system"
-	builtin_text "goagent/internal/tools/resources/builtin/text"
+	"goagentx/internal/errors"
+	builtin_execution "goagentx/internal/tools/resources/builtin/execution"
+	builtin_file "goagentx/internal/tools/resources/builtin/file"
+	builtin_knowledge "goagentx/internal/tools/resources/builtin/knowledge"
+	builtin_math "goagentx/internal/tools/resources/builtin/math"
+	builtin_memory "goagentx/internal/tools/resources/builtin/memory"
+	builtin_network "goagentx/internal/tools/resources/builtin/network"
+	builtin_planning "goagentx/internal/tools/resources/builtin/planning"
+	builtin_system "goagentx/internal/tools/resources/builtin/system"
+	builtin_text "goagentx/internal/tools/resources/builtin/text"
 
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // RegisterGeneralTools registers all general-purpose tools.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"goagent/internal/eval"
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/eval"
+	"goagentx/internal/tools/resources/core"
 )
 
 func main() {

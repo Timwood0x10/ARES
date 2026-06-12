@@ -3,10 +3,10 @@
 package experience
 
 import (
-	internalexperience "goagent/internal/experience"
-	"goagent/internal/llm"
-	"goagent/internal/storage/postgres/embedding"
-	"goagent/internal/storage/postgres/repositories"
+	internalexperience "goagentx/internal/experience"
+	"goagentx/internal/llm"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // DistillationService re-exports from internal/experience.

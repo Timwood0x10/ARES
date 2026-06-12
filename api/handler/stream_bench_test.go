@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"goagent/internal/agents/base"
+	"goagentx/internal/agents/base"
 )
 
 // BenchmarkStreamHandler_HandleStream benchmarks the SSE streaming handler.

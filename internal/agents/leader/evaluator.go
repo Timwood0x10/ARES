@@ -3,7 +3,7 @@ package leader
 import (
 	"context"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // Evaluator evaluates the quality of agent results.

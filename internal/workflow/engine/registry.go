@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // AgentFactory creates agent instances.

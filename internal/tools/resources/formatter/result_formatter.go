@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // ResultFormatter formats tool results in user-friendly way.

@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/plugins/resurrection"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/plugins/resurrection"
+	"goagentx/internal/protocol/ahp"
 )
 
 // resMockAgent is a test double for base.Agent used in resurrection tests.

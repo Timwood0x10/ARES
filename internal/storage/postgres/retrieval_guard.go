@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"goagent/internal/core/errors"
+	"goagentx/internal/core/errors"
 
 	"golang.org/x/time/rate"
 )

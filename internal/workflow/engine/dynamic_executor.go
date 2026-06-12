@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // ApplyMode controls when graph mutations take effect during execution.

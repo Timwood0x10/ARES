@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"goagent/internal/agents/base"
+	"goagentx/internal/agents/base"
 )
 
 // Sentinel errors for the runtime package.
@@ -18,8 +18,6 @@ var (
 	ErrAgentAlreadyRegistered = errors.New("agent already registered")
 	// ErrRuntimeStopped indicates the runtime has been stopped and cannot accept new work.
 	ErrRuntimeStopped = errors.New("runtime stopped")
-	// ErrMaxRestartsExceeded indicates an agent has exceeded the maximum restart limit.
-	ErrMaxRestartsExceeded = errors.New("max restarts exceeded")
 	// ErrNilAgent indicates a nil agent was provided.
 	ErrNilAgent = errors.New("nil agent")
 	// ErrNilFactory indicates a nil factory was provided.

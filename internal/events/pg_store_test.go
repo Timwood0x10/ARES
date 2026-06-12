@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/storage/postgres"
 )
 
 // getTestPool returns a postgres.Pool connected to the test database.
@@ -366,6 +366,116 @@ func TestPostgresEventStore_ConcurrentAppend(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(eventsPerStream), ver)
 	}
+}
+
+// TestPostgresEventStore_AppendMultipleStreams writes events to 3 different streams
+// and reads each back independently to verify stream isolation.
+func TestPostgresEventStore_AppendMultipleStreams(t *testing.T) {
+	pool := getTestPool(t)
+	defer func() { _ = pool.Close() }()
+	cleanupEvents(t, pool)
+
+	store := NewPostgresEventStore(pool)
+	ctx := context.Background()
+	ts := time.Now().UnixNano()
+
+	streamIDs := []string{
+		fmt.Sprintf("test-multi-a-%d", ts),
+		fmt.Sprintf("test-multi-b-%d", ts),
+		fmt.Sprintf("test-multi-c-%d", ts),
+	}
+	eventTypes := []EventType{EventTaskCreated, EventAgentStarted, EventMemoryDistilled}
+
+	// Append 3 events to each stream.
+	for i, sid := range streamIDs {
+		for j := 0; j < 3; j++ {
+			evt := newTestEvent(eventTypes[i], "stream", sid)
+			require.NoError(t, store.Append(ctx, sid, []*Event{evt}, int64(j)))
+		}
+	}
+
+	// Read each stream independently and verify isolation.
+	for i, sid := range streamIDs {
+		t.Run(fmt.Sprintf("stream_%d", i), func(t *testing.T) {
+			events, err := store.Read(ctx, sid, ReadOptions{})
+			require.NoError(t, err)
+			require.Len(t, events, 3, "each stream should have exactly 3 events")
+
+			for _, evt := range events {
+				assert.Equal(t, sid, evt.StreamID, "event StreamID must match the stream it was written to")
+				assert.Equal(t, eventTypes[i], evt.Type, "event type must match the type written to this stream")
+			}
+
+			// Verify versions are sequential.
+			assert.Equal(t, int64(1), events[0].Version)
+			assert.Equal(t, int64(2), events[1].Version)
+			assert.Equal(t, int64(3), events[2].Version)
+		})
+	}
+}
+
+// TestPostgresEventStore_ConcurrentAppend_SameStream verifies that only one goroutine
+// succeeds when multiple goroutines append to the same stream with a fixed expectedVersion.
+func TestPostgresEventStore_ConcurrentAppend_SameStream(t *testing.T) {
+	pool := getTestPool(t)
+	defer func() { _ = pool.Close() }()
+	cleanupEvents(t, pool)
+
+	store := NewPostgresEventStore(pool)
+	ctx := context.Background()
+	streamID := fmt.Sprintf("test-concurrent-same-%d", time.Now().UnixNano())
+
+	// Seed the stream at version 0 (expectedVersion 0 means new stream).
+	seedEvt := newTestEvent(EventAgentStarted, "seed", true)
+	require.NoError(t, store.Append(ctx, streamID, []*Event{seedEvt}, 0))
+
+	// 10 goroutines race to append with expectedVersion=1.
+	// Only one can succeed because the version increments to 2 after the first win.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	successCount := 0
+	var mu sync.Mutex
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			evt := newTestEvent(EventTaskCreated, "goroutine", idx)
+			if appendErr := store.Append(ctx, streamID, []*Event{evt}, 1); appendErr == nil {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, successCount, "exactly one goroutine should succeed")
+
+	// The stream should be at version 2.
+	ver, err := store.StreamVersion(ctx, streamID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), ver)
+}
+
+// TestPostgresEventStore_Read_NonexistentStream verifies that reading from a stream
+// that has never been written to returns an empty slice and nil error.
+func TestPostgresEventStore_Read_NonexistentStream(t *testing.T) {
+	pool := getTestPool(t)
+	defer func() { _ = pool.Close() }()
+
+	store := NewPostgresEventStore(pool)
+	ctx := context.Background()
+	streamID := fmt.Sprintf("test-nonexistent-%d", time.Now().UnixNano())
+
+	events, err := store.Read(ctx, streamID, ReadOptions{})
+	require.NoError(t, err, "reading a nonexistent stream should return nil error")
+	assert.Empty(t, events, "nonexistent stream should return empty events")
+
+	// StreamVersion for nonexistent stream returns 0.
+	ver, err := store.StreamVersion(ctx, streamID)
+	require.NoError(t, err, "StreamVersion for nonexistent stream should return nil error")
+	assert.Equal(t, int64(0), ver, "nonexistent stream version should be 0")
 }
 
 // TestPostgresEventStore_NilPoolSafety verifies that nil pool is handled gracefully.

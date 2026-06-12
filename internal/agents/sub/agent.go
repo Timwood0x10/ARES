@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"sync"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 )
 
 // Agent represents the Sub Agent interface.
@@ -152,6 +152,21 @@ func (a *subAgent) Start(ctx context.Context) error {
 	a.mu.Unlock()
 
 	a.setStatus(models.AgentStatusReady)
+
+	// Wire event store to executor for tool/LLM call events.
+	if a.eventStore != nil {
+		if setter, ok := a.executor.(interface {
+			SetEventStore(events.EventStore, string)
+		}); ok {
+			setter.SetEventStore(a.eventStore, a.id)
+		}
+	}
+
+	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+		"agent_id": a.id,
+		"type":     string(a.agentType),
+	})
+
 	return nil
 }
 
@@ -171,6 +186,10 @@ func (a *subAgent) Stop(ctx context.Context) error {
 		close(stopCh)
 	}
 	a.streamWg.Wait()
+
+	a.emitEvent(ctx, events.EventAgentStopped, map[string]any{
+		"agent_id": a.id,
+	})
 
 	a.setStatus(models.AgentStatusOffline)
 	return nil
@@ -238,7 +257,28 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	if a.executor == nil {
 		return nil, errors.ErrNilPointer
 	}
-	return a.executor.Execute(ctx, task)
+
+	a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		"task_id":  task.TaskID,
+		"agent_id": a.id,
+	})
+
+	result, err := a.executor.Execute(ctx, task)
+	if err != nil {
+		a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+			"error":    err.Error(),
+		})
+		return nil, err
+	}
+
+	a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+		"task_id":  task.TaskID,
+		"agent_id": a.id,
+	})
+
+	return result, nil
 }
 
 // ProcessStream handles input and returns a stream of events.
@@ -285,9 +325,20 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			return
 		}
 
+		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+		})
+
 		// Execute task
 		result, err := a.executor.Execute(ctx, task)
 		if err != nil {
+			a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+				"task_id":  task.TaskID,
+				"agent_id": a.id,
+				"error":    err.Error(),
+			})
+
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
@@ -295,6 +346,11 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			}
 			return
 		}
+
+		a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			"task_id":  task.TaskID,
+			"agent_id": a.id,
+		})
 
 		// Send task complete event
 		select {
@@ -365,7 +421,7 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 }
 
 // emitEvent appends a single event to the event store.
-// No-op if eventStore is nil.
+// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
 func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
 	if a.eventStore == nil {
 		return
@@ -376,6 +432,8 @@ func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, pa
 		Payload:  payload,
 	}
 	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "type", eventType, "error", err)
+		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
+	} else {
+		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }

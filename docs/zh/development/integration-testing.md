@@ -27,7 +27,7 @@ export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/goagent_te
 
 ```bash
 docker run -d \
-  --name goagent-test-db \
+  --name goagentx-test-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent_test \
   -p 5432:5432 \

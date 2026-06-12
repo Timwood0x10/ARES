@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // MemoryManager provides unified memory management.

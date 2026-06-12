@@ -257,7 +257,7 @@ type Message struct {
 **代码位置**: `internal/storage/postgres/pool.go:30-50`
 
 ```go
-import "goagent/internal/storage/postgres"
+import "goagentx/internal/storage/postgres"
 
 config := &postgres.Config{
     Host:            "localhost",

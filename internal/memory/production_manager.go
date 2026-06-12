@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
-	storage_models "goagent/internal/storage/postgres/models"
-	"goagent/internal/storage/postgres/repositories"
-	"goagent/internal/storage/postgres/services"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	storage_models "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/storage/postgres/services"
 )
 
 // ProductionMemoryManager implements MemoryManager interface with production-grade storage.

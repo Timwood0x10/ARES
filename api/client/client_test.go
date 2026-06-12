@@ -7,11 +7,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagent/api/core"
-	agentSvc "goagent/api/service/agent"
-	llmSvc "goagent/api/service/llm"
-	memorySvc "goagent/api/service/memory"
-	retrievalSvc "goagent/api/service/retrieval"
+	"goagentx/api/core"
+	agentSvc "goagentx/api/service/agent"
+	llmSvc "goagentx/api/service/llm"
+	memorySvc "goagentx/api/service/memory"
+	retrievalSvc "goagentx/api/service/retrieval"
 )
 
 // TestNewClient tests the creation of a new client instance.

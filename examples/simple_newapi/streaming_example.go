@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 
-	"goagent/api/client"
+	"goagentx/api/client"
 )
 
 func main() {

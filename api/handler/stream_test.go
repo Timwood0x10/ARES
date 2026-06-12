@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"goagent/internal/agents/base"
+	"goagentx/internal/agents/base"
 )
 
 // MockAgentProcessor implements AgentProcessor for testing.

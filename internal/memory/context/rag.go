@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/storage/postgres"
 )
 
 // VectorSearcher defines the interface for vector storage operations.

@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -26,10 +27,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/runtime"
+	runtimeSvc "goagentx/api/service/runtime"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 )
 
 // phaseSeparator prints a visual phase separator for readable output.
@@ -266,6 +267,9 @@ func (w *workerAgent) ReplayEvents(evts []*events.Event) error {
 		}
 	}
 
+	// Restore task count from replayed events.
+	w.taskCount.Store(int64(replayed))
+
 	slog.Info("events replayed",
 		"agent_id", w.id,
 		"total_events", len(evts),
@@ -383,16 +387,21 @@ func main() {
 	defer cancel()
 
 	// Shared infrastructure.
-	eventStore := events.NewMemoryEventStore()
 	cogMemory := NewCognitiveMemory()
 
-	// Runtime config with aggressive health checks for demo.
-	rtConfig := &runtime.Config{
-		HealthCheckInterval: 2 * time.Second,
+	// Create runtime service — one call wires up EventStore + HeartbeatMonitor + Resurrection.
+	svc, err := runtimeSvc.NewService(runtimeSvc.Config{
+		HeartbeatInterval:   2 * time.Second,
+		HeartbeatTimeout:    3 * time.Second,
+		MaxMissedHeartbeats: 2,
 		MaxRestartsPerAgent: 5,
-		MaxReplayEvents:     1000,
+		ResurrectTimeout:    10 * time.Second,
+		UseMemoryStore:      true,
+	}, nil)
+	if err != nil {
+		log.Fatalf("failed to create runtime service: %v", err)
 	}
-	rt := runtime.New(rtConfig, eventStore, nil)
+	eventStore := svc.EventStore()
 
 	// ----------------------------------------------------------
 	// Phase 1: Create and register agents.
@@ -403,15 +412,15 @@ func main() {
 	worker := newWorker("worker-1", eventStore, cogMemory)
 	planner := newWorker("planner-1", eventStore, cogMemory)
 
-	rt.RegisterAgent(leader, func() base.Agent {
+	svc.RegisterAgent(leader, func() base.Agent {
 		slog.Info("factory invoked", "agent_id", "leader-1", "reason", "resurrection")
 		return newWorker("leader-1", eventStore, cogMemory)
 	})
-	rt.RegisterAgent(worker, func() base.Agent {
+	svc.RegisterAgent(worker, func() base.Agent {
 		slog.Info("factory invoked", "agent_id", "worker-1", "reason", "resurrection")
 		return newWorker("worker-1", eventStore, cogMemory)
 	})
-	rt.RegisterAgent(planner, func() base.Agent {
+	svc.RegisterAgent(planner, func() base.Agent {
 		slog.Info("factory invoked", "agent_id", "planner-1", "reason", "resurrection")
 		return newWorker("planner-1", eventStore, cogMemory)
 	})
@@ -421,14 +430,14 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 2: Normal Operation")
 
-	if err := rt.Start(ctx); err != nil {
+	if err := svc.Start(ctx); err != nil {
 		slog.Error("failed to start runtime", "error", err)
 		return
 	}
 
 	// Let agents process tasks for a while.
 	time.Sleep(6 * time.Second)
-	printStats(rt, eventStore, ctx)
+	printStats(svc, eventStore, ctx)
 
 	// Take a snapshot of worker state before crash.
 	snapshot, _ := worker.Snapshot()
@@ -458,7 +467,7 @@ func main() {
 	// The Runtime creates a new worker via factory and replays events.
 	// We need to get a reference to the resurrected agent.
 	// Note: The Runtime holds the new instance internally.
-	printStats(rt, eventStore, ctx)
+	printStats(svc, eventStore, ctx)
 
 	// Verify that events were replayed (operational recovery).
 	replayedEvents, _ := eventStore.Read(ctx, "worker-1", events.ReadOptions{
@@ -467,7 +476,7 @@ func main() {
 	fmt.Printf("  Total events for worker-1: %d\n", len(replayedEvents))
 
 	// Verify restored agent state.
-	if restored := rt.GetAgent("worker-1"); restored != nil {
+	if restored := svc.GetAgent("worker-1"); restored != nil {
 		if w, ok := restored.(*workerAgent); ok {
 			verified := verifyRestoredState(w, 1)
 			fmt.Printf("  Restored state verified: %v\n", verified)
@@ -491,7 +500,7 @@ func main() {
 	phaseSeparator("Phase 5: Resurrected Agent Working")
 
 	time.Sleep(6 * time.Second)
-	printStats(rt, eventStore, ctx)
+	printStats(svc, eventStore, ctx)
 
 	// ----------------------------------------------------------
 	// Phase 6: Second crash (planner) to show multiple resurrections.
@@ -500,7 +509,7 @@ func main() {
 
 	planner.shouldCrash.Store(true)
 	time.Sleep(5 * time.Second)
-	printStats(rt, eventStore, ctx)
+	printStats(svc, eventStore, ctx)
 
 	// ----------------------------------------------------------
 	// Phase 7: Final event history.
@@ -541,7 +550,7 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 8: Graceful Shutdown")
 
-	if err := rt.Stop(); err != nil {
+	if err := svc.Stop(); err != nil {
 		slog.Error("runtime stop failed", "error", err)
 	}
 
@@ -554,8 +563,8 @@ func main() {
 }
 
 // printStats displays current runtime statistics.
-func printStats(rt *runtime.Manager, store *events.MemoryEventStore, ctx context.Context) {
-	stats := rt.Stats()
+func printStats(svc *runtimeSvc.Service, store events.EventStore, ctx context.Context) {
+	stats := svc.Stats()
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 	fmt.Printf("  Uptime: %s\n", stats.Uptime.Round(time.Second))

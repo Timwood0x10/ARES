@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
 )
 
 // TestNewDynamicExecutor verifies that NewDynamicExecutor returns a valid

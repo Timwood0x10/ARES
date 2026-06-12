@@ -20,12 +20,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"goagent/api/experience"
-	"goagent/internal/llm"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
-	storageModels "goagent/internal/storage/postgres/models"
-	"goagent/internal/storage/postgres/repositories"
+	"goagentx/api/experience"
+	"goagentx/internal/llm"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	storageModels "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 const (

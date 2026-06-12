@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // Workflow errors.

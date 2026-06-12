@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/events"
+	"goagentx/internal/events"
 )
 
 // emitSessionEvents emits a sequence of session lifecycle events to the given stream.
@@ -274,7 +274,7 @@ func TestEventSourcing_SubscribeAndReplay(t *testing.T) {
 		{events.EventMessageAdded, map[string]any{"content": "hello"}},
 		{events.EventTaskCreated, map[string]any{"task_id": "t1"}},
 		{events.EventTaskCompleted, map[string]any{"task_id": "t1", "result": "ok"}},
-		{events.EventStepCompleted, map[string]any{"step": "final"}},
+		{events.EventTaskCompleted, map[string]any{"step": "final"}},
 	}
 
 	var received []*events.Event
@@ -335,7 +335,7 @@ func TestEventSourcing_FailoverWithPartialProgress(t *testing.T) {
 	firstBatch := []*events.Event{
 		{Type: events.EventSessionCreated, Payload: map[string]any{"session": streamID}},
 		{Type: events.EventTaskCreated, Payload: map[string]any{"task_id": "t1", "step": 1}},
-		{Type: events.EventStepCompleted, Payload: map[string]any{"task_id": "t1", "step": 1}},
+		{Type: events.EventTaskCompleted, Payload: map[string]any{"task_id": "t1", "step": 1}},
 	}
 	err := store.Append(ctx, streamID, firstBatch, 0)
 	require.NoError(t, err)
@@ -357,7 +357,7 @@ func TestEventSourcing_FailoverWithPartialProgress(t *testing.T) {
 	// Leader B emits the remaining events.
 	secondBatch := []*events.Event{
 		{Type: events.EventTaskCreated, Payload: map[string]any{"task_id": "t1", "step": 2}},
-		{Type: events.EventStepCompleted, Payload: map[string]any{"task_id": "t1", "step": 2}},
+		{Type: events.EventTaskCompleted, Payload: map[string]any{"task_id": "t1", "step": 2}},
 		{Type: events.EventTaskCompleted, Payload: map[string]any{"task_id": "t1", "result": "done"}},
 	}
 	err = store.Append(ctx, streamID, secondBatch, lastVersion)

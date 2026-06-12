@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	apperrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/protocol/ahp"
+	apperrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )

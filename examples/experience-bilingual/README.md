@@ -48,8 +48,8 @@ llm:
 Run the database migration to create the required tables:
 
 ```bash
-cd /Users/scc/go/src/goagent
-go run cmd/migrate_goagent/main.go
+cd /Users/scc/go/src/goagentx
+go run cmd/migrate_goagentx/main.go
 ```
 
 This creates the `experiences_1024` table with vector support.
@@ -63,7 +63,7 @@ Update `config.yaml` with your database and service credentials.
 Run the test:
 
 ```bash
-cd /Users/scc/go/src/goagent/examples/experience-bilingual-test
+cd /Users/scc/go/src/goagentx/examples/experience-bilingual-test
 go run main.go
 ```
 

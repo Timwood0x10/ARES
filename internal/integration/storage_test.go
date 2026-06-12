@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/agents/leader"
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/agents/leader"
+	"goagentx/internal/storage/postgres"
 )
 
 // TestWriteBufferBatchFlush verifies the full WriteBuffer pipeline:

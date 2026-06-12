@@ -4,8 +4,8 @@ package router
 import (
 	"net/http"
 
-	"goagent/api/handler"
-	"goagent/internal/agents/base"
+	"goagentx/api/handler"
+	"goagentx/internal/agents/base"
 )
 
 // Router provides HTTP routing for the API.

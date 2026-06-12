@@ -3,7 +3,7 @@ package output
 import (
 	"context"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // LLMAdapter defines the interface for LLM providers.

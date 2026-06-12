@@ -17,14 +17,14 @@ import (
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
-	"goagent/internal/experience"
-	"goagent/internal/llm"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
-	storage_models "goagent/internal/storage/postgres/models"
-	"goagent/internal/storage/postgres/repositories"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/experience"
+	"goagentx/internal/llm"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
+	storage_models "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 var allowedSynonymDir string

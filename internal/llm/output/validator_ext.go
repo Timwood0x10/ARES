@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	gerr "goagent/internal/errors"
+	gerr "goagentx/internal/errors"
 )
 
 // Validation limits for LLM output parsing.

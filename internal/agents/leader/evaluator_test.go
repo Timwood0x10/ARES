@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 func TestDefaultEvaluator_Evaluate(t *testing.T) {

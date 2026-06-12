@@ -3,7 +3,7 @@
 package experience
 
 import (
-	internalexperience "goagent/internal/experience"
+	internalexperience "goagentx/internal/experience"
 )
 
 // TaskResult re-exports from internal/experience.

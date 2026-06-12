@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestNewFileTools tests creating a new FileTools.

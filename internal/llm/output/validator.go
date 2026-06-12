@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"sync"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // Validator validates data against schemas.

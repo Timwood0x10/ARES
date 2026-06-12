@@ -1,15 +1,14 @@
-# GoAgent
+# GoAgentX
 
 ```shell
-
-   >===>                            >>                                       >=>   
- >>    >=>                         >>=>                                      >=>   
->=>            >=>                >> >=>        >=>      >==>    >==>>==>  >=>>==> 
->=>          >=>  >=>  >====>    >=>  >=>     >=>  >=> >>   >=>   >=>  >=>   >=>   
->=>   >===> >=>    >=>          >=====>>=>   >=>   >=> >>===>>=>  >=>  >=>   >=>   
- >=>    >>   >=>  >=>          >=>      >=>   >=>  >=> >>         >=>  >=>   >=>   
-  >====>       >=>            >=>        >=>      >=>   >====>   >==>  >=>    >=>  
-                                               >=>                                 
+   _____                               _  __   __
+  / ____|        /\                   | | \ \ / /
+ | |  __  ___   /  \   __ _  ___ _ __ | |_ \ V / 
+ | | |_ |/ _ \ / /\ \ / _` |/ _ \ '_ \| __| > <  
+ | |__| | (_) / ____ \ (_| |  __/ | | | |_ / . \ 
+  \_____|\___/_/    \_\__, |\___|_| |_|\__/_/ \_\
+                       __/ |                     
+                      |___/                      
 ```
 
 
@@ -210,7 +209,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 ```bash
 docker run -d \
-  --name goagent-db \
+  --name goagentx-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
@@ -249,7 +248,7 @@ go test -bench=. ./...             # Benchmarks
 ## Project Structure
 
 ```
-goagent/
+GoAgentX/
 ├── internal/
 │   ├── agents/          # Leader/Sub agent system
 │   ├── runtime/         # Runtime lifecycle management

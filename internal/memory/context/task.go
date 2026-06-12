@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // TaskMemory stores task-specific context and distillation.

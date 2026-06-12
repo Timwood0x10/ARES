@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/tools/resources/core"
 )
 
 // mockTool is a simple mock tool for testing.

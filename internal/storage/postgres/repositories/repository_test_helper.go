@@ -7,7 +7,7 @@ import (
 	"log"
 	"testing"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

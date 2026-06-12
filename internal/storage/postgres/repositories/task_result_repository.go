@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres"
-	storage_models "goagent/internal/storage/postgres/models"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
+	storage_models "goagentx/internal/storage/postgres/models"
 )
 
 // TaskResultRepository provides data access for task execution results.

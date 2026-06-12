@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	apperrors "goagent/internal/errors"
-	"goagent/internal/storage/postgres"
+	apperrors "goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
 )
 
 // PostgresEventStore persists events in PostgreSQL with optimistic concurrency control.

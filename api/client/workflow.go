@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	llmSvc "goagent/api/service/llm"
-	"goagent/internal/agents/base"
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	gerr "goagent/internal/errors"
-	"goagent/internal/workflow/engine"
+	llmSvc "goagentx/api/service/llm"
+	"goagentx/internal/agents/base"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	gerr "goagentx/internal/errors"
+	"goagentx/internal/workflow/engine"
 )
 
 // WorkflowClient provides workflow orchestration capabilities.

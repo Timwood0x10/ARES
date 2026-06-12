@@ -4,7 +4,7 @@ package postgres
 import (
 	"context"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // MigrateStorage runs the storage system database migrations.

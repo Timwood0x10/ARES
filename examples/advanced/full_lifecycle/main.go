@@ -25,12 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/memory"
-	"goagent/internal/runtime"
-	"goagent/internal/workflow/engine"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/memory"
+	"goagentx/internal/runtime"
+	"goagentx/internal/workflow/engine"
 )
 
 // phaseSeparator prints a visual phase separator for readable output.

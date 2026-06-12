@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"goagent/internal/config"
-	"goagent/internal/llm"
-	"goagent/internal/tools/resources"
-	"goagent/internal/tools/resources/agent"
+	"goagentx/internal/config"
+	"goagentx/internal/llm"
+	"goagentx/internal/tools/resources"
+	"goagentx/internal/tools/resources/agent"
 )
 
 type DialogAgent struct {

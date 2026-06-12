@@ -330,8 +330,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourusername/goagent/api/service"
-	"github.com/yourusername/goagent/internal/config"
+	"github.com/Timwood0x10/goagentx/api/service"
+	"github.com/Timwood0x10/goagentx/internal/config"
 )
 
 func TestEndToEndFlow(t *testing.T) {
@@ -567,7 +567,7 @@ Set up local test environment:
 ```bash
 # Start PostgreSQL
 docker run -d \
-  --name goagent-test-db \
+  --name goagentx-test-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \

@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"goagent/api/service/graph"
-	"goagent/internal/observability"
-	wfgraph "goagent/internal/workflow/graph"
+	"goagentx/api/service/graph"
+	"goagentx/internal/observability"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 func main() {

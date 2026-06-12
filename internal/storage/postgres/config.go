@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // Config represents the database configuration.

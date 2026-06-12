@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Memory Distillation module is a component in the goagent framework for extracting key information from conversation history and task execution processes, storing it in a retrievable format. The module supports two distillation implementation methods, suitable for different use cases.
+The Memory Distillation module is a component in the GoAgentX framework for extracting key information from conversation history and task execution processes, storing it in a retrievable format. The module supports two distillation implementation methods, suitable for different use cases.
 
 ---
 

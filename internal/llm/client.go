@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // HTTPError represents an HTTP request error.

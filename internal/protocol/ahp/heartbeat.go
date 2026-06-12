@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/core/models"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
 )
 
 // HeartbeatConfig holds the configuration for heartbeat mechanism.

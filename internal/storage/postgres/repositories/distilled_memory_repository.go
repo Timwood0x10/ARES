@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
 )
 
 // DistilledMemory represents a distilled memory from conversation history.

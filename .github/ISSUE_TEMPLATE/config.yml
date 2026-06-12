@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/mq理念/goagent/tree/main/docs
+    url: https://github.com/Timwood0x10/GoAgentX/tree/main/docs
     about: Please refer to the docs directory for detailed documentation
   - name: GitHub Discussions
-    url: https://github.com/mq理念/goagent/discussions
+    url: https://github.com/Timwood0x10/GoAgentX/discussions
     about: Ask questions and join discussions

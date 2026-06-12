@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Experience System is an intelligent component in the goagent framework that automatically learns from task executions and reuses that knowledge in future tasks. By distilling successful task results into reusable experiences, the system enables continuous learning and optimization of agents.
+The Experience System is an intelligent component in the GoAgentX framework that automatically learns from task executions and reuses that knowledge in future tasks. By distilling successful task results into reusable experiences, the system enables continuous learning and optimization of agents.
 
 ---
 
@@ -410,7 +410,7 @@ conflictResolver.Configure(0.9) // 90% similarity threshold
 ### 1. Basic Distillation
 
 ```go
-import "goagent/api/experience"
+import "goagentx/api/experience"
 
 // Create task result
 task := &experience.TaskResult{

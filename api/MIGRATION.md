@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档说明如何从旧的API（`goagent/api`包）迁移到新的分层API（`goagent/api/client`包）。
+本文档说明如何从旧的API（`goagentx/api`包）迁移到新的分层API（`goagentx/api/client`包）。
 
 ## 为什么迁移？
 
@@ -21,19 +21,19 @@
 **旧代码**：
 ```go
 import (
-    "goagent/api"
-    "goagent/api/agent"
-    "goagent/api/memory"
+    "goagentx/api"
+    "goagentx/api/agent"
+    "goagentx/api/memory"
 )
 ```
 
 **新代码**：
 ```go
 import (
-    "goagent/api/client"
-    "goagent/api/core"
-    "goagent/api/service/agent"
-    "goagent/api/service/memory"
+    "goagentx/api/client"
+    "goagentx/api/core"
+    "goagentx/api/service/agent"
+    "goagentx/api/service/memory"
 )
 ```
 
@@ -228,7 +228,7 @@ import (
     "context"
     "log"
     
-    "goagent/api"
+    "goagentx/api"
 )
 
 func main() {
@@ -282,10 +282,10 @@ import (
     "log"
     "time"
     
-    "goagent/api/client"
-    "goagent/api/core"
-    "goagent/api/service/agent"
-    "goagent/api/service/memory"
+    "goagentx/api/client"
+    "goagentx/api/core"
+    "goagentx/api/service/agent"
+    "goagentx/api/service/memory"
 )
 
 func main() {

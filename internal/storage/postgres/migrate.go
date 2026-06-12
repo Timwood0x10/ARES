@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // Migrate runs database migrations.

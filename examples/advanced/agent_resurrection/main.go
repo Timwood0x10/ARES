@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/plugins/resurrection"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/plugins/resurrection"
+	"goagentx/internal/protocol/ahp"
 )
 
 // workerAgent simulates any agent type.

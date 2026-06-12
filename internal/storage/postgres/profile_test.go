@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/core/models"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
 )
 
 // TestProfileRepository_NewProfileRepository tests creating a new ProfileRepository.

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres/embedding"
-	"goagent/internal/storage/postgres/repositories"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres/embedding"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // SimpleRetrievalConfig configuration for simple retrieval service

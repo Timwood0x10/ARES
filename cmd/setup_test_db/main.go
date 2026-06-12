@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/storage/postgres"
 )
 
 func getEnv(key, defaultValue string) string {

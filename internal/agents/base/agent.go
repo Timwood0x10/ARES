@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 )
 
 // EventType represents the type of agent event.
@@ -89,6 +89,7 @@ type StatefulAgent interface {
 	ReplayEvents(events []*events.Event) error
 
 	// Snapshot returns a serializable snapshot of current state.
+	// NOTE: Not yet wired into the resurrection flow; will be used when snapshot-based recovery is implemented.
 	Snapshot() (map[string]any, error)
 }
 

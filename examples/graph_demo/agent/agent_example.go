@@ -7,11 +7,11 @@ import (
 	"log"
 	"time"
 
-	"goagent/api/service/graph"
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/observability"
-	wfgraph "goagent/internal/workflow/graph"
+	"goagentx/api/service/graph"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/observability"
+	wfgraph "goagentx/internal/workflow/graph"
 )
 
 // mockAgent simulates an agent for demonstration

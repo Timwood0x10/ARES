@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/agents/base"
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/events"
-	"goagent/internal/memory"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
+	"goagentx/internal/memory"
+	"goagentx/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -257,6 +257,12 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 		slog.Info("Message queue initialized", "agent_id", a.id)
 	}
 
+	// Emit agent started event.
+	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+		"agent_id": a.id,
+		"type":     string(a.agentType),
+	})
+
 	slog.Info("Leader agent started successfully", "agent_id", a.id)
 	a.setStatus(models.AgentStatusReady)
 	return nil
@@ -293,6 +299,10 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 		}
 
 		slog.Info("Leader agent stopped successfully", "agent_id", a.id)
+	})
+
+	a.emitEvent(ctx, events.EventAgentStopped, map[string]any{
+		"agent_id": a.id,
 	})
 
 	a.setStatus(models.AgentStatusOffline)
@@ -461,7 +471,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 }
 
 // emitEvent appends a single event to the event store.
-// No-op if eventStore is nil.
+// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
 func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
 	if a.eventStore == nil {
 		return
@@ -472,7 +482,9 @@ func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType,
 		Payload:  payload,
 	}
 	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "type", eventType, "error", err)
+		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
+	} else {
+		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }
 
@@ -640,6 +652,10 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	default:
 	}
 
+	a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		"step": "parse",
+	})
+
 	profile, err := a.parser.Parse(ctx, strInput)
 	if err != nil {
 		return nil, err
@@ -656,6 +672,10 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, coreerrors.ErrAgentNotRunning
 	default:
 	}
+
+	a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+		"step": "plan",
+	})
 
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
@@ -674,6 +694,10 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, coreerrors.ErrAgentNotRunning
 	default:
 	}
+
+	a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+		"step": "dispatch",
+	})
 
 	slog.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
@@ -841,6 +865,10 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		}
 
 		// Parse profile.
+		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			"step": "parse",
+		})
+
 		profile, err := a.parser.Parse(ctx, strInput)
 		if err != nil {
 			select {
@@ -852,6 +880,10 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		}
 
 		// Plan tasks.
+		a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+			"step": "plan",
+		})
+
 		tasks, err := a.planner.Plan(ctx, profile, strInput)
 		if err != nil {
 			select {
@@ -872,6 +904,10 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 				return nil
 			}
 		}
+
+		a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+			"step": "dispatch",
+		})
 
 		results, err := a.dispatcher.Dispatch(ctx, tasks)
 		if err != nil {

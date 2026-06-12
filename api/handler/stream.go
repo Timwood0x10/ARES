@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"goagent/internal/agents/base"
+	"goagentx/internal/agents/base"
 )
 
 // StreamHandler handles SSE streaming requests.

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // EmbeddingReconciler provides eventual consistency for embedding operations.

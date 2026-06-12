@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 var embeddingConfig = &EmbeddingConfig{

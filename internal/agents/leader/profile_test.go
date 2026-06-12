@@ -3,9 +3,9 @@ package leader
 import (
 	"testing"
 
-	apperrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/llm/output"
+	apperrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/llm/output"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

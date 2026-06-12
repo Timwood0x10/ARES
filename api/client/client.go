@@ -5,13 +5,15 @@ import (
 	"context"
 	"time"
 
-	"goagent/api/core"
-	agentSvc "goagent/api/service/agent"
-	llmSvc "goagent/api/service/llm"
-	memorySvc "goagent/api/service/memory"
-	retrievalSvc "goagent/api/service/retrieval"
-	workflowSvc "goagent/api/service/workflow"
-	"goagent/internal/errors"
+	"goagentx/api/core"
+	agentSvc "goagentx/api/service/agent"
+	llmSvc "goagentx/api/service/llm"
+	memorySvc "goagentx/api/service/memory"
+	retrievalSvc "goagentx/api/service/retrieval"
+	runtimeSvc "goagentx/api/service/runtime"
+	workflowSvc "goagentx/api/service/workflow"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
 )
 
 // Client provides a unified client interface for all GoAgent modules.
@@ -143,6 +145,26 @@ func (c *Client) Workflow() (*workflowSvc.Service, error) {
 		return nil, ErrWorkflowNotConfigured
 	}
 	return c.workflowService, nil
+}
+
+// Runtime creates a new runtime service for agent lifecycle management.
+// This is a convenience method that wires up EventStore + HeartbeatMonitor + Resurrection.
+//
+// Args:
+//
+//	config - runtime configuration. Uses defaults if nil.
+//	eventStore - optional event store. If nil, uses in-memory store.
+//
+// Returns:
+//
+//	service - the runtime service.
+//	err - if creation fails.
+func (c *Client) Runtime(config *runtimeSvc.Config, eventStore events.EventStore) (*runtimeSvc.Service, error) {
+	if config == nil {
+		defaultCfg := runtimeSvc.DefaultConfig()
+		config = &defaultCfg
+	}
+	return runtimeSvc.NewService(*config, eventStore)
 }
 
 // Close closes the client and cleans up resources.

@@ -3,7 +3,7 @@ package resurrection
 import (
 	"sync"
 
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/protocol/ahp"
 )
 
 // HeartbeatAdapter adapts ahp.HeartbeatMonitor to the HealthChecker interface.

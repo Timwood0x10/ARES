@@ -65,7 +65,7 @@ graph LR
 
 ## Event Types
 
-共 17 种事件类型，按领域分组：
+共 20 种事件类型，按领域分组：
 
 ### Agent 生命周期
 
@@ -101,6 +101,14 @@ graph LR
 | Step Completed | `step.completed` | Workflow Step 完成 |
 | Step Failed | `step.failed` | Workflow Step 失败 |
 | Step Skipped | `step.skipped` | Workflow Step 跳过（依赖失败） |
+
+### Tool 与 LLM
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Tool Called | `tool.called` | 工具被调用时触发 |
+| Tool Failed | `tool.failed` | 工具调用失败时触发 |
+| LLM Call | `llm.call` | LLM 被调用时触发 |
 
 ### Failover
 

@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"goagent/api/core"
-	"goagent/internal/errors"
-	"goagent/internal/llm"
+	"goagentx/api/core"
+	"goagentx/internal/errors"
+	"goagentx/internal/llm"
 )
 
 // Service provides LLM operations.

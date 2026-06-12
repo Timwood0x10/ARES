@@ -11,8 +11,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // Pool represents a database connection pool with "get usage release" pattern.
@@ -30,7 +30,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 		return nil, errors.Wrap(err, "invalid config")
 	}
 
-	db, err := sql.Open("postgres", cfg.DSN())
+	db, err := sql.Open("pgx", cfg.DSN())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to open database")
 	}

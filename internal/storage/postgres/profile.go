@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"time"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // ProfileRepository handles user profile persistence.

@@ -343,6 +343,88 @@ func TestMemoryEventStore_ReadAllEmpty(t *testing.T) {
 	assert.Empty(t, events)
 }
 
+// TestMemoryEventStore_Close_MultipleTimes verifies that calling Close() twice
+// is a no-op and returns nil both times.
+func TestMemoryEventStore_Close_MultipleTimes(t *testing.T) {
+	store := NewMemoryEventStore()
+	ctx := context.Background()
+
+	// Create a subscriber to verify first close cleans it up.
+	ch, err := store.Subscribe(ctx, EventFilter{})
+	require.NoError(t, err)
+
+	// First close succeeds.
+	err = store.Close()
+	require.NoError(t, err)
+
+	// Subscriber channel closed after first close.
+	_, ok := <-ch
+	assert.False(t, ok, "channel should be closed after first Close")
+
+	// Second close is a no-op, returns nil.
+	err = store.Close()
+	assert.NoError(t, err, "second Close should be a no-op")
+
+	// Third close is still a no-op.
+	err = store.Close()
+	assert.NoError(t, err, "third Close should be a no-op")
+
+	// Operations still fail after repeated closes.
+	err = store.Append(ctx, "s1", []*Event{{Type: EventAgentStarted}}, 0)
+	assert.ErrorIs(t, err, ErrEventStoreClosed)
+}
+
+// TestMemoryEventStore_ConcurrentReadAndAppend verifies that concurrent reads
+// and appends to the same stream do not cause data races.
+func TestMemoryEventStore_ConcurrentReadAndAppend(t *testing.T) {
+	store := NewMemoryEventStore()
+	ctx := context.Background()
+
+	// Seed the stream with an initial event.
+	err := store.Append(ctx, "s1", []*Event{{Type: EventAgentStarted}}, 0)
+	require.NoError(t, err)
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+
+	wg.Add(goroutines * 2)
+
+	// Half the goroutines append events.
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			// Use auto-detect version to avoid ErrVersionConflict noise.
+			_ = store.Append(ctx, "s1", []*Event{
+				{Type: EventTaskCreated, Payload: map[string]any{"goroutine": idx}},
+			}, 0)
+		}(i)
+	}
+
+	// The other half read events concurrently.
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			events, readErr := store.Read(ctx, "s1", ReadOptions{})
+			if readErr != nil {
+				// Read after close is acceptable in this concurrent scenario.
+				return
+			}
+			// Just access the slice; the race detector will catch any issues.
+			_ = len(events)
+			for _, evt := range events {
+				_ = evt.Version
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Final read to verify data consistency.
+	events, err := store.Read(ctx, "s1", ReadOptions{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(events), 1, "at least the seed event should exist")
+}
+
 func TestAppend_VersionOverflow(t *testing.T) {
 	store := NewMemoryEventStore()
 	ctx := context.Background()

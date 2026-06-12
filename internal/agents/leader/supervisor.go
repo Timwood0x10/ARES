@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/agents/base"
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/events"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -38,6 +38,7 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 }
 
 // LeaderSupervisor monitors leader health and triggers failover.
+// TODO: legacy — still used in tests; production code should migrate to Runtime-level supervision.
 type LeaderSupervisor struct {
 	mu           sync.RWMutex
 	leaders      map[string]base.Agent

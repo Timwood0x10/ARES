@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/memory"
+	"goagentx/internal/memory"
 )
 
 // Service provides agent management operations.

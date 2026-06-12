@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/memory"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -143,6 +144,199 @@ func (f *mockFactory) create() AgentFactory {
 }
 
 func (f *mockFactory) lastAgent() *mockStatefulAgent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.agents) == 0 {
+		return nil
+	}
+	return f.agents[len(f.agents)-1]
+}
+
+// mockMemoryManager is a MemoryManager implementation for testing.
+type mockMemoryManager struct {
+	getLatestSessionCalls int
+	getMessagesCalls      int
+}
+
+func newMockMemoryManager() *mockMemoryManager {
+	return &mockMemoryManager{}
+}
+
+func (m *mockMemoryManager) CreateSession(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockMemoryManager) AddMessage(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (m *mockMemoryManager) GetMessages(_ context.Context, _ string) ([]memory.Message, error) {
+	m.getMessagesCalls++
+	return []memory.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}, nil
+}
+
+func (m *mockMemoryManager) DeleteSession(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockMemoryManager) BuildContext(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockMemoryManager) CreateTask(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockMemoryManager) DistillTask(_ context.Context, _ string) (*models.Task, error) {
+	return nil, nil
+}
+
+func (m *mockMemoryManager) StoreDistilledTask(_ context.Context, _ string, _ *models.Task) error {
+	return nil
+}
+
+func (m *mockMemoryManager) SearchSimilarTasks(_ context.Context, _ string, _ int) ([]*models.Task, error) {
+	return nil, nil
+}
+
+func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	m.getLatestSessionCalls++
+	return "sess-mem", nil
+}
+
+func (m *mockMemoryManager) Start(_ context.Context) error { return nil }
+func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
+
+// errEventStore is an EventStore that returns an error on Read.
+type errEventStore struct {
+	readErr error
+}
+
+func (s *errEventStore) Append(_ context.Context, _ string, _ []*events.Event, _ int64) error {
+	return nil
+}
+
+func (s *errEventStore) Read(_ context.Context, _ string, _ events.ReadOptions) ([]*events.Event, error) {
+	return nil, s.readErr
+}
+
+func (s *errEventStore) ReadAll(_ context.Context, _ events.ReadOptions) ([]*events.Event, error) {
+	return nil, s.readErr
+}
+
+func (s *errEventStore) Subscribe(_ context.Context, _ events.EventFilter) (<-chan *events.Event, error) {
+	ch := make(chan *events.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (s *errEventStore) StreamVersion(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
+// errMemoryManager is a MemoryManager that returns errors on session/message retrieval.
+type errMemoryManager struct {
+	sessionErr  error
+	messagesErr error
+}
+
+func (m *errMemoryManager) CreateSession(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *errMemoryManager) AddMessage(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (m *errMemoryManager) GetMessages(_ context.Context, _ string) ([]memory.Message, error) {
+	return nil, m.messagesErr
+}
+
+func (m *errMemoryManager) DeleteSession(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *errMemoryManager) BuildContext(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *errMemoryManager) CreateTask(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *errMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *errMemoryManager) DistillTask(_ context.Context, _ string) (*models.Task, error) {
+	return nil, nil
+}
+
+func (m *errMemoryManager) StoreDistilledTask(_ context.Context, _ string, _ *models.Task) error {
+	return nil
+}
+
+func (m *errMemoryManager) SearchSimilarTasks(_ context.Context, _ string, _ int) ([]*models.Task, error) {
+	return nil, nil
+}
+
+func (m *errMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
+	return "", m.sessionErr
+}
+
+func (m *errMemoryManager) Start(_ context.Context) error { return nil }
+func (m *errMemoryManager) Stop(_ context.Context) error  { return nil }
+
+// slowStopAgent blocks in Stop until the provided channel is closed or context expires.
+type slowStopAgent struct {
+	*mockAgent
+	stopBlocker chan struct{}
+}
+
+func newSlowStopAgent(id string) *slowStopAgent {
+	return &slowStopAgent{
+		mockAgent:   newMockAgent(id),
+		stopBlocker: make(chan struct{}),
+	}
+}
+
+func (a *slowStopAgent) Stop(ctx context.Context) error {
+	a.stopped.Add(1)
+	select {
+	case <-a.stopBlocker:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// nonStatefulFactory creates agents that do NOT implement StatefulAgent.
+type nonStatefulFactory struct {
+	mu     sync.Mutex
+	agents []*mockAgent
+}
+
+func newNonStatefulFactory() *nonStatefulFactory {
+	return &nonStatefulFactory{}
+}
+
+func (f *nonStatefulFactory) create(id string) AgentFactory {
+	return func() base.Agent {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		a := newMockAgent(id)
+		f.agents = append(f.agents, a)
+		return a
+	}
+}
+
+func (f *nonStatefulFactory) lastAgent() *mockAgent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.agents) == 0 {
@@ -770,4 +964,514 @@ func TestManager_NotifyAgentDead_BeforeStart(t *testing.T) {
 	assert.NotPanics(t, func() {
 		m.NotifyAgentDead("a1", "test before start")
 	})
+}
+
+// TestManager_RestoreAgent_WithEventStore verifies that RestoreAgent replays events
+// from the EventStore and passes them to a StatefulAgent.
+func TestManager_RestoreAgent_WithEventStore(t *testing.T) {
+	eventStore := events.NewMemoryEventStore()
+	m := New(nil, eventStore, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Pre-populate the event store with two events for stream "a1".
+	err := eventStore.Append(ctx, "a1", []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "sess-abc"},
+		},
+		{
+			Type:    events.EventTaskCreated,
+			Payload: map[string]any{"task_id": "task-1"},
+		},
+	}, 0)
+	require.NoError(t, err)
+
+	factory := newMockFactory()
+	err = m.RestoreAgent(ctx, "a1", factory.create())
+	require.NoError(t, err)
+
+	// Wait for the agent goroutine to call Start.
+	time.Sleep(100 * time.Millisecond)
+
+	restoredAgent := factory.lastAgent()
+	require.NotNil(t, restoredAgent, "factory should have created an agent")
+
+	// Events must have been replayed to the StatefulAgent.
+	require.NotNil(t, restoredAgent.replayedEvts, "events should have been replayed")
+	assert.Len(t, restoredAgent.replayedEvts, 2)
+
+	// State should contain session_id extracted from EventSessionCreated.
+	require.NotNil(t, restoredAgent.restoredState, "state should have been restored")
+	assert.Equal(t, "sess-abc", restoredAgent.restoredState["session_id"])
+
+	// Agent should be running.
+	assert.Equal(t, models.AgentStatusReady, restoredAgent.Status())
+}
+
+// TestManager_RestoreAgent_WithMemoryManager verifies that RestoreAgent loads
+// cognitive state (conversation history) via MemoryManager during restoration.
+func TestManager_RestoreAgent_WithMemoryManager(t *testing.T) {
+	eventStore := events.NewMemoryEventStore()
+	memManager := newMockMemoryManager()
+	m := New(nil, eventStore, memManager)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Pre-populate the event store with a session event.
+	err := eventStore.Append(ctx, "a1", []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "sess-mem"},
+		},
+	}, 0)
+	require.NoError(t, err)
+
+	factory := newMockFactory()
+	err = m.RestoreAgent(ctx, "a1", factory.create())
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	restoredAgent := factory.lastAgent()
+	require.NotNil(t, restoredAgent)
+
+	// RestoreState should have been called with combined state.
+	require.NotNil(t, restoredAgent.restoredState)
+	assert.Equal(t, "sess-mem", restoredAgent.restoredState["session_id"])
+
+	// Conversation history from the mock memory manager should be present.
+	history, ok := restoredAgent.restoredState["conversation_history"]
+	require.True(t, ok, "conversation_history should be in restored state")
+	assert.Len(t, history.([]memory.Message), 2)
+
+	// Events should have been replayed.
+	require.NotNil(t, restoredAgent.replayedEvts)
+	assert.Len(t, restoredAgent.replayedEvts, 1)
+}
+
+// TestManager_RestoreAgent_AgentNotStatefulAgent verifies that RestoreAgent works
+// correctly when the factory returns an agent that does NOT implement StatefulAgent.
+// State restoration and event replay should be skipped without error.
+func TestManager_RestoreAgent_AgentNotStatefulAgent(t *testing.T) {
+	factory := newNonStatefulFactory()
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	err := m.RestoreAgent(ctx, "a1", factory.create("a1"))
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	restoredAgent := factory.lastAgent()
+	require.NotNil(t, restoredAgent, "factory should have created an agent")
+	assert.Equal(t, "a1", restoredAgent.ID())
+
+	// Agent should be running despite not implementing StatefulAgent.
+	assert.Equal(t, models.AgentStatusReady, restoredAgent.Status())
+
+	// GetAgent should return the restored agent.
+	got := m.GetAgent("a1")
+	assert.Equal(t, restoredAgent, got)
+}
+
+// TestManager_RestoreAgent_EventStoreError verifies that when the EventStore returns
+// an error, the agent is still created and started without restored state.
+func TestManager_RestoreAgent_EventStoreError(t *testing.T) {
+	store := &errEventStore{readErr: fmt.Errorf("database connection lost")}
+	factory := newMockFactory()
+	m := New(nil, store, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	err := m.RestoreAgent(ctx, "a1", factory.create())
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	// Agent should have been created and started despite EventStore failure.
+	restoredAgent := factory.lastAgent()
+	require.NotNil(t, restoredAgent)
+
+	// No events were available, so RestoreState and ReplayEvents should not have been called.
+	assert.Nil(t, restoredAgent.restoredState, "no state should be restored on event store error")
+	assert.Nil(t, restoredAgent.replayedEvts, "no events should be replayed on event store error")
+
+	// Agent should still be running.
+	assert.Equal(t, models.AgentStatusReady, restoredAgent.Status())
+}
+
+// TestManager_RestoreAgent_MemoryManagerError verifies that when the MemoryManager
+// returns an error during cognitive recovery, the agent is still restored and started.
+func TestManager_RestoreAgent_MemoryManagerError(t *testing.T) {
+	store := events.NewMemoryEventStore()
+	memMgr := &errMemoryManager{
+		sessionErr:  fmt.Errorf("checkpoint table corrupted"),
+		messagesErr: fmt.Errorf("messages query timeout"),
+	}
+	factory := newMockFactory()
+	m := New(nil, store, memMgr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Append a session event so buildCognitiveState tries to load messages.
+	err := store.Append(ctx, "a1", []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "sess-err"},
+		},
+	}, 0)
+	require.NoError(t, err)
+
+	err = m.RestoreAgent(ctx, "a1", factory.create())
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	restoredAgent := factory.lastAgent()
+	require.NotNil(t, restoredAgent)
+
+	// The operational state (session_id) should still be restored from events.
+	require.NotNil(t, restoredAgent.restoredState)
+	assert.Equal(t, "sess-err", restoredAgent.restoredState["session_id"])
+
+	// Conversation history should NOT be present because GetMessages returned an error.
+	_, hasHistory := restoredAgent.restoredState["conversation_history"]
+	assert.False(t, hasHistory, "conversation_history should be absent when GetMessages fails")
+
+	// Agent should be running despite memory manager errors.
+	assert.Equal(t, models.AgentStatusReady, restoredAgent.Status())
+}
+
+// TestManager_NotifyAgentDead_AfterStop verifies that NotifyAgentDead is a no-op
+// when the runtime has been stopped, preventing resurrection of agents during shutdown.
+func TestManager_NotifyAgentDead_AfterStop(t *testing.T) {
+	factory := newMockFactory()
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	agent := newMockAgent("a1")
+	m.RegisterAgent(agent, factory.create())
+	require.NoError(t, m.StartAgent(ctx, agent))
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop the runtime.
+	require.NoError(t, m.Stop())
+
+	// NotifyAgentDead after stop should be a no-op.
+	m.NotifyAgentDead("a1", "late crash")
+	time.Sleep(200 * time.Millisecond)
+
+	factory.mu.Lock()
+	callCount := factory.callCount
+	factory.mu.Unlock()
+
+	// Factory should NOT have been called because runtime is stopped.
+	assert.Equal(t, 0, callCount, "factory should not be called after runtime is stopped")
+}
+
+// TestManager_NotifyAgentDead_NoFactory verifies that NotifyAgentDead correctly
+// skips restoration when no factory is registered for the agent.
+func TestManager_NotifyAgentDead_NoFactoryRegistered(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	agent := newMockAgent("a1")
+	// Start the agent without registering a factory.
+	require.NoError(t, m.StartAgent(ctx, agent))
+	time.Sleep(50 * time.Millisecond)
+
+	// NotifyAgentDead should be a no-op without panicking.
+	assert.NotPanics(t, func() {
+		m.NotifyAgentDead("a1", "crash without factory")
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	// Total restarts should remain zero since no factory was registered.
+	stats := m.Stats()
+	assert.Equal(t, 0, stats.TotalRestarts)
+}
+
+// TestManager_Stop_ConcurrentStopAgent verifies that Stop() and StopAgent() called
+// concurrently do not cause panics or data races.
+func TestManager_Stop_ConcurrentStopAgent(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Register and start multiple agents.
+	for i := 0; i < 5; i++ {
+		agent := newMockAgent(fmt.Sprintf("agent-%d", i))
+		require.NoError(t, m.StartAgent(ctx, agent))
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	var wg sync.WaitGroup
+
+	// Call StopAgent for specific agents concurrently.
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_ = m.StopAgent(ctx, id)
+		}(fmt.Sprintf("agent-%d", i))
+	}
+
+	// Call Stop() concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = m.Stop()
+	}()
+
+	wg.Wait()
+
+	// All agents should be stopped.
+	stats := m.Stats()
+	assert.Equal(t, 0, stats.ActiveAgents)
+}
+
+// TestManager_Stop_WithRunningAgents verifies that Stop() gracefully stops all
+// currently running agents.
+func TestManager_Stop_WithRunningAgents(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	agents := make([]*mockAgent, 5)
+	for i := 0; i < 5; i++ {
+		agents[i] = newMockAgent(fmt.Sprintf("agent-%d", i))
+		require.NoError(t, m.StartAgent(ctx, agents[i]))
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify all agents are active.
+	stats := m.Stats()
+	assert.Equal(t, 5, stats.ActiveAgents)
+
+	// Stop the runtime.
+	require.NoError(t, m.Stop())
+
+	// All agents should have had Stop called.
+	for i, agent := range agents {
+		assert.GreaterOrEqual(t, agent.stopped.Load(), int32(1),
+			"agent-%d should have been stopped", i)
+	}
+
+	// No agents should remain active.
+	stats = m.Stats()
+	assert.Equal(t, 0, stats.ActiveAgents)
+}
+
+// TestManager_Stop_TimeoutRespected verifies that agents which take too long to stop
+// are cancelled via context and Stop() still completes within the configured timeout.
+func TestManager_Stop_TimeoutRespected(t *testing.T) {
+	config := &Config{
+		HealthCheckInterval: 1 * time.Second,
+		AgentStopTimeout:    100 * time.Millisecond,
+		OverallStopTimeout:  500 * time.Millisecond,
+	}
+	m := New(config, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Register a slow-stop agent that blocks until its blocker channel is closed.
+	slow := newSlowStopAgent("slow-agent")
+	require.NoError(t, m.StartAgent(ctx, slow))
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop the runtime. The slow agent should be cancelled by context timeout.
+	start := time.Now()
+	err := m.Stop()
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+
+	// Stop should complete in roughly AgentStopTimeout, not hang forever.
+	assert.Less(t, elapsed, 5*time.Second,
+		"Stop should not block indefinitely even with a slow agent")
+
+	// The slow agent's Stop should have been called at least once.
+	assert.GreaterOrEqual(t, slow.stopped.Load(), int32(1))
+}
+
+// TestManager_Stats_AfterMultipleOperations verifies that Stats() accurately reflects
+// the runtime state after a series of register, start, stop, and restart operations.
+func TestManager_Stats_AfterMultipleOperations(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Register and start two agents.
+	agent1 := newMockAgent("a1")
+	agent2 := newMockAgent("a2")
+	factory1 := func() base.Agent { return newMockAgent("a1") }
+	factory2 := func() base.Agent { return newMockAgent("a2") }
+
+	m.RegisterAgent(agent1, factory1)
+	m.RegisterAgent(agent2, factory2)
+
+	require.NoError(t, m.StartAgent(ctx, agent1))
+	require.NoError(t, m.StartAgent(ctx, agent2))
+	time.Sleep(100 * time.Millisecond)
+
+	stats := m.Stats()
+	assert.Equal(t, 2, stats.ActiveAgents)
+	assert.Equal(t, 0, stats.TotalRestarts)
+
+	// Stop one agent.
+	require.NoError(t, m.StopAgent(ctx, "a1"))
+	time.Sleep(50 * time.Millisecond)
+
+	stats = m.Stats()
+	assert.Equal(t, 1, stats.ActiveAgents)
+	assert.Equal(t, 0, stats.TotalRestarts)
+
+	// Restart the other agent.
+	require.NoError(t, m.RestartAgent(ctx, "a2"))
+	time.Sleep(100 * time.Millisecond)
+
+	stats = m.Stats()
+	assert.Equal(t, 1, stats.ActiveAgents, "restarted agent should count as one active agent")
+	assert.Equal(t, 1, stats.TotalRestarts, "restart should increment total restarts")
+	assert.Greater(t, stats.Uptime, time.Duration(0), "uptime should be positive after operations")
+}
+
+// TestManager_Stats_ConcurrentAccess verifies that Stats() is safe to call
+// while agents are being registered and stopped concurrently.
+func TestManager_Stats_ConcurrentAccess(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 30)
+
+	// Concurrently register and start agents.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("concurrent-agent-%d", id)
+			agent := newMockAgent(agentID)
+			if err := m.StartAgent(ctx, agent); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+
+	// Concurrently read Stats.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stats := m.Stats()
+			// ActiveAgents must be non-negative.
+			if stats.ActiveAgents < 0 {
+				errs <- fmt.Errorf("negative ActiveAgents: %d", stats.ActiveAgents)
+			}
+		}()
+	}
+
+	// Concurrently stop agents.
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("concurrent-agent-%d", id)
+			_ = m.StopAgent(ctx, agentID)
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("concurrent operation error: %v", err)
+	}
+}
+
+// TestManager_GetAgent_Exists verifies that GetAgent returns the correct agent
+// instance when the agent is registered and running.
+func TestManager_GetAgent_Exists(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	agent := newMockAgent("a1")
+	require.NoError(t, m.StartAgent(ctx, agent))
+	time.Sleep(50 * time.Millisecond)
+
+	got := m.GetAgent("a1")
+	require.NotNil(t, got, "GetAgent should return the registered agent")
+	assert.Equal(t, "a1", got.ID())
+}
+
+// TestManager_GetAgent_NotExists verifies that GetAgent returns nil
+// when the requested agent ID is not registered.
+func TestManager_GetAgent_NotExists(t *testing.T) {
+	m := New(nil, nil, nil)
+
+	got := m.GetAgent("nonexistent")
+	assert.Nil(t, got, "GetAgent should return nil for unregistered agent")
+}
+
+// TestManager_GetAgent_AfterRestore verifies that GetAgent returns the new agent
+// instance after a RestoreAgent call replaces the original agent.
+func TestManager_GetAgent_AfterRestore(t *testing.T) {
+	m := New(nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, m.Start(ctx))
+
+	// Register and start the original agent.
+	original := newMockAgent("a1")
+	factory := newMockFactory()
+	m.RegisterAgent(original, factory.create())
+	require.NoError(t, m.StartAgent(ctx, original))
+	time.Sleep(50 * time.Millisecond)
+
+	// GetAgent should return the original agent.
+	gotBefore := m.GetAgent("a1")
+	assert.Equal(t, original, gotBefore, "GetAgent should return the original agent")
+
+	// RestoreAgent creates a new instance from the factory.
+	err := m.RestoreAgent(ctx, "a1", factory.create())
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	// GetAgent should now return the new (restored) agent, not the original.
+	gotAfter := m.GetAgent("a1")
+	require.NotNil(t, gotAfter, "GetAgent should return the restored agent")
+	assert.NotEqual(t, original, gotAfter, "GetAgent should return the new agent, not the original")
+
+	// The restored agent should be a StatefulAgent from the factory.
+	newAgent := factory.lastAgent()
+	require.NotNil(t, newAgent)
+	assert.Equal(t, newAgent, gotAfter)
 }

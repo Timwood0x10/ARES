@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // helper to create a RecommendItem with the given ItemID.

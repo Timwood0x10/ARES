@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"goagent/api/core"
-	"goagent/internal/errors"
-	"goagent/internal/memory"
+	"goagentx/api/core"
+	"goagentx/internal/errors"
+	"goagentx/internal/memory"
 )
 
 // Service provides agent management operations.

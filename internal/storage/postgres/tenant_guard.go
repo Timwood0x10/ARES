@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	coreerrors "goagent/internal/core/errors"
-	"goagent/internal/errors"
+	coreerrors "goagentx/internal/core/errors"
+	"goagentx/internal/errors"
 )
 
 // TenantGuard provides physical isolation for multi-tenant data access.

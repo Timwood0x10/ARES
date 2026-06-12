@@ -236,7 +236,7 @@ func TestSubscribe_FilterByMultipleTypes(t *testing.T) {
 	}
 	entries := []eventEntry{
 		{EventAgentStarted, true},
-		{EventAgentFailed, false},
+		{EventTaskFailed, false},
 		{EventTaskCreated, true},
 		{EventSessionCreated, false},
 		{EventTaskCompleted, true},

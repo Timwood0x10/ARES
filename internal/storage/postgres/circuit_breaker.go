@@ -2,7 +2,7 @@
 package postgres
 
 import (
-	"goagent/internal/core/errors"
+	"goagentx/internal/core/errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"

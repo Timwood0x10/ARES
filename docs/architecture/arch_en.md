@@ -301,7 +301,7 @@ const (
 ## Directory Structure
 
 ```
-goagent/
+GoAgentX/
 ├── internal/                # Core implementation
 │   ├── agents/              # Agent system
 │   │   ├── base/            # Agent base interfaces

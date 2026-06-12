@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	"goagent/internal/errors"
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/errors"
+	"goagentx/internal/storage/postgres"
 )
 
 // taskResultsTable is the table name for task results.

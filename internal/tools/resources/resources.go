@@ -1,10 +1,10 @@
 package resources
 
 import (
-	"goagent/internal/tools/resources/agent"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
-	"goagent/internal/tools/resources/formatter"
+	"goagentx/internal/tools/resources/agent"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/formatter"
 )
 
 // Core types

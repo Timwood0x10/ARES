@@ -23,8 +23,6 @@ type EventType string
 const (
 	EventAgentStarted      EventType = "agent.started"
 	EventAgentStopped      EventType = "agent.stopped"
-	EventAgentFailed       EventType = "agent.failed"
-	EventAgentRecovered    EventType = "agent.recovered"
 	EventTaskCreated       EventType = "task.created"
 	EventTaskDispatched    EventType = "task.dispatched"
 	EventTaskCompleted     EventType = "task.completed"
@@ -32,12 +30,9 @@ const (
 	EventSessionCreated    EventType = "session.created"
 	EventMessageAdded      EventType = "message.added"
 	EventMemoryDistilled   EventType = "memory.distilled"
-	EventWorkflowStarted   EventType = "workflow.started"
-	EventStepCompleted     EventType = "step.completed"
-	EventStepFailed        EventType = "step.failed"
-	EventStepSkipped       EventType = "step.skipped"
 	EventFailoverTriggered EventType = "failover.triggered"
 	EventFailoverCompleted EventType = "failover.completed"
+	EventLLMCall           EventType = "llm.call"
 )
 
 // ReadDirection controls the order in which events are returned.

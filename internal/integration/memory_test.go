@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/memory"
-	"goagent/internal/storage/postgres"
-	"goagent/internal/storage/postgres/embedding"
+	"goagentx/internal/memory"
+	"goagentx/internal/storage/postgres"
+	"goagentx/internal/storage/postgres/embedding"
 )
 
 // createTestMemoryManager creates a ProductionMemoryManager for integration tests.

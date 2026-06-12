@@ -18,15 +18,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"sync"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/runtime"
+	runtimeSvc "goagentx/api/service/runtime"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 )
 
 // phaseSeparator prints a visual phase separator for readable output.
@@ -199,7 +200,7 @@ func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventStepCompleted:
+		case events.EventTaskCompleted:
 			if cp, ok := ev.Payload["checkpoint"].(int); ok && cp > a.checkpoint {
 				a.checkpoint = cp
 			}
@@ -268,7 +269,7 @@ func (a *leaderAgent) workLoop(ctx context.Context) {
 			time.Sleep(200 * time.Millisecond)
 
 			// Save checkpoint via event.
-			a.emitEvent(ctx, events.EventStepCompleted, map[string]any{
+			a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   a.id,
 				"session_id": sid,
@@ -378,16 +379,19 @@ func main() {
 
 	failoverTimer := &FailoverTimer{}
 
-	// 1. Create shared infrastructure.
-	eventStore := events.NewMemoryEventStore()
-
-	// 2. Create Runtime with aggressive health checks for demo.
-	rtConfig := &runtime.Config{
-		HealthCheckInterval: 1 * time.Second,
+	// 1. Create runtime service — one call wires up EventStore + HeartbeatMonitor + Resurrection.
+	svc, err := runtimeSvc.NewService(runtimeSvc.Config{
+		HeartbeatInterval:   1 * time.Second,
+		HeartbeatTimeout:    2 * time.Second,
+		MaxMissedHeartbeats: 2,
 		MaxRestartsPerAgent: 3,
-		MaxReplayEvents:     1000,
+		ResurrectTimeout:    10 * time.Second,
+		UseMemoryStore:      true,
+	}, nil)
+	if err != nil {
+		log.Fatalf("failed to create runtime service: %v", err)
 	}
-	rt := runtime.New(rtConfig, eventStore, nil)
+	eventStore := svc.EventStore()
 
 	// ----------------------------------------------------------
 	// Phase 1: Register and start leader.
@@ -395,7 +399,7 @@ func main() {
 	phaseSeparator("Phase 1: Leader Startup")
 
 	leader := newLeader("leader-1", eventStore)
-	rt.RegisterAgent(leader, func() base.Agent {
+	svc.RegisterAgent(leader, func() base.Agent {
 		failoverTimer.Mark("factory")
 		slog.Info("factory invoked: creating new leader",
 			"agent_id", "leader-1",
@@ -404,7 +408,7 @@ func main() {
 		return newLeader("leader-1", eventStore)
 	})
 
-	if err := rt.Start(ctx); err != nil {
+	if err := svc.Start(ctx); err != nil {
 		slog.Error("failed to start runtime", "error", err)
 		return
 	}
@@ -416,7 +420,7 @@ func main() {
 
 	time.Sleep(6 * time.Second)
 
-	stats := rt.Stats()
+	stats := svc.Stats()
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
@@ -450,7 +454,7 @@ func main() {
 	failoverTimer.Mark("ready")
 	failoverTimer.Report()
 
-	stats = rt.Stats()
+	stats = svc.Stats()
 	fmt.Printf("\n  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
@@ -463,7 +467,7 @@ func main() {
 	// Show checkpoint progression.
 	fmt.Println("\n  Checkpoint progression:")
 	for _, ev := range evts {
-		if ev.Type == events.EventStepCompleted {
+		if ev.Type == events.EventTaskCompleted {
 			if cp, ok := ev.Payload["checkpoint"]; ok {
 				fmt.Printf("    Checkpoint %v (task=%v)\n", cp, ev.Payload["task_id"])
 			}
@@ -477,7 +481,7 @@ func main() {
 
 	time.Sleep(4 * time.Second)
 
-	stats = rt.Stats()
+	stats = svc.Stats()
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
@@ -516,7 +520,7 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 7: Graceful Shutdown")
 
-	if err := rt.Stop(); err != nil {
+	if err := svc.Stop(); err != nil {
 		slog.Error("runtime stop failed", "error", err)
 	}
 

@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/events"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/events"
+	"goagentx/internal/protocol/ahp"
 )
 
 // mockAgent is a test double for base.Agent.
@@ -640,7 +640,7 @@ func TestResurrection_NonExistentAgent_IsNoOp(t *testing.T) {
 	_ = sup.Stop()
 }
 
-func TestResurrection_AgentAlreadyOffline_IsNoOp(t *testing.T) {
+func TestResurrection_AgentAlreadyOffline_IsResurrected(t *testing.T) {
 	health := newMockHealthChecker()
 	sup, err := New(health, Config{
 		CheckInterval:     50 * time.Millisecond,
@@ -665,12 +665,12 @@ func TestResurrection_AgentAlreadyOffline_IsNoOp(t *testing.T) {
 	defer cancel()
 	require.NoError(t, sup.Start(ctx))
 
-	// onFailure checks if status is offline and should skip.
+	// Offline agents should be resurrected when failure is detected.
 	health.triggerFailure("a1")
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
-	assert.False(t, factoryCalled.Load(), "factory should not be called for offline agent")
-	assert.Equal(t, 0, sup.Stats().Resurrects)
+	assert.True(t, factoryCalled.Load(), "factory should be called for offline agent")
+	assert.Equal(t, 1, sup.Stats().Resurrects)
 
 	_ = sup.Stop()
 }

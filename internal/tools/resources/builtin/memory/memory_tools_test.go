@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/core/models"
-	"goagent/internal/memory"
-	"goagent/internal/storage/postgres/repositories"
+	"goagentx/internal/core/models"
+	"goagentx/internal/memory"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // MockMemoryManager is a mock implementation of memory.MemoryManager for testing.

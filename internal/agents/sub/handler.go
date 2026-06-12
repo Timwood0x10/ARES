@@ -3,8 +3,8 @@ package sub
 import (
 	"context"
 
-	"goagent/internal/core/errors"
-	"goagent/internal/protocol/ahp"
+	"goagentx/internal/core/errors"
+	"goagentx/internal/protocol/ahp"
 )
 
 // messageHandler handles incoming AHP messages.

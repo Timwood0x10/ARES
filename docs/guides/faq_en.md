@@ -8,8 +8,8 @@ This document collects common issues and solutions when using go-agent.
 
 **Symptoms**:
 ```
-go: downloading goagent/api v0.0.0
-go: module goagent/api: Get "https://proxy.golang.org/goagent/api/@v/list": dial tcp: lookup proxy.golang.org
+go: downloading goagentx/api v0.0.0
+go: module goagentx/api: Get "https://proxy.golang.org/goagentx/api/@v/list": dial tcp: lookup proxy.golang.org
 ```
 
 **Solution**:
@@ -430,7 +430,7 @@ go build ./...
 
 - Read [Architecture Documentation](arch_en.md)
 - Read [Quick Start Guide](quick_start_en.md)
-- Submit [Issue](https://github.com/yourusername/goagent/issues)
+- Submit [Issue](https://github.com/Timwood0x10/goagentx/issues)
 
 ---
 

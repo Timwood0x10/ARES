@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"goagent/internal/storage/postgres/repositories"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 )
 
 // DistilledMemorySearch searches distilled memories from the database.

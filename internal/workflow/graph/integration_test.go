@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/observability"
-	"goagent/internal/ratelimit"
+	"goagentx/internal/observability"
+	"goagentx/internal/ratelimit"
 )
 
 func TestGraphWithObservability(t *testing.T) {

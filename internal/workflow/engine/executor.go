@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
 )
 
 // Executor executes workflows based on DAG ordering.

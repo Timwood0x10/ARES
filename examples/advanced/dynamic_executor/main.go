@@ -5,8 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
-	"goagent/internal/workflow/engine"
+	"goagentx/internal/workflow/engine"
 )
 
 func main() {
@@ -60,7 +61,7 @@ func main() {
 		nil,
 		engine.ApplyAtCheckpoint,
 		engine.WithMaxParallel(5),
-		engine.WithStepTimeout(60*1000*1000*1000), // 60s in nanoseconds
+		engine.WithStepTimeout(60*time.Second),
 	)
 	fmt.Printf("Executor with options: %v\n\n", executorWithOpts != nil)
 

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"goagent/api/client"
-	"goagent/api/core"
-	"goagent/internal/llm/output"
-	"goagent/internal/workflow/engine"
+	"goagentx/api/client"
+	"goagentx/api/core"
+	"goagentx/internal/llm/output"
+	"goagentx/internal/workflow/engine"
 )
 
 const (

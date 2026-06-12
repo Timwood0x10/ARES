@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagent/internal/core/errors"
+	"goagentx/internal/core/errors"
 )
 
 // MessageQueue represents an in-memory message queue for agent communication.

@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"goagent/internal/memory"
-	"goagent/internal/storage/postgres/repositories"
-	"goagent/internal/tools/resources/base"
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/memory"
+	"goagentx/internal/storage/postgres/repositories"
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 )
 
 // MemorySearch searches distilled memories and user preferences.

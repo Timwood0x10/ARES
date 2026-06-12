@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	coreerrors "goagent/internal/core/errors"
+	coreerrors "goagentx/internal/core/errors"
 )
 
 // TestClient_GenerateStream_Ollama tests Ollama streaming through llm.Client.

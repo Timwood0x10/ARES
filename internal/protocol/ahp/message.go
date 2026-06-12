@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagent/internal/core/models"
+	"goagentx/internal/core/models"
 )
 
 // messageIDCounter is used to generate unique message IDs.

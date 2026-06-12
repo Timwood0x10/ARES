@@ -136,11 +136,7 @@ supervisor.Start(ctx)
 // 调用工厂函数，启动新实例，停止旧实例。
 ```
 
-<<<<<<< HEAD
-完整示例：`examples/v2_demo/agent_resurrection/main.go`
-=======
 完整示例：`examples/advanced/agent_resurrection/main.go`
->>>>>>> 3f3093d ( feat(v2): runtime layer, event sourcing, dynamic workflow, HITL, pluggable vector store + 50 bug fixes)
 
 ## 复活流程
 

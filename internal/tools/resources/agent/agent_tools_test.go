@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagent/internal/tools/resources/core"
+	"goagentx/internal/tools/resources/core"
 )
 
 // TestDefaultAgentToolConfig tests default configuration.

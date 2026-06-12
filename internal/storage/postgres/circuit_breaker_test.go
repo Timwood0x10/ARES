@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/core/errors"
+	"goagentx/internal/core/errors"
 )
 
 func TestNewCircuitBreaker(t *testing.T) {

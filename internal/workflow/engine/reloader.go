@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 
 	"github.com/fsnotify/fsnotify"
 )

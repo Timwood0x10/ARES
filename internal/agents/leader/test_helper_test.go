@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"goagent/internal/storage/postgres"
+	"goagentx/internal/storage/postgres"
 )
 
 // getTestPool creates a PostgreSQL connection pool for integration tests.

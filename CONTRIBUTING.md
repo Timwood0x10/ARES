@@ -1,6 +1,6 @@
-# Contributing to GoAgent
+# Contributing to GoAgentX
 
-Thank you for considering contributing to GoAgent! This document provides guidelines and instructions for contributing.
+Thank you for considering contributing to GoAgentX! This document provides guidelines and instructions for contributing.
 
 ## Code of Conduct
 
@@ -11,7 +11,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ### Reporting Bugs
 
 Before creating a bug report:
-- Check the [issue tracker](https://github.com/mq理念/goagent/issues) to avoid duplicates
+- Check the [issue tracker](https://github.com/Timwood0x10/GoAgentX/issues) to avoid duplicates
 - Verify the bug exists in the latest version
 - Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.md) when creating issues
 
@@ -64,25 +64,25 @@ We welcome feature suggestions! Please:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/mq理念/goagent.git
-   cd goagent
+   git clone https://github.com/Timwood0x10/GoAgentX.git
+   cd GoAgentX
    ```
 
 2. **Start PostgreSQL with pgvector**:
    ```bash
-   docker run -d --name goagent-db \
+   docker run -d --name goagentx-db \
      -e POSTGRES_PASSWORD=postgres \
      -e POSTGRES_DB=goagent \
      -p 5433:5432 \
      pgvector/pgvector:pg16
 
    # Enable pgvector extension
-   docker exec -it goagent-db psql -U postgres -d goagent -c "CREATE EXTENSION IF NOT EXISTS vector;"
+   docker exec -it goagentx-db psql -U postgres -d goagent -c "CREATE EXTENSION IF NOT EXISTS vector;"
    ```
 
 3. **Run database migrations**:
    ```bash
-   go run cmd/migrate_goagent/main.go
+   go run cmd/migrate_goagentx/main.go
    ```
 
 4. **Run tests**:
@@ -126,7 +126,7 @@ We welcome feature suggestions! Please:
 ## Project Structure
 
 ```
-goagent/
+GoAgentX/
 ├── api/                    # API layer
 ├── cmd/                    # Command-line tools
 ├── configs/                # Configuration files

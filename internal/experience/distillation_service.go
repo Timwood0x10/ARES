@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"goagent/internal/errors"
-	"goagent/internal/llm"
-	"goagent/internal/storage/postgres/embedding"
-	storage_models "goagent/internal/storage/postgres/models"
-	"goagent/internal/storage/postgres/repositories"
+	"goagentx/internal/errors"
+	"goagentx/internal/llm"
+	"goagentx/internal/storage/postgres/embedding"
+	storage_models "goagentx/internal/storage/postgres/models"
+	"goagentx/internal/storage/postgres/repositories"
 )
 
 // DistillationService provides experience distillation from task results.

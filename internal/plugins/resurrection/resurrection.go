@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"goagent/internal/agents/base"
-	"goagent/internal/core/models"
-	"goagent/internal/errors"
-	"goagent/internal/events"
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/errors"
+	"goagentx/internal/events"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -299,8 +299,8 @@ func (s *Supervisor) onFailure(agentID string) {
 		s.mu.Unlock()
 		return
 	}
-	w, exists := s.agents[agentID]
-	if !exists || w.agent.Status() == models.AgentStatusOffline {
+	_, exists := s.agents[agentID]
+	if !exists {
 		s.mu.Unlock()
 		return
 	}

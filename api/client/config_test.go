@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagent/api/core"
+	"goagentx/api/core"
 )
 
 // TestNewConfigLoader tests the creation of a new config loader.

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"goagent/internal/errors"
+	"goagentx/internal/errors"
 )
 
 // FormatVector converts []float64 to pgvector format string.

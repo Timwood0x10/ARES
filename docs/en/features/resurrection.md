@@ -136,11 +136,7 @@ supervisor.Start(ctx)
 // calls factory, starts new instance, stops old instance.
 ```
 
-<<<<<<< HEAD
-Full example: `examples/v2_demo/agent_resurrection/main.go`
-=======
 Full example: `examples/advanced/agent_resurrection/main.go`
->>>>>>> 3f3093d ( feat(v2): runtime layer, event sourcing, dynamic workflow, HITL, pluggable vector store + 50 bug fixes)
 
 ## Resurrection Flow
 
