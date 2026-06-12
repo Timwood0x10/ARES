@@ -3,7 +3,7 @@ module goagentx
 go 1.26.1
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/stretchr/testify v1.11.1
