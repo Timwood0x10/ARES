@@ -54,20 +54,39 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  replay    Step-by-step replay of a task\n")
 }
 
+// separateArgs splits args into flags (starting with -) and positional args.
+// Returns (flags, positional) so that flag.Parse gets flags in front.
+func separateArgs(args []string) (flags []string, positional []string) {
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			// Include the flag value if present and not another flag.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flags = append(flags, args[i+1])
+				i++
+			}
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	return flags, positional
+}
+
 // runInspect handles the "inspect" subcommand.
 func runInspect(args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	format := fs.String("format", "text", "Output format: text, mermaid, dot, json")
 	input := fs.String("input", "", "Path to JSON events file (default: stdin)")
 
-	if err := fs.Parse(args); err != nil {
+	flags, positional := separateArgs(args)
+	if err := fs.Parse(flags); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		return fmt.Errorf("taskID is required")
 	}
-	taskID := fs.Arg(0)
+	taskID := positional[0]
 
 	evts, err := loadEvents(*input)
 	if err != nil {
@@ -109,14 +128,15 @@ func runReplay(args []string) error {
 	step := fs.Int("step", -1, "Jump to a specific step (0-indexed)")
 	input := fs.String("input", "", "Path to JSON events file (default: stdin)")
 
-	if err := fs.Parse(args); err != nil {
+	flags, positional := separateArgs(args)
+	if err := fs.Parse(flags); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
 
-	if fs.NArg() < 1 {
+	if len(positional) < 1 {
 		return fmt.Errorf("taskID is required")
 	}
-	taskID := fs.Arg(0)
+	taskID := positional[0]
 
 	evts, err := loadEvents(*input)
 	if err != nil {
@@ -125,7 +145,7 @@ func runReplay(args []string) error {
 
 	// Load events into a memory store for the replay session.
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -184,7 +204,7 @@ func loadEvents(path string) ([]*events.Event, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open file %s: %w", path, err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		reader = f
 	}
 
@@ -208,7 +228,6 @@ func loadEvents(path string) ([]*events.Event, error) {
 // inspectText prints a human-readable summary of the flight data.
 func inspectText(taskID string, evts []*events.Event) error {
 	tl := flight.NewTimeline()
-	_ = flight.NewGraph()
 	dl := flight.NewDecisionLog()
 	de := flight.NewDiagnosticsEngine()
 
@@ -329,7 +348,7 @@ func inspectJSON(evts []*events.Event) error {
 // buildGraph constructs a flight.Graph from events.
 func buildGraph(evts []*events.Event) *flight.Graph {
 	g := flight.NewGraph()
-	nodeMap := make(map[string]*flight.GraphNode)
+	hasRoot := false
 
 	for _, e := range evts {
 		nodeID := e.ID
@@ -352,6 +371,14 @@ func buildGraph(evts []*events.Event) *flight.Graph {
 
 		parentID := stringOr(e.Payload, "parent_id", "")
 
+		// Only the first event without a parent becomes the root.
+		if parentID == "" && !hasRoot {
+			hasRoot = true
+		} else if parentID == "" {
+			// Subsequent parentless events attach to the root.
+			parentID = evts[0].ID
+		}
+
 		node := &flight.GraphNode{
 			ID:       nodeID,
 			ParentID: parentID,
@@ -362,17 +389,7 @@ func buildGraph(evts []*events.Event) *flight.Graph {
 			Metadata: e.Payload,
 		}
 
-		nodeMap[nodeID] = node
 		g.AddNode(node)
-	}
-
-	// If no root was set (all nodes have parents), use the first event as root.
-	if g.Root() == nil && len(nodeMap) > 0 {
-		for _, n := range nodeMap {
-			n.ParentID = ""
-			g.AddNode(n)
-			break
-		}
 	}
 
 	return g

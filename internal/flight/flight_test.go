@@ -846,7 +846,7 @@ func TestReplaySessionCurrentAfterStep(t *testing.T) {
 	})
 
 	session, _ := NewReplaySession(context.Background(), store, "task-1")
-	session.Step()
+	_, _ = session.Step()
 
 	current := session.Current()
 	if current == nil {
@@ -872,7 +872,7 @@ func TestReplaySessionIsFinished(t *testing.T) {
 		t.Error("should not be finished before stepping")
 	}
 
-	session.Step()
+	_, _ = session.Step()
 	if !session.IsFinished() {
 		t.Error("should be finished after last step")
 	}
@@ -889,7 +889,7 @@ func TestReplaySessionStepPastEnd(t *testing.T) {
 	})
 
 	session, _ := NewReplaySession(context.Background(), store, "task-1")
-	session.Step()
+	_, _ = session.Step()
 
 	_, err := session.Step()
 	if err == nil {
@@ -908,7 +908,7 @@ func TestReplaySessionReset(t *testing.T) {
 	})
 
 	session, _ := NewReplaySession(context.Background(), store, "task-1")
-	session.Step()
+	_, _ = session.Step()
 	session.Reset()
 
 	if session.Current() != nil {
