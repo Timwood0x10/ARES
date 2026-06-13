@@ -222,8 +222,7 @@ func (a *APIv2) handleWS(w http.ResponseWriter, r *http.Request) {
 	a.hub.Register(client)
 
 	pingInterval := 30 * time.Second
-	go client.WritePump(pingInterval)
-	go client.ReadPump()
+	client.Start(pingInterval)
 }
 
 // ── System ────────────────────────────────────
@@ -250,11 +249,11 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"uptime":       time.Since(a.start).Round(time.Second).String(),
-		"agents":       agentCount,
-		"mcp_servers":  mcpServers,
-		"mcp_tools":    mcpTools,
-		"dashboard":    "http://" + r.Host,
+		"uptime":      time.Since(a.start).Round(time.Second).String(),
+		"agents":      agentCount,
+		"mcp_servers": mcpServers,
+		"mcp_tools":   mcpTools,
+		"dashboard":   "http://" + r.Host,
 	})
 }
 

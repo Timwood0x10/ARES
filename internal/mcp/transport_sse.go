@@ -49,7 +49,8 @@ func NewSSETransport(config SSEConfig) *SSETransport {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		msgCh: make(chan *JSONRPCMessage, 64),
+		msgCh:   make(chan *JSONRPCMessage, 64),
+		postURL: config.URL, // Set default POST URL; may be overridden by "endpoint" SSE event.
 	}
 }
 
@@ -100,9 +101,8 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 		return fmt.Errorf("sse endpoint returned status %d", resp.StatusCode)
 	}
 
-	// Determine POST URL. If the SSE endpoint returns an "endpoint" event,
-	// use that URL. Otherwise, POST to the same URL.
-	t.postURL = t.config.URL
+	// POST URL defaults to config.URL (set in constructor). If the SSE endpoint
+	// returns an "endpoint" event, handleSSEEvent updates it under t.mu.
 
 	reader := bufio.NewReader(resp.Body)
 	var eventType string
@@ -227,9 +227,8 @@ func (t *SSETransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 // Close shuts down the SSE transport.
 func (t *SSETransport) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if !t.started {
+		t.mu.Unlock()
 		return nil
 	}
 
@@ -237,7 +236,10 @@ func (t *SSETransport) Close() error {
 	if t.cancel != nil {
 		t.cancel()
 	}
+	t.mu.Unlock()
 
+	// Wait for the receive loop outside the lock to avoid deadlock:
+	// receiveLoop -> handleSSEEvent may need t.mu to update postURL.
 	if err := t.eg.Wait(); err != nil {
 		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
 	}

@@ -28,6 +28,7 @@ const (
 	WSTypeMCPChange   = "mcp_tool_change"
 	WSTypePing        = "ping"
 	WSTypePong        = "pong"
+	WSTypeAgentStream = "agent_stream"
 )
 
 // Well-known WebSocket channels.

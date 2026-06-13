@@ -17,6 +17,7 @@ type WSHub struct {
 	broadcast  chan *WSMessage
 	mu         sync.RWMutex
 	done       chan struct{}
+	stopOnce   sync.Once
 }
 
 // WSClient represents a single WebSocket connection.
@@ -78,9 +79,11 @@ func (h *WSHub) Run() {
 	}
 }
 
-// Stop shuts down the hub.
+// Stop shuts down the hub. Safe to call multiple times.
 func (h *WSHub) Stop() {
-	close(h.done)
+	h.stopOnce.Do(func() {
+		close(h.done)
+	})
 }
 
 // BroadcastToChannel sends a message to all subscribers of a channel.

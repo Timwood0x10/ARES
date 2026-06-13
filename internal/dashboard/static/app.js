@@ -110,9 +110,23 @@
                     </select>
                     <button id="launch-btn" style="padding:.5rem 1rem;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">Launch</button>
                 </div>
+                <div id="custom-fields" style="display:none;margin-top:1rem">
+                    <div style="margin-bottom:.75rem">
+                        <label style="display:block;font-size:.8rem;color:var(--text-secondary);margin-bottom:.25rem">Agent Name</label>
+                        <input id="custom-name" type="text" placeholder="my-agent" style="width:100%;padding:.5rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:.875rem">
+                    </div>
+                    <div style="margin-bottom:.75rem">
+                        <label style="display:block;font-size:.8rem;color:var(--text-secondary);margin-bottom:.25rem">MCP Tool Name</label>
+                        <input id="custom-tool" type="text" placeholder="tool_name" style="width:100%;padding:.5rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:.875rem">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:.8rem;color:var(--text-secondary);margin-bottom:.25rem">LLM Prompt</label>
+                        <textarea id="custom-prompt" rows="6" placeholder="Write your prompt here..." style="width:100%;padding:.5rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-size:.875rem;font-family:inherit;resize:vertical"></textarea>
+                    </div>
+                </div>
                 <div id="launch-msg" style="margin-top:.5rem;font-size:.875rem;color:var(--text-secondary)"></div>
             </div>
-            <h3 style="margin-top:1.5rem">Results (${(list||[]).filter(a=>a.status==='completed').length})</h3>
+            <h3 style="margin-top:1.5rem">Results (${(list||[]).filter(a=>a.status==='completed').length}) <button id="refresh-btn" style="padding:.25rem .75rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;color:var(--text-secondary);cursor:pointer;font-size:.8rem;vertical-align:middle;margin-left:.5rem">Refresh</button></h3>
             ${(list||[]).filter(a=>a.status==='completed').map(a=>`
                 <div class="card">
                     <strong>${esc(a.name)}</strong> — ${esc(a.duration||'-')}
@@ -120,16 +134,37 @@
                 </div>
             `).join('')}`;
 
+        // Toggle custom fields based on template selection
+        const tplSel = document.getElementById('tpl');
+        const customFields = document.getElementById('custom-fields');
+        function toggleCustom() { customFields.style.display = tplSel.value ? 'none' : 'block'; }
+        tplSel.addEventListener('change', toggleCustom);
+        toggleCustom();
+
+        // Launch button
         document.getElementById('launch-btn').onclick = async () => {
             const btn = document.getElementById('launch-btn');
             const msg = document.getElementById('launch-msg');
             btn.disabled = true; msg.textContent = 'Launching...';
-            const tid = document.getElementById('tpl').value;
-            const r = await api('/agents', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_id:tid||undefined})});
+            const tid = tplSel.value;
+            let body;
+            if (tid) {
+                body = {template_id: tid};
+            } else {
+                body = {
+                    name: document.getElementById('custom-name').value.trim() || undefined,
+                    mcp_tool: document.getElementById('custom-tool').value.trim() || undefined,
+                    llm_prompt: document.getElementById('custom-prompt').value.trim() || undefined
+                };
+            }
+            const r = await api('/agents', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
             btn.disabled = false;
             if (r&&r.id) { msg.textContent = 'Agent '+r.id+' launched!'; msg.style.color='var(--success)'; setTimeout(()=>orchestrator(),2000); }
             else { msg.textContent='Failed'; msg.style.color='var(--danger)'; }
         };
+
+        // Refresh button
+        document.getElementById('refresh-btn').onclick = () => orchestrator();
     }
 
     // ── WebSocket ────────────────────────────────

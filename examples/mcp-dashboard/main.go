@@ -31,6 +31,7 @@ import (
 	"goagentx/internal/events"
 	"goagentx/internal/llm/output"
 	"goagentx/internal/mcp"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -88,7 +89,7 @@ func main() {
 		slog.Error("MCP connect failed", "error", err)
 		os.Exit(1)
 	}
-	defer mcpClient.Close()
+	defer func() { _ = mcpClient.Close() }()
 
 	tools, _ := mcpClient.ListTools(ctx)
 	slog.Info("MCP tools discovered", "count", len(tools))
@@ -283,6 +284,21 @@ type llmAdapterWrap struct{ adapter output.LLMAdapter }
 
 func (w *llmAdapterWrap) Generate(ctx context.Context, prompt string) (string, error) {
 	return w.adapter.Generate(ctx, prompt)
+}
+
+func (w *llmAdapterWrap) GenerateStream(ctx context.Context, prompt string) (<-chan dashboard.StreamChunk, error) {
+	src, err := w.adapter.GenerateStream(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	dst := make(chan dashboard.StreamChunk)
+	go func() {
+		defer close(dst)
+		for c := range src {
+			dst <- dashboard.StreamChunk{Content: c.Content, Done: c.Done, Err: c.Err}
+		}
+	}()
+	return dst, nil
 }
 
 type mcpStatusBridge struct{ tools []mcp.MCPToolDef }

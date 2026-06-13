@@ -96,7 +96,9 @@ func TestAPICreateAgent(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
 	if resp["id"] == "" {
 		t.Error("expected non-empty id")
 	}
@@ -185,7 +187,9 @@ func TestAPIGetAgent(t *testing.T) {
 	}
 
 	var resp AgentResult
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
 	if resp.ID != id {
 		t.Errorf("expected id %s, got %s", id, resp.ID)
 	}
@@ -212,8 +216,12 @@ func TestAPIListAgents(t *testing.T) {
 	handler := api.Handler()
 
 	// Create agents.
-	orch.CreateAgent(AgentRequest{Name: "A1", MCPTool: "search", LLMPrompt: "{{.raw_data}}"})
-	orch.CreateAgent(AgentRequest{Name: "A2", MCPTool: "search", LLMPrompt: "{{.raw_data}}"})
+	if _, err := orch.CreateAgent(AgentRequest{Name: "A1", MCPTool: "search", LLMPrompt: "{{.raw_data}}"}); err != nil {
+		t.Fatalf("CreateAgent A1: %v", err)
+	}
+	if _, err := orch.CreateAgent(AgentRequest{Name: "A2", MCPTool: "search", LLMPrompt: "{{.raw_data}}"}); err != nil {
+		t.Fatalf("CreateAgent A2: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	w := httptest.NewRecorder()
@@ -224,7 +232,9 @@ func TestAPIListAgents(t *testing.T) {
 	}
 
 	var resp []AgentResult
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
 	if len(resp) != 2 {
 		t.Errorf("expected 2 agents, got %d", len(resp))
 	}
@@ -243,7 +253,9 @@ func TestAPIListMCPServers(t *testing.T) {
 	}
 
 	var resp []MCPServerStatusView
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
 	if len(resp) != 1 {
 		t.Errorf("expected 1 server, got %d", len(resp))
 	}

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"goagentx/internal/events"
+
 	"golang.org/x/sync/errgroup"
 )
 

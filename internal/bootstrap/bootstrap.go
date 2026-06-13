@@ -20,7 +20,6 @@ import (
 // MCPDashboard holds the initialized MCP and Dashboard components.
 type MCPDashboard struct {
 	MCPManager *mcp.MCPManager
-	Dashboard  *dashboard.DashboardRouter
 	HTTPServer *http.Server
 }
 
@@ -100,7 +99,6 @@ func SetupDashboard(
 		dashConfig.WSPingInterval = 30 * time.Second
 	}
 
-	service := dashboard.NewDashboardService(rt, agents, eventStore, memMgr, mcpMgr)
 	hub := dashboard.NewWSHub()
 
 	go hub.Run()
@@ -113,12 +111,11 @@ func SetupDashboard(
 		}
 	}
 
-	handler := dashboard.NewDashboardHandler(service, hub, dashConfig)
-	router := dashboard.NewDashboardRouter(handler, dashConfig)
+	api := dashboard.NewAPIv2(nil, mcpMgr, hub)
 
 	httpServer := &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      router,
+		Handler:      api.Handler(),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -128,7 +125,6 @@ func SetupDashboard(
 
 	return &MCPDashboard{
 		MCPManager: nil, // Set by caller if MCP was initialized.
-		Dashboard:  router,
 		HTTPServer: httpServer,
 	}, nil
 }

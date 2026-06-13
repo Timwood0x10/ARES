@@ -111,7 +111,9 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	}
 
 	onChange := func() {
-		_ = m.RefreshTools(ctx, name)
+		if err := m.RefreshTools(ctx, name); err != nil {
+			slog.Warn("mcp: failed to refresh tools", "server", name, "error", err)
+		}
 	}
 
 	client := NewMCPClient(MCPClientConfig{

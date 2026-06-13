@@ -1,4 +1,4 @@
-// package dashboard - agent orchestration for the web dashboard.
+// Package dashboard - agent orchestration for the web dashboard.
 package dashboard
 
 import (
@@ -6,21 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"goagentx/internal/events"
+	"goagentx/internal/llm/output"
 )
 
 // AgentTemplate defines a reusable agent configuration.
 type AgentTemplate struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	MCPTool     string `json:"mcp_tool"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	MCPTool     string         `json:"mcp_tool"`
 	MCPArgs     map[string]any `json:"mcp_args,omitempty"`
-	LLMPrompt   string `json:"llm_prompt"`
+	LLMPrompt   string         `json:"llm_prompt"`
 }
 
 // AgentRequest holds a request to create and run an agent.
@@ -29,8 +31,8 @@ type AgentRequest struct {
 	Name       string         `json:"name,omitempty"`        // Or custom name
 	MCPTool    string         `json:"mcp_tool,omitempty"`    // Or custom MCP tool
 	MCPArgs    map[string]any `json:"mcp_args,omitempty"`
-	LLMPrompt  string         `json:"llm_prompt,omitempty"`  // Or custom prompt
-	Target     string         `json:"target,omitempty"`      // Target to analyze
+	LLMPrompt  string         `json:"llm_prompt,omitempty"` // Or custom prompt
+	Target     string         `json:"target,omitempty"`     // Target to analyze
 }
 
 // AgentResult holds the full result of an agent run.
@@ -77,6 +79,19 @@ type LLMExecutor interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 }
 
+// StreamLLMExecutor is an optional extension of LLMExecutor that supports streaming.
+// Implement this interface on your LLMExecutor to enable real-time chunk broadcasting.
+type StreamLLMExecutor interface {
+	GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error)
+}
+
+// StreamChunk represents a single chunk in a streaming LLM response.
+type StreamChunk struct {
+	Content string // Text content of this chunk. May be empty for final chunk.
+	Done    bool   // True when this is the final chunk.
+	Err     error  // Non-nil only on final chunk if an error occurred.
+}
+
 // EventBroadcaster emits events (optional, may be nil).
 type EventBroadcaster interface {
 	Broadcast(channel string, msg *WSMessage)
@@ -92,6 +107,7 @@ type Orchestrator struct {
 	store     *events.MemoryEventStore // optional, for event persistence
 	mu        sync.RWMutex
 	nextID    atomic.Int64
+	agentWg   sync.WaitGroup // tracks background agent goroutines
 }
 
 // NewOrchestrator creates a new Orchestrator.
@@ -105,11 +121,15 @@ func NewOrchestrator(mcp MCPExecutor, llm LLMExecutor) *Orchestrator {
 
 // SetHub attaches a WebSocket hub for real-time agent updates.
 func (o *Orchestrator) SetHub(hub *WSHub) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.hub = hub
 }
 
 // SetEventStore attaches an event store for event persistence.
 func (o *Orchestrator) SetEventStore(store *events.MemoryEventStore) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.store = store
 }
 
@@ -173,8 +193,12 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 	o.agents[id] = result
 	o.mu.Unlock()
 
-	// Run in background.
-	go o.runAgent(id, req, result)
+	// Run in background with WaitGroup tracking.
+	o.agentWg.Add(1)
+	go func() {
+		defer o.agentWg.Done()
+		o.runAgent(id, req, result)
+	}()
 
 	return id, nil
 }
@@ -246,14 +270,24 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 		prompt = "Analyze the following code data and provide insights:\n\n{{.raw_data}}"
 	}
 
-	// Simple template substitution.
-	if contains(prompt, "{{.raw_data}}") {
-		prompt = replaceAll(prompt, "{{.raw_data}}", truncateStr(rawData, 8000))
+	// Render template using TemplateEngine; fall back to simple replacement
+	// if the template syntax is malformed.
+	truncated := truncateStr(rawData, 8000)
+	engine := output.NewTemplateEngine()
+	rendered, err := engine.Render(prompt, map[string]string{"raw_data": truncated})
+	if err != nil {
+		// Fallback: plain string replacement for malformed templates.
+		if strings.Contains(prompt, "{{.raw_data}}") {
+			prompt = strings.ReplaceAll(prompt, "{{.raw_data}}", truncated)
+		} else {
+			prompt = prompt + "\n\nData:\n" + truncated
+		}
 	} else {
-		prompt = prompt + "\n\nData:\n" + truncateStr(rawData, 8000)
+		prompt = rendered
 	}
 
-	analysis, err := o.llm.Generate(ctx, prompt)
+	// Try streaming first; fall back to blocking Generate.
+	analysis, err := o.llmGenerateStreaming(ctx, id, prompt)
 	if err != nil {
 		o.failAgent(id, err)
 		return
@@ -273,17 +307,62 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 	o.emitEvent(id, "agent.completed", map[string]any{"duration": result.Duration, "analysis_len": len(analysis)})
 
 	// Broadcast completion.
-	if o.hub != nil {
-		o.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
+	hub := o.getHub()
+	if hub != nil {
+		hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
 			Type: WSTypeAgentUpdate,
 			Data: &cp,
 		})
 		// Also broadcast to the agent-specific channel for result viewers.
-		o.hub.BroadcastToChannel("agent:"+id, &WSMessage{
+		hub.BroadcastToChannel("agent:"+id, &WSMessage{
 			Type: "agent_result",
 			Data: &cp,
 		})
 	}
+}
+
+// llmGenerateStreaming attempts streaming via StreamLLMExecutor, falling back to Generate.
+func (o *Orchestrator) llmGenerateStreaming(ctx context.Context, agentID, prompt string) (string, error) {
+	if streamer, ok := o.llm.(StreamLLMExecutor); ok {
+		ch, err := streamer.GenerateStream(ctx, prompt)
+		if err == nil {
+			return o.consumeStream(agentID, ch)
+		}
+		// Streaming init failed — fall through to blocking call.
+		slog.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
+	}
+	return o.llm.Generate(ctx, prompt)
+}
+
+// consumeStream reads chunks from the channel, accumulates the analysis, and
+// broadcasts each chunk via WebSocket. Returns the full accumulated text.
+func (o *Orchestrator) consumeStream(agentID string, ch <-chan StreamChunk) (string, error) {
+	var analysis string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			return analysis, chunk.Err
+		}
+		if chunk.Content != "" {
+			analysis += chunk.Content
+			o.broadcastStreamChunk(agentID, chunk.Content)
+		}
+		if chunk.Done {
+			break
+		}
+	}
+	return analysis, nil
+}
+
+// broadcastStreamChunk sends a single streaming chunk to WebSocket subscribers.
+func (o *Orchestrator) broadcastStreamChunk(agentID, content string) {
+	hub := o.getHub()
+	if hub == nil {
+		return
+	}
+	hub.BroadcastToChannel("agent:"+agentID, &WSMessage{
+		Type: WSTypeAgentStream,
+		Data: map[string]string{"chunk": content},
+	})
 }
 
 func (o *Orchestrator) updateStatus(id, status string, progress int, errMsg string) {
@@ -301,8 +380,9 @@ func (o *Orchestrator) updateStatus(id, status string, progress int, errMsg stri
 	o.mu.Unlock()
 
 	// Broadcast to WebSocket subscribers.
-	if o.hub != nil && agentCopy != nil {
-		o.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
+	hub := o.getHub()
+	if hub != nil && agentCopy != nil {
+		hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
 			Type: WSTypeAgentUpdate,
 			Data: agentCopy,
 		})
@@ -333,8 +413,9 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	slog.Error("orchestrator: agent failed", "id", id, "error", err)
 	o.emitEvent(id, "agent.failed", map[string]any{"error": err.Error()})
 
-	if o.hub != nil && cp != nil {
-		o.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
+	hub := o.getHub()
+	if hub != nil && cp != nil {
+		hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
 			Type: WSTypeAgentUpdate,
 			Data: cp,
 		})
@@ -343,7 +424,8 @@ func (o *Orchestrator) failAgent(id string, err error) {
 
 // emitEvent stores an event in the event store (if configured).
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
-	if o.store == nil {
+	store := o.getStore()
+	if store == nil {
 		return
 	}
 	ctx := context.Background()
@@ -354,44 +436,23 @@ func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]
 		Payload:   payload,
 		Timestamp: time.Now(),
 	}
-	_ = o.store.Append(ctx, streamID, []*events.Event{evt}, 0)
-}
-
-// contains checks if s contains substr.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && searchString(s, substr))
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	if err := store.Append(ctx, streamID, []*events.Event{evt}, 0); err != nil {
+		slog.Warn("orchestrator: failed to append event", "stream", streamID, "type", eventType, "error", err)
 	}
-	return false
 }
 
-func replaceAll(s, old, new string) string {
-	result := ""
-	for {
-		idx := searchString2(s, old)
-		if idx < 0 {
-			result += s
-			break
-		}
-		result += s[:idx] + new
-		s = s[idx+len(old):]
-	}
-	return result
+// getHub returns the current hub under a read lock. Safe for concurrent use.
+func (o *Orchestrator) getHub() *WSHub {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.hub
 }
 
-func searchString2(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+// getStore returns the current event store under a read lock. Safe for concurrent use.
+func (o *Orchestrator) getStore() *events.MemoryEventStore {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.store
 }
 
 func truncateStr(s string, n int) string {

@@ -156,6 +156,230 @@ func TestParser(t *testing.T) {
 			t.Errorf("expected 2 items")
 		}
 	})
+
+	t.Run("ParseJSONSlice valid array", func(t *testing.T) {
+		parser := NewParser()
+		input := `[{"id": 1}, {"id": 2}, {"id": 3}]`
+
+		result, err := parser.ParseJSONSlice(input)
+		if err != nil {
+			t.Fatalf("ParseJSONSlice error: %v", err)
+		}
+		if len(result) != 3 {
+			t.Errorf("expected 3 items, got %d", len(result))
+		}
+	})
+
+	t.Run("ParseJSONSlice from markdown", func(t *testing.T) {
+		parser := NewParser()
+		input := "Here is the result:\n```json\n[{\"name\": \"Alice\"}, {\"name\": \"Bob\"}]\n```"
+
+		result, err := parser.ParseJSONSlice(input)
+		if err != nil {
+			t.Fatalf("ParseJSONSlice error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Errorf("expected 2 items, got %d", len(result))
+		}
+	})
+
+	t.Run("ParseJSONSlice with trailing comma fix", func(t *testing.T) {
+		parser := NewParser()
+		input := `[{"id": 1}, {"id": 2},]`
+
+		result, err := parser.ParseJSONSlice(input)
+		if err != nil {
+			t.Fatalf("ParseJSONSlice should fix trailing comma: %v", err)
+		}
+		if len(result) != 2 {
+			t.Errorf("expected 2 items, got %d", len(result))
+		}
+	})
+
+	t.Run("ParseJSONSlice empty input", func(t *testing.T) {
+		parser := NewParser()
+
+		_, err := parser.ParseJSONSlice("")
+		if err == nil {
+			t.Errorf("expected error for empty input")
+		}
+	})
+
+	t.Run("ParseJSONSlice non-array JSON", func(t *testing.T) {
+		parser := NewParser()
+		input := `{"key": "value"}`
+
+		_, err := parser.ParseJSONSlice(input)
+		if err == nil {
+			t.Errorf("expected error for non-array JSON")
+		}
+	})
+
+	t.Run("ParseJSONSlice invalid JSON", func(t *testing.T) {
+		parser := NewParser()
+		input := "not json at all"
+
+		_, err := parser.ParseJSONSlice(input)
+		if err == nil {
+			t.Errorf("expected error for invalid input")
+		}
+	})
+
+	t.Run("ParseStructured into struct", func(t *testing.T) {
+		parser := NewParser()
+		input := `{"name": "Alice", "age": 30}`
+
+		type Person struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+
+		var result Person
+		err := parser.ParseStructured(input, &result)
+		if err != nil {
+			t.Fatalf("ParseStructured error: %v", err)
+		}
+		if result.Name != "Alice" {
+			t.Errorf("expected name Alice, got %s", result.Name)
+		}
+		if result.Age != 30 {
+			t.Errorf("expected age 30, got %d", result.Age)
+		}
+	})
+
+	t.Run("ParseStructured from markdown", func(t *testing.T) {
+		parser := NewParser()
+		input := "```json\n{\"city\": \"Beijing\", \"country\": \"CN\"}\n```"
+
+		type Location struct {
+			City    string `json:"city"`
+			Country string `json:"country"`
+		}
+
+		var result Location
+		err := parser.ParseStructured(input, &result)
+		if err != nil {
+			t.Fatalf("ParseStructured error: %v", err)
+		}
+		if result.City != "Beijing" {
+			t.Errorf("expected city Beijing, got %s", result.City)
+		}
+	})
+
+	t.Run("ParseStructured nil target", func(t *testing.T) {
+		parser := NewParser()
+		input := `{"key": "value"}`
+
+		err := parser.ParseStructured(input, nil)
+		if err == nil {
+			t.Errorf("expected error for nil target")
+		}
+	})
+
+	t.Run("ParseStructured invalid JSON", func(t *testing.T) {
+		parser := NewParser()
+		input := "not valid json"
+
+		var result map[string]interface{}
+		err := parser.ParseStructured(input, &result)
+		if err == nil {
+			t.Errorf("expected error for invalid JSON")
+		}
+	})
+
+	t.Run("ParseKeyValue with colon", func(t *testing.T) {
+		parser := NewParser()
+		input := "Name: Alice\nAge: 30\nCity: Beijing"
+
+		result := parser.ParseKeyValue(input)
+		if result["Name"] != "Alice" {
+			t.Errorf("expected Name=Alice, got %s", result["Name"])
+		}
+		if result["Age"] != "30" {
+			t.Errorf("expected Age=30, got %s", result["Age"])
+		}
+		if result["City"] != "Beijing" {
+			t.Errorf("expected City=Beijing, got %s", result["City"])
+		}
+	})
+
+	t.Run("ParseKeyValue with equals", func(t *testing.T) {
+		parser := NewParser()
+		input := "name = Bob\nage = 25"
+
+		result := parser.ParseKeyValue(input)
+		if result["name"] != "Bob" {
+			t.Errorf("expected name=Bob, got %s", result["name"])
+		}
+		if result["age"] != "25" {
+			t.Errorf("expected age=25, got %s", result["age"])
+		}
+	})
+
+	t.Run("ParseKeyValue mixed delimiters", func(t *testing.T) {
+		parser := NewParser()
+		input := "Name: Alice\nAge = 30"
+
+		result := parser.ParseKeyValue(input)
+		if result["Name"] != "Alice" {
+			t.Errorf("expected Name=Alice, got %s", result["Name"])
+		}
+		if result["Age"] != "30" {
+			t.Errorf("expected Age=30, got %s", result["Age"])
+		}
+	})
+
+	t.Run("ParseKeyValue empty input", func(t *testing.T) {
+		parser := NewParser()
+
+		result := parser.ParseKeyValue("")
+		if len(result) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(result))
+		}
+	})
+
+	t.Run("ParseKeyValue with empty lines", func(t *testing.T) {
+		parser := NewParser()
+		input := "Name: Alice\n\n\nAge: 30\n"
+
+		result := parser.ParseKeyValue(input)
+		if len(result) != 2 {
+			t.Errorf("expected 2 entries, got %d", len(result))
+		}
+	})
+
+	t.Run("ParseKeyValue no delimiter", func(t *testing.T) {
+		parser := NewParser()
+		input := "just some text\nno delimiters here"
+
+		result := parser.ParseKeyValue(input)
+		if len(result) != 0 {
+			t.Errorf("expected empty map for lines without delimiters, got %d entries", len(result))
+		}
+	})
+
+	t.Run("ParseKeyValue value with colon", func(t *testing.T) {
+		parser := NewParser()
+		input := "URL: https://example.com"
+
+		result := parser.ParseKeyValue(input)
+		if result["URL"] != "https://example.com" {
+			t.Errorf("expected URL=https://example.com, got %s", result["URL"])
+		}
+	})
+
+	t.Run("ParseKeyValue whitespace trimming", func(t *testing.T) {
+		parser := NewParser()
+		input := "  Name :   Alice  \n  Age  =  30  "
+
+		result := parser.ParseKeyValue(input)
+		if result["Name"] != "Alice" {
+			t.Errorf("expected Name=Alice, got %s", result["Name"])
+		}
+		if result["Age"] != "30" {
+			t.Errorf("expected Age=30, got %s", result["Age"])
+		}
+	})
 }
 
 func TestSchema(t *testing.T) {
@@ -470,6 +694,228 @@ func TestValidator(t *testing.T) {
 		err := v.ValidateRecommendResult(nil)
 		if err == nil {
 			t.Errorf("expected error for nil result")
+		}
+	})
+}
+
+func TestTemplateEngineRenderMapData(t *testing.T) {
+	engine := NewTemplateEngine()
+
+	t.Run("render with map[string]string", func(t *testing.T) {
+		result, err := engine.Render("Hello {{.name}}, welcome to {{.place}}!", map[string]string{
+			"name":  "Alice",
+			"place": "Wonderland",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "Hello Alice, welcome to Wonderland!" {
+			t.Errorf("unexpected result: %q", result)
+		}
+	})
+
+	t.Run("render raw_data template with map", func(t *testing.T) {
+		// This is the exact pattern used in orchestrator.go.
+		tmpl := "Analyze the following data:\n\n{{.raw_data}}"
+		result, err := engine.Render(tmpl, map[string]string{
+			"raw_data": "some data here",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := "Analyze the following data:\n\nsome data here"
+		if result != expected {
+			t.Errorf("expected %q, got %q", expected, result)
+		}
+	})
+
+	t.Run("render with missing key produces no value placeholder", func(t *testing.T) {
+		result, err := engine.Render("Value: {{.missing}}", map[string]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "Value: <no value>" {
+			t.Errorf("expected 'Value: <no value>', got %q", result)
+		}
+	})
+
+	t.Run("render with template functions", func(t *testing.T) {
+		result, err := engine.Render("{{upper .msg}}", map[string]string{
+			"msg": "hello",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "HELLO" {
+			t.Errorf("expected 'HELLO', got %q", result)
+		}
+	})
+
+	t.Run("render with malformed template returns error", func(t *testing.T) {
+		_, err := engine.Render("{{.unclosed", map[string]string{})
+		if err == nil {
+			t.Error("expected error for malformed template")
+		}
+	})
+}
+
+func TestPromptTemplate(t *testing.T) {
+	pt := &PromptTemplate{
+		Name:        "test",
+		Description: "A test template",
+		Template:    "Hello {{.name}}",
+		Variables:   []string{"name"},
+	}
+
+	if pt.Name != "test" {
+		t.Errorf("expected name 'test', got %q", pt.Name)
+	}
+	if pt.Description != "A test template" {
+		t.Errorf("expected description 'A test template', got %q", pt.Description)
+	}
+	if len(pt.Variables) != 1 || pt.Variables[0] != "name" {
+		t.Errorf("unexpected variables: %v", pt.Variables)
+	}
+}
+
+func TestTemplateRegistry(t *testing.T) {
+	t.Run("new registry is empty", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		if r == nil {
+			t.Fatal("expected non-nil registry")
+		}
+		if len(r.List()) != 0 {
+			t.Errorf("expected empty list, got %d", len(r.List()))
+		}
+	})
+
+	t.Run("register and get", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		tmpl := &PromptTemplate{
+			Name:        "greeting",
+			Description: "A greeting template",
+			Template:    "Hello {{.name}}!",
+			Variables:   []string{"name"},
+		}
+		if err := r.Register(tmpl); err != nil {
+			t.Fatalf("register error: %v", err)
+		}
+
+		got, ok := r.Get("greeting")
+		if !ok {
+			t.Fatal("expected to find 'greeting'")
+		}
+		if got.Name != "greeting" {
+			t.Errorf("expected name 'greeting', got %q", got.Name)
+		}
+		if got.Template != "Hello {{.name}}!" {
+			t.Errorf("unexpected template: %q", got.Template)
+		}
+	})
+
+	t.Run("get nonexistent returns false", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		_, ok := r.Get("nonexistent")
+		if ok {
+			t.Error("expected false for nonexistent template")
+		}
+	})
+
+	t.Run("list returns all registered", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		r.Register(&PromptTemplate{Name: "a", Template: "tmpl a"})
+		r.Register(&PromptTemplate{Name: "b", Template: "tmpl b"})
+
+		list := r.List()
+		if len(list) != 2 {
+			t.Fatalf("expected 2 templates, got %d", len(list))
+		}
+
+		names := map[string]bool{}
+		for _, tmpl := range list {
+			names[tmpl.Name] = true
+		}
+		if !names["a"] || !names["b"] {
+			t.Errorf("expected both 'a' and 'b' in list, got %v", names)
+		}
+	})
+
+	t.Run("render by name", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		r.Register(&PromptTemplate{
+			Name:     "analyze",
+			Template: "Analyze: {{.raw_data}}",
+		})
+
+		result, err := r.Render("analyze", map[string]string{
+			"raw_data": "some data",
+		})
+		if err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+		if result != "Analyze: some data" {
+			t.Errorf("expected 'Analyze: some data', got %q", result)
+		}
+	})
+
+	t.Run("render nonexistent returns error", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		_, err := r.Render("missing", map[string]string{})
+		if err == nil {
+			t.Error("expected error for nonexistent template")
+		}
+	})
+
+	t.Run("register nil returns error", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		if err := r.Register(nil); err == nil {
+			t.Error("expected error for nil template")
+		}
+	})
+
+	t.Run("register empty name returns error", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		if err := r.Register(&PromptTemplate{Template: "some template"}); err == nil {
+			t.Error("expected error for empty name")
+		}
+	})
+
+	t.Run("register empty template returns error", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		if err := r.Register(&PromptTemplate{Name: "empty"}); err == nil {
+			t.Error("expected error for empty template source")
+		}
+	})
+
+	t.Run("register duplicate name returns error", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		r.Register(&PromptTemplate{Name: "dup", Template: "first"})
+		err := r.Register(&PromptTemplate{Name: "dup", Template: "second"})
+		if err == nil {
+			t.Error("expected error for duplicate registration")
+		}
+
+		// Original should be preserved.
+		got, _ := r.Get("dup")
+		if got.Template != "first" {
+			t.Errorf("expected original template 'first', got %q", got.Template)
+		}
+	})
+
+	t.Run("register copies template to prevent mutation", func(t *testing.T) {
+		r := NewTemplateRegistry()
+		original := &PromptTemplate{
+			Name:     "immutable",
+			Template: "original",
+		}
+		r.Register(original)
+
+		// Mutate the original after registration.
+		original.Template = "mutated"
+
+		got, _ := r.Get("immutable")
+		if got.Template != "original" {
+			t.Errorf("registry should store a copy, got %q", got.Template)
 		}
 	})
 }

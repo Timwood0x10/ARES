@@ -124,9 +124,9 @@ func TestOrchestratorCreateCustomAgent(t *testing.T) {
 
 	// Create agent without template.
 	id, err := orch.CreateAgent(AgentRequest{
-		Name:     "Custom Agent",
-		MCPTool:  "custom",
-		MCPArgs:  map[string]any{"key": "value"},
+		Name:      "Custom Agent",
+		MCPTool:   "custom",
+		MCPArgs:   map[string]any{"key": "value"},
 		LLMPrompt: "Custom prompt: {{.raw_data}}",
 	})
 	if err != nil {
@@ -248,11 +248,13 @@ func TestOrchestratorListAgents(t *testing.T) {
 
 	// Create multiple agents.
 	for i := 0; i < 3; i++ {
-		orch.CreateAgent(AgentRequest{
+		if _, err := orch.CreateAgent(AgentRequest{
 			Name:      fmt.Sprintf("Agent %d", i),
 			MCPTool:   "",
 			LLMPrompt: "test",
-		})
+		}); err != nil {
+			t.Fatalf("CreateAgent %d: %v", i, err)
+		}
 	}
 
 	agents := orch.ListAgents()

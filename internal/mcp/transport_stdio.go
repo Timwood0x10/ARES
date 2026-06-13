@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
 
 // StdioConfig holds configuration for a stdio-based MCP transport.
@@ -27,7 +28,7 @@ type StdioTransport struct {
 	stderr    io.ReadCloser
 	config    StdioConfig
 	mu        sync.Mutex
-	started   bool
+	started   atomic.Bool
 	receiveMu sync.Mutex
 	stderrWg  sync.WaitGroup
 }
@@ -44,7 +45,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.started {
+	if t.started.Load() {
 		return fmt.Errorf("transport already started")
 	}
 
@@ -87,7 +88,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("start process: %w", err)
 	}
 
-	t.started = true
+	t.started.Store(true)
 
 	// Drain stderr in background to prevent blocking, logging output for diagnostics.
 	t.stderrWg.Add(1)
@@ -110,7 +111,7 @@ func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !t.started {
+	if !t.started.Load() {
 		return fmt.Errorf("transport not started")
 	}
 
@@ -133,7 +134,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 	t.receiveMu.Lock()
 	defer t.receiveMu.Unlock()
 
-	if !t.started {
+	if !t.started.Load() {
 		return nil, fmt.Errorf("transport not started")
 	}
 
@@ -176,11 +177,11 @@ func (t *StdioTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if !t.started {
+	if !t.started.Load() {
 		return nil
 	}
 
-	t.started = false
+	t.started.Store(false)
 
 	if t.stdin != nil {
 		_ = t.stdin.Close()
