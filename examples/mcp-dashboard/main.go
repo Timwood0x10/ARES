@@ -17,13 +17,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,6 +32,8 @@ import (
 	"goagentx/internal/flight"
 	"goagentx/internal/llm/output"
 	"goagentx/internal/mcp"
+
+	"github.com/google/uuid"
 
 	"gopkg.in/yaml.v3"
 )
@@ -129,6 +131,8 @@ func main() {
 
 	// ── Unified API ────────────────────────────
 	api := dashboard.NewAPIv2(orch, mcpBridge, hub)
+	arenaAdapter := &arenaAdapter{orch: orch, eventStore: eventStore}
+	api.SetArena(arenaAdapter)
 	httpServer := &http.Server{Addr: addr, Handler: api.Handler()}
 
 	go func() {
@@ -138,7 +142,7 @@ func main() {
 
 	// ── Initial review ─────────────────────────
 	slog.Info("running initial code review...")
-	runReview(orch, buildTemplates(tools))
+	runReview(orch, tools)
 
 	// ── Periodic review ────────────────────────
 	if interval > 0 {
@@ -152,7 +156,7 @@ func main() {
 					return
 				case <-ticker.C:
 					slog.Info("periodic review triggered")
-					runReview(orch, buildTemplates(tools))
+					runReview(orch, tools)
 				}
 			}
 		}()
@@ -167,14 +171,109 @@ func main() {
 	_ = httpServer.Shutdown(context.Background())
 }
 
-func runReview(orch *dashboard.Orchestrator, templates []dashboard.AgentTemplate) {
-	for _, t := range templates {
-		id, err := orch.CreateAgent(dashboard.AgentRequest{TemplateID: t.ID})
+func runReview(orch *dashboard.Orchestrator, tools []mcp.MCPToolDef) {
+	m := make(map[string]string)
+	for _, t := range tools {
+		m[t.Name] = t.Name
+		if i := strings.Index(t.Name, "_"); i >= 0 {
+			m[t.Name[i+1:]] = t.Name
+		}
+	}
+	r := func(n string) string { return m[n] }
+
+	agents := []dashboard.AgentRequest{
+		{
+			Name: "Architecture Review",
+			Steps: []dashboard.AgentStep{
+				{Tool: r("files"), Args: nil},
+				{Tool: r("search"), Args: map[string]any{"search": "func main|func New|func Start"}},
+				{Tool: r("context"), Args: map[string]any{"task": "analyze package dependencies and module structure"}},
+			},
+			LLMPrompt: `You are a senior code architect. Analyze this project using the gathered data:
+1. Architecture pattern and package organization
+2. Dependency flow and coupling issues
+3. Entry points and their responsibilities
+4. Separation of concerns
+5. Specific improvement suggestions
+
+Data:
+{{.raw_data}}`,
+		},
+		{
+			Name: "Error Handling Review",
+			Steps: []dashboard.AgentStep{
+				{Tool: r("search"), Args: map[string]any{"search": "ErrXxx|errors.New|fmt.Errorf"}},
+				{Tool: r("context"), Args: map[string]any{"task": "find all error handling: wrapping, sentinel errors, swallowed errors, panic usage"}},
+				{Tool: r("callers"), Args: map[string]any{"symbol": "fmt.Errorf"}},
+			},
+			LLMPrompt: `You are a Go reliability engineer. Review error handling:
+1. Are errors wrapped with context (fmt.Errorf %w)?
+2. Any swallowed errors (_ = err without logging)?
+3. Sentinel errors properly defined?
+4. Any panic() in non-init code?
+5. Specific violations with file:line
+
+Data:
+{{.raw_data}}`,
+		},
+		{
+			Name: "Concurrency Review",
+			Steps: []dashboard.AgentStep{
+				{Tool: r("search"), Args: map[string]any{"search": "go func|errgroup|sync.Mutex|sync.RWMutex"}},
+				{Tool: r("context"), Args: map[string]any{"task": "find all goroutine launches, mutex usage, channel patterns"}},
+				{Tool: r("callers"), Args: map[string]any{"symbol": "errgroup.Group"}},
+			},
+			LLMPrompt: `You are a Go concurrency expert. Review:
+1. Bare 'go' without errgroup/WaitGroup?
+2. Potential goroutine leaks?
+3. Shared state without mutex?
+4. Channel misuse risks?
+5. Race condition risks with specific locations
+
+Data:
+{{.raw_data}}`,
+		},
+		{
+			Name: "API Surface Review",
+			Steps: []dashboard.AgentStep{
+				{Tool: r("search"), Args: map[string]any{"search": "type.*interface"}},
+				{Tool: r("search"), Args: map[string]any{"search": "func New"}},
+				{Tool: r("context"), Args: map[string]any{"task": "analyze public API consistency and interface design"}},
+			},
+			LLMPrompt: `Review the public API surface:
+1. Are interfaces small and focused?
+2. Is naming consistent across packages?
+3. Are constructors following patterns?
+4. Breaking change risks?
+
+Data:
+{{.raw_data}}`,
+		},
+		{
+			Name: "Change Impact Analysis",
+			Steps: []dashboard.AgentStep{
+				{Tool: r("impact"), Args: map[string]any{"symbol": "Tool"}},
+				{Tool: r("callers"), Args: map[string]any{"symbol": "Tool"}},
+				{Tool: r("context"), Args: map[string]any{"task": "find all Tool interface implementations and usages"}},
+			},
+			LLMPrompt: `Analyze the impact of changing the Tool interface:
+1. All implementations that would break
+2. Test coverage gaps
+3. Migration strategy
+4. Risk assessment per package
+
+Data:
+{{.raw_data}}`,
+		},
+	}
+
+	for _, req := range agents {
+		id, err := orch.CreateAgent(req)
 		if err != nil {
-			slog.Error("create agent failed", "template", t.ID, "error", err)
+			slog.Error("create agent failed", "name", req.Name, "error", err)
 			continue
 		}
-		slog.Info("agent launched", "id", id, "template", t.ID)
+		slog.Info("agent launched", "id", id, "name", req.Name, "steps", len(req.Steps))
 	}
 }
 
@@ -360,4 +459,103 @@ func loadConfig(path string) (*appConfig, error) {
 	return &cfg, yaml.Unmarshal(data, &cfg)
 }
 
-var _ = json.Marshal
+// ── Arena Adapter ──────────────────────────────
+
+type arenaAdapter struct {
+	orch       *dashboard.Orchestrator
+	eventStore *events.MemoryEventStore
+	history    []dashboard.ArenaResult
+	mu         sync.Mutex
+}
+
+func (a *arenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResult {
+	start := time.Now()
+
+	// Actually execute the action.
+	switch action.Type {
+	case dashboard.ArenaActionKillLeader:
+		// Find and cancel the leader (first agent).
+		agents := a.orch.ListAgents()
+		for _, ag := range agents {
+			if ag.Status != "completed" && ag.Status != "failed" {
+				a.orch.CancelAgent(ag.ID)
+				slog.Info("arena: killed leader agent", "id", ag.ID)
+				break
+			}
+		}
+	case dashboard.ArenaActionKillAgent:
+		if action.TargetID != "" {
+			if a.orch.CancelAgent(action.TargetID) {
+				slog.Info("arena: killed agent", "id", action.TargetID)
+			} else {
+				slog.Warn("arena: agent not found", "id", action.TargetID)
+			}
+		}
+	case dashboard.ArenaActionRemoveNode, dashboard.ArenaActionRemoveEdge:
+		// DAG operations — no-op in this demo (no MutableDAG wired).
+		slog.Info("arena: DAG operation (no-op in demo)", "type", string(action.Type))
+	}
+
+	// Emit event to store.
+	if a.eventStore != nil {
+		ctx := context.Background()
+		payload := map[string]any{
+			"action":    string(action.Type),
+			"target_id": action.TargetID,
+			"source_id": action.SourceID,
+		}
+		evt := &events.Event{
+			ID:        uuid.New().String(),
+			StreamID:  "arena",
+			Type:      "arena.action",
+			Payload:   payload,
+			Timestamp: time.Now(),
+		}
+		_ = a.eventStore.Append(ctx, "arena", []*events.Event{evt}, 0)
+	}
+
+	result := dashboard.ArenaResult{
+		Success:  true,
+		Action:   action,
+		Duration: time.Since(start),
+	}
+
+	a.mu.Lock()
+	a.history = append(a.history, result)
+	a.mu.Unlock()
+
+	slog.Info("arena: action executed",
+		"type", string(action.Type),
+		"target", action.TargetID,
+		"duration", result.Duration,
+	)
+
+	return result
+}
+
+func (a *arenaAdapter) Stats() map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	total := len(a.history)
+	successful := 0
+	for _, r := range a.history {
+		if r.Success {
+			successful++
+		}
+	}
+
+	return map[string]any{
+		"total_actions":      total,
+		"successful_actions": successful,
+		"failed_actions":     total - successful,
+	}
+}
+
+func (a *arenaAdapter) History() []dashboard.ArenaResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	result := make([]dashboard.ArenaResult, len(a.history))
+	copy(result, a.history)
+	return result
+}

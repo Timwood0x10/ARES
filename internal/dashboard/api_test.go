@@ -39,7 +39,9 @@ func TestAPIRoot(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
+	// Root with Accept: application/json returns JSON overview.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -56,6 +58,25 @@ func TestAPIRoot(t *testing.T) {
 	}
 	if _, ok := resp["agents"]; !ok {
 		t.Error("expected agents in response")
+	}
+}
+
+func TestAPIRootHTML(t *testing.T) {
+	api, _ := setupAPI()
+	handler := api.Handler()
+
+	// Root without Accept header returns HTML.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "text/html; charset=utf-8" {
+		t.Errorf("expected HTML content type, got %s", ct)
 	}
 }
 

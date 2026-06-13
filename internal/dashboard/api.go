@@ -17,12 +17,45 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// ArenaActionType is the type of chaos action.
+type ArenaActionType string
+
+const (
+	ArenaActionKillLeader ArenaActionType = "kill_leader"
+	ArenaActionKillAgent  ArenaActionType = "kill_agent"
+	ArenaActionRemoveNode ArenaActionType = "remove_node"
+	ArenaActionRemoveEdge ArenaActionType = "remove_edge"
+)
+
+// ArenaAction represents a single chaos action.
+type ArenaAction struct {
+	Type     ArenaActionType `json:"type"`
+	TargetID string          `json:"target_id,omitempty"`
+	SourceID string          `json:"source_id,omitempty"`
+}
+
+// ArenaResult holds the outcome of an arena action.
+type ArenaResult struct {
+	Success  bool          `json:"success"`
+	Action   ArenaAction   `json:"action"`
+	Error    string        `json:"error,omitempty"`
+	Duration time.Duration `json:"duration"`
+}
+
+// ArenaProvider abstracts the arena service for the dashboard.
+type ArenaProvider interface {
+	Execute(action ArenaAction) ArenaResult
+	Stats() map[string]any
+	History() []ArenaResult
+}
+
 // APIv2 is the unified dashboard API.
 type APIv2 struct {
 	orch  *Orchestrator
 	mcp   MCPStatusProvider
 	hub   *WSHub
 	start time.Time
+	arena ArenaProvider
 }
 
 // NewAPIv2 creates a new unified API.
@@ -33,6 +66,11 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 		hub:   hub,
 		start: time.Now(),
 	}
+}
+
+// SetArena attaches an arena provider for chaos operations.
+func (a *APIv2) SetArena(arena ArenaProvider) {
+	a.arena = arena
 }
 
 // Handler returns the http.Handler with all routes mounted.
@@ -58,6 +96,14 @@ func (a *APIv2) Handler() http.Handler {
 	// ── WebSocket ───────────────────────────────
 	// GET    /ws              → upgrade to WebSocket
 	mux.HandleFunc("/ws", a.handleWS)
+
+	// ── Arena ────────────────────────────────────
+	mux.HandleFunc("/arena/leader/kill", a.handleArenaKillLeader)
+	mux.HandleFunc("/arena/agent/", a.handleArenaKillAgent)
+	mux.HandleFunc("/arena/node/", a.handleArenaRemoveNode)
+	mux.HandleFunc("/arena/edge/remove", a.handleArenaRemoveEdge)
+	mux.HandleFunc("/arena/stats", a.handleArenaStats)
+	mux.HandleFunc("/arena/history", a.handleArenaHistory)
 
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
@@ -234,6 +280,21 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serve the SPA HTML at /, or JSON if requested.
+	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+		a.handleOverviewJSON(w, r)
+		return
+	}
+	data, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("index.html not found"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(data)
+}
+
+func (a *APIv2) handleOverviewJSON(w http.ResponseWriter, r *http.Request) {
 	agentCount := 0
 	if a.orch != nil {
 		agentCount = len(a.orch.ListAgents())
@@ -255,6 +316,112 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"mcp_tools":   mcpTools,
 		"dashboard":   "http://" + r.Host,
 	})
+}
+
+// ── Arena handlers ─────────────────────────────
+
+func (a *APIv2) handleArenaKillLeader(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	result := a.arena.Execute(ArenaAction{Type: ArenaActionKillLeader})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaKillAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/arena/agent/")
+	id = strings.TrimSuffix(id, "/kill")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("agent id required"))
+		return
+	}
+	result := a.arena.Execute(ArenaAction{Type: ArenaActionKillAgent, TargetID: id})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaRemoveNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/arena/node/")
+	id = strings.TrimSuffix(id, "/remove")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("node id required"))
+		return
+	}
+	result := a.arena.Execute(ArenaAction{Type: ArenaActionRemoveNode, TargetID: id})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaRemoveEdge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
+		return
+	}
+	if req.From == "" || req.To == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("from and to are required"))
+		return
+	}
+	result := a.arena.Execute(ArenaAction{
+		Type:     ArenaActionRemoveEdge,
+		TargetID: req.To,
+		SourceID: req.From,
+	})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.arena.Stats())
+}
+
+func (a *APIv2) handleArenaHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.arena.History())
 }
 
 // ── Middleware ─────────────────────────────────

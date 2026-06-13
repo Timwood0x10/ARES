@@ -26,6 +26,12 @@ type AgentTemplate struct {
 	LLMPrompt   string         `json:"llm_prompt"`
 }
 
+// AgentStep defines a single tool call in a multi-step agent.
+type AgentStep struct {
+	Tool string         `json:"tool"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
 // AgentRequest holds a request to create and run an agent.
 type AgentRequest struct {
 	TemplateID string         `json:"template_id,omitempty"` // Use a template
@@ -34,6 +40,7 @@ type AgentRequest struct {
 	MCPArgs    map[string]any `json:"mcp_args,omitempty"`
 	LLMPrompt  string         `json:"llm_prompt,omitempty"` // Or custom prompt
 	Target     string         `json:"target,omitempty"`     // Target to analyze
+	Steps      []AgentStep    `json:"steps,omitempty"`      // Multi-step tool calls
 }
 
 // AgentResult holds the full result of an agent run.
@@ -104,9 +111,10 @@ type Orchestrator struct {
 	llm       LLMExecutor
 	templates []AgentTemplate
 	agents    map[string]*AgentResult
-	hub       *WSHub                   // optional, for real-time WS updates
-	store     *events.MemoryEventStore // optional, for event persistence
-	flight    *flight.FlightRecorder   // optional, for flight recording
+	cancels   map[string]context.CancelFunc // per-agent cancel functions
+	hub       *WSHub                        // optional, for real-time WS updates
+	store     *events.MemoryEventStore      // optional, for event persistence
+	flight    *flight.FlightRecorder        // optional, for flight recording
 	mu        sync.RWMutex
 	nextID    atomic.Int64
 	agentWg   sync.WaitGroup // tracks background agent goroutines
@@ -115,9 +123,10 @@ type Orchestrator struct {
 // NewOrchestrator creates a new Orchestrator.
 func NewOrchestrator(mcp MCPExecutor, llm LLMExecutor) *Orchestrator {
 	return &Orchestrator{
-		mcp:    mcp,
-		llm:    llm,
-		agents: make(map[string]*AgentResult),
+		mcp:     mcp,
+		llm:     llm,
+		agents:  make(map[string]*AgentResult),
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -205,15 +214,32 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 		StartedAt: time.Now(),
 	}
 
+	agentCtx, agentCancel := context.WithCancel(context.Background())
+
 	o.mu.Lock()
 	o.agents[id] = result
+	o.cancels[id] = agentCancel
 	o.mu.Unlock()
 
-	// Run in background with WaitGroup tracking.
+	// Run in background with WaitGroup tracking and auto-resurrection.
 	o.agentWg.Add(1)
 	go func() {
 		defer o.agentWg.Done()
-		o.runAgent(id, req, result)
+		defer func() {
+			o.mu.Lock()
+			delete(o.cancels, id)
+			o.mu.Unlock()
+		}()
+		o.runAgent(agentCtx, id, req, result)
+
+		// Auto-resurrect if killed by arena (context cancelled while not completed).
+		if agentCtx.Err() != nil && result.Status != "completed" {
+			slog.Info("orchestrator: agent killed, resurrecting", "id", id, "name", req.Name)
+			o.emitEvent(id, "agent.resurrecting", map[string]any{"reason": "arena kill"})
+			if _, err := o.CreateAgent(req); err != nil {
+				slog.Error("orchestrator: resurrection failed", "id", id, "error", err)
+			}
+		}
 	}()
 
 	return id, nil
@@ -232,6 +258,17 @@ func (o *Orchestrator) GetAgent(id string) (*AgentResult, bool) {
 	return &cp, true
 }
 
+// CancelAgent cancels a running agent by ID.
+func (o *Orchestrator) CancelAgent(id string) bool {
+	o.mu.RLock()
+	cancel, ok := o.cancels[id]
+	o.mu.RUnlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
 // ListAgents returns all agents.
 func (o *Orchestrator) ListAgents() []AgentResult {
 	o.mu.RLock()
@@ -245,8 +282,7 @@ func (o *Orchestrator) ListAgents() []AgentResult {
 }
 
 // runAgent executes the full agent lifecycle: MCP → LLM → result.
-func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult) {
-	ctx := context.Background()
+func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest, result *AgentResult) {
 	agentStart := time.Now()
 
 	// Record agent start in flight timeline.
@@ -256,11 +292,41 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 	o.emitEvent(id, "agent.started", map[string]any{"name": req.Name, "tool": req.MCPTool})
 	slog.Info("orchestrator: agent started", "id", id, "name", req.Name, "tool", req.MCPTool)
 
-	// Phase 1: MCP data gathering.
+	// Phase 1: MCP data gathering (single or multi-step).
 	o.updateStatus(id, "gathering data...", 20, "")
 
 	var rawData string
-	if req.MCPTool == "" {
+	if len(req.Steps) > 0 {
+		// Multi-step: call each tool in sequence, accumulate results.
+		for i, step := range req.Steps {
+			select {
+			case <-ctx.Done():
+				o.failAgent(id, ctx.Err())
+				return
+			default:
+			}
+
+			progress := 20 + (i * 25 / len(req.Steps))
+			o.updateStatus(id, fmt.Sprintf("step %d/%d: %s", i+1, len(req.Steps), step.Tool), progress, "")
+			o.emitFlightDecision(id, step.Tool, fmt.Sprintf("step %d", i+1))
+
+			mcpStart := time.Now()
+			o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+step.Tool, mcpStart, map[string]any{"step": i + 1})
+
+			res, err := o.mcp.CallTool(ctx, step.Tool, step.Args)
+			if err != nil {
+				o.emitFlightTimeline(id, flight.EventError, "mcp.call."+step.Tool+".error", mcpStart, map[string]any{"error": err.Error()})
+				o.failAgent(id, err)
+				return
+			}
+
+			o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+step.Tool, mcpStart)
+
+			for _, b := range res.Content {
+				rawData += fmt.Sprintf("\n--- Step %d: %s ---\n%s\n", i+1, step.Tool, b.Text)
+			}
+		}
+	} else if req.MCPTool == "" {
 		// List tools.
 		mcpStart := time.Now()
 		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.list_tools", mcpStart, nil)
@@ -276,7 +342,7 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 		data, _ := json.MarshalIndent(tools, "", "  ")
 		rawData = string(data)
 	} else {
-		// Record tool selection decision.
+		// Single tool call.
 		o.emitFlightDecision(id, req.MCPTool, "template selection")
 
 		mcpStart := time.Now()
