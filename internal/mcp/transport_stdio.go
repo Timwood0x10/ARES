@@ -1,0 +1,188 @@
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"sync"
+)
+
+// StdioConfig holds configuration for a stdio-based MCP transport.
+type StdioConfig struct {
+	Command string            `yaml:"command" json:"command"`
+	Args    []string          `yaml:"args" json:"args"`
+	Env     map[string]string `yaml:"env" json:"env"`
+	WorkDir string            `yaml:"work_dir" json:"work_dir"`
+}
+
+// StdioTransport implements Transport by communicating with an MCP server
+// over stdin/stdout of a subprocess.
+type StdioTransport struct {
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Scanner
+	stderr    io.ReadCloser
+	config    StdioConfig
+	mu        sync.Mutex
+	started   bool
+	receiveMu sync.Mutex
+}
+
+// NewStdioTransport creates a new stdio transport with the given config.
+func NewStdioTransport(config StdioConfig) *StdioTransport {
+	return &StdioTransport{
+		config: config,
+	}
+}
+
+// Start launches the subprocess and prepares stdin/stdout for communication.
+func (t *StdioTransport) Start(ctx context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.started {
+		return fmt.Errorf("transport already started")
+	}
+
+	if t.config.Command == "" {
+		return fmt.Errorf("command is required")
+	}
+
+	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...)
+
+	if t.config.WorkDir != "" {
+		t.cmd.Dir = t.config.WorkDir
+	}
+
+	if len(t.config.Env) > 0 {
+		t.cmd.Env = make([]string, 0, len(t.config.Env))
+		for k, v := range t.config.Env {
+			t.cmd.Env = append(t.cmd.Env, k+"="+v)
+		}
+	}
+
+	var err error
+	t.stdin, err = t.cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+
+	stdoutPipe, err := t.cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	t.stdout = bufio.NewScanner(stdoutPipe)
+	t.stdout.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	t.stderr, err = t.cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := t.cmd.Start(); err != nil {
+		return fmt.Errorf("start process: %w", err)
+	}
+
+	t.started = true
+
+	// Drain stderr in background to prevent blocking.
+	go func() {
+		_, _ = io.Copy(io.Discard, t.stderr)
+	}()
+
+	return nil
+}
+
+// Send encodes and writes a JSON-RPC message to the subprocess stdin.
+func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !t.started {
+		return fmt.Errorf("transport not started")
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		return fmt.Errorf("encode message: %w", err)
+	}
+
+	// Write message followed by newline as delimiter.
+	data = append(data, '\n')
+	if _, err := t.stdin.Write(data); err != nil {
+		return fmt.Errorf("write stdin: %w", err)
+	}
+
+	return nil
+}
+
+// Receive reads the next JSON-RPC message from the subprocess stdout.
+func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
+	t.receiveMu.Lock()
+	defer t.receiveMu.Unlock()
+
+	if !t.started {
+		return nil, fmt.Errorf("transport not started")
+	}
+
+	// Use a channel to make the blocking scan interruptible.
+	type scanResult struct {
+		data []byte
+		err  error
+	}
+
+	ch := make(chan scanResult, 1)
+	go func() {
+		if t.stdout.Scan() {
+			ch <- scanResult{data: t.stdout.Bytes()}
+		} else {
+			ch <- scanResult{err: t.stdout.Err()}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-ch:
+		if result.err != nil {
+			return nil, fmt.Errorf("read stdout: %w", result.err)
+		}
+		msg, err := Decode(result.data)
+		if err != nil {
+			return nil, fmt.Errorf("decode message: %w", err)
+		}
+		return msg, nil
+	}
+}
+
+// Close terminates the subprocess and cleans up resources.
+func (t *StdioTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !t.started {
+		return nil
+	}
+
+	t.started = false
+
+	if t.stdin != nil {
+		_ = t.stdin.Close()
+	}
+
+	if t.stderr != nil {
+		_ = t.stderr.Close()
+	}
+
+	if t.cmd != nil && t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+		_ = t.cmd.Wait()
+	}
+
+	return nil
+}
+
+// Ensure StdioTransport implements Transport at compile time.
+var _ Transport = (*StdioTransport)(nil)

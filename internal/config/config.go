@@ -26,16 +26,18 @@ const (
 
 // Config holds all configuration for the server.
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	LLM        LLMConfig        `yaml:"llm"`
-	Agents     AgentsConfig     `yaml:"agents"`
-	Tools      ToolsConfig      `yaml:"tools"`
-	Prompts    PromptsConfig    `yaml:"prompts"`
-	Output     OutputConfig     `yaml:"output"`
-	Validation ValidationConfig `yaml:"validation"`
-	Workflow   WorkflowConfig   `yaml:"workflow"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Memory     MemoryConfig     `yaml:"memory"`
+	Server     ServerConfig       `yaml:"server"`
+	LLM        LLMConfig          `yaml:"llm"`
+	Agents     AgentsConfig       `yaml:"agents"`
+	Tools      ToolsConfig        `yaml:"tools"`
+	Prompts    PromptsConfig      `yaml:"prompts"`
+	Output     OutputConfig       `yaml:"output"`
+	Validation ValidationConfig   `yaml:"validation"`
+	Workflow   WorkflowConfig     `yaml:"workflow"`
+	Storage    StorageConfig      `yaml:"storage"`
+	Memory     MemoryConfig       `yaml:"memory"`
+	MCP        MCPConfig          `yaml:"mcp"`
+	Dashboard  DashboardAppConfig `yaml:"dashboard"`
 }
 
 // ServerConfig holds server configuration.
@@ -481,4 +483,47 @@ type AgentToolConfig struct {
 	Description  string   `yaml:"description"`   // Agent description
 	SystemPrompt string   `yaml:"system_prompt"` // Custom system prompt for this agent
 	Tools        []string `yaml:"tools"`         // List of tool names this agent can use
+}
+
+// MCPConfig holds MCP client configuration.
+type MCPConfig struct {
+	Servers []MCPServerEntry `yaml:"servers"`
+}
+
+// MCPServerEntry holds configuration for a single MCP server.
+type MCPServerEntry struct {
+	Name      string         `yaml:"name"`
+	Enabled   bool           `yaml:"enabled"`
+	AutoStart bool           `yaml:"auto_start"`
+	Timeout   int            `yaml:"timeout"` // seconds
+	Transport TransportEntry `yaml:"transport"`
+}
+
+// TransportEntry holds transport configuration.
+type TransportEntry struct {
+	Type  string      `yaml:"type"` // "stdio" or "sse"
+	Stdio *StdioEntry `yaml:"stdio,omitempty"`
+	SSE   *SSEEntry   `yaml:"sse,omitempty"`
+}
+
+// StdioEntry holds stdio transport configuration.
+type StdioEntry struct {
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+	WorkDir string            `yaml:"work_dir"`
+}
+
+// SSEEntry holds SSE transport configuration.
+type SSEEntry struct {
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+	Timeout int               `yaml:"timeout"` // seconds
+}
+
+// DashboardAppConfig holds dashboard configuration.
+type DashboardAppConfig struct {
+	Addr           string `yaml:"addr"`
+	EnableAuth     bool   `yaml:"enable_auth"`
+	WSPingInterval int    `yaml:"ws_ping_interval"` // seconds
 }

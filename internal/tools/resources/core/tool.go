@@ -18,6 +18,8 @@ const (
 	CategoryMemory ToolCategory = "memory"
 	// CategoryDomain represents domain-specific tools (weather, search, etc.)
 	CategoryDomain ToolCategory = "domain"
+	// CategoryExternal represents external MCP tools connected via MCP protocol.
+	CategoryExternal ToolCategory = "external"
 )
 
 // Parameter defines a single parameter.

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoAgentX Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <nav class="sidebar">
+            <h2>GoAgentX</h2>
+            <ul>
+                <li><a href="#" data-view="overview" class="active">Overview</a></li>
+                <li><a href="#" data-view="agents">Agents</a></li>
+                <li><a href="#" data-view="workflows">Workflows</a></li>
+                <li><a href="#" data-view="memory">Memory</a></li>
+                <li><a href="#" data-view="events">Events</a></li>
+                <li><a href="#" data-view="mcp">MCP</a></li>
+            </ul>
+        </nav>
+        <main class="content">
+            <div id="view-overview" class="view active"></div>
+            <div id="view-agents" class="view"></div>
+            <div id="view-workflows" class="view"></div>
+            <div id="view-memory" class="view"></div>
+            <div id="view-events" class="view"></div>
+            <div id="view-mcp" class="view"></div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

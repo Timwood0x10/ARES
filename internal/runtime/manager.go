@@ -802,3 +802,50 @@ func (m *Manager) healthCheck() {
 		}
 	}
 }
+
+// AgentInfo holds agent metadata for external consumers like the dashboard.
+type AgentInfo struct {
+	ID       string
+	Type     string
+	Status   string
+	Restarts int
+}
+
+// ListAgents returns metadata for all managed agents.
+func (m *Manager) ListAgents() []AgentInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	infos := make([]AgentInfo, 0, len(m.agents))
+	for id, ma := range m.agents {
+		if ma.agent == nil {
+			continue
+		}
+		infos = append(infos, AgentInfo{
+			ID:       id,
+			Type:     string(ma.agent.Type()),
+			Status:   string(ma.agent.Status()),
+			Restarts: ma.restarts,
+		})
+	}
+
+	return infos
+}
+
+// GetAgentInfo returns metadata for a specific agent.
+func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ma, ok := m.agents[agentID]
+	if !ok || ma.agent == nil {
+		return nil, false
+	}
+
+	return &AgentInfo{
+		ID:       agentID,
+		Type:     string(ma.agent.Type()),
+		Status:   string(ma.agent.Status()),
+		Restarts: ma.restarts,
+	}, true
+}
