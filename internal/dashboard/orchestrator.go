@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"goagentx/internal/events"
+	"goagentx/internal/flight"
 	"goagentx/internal/llm/output"
 )
 
@@ -105,6 +106,7 @@ type Orchestrator struct {
 	agents    map[string]*AgentResult
 	hub       *WSHub                   // optional, for real-time WS updates
 	store     *events.MemoryEventStore // optional, for event persistence
+	flight    *flight.FlightRecorder   // optional, for flight recording
 	mu        sync.RWMutex
 	nextID    atomic.Int64
 	agentWg   sync.WaitGroup // tracks background agent goroutines
@@ -131,6 +133,20 @@ func (o *Orchestrator) SetEventStore(store *events.MemoryEventStore) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.store = store
+}
+
+// SetFlightRecorder attaches a FlightRecorder for runtime flight data recording.
+func (o *Orchestrator) SetFlightRecorder(fr *flight.FlightRecorder) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.flight = fr
+}
+
+// getFlight returns the current FlightRecorder under a read lock. Safe for concurrent use.
+func (o *Orchestrator) getFlight() *flight.FlightRecorder {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.flight
 }
 
 // SetTemplates sets the available agent templates.
@@ -231,6 +247,10 @@ func (o *Orchestrator) ListAgents() []AgentResult {
 // runAgent executes the full agent lifecycle: MCP → LLM → result.
 func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult) {
 	ctx := context.Background()
+	agentStart := time.Now()
+
+	// Record agent start in flight timeline.
+	o.emitFlightTimeline(id, flight.EventAgentStart, "agent.start", agentStart, nil)
 
 	o.updateStatus(id, "running", 10, "")
 	o.emitEvent(id, "agent.started", map[string]any{"name": req.Name, "tool": req.MCPTool})
@@ -242,19 +262,34 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 	var rawData string
 	if req.MCPTool == "" {
 		// List tools.
+		mcpStart := time.Now()
+		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.list_tools", mcpStart, nil)
+
 		tools, err := o.mcp.ListTools(ctx)
 		if err != nil {
+			o.emitFlightTimeline(id, flight.EventError, "mcp.list_tools.error", mcpStart, map[string]any{"error": err.Error()})
 			o.failAgent(id, err)
 			return
 		}
+
+		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.list_tools", mcpStart)
 		data, _ := json.MarshalIndent(tools, "", "  ")
 		rawData = string(data)
 	} else {
+		// Record tool selection decision.
+		o.emitFlightDecision(id, req.MCPTool, "template selection")
+
+		mcpStart := time.Now()
+		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+req.MCPTool, mcpStart, map[string]any{"tool": req.MCPTool})
+
 		res, err := o.mcp.CallTool(ctx, req.MCPTool, req.MCPArgs)
 		if err != nil {
+			o.emitFlightTimeline(id, flight.EventError, "mcp.call."+req.MCPTool+".error", mcpStart, map[string]any{"error": err.Error()})
 			o.failAgent(id, err)
 			return
 		}
+
+		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+req.MCPTool, mcpStart)
 		for _, b := range res.Content {
 			rawData += b.Text
 		}
@@ -287,11 +322,17 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 	}
 
 	// Try streaming first; fall back to blocking Generate.
+	llmStart := time.Now()
+	o.emitFlightTimeline(id, flight.EventLLMCall, "llm.generate", llmStart, nil)
+
 	analysis, err := o.llmGenerateStreaming(ctx, id, prompt)
 	if err != nil {
+		o.emitFlightTimeline(id, flight.EventError, "llm.generate.error", llmStart, map[string]any{"error": err.Error()})
 		o.failAgent(id, err)
 		return
 	}
+
+	o.emitFlightTimelineEnd(id, flight.EventLLMResult, "llm.generate", llmStart)
 
 	// Phase 3: Done.
 	o.mu.Lock()
@@ -302,6 +343,11 @@ func (o *Orchestrator) runAgent(id string, req AgentRequest, result *AgentResult
 	result.Duration = result.FinishedAt.Sub(result.StartedAt).Round(time.Second).String()
 	cp := *result
 	o.mu.Unlock()
+
+	// Record agent end in flight timeline.
+	o.emitFlightTimeline(id, flight.EventAgentEnd, "agent.end", agentStart, map[string]any{
+		"duration": result.Duration,
+	})
 
 	slog.Info("orchestrator: agent completed", "id", id, "duration", result.Duration)
 	o.emitEvent(id, "agent.completed", map[string]any{"duration": result.Duration, "analysis_len": len(analysis)})
@@ -400,15 +446,22 @@ func (o *Orchestrator) updateRawDataLen(id string, n int) {
 func (o *Orchestrator) failAgent(id string, err error) {
 	o.mu.Lock()
 	var cp *AgentResult
+	var duration time.Duration
 	if a, ok := o.agents[id]; ok {
 		a.Status = "failed"
 		a.Error = err.Error()
 		a.FinishedAt = time.Now()
 		a.Duration = a.FinishedAt.Sub(a.StartedAt).Round(time.Second).String()
+		duration = a.FinishedAt.Sub(a.StartedAt)
 		tmp := *a
 		cp = &tmp
 	}
 	o.mu.Unlock()
+
+	// Record failure diagnostics in flight recorder.
+	if fr := o.getFlight(); fr != nil {
+		fr.Diagnostics().Record(flight.AutoDiagnose(id, "", err, duration))
+	}
 
 	slog.Error("orchestrator: agent failed", "id", id, "error", err)
 	o.emitEvent(id, "agent.failed", map[string]any{"error": err.Error()})
@@ -453,6 +506,67 @@ func (o *Orchestrator) getStore() *events.MemoryEventStore {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.store
+}
+
+// emitFlightTimeline adds a start-style TimelineEvent to the flight recorder.
+// Nil-safe: does nothing if the flight recorder is not configured.
+func (o *Orchestrator) emitFlightTimeline(agentID string, eventType flight.EventType, name string, startAt time.Time, metadata map[string]any) {
+	fr := o.getFlight()
+	if fr == nil {
+		return
+	}
+	fr.Timeline().Add(flight.TimelineEvent{
+		ID:       fmt.Sprintf("ft-%d", time.Now().UnixNano()),
+		AgentID:  agentID,
+		Type:     eventType,
+		Name:     name,
+		StartAt:  startAt,
+		Metadata: metadata,
+	})
+}
+
+// emitFlightTimelineEnd adds a completed-style TimelineEvent with duration.
+// Nil-safe: does nothing if the flight recorder is not configured.
+func (o *Orchestrator) emitFlightTimelineEnd(agentID string, eventType flight.EventType, name string, startAt time.Time) {
+	fr := o.getFlight()
+	if fr == nil {
+		return
+	}
+	now := time.Now()
+	fr.Timeline().Add(flight.TimelineEvent{
+		ID:       fmt.Sprintf("ft-%d", now.UnixNano()),
+		AgentID:  agentID,
+		Type:     eventType,
+		Name:     name,
+		StartAt:  startAt,
+		EndAt:    now,
+		Duration: now.Sub(startAt),
+	})
+}
+
+// emitFlightDecision records a tool selection decision in the flight recorder.
+// Nil-safe: does nothing if the flight recorder is not configured.
+func (o *Orchestrator) emitFlightDecision(agentID, selected, reason string) {
+	fr := o.getFlight()
+	if fr == nil {
+		return
+	}
+	o.mu.RLock()
+	availableTools := make([]string, len(o.templates))
+	for i, t := range o.templates {
+		availableTools[i] = t.MCPTool
+	}
+	o.mu.RUnlock()
+
+	fr.Decisions().Add(flight.Decision{
+		ID:         fmt.Sprintf("dec-%s", agentID),
+		AgentID:    agentID,
+		Type:       flight.DecisionToolSelect,
+		Candidates: availableTools,
+		Selected:   selected,
+		Reason:     reason,
+		Timestamp:  time.Now(),
+	})
 }
 
 func truncateStr(s string, n int) string {

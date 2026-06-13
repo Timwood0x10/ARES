@@ -29,6 +29,7 @@ import (
 
 	"goagentx/internal/dashboard"
 	"goagentx/internal/events"
+	"goagentx/internal/flight"
 	"goagentx/internal/llm/output"
 	"goagentx/internal/mcp"
 
@@ -111,6 +112,18 @@ func main() {
 	orch.SetTemplates(buildTemplates(tools))
 	orch.SetHub(hub)
 	orch.SetEventStore(eventStore)
+
+	// ── Flight Recorder ─────────────────────────
+	fr := flight.NewFlightRecorder(flight.FlightRecorderConfig{
+		EventStore: eventStore,
+	})
+	if err := fr.Start(ctx); err != nil {
+		slog.Error("flight recorder start failed", "error", err)
+		os.Exit(1)
+	}
+	defer fr.Stop()
+	orch.SetFlightRecorder(fr)
+	slog.Info("flight recorder wired")
 
 	mcpBridge := &mcpStatusBridge{tools: tools}
 
