@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -26,7 +27,15 @@ func NewDashboardRouter(handler *DashboardHandler, config *DashboardConfig) *Das
 
 // ServeHTTP implements http.Handler.
 func (r *DashboardRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Add CORS headers for development.
+	// Panic recovery — one bad request must not crash the server.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("dashboard: panic recovered", "path", req.URL.Path, "recover", rec)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+	}()
+
+	// CORS headers for development.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -114,6 +123,25 @@ func (r *DashboardRouter) registerRoutes() {
 		}
 
 		h.HandleRefreshMCPServer(w, req)
+	})
+
+	// Orchestrator (agent management).
+	r.mux.HandleFunc("/api/dashboard/orchestrator/templates", h.HandleListTemplates)
+	r.mux.HandleFunc("/api/dashboard/orchestrator/agents/", func(w http.ResponseWriter, req *http.Request) {
+		// /api/dashboard/orchestrator/agents/{id}
+		h.HandleGetAgentResult(w, req)
+	})
+	r.mux.HandleFunc("/api/dashboard/orchestrator/agents", func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/api/dashboard/orchestrator/agents" {
+			// Delegate to the trailing-slash handler for /agents/{id}.
+			http.NotFound(w, req)
+			return
+		}
+		if req.Method == http.MethodPost {
+			h.HandleCreateAgent(w, req)
+		} else {
+			h.HandleListRunningAgents(w, req)
+		}
 	})
 
 	// Static files (SPA).

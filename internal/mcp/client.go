@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // MCPClientConfig holds configuration for creating an MCPClient.
@@ -37,7 +40,7 @@ type MCPClient struct {
 	timeout    time.Duration
 	ctx        context.Context
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	eg         errgroup.Group
 	connected  atomic.Bool
 }
 
@@ -71,8 +74,9 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 	}
 
 	// Start receiving messages in background.
-	c.wg.Add(1)
-	go c.receiveLoop()
+	c.eg.Go(func() error {
+		return c.receiveLoop()
+	})
 
 	// Perform initialize handshake.
 	if err := c.initialize(); err != nil {
@@ -201,7 +205,9 @@ func (c *MCPClient) Close() error {
 		_ = c.transport.Close()
 	}
 
-	c.wg.Wait()
+	if err := c.eg.Wait(); err != nil && c.ctx.Err() == nil {
+		slog.Error("mcp: receive loop error", "server", c.serverName, "error", err)
+	}
 
 	// Close all pending channels.
 	c.pendingMu.Lock()
@@ -267,16 +273,14 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 }
 
 // receiveLoop reads messages from the transport and dispatches them.
-func (c *MCPClient) receiveLoop() {
-	defer c.wg.Done()
-
+func (c *MCPClient) receiveLoop() error {
 	for {
 		msg, err := c.transport.Receive(c.ctx)
 		if err != nil {
 			if c.ctx.Err() != nil {
-				return
+				return nil
 			}
-			continue
+			return fmt.Errorf("receive: %w", err)
 		}
 
 		switch {

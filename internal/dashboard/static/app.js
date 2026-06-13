@@ -1,384 +1,169 @@
-// GoAgentX Dashboard - Single Page Application
+// GoAgentX Dashboard — unified API v2
 (function() {
     'use strict';
-
-    const API_BASE = '/api/dashboard';
     let ws = null;
-    let currentView = 'overview';
-    let reconnectTimer = null;
 
-    // --- Navigation ---
-    document.querySelectorAll('.sidebar a[data-view]').forEach(link => {
-        link.addEventListener('click', (e) => {
-            e.preventDefault();
-            const view = link.dataset.view;
-            switchView(view);
-        });
+    // ── API ──────────────────────────────────────
+    async function api(path, opts) {
+        try {
+            const r = await fetch(path, opts);
+            if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error||r.statusText); }
+            return await r.json();
+        } catch(e) { console.error('API:', path, e); return null; }
+    }
+
+    // ── Router ───────────────────────────────────
+    const views = { overview, agents, mcp, orchestrator };
+    document.querySelectorAll('[data-view]').forEach(a => {
+        a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.view); });
     });
 
-    function switchView(view) {
-        document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
-        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-
-        const link = document.querySelector(`[data-view="${view}"]`);
-        const viewEl = document.getElementById(`view-${view}`);
-        if (link) link.classList.add('active');
-        if (viewEl) viewEl.classList.add('active');
-
-        currentView = view;
-        loadView(view);
+    function show(name) {
+        document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view===name));
+        document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id==='view-'+name));
+        if (views[name]) views[name]();
     }
 
-    // --- API Helpers ---
-    async function fetchJSON(path, options) {
-        try {
-            const resp = await fetch(API_BASE + path, options);
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({ error: resp.statusText }));
-                throw new Error(err.error || resp.statusText);
-            }
-            return await resp.json();
-        } catch (err) {
-            console.error(`API error: ${path}`, err);
-            return null;
-        }
-    }
-
-    // --- View Loaders ---
-    async function loadView(view) {
-        switch (view) {
-            case 'overview':  return loadOverview();
-            case 'agents':    return loadAgents();
-            case 'workflows': return loadWorkflows();
-            case 'memory':    return loadMemory();
-            case 'events':    return loadEvents();
-            case 'mcp':       return loadMCP();
-        }
-    }
-
-    async function loadOverview() {
-        const data = await fetchJSON('/overview');
-        if (!data) return;
-
-        const el = document.getElementById('view-overview');
-        el.innerHTML = `
-            <h3>System Overview</h3>
+    // ── Overview ─────────────────────────────────
+    async function overview() {
+        const d = await api('/');
+        if (!d) return;
+        document.getElementById('view-overview').innerHTML = `
+            <h3>System</h3>
             <div class="card-grid">
-                <div class="card stat-card">
-                    <div class="value">${data.agent_count || 0}</div>
-                    <div class="label">Active Agents</div>
-                </div>
-                <div class="card stat-card">
-                    <div class="value">${data.runtime_stats?.total_restarts || 0}</div>
-                    <div class="label">Total Restarts</div>
-                </div>
-                <div class="card stat-card">
-                    <div class="value">${data.uptime || '0s'}</div>
-                    <div class="label">Uptime</div>
-                </div>
-                <div class="card stat-card">
-                    <div class="value">${data.mcp_status?.total_tools || 0}</div>
-                    <div class="label">MCP Tools</div>
-                </div>
-            </div>
-            <div class="card">
-                <h3>Runtime Stats</h3>
-                <table>
-                    <tr><td>Active Agents</td><td>${data.runtime_stats?.active_agents || 0}</td></tr>
-                    <tr><td>Total Restarts</td><td>${data.runtime_stats?.total_restarts || 0}</td></tr>
-                    <tr><td>Uptime (seconds)</td><td>${data.runtime_stats?.uptime_seconds || 0}</td></tr>
-                </table>
-            </div>
-            ${data.mcp_status ? `
-            <div class="card">
-                <h3>MCP Status</h3>
-                <table>
-                    <tr><td>Servers</td><td>${data.mcp_status.server_count}</td></tr>
-                    <tr><td>Connected</td><td>${data.mcp_status.connected_count}</td></tr>
-                    <tr><td>Total Tools</td><td>${data.mcp_status.total_tools}</td></tr>
-                </table>
-            </div>` : ''}
-        `;
+                <div class="card stat-card"><div class="value">${d.agents||0}</div><div class="label">Agents</div></div>
+                <div class="card stat-card"><div class="value">${d.mcp_servers||0}</div><div class="label">MCP Servers</div></div>
+                <div class="card stat-card"><div class="value">${d.mcp_tools||0}</div><div class="label">MCP Tools</div></div>
+                <div class="card stat-card"><div class="value">${d.uptime||'-'}</div><div class="label">Uptime</div></div>
+            </div>`;
     }
 
-    async function loadAgents() {
-        const agents = await fetchJSON('/agents');
-        if (!agents) return;
-
+    // ── Agents ───────────────────────────────────
+    async function agents() {
+        const list = await api('/agents') || [];
         const el = document.getElementById('view-agents');
-        if (agents.length === 0) {
-            el.innerHTML = '<div class="empty-state">No agents registered</div>';
-            return;
-        }
-
+        if (!list.length) { el.innerHTML = '<div class="empty-state">No agents. Launch from Orchestrator.</div>'; return; }
         el.innerHTML = `
-            <h3>Agents</h3>
-            <div class="card">
-                <table>
-                    <thead>
-                        <tr><th>ID</th><th>Type</th><th>Status</th><th>Restarts</th></tr>
-                    </thead>
-                    <tbody>
-                        ${agents.map(a => `
-                            <tr>
-                                <td>${escapeHtml(a.id)}</td>
-                                <td>${escapeHtml(a.type)}</td>
-                                <td><span class="badge ${statusBadge(a.status)}">${escapeHtml(a.status)}</span></td>
-                                <td>${a.restarts}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
+            <h3>Agents (${list.length})</h3>
+            <div class="card"><table>
+                <thead><tr><th>Name</th><th>Status</th><th>Progress</th><th>Duration</th><th></th></tr></thead>
+                <tbody>${list.map(a => `<tr>
+                    <td>${esc(a.name)}</td>
+                    <td><span class="badge ${badge(a.status)}">${esc(a.status)}</span></td>
+                    <td><div style="background:var(--bg-tertiary);border-radius:4px;height:8px;width:100px;display:inline-block;">
+                        <div style="background:var(--accent);border-radius:4px;height:100%;width:${a.progress||0}%"></div>
+                    </div> ${a.progress||0}%</td>
+                    <td>${esc(a.duration||'-')}</td>
+                    <td><button onclick="viewAgent('${a.id}')" style="padding:.25rem .5rem;font-size:.75rem">View</button></td>
+                </tr>`).join('')}</tbody>
+            </table></div>
+            <div class="card" id="agent-detail" style="display:none">
+                <h3 id="detail-title"></h3>
+                <div id="detail-body" style="white-space:pre-wrap;font-family:monospace;font-size:.875rem;max-height:600px;overflow-y:auto"></div>
+            </div>`;
     }
 
-    async function loadWorkflows() {
-        const workflows = await fetchJSON('/workflows');
-        const el = document.getElementById('view-workflows');
+    window.viewAgent = async function(id) {
+        const a = await api('/agents/'+id);
+        if (!a) return;
+        document.getElementById('agent-detail').style.display = 'block';
+        document.getElementById('detail-title').textContent = a.name + ' — ' + a.status;
+        let body = `Tool: ${a.mcp_tool||'-'}  |  Duration: ${a.duration||'-'}  |  Data: ${a.raw_data_len||0} bytes\n`;
+        if (a.error) body += `\nError: ${a.error}\n`;
+        if (a.analysis) body += `\n${a.analysis}`;
+        document.getElementById('detail-body').textContent = body;
+        document.getElementById('agent-detail').scrollIntoView({behavior:'smooth'});
+    };
 
-        if (!workflows || workflows.length === 0) {
-            el.innerHTML = '<div class="empty-state">No workflow executions</div>';
-            return;
-        }
-
-        el.innerHTML = `
-            <h3>Workflow Executions</h3>
-            <div class="card">
-                <table>
-                    <thead>
-                        <tr><th>ID</th><th>Workflow</th><th>Status</th><th>Started</th><th>Duration</th></tr>
-                    </thead>
-                    <tbody>
-                        ${workflows.map(w => `
-                            <tr>
-                                <td>${escapeHtml(w.id)}</td>
-                                <td>${escapeHtml(w.workflow_id)}</td>
-                                <td><span class="badge ${statusBadge(w.status)}">${escapeHtml(w.status)}</span></td>
-                                <td>${formatTime(w.started_at)}</td>
-                                <td>${escapeHtml(w.duration || '-')}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    async function loadMemory() {
-        const el = document.getElementById('view-memory');
-        el.innerHTML = `
-            <h3>Memory Explorer</h3>
-            <div class="search-box">
-                <input type="text" id="memory-search-input" placeholder="Search distilled memories...">
-                <button id="memory-search-btn">Search</button>
-            </div>
-            <div id="memory-results"></div>
-        `;
-
-        document.getElementById('memory-search-btn').addEventListener('click', searchMemory);
-        document.getElementById('memory-search-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') searchMemory();
-        });
-    }
-
-    async function searchMemory() {
-        const query = document.getElementById('memory-search-input').value.trim();
-        if (!query) return;
-
-        const results = await fetchJSON('/memory/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, limit: 20 })
-        });
-
-        const el = document.getElementById('memory-results');
-        if (!results || results.length === 0) {
-            el.innerHTML = '<div class="empty-state">No results found</div>';
-            return;
-        }
-
-        el.innerHTML = `
-            <div class="card">
-                <table>
-                    <thead>
-                        <tr><th>ID</th><th>Type</th><th>Content</th><th>Source</th><th>Created</th></tr>
-                    </thead>
-                    <tbody>
-                        ${results.map(r => `
-                            <tr>
-                                <td>${escapeHtml(r.id)}</td>
-                                <td>${escapeHtml(r.type)}</td>
-                                <td>${escapeHtml(truncate(r.content, 100))}</td>
-                                <td>${escapeHtml(r.source)}</td>
-                                <td>${formatTime(r.created_at)}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    async function loadEvents() {
-        const events = await fetchJSON('/events?limit=100');
-        const el = document.getElementById('view-events');
-
-        el.innerHTML = `
-            <h3>Event Stream <span class="ws-status disconnected" id="ws-indicator"></span></h3>
-            <div class="card">
-                <div class="event-log" id="event-log">
-                    ${(events || []).map(e => eventEntryHTML(e)).join('')}
-                </div>
-            </div>
-        `;
-
-        connectWebSocket();
-    }
-
-    async function loadMCP() {
-        const servers = await fetchJSON('/mcp/servers');
+    // ── MCP ──────────────────────────────────────
+    async function mcp() {
+        const list = await api('/mcp') || [];
         const el = document.getElementById('view-mcp');
+        if (!list.length) { el.innerHTML = '<div class="empty-state">No MCP servers.</div>'; return; }
+        el.innerHTML = list.map(s => `
+            <h3>${esc(s.name)} <span class="badge ${s.connected?'badge-success':'badge-danger'}">${s.connected?'Connected':'Disconnected'}</span></h3>
+            <div class="card"><table>
+                <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+                <tbody>${(s.tools||[]).map(t=>`<tr>
+                    <td><code>${esc(t.name)}</code></td>
+                    <td>${esc(t.description||'-')}</td>
+                </tr>`).join('')}</tbody>
+            </table></div>
+        `).join('');
+    }
 
-        if (!servers || servers.length === 0) {
-            el.innerHTML = '<div class="empty-state">No MCP servers configured</div>';
-            return;
-        }
-
+    // ── Orchestrator ─────────────────────────────
+    async function orchestrator() {
+        const [tpls, list] = await Promise.all([api('/agents?status=completed'), api('/agents')]);
+        const el = document.getElementById('view-orchestrator');
         el.innerHTML = `
-            <h3>MCP Servers</h3>
+            <h3>Launch Agent</h3>
             <div class="card">
-                <table>
-                    <thead>
-                        <tr><th>Name</th><th>Status</th><th>Tools</th><th>Version</th><th>Error</th></tr>
-                    </thead>
-                    <tbody>
-                        ${servers.map(s => `
-                            <tr>
-                                <td>${escapeHtml(s.name)}</td>
-                                <td><span class="badge ${s.connected ? 'badge-success' : 'badge-danger'}">${s.connected ? 'Connected' : 'Disconnected'}</span></td>
-                                <td>${(s.tools || []).length}</td>
-                                <td>${escapeHtml(s.version || '-')}</td>
-                                <td>${escapeHtml(s.error || '-')}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+                <div class="search-box">
+                    <select id="tpl" style="padding:.5rem;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);min-width:200px">
+                        <option value="">-- Custom --</option>
+                        <option value="tpl-structure">Architecture Review</option>
+                        <option value="tpl-error-review">Error Handling Review</option>
+                        <option value="tpl-concurrency">Concurrency Review</option>
+                        <option value="tpl-impact">Change Impact Analysis</option>
+                        <option value="tpl-api">API Surface Review</option>
+                    </select>
+                    <button id="launch-btn" style="padding:.5rem 1rem;background:var(--accent);border:none;border-radius:4px;color:#fff;cursor:pointer">Launch</button>
+                </div>
+                <div id="launch-msg" style="margin-top:.5rem;font-size:.875rem;color:var(--text-secondary)"></div>
             </div>
-        `;
+            <h3 style="margin-top:1.5rem">Results (${(list||[]).filter(a=>a.status==='completed').length})</h3>
+            ${(list||[]).filter(a=>a.status==='completed').map(a=>`
+                <div class="card">
+                    <strong>${esc(a.name)}</strong> — ${esc(a.duration||'-')}
+                    <div style="white-space:pre-wrap;font-family:monospace;font-size:.875rem;margin-top:.5rem;max-height:300px;overflow-y:auto">${esc((a.analysis||'').slice(0,2000))}</div>
+                </div>
+            `).join('')}`;
+
+        document.getElementById('launch-btn').onclick = async () => {
+            const btn = document.getElementById('launch-btn');
+            const msg = document.getElementById('launch-msg');
+            btn.disabled = true; msg.textContent = 'Launching...';
+            const tid = document.getElementById('tpl').value;
+            const r = await api('/agents', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_id:tid||undefined})});
+            btn.disabled = false;
+            if (r&&r.id) { msg.textContent = 'Agent '+r.id+' launched!'; msg.style.color='var(--success)'; setTimeout(()=>orchestrator(),2000); }
+            else { msg.textContent='Failed'; msg.style.color='var(--danger)'; }
+        };
     }
 
-    // --- WebSocket ---
-    function connectWebSocket() {
-        if (ws && ws.readyState === WebSocket.OPEN) return;
-
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url = `${protocol}//${location.host}/api/dashboard/events/stream`;
-
-        ws = new WebSocket(url);
-
+    // ── WebSocket ────────────────────────────────
+    function connectWS() {
+        if (ws && ws.readyState===WebSocket.OPEN) return;
+        const proto = location.protocol==='https:'?'wss:':'ws:';
+        ws = new WebSocket(proto+'//'+location.host+'/ws');
         ws.onopen = () => {
-            updateWSStatus(true);
-            ws.send(JSON.stringify({ type: 'subscribe', channel: 'events' }));
-            ws.send(JSON.stringify({ type: 'subscribe', channel: 'agents' }));
+            ws.send(JSON.stringify({type:'subscribe',channel:'agents'}));
+            ws.send(JSON.stringify({type:'subscribe',channel:'events'}));
         };
-
-        ws.onmessage = (event) => {
+        ws.onmessage = e => {
             try {
-                const msg = JSON.parse(event.data);
-                handleWSMessage(msg);
-            } catch (e) {
-                console.error('WS parse error:', e);
-            }
-        };
-
-        ws.onclose = () => {
-            updateWSStatus(false);
-            scheduleReconnect();
-        };
-
-        ws.onerror = () => {
-            updateWSStatus(false);
-        };
-    }
-
-    function handleWSMessage(msg) {
-        if (msg.type === 'event' && currentView === 'events') {
-            const log = document.getElementById('event-log');
-            if (log) {
-                log.insertAdjacentHTML('afterbegin', eventEntryHTML(msg.data));
-                // Keep log manageable.
-                while (log.children.length > 500) {
-                    log.removeChild(log.lastChild);
+                const msg = JSON.parse(e.data);
+                if (msg.type==='agent_update') {
+                    // Auto-refresh agents view if open.
+                    const active = document.querySelector('.view.active');
+                    if (active && active.id==='view-agents') agents();
                 }
-            }
-        }
+            } catch(_) {}
+        };
+        ws.onclose = () => setTimeout(connectWS, 5000);
     }
 
-    function updateWSStatus(connected) {
-        const indicator = document.getElementById('ws-indicator');
-        if (indicator) {
-            indicator.className = `ws-status ${connected ? 'connected' : 'disconnected'}`;
-        }
+    // ── Helpers ──────────────────────────────────
+    function esc(s) { if(!s)return''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+    function badge(s) {
+        if (s==='completed') return 'badge-success';
+        if (s==='running'||s==='pending') return 'badge-warning';
+        if (s==='failed') return 'badge-danger';
+        return 'badge-info';
     }
 
-    function scheduleReconnect() {
-        if (reconnectTimer) return;
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            if (currentView === 'events') {
-                connectWebSocket();
-            }
-        }, 5000);
-    }
-
-    // --- Helpers ---
-    function escapeHtml(str) {
-        if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
-    }
-
-    function truncate(str, max) {
-        if (!str) return '';
-        return str.length > max ? str.slice(0, max) + '...' : str;
-    }
-
-    function formatTime(ts) {
-        if (!ts) return '-';
-        try {
-            return new Date(ts).toLocaleString();
-        } catch {
-            return ts;
-        }
-    }
-
-    function statusBadge(status) {
-        switch (status) {
-            case 'ready':
-            case 'completed':
-            case 'success':  return 'badge-success';
-            case 'busy':
-            case 'running':
-            case 'processing': return 'badge-warning';
-            case 'offline':
-            case 'failed':
-            case 'error':    return 'badge-danger';
-            default:         return 'badge-info';
-        }
-    }
-
-    function eventEntryHTML(e) {
-        return `
-            <div class="event-entry">
-                <span class="time">${formatTime(e.timestamp)}</span>
-                <span class="type">${escapeHtml(e.type)}</span>
-                <span>${escapeHtml(e.stream_id)}</span>
-            </div>
-        `;
-    }
-
-    // --- Init ---
-    switchView('overview');
+    // ── Init ─────────────────────────────────────
+    show('overview');
+    connectWS();
 })();

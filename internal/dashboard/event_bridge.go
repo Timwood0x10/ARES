@@ -2,9 +2,10 @@ package dashboard
 
 import (
 	"context"
-	"sync"
+	"log/slog"
 
 	"goagentx/internal/events"
+	"golang.org/x/sync/errgroup"
 )
 
 // EventBridge subscribes to the EventStore and forwards events to the WebSocket hub.
@@ -12,7 +13,7 @@ type EventBridge struct {
 	eventStore events.EventStore
 	hub        *WSHub
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	eg         errgroup.Group
 }
 
 // NewEventBridge creates a new EventBridge.
@@ -29,11 +30,13 @@ func (b *EventBridge) Start(ctx context.Context) error {
 
 	ch, err := b.eventStore.Subscribe(ctx, events.EventFilter{})
 	if err != nil {
+		b.cancel()
 		return err
 	}
 
-	b.wg.Add(1)
-	go b.forwardLoop(ctx, ch)
+	b.eg.Go(func() error {
+		return b.forwardLoop(ctx, ch)
+	})
 
 	return nil
 }
@@ -43,20 +46,20 @@ func (b *EventBridge) Stop() {
 	if b.cancel != nil {
 		b.cancel()
 	}
-	b.wg.Wait()
+	if err := b.eg.Wait(); err != nil {
+		slog.Error("dashboard: event bridge forward loop error", "error", err)
+	}
 }
 
 // forwardLoop reads events and broadcasts them to appropriate channels.
-func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *events.Event) {
-	defer b.wg.Done()
-
+func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *events.Event) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case evt, ok := <-ch:
 			if !ok {
-				return
+				return nil
 			}
 			b.handleEvent(evt)
 		}
@@ -81,20 +84,15 @@ func (b *EventBridge) handleEvent(evt *events.Event) {
 	})
 
 	// Route to specific channels based on event type.
-	switch {
-	case evt.Type == events.EventAgentStarted || evt.Type == events.EventAgentStopped:
+	switch evt.Type {
+	case events.EventAgentStarted, events.EventAgentStopped,
+		events.EventFailoverTriggered, events.EventFailoverCompleted:
 		b.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
 			Type: WSTypeAgentUpdate,
 			Data: view,
 		})
 
-	case evt.Type == events.EventFailoverTriggered || evt.Type == events.EventFailoverCompleted:
-		b.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
-			Type: WSTypeAgentUpdate,
-			Data: view,
-		})
-
-	case evt.Type == events.EventTaskCreated || evt.Type == events.EventTaskCompleted || evt.Type == events.EventTaskFailed:
+	case events.EventTaskCreated, events.EventTaskCompleted, events.EventTaskFailed:
 		// Route to workflow channel if we can extract an execution ID.
 		if execID := extractExecutionID(evt); execID != "" {
 			channel := WSChannelPrefixWorkflow + execID

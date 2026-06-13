@@ -1,879 +1,328 @@
-# GoAgentX v3: MCP Client + Web Dashboard 开发文档
+# MCP Client + Web Dashboard
 
-## 概述
+## 1. 为什么这么设计
 
-两个核心功能扩展:
+### 问题
 
-1. **MCP Client** -- 连接外部 MCP Server, 自动发现工具, 注册到现有 Tool Registry, Agent 像使用内置工具一样使用 MCP 工具
-2. **Web Dashboard** -- DAG 执行可视化、Agent 状态监控、Memory/蒸馏查询、事件流实时推送
+GoAgentX agent 需要分析代码，但：
+- 内置工具（calculator、datetime、text）无法理解代码库
+- 硬编码工具集成意味着每个新数据源（GitHub、Jira、DB）都需要改代码
+- 没有办法实时看到 agent 在做什么
+
+### 思路
+
+**MCP Client**：不重新造工具集成的轮子。MCP 是开放协议 — 任何实现它的服务器都能接入 GoAgentX。客户端自动发现工具，所以添加新数据源 = 运行新 MCP 服务器，零代码改动。
+
+**Dashboard**：不构建复杂的监控系统。一个 HTTP 服务器 + 6 个端点 + WebSocket 覆盖了观测（agent 在做什么？）和交互（启动新 agent）。无数据库、无消息队列、无前端构建步骤。
+
+### 取舍
+
+| 决策 | 选择 | 备选方案 | 原因 |
+|------|------|---------|------|
+| 工具发现 | 通过 `tools/list` 自动发现 | 每个工具手动配置 | MCP 服务器比我们更了解自己的工具 |
+| 工具命名 | `mcp.<server>.<tool>` | 扁平命名 | 防止两个服务器有同名工具时冲突 |
+| 传输层 | stdio + SSE | 只用 stdio | SSE 支持远程服务器，stdio 对本地更简单 |
+| Schema 桥接 | JSON Schema → ParameterSchema | 保留 JSON Schema | 现有校验管线期望 ParameterSchema，没理由改它 |
+| Dashboard 后端 | 标准库 `net/http` | Gin、Echo、Fiber | 6 个端点不需要引入新框架 |
+| Dashboard 前端 | 原生 JS、go:embed | React、Vue、构建工具 | SPA 约 200 行，不值得引入构建工具链 |
+| 状态存储 | 内存 | PostgreSQL | Dashboard 是只读观测工具，不是数据库 |
+| Agent 执行 | 每个 agent 一个 goroutine | Worker pool | Agent 是 I/O 密集型（MCP + LLM 调用），goroutine 很轻量 |
+
+### 当前不支持的（及原因）
+
+- **MCP resource/prompt 协议**：只实现了 tools。Resources 和 prompts 是 MCP 扩展，很少有服务器用。需要时再加。
+- **传输层重连**：SSE 断开后客户端停止。重连增加复杂度（状态重放、重复检测）。有真实需求时再做。
+- **Agent 持久化**：Agent 存在内存中。进程重启后历史丢失。这是有意的 — dashboard 是开发/调试工具，不是生产数据库。
+- **多用户认证**：Dashboard 没有认证。设计用于本地开发。如需外部访问，加反向代理 + 认证。
 
 ---
 
-## 第一部分: MCP Client 集成
+## 2. MCP Client
 
-### 1.1 设计原则
+### 2.1 协议流程
 
-- MCP 工具是 **Tool interface 的实现者** -- 走和内置工具完全一样的 Registry/CapabilityEngine/AgentTools 管线
-- 利用现有 **PluginRegistry + ToolFactory** 模式做生命周期管理
-- 双传输层: **stdio**(子进程) 和 **SSE**(HTTP), 对齐 MCP 规范
-- 动态工具发现: MCP server 增删工具时, 自动同步到 Registry
+```mermaid
+sequenceDiagram
+    participant C as MCPClient
+    participant S as MCP Server
 
-### 1.2 架构图
-
-```
-┌──────────────────────────────────────────────────────┐
-│                    Agent System                       │
-│  AgentTools ──► CapabilityEngine ──► Registry         │
-│       │                                  ▲            │
-│       │                                  │            │
-│       │              ┌───────────────────┤            │
-│       │              │ Register          │ Register   │
-│       ▼              │                   │            │
-│  Execute(name,params)│                   │            │
-│       │         ┌────┴─────┐     ┌───────┴──────┐    │
-│       ├────────►│BuiltinTool│     │   MCPTool    │    │
-│       │         └──────────┘     └───────┬──────┘    │
-│       │                                  │            │
-└───────┼──────────────────────────────────┼────────────┘
-        │                                  │
-        │                          ┌───────▼──────┐
-        │                          │  MCPClient   │
-        │                          │  (每个server) │
-        │                          └───────┬──────┘
-        │                                  │
-        │                          ┌───────▼──────┐
-        │                          │  Transport   │
-        │                          │ stdio | SSE  │
-        │                          └───────┬──────┘
-        │                                  │
-        │                          ┌───────▼──────┐
-        │                          │  MCP Server  │
-        │                          │  (外部进程)   │
-        │                          └──────────────┘
+    C->>S: initialize {protocolVersion, clientInfo, capabilities}
+    S-->>C: {serverInfo, capabilities}
+    C->>S: notifications/initialized
+    C->>S: tools/list
+    S-->>C: {tools: [{name, description, inputSchema}]}
+    Note over C,S: 可以开始调用工具
+    C->>S: tools/call {name, arguments}
+    S-->>C: {content: [{type, text}], isError}
 ```
 
-### 1.3 数据结构设计
+### 2.2 工具发现 vs 用户定制
 
-#### 1.3.1 JSON-RPC 层
+**两者都支持。**
 
-```go
-// internal/mcp/jsonrpc.go
+自动发现在连接时发生 — `tools/list` 返回服务器暴露的所有工具。不需要为单个工具做配置。
 
-type JSONRPCMessage struct {
-    JSONRPC string          `json:"jsonrpc"`           // 固定 "2.0"
-    ID      *int64          `json:"id,omitempty"`      // nil 表示通知
-    Method  string          `json:"method,omitempty"`
-    Params  json.RawMessage `json:"params,omitempty"`
-    Result  json.RawMessage `json:"result,omitempty"`
-    Error   *JSONRPCError   `json:"error,omitempty"`
-}
+定制在 API 层发生 — 用户可以针对任何已发现的工具创建自定义 agent，指定参数和 prompt：
 
-type JSONRPCError struct {
-    Code    int             `json:"code"`
-    Message string          `json:"message"`
-    Data    json.RawMessage `json:"data,omitempty"`
-}
+```bash
+# 自动发现：直接用工具名
+curl -X POST /agents -d '{"mcp_tool":"codegraph_search","mcp_args":{"search":"func main"}}'
+
+# 自定义 prompt：覆盖 LLM 解读数据的方式
+curl -X POST /agents -d '{"mcp_tool":"codegraph_context","mcp_args":{"task":"..."},"llm_prompt":"你的自定义分析指令..."}'
 ```
 
-#### 1.3.2 传输层接口
+### 2.3 Schema 转换
 
-```go
-// internal/mcp/transport.go
+MCP 用 JSON Schema 描述工具参数。GoAgentX 用 `ParameterSchema`。桥接：
 
-type Transport interface {
-    Start(ctx context.Context) error
-    Send(ctx context.Context, msg *JSONRPCMessage) error
-    Receive(ctx context.Context) (*JSONRPCMessage, error)
-    Close() error
-}
+```
+JSON Schema                    ParameterSchema
+─────────────────────────────  ─────────────────────────────
+type: "object"            →    Type: "object"
+properties.name.type      →    Properties["name"].Type
+properties.name.enum      →    Properties["name"].Enum
+properties.name.minimum   →    Properties["name"].Min
+required: ["name"]        →    Required: []string{"name"}
 ```
 
-**Stdio 传输** -- 启动子进程, 通过 stdin/stdout 读写 JSON-RPC:
+这是有损转换 — JSON Schema 支持嵌套对象、数组、oneOf 等 ParameterSchema 不支持的。对于 MCP 工具（通常是扁平参数 schema），这够用。复杂 schema 需要更丰富的参数模型。
 
-```go
-// internal/mcp/transport_stdio.go
+### 2.4 传输层选择
 
-type StdioTransport struct {
-    cmd     *exec.Cmd
-    stdin   io.WriteCloser
-    stdout  *bufio.Scanner
-    stderr  io.ReadCloser
-    mu      sync.Mutex
-    started bool
-}
+**stdio**：启动子进程。简单，无网络配置。用于本地工具如 codegraph。
 
-type StdioConfig struct {
-    Command string            // 如 "codegraph"
-    Args    []string          // 如 ["serve", "--mcp"]
-    Env     map[string]string // 额外环境变量
-    WorkDir string            // 工作目录
-}
-```
+**SSE**：基于 HTTP。支持远程服务器、认证头。用于 MCP 服务器在其他机器上的场景。
 
-**SSE 传输** -- HTTP SSE 连接, POST 发送 JSON-RPC:
+接口相同 — 换传输层是改配置，不是改代码。
 
-```go
-// internal/mcp/transport_sse.go
+### 2.5 添加自定义 MCP 服务器
 
-type SSETransport struct {
-    baseURL    string
-    httpClient *http.Client
-    msgCh      chan *JSONRPCMessage
-    cancel     context.CancelFunc
-    wg         sync.WaitGroup
-    mu         sync.Mutex
-    started    bool
-}
+任何通过 stdio 或 HTTP SSE 实现 MCP 协议的进程都能用。最小实现：
 
-type SSEConfig struct {
-    URL     string
-    Headers map[string]string // 认证头等
-    Timeout time.Duration
-}
-```
+1. 响应 `initialize`，返回服务器信息
+2. 响应 `tools/list`，返回工具定义
+3. 响应 `tools/call`，返回结果
 
-#### 1.3.3 MCP 协议类型
-
-```go
-// internal/mcp/types.go
-
-// --- 初始化 ---
-
-type InitializeParams struct {
-    ProtocolVersion string         `json:"protocolVersion"`
-    ClientInfo      Implementation `json:"clientInfo"`
-    Capabilities    ClientCaps     `json:"capabilities"`
-}
-
-type Implementation struct {
-    Name    string `json:"name"`    // "GoAgentX"
-    Version string `json:"version"`
-}
-
-type ClientCaps struct {
-    Tools *ToolClientCaps `json:"tools,omitempty"`
-}
-
-type ToolClientCaps struct {
-    ListChanged bool `json:"listChanged,omitempty"`
-}
-
-type InitializeResult struct {
-    ProtocolVersion string         `json:"protocolVersion"`
-    ServerInfo      Implementation `json:"serverInfo"`
-    Capabilities    ServerCaps     `json:"capabilities"`
-}
-
-type ServerCaps struct {
-    Tools     *ToolServerCaps     `json:"tools,omitempty"`
-    Resources *ResourceServerCaps `json:"resources,omitempty"`
-    Prompts   *PromptServerCaps   `json:"prompts,omitempty"`
-}
-
-type ToolServerCaps struct {
-    ListChanged bool `json:"listChanged,omitempty"`
-}
-
-type ResourceServerCaps struct {
-    Subscribe   bool `json:"subscribe,omitempty"`
-    ListChanged bool `json:"listChanged,omitempty"`
-}
-
-type PromptServerCaps struct {
-    ListChanged bool `json:"listChanged,omitempty"`
-}
-
-// --- 工具 ---
-
-type MCPToolDef struct {
-    Name        string          `json:"name"`
-    Description string          `json:"description,omitempty"`
-    InputSchema json.RawMessage `json:"inputSchema"` // JSON Schema
-}
-
-type ToolsListResult struct {
-    Tools []MCPToolDef `json:"tools"`
-}
-
-type ToolCallParams struct {
-    Name      string         `json:"name"`
-    Arguments map[string]any `json:"arguments,omitempty"`
-}
-
-type ToolCallResult struct {
-    Content []ContentBlock `json:"content"`
-    IsError bool           `json:"isError,omitempty"`
-}
-
-type ContentBlock struct {
-    Type     string `json:"type"`               // "text", "image", "resource"
-    Text     string `json:"text,omitempty"`
-    MimeType string `json:"mimeType,omitempty"`
-    Data     string `json:"data,omitempty"`      // base64 (图片)
-    URI      string `json:"uri,omitempty"`       // resource 引用
-}
-```
-
-#### 1.3.4 MCP Client
-
-```go
-// internal/mcp/client.go
-
-type MCPClient struct {
-    transport  Transport
-    serverName string
-    serverCaps *ServerCaps
-    tools      map[string]*MCPToolDef  // name -> definition
-    mu         sync.RWMutex
-    nextID     atomic.Int64
-    pending    map[int64]chan *JSONRPCMessage  // 在途请求追踪
-    pendingMu  sync.Mutex
-    onChange   func()                  // 工具列表变更回调
-    ctx        context.Context
-    cancel     context.CancelFunc
-    wg         sync.WaitGroup
-}
-
-type MCPClientConfig struct {
-    ServerName string
-    Transport  TransportConfig
-    Timeout    time.Duration      // 单次调用超时, 默认 30s
-    OnChange   func()             // 工具列表变更回调
-}
-
-type TransportConfig struct {
-    Type  string       `yaml:"type" json:"type"` // "stdio" 或 "sse"
-    Stdio *StdioConfig `yaml:"stdio,omitempty" json:"stdio,omitempty"`
-    SSE   *SSEConfig   `yaml:"sse,omitempty" json:"sse,omitempty"`
-}
-```
-
-**MCPClient 核心方法:**
-
-```go
-func (c *MCPClient) Connect(ctx context.Context) error           // 启动传输 + 初始化握手
-func (c *MCPClient) Close() error                                 // 关闭
-func (c *MCPClient) ListTools(ctx context.Context) ([]MCPToolDef, error)
-func (c *MCPClient) CallTool(ctx context.Context, name string, args map[string]any) (*ToolCallResult, error)
-func (c *MCPClient) ServerName() string
-func (c *MCPClient) ServerCapabilities() *ServerCaps
-```
-
-#### 1.3.5 MCPTool -- 桥接到 Tool 接口
-
-每个 MCP 工具包装为一个 GoAgentX `Tool`:
-
-```go
-// internal/mcp/mcp_tool.go
-
-type MCPTool struct {
-    *base.BaseTool
-    client     *MCPClient
-    serverName string
-    toolDef    *MCPToolDef
-    schema     *core.ParameterSchema  // 从 MCPToolDef.InputSchema 解析
-}
-```
-
-- `Name()` 返回 `"mcp.<serverName>.<toolName>"` (命名空间隔离, 避免冲突)
-- `Category()` 返回 `core.CategoryExternal`
-- `Capabilities()` 返回 `[]core.Capability{core.CapabilityExternal}`
-- `Execute(ctx, params)` 委托给 `client.CallTool()`, 将 `ToolCallResult` 转为 `core.Result`
-- `Parameters()` 从 `MCPToolDef.InputSchema` 解析 (JSON Schema -> `core.ParameterSchema`)
-
-#### 1.3.6 MCPManager -- 多服务器管理器
-
-```go
-// internal/mcp/manager.go
-
-type MCPManager struct {
-    clients    map[string]*MCPClient   // serverName -> client
-    registry   *core.Registry          // 注册到的 GoAgentX 工具注册表
-    mu         sync.RWMutex
-    config     *MCPManagerConfig
-}
-
-type MCPManagerConfig struct {
-    Servers []MCPServerConfig `yaml:"servers" json:"servers"`
-}
-
-type MCPServerConfig struct {
-    Name      string          `yaml:"name" json:"name"`
-    Transport TransportConfig `yaml:"transport" json:"transport"`
-    Timeout   time.Duration   `yaml:"timeout" json:"timeout"`
-    Enabled   bool            `yaml:"enabled" json:"enabled"`
-    AutoStart bool            `yaml:"auto_start" json:"auto_start"`
-}
-```
-
-**核心方法:**
-
-```go
-func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) *MCPManager
-func (m *MCPManager) Start(ctx context.Context) error       // 连接所有 auto_start 服务器
-func (m *MCPManager) Stop(ctx context.Context) error        // 断开所有
-func (m *MCPManager) ConnectServer(ctx context.Context, name string) error
-func (m *MCPManager) DisconnectServer(ctx context.Context, name string) error
-func (m *MCPManager) RefreshTools(ctx context.Context, serverName string) error
-func (m *MCPManager) ListServers() []MCPServerStatus
-func (m *MCPManager) GetClient(serverName string) (*MCPClient, bool)
-```
-
-```go
-type MCPServerStatus struct {
-    Name      string    `json:"name"`
-    Connected bool      `json:"connected"`
-    ToolCount int       `json:"tool_count"`
-    Version   string    `json:"version"`
-    Error     string    `json:"error,omitempty"`
-    ConnAt    time.Time `json:"connected_at,omitempty"`
-}
-```
-
-#### 1.3.7 JSON Schema -> ParameterSchema 转换器
-
-```go
-// internal/mcp/schema.go
-
-func ConvertJSONSchema(raw json.RawMessage) (*core.ParameterSchema, error)
-```
-
-将 JSON Schema 的 `type`, `properties`, `required`, `enum`, `minimum`, `maximum`, `description` 映射到 `core.ParameterSchema` 和 `core.Parameter`.
-
-#### 1.3.8 配置 (YAML)
-
-在现有 `config.yaml` 中扩展:
+配置：
 
 ```yaml
 mcp:
   servers:
+    - name: my-server
+      transport:
+        type: stdio
+        stdio:
+          command: /path/to/my-mcp-server
+          args: ["--config", "my-config.json"]
+```
+
+---
+
+## 3. Dashboard 与 Agent 编排
+
+### 3.1 API
+
+```
+GET  /                → {uptime, agents, mcp_servers, mcp_tools}
+GET  /agents          → [{id, name, status, progress, mcp_tool, analysis, ...}]
+POST /agents          → 创建 agent {template_id} 或 {name, mcp_tool, llm_prompt}
+GET  /agents/{id}     → agent 详情，包含完整 LLM 分析文本
+GET  /mcp             → [{name, connected, tools: [{name, description}]}]
+GET  /ws              → WebSocket 实时更新
+```
+
+### 3.2 Agent 生命周期
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: POST /agents
+    pending --> running: orchestrator 启动
+    running --> gathering: 调用 MCP 工具
+    gathering --> analyzing: 数据已接收，发送给 LLM
+    analyzing --> completed: LLM 响应已存储
+    running --> failed: MCP 错误
+    analyzing --> failed: LLM 错误
+```
+
+每次状态变更通过 WebSocket 广播到 `agents` 频道订阅者。
+
+### 3.3 前端编排 — 工作原理
+
+Dashboard 的 Orchestrator 标签页提供：
+
+**模板选择**：下拉菜单，预配置分析类型（Architecture Review、Error Handling、Concurrency、Impact、API Surface）。选择模板自动填充 MCP 工具。
+
+**自定义 Agent 创建**：用户可以指定：
+- Agent 名称（自由文本）
+- MCP 工具（从已发现的工具中选择）
+- LLM prompt（自由文本，支持 `{{.raw_data}}` 占位符）
+
+**实时状态**：每个 agent 显示：
+- 状态标签（pending/running/completed/failed）
+- 进度条（10% → 50% → 100%）
+- 耗时
+- 点击 "View" 查看完整 LLM 分析
+
+**WebSocket 更新**：agent 完成时，Agents 标签页自动刷新。无需手动轮询。
+
+```mermaid
+graph LR
+    subgraph "浏览器"
+        SELECT[选择模板]
+        CLICK[点击 Launch]
+        VIEW[查看结果]
+    end
+
+    subgraph "API"
+        POST[POST /agents]
+        GET[GET /agents/:id]
+        WS[/ws WebSocket]
+    end
+
+    subgraph "后端"
+        ORCH[Orchestrator]
+        MCP[MCP Client]
+        LLM[LLM]
+    end
+
+    SELECT --> CLICK --> POST --> ORCH
+    ORCH --> MCP --> ORCH
+    ORCH --> LLM --> ORCH
+    ORCH -->|广播| WS --> VIEW
+    VIEW --> GET
+```
+
+### 3.4 现在能做什么
+
+| 操作 | 方式 |
+|------|------|
+| 查看所有 agent | Dashboard → Agents 标签页，或 `GET /agents` |
+| 启动预置分析 | Dashboard → Orchestrator → 选模板 → Launch |
+| 启动自定义分析 | `POST /agents`，指定 `mcp_tool` + `llm_prompt` |
+| 观看 agent 进度 | Agents 标签页通过 WebSocket 自动刷新 |
+| 阅读完整分析 | 点击已完成 agent 的 "View" |
+| 查看 MCP 工具 | Dashboard → MCP 标签页，或 `GET /mcp` |
+| 按状态过滤 agent | `GET /agents?status=completed` |
+| 定期审查 | `go run . -interval 300`（每 5 分钟） |
+
+### 3.5 可以扩展的功能
+
+| 功能 | 工作量 | 价值 |
+|------|--------|------|
+| Agent 链式执行（A 的输出 → B 的输入） | 中 | 多步分析管线 |
+| UI 中的 prompt 编辑器 | 低 | 无代码创建 agent |
+| 结果对比（两次分析的 diff） | 中 | 跟踪代码质量变化 |
+| Agent 取消 | 低 | 停止长时间运行的 agent |
+| 导出结果（Markdown、JSON） | 低 | 分享分析报告 |
+| 认证（API key 或 OAuth） | 中 | 多用户 / 外部访问 |
+
+这些尚未实现。当前系统聚焦核心循环：发现工具 → 启动 agent → 查看结果。
+
+---
+
+## 4. 示例：Code Review 服务
+
+### 4.1 功能
+
+独立二进制。连接 codegraph MCP + Ollama，运行分析 agent，提供 dashboard。
+
+```mermaid
+graph TB
+    subgraph "go run ./examples/mcp-dashboard/"
+        MAIN[main.go]
+        CONFIG[config.yaml]
+    end
+
+    MAIN -->|stdio| CG[codegraph serve --mcp]
+    MAIN -->|HTTP| OLL[Ollama /api/generate]
+    MAIN -->|HTTP| BROWSER[浏览器 :8090]
+
+    CG -->|tools/list| MAIN
+    CG -->|tools/call| MAIN
+    OLL -->|LLM 响应| MAIN
+    MAIN -->|dashboard| BROWSER
+```
+
+### 4.2 Agent 模板
+
+| 模板 | MCP 工具 | 分析内容 |
+|------|---------|---------|
+| Architecture Review | `codegraph_files` | 包组织、依赖流向、入口点 |
+| Error Handling Review | `codegraph_context` | 错误包装模式、哨兵错误、被吞掉的错误 |
+| Concurrency Review | `codegraph_context` | goroutine 管理、竞态条件、mutex 使用 |
+| Change Impact Analysis | `codegraph_impact` | 接口变更会破坏什么、迁移策略 |
+| API Surface Review | `codegraph_search` | 接口大小、命名一致性、构造器模式 |
+
+### 4.3 运行
+
+```bash
+# 前置条件
+ollama pull llama3.2
+npm install -g codegraph && codegraph index /path/to/project
+
+# 启动
+make demo-mcp TARGET=/path/to/project ADDR=:8090
+
+# 或直接运行
+go run ./examples/mcp-dashboard/ -config ./examples/mcp-dashboard/config.yaml -target /path/to/project -interval 300
+```
+
+### 4.4 配置
+
+```yaml
+llm:
+  provider: "ollama"              # "openai", "ollama", "openrouter"
+  base_url: "http://localhost:11434"
+  model: "llama3.2"
+  timeout: 120
+
+mcp:
+  servers:
     - name: codegraph
-      enabled: true
-      auto_start: true
-      timeout: 30s
       transport:
         type: stdio
         stdio:
           command: codegraph
           args: ["serve", "--mcp"]
 
-    - name: remote-search
-      enabled: true
-      auto_start: true
-      timeout: 60s
-      transport:
-        type: sse
-        sse:
-          url: "http://localhost:8080/mcp"
-          headers:
-            Authorization: "Bearer ${MCP_TOKEN}"
+dashboard:
+  addr: ":8090"
 ```
 
-### 1.4 集成点 (无需修改的现有组件)
-
-| 现有组件 | 变动 |
-|---|---|
-| `core.Registry` | 无变动 -- MCPTool 实现 Tool 接口, 正常注册 |
-| `core.CapabilityEngine` | 无变动 -- MCPTool 声明 CapabilityExternal, 自动重建 capMap |
-| `AgentTools` | 无变动 -- 过滤视图对 MCP 工具同样生效 |
-| `PluginRegistry` | 注册 `MCPToolFactory` 为 `"mcp"` 工厂 |
-| `ToolLifecycle` | `MCPTool` 实现 `Init`/`Stop` 管理连接生命周期 |
-| `api/client/Config` | 增加 `MCP *MCPManagerConfig` 字段 |
-| `internal/config` | 增加 `MCP MCPManagerConfig` 到配置结构体 |
-| Runtime `Manager.Start()` | 启动时调用 `MCPManager.Start()` |
-
-### 1.5 文件布局
-
-```
-internal/mcp/
-├── jsonrpc.go          # JSON-RPC 2.0 消息类型
-├── transport.go        # Transport 接口
-├── transport_stdio.go  # Stdio 传输实现
-├── transport_sse.go    # SSE 传输实现
-├── types.go            # MCP 协议类型 (Initialize, Tools, Content)
-├── client.go           # MCPClient (单服务器连接)
-├── mcp_tool.go         # MCPTool (Tool 接口桥接)
-├── schema.go           # JSON Schema -> ParameterSchema 转换器
-├── manager.go          # MCPManager (多服务器管理器)
-├── factory.go          # MCPToolFactory (PluginRegistry 集成)
-└── *_test.go
-```
+依赖：codegraph 二进制 + 本地运行的 Ollama。无数据库。
 
 ---
 
-## 第二部分: Web Dashboard
-
-### 2.1 设计原则
-
-- **后端**: Go `net/http` 标准库 -- 不引入新的 HTTP 框架, 保持一致性
-- **实时推送**: WebSocket (唯一新依赖: `gorilla/websocket`)
-- **前端**: 嵌入式 SPA (单 HTML + JS, 无构建步骤), 通过 `embed` 打包到 Go 二进制
-- **数据源**: 读取现有 EventStore, Runtime, MemoryManager, MutableDAG -- 不新增存储
-
-### 2.2 架构图
+## 5. 文件布局
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Browser (SPA)                     │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐  │
-│  │Agent    │ │DAG       │ │Memory    │ │Event   │  │
-│  │Monitor  │ │Visualizer│ │Explorer  │ │Stream  │  │
-│  └────┬────┘ └─────┬────┘ └─────┬────┘ └───┬────┘  │
-│       │            │            │           │        │
-│       └──────┬─────┴────────────┴───────────┘        │
-│              │ REST + WebSocket                      │
-└──────────────┼───────────────────────────────────────┘
-               │
-┌──────────────┼───────────────────────────────────────┐
-│   Dashboard  │  API Server                           │
-│   ┌──────────▼─────────┐                             │
-│   │  DashboardRouter   │                             │
-│   │  /api/dashboard/*  │                             │
-│   └──────────┬─────────┘                             │
-│              │                                       │
-│   ┌──────────▼─────────┐    ┌──────────────────┐    │
-│   │   REST Handlers    │    │  WebSocket Hub   │    │
-│   │  agents, dag,      │    │  broadcast,      │    │
-│   │  memory, events,   │    │  subscribe,      │    │
-│   │  mcp               │    │  rooms           │    │
-│   └──────────┬─────────┘    └────────┬─────────┘    │
-│              │                       │               │
-│   ┌──────────▼───────────────────────▼──────────┐   │
-│   │            DashboardService                  │   │
-│   │  runtime, eventStore, memoryMgr, mcpMgr     │   │
-│   └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-```
-
-### 2.3 数据结构设计
-
-#### 2.3.1 Dashboard Service
-
-```go
-// internal/dashboard/service.go
-
-type DashboardService struct {
-    runtime    runtime.Runtime
-    eventStore events.EventStore
-    memoryMgr  memory.MemoryManager
-    mcpMgr     *mcp.MCPManager       // MCP 未配置时为 nil
-    startTime  time.Time
-}
-
-type DashboardConfig struct {
-    Addr           string        `yaml:"addr" json:"addr"`             // ":8090"
-    EnableAuth     bool          `yaml:"enable_auth" json:"enable_auth"`
-    StaticDir      string        `yaml:"static_dir" json:"static_dir"` // "" = 使用嵌入资源
-    WSPingInterval time.Duration `yaml:"ws_ping_interval" json:"ws_ping_interval"`
-}
-```
-
-#### 2.3.2 REST API 响应类型
-
-**系统概览:**
-
-```go
-// internal/dashboard/types.go
-
-type SystemOverview struct {
-    Uptime       string            `json:"uptime"`
-    AgentCount   int               `json:"agent_count"`
-    ActiveTasks  int               `json:"active_tasks"`
-    TotalEvents  int64             `json:"total_events"`
-    MemoryStats  MemoryStats       `json:"memory_stats"`
-    MCPStatus    *MCPOverview      `json:"mcp_status,omitempty"`
-    RuntimeStats runtime.RuntimeStats `json:"runtime_stats"`
-}
-
-type MemoryStats struct {
-    ActiveSessions int `json:"active_sessions"`
-    DistilledCount int `json:"distilled_count"`
-    TotalMessages  int `json:"total_messages"`
-}
-
-type MCPOverview struct {
-    ServerCount    int `json:"server_count"`
-    ConnectedCount int `json:"connected_count"`
-    TotalTools     int `json:"total_tools"`
-}
-```
-
-**Agent 视图:**
-
-```go
-type AgentView struct {
-    ID         string              `json:"id"`
-    Type       string              `json:"type"`
-    Status     string              `json:"status"`
-    Restarts   int                 `json:"restarts"`
-    Uptime     string              `json:"uptime"`
-    LastEvent  *EventView          `json:"last_event,omitempty"`
-    Heartbeat  *HeartbeatView      `json:"heartbeat,omitempty"`
-}
-
-type HeartbeatView struct {
-    LastSeen    time.Time `json:"last_seen"`
-    MissedCount int       `json:"missed_count"`
-    IsAlive     bool      `json:"is_alive"`
-}
-```
-
-**DAG 视图:**
-
-```go
-type DAGView struct {
-    Nodes   []DAGNodeView   `json:"nodes"`
-    Edges   []DAGEdgeView   `json:"edges"`
-    Version uint64          `json:"version"`
-}
-
-type DAGNodeView struct {
-    ID        string            `json:"id"`
-    Name      string            `json:"name"`
-    AgentType string            `json:"agent_type"`
-    Status    string            `json:"status"`    // pending/running/completed/failed
-    InDegree  int               `json:"in_degree"`
-    OutDegree int               `json:"out_degree"`
-    Duration  string            `json:"duration,omitempty"`
-    Error     string            `json:"error,omitempty"`
-    Metadata  map[string]string `json:"metadata,omitempty"`
-}
-
-type DAGEdgeView struct {
-    From string `json:"from"`
-    To   string `json:"to"`
-}
-
-type WorkflowExecutionView struct {
-    ID         string            `json:"id"`
-    WorkflowID string            `json:"workflow_id"`
-    Status     string            `json:"status"`
-    Steps      []StepStateView   `json:"steps"`
-    StartedAt  time.Time         `json:"started_at"`
-    Duration   string            `json:"duration,omitempty"`
-    Error      string            `json:"error,omitempty"`
-}
-
-type StepStateView struct {
-    StepID   string `json:"step_id"`
-    Name     string `json:"name"`
-    Status   string `json:"status"`
-    Duration string `json:"duration,omitempty"`
-    Output   string `json:"output,omitempty"`
-    Error    string `json:"error,omitempty"`
-    Attempts int    `json:"attempts"`
-}
-```
-
-**Memory 视图:**
-
-```go
-type SessionView struct {
-    SessionID    string        `json:"session_id"`
-    UserID       string        `json:"user_id"`
-    MessageCount int           `json:"message_count"`
-    CreatedAt    time.Time     `json:"created_at"`
-    Messages     []MessageView `json:"messages,omitempty"` // 仅详情请求时返回
-}
-
-type MessageView struct {
-    Role    string    `json:"role"`
-    Content string    `json:"content"`
-    Time    time.Time `json:"time"`
-}
-
-type DistilledMemoryView struct {
-    ID         string    `json:"id"`
-    Type       string    `json:"type"`
-    Content    string    `json:"content"`
-    Importance float64   `json:"importance"`
-    Source     string    `json:"source"`
-    CreatedAt  time.Time `json:"created_at"`
-}
-```
-
-**Event 视图:**
-
-```go
-type EventView struct {
-    ID        string         `json:"id"`
-    StreamID  string         `json:"stream_id"`
-    Type      string         `json:"type"`
-    Payload   map[string]any `json:"payload"`
-    Version   int64          `json:"version"`
-    Timestamp time.Time      `json:"timestamp"`
-}
-
-type EventQueryParams struct {
-    StreamID  string     // 按 stream 过滤
-    Types     []string   // 按事件类型过滤
-    Since     time.Time  // 起始时间
-    Limit     int        // 最大条数, 默认 50
-    Direction string     // "asc" 或 "desc"
-}
-```
-
-**MCP 视图:**
-
-```go
-type MCPServerView struct {
-    Name      string        `json:"name"`
-    Connected bool          `json:"connected"`
-    Version   string        `json:"version"`
-    Tools     []MCPToolView `json:"tools"`
-    Error     string        `json:"error,omitempty"`
-    ConnAt    time.Time     `json:"connected_at,omitempty"`
-}
-
-type MCPToolView struct {
-    Name        string `json:"name"`
-    Description string `json:"description"`
-    ServerName  string `json:"server_name"`
-}
-```
-
-#### 2.3.3 REST API 端点
-
-```
-GET    /api/dashboard/overview                  -> SystemOverview
-GET    /api/dashboard/agents                    -> []AgentView
-GET    /api/dashboard/agents/:id                -> AgentView
-GET    /api/dashboard/agents/:id/events         -> []EventView
-
-GET    /api/dashboard/workflows                 -> []WorkflowExecutionView
-GET    /api/dashboard/workflows/:id             -> WorkflowExecutionView
-GET    /api/dashboard/workflows/:id/dag         -> DAGView
-
-GET    /api/dashboard/memory/sessions           -> []SessionView
-GET    /api/dashboard/memory/sessions/:id       -> SessionView (含消息)
-GET    /api/dashboard/memory/distilled          -> []DistilledMemoryView
-POST   /api/dashboard/memory/search             -> []DistilledMemoryView
-       body: {"query": "...", "limit": 10}
-
-GET    /api/dashboard/events                    -> []EventView
-       query: ?stream_id=&type=&since=&limit=&direction=
-GET    /api/dashboard/events/stream             -> WebSocket 升级
-
-GET    /api/dashboard/mcp/servers               -> []MCPServerView
-POST   /api/dashboard/mcp/servers/:name/refresh -> MCPServerView
-```
-
-#### 2.3.4 WebSocket 协议
-
-```go
-// internal/dashboard/ws.go
-
-type WSMessage struct {
-    Type    string         `json:"type"`
-    Channel string         `json:"channel,omitempty"`
-    Data    any            `json:"data"`
-    TS      time.Time      `json:"ts"`
-}
-```
-
-**客户端 -> 服务端 (订阅/取消订阅):**
-
-```json
-{"type": "subscribe", "channel": "events"}
-{"type": "subscribe", "channel": "agents"}
-{"type": "subscribe", "channel": "workflow:<execution_id>"}
-{"type": "subscribe", "channel": "dag:<workflow_id>"}
-{"type": "unsubscribe", "channel": "events"}
-```
-
-**服务端 -> 客户端 (推送):**
-
-```json
-{"type": "event",          "channel": "events",              "data": <EventView>,     "ts": "..."}
-{"type": "agent_update",   "channel": "agents",              "data": <AgentView>,     "ts": "..."}
-{"type": "step_update",    "channel": "workflow:<exec_id>",  "data": <StepStateView>, "ts": "..."}
-{"type": "dag_change",     "channel": "dag:<wf_id>",         "data": <DAGView>,       "ts": "..."}
-{"type": "heartbeat",      "channel": "agents",              "data": {"agent_id":"...","alive":true}, "ts": "..."}
-{"type": "mcp_tool_change","channel": "mcp",                 "data": <MCPServerView>, "ts": "..."}
-```
-
-#### 2.3.5 WebSocket Hub
-
-```go
-// internal/dashboard/ws_hub.go
-
-type WSHub struct {
-    clients    map[*WSClient]struct{}
-    channels   map[string]map[*WSClient]struct{}  // channel -> 订阅者
-    register   chan *WSClient
-    unregister chan *WSClient
-    broadcast  chan *WSMessage
-    mu         sync.RWMutex
-}
-
-type WSClient struct {
-    hub      *WSHub
-    conn     *websocket.Conn
-    send     chan []byte
-    channels map[string]struct{}
-    mu       sync.Mutex
-}
-```
-
-**Hub 生命周期:**
-- `Run()` -- 主 select 循环, 处理 register/unregister/broadcast
-- `BroadcastToChannel(channel string, msg *WSMessage)` -- 向指定 channel 的订阅者广播
-- `BroadcastAll(msg *WSMessage)` -- 向所有连接客户端广播
-
-#### 2.3.6 Event Bridge (EventStore -> WebSocket)
-
-```go
-// internal/dashboard/event_bridge.go
-
-type EventBridge struct {
-    eventStore events.EventStore
-    hub        *WSHub
-    cancel     context.CancelFunc
-    wg         sync.WaitGroup
-}
-```
-
-订阅 `EventStore` 全部事件, 将 `*events.Event` 转换为 `WSMessage`, 广播到 `"events"` channel. 同时根据事件类型映射到对应 channel:
-- `agent.started`, `agent.stopped` -> `"agents"` channel
-- `task.created`, `task.completed`, `task.failed` -> `"workflow:<exec_id>"` channel
-- `failover.*` -> `"agents"` channel
-
-#### 2.3.7 需要在现有类型上新增的方法
-
-```go
-// 添加到 runtime.Runtime 接口:
-ListAgents() []AgentInfo
-GetAgent(id string) (*AgentInfo, bool)
-
-type AgentInfo struct {
-    ID       string
-    Type     string
-    Status   string
-    Restarts int
-}
-
-// 添加到 runtime.Manager 实现:
-func (m *Manager) ListAgents() []AgentInfo
-func (m *Manager) GetAgent(id string) (*AgentInfo, bool)
-```
-
-### 2.4 文件布局
-
-```
-internal/dashboard/
-├── service.go        # DashboardService (读取 runtime/events/memory/mcp)
-├── types.go          # 所有视图类型
-├── router.go         # DashboardRouter (REST 端点 + 静态文件服务)
-├── handlers.go       # HTTP handler 函数
-├── ws.go             # WebSocket 消息类型
-├── ws_hub.go         # WebSocket Hub + Client
-├── event_bridge.go   # EventStore -> WebSocket 桥接
-├── static.go         # embed.FS 嵌入 SPA 资源
-├── static/
-│   ├── index.html    # 单页应用
-│   ├── app.js        # 前端逻辑 (vanilla JS 或 Alpine.js)
-│   └── style.css     # 样式
-└── *_test.go
-```
-
-### 2.5 新依赖
-
-```
-go get github.com/gorilla/websocket
-```
-
-这是唯一的新依赖, 其他全部使用标准库.
-
----
-
-## 第三部分: 启动序列
-
-```go
-// 应用启动顺序:
-
-1. 加载配置
-2. 初始化 EventStore (已有)
-3. 初始化 MemoryManager (已有)
-4. 初始化 Runtime (已有)
-
-// --- 新增 ---
-5. 初始化 MCPManager(config.MCP.Servers)
-6. MCPManager.Start(ctx)  // 连接所有 auto_start 服务器
-7. 将 MCP 工具注册到 GlobalRegistry
-
-8. 启动 agents (已有)
-9. Runtime.Start(ctx) (已有)
-
-// --- 新增 ---
-10. 初始化 DashboardService(runtime, eventStore, memoryMgr, mcpMgr)
-11. 初始化 WSHub, EventBridge
-12. 在 config.Dashboard.Addr 上启动 DashboardRouter
-```
-
----
-
-## 第四部分: Task List
-
-### Phase 1: MCP Client (优先级: 高)
-
-| # | 任务 | 包 | 依赖 | 预估 |
-|---|------|---------|------------|----------|
-| 1.1 | JSON-RPC 消息类型 + 编解码 | `internal/mcp` | - | 0.5d |
-| 1.2 | Transport 接口 + StdioTransport | `internal/mcp` | 1.1 | 1d |
-| 1.3 | SSETransport | `internal/mcp` | 1.1 | 1d |
-| 1.4 | MCP 协议类型 (Initialize, Tools, Content) | `internal/mcp` | - | 0.5d |
-| 1.5 | MCPClient (connect, list tools, call tool) | `internal/mcp` | 1.1, 1.2, 1.4 | 1.5d |
-| 1.6 | JSON Schema -> ParameterSchema 转换器 | `internal/mcp` | - | 0.5d |
-| 1.7 | MCPTool (Tool 接口桥接) | `internal/mcp` | 1.5, 1.6 | 1d |
-| 1.8 | MCPManager (多服务器管理器) | `internal/mcp` | 1.5, 1.7 | 1d |
-| 1.9 | MCPToolFactory (PluginRegistry 集成) | `internal/mcp` | 1.8 | 0.5d |
-| 1.10 | 配置集成 (YAML 解析, 校验) | `internal/config` | 1.8 | 0.5d |
-| 1.11 | 启动引导集成 (MCPManager 加入启动流程) | `cmd/` 或 `api/client` | 1.8, 1.10 | 0.5d |
-| 1.12 | 集成测试: mock MCP server | `internal/mcp` | 1.5 | 1d |
-| 1.13 | 集成测试: 真实 codegraph MCP | `internal/mcp` | 1.8 | 0.5d |
-
-**Phase 1 合计: ~10 天**
-
-### Phase 2: Web Dashboard (优先级: 中)
-
-| # | 任务 | 包 | 依赖 | 预估 |
-|---|------|---------|------------|----------|
-| 2.1 | DashboardService + 视图类型 | `internal/dashboard` | - | 1d |
-| 2.2 | Runtime.ListAgents() / GetAgent() 方法 | `internal/runtime` | - | 0.5d |
-| 2.3 | REST handlers (overview, agents, events) | `internal/dashboard` | 2.1, 2.2 | 1.5d |
-| 2.4 | REST handlers (workflows, DAG, memory) | `internal/dashboard` | 2.1 | 1.5d |
-| 2.5 | REST handlers (MCP 状态) | `internal/dashboard` | 2.1, Phase 1 | 0.5d |
-| 2.6 | WebSocket Hub + Client | `internal/dashboard` | - | 1d |
-| 2.7 | EventBridge (EventStore -> WS) | `internal/dashboard` | 2.6 | 1d |
-| 2.8 | DashboardRouter (挂载所有端点) | `internal/dashboard` | 2.3-2.7 | 0.5d |
-| 2.9 | 前端: Dashboard 首页 + Agent Monitor | `internal/dashboard/static` | 2.3 | 2d |
-| 2.10 | 前端: DAG 可视化器 | `internal/dashboard/static` | 2.4 | 2d |
-| 2.11 | 前端: Memory Explorer | `internal/dashboard/static` | 2.4 | 1d |
-| 2.12 | 前端: Event Stream (实时) | `internal/dashboard/static` | 2.7 | 1d |
-| 2.13 | 前端: MCP 状态页 | `internal/dashboard/static` | 2.5 | 0.5d |
-| 2.14 | 配置集成 + 启动引导 | `internal/config`, `cmd/` | 2.8 | 0.5d |
-| 2.15 | 集成测试 | `internal/dashboard` | 2.8 | 1d |
-
-**Phase 2 合计: ~14.5 天**
-
-### 实施顺序
-
-```
-第 1-2 周:  MCP 任务 1.1-1.7  (核心 client, transport, tool 桥接)
-第 2-3 周:  MCP 任务 1.8-1.13 (manager, 配置, 集成测试)
-第 3-4 周:  Dashboard 任务 2.1-2.8 (后端 API + WebSocket)
-第 4-5 周:  Dashboard 任务 2.9-2.15 (前端 SPA + 集成)
-```
-
-### 关键路径
-
-```
-1.1 ──► 1.2 ──► 1.5 ──► 1.7 ──► 1.8 ──► 1.11
-                 │                │
-                 ▼                ▼
-                1.12             2.5
-                                  │
-2.2 ──► 2.3 ──► 2.8 ──► 2.14    │
-         │                        │
-2.6 ──► 2.7 ──────────────────────┘
+internal/mcp/               # MCP 客户端实现
+├── jsonrpc.go              # JSON-RPC 2.0 类型、编解码
+├── transport.go            # Transport 接口
+├── transport_stdio.go      # Stdio 子进程传输
+├── transport_sse.go        # HTTP SSE 传输
+├── types.go                # MCP 协议类型
+├── client.go               # MCPClient（连接、握手、调用）
+├── mcp_tool.go             # MCPTool（core.Tool 桥接）
+├── schema.go               # JSON Schema → ParameterSchema
+├── manager.go              # MCPManager（多服务器）
+├── factory.go              # MCPToolFactory（PluginRegistry）
+└── *_test.go               # 42 个测试
+
+internal/dashboard/          # Dashboard + 编排
+├── api.go                  # 统一 API v2（6 个端点）
+├── orchestrator.go         # Agent 生命周期管理
+├── service.go              # DashboardService（旧桥接）
+├── types.go                # 视图类型
+├── ws.go                   # WebSocket 消息类型
+├── ws_hub.go               # WebSocket hub（频道发布/订阅）
+├── event_bridge.go         # EventStore → WebSocket
+├── static.go               # go:embed
+├── static/                 # SPA（HTML + JS + CSS，无构建）
+└── *_test.go               # 56 个测试
+
+examples/mcp-dashboard/      # 独立服务
+├── main.go                 # 连接 MCP + LLM，提供 dashboard
+└── config.yaml
 ```

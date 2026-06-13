@@ -58,7 +58,7 @@ func TestMCPClientConnect(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if !client.IsConnected() {
 		t.Error("expected client to be connected")
@@ -95,7 +95,7 @@ func TestMCPClientListTools(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client.ToolCount() != 2 {
 		t.Errorf("ToolCount = %d, want 2", client.ToolCount())
@@ -123,7 +123,7 @@ func TestMCPClientCallTool(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	result, err := client.CallTool(ctx, "echo", map[string]any{"input": "hello"})
 	if err != nil {
@@ -168,7 +168,7 @@ func TestMCPClientCallToolError(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err := client.CallTool(ctx, "broken", nil)
 	if err == nil {
@@ -204,7 +204,7 @@ func TestMCPClientClose(t *testing.T) {
 	}
 }
 
-func TestNewTransportFromConfig(t *testing.T) {
+func TestNewTransportFromConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  TransportConfig

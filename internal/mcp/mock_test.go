@@ -20,16 +20,6 @@ type mockTransport struct {
 	recvErr error
 }
 
-func newMockTransport(responses ...*JSONRPCMessage) *mockTransport {
-	ch := make(chan *JSONRPCMessage, len(responses)+8)
-	for _, r := range responses {
-		ch <- r
-	}
-	return &mockTransport{
-		respCh: ch,
-	}
-}
-
 // newMockServer creates a mock transport that responds to each request.
 func newMockServer(handler func(msg *JSONRPCMessage) *JSONRPCMessage) *mockTransport {
 	return &mockTransport{
@@ -92,50 +82,6 @@ func (t *mockTransport) Sent() []*JSONRPCMessage {
 	result := make([]*JSONRPCMessage, len(t.sent))
 	copy(result, t.sent)
 	return result
-}
-
-// buildInitializeResult creates a mock initialize response.
-func buildInitializeResult() *JSONRPCMessage {
-	result := InitializeResult{
-		ProtocolVersion: ProtocolVersion,
-		ServerInfo: Implementation{
-			Name:    "mock-server",
-			Version: "1.0.0",
-		},
-		Capabilities: ServerCapabilities{
-			Tools: &ToolServerCapabilities{ListChanged: true},
-		},
-	}
-	data, _ := json.Marshal(result)
-	return &JSONRPCMessage{
-		JSONRPC: JSONRPCVersion,
-		ID:      int64Ptr(1),
-		Result:  data,
-	}
-}
-
-// buildToolsListResult creates a mock tools/list response.
-func buildToolsListResult(tools []MCPToolDef) *JSONRPCMessage {
-	result := ToolsListResult{Tools: tools}
-	data, _ := json.Marshal(result)
-	return &JSONRPCMessage{
-		JSONRPC: JSONRPCVersion,
-		ID:      int64Ptr(2),
-		Result:  data,
-	}
-}
-
-// buildToolCallResult creates a mock tools/call response.
-func buildToolCallResult(text string) *JSONRPCMessage {
-	result := ToolCallResult{
-		Content: []ContentBlock{{Type: "text", Text: text}},
-	}
-	data, _ := json.Marshal(result)
-	return &JSONRPCMessage{
-		JSONRPC: JSONRPCVersion,
-		ID:      int64Ptr(3),
-		Result:  data,
-	}
 }
 
 func buildSimpleToolDef(name, desc string) MCPToolDef {

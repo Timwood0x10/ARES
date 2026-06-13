@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,9 +13,10 @@ import (
 
 // DashboardHandler holds HTTP handlers for the dashboard API.
 type DashboardHandler struct {
-	service *DashboardService
-	hub     *WSHub
-	config  *DashboardConfig
+	service      *DashboardService
+	hub          *WSHub
+	config       *DashboardConfig
+	orchestrator *Orchestrator
 }
 
 // NewDashboardHandler creates a new handler.
@@ -24,6 +26,11 @@ func NewDashboardHandler(service *DashboardService, hub *WSHub, config *Dashboar
 		hub:     hub,
 		config:  config,
 	}
+}
+
+// SetOrchestrator attaches an orchestrator for agent management.
+func (h *DashboardHandler) SetOrchestrator(o *Orchestrator) {
+	h.orchestrator = o
 }
 
 // HandleOverview returns system overview.
@@ -261,8 +268,7 @@ func (h *DashboardHandler) HandleEventStream(w http.ResponseWriter, r *http.Requ
 		pingInterval = h.config.WSPingInterval
 	}
 
-	go client.WritePump(pingInterval)
-	go client.ReadPump()
+	client.Start(pingInterval)
 }
 
 // HandleListMCPServers returns MCP server status.
@@ -295,13 +301,91 @@ func (h *DashboardHandler) HandleRefreshMCPServer(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// HandleListTemplates returns available agent templates.
+func (h *DashboardHandler) HandleListTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.orchestrator == nil {
+		writeJSON(w, http.StatusOK, []AgentTemplate{})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.orchestrator.GetTemplates())
+}
+
+// HandleCreateAgent creates and starts a new agent.
+func (h *DashboardHandler) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.orchestrator == nil {
+		writeError(w, http.StatusServiceUnavailable, "orchestrator not configured")
+		return
+	}
+
+	var req AgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	id, err := h.orchestrator.CreateAgent(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "status": "pending"})
+}
+
+// HandleListRunningAgents returns all agents managed by the orchestrator.
+func (h *DashboardHandler) HandleListRunningAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.orchestrator == nil {
+		writeJSON(w, http.StatusOK, []AgentResult{})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.orchestrator.ListAgents())
+}
+
+// HandleGetAgentResult returns a specific agent's full result.
+func (h *DashboardHandler) HandleGetAgentResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.orchestrator == nil {
+		writeError(w, http.StatusServiceUnavailable, "orchestrator not configured")
+		return
+	}
+
+	id := extractPathParam(r.URL.Path, "/api/dashboard/orchestrator/agents/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	result, ok := h.orchestrator.GetAgent(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
 // writeJSON writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		// Best effort - header already sent.
-		_ = err
+		// Headers already sent; log at Debug level since there is nothing we can do.
+		slog.Debug("dashboard: failed to encode JSON response", "error", err)
 	}
 }
 

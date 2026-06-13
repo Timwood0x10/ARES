@@ -86,7 +86,9 @@ func (m *MCPManager) Stop(_ context.Context) error {
 
 	for name, mc := range m.clients {
 		m.unregisterTools(mc)
-		_ = mc.client.Close()
+		if err := mc.client.Close(); err != nil {
+			slog.Warn("mcp: failed to close client", "server", name, "error", err)
+		}
 		delete(m.clients, name)
 	}
 
@@ -155,7 +157,9 @@ func (m *MCPManager) DisconnectServer(_ context.Context, name string) error {
 	}
 
 	m.unregisterTools(mc)
-	_ = mc.client.Close()
+	if err := mc.client.Close(); err != nil {
+		slog.Warn("mcp: failed to close client", "server", name, "error", err)
+	}
 	delete(m.clients, name)
 
 	return nil
@@ -264,7 +268,9 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 // unregisterTools removes all tools for a managed client from the registry.
 func (m *MCPManager) unregisterTools(mc *managedClient) {
 	for _, name := range mc.tools {
-		_ = m.registry.Unregister(name)
+		if err := m.registry.Unregister(name); err != nil {
+			slog.Warn("mcp: failed to unregister tool", "tool", name, "error", err)
+		}
 	}
 	mc.tools = nil
 }

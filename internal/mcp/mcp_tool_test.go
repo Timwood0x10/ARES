@@ -18,7 +18,7 @@ func TestNewMCPTool(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	mcpTool, err := NewMCPTool(client, &toolDef)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestNewMCPToolNilDef(t *testing.T) {
 	server := newTestServer(nil, nil)
 	client := NewMCPClient(MCPClientConfig{ServerName: "test"})
 	_ = client.Connect(context.Background(), server)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err := NewMCPTool(client, nil)
 	if err == nil {
@@ -98,7 +98,7 @@ func TestMCPToolExecute(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	mcpTool, err := NewMCPTool(client, &toolDef)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestMCPToolExecuteError(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	toolDef := buildSimpleToolDef("fail", "Failing tool")
 	mcpTool, _ := NewMCPTool(client, &toolDef)
@@ -168,7 +168,7 @@ func TestMCPToolExecuteIsError(t *testing.T) {
 	if err := client.Connect(ctx, server); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	mcpTool, _ := NewMCPTool(client, &toolDef)
 	res, err := mcpTool.Execute(ctx, nil)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"sync"
 )
@@ -28,6 +29,7 @@ type StdioTransport struct {
 	mu        sync.Mutex
 	started   bool
 	receiveMu sync.Mutex
+	stderrWg  sync.WaitGroup
 }
 
 // NewStdioTransport creates a new stdio transport with the given config.
@@ -87,9 +89,17 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 	t.started = true
 
-	// Drain stderr in background to prevent blocking.
+	// Drain stderr in background to prevent blocking, logging output for diagnostics.
+	t.stderrWg.Add(1)
 	go func() {
-		_, _ = io.Copy(io.Discard, t.stderr)
+		defer t.stderrWg.Done()
+		scanner := bufio.NewScanner(t.stderr)
+		for scanner.Scan() {
+			slog.Debug("mcp: subprocess stderr", "command", t.config.Command, "line", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			slog.Warn("mcp: error reading subprocess stderr", "command", t.config.Command, "error", err)
+		}
 	}()
 
 	return nil
@@ -134,7 +144,10 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 	}
 
 	ch := make(chan scanResult, 1)
+	var scanWg sync.WaitGroup
+	scanWg.Add(1)
 	go func() {
+		defer scanWg.Done()
 		if t.stdout.Scan() {
 			ch <- scanResult{data: t.stdout.Bytes()}
 		} else {
@@ -144,6 +157,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 
 	select {
 	case <-ctx.Done():
+		scanWg.Wait()
 		return nil, ctx.Err()
 	case result := <-ch:
 		if result.err != nil {
@@ -180,6 +194,8 @@ func (t *StdioTransport) Close() error {
 		_ = t.cmd.Process.Kill()
 		_ = t.cmd.Wait()
 	}
+
+	t.stderrWg.Wait()
 
 	return nil
 }

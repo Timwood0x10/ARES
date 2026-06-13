@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // SSEConfig holds configuration for an SSE-based MCP transport.
@@ -28,7 +31,7 @@ type SSETransport struct {
 	httpClient *http.Client
 	msgCh      chan *JSONRPCMessage
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	eg         errgroup.Group
 	mu         sync.Mutex
 	started    bool
 	postURL    string
@@ -67,19 +70,18 @@ func (t *SSETransport) Start(ctx context.Context) error {
 	t.started = true
 
 	// Connect to SSE endpoint and start receiving messages.
-	t.wg.Add(1)
-	go t.receiveLoop(ctx)
+	t.eg.Go(func() error {
+		return t.receiveLoop(ctx)
+	})
 
 	return nil
 }
 
 // receiveLoop connects to the SSE endpoint and reads events.
-func (t *SSETransport) receiveLoop(ctx context.Context) {
-	defer t.wg.Done()
-
+func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.config.URL, nil)
 	if err != nil {
-		return
+		return fmt.Errorf("create sse request: %w", err)
 	}
 
 	req.Header.Set("Accept", "text/event-stream")
@@ -90,12 +92,12 @@ func (t *SSETransport) receiveLoop(ctx context.Context) {
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return
+		return fmt.Errorf("sse connect: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return
+		return fmt.Errorf("sse endpoint returned status %d", resp.StatusCode)
 	}
 
 	// Determine POST URL. If the SSE endpoint returns an "endpoint" event,
@@ -110,9 +112,9 @@ func (t *SSETransport) receiveLoop(ctx context.Context) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			return
+			return fmt.Errorf("sse read: %w", err)
 		}
 
 		line = strings.TrimRight(line, "\r\n")
@@ -199,7 +201,7 @@ func (t *SSETransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if err != nil {
 		return fmt.Errorf("post message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
@@ -236,7 +238,9 @@ func (t *SSETransport) Close() error {
 		t.cancel()
 	}
 
-	t.wg.Wait()
+	if err := t.eg.Wait(); err != nil {
+		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
+	}
 	close(t.msgCh)
 
 	return nil

@@ -33,12 +33,13 @@ type MCPStatusProvider interface {
 
 // MCPServerStatusView is a dashboard-safe view of MCP server status.
 type MCPServerStatusView struct {
-	Name      string
-	Connected bool
-	ToolCount int
-	Version   string
-	Error     string
-	ConnAt    time.Time
+	Name      string        `json:"name"`
+	Connected bool          `json:"connected"`
+	ToolCount int           `json:"tool_count"`
+	Version   string        `json:"version"`
+	Error     string        `json:"error,omitempty"`
+	ConnAt    time.Time     `json:"connected_at,omitempty"`
+	Tools     []MCPToolView `json:"tools"`
 }
 
 // DashboardConfig holds configuration for the dashboard.
@@ -80,28 +81,25 @@ func NewDashboardService(
 
 // GetOverview returns the system overview.
 func (s *DashboardService) GetOverview(ctx context.Context) (*SystemOverview, error) {
-	stats := s.rt.Stats()
-
 	overview := &SystemOverview{
 		Uptime:      time.Since(s.startTime).Round(time.Second).String(),
-		AgentCount:  stats.ActiveAgents,
+		AgentCount:  0,
 		ActiveTasks: 0,
 		TotalEvents: 0,
-		RuntimeStats: RuntimeStatsView{
+	}
+
+	if s.rt != nil {
+		stats := s.rt.Stats()
+		overview.AgentCount = stats.ActiveAgents
+		overview.RuntimeStats = RuntimeStatsView{
 			ActiveAgents:  stats.ActiveAgents,
 			TotalRestarts: stats.TotalRestarts,
 			UptimeSeconds: int64(stats.Uptime.Seconds()),
-		},
-	}
-
-	// Count events.
-	if s.eventStore != nil {
-		events, err := s.eventStore.ReadAll(ctx, events.ReadOptions{Limit: 1})
-		if err == nil {
-			// We just check if it works; total count comes from a separate mechanism.
-			_ = events
 		}
 	}
+
+	// TODO: EventStore does not expose a Count method; TotalEvents is reported as 0
+	// until a dedicated counting mechanism is added to the events package.
 
 	// Memory stats.
 	if s.memMgr != nil {
@@ -305,13 +303,15 @@ func (s *DashboardService) GetMCPServers() []MCPServerView {
 	views := make([]MCPServerView, 0, len(servers))
 
 	for _, srv := range servers {
-		views = append(views, MCPServerView{
+		view := MCPServerView{
 			Name:      srv.Name,
 			Connected: srv.Connected,
 			Version:   srv.Version,
 			Error:     srv.Error,
 			ConnAt:    srv.ConnAt,
-		})
+			Tools:     srv.Tools,
+		}
+		views = append(views, view)
 	}
 
 	return views

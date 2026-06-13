@@ -26,6 +26,7 @@ type WSClient struct {
 	send     chan []byte
 	channels map[string]struct{}
 	mu       sync.Mutex
+	wg       sync.WaitGroup
 }
 
 // NewWSHub creates a new WSHub.
@@ -202,6 +203,25 @@ func (c *WSClient) Unsubscribe(channel string) {
 		}
 	}
 	c.hub.mu.Unlock()
+}
+
+// Start launches the ReadPump and WritePump goroutines for this client.
+// The caller must provide the ping interval for the WritePump.
+func (c *WSClient) Start(pingInterval time.Duration) {
+	c.wg.Add(2)
+	go func() {
+		defer c.wg.Done()
+		c.ReadPump()
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.WritePump(pingInterval)
+	}()
+}
+
+// Wait blocks until both ReadPump and WritePump have exited.
+func (c *WSClient) Wait() {
+	c.wg.Wait()
 }
 
 // ReadPump reads messages from the WebSocket connection.
