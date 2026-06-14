@@ -1,6 +1,7 @@
 package arena
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /arena/stats", h.handleStats)
 	mux.HandleFunc("GET /arena/history", h.handleHistory)
 	mux.HandleFunc("GET /arena/stream", h.handleStream)
+	mux.HandleFunc("GET /arena/score", h.handleScore)
+	mux.HandleFunc("POST /arena/survival", h.handleSurvivalStart)
+	mux.HandleFunc("GET /arena/survival/status", h.handleSurvivalStatus)
 }
 
 // edgeRequest is the JSON body for RemoveEdge requests.
@@ -151,6 +155,47 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (h *Handler) handleScore(w http.ResponseWriter, _ *http.Request) {
+	stats := h.service.Stats()
+	avgRecovery := h.service.calculateAvgRecoveryTime(nil)
+	score := CalculateScore(stats, avgRecovery)
+	writeJSON(w, http.StatusOK, score)
+}
+
+func (h *Handler) handleSurvivalStart(w http.ResponseWriter, r *http.Request) {
+	var cfg SurvivalConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if cfg.Duration <= 0 {
+		cfg.Duration = 30 * time.Minute
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = 10 * time.Second
+	}
+
+	// Run survival in background.
+	go func() {
+		report := h.service.RunSurvival(context.Background(), cfg)
+		slog.Info("arena: survival run finished in background",
+			"actions", report.ActionsRun,
+			"score", report.Score.Score,
+			"grade", report.Score.Grade,
+		)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "started",
+		"message": "survival run started",
+	})
+}
+
+func (h *Handler) handleSurvivalStatus(w http.ResponseWriter, _ *http.Request) {
+	status := h.service.GetSurvivalStatus()
+	writeJSON(w, http.StatusOK, status)
 }
 
 // writeResult writes an action result as JSON. Returns 500 on failure, 200 on success.

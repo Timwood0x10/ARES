@@ -18,7 +18,7 @@
     }
 
     // ── Router ───────────────────────────
-    const views = { overview, agents, mcp, orchestrator, arena };
+    const views = { overview, agents, mcp, orchestrator, arena, flight };
     document.querySelectorAll('[data-view]').forEach(a => {
         a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.view); });
     });
@@ -266,10 +266,11 @@
 
     // ── Arena ─────────────────────────────
     async function arena() {
-        const [stats, history, agents] = await Promise.all([
+        const [stats, history, agents, score] = await Promise.all([
             api('/arena/stats'),
             api('/arena/history'),
             api('/agents'),
+            api('/arena/score'),
         ]);
         arenaAgents = agents || [];
         const el = document.getElementById('view-arena');
@@ -277,28 +278,52 @@
         const recoveryRate = stats && stats.total_actions > 0
             ? Math.round((stats.successful_actions / stats.total_actions) * 100) : 0;
 
+        // Build resilience score card.
+        const scoreValue = score?.score != null ? score.score.toFixed(1) : '-';
+        const scoreGrade = score?.grade || '-';
+        const scoreRecovery = score?.recovery_rate != null ? score.recovery_rate.toFixed(1) + '%' : '-';
+        const scoreAvgTime = score?.avg_recovery_time
+            ? (score.avg_recovery_time / 1000000000).toFixed(1) + 's' : '-';
+        const gradeColor = scoreGrade === 'A+' ? '#22c55e'
+            : scoreGrade === 'A' ? '#22c55e'
+            : scoreGrade === 'B' ? '#eab308'
+            : scoreGrade === 'C' ? '#f97316'
+            : scoreGrade === 'D' ? '#ef4444'
+            : '#6b7280';
+
         el.innerHTML = `
             <div class="page-header">
                 <h2>Agent Arena</h2>
                 <div class="page-desc">Chaos engineering — break it, watch it recover</div>
             </div>
 
-            <div class="stat-grid">
-                <div class="stat-card">
-                    <div class="label">Recovery Rate</div>
-                    <div class="value">${recoveryRate}%</div>
+            <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+                <div class="card" style="flex:0 0 220px;text-align:center;padding:1.5rem;border:2px solid ${gradeColor};border-radius:var(--radius)">
+                    <div style="font-size:0.8125rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Resilience Score</div>
+                    <div style="font-size:2.5rem;font-weight:700;color:${gradeColor}">${scoreValue}</div>
+                    <div style="font-size:1.5rem;font-weight:600;color:${gradeColor};margin-bottom:0.75rem">${scoreGrade}</div>
+                    <div style="font-size:0.8125rem;color:var(--text-secondary)">Recovery: ${scoreRecovery}</div>
+                    <div style="font-size:0.8125rem;color:var(--text-secondary)">Avg Time: ${scoreAvgTime}</div>
                 </div>
-                <div class="stat-card">
-                    <div class="label">Total Faults</div>
-                    <div class="value">${stats?.total_actions||0}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">Recovered</div>
-                    <div class="value">${stats?.successful_actions||0}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">Failed</div>
-                    <div class="value">${stats?.failed_actions||0}</div>
+                <div style="flex:1;min-width:0">
+                    <div class="stat-grid">
+                        <div class="stat-card">
+                            <div class="label">Recovery Rate</div>
+                            <div class="value">${recoveryRate}%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="label">Total Faults</div>
+                            <div class="value">${stats?.total_actions||0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="label">Recovered</div>
+                            <div class="value">${stats?.successful_actions||0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="label">Failed</div>
+                            <div class="value">${stats?.failed_actions||0}</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -449,6 +474,257 @@
     const dangerStyle = document.createElement('style');
     dangerStyle.textContent = `.btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:white;box-shadow:0 2px 8px rgba(239,68,68,0.3)}.btn-danger:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(239,68,68,0.3)}`;
     document.head.appendChild(dangerStyle);
+
+    // ── Flight Recorder ─────────────────
+    async function flight() {
+        const el = document.getElementById('view-flight');
+        el.innerHTML = `
+            <div class="page-header">
+                <h2>Flight Recorder</h2>
+                <div class="page-desc">Timeline, call graph, decisions, and diagnostics</div>
+            </div>
+            <div id="flight-loading" class="empty-state">Loading flight data...</div>`;
+
+        const [summary, graphData, decisions, diagData, genealogyData] = await Promise.all([
+            api('/flight/summary'),
+            api('/flight/graph'),
+            api('/flight/decisions'),
+            api('/flight/diagnostics'),
+            api('/flight/genealogy'),
+        ]);
+
+        const container = document.getElementById('flight-loading');
+        if (!container) return; // navigated away
+
+        container.remove();
+
+        // Build all sections.
+        el.innerHTML = `
+            <div class="page-header">
+                <h2>Flight Recorder</h2>
+                <div class="page-desc">Timeline, call graph, decisions, and diagnostics</div>
+            </div>
+            ${renderTimelineSection(summary)}
+            ${renderGraphSection(graphData)}
+            ${renderDecisionsSection(decisions)}
+            ${renderDiagnosticsSection(diagData)}
+            ${renderGenealogySection(genealogyData)}`;
+
+        // Render Mermaid diagrams after DOM insertion.
+        renderMermaidDiagrams();
+    }
+
+    function renderTimelineSection(summary) {
+        if (!summary || summary.event_count === 0) {
+            return '<div class="card"><h3>Timeline</h3><div class="empty-state">No timeline events recorded yet.</div></div>';
+        }
+
+        const toolPct = summary.tool_percent || 0;
+        const llmPct = summary.llm_percent || 0;
+        const waitPct = summary.wait_percent || 0;
+        const otherPct = Math.max(0, 100 - toolPct - llmPct - waitPct);
+
+        return `
+            <div class="card">
+                <h3>Timeline — Time Distribution</h3>
+                <div class="timeline-chart">
+                    <div class="timeline-row">
+                        <span class="timeline-label">Tool Calls</span>
+                        <div class="timeline-bar-track">
+                            <div class="timeline-bar" style="width:${toolPct}%;background:linear-gradient(90deg,var(--accent),#a78bfa)"></div>
+                        </div>
+                        <span class="timeline-pct">${toolPct.toFixed(1)}%</span>
+                    </div>
+                    <div class="timeline-row">
+                        <span class="timeline-label">LLM Calls</span>
+                        <div class="timeline-bar-track">
+                            <div class="timeline-bar" style="width:${llmPct}%;background:linear-gradient(90deg,var(--success),#34d399)"></div>
+                        </div>
+                        <span class="timeline-pct">${llmPct.toFixed(1)}%</span>
+                    </div>
+                    <div class="timeline-row">
+                        <span class="timeline-label">Waiting</span>
+                        <div class="timeline-bar-track">
+                            <div class="timeline-bar" style="width:${waitPct}%;background:linear-gradient(90deg,var(--warning),#fbbf24)"></div>
+                        </div>
+                        <span class="timeline-pct">${waitPct.toFixed(1)}%</span>
+                    </div>
+                    <div class="timeline-row">
+                        <span class="timeline-label">Other</span>
+                        <div class="timeline-bar-track">
+                            <div class="timeline-bar" style="width:${otherPct}%;background:linear-gradient(90deg,var(--text-muted),var(--text-secondary))"></div>
+                        </div>
+                        <span class="timeline-pct">${otherPct.toFixed(1)}%</span>
+                    </div>
+                </div>
+                <div class="timeline-stats">
+                    <span>Events: <strong>${summary.event_count}</strong></span>
+                    <span>Total: <strong>${formatDuration(summary.total_duration)}</strong></span>
+                </div>
+            </div>`;
+    }
+
+    function renderGraphSection(graphData) {
+        const mermaidText = graphData?.mermaid || '';
+        if (!mermaidText || mermaidText.includes('No data')) {
+            return '<div class="card"><h3>Call Graph</h3><div class="empty-state">No call graph data recorded yet.</div></div>';
+        }
+
+        return `
+            <div class="card">
+                <h3>Call Graph</h3>
+                <div class="mermaid" data-mermaid="${esc(mermaidText)}">${esc(mermaidText)}</div>
+            </div>`;
+    }
+
+    function renderDecisionsSection(decisions) {
+        if (!decisions || decisions.length === 0) {
+            return '<div class="card"><h3>Decisions</h3><div class="empty-state">No decisions recorded yet.</div></div>';
+        }
+
+        return `
+            <div class="card">
+                <h3>Decisions (${decisions.length})</h3>
+                <div class="table-scroll">
+                    <table class="decision-table">
+                        <thead>
+                            <tr>
+                                <th>Agent</th>
+                                <th>Type</th>
+                                <th>Selected</th>
+                                <th>Reason</th>
+                                <th>Confidence</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${decisions.map(d => `
+                                <tr>
+                                    <td><code>${esc(d.agent_id || '-')}</code></td>
+                                    <td>${badge(d.type || '-')}</td>
+                                    <td><strong>${esc(d.selected || '-')}</strong></td>
+                                    <td style="max-width:300px;color:var(--text-secondary)">${esc(truncate(d.reason || '-'))}</td>
+                                    <td>
+                                        <div class="confidence-bar">
+                                            <div class="confidence-fill" style="width:${(d.confidence||0)*100}%"></div>
+                                        </div>
+                                        <span class="confidence-pct">${((d.confidence||0)*100).toFixed(0)}%</span>
+                                    </td>
+                                </tr>`).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+    }
+
+    function renderDiagnosticsSection(diagData) {
+        const records = diagData?.records || [];
+        const dist = diagData?.distribution || {};
+
+        if (records.length === 0 && (!dist.categories || Object.keys(dist.categories).length === 0)) {
+            return '<div class="card"><h3>Diagnostics</h3><div class="empty-state">No diagnostic records yet.</div></div>';
+        }
+
+        const categories = dist.categories || {};
+        const percentages = dist.percentages || {};
+        const total = dist.total || 0;
+
+        // Build conic-gradient for pie chart.
+        const pieColors = [
+            'var(--danger)', 'var(--warning)', 'var(--info)', 'var(--success)',
+            'var(--accent)', 'var(--text-muted)', '#a78bfa', '#f472b6'
+        ];
+        let conicParts = [];
+        let acc = 0;
+        const catKeys = Object.keys(categories);
+        catKeys.forEach((cat, i) => {
+            const pct = percentages[cat] || 0;
+            const color = pieColors[i % pieColors.length];
+            conicParts.push(`${color} ${acc}% ${acc + pct}%`);
+            acc += pct;
+        });
+        const conicCSS = conicParts.length > 0
+            ? `conic-gradient(${conicParts.join(', ')})`
+            : 'conic-gradient(var(--text-muted) 0% 100%)';
+
+        const categoryRows = catKeys.map((cat, i) => {
+            const count = categories[cat] || 0;
+            const pct = percentages[cat] || 0;
+            const color = pieColors[i % pieColors.length];
+            return `
+                <tr>
+                    <td><span class="dot-indicator" style="background:${color}"></span>${esc(cat)}</td>
+                    <td>${count}</td>
+                    <td>${pct.toFixed(1)}%</td>
+                </tr>`;
+        }).join('');
+
+        return `
+            <div class="card">
+                <h3>Diagnostics</h3>
+                <div class="diagnostics-card">
+                    <div class="diagnostics-pie-wrap">
+                        <div class="pie-chart" style="background:${conicCSS}"></div>
+                        <div class="pie-center">${total}</div>
+                    </div>
+                    <div class="diagnostics-table-wrap">
+                        <table class="diagnostics-table">
+                            <thead>
+                                <tr><th>Category</th><th>Count</th><th>Percentage</th></tr>
+                            </thead>
+                            <tbody>${categoryRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    function renderGenealogySection(genealogyData) {
+        const mermaidText = genealogyData?.mermaid || '';
+        if (!mermaidText || mermaidText.includes('No agents')) {
+            return '<div class="card"><h3>Genealogy</h3><div class="empty-state">No genealogy data recorded yet.</div></div>';
+        }
+
+        return `
+            <div class="card">
+                <h3>Genealogy Tree</h3>
+                <div class="mermaid" data-mermaid="${esc(mermaidText)}">${esc(mermaidText)}</div>
+            </div>`;
+    }
+
+    function renderMermaidDiagrams() {
+        if (typeof mermaid === 'undefined') return;
+        try {
+            mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+            document.querySelectorAll('.mermaid[data-mermaid]').forEach(async (el, i) => {
+                const text = el.getAttribute('data-mermaid');
+                if (!text) return;
+                try {
+                    const id = 'mermaid-graph-' + i;
+                    const { svg } = await mermaid.render(id, text);
+                    el.innerHTML = svg;
+                    el.removeAttribute('data-mermaid');
+                } catch (err) {
+                    console.error('Mermaid render error:', err);
+                    el.innerHTML = '<div class="empty-state">Failed to render diagram</div>';
+                }
+            });
+        } catch (e) {
+            console.error('Mermaid init error:', e);
+        }
+    }
+
+    function formatDuration(d) {
+        if (!d) return '-';
+        // Go duration is in nanoseconds when serialized as int, or a string.
+        if (typeof d === 'string') return d;
+        if (typeof d === 'number') {
+            if (d > 1e9) return (d / 1e9).toFixed(2) + 's';
+            if (d > 1e6) return (d / 1e6).toFixed(1) + 'ms';
+            if (d > 1e3) return (d / 1e3).toFixed(1) + 'us';
+            return d + 'ns';
+        }
+        return String(d);
+    }
 
     // ── DAG Visualization ───────────────
     var SVG_NS = 'http://www.w3.org/2000/svg';

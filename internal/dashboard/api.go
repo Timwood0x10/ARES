@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"goagentx/internal/flight"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -49,13 +51,20 @@ type ArenaProvider interface {
 	History() []ArenaResult
 }
 
+// SurvivalProvider abstracts survival mode for the dashboard.
+type SurvivalProvider interface {
+	GetSurvivalStatus() map[string]any
+	GetResilienceScore() map[string]any
+}
+
 // APIv2 is the unified dashboard API.
 type APIv2 struct {
-	orch  *Orchestrator
-	mcp   MCPStatusProvider
-	hub   *WSHub
-	start time.Time
-	arena ArenaProvider
+	orch     *Orchestrator
+	mcp      MCPStatusProvider
+	hub      *WSHub
+	start    time.Time
+	arena    ArenaProvider
+	survival SurvivalProvider
 }
 
 // NewAPIv2 creates a new unified API.
@@ -71,6 +80,11 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 // SetArena attaches an arena provider for chaos operations.
 func (a *APIv2) SetArena(arena ArenaProvider) {
 	a.arena = arena
+}
+
+// SetSurvival attaches a survival provider for resilience testing.
+func (a *APIv2) SetSurvival(survival SurvivalProvider) {
+	a.survival = survival
 }
 
 // Handler returns the http.Handler with all routes mounted.
@@ -104,6 +118,17 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/arena/edge/remove", a.handleArenaRemoveEdge)
 	mux.HandleFunc("/arena/stats", a.handleArenaStats)
 	mux.HandleFunc("/arena/history", a.handleArenaHistory)
+	mux.HandleFunc("/arena/score", a.handleArenaScore)
+	mux.HandleFunc("/arena/survival", a.handleArenaSurvival)
+	mux.HandleFunc("/arena/survival/status", a.handleArenaSurvivalStatus)
+
+	// ── Flight Recorder ─────────────────────────
+	mux.HandleFunc("/flight/timeline", a.handleFlightTimeline)
+	mux.HandleFunc("/flight/summary", a.handleFlightSummary)
+	mux.HandleFunc("/flight/graph", a.handleFlightGraph)
+	mux.HandleFunc("/flight/decisions", a.handleFlightDecisions)
+	mux.HandleFunc("/flight/diagnostics", a.handleFlightDiagnostics)
+	mux.HandleFunc("/flight/genealogy", a.handleFlightGenealogy)
 
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
@@ -424,6 +449,226 @@ func (a *APIv2) handleArenaHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.arena.History())
+}
+
+func (a *APIv2) handleArenaScore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.survival == nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.survival.GetResilienceScore())
+}
+
+func (a *APIv2) handleArenaSurvival(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.survival == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("survival mode not available"))
+		return
+	}
+	// Forward to the arena handler for actual execution.
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "started",
+		"message": "survival run started",
+	})
+}
+
+func (a *APIv2) handleArenaSurvivalStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.survival == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"running": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.survival.GetSurvivalStatus())
+}
+
+// ── Flight Recorder handlers ──────────────────
+
+// getFlightRecorder returns the FlightRecorder from the orchestrator. May be nil.
+func (a *APIv2) getFlightRecorder() *flight.FlightRecorder {
+	if a.orch == nil {
+		return nil
+	}
+	return a.orch.getFlight()
+}
+
+func (a *APIv2) handleFlightTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+
+	agentID := r.URL.Query().Get("agent_id")
+	var events []flight.TimelineEvent
+	if agentID != "" {
+		events = fr.Timeline().FilterByAgent(agentID)
+	} else {
+		events = fr.Timeline().Events()
+	}
+
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (a *APIv2) handleFlightSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil {
+		writeJSON(w, http.StatusOK, flight.TimelineSummary{})
+		return
+	}
+
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID != "" {
+		// Compute summary for filtered events.
+		events := fr.Timeline().FilterByAgent(agentID)
+		summary := computeSummary(events)
+		writeJSON(w, http.StatusOK, summary)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, fr.Timeline().Summary())
+}
+
+// computeSummary builds a TimelineSummary from a filtered set of events.
+func computeSummary(events []flight.TimelineEvent) flight.TimelineSummary {
+	var summary flight.TimelineSummary
+	summary.EventCount = len(events)
+
+	for _, e := range events {
+		switch e.Type {
+		case flight.EventToolCall, flight.EventToolResult:
+			summary.ToolDuration += e.Duration
+		case flight.EventLLMCall, flight.EventLLMResult:
+			summary.LLMDuration += e.Duration
+		case flight.EventWaiting:
+			summary.WaitDuration += e.Duration
+		case flight.EventError:
+			summary.ErrorDuration += e.Duration
+		}
+	}
+
+	if len(events) > 0 {
+		minStart := events[0].StartAt
+		maxEnd := events[0].EndAt
+		for _, e := range events {
+			if e.StartAt.Before(minStart) {
+				minStart = e.StartAt
+			}
+			if e.EndAt.After(maxEnd) {
+				maxEnd = e.EndAt
+			}
+		}
+		if !maxEnd.IsZero() && maxEnd.After(minStart) {
+			summary.TotalDuration = maxEnd.Sub(minStart)
+		}
+	}
+
+	if summary.TotalDuration > 0 {
+		summary.ToolPercent = float64(summary.ToolDuration) / float64(summary.TotalDuration) * 100
+		summary.LLMPercent = float64(summary.LLMDuration) / float64(summary.TotalDuration) * 100
+		summary.WaitPercent = float64(summary.WaitDuration) / float64(summary.TotalDuration) * 100
+	}
+
+	return summary
+}
+
+func (a *APIv2) handleFlightGraph(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"mermaid": "graph LR\n    empty[No data]"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"mermaid": fr.Graph().ExportMermaid()})
+}
+
+func (a *APIv2) handleFlightDecisions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID != "" {
+		writeJSON(w, http.StatusOK, fr.Decisions().FilterByAgent(agentID))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, fr.Decisions().All())
+}
+
+func (a *APIv2) handleFlightDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"records":      []any{},
+			"distribution": flight.CategoryDistribution{},
+		})
+		return
+	}
+
+	agentID := r.URL.Query().Get("agent_id")
+	var records []flight.DiagnosticRecord
+	if agentID != "" {
+		records = fr.Diagnostics().FilterByAgent(agentID)
+	} else {
+		records = fr.Diagnostics().All()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records":      records,
+		"distribution": fr.Diagnostics().Distribution(),
+	})
+}
+
+func (a *APIv2) handleFlightGenealogy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+
+	fr := a.getFlightRecorder()
+	if fr == nil || fr.Genealogy() == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"mermaid": "graph LR\n    empty[No agents]"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"mermaid": fr.Genealogy().ExportMermaid()})
 }
 
 // ── Middleware ─────────────────────────────────

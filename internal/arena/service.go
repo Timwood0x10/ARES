@@ -29,6 +29,8 @@ type Service struct {
 	actions  []Result
 	stats    Stats
 	mu       sync.RWMutex
+
+	survival survivalState
 }
 
 // NewService creates a Service with the given injector and optional event store.

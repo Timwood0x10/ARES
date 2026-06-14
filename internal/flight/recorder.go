@@ -10,11 +10,12 @@ import (
 )
 
 // FlightRecorder is the unified entry point for all flight data.
-// It aggregates Timeline, Graph, DecisionLog, DiagnosticsEngine, and MemoryPipeline.
+// It aggregates Timeline, Graph, DecisionLog, DiagnosticsEngine, Genealogy, and MemoryPipeline.
 type FlightRecorder struct {
 	collector  *Collector
 	eventStore events.EventStore
 	memManager memory.MemoryManager
+	genealogy  *Genealogy
 	mu         sync.RWMutex
 	started    bool
 }
@@ -23,6 +24,7 @@ type FlightRecorder struct {
 type FlightRecorderConfig struct {
 	EventStore events.EventStore
 	MemManager memory.MemoryManager
+	Genealogy  *Genealogy // optional, for agent genealogy tracking
 }
 
 // NewFlightRecorder creates a new flight recorder.
@@ -35,6 +37,7 @@ func NewFlightRecorder(cfg FlightRecorderConfig) *FlightRecorder {
 		collector:  collector,
 		eventStore: cfg.EventStore,
 		memManager: cfg.MemManager,
+		genealogy:  cfg.Genealogy,
 	}
 }
 
@@ -88,6 +91,20 @@ func (fr *FlightRecorder) Decisions() *DecisionLog {
 // Diagnostics returns the diagnostics engine.
 func (fr *FlightRecorder) Diagnostics() *DiagnosticsEngine {
 	return fr.collector.Diagnostics()
+}
+
+// Genealogy returns the agent genealogy tree. May be nil if not configured.
+func (fr *FlightRecorder) Genealogy() *Genealogy {
+	fr.mu.RLock()
+	defer fr.mu.RUnlock()
+	return fr.genealogy
+}
+
+// SetGenealogy attaches a genealogy tree to the flight recorder.
+func (fr *FlightRecorder) SetGenealogy(g *Genealogy) {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	fr.genealogy = g
 }
 
 // Pipeline returns the memory pipeline for a session.

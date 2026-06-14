@@ -105,3 +105,23 @@ func (in *Injector) RemoveEdge(ctx context.Context, from, to string) error {
 	}
 	return nil
 }
+
+// AvailableAgentIDs returns the IDs of all agents known to the runtime.
+// Returns an empty slice if the runtime is nil.
+func (in *Injector) AvailableAgentIDs() []string {
+	if in.runtime == nil {
+		return nil
+	}
+	infos := in.runtime.ListAgents()
+	ids := make([]string, 0, len(infos))
+	for _, info := range infos {
+		ids = append(ids, info.ID)
+	}
+	return ids
+}
+
+// AvailableNodeIDs returns the IDs of agents that could serve as DAG nodes.
+// Returns an empty slice if the runtime is nil.
+func (in *Injector) AvailableNodeIDs() []string {
+	return in.AvailableAgentIDs()
+}
