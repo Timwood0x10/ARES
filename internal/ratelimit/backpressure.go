@@ -14,7 +14,6 @@ type Backpressure struct {
 	wg         sync.WaitGroup
 	active     int
 	maxActive  int
-	queueSize  int
 	dropPolicy DropPolicy
 	metrics    *BackpressureMetrics
 	cancelFunc context.CancelFunc
@@ -58,7 +57,6 @@ func NewBackpressure(maxActive, queueSize int, dropPolicy DropPolicy) *Backpress
 	bp := &Backpressure{
 		queue:      make(chan *BackpressureRequest, queueSize),
 		maxActive:  maxActive,
-		queueSize:  queueSize,
 		dropPolicy: dropPolicy,
 		metrics:    &BackpressureMetrics{},
 	}

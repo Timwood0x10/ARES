@@ -8,6 +8,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -55,6 +56,13 @@ type ArenaProvider interface {
 type SurvivalProvider interface {
 	GetSurvivalStatus() map[string]any
 	GetResilienceScore() map[string]any
+}
+
+// SurvivalStarter is an optional extension of SurvivalProvider that can
+// actually start a survival run. If the concrete provider does not implement
+// this interface, the /arena/survival POST endpoint returns 501.
+type SurvivalStarter interface {
+	StartSurvival(ctx context.Context) error
 }
 
 // APIv2 is the unified dashboard API.
@@ -472,7 +480,15 @@ func (a *APIv2) handleArenaSurvival(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errResp("survival mode not available"))
 		return
 	}
-	// Forward to the arena handler for actual execution.
+	starter, ok := a.survival.(SurvivalStarter)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errResp("survival start not supported by current provider"))
+		return
+	}
+	if err := starter.StartSurvival(r.Context()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp(err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status":  "started",
 		"message": "survival run started",

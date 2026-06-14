@@ -296,11 +296,6 @@ func (c *Collector) handleLLMCall(evt *events.Event) {
 }
 
 func (c *Collector) handleToolEvent(evt *events.Event) {
-	nodeType := NodeTool
-	if isLLMEvent(evt) {
-		nodeType = NodeLLM
-	}
-
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
 		AgentID:  evt.StreamID,
@@ -313,7 +308,7 @@ func (c *Collector) handleToolEvent(evt *events.Event) {
 	c.graph.AddNode(&GraphNode{
 		ID:       evt.ID,
 		ParentID: evt.StreamID,
-		Type:     nodeType,
+		Type:     NodeTool,
 		Name:     string(evt.Type),
 		Status:   StatusCompleted,
 		StartAt:  evt.Timestamp,
@@ -346,11 +341,6 @@ func (c *Collector) handleDecisionEvent(evt *events.Event) {
 func isToolEvent(evt *events.Event) bool {
 	s := string(evt.Type)
 	return len(s) > 5 && s[:5] == "tool."
-}
-
-func isLLMEvent(evt *events.Event) bool {
-	s := string(evt.Type)
-	return len(s) > 4 && s[:4] == "llm."
 }
 
 func isDecisionEvent(evt *events.Event) bool {

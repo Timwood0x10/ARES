@@ -53,6 +53,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	slog.Info("llm connected", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// MCP
+	if len(cfg.MCP.Servers) == 0 {
+		return nil, fmt.Errorf("no mcp servers configured")
+	}
 	mcpClient := mcp.NewMCPClient(mcp.MCPClientConfig{
 		ServerName: cfg.MCP.Servers[0].Name,
 		Timeout:    60 * time.Second,
@@ -75,7 +78,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	eventStore := events.NewMemoryEventStore()
 	s.eventStore = eventStore
 	bridge := dashboard.NewEventBridge(eventStore, hub)
-	_ = bridge.Start(ctx)
+	if startErr := bridge.Start(ctx); startErr != nil {
+		slog.Warn("event bridge start failed", "error", startErr)
+	}
 
 	// Orchestrator
 	orch := dashboard.NewOrchestrator(
@@ -90,7 +95,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 
 	// Flight Recorder
 	fr := flight.NewFlightRecorder(flight.FlightRecorderConfig{EventStore: eventStore})
-	_ = fr.Start(ctx)
+	if startErr := fr.Start(ctx); startErr != nil {
+		slog.Warn("flight recorder start failed", "error", startErr)
+	}
 	orch.SetFlightRecorder(fr)
 
 	// Dashboard

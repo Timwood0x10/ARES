@@ -66,9 +66,9 @@ func TestCalculateScore_SlowRecovery(t *testing.T) {
 
 func TestCalculateScore_GradeThresholds(t *testing.T) {
 	tests := []struct {
-		name   string
-		score  float64
-		grade  string
+		name  string
+		score float64
+		grade string
 	}{
 		{"A+ boundary", 95.0, "A+"},
 		{"A boundary", 90.0, "A"},

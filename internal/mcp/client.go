@@ -198,7 +198,9 @@ func (c *MCPClient) IsConnected() bool {
 
 // Close shuts down the client and transport.
 func (c *MCPClient) Close() error {
-	c.cancel()
+	if c.cancel != nil {
+		c.cancel()
+	}
 	c.connected.Store(false)
 
 	if c.transport != nil {

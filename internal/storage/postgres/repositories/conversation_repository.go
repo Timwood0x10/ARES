@@ -216,23 +216,7 @@ func (r *ConversationRepository) DeleteBySession(ctx context.Context, sessionID,
 // id - conversation message identifier.
 // Returns error if delete operation fails.
 func (r *ConversationRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM conversations WHERE id = $1`
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return errors.Wrap(err, "delete conversation")
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return errors.Wrap(err, "get rows affected")
-	}
-
-	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
-	}
-
-	return nil
+	return postgres.DeleteByID(ctx, r.db, "conversations", id)
 }
 
 // GetByUser retrieves recent conversation messages for a specific user.

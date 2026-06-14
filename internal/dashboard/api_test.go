@@ -383,6 +383,3 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 		})
 	}
 }
-
-// prevent unused import.
-var _ = time.After

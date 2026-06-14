@@ -129,6 +129,30 @@ func (g *Genealogy) RecordResurrection(oldID, newID string) {
 	g.nodes[newID] = newNode
 }
 
+// RecordRoot records a root agent (no parent).
+func (g *Genealogy) RecordRoot(id, agentType string, metadata map[string]any) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if _, exists := g.nodes[id]; !exists {
+		node := &LineageNode{
+			ID:        id,
+			Type:      agentType,
+			SpawnedAt: time.Now(),
+			IsAlive:   true,
+			Metadata:  metadata,
+		}
+		g.nodes[id] = node
+		g.roots = append(g.roots, node)
+	} else {
+		// Node already exists (e.g., from a spawn record) — just mark alive.
+		if node, ok := g.nodes[id]; ok {
+			node.IsAlive = true
+			node.SpawnedAt = time.Now()
+		}
+	}
+}
+
 // RecordDeath marks an agent as dead.
 func (g *Genealogy) RecordDeath(agentID string) {
 	g.mu.Lock()

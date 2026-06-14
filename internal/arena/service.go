@@ -178,14 +178,10 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		Timestamp: time.Now(),
 	}
 
-	// Get current stream version for optimistic concurrency.
-	version, err := s.store.StreamVersion(ctx, arenaStreamID)
-	if err != nil {
-		// Stream likely does not exist yet; use version 0.
-		version = 0
-	}
-
-	if err := s.store.Append(ctx, arenaStreamID, []*events.Event{ev}, version); err != nil {
+	// Use expectedVersion = 0 to allow the event store to auto-detect the current version.
+	// This avoids race conditions between StreamVersion() and Append() calls when
+	// multiple goroutines are emitting events concurrently.
+	if err := s.store.Append(ctx, arenaStreamID, []*events.Event{ev}, 0); err != nil {
 		slog.Error("arena: failed to emit event",
 			"action_id", action.ID,
 			"error", err,

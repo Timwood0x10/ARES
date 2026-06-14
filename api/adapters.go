@@ -69,23 +69,30 @@ type ArenaAdapter struct {
 	Orch  *dashboard.Orchestrator
 	Store *events.MemoryEventStore
 	mu    sync.Mutex
+	// stats counters — updated on each Execute call.
+	totalActions      int
+	successfulActions int
+	failedActions     int
+	// history records every Execute result.
+	history []dashboard.ArenaResult
 }
 
 func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResult {
 	start := time.Now()
+	success := false
 	switch action.Type {
 	case dashboard.ArenaActionKillLeader:
 		for _, ag := range a.Orch.ListAgents() {
 			if ag.Status != "completed" && ag.Status != "failed" {
-				a.Orch.CancelAgent(ag.ID)
-				slog.Info("arena: killed leader", "id", ag.ID)
+				success = a.Orch.CancelAgent(ag.ID)
+				slog.Info("arena: killed leader", "id", ag.ID, "success", success)
 				break
 			}
 		}
 	case dashboard.ArenaActionKillAgent:
 		if action.TargetID != "" {
-			a.Orch.CancelAgent(action.TargetID)
-			slog.Info("arena: killed agent", "id", action.TargetID)
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: killed agent", "id", action.TargetID, "success", success)
 		}
 	}
 	if a.Store != nil {
@@ -96,13 +103,39 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		}
 		_ = a.Store.Append(context.Background(), "arena", []*events.Event{evt}, 0)
 	}
-	return dashboard.ArenaResult{Success: true, Action: action, Duration: time.Since(start)}
+	result := dashboard.ArenaResult{Success: success, Action: action, Duration: time.Since(start)}
+
+	// Track stats and history under lock.
+	a.mu.Lock()
+	a.totalActions++
+	if success {
+		a.successfulActions++
+	} else {
+		a.failedActions++
+	}
+	a.history = append(a.history, result)
+	a.mu.Unlock()
+
+	return result
 }
 
 func (a *ArenaAdapter) Stats() map[string]any {
-	return map[string]any{"total_actions": 0, "successful_actions": 0, "failed_actions": 0}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return map[string]any{
+		"total_actions":      a.totalActions,
+		"successful_actions": a.successfulActions,
+		"failed_actions":     a.failedActions,
+	}
 }
 
 func (a *ArenaAdapter) History() []dashboard.ArenaResult {
-	return nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.history) == 0 {
+		return nil
+	}
+	cp := make([]dashboard.ArenaResult, len(a.history))
+	copy(cp, a.history)
+	return cp
 }

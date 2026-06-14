@@ -8,6 +8,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Lock ordering: always acquire c.mu (WSClient) before h.mu (WSHub).
+// This invariant is upheld by Subscribe/Unsubscribe and must not be violated
+// by future changes to avoid deadlocks.
+
 // WSHub manages WebSocket client connections and channel-based message routing.
 type WSHub struct {
 	clients    map[*WSClient]struct{}
@@ -138,8 +142,17 @@ func (h *WSHub) removeClient(client *WSClient) {
 
 	delete(h.clients, client)
 
-	// Remove from all channels.
+	// Acquire client.mu before reading client.channels to prevent data race.
+	// Lock ordering: client.mu before h.mu is maintained since h.mu is already held.
+	client.mu.Lock()
+	channelsCopy := make(map[string]struct{})
 	for ch := range client.channels {
+		channelsCopy[ch] = struct{}{}
+	}
+	client.mu.Unlock()
+
+	// Remove from all channels.
+	for ch := range channelsCopy {
 		if subs, ok := h.channels[ch]; ok {
 			delete(subs, client)
 			if len(subs) == 0 {

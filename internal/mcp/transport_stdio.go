@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -60,10 +61,9 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 
 	if len(t.config.Env) > 0 {
-		t.cmd.Env = make([]string, 0, len(t.config.Env))
-		for k, v := range t.config.Env {
-			t.cmd.Env = append(t.cmd.Env, k+"="+v)
-		}
+		// Preserve parent process environment and append custom variables.
+		// This ensures the subprocess has PATH and other essential variables.
+		t.cmd.Env = append(os.Environ(), convertEnvVars(t.config.Env)...)
 	}
 
 	var err error
@@ -199,6 +199,15 @@ func (t *StdioTransport) Close() error {
 	t.stderrWg.Wait()
 
 	return nil
+}
+
+// convertEnvVars converts map[string]string to []string format for exec.Cmd.Env.
+func convertEnvVars(env map[string]string) []string {
+	vars := make([]string, 0, len(env))
+	for k, v := range env {
+		vars = append(vars, k+"="+v)
+	}
+	return vars
 }
 
 // Ensure StdioTransport implements Transport at compile time.

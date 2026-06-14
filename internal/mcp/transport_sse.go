@@ -72,7 +72,9 @@ func (t *SSETransport) Start(ctx context.Context) error {
 
 	// Connect to SSE endpoint and start receiving messages.
 	t.eg.Go(func() error {
-		return t.receiveLoop(ctx)
+		err := t.receiveLoop(ctx)
+		close(t.msgCh)
+		return err
 	})
 
 	return nil
@@ -240,10 +242,11 @@ func (t *SSETransport) Close() error {
 
 	// Wait for the receive loop outside the lock to avoid deadlock:
 	// receiveLoop -> handleSSEEvent may need t.mu to update postURL.
+	// The channel is closed inside the errgroup goroutine after receiveLoop returns,
+	// so there is no race between handleSSEEvent sending and close.
 	if err := t.eg.Wait(); err != nil {
 		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
 	}
-	close(t.msgCh)
 
 	return nil
 }

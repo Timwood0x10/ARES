@@ -149,6 +149,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 		return nil, ErrInvalidAgentID
 	}
 
+	if s.repo == nil {
+		return nil, errors.New("agent repository not configured")
+	}
+
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
 		return nil, errors.Wrap(err, "get agent")
@@ -192,6 +196,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 	if agentID == "" {
 		return ErrInvalidAgentID
+	}
+
+	if s.repo == nil {
+		return errors.New("agent repository not configured")
 	}
 
 	// Get agent to retrieve session ID
@@ -328,6 +336,10 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 
 	if task.AgentID == "" {
 		return nil, ErrInvalidAgentID
+	}
+
+	if s.repo == nil {
+		return nil, errors.New("agent repository not configured")
 	}
 
 	// Get agent

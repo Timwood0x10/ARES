@@ -75,13 +75,24 @@ func (r *Registry) On(event Event, handler Handler) {
 //
 //	ctx - the event context carrying metadata.
 func (r *Registry) Emit(ctx *Context) {
+	if ctx == nil {
+		return
+	}
+
 	r.mu.RLock()
 	handlers := make([]Handler, len(r.handlers[ctx.Event]))
 	copy(handlers, r.handlers[ctx.Event])
 	r.mu.RUnlock()
 
 	for _, h := range handlers {
-		h(ctx)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Isolate handler panics to prevent cascading failure.
+				}
+			}()
+			h(ctx)
+		}()
 	}
 }
 

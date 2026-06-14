@@ -46,17 +46,18 @@ type AgentRequest struct {
 
 // AgentResult holds the full result of an agent run.
 type AgentResult struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Progress   int       `json:"progress"`
-	MCPTool    string    `json:"mcp_tool"`
-	RawDataLen int       `json:"raw_data_len"`
-	Analysis   string    `json:"analysis"`
-	Error      string    `json:"error,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	Duration   string    `json:"duration,omitempty"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Status          string    `json:"status"`
+	Progress        int       `json:"progress"`
+	MCPTool         string    `json:"mcp_tool"`
+	RawDataLen      int       `json:"raw_data_len"`
+	Analysis        string    `json:"analysis"`
+	Error           string    `json:"error,omitempty"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at,omitempty"`
+	Duration        string    `json:"duration,omitempty"`
+	ResurrectionCnt int       `json:"resurrection_cnt"`
 }
 
 // MCPExecutor abstracts MCP tool calls for the orchestrator.
@@ -101,11 +102,6 @@ type StreamChunk struct {
 	Err     error  // Non-nil only on final chunk if an error occurred.
 }
 
-// EventBroadcaster emits events (optional, may be nil).
-type EventBroadcaster interface {
-	Broadcast(channel string, msg *WSMessage)
-}
-
 // Orchestrator manages agent lifecycle — creation, execution, results.
 type Orchestrator struct {
 	mcp         MCPExecutor
@@ -120,15 +116,20 @@ type Orchestrator struct {
 	mu          sync.RWMutex
 	nextID      atomic.Int64
 	agentWg     sync.WaitGroup // tracks background agent goroutines
+	baseCtx     context.Context
+	baseCancel  context.CancelFunc
 }
 
 // NewOrchestrator creates a new Orchestrator.
 func NewOrchestrator(mcp MCPExecutor, llm LLMExecutor) *Orchestrator {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Orchestrator{
-		mcp:     mcp,
-		llm:     llm,
-		agents:  make(map[string]*AgentResult),
-		cancels: make(map[string]context.CancelFunc),
+		mcp:        mcp,
+		llm:        llm,
+		agents:     make(map[string]*AgentResult),
+		cancels:    make(map[string]context.CancelFunc),
+		baseCtx:    ctx,
+		baseCancel: cancel,
 	}
 }
 
@@ -151,6 +152,13 @@ func (o *Orchestrator) SetFlightRecorder(fr *flight.FlightRecorder) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.flight = fr
+}
+
+// Stop cancels the base context, signalling all running agents to shut down,
+// and waits for every background agent goroutine to finish.
+func (o *Orchestrator) Stop() {
+	o.baseCancel()
+	o.agentWg.Wait()
 }
 
 // EventStore returns the current event store. May be nil if not configured.
@@ -236,14 +244,24 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 	id := fmt.Sprintf("agent-%d", o.nextID.Add(1))
 
 	result := &AgentResult{
-		ID:        id,
-		Name:      req.Name,
-		Status:    "pending",
-		MCPTool:   req.MCPTool,
-		StartedAt: time.Now(),
+		ID:              id,
+		Name:            req.Name,
+		Status:          "pending",
+		MCPTool:         req.MCPTool,
+		StartedAt:       time.Now(),
+		ResurrectionCnt: 0,
 	}
 
-	agentCtx, agentCancel := context.WithCancel(context.Background())
+	// Increment resurrection counter if this is a resume.
+	if req.ResumeFrom != "" {
+		o.mu.RLock()
+		if prevAgent, ok := o.agents[req.ResumeFrom]; ok {
+			result.ResurrectionCnt = prevAgent.ResurrectionCnt + 1
+		}
+		o.mu.RUnlock()
+	}
+
+	agentCtx, agentCancel := context.WithCancel(o.baseCtx)
 
 	o.mu.Lock()
 	o.agents[id] = result
@@ -262,12 +280,47 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 		o.runAgent(agentCtx, id, req, result)
 
 		// Auto-resurrect if killed by arena (context cancelled while not completed).
-		if agentCtx.Err() != nil && result.Status != "completed" {
-			slog.Info("orchestrator: agent killed, resurrecting", "id", id, "name", req.Name)
-			o.emitEvent(id, "agent.resurrecting", map[string]any{"reason": "arena kill"})
-			req.ResumeFrom = id // Resume from the killed agent's progress.
+		// Read result.Status and ResurrectionCnt under lock to avoid data race.
+		const maxResurrections = 3
+		o.mu.RLock()
+		status := result.Status
+		resurrectionCnt := result.ResurrectionCnt
+		o.mu.RUnlock()
+
+		if agentCtx.Err() != nil && status != "completed" && o.baseCtx.Err() == nil {
+			if resurrectionCnt >= maxResurrections {
+				slog.Warn(
+					"orchestrator: agent exceeded max resurrections",
+					"id", id,
+					"name", req.Name,
+					"count", resurrectionCnt,
+				)
+				o.emitEvent(id, "agent.resurrection_limit_exceeded", map[string]any{
+					"reason": "arena kill",
+					"count":  resurrectionCnt,
+				})
+				return
+			}
+
+			slog.Info(
+				"orchestrator: agent killed, resurrecting",
+				"id", id,
+				"name", req.Name,
+				"resurrection", resurrectionCnt+1,
+			)
+			o.emitEvent(id, "agent.resurrecting", map[string]any{
+				"reason": "arena kill",
+				"count":  resurrectionCnt + 1,
+			})
+
+			// Increment resurrection counter for the next attempt.
+			req.ResumeFrom = id
 			if _, err := o.CreateAgent(req); err != nil {
-				slog.Error("orchestrator: resurrection failed", "id", id, "error", err)
+				slog.Error(
+					"orchestrator: resurrection failed",
+					"id", id,
+					"error", err,
+				)
 			}
 		}
 	}()
@@ -373,7 +426,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 			default:
 			}
 
-			progress := 20 + (i * 25 / len(req.Steps))
+			progress := 20 + ((i + 1) * 25 / len(req.Steps))
 			o.updateStatus(id, fmt.Sprintf("step %d/%d: %s", i+1, len(req.Steps), step.Tool), progress, "")
 			toolName := o.resolveToolName(step.Tool)
 			o.emitFlightDecision(id, toolName, fmt.Sprintf("step %d", i+1))
@@ -816,8 +869,9 @@ func BuildToolAliases(tools []MCPToolInfo) map[string]string {
 }
 
 func truncateStr(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string(runes[:n]) + "..."
 }

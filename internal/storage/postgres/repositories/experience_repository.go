@@ -224,23 +224,7 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 // id - experience identifier.
 // Returns error if delete operation fails.
 func (r *ExperienceRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM experiences_1024 WHERE id = $1`
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return errors.Wrap(err, "delete experience")
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return errors.Wrap(err, "get rows affected")
-	}
-
-	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
-	}
-
-	return nil
+	return postgres.DeleteByID(ctx, r.db, "experiences_1024", id)
 }
 
 // SearchByVector performs vector similarity search for experiences.

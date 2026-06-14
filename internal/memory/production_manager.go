@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,12 +32,9 @@ type ProductionMemoryManager struct {
 	tenantGuard      *postgres.TenantGuard
 	retrievalService *services.RetrievalService
 	embeddingClient  *embedding.EmbeddingClient
-	writeBuffer      *postgres.WriteBuffer    // Write buffer for rate limiting
-	embeddingQueue   *postgres.EmbeddingQueue // Async embedding queue
+	writeBuffer      *postgres.WriteBuffer // Write buffer for rate limiting
 
 	// Repositories
-	knowledgeRepository    *repositories.KnowledgeRepository
-	experienceRepository   *repositories.ExperienceRepository
 	conversationRepository *repositories.ConversationRepository
 	taskResultRepository   *repositories.TaskResultRepository
 
@@ -107,7 +105,6 @@ func NewProductionMemoryManager(
 	// Create repositories
 	dbConn := dbPool.GetDB()
 	knowledgeRepo := repositories.NewKnowledgeRepository(dbPool.GetDB(), dbConn)
-	experienceRepo := repositories.NewExperienceRepository(dbConn)
 	conversationRepo := repositories.NewConversationRepository(dbConn)
 	taskResultRepo := repositories.NewTaskResultRepository(dbConn)
 
@@ -146,32 +143,16 @@ func NewProductionMemoryManager(
 	)
 
 	return &ProductionMemoryManager{
-
-		dbPool: dbPool,
-
-		tenantGuard: tenantGuard,
-
-		retrievalService: retrievalService,
-
-		embeddingClient: embeddingClient,
-
-		writeBuffer: writeBuffer,
-
-		embeddingQueue: embeddingQueue,
-
-		knowledgeRepository: knowledgeRepo,
-
-		experienceRepository: experienceRepo,
-
+		dbPool:                 dbPool,
+		tenantGuard:            tenantGuard,
+		retrievalService:       retrievalService,
+		embeddingClient:        embeddingClient,
+		writeBuffer:            writeBuffer,
 		conversationRepository: conversationRepo,
-
-		taskResultRepository: taskResultRepo,
-
-		config: config,
-
-		sessionCache: make(map[string]*SessionData),
-
-		maxCacheSize: config.MaxSessions,
+		taskResultRepository:   taskResultRepo,
+		config:                 config,
+		sessionCache:           make(map[string]*SessionData),
+		maxCacheSize:           config.MaxSessions,
 	}, nil
 }
 
@@ -282,7 +263,9 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 	// Clear cache
 	m.sessionCache = make(map[string]*SessionData)
 
+	// Reset lifecycle flags to allow restart
 	m.stopped = true
+	m.started = false
 	slog.Info("Production memory manager stopped")
 	return nil
 }
@@ -774,7 +757,9 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 
 	var sessionID string
 	if err := row.Scan(&sessionID); err != nil {
-		if err == sql.ErrNoRows {
+		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows (pgx driver)
+		// to support different database drivers.
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows in result set") {
 			return "", nil
 		}
 		return "", errors.Wrap(err, "get latest session for leader")

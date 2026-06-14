@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"goagentx/api/core"
@@ -18,12 +19,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var allowedConfigDir string
+var (
+	allowedConfigDir   string
+	allowedConfigDirMu sync.RWMutex
+)
 
 // SetAllowedConfigDir sets the allowed directory for config files.
 // This is a security measure to prevent path traversal attacks.
 func SetAllowedConfigDir(dir string) {
+	allowedConfigDirMu.Lock()
 	allowedConfigDir = dir
+	allowedConfigDirMu.Unlock()
+}
+
+// getAllowedConfigDir returns the allowed config directory in a thread-safe manner.
+func getAllowedConfigDir() string {
+	allowedConfigDirMu.RLock()
+	dir := allowedConfigDir
+	allowedConfigDirMu.RUnlock()
+	return dir
 }
 
 // ConfigFile represents the structure of the configuration file.
@@ -210,17 +224,17 @@ func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
 	}
 
 	// Security: validate path is within allowed directory
-	if allowedConfigDir != "" {
+	if dir := getAllowedConfigDir(); dir != "" {
 		absPath, err := filepath.Abs(configPath)
 		if err != nil {
 			return nil, errors.Wrap(err, "get absolute path")
 		}
-		absDir, err := filepath.Abs(allowedConfigDir)
+		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, errors.Wrap(err, "get absolute directory")
 		}
 		if !strings.HasPrefix(absPath, absDir) {
-			return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, allowedConfigDir)
+			return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, dir)
 		}
 	}
 

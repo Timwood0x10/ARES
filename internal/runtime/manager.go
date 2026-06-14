@@ -499,19 +499,9 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		ma.restarts++
 	}
 	m.totalRestarts++
-	m.mu.Unlock()
 
-	slog.Warn("runtime: agent dead, scheduling restore",
-		"agent_id", agentID, "reason", reason,
-	)
-
-	m.emitEvent(context.Background(), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
-		"agent_id":     agentID,
-		"reason":       reason,
-		"auto_restore": true,
-	})
-
-	// Trigger RestoreAgent asynchronously via errgroup.
+	// Schedule RestoreAgent asynchronously via errgroup BEFORE unlocking
+	// to prevent Add-after-Wait panic if Stop() is called concurrently.
 	m.g.Go(func() error {
 		restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
 		defer restoreCancel()
@@ -522,6 +512,18 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 			)
 		}
 		return nil // Never propagate; runtime must keep running.
+	})
+
+	m.mu.Unlock()
+
+	slog.Warn("runtime: agent dead, scheduling restore",
+		"agent_id", agentID, "reason", reason,
+	)
+
+	m.emitEvent(context.Background(), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+		"agent_id":     agentID,
+		"reason":       reason,
+		"auto_restore": true,
 	})
 }
 

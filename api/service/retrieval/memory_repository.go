@@ -53,12 +53,16 @@ func (r *MemoryRepository) CreateKnowledge(ctx context.Context, item *core.Knowl
 	return nil
 }
 
-// GetKnowledge retrieves a knowledge item by ID.
+// GetKnowledge retrieves a knowledge item by ID within a tenant scope.
 // Args:
 // ctx - operation context.
+// tenantID - the tenant identifier for isolation.
 // itemID - the knowledge item identifier.
 // Returns the knowledge item or error if not found.
-func (r *MemoryRepository) GetKnowledge(ctx context.Context, itemID string) (*core.KnowledgeItem, error) {
+func (r *MemoryRepository) GetKnowledge(ctx context.Context, tenantID, itemID string) (*core.KnowledgeItem, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant ID is empty")
+	}
 	if itemID == "" {
 		return nil, fmt.Errorf("item ID is empty")
 	}
@@ -68,6 +72,10 @@ func (r *MemoryRepository) GetKnowledge(ctx context.Context, itemID string) (*co
 
 	item, exists := r.knowledge[itemID]
 	if !exists {
+		return nil, nil
+	}
+
+	if item.TenantID != tenantID {
 		return nil, nil
 	}
 

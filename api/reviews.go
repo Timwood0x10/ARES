@@ -75,10 +75,14 @@ func BuildAgentRequest(task ReviewTask) dashboard.AgentRequest {
 func BuildTemplates() []dashboard.AgentTemplate {
 	templates := make([]dashboard.AgentTemplate, 0, len(DefaultReviewTasks))
 	for i, task := range DefaultReviewTasks {
+		toolName := ""
+		if len(task.Tools) > 0 {
+			toolName = task.Tools[0][0]
+		}
 		templates = append(templates, dashboard.AgentTemplate{
 			ID:        fmt.Sprintf("tpl-%d", i),
 			Name:      task.Name,
-			MCPTool:   task.Tools[0][0],
+			MCPTool:   toolName,
 			LLMPrompt: task.Prompt,
 		})
 	}

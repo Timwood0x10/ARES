@@ -77,19 +77,9 @@ type experienceRepositoryAdapter struct {
 
 // SearchByVector implements internal ExperienceRepository interface
 
-func (a *experienceRepositoryAdapter) SearchByVector(ctx interface{}, vector []float64, tenantID string, limit int) ([]distillation.Experience, error) {
+func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]distillation.Experience, error) {
 
-	// Convert interface{} to context.Context if possible
-
-	ctxTyped, ok := ctx.(context.Context)
-
-	if !ok {
-
-		return []distillation.Experience{}, nil
-
-	}
-
-	apiExperiences, err := a.apiRepo.SearchByVector(ctxTyped, vector, tenantID, limit)
+	apiExperiences, err := a.apiRepo.SearchByVector(ctx, vector, tenantID, limit)
 
 	if err != nil {
 
@@ -121,14 +111,8 @@ func (a *experienceRepositoryAdapter) SearchByVector(ctx interface{}, vector []f
 }
 
 // GetByMemoryType implements internal ExperienceRepository interface
-func (a *experienceRepositoryAdapter) GetByMemoryType(ctx interface{}, tenantID string, memoryType distillation.MemoryType) ([]distillation.Experience, error) {
-	// Convert interface{} to context.Context if possible
-	ctxTyped, ok := ctx.(context.Context)
-	if !ok {
-		return []distillation.Experience{}, nil
-	}
-
-	apiExperiences, err := a.apiRepo.GetByMemoryType(ctxTyped, tenantID, MemoryType(memoryType))
+func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenantID string, memoryType distillation.MemoryType) ([]distillation.Experience, error) {
+	apiExperiences, err := a.apiRepo.GetByMemoryType(ctx, tenantID, MemoryType(memoryType))
 	if err != nil {
 		return nil, err
 	}
@@ -148,13 +132,7 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx interface{}, tenantID 
 }
 
 // Update implements internal ExperienceRepository interface
-func (a *experienceRepositoryAdapter) Update(ctx interface{}, experience *distillation.Experience) error {
-	// Convert interface{} to context.Context if possible
-	ctxTyped, ok := ctx.(context.Context)
-	if !ok {
-		return nil
-	}
-
+func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *distillation.Experience) error {
 	apiExperience := &Experience{
 		Problem:          experience.Problem,
 		Solution:         experience.Solution,
@@ -162,28 +140,16 @@ func (a *experienceRepositoryAdapter) Update(ctx interface{}, experience *distil
 		ExtractionMethod: ExtractionMethod(experience.ExtractionMethod),
 	}
 
-	return a.apiRepo.Update(ctxTyped, apiExperience)
+	return a.apiRepo.Update(ctx, apiExperience)
 }
 
 // Delete implements internal ExperienceRepository interface
-func (a *experienceRepositoryAdapter) Delete(ctx interface{}, id string) error {
-	// Convert interface{} to context.Context if possible
-	ctxTyped, ok := ctx.(context.Context)
-	if !ok {
-		return nil
-	}
-
-	return a.apiRepo.Delete(ctxTyped, id)
+func (a *experienceRepositoryAdapter) Delete(ctx context.Context, id string) error {
+	return a.apiRepo.Delete(ctx, id)
 }
 
 // Create implements internal ExperienceRepository interface
-func (a *experienceRepositoryAdapter) Create(ctx interface{}, experience *distillation.Experience) error {
-	// Convert interface{} to context.Context if possible
-	ctxTyped, ok := ctx.(context.Context)
-	if !ok {
-		return fmt.Errorf("invalid context type")
-	}
-
+func (a *experienceRepositoryAdapter) Create(ctx context.Context, experience *distillation.Experience) error {
 	// Convert internal experience to API experience
 	apiExperience := &Experience{
 		Problem:          experience.Problem,
@@ -192,7 +158,7 @@ func (a *experienceRepositoryAdapter) Create(ctx interface{}, experience *distil
 		ExtractionMethod: ExtractionMethod(experience.ExtractionMethod),
 	}
 
-	return a.apiRepo.Create(ctxTyped, apiExperience)
+	return a.apiRepo.Create(ctx, apiExperience)
 }
 
 // GetDistiller returns the internal distiller instance (for advanced usage).

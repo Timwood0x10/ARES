@@ -109,6 +109,15 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 	for i, task := range tasks {
 		task := task
 		g.Go(func() error {
+			// Handle nil task elements to prevent panic.
+			if task == nil {
+				resultsMu.Lock()
+				results[i] = models.NewTaskResult("", "")
+				results[i].SetError("task is nil")
+				resultsMu.Unlock()
+				return fmt.Errorf("task %d is nil", i)
+			}
+
 			result := models.NewTaskResult(task.TaskID, task.AgentType)
 
 			select {

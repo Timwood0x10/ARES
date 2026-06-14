@@ -61,26 +61,26 @@ func NewMockExperienceRepository(experiences []Experience) *MockExperienceReposi
 	}
 }
 
-func (m *MockExperienceRepository) SearchByVector(ctx interface{}, vector []float64, tenantID string, limit int) ([]Experience, error) {
+func (m *MockExperienceRepository) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]Experience, error) {
 	if len(m.experiences) == 0 {
 		return []Experience{}, nil
 	}
 	return m.experiences[:minInt(limit, len(m.experiences))], nil
 }
 
-func (m *MockExperienceRepository) GetByMemoryType(ctx interface{}, tenantID string, memoryType MemoryType) ([]Experience, error) {
+func (m *MockExperienceRepository) GetByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) ([]Experience, error) {
 	return m.experiences, nil
 }
 
-func (m *MockExperienceRepository) Update(ctx interface{}, experience *Experience) error {
+func (m *MockExperienceRepository) Update(ctx context.Context, experience *Experience) error {
 	return nil
 }
 
-func (m *MockExperienceRepository) Delete(ctx interface{}, id string) error {
+func (m *MockExperienceRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *MockExperienceRepository) Create(ctx interface{}, experience *Experience) error {
+func (m *MockExperienceRepository) Create(ctx context.Context, experience *Experience) error {
 	m.experiences = append(m.experiences, *experience)
 	return nil
 }

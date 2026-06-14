@@ -40,21 +40,21 @@ type SurvivalEvent struct {
 
 // SurvivalStatus holds the current state of a running survival test.
 type SurvivalStatus struct {
-	Running     bool             `json:"running"`
-	Config      SurvivalConfig   `json:"config"`
-	ActionsRun  int              `json:"actions_run"`
-	StartedAt   time.Time        `json:"started_at,omitempty"`
-	Elapsed     time.Duration    `json:"elapsed"`
-	Timeline    []SurvivalEvent  `json:"timeline"`
+	Running    bool            `json:"running"`
+	Config     SurvivalConfig  `json:"config"`
+	ActionsRun int             `json:"actions_run"`
+	StartedAt  time.Time       `json:"started_at,omitempty"`
+	Elapsed    time.Duration   `json:"elapsed"`
+	Timeline   []SurvivalEvent `json:"timeline"`
 }
 
 // survivalState tracks the in-progress survival run.
 type survivalState struct {
-	mu       sync.Mutex
-	running  bool
-	config   SurvivalConfig
-	started  time.Time
-	events   []SurvivalEvent
+	mu      sync.RWMutex
+	running bool
+	config  SurvivalConfig
+	started time.Time
+	events  []SurvivalEvent
 }
 
 // RunSurvival runs chaos actions at intervals for the configured duration.
@@ -140,8 +140,8 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 
 // GetSurvivalStatus returns the current status of the survival run.
 func (s *Service) GetSurvivalStatus() SurvivalStatus {
-	s.survival.mu.Lock()
-	defer s.survival.mu.Unlock()
+	s.survival.mu.RLock()
+	defer s.survival.mu.RUnlock()
 
 	status := SurvivalStatus{
 		Running:    s.survival.running,
@@ -217,8 +217,8 @@ func (s *Service) randomChaosAction() Action {
 		// Use agent IDs as proxy for edge endpoints.
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) >= 2 {
-			fromIdx := rand.Intn(len(ids))    //nolint:gosec
-			toIdx := rand.Intn(len(ids) - 1)  //nolint:gosec
+			fromIdx := rand.Intn(len(ids))   //nolint:gosec
+			toIdx := rand.Intn(len(ids) - 1) //nolint:gosec
 			if toIdx >= fromIdx {
 				toIdx++
 			}

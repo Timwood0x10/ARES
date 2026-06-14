@@ -106,25 +106,7 @@ func (c *GenealogyCollector) handleAgentStarted(evt *events.Event) {
 		c.genealogy.RecordSpawn(parentID, agentID, agentType, evt.Payload)
 	} else {
 		// No parent — this is a root agent.
-		c.genealogy.mu.Lock()
-		if _, exists := c.genealogy.nodes[agentID]; !exists {
-			node := &LineageNode{
-				ID:        agentID,
-				Type:      agentType,
-				SpawnedAt: evt.Timestamp,
-				IsAlive:   true,
-				Metadata:  evt.Payload,
-			}
-			c.genealogy.nodes[agentID] = node
-			c.genealogy.roots = append(c.genealogy.roots, node)
-		} else {
-			// Node already exists (e.g., from a spawn record) — just mark alive.
-			if node, ok := c.genealogy.nodes[agentID]; ok {
-				node.IsAlive = true
-				node.SpawnedAt = evt.Timestamp
-			}
-		}
-		c.genealogy.mu.Unlock()
+		c.genealogy.RecordRoot(agentID, agentType, evt.Payload)
 	}
 }
 

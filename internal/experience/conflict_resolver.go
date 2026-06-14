@@ -51,18 +51,26 @@ func (c *ConflictResolver) DetectConflictGroups(ctx context.Context, experiences
 		group := []*Experience{exp1}
 		used[exp1.ID] = true
 
-		// Find all experiences with similar problem
+		// Find all experiences with similar problem.
+		// Add to group if similar to any existing member (single-link clustering).
 		for j := i + 1; j < len(experiences); j++ {
 			exp2 := experiences[j]
 			if used[exp2.ID] {
 				continue
 			}
 
-			// Calculate problem embedding similarity
-			similarity := c.cosineSimilarity(exp1.Embedding, exp2.Embedding)
+			// Check similarity against all group members.
+			// Add to group if similar to any existing member.
+			shouldAdd := false
+			for _, groupMember := range group {
+				similarity := c.cosineSimilarity(exp2.Embedding, groupMember.Embedding)
+				if similarity > c.problemSimilarityThreshold {
+					shouldAdd = true
+					break
+				}
+			}
 
-			// If similarity exceeds threshold, add to same group
-			if similarity > c.problemSimilarityThreshold {
+			if shouldAdd {
 				group = append(group, exp2)
 				used[exp2.ID] = true
 			}
