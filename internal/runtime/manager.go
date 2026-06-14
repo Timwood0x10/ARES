@@ -167,6 +167,11 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 		return nil
 	})
 
+	m.emitEvent(ctx, "lifecycle:"+id, events.EventAgentStarted, map[string]any{
+		"agent_id": id,
+		"type":     string(agent.Type()),
+	})
+
 	return nil
 }
 
@@ -201,8 +206,31 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 		}
 	}
 
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+		"agent_id": agentID,
+		"reason":   "explicit_stop",
+	})
+
 	slog.Info("runtime: agent stopped", "agent_id", agentID)
 	return nil
+}
+
+// emitEvent appends a lifecycle event to the EventStore.
+// No-op if eventStore is nil. Failures are logged as warnings (non-critical).
+func (m *Manager) emitEvent(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any) {
+	if m.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		ID:        events.NewEventID(),
+		StreamID:  streamID,
+		Type:      eventType,
+		Payload:   payload,
+		Timestamp: time.Now(),
+	}
+	if err := m.eventStore.Append(ctx, streamID, []*events.Event{event}, 0); err != nil {
+		slog.Warn("runtime: failed to emit event", "type", eventType, "stream_id", streamID, "error", err)
+	}
 }
 
 // GetAgent returns the current instance of a managed agent, or nil if not found.
@@ -234,6 +262,11 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	ma.stopped = true
 	prevRestarts := ma.restarts
 	m.mu.Unlock()
+
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+		"agent_id": agentID,
+		"reason":   "restart",
+	})
 
 	// Stop the old agent.
 	if ma.cancel != nil {
@@ -288,6 +321,11 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 		return nil
 	})
 
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStarted, map[string]any{
+		"agent_id": agentID,
+		"type":     "restart",
+	})
+
 	slog.Info("runtime: agent restarted", "agent_id", agentID)
 	return nil
 }
@@ -304,6 +342,10 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 	if factory == nil {
 		return ErrNilFactory
 	}
+
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverTriggered, map[string]any{
+		"agent_id": agentID,
+	})
 
 	// Stop old agent if present. Use write lock to prevent race with concurrent
 	// RestoreAgent or NotifyAgentDead calls replacing the same agentID.
@@ -404,6 +446,11 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 		return nil
 	})
 
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverCompleted, map[string]any{
+		"agent_id": agentID,
+		"type":     newAgent.Type(),
+	})
+
 	slog.Info("runtime: agent restored",
 		"agent_id", agentID, "type", newAgent.Type(),
 		"restarts", prevRestarts,
@@ -458,6 +505,12 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id", agentID, "reason", reason,
 	)
 
+	m.emitEvent(context.Background(), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+		"agent_id":     agentID,
+		"reason":       reason,
+		"auto_restore": true,
+	})
+
 	// Trigger RestoreAgent asynchronously via errgroup.
 	m.g.Go(func() error {
 		restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
@@ -494,6 +547,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.cancel = childCancel
 	m.g, m.gctx = errgroup.WithContext(childCtx)
 	m.mu.Unlock()
+
+	// Wire EventStore into MemoryManager if both are available.
+	if m.memManager != nil && m.eventStore != nil {
+		m.memManager.SetEventStore(m.eventStore, "memory-manager")
+	}
 
 	// Launch all registered agents in managed goroutines.
 	m.mu.RLock()

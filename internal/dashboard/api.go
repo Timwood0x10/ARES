@@ -291,7 +291,9 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		slog.Debug("dashboard: failed to write index.html", "error", err)
+	}
 }
 
 func (a *APIv2) handleOverviewJSON(w http.ResponseWriter, r *http.Request) {

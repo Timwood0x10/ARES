@@ -13,6 +13,7 @@ import (
 
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
+	"goagentx/internal/events"
 	memctx "goagentx/internal/memory/context"
 	"goagentx/internal/memory/distillation"
 	"goagentx/internal/storage/postgres/embedding"
@@ -36,6 +37,10 @@ type memoryManager struct {
 	expRepo       distillation.ExperienceRepository
 	useNewDistill bool // Flag to use new distillation engine
 	cleanupCancel context.CancelFunc
+
+	// Event sourcing: optional EventStore for emitting lifecycle events.
+	eventStore events.EventStore
+	streamID   string // Stream ID used when appending events.
 }
 
 // DistilledTaskData holds distilled task information with local vector.
@@ -168,6 +173,28 @@ func (m *memoryManager) Stop(ctx context.Context) error {
 	return nil
 }
 
+// SetEventStore configures an optional EventStore for emitting lifecycle events.
+// If store is nil, event emission is a no-op.
+func (m *memoryManager) SetEventStore(store events.EventStore, streamID string) {
+	m.eventStore = store
+	m.streamID = streamID
+}
+
+// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+func (m *memoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if m.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: m.streamID,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := m.eventStore.Append(ctx, m.streamID, []*events.Event{event}, 0); err != nil {
+		slog.Warn("Failed to emit event", "type", eventType, "error", err)
+	}
+}
+
 // CreateSession creates a new session and returns the session ID.
 func (m *memoryManager) CreateSession(ctx context.Context, userID string) (string, error) {
 	// Use both time and userID to ensure uniqueness
@@ -185,6 +212,12 @@ func (m *memoryManager) CreateSession(ctx context.Context, userID string) (strin
 		return "", errors.Wrap(err, "create session")
 	}
 
+	// Emit session created event.
+	m.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+		"session_id": sessionID,
+		"user_id":    userID,
+	})
+
 	slog.Debug("Session created", "session_id", sessionID, "user_id", userID)
 	return sessionID, nil
 }
@@ -200,6 +233,12 @@ func (m *memoryManager) AddMessage(ctx context.Context, sessionID, role, content
 	if err := m.sessionMemory.AddMessage(ctx, sessionID, msg); err != nil {
 		return errors.Wrap(err, "add message")
 	}
+
+	// Emit message added event.
+	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		"session_id": sessionID,
+		"role":       role,
+	})
 
 	slog.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
@@ -331,6 +370,14 @@ func (m *memoryManager) distillTaskCommon(ctx context.Context, taskID, method st
 		slog.Warn("[Memory Distillation] Task input is not a string", "task_id", taskID)
 		inputStr = ""
 	}
+
+	// Emit memory distilled event.
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":     taskID,
+		"input_count": len(inputStr),
+		"method":      method,
+	})
+
 	slog.Info("[Memory Distillation] Task distilled successfully",
 		"task_id", taskID,
 		"method", method,
@@ -395,6 +442,12 @@ func (m *memoryManager) storeDistilledTaskOld(ctx context.Context, taskID string
 	m.evictOldestDistilledTask()
 
 	m.distilledTasks[taskID] = data
+
+	// Emit memory distilled event for successful storage.
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":      taskID,
+		"output_count": len(outputStr),
+	})
 
 	slog.Info("[Memory Distillation] Distilled task stored successfully (old method)",
 		"task_id", taskID,
@@ -498,6 +551,13 @@ func (m *memoryManager) storeDistilledTaskNew(ctx context.Context, taskID string
 	}
 
 	metrics := m.distiller.GetMetrics()
+
+	// Emit memory distilled event for successful storage.
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":      taskID,
+		"output_count": len(memories),
+	})
+
 	slog.Info("[Memory Distillation] Distillation completed (new method)",
 		"task_id", taskID,
 		"memories_created", len(memories),

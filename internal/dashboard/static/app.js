@@ -3,6 +3,8 @@
     'use strict';
     let ws = null;
     let currentView = 'overview';
+    let selectedAgentId = null;
+    let arenaAgents = [];
 
     // ── API ──────────────────────────────
     async function api(path, opts) {
@@ -269,6 +271,7 @@
             api('/arena/history'),
             api('/agents'),
         ]);
+        arenaAgents = agents || [];
         const el = document.getElementById('view-arena');
 
         const recoveryRate = stats && stats.total_actions > 0
@@ -297,6 +300,12 @@
                     <div class="label">Failed</div>
                     <div class="value">${stats?.failed_actions||0}</div>
                 </div>
+            </div>
+
+            <div class="card">
+                <h3>Agent Graph</h3>
+                <svg id="dag-svg" width="100%" height="200" style="background:var(--bg-primary);border-radius:var(--radius-sm)"></svg>
+                <div id="arena-selected-info" style="margin-top:0.75rem"></div>
             </div>
 
             <div class="card">
@@ -345,6 +354,30 @@
 
         // Auto-refresh every 3s.
         setTimeout(() => { if (currentView==='arena') arena(); }, 3000);
+
+        // Render DAG and sync selection.
+        renderDAG(arenaAgents);
+        const agentSelect = document.getElementById('arena-agent-select');
+        if (agentSelect) {
+            if (selectedAgentId) agentSelect.value = selectedAgentId;
+            agentSelect.addEventListener('change', () => {
+                const id = agentSelect.value;
+                if (id) {
+                    const a = arenaAgents.find(ag => ag.id === id);
+                    selectedAgentId = id;
+                    updateSelectedInfo(a || null);
+                } else {
+                    selectedAgentId = null;
+                    updateSelectedInfo(null);
+                }
+                renderDAG(arenaAgents);
+            });
+        }
+        // Restore info panel for current selection.
+        if (selectedAgentId) {
+            const a = arenaAgents.find(ag => ag.id === selectedAgentId);
+            updateSelectedInfo(a || null);
+        }
     }
 
     window.arenaAction = async function(type) {
@@ -362,8 +395,8 @@
     };
 
     window.arenaKillAgent = async function() {
-        const id = document.getElementById('arena-agent-select').value;
-        if (!id) { alert('Select an agent first'); return; }
+        const id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first (use dropdown or click a node)'); return; }
         const el = document.getElementById('arena-action-result');
         el.textContent = 'Killing agent...';
         el.style.color = 'var(--text-secondary)';
@@ -416,6 +449,143 @@
     const dangerStyle = document.createElement('style');
     dangerStyle.textContent = `.btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:white;box-shadow:0 2px 8px rgba(239,68,68,0.3)}.btn-danger:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(239,68,68,0.3)}`;
     document.head.appendChild(dangerStyle);
+
+    // ── DAG Visualization ───────────────
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+
+    function renderDAG(agents) {
+        var svg = document.getElementById('dag-svg');
+        if (!svg) return;
+        svg.innerHTML = '';
+
+        if (!agents || agents.length === 0) {
+            var t = document.createElementNS(SVG_NS, 'text');
+            t.setAttribute('x', '50%');
+            t.setAttribute('y', '50%');
+            t.setAttribute('text-anchor', 'middle');
+            t.setAttribute('dominant-baseline', 'middle');
+            t.setAttribute('fill', 'var(--text-muted)');
+            t.setAttribute('font-size', '14');
+            t.textContent = 'No agents to display';
+            svg.appendChild(t);
+            return;
+        }
+
+        var cols = 4;
+        var xStart = 100;
+        var yStart = 70;
+        var xGap = 180;
+        var yGap = 120;
+
+        agents.forEach(function(a, i) {
+            var x = xStart + (i % cols) * xGap;
+            var y = yStart + Math.floor(i / cols) * yGap;
+
+            var statusColor = a.status === 'completed' ? 'var(--success)' :
+                              a.status === 'failed' ? 'var(--danger)' :
+                              (a.status.includes('running') || a.status.includes('analyzing') || a.status === 'pending') ? 'var(--warning)' :
+                              'var(--info)';
+
+            var isSelected = selectedAgentId === a.id;
+
+            var g = document.createElementNS(SVG_NS, 'g');
+            g.setAttribute('data-agent-id', a.id);
+            g.style.cursor = 'pointer';
+
+            // Glow ring for selected node.
+            if (isSelected) {
+                var glow = document.createElementNS(SVG_NS, 'circle');
+                glow.setAttribute('cx', x);
+                glow.setAttribute('cy', y);
+                glow.setAttribute('r', '36');
+                glow.setAttribute('fill', 'none');
+                glow.setAttribute('stroke', 'var(--accent)');
+                glow.setAttribute('stroke-width', '2');
+                glow.setAttribute('stroke-opacity', '0.3');
+                g.appendChild(glow);
+            }
+
+            // Node circle.
+            var circle = document.createElementNS(SVG_NS, 'circle');
+            circle.setAttribute('cx', x);
+            circle.setAttribute('cy', y);
+            circle.setAttribute('r', isSelected ? '30' : '26');
+            circle.setAttribute('fill', statusColor);
+            circle.setAttribute('fill-opacity', '0.15');
+            circle.setAttribute('stroke', isSelected ? 'var(--accent)' : statusColor);
+            circle.setAttribute('stroke-width', isSelected ? '3' : '2');
+            g.appendChild(circle);
+
+            // Name label (inside circle).
+            var name = document.createElementNS(SVG_NS, 'text');
+            name.setAttribute('x', x);
+            name.setAttribute('y', y + 1);
+            name.setAttribute('text-anchor', 'middle');
+            name.setAttribute('dominant-baseline', 'middle');
+            name.setAttribute('fill', 'var(--text-primary)');
+            name.setAttribute('font-size', '10');
+            name.setAttribute('font-weight', '600');
+            name.style.pointerEvents = 'none';
+            name.textContent = truncName(a.name, 8);
+            g.appendChild(name);
+
+            // Status label (below circle).
+            var status = document.createElementNS(SVG_NS, 'text');
+            status.setAttribute('x', x);
+            status.setAttribute('y', y + 42);
+            status.setAttribute('text-anchor', 'middle');
+            status.setAttribute('fill', statusColor);
+            status.setAttribute('font-size', '10');
+            status.style.pointerEvents = 'none';
+            status.textContent = a.status;
+            g.appendChild(status);
+
+            // Click handler.
+            g.addEventListener('click', function() { selectAgent(a); });
+
+            svg.appendChild(g);
+        });
+
+        // Adjust SVG height to fit all nodes.
+        var rows = Math.ceil(agents.length / cols);
+        var height = yStart + rows * yGap + 30;
+        svg.setAttribute('height', Math.max(200, height));
+    }
+
+    function truncName(name, maxLen) {
+        if (!name) return '?';
+        return name.length > maxLen ? name.slice(0, maxLen - 1) + '..' : name;
+    }
+
+    function selectAgent(agent) {
+        selectedAgentId = agent.id;
+        // Sync the Kill Agent dropdown.
+        var select = document.getElementById('arena-agent-select');
+        if (select) select.value = agent.id;
+        // Update info panel and re-render DAG.
+        updateSelectedInfo(agent);
+        renderDAG(arenaAgents);
+    }
+
+    function updateSelectedInfo(agent) {
+        var el = document.getElementById('arena-selected-info');
+        if (!el) return;
+        if (!agent) { el.innerHTML = ''; return; }
+
+        var statusColor = agent.status === 'completed' ? 'var(--success)' :
+                          agent.status === 'failed' ? 'var(--danger)' :
+                          (agent.status.includes('running') || agent.status.includes('analyzing') || agent.status === 'pending') ? 'var(--warning)' :
+                          'var(--info)';
+
+        el.innerHTML =
+            '<div style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-primary);border:1px solid var(--accent);border-radius:var(--radius-sm);font-size:0.8125rem">' +
+                '<span style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';flex-shrink:0"></span>' +
+                '<strong>' + esc(agent.name) + '</strong>' +
+                '<span style="color:var(--text-secondary)">' + esc(agent.status) + '</span>' +
+                (agent.duration ? '<span style="color:var(--text-muted)">' + esc(agent.duration) + '</span>' : '') +
+                '<span style="color:var(--text-muted);margin-left:auto">ID: ' + esc(agent.id) + '</span>' +
+            '</div>';
+    }
 
     // ── WebSocket ────────────────────────
     function connectWS() {

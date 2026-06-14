@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 	"goagentx/internal/memory"
 )
 
@@ -95,6 +96,8 @@ func (m *mockMemoryManager) Start(ctx context.Context) error {
 func (m *mockMemoryManager) Stop(ctx context.Context) error {
 	return nil
 }
+
+func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {}
 
 // TestNewService tests the NewService constructor.
 func TestNewService(t *testing.T) {

@@ -38,9 +38,10 @@ type AgentRequest struct {
 	Name       string         `json:"name,omitempty"`        // Or custom name
 	MCPTool    string         `json:"mcp_tool,omitempty"`    // Or custom MCP tool
 	MCPArgs    map[string]any `json:"mcp_args,omitempty"`
-	LLMPrompt  string         `json:"llm_prompt,omitempty"` // Or custom prompt
-	Target     string         `json:"target,omitempty"`     // Target to analyze
-	Steps      []AgentStep    `json:"steps,omitempty"`      // Multi-step tool calls
+	LLMPrompt  string         `json:"llm_prompt,omitempty"`  // Or custom prompt
+	Target     string         `json:"target,omitempty"`      // Target to analyze
+	Steps      []AgentStep    `json:"steps,omitempty"`       // Multi-step tool calls
+	ResumeFrom string         `json:"resume_from,omitempty"` // Agent ID to resume from after kill
 }
 
 // AgentResult holds the full result of an agent run.
@@ -107,17 +108,18 @@ type EventBroadcaster interface {
 
 // Orchestrator manages agent lifecycle — creation, execution, results.
 type Orchestrator struct {
-	mcp       MCPExecutor
-	llm       LLMExecutor
-	templates []AgentTemplate
-	agents    map[string]*AgentResult
-	cancels   map[string]context.CancelFunc // per-agent cancel functions
-	hub       *WSHub                        // optional, for real-time WS updates
-	store     *events.MemoryEventStore      // optional, for event persistence
-	flight    *flight.FlightRecorder        // optional, for flight recording
-	mu        sync.RWMutex
-	nextID    atomic.Int64
-	agentWg   sync.WaitGroup // tracks background agent goroutines
+	mcp         MCPExecutor
+	llm         LLMExecutor
+	templates   []AgentTemplate
+	toolAliases map[string]string // short-name → full-name mappings for MCP tools
+	agents      map[string]*AgentResult
+	cancels     map[string]context.CancelFunc // per-agent cancel functions
+	hub         *WSHub                        // optional, for real-time WS updates
+	store       *events.MemoryEventStore      // optional, for event persistence
+	flight      *flight.FlightRecorder        // optional, for flight recording
+	mu          sync.RWMutex
+	nextID      atomic.Int64
+	agentWg     sync.WaitGroup // tracks background agent goroutines
 }
 
 // NewOrchestrator creates a new Orchestrator.
@@ -151,6 +153,11 @@ func (o *Orchestrator) SetFlightRecorder(fr *flight.FlightRecorder) {
 	o.flight = fr
 }
 
+// EventStore returns the current event store. May be nil if not configured.
+func (o *Orchestrator) EventStore() *events.MemoryEventStore {
+	return o.getStore()
+}
+
 // getFlight returns the current FlightRecorder under a read lock. Safe for concurrent use.
 func (o *Orchestrator) getFlight() *flight.FlightRecorder {
 	o.mu.RLock()
@@ -163,6 +170,28 @@ func (o *Orchestrator) SetTemplates(templates []AgentTemplate) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.templates = templates
+}
+
+// SetToolAliases sets short-name to full-name mappings for MCP tools.
+// e.g. "files" maps to "codegraph_files".
+func (o *Orchestrator) SetToolAliases(aliases map[string]string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.toolAliases = aliases
+}
+
+// resolveToolName resolves a short tool alias to its full MCP name.
+// Returns the original name if no alias mapping exists.
+func (o *Orchestrator) resolveToolName(name string) string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.toolAliases == nil {
+		return name
+	}
+	if full, ok := o.toolAliases[name]; ok {
+		return full
+	}
+	return name
 }
 
 // GetTemplates returns available templates.
@@ -236,6 +265,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 		if agentCtx.Err() != nil && result.Status != "completed" {
 			slog.Info("orchestrator: agent killed, resurrecting", "id", id, "name", req.Name)
 			o.emitEvent(id, "agent.resurrecting", map[string]any{"reason": "arena kill"})
+			req.ResumeFrom = id // Resume from the killed agent's progress.
 			if _, err := o.CreateAgent(req); err != nil {
 				slog.Error("orchestrator: resurrection failed", "id", id, "error", err)
 			}
@@ -295,10 +325,47 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	// Phase 1: MCP data gathering (single or multi-step).
 	o.updateStatus(id, "gathering data...", 20, "")
 
+	// Resume support: if ResumeFrom is set, read previous agent's events to
+	// determine which steps were already completed and skip them.
+	startStep := 0
+	var resumeSummary string
+	if req.ResumeFrom != "" {
+		completedSteps, summary := o.loadResumeProgress(ctx, req.ResumeFrom, req.Steps)
+		startStep = completedSteps
+		resumeSummary = summary
+		if startStep > 0 {
+			slog.Info("orchestrator: resuming agent from step",
+				"id", id, "resume_from", req.ResumeFrom, "start_step", startStep+1, "total_steps", len(req.Steps))
+			o.updateStatus(id, fmt.Sprintf("resuming from step %d/%d", startStep+1, len(req.Steps)), 20, "")
+			o.emitEvent(id, "agent.resumed", map[string]any{
+				"resume_from":  req.ResumeFrom,
+				"start_step":   startStep + 1,
+				"total_steps":  len(req.Steps),
+				"prev_summary": resumeSummary,
+			})
+		}
+	}
+
 	var rawData string
-	if len(req.Steps) > 0 {
+
+	// If resuming and all MCP steps were already completed, load previous data.
+	if req.ResumeFrom != "" && startStep >= len(req.Steps) && len(req.Steps) > 0 {
+		prevData := o.loadPreviousData(ctx, req.ResumeFrom)
+		if prevData != "" {
+			rawData = prevData
+			slog.Info("orchestrator: resuming with previous MCP data", "id", id, "data_len", len(rawData))
+		}
+	}
+
+	// Only gather new MCP data if we don't already have it from resume.
+	if rawData == "" && len(req.Steps) > 0 {
 		// Multi-step: call each tool in sequence, accumulate results.
+		// Skip steps that were already completed by the previous agent.
 		for i, step := range req.Steps {
+			if i < startStep {
+				// Already completed by the previous agent; skip.
+				continue
+			}
 			select {
 			case <-ctx.Done():
 				o.failAgent(id, ctx.Err())
@@ -308,25 +375,34 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 
 			progress := 20 + (i * 25 / len(req.Steps))
 			o.updateStatus(id, fmt.Sprintf("step %d/%d: %s", i+1, len(req.Steps), step.Tool), progress, "")
-			o.emitFlightDecision(id, step.Tool, fmt.Sprintf("step %d", i+1))
+			toolName := o.resolveToolName(step.Tool)
+			o.emitFlightDecision(id, toolName, fmt.Sprintf("step %d", i+1))
 
 			mcpStart := time.Now()
-			o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+step.Tool, mcpStart, map[string]any{"step": i + 1})
+			o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+toolName, mcpStart, map[string]any{"step": i + 1})
 
-			res, err := o.mcp.CallTool(ctx, step.Tool, step.Args)
+			res, err := o.mcp.CallTool(ctx, toolName, step.Args)
 			if err != nil {
-				o.emitFlightTimeline(id, flight.EventError, "mcp.call."+step.Tool+".error", mcpStart, map[string]any{"error": err.Error()})
+				o.emitFlightTimeline(id, flight.EventError, "mcp.call."+toolName+".error", mcpStart, map[string]any{"error": err.Error()})
 				o.failAgent(id, err)
 				return
 			}
 
-			o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+step.Tool, mcpStart)
+			o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+toolName, mcpStart)
+
+			// Record step completion in event store for future resurrection.
+			o.emitEvent(id, "mcp.step.completed", map[string]any{
+				"step":  i + 1,
+				"tool":  toolName,
+				"args":  step.Args,
+				"total": len(req.Steps),
+			})
 
 			for _, b := range res.Content {
-				rawData += fmt.Sprintf("\n--- Step %d: %s ---\n%s\n", i+1, step.Tool, b.Text)
+				rawData += fmt.Sprintf("\n--- Step %d: %s ---\n%s\n", i+1, toolName, b.Text)
 			}
 		}
-	} else if req.MCPTool == "" {
+	} else if rawData == "" && req.MCPTool == "" {
 		// List tools.
 		mcpStart := time.Now()
 		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.list_tools", mcpStart, nil)
@@ -341,32 +417,39 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.list_tools", mcpStart)
 		data, _ := json.MarshalIndent(tools, "", "  ")
 		rawData = string(data)
-	} else {
+	} else if rawData == "" {
 		// Single tool call.
-		o.emitFlightDecision(id, req.MCPTool, "template selection")
+		mcpToolName := o.resolveToolName(req.MCPTool)
+		o.emitFlightDecision(id, mcpToolName, "template selection")
 
 		mcpStart := time.Now()
-		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+req.MCPTool, mcpStart, map[string]any{"tool": req.MCPTool})
+		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.call."+mcpToolName, mcpStart, map[string]any{"tool": mcpToolName})
 
-		res, err := o.mcp.CallTool(ctx, req.MCPTool, req.MCPArgs)
+		res, err := o.mcp.CallTool(ctx, mcpToolName, req.MCPArgs)
 		if err != nil {
-			o.emitFlightTimeline(id, flight.EventError, "mcp.call."+req.MCPTool+".error", mcpStart, map[string]any{"error": err.Error()})
+			o.emitFlightTimeline(id, flight.EventError, "mcp.call."+mcpToolName+".error", mcpStart, map[string]any{"error": err.Error()})
 			o.failAgent(id, err)
 			return
 		}
 
-		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+req.MCPTool, mcpStart)
+		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.call."+mcpToolName, mcpStart)
 		for _, b := range res.Content {
 			rawData += b.Text
 		}
 	}
 
 	o.updateRawDataLen(id, len(rawData))
+	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": rawData})
 	o.updateStatus(id, "analyzing with LLM...", 50, "")
 	slog.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
 
 	// Phase 2: LLM analysis.
+	// Prepend resume context to the prompt so the LLM knows what was already done.
 	prompt := req.LLMPrompt
+	if resumeSummary != "" && startStep > 0 {
+		resumeCtx := fmt.Sprintf("This agent was interrupted and is being resumed.\nPrevious progress:\n%s\nContinuing from step %d...\n\n", resumeSummary, startStep+1)
+		prompt = resumeCtx + prompt
+	}
 	if prompt == "" {
 		prompt = "Analyze the following code data and provide insights:\n\n{{.raw_data}}"
 	}
@@ -633,6 +716,103 @@ func (o *Orchestrator) emitFlightDecision(agentID, selected, reason string) {
 		Reason:     reason,
 		Timestamp:  time.Now(),
 	})
+}
+
+// loadResumeProgress reads events from a previous agent to determine how many
+// multi-step calls were already completed and builds a human-readable summary.
+// Returns the number of completed steps and a summary string.
+// Nil-safe: returns (0, "") if the event store is not configured or no events are found.
+func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID string, steps []AgentStep) (int, string) {
+	store := o.getStore()
+	if store == nil {
+		return 0, ""
+	}
+
+	prevEvents, err := store.Read(ctx, previousAgentID, events.ReadOptions{
+		Direction: events.ReadAscending,
+		Limit:     10000,
+	})
+	if err != nil {
+		slog.Warn("orchestrator: failed to read resume events", "agent", previousAgentID, "error", err)
+		return 0, ""
+	}
+
+	// Count mcp.step.completed events to determine how far the previous agent got.
+	completedSteps := 0
+	var completedDetails []string
+	for _, evt := range prevEvents {
+		if evt.Type != "mcp.step.completed" {
+			continue
+		}
+		completedSteps++
+		var stepNum int
+		switch v := evt.Payload["step"].(type) {
+		case int:
+			stepNum = v
+		case float64:
+			stepNum = int(v)
+		}
+		toolName, _ := evt.Payload["tool"].(string)
+		completedDetails = append(completedDetails, fmt.Sprintf("  - Step %d (%s): completed", stepNum, toolName))
+	}
+
+	if completedSteps == 0 {
+		return 0, ""
+	}
+
+	// Cap to the actual step count in case the event list is stale.
+	if completedSteps > len(steps) {
+		completedSteps = len(steps)
+	}
+
+	summary := fmt.Sprintf("Agent %s completed %d/%d steps before interruption:\n%s",
+		previousAgentID, completedSteps, len(steps), strings.Join(completedDetails, "\n"))
+
+	return completedSteps, summary
+}
+
+// loadPreviousData loads the raw MCP data from a previous agent's events.
+// Used when resuming: all MCP steps completed, need the data for LLM.
+func (o *Orchestrator) loadPreviousData(ctx context.Context, previousAgentID string) string {
+	store := o.getStore()
+	if store == nil {
+		return ""
+	}
+
+	evts, err := store.Read(ctx, previousAgentID, events.ReadOptions{
+		Direction: events.ReadAscending,
+		Limit:     10000,
+	})
+	if err != nil {
+		return ""
+	}
+
+	// Find the largest mcp.data.gathered event — that's the final accumulated data.
+	var maxLen int
+	var maxData string
+	for _, evt := range evts {
+		if evt.Type == "mcp.data.gathered" {
+			if data, ok := evt.Payload["data"].(string); ok && len(data) > maxLen {
+				maxLen = len(data)
+				maxData = data
+			}
+		}
+	}
+
+	return maxData
+}
+
+// BuildToolAliases creates short-name mappings from MCP tool definitions.
+// For a tool named "codegraph_files", it maps both "codegraph_files" and "files" to "codegraph_files".
+func BuildToolAliases(tools []MCPToolInfo) map[string]string {
+	aliases := make(map[string]string)
+	for _, t := range tools {
+		aliases[t.Name] = t.Name
+		if idx := strings.Index(t.Name, "_"); idx >= 0 {
+			aliases[t.Name[idx+1:]] = t.Name
+		}
+	}
+	return aliases
 }
 
 func truncateStr(s string, n int) string {

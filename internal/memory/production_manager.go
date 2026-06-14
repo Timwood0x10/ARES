@@ -15,6 +15,7 @@ import (
 
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
+	"goagentx/internal/events"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -53,6 +54,10 @@ type ProductionMemoryManager struct {
 	// Optional: keep in-memory cache for hot data
 	sessionCache map[string]*SessionData
 	maxCacheSize int
+
+	// Event sourcing: optional EventStore for emitting lifecycle events.
+	eventStore events.EventStore
+	streamID   string // Stream ID used when appending events.
 }
 
 // SessionData holds session information with optional caching.
@@ -187,6 +192,28 @@ func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 	return nil
 }
 
+// SetEventStore configures an optional EventStore for emitting lifecycle events.
+// If store is nil, event emission is a no-op.
+func (m *ProductionMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+	m.eventStore = store
+	m.streamID = streamID
+}
+
+// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if m.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: m.streamID,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := m.eventStore.Append(ctx, m.streamID, []*events.Event{event}, 0); err != nil {
+		slog.Warn("Failed to emit event", "type", eventType, "error", err)
+	}
+}
+
 // Start starts the memory manager and background workers.
 // This method creates a new context for the memory manager and starts
 // the write buffer goroutine. The context is used for graceful shutdown.
@@ -296,6 +323,12 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 		}
 	}
 
+	// Emit session created event.
+	m.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+		"session_id": sessionID,
+		"user_id":    userID,
+	})
+
 	slog.Debug("Session created", "session_id", sessionID, "user_id", userID)
 	return sessionID, nil
 }
@@ -366,6 +399,12 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		sessionData.MessageCount++
 	}
 	m.mu.Unlock()
+
+	// Emit message added event.
+	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		"session_id": sessionID,
+		"role":       role,
+	})
 
 	slog.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
@@ -582,6 +621,16 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 		CreatedAt: taskResult.CreatedAt,
 	}
 
+	// Emit memory distilled event.
+	inputCount := 0
+	if content, ok := taskResult.Input["content"].(string); ok {
+		inputCount = len(content)
+	}
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":     taskID,
+		"input_count": inputCount,
+	})
+
 	slog.Debug("Task distilled", "task_id", taskID)
 	return task, nil
 }
@@ -623,6 +672,12 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	if err := m.writeBuffer.Write(ctx, writeItem); err != nil {
 		return errors.Wrap(err, "write to buffer")
 	}
+
+	// Emit memory distilled event.
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":      taskID,
+		"output_count": 1,
+	})
 
 	slog.Debug("Distilled task queued for async embedding", "task_id", taskID)
 	return nil

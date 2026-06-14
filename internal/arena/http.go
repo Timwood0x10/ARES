@@ -144,7 +144,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 				slog.Error("arena: sse marshal error", "error", err)
 				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				slog.Debug("arena: sse write error (client disconnected?)", "error", err)
+				return
+			}
 			flusher.Flush()
 		}
 	}

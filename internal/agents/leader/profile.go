@@ -8,6 +8,7 @@ import (
 	apperrors "goagentx/internal/core/errors"
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
+	"goagentx/internal/events"
 	"goagentx/internal/llm/output"
 )
 
@@ -18,6 +19,7 @@ type profileParser struct {
 	promptTpl  string
 	validator  *output.Validator
 	maxRetries int
+	eventStore events.EventStore
 }
 
 // NewProfileParser creates a new ProfileParser with LLM support.
@@ -37,6 +39,28 @@ func NewProfileParser(
 		promptTpl:  promptTpl,
 		validator:  validator,
 		maxRetries: maxRetries,
+	}
+}
+
+// WithEventStore sets the event store for LLM call tracking.
+func (p *profileParser) WithEventStore(store events.EventStore) {
+	p.eventStore = store
+}
+
+// emitEvent appends a single event to the event store.
+// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+func (p *profileParser) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if p.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		Type:    eventType,
+		Payload: payload,
+	}
+	if err := p.eventStore.Append(ctx, "profile-parser", []*events.Event{event}, 0); err != nil {
+		slog.Warn("failed to emit event", "type", eventType, "error", err)
+	} else {
+		slog.Debug("event emitted", "type", eventType)
 	}
 }
 
@@ -88,8 +112,21 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 	// Call LLM
 	response, err := p.llmAdapter.Generate(ctx, prompt)
 	if err != nil {
+		p.emitEvent(ctx, events.EventLLMCall, map[string]any{
+			"purpose": "profile_parsing",
+			"model":   p.llmAdapter.GetModel(),
+			"error":   err.Error(),
+			"status":  "failed",
+		})
 		return nil, errors.WrapError(apperrors.ErrLLMGenerateFailed, err)
 	}
+
+	p.emitEvent(ctx, events.EventLLMCall, map[string]any{
+		"purpose":    "profile_parsing",
+		"model":      p.llmAdapter.GetModel(),
+		"input_len":  len(prompt),
+		"output_len": len(response),
+	})
 
 	// Parse response
 	profile, err := p.parseResponse(response)

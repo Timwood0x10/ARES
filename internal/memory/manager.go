@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 )
 
 // MemoryManager provides unified memory management.
@@ -53,6 +54,10 @@ type MemoryManager interface {
 
 	// Stop stops the memory manager and cleans up resources.
 	Stop(ctx context.Context) error
+
+	// SetEventStore configures an optional EventStore for emitting lifecycle events.
+	// If store is nil, event emission is a no-op.
+	SetEventStore(store events.EventStore, streamID string)
 }
 
 // MemoryConfig holds configuration for MemoryManager.

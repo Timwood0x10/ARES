@@ -64,6 +64,10 @@ func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
 func WithEventStore(store events.EventStore) LeaderOption {
 	return func(a *leaderAgent) {
 		a.eventStore = store
+		// Wire event store to profile parser for LLM call tracking.
+		if pp, ok := a.parser.(*profileParser); ok {
+			pp.WithEventStore(store)
+		}
 	}
 }
 

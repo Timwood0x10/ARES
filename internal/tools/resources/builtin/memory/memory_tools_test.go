@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 	"goagentx/internal/memory"
 	"goagentx/internal/storage/postgres/repositories"
 )
@@ -75,6 +76,9 @@ func (m *MockMemoryManager) Start(ctx context.Context) error {
 
 func (m *MockMemoryManager) Stop(ctx context.Context) error {
 	return nil
+}
+
+func (m *MockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
 }
 
 func (m *MockMemoryManager) Clear(ctx context.Context) error {

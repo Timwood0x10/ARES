@@ -3,8 +3,11 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"goagentx/internal/events"
 )
 
 // mockMCPExecutor implements MCPExecutor for testing.
@@ -360,4 +363,343 @@ func TestTemplateDefaults(t *testing.T) {
 	if result.MCPTool != "t" {
 		t.Errorf("expected tool 't', got %s", result.MCPTool)
 	}
+}
+
+func TestOrchestratorEventStoreGetter(t *testing.T) {
+	orch := NewOrchestrator(&mockMCPExecutor{}, &mockLLMExecutor{})
+
+	// Before setting store, EventStore() should return nil.
+	if orch.EventStore() != nil {
+		t.Error("expected nil event store before SetEventStore")
+	}
+
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+	orch.SetEventStore(store)
+
+	if orch.EventStore() != store {
+		t.Error("expected EventStore() to return the configured store")
+	}
+}
+
+// trackMCPExecutor records CallTool invocations and returns configurable results.
+type trackMCPExecutor struct {
+	tools    []MCPToolInfo
+	calls    []string // records tool names in order
+	response string
+	err      error
+}
+
+func (m *trackMCPExecutor) CallTool(_ context.Context, name string, _ map[string]any) (*MCPToolResult, error) {
+	m.calls = append(m.calls, name)
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &MCPToolResult{
+		Content: []MCPContentBlock{{Type: "text", Text: m.response}},
+	}, nil
+}
+
+func (m *trackMCPExecutor) ListTools(_ context.Context) ([]MCPToolInfo, error) {
+	return m.tools, nil
+}
+
+func TestOrchestratorResumeSkipsCompletedSteps(t *testing.T) {
+	mcp := &trackMCPExecutor{
+		tools:    []MCPToolInfo{{Name: "t", Description: "d"}},
+		response: "step data",
+	}
+	llm := &mockLLMExecutor{response: "analysis"}
+	orch := NewOrchestrator(mcp, llm)
+
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+	orch.SetEventStore(store)
+
+	steps := []AgentStep{
+		{Tool: "tool_a", Args: map[string]any{"k": "1"}},
+		{Tool: "tool_b", Args: map[string]any{"k": "2"}},
+		{Tool: "tool_c", Args: map[string]any{"k": "3"}},
+	}
+
+	// Simulate a previous agent that completed steps 1 and 2.
+	prevID := "agent-prev"
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		evt := &events.Event{
+			ID:        fmt.Sprintf("evt-step-%d", i+1),
+			StreamID:  prevID,
+			Type:      "mcp.step.completed",
+			Payload:   map[string]any{"step": i + 1, "tool": steps[i].Tool, "total": 3},
+			Timestamp: time.Now(),
+		}
+		if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+	}
+
+	// Create a new agent that resumes from the previous one.
+	id, err := orch.CreateAgent(AgentRequest{
+		Name:       "Resuming Agent",
+		Steps:      steps,
+		ResumeFrom: prevID,
+		LLMPrompt:  "Analyze data",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	result, ok := orch.GetAgent(id)
+	if !ok {
+		t.Fatal("expected agent to exist")
+	}
+	if result.Status != "completed" {
+		t.Errorf("expected completed, got %s", result.Status)
+	}
+
+	// Only step 3 (tool_c) should have been called; steps 1 and 2 were skipped.
+	if len(mcp.calls) != 1 {
+		t.Fatalf("expected 1 MCP call (step 3 only), got %d: %v", len(mcp.calls), mcp.calls)
+	}
+	if mcp.calls[0] != "tool_c" {
+		t.Errorf("expected tool_c, got %s", mcp.calls[0])
+	}
+}
+
+func TestOrchestratorResumeSkipsNoStepsWhenNoneCompleted(t *testing.T) {
+	mcp := &trackMCPExecutor{
+		tools:    []MCPToolInfo{{Name: "t", Description: "d"}},
+		response: "data",
+	}
+	llm := &mockLLMExecutor{response: "analysis"}
+	orch := NewOrchestrator(mcp, llm)
+
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+	orch.SetEventStore(store)
+
+	steps := []AgentStep{
+		{Tool: "tool_a"},
+		{Tool: "tool_b"},
+	}
+
+	// Previous agent has events but none are mcp.step.completed.
+	prevID := "agent-prev-empty"
+	ctx := context.Background()
+	evt := &events.Event{
+		ID:        "evt-start",
+		StreamID:  prevID,
+		Type:      events.EventType("agent.started"),
+		Payload:   map[string]any{"name": "prev"},
+		Timestamp: time.Now(),
+	}
+	if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	id, err := orch.CreateAgent(AgentRequest{
+		Name:       "Resuming Agent",
+		Steps:      steps,
+		ResumeFrom: prevID,
+		LLMPrompt:  "Analyze",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	result, ok := orch.GetAgent(id)
+	if !ok {
+		t.Fatal("expected agent to exist")
+	}
+	if result.Status != "completed" {
+		t.Errorf("expected completed, got %s", result.Status)
+	}
+
+	// Both steps should have been called since none were completed.
+	if len(mcp.calls) != 2 {
+		t.Fatalf("expected 2 MCP calls, got %d: %v", len(mcp.calls), mcp.calls)
+	}
+}
+
+func TestOrchestratorResumeWithNoEventStore(t *testing.T) {
+	mcp := &trackMCPExecutor{
+		tools:    []MCPToolInfo{{Name: "t", Description: "d"}},
+		response: "data",
+	}
+	llm := &mockLLMExecutor{response: "analysis"}
+	orch := NewOrchestrator(mcp, llm)
+	// No event store configured.
+
+	steps := []AgentStep{
+		{Tool: "tool_a"},
+		{Tool: "tool_b"},
+	}
+
+	id, err := orch.CreateAgent(AgentRequest{
+		Name:       "Resuming No Store",
+		Steps:      steps,
+		ResumeFrom: "agent-ghost",
+		LLMPrompt:  "Analyze",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	result, ok := orch.GetAgent(id)
+	if !ok {
+		t.Fatal("expected agent to exist")
+	}
+	if result.Status != "completed" {
+		t.Errorf("expected completed, got %s", result.Status)
+	}
+
+	// Without an event store, all steps should run from the beginning.
+	if len(mcp.calls) != 2 {
+		t.Fatalf("expected 2 MCP calls, got %d: %v", len(mcp.calls), mcp.calls)
+	}
+}
+
+func TestOrchestratorEmitsStepCompletedEvents(t *testing.T) {
+	mcp := &trackMCPExecutor{
+		tools:    []MCPToolInfo{{Name: "t", Description: "d"}},
+		response: "data",
+	}
+	llm := &mockLLMExecutor{response: "analysis"}
+	orch := NewOrchestrator(mcp, llm)
+
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+	orch.SetEventStore(store)
+
+	steps := []AgentStep{
+		{Tool: "alpha"},
+		{Tool: "beta"},
+		{Tool: "gamma"},
+	}
+
+	id, err := orch.CreateAgent(AgentRequest{
+		Name:      "Step Emitter",
+		Steps:     steps,
+		LLMPrompt: "Analyze",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Read back events for this agent.
+	ctx := context.Background()
+	events, err := store.Read(ctx, id, events.ReadOptions{Direction: events.ReadAscending})
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+
+	stepEvents := 0
+	for _, evt := range events {
+		if evt.Type == "mcp.step.completed" {
+			stepEvents++
+			tool, _ := evt.Payload["tool"].(string)
+			step, _ := evt.Payload["step"].(int)
+			if step < 1 || step > 3 {
+				t.Errorf("unexpected step number: %d", step)
+			}
+			if tool == "" {
+				t.Error("expected non-empty tool name in step event")
+			}
+		}
+	}
+
+	if stepEvents != 3 {
+		t.Errorf("expected 3 mcp.step.completed events, got %d", stepEvents)
+	}
+}
+
+func TestOrchestratorResumePromptIncludesPreviousProgress(t *testing.T) {
+	mcp := &trackMCPExecutor{
+		tools:    []MCPToolInfo{{Name: "t", Description: "d"}},
+		response: "data",
+	}
+
+	var capturedPrompt string
+	llm := &capturePromptLLM{response: "analysis", prompt: &capturedPrompt}
+	orch := NewOrchestrator(mcp, llm)
+
+	store := events.NewMemoryEventStore()
+	defer store.Close()
+	orch.SetEventStore(store)
+
+	steps := []AgentStep{
+		{Tool: "tool_a"},
+		{Tool: "tool_b"},
+		{Tool: "tool_c"},
+	}
+
+	// Simulate a previous agent that completed step 1.
+	prevID := "agent-prev-prompt"
+	ctx := context.Background()
+	evt := &events.Event{
+		ID:        "evt-s1",
+		StreamID:  prevID,
+		Type:      "mcp.step.completed",
+		Payload:   map[string]any{"step": 1, "tool": "tool_a", "total": 3},
+		Timestamp: time.Now(),
+	}
+	if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	id, err := orch.CreateAgent(AgentRequest{
+		Name:       "Prompt Check",
+		Steps:      steps,
+		ResumeFrom: prevID,
+		LLMPrompt:  "Analyze the data",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent error: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	result, ok := orch.GetAgent(id)
+	if !ok {
+		t.Fatal("expected agent to exist")
+	}
+	if result.Status != "completed" {
+		t.Errorf("expected completed, got %s", result.Status)
+	}
+
+	// The LLM prompt should contain the resume preamble.
+	if !strings.Contains(capturedPrompt, "This agent was interrupted and is being resumed") {
+		t.Error("expected resume preamble in LLM prompt")
+	}
+	if !strings.Contains(capturedPrompt, "Continuing from step 2") {
+		t.Errorf("expected 'Continuing from step 2' in prompt, got: %s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "Agent agent-prev-prompt completed 1/3 steps") {
+		t.Errorf("expected previous agent summary in prompt, got: %s", capturedPrompt)
+	}
+}
+
+// capturePromptLLM records the prompt passed to Generate.
+type capturePromptLLM struct {
+	response string
+	prompt   *string
+	err      error
+}
+
+func (m *capturePromptLLM) Generate(_ context.Context, prompt string) (string, error) {
+	if m.prompt != nil {
+		*m.prompt = prompt
+	}
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.response, nil
 }

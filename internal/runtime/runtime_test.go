@@ -213,6 +213,8 @@ func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ strin
 
 func (m *mockMemoryManager) Start(_ context.Context) error { return nil }
 func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
+func (m *mockMemoryManager) SetEventStore(_ events.EventStore, _ string) {
+}
 
 // errEventStore is an EventStore that returns an error on Read.
 type errEventStore struct {
@@ -293,6 +295,8 @@ func (m *errMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string
 
 func (m *errMemoryManager) Start(_ context.Context) error { return nil }
 func (m *errMemoryManager) Stop(_ context.Context) error  { return nil }
+func (m *errMemoryManager) SetEventStore(_ events.EventStore, _ string) {
+}
 
 // slowStopAgent blocks in Stop until the provided channel is closed or context expires.
 type slowStopAgent struct {
