@@ -279,6 +279,9 @@ func (m *MCPManager) unregisterTools(mc *managedClient) {
 
 // findServerConfig returns the config for a named server.
 func (m *MCPManager) findServerConfig(name string) *MCPServerConfig {
+	if m.config == nil {
+		return nil
+	}
 	for i := range m.config.Servers {
 		if m.config.Servers[i].Name == name {
 			return &m.config.Servers[i]

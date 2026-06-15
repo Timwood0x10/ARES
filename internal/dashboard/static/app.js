@@ -6,222 +6,304 @@
     let selectedAgentId = null;
     let arenaAgents = [];
 
+    // ── DOM Builder ───────────────────────
+    function h(tag, attrs, ...children) {
+        var el = document.createElement(tag);
+        if (attrs) {
+            for (var k in attrs) {
+                if (k === 'className') { el.className = attrs[k]; }
+                else if (k === 'style' && typeof attrs[k] === 'object') {
+                    for (var sk in attrs[k]) el.style[sk] = attrs[k][sk];
+                } else if (k.startsWith('on')) {
+                    el.addEventListener(k.slice(2).toLowerCase(), attrs[k]);
+                } else if (k === 'dangerousHTML') {
+                    el.innerHTML = attrs[k];
+                } else {
+                    el.setAttribute(k, attrs[k]);
+                }
+            }
+        }
+        for (var i = 0; i < children.length; i++) {
+            var c = children[i];
+            if (c == null || c === false || c === true) continue;
+            if (typeof c === 'string' || typeof c === 'number') {
+                el.appendChild(document.createTextNode(String(c)));
+            } else if (Array.isArray(c)) {
+                for (var j = 0; j < c.length; j++) {
+                    if (c[j]) el.appendChild(c[j]);
+                }
+            } else if (c.nodeType) {
+                el.appendChild(c);
+            }
+        }
+        return el;
+    }
+
+    function clear(el) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function setContent(el) {
+        clear(el);
+        for (var i = 1; i < arguments.length; i++) {
+            var c = arguments[i];
+            if (c == null) continue;
+            if (typeof c === 'string') { el.appendChild(document.createTextNode(c)); }
+            else if (c.nodeType) { el.appendChild(c); }
+            else if (Array.isArray(c)) {
+                for (var j = 0; j < c.length; j++) {
+                    if (c[j] && c[j].nodeType) el.appendChild(c[j]);
+                }
+            }
+        }
+    }
+
     // ── API ──────────────────────────────
     async function api(path, opts) {
         try {
-            const headers = opts?.headers || {};
+            var headers = (opts && opts.headers) || {};
             if (!headers['Accept']) headers['Accept'] = 'application/json';
-            const r = await fetch(path, { ...opts, headers });
-            if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error||r.statusText); }
+            var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
+            if (!r.ok) {
+                var e = await r.json().catch(function() { return {}; });
+                throw new Error(e.error || r.statusText);
+            }
             return await r.json();
         } catch(e) { console.error('API:', path, e); return null; }
     }
 
     // ── Router ───────────────────────────
-    const views = { overview, agents, mcp, orchestrator, arena, flight };
-    document.querySelectorAll('[data-view]').forEach(a => {
-        a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.view); });
+    var views = { overview: overview, agents: agents, mcp: mcp, orchestrator: orchestrator, arena: arena, flight: flight };
+    document.querySelectorAll('[data-view]').forEach(function(a) {
+        a.addEventListener('click', function(e) { e.preventDefault(); show(a.dataset.view); });
     });
 
     function show(name) {
         currentView = name;
-        document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view===name));
-        document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id==='view-'+name));
+        document.querySelectorAll('[data-view]').forEach(function(a) {
+            a.classList.toggle('active', a.dataset.view === name);
+        });
+        document.querySelectorAll('.view').forEach(function(v) {
+            v.classList.toggle('active', v.id === 'view-' + name);
+        });
         if (views[name]) views[name]();
     }
 
     // ── Overview ─────────────────────────
     async function overview() {
-        const d = await api('/');
+        var d = await api('/');
         if (!d) return;
-        const el = document.getElementById('view-overview');
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>System Overview</h2>
-                <div class="page-desc">Real-time runtime intelligence</div>
-            </div>
-            <div class="stat-grid">
-                <div class="stat-card">
-                    <div class="label">Active Agents</div>
-                    <div class="value">${d.agents||0}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">MCP Servers</div>
-                    <div class="value">${d.mcp_servers||0}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">MCP Tools</div>
-                    <div class="value">${d.mcp_tools||0}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="label">Uptime</div>
-                    <div class="value" style="font-size:1.25rem">${d.uptime||'-'}</div>
-                </div>
-            </div>
-            <div class="card">
-                <h3>Quick Actions</h3>
-                <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
-                    <button class="btn btn-primary" onclick="show('orchestrator')">Launch Agent</button>
-                    <button class="btn btn-outline" onclick="show('agents')">View Agents</button>
-                    <button class="btn btn-outline" onclick="show('mcp')">MCP Tools</button>
-                </div>
-            </div>`;
+        var el = document.getElementById('view-overview');
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'System Overview'),
+                h('div', { className: 'page-desc' }, 'Real-time runtime intelligence')
+            ),
+            h('div', { className: 'stat-grid' },
+                statCard('Active Agents', String(d.agents || 0)),
+                statCard('MCP Servers', String(d.mcp_servers || 0)),
+                statCard('MCP Tools', String(d.mcp_tools || 0)),
+                statCard('Uptime', d.uptime || '-')
+            ),
+            h('div', { className: 'card' },
+                h('h3', null, 'Quick Actions'),
+                h('div', { style: { display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.5rem' } },
+                    h('button', { className: 'btn btn-primary', onClick: function() { show('orchestrator'); } }, 'Launch Agent'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { show('agents'); } }, 'View Agents'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { show('mcp'); } }, 'MCP Tools')
+                )
+            )
+        );
+    }
+
+    function statCard(label, value) {
+        return h('div', { className: 'stat-card' },
+            h('div', { className: 'label' }, label),
+            h('div', { className: 'value' }, value)
+        );
     }
 
     // ── Agents ───────────────────────────
     async function agents() {
-        const list = await api('/agents') || [];
-        const el = document.getElementById('view-agents');
+        var list = await api('/agents') || [];
+        var el = document.getElementById('view-agents');
 
         if (!list.length) {
-            el.innerHTML = `
-                <div class="page-header"><h2>Agents</h2></div>
-                <div class="empty-state">No agents running. Launch from the Orchestrator tab.</div>`;
+            setContent(el,
+                h('div', { className: 'page-header' }, h('h2', null, 'Agents')),
+                h('div', { className: 'empty-state' }, 'No agents running. Launch from the Orchestrator tab.')
+            );
             return;
         }
 
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>Agents</h2>
-                <div class="page-desc">${list.length} agent${list.length>1?'s':''} tracked</div>
-            </div>
-            <div class="card">
-                <table>
-                    <thead><tr><th>Name</th><th>Status</th><th>Progress</th><th>Duration</th><th></th></tr></thead>
-                    <tbody>${list.map(a => `
-                        <tr>
-                            <td><strong>${esc(a.name)}</strong></td>
-                            <td>${badge(a.status)}</td>
-                            <td>
-                                <div class="progress-bar"><div class="fill" style="width:${a.progress||0}%"></div></div>
-                                <span style="margin-left:0.5rem;font-size:0.75rem;color:var(--text-secondary)">${a.progress||0}%</span>
-                            </td>
-                            <td style="color:var(--text-secondary)">${esc(a.duration||'-')}</td>
-                            <td><button class="btn btn-outline btn-sm" onclick="viewAgent('${a.id}')">View</button></td>
-                        </tr>`).join('')}
-                    </tbody>
-                </table>
-            </div>
-            <div id="agent-detail"></div>`;
+        var rows = list.map(function(a) {
+            return h('tr', null,
+                h('td', null, h('strong', null, esc(a.name))),
+                h('td', null, badge(a.status)),
+                h('td', null,
+                    progressBar(a.progress || 0),
+                    h('span', { style: { marginLeft: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)' } }, String(a.progress || 0) + '%')
+                ),
+                h('td', { style: { color: 'var(--text-secondary)' } }, esc(a.duration || '-')),
+                h('td', null,
+                    h('button', { className: 'btn btn-outline btn-sm', onClick: function() { viewAgent(a.id); } }, 'View')
+                )
+            );
+        });
 
-        // Auto-refresh if agents are running.
-        if (list.some(a => a.status==='running' || a.status==='pending' || a.status.includes('analyzing'))) {
-            setTimeout(() => { if (currentView==='agents') agents(); }, 3000);
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'Agents'),
+                h('div', { className: 'page-desc' }, String(list.length) + ' agent' + (list.length > 1 ? 's' : '') + ' tracked')
+            ),
+            h('div', { className: 'card' },
+                h('table', null,
+                    h('thead', null, h('tr', null,
+                        h('th', null, 'Name'), h('th', null, 'Status'), h('th', null, 'Progress'), h('th', null, 'Duration'), h('th', null)
+                    )),
+                    h('tbody', null, rows)
+                )
+            ),
+            h('div', { id: 'agent-detail' })
+        );
+
+        if (list.some(function(a) { return a.status === 'running' || a.status === 'pending' || a.status.indexOf('analyzing') !== -1; })) {
+            setTimeout(function() { if (currentView === 'agents') agents(); }, 3000);
         }
     }
 
-    window.viewAgent = async function(id) {
-        const a = await api('/agents/'+id);
-        if (!a) return;
-        const el = document.getElementById('agent-detail');
-        el.innerHTML = `
-            <div class="card result-card">
-                <div class="result-header">
-                    <h3>${esc(a.name)}</h3>
-                    ${badge(a.status)}
-                </div>
-                <div style="display:flex;gap:2rem;margin-bottom:1rem;font-size:0.8125rem;color:var(--text-secondary)">
-                    <span>Tool: <code>${esc(a.mcp_tool||'-')}</code></span>
-                    <span>Duration: ${esc(a.duration||'-')}</span>
-                    <span>Data: ${a.raw_data_len||0} bytes</span>
-                </div>
-                ${a.error ? `<div style="color:var(--danger);padding:0.75rem;background:var(--danger-glow);border-radius:var(--radius-sm);margin-bottom:1rem;font-size:0.875rem">${esc(a.error)}</div>` : ''}
-                ${a.analysis ? `<div class="analysis-block">${esc(a.analysis)}</div>` : '<div class="empty-state">No analysis available</div>'}
-            </div>`;
-        el.scrollIntoView({behavior:'smooth'});
-    };
+    function viewAgent(id) {
+        api('/agents/' + id).then(function(a) {
+            if (!a) return;
+            var el = document.getElementById('agent-detail');
+            var parts = [
+                h('div', { className: 'card result-card' },
+                    h('div', { className: 'result-header' },
+                        h('h3', null, esc(a.name)),
+                        badge(a.status)
+                    ),
+                    h('div', { style: { display: 'flex', gap: '2rem', marginBottom: '1rem', fontSize: '0.8125rem', color: 'var(--text-secondary)' } },
+                        h('span', null, 'Tool: ', h('code', null, esc(a.mcp_tool || '-'))),
+                        h('span', null, 'Duration: ', esc(a.duration || '-')),
+                        h('span', null, 'Data: ', String(a.raw_data_len || 0), ' bytes')
+                    )
+                )
+            ];
+            if (a.error) {
+                parts[0].appendChild(
+                    h('div', { style: { color: 'var(--danger)', padding: '0.75rem', background: 'var(--danger-glow)', borderRadius: 'var(--radius-sm)', marginBottom: '1rem', fontSize: '0.875rem' } }, esc(a.error))
+                );
+            }
+            parts[0].appendChild(
+                a.analysis
+                    ? h('div', { className: 'analysis-block' }, esc(a.analysis))
+                    : h('div', { className: 'empty-state' }, 'No analysis available')
+            );
+            setContent(el, parts[0]);
+            el.scrollIntoView({ behavior: 'smooth' });
+        });
+    }
 
     // ── MCP ──────────────────────────────
     async function mcp() {
-        const list = await api('/mcp') || [];
-        const el = document.getElementById('view-mcp');
+        var list = await api('/mcp') || [];
+        var el = document.getElementById('view-mcp');
 
         if (!list.length) {
-            el.innerHTML = `
-                <div class="page-header"><h2>MCP Tools</h2></div>
-                <div class="empty-state">No MCP servers connected.</div>`;
+            setContent(el,
+                h('div', { className: 'page-header' }, h('h2', null, 'MCP Tools')),
+                h('div', { className: 'empty-state' }, 'No MCP servers connected.')
+            );
             return;
         }
 
-        el.innerHTML = list.map(s => `
-            <div class="page-header">
-                <h2>${esc(s.name)}</h2>
-                <div class="page-desc">${badge(s.connected?'connected':'disconnected')} &middot; ${(s.tools||[]).length} tools</div>
-            </div>
-            <div class="card">
-                <table>
-                    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
-                    <tbody>${(s.tools||[]).map(t => `
-                        <tr>
-                            <td><code>${esc(t.name)}</code></td>
-                            <td style="color:var(--text-secondary);max-width:500px">${esc(truncate(t.description||'-'))}</td>
-                        </tr>`).join('')}
-                    </tbody>
-                </table>
-            </div>`).join('');
+        var sections = list.map(function(s) {
+            var toolRows = (s.tools || []).map(function(t) {
+                return h('tr', null,
+                    h('td', null, h('code', null, esc(t.name))),
+                    h('td', { style: { color: 'var(--text-secondary)', maxWidth: '500px' } }, truncate(t.description || '-'))
+                );
+            });
+            return [
+                h('div', { className: 'page-header' },
+                    h('h2', null, esc(s.name)),
+                    h('div', { className: 'page-desc' }, badge(s.connected ? 'connected' : 'disconnected'), ' \u00B7 ', String((s.tools || []).length), ' tools')
+                ),
+                h('div', { className: 'card' },
+                    h('table', null,
+                        h('thead', null, h('tr', null, h('th', null, 'Tool'), h('th', null, 'Description'))),
+                        h('tbody', null, toolRows)
+                    )
+                )
+            ];
+        });
+        setContent(el, sections.flat());
     }
 
     // ── Orchestrator ─────────────────────
     async function orchestrator() {
-        const list = await api('/agents') || [];
-        const completed = list.filter(a => a.status==='completed' && a.analysis);
-        const el = document.getElementById('view-orchestrator');
+        var list = await api('/agents') || [];
+        var completed = list.filter(function(a) { return a.status === 'completed' && a.analysis; });
+        var el = document.getElementById('view-orchestrator');
 
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>Orchestrator</h2>
-                <div class="page-desc">Create and launch analysis agents</div>
-            </div>
-            <div class="card">
-                <h3>Launch Agent</h3>
-                <div class="orch-form">
-                    <div class="field">
-                        <label>Template</label>
-                        <select id="tpl">
-                            <option value="">-- Custom --</option>
-                            <option value="tpl-structure">Architecture Review</option>
-                            <option value="tpl-error-review">Error Handling</option>
-                            <option value="tpl-concurrency">Concurrency</option>
-                            <option value="tpl-impact">Change Impact</option>
-                            <option value="tpl-api">API Surface</option>
-                        </select>
-                    </div>
-                    <div class="field" id="custom-fields" style="display:none">
-                        <label>Agent Name</label>
-                        <input type="text" id="custom-name" placeholder="My Review">
-                    </div>
-                    <div class="field" id="custom-tool-field" style="display:none">
-                        <label>MCP Tool</label>
-                        <input type="text" id="custom-tool" placeholder="codegraph_context">
-                    </div>
-                    <div class="field" id="custom-prompt-field" style="display:none">
-                        <label>LLM Prompt</label>
-                        <textarea id="custom-prompt" rows="2" placeholder="Analyze: {{.raw_data}}"></textarea>
-                    </div>
-                    <div class="field" style="align-self:flex-end">
-                        <button class="btn btn-primary" id="launch-btn">Launch</button>
-                    </div>
-                </div>
-                <div id="launch-msg" style="margin-top:0.75rem;font-size:0.8125rem"></div>
-            </div>
+        var completedCards = completed.length > 0 ? completed.map(function(a) {
+            return h('div', { className: 'result-card', style: { marginBottom: '1rem', padding: '1rem', borderLeft: '3px solid var(--accent)', background: 'rgba(99,102,241,0.03)', borderRadius: '0 var(--radius-sm) var(--radius-sm) 0' } },
+                h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' } },
+                    h('strong', null, esc(a.name)),
+                    h('span', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)' } }, esc(a.duration || '-'))
+                ),
+                h('div', { className: 'analysis-block' }, esc((a.analysis || '').slice(0, 3000)))
+            );
+        }) : [];
 
-            ${completed.length ? `
-            <div class="card">
-                <h3>Results (${completed.length})</h3>
-                ${completed.map(a => `
-                    <div class="result-card" style="margin-bottom:1rem;padding:1rem;border-left:3px solid var(--accent);background:rgba(99,102,241,0.03);border-radius:0 var(--radius-sm) var(--radius-sm) 0">
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-                            <strong>${esc(a.name)}</strong>
-                            <span style="font-size:0.75rem;color:var(--text-secondary)">${esc(a.duration||'-')}</span>
-                        </div>
-                        <div class="analysis-block">${esc((a.analysis||'').slice(0,3000))}</div>
-                    </div>`).join('')}
-            </div>` : ''}`;
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'Orchestrator'),
+                h('div', { className: 'page-desc' }, 'Create and launch analysis agents')
+            ),
+            h('div', { className: 'card' },
+                h('h3', null, 'Launch Agent'),
+                h('div', { className: 'orch-form' },
+                    h('div', { className: 'field' },
+                        h('label', null, 'Template'),
+                        h('select', { id: 'tpl' },
+                            h('option', { value: '' }, '-- Custom --'),
+                            h('option', { value: 'tpl-structure' }, 'Architecture Review'),
+                            h('option', { value: 'tpl-error-review' }, 'Error Handling'),
+                            h('option', { value: 'tpl-concurrency' }, 'Concurrency'),
+                            h('option', { value: 'tpl-impact' }, 'Change Impact'),
+                            h('option', { value: 'tpl-api' }, 'API Surface')
+                        )
+                    ),
+                    h('div', { className: 'field', id: 'custom-fields', style: { display: 'none' } },
+                        h('label', null, 'Agent Name'),
+                        h('input', { type: 'text', id: 'custom-name', placeholder: 'My Review' })
+                    ),
+                    h('div', { className: 'field', id: 'custom-tool-field', style: { display: 'none' } },
+                        h('label', null, 'MCP Tool'),
+                        h('input', { type: 'text', id: 'custom-tool', placeholder: 'codegraph_context' })
+                    ),
+                    h('div', { className: 'field', id: 'custom-prompt-field', style: { display: 'none' } },
+                        h('label', null, 'LLM Prompt'),
+                        h('textarea', { id: 'custom-prompt', rows: '2', placeholder: 'Analyze: {{.raw_data}}' })
+                    ),
+                    h('div', { className: 'field', style: { alignSelf: 'flex-end' } },
+                        h('button', { className: 'btn btn-primary', id: 'launch-btn' }, 'Launch')
+                    )
+                ),
+                h('div', { id: 'launch-msg', style: { marginTop: '0.75rem', fontSize: '0.8125rem' } })
+            ),
+            completed.length > 0
+                ? h('div', { className: 'card' },
+                      h('h3', null, 'Results (' + String(completed.length) + ')'),
+                      completedCards
+                  )
+                : null
+        );
 
-        // Toggle custom fields.
-        const tplSelect = document.getElementById('tpl');
-        const toggle = () => {
-            const isCustom = !tplSelect.value;
+        var tplSelect = document.getElementById('tpl');
+        var toggle = function() {
+            var isCustom = !tplSelect.value;
             document.getElementById('custom-fields').style.display = isCustom ? 'flex' : 'none';
             document.getElementById('custom-tool-field').style.display = isCustom ? 'flex' : 'none';
             document.getElementById('custom-prompt-field').style.display = isCustom ? 'flex' : 'none';
@@ -229,34 +311,33 @@
         tplSelect.addEventListener('change', toggle);
         toggle();
 
-        // Launch handler.
-        document.getElementById('launch-btn').addEventListener('click', async () => {
-            const btn = document.getElementById('launch-btn');
-            const msg = document.getElementById('launch-msg');
+        document.getElementById('launch-btn').addEventListener('click', async function() {
+            var btn = document.getElementById('launch-btn');
+            var msg = document.getElementById('launch-msg');
             btn.disabled = true;
             msg.textContent = 'Launching...';
             msg.style.color = 'var(--text-secondary)';
 
-            const tid = tplSelect.value;
-            const body = {};
+            var tid = tplSelect.value;
+            var body = {};
             if (tid) {
                 body.template_id = tid;
             } else {
-                const name = document.getElementById('custom-name').value;
-                const tool = document.getElementById('custom-tool').value;
-                const prompt = document.getElementById('custom-prompt').value;
-                if (!name) { msg.textContent = 'Name is required'; msg.style.color = 'var(--danger)'; btn.disabled=false; return; }
+                var name = document.getElementById('custom-name').value;
+                var tool = document.getElementById('custom-tool').value;
+                var prompt = document.getElementById('custom-prompt').value;
+                if (!name) { msg.textContent = 'Name is required'; msg.style.color = 'var(--danger)'; btn.disabled = false; return; }
                 body.name = name;
                 if (tool) body.mcp_tool = tool;
                 if (prompt) body.llm_prompt = prompt;
             }
 
-            const r = await api('/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+            var r = await api('/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
             btn.disabled = false;
             if (r && r.id) {
-                msg.textContent = `Agent ${r.id} launched!`;
+                msg.textContent = 'Agent ' + r.id + ' launched!';
                 msg.style.color = 'var(--success)';
-                setTimeout(() => orchestrator(), 2000);
+                setTimeout(function() { orchestrator(); }, 2000);
             } else {
                 msg.textContent = 'Failed to launch';
                 msg.style.color = 'var(--danger)';
@@ -266,129 +347,127 @@
 
     // ── Arena ─────────────────────────────
     async function arena() {
-        const [stats, history, agents, score] = await Promise.all([
+        var results = await Promise.all([
             api('/arena/stats'),
             api('/arena/history'),
             api('/agents'),
             api('/arena/score'),
         ]);
+        var stats = results[0], history = results[1], agents = results[2], score = results[3];
         arenaAgents = agents || [];
-        const el = document.getElementById('view-arena');
+        var el = document.getElementById('view-arena');
 
-        const recoveryRate = stats && stats.total_actions > 0
+        var recoveryRate = stats && stats.total_actions > 0
             ? Math.round((stats.successful_actions / stats.total_actions) * 100) : 0;
 
-        // Build resilience score card.
-        const scoreValue = score?.score != null ? score.score.toFixed(1) : '-';
-        const scoreGrade = score?.grade || '-';
-        const scoreRecovery = score?.recovery_rate != null ? score.recovery_rate.toFixed(1) + '%' : '-';
-        const scoreAvgTime = score?.avg_recovery_time
+        var scoreValue = (score && score.score != null) ? score.score.toFixed(1) : '-';
+        var scoreGrade = (score && score.grade) || '-';
+        var scoreRecovery = (score && score.recovery_rate != null) ? score.recovery_rate.toFixed(1) + '%' : '-';
+        var scoreAvgTime = (score && score.avg_recovery_time)
             ? (score.avg_recovery_time / 1000000000).toFixed(1) + 's' : '-';
-        const gradeColor = scoreGrade === 'A+' ? '#22c55e'
-            : scoreGrade === 'A' ? '#22c55e'
+        var gradeColor = scoreGrade === 'A+' || scoreGrade === 'A' ? '#22c55e'
             : scoreGrade === 'B' ? '#eab308'
             : scoreGrade === 'C' ? '#f97316'
-            : scoreGrade === 'D' ? '#ef4444'
+            : scoreGrade === 'D' || scoreGrade === 'F' ? '#ef4444'
             : '#6b7280';
 
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>Agent Arena</h2>
-                <div class="page-desc">Chaos engineering — break it, watch it recover</div>
-            </div>
+        var historyExists = history && history.length > 0;
+        var historyRows = historyExists ? history.slice().reverse().map(function(r) {
+            return h('tr', null,
+                h('td', null, h('code', null, esc((r.action && r.action.type) || '-'))),
+                h('td', null, esc((r.action && r.action.target_id) || (r.action && r.action.source_id) || '-')),
+                h('td', null, r.success
+                    ? h('span', { className: 'badge badge-success' }, 'success')
+                    : h('span', { className: 'badge badge-danger' }, 'failed')),
+                h('td', { style: { color: 'var(--text-secondary)' } },
+                    r.duration ? Math.round(r.duration / 1000000) + 'ms' : '-')
+            );
+        }) : [];
 
-            <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
-                <div class="card" style="flex:0 0 220px;text-align:center;padding:1.5rem;border:2px solid ${gradeColor};border-radius:var(--radius)">
-                    <div style="font-size:0.8125rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem">Resilience Score</div>
-                    <div style="font-size:2.5rem;font-weight:700;color:${gradeColor}">${scoreValue}</div>
-                    <div style="font-size:1.5rem;font-weight:600;color:${gradeColor};margin-bottom:0.75rem">${scoreGrade}</div>
-                    <div style="font-size:0.8125rem;color:var(--text-secondary)">Recovery: ${scoreRecovery}</div>
-                    <div style="font-size:0.8125rem;color:var(--text-secondary)">Avg Time: ${scoreAvgTime}</div>
-                </div>
-                <div style="flex:1;min-width:0">
-                    <div class="stat-grid">
-                        <div class="stat-card">
-                            <div class="label">Recovery Rate</div>
-                            <div class="value">${recoveryRate}%</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="label">Total Faults</div>
-                            <div class="value">${stats?.total_actions||0}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="label">Recovered</div>
-                            <div class="value">${stats?.successful_actions||0}</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="label">Failed</div>
-                            <div class="value">${stats?.failed_actions||0}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'Agent Arena'),
+                h('div', { className: 'page-desc' }, 'Chaos engineering \u2014 break it, watch it recover')
+            ),
+            h('div', { style: { display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' } },
+                h('div', { className: 'card', style: { flex: '0 0 220px', textAlign: 'center', padding: '1.5rem', border: '2px solid ' + gradeColor } },
+                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' } }, 'Resilience Score'),
+                    h('div', { style: { fontSize: '2.5rem', fontWeight: '700', color: gradeColor } }, scoreValue),
+                    h('div', { style: { fontSize: '1.5rem', fontWeight: '600', color: gradeColor, marginBottom: '0.75rem' } }, scoreGrade),
+                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)' } }, 'Recovery: ' + scoreRecovery),
+                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)' } }, 'Avg Time: ' + scoreAvgTime)
+                ),
+                h('div', { style: { flex: 1, minWidth: 0 } },
+                    h('div', { className: 'stat-grid' },
+                        statCard('Recovery Rate', String(recoveryRate) + '%'),
+                        statCard('Total Faults', String((stats && stats.total_actions) || 0)),
+                        statCard('Recovered', String((stats && stats.successful_actions) || 0)),
+                        statCard('Failed', String((stats && stats.failed_actions) || 0))
+                    )
+                )
+            ),
+            h('div', { className: 'card' },
+                h('h3', null, 'Agent Graph'),
+                h('svg', { id: 'dag-svg', width: '100%', height: '200', style: { background: 'var(--bg-primary)', borderRadius: 'var(--radius-sm)' } }),
+                h('div', { id: 'arena-selected-info', style: { marginTop: '0.75rem' } })
+            ),
+            h('div', { className: 'card' },
+                h('h3', null, 'Inject Fault'),
+                h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.5rem' } },
+                    h('button', { className: 'btn btn-danger', style: { background: 'linear-gradient(135deg,#ef4444,#dc2626)', color: 'white' }, onClick: function() { arenaAction('kill_leader'); } },
+                        '\u2620 Assassinate Leader'
+                    ),
+                    h('button', { className: 'btn btn-danger', style: { background: 'linear-gradient(135deg,#f97316,#ea580c)', color: 'white' }, onClick: function() { arenaKillOrchestrator(); } },
+                        '\u2699 Kill Orchestrator'
+                    ),
+                    h('select', { id: 'arena-agent-select', style: { padding: '0.625rem 1rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)' } },
+                        h('option', { value: '' }, '-- Select Agent --'),
+                        (agents || []).map(function(a) {
+                            return h('option', { value: a.id }, esc(a.name), ' (', esc(a.status), ')');
+                        })
+                    ),
+                    h('button', { className: 'btn btn-outline', style: { borderColor: 'var(--danger)', color: 'var(--danger)' }, onClick: function() { arenaKillAgent(); } },
+                        '\uD83D\uDD25 Kill Agent'
+                    )
+                ),
+                h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.75rem' } },
+                    h('input', { type: 'text', id: 'arena-node-id', placeholder: 'Node ID', style: { padding: '0.625rem 1rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)' } }),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaRemoveNode(); } }, '\uD83D\uDCA3 Remove Node'),
+                    h('input', { type: 'text', id: 'arena-edge-from', placeholder: 'From', style: { width: '100px', padding: '0.625rem 1rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)' } }),
+                    h('input', { type: 'text', id: 'arena-edge-to', placeholder: 'To', style: { width: '100px', padding: '0.625rem 1rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)' } }),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaRemoveEdge(); } }, '\u2716 Remove Edge'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaPauseAgent(); } }, '\u23F8 Pause Agent'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaResumeAgent(); } }, '\u25B6 Resume Agent'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaSlowAgent(); } }, '\uD83D\uDC0C Slow Agent'),
+                    h('button', { className: 'btn btn-outline', onClick: function() { arenaNetworkPartition(); } }, '\uD83D\uDDE1 Network Partition')
+                ),
+                h('div', { id: 'arena-action-result', style: { marginTop: '0.75rem', fontSize: '0.8125rem' } })
+            ),
+            h('div', { className: 'card' },
+                h('h3', null, 'Action History'),
+                h('div', { id: 'arena-history' },
+                    historyExists
+                        ? h('table', null,
+                              h('thead', null, h('tr', null,
+                                  h('th', null, 'Action'), h('th', null, 'Target'), h('th', null, 'Result'), h('th', null, 'Duration')
+                              )),
+                              h('tbody', null, historyRows)
+                          )
+                        : h('div', { className: 'empty-state' }, 'No actions yet. Inject a fault above.')
+                )
+            )
+        );
 
-            <div class="card">
-                <h3>Agent Graph</h3>
-                <svg id="dag-svg" width="100%" height="200" style="background:var(--bg-primary);border-radius:var(--radius-sm)"></svg>
-                <div id="arena-selected-info" style="margin-top:0.75rem"></div>
-            </div>
+        setTimeout(function() { if (currentView === 'arena') arena(); }, 3000);
 
-            <div class="card">
-                <h3>Inject Fault</h3>
-                <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:0.5rem">
-                    <button class="btn btn-danger" onclick="arenaAction('kill_leader')" style="background:linear-gradient(135deg,#ef4444,#dc2626);color:white;box-shadow:0 2px 8px rgba(239,68,68,0.3)">
-                        &#9760; Assassinate Leader
-                    </button>
-                    <select id="arena-agent-select" style="padding:0.625rem 1rem;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary)">
-                        <option value="">-- Select Agent --</option>
-                        ${(agents||[]).map(a => `<option value="${a.id}">${esc(a.name)} (${a.status})</option>`).join('')}
-                    </select>
-                    <button class="btn btn-outline" onclick="arenaKillAgent()" style="border-color:var(--danger);color:var(--danger)">
-                        &#128293; Kill Agent
-                    </button>
-                </div>
-                <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:0.75rem">
-                    <input type="text" id="arena-node-id" placeholder="Node ID" style="padding:0.625rem 1rem;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary)">
-                    <button class="btn btn-outline" onclick="arenaRemoveNode()">&#128163; Remove Node</button>
-                    <input type="text" id="arena-edge-from" placeholder="From" style="width:100px;padding:0.625rem 1rem;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary)">
-                    <input type="text" id="arena-edge-to" placeholder="To" style="width:100px;padding:0.625rem 1rem;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary)">
-                    <button class="btn btn-outline" onclick="arenaRemoveEdge()">&#9986; Remove Edge</button>
-                </div>
-                <div id="arena-action-result" style="margin-top:0.75rem;font-size:0.8125rem"></div>
-            </div>
-
-            <div class="card">
-                <h3>Action History</h3>
-                <div id="arena-history">
-                    ${(history||[]).length === 0 ? '<div class="empty-state">No actions yet. Inject a fault above.</div>' : `
-                    <table>
-                        <thead><tr><th>Action</th><th>Target</th><th>Result</th><th>Duration</th></tr></thead>
-                        <tbody>
-                            ${(history||[]).reverse().map(r => `
-                                <tr>
-                                    <td><code>${esc(r.action?.type||'-')}</code></td>
-                                    <td>${esc(r.action?.target_id||r.action?.source_id||'-')}</td>
-                                    <td>${r.success ? '<span class="badge badge-success">success</span>' : '<span class="badge badge-danger">failed</span>'}</td>
-                                    <td style="color:var(--text-secondary)">${r.duration ? Math.round(r.duration/1000000)+'ms' : '-'}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>`}
-                </div>
-            </div>`;
-
-        // Auto-refresh every 3s.
-        setTimeout(() => { if (currentView==='arena') arena(); }, 3000);
-
-        // Render DAG and sync selection.
         renderDAG(arenaAgents);
-        const agentSelect = document.getElementById('arena-agent-select');
+        var agentSelect = document.getElementById('arena-agent-select');
         if (agentSelect) {
             if (selectedAgentId) agentSelect.value = selectedAgentId;
-            agentSelect.addEventListener('change', () => {
-                const id = agentSelect.value;
+            agentSelect.addEventListener('change', function() {
+                var id = agentSelect.value;
                 if (id) {
-                    const a = arenaAgents.find(ag => ag.id === id);
+                    var a = arenaAgents.find(function(ag) { return ag.id === id; });
                     selectedAgentId = id;
                     updateSelectedInfo(a || null);
                 } else {
@@ -398,311 +477,373 @@
                 renderDAG(arenaAgents);
             });
         }
-        // Restore info panel for current selection.
         if (selectedAgentId) {
-            const a = arenaAgents.find(ag => ag.id === selectedAgentId);
+            var a = arenaAgents.find(function(ag) { return ag.id === selectedAgentId; });
             updateSelectedInfo(a || null);
         }
     }
 
-    window.arenaAction = async function(type) {
-        const el = document.getElementById('arena-action-result');
+    function arenaAction(type) {
+        var el = document.getElementById('arena-action-result');
         el.textContent = 'Injecting...';
         el.style.color = 'var(--text-secondary)';
+        api('/arena/leader/kill', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Leader killed \u2014 watching recovery...')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
 
-        const r = await api('/arena/leader/kill', { method: 'POST' });
-        if (r && r.success) {
-            el.innerHTML = `<span class="badge badge-success">Leader killed — watching recovery...</span>`;
-        } else {
-            el.innerHTML = `<span class="badge badge-danger">Failed: ${esc(r?.error||'unknown')}</span>`;
-        }
-        setTimeout(() => { if (currentView==='arena') arena(); }, 1000);
-    };
-
-    window.arenaKillAgent = async function() {
-        const id = document.getElementById('arena-agent-select').value || selectedAgentId;
+    function arenaKillAgent() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
         if (!id) { alert('Select an agent first (use dropdown or click a node)'); return; }
-        const el = document.getElementById('arena-action-result');
+        var el = document.getElementById('arena-action-result');
         el.textContent = 'Killing agent...';
         el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/kill', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Agent ', esc(id), ' killed \u2014 resurrection pending...')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
 
-        const r = await api(`/arena/agent/${id}/kill`, { method: 'POST' });
-        if (r && r.success) {
-            el.innerHTML = `<span class="badge badge-success">Agent ${esc(id)} killed — resurrection pending...</span>`;
-        } else {
-            el.innerHTML = `<span class="badge badge-danger">Failed: ${esc(r?.error||'unknown')}</span>`;
-        }
-        setTimeout(() => { if (currentView==='arena') arena(); }, 1000);
-    };
-
-    window.arenaRemoveNode = async function() {
-        const id = document.getElementById('arena-node-id').value;
+    function arenaRemoveNode() {
+        var id = document.getElementById('arena-node-id').value;
         if (!id) { alert('Enter a node ID'); return; }
-        const el = document.getElementById('arena-action-result');
+        var el = document.getElementById('arena-action-result');
         el.textContent = 'Removing node...';
+        api('/arena/node/' + id + '/remove', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Node ', esc(id), ' removed')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
 
-        const r = await api(`/arena/node/${id}/remove`, { method: 'POST' });
-        if (r && r.success) {
-            el.innerHTML = `<span class="badge badge-success">Node ${esc(id)} removed</span>`;
-        } else {
-            el.innerHTML = `<span class="badge badge-danger">Failed: ${esc(r?.error||'unknown')}</span>`;
-        }
-        setTimeout(() => { if (currentView==='arena') arena(); }, 1000);
-    };
-
-    window.arenaRemoveEdge = async function() {
-        const from = document.getElementById('arena-edge-from').value;
-        const to = document.getElementById('arena-edge-to').value;
+    function arenaRemoveEdge() {
+        var from = document.getElementById('arena-edge-from').value;
+        var to = document.getElementById('arena-edge-to').value;
         if (!from || !to) { alert('Enter both From and To'); return; }
-        const el = document.getElementById('arena-action-result');
+        var el = document.getElementById('arena-action-result');
         el.textContent = 'Removing edge...';
-
-        const r = await api('/arena/edge/remove', {
+        api('/arena/edge/remove', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from, to }),
+            body: JSON.stringify({ from: from, to: to }),
+        }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Edge ', esc(from), '\u2192', esc(to), ' removed')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
         });
-        if (r && r.success) {
-            el.innerHTML = `<span class="badge badge-success">Edge ${esc(from)}→${esc(to)} removed</span>`;
-        } else {
-            el.innerHTML = `<span class="badge badge-danger">Failed: ${esc(r?.error||'unknown')}</span>`;
-        }
-        setTimeout(() => { if (currentView==='arena') arena(); }, 1000);
-    };
+    }
 
-    // Add danger button style.
-    const dangerStyle = document.createElement('style');
-    dangerStyle.textContent = `.btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:white;box-shadow:0 2px 8px rgba(239,68,68,0.3)}.btn-danger:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(239,68,68,0.3)}`;
-    document.head.appendChild(dangerStyle);
+    function arenaPauseAgent() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Pausing agent...';
+        api('/arena/agent/' + id + '/pause', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' paused')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
+
+    function arenaResumeAgent() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Resuming agent...';
+        api('/arena/agent/' + id + '/resume', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Agent ', esc(id), ' resumed')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
+
+    function arenaSlowAgent() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Slowing agent...';
+        var delay = prompt('Delay in seconds (default: 5):', '5');
+        if (!delay) return;
+        api('/arena/agent/' + id + '/slow', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration: delay + 's' }),
+        }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' slowed by ', delay, 's')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
+
+    function arenaKillOrchestrator() {
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Killing orchestrator...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/orchestrator/kill', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-success' }, 'Orchestrator killed \u2014 watching recovery...')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
+
+    function arenaNetworkPartition() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Partitioning network...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/partition', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' network partitioned')
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+        });
+    }
 
     // ── Flight Recorder ─────────────────
     async function flight() {
-        const el = document.getElementById('view-flight');
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>Flight Recorder</h2>
-                <div class="page-desc">Timeline, call graph, decisions, and diagnostics</div>
-            </div>
-            <div id="flight-loading" class="empty-state">Loading flight data...</div>`;
+        var el = document.getElementById('view-flight');
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'Flight Recorder'),
+                h('div', { className: 'page-desc' }, 'Timeline, call graph, decisions, and diagnostics')
+            ),
+            h('div', { id: 'flight-loading', className: 'empty-state' }, 'Loading flight data...')
+        );
 
-        const [summary, graphData, decisions, diagData, genealogyData] = await Promise.all([
+        var results = await Promise.all([
             api('/flight/summary'),
             api('/flight/graph'),
             api('/flight/decisions'),
             api('/flight/diagnostics'),
             api('/flight/genealogy'),
         ]);
+        var summary = results[0], graphData = results[1], decisions = results[2], diagData = results[3], genealogyData = results[4];
 
-        const container = document.getElementById('flight-loading');
-        if (!container) return; // navigated away
-
+        var container = document.getElementById('flight-loading');
+        if (!container) return;
         container.remove();
 
-        // Build all sections.
-        el.innerHTML = `
-            <div class="page-header">
-                <h2>Flight Recorder</h2>
-                <div class="page-desc">Timeline, call graph, decisions, and diagnostics</div>
-            </div>
-            ${renderTimelineSection(summary)}
-            ${renderGraphSection(graphData)}
-            ${renderDecisionsSection(decisions)}
-            ${renderDiagnosticsSection(diagData)}
-            ${renderGenealogySection(genealogyData)}`;
+        setContent(el,
+            h('div', { className: 'page-header' },
+                h('h2', null, 'Flight Recorder'),
+                h('div', { className: 'page-desc' }, 'Timeline, call graph, decisions, and diagnostics')
+            ),
+            renderTimelineSection(summary),
+            renderGraphSection(graphData),
+            renderDecisionsSection(decisions),
+            renderDiagnosticsSection(diagData),
+            renderGenealogySection(genealogyData)
+        );
 
-        // Render Mermaid diagrams after DOM insertion.
         renderMermaidDiagrams();
     }
 
     function renderTimelineSection(summary) {
         if (!summary || summary.event_count === 0) {
-            return '<div class="card"><h3>Timeline</h3><div class="empty-state">No timeline events recorded yet.</div></div>';
+            return h('div', { className: 'card' },
+                h('h3', null, 'Timeline'),
+                h('div', { className: 'empty-state' }, 'No timeline events recorded yet.')
+            );
         }
 
-        const toolPct = summary.tool_percent || 0;
-        const llmPct = summary.llm_percent || 0;
-        const waitPct = summary.wait_percent || 0;
-        const otherPct = Math.max(0, 100 - toolPct - llmPct - waitPct);
+        var toolPct = summary.tool_percent || 0;
+        var llmPct = summary.llm_percent || 0;
+        var waitPct = summary.wait_percent || 0;
+        var otherPct = Math.max(0, 100 - toolPct - llmPct - waitPct);
 
-        return `
-            <div class="card">
-                <h3>Timeline — Time Distribution</h3>
-                <div class="timeline-chart">
-                    <div class="timeline-row">
-                        <span class="timeline-label">Tool Calls</span>
-                        <div class="timeline-bar-track">
-                            <div class="timeline-bar" style="width:${toolPct}%;background:linear-gradient(90deg,var(--accent),#a78bfa)"></div>
-                        </div>
-                        <span class="timeline-pct">${toolPct.toFixed(1)}%</span>
-                    </div>
-                    <div class="timeline-row">
-                        <span class="timeline-label">LLM Calls</span>
-                        <div class="timeline-bar-track">
-                            <div class="timeline-bar" style="width:${llmPct}%;background:linear-gradient(90deg,var(--success),#34d399)"></div>
-                        </div>
-                        <span class="timeline-pct">${llmPct.toFixed(1)}%</span>
-                    </div>
-                    <div class="timeline-row">
-                        <span class="timeline-label">Waiting</span>
-                        <div class="timeline-bar-track">
-                            <div class="timeline-bar" style="width:${waitPct}%;background:linear-gradient(90deg,var(--warning),#fbbf24)"></div>
-                        </div>
-                        <span class="timeline-pct">${waitPct.toFixed(1)}%</span>
-                    </div>
-                    <div class="timeline-row">
-                        <span class="timeline-label">Other</span>
-                        <div class="timeline-bar-track">
-                            <div class="timeline-bar" style="width:${otherPct}%;background:linear-gradient(90deg,var(--text-muted),var(--text-secondary))"></div>
-                        </div>
-                        <span class="timeline-pct">${otherPct.toFixed(1)}%</span>
-                    </div>
-                </div>
-                <div class="timeline-stats">
-                    <span>Events: <strong>${summary.event_count}</strong></span>
-                    <span>Total: <strong>${formatDuration(summary.total_duration)}</strong></span>
-                </div>
-            </div>`;
+        return h('div', { className: 'card' },
+            h('h3', null, 'Timeline \u2014 Time Distribution'),
+            h('div', { className: 'timeline-chart' },
+                timelineRow('Tool Calls', toolPct, 'linear-gradient(90deg,var(--accent),#a78bfa)'),
+                timelineRow('LLM Calls', llmPct, 'linear-gradient(90deg,var(--success),#34d399)'),
+                timelineRow('Waiting', waitPct, 'linear-gradient(90deg,var(--warning),#fbbf24)'),
+                timelineRow('Other', otherPct, 'linear-gradient(90deg,var(--text-muted),var(--text-secondary))')
+            ),
+            h('div', { className: 'timeline-stats' },
+                h('span', null, 'Events: ', h('strong', null, String(summary.event_count))),
+                h('span', null, 'Total: ', h('strong', null, formatDuration(summary.total_duration)))
+            )
+        );
+    }
+
+    function timelineRow(label, pct, color) {
+        return h('div', { className: 'timeline-row' },
+            h('span', { className: 'timeline-label' }, label),
+            h('div', { className: 'timeline-bar-track' },
+                h('div', { className: 'timeline-bar', style: { width: String(pct) + '%', background: color } })
+            ),
+            h('span', { className: 'timeline-pct' }, pct.toFixed(1) + '%')
+        );
     }
 
     function renderGraphSection(graphData) {
-        const mermaidText = graphData?.mermaid || '';
-        if (!mermaidText || mermaidText.includes('No data')) {
-            return '<div class="card"><h3>Call Graph</h3><div class="empty-state">No call graph data recorded yet.</div></div>';
+        var mermaidText = (graphData && graphData.mermaid) || '';
+        if (!mermaidText || mermaidText.indexOf('No data') !== -1) {
+            return h('div', { className: 'card' },
+                h('h3', null, 'Call Graph'),
+                h('div', { className: 'empty-state' }, 'No call graph data recorded yet.')
+            );
         }
-
-        return `
-            <div class="card">
-                <h3>Call Graph</h3>
-                <div class="mermaid" data-mermaid="${esc(mermaidText)}">${esc(mermaidText)}</div>
-            </div>`;
+        return h('div', { className: 'card' },
+            h('h3', null, 'Call Graph'),
+            h('div', { className: 'mermaid', dangerousHTML: esc(mermaidText) }, mermaidText)
+        );
     }
 
     function renderDecisionsSection(decisions) {
         if (!decisions || decisions.length === 0) {
-            return '<div class="card"><h3>Decisions</h3><div class="empty-state">No decisions recorded yet.</div></div>';
+            return h('div', { className: 'card' },
+                h('h3', null, 'Decisions'),
+                h('div', { className: 'empty-state' }, 'No decisions recorded yet.')
+            );
         }
 
-        return `
-            <div class="card">
-                <h3>Decisions (${decisions.length})</h3>
-                <div class="table-scroll">
-                    <table class="decision-table">
-                        <thead>
-                            <tr>
-                                <th>Agent</th>
-                                <th>Type</th>
-                                <th>Selected</th>
-                                <th>Reason</th>
-                                <th>Confidence</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${decisions.map(d => `
-                                <tr>
-                                    <td><code>${esc(d.agent_id || '-')}</code></td>
-                                    <td>${badge(d.type || '-')}</td>
-                                    <td><strong>${esc(d.selected || '-')}</strong></td>
-                                    <td style="max-width:300px;color:var(--text-secondary)">${esc(truncate(d.reason || '-'))}</td>
-                                    <td>
-                                        <div class="confidence-bar">
-                                            <div class="confidence-fill" style="width:${(d.confidence||0)*100}%"></div>
-                                        </div>
-                                        <span class="confidence-pct">${((d.confidence||0)*100).toFixed(0)}%</span>
-                                    </td>
-                                </tr>`).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </div>`;
+        var rows = decisions.map(function(d) {
+            return h('tr', null,
+                h('td', null, h('code', null, esc(d.agent_id || '-'))),
+                h('td', null, badge(d.type || '-')),
+                h('td', null, h('strong', null, esc(d.selected || '-'))),
+                h('td', { style: { maxWidth: '300px', color: 'var(--text-secondary)' } }, truncate(d.reason || '-')),
+                h('td', null,
+                    h('div', { className: 'confidence-bar' },
+                        h('div', { className: 'confidence-fill', style: { width: String(((d.confidence || 0) * 100)) + '%' } })
+                    ),
+                    h('span', { className: 'confidence-pct' }, String(((d.confidence || 0) * 100).toFixed(0)) + '%')
+                )
+            );
+        });
+
+        return h('div', { className: 'card' },
+            h('h3', null, 'Decisions (' + String(decisions.length) + ')'),
+            h('div', { className: 'table-scroll' },
+                h('table', { className: 'decision-table' },
+                    h('thead', null, h('tr', null,
+                        h('th', null, 'Agent'), h('th', null, 'Type'), h('th', null, 'Selected'),
+                        h('th', null, 'Reason'), h('th', null, 'Confidence')
+                    )),
+                    h('tbody', null, rows)
+                )
+            )
+        );
     }
 
     function renderDiagnosticsSection(diagData) {
-        const records = diagData?.records || [];
-        const dist = diagData?.distribution || {};
+        var records = (diagData && diagData.records) || [];
+        var dist = (diagData && diagData.distribution) || {};
+        var categories = dist.categories || {};
+        var catKeys = Object.keys(categories);
 
-        if (records.length === 0 && (!dist.categories || Object.keys(dist.categories).length === 0)) {
-            return '<div class="card"><h3>Diagnostics</h3><div class="empty-state">No diagnostic records yet.</div></div>';
+        if (records.length === 0 && catKeys.length === 0) {
+            return h('div', { className: 'card' },
+                h('h3', null, 'Diagnostics'),
+                h('div', { className: 'empty-state' }, 'No diagnostic records yet.')
+            );
         }
 
-        const categories = dist.categories || {};
-        const percentages = dist.percentages || {};
-        const total = dist.total || 0;
+        var percentages = dist.percentages || {};
+        var total = dist.total || 0;
+        var pieColors = ['var(--danger)', 'var(--warning)', 'var(--info)', 'var(--success)', 'var(--accent)', 'var(--text-muted)', '#a78bfa', '#f472b6'];
 
-        // Build conic-gradient for pie chart.
-        const pieColors = [
-            'var(--danger)', 'var(--warning)', 'var(--info)', 'var(--success)',
-            'var(--accent)', 'var(--text-muted)', '#a78bfa', '#f472b6'
-        ];
-        let conicParts = [];
-        let acc = 0;
-        const catKeys = Object.keys(categories);
-        catKeys.forEach((cat, i) => {
-            const pct = percentages[cat] || 0;
-            const color = pieColors[i % pieColors.length];
-            conicParts.push(`${color} ${acc}% ${acc + pct}%`);
+        var conicParts = [];
+        var acc = 0;
+        catKeys.forEach(function(cat, i) {
+            var pct = percentages[cat] || 0;
+            var color = pieColors[i % pieColors.length];
+            conicParts.push(color + ' ' + String(acc) + '% ' + String(acc + pct) + '%');
             acc += pct;
         });
-        const conicCSS = conicParts.length > 0
-            ? `conic-gradient(${conicParts.join(', ')})`
+        var conicCSS = conicParts.length > 0
+            ? 'conic-gradient(' + conicParts.join(', ') + ')'
             : 'conic-gradient(var(--text-muted) 0% 100%)';
 
-        const categoryRows = catKeys.map((cat, i) => {
-            const count = categories[cat] || 0;
-            const pct = percentages[cat] || 0;
-            const color = pieColors[i % pieColors.length];
-            return `
-                <tr>
-                    <td><span class="dot-indicator" style="background:${color}"></span>${esc(cat)}</td>
-                    <td>${count}</td>
-                    <td>${pct.toFixed(1)}%</td>
-                </tr>`;
-        }).join('');
+        var categoryRows = catKeys.map(function(cat, i) {
+            var count = categories[cat] || 0;
+            var pct = percentages[cat] || 0;
+            var color = pieColors[i % pieColors.length];
+            return h('tr', null,
+                h('td', null, h('span', { className: 'dot-indicator', style: { background: color } }), esc(cat)),
+                h('td', null, String(count)),
+                h('td', null, pct.toFixed(1) + '%')
+            );
+        });
 
-        return `
-            <div class="card">
-                <h3>Diagnostics</h3>
-                <div class="diagnostics-card">
-                    <div class="diagnostics-pie-wrap">
-                        <div class="pie-chart" style="background:${conicCSS}"></div>
-                        <div class="pie-center">${total}</div>
-                    </div>
-                    <div class="diagnostics-table-wrap">
-                        <table class="diagnostics-table">
-                            <thead>
-                                <tr><th>Category</th><th>Count</th><th>Percentage</th></tr>
-                            </thead>
-                            <tbody>${categoryRows}</tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>`;
+        return h('div', { className: 'card' },
+            h('h3', null, 'Diagnostics'),
+            h('div', { className: 'diagnostics-card' },
+                h('div', { className: 'diagnostics-pie-wrap' },
+                    h('div', { className: 'pie-chart', style: { background: conicCSS } }),
+                    h('div', { className: 'pie-center' }, String(total))
+                ),
+                h('div', { className: 'diagnostics-table-wrap' },
+                    h('table', { className: 'diagnostics-table' },
+                        h('thead', null, h('tr', null, h('th', null, 'Category'), h('th', null, 'Count'), h('th', null, 'Percentage'))),
+                        h('tbody', null, categoryRows)
+                    )
+                )
+            )
+        );
     }
 
     function renderGenealogySection(genealogyData) {
-        const mermaidText = genealogyData?.mermaid || '';
-        if (!mermaidText || mermaidText.includes('No agents')) {
-            return '<div class="card"><h3>Genealogy</h3><div class="empty-state">No genealogy data recorded yet.</div></div>';
+        var mermaidText = (genealogyData && genealogyData.mermaid) || '';
+        if (!mermaidText || mermaidText.indexOf('No agents') !== -1) {
+            return h('div', { className: 'card' },
+                h('h3', null, 'Genealogy'),
+                h('div', { className: 'empty-state' }, 'No genealogy data recorded yet.')
+            );
         }
-
-        return `
-            <div class="card">
-                <h3>Genealogy Tree</h3>
-                <div class="mermaid" data-mermaid="${esc(mermaidText)}">${esc(mermaidText)}</div>
-            </div>`;
+        return h('div', { className: 'card' },
+            h('h3', null, 'Genealogy Tree'),
+            h('div', { className: 'mermaid', dangerousHTML: esc(mermaidText) })
+        );
     }
 
     function renderMermaidDiagrams() {
         if (typeof mermaid === 'undefined') return;
         try {
             mermaid.initialize({ startOnLoad: false, theme: 'dark' });
-            document.querySelectorAll('.mermaid[data-mermaid]').forEach(async (el, i) => {
-                const text = el.getAttribute('data-mermaid');
+            document.querySelectorAll('.mermaid[data-mermaid]').forEach(function(el, i) {
+                var text = el.getAttribute('data-mermaid');
                 if (!text) return;
                 try {
-                    const id = 'mermaid-graph-' + i;
-                    const { svg } = await mermaid.render(id, text);
-                    el.innerHTML = svg;
-                    el.removeAttribute('data-mermaid');
+                    var id = 'mermaid-graph-' + String(i);
+                    mermaid.render(id, text).then(function(res) {
+                        el.innerHTML = res.svg;
+                        el.removeAttribute('data-mermaid');
+                    }).catch(function(err) {
+                        console.error('Mermaid render error:', err);
+                        el.innerHTML = '<div class="empty-state">Failed to render diagram</div>';
+                    });
                 } catch (err) {
                     console.error('Mermaid render error:', err);
                     el.innerHTML = '<div class="empty-state">Failed to render diagram</div>';
@@ -715,13 +856,12 @@
 
     function formatDuration(d) {
         if (!d) return '-';
-        // Go duration is in nanoseconds when serialized as int, or a string.
         if (typeof d === 'string') return d;
         if (typeof d === 'number') {
             if (d > 1e9) return (d / 1e9).toFixed(2) + 's';
             if (d > 1e6) return (d / 1e6).toFixed(1) + 'ms';
-            if (d > 1e3) return (d / 1e3).toFixed(1) + 'us';
-            return d + 'ns';
+            if (d > 1e3) return (d / 1e3).toFixed(1) + '\u00B5s';
+            return String(d) + 'ns';
         }
         return String(d);
     }
@@ -759,7 +899,7 @@
 
             var statusColor = a.status === 'completed' ? 'var(--success)' :
                               a.status === 'failed' ? 'var(--danger)' :
-                              (a.status.includes('running') || a.status.includes('analyzing') || a.status === 'pending') ? 'var(--warning)' :
+                              (a.status.indexOf('running') !== -1 || a.status.indexOf('analyzing') !== -1 || a.status === 'pending') ? 'var(--warning)' :
                               'var(--info)';
 
             var isSelected = selectedAgentId === a.id;
@@ -768,7 +908,6 @@
             g.setAttribute('data-agent-id', a.id);
             g.style.cursor = 'pointer';
 
-            // Glow ring for selected node.
             if (isSelected) {
                 var glow = document.createElementNS(SVG_NS, 'circle');
                 glow.setAttribute('cx', x);
@@ -781,7 +920,6 @@
                 g.appendChild(glow);
             }
 
-            // Node circle.
             var circle = document.createElementNS(SVG_NS, 'circle');
             circle.setAttribute('cx', x);
             circle.setAttribute('cy', y);
@@ -792,7 +930,6 @@
             circle.setAttribute('stroke-width', isSelected ? '3' : '2');
             g.appendChild(circle);
 
-            // Name label (inside circle).
             var name = document.createElementNS(SVG_NS, 'text');
             name.setAttribute('x', x);
             name.setAttribute('y', y + 1);
@@ -805,7 +942,6 @@
             name.textContent = truncName(a.name, 8);
             g.appendChild(name);
 
-            // Status label (below circle).
             var status = document.createElementNS(SVG_NS, 'text');
             status.setAttribute('x', x);
             status.setAttribute('y', y + 42);
@@ -816,13 +952,10 @@
             status.textContent = a.status;
             g.appendChild(status);
 
-            // Click handler.
             g.addEventListener('click', function() { selectAgent(a); });
-
             svg.appendChild(g);
         });
 
-        // Adjust SVG height to fit all nodes.
         var rows = Math.ceil(agents.length / cols);
         var height = yStart + rows * yGap + 30;
         svg.setAttribute('height', Math.max(200, height));
@@ -835,10 +968,8 @@
 
     function selectAgent(agent) {
         selectedAgentId = agent.id;
-        // Sync the Kill Agent dropdown.
         var select = document.getElementById('arena-agent-select');
         if (select) select.value = agent.id;
-        // Update info panel and re-render DAG.
         updateSelectedInfo(agent);
         renderDAG(arenaAgents);
     }
@@ -846,48 +977,59 @@
     function updateSelectedInfo(agent) {
         var el = document.getElementById('arena-selected-info');
         if (!el) return;
-        if (!agent) { el.innerHTML = ''; return; }
+        if (!agent) { setContent(el); return; }
 
         var statusColor = agent.status === 'completed' ? 'var(--success)' :
                           agent.status === 'failed' ? 'var(--danger)' :
-                          (agent.status.includes('running') || agent.status.includes('analyzing') || agent.status === 'pending') ? 'var(--warning)' :
+                          (agent.status.indexOf('running') !== -1 || agent.status.indexOf('analyzing') !== -1 || agent.status === 'pending') ? 'var(--warning)' :
                           'var(--info)';
 
-        el.innerHTML =
-            '<div style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0.75rem;background:var(--bg-primary);border:1px solid var(--accent);border-radius:var(--radius-sm);font-size:0.8125rem">' +
-                '<span style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';flex-shrink:0"></span>' +
-                '<strong>' + esc(agent.name) + '</strong>' +
-                '<span style="color:var(--text-secondary)">' + esc(agent.status) + '</span>' +
-                (agent.duration ? '<span style="color:var(--text-muted)">' + esc(agent.duration) + '</span>' : '') +
-                '<span style="color:var(--text-muted);margin-left:auto">ID: ' + esc(agent.id) + '</span>' +
-            '</div>';
+        setContent(el,
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', fontSize: '0.8125rem' } },
+                h('span', { style: { width: '10px', height: '10px', borderRadius: '50%', background: statusColor, flexShrink: 0 } }),
+                h('strong', null, esc(agent.name)),
+                h('span', { style: { color: 'var(--text-secondary)' } }, esc(agent.status)),
+                agent.duration ? h('span', { style: { color: 'var(--text-muted)' } }, esc(agent.duration)) : null,
+                h('span', { style: { color: 'var(--text-muted)', marginLeft: 'auto' } }, 'ID: ', esc(agent.id))
+            )
+        );
     }
 
     // ── WebSocket ────────────────────────
     function connectWS() {
-        if (ws && ws.readyState===WebSocket.OPEN) return;
-        const proto = location.protocol==='https:'?'wss:':'ws:';
-        ws = new WebSocket(proto+'//'+location.host+'/ws');
-        ws.onopen = () => {
-            ws.send(JSON.stringify({type:'subscribe',channel:'agents'}));
-            ws.send(JSON.stringify({type:'subscribe',channel:'events'}));
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(proto + '//' + location.host + '/ws');
+        ws.onopen = function() {
+            ws.send(JSON.stringify({ type: 'subscribe', channel: 'agents' }));
+            ws.send(JSON.stringify({ type: 'subscribe', channel: 'events' }));
         };
-        ws.onmessage = e => {
+        ws.onmessage = function(e) {
             try {
-                const msg = JSON.parse(e.data);
-                if (msg.type==='agent_update' && currentView==='agents') agents();
+                var msg = JSON.parse(e.data);
+                if (msg.type === 'agent_update' && currentView === 'agents') agents();
             } catch(_) {}
         };
-        ws.onclose = () => setTimeout(connectWS, 5000);
+        ws.onclose = function() { setTimeout(connectWS, 5000); };
     }
 
     // ── Helpers ──────────────────────────
-    function esc(s) { if(!s)return''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-    function truncate(s) { if(!s||s.length<=120)return s; return s.slice(0,117)+'...'; }
+    function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    function truncate(s) { if (!s || s.length <= 120) return s; return s.slice(0, 117) + '...'; }
+
     function badge(s) {
         if (!s) return '';
-        const cls = s==='completed'?'badge-success':s==='failed'?'badge-danger':s.includes('running')||s.includes('analyzing')||s==='pending'?'badge-warning':'badge-info';
-        return `<span class="badge ${cls}">${esc(s)}</span>`;
+        var cls = s === 'completed' ? 'badge-success' :
+                  s === 'failed' ? 'badge-danger' :
+                  (s.indexOf('running') !== -1 || s.indexOf('analyzing') !== -1 || s === 'pending') ? 'badge-warning' : 'badge-info';
+        return h('span', { className: 'badge ' + cls }, esc(s));
+    }
+
+    function progressBar(pct) {
+        return h('div', { className: 'progress-bar' },
+            h('div', { className: 'fill', style: { width: String(pct) + '%' } })
+        );
     }
 
     // ── Init ─────────────────────────────

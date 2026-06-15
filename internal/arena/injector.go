@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"goagentx/internal/runtime"
 )
@@ -16,12 +17,18 @@ var (
 	ErrDAGNil = errors.New("arena: dag is nil")
 	// ErrLeaderNotFound indicates no agent with type "leader" was found.
 	ErrLeaderNotFound = errors.New("arena: leader agent not found")
+	// ErrOrchestratorNotFound indicates no agent with type "orchestrator" was found.
+	ErrOrchestratorNotFound = errors.New("arena: orchestrator agent not found")
 )
 
 // RuntimeProvider is the subset of runtime capabilities needed by the arena.
 type RuntimeProvider interface {
 	StopAgent(ctx context.Context, agentID string) error
 	ListAgents() []runtime.AgentInfo
+	PauseAgent(ctx context.Context, agentID string) error
+	ResumeAgent(ctx context.Context, agentID string) error
+	SlowAgent(ctx context.Context, agentID string, delay time.Duration) error
+	PartitionNetwork(ctx context.Context, agentID string) error
 }
 
 // DAGProvider is the subset of DAG mutation capabilities needed by the arena.
@@ -56,6 +63,40 @@ func (in *Injector) KillAgent(ctx context.Context, id string) error {
 	slog.Warn("arena: killing agent", "agent_id", id)
 	if err := in.runtime.StopAgent(ctx, id); err != nil {
 		return fmt.Errorf("arena: kill agent %s: %w", id, err)
+	}
+	return nil
+}
+
+// KillOrchestrator finds the orchestrator agent and stops it.
+func (in *Injector) KillOrchestrator(ctx context.Context) (string, error) {
+	if in.runtime == nil {
+		return "", ErrRuntimeNil
+	}
+	orchID := ""
+	for _, info := range in.runtime.ListAgents() {
+		if info.Type == "orchestrator" {
+			orchID = info.ID
+			break
+		}
+	}
+	if orchID == "" {
+		return "", ErrOrchestratorNotFound
+	}
+	slog.Warn("arena: assassinating orchestrator", "agent_id", orchID)
+	if err := in.runtime.StopAgent(ctx, orchID); err != nil {
+		return "", fmt.Errorf("arena: kill orchestrator %s: %w", orchID, err)
+	}
+	return orchID, nil
+}
+
+// NetworkPartition isolates an agent from the network.
+func (in *Injector) NetworkPartition(ctx context.Context, id string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: partitioning network for agent", "agent_id", id)
+	if err := in.runtime.PartitionNetwork(ctx, id); err != nil {
+		return fmt.Errorf("arena: network partition %s: %w", id, err)
 	}
 	return nil
 }
@@ -102,6 +143,42 @@ func (in *Injector) RemoveEdge(ctx context.Context, from, to string) error {
 	slog.Warn("arena: removing edge from DAG", "from", from, "to", to)
 	if err := in.dag.RemoveEdge(ctx, from, to); err != nil {
 		return fmt.Errorf("arena: remove edge %s->%s: %w", from, to, err)
+	}
+	return nil
+}
+
+// PauseAgent suspends an agent temporarily via the runtime.
+func (in *Injector) PauseAgent(ctx context.Context, id string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: pausing agent", "agent_id", id)
+	if err := in.runtime.PauseAgent(ctx, id); err != nil {
+		return fmt.Errorf("arena: pause agent %s: %w", id, err)
+	}
+	return nil
+}
+
+// ResumeAgent resumes a previously paused agent via the runtime.
+func (in *Injector) ResumeAgent(ctx context.Context, id string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: resuming agent", "agent_id", id)
+	if err := in.runtime.ResumeAgent(ctx, id); err != nil {
+		return fmt.Errorf("arena: resume agent %s: %w", id, err)
+	}
+	return nil
+}
+
+// SlowAgent makes an agent artificially slow by adding a processing delay.
+func (in *Injector) SlowAgent(ctx context.Context, id string, delay time.Duration) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: slowing agent", "agent_id", id, "delay", delay)
+	if err := in.runtime.SlowAgent(ctx, id, delay); err != nil {
+		return fmt.Errorf("arena: slow agent %s: %w", id, err)
 	}
 	return nil
 }

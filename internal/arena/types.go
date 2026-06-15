@@ -10,10 +10,15 @@ import "time"
 type ActionType string
 
 const (
-	ActionKillLeader ActionType = "kill_leader"
-	ActionKillAgent  ActionType = "kill_agent"
-	ActionRemoveNode ActionType = "remove_node"
-	ActionRemoveEdge ActionType = "remove_edge"
+	ActionKillLeader       ActionType = "kill_leader"
+	ActionKillAgent        ActionType = "kill_agent"
+	ActionRemoveNode       ActionType = "remove_node"
+	ActionRemoveEdge       ActionType = "remove_edge"
+	ActionPauseAgent       ActionType = "pause_agent"
+	ActionResumeAgent      ActionType = "resume_agent"
+	ActionSlowAgent        ActionType = "slow_agent"
+	ActionKillOrchestrator ActionType = "kill_orchestrator"
+	ActionNetworkPartition ActionType = "network_partition"
 )
 
 // Action represents a single chaos action to inject.

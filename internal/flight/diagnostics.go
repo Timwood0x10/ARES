@@ -203,9 +203,17 @@ func SuggestFix(cat DiagnosticCategory) []string {
 
 // AutoDiagnose creates a DiagnosticRecord from an error with automatic classification.
 func AutoDiagnose(agentID, taskID string, err error, duration time.Duration) DiagnosticRecord {
-	errMsg := err.Error()
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
 	cat := ClassifyError(errMsg)
 	suggestions := SuggestFix(cat)
+
+	suggestion := ""
+	if len(suggestions) > 0 {
+		suggestion = suggestions[0]
+	}
 
 	return DiagnosticRecord{
 		ID:         fmt.Sprintf("diag-%d", time.Now().UnixNano()),
@@ -213,7 +221,7 @@ func AutoDiagnose(agentID, taskID string, err error, duration time.Duration) Dia
 		TaskID:     taskID,
 		Category:   cat,
 		RootCause:  errMsg,
-		Suggestion: suggestions[0],
+		Suggestion: suggestion,
 		Timestamp:  time.Now(),
 		Duration:   duration,
 	}

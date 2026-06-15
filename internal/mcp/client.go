@@ -80,7 +80,9 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 
 	// Perform initialize handshake.
 	if err := c.initialize(); err != nil {
-		_ = c.Close()
+		if closeErr := c.Close(); closeErr != nil {
+			slog.Warn("mcp: close after init failure", "error", closeErr)
+		}
 		return fmt.Errorf("initialize: %w", err)
 	}
 
@@ -88,7 +90,9 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 
 	// Discover initial tools.
 	if _, err := c.ListTools(ctx); err != nil {
-		_ = c.Close()
+		if closeErr := c.Close(); closeErr != nil {
+			slog.Warn("mcp: close after list tools failure", "error", closeErr)
+		}
 		return fmt.Errorf("list tools: %w", err)
 	}
 
@@ -204,7 +208,9 @@ func (c *MCPClient) Close() error {
 	c.connected.Store(false)
 
 	if c.transport != nil {
-		_ = c.transport.Close()
+		if err := c.transport.Close(); err != nil {
+			slog.Warn("mcp: transport close error", "server", c.serverName, "error", err)
+		}
 	}
 
 	if err := c.eg.Wait(); err != nil && c.ctx.Err() == nil {
@@ -249,6 +255,11 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 	if err := c.transport.Send(ctx, msg); err != nil {
 		return fmt.Errorf("send: %w", err)
+	}
+
+	// Check parent context before applying timeout.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Wait for response with timeout.

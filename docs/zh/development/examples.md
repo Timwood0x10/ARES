@@ -69,6 +69,8 @@ graph LR
 ```go
 // 创建基础设施。
 eventStore := events.NewMemoryEventStore()
+// 生产环境蒸馏推荐使用 NewMemoryManagerWithDistiller 替代 NewMemoryManager
+// （需要 embedding.EmbeddingService 和 distillation.ExperienceRepository）。
 memManager, _ := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 memManager.Start(ctx)
 

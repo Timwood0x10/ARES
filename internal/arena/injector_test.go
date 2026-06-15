@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,10 +15,18 @@ import (
 
 // mockRuntime implements RuntimeProvider for testing.
 type mockRuntime struct {
-	mu           sync.Mutex
-	stopAgentFn  func(ctx context.Context, agentID string) error
-	listAgentsFn func() []runtime.AgentInfo
-	stopped      []string
+	mu             sync.Mutex
+	stopAgentFn    func(ctx context.Context, agentID string) error
+	listAgentsFn   func() []runtime.AgentInfo
+	pauseAgentFn   func(ctx context.Context, agentID string) error
+	resumeAgentFn  func(ctx context.Context, agentID string) error
+	slowAgentFn    func(ctx context.Context, agentID string, delay time.Duration) error
+	partitionNetFn func(ctx context.Context, agentID string) error
+	stopped        []string
+	paused         []string
+	resumed        []string
+	slowed         []string
+	partitioned    []string
 }
 
 func (m *mockRuntime) StopAgent(ctx context.Context, agentID string) error {
@@ -35,6 +44,78 @@ func (m *mockRuntime) getStopped() []string {
 	defer m.mu.Unlock()
 	out := make([]string, len(m.stopped))
 	copy(out, m.stopped)
+	return out
+}
+
+func (m *mockRuntime) PauseAgent(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	m.paused = append(m.paused, agentID)
+	m.mu.Unlock()
+	if m.pauseAgentFn != nil {
+		return m.pauseAgentFn(ctx, agentID)
+	}
+	return nil
+}
+
+func (m *mockRuntime) ResumeAgent(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	m.resumed = append(m.resumed, agentID)
+	m.mu.Unlock()
+	if m.resumeAgentFn != nil {
+		return m.resumeAgentFn(ctx, agentID)
+	}
+	return nil
+}
+
+func (m *mockRuntime) SlowAgent(ctx context.Context, agentID string, delay time.Duration) error {
+	m.mu.Lock()
+	m.slowed = append(m.slowed, agentID)
+	m.mu.Unlock()
+	if m.slowAgentFn != nil {
+		return m.slowAgentFn(ctx, agentID, delay)
+	}
+	return nil
+}
+
+func (m *mockRuntime) getPaused() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.paused))
+	copy(out, m.paused)
+	return out
+}
+
+func (m *mockRuntime) getResumed() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.resumed))
+	copy(out, m.resumed)
+	return out
+}
+
+func (m *mockRuntime) getSlowed() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.slowed))
+	copy(out, m.slowed)
+	return out
+}
+
+func (m *mockRuntime) PartitionNetwork(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	m.partitioned = append(m.partitioned, agentID)
+	m.mu.Unlock()
+	if m.partitionNetFn != nil {
+		return m.partitionNetFn(ctx, agentID)
+	}
+	return nil
+}
+
+func (m *mockRuntime) getPartitioned() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.partitioned))
+	copy(out, m.partitioned)
 	return out
 }
 

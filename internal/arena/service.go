@@ -62,6 +62,27 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 		err = s.injector.RemoveNode(ctx, action.TargetID)
 	case ActionRemoveEdge:
 		err = s.injector.RemoveEdge(ctx, action.SourceID, action.TargetID)
+	case ActionPauseAgent:
+		err = s.injector.PauseAgent(ctx, action.TargetID)
+	case ActionResumeAgent:
+		err = s.injector.ResumeAgent(ctx, action.TargetID)
+	case ActionSlowAgent:
+		delay, parseErr := parseDuration(action, 5*time.Second)
+		if parseErr != nil {
+			err = parseErr
+			break
+		}
+		err = s.injector.SlowAgent(ctx, action.TargetID, delay)
+	case ActionKillOrchestrator:
+		orchID, killErr := s.injector.KillOrchestrator(ctx)
+		if killErr == nil {
+			action.Metadata = mergeMap(action.Metadata, map[string]any{
+				"killed_orchestrator_id": orchID,
+			})
+		}
+		err = killErr
+	case ActionNetworkPartition:
+		err = s.injector.NetworkPartition(ctx, action.TargetID)
 	default:
 		err = fmt.Errorf("arena: unknown action type: %s", action.Type)
 	}
@@ -199,4 +220,29 @@ func mergeMap(base, override map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// parseDuration extracts a duration from action.Metadata["duration"] or returns a default.
+func parseDuration(action Action, defaultDuration time.Duration) (time.Duration, error) {
+	if action.Metadata == nil {
+		return defaultDuration, nil
+	}
+	durVal, ok := action.Metadata["duration"]
+	if !ok {
+		return defaultDuration, nil
+	}
+	switch v := durVal.(type) {
+	case time.Duration:
+		return v, nil
+	case string:
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, fmt.Errorf("arena: invalid duration %q: %w", v, err)
+		}
+		return d, nil
+	case float64:
+		return time.Duration(v), nil
+	default:
+		return 0, fmt.Errorf("arena: unsupported duration type %T", durVal)
+	}
 }

@@ -207,12 +207,17 @@ func (c *Collector) handleTaskEnd(evt *events.Event) {
 		if e, ok := evt.Payload["error"].(string); ok {
 			errMsg = e
 		}
+		suggestions := SuggestFix(ClassifyError(errMsg))
+		suggestion := ""
+		if len(suggestions) > 0 {
+			suggestion = suggestions[0]
+		}
 		c.diag.Record(DiagnosticRecord{
 			ID:         evt.ID,
 			AgentID:    evt.StreamID,
 			Category:   ClassifyError(errMsg),
 			RootCause:  errMsg,
-			Suggestion: SuggestFix(ClassifyError(errMsg))[0],
+			Suggestion: suggestion,
 			Timestamp:  evt.Timestamp,
 		})
 	}

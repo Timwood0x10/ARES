@@ -33,6 +33,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /arena/history", h.handleHistory)
 	mux.HandleFunc("GET /arena/stream", h.handleStream)
 	mux.HandleFunc("GET /arena/score", h.handleScore)
+	mux.HandleFunc("POST /arena/orchestrator/kill", h.handleKillOrchestrator)
+	mux.HandleFunc("POST /arena/agent/{id}/partition", h.handleNetworkPartition)
 	mux.HandleFunc("POST /arena/survival", h.handleSurvivalStart)
 	mux.HandleFunc("GET /arena/survival/status", h.handleSurvivalStatus)
 }
@@ -100,6 +102,32 @@ func (h *Handler) handleRemoveEdge(w http.ResponseWriter, r *http.Request) {
 		Type:      ActionRemoveEdge,
 		TargetID:  req.To,
 		SourceID:  req.From,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleKillOrchestrator(w http.ResponseWriter, r *http.Request) {
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionKillOrchestrator,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleNetworkPartition(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionNetworkPartition,
+		TargetID:  id,
 		CreatedAt: time.Now(),
 	}
 	result := h.service.Execute(r.Context(), action)
@@ -254,6 +282,24 @@ func ValidateAction(action Action) error {
 		if action.SourceID == "" || action.TargetID == "" {
 			return errors.New("source_id and target_id are required for remove_edge")
 		}
+	case ActionPauseAgent:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for pause_agent")
+		}
+	case ActionResumeAgent:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for resume_agent")
+		}
+	case ActionSlowAgent:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for slow_agent")
+		}
+	case ActionKillOrchestrator:
+		// No target required; orchestrator is discovered automatically.
+	case ActionNetworkPartition:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for network_partition")
+		}
 	default:
 		return fmt.Errorf("unknown action type: %s", action.Type)
 	}
@@ -271,6 +317,16 @@ func RoutePath(actionType ActionType) string {
 		return "POST /arena/node/{id}/remove"
 	case ActionRemoveEdge:
 		return "POST /arena/edge/remove"
+	case ActionPauseAgent:
+		return "POST /arena/agent/{id}/pause"
+	case ActionResumeAgent:
+		return "POST /arena/agent/{id}/resume"
+	case ActionSlowAgent:
+		return "POST /arena/agent/{id}/slow"
+	case ActionKillOrchestrator:
+		return "POST /arena/orchestrator/kill"
+	case ActionNetworkPartition:
+		return "POST /arena/agent/{id}/partition"
 	default:
 		return ""
 	}
@@ -287,6 +343,16 @@ func ParseActionType(s string) (ActionType, error) {
 		return ActionRemoveNode, nil
 	case "remove_edge":
 		return ActionRemoveEdge, nil
+	case "pause_agent":
+		return ActionPauseAgent, nil
+	case "resume_agent":
+		return ActionResumeAgent, nil
+	case "slow_agent":
+		return ActionSlowAgent, nil
+	case "kill_orchestrator":
+		return ActionKillOrchestrator, nil
+	case "network_partition":
+		return ActionNetworkPartition, nil
 	default:
 		return "", fmt.Errorf("unknown action type: %s", s)
 	}

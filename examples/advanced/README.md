@@ -69,6 +69,9 @@ Demonstrates the complete agent lifecycle with Runtime, EventStore, MemoryManage
 ```go
 // Create shared infrastructure.
 eventStore := events.NewMemoryEventStore()
+// For production distillation support, use NewMemoryManagerWithDistiller
+// instead of NewMemoryManager (requires embedding.EmbeddingService and
+// distillation.ExperienceRepository).
 memManager, _ := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 memManager.Start(ctx)
 

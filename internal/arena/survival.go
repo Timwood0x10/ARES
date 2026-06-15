@@ -193,6 +193,11 @@ func (s *Service) randomChaosAction() Action {
 		ActionKillLeader,
 		ActionRemoveNode,
 		ActionRemoveEdge,
+		ActionPauseAgent,
+		ActionResumeAgent,
+		ActionSlowAgent,
+		ActionKillOrchestrator,
+		ActionNetworkPartition,
 	}
 	actionType := actionTypes[rand.Intn(len(actionTypes))] //nolint:gosec // non-crypto rand is fine for chaos testing
 
@@ -214,7 +219,6 @@ func (s *Service) randomChaosAction() Action {
 			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
 		}
 	case ActionRemoveEdge:
-		// Use agent IDs as proxy for edge endpoints.
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) >= 2 {
 			fromIdx := rand.Intn(len(ids))   //nolint:gosec
@@ -226,7 +230,17 @@ func (s *Service) randomChaosAction() Action {
 			action.TargetID = ids[toIdx]
 		}
 	case ActionKillLeader:
-		// No target needed; leader is discovered automatically.
+	case ActionKillOrchestrator:
+	case ActionPauseAgent, ActionResumeAgent, ActionSlowAgent, ActionNetworkPartition:
+		ids := s.injector.AvailableAgentIDs()
+		if len(ids) > 0 {
+			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
+			if actionType == ActionSlowAgent {
+				action.Metadata = map[string]any{
+					"duration": time.Duration(5+rand.Intn(10)) * time.Second,
+				}
+			}
+		}
 	}
 
 	return action

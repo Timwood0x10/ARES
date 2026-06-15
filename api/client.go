@@ -13,6 +13,7 @@ import (
 	"goagentx/api/retrieval"
 	"goagentx/internal/errors"
 	internalmemory "goagentx/internal/memory"
+	"goagentx/internal/memory/distillation"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	"goagentx/internal/storage/postgres/repositories"
@@ -74,6 +75,12 @@ type MemoryConfig struct {
 	Enabled        bool
 	MaxHistory     int
 	EnablePostgres bool
+	// Embedder is an optional embedding service for distillation support.
+	// When set, NewClient uses NewMemoryManagerWithDistiller instead of NewMemoryManager.
+	Embedder embedding.EmbeddingService
+	// ExpRepo is an optional experience repository for distillation support.
+	// Required when Embedder is set.
+	ExpRepo distillation.ExperienceRepository
 }
 
 // NewClient creates a new GoAgent client instance with simplified initialization.
@@ -107,11 +114,20 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	// Initialize memory manager
-	memoryMgr, err := internalmemory.NewMemoryManager(&internalmemory.MemoryConfig{
-		Enabled:        config.Memory.Enabled,
-		MaxHistory:     config.Memory.MaxHistory,
-		EnablePostgres: config.Memory.EnablePostgres,
-	})
+	var memoryMgr internalmemory.MemoryManager
+	if config.Memory.Embedder != nil {
+		memoryMgr, err = internalmemory.NewMemoryManagerWithDistiller(&internalmemory.MemoryConfig{
+			Enabled:        config.Memory.Enabled,
+			MaxHistory:     config.Memory.MaxHistory,
+			EnablePostgres: config.Memory.EnablePostgres,
+		}, config.Memory.Embedder, config.Memory.ExpRepo)
+	} else {
+		memoryMgr, err = internalmemory.NewMemoryManager(&internalmemory.MemoryConfig{
+			Enabled:        config.Memory.Enabled,
+			MaxHistory:     config.Memory.MaxHistory,
+			EnablePostgres: config.Memory.EnablePostgres,
+		})
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "create memory manager")
 	}

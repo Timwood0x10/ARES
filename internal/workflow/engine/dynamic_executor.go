@@ -361,11 +361,12 @@ func (e *DynamicExecutor) runDynamicSteps(
 			continue
 		}
 
-		if !e.canExecute(step, completed, mu) {
-			mu.Lock()
-			alreadyProcessed := processed[stepID]
-			mu.Unlock()
+		mu.Lock()
+		canExec := e.canExecute(step, completed)
+		alreadyProcessed := processed[stepID]
+		mu.Unlock()
 
+		if !canExec {
 			if alreadyProcessed {
 				stepIndex++
 				continue
@@ -374,17 +375,23 @@ func (e *DynamicExecutor) runDynamicSteps(
 			// H3 fix: wait for any step goroutine to complete via stepDone channel,
 			// instead of stepEg.Wait() which blocks until ALL goroutines finish
 			// and races with concurrent stepEg.Go() calls.
+			deadlockTimer := time.NewTimer(5 * time.Second)
 			select {
 			case <-stepDone:
+				deadlockTimer.Stop()
 				// Some goroutine completed, re-check dependencies.
 				continue
-			case <-time.After(5 * time.Second):
+			case <-deadlockTimer.C:
 				// Timeout: potential deadlock detected.
-				errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies", stepID)
+				select {
+				case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies", stepID):
+				default:
+				}
 				_ = stepEg.Wait()
 				close(resultChan)
 				return
 			case <-ctx.Done():
+				deadlockTimer.Stop()
 				_ = stepEg.Wait()
 				close(resultChan)
 				return

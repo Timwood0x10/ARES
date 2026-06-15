@@ -21,6 +21,8 @@ import (
 type MCPDashboard struct {
 	MCPManager *mcp.MCPManager
 	HTTPServer *http.Server
+	hub        *dashboard.WSHub
+	bridge     *dashboard.EventBridge
 }
 
 // SetupMCP initializes the MCP manager from config and connects to servers.
@@ -79,6 +81,7 @@ func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registr
 
 // SetupDashboard initializes the dashboard service, WebSocket hub, and HTTP server.
 func SetupDashboard(
+	ctx context.Context,
 	cfg *config.DashboardAppConfig,
 	rt runtime.Runtime,
 	agents dashboard.AgentProvider,
@@ -104,9 +107,10 @@ func SetupDashboard(
 	go hub.Run()
 
 	// Start event bridge if event store is available.
+	var bridge *dashboard.EventBridge
 	if eventStore != nil {
-		bridge := dashboard.NewEventBridge(eventStore, hub)
-		if err := bridge.Start(context.Background()); err != nil {
+		bridge = dashboard.NewEventBridge(eventStore, hub)
+		if err := bridge.Start(ctx); err != nil {
 			slog.Warn("bootstrap: event bridge start failed", "error", err)
 		}
 	}
@@ -124,8 +128,10 @@ func SetupDashboard(
 	slog.Info("bootstrap: dashboard initialized", "addr", cfg.Addr)
 
 	return &MCPDashboard{
-		MCPManager: nil, // Set by caller if MCP was initialized.
+		MCPManager: nil,
 		HTTPServer: httpServer,
+		hub:        hub,
+		bridge:     bridge,
 	}, nil
 }
 
@@ -144,10 +150,22 @@ func StartDashboard(md *MCPDashboard) error {
 	return nil
 }
 
-// StopDashboard gracefully shuts down the dashboard HTTP server.
+// StopDashboard gracefully shuts down the dashboard HTTP server, hub, and bridge.
 func StopDashboard(ctx context.Context, md *MCPDashboard) error {
-	if md == nil || md.HTTPServer == nil {
+	if md == nil {
 		return nil
 	}
-	return md.HTTPServer.Shutdown(ctx)
+
+	if md.bridge != nil {
+		md.bridge.Stop()
+	}
+
+	if md.hub != nil {
+		md.hub.Stop()
+	}
+
+	if md.HTTPServer != nil {
+		return md.HTTPServer.Shutdown(ctx)
+	}
+	return nil
 }
