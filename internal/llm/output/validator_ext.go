@@ -61,20 +61,6 @@ func NewInputValidator() *InputValidator {
 	}
 }
 
-// NewInputValidatorWithLimits creates a new InputValidator with custom limits.
-func NewInputValidatorWithLimits(
-	maxInputLength, maxJSONLength, maxJSONDepth, maxArrayLength, maxStringLength, maxObjectKeyLength int,
-) *InputValidator {
-	return &InputValidator{
-		maxInputLength:     maxInputLength,
-		maxJSONLength:      maxJSONLength,
-		maxJSONDepth:       maxJSONDepth,
-		maxArrayLength:     maxArrayLength,
-		maxStringLength:    maxStringLength,
-		maxObjectKeyLength: maxObjectKeyLength,
-	}
-}
-
 // ValidateInput validates the input length and returns an error if it exceeds limits.
 func (v *InputValidator) ValidateInput(input string) error {
 	if len(input) > v.maxInputLength {

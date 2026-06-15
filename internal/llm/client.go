@@ -425,7 +425,6 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 			select {
 			case ch <- chunk:
 			case <-ctx.Done():
-				streamErr = ctx.Err()
 				return
 			}
 		}

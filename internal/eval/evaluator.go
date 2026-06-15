@@ -42,35 +42,6 @@ func (e *ExactMatchEvaluator) Evaluate(ctx context.Context, testCase TestCase, r
 	}, nil
 }
 
-// SubstringMatchEvaluator checks if the expected output is a substring of the actual output.
-type SubstringMatchEvaluator struct{}
-
-// NewSubstringMatchEvaluator creates a new substring match evaluator.
-func NewSubstringMatchEvaluator() *SubstringMatchEvaluator {
-	return &SubstringMatchEvaluator{}
-}
-
-// Evaluate returns a score based on substring match.
-func (e *SubstringMatchEvaluator) Evaluate(ctx context.Context, testCase TestCase, result TestResult) ([]EvalScore, error) {
-	_ = ctx // reserved for future use
-	if testCase.ExpectedOutput == "" {
-		return []EvalScore{{Metric: "substring_match", Score: 1.0, Details: "no expected output specified"}}, nil
-	}
-
-	score := 0.0
-	if strings.Contains(result.ActualOutput, testCase.ExpectedOutput) {
-		score = 1.0
-	}
-
-	return []EvalScore{
-		{
-			Metric:  "substring_match",
-			Score:   score,
-			Details: "checks if expected output is substring of actual output",
-		},
-	}, nil
-}
-
 // KeywordPresenceEvaluator checks if specified keywords are present in the output.
 type KeywordPresenceEvaluator struct {
 	Keywords []string

@@ -77,30 +77,6 @@ func (m *mockRuntime) SlowAgent(ctx context.Context, agentID string, delay time.
 	return nil
 }
 
-func (m *mockRuntime) getPaused() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.paused))
-	copy(out, m.paused)
-	return out
-}
-
-func (m *mockRuntime) getResumed() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.resumed))
-	copy(out, m.resumed)
-	return out
-}
-
-func (m *mockRuntime) getSlowed() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.slowed))
-	copy(out, m.slowed)
-	return out
-}
-
 func (m *mockRuntime) PartitionNetwork(ctx context.Context, agentID string) error {
 	m.mu.Lock()
 	m.partitioned = append(m.partitioned, agentID)
@@ -109,14 +85,6 @@ func (m *mockRuntime) PartitionNetwork(ctx context.Context, agentID string) erro
 		return m.partitionNetFn(ctx, agentID)
 	}
 	return nil
-}
-
-func (m *mockRuntime) getPartitioned() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.partitioned))
-	copy(out, m.partitioned)
-	return out
 }
 
 func (m *mockRuntime) ListAgents() []runtime.AgentInfo {

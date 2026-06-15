@@ -31,14 +31,6 @@ func NewParser() *Parser {
 	}
 }
 
-// NewParserWithValidator creates a new Parser with custom input validation.
-func NewParserWithValidator(validator *InputValidator) *Parser {
-	return &Parser{
-		fixJSON:        true,
-		inputValidator: validator,
-	}
-}
-
 // ParseRecommendResult parses LLM output into RecommendResult.
 func (p *Parser) ParseRecommendResult(output string) (*models.RecommendResult, error) {
 	// Validate input length before processing

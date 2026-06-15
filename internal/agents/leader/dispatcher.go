@@ -26,39 +26,6 @@ type MessageSender interface {
 	Send(ctx context.Context, agentAddr string, msg *ahp.AHPMessage) error
 }
 
-// LocalMessageSender sends messages to local agent queues.
-type LocalMessageSender struct {
-	queues map[string]*ahp.MessageQueue
-	mu     sync.RWMutex
-}
-
-// NewLocalMessageSender creates a new LocalMessageSender.
-func NewLocalMessageSender() *LocalMessageSender {
-	return &LocalMessageSender{
-		queues: make(map[string]*ahp.MessageQueue),
-	}
-}
-
-// RegisterQueue registers a message queue for an agent address.
-func (s *LocalMessageSender) RegisterQueue(agentAddr string, queue *ahp.MessageQueue) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.queues[agentAddr] = queue
-}
-
-// Send sends a message to the specified agent address.
-func (s *LocalMessageSender) Send(ctx context.Context, agentAddr string, msg *ahp.AHPMessage) error {
-	s.mu.RLock()
-	queue, ok := s.queues[agentAddr]
-	s.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("no queue registered for agent: %s", agentAddr)
-	}
-
-	return queue.Enqueue(ctx, msg)
-}
-
 // taskDispatcher dispatches tasks to sub-agents.
 type taskDispatcher struct {
 	mu            sync.RWMutex

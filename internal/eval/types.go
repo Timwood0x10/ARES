@@ -96,17 +96,6 @@ type TestResult struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// NewTestResult creates a new TestResult with initialized fields.
-func NewTestResult(testCaseID, actualOutput string) *TestResult {
-	return &TestResult{
-		TestCaseID:   testCaseID,
-		ActualOutput: actualOutput,
-		ToolsUsed:    make([]string, 0),
-		Metrics:      make(map[string]float64),
-		Timestamp:    time.Now(),
-	}
-}
-
 // EvalScore represents a single evaluation metric score.
 type EvalScore struct {
 	// Metric is the name of the metric.

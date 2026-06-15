@@ -25,6 +25,9 @@ type managedAgent struct {
 	// (via StopAgent or RestartAgent). Prevents NotifyAgentDead from
 	// triggering resurrection of an intentionally stopped agent.
 	stopped bool
+	// resurrecting is set to true when NotifyAgentDead triggers RestoreAgent.
+	// Prevents duplicate resurrection attempts for the same agent.
+	resurrecting bool
 }
 
 // Manager implements the Runtime interface.
@@ -142,30 +145,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 	m.agents[id] = ma
 	m.mu.Unlock()
 
-	// Launch agent in a managed goroutine with panic recovery.
-	m.g.Go(func() error {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("runtime: agent panicked in Start",
-					"agent_id", id, "panic", r,
-				)
-				m.NotifyAgentDead(id, fmt.Sprintf("panic: %v", r))
-			}
-		}()
-
-		if err := agent.Start(agentCtx); err != nil {
-			// Context cancellation means intentional stop; do not resurrect.
-			if agentCtx.Err() != nil {
-				return nil
-			}
-			slog.Error("runtime: agent start failed",
-				"agent_id", id, "error", err,
-			)
-			m.NotifyAgentDead(id, fmt.Sprintf("start failed: %v", err))
-			return nil // Do not propagate; runtime must keep running.
-		}
-		return nil
-	})
+	m.launchAgentGoroutine(agentCtx, id, agent)
 
 	m.emitEvent(ctx, "lifecycle:"+id, events.EventAgentStarted, map[string]any{
 		"agent_id": id,
@@ -298,28 +278,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	m.totalRestarts++
 	m.mu.Unlock()
 
-	m.g.Go(func() error {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("runtime: restarted agent panicked",
-					"agent_id", agentID, "panic", r,
-				)
-				m.NotifyAgentDead(agentID, fmt.Sprintf("panic: %v", r))
-			}
-		}()
-
-		if err := newAgent.Start(agentCtx); err != nil {
-			if agentCtx.Err() != nil {
-				return nil
-			}
-			slog.Error("runtime: restarted agent start failed",
-				"agent_id", agentID, "error", err,
-			)
-			m.NotifyAgentDead(agentID, fmt.Sprintf("start failed: %v", err))
-			return nil
-		}
-		return nil
-	})
+	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
 
 	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStarted, map[string]any{
 		"agent_id": agentID,
@@ -463,18 +422,14 @@ func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agen
 // NotifyAgentDead is called when an agent dies. It triggers asynchronous restoration
 // via errgroup if a factory is registered for the agent.
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
-	// Use write lock for check-and-increment to prevent TOCTOU race.
-	// Two concurrent calls could both pass the restart limit check under RLock,
-	// then both schedule RestoreAgent, exceeding the intended restart count.
 	m.mu.Lock()
 	factory, hasFactory := m.factories[agentID]
 	ma, hasAgent := m.agents[agentID]
 	isStopped := m.isStopped
-	// Check if the agent was intentionally stopped (via StopAgent or RestartAgent).
-	// If so, do not trigger resurrection.
 	intentionallyStopped := hasAgent && ma.stopped
+	alreadyResurrecting := hasAgent && ma.resurrecting
 
-	if isStopped || intentionallyStopped {
+	if isStopped || intentionallyStopped || alreadyResurrecting {
 		m.mu.Unlock()
 		return
 	}
@@ -486,7 +441,6 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		return
 	}
 
-	// Check restart limit and increment under the same write lock.
 	if hasAgent && m.config.MaxRestartsPerAgent > 0 && ma.restarts >= m.config.MaxRestartsPerAgent {
 		m.mu.Unlock()
 		slog.Error("runtime: max restarts exceeded, not restoring",
@@ -496,15 +450,21 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		return
 	}
 
-	// Increment restarts under lock BEFORE launching the goroutine.
 	if hasAgent {
 		ma.restarts++
+		ma.resurrecting = true
 	}
 	m.totalRestarts++
 
-	// Schedule RestoreAgent asynchronously via errgroup BEFORE unlocking
-	// to prevent Add-after-Wait panic if Stop() is called concurrently.
 	m.g.Go(func() error {
+		defer func() {
+			m.mu.Lock()
+			if entry, exists := m.agents[agentID]; exists {
+				entry.resurrecting = false
+			}
+			m.mu.Unlock()
+		}()
+
 		restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
 		defer restoreCancel()
 
@@ -513,7 +473,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 				"agent_id", agentID, "error", err,
 			)
 		}
-		return nil // Never propagate; runtime must keep running.
+		return nil
 	})
 
 	m.mu.Unlock()
@@ -568,28 +528,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 			currentAgent := ma.agent
 			currentID := id
-			m.g.Go(func() error {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("runtime: agent panicked",
-							"agent_id", currentID, "panic", r,
-						)
-						m.NotifyAgentDead(currentID, fmt.Sprintf("panic: %v", r))
-					}
-				}()
-
-				if err := currentAgent.Start(agentCtx); err != nil {
-					if agentCtx.Err() != nil {
-						return nil
-					}
-					slog.Error("runtime: agent start failed",
-						"agent_id", currentID, "error", err,
-					)
-					m.NotifyAgentDead(currentID, fmt.Sprintf("start failed: %v", err))
-					return nil
-				}
-				return nil
-			})
+			m.launchAgentGoroutine(agentCtx, currentID, currentAgent)
 		}
 	}
 	m.mu.RUnlock()

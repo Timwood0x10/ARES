@@ -2,6 +2,7 @@
 package callbacks
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -88,7 +89,7 @@ func (r *Registry) Emit(ctx *Context) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// Isolate handler panics to prevent cascading failure.
+					slog.Error("handler panicked", "event", ctx.Event, "recover", r)
 				}
 			}()
 			h(ctx)

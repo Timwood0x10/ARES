@@ -374,7 +374,7 @@ func TestOrchestratorEventStoreGetter(t *testing.T) {
 	}
 
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
 	if orch.EventStore() != store {
@@ -413,7 +413,7 @@ func TestOrchestratorResumeSkipsCompletedSteps(t *testing.T) {
 	orch := NewOrchestrator(mcp, llm)
 
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
 	steps := []AgentStep{
@@ -477,7 +477,7 @@ func TestOrchestratorResumeSkipsNoStepsWhenNoneCompleted(t *testing.T) {
 	orch := NewOrchestrator(mcp, llm)
 
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
 	steps := []AgentStep{
@@ -574,7 +574,7 @@ func TestOrchestratorEmitsStepCompletedEvents(t *testing.T) {
 	orch := NewOrchestrator(mcp, llm)
 
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
 	steps := []AgentStep{
@@ -632,7 +632,7 @@ func TestOrchestratorResumePromptIncludesPreviousProgress(t *testing.T) {
 	orch := NewOrchestrator(mcp, llm)
 
 	store := events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
 	steps := []AgentStep{

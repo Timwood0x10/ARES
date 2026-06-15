@@ -62,21 +62,6 @@ func NewRAG(maxSize int) *RAG {
 	}
 }
 
-// NewRAGWithOptions creates a new RAG instance with options.
-func NewRAGWithOptions(maxSize int, opts ...Option) *RAG {
-	r := &RAG{
-		entries: make(map[string]*KnowledgeEntry),
-		index:   NewVectorIndex(),
-		maxSize: maxSize,
-	}
-
-	for _, opt := range opts {
-		opt(r)
-	}
-
-	return r
-}
-
 // NewVectorIndex creates a new VectorIndex.
 func NewVectorIndex() *VectorIndex {
 	return &VectorIndex{

@@ -2,6 +2,7 @@ package arena
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -185,7 +186,7 @@ func TestHandleHistory_WithData(t *testing.T) {
 	h, svc := setupHandler(rt, nil)
 
 	// Execute an action first.
-	svc.Execute(nil, Action{
+	svc.Execute(context.Background(), Action{
 		ID: "hist-1", Type: ActionKillAgent, TargetID: "a-1",
 	})
 
