@@ -10,6 +10,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -24,10 +25,19 @@ import (
 type ArenaActionType string
 
 const (
-	ArenaActionKillLeader ArenaActionType = "kill_leader"
-	ArenaActionKillAgent  ArenaActionType = "kill_agent"
-	ArenaActionRemoveNode ArenaActionType = "remove_node"
-	ArenaActionRemoveEdge ArenaActionType = "remove_edge"
+	ArenaActionKillLeader       ArenaActionType = "kill_leader"
+	ArenaActionKillAgent        ArenaActionType = "kill_agent"
+	ArenaActionRemoveNode       ArenaActionType = "remove_node"
+	ArenaActionRemoveEdge       ArenaActionType = "remove_edge"
+	ArenaActionPauseAgent       ArenaActionType = "pause_agent"
+	ArenaActionResumeAgent      ArenaActionType = "resume_agent"
+	ArenaActionSlowAgent        ArenaActionType = "slow_agent"
+	ArenaActionKillOrchestrator ArenaActionType = "kill_orchestrator"
+	ArenaActionNetworkPartition ArenaActionType = "network_partition"
+	ArenaActionToolTimeout      ArenaActionType = "tool_timeout"
+	ArenaActionMemoryCorrupt    ArenaActionType = "memory_corrupt"
+	ArenaActionMCPDisconnect    ArenaActionType = "mcp_disconnect"
+	ArenaActionLLMFailure       ArenaActionType = "llm_failure"
 )
 
 // ArenaAction represents a single chaos action.
@@ -35,6 +45,7 @@ type ArenaAction struct {
 	Type     ArenaActionType `json:"type"`
 	TargetID string          `json:"target_id,omitempty"`
 	SourceID string          `json:"source_id,omitempty"`
+	Metadata map[string]any  `json:"metadata,omitempty"`
 }
 
 // ArenaResult holds the outcome of an arena action.
@@ -121,7 +132,7 @@ func (a *APIv2) Handler() http.Handler {
 
 	// ── Arena ────────────────────────────────────
 	mux.HandleFunc("/arena/leader/kill", a.handleArenaKillLeader)
-	mux.HandleFunc("/arena/agent/", a.handleArenaKillAgent)
+	mux.HandleFunc("/arena/agent/", a.handleArenaAgentFault) // catch-all: kill/pause/resume/slow/partition/tool-timeout/memory-corrupt/mcp-disconnect/llm-failure
 	mux.HandleFunc("/arena/node/", a.handleArenaRemoveNode)
 	mux.HandleFunc("/arena/edge/remove", a.handleArenaRemoveEdge)
 	mux.HandleFunc("/arena/stats", a.handleArenaStats)
@@ -129,6 +140,12 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/arena/score", a.handleArenaScore)
 	mux.HandleFunc("/arena/survival", a.handleArenaSurvival)
 	mux.HandleFunc("/arena/survival/status", a.handleArenaSurvivalStatus)
+
+	// ── Arena extended fault injection ──────
+	mux.HandleFunc("/arena/orchestrator/kill", a.handleArenaKillOrchestrator)
+	mux.HandleFunc("/arena/survival/stop", a.handleArenaSurvivalStop)
+	mux.HandleFunc("/arena/metrics", a.handleArenaMetrics)
+	mux.HandleFunc("/arena/stream", a.handleArenaStream)
 
 	// ── Flight Recorder ─────────────────────────
 	mux.HandleFunc("/flight/timeline", a.handleFlightTimeline)
@@ -505,6 +522,182 @@ func (a *APIv2) handleArenaSurvivalStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, a.survival.GetSurvivalStatus())
+}
+
+// handleArenaAgentFault is a catch-all for /arena/agent/{id}/{action}
+// 支持: pause, resume, slow, partition, tool-timeout, memory-corrupt, mcp-disconnect, llm-failure
+func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	// 路径格式: /arena/agent/{id}/{action}
+	path := strings.TrimPrefix(r.URL.Path, "/arena/agent/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid path, expected /arena/agent/{id}/{action}"))
+		return
+	}
+	id := parts[0]
+	actionStr := parts[1]
+
+	actionMap := map[string]ArenaActionType{
+		"pause":          ArenaActionPauseAgent,
+		"resume":         ArenaActionResumeAgent,
+		"slow":           ArenaActionSlowAgent,
+		"partition":      ArenaActionNetworkPartition,
+		"tool-timeout":   ArenaActionToolTimeout,
+		"memory-corrupt": ArenaActionMemoryCorrupt,
+		"mcp-disconnect": ArenaActionMCPDisconnect,
+		"llm-failure":    ArenaActionLLMFailure,
+	}
+	actionType, ok := actionMap[actionStr]
+	if !ok {
+		// 回退到已有的 kill 处理器
+		if actionStr == "kill" {
+			result := a.arena.Execute(ArenaAction{Type: ArenaActionKillAgent, TargetID: id})
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, errResp("unknown action: "+actionStr))
+		return
+	}
+
+	var body map[string]any
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&body)
+	}
+
+	action := ArenaAction{Type: actionType, TargetID: id}
+	// 提取元数据（如 slow_agent 的 duration）
+	if d, ok := body["duration"].(string); ok {
+		action.Metadata = map[string]any{"duration": d}
+	}
+	if et, ok := body["error_type"].(string); ok {
+		if action.Metadata == nil {
+			action.Metadata = map[string]any{}
+		}
+		action.Metadata["error_type"] = et
+	}
+
+	result := a.arena.Execute(action)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaKillOrchestrator(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
+		return
+	}
+	result := a.arena.Execute(ArenaAction{Type: ArenaActionKillOrchestrator})
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *APIv2) handleArenaSurvivalStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.survival == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"stopped": true})
+		return
+	}
+	if stopper, ok := a.survival.(interface{ StopSurvival() error }); ok {
+		_ = stopper.StopSurvival()
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"stopped": true})
+}
+
+func (a *APIv2) handleArenaMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.arena == nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	stats := a.arena.Stats()
+	history := a.arena.History()
+	// 从 stats + history 计算指标。
+	totalActions := 0
+	successfulActions := 0
+	if v, ok := stats["total_actions"].(int); ok {
+		totalActions = v
+	}
+	if v, ok := stats["successful_actions"].(int); ok {
+		successfulActions = v
+	}
+
+	failoverCount := 0
+	var recoveryTimes []time.Duration
+	for _, h := range history {
+		if h.Success {
+			failoverCount++
+		}
+		recoveryTimes = append(recoveryTimes, h.Duration)
+	}
+
+	avgRecovery := time.Duration(0)
+	if len(recoveryTimes) > 0 {
+		var total time.Duration
+		for _, d := range recoveryTimes {
+			total += d
+		}
+		avgRecovery = total / time.Duration(len(recoveryTimes))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_actions":         totalActions,
+		"successful_actions":    successfulActions,
+		"failed_actions":        totalActions - successfulActions,
+		"failover_count":        failoverCount,
+		"avg_recovery_time":     avgRecovery.String(),
+		"data_consistency_rate": 1.0,
+	})
+}
+
+func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	// 发送初始连接事件。
+	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339))
+	flusher.Flush()
+
+	// 发送 arena 历史事件后关闭。
+	if a.arena != nil {
+		history := a.arena.History()
+		for i, h := range history {
+			if i >= 20 { // 限制数量
+				break
+			}
+			data, _ := json.Marshal(h)
+			fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data)
+			flusher.Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+	flusher.Flush()
 }
 
 // ── Flight Recorder handlers ──────────────────

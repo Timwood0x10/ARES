@@ -29,6 +29,8 @@ type Service struct {
 	actions  []Result
 	stats    Stats
 	mu       sync.RWMutex
+	metrics  *MetricsCollector
+	bridge   *FlightBridge
 
 	survival survivalState
 }
@@ -39,7 +41,13 @@ func NewService(injector *Injector, store EventStore) *Service {
 		injector: injector,
 		store:    store,
 		actions:  make([]Result, 0),
+		metrics:  NewMetricsCollector(),
 	}
+}
+
+// SetFlightBridge attaches a flight bridge for arena-flight integration.
+func (s *Service) SetFlightBridge(b *FlightBridge) {
+	s.bridge = b
 }
 
 // Execute runs the given action, records the result, and emits an event.
@@ -83,6 +91,23 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 		err = killErr
 	case ActionNetworkPartition:
 		err = s.injector.NetworkPartition(ctx, action.TargetID)
+	case ActionToolTimeout:
+		timeout, parseErr := parseDuration(action, 5*time.Second)
+		if parseErr != nil {
+			err = parseErr
+			break
+		}
+		err = s.injector.ToolTimeout(ctx, action.TargetID, timeout)
+	case ActionMemoryCorrupt:
+		err = s.injector.CorruptMemory(ctx, action.TargetID)
+	case ActionMCPDisconnect:
+		err = s.injector.DisconnectMCP(ctx, action.TargetID)
+	case ActionLLMFailure:
+		errType, ok := action.Metadata["error_type"].(string)
+		if !ok || errType == "" {
+			errType = "rate_limit"
+		}
+		err = s.injector.InjectLLMFailure(ctx, action.TargetID, errType)
 	default:
 		err = fmt.Errorf("arena: unknown action type: %s", action.Type)
 	}
@@ -108,6 +133,9 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 	s.stats.LastAction = time.Now()
 	s.mu.Unlock()
 
+	// Record action result in the metrics collector.
+	s.metrics.RecordActionResult(action.Type, result.Success, duration)
+
 	s.emitEvent(ctx, action, result)
 
 	if result.Success {
@@ -125,6 +153,10 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 			"error", result.Error,
 			"duration", duration,
 		)
+	}
+
+	if s.bridge != nil {
+		s.bridge.OnActionExecuted(action, result)
 	}
 
 	return result
@@ -148,13 +180,19 @@ func (s *Service) Stats() Stats {
 	return s.stats
 }
 
-// Reset clears history and stats.
+// Metrics returns the metrics collector's snapshot.
+func (s *Service) Metrics() MetricsSnapshot {
+	return s.metrics.Snapshot()
+}
+
+// Reset clears history, stats, and metrics.
 func (s *Service) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.actions = make([]Result, 0)
 	s.stats = Stats{}
+	s.metrics.Reset()
 }
 
 // Subscribe returns a channel of arena events from the event store.

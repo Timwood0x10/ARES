@@ -255,6 +255,10 @@ func TestParseActionType(t *testing.T) {
 		{"remove_node", ActionRemoveNode, false},
 		{"remove_edge", ActionRemoveEdge, false},
 		{"KILL_LEADER", ActionKillLeader, false},
+		{"tool_timeout", ActionToolTimeout, false},
+		{"memory_corrupt", ActionMemoryCorrupt, false},
+		{"mcp_disconnect", ActionMCPDisconnect, false},
+		{"llm_failure", ActionLLMFailure, false},
 		{"unknown", "", true},
 	}
 
@@ -276,6 +280,10 @@ func TestRoutePath(t *testing.T) {
 	assert.Equal(t, "POST /arena/agent/{id}/kill", RoutePath(ActionKillAgent))
 	assert.Equal(t, "POST /arena/node/{id}/remove", RoutePath(ActionRemoveNode))
 	assert.Equal(t, "POST /arena/edge/remove", RoutePath(ActionRemoveEdge))
+	assert.Equal(t, "POST /arena/agent/{id}/tool-timeout", RoutePath(ActionToolTimeout))
+	assert.Equal(t, "POST /arena/agent/{id}/memory-corrupt", RoutePath(ActionMemoryCorrupt))
+	assert.Equal(t, "POST /arena/agent/{id}/mcp-disconnect", RoutePath(ActionMCPDisconnect))
+	assert.Equal(t, "POST /arena/agent/{id}/llm-failure", RoutePath(ActionLLMFailure))
 	assert.Empty(t, RoutePath("unknown"))
 }
 
@@ -327,4 +335,136 @@ func TestRegisterRoutes(t *testing.T) {
 		// Should not be 404 (route exists).
 		assert.NotEqual(t, http.StatusNotFound, rec.Code, "route not found: %s %s", r.method, r.path)
 	}
+}
+
+func TestHandleToolTimeout_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	h, _ := setupHandler(rt, nil)
+
+	body := `{"duration":"5s"}`
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString(body))
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleToolTimeout(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var result Result
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	assert.True(t, result.Success)
+	assert.Equal(t, "agent-1", result.Action.TargetID)
+}
+
+func TestHandleToolTimeout_MissingID(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent//tool-timeout", nil)
+	rec := httptest.NewRecorder()
+	h.handleToolTimeout(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleToolTimeout_InvalidJSON(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString("not json"))
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleToolTimeout(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleMemoryCorrupt_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	h, _ := setupHandler(rt, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/memory-corrupt", nil)
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleMemoryCorrupt(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var result Result
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	assert.True(t, result.Success)
+	assert.Equal(t, "agent-1", result.Action.TargetID)
+}
+
+func TestHandleMemoryCorrupt_MissingID(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent//memory-corrupt", nil)
+	rec := httptest.NewRecorder()
+	h.handleMemoryCorrupt(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleMCPDisconnect_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	h, _ := setupHandler(rt, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/mcp-disconnect", nil)
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleMCPDisconnect(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var result Result
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	assert.True(t, result.Success)
+	assert.Equal(t, "agent-1", result.Action.TargetID)
+}
+
+func TestHandleMCPDisconnect_MissingID(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent//mcp-disconnect", nil)
+	rec := httptest.NewRecorder()
+	h.handleMCPDisconnect(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleLLMFailure_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	h, _ := setupHandler(rt, nil)
+
+	body := `{"error_type":"rate_limit"}`
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString(body))
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleLLMFailure(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var result Result
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	assert.True(t, result.Success)
+	assert.Equal(t, "agent-1", result.Action.TargetID)
+}
+
+func TestHandleLLMFailure_MissingID(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent//llm-failure", nil)
+	rec := httptest.NewRecorder()
+	h.handleLLMFailure(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleLLMFailure_InvalidJSON(t *testing.T) {
+	h, _ := setupHandler(nil, nil)
+
+	req := httptest.NewRequest("POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString("not json"))
+	req.SetPathValue("id", "agent-1")
+	rec := httptest.NewRecorder()
+	h.handleLLMFailure(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }

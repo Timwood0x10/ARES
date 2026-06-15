@@ -308,3 +308,72 @@ func TestSubscribe_WithStore(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, ch)
 }
+
+func TestExecute_ToolTimeout(t *testing.T) {
+	rt := &mockRuntime{}
+	svc := newTestService(rt, nil, nil)
+
+	action := Action{
+		ID:        "tt-1",
+		Type:      ActionToolTimeout,
+		TargetID:  "agent-1",
+		Metadata:  map[string]any{"duration": "5s"},
+		CreatedAt: time.Now(),
+	}
+
+	result := svc.Execute(context.Background(), action)
+	assert.True(t, result.Success)
+	assert.Equal(t, []string{"agent-1"}, rt.getToolTimedOut())
+}
+
+func TestExecute_MemoryCorrupt(t *testing.T) {
+	rt := &mockRuntime{}
+	svc := newTestService(rt, nil, nil)
+
+	action := Action{
+		ID:        "mc-1",
+		Type:      ActionMemoryCorrupt,
+		TargetID:  "agent-1",
+		CreatedAt: time.Now(),
+	}
+
+	result := svc.Execute(context.Background(), action)
+	assert.True(t, result.Success)
+	assert.Equal(t, []string{"agent-1"}, rt.getMemoryCorrupted())
+}
+
+func TestExecute_MCPDisconnect(t *testing.T) {
+	rt := &mockRuntime{}
+	svc := newTestService(rt, nil, nil)
+
+	action := Action{
+		ID:        "md-1",
+		Type:      ActionMCPDisconnect,
+		TargetID:  "agent-1",
+		CreatedAt: time.Now(),
+	}
+
+	result := svc.Execute(context.Background(), action)
+	assert.True(t, result.Success)
+	assert.Equal(t, []string{"agent-1"}, rt.getMCPDisconnected())
+}
+
+func TestExecute_LLMFailure(t *testing.T) {
+	rt := &mockRuntime{}
+	svc := newTestService(rt, nil, nil)
+
+	action := Action{
+		ID:        "lf-1",
+		Type:      ActionLLMFailure,
+		TargetID:  "agent-1",
+		Metadata:  map[string]any{"error_type": "rate_limit"},
+		CreatedAt: time.Now(),
+	}
+
+	result := svc.Execute(context.Background(), action)
+	assert.True(t, result.Success)
+	failed := rt.getLLMFailed()
+	require.Len(t, failed, 1)
+	assert.Equal(t, "agent-1", failed[0].id)
+	assert.Equal(t, "rate_limit", failed[0].errType)
+}

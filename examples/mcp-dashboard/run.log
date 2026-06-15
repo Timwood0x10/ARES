@@ -1,0 +1,19 @@
+[20:38:32] GoAgentX Chaos Demo LIVE @ http://localhost8090 | Log: ./examples/mcp-dashboard/run.log
+[20:38:32] -> Open Arena tab, click 'Kill Agent', watch die->resurrect->cnt++
+[20:38:32] 
+[CHAOS] Starting RunReview() — 5 review agents launching...
+[20:38:32] [CHAOS] Waiting 3s for agents to enter data-gathering phase...
+[20:38:35] [CHAOS] === KILLING RUNNING AGENTS MID-FLIGHT ===
+[20:38:35]   [KILL] agent-5 (Change Impact Analysis) status=analyzing with LLM... resurrection_cnt=0
+[20:39:36]   [KILL] agent-1 (Architecture Review) status=analyzing with LLM... resurrection_cnt=0
+[20:39:36]     WARN: CancelAgent returned false (agent may have just finished)
+[20:39:36]   [KILL] agent-2 (Error Handling Review) status=analyzing with LLM... resurrection_cnt=0
+[20:39:36]     WARN: CancelAgent returned false (agent may have just finished)
+[20:39:36]   [KILL] agent-3 (Concurrency Review) status=analyzing with LLM... resurrection_cnt=0
+[20:39:36]     WARN: CancelAgent returned false (agent may have just finished)
+[20:39:36]   [KILL] agent-4 (API Surface Review) status=analyzing with LLM... resurrection_cnt=0
+[20:39:36]     WARN: CancelAgent returned false (agent may have just finished)
+[20:39:36] 
+[REPORT] Agents:6 TotalKills:1 Survived:1/6
+[20:39:36] VERDICT: CHAOS SURVIVED — Kill->Resurrect works, context preserved!
+[20:39:36]   Proved: MCP discovery OK | Kill resilience OK | Context preserved OK

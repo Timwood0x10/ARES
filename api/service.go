@@ -102,7 +102,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 
 	// Dashboard
 	api := dashboard.NewAPIv2(orch, &MCPStatusBridge{Tools: tools}, hub)
-	api.SetArena(&ArenaAdapter{Orch: orch, Store: eventStore})
+	adapter := &ArenaAdapter{Orch: orch, Store: eventStore}
+	api.SetArena(adapter)
+	api.SetSurvival(adapter) // ArenaAdapter 同时实现 SurvivalProvider + SurvivalStarter
 	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: api.Handler()}
 	go func() {
 		slog.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
@@ -128,6 +130,16 @@ func (s *Service) RunReview() {
 // Orchestrator returns the underlying orchestrator for custom agent creation.
 func (s *Service) Orchestrator() *dashboard.Orchestrator {
 	return s.orch
+}
+
+// HTTPServer returns the underlying HTTP server for handler customization.
+func (s *Service) HTTPServer() *http.Server {
+	return s.httpServer
+}
+
+// SetHTTPHandler replaces the HTTP server's handler (must be called before Wait).
+func (s *Service) SetHTTPHandler(handler http.Handler) {
+	s.httpServer.Handler = handler
 }
 
 // Wait blocks until shutdown signal.

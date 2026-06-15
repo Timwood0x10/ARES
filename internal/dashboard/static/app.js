@@ -346,21 +346,27 @@
     }
 
     // ── Arena ─────────────────────────────
+    var arenaEventSource = null;
+    var arenaSSEReconnectDelay = 1000;
+    var arenaEventLogEntries = [];
+    var survivalPollTimer = null;
+
     async function arena() {
         var results = await Promise.all([
             api('/arena/stats'),
             api('/arena/history'),
             api('/agents'),
             api('/arena/score'),
+            api('/arena/metrics'),
         ]);
-        var stats = results[0], history = results[1], agents = results[2], score = results[3];
+        var stats = results[0], history = results[1], agents = results[2], score = results[3], metrics = results[4];
         arenaAgents = agents || [];
         var el = document.getElementById('view-arena');
 
         var recoveryRate = stats && stats.total_actions > 0
             ? Math.round((stats.successful_actions / stats.total_actions) * 100) : 0;
 
-        var scoreValue = (score && score.score != null) ? score.score.toFixed(1) : '-';
+        var scoreValue = (score && score.score != null) ? parseFloat(score.score) : null;
         var scoreGrade = (score && score.grade) || '-';
         var scoreRecovery = (score && score.recovery_rate != null) ? score.recovery_rate.toFixed(1) + '%' : '-';
         var scoreAvgTime = (score && score.avg_recovery_time)
@@ -370,6 +376,10 @@
             : scoreGrade === 'C' ? '#f97316'
             : scoreGrade === 'D' || scoreGrade === 'F' ? '#ef4444'
             : '#6b7280';
+
+        var dimAvailability = (score && score.dimensions && score.dimensions.availability != null) ? parseFloat(score.dimensions.availability) : 0;
+        var dimRecovery = (score && score.dimensions && score.dimensions.recovery != null) ? parseFloat(score.dimensions.recovery) : 0;
+        var dimConsistency = (score && score.dimensions && score.dimensions.consistency != null) ? parseFloat(score.dimensions.consistency) : 0;
 
         var historyExists = history && history.length > 0;
         var historyRows = historyExists ? history.slice().reverse().map(function(r) {
@@ -384,31 +394,104 @@
             );
         }) : [];
 
+        var hasMetrics = metrics && typeof metrics === 'object';
+        var metricsContent = hasMetrics
+            ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: '0.75rem' } },
+                h('div', { style: { textAlign: 'center', padding: '0.5rem 0' } },
+                    h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' } }, 'Avg Recovery'),
+                    h('div', { style: { fontSize: '1.25rem', fontWeight: '700', color: 'var(--accent)' } }, metrics.avg_recovery_time != null ? (metrics.avg_recovery_time / 1000000000).toFixed(1) + 's' : 'N/A')
+                ),
+                h('div', { style: { textAlign: 'center', padding: '0.5rem 0' } },
+                    h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' } }, 'Failovers'),
+                    h('div', { style: { fontSize: '1.25rem', fontWeight: '700', color: 'var(--warning)' } }, String(metrics.failover_count || 0))
+                ),
+                h('div', { style: { textAlign: 'center', padding: '0.5rem 0' } },
+                    h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' } }, 'Min Time'),
+                    h('div', { style: { fontSize: '1.25rem', fontWeight: '700', color: 'var(--success)' } }, metrics.min_recovery_time != null ? (metrics.min_recovery_time / 1000000000).toFixed(1) + 's' : 'N/A')
+                ),
+                h('div', { style: { textAlign: 'center', padding: '0.5rem 0' } },
+                    h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' } }, 'Max Time'),
+                    h('div', { style: { fontSize: '1.25rem', fontWeight: '700', color: 'var(--danger)' } }, metrics.max_recovery_time != null ? (metrics.max_recovery_time / 1000000000).toFixed(1) + 's' : 'N/A')
+                )
+              )
+            : null;
+
         setContent(el,
             h('div', { className: 'page-header' },
                 h('h2', null, 'Agent Arena'),
                 h('div', { className: 'page-desc' }, 'Chaos engineering \u2014 break it, watch it recover')
             ),
             h('div', { style: { display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' } },
-                h('div', { className: 'card', style: { flex: '0 0 220px', textAlign: 'center', padding: '1.5rem', border: '2px solid ' + gradeColor } },
-                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' } }, 'Resilience Score'),
-                    h('div', { style: { fontSize: '2.5rem', fontWeight: '700', color: gradeColor } }, scoreValue),
-                    h('div', { style: { fontSize: '1.5rem', fontWeight: '600', color: gradeColor, marginBottom: '0.75rem' } }, scoreGrade),
-                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)' } }, 'Recovery: ' + scoreRecovery),
-                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-secondary)' } }, 'Avg Time: ' + scoreAvgTime)
+                h('div', { className: 'card', id: 'arena-score-card', style: { flex: '0 0 260px', padding: '1.5rem', border: '2px solid ' + gradeColor, position: 'relative', overflow: 'hidden' } },
+                    h('div', { style: { position: 'absolute', top: '-30px', right: '-30px', width: '100px', height: '100px', background: gradeColor, opacity: 0.08, borderRadius: '50%' } }),
+                    h('div', { style: { position: 'absolute', bottom: '-40px', left: '-20px', width: '80px', height: '80px', background: gradeColor, opacity: 0.06, borderRadius: '50%' } }),
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' } },
+                        h('div', { className: 'score-ring' },
+                            h('svg', { width: '90', height: '90', viewBox: '0 0 120 120' },
+                                h('circle', { cx: '60', cy: '60', r: '52', fill: 'none', stroke: 'var(--bg-primary)', strokeWidth: '8' }),
+                                h('circle', {
+                                    cx: '60', cy: '60', r: '52', fill: 'none',
+                                    stroke: gradeColor, strokeWidth: '8',
+                                    strokeLinecap: 'round',
+                                    strokeDasharray: String(327 * ((scoreValue || 0) / 100)) + ' 327',
+                                    transform: 'rotate(-90 60 60)',
+                                    style: { transition: 'stroke-dasharray 0.8s ease' }
+                                }),
+                                h('text', { id: 'arena-score-value', x: '60', y: '58', textAnchor: 'middle', dominantBaseline: 'middle', fill: gradeColor, fontSize: '22', fontWeight: '700' }, scoreValue != null ? String(Math.round(scoreValue)) : '-'),
+                                h('text', { x: '60', y: '76', textAnchor: 'middle', dominantBaseline: 'middle', fill: 'var(--text-muted)', fontSize: '9', fontWeight: '500' }, '/100')
+                            )
+                        ),
+                        h('div', null,
+                            h('div', { style: { fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' } }, 'Resilience Score'),
+                            h('span', { id: 'arena-score-grade', className: 'grade-badge-large', style: { background: gradeColor, boxShadow: '0 0 20px ' + gradeColor + '40', color: '#fff' } }, scoreGrade)
+                        )
+                    ),
+                    h('div', { style: { marginTop: '0.75rem' } },
+                        h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.04em' } }, 'Dimension Breakdown'),
+                        h('div', { className: 'dimension-bar' },
+                            h('div', { style: { flex: '0 0 33.33%', textAlign: 'center' } },
+                                h('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--bg-primary)', overflow: 'hidden', marginBottom: '0.2rem' } },
+                                    h('div', { style: { width: String(dimAvailability) + '%', height: '100%', borderRadius: '3px', background: 'linear-gradient(90deg,#3b82f6,#60a5fa)', transition: 'width 0.6s ease' } })
+                                ),
+                                h('div', { style: { fontSize: '0.65rem', color: '#60a5fa', fontWeight: '600' } }, 'Avail ' + dimAvailability.toFixed(0) + '%')
+                            ),
+                            h('div', { style: { flex: '0 0 33.33%', textAlign: 'center' } },
+                                h('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--bg-primary)', overflow: 'hidden', marginBottom: '0.2rem' } },
+                                    h('div', { style: { width: String(dimRecovery) + '%', height: '100%', borderRadius: '3px', background: 'linear-gradient(90deg,#22c55e,#4ade80)', transition: 'width 0.6s ease' } })
+                                ),
+                                h('div', { style: { fontSize: '0.65rem', color: '#4ade80', fontWeight: '600' } }, 'Recov ' + dimRecovery.toFixed(0) + '%')
+                            ),
+                            h('div', { style: { flex: '0 0 33.33%', textAlign: 'center' } },
+                                h('div', { style: { height: '6px', borderRadius: '3px', background: 'var(--bg-primary)', overflow: 'hidden', marginBottom: '0.2rem' } },
+                                    h('div', { style: { width: String(dimConsistency) + '%', height: '100%', borderRadius: '3px', background: 'linear-gradient(90deg,#a78bfa,#c4b5fd)', transition: 'width 0.6s ease' } })
+                                ),
+                                h('div', { style: { fontSize: '0.65rem', color: '#c4b5fd', fontWeight: '600' } }, 'Consi ' + dimConsistency.toFixed(0) + '%')
+                            )
+                        )
+                    ),
+                    h('div', { style: { display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)', fontSize: '0.8125rem', color: 'var(--text-secondary)' } },
+                        h('span', null, 'Recovery: ', h('strong', { style: { color: gradeColor } }, scoreRecovery)),
+                        h('span', null, 'Avg Time: ', h('strong', null, scoreAvgTime))
+                    )
                 ),
                 h('div', { style: { flex: 1, minWidth: 0 } },
                     h('div', { className: 'stat-grid' },
-                        statCard('Recovery Rate', String(recoveryRate) + '%'),
-                        statCard('Total Faults', String((stats && stats.total_actions) || 0)),
-                        statCard('Recovered', String((stats && stats.successful_actions) || 0)),
-                        statCard('Failed', String((stats && stats.failed_actions) || 0))
-                    )
+                        h('div', { className: 'stat-card' }, h('div', { className: 'label' }, 'Recovery Rate'), h('div', { className: 'value arena-stat-value' }, String(recoveryRate) + '%')),
+                        h('div', { className: 'stat-card' }, h('div', { className: 'label' }, 'Total Faults'), h('div', { className: 'value arena-stat-value' }, String((stats && stats.total_actions) || 0))),
+                        h('div', { className: 'stat-card' }, h('div', { className: 'label' }, 'Recovered'), h('div', { className: 'value arena-stat-value' }, String((stats && stats.successful_actions) || 0))),
+                        h('div', { className: 'stat-card' }, h('div', { className: 'label' }, 'Failed'), h('div', { className: 'value arena-stat-value' }, String((stats && stats.failed_actions) || 0)))
+                    ),
+                    metricsContent
+                        ? h('div', { className: 'card', style: { marginTop: '1rem' } },
+                              h('h3', null, 'Metrics'),
+                              metricsContent
+                          )
+                        : null
                 )
             ),
             h('div', { className: 'card' },
-                h('h3', null, 'Agent Graph'),
-                h('svg', { id: 'dag-svg', width: '100%', height: '200', style: { background: 'var(--bg-primary)', borderRadius: 'var(--radius-sm)' } }),
+                h('h3', null, 'Agent Topology'),
+                h('svg', { id: 'dag-svg', width: '100%', height: '320', style: { background: 'var(--bg-primary)', borderRadius: 'var(--radius-sm)' } }),
                 h('div', { id: 'arena-selected-info', style: { marginTop: '0.75rem' } })
             ),
             h('div', { className: 'card' },
@@ -441,7 +524,45 @@
                     h('button', { className: 'btn btn-outline', onClick: function() { arenaSlowAgent(); } }, '\uD83D\uDC0C Slow Agent'),
                     h('button', { className: 'btn btn-outline', onClick: function() { arenaNetworkPartition(); } }, '\uD83D\uDDE1 Network Partition')
                 ),
+                h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.75rem' } },
+                    h('button', { className: 'btn btn-outline', style: { background: 'linear-gradient(135deg,#f97316,#ea580c)', color: 'white', border: 'none' }, onClick: function() { arenaToolTimeout(); } },
+                        '\u23F3 Tool Timeout'
+                    ),
+                    h('button', { className: 'btn btn-outline', style: { background: 'linear-gradient(135deg,#ef4444,#dc2626)', color: 'white', border: 'none' }, onClick: function() { arenaMemoryCorrupt(); } },
+                        '\uD83D\uDCDA Memory Corrupt'
+                    ),
+                    h('button', { className: 'btn btn-outline', style: { background: 'linear-gradient(135deg,#a78bfa,#8b5cf6)', color: 'white', border: 'none' }, onClick: function() { arenaMCPDisconnect(); } },
+                        '\uD83D\uDCF1 MCP Disconnect'
+                    ),
+                    h('button', { className: 'btn btn-outline', style: { background: 'linear-gradient(135deg,#f472b6,#ec4899)', color: 'white', border: 'none' }, onClick: function() { arenaLLMFailure(); } },
+                        '\uD83E\uDDE0 LLM Failure'
+                    )
+                ),
                 h('div', { id: 'arena-action-result', style: { marginTop: '0.75rem', fontSize: '0.8125rem' } })
+            ),
+            h('div', { className: 'card survival-panel' },
+                h('h3', null, 'Survival Mode'),
+                h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end', marginTop: '0.5rem' } },
+                    h('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.25rem' } },
+                        h('label', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)' } }, 'Duration'),
+                        h('input', { type: 'text', id: 'survival-duration', value: '30m', placeholder: '30m', style: { padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', width: '80px', fontSize: '0.8125rem' } })
+                    ),
+                    h('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.25rem' } },
+                        h('label', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)' } }, 'Interval'),
+                        h('input', { type: 'text', id: 'survival-interval', value: '10s', placeholder: '10s', style: { padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', width: '80px', fontSize: '0.8125rem' } })
+                    ),
+                    h('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.25rem' } },
+                        h('label', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)' } }, 'Agent Count'),
+                        h('input', { type: 'number', id: 'survival-agent-count', value: '0', min: '0', style: { padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', width: '70px', fontSize: '0.8125rem' } })
+                    ),
+                    h('button', { className: 'btn btn-primary', id: 'arena-survival-start', onClick: function() { arenaStartSurvival(); } },
+                        '\uD83C\uDFC5 Start Survival'
+                    ),
+                    h('button', { className: 'btn btn-danger', id: 'arena-survival-stop', onClick: function() { arenaStopSurvival(); }, style: { display: 'none' } },
+                        '\u23F9 Stop Survival'
+                    )
+                ),
+                h('div', { id: 'survival-status-panel', style: { marginTop: '0.75rem' } })
             ),
             h('div', { className: 'card' },
                 h('h3', null, 'Action History'),
@@ -451,16 +572,31 @@
                               h('thead', null, h('tr', null,
                                   h('th', null, 'Action'), h('th', null, 'Target'), h('th', null, 'Result'), h('th', null, 'Duration')
                               )),
-                              h('tbody', null, historyRows)
+                              h('tbody', { id: 'arena-history-tbody' }, historyRows)
                           )
                         : h('div', { className: 'empty-state' }, 'No actions yet. Inject a fault above.')
+                )
+            ),
+            h('div', { className: 'card' },
+                h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' } },
+                    h('h3', { style: { marginBottom: 0 } }, 'Event Log'),
+                    h('div', { id: 'sse-status-indicator', className: 'status-indicator', style: { display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: 'var(--text-muted)' } },
+                        h('span', { id: 'sse-status-dot', style: { width: '8px', height: '8px', borderRadius: '50%', background: 'var(--text-muted)', flexShrink: 0 } }),
+                        h('span', { id: 'sse-status-text' }, 'disconnected')
+                    )
+                ),
+                h('div', { id: 'arena-event-log', className: 'event-log', style: { background: 'var(--bg-primary)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' } },
+                    h('div', { className: 'empty-state', padding: '2rem', fontSize: '0.8125rem' }, 'Connecting to event stream...')
                 )
             )
         );
 
-        setTimeout(function() { if (currentView === 'arena') arena(); }, 3000);
+        // NOTE: No auto-refresh timer here. arena() is called on tab-switch
+        // and after each action via refreshArenaData(). Auto-refresh caused
+        // infinite DOM rebuild loop that broke DAG rendering and interactions.
 
-        renderDAG(arenaAgents);
+        // Defer DAG render so virtual DOM has flushed to real DOM.
+        requestAnimationFrame(function() { renderDAG(arenaAgents); });
         var agentSelect = document.getElementById('arena-agent-select');
         if (agentSelect) {
             if (selectedAgentId) agentSelect.value = selectedAgentId;
@@ -481,6 +617,65 @@
             var a = arenaAgents.find(function(ag) { return ag.id === selectedAgentId; });
             updateSelectedInfo(a || null);
         }
+
+        connectArenaEventSource();
+        arenaPollSurvivalStatus();
+    }
+
+    // Lightweight data refresh after actions — does NOT rebuild entire DOM.
+    // Only re-fetches agents/score/stats and updates DAG + score display in-place.
+    function refreshArenaData() {
+        if (currentView !== 'arena') return;
+        Promise.all([
+            api('/agents'),
+            api('/arena/score'),
+            api('/arena/stats'),
+            api('/arena/history'),
+            api('/arena/metrics'),
+        ]).then(function(results) {
+            if (currentView !== 'arena') return;
+            arenaAgents = results[0] || [];
+            var score = results[1];
+            var stats = results[2];
+            var history = results[3];
+            var metrics = results[4];
+
+            // Re-render DAG with updated agents.
+            renderDAG(arenaAgents);
+
+            // Update score card in-place.
+            var scoreEl = document.getElementById('arena-score-value');
+            var gradeEl = document.getElementById('arena-score-grade');
+            if (score && score.score != null && scoreEl) scoreEl.textContent = String(Math.round(parseFloat(score.score)));
+            if (score && gradeEl) gradeEl.textContent = (score.grade || '-');
+
+            // Update stat cards.
+            var statEls = document.querySelectorAll('.arena-stat-value');
+            if (statEls.length >= 4 && stats) {
+                statEls[0].textContent = (stats.total_actions || 0).toString();
+                statEls[1].textContent = ((stats.successful_actions || 0)).toString();
+                statEls[2].textContent = ((stats.failed_actions || 0)).toString();
+                var recoveryRate = stats.total_actions > 0 ? Math.round((stats.successful_actions / stats.total_actions) * 100) : 0;
+                statEls[3].textContent = recoveryRate + '%';
+            }
+
+            // Update history table if it exists.
+            var tbody = document.getElementById('arena-history-tbody');
+            if (tbody && history && history.length > 0) {
+                var rows = history.slice().reverse().map(function(r) {
+                    return h('tr', null,
+                        h('td', null, h('code', null, esc((r.action && r.action.type) || '-'))),
+                        h('td', null, esc((r.action && r.action.target_id) || (r.action && r.action.source_id) || '-')),
+                        h('td', null, r.success
+                            ? h('span', { className: 'badge badge-success' }, 'success')
+                            : h('span', { className: 'badge badge-danger' }, 'failed')),
+                        h('td', { style: { color: 'var(--text-secondary)' } },
+                            r.duration ? Math.round(r.duration / 1000000) + 'ms' : '-')
+                    );
+                });
+                setContent(tbody, rows);
+            }
+        }).catch(function() {});
     }
 
     function arenaAction(type) {
@@ -493,7 +688,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Leader killed \u2014 watching recovery...')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -509,7 +704,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Agent ', esc(id), ' killed \u2014 resurrection pending...')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -524,7 +719,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Node ', esc(id), ' removed')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -544,7 +739,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Edge ', esc(from), '\u2192', esc(to), ' removed')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -559,7 +754,7 @@
                     ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' paused')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -574,7 +769,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Agent ', esc(id), ' resumed')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -595,7 +790,7 @@
                     ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' slowed by ', delay, 's')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -609,7 +804,7 @@
                     ? h('span', { className: 'badge badge-success' }, 'Orchestrator killed \u2014 watching recovery...')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
     }
 
@@ -625,8 +820,320 @@
                     ? h('span', { className: 'badge badge-warning' }, 'Agent ', esc(id), ' network partitioned')
                     : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
             );
-            setTimeout(function() { if (currentView === 'arena') arena(); }, 1000);
+refreshArenaData();
         });
+    }
+
+    function arenaToolTimeout() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Injecting tool timeout...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/tool-timeout', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-warning' }, 'Tool timeout injected on ', esc(id))
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+refreshArenaData();
+        });
+    }
+
+    function arenaMemoryCorrupt() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Injecting memory corruption...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/memory-corrupt', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-danger' }, 'Memory corruption injected on ', esc(id))
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+refreshArenaData();
+        });
+    }
+
+    function arenaMCPDisconnect() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Injecting MCP disconnect...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/mcp-disconnect', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-warning' }, 'MCP disconnect injected on ', esc(id))
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+refreshArenaData();
+        });
+    }
+
+    function arenaLLMFailure() {
+        var id = document.getElementById('arena-agent-select').value || selectedAgentId;
+        if (!id) { alert('Select an agent first'); return; }
+        var el = document.getElementById('arena-action-result');
+        el.textContent = 'Injecting LLM failure...';
+        el.style.color = 'var(--text-secondary)';
+        api('/arena/agent/' + id + '/llm-failure', { method: 'POST' }).then(function(r) {
+            setContent(el,
+                r && r.success
+                    ? h('span', { className: 'badge badge-danger' }, 'LLM failure injected on ', esc(id))
+                    : h('span', { className: 'badge badge-danger' }, 'Failed: ' + esc((r && r.error) || 'unknown'))
+            );
+refreshArenaData();
+        });
+    }
+
+    // ── SSE Event Log ─────────────────────
+    function connectArenaEventSource() {
+        if (arenaEventSource) {
+            arenaEventSource.close();
+            arenaEventSource = null;
+        }
+
+        updateSSEStatus('connecting', '#eab308');
+        try {
+            arenaEventSource = new EventSource('/arena/stream');
+        } catch(e) {
+            updateSSEStatus('error', '#ef4444');
+            scheduleSSEReconnect();
+            return;
+        }
+
+        arenaEventSource.onopen = function() {
+            updateSSEStatus('connected', '#22c55e');
+            arenaSSEReconnectDelay = 1000;
+        };
+
+        arenaEventSource.onmessage = function(e) {
+            try {
+                var ev = JSON.parse(e.data);
+                addArenaEventLogEntry(ev);
+            } catch(err) {}
+        };
+
+        arenaEventSource.onerror = function(err) {
+            updateSSEStatus('disconnected', '#ef4444');
+            if (arenaEventSource) {
+                arenaEventSource.close();
+                arenaEventSource = null;
+            }
+            scheduleSSEReconnect();
+        };
+    }
+
+    function scheduleSSEReconnect() {
+        if (currentView !== 'arena') return;
+        updateSSEStatus('reconnecting', '#eab308');
+        setTimeout(function() {
+            if (currentView === 'arena') connectArenaEventSource();
+        }, arenaSSEReconnectDelay);
+        arenaSSEReconnectDelay = Math.min(arenaSSEReconnectDelay * 2, 30000);
+    }
+
+    function updateSSEStatus(status, color) {
+        var dot = document.getElementById('sse-status-dot');
+        var text = document.getElementById('sse-status-text');
+        if (dot) dot.style.background = color;
+        if (text) text.textContent = status;
+    }
+
+    function getEventTypeColor(type) {
+        if (!type) return 'var(--text-secondary)';
+        var t = String(type).toLowerCase();
+        if (t.indexOf('fault') !== -1 || t.indexOf('kill') !== -1 || t.indexOf('error') !== -1) return 'var(--danger)';
+        if (t.indexOf('recover') !== -1 || t.indexOf('resurrect') !== -1 || t.indexOf('elect') !== -1) return 'var(--success)';
+        if (t.indexOf('slow') !== -1 || t.indexOf('pause') !== -1 || t.indexOf('timeout') !== -1) return 'var(--warning)';
+        if (t.indexOf('partition') !== -1 || t.indexOf('disconnect') !== -1) return '#a78bfa';
+        if (t.indexOf('survival') !== -1) return '#f472b6';
+        return 'var(--accent)';
+    }
+
+    function formatEventTime(ts) {
+        if (!ts) return '--:--:--';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return String(ts).slice(11, 19);
+        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function addArenaEventLogEntry(ev) {
+        if (!ev) return;
+
+        arenaEventLogEntries.unshift(ev);
+        if (arenaEventLogEntries.length > 200) {
+            arenaEventLogEntries = arenaEventLogEntries.slice(0, 200);
+        }
+
+        var logEl = document.getElementById('arena-event-log');
+        if (!logEl) return;
+
+        var typeColor = getEventTypeColor(ev.type || ev.event_type || '');
+        var isSuccess = ev.success === true || ev.status === 'success';
+
+        var entry = h('div', { className: 'event-log-entry' + (isSuccess ? ' event-success' : !isSuccess && ev.success === false ? ' event-error' : '') },
+            h('span', { style: { color: 'var(--text-muted)', fontSize: '0.7rem', flexShrink: 0, fontFamily: "'SF Mono','Fira Code',monospace" } },
+                formatEventTime(ev.timestamp || ev.time)
+            ),
+            h('span', { style: { color: typeColor, fontWeight: '600', fontSize: '0.75rem', flexShrink: 0, padding: '0.1rem 0.35rem', background: typeColor.replace(')', ',0.15)').replace('rgb', 'rgba'), borderRadius: '3px', marginRight: '0.5rem' } },
+                esc(ev.type || ev.event_type || 'event')
+            ),
+            h('span', { style: { color: 'var(--text-primary)', fontSize: '0.8125rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                ev.target_id || ev.target || ev.agent_id || ''
+                    ? ('Target: ' + esc(ev.target_id || ev.target || ev.agent_id || ''))
+                    : esc(ev.message || ev.description || '')
+            ),
+            h('span', { style: { fontSize: '0.7rem', fontWeight: '600', flexShrink: 0, marginLeft: '0.5rem' } },
+                isSuccess
+                    ? h('span', { style: { color: 'var(--success)' } }, '\u2713')
+                    : ev.success === false
+                        ? h('span', { style: { color: 'var(--danger)' } }, '\u2717')
+                        : null
+            )
+        );
+
+        var emptyState = logEl.querySelector('.empty-state');
+        if (emptyState) logEl.removeChild(emptyState);
+
+        logEl.insertBefore(entry, logEl.firstChild);
+
+        while (logEl.children.length > 200) {
+            logEl.removeChild(logEl.lastChild);
+        }
+    }
+
+    // ── Survival Mode ─────────────────────
+    function arenaStartSurvival() {
+        var duration = document.getElementById('survival-duration').value || '30m';
+        var interval = document.getElementById('survival-interval').value || '10s';
+        var agentCount = parseInt(document.getElementById('survival-agent-count').value) || 0;
+
+        var startBtn = document.getElementById('arena-survival-start');
+        var stopBtn = document.getElementById('arena-survival-stop');
+        if (startBtn) startBtn.disabled = true;
+
+        api('/arena/survival', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration: duration, interval: interval, agent_count: agentCount }),
+        }).then(function(r) {
+            if (startBtn) startBtn.disabled = false;
+            if (r && (r.running || r.started || r.status === 'started')) {
+                if (startBtn) startBtn.style.display = 'none';
+                if (stopBtn) stopBtn.style.display = '';
+                arenaPollSurvivalStatus();
+            } else {
+                alert('Failed to start survival mode: ' + ((r && r.error) || 'unknown'));
+            }
+        }).catch(function() {
+            if (startBtn) startBtn.disabled = false;
+            alert('Failed to reach server for survival mode');
+        });
+    }
+
+    function arenaStopSurvival() {
+        var stopBtn = document.getElementById('arena-survival-stop');
+        if (stopBtn) stopBtn.disabled = true;
+
+        api('/arena/survival/stop', { method: 'POST' }).then(function(r) {
+            if (stopBtn) stopBtn.disabled = false;
+            if (r && r.stopped) {
+                var startBtn = document.getElementById('arena-survival-start');
+                if (startBtn) startBtn.style.display = '';
+                if (stopBtn) stopBtn.style.display = 'none';
+                arenaPollSurvivalStatus();
+            }
+        }).catch(function() {
+            if (stopBtn) stopBtn.disabled = false;
+        });
+    }
+
+    function arenaPollSurvivalStatus() {
+        if (currentView !== 'arena') {
+            if (survivalPollTimer) { clearTimeout(survivalPollTimer); survivalPollTimer = null; }
+            return;
+        }
+
+        api('/arena/survival/status').then(function(st) {
+            if (currentView !== 'arena') return;
+
+            var panel = document.getElementById('survival-status-panel');
+            var startBtn = document.getElementById('arena-survival-start');
+            var stopBtn = document.getElementById('arena-survival-stop');
+
+            if (!panel) return;
+
+            if (!st || typeof st !== 'object') {
+                setContent(panel,
+                    h('div', { style: { fontSize: '0.8125rem', color: 'var(--text-muted)' } }, 'Survival status unavailable')
+                );
+                return;
+            }
+
+            var isRunning = st.running === true || st.status === 'running';
+            if (isRunning) {
+                if (startBtn) startBtn.style.display = 'none';
+                if (stopBtn) stopBtn.style.display = '';
+            } else {
+                if (startBtn) startBtn.style.display = '';
+                if (stopBtn) stopBtn.style.display = 'none';
+            }
+
+            var elapsedStr = '-';
+            if (st.elapsed != null) {
+                var sec = Math.floor(st.elapsed / 1000000000);
+                var min = Math.floor(sec / 60);
+                sec = sec % 60;
+                elapsedStr = String(min).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
+            }
+
+            var timelineEvents = (st.recent_events || st.timeline || []).slice(-10);
+
+            setContent(panel,
+                h('div', { style: { display: 'flex', gap: '1.5rem', alignItems: 'flex-start', flexWrap: 'wrap' } },
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: '0.5rem' } },
+                        h('span', { className: 'status-indicator-dot', style: { width: '10px', height: '10px', borderRadius: '50%', background: isRunning ? 'var(--success)' : 'var(--text-muted)', animation: isRunning ? 'pulse-glow 1.5s infinite' : 'none', boxShadow: isRunning ? '0 0 8px rgba(16,185,129,0.5)' : 'none' } }),
+                        h('strong', { style: { fontSize: '0.875rem', color: isRunning ? 'var(--success)' : 'var(--text-muted)' } },
+                            isRunning ? '\u25B6 Running' : '\u23F8 Stopped'
+                        )
+                    ),
+                    h('div', { style: { fontSize: '0.8125rem' } },
+                        h('span', { style: { color: 'var(--text-secondary)' } }, 'Elapsed: '),
+                        h('strong', { style: { color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' } }, elapsedStr)
+                    ),
+                    h('div', { style: { fontSize: '0.8125rem' } },
+                        h('span', { style: { color: 'var(--text-secondary)' } }, 'Actions: '),
+                        h('strong', { style: { color: 'var(--accent)' } }, String(st.actions_run || st.action_count || 0))
+                    )
+                ),
+                timelineEvents.length > 0
+                    ? h('div', { style: { marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' } },
+                          h('div', { style: { fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.04em' } }, 'Recent Events'),
+                          h('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.2rem', maxHeight: '120px', overflowY: 'auto' } },
+                              timelineEvents.map(function(te) {
+                                  return h('div', { style: { display: 'flex', gap: '0.5rem', fontSize: '0.75rem', padding: '0.2rem 0.4rem', borderRadius: '3px', background: 'rgba(255,255,255,0.02)' } },
+                                      h('span', { style: { color: 'var(--text-muted)', fontSize: '0.65rem', flexShrink: 0, fontFamily: "'SF Mono','Fira Code',monospace" } },
+                                          formatEventTime(te.timestamp || te.time)
+                                      ),
+                                      h('span', { style: { color: getEventTypeColor(te.type || ''), fontWeight: '500' } },
+                                          esc(te.type || te.action || '-')
+                                      ),
+                                      h('span', { style: { color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } },
+                                          esc(te.target || te.target_id || '')
+                                      )
+                                  );
+                              })
+                          )
+                      )
+                    : null
+            );
+        });
+
+        survivalPollTimer = setTimeout(function() { arenaPollSurvivalStatus(); }, 5000);
     }
 
     // ── Flight Recorder ─────────────────
@@ -866,7 +1373,7 @@
         return String(d);
     }
 
-    // ── DAG Visualization ───────────────
+    // ── DAG / Topology Visualization ───
     var SVG_NS = 'http://www.w3.org/2000/svg';
 
     function renderDAG(agents) {
@@ -874,35 +1381,101 @@
         if (!svg) return;
         svg.innerHTML = '';
 
-        if (!agents || agents.length === 0) {
-            var t = document.createElementNS(SVG_NS, 'text');
-            t.setAttribute('x', '50%');
-            t.setAttribute('y', '50%');
-            t.setAttribute('text-anchor', 'middle');
-            t.setAttribute('dominant-baseline', 'middle');
-            t.setAttribute('fill', 'var(--text-muted)');
-            t.setAttribute('font-size', '14');
-            t.textContent = 'No agents to display';
-            svg.appendChild(t);
+        var hasAgents = agents && agents.length > 0;
+
+        var W = Math.max(svg.clientWidth || 800, 800);
+        var H = hasAgents ? Math.max(320, 140 + Math.ceil(agents.length / 5) * 110) : 260;
+        svg.setAttribute('height', String(H));
+        svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+
+        if (!hasAgents) {
+            renderEmptyDAG(svg, W, H);
             return;
         }
 
-        var cols = 4;
-        var xStart = 100;
-        var yStart = 70;
-        var xGap = 180;
-        var yGap = 120;
+        var cx = W / 2;
+        var cy = 70;
+        var radiusX = Math.min(W * 0.38, 280);
+        var radiusY = 100;
 
+        // Draw edges (orchestrator -> agents).
         agents.forEach(function(a, i) {
-            var x = xStart + (i % cols) * xGap;
-            var y = yStart + Math.floor(i / cols) * yGap;
+            var angle = (i / agents.length) * 2 * Math.PI - Math.PI / 2;
+            var ax = cx + radiusX * Math.cos(angle);
+            var ay = cy + 60 + radiusY * Math.sin(angle);
+
+            var line = document.createElementNS(SVG_NS, 'line');
+            line.setAttribute('x1', String(cx));
+            line.setAttribute('y1', String(cy));
+            line.setAttribute('x2', String(ax));
+            line.setAttribute('y2', String(ay));
+            line.setAttribute('stroke', 'var(--border)');
+            line.setAttribute('stroke-width', '1.5');
+            line.setAttribute('stroke-dasharray', '4 3');
+            line.style.transition = 'stroke 0.3s';
+            svg.appendChild(line);
+        });
+
+        // Orchestrator node.
+        var orchG = document.createElementNS(SVG_NS, 'g');
+        orchG.style.cursor = 'pointer';
+        var orchCircle = document.createElementNS(SVG_NS, 'circle');
+        orchCircle.setAttribute('cx', String(cx));
+        orchCircle.setAttribute('cy', String(cy));
+        orchCircle.setAttribute('r', '28');
+        orchCircle.setAttribute('fill', 'rgba(99,102,241,0.12)');
+        orchCircle.setAttribute('stroke', 'var(--accent)');
+        orchCircle.setAttribute('stroke-width', '2');
+        orchG.appendChild(orchCircle);
+
+        var orchLabel = document.createElementNS(SVG_NS, 'text');
+        orchLabel.setAttribute('x', String(cx));
+        orchLabel.setAttribute('y', String(cy - 1));
+        orchLabel.setAttribute('text-anchor', 'middle');
+        orchLabel.setAttribute('dominant-baseline', 'middle');
+        orchLabel.setAttribute('fill', 'var(--accent)');
+        orchLabel.setAttribute('font-size', '10');
+        orchLabel.setAttribute('font-weight', '700');
+        orchLabel.style.pointerEvents = 'none';
+        orchLabel.textContent = 'ORCH';
+        orchG.appendChild(orchLabel);
+
+        var orchSub = document.createElementNS(SVG_NS, 'text');
+        orchSub.setAttribute('x', String(cx));
+        orchSub.setAttribute('y', String(cy + 12));
+        orchSub.setAttribute('text-anchor', 'middle');
+        orchSub.setAttribute('fill', 'var(--text-muted)');
+        orchSub.setAttribute('font-size', '7.5');
+        orchSub.style.pointerEvents = 'none';
+        orchSub.textContent = 'Orchestrator';
+        orchG.appendChild(orchSub);
+
+        var crown = document.createElementNS(SVG_NS, 'text');
+        crown.setAttribute('x', String(cx));
+        crown.setAttribute('y', String(cy - 34));
+        crown.setAttribute('text-anchor', 'middle');
+        crown.setAttribute('fill', '#f59e0b');
+        crown.setAttribute('font-size', '14');
+        crown.style.pointerEvents = 'none';
+        crown.textContent = '\u265A';
+        orchG.appendChild(crown);
+
+        orchG.addEventListener('mouseover', function() { orchCircle.setAttribute('r', '32'); });
+        orchG.addEventListener('mouseout', function() { orchCircle.setAttribute('r', '28'); });
+        svg.appendChild(orchG);
+
+        // Agent nodes in ring layout.
+        agents.forEach(function(a, i) {
+            var angle = (i / agents.length) * 2 * Math.PI - Math.PI / 2;
+            var ax = cx + radiusX * Math.cos(angle);
+            var ay = cy + 60 + radiusY * Math.sin(angle);
 
             var statusColor = a.status === 'completed' ? 'var(--success)' :
                               a.status === 'failed' ? 'var(--danger)' :
                               (a.status.indexOf('running') !== -1 || a.status.indexOf('analyzing') !== -1 || a.status === 'pending') ? 'var(--warning)' :
                               'var(--info)';
-
             var isSelected = selectedAgentId === a.id;
+            var isRunning = a.status.indexOf('running') !== -1 || a.status.indexOf('analyzing') !== -1;
 
             var g = document.createElementNS(SVG_NS, 'g');
             g.setAttribute('data-agent-id', a.id);
@@ -910,55 +1483,121 @@
 
             if (isSelected) {
                 var glow = document.createElementNS(SVG_NS, 'circle');
-                glow.setAttribute('cx', x);
-                glow.setAttribute('cy', y);
-                glow.setAttribute('r', '36');
+                glow.setAttribute('cx', String(ax));
+                glow.setAttribute('cy', String(ay));
+                glow.setAttribute('r', '30');
                 glow.setAttribute('fill', 'none');
                 glow.setAttribute('stroke', 'var(--accent)');
                 glow.setAttribute('stroke-width', '2');
-                glow.setAttribute('stroke-opacity', '0.3');
+                glow.setAttribute('stroke-opacity', '0.35');
                 g.appendChild(glow);
             }
 
             var circle = document.createElementNS(SVG_NS, 'circle');
-            circle.setAttribute('cx', x);
-            circle.setAttribute('cy', y);
-            circle.setAttribute('r', isSelected ? '30' : '26');
-            circle.setAttribute('fill', statusColor);
+            circle.setAttribute('cx', String(ax));
+            circle.setAttribute('cy', String(ay));
+            circle.setAttribute('r', isSelected ? '24' : '20');
             circle.setAttribute('fill-opacity', '0.15');
+            circle.setAttribute('fill', statusColor);
             circle.setAttribute('stroke', isSelected ? 'var(--accent)' : statusColor);
-            circle.setAttribute('stroke-width', isSelected ? '3' : '2');
+            circle.setAttribute('stroke-width', isSelected ? '2.5' : '1.8');
+            if (isRunning) { circle.setAttribute('class', 'dag-running-pulse'); }
             g.appendChild(circle);
 
             var name = document.createElementNS(SVG_NS, 'text');
-            name.setAttribute('x', x);
-            name.setAttribute('y', y + 1);
+            name.setAttribute('x', String(ax));
+            name.setAttribute('y', String(ay - 1));
             name.setAttribute('text-anchor', 'middle');
             name.setAttribute('dominant-baseline', 'middle');
             name.setAttribute('fill', 'var(--text-primary)');
-            name.setAttribute('font-size', '10');
+            name.setAttribute('font-size', '9.5');
             name.setAttribute('font-weight', '600');
             name.style.pointerEvents = 'none';
-            name.textContent = truncName(a.name, 8);
+            name.textContent = truncName(a.name, 9);
             g.appendChild(name);
 
-            var status = document.createElementNS(SVG_NS, 'text');
-            status.setAttribute('x', x);
-            status.setAttribute('y', y + 42);
-            status.setAttribute('text-anchor', 'middle');
-            status.setAttribute('fill', statusColor);
-            status.setAttribute('font-size', '10');
-            status.style.pointerEvents = 'none';
-            status.textContent = a.status;
-            g.appendChild(status);
+            var statusText = document.createElementNS(SVG_NS, 'text');
+            statusText.setAttribute('x', String(ax));
+            statusText.setAttribute('y', String(ay + 33));
+            statusText.setAttribute('text-anchor', 'middle');
+            statusText.setAttribute('fill', statusColor);
+            statusText.setAttribute('font-size', '8.5');
+            statusText.setAttribute('font-weight', '500');
+            statusText.style.pointerEvents = 'none';
+            statusText.textContent = a.status;
+            g.appendChild(statusText);
+
+            // Invisible larger hit area for easier clicking.
+            var hitArea = document.createElementNS(SVG_NS, 'circle');
+            hitArea.setAttribute('cx', String(ax));
+            hitArea.setAttribute('cy', String(ay));
+            hitArea.setAttribute('r', '34');
+            hitArea.setAttribute('fill', 'transparent');
+            g.appendChild(hitArea);
 
             g.addEventListener('click', function() { selectAgent(a); });
             svg.appendChild(g);
         });
 
-        var rows = Math.ceil(agents.length / cols);
-        var height = yStart + rows * yGap + 30;
-        svg.setAttribute('height', Math.max(200, height));
+        // Legend bar at bottom.
+        var legendY = H - 22;
+        var legendItems = [
+            { color: 'var(--success)', label: 'Completed' },
+            { color: 'var(--warning)', label: 'Running' },
+            { color: 'var(--danger)', label: 'Failed' },
+            { color: 'var(--info)', label: 'Other' },
+        ];
+        var legendStartX = W / 2 - (legendItems.length * 90) / 2;
+        legendItems.forEach(function(item, i) {
+            var lx = legendStartX + i * 90;
+            var dot = document.createElementNS(SVG_NS, 'circle');
+            dot.setAttribute('cx', String(lx));
+            dot.setAttribute('cy', String(legendY));
+            dot.setAttribute('r', '4');
+            dot.setAttribute('fill', item.color);
+            svg.appendChild(dot);
+            var lbl = document.createElementNS(SVG_NS, 'text');
+            lbl.setAttribute('x', String(lx + 8));
+            lbl.setAttribute('y', String(legendY + 1));
+            lbl.setAttribute('fill', 'var(--text-muted)');
+            lbl.setAttribute('font-size', '7.5');
+            lbl.textContent = item.label;
+            svg.appendChild(lbl);
+        });
+    }
+
+    function renderEmptyDAG(svg, w, h) {
+        var rect = document.createElementNS(SVG_NS, 'rect');
+        rect.setAttribute('x', '10%');
+        rect.setAttribute('y', '20%');
+        rect.setAttribute('width', '80%');
+        rect.setAttribute('height', '60%');
+        rect.setAttribute('rx', '16');
+        rect.setAttribute('fill', 'var(--bg-secondary)');
+        rect.setAttribute('stroke', 'var(--border)');
+        rect.setAttribute('stroke-width', '1');
+        rect.setAttribute('stroke-dasharray', '6 4');
+        svg.appendChild(rect);
+
+        var t = document.createElementNS(SVG_NS, 'text');
+        t.setAttribute('x', '50%');
+        t.setAttribute('y', '48%');
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('dominant-baseline', 'middle');
+        t.setAttribute('fill', 'var(--text-muted)');
+        t.setAttribute('font-size', '13');
+        t.textContent = 'No active agents \u2014 launch from Orchestrator tab';
+        svg.appendChild(t);
+
+        var sub = document.createElementNS(SVG_NS, 'text');
+        sub.setAttribute('x', '50%');
+        sub.setAttribute('y', '58%');
+        sub.setAttribute('text-anchor', 'middle');
+        sub.setAttribute('fill', 'var(--text-muted)');
+        sub.setAttribute('font-size', '10');
+        sub.setAttribute('opacity', '0.6');
+        sub.textContent = 'Agent topology will appear here once agents are running';
+        svg.appendChild(sub);
     }
 
     function truncName(name, maxLen) {

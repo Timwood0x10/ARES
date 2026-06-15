@@ -128,3 +128,10 @@ func TestActionTypes(t *testing.T) {
 	assert.Equal(t, ActionType("remove_node"), ActionRemoveNode)
 	assert.Equal(t, ActionType("remove_edge"), ActionRemoveEdge)
 }
+
+func TestNewActionTypes(t *testing.T) {
+	assert.Equal(t, ActionType("tool_timeout"), ActionToolTimeout)
+	assert.Equal(t, ActionType("memory_corrupt"), ActionMemoryCorrupt)
+	assert.Equal(t, ActionType("mcp_disconnect"), ActionMCPDisconnect)
+	assert.Equal(t, ActionType("llm_failure"), ActionLLMFailure)
+}

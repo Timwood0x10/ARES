@@ -52,6 +52,7 @@ type SurvivalStatus struct {
 type survivalState struct {
 	mu      sync.RWMutex
 	running bool
+	cancel  context.CancelFunc
 	config  SurvivalConfig
 	started time.Time
 	events  []SurvivalEvent
@@ -68,14 +69,19 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 		cfg.Interval = 10 * time.Second
 	}
 
+	// Create a cancellable context for this survival run.
+	survCtx, cancel := context.WithCancel(ctx)
+
 	// Mark survival as running.
 	s.survival.mu.Lock()
 	if s.survival.running {
 		s.survival.mu.Unlock()
+		cancel()
 		slog.Warn("arena: survival already running, returning empty report")
 		return SurvivalReport{}
 	}
 	s.survival.running = true
+	s.survival.cancel = cancel
 	s.survival.config = cfg
 	s.survival.started = time.Now()
 	s.survival.events = make([]SurvivalEvent, 0)
@@ -101,8 +107,8 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 
 	for {
 		select {
-		case <-ctx.Done():
-			slog.Info("arena: survival mode cancelled by context")
+		case <-survCtx.Done():
+			slog.Info("arena: survival mode cancelled")
 			return s.buildSurvivalReport(time.Since(start), timeline)
 		case now := <-ticker.C:
 			if now.After(deadline) {
@@ -114,7 +120,7 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 			}
 
 			action := s.randomChaosAction()
-			result := s.Execute(ctx, action)
+			result := s.Execute(survCtx, action)
 
 			event := SurvivalEvent{
 				Timestamp: time.Now(),
@@ -156,11 +162,22 @@ func (s *Service) GetSurvivalStatus() SurvivalStatus {
 	return status
 }
 
+// StopSurvival cancels the currently running survival test.
+func (s *Service) StopSurvival() {
+	s.survival.mu.Lock()
+	defer s.survival.mu.Unlock()
+	if s.survival.running && s.survival.cancel != nil {
+		s.survival.cancel()
+		slog.Info("arena: survival mode stop requested")
+	}
+}
+
 // buildSurvivalReport constructs the final report from the timeline.
 func (s *Service) buildSurvivalReport(duration time.Duration, timeline []SurvivalEvent) SurvivalReport {
 	stats := s.Stats()
 	avgRecovery := s.calculateAvgRecoveryTime(timeline)
-	score := CalculateScore(stats, avgRecovery)
+	metrics := s.Metrics()
+	score := CalculateScore(stats, avgRecovery, &metrics)
 
 	return SurvivalReport{
 		Duration:   duration,
@@ -198,6 +215,10 @@ func (s *Service) randomChaosAction() Action {
 		ActionSlowAgent,
 		ActionKillOrchestrator,
 		ActionNetworkPartition,
+		ActionToolTimeout,
+		ActionMemoryCorrupt,
+		ActionMCPDisconnect,
+		ActionLLMFailure,
 	}
 	actionType := actionTypes[rand.Intn(len(actionTypes))] //nolint:gosec // non-crypto rand is fine for chaos testing
 
@@ -231,13 +252,25 @@ func (s *Service) randomChaosAction() Action {
 		}
 	case ActionKillLeader:
 	case ActionKillOrchestrator:
-	case ActionPauseAgent, ActionResumeAgent, ActionSlowAgent, ActionNetworkPartition:
+	case ActionPauseAgent, ActionResumeAgent, ActionSlowAgent, ActionNetworkPartition,
+		ActionToolTimeout, ActionMemoryCorrupt, ActionMCPDisconnect, ActionLLMFailure:
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) > 0 {
 			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
 			if actionType == ActionSlowAgent {
 				action.Metadata = map[string]any{
 					"duration": time.Duration(5+rand.Intn(10)) * time.Second,
+				}
+			}
+			if actionType == ActionToolTimeout {
+				action.Metadata = map[string]any{
+					"duration": time.Duration(5+rand.Intn(10)) * time.Second,
+				}
+			}
+			if actionType == ActionLLMFailure {
+				errTypes := []string{"rate_limit", "overloaded", "timeout"}
+				action.Metadata = map[string]any{
+					"error_type": errTypes[rand.Intn(len(errTypes))], //nolint:gosec
 				}
 			}
 		}

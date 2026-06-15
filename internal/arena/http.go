@@ -11,16 +11,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"goagentx/internal/flight"
 )
 
 // Handler provides HTTP endpoints for the arena.
 type Handler struct {
-	service *Service
+	service  *Service
+	recorder *flight.FlightRecorder
 }
 
 // NewHandler creates a Handler backed by the given Service.
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
+}
+
+// SetFlightRecorder attaches a flight recorder for arena-flight data endpoints.
+func (h *Handler) SetFlightRecorder(recorder *flight.FlightRecorder) {
+	h.recorder = recorder
 }
 
 // RegisterRoutes registers arena routes on the given mux.
@@ -33,10 +41,23 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /arena/history", h.handleHistory)
 	mux.HandleFunc("GET /arena/stream", h.handleStream)
 	mux.HandleFunc("GET /arena/score", h.handleScore)
+	mux.HandleFunc("GET /arena/metrics", h.handleMetrics)
 	mux.HandleFunc("POST /arena/orchestrator/kill", h.handleKillOrchestrator)
 	mux.HandleFunc("POST /arena/agent/{id}/partition", h.handleNetworkPartition)
+	mux.HandleFunc("POST /arena/agent/{id}/pause", h.handlePauseAgent)
+	mux.HandleFunc("POST /arena/agent/{id}/resume", h.handleResumeAgent)
+	mux.HandleFunc("POST /arena/agent/{id}/slow", h.handleSlowAgent)
 	mux.HandleFunc("POST /arena/survival", h.handleSurvivalStart)
+	mux.HandleFunc("POST /arena/survival/stop", h.handleSurvivalStop)
 	mux.HandleFunc("GET /arena/survival/status", h.handleSurvivalStatus)
+	mux.HandleFunc("GET /arena/flight/timeline", h.handleArenaTimeline)
+	mux.HandleFunc("GET /arena/flight/diagnostics", h.handleArenaDiagnostics)
+	mux.HandleFunc("POST /arena/agent/{id}/tool-timeout", h.handleToolTimeout)
+	mux.HandleFunc("POST /arena/agent/{id}/memory-corrupt", h.handleMemoryCorrupt)
+	mux.HandleFunc("POST /arena/agent/{id}/mcp-disconnect", h.handleMCPDisconnect)
+	mux.HandleFunc("POST /arena/agent/{id}/llm-failure", h.handleLLMFailure)
+	mux.HandleFunc("POST /arena/scenario/run", h.handleScenarioRun)
+	mux.HandleFunc("POST /arena/scenario/validate", h.handleScenarioValidate)
 }
 
 // edgeRequest is the JSON body for RemoveEdge requests.
@@ -134,6 +155,156 @@ func (h *Handler) handleNetworkPartition(w http.ResponseWriter, r *http.Request)
 	writeResult(w, result)
 }
 
+// slowRequest is the JSON body for SlowAgent requests.
+type slowRequest struct {
+	Duration string `json:"duration"`
+}
+
+func (h *Handler) handlePauseAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionPauseAgent,
+		TargetID:  id,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleResumeAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionResumeAgent,
+		TargetID:  id,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleSlowAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	var req slowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionSlowAgent,
+		TargetID:  id,
+		Metadata:  map[string]any{"duration": req.Duration},
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleSurvivalStop(w http.ResponseWriter, _ *http.Request) {
+	h.service.StopSurvival()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped", "message": "survival mode stopped"})
+}
+
+// toolTimeoutRequest is the JSON body for ToolTimeout requests.
+type toolTimeoutRequest struct {
+	Duration string `json:"duration"`
+}
+
+func (h *Handler) handleToolTimeout(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	var req toolTimeoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionToolTimeout,
+		TargetID:  id,
+		Metadata:  map[string]any{"duration": req.Duration},
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleMemoryCorrupt(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionMemoryCorrupt,
+		TargetID:  id,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+func (h *Handler) handleMCPDisconnect(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionMCPDisconnect,
+		TargetID:  id,
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
+// llmFailureRequest is the JSON body for LLMFailure requests.
+type llmFailureRequest struct {
+	ErrorType string `json:"error_type"`
+}
+
+func (h *Handler) handleLLMFailure(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing agent id")
+		return
+	}
+	var req llmFailureRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	action := Action{
+		ID:        uuid.New().String(),
+		Type:      ActionLLMFailure,
+		TargetID:  id,
+		Metadata:  map[string]any{"error_type": req.ErrorType},
+		CreatedAt: time.Now(),
+	}
+	result := h.service.Execute(r.Context(), action)
+	writeResult(w, result)
+}
+
 func (h *Handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.Stats())
 }
@@ -188,8 +359,14 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleScore(w http.ResponseWriter, _ *http.Request) {
 	stats := h.service.Stats()
 	avgRecovery := h.service.calculateAvgRecoveryTime(nil)
-	score := CalculateScore(stats, avgRecovery)
+	metrics := h.service.Metrics()
+	score := CalculateScore(stats, avgRecovery, &metrics)
 	writeJSON(w, http.StatusOK, score)
+}
+
+func (h *Handler) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	metrics := h.service.Metrics()
+	writeJSON(w, http.StatusOK, metrics)
 }
 
 func (h *Handler) handleSurvivalStart(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +401,87 @@ func (h *Handler) handleSurvivalStart(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleSurvivalStatus(w http.ResponseWriter, _ *http.Request) {
 	status := h.service.GetSurvivalStatus()
 	writeJSON(w, http.StatusOK, status)
+}
+
+// handleArenaTimeline returns arena-related timeline events (filtered by source=arena).
+func (h *Handler) handleArenaTimeline(w http.ResponseWriter, _ *http.Request) {
+	if h.recorder == nil {
+		writeError(w, http.StatusServiceUnavailable, "flight recorder not configured")
+		return
+	}
+
+	allEvents := h.recorder.Timeline().Events()
+	var arenaEvents []flight.TimelineEvent
+	for _, e := range allEvents {
+		if src, ok := e.Metadata["source"].(string); ok && src == "arena" {
+			arenaEvents = append(arenaEvents, e)
+		}
+	}
+	writeJSON(w, http.StatusOK, arenaEvents)
+}
+
+// handleArenaDiagnostics returns arena-related diagnostic records.
+func (h *Handler) handleArenaDiagnostics(w http.ResponseWriter, _ *http.Request) {
+	if h.recorder == nil {
+		writeError(w, http.StatusServiceUnavailable, "flight recorder not configured")
+		return
+	}
+
+	allRecords := h.recorder.Diagnostics().All()
+	var arenaRecords []flight.DiagnosticRecord
+	for _, r := range allRecords {
+		if len(r.TaskID) >= 6 && r.TaskID[:6] == "arena-" {
+			arenaRecords = append(arenaRecords, r)
+		}
+	}
+	writeJSON(w, http.StatusOK, arenaRecords)
+}
+
+func (h *Handler) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
+	var scenario Scenario
+	if err := json.NewDecoder(r.Body).Decode(&scenario); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	if err := ValidateScenario(&scenario); err != nil {
+		writeError(w, http.StatusBadRequest, "validation failed: "+err.Error())
+		return
+	}
+
+	report, err := RunScenarioReport(r.Context(), h.service, scenario)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scenario execution failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (h *Handler) handleScenarioValidate(w http.ResponseWriter, r *http.Request) {
+	var scenario Scenario
+	if err := json.NewDecoder(r.Body).Decode(&scenario); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	if err := ValidateScenario(&scenario); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"valid":    false,
+			"error":    err.Error(),
+			"scenario": scenario.Name,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"valid":        true,
+		"error":        "",
+		"scenario":     scenario.Name,
+		"action_count": len(scenario.Actions),
+		"description":  scenario.Description,
+		"tags":         scenario.Tags,
+	})
 }
 
 // writeResult writes an action result as JSON. Returns 500 on failure, 200 on success.
@@ -300,6 +558,22 @@ func ValidateAction(action Action) error {
 		if action.TargetID == "" {
 			return errors.New("target_id is required for network_partition")
 		}
+	case ActionToolTimeout:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for tool_timeout")
+		}
+	case ActionMemoryCorrupt:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for memory_corrupt")
+		}
+	case ActionMCPDisconnect:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for mcp_disconnect")
+		}
+	case ActionLLMFailure:
+		if action.TargetID == "" {
+			return errors.New("target_id is required for llm_failure")
+		}
 	default:
 		return fmt.Errorf("unknown action type: %s", action.Type)
 	}
@@ -327,6 +601,14 @@ func RoutePath(actionType ActionType) string {
 		return "POST /arena/orchestrator/kill"
 	case ActionNetworkPartition:
 		return "POST /arena/agent/{id}/partition"
+	case ActionToolTimeout:
+		return "POST /arena/agent/{id}/tool-timeout"
+	case ActionMemoryCorrupt:
+		return "POST /arena/agent/{id}/memory-corrupt"
+	case ActionMCPDisconnect:
+		return "POST /arena/agent/{id}/mcp-disconnect"
+	case ActionLLMFailure:
+		return "POST /arena/agent/{id}/llm-failure"
 	default:
 		return ""
 	}
@@ -353,6 +635,14 @@ func ParseActionType(s string) (ActionType, error) {
 		return ActionKillOrchestrator, nil
 	case "network_partition":
 		return ActionNetworkPartition, nil
+	case "tool_timeout":
+		return ActionToolTimeout, nil
+	case "memory_corrupt":
+		return ActionMemoryCorrupt, nil
+	case "mcp_disconnect":
+		return ActionMCPDisconnect, nil
+	case "llm_failure":
+		return ActionLLMFailure, nil
 	default:
 		return "", fmt.Errorf("unknown action type: %s", s)
 	}

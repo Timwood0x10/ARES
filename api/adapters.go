@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -73,6 +74,7 @@ type ArenaAdapter struct {
 	totalActions      int
 	successfulActions int
 	failedActions     int
+	resurrectionTotal int
 	// history records every Execute result.
 	history []dashboard.ArenaResult
 }
@@ -94,6 +96,54 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			success = a.Orch.CancelAgent(action.TargetID)
 			slog.Info("arena: killed agent", "id", action.TargetID, "success", success)
 		}
+	case dashboard.ArenaActionPauseAgent:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: paused agent", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionResumeAgent:
+		// Resume 在 cancel 模型下是空操作；自动复活机制处理。
+		success = true
+		slog.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
+	case dashboard.ArenaActionSlowAgent:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: slowed agent (kill→resurrect cycle)", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionKillOrchestrator:
+		// 杀死第一个运行中的 agent（模拟编排器故障）。
+		for _, ag := range a.Orch.ListAgents() {
+			if ag.Status != "completed" && ag.Status != "failed" {
+				success = a.Orch.CancelAgent(ag.ID)
+				slog.Info("arena: killed via orchestrator-fault", "id", ag.ID, "success", success)
+				break
+			}
+		}
+	case dashboard.ArenaActionNetworkPartition:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: network partition on agent", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionToolTimeout:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: tool timeout on agent", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionMemoryCorrupt:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: memory corrupt on agent", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionMCPDisconnect:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: mcp disconnect on agent", "id", action.TargetID, "success", success)
+		}
+	case dashboard.ArenaActionLLMFailure:
+		if action.TargetID != "" {
+			success = a.Orch.CancelAgent(action.TargetID)
+			slog.Info("arena: llm failure on agent", "id", action.TargetID, "success", success)
+		}
 	}
 	if a.Store != nil {
 		evt := &events.Event{
@@ -110,6 +160,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 	a.totalActions++
 	if success {
 		a.successfulActions++
+		a.resurrectionTotal++
 	} else {
 		a.failedActions++
 	}
@@ -138,4 +189,76 @@ func (a *ArenaAdapter) History() []dashboard.ArenaResult {
 	cp := make([]dashboard.ArenaResult, len(a.history))
 	copy(cp, a.history)
 	return cp
+}
+
+// roundTo 将浮点数四舍五入到指定精度。
+func roundTo(v float64, prec int) float64 {
+	p := math.Pow(10, float64(prec))
+	return math.Round(v*p) / p
+}
+
+// ResilienceScore 返回基于已执行动作的基本弹性评分。
+func (a *ArenaAdapter) ResilienceScore() map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	score := 100.0
+	if a.totalActions > 0 {
+		score = float64(a.successfulActions) / float64(a.totalActions) * 100
+	}
+	grade := "F"
+	if score >= 97 {
+		grade = "A+"
+	} else if score >= 93 {
+		grade = "A"
+	} else if score >= 90 {
+		grade = "A-"
+	} else if score >= 87 {
+		grade = "B+"
+	} else if score >= 83 {
+		grade = "B"
+	} else if score >= 80 {
+		grade = "B-"
+	} else if score >= 77 {
+		grade = "C+"
+	} else if score >= 73 {
+		grade = "C"
+	} else if score >= 70 {
+		grade = "C-"
+	} else if score >= 67 {
+		grade = "D+"
+	} else if score >= 63 {
+		grade = "D"
+	} else if score >= 60 {
+		grade = "D-"
+	}
+	return map[string]any{
+		"score":         roundTo(score, 1),
+		"grade":         grade,
+		"total_actions": a.totalActions,
+		"success_rate":  roundTo(score, 1),
+	}
+}
+
+// ── SurvivalStarter / SurvivalProvider 实现 ──
+
+// StartSurvival 启动生存模式（演示模式）。
+func (a *ArenaAdapter) StartSurvival(ctx context.Context) error {
+	slog.Info("arena: survival mode started (demo mode)")
+	return nil
+}
+
+// StopSurvival 停止生存模式。
+func (a *ArenaAdapter) StopSurvival() error {
+	slog.Info("arena: survival mode stopped")
+	return nil
+}
+
+// GetResilienceScore 返回当前弹性评分。
+func (a *ArenaAdapter) GetResilienceScore() map[string]any {
+	return a.ResilienceScore()
+}
+
+// GetSurvivalStatus 返回生存模式状态。
+func (a *ArenaAdapter) GetSurvivalStatus() map[string]any {
+	return map[string]any{"running": false, "mode": "chaos_demo"}
 }

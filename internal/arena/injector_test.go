@@ -15,18 +15,29 @@ import (
 
 // mockRuntime implements RuntimeProvider for testing.
 type mockRuntime struct {
-	mu             sync.Mutex
-	stopAgentFn    func(ctx context.Context, agentID string) error
-	listAgentsFn   func() []runtime.AgentInfo
-	pauseAgentFn   func(ctx context.Context, agentID string) error
-	resumeAgentFn  func(ctx context.Context, agentID string) error
-	slowAgentFn    func(ctx context.Context, agentID string, delay time.Duration) error
-	partitionNetFn func(ctx context.Context, agentID string) error
-	stopped        []string
-	paused         []string
-	resumed        []string
-	slowed         []string
-	partitioned    []string
+	mu              sync.Mutex
+	stopAgentFn     func(ctx context.Context, agentID string) error
+	listAgentsFn    func() []runtime.AgentInfo
+	pauseAgentFn    func(ctx context.Context, agentID string) error
+	resumeAgentFn   func(ctx context.Context, agentID string) error
+	slowAgentFn     func(ctx context.Context, agentID string, delay time.Duration) error
+	partitionNetFn  func(ctx context.Context, agentID string) error
+	toolTimeoutFn   func(ctx context.Context, agentID string, timeout time.Duration) error
+	corruptMemFn    func(ctx context.Context, agentID string) error
+	disconnectMCPFn func(ctx context.Context, agentID string) error
+	injectLLMFailFn func(ctx context.Context, agentID string, errType string) error
+	stopped         []string
+	paused          []string
+	resumed         []string
+	slowed          []string
+	partitioned     []string
+	toolTimedOut    []string
+	memoryCorrupted []string
+	mcpDisconnected []string
+	llmFailed       []struct {
+		id      string
+		errType string
+	}
 }
 
 func (m *mockRuntime) StopAgent(ctx context.Context, agentID string) error {
@@ -87,11 +98,92 @@ func (m *mockRuntime) PartitionNetwork(ctx context.Context, agentID string) erro
 	return nil
 }
 
+func (m *mockRuntime) ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error {
+	m.mu.Lock()
+	m.toolTimedOut = append(m.toolTimedOut, agentID)
+	m.mu.Unlock()
+	if m.toolTimeoutFn != nil {
+		return m.toolTimeoutFn(ctx, agentID, timeout)
+	}
+	return nil
+}
+
+func (m *mockRuntime) CorruptMemory(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	m.memoryCorrupted = append(m.memoryCorrupted, agentID)
+	m.mu.Unlock()
+	if m.corruptMemFn != nil {
+		return m.corruptMemFn(ctx, agentID)
+	}
+	return nil
+}
+
+func (m *mockRuntime) DisconnectMCP(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	m.mcpDisconnected = append(m.mcpDisconnected, agentID)
+	m.mu.Unlock()
+	if m.disconnectMCPFn != nil {
+		return m.disconnectMCPFn(ctx, agentID)
+	}
+	return nil
+}
+
+func (m *mockRuntime) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
+	m.mu.Lock()
+	m.llmFailed = append(m.llmFailed, struct {
+		id      string
+		errType string
+	}{id: agentID, errType: errType})
+	m.mu.Unlock()
+	if m.injectLLMFailFn != nil {
+		return m.injectLLMFailFn(ctx, agentID, errType)
+	}
+	return nil
+}
+
 func (m *mockRuntime) ListAgents() []runtime.AgentInfo {
 	if m.listAgentsFn != nil {
 		return m.listAgentsFn()
 	}
 	return nil
+}
+
+func (m *mockRuntime) getToolTimedOut() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.toolTimedOut))
+	copy(out, m.toolTimedOut)
+	return out
+}
+
+func (m *mockRuntime) getMemoryCorrupted() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.memoryCorrupted))
+	copy(out, m.memoryCorrupted)
+	return out
+}
+
+func (m *mockRuntime) getMCPDisconnected() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.mcpDisconnected))
+	copy(out, m.mcpDisconnected)
+	return out
+}
+
+func (m *mockRuntime) getLLMFailed() []struct {
+	id      string
+	errType string
+} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]struct {
+		id      string
+		errType string
+	}, len(m.llmFailed))
+	copy(out, m.llmFailed)
+	return out
 }
 
 // mockDAG implements DAGProvider for testing.
@@ -290,4 +382,119 @@ func TestNewInjector_WithDeps(t *testing.T) {
 	assert.NotNil(t, inj)
 	assert.NotNil(t, inj.runtime)
 	assert.NotNil(t, inj.dag)
+}
+
+func TestToolTimeout_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	inj := NewInjector(rt, nil)
+
+	err := inj.ToolTimeout(context.Background(), "agent-1", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-1"}, rt.getToolTimedOut())
+}
+
+func TestToolTimeout_NilRuntime(t *testing.T) {
+	inj := NewInjector(nil, nil)
+
+	err := inj.ToolTimeout(context.Background(), "agent-1", 5*time.Second)
+	assert.ErrorIs(t, err, ErrRuntimeNil)
+}
+
+func TestToolTimeout_RuntimeError(t *testing.T) {
+	rt := &mockRuntime{
+		toolTimeoutFn: func(_ context.Context, _ string, _ time.Duration) error {
+			return errors.New("timeout injection failed")
+		},
+	}
+	inj := NewInjector(rt, nil)
+
+	err := inj.ToolTimeout(context.Background(), "agent-1", 5*time.Second)
+	assert.ErrorContains(t, err, "timeout injection failed")
+}
+
+func TestCorruptMemory_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	inj := NewInjector(rt, nil)
+
+	err := inj.CorruptMemory(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-1"}, rt.getMemoryCorrupted())
+}
+
+func TestCorruptMemory_NilRuntime(t *testing.T) {
+	inj := NewInjector(nil, nil)
+
+	err := inj.CorruptMemory(context.Background(), "agent-1")
+	assert.ErrorIs(t, err, ErrRuntimeNil)
+}
+
+func TestCorruptMemory_RuntimeError(t *testing.T) {
+	rt := &mockRuntime{
+		corruptMemFn: func(_ context.Context, _ string) error {
+			return errors.New("corruption failed")
+		},
+	}
+	inj := NewInjector(rt, nil)
+
+	err := inj.CorruptMemory(context.Background(), "agent-1")
+	assert.ErrorContains(t, err, "corruption failed")
+}
+
+func TestDisconnectMCP_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	inj := NewInjector(rt, nil)
+
+	err := inj.DisconnectMCP(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent-1"}, rt.getMCPDisconnected())
+}
+
+func TestDisconnectMCP_NilRuntime(t *testing.T) {
+	inj := NewInjector(nil, nil)
+
+	err := inj.DisconnectMCP(context.Background(), "agent-1")
+	assert.ErrorIs(t, err, ErrRuntimeNil)
+}
+
+func TestDisconnectMCP_RuntimeError(t *testing.T) {
+	rt := &mockRuntime{
+		disconnectMCPFn: func(_ context.Context, _ string) error {
+			return errors.New("disconnect failed")
+		},
+	}
+	inj := NewInjector(rt, nil)
+
+	err := inj.DisconnectMCP(context.Background(), "agent-1")
+	assert.ErrorContains(t, err, "disconnect failed")
+}
+
+func TestInjectLLMFailure_Success(t *testing.T) {
+	rt := &mockRuntime{}
+	inj := NewInjector(rt, nil)
+
+	err := inj.InjectLLMFailure(context.Background(), "agent-1", "rate_limit")
+	require.NoError(t, err)
+	failed := rt.getLLMFailed()
+	require.Len(t, failed, 1)
+	assert.Equal(t, "agent-1", failed[0].id)
+	assert.Equal(t, "rate_limit", failed[0].errType)
+}
+
+func TestInjectLLMFailure_NilRuntime(t *testing.T) {
+	inj := NewInjector(nil, nil)
+
+	err := inj.InjectLLMFailure(context.Background(), "agent-1", "rate_limit")
+	assert.ErrorIs(t, err, ErrRuntimeNil)
+}
+
+func TestInjectLLMFailure_RuntimeError(t *testing.T) {
+	rt := &mockRuntime{
+		injectLLMFailFn: func(_ context.Context, _ string, _ string) error {
+			return errors.New("llm failure injection failed")
+		},
+	}
+	inj := NewInjector(rt, nil)
+
+	err := inj.InjectLLMFailure(context.Background(), "agent-1", "rate_limit")
+	assert.ErrorContains(t, err, "llm failure injection failed")
 }

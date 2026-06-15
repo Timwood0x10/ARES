@@ -345,8 +345,10 @@ textarea { resize: vertical; }
 
 /* ── Event Log ───────────────────────── */
 .event-log {
-    max-height: 500px;
+    max-height: 420px;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 0.8125rem;
     padding: 0.5rem;
@@ -620,4 +622,98 @@ code, .mono {
     .stat-grid { grid-template-columns: 1fr 1fr; }
     .diagnostics-card { flex-direction: column; align-items: center; }
     .timeline-label { width: 70px; font-size: 0.75rem; }
+}
+
+/* ── Score Ring (Arena) ─────────────── */
+.score-ring {
+    flex-shrink: 0;
+}
+
+.grade-badge-large {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.4rem 1rem;
+    border-radius: 100px;
+    font-size: 1.5rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+.dimension-bar {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* ── Event Log Entries (Arena) ───────── */
+
+.event-log-entry {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid rgba(30,37,56,0.5);
+    transition: background 0.15s;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+
+.event-log-entry:hover {
+    background: var(--bg-hover);
+}
+
+.event-log-entry.event-success {
+    border-left: 3px solid var(--success);
+}
+
+.event-log-entry.event-error {
+    border-left: 3px solid var(--danger);
+}
+
+/* ── Survival Panel (Arena) ──────────── */
+.survival-panel {
+    background: linear-gradient(135deg, rgba(99,102,241,0.04), rgba(167,139,250,0.04));
+    border-color: rgba(99,102,241,0.2);
+}
+
+.survival-panel h3 {
+    color: #a78bfa;
+}
+
+/* ── Status Indicator (Arena) ────────── */
+.status-indicator-dot {
+    display: inline-block;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+@keyframes pulse-glow {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(16,185,129,0.5); }
+    50% { opacity: 0.6; box-shadow: 0 0 14px rgba(16,185,129,0.25); }
+}
+
+/* ── DAG / Topology Animations ───────── */
+@keyframes dag-pulse {
+    0% { stroke-opacity: 1; stroke-width: 1.8; }
+    50% { stroke-opacity: 0.5; stroke-width: 2.5; }
+    100% { stroke-opacity: 1; stroke-width: 1.8; }
+}
+
+.dag-running-pulse {
+    animation: dag-pulse 2s ease-in-out infinite;
+}
+
+#dag-svg g:hover circle:not(.dag-running-pulse) {
+    filter: brightness(1.4);
+}
+
+.glow-ring {
+    animation: glow-ring-pulse 2s ease-in-out infinite;
+}
+
+@keyframes glow-ring-pulse {
+    0%, 100% { stroke-opacity: 0.3; }
+    50% { stroke-opacity: 0.15; }
 }

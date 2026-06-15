@@ -29,6 +29,10 @@ type RuntimeProvider interface {
 	ResumeAgent(ctx context.Context, agentID string) error
 	SlowAgent(ctx context.Context, agentID string, delay time.Duration) error
 	PartitionNetwork(ctx context.Context, agentID string) error
+	ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error
+	CorruptMemory(ctx context.Context, agentID string) error
+	DisconnectMCP(ctx context.Context, agentID string) error
+	InjectLLMFailure(ctx context.Context, agentID string, errType string) error
 }
 
 // DAGProvider is the subset of DAG mutation capabilities needed by the arena.
@@ -179,6 +183,54 @@ func (in *Injector) SlowAgent(ctx context.Context, id string, delay time.Duratio
 	slog.Warn("arena: slowing agent", "agent_id", id, "delay", delay)
 	if err := in.runtime.SlowAgent(ctx, id, delay); err != nil {
 		return fmt.Errorf("arena: slow agent %s: %w", id, err)
+	}
+	return nil
+}
+
+// ToolTimeout injects a tool timeout fault on an agent via the runtime.
+func (in *Injector) ToolTimeout(ctx context.Context, id string, timeout time.Duration) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: injecting tool timeout", "agent_id", id, "timeout", timeout)
+	if err := in.runtime.ToolTimeout(ctx, id, timeout); err != nil {
+		return fmt.Errorf("arena: tool timeout %s: %w", id, err)
+	}
+	return nil
+}
+
+// CorruptMemory injects a memory corruption fault on an agent via the runtime.
+func (in *Injector) CorruptMemory(ctx context.Context, id string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: corrupting memory", "agent_id", id)
+	if err := in.runtime.CorruptMemory(ctx, id); err != nil {
+		return fmt.Errorf("arena: corrupt memory %s: %w", id, err)
+	}
+	return nil
+}
+
+// DisconnectMCP injects an MCP disconnection fault on an agent via the runtime.
+func (in *Injector) DisconnectMCP(ctx context.Context, id string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: disconnecting MCP", "agent_id", id)
+	if err := in.runtime.DisconnectMCP(ctx, id); err != nil {
+		return fmt.Errorf("arena: disconnect MCP %s: %w", id, err)
+	}
+	return nil
+}
+
+// InjectLLMFailure injects an LLM failure fault on an agent via the runtime.
+func (in *Injector) InjectLLMFailure(ctx context.Context, id string, errType string) error {
+	if in.runtime == nil {
+		return ErrRuntimeNil
+	}
+	slog.Warn("arena: injecting LLM failure", "agent_id", id, "error_type", errType)
+	if err := in.runtime.InjectLLMFailure(ctx, id, errType); err != nil {
+		return fmt.Errorf("arena: inject LLM failure %s: %w", id, err)
 	}
 	return nil
 }

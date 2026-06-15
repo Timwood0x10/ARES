@@ -19,16 +19,22 @@ const (
 	ActionSlowAgent        ActionType = "slow_agent"
 	ActionKillOrchestrator ActionType = "kill_orchestrator"
 	ActionNetworkPartition ActionType = "network_partition"
+
+	// Tool and infrastructure fault injection.
+	ActionToolTimeout   ActionType = "tool_timeout"
+	ActionMemoryCorrupt ActionType = "memory_corrupt"
+	ActionMCPDisconnect ActionType = "mcp_disconnect"
+	ActionLLMFailure    ActionType = "llm_failure"
 )
 
 // Action represents a single chaos action to inject.
 type Action struct {
-	ID        string         `json:"id"`
-	Type      ActionType     `json:"type"`
-	TargetID  string         `json:"target_id"`
-	SourceID  string         `json:"source_id,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID        string         `json:"id" yaml:"id"`
+	Type      ActionType     `json:"type" yaml:"type"`
+	TargetID  string         `json:"target_id" yaml:"target_id"`
+	SourceID  string         `json:"source_id,omitempty" yaml:"source_id,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	CreatedAt time.Time      `json:"created_at" yaml:"created_at"`
 }
 
 // Result holds the outcome of an action.
