@@ -7,10 +7,9 @@ import (
 	"goagentx/internal/errors"
 )
 
-// Migrate runs database migrations.
-func Migrate(ctx context.Context, pool *Pool) error {
-	migrations := []string{
-		`CREATE TABLE IF NOT EXISTS user_profiles (
+// coreMigrationStatements contains the DDL for core application tables.
+var coreMigrationStatements = []string{
+	`CREATE TABLE IF NOT EXISTS user_profiles (
 			user_id VARCHAR(255) PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
 			gender VARCHAR(50),
@@ -26,7 +25,7 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE TABLE IF NOT EXISTS sessions (
+	`CREATE TABLE IF NOT EXISTS sessions (
 			session_id VARCHAR(255) PRIMARY KEY,
 			user_id VARCHAR(255) NOT NULL,
 			input TEXT,
@@ -38,10 +37,10 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			expired_at TIMESTAMP
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_expired_at ON sessions(expired_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_expired_at ON sessions(expired_at)`,
 
-		`CREATE TABLE IF NOT EXISTS recommendations (
+	`CREATE TABLE IF NOT EXISTS recommendations (
 			id SERIAL PRIMARY KEY,
 			session_id VARCHAR(255) UNIQUE NOT NULL,
 			user_id VARCHAR(255) NOT NULL,
@@ -56,10 +55,10 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_recommendations_user_id ON recommendations(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON recommendations(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_recommendations_user_id ON recommendations(user_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON recommendations(created_at)`,
 
-		`CREATE TABLE IF NOT EXISTS embeddings (
+	`CREATE TABLE IF NOT EXISTS embeddings (
 			id VARCHAR(255) PRIMARY KEY,
 			table_name VARCHAR(100) NOT NULL,
 			embedding VECTOR(1536),
@@ -67,9 +66,9 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
+	`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
 
-		`CREATE TABLE IF NOT EXISTS leader_checkpoints (
+	`CREATE TABLE IF NOT EXISTS leader_checkpoints (
 			leader_id VARCHAR(255) NOT NULL,
 			session_id VARCHAR(255) NOT NULL,
 			status VARCHAR(50) NOT NULL DEFAULT 'active',
@@ -78,10 +77,10 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			PRIMARY KEY (leader_id)
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_leader_checkpoints_status ON leader_checkpoints(status)`,
+	`CREATE INDEX IF NOT EXISTS idx_leader_checkpoints_status ON leader_checkpoints(status)`,
 
-		// knowledge_chunks_1024 - RAG knowledge base with fixed 1024 dimensions.
-		`CREATE TABLE IF NOT EXISTS knowledge_chunks_1024 (
+	// knowledge_chunks_1024 - RAG knowledge base with fixed 1024 dimensions.
+	`CREATE TABLE IF NOT EXISTS knowledge_chunks_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			content TEXT NOT NULL,
@@ -104,14 +103,14 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tenant
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tenant
 		ON knowledge_chunks_1024(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash
 		ON knowledge_chunks_1024(content_hash)`,
 
-		// experiences_1024 - Agent experiences with decay mechanism.
-		`CREATE TABLE IF NOT EXISTS experiences_1024 (
+	// experiences_1024 - Agent experiences with decay mechanism.
+	`CREATE TABLE IF NOT EXISTS experiences_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			type VARCHAR(50) NOT NULL CHECK (type IN ('query', 'solution', 'failure', 'pattern', 'distilled')),
@@ -128,14 +127,14 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_tenant
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_tenant
 		ON experiences_1024(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay
 		ON experiences_1024(decay_at) WHERE decay_at IS NOT NULL`,
 
-		// embedding_queue - Async embedding task queue with idempotency.
-		`CREATE TABLE IF NOT EXISTS embedding_queue (
+	// embedding_queue - Async embedding task queue with idempotency.
+	`CREATE TABLE IF NOT EXISTS embedding_queue (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			task_id TEXT NOT NULL,
 			table_name TEXT NOT NULL,
@@ -152,11 +151,11 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			error_message TEXT
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_embedding_queue_status ON embedding_queue(status, queued_at)
+	`CREATE INDEX IF NOT EXISTS idx_embedding_queue_status ON embedding_queue(status, queued_at)
 		WHERE status IN ('pending', 'processing')`,
 
-		// embedding_dead_letter - Failed embedding tasks moved after max retries.
-		`CREATE TABLE IF NOT EXISTS embedding_dead_letter (
+	// embedding_dead_letter - Failed embedding tasks moved after max retries.
+	`CREATE TABLE IF NOT EXISTS embedding_dead_letter (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			task_id TEXT NOT NULL,
 			table_name TEXT NOT NULL,
@@ -169,11 +168,11 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
 
-		// events - Event sourcing store with optimistic concurrency control.
-		`CREATE TABLE IF NOT EXISTS events (
+	// events - Event sourcing store with optimistic concurrency control.
+	`CREATE TABLE IF NOT EXISTS events (
 			id VARCHAR(255) NOT NULL,
 			stream_id VARCHAR(255) NOT NULL,
 			type VARCHAR(100) NOT NULL,
@@ -184,18 +183,19 @@ func Migrate(ctx context.Context, pool *Pool) error {
 			PRIMARY KEY (id)
 		)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events(stream_id, version)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
-		`ALTER TABLE events ADD CONSTRAINT IF NOT EXISTS uq_stream_version UNIQUE (stream_id, version)`,
-	}
+	`CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events(stream_id, version)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
+	`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
+	`ALTER TABLE events ADD CONSTRAINT IF NOT EXISTS uq_stream_version UNIQUE (stream_id, version)`,
+}
 
-	for i, migration := range migrations {
+// Migrate runs database migrations.
+func Migrate(ctx context.Context, pool *Pool) error {
+	for i, migration := range coreMigrationStatements {
 		if _, err := pool.Exec(ctx, migration); err != nil {
 			return errors.Wrapf(err, "migration %d failed", i)
 		}
 	}
-
 	return nil
 }
 

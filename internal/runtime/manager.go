@@ -331,13 +331,6 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 }
 
 // RestoreAgent creates a new agent from factory, replays events, restores memory, and starts it.
-//
-// Recovery flow:
-//  1. Create new agent instance from factory.
-//  2. Replay events from EventStore (operational recovery).
-//  3. Enrich state with MemoryManager context (cognitive recovery).
-//  4. RestoreState + ReplayEvents on the new agent if it implements StatefulAgent.
-//  5. Start the new agent.
 func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory AgentFactory) error {
 	if factory == nil {
 		return ErrNilFactory
@@ -347,8 +340,43 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 		"agent_id": agentID,
 	})
 
-	// Stop old agent if present. Use write lock to prevent race with concurrent
-	// RestoreAgent or NotifyAgentDead calls replacing the same agentID.
+	oldMA, oldExists := m.stopOldRestoredAgent(ctx, agentID)
+
+	newAgent, err := m.recoverAgentState(ctx, agentID, factory)
+	if err != nil {
+		return err
+	}
+
+	prevRestarts := 0
+	m.mu.Lock()
+	if oldExists && oldMA != nil {
+		prevRestarts = oldMA.restarts
+	}
+	agentCtx, agentCancel := context.WithCancel(m.gctx)
+	m.agents[agentID] = &managedAgent{
+		agent:    newAgent,
+		factory:  factory,
+		cancel:   agentCancel,
+		restarts: prevRestarts,
+	}
+	m.mu.Unlock()
+
+	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
+
+	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverCompleted, map[string]any{
+		"agent_id": agentID,
+		"type":     newAgent.Type(),
+	})
+
+	slog.Info("runtime: agent restored",
+		"agent_id", agentID, "type", newAgent.Type(),
+		"restarts", prevRestarts,
+	)
+	return nil
+}
+
+// stopOldRestoredAgent marks the old agent as stopped and gracefully shuts it down.
+func (m *Manager) stopOldRestoredAgent(ctx context.Context, agentID string) (*managedAgent, bool) {
 	m.mu.Lock()
 	oldMA, oldExists := m.agents[agentID]
 	if oldExists && oldMA != nil {
@@ -361,35 +389,33 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 			oldMA.cancel()
 		}
 		stopCtx, stopCancel := context.WithTimeout(ctx, m.config.AgentStopTimeout)
+		defer stopCancel()
 		if err := oldMA.agent.Stop(stopCtx); err != nil {
 			slog.Warn("runtime: restore stop old agent failed",
 				"agent_id", agentID, "error", err,
 			)
 		}
-		stopCancel()
 	}
+	return oldMA, oldExists
+}
 
-	// Step 1: Create new agent from factory.
+// recoverAgentState creates a new agent from factory, replays events for operational
+// recovery, and enriches state with memory context for cognitive recovery.
+func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory AgentFactory) (base.Agent, error) {
 	newAgent := factory()
 	if newAgent == nil {
-		return fmt.Errorf("runtime: factory returned nil for agent %s", agentID)
+		return nil, fmt.Errorf("runtime: factory returned nil for agent %s", agentID)
 	}
 
-	// Step 2: Replay events from EventStore (operational recovery).
 	evts := m.replayEvents(ctx, agentID)
-
-	// Step 3: Build combined recovery state if agent is StatefulAgent.
 	if sa, ok := newAgent.(base.StatefulAgent); ok {
 		state := buildStateFromEvents(evts)
-
-		// Enrich state with memory context (cognitive recovery).
 		if m.memManager != nil {
 			cognitiveState := m.buildCognitiveState(ctx, agentID, state)
 			for k, v := range cognitiveState {
 				state[k] = v
 			}
 		}
-
 		if len(state) > 0 {
 			if err := sa.RestoreState(state); err != nil {
 				slog.Warn("runtime: RestoreState failed",
@@ -405,39 +431,26 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 			}
 		}
 	}
+	return newAgent, nil
+}
 
-	// Step 4: Register and start the new agent.
-	m.mu.Lock()
-	agentCtx, agentCancel := context.WithCancel(m.gctx)
-	prevRestarts := 0
-	if oldExists && oldMA != nil {
-		prevRestarts = oldMA.restarts
-	}
-	// Do NOT increment restarts here; NotifyAgentDead already did so
-	// under write lock before scheduling this call.
-	m.agents[agentID] = &managedAgent{
-		agent:    newAgent,
-		factory:  factory,
-		cancel:   agentCancel,
-		restarts: prevRestarts,
-	}
-	m.mu.Unlock()
-
+// launchAgentGoroutine starts the agent in a managed goroutine with panic recovery.
+func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agent base.Agent) {
 	m.g.Go(func() error {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("runtime: restored agent panicked",
+				slog.Error("runtime: agent panicked",
 					"agent_id", agentID, "panic", r,
 				)
 				m.NotifyAgentDead(agentID, fmt.Sprintf("panic: %v", r))
 			}
 		}()
 
-		if err := newAgent.Start(agentCtx); err != nil {
-			if agentCtx.Err() != nil {
+		if err := agent.Start(ctx); err != nil {
+			if ctx.Err() != nil {
 				return nil
 			}
-			slog.Error("runtime: restored agent start failed",
+			slog.Error("runtime: agent start failed",
 				"agent_id", agentID, "error", err,
 			)
 			m.NotifyAgentDead(agentID, fmt.Sprintf("start failed: %v", err))
@@ -445,17 +458,6 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 		}
 		return nil
 	})
-
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverCompleted, map[string]any{
-		"agent_id": agentID,
-		"type":     newAgent.Type(),
-	})
-
-	slog.Info("runtime: agent restored",
-		"agent_id", agentID, "type", newAgent.Type(),
-		"restarts", prevRestarts,
-	)
-	return nil
 }
 
 // NotifyAgentDead is called when an agent dies. It triggers asynchronous restoration

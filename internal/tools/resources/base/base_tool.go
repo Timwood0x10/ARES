@@ -6,6 +6,9 @@ import (
 	"goagentx/internal/tools/resources/core"
 )
 
+// Compile-time check: BaseTool satisfies ToolLifecycle.
+var _ core.ToolLifecycle = (*BaseTool)(nil)
+
 // BaseTool provides common tool functionality.
 type BaseTool struct {
 	name         string
@@ -14,6 +17,16 @@ type BaseTool struct {
 	capabilities []core.Capability
 	parameters   *core.ParameterSchema
 	metadata     *core.ToolMetadata
+}
+
+// Init is a no-op lifecycle hook. Override in embedding types as needed.
+func (t *BaseTool) Init(ctx context.Context) error {
+	return nil
+}
+
+// Stop is a no-op lifecycle hook. Override in embedding types as needed.
+func (t *BaseTool) Stop(ctx context.Context) error {
+	return nil
 }
 
 // NewBaseTool creates a new BaseTool.

@@ -7,12 +7,11 @@ import (
 	"goagentx/internal/errors"
 )
 
-// MigrateStorage runs the storage system database migrations.
-// This creates the new vector-based storage schema with 6 core tables and supporting indexes.
-func MigrateStorage(ctx context.Context, pool *Pool) error {
-	migrations := []string{
-		// 1. knowledge_chunks_1024 table - RAG knowledge base with fixed 1024 dimensions
-		`CREATE TABLE IF NOT EXISTS knowledge_chunks_1024 (
+// storageMigrations contains the DDL statements for the vector-based storage schema.
+// Each entry is executed as a single SQL statement in order.
+var storageMigrations = []string{
+	// 1. knowledge_chunks_1024 table - RAG knowledge base with fixed 1024 dimensions
+	`CREATE TABLE IF NOT EXISTS knowledge_chunks_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			content TEXT NOT NULL,
@@ -35,42 +34,42 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		// Enable RLS for knowledge_chunks_1024
-		`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
+	// Enable RLS for knowledge_chunks_1024
+	`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
 
-		// Create tenant isolation policy
-		`CREATE POLICY tenant_isolation_knowledge_1024 ON knowledge_chunks_1024
+	// Create tenant isolation policy
+	`CREATE POLICY tenant_isolation_knowledge_1024 ON knowledge_chunks_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create auto-update trigger for tsv
-		`CREATE TRIGGER tsvector_update_knowledge_1024 BEFORE INSERT OR UPDATE ON knowledge_chunks_1024
+	// Create auto-update trigger for tsv
+	`CREATE TRIGGER tsvector_update_knowledge_1024 BEFORE INSERT OR UPDATE ON knowledge_chunks_1024
 		FOR EACH ROW EXECUTE FUNCTION
 		tsvector_update_trigger(tsv, 'pg_catalog.simple', content)`,
 
-		// Create indexes for knowledge_chunks_1024
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_embedding 
+	// Create indexes for knowledge_chunks_1024
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_embedding 
 		ON knowledge_chunks_1024 
 		USING ivfflat (embedding vector_cosine_ops) 
 		WITH (lists = 100)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tsv 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tsv 
 		ON knowledge_chunks_1024 
 		USING GIN(tsv)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_doc_chunk 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_doc_chunk 
 		ON knowledge_chunks_1024(document_id, chunk_index)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_source_type 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_source_type 
 		ON knowledge_chunks_1024(source_type)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tenant 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_tenant 
 		ON knowledge_chunks_1024(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash 
+	`CREATE INDEX IF NOT EXISTS idx_knowledge_1024_content_hash 
 		ON knowledge_chunks_1024(content_hash)`,
 
-		// 2. experiences_1024 table - Agent experiences with decay mechanism
-		`CREATE TABLE IF NOT EXISTS experiences_1024 (
+	// 2. experiences_1024 table - Agent experiences with decay mechanism
+	`CREATE TABLE IF NOT EXISTS experiences_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			type VARCHAR(50) NOT NULL CHECK (type IN ('query', 'solution', 'failure', 'pattern', 'distilled')),
@@ -87,34 +86,34 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
+	`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for experiences_1024
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_embedding 
+	// Create indexes for experiences_1024
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_embedding 
 		ON experiences_1024 
 		USING ivfflat (embedding vector_cosine_ops) 
 		WITH (lists = 100)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_type 
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_type 
 		ON experiences_1024(type)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_agent 
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_agent 
 		ON experiences_1024(agent_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_score 
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_score 
 		ON experiences_1024(score DESC)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_tenant 
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_tenant 
 		ON experiences_1024(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay 
+	`CREATE INDEX IF NOT EXISTS idx_experiences_1024_decay 
 		ON experiences_1024(decay_at) WHERE decay_at IS NOT NULL`,
 
-		// 3. tools table - Tools with semantic embedding
-		`CREATE TABLE IF NOT EXISTS tools (
+	// 3. tools table - Tools with semantic embedding
+	`CREATE TABLE IF NOT EXISTS tools (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			name VARCHAR(255) NOT NULL,
@@ -131,31 +130,31 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_tools ON tools
+	`CREATE POLICY tenant_isolation_tools ON tools
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for tools
-		`CREATE INDEX IF NOT EXISTS idx_tools_tenant_name 
+	// Create indexes for tools
+	`CREATE INDEX IF NOT EXISTS idx_tools_tenant_name 
 		ON tools(tenant_id, name)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_tools_usage_count 
+	`CREATE INDEX IF NOT EXISTS idx_tools_usage_count 
 		ON tools(usage_count DESC)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_tools_agent_type 
+	`CREATE INDEX IF NOT EXISTS idx_tools_agent_type 
 		ON tools(agent_type)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_tools_tags 
+	`CREATE INDEX IF NOT EXISTS idx_tools_tags 
 		ON tools USING GIN(tags)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_tools_embedding 
+	`CREATE INDEX IF NOT EXISTS idx_tools_embedding 
 		ON tools 
 		USING ivfflat (embedding vector_cosine_ops) 
 		WHERE embedding IS NOT NULL`,
 
-		// 4. conversations table - Conversation history without vector embedding
-		`CREATE TABLE IF NOT EXISTS conversations (
+	// 4. conversations table - Conversation history without vector embedding
+	`CREATE TABLE IF NOT EXISTS conversations (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			session_id VARCHAR(64) NOT NULL,
 			tenant_id TEXT NOT NULL,
@@ -167,29 +166,29 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE conversations ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE conversations ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_conversations ON conversations
+	`CREATE POLICY tenant_isolation_conversations ON conversations
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for conversations
-		`CREATE INDEX IF NOT EXISTS idx_conversations_session 
+	// Create indexes for conversations
+	`CREATE INDEX IF NOT EXISTS idx_conversations_session 
 		ON conversations(session_id, created_at)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_conversations_tenant 
+	`CREATE INDEX IF NOT EXISTS idx_conversations_tenant 
 		ON conversations(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_conversations_user 
+	`CREATE INDEX IF NOT EXISTS idx_conversations_user 
 		ON conversations(user_id, created_at)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_conversations_agent 
+	`CREATE INDEX IF NOT EXISTS idx_conversations_agent 
 		ON conversations(agent_id, created_at)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_conversations_expires 
+	`CREATE INDEX IF NOT EXISTS idx_conversations_expires 
 		ON conversations(expires_at) WHERE expires_at IS NOT NULL`,
 
-		// 5. task_results_1024 table - Task execution results with vector embedding
-		`CREATE TABLE IF NOT EXISTS task_results_1024 (
+	// 5. task_results_1024 table - Task execution results with vector embedding
+	`CREATE TABLE IF NOT EXISTS task_results_1024 (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			session_id VARCHAR(64) NOT NULL,
@@ -207,34 +206,34 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE task_results_1024 ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE task_results_1024 ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_task_results_1024 ON task_results_1024
+	`CREATE POLICY tenant_isolation_task_results_1024 ON task_results_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for task_results_1024
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_embedding 
+	// Create indexes for task_results_1024
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_embedding 
 		ON task_results_1024 
 		USING ivfflat (embedding vector_cosine_ops) 
 		WHERE embedding IS NOT NULL`,
 
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_type 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_type 
 		ON task_results_1024(task_type)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_status 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_status 
 		ON task_results_1024(status)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_session 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_session 
 		ON task_results_1024(session_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_agent 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_agent 
 		ON task_results_1024(agent_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_task_results_1024_tenant 
+	`CREATE INDEX IF NOT EXISTS idx_task_results_1024_tenant 
 		ON task_results_1024(tenant_id)`,
 
-		// 6. secrets table - Encrypted sensitive data
-		`CREATE TABLE IF NOT EXISTS secrets (
+	// 6. secrets table - Encrypted sensitive data
+	`CREATE TABLE IF NOT EXISTS secrets (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			key VARCHAR(255) NOT NULL,
@@ -246,26 +245,26 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_secrets ON secrets
+	`CREATE POLICY tenant_isolation_secrets ON secrets
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for secrets
-		`CREATE INDEX IF NOT EXISTS idx_secrets_tenant_key 
+	// Create indexes for secrets
+	`CREATE INDEX IF NOT EXISTS idx_secrets_tenant_key 
 		ON secrets(tenant_id, key)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_secrets_tenant 
+	`CREATE INDEX IF NOT EXISTS idx_secrets_tenant 
 		ON secrets(tenant_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_secrets_expires 
+	`CREATE INDEX IF NOT EXISTS idx_secrets_expires 
 		ON secrets(expires_at) WHERE expires_at IS NOT NULL`,
 
-		`CREATE INDEX IF NOT EXISTS idx_secrets_key_version 
+	`CREATE INDEX IF NOT EXISTS idx_secrets_key_version 
 		ON secrets(key_version)`,
 
-		// 7. embedding_queue table - Async embedding task queue with idempotency
-		`CREATE TABLE IF NOT EXISTS embedding_queue (
+	// 7. embedding_queue table - Async embedding task queue with idempotency
+	`CREATE TABLE IF NOT EXISTS embedding_queue (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			task_id TEXT NOT NULL,
 			table_name TEXT NOT NULL,
@@ -282,14 +281,14 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			error_message TEXT
 		)`,
 
-		// Create indexes for embedding_queue
-		`CREATE UNIQUE INDEX idx_embedding_queue_dedupe ON embedding_queue(dedupe_key)`,
+	// Create indexes for embedding_queue
+	`CREATE UNIQUE INDEX idx_embedding_queue_dedupe ON embedding_queue(dedupe_key)`,
 
-		`CREATE INDEX idx_embedding_queue_status ON embedding_queue(status, queued_at) 
+	`CREATE INDEX idx_embedding_queue_status ON embedding_queue(status, queued_at) 
 		WHERE status IN ('pending', 'processing')`,
 
-		// 8. embedding_dead_letter table - Failed embedding tasks
-		`CREATE TABLE IF NOT EXISTS embedding_dead_letter (
+	// 8. embedding_dead_letter table - Failed embedding tasks
+	`CREATE TABLE IF NOT EXISTS embedding_dead_letter (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			task_id TEXT NOT NULL,
 			table_name TEXT NOT NULL,
@@ -302,12 +301,12 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		// Create indexes for embedding_dead_letter
-		`CREATE INDEX idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
-		`CREATE INDEX idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
+	// Create indexes for embedding_dead_letter
+	`CREATE INDEX idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
+	`CREATE INDEX idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
 
-		// 9. distilled_memories table - Distilled conversation memories for cross-session context
-		`CREATE TABLE IF NOT EXISTS distilled_memories (
+	// 9. distilled_memories table - Distilled conversation memories for cross-session context
+	`CREATE TABLE IF NOT EXISTS distilled_memories (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id TEXT NOT NULL,
 			user_id TEXT,
@@ -325,42 +324,42 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 
-		`ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`,
+	`ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`,
 
-		`CREATE POLICY tenant_isolation_distilled_memories ON distilled_memories
+	`CREATE POLICY tenant_isolation_distilled_memories ON distilled_memories
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
-		// Create indexes for distilled_memories
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_embedding
+	// Create indexes for distilled_memories
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_embedding
 		ON distilled_memories
 		USING ivfflat (embedding vector_cosine_ops)
 		WITH (lists = 100)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_user
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_user
 		ON distilled_memories(user_id, created_at)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_session
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_session
 		ON distilled_memories(session_id)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_type
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_type
 		ON distilled_memories(memory_type)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_importance
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_importance
 		ON distilled_memories(importance DESC)`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_expires
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_expires
 		ON distilled_memories(expires_at) WHERE expires_at IS NOT NULL`,
 
-		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_tenant
+	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_tenant
 		ON distilled_memories(tenant_id)`,
-	}
+}
 
-	// Execute migrations
-	for _, migration := range migrations {
+// MigrateStorage runs the storage system database migrations.
+func MigrateStorage(ctx context.Context, pool *Pool) error {
+	for _, migration := range storageMigrations {
 		if _, err := pool.db.ExecContext(ctx, migration); err != nil {
 			return errors.Wrap(err, "migration failed")
 		}
 	}
-
 	return nil
 }
