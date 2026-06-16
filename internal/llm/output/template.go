@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+	"gopkg.in/yaml.v3"
 )
 
 // TemplateEngine handles prompt templates.
@@ -262,8 +263,11 @@ func toJSON(v interface{}) string {
 }
 
 func toYAML(v interface{}) string {
-	// TODO: implement proper YAML serialization (expected by 2026-07-01).
-	return fmt.Sprintf("%v", v)
+	b, err := yaml.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
 // Global default template engine.

@@ -248,9 +248,3 @@ func (in *Injector) AvailableAgentIDs() []string {
 	}
 	return ids
 }
-
-// AvailableNodeIDs returns the IDs of agents that could serve as DAG nodes.
-// Returns an empty slice if the runtime is nil.
-func (in *Injector) AvailableNodeIDs() []string {
-	return in.AvailableAgentIDs()
-}

@@ -333,5 +333,3 @@ func scanSummary(s summaryScanner) (*EventSummary, error) {
 
 	return &summary, nil
 }
-
-

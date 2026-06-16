@@ -38,7 +38,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	s := &Service{cfg: cfg, ctx: ctx, cancel: cancel}
 
 	// LLM
-	llm, err := output.CreateAdapter(ctx, cfg.LLM.Provider, &output.Config{
+	llm, err := output.CreateAdapter(cfg.LLM.Provider, &output.Config{
 		Provider: cfg.LLM.Provider, Model: cfg.LLM.Model,
 		BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey,
 		MaxTokens: 4096, Timeout: cfg.LLM.Timeout,

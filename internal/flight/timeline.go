@@ -120,15 +120,17 @@ func (t *Timeline) Summary() TimelineSummary {
 		summary.ErrorDuration += typeDuration(e, EventError)
 	}
 
-	// Total = max(end) - min(start).
+	// Total = max(end) - min(start). Only consider events that have
+	// a non-zero EndAt, since start-only events (e.g. agent.start,
+	// task.start) do not set EndAt.
 	if len(t.events) > 0 {
 		minStart := t.events[0].StartAt
-		maxEnd := t.events[0].EndAt
+		var maxEnd time.Time
 		for _, e := range t.events {
 			if e.StartAt.Before(minStart) {
 				minStart = e.StartAt
 			}
-			if e.EndAt.After(maxEnd) {
+			if !e.EndAt.IsZero() && (maxEnd.IsZero() || e.EndAt.After(maxEnd)) {
 				maxEnd = e.EndAt
 			}
 		}

@@ -23,15 +23,16 @@ type StdioConfig struct {
 // StdioTransport implements Transport by communicating with an MCP server
 // over stdin/stdout of a subprocess.
 type StdioTransport struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Scanner
-	stderr    io.ReadCloser
-	config    StdioConfig
-	mu        sync.Mutex
-	started   atomic.Bool
-	receiveMu sync.Mutex
-	stderrWg  sync.WaitGroup
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Scanner
+	stdoutPipe io.ReadCloser
+	stderr     io.ReadCloser
+	config     StdioConfig
+	mu         sync.Mutex
+	started    atomic.Bool
+	receiveMu  sync.Mutex
+	stderrWg   sync.WaitGroup
 }
 
 // NewStdioTransport creates a new stdio transport with the given config.
@@ -76,6 +77,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
+	t.stdoutPipe = stdoutPipe
 	t.stdout = bufio.NewScanner(stdoutPipe)
 	t.stdout.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
@@ -158,6 +160,10 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 
 	select {
 	case <-ctx.Done():
+		// Close stdout pipe to unblock the scanning goroutine so it can exit.
+		// Without this, t.stdout.Scan() blocks forever on pipe read,
+		// causing scanWg.Wait() to hang and leak the goroutine.
+		t.closeStdoutPipe()
 		scanWg.Wait()
 		return nil, ctx.Err()
 	case result := <-ch:
@@ -172,6 +178,16 @@ func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
 	}
 }
 
+// closeStdoutPipe closes the stdout pipe to unblock the scanner goroutine.
+// The pipe's Close method is safe for concurrent calls on *os.File —
+// double-close returns os.ErrClosed which is discarded here.
+// This is used from both Receive() (ctx cancellation) and Close() (shutdown).
+func (t *StdioTransport) closeStdoutPipe() {
+	if t.stdoutPipe != nil {
+		_ = t.stdoutPipe.Close()
+	}
+}
+
 // Close terminates the subprocess and cleans up resources.
 func (t *StdioTransport) Close() error {
 	t.mu.Lock()
@@ -182,6 +198,8 @@ func (t *StdioTransport) Close() error {
 	}
 
 	t.started.Store(false)
+
+	t.closeStdoutPipe()
 
 	if t.stdin != nil {
 		_ = t.stdin.Close()

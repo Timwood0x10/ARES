@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -702,4 +703,100 @@ func (m *capturePromptLLM) Generate(_ context.Context, prompt string) (string, e
 		return "", m.err
 	}
 	return m.response, nil
+}
+
+// mockStreamLLMExecutor implements both LLMExecutor and StreamLLMExecutor for testing.
+type mockStreamLLMExecutor struct {
+	chunks []StreamChunk
+	err    error
+}
+
+func (m *mockStreamLLMExecutor) Generate(_ context.Context, _ string) (string, error) {
+	return "fallback", nil
+}
+
+func (m *mockStreamLLMExecutor) GenerateStream(_ context.Context, _ string) (<-chan StreamChunk, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	ch := make(chan StreamChunk, len(m.chunks))
+	for _, c := range m.chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
+}
+
+// hangingStreamLLMExecutor returns a channel that is never closed (simulates a hung stream).
+type hangingStreamLLMExecutor struct{}
+
+func (h *hangingStreamLLMExecutor) Generate(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("should not be called")
+}
+
+func (h *hangingStreamLLMExecutor) GenerateStream(_ context.Context, _ string) (<-chan StreamChunk, error) {
+	ch := make(chan StreamChunk)
+	// Intentionally never close the channel — simulates a hung LLM adapter.
+	return ch, nil
+}
+
+func TestConsumeStreamContextCancellation(t *testing.T) {
+	orch := NewOrchestrator(&mockMCPExecutor{}, &hangingStreamLLMExecutor{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	analysis, err := orch.llmGenerateStreaming(ctx, "test-agent", "prompt")
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got: %v", err)
+	}
+	if analysis != "" {
+		t.Errorf("expected empty analysis from cancelled stream, got: %q", analysis)
+	}
+}
+
+func TestConsumeStreamNormalCompletion(t *testing.T) {
+	llm := &mockStreamLLMExecutor{
+		chunks: []StreamChunk{
+			{Content: "hello "},
+			{Content: "world"},
+			{Done: true},
+		},
+	}
+	orch := NewOrchestrator(&mockMCPExecutor{}, llm)
+
+	ctx := context.Background()
+	analysis, err := orch.llmGenerateStreaming(ctx, "test-agent", "prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if analysis != "hello world" {
+		t.Errorf("expected 'hello world', got %q", analysis)
+	}
+}
+
+func TestConsumeStreamErrorChunk(t *testing.T) {
+	streamErr := fmt.Errorf("LLM rate limited")
+	llm := &mockStreamLLMExecutor{
+		chunks: []StreamChunk{
+			{Content: "partial"},
+			{Err: streamErr},
+		},
+	}
+	orch := NewOrchestrator(&mockMCPExecutor{}, llm)
+
+	ctx := context.Background()
+	analysis, err := orch.llmGenerateStreaming(ctx, "test-agent", "prompt")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, streamErr) {
+		t.Errorf("expected stream error, got: %v", err)
+	}
+	if analysis != "partial" {
+		t.Errorf("expected 'partial' analysis before error, got %q", analysis)
+	}
 }

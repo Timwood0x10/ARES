@@ -164,15 +164,15 @@ func (h *WSHub) removeClient(client *WSClient) {
 	close(client.send)
 }
 
-// sendToClient queues a message for a client. Caller must hold h.mu (read lock OK).
+// sendToClient queues a message for a client. Caller must hold h.mu (read or write lock).
+// No need to lock client.mu: client.send is a buffered channel and is only closed
+// under h.mu.Lock() (in removeClient). Holding h.mu (even RLock) prevents removeClient
+// from acquiring the write lock, so client.send cannot be closed concurrently.
 func (h *WSHub) sendToClient(client *WSClient, msg *WSMessage) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
-
-	client.mu.Lock()
-	defer client.mu.Unlock()
 
 	select {
 	case client.send <- data:

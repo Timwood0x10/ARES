@@ -157,6 +157,36 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Dynamic tool registration and discovery
 - Capability matching between agents and tools
 - Parameter validation with schema support
+- Pre/post execution lifecycle hooks
+
+**MCP Integration**
+- Model Context Protocol client with JSON-RPC 2.0 messaging
+- Stdio and SSE transport support
+- Tool schema management and connection lifecycle
+
+**Observability**
+- Web Dashboard: real-time monitoring with WebSocket streaming
+- Flight Recorder: timeline tracking, decision logging, diagnostics engine
+- Agent Genealogy: lineage tracking with graph export (DOT/JSON)
+- Event Bridge: system state streaming to dashboard
+
+**Chaos Engineering**
+- Arena framework for fault injection testing
+- Fault types: process_kill, network_partition, latency_spike, kill_orchestrator
+- Resilience scoring with configurable metrics
+- Survival mode for continuous chaos testing
+
+**LLM Tool Calling**
+- Multi-provider output adapters (OpenAI, Ollama, OpenRouter)
+- Prompt template engine with Go template syntax
+- Function calling extraction and validation
+- Schema-based parameter validation
+- Streaming output parser
+
+**Extensibility**
+- Event-driven callbacks system with typed contexts
+- Event auto-compaction with retention policies
+- Pluggable health checking for agent resurrection
 
 ## Benchmark Highlights
 
@@ -231,6 +261,18 @@ go run ./examples/advanced/agent_resurrection/
 go run ./examples/advanced/runtime_resurrection/
 go run ./examples/advanced/dynamic_executor/
 go run ./examples/advanced/mutable_dag/
+
+# Dashboard with MCP integration
+cd examples/mcp-dashboard && go run main.go
+
+# Quantitative analysis demo
+cd examples/quant-demo && go run main.go
+
+# Development agent demo
+cd examples/devagent && go run main.go
+
+# Tool capability demo
+cd examples/capability-demo && go run main.go
 ```
 
 See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
@@ -257,10 +299,17 @@ GoAgentX/
 │   ├── storage/          # VectorStore interface + implementations
 │   │   ├── postgres/     # PostgreSQL + pgvector (production)
 │   │   └── memory/       # In-memory (dev/test)
+│   ├── mcp/             # MCP client (stdio/SSE transport)
+│   ├── dashboard/        # Web dashboard (WebSocket + REST API)
+│   ├── flight/           # Flight recorder (timeline/genealogy/diagnostics)
+│   ├── arena/            # Chaos engineering arena
+│   ├── callbacks/        # Event-driven callback system
+│   ├── llm/output/       # LLM output parsers + prompt templates
 │   └── tools/           # Tool registry and invocation
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
-├── examples/            # Travel, knowledge-base, simple demos
+├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...
 ├── api/                 # Service interfaces and client
+├── cmd/                 # CLI tools (arena, flight, migration, ...)
 └── benchmarks/          # Benchmark reports and logs
 ```
 
@@ -327,6 +376,8 @@ See `examples/travel/config.yaml` for a complete example.
 - [Dynamic Graph](docs/en/features/dynamic-graph.md)
 - [Human-in-the-Loop](docs/en/features/hitl.md)
 - [Agent Resurrection](docs/en/features/resurrection.md)
+- [MCP & Dashboard](docs/en/features/mcp-and-dashboard.md)
+- [Event Sourcing](docs/en/features/event-sourcing.md)
 - [Integration Testing](docs/en/development/integration-testing.md)
 - [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)

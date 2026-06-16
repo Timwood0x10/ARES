@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func TestNewStdioTransport(t *testing.T) {
@@ -220,5 +222,35 @@ func TestNewTransportFromConfigReturnsCorrectType(t *testing.T) {
 	}
 	if _, ok := tr.(*SSETransport); !ok {
 		t.Errorf("expected *SSETransport, got %T", tr)
+	}
+}
+
+func TestStdioTransportReceiveContextCancelNoLeak(t *testing.T) {
+	// Use "cat" which reads stdin and echoes to stdout — it will block waiting for input,
+	// so Receive() will block in t.stdout.Scan() until we cancel the context.
+	tr := NewStdioTransport(StdioConfig{Command: "cat"})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	if err := tr.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = tr.Close() }()
+
+	before := runtime.NumGoroutine()
+
+	// Cancel context after a short delay to trigger the ctx.Done() path in Receive().
+	time.AfterFunc(50*time.Millisecond, cancel)
+	_, err := tr.Receive(ctx)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+
+	// Give goroutines a moment to exit.
+	time.Sleep(100 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	diff := after - before
+	if diff > 2 {
+		t.Fatalf("possible goroutine leak: goroutines increased by %d (before=%d, after=%d)", diff, before, after)
 	}
 }

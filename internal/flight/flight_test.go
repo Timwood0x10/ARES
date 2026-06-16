@@ -98,6 +98,42 @@ func TestTimelineSummary(t *testing.T) {
 	}
 }
 
+// TestTimelineSummaryWithZeroEndAt verifies that Summary() handles events
+// with zero EndAt (e.g. agent.start events that lack end timestamps).
+// The maxEnd calculation must skip EndAt.IsZero() to avoid zero Duration.
+func TestTimelineSummaryWithZeroEndAt(t *testing.T) {
+	tl := NewTimeline()
+	base := time.Now()
+
+	// Add an agent.start event with no EndAt (zero value).
+	tl.Add(TimelineEvent{
+		ID: "e1", AgentID: "a1", Type: EventAgentStart,
+		StartAt: base, Duration: 0,
+	})
+	// Add a tool.call event with a proper EndAt.
+	tl.Add(TimelineEvent{
+		ID: "e2", AgentID: "a1", Type: EventToolCall,
+		StartAt: base, EndAt: base.Add(5 * time.Second), Duration: 5 * time.Second,
+	})
+	// Add another start-only event.
+	tl.Add(TimelineEvent{
+		ID: "e3", AgentID: "a1", Type: EventAgentStart,
+		StartAt: base.Add(2 * time.Second), Duration: 0,
+	})
+
+	summary := tl.Summary()
+
+	if summary.EventCount != 3 {
+		t.Errorf("EventCount = %d, want 3", summary.EventCount)
+	}
+	if summary.TotalDuration != 5*time.Second {
+		t.Errorf("TotalDuration = %v, want 5s (from tool.call, ignoring zero-EndAt events)", summary.TotalDuration)
+	}
+	if summary.ToolDuration != 5*time.Second {
+		t.Errorf("ToolDuration = %v, want 5s", summary.ToolDuration)
+	}
+}
+
 func TestTimelineConcurrentAdd(t *testing.T) {
 	tl := NewTimeline()
 	var wg sync.WaitGroup

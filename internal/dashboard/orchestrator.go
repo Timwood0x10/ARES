@@ -574,7 +574,7 @@ func (o *Orchestrator) llmGenerateStreaming(ctx context.Context, agentID, prompt
 	if streamer, ok := o.llm.(StreamLLMExecutor); ok {
 		ch, err := streamer.GenerateStream(ctx, prompt)
 		if err == nil {
-			return o.consumeStream(agentID, ch)
+			return o.consumeStream(ctx, agentID, ch)
 		}
 		// Streaming init failed — fall through to blocking call.
 		slog.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
@@ -584,21 +584,30 @@ func (o *Orchestrator) llmGenerateStreaming(ctx context.Context, agentID, prompt
 
 // consumeStream reads chunks from the channel, accumulates the analysis, and
 // broadcasts each chunk via WebSocket. Returns the full accumulated text.
-func (o *Orchestrator) consumeStream(agentID string, ch <-chan StreamChunk) (string, error) {
+// If ctx is cancelled before the stream finishes, returns ctx.Err() with
+// whatever analysis has been accumulated so far.
+func (o *Orchestrator) consumeStream(ctx context.Context, agentID string, ch <-chan StreamChunk) (string, error) {
 	var analysis string
-	for chunk := range ch {
-		if chunk.Err != nil {
-			return analysis, chunk.Err
-		}
-		if chunk.Content != "" {
-			analysis += chunk.Content
-			o.broadcastStreamChunk(agentID, chunk.Content)
-		}
-		if chunk.Done {
-			break
+	for {
+		select {
+		case <-ctx.Done():
+			return analysis, ctx.Err()
+		case chunk, ok := <-ch:
+			if !ok {
+				return analysis, nil
+			}
+			if chunk.Err != nil {
+				return analysis, chunk.Err
+			}
+			if chunk.Content != "" {
+				analysis += chunk.Content
+				o.broadcastStreamChunk(agentID, chunk.Content)
+			}
+			if chunk.Done {
+				return analysis, nil
+			}
 		}
 	}
-	return analysis, nil
 }
 
 // broadcastStreamChunk sends a single streaming chunk to WebSocket subscribers.

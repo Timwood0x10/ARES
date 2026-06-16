@@ -156,6 +156,36 @@ flowchart LR
 - 动态工具注册与发现
 - Agent 与工具的能力匹配
 - Schema 参数校验
+- 工具执行前后生命周期钩子
+
+**MCP 集成**
+- Model Context Protocol 客户端，支持 JSON-RPC 2.0 消息
+- Stdio 和 SSE 传输支持
+- 工具 schema 管理和连接生命周期管理
+
+**可观测性**
+- Web Dashboard：WebSocket 实时监控面板
+- Flight Recorder：时间线追踪、决策记录、诊断引擎
+- Agent 基因谱系：血缘关系追踪，支持 DOT/JSON 导出
+- Event Bridge：系统状态实时流式推送至 Dashboard
+
+**混沌工程**
+- Arena 故障注入测试框架
+- 支持故障类型：process_kill、network_partition、latency_spike、kill_orchestrator
+- 可配置指标的弹性评分
+- Survival 模式持续混沌测试
+
+**LLM Tool Calling**
+- 多 Provider 输出适配器（OpenAI、Ollama、OpenRouter）
+- Prompt 模板引擎，支持 Go template 语法
+- Function Calling 提取与验证
+- 基于 Schema 的参数校验
+- 流式输出解析器
+
+**扩展性**
+- 事件驱动回调系统，支持类型化上下文
+- 事件自动压缩，可配置保留策略
+- 可插拔健康检测（用于 Agent 复活）
 
 ## 性能数据
 
@@ -230,6 +260,18 @@ go run ./examples/advanced/agent_resurrection/
 go run ./examples/advanced/runtime_resurrection/
 go run ./examples/advanced/dynamic_executor/
 go run ./examples/advanced/mutable_dag/
+
+# Dashboard + MCP 集成示例
+cd examples/mcp-dashboard && go run main.go
+
+# 量化分析示例
+cd examples/quant-demo && go run main.go
+
+# 开发 Agent 示例
+cd examples/devagent && go run main.go
+
+# 工具能力演示
+cd examples/capability-demo && go run main.go
 ```
 
 详见 [示例文档](docs/zh/development/examples.md)。
@@ -306,6 +348,8 @@ memory:
 - [动态图](docs/zh/features/dynamic-graph.md)
 - [人机协作](docs/zh/features/hitl.md)
 - [Agent 复活](docs/zh/features/resurrection.md)
+- [MCP 与 Dashboard](docs/zh/features/mcp-and-dashboard.md)
+- [事件溯源](docs/zh/features/event-sourcing.md)
 - [集成测试](docs/zh/development/integration-testing.md)
 - [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)

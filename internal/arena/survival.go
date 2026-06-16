@@ -61,6 +61,16 @@ type survivalState struct {
 // RunSurvival runs chaos actions at intervals for the configured duration.
 // It randomly kills agents, removes edges, etc., and records everything.
 // Only one survival run can be active at a time.
+//
+// Lock hierarchy (outer → inner): survival.mu → s.mu (via Execute).
+// The survival.mu lock protects the survivalState fields (running, cancel,
+// config, started, events) and is held briefly for state mutations and
+// status queries. It must never be called while holding s.mu. Conversely,
+// s.Execute acquires s.mu internally; it is called without holding any
+// arena-level lock to avoid inversion. The shared events slice append at
+// line ~134 is safe because it runs on the single goroutine inside the
+// for-select loop while GetSurvivalStatus/StopSurvival only read under
+// survival.mu.RLock/Lock respectively.
 func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalReport {
 	if cfg.Duration <= 0 {
 		cfg = defaultSurvivalConfig()
@@ -235,7 +245,7 @@ func (s *Service) randomChaosAction() Action {
 			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
 		}
 	case ActionRemoveNode:
-		ids := s.injector.AvailableNodeIDs()
+		ids := s.injector.AvailableAgentIDs()
 		if len(ids) > 0 {
 			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
 		}
