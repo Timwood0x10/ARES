@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-TARGET="${1:-.}"
-CONFIG="${2:-./examples/mcp-dashboard/config.yaml}"
+CONFIG="${1:-./examples/mcp-dashboard/config.yaml}"
 ADDR=$(grep 'addr:' "$CONFIG" | head -1 | sed 's/.*: *//' | tr -d '"' | tr -d "'")
 ADDR="${ADDR:-:8090}"
 PORT="${ADDR#:}"
-LOG=/tmp/mcp-dashboard.log
+DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$DIR/run.log"
 
 echo "Building..."
 go build -o /tmp/mcp-dashboard ./examples/mcp-dashboard/
 
 echo "Starting in background..."
-/tmp/mcp-dashboard -config "$CONFIG" -target "$TARGET" > "$LOG" 2>&1 &
+/tmp/mcp-dashboard -config "$CONFIG" -log "$LOG" > "$LOG" 2>&1 &
 PID=$!
 
 sleep 3

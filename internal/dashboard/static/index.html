@@ -1,55 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoAgentX Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoAgentX — Chaos Arena</title>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div id="app">
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <h1>GoAgentX</h1>
-                <div class="subtitle">Runtime Intelligence</div>
-            </div>
-            <nav>
-                <a href="#" data-view="overview" class="active">
-                    <span class="icon">&#9673;</span>
-                    <span>Overview</span>
-                </a>
-                <a href="#" data-view="agents">
-                    <span class="icon">&#9881;</span>
-                    <span>Agents</span>
-                </a>
-                <a href="#" data-view="mcp">
-                    <span class="icon">&#9889;</span>
-                    <span>MCP Tools</span>
-                </a>
-                <a href="#" data-view="orchestrator">
-                    <span class="icon">&#9654;</span>
-                    <span>Orchestrator</span>
-                </a>
-                <a href="#" data-view="arena">
-                    <span class="icon">&#9760;</span>
-                    <span>Arena</span>
-                </a>
-                <a href="#" data-view="flight">
-                    <span class="icon">&#9992;</span>
-                    <span>Flight</span>
-                </a>
-            </nav>
-        </aside>
-        <main class="content">
-            <div id="view-overview" class="view active"></div>
-            <div id="view-agents" class="view"></div>
-            <div id="view-mcp" class="view"></div>
-            <div id="view-orchestrator" class="view"></div>
-            <div id="view-arena" class="view"></div>
-            <div id="view-flight" class="view"></div>
-        </main>
+<div id="app">
+  <header class="topbar">
+    <div class="logo">
+      <span class="logo-icon">&#9760;</span>
+      <span class="logo-text">CHAOS ARENA</span>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-    <script src="/static/app.js"></script>
+    <div id="score-bar" class="score-bar"></div>
+    <div id="fault-bar" class="fault-bar"></div>
+  </header>
+  <div class="main">
+    <section class="dag-panel">
+      <svg id="dag"></svg>
+      <div id="dag-info" class="dag-info"></div>
+    </section>
+    <section class="side-panel">
+      <div id="agent-grid" class="agent-grid"></div>
+      <div id="event-log" class="event-log"></div>
+    </section>
+  </div>
+</div>
+<script src="/static/app.js"></script>
 </body>
 </html>
