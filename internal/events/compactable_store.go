@@ -82,7 +82,7 @@ func (s *CompactableEventStore) Append(
 // Uses debouncing to avoid redundant checks on every Append.
 func (s *CompactableEventStore) maybeCompact(streamID string) {
 	s.mu.Lock()
-	version, err := s.EventStore.StreamVersion(context.Background(), streamID)
+	version, err := s.StreamVersion(context.Background(), streamID)
 	if err != nil {
 		s.mu.Unlock()
 		slog.Debug("compaction: failed to get version", "stream_id", streamID, "error", err)

@@ -370,7 +370,6 @@ type mockSummaryRepo struct {
 	mu        sync.Mutex
 	summaries map[string]*EventSummary // keyed by ID
 	saveErr   error
-	deleteErr error
 }
 
 func newMockSummaryRepo() *mockSummaryRepo {

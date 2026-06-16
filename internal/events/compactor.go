@@ -311,7 +311,7 @@ func DefaultSummarizer(events []*Event) string {
 		typeCounts map[string]int
 		startTime  time.Time
 		endTime    time.Time
-		outcome    string = "unknown"
+		outcome    string
 		request    string
 		errMsgs    []string
 	)

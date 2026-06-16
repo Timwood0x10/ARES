@@ -111,7 +111,7 @@ func (r *PgSummaryRepository) FindByStreamID(ctx context.Context, streamID strin
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("close event summaries rows failed: %v", err)
+			slog.Error("close event summaries rows failed", "err", err)
 		}
 	}()
 
@@ -150,7 +150,7 @@ func (r *PgSummaryRepository) FindByAgentAndTask(ctx context.Context, agentID, t
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("close event summaries rows failed: %v", err)
+			slog.Error("close event summaries rows failed", "err", err)
 		}
 	}()
 
@@ -187,7 +187,11 @@ func (r *PgSummaryRepository) FindByAgentID(ctx context.Context, agentID string)
 	if err != nil {
 		return nil, apperrors.Wrap(err, "query event summaries by agent")
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("close event summaries rows failed", "err", err)
+		}
+	}()
 
 	var summaries []*EventSummary
 	for rows.Next() {
@@ -364,20 +368,28 @@ func scanSummaryRow(row *postgres.ManagedRow) (*EventSummary, error) {
 		&summary.CreatedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, apperrors.Wrap(err, "scan event summary")
 	}
 
 	if len(eventTypeCountsJSON) > 0 {
-		json.Unmarshal(eventTypeCountsJSON, &summary.EventTypeCounts)
+		if err := json.Unmarshal(eventTypeCountsJSON, &summary.EventTypeCounts); err != nil {
+			return nil, apperrors.Wrap(err, "unmarshal event type counts")
+		}
 	}
 	if len(tasksCreatedJSON) > 0 {
-		json.Unmarshal(tasksCreatedJSON, &summary.TasksCreated)
+		if err := json.Unmarshal(tasksCreatedJSON, &summary.TasksCreated); err != nil {
+			return nil, apperrors.Wrap(err, "unmarshal tasks created")
+		}
 	}
 	if len(toolsCalledJSON) > 0 {
-		json.Unmarshal(toolsCalledJSON, &summary.ToolsCalled)
+		if err := json.Unmarshal(toolsCalledJSON, &summary.ToolsCalled); err != nil {
+			return nil, apperrors.Wrap(err, "unmarshal tools called")
+		}
 	}
 	if len(errorsJSON) > 0 {
-		json.Unmarshal(errorsJSON, &summary.Errors)
+		if err := json.Unmarshal(errorsJSON, &summary.Errors); err != nil {
+			return nil, apperrors.Wrap(err, "unmarshal errors")
+		}
 	}
 	if len(metadataJSON) > 0 {
 		summary.Metadata = metadataJSON
