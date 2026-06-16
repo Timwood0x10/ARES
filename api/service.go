@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"goagentx/internal/dashboard"
-	"goagentx/internal/events"
 	"goagentx/internal/flight"
 	"goagentx/internal/llm/output"
 	"goagentx/internal/mcp"
@@ -27,7 +26,7 @@ type Service struct {
 	cfg        *ServiceConfig
 	orch       *dashboard.Orchestrator
 	hub        *dashboard.WSHub
-	eventStore *events.MemoryEventStore
+	eventStore *EventStore
 	httpServer *http.Server
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -75,7 +74,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	go hub.Run()
 	s.hub = hub
 
-	eventStore := events.NewMemoryEventStore()
+	eventStore := NewEventStore()
 	s.eventStore = eventStore
 	bridge := dashboard.NewEventBridge(eventStore, hub)
 	if startErr := bridge.Start(ctx); startErr != nil {
@@ -90,7 +89,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	orch.SetToolAliases(BuildToolAliases(tools))
 	orch.SetTemplates(BuildTemplates())
 	orch.SetHub(hub)
-	orch.SetEventStore(eventStore)
+	orch.SetEventStore(eventStore.RawStore())
 	s.orch = orch
 
 	// Flight Recorder

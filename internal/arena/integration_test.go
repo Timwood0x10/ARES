@@ -1,6 +1,7 @@
 package arena
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -147,7 +148,7 @@ func TestServiceWithBridge(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	result := svc.Execute(nil, action)
+	result := svc.Execute(context.TODO(), action)
 	assert.True(t, result.Success)
 
 	events := recorder.Timeline().Events()

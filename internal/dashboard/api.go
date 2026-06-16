@@ -385,25 +385,6 @@ func (a *APIv2) handleArenaKillLeader(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (a *APIv2) handleArenaKillAgent(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
-		return
-	}
-	if a.arena == nil {
-		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/arena/agent/")
-	id = strings.TrimSuffix(id, "/kill")
-	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp("agent id required"))
-		return
-	}
-	result := a.arena.Execute(ArenaAction{Type: ArenaActionKillAgent, TargetID: id})
-	writeJSON(w, http.StatusOK, result)
-}
-
 func (a *APIv2) handleArenaRemoveNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
@@ -525,7 +506,7 @@ func (a *APIv2) handleArenaSurvivalStatus(w http.ResponseWriter, r *http.Request
 }
 
 // handleArenaAgentFault is a catch-all for /arena/agent/{id}/{action}
-// 支持: pause, resume, slow, partition, tool-timeout, memory-corrupt, mcp-disconnect, llm-failure
+// Supported actions: pause, resume, slow, partition, tool-timeout, memory-corrupt, mcp-disconnect, llm-failure
 func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
@@ -535,7 +516,7 @@ func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errResp("arena not available"))
 		return
 	}
-	// 路径格式: /arena/agent/{id}/{action}
+	// Path format: /arena/agent/{id}/{action}
 	path := strings.TrimPrefix(r.URL.Path, "/arena/agent/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -557,7 +538,7 @@ func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 	}
 	actionType, ok := actionMap[actionStr]
 	if !ok {
-		// 回退到已有的 kill 处理器
+		// Fall back to the existing kill handler.
 		if actionStr == "kill" {
 			result := a.arena.Execute(ArenaAction{Type: ArenaActionKillAgent, TargetID: id})
 			writeJSON(w, http.StatusOK, result)
@@ -569,11 +550,13 @@ func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 
 	var body map[string]any
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&body)
+		// Body may be absent or empty; decode failure means no metadata,
+		// which is safe to ignore for optional fault-injection parameters.
+		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
 
 	action := ArenaAction{Type: actionType, TargetID: id}
-	// 提取元数据（如 slow_agent 的 duration）
+	// Extract metadata (e.g., duration for slow_agent action).
 	if d, ok := body["duration"].(string); ok {
 		action.Metadata = map[string]any{"duration": d}
 	}
@@ -627,7 +610,7 @@ func (a *APIv2) handleArenaMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := a.arena.Stats()
 	history := a.arena.History()
-	// 从 stats + history 计算指标。
+	// Calculate metrics from stats + history.
 	totalActions := 0
 	successfulActions := 0
 	if v, ok := stats["total_actions"].(int); ok {
@@ -679,24 +662,24 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 发送初始连接事件。
-	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339))
+	// Send initial connection event.
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339))
 	flusher.Flush()
 
-	// 发送 arena 历史事件后关闭。
+	// Send arena history events then close.
 	if a.arena != nil {
 		history := a.arena.History()
 		for i, h := range history {
-			if i >= 20 { // 限制数量
+			if i >= 20 { // Limit count to prevent overwhelming the client.
 				break
 			}
 			data, _ := json.Marshal(h)
-			fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data)
 			flusher.Flush()
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+	_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 	flusher.Flush()
 }
 

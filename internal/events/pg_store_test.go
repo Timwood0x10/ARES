@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,8 +61,8 @@ func getTestPool(t *testing.T) *postgres.Pool {
 func createEventsTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	ddl := `
-		CREATE TABLE IF NOT EXISTS events (
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS events (
 			id VARCHAR(255) NOT NULL,
 			stream_id VARCHAR(255) NOT NULL,
 			type VARCHAR(100) NOT NULL,
@@ -70,14 +71,19 @@ func createEventsTable(t *testing.T, db *sql.DB) {
 			version BIGINT NOT NULL,
 			created_at TIMESTAMP DEFAULT NOW(),
 			PRIMARY KEY (id)
-		);
-		CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events(stream_id, version);
-		CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
-		CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
-		ALTER TABLE events ADD CONSTRAINT IF NOT EXISTS uq_stream_version UNIQUE (stream_id, version);
-	`
-	if _, err := db.Exec(ddl); err != nil {
-		t.Fatalf("failed to create events table: %v", err)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events(stream_id, version)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
+		`ALTER TABLE events ADD CONSTRAINT uq_stream_version UNIQUE (stream_id, version)`, // ignore if exists
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			// Ignore "already exists" errors for idempotent DDL.
+			if !strings.Contains(err.Error(), "already exists") {
+				t.Fatalf("failed to create events table: %v", err)
+			}
+		}
 	}
 }
 

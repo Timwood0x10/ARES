@@ -183,10 +183,39 @@ var coreMigrationStatements = []string{
 			PRIMARY KEY (id)
 		)`,
 
-	`CREATE INDEX IF NOT EXISTS idx_events_stream_version ON events(stream_id, version)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_stream_version ON events(stream_id, version)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
-	`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
-	`ALTER TABLE events ADD CONSTRAINT IF NOT EXISTS uq_stream_version UNIQUE (stream_id, version)`,
+
+	// event_summaries - Compacted event summaries stored in relational DB (not vector DB).
+	// Each summary represents a window of events that have been compacted/summarized
+	// for long-running agent tasks. Bound to agent, task, and user request context.
+	`CREATE TABLE IF NOT EXISTS event_summaries (
+			id VARCHAR(255) PRIMARY KEY,
+			stream_id VARCHAR(255) NOT NULL,
+			agent_id VARCHAR(255) NOT NULL,
+			task_id VARCHAR(255),
+			session_id VARCHAR(255),
+			user_id VARCHAR(255),
+			summary_text TEXT NOT NULL,
+			event_count INTEGER NOT NULL DEFAULT 0,
+			start_version BIGINT NOT NULL,
+			end_version BIGINT NOT NULL,
+			start_time TIMESTAMP NOT NULL,
+			end_time TIMESTAMP NOT NULL,
+			event_type_counts JSONB DEFAULT '{}'::jsonb,
+			tasks_created JSONB DEFAULT '[]'::jsonb,
+			tools_called JSONB DEFAULT '[]'::jsonb,
+			errors JSONB DEFAULT '[]'::jsonb,
+			request_summary TEXT,
+			outcome VARCHAR(50) NOT NULL DEFAULT 'active',
+			metadata JSONB DEFAULT '{}'::jsonb,
+			created_at TIMESTAMP DEFAULT NOW()
+		)`,
+
+	`CREATE INDEX IF NOT EXISTS idx_event_summaries_stream ON event_summaries(stream_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_summaries_agent ON event_summaries(agent_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_summaries_agent_task ON event_summaries(agent_id, task_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_event_summaries_created ON event_summaries(created_at)`,
 }
 
 // Migrate runs database migrations.

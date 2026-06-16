@@ -634,8 +634,8 @@ func TestLoadExampleFiles(t *testing.T) {
 		wantName    string
 		wantActions int
 	}{
-		{"basic_kill.yaml", "basic-leader-kill", 2},
-		{"network_storm.yaml", "network-storm", 3},
+		{"leader_assassination.yaml", "leader-assassination-and-recovery", 4},
+		{"cascading_storm.yaml", "cascading-failure-storm", 7},
 	}
 
 	for _, tc := range examples {

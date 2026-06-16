@@ -68,7 +68,7 @@ func (b *MCPStatusBridge) ListServers() []dashboard.MCPServerStatusView {
 // ArenaAdapter implements dashboard.ArenaProvider.
 type ArenaAdapter struct {
 	Orch  *dashboard.Orchestrator
-	Store *events.MemoryEventStore
+	Store events.EventStore
 	mu    sync.Mutex
 	// stats counters — updated on each Execute call.
 	totalActions      int
@@ -102,7 +102,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			slog.Info("arena: paused agent", "id", action.TargetID, "success", success)
 		}
 	case dashboard.ArenaActionResumeAgent:
-		// Resume 在 cancel 模型下是空操作；自动复活机制处理。
+		// Resume is a no-op under cancel model; auto-resurrection handles it.
 		success = true
 		slog.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
 	case dashboard.ArenaActionSlowAgent:
@@ -111,7 +111,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			slog.Info("arena: slowed agent (kill→resurrect cycle)", "id", action.TargetID, "success", success)
 		}
 	case dashboard.ArenaActionKillOrchestrator:
-		// 杀死第一个运行中的 agent（模拟编排器故障）。
+		// Kill the first running agent (simulates orchestrator failure).
 		for _, ag := range a.Orch.ListAgents() {
 			if ag.Status != "completed" && ag.Status != "failed" {
 				success = a.Orch.CancelAgent(ag.ID)
@@ -151,7 +151,9 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			Type: "arena.action", Payload: map[string]any{"action": string(action.Type)},
 			Timestamp: time.Now(),
 		}
-		_ = a.Store.Append(context.Background(), "arena", []*events.Event{evt}, 0)
+		if err := a.Store.Append(context.Background(), "arena", []*events.Event{evt}, 0); err != nil {
+			slog.Warn("arena: failed to record action event", "error", err)
+		}
 	}
 	result := dashboard.ArenaResult{Success: success, Action: action, Duration: time.Since(start)}
 
@@ -191,13 +193,13 @@ func (a *ArenaAdapter) History() []dashboard.ArenaResult {
 	return cp
 }
 
-// roundTo 将浮点数四舍五入到指定精度。
+// roundTo rounds a float64 to the specified precision.
 func roundTo(v float64, prec int) float64 {
 	p := math.Pow(10, float64(prec))
 	return math.Round(v*p) / p
 }
 
-// ResilienceScore 返回基于已执行动作的基本弹性评分。
+// ResilienceScore returns a basic resilience score based on executed actions.
 func (a *ArenaAdapter) ResilienceScore() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -239,21 +241,21 @@ func (a *ArenaAdapter) ResilienceScore() map[string]any {
 	}
 }
 
-// ── SurvivalStarter / SurvivalProvider 实现 ──
+// --- SurvivalStarter / SurvivalProvider implementation ---
 
-// StartSurvival 启动生存模式（演示模式）。
+// StartSurvival starts survival mode (demo mode).
 func (a *ArenaAdapter) StartSurvival(ctx context.Context) error {
 	slog.Info("arena: survival mode started (demo mode)")
 	return nil
 }
 
-// StopSurvival 停止生存模式。
+// StopSurvival stops survival mode.
 func (a *ArenaAdapter) StopSurvival() error {
 	slog.Info("arena: survival mode stopped")
 	return nil
 }
 
-// GetResilienceScore 返回当前弹性评分。
+// GetResilienceScore returns the current resilience score.
 func (a *ArenaAdapter) GetResilienceScore() map[string]any {
 	return a.ResilienceScore()
 }

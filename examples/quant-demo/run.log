@@ -1,0 +1,78 @@
+[10:57:22] 
+📊 Loaded 10 stocks from ./examples/quant-demo/data/universe.csv
+[10:57:22] 🚀 Quant Demo LIVE @ http://localhost8091 | Log: ./examples/quant-demo/run.log
+[10:57:22]    Open Arena tab → click ☠Leader → watch agents resurrect
+
+[10:57:22] ═══ Initializing Quant Agents ═══
+[10:57:22]   ✓ Created Momentum Researcher    id=agent-1
+[10:57:22]   ✓ Created Value Researcher       id=agent-2
+[10:57:22]   ✓ Created Portfolio Manager      id=agent-3
+[10:57:22]   ✓ Created Risk Monitor           id=agent-4
+[10:57:22] 
+[10:57:22] ═══ Phase 1: Momentum Factor ═══
+[10:57:22]   Ticker     Mom6M%   Rank  Z-Score
+[10:57:22]   ──────────────────────────────────
+[10:57:22]   AAPL         14.3      2    +1.25
+[10:57:22]   MSFT         11.4      3    +0.61
+[10:57:22]   GOOG          9.0      5    +0.11
+[10:57:22]   AMZN         17.6      1    +1.94
+[10:57:22]   TSLA          1.7     10    -1.46
+[10:57:22]   JPM           9.3      4    +0.16
+[10:57:22]   V             7.7      6    -0.18
+[10:57:22]   JNJ           3.5      9    -1.07
+[10:57:22]   PG            5.8      7    -0.57
+[10:57:22]   XOM           4.8      8    -0.79
+[10:57:22] 
+═══ Phase 2: Value Factor ═══
+[10:57:22]   Ticker      Value   Rank  Z-Score
+[10:57:22]   ──────────────────────────────────
+[10:57:22]   AAPL        -42.7      9    -1.62
+[10:57:22]   MSFT        -31.8      8    -0.76
+[10:57:22]   GOOG        -14.8      4    +0.59
+[10:57:22]   AMZN        -23.8      7    -0.12
+[10:57:22]   TSLA        -43.5     10    -1.69
+[10:57:22]   JPM          -7.5      1    +1.17
+[10:57:22]   V           -22.5      6    -0.02
+[10:57:22]   JNJ         -11.2      3    +0.88
+[10:57:22]   PG          -16.3      5    +0.47
+[10:57:22]   XOM          -8.4      2    +1.09
+[10:57:22] 
+═══ Phase 3: Portfolio Allocation ═══
+[10:57:22]   Ticker     Weight Composite
+[10:57:22]   ────────────────────────────
+[10:57:22]   JPM         33.8%     0.67
+[10:57:22]   AMZN        33.8%     0.91
+[10:57:22]   GOOG        22.7%     0.35
+[10:57:22]   XOM          9.8%     0.15
+[10:57:22]   Total positions: 4
+[10:57:22] 
+═══ Phase 4: Risk Monitoring ═══
+[10:57:22]   Risk Score:      75.0/100
+[10:57:22]   Max Weight:      33.8%
+[10:57:22]   Concentration:   0.289
+[10:57:22]   ✅ Portfolio is well-diversified
+[10:57:22] 
+[10:57:22] ╔════════════════════════════════════════════════════╗
+[10:57:22] ║    QUANTITATIVE MULTI-AGENT SYSTEM REPORT         ║
+[10:57:22] ╚════════════════════════════════════════════════════╝
+[10:57:22] 
+[10:57:22]   Duration:         0s
+[10:57:22]   Universe:         10 stocks
+[10:57:22]   Portfolio:        4 positions
+[10:57:22]   Top Holding:      JPM (33.8%)
+[10:57:22]   Risk Score:       75.0/100
+[10:57:22] 
+[10:57:22]   ── Self-Healing ──
+[10:57:22]   Agents:           4
+[10:57:22]   Total Kills:      0
+[10:57:22]   Resurrected:      0/4
+[10:57:22] 
+[10:57:22]   Top Momentum:     AAPL (1.25 σ)
+[10:57:22]   Top Value:        AAPL (-1.62 σ)
+[10:57:22] 
+[10:57:22]   ⚠ No agents were killed (timing issue)
+[10:57:22] 
+[10:57:26] 
+☠ [CHAOS WAVE] Killing Momentum Researcher (agent-1) resurrected=0
+[10:57:30] 
+📈 Quant Demo complete. Logs: ./examples/quant-demo/run.log

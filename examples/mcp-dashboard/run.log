@@ -1,140 +1,581 @@
-2026/06/15 22:28:24 INFO llm connected provider=ollama model=llama3.2
-2026/06/15 22:28:24 INFO mcp tools discovered count=10
-2026/06/15 22:28:24 INFO flight recorder started
+2026/06/16 08:51:32 INFO llm connected provider=ollama model=llama3.2
+2026/06/16 08:51:32 INFO mcp tools discovered count=10
+2026/06/16 08:51:32 INFO flight recorder started
 GoAgentX Chaos Demo LIVE @ http://localhost8090 | Log: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
-2026/06/15 22:28:24 INFO dashboard started url=http://localhost:8090
 -> Open Arena tab, click 'Kill Agent', watch die->resurrect->cnt++
+2026/06/16 08:51:32 INFO dashboard started url=http://localhost:8090
 
 [CHAOS] Starting RunReview() — 5 review agents launching...
-2026/06/15 22:28:24 INFO agent launched id=agent-1 name="Architecture Review"
-2026/06/15 22:28:24 INFO agent launched id=agent-2 name="Error Handling Review"
-2026/06/15 22:28:24 INFO agent launched id=agent-3 name="Concurrency Review"
-2026/06/15 22:28:24 INFO agent launched id=agent-4 name="API Surface Review"
-2026/06/15 22:28:24 INFO agent launched id=agent-5 name="Change Impact Analysis"
-2026/06/15 22:28:24 INFO orchestrator: agent started id=agent-1 name="Architecture Review" tool=""
-2026/06/15 22:28:24 INFO orchestrator: agent started id=agent-4 name="API Surface Review" tool=""
-2026/06/15 22:28:24 INFO orchestrator: agent started id=agent-5 name="Change Impact Analysis" tool=""
-2026/06/15 22:28:24 INFO orchestrator: agent started id=agent-2 name="Error Handling Review" tool=""
-2026/06/15 22:28:24 INFO orchestrator: agent started id=agent-3 name="Concurrency Review" tool=""
-2026/06/15 22:28:24 INFO orchestrator: MCP data gathered id=agent-2 bytes=2392
-2026/06/15 22:28:24 INFO orchestrator: MCP data gathered id=agent-4 bytes=1389
-2026/06/15 22:28:24 INFO orchestrator: MCP data gathered id=agent-3 bytes=5755
-2026/06/15 22:28:24 INFO orchestrator: MCP data gathered id=agent-1 bytes=23410
-2026/06/15 22:28:24 INFO orchestrator: MCP data gathered id=agent-5 bytes=10571
-[CHAOS] Wave 1 — scanning 5 agents...
-  [KILL] wave=1 agent=agent-1 (Architecture Review) status="analyzing with LLM..." resurrect=0
-2026/06/15 22:28:26 ERROR orchestrator: agent failed id=agent-1 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:28:26 INFO orchestrator: agent killed, resurrecting id=agent-1 name="Architecture Review" resurrection=1
-2026/06/15 22:28:26 INFO orchestrator: agent started id=agent-6 name="Architecture Review" tool=""
-2026/06/15 22:28:26 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
-2026/06/15 22:28:26 INFO orchestrator: resuming with previous MCP data id=agent-6 data_len=23410
-2026/06/15 22:28:26 INFO orchestrator: MCP data gathered id=agent-6 bytes=23410
-  [KILL] wave=1 agent=agent-2 (Error Handling Review) status="analyzing with LLM..." resurrect=0
-2026/06/15 22:28:31 ERROR orchestrator: agent failed id=agent-2 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:28:31 INFO orchestrator: agent killed, resurrecting id=agent-2 name="Error Handling Review" resurrection=1
-2026/06/15 22:28:31 INFO orchestrator: agent started id=agent-7 name="Error Handling Review" tool=""
-2026/06/15 22:28:31 INFO orchestrator: resuming agent from step id=agent-7 resume_from=agent-2 start_step=4 total_steps=3
-2026/06/15 22:28:31 INFO orchestrator: resuming with previous MCP data id=agent-7 data_len=2392
-2026/06/15 22:28:31 INFO orchestrator: MCP data gathered id=agent-7 bytes=2392
-  [KILL] wave=1 agent=agent-3 (Concurrency Review) status="analyzing with LLM..." resurrect=0
-2026/06/15 22:28:36 ERROR orchestrator: agent failed id=agent-3 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:28:36 INFO orchestrator: agent killed, resurrecting id=agent-3 name="Concurrency Review" resurrection=1
-2026/06/15 22:28:36 INFO orchestrator: agent started id=agent-8 name="Concurrency Review" tool=""
-2026/06/15 22:28:36 INFO orchestrator: resuming agent from step id=agent-8 resume_from=agent-3 start_step=4 total_steps=3
-2026/06/15 22:28:36 INFO orchestrator: resuming with previous MCP data id=agent-8 data_len=5755
-2026/06/15 22:28:36 INFO orchestrator: MCP data gathered id=agent-8 bytes=5755
-2026/06/15 22:28:37 INFO orchestrator: agent completed id=agent-4 duration=12s
-  [KILL] wave=1 agent=agent-4 (API Surface Review) status="analyzing with LLM..." resurrect=0
-2026/06/15 22:28:43 INFO orchestrator: agent completed id=agent-5 duration=19s
-  [KILL] wave=1 agent=agent-5 (Change Impact Analysis) status="analyzing with LLM..." resurrect=0
-[CHAOS] Wave 2 — scanning 8 agents...
-  [KILL] wave=2 agent=agent-6 (Architecture Review) status="analyzing with LLM..." resurrect=1
-2026/06/15 22:28:51 ERROR orchestrator: agent failed id=agent-6 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:28:51 INFO orchestrator: agent killed, resurrecting id=agent-6 name="Architecture Review" resurrection=2
-2026/06/15 22:28:51 INFO orchestrator: agent started id=agent-9 name="Architecture Review" tool=""
-2026/06/15 22:28:51 INFO orchestrator: MCP data gathered id=agent-9 bytes=23410
-2026/06/15 22:28:56 INFO orchestrator: agent completed id=agent-7 duration=25s
-  [KILL] wave=2 agent=agent-7 (Error Handling Review) status="analyzing with LLM..." resurrect=1
-  [KILL] wave=2 agent=agent-8 (Concurrency Review) status="analyzing with LLM..." resurrect=1
-2026/06/15 22:29:01 ERROR orchestrator: agent failed id=agent-8 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:29:01 INFO orchestrator: agent killed, resurrecting id=agent-8 name="Concurrency Review" resurrection=2
-2026/06/15 22:29:01 INFO orchestrator: agent started id=agent-10 name="Concurrency Review" tool=""
-2026/06/15 22:29:01 INFO orchestrator: MCP data gathered id=agent-10 bytes=5755
-[CHAOS] Wave 3 — scanning 10 agents...
-  [KILL] wave=3 agent=agent-9 (Architecture Review) status="analyzing with LLM..." resurrect=2
-2026/06/15 22:29:06 ERROR orchestrator: agent failed id=agent-9 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:29:06 INFO orchestrator: agent killed, resurrecting id=agent-9 name="Architecture Review" resurrection=3
-2026/06/15 22:29:06 INFO orchestrator: agent started id=agent-11 name="Architecture Review" tool=""
-2026/06/15 22:29:06 INFO orchestrator: resuming agent from step id=agent-11 resume_from=agent-9 start_step=4 total_steps=3
-2026/06/15 22:29:06 INFO orchestrator: resuming with previous MCP data id=agent-11 data_len=23410
-2026/06/15 22:29:06 INFO orchestrator: MCP data gathered id=agent-11 bytes=23410
-  [KILL] wave=3 agent=agent-10 (Concurrency Review) status="analyzing with LLM..." resurrect=2
-2026/06/15 22:29:11 ERROR orchestrator: agent failed id=agent-10 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:29:11 INFO orchestrator: agent killed, resurrecting id=agent-10 name="Concurrency Review" resurrection=3
-2026/06/15 22:29:11 INFO orchestrator: agent started id=agent-12 name="Concurrency Review" tool=""
-2026/06/15 22:29:11 INFO orchestrator: resuming agent from step id=agent-12 resume_from=agent-10 start_step=4 total_steps=3
-2026/06/15 22:29:11 INFO orchestrator: resuming with previous MCP data id=agent-12 data_len=5755
-2026/06/15 22:29:11 INFO orchestrator: MCP data gathered id=agent-12 bytes=5755
-[CHAOS] Wave 4 — scanning 12 agents...
-  [KILL] wave=4 agent=agent-11 (Architecture Review) status="analyzing with LLM..." resurrect=3
-2026/06/15 22:29:16 ERROR orchestrator: agent failed id=agent-11 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
-2026/06/15 22:29:16 WARN orchestrator: agent exceeded max resurrections id=agent-11 name="Architecture Review" count=3
-2026/06/15 22:29:19 ERROR orchestrator: agent failed id=agent-12 error="API request failed with status 500: {\"error\":\"an error was encountered while running the model: unexpected EOF\"}"
-  [KILL] wave=4 agent=agent-12 (Concurrency Review) status="analyzing with LLM..." resurrect=3
-[CHAOS] Wave 5 — scanning 12 agents...
-[CHAOS] Wave 6 — scanning 12 agents...
-[CHAOS] Wave 7 — scanning 12 agents...
-[CHAOS] Wave 8 — scanning 12 agents...
-[CHAOS] Wave 9 — scanning 12 agents...
-[CHAOS] Wave 10 — scanning 12 agents...
-[CHAOS] Wave 11 — scanning 12 agents...
-[CHAOS] Wave 12 — scanning 12 agents...
-[CHAOS] Wave 13 — scanning 12 agents...
-[CHAOS] Wave 14 — scanning 12 agents...
-[CHAOS] Wave 15 — scanning 12 agents...
-[CHAOS] Wave 16 — scanning 12 agents...
-[CHAOS] Wave 17 — scanning 12 agents...
-[CHAOS] Wave 18 — scanning 12 agents...
-[CHAOS] Wave 19 — scanning 12 agents...
-[CHAOS] Wave 20 — scanning 12 agents...
-[CHAOS] Wave 21 — scanning 12 agents...
-[CHAOS] Wave 22 — scanning 12 agents...
-[CHAOS] Wave 23 — scanning 12 agents...
-[CHAOS] Wave 24 — scanning 12 agents...
-[CHAOS] Wave 25 — scanning 12 agents...
-nning 12 agents...
-[22:29:56] [CHAOS] Wave 20 — scanning 12 agents...
-[22:29:58] [CHAOS] Wave 21 — scanning 12 agents...
-[22:30:00] [CHAOS] Wave 22 — scanning 12 [CHAOS] Wave 30 — scanning 12 agents...
-[CHAOS] Wave 31 — scanning 12 agents...
-[CHAOS] Wave 32 — scanning 12 agents...
-[CHAOS] Wave 33 — scanning 12 agents...
-[CHAOS] Wave 34 — scanning 12 agents...
-[CHAOS] Wave 35 — scanning 12 agents...
-[CHAOS] Wave 36 — scanning 12 agents...
-[CHAOS] Wave 37 — scanning 12 agents...
-[CHAOS] Wave 38 — scanning 12 agents...
-[CHAOS] Wave 39 — scanning 12 agents...
-[CHAOS] Wave 40 — scanning 12 agents...
-[CHAOS] Wave 41 — scanning 12 agents...
-[CHAOS] Wave 42 — scanning 12 agents...
-[CHAOS] Wave 43 — scanning 12 agents...
-[CHAOS] Wave 44 — scanning 12 agents...
-[CHAOS] Wave 45 — scanning 12 agents...
-[CHAOS] Wave 46 — scanning 12 agents...
-[CHAOS] Wave 47 — scanning 12 agents...
-[CHAOS] Wave 48 — scanning 12 agents...
-[CHAOS] Wave 49 — scanning 12 agents...
+2026/06/16 08:51:32 INFO agent launched id=agent-1 name="Architecture Review"
+2026/06/16 08:51:32 INFO agent launched id=agent-2 name="Error Handling Review"
+2026/06/16 08:51:32 INFO agent launched id=agent-3 name="Concurrency Review"
+2026/06/16 08:51:32 INFO agent launched id=agent-4 name="API Surface Review"
+2026/06/16 08:51:32 INFO agent launched id=agent-5 name="Change Impact Analysis"
+2026/06/16 08:51:32 INFO orchestrator: agent started id=agent-1 name="Architecture Review" tool=""
+2026/06/16 08:51:32 INFO orchestrator: agent started id=agent-3 name="Concurrency Review" tool=""
+2026/06/16 08:51:32 INFO orchestrator: agent started id=agent-5 name="Change Impact Analysis" tool=""
+2026/06/16 08:51:32 INFO orchestrator: agent started id=agent-4 name="API Surface Review" tool=""
+2026/06/16 08:51:32 INFO orchestrator: agent started id=agent-2 name="Error Handling Review" tool=""
+2026/06/16 08:51:33 INFO orchestrator: MCP data gathered id=agent-4 bytes=1389
+2026/06/16 08:51:33 INFO orchestrator: MCP data gathered id=agent-5 bytes=10571
+2026/06/16 08:51:33 INFO orchestrator: MCP data gathered id=agent-1 bytes=23410
+2026/06/16 08:51:33 INFO orchestrator: MCP data gathered id=agent-2 bytes=2392
+2026/06/16 08:51:33 INFO orchestrator: MCP data gathered id=agent-3 bytes=5755
 
-[REPORT] Agents:12 TotalKills:13 Survived:7/12
-VERDICT: CHAOS SURVIVED — Kill->Resurrect works, context preserved!
-  Proved: MCP discovery OK | Kill resilience OK | Context preserved OK
+━━━ [CHAOS WAVE 1] 2s ━━━  agents: 5 alive, 5 total
+  ☠ KILL agent-1 (Architecture Review)  wave=1  status="analyzing with LLM..."  resurrected=0
+2026/06/16 08:51:34 ERROR orchestrator: agent failed id=agent-1 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:51:34 INFO orchestrator: agent killed, resurrecting id=agent-1 name="Architecture Review" resurrection=1
+2026/06/16 08:51:34 INFO orchestrator: agent started id=agent-6 name="Architecture Review" tool=""
+2026/06/16 08:51:34 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
+2026/06/16 08:51:34 INFO orchestrator: resuming with previous MCP data id=agent-6 data_len=23410
+2026/06/16 08:51:34 INFO orchestrator: MCP data gathered id=agent-6 bytes=23410
+2026/06/16 08:51:37 INFO orchestrator: agent completed id=agent-4 duration=5s
+  ☠ KILL agent-2 (Error Handling Review)  wave=1  status="analyzing with LLM..."  resurrected=0
+2026/06/16 08:51:39 ERROR orchestrator: agent failed id=agent-2 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:51:39 INFO orchestrator: agent killed, resurrecting id=agent-2 name="Error Handling Review" resurrection=1
+2026/06/16 08:51:39 INFO orchestrator: agent started id=agent-7 name="Error Handling Review" tool=""
+2026/06/16 08:51:39 INFO orchestrator: resuming agent from step id=agent-7 resume_from=agent-2 start_step=4 total_steps=3
+2026/06/16 08:51:39 INFO orchestrator: resuming with previous MCP data id=agent-7 data_len=2392
+2026/06/16 08:51:39 INFO orchestrator: MCP data gathered id=agent-7 bytes=2392
+2026/06/16 08:51:44 INFO orchestrator: agent completed id=agent-5 duration=12s
+  ☠ KILL agent-3 (Concurrency Review)  wave=1  status="analyzing with LLM..."  resurrected=0
+2026/06/16 08:51:44 ERROR orchestrator: agent failed id=agent-3 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:51:44 INFO orchestrator: agent killed, resurrecting id=agent-3 name="Concurrency Review" resurrection=1
+2026/06/16 08:51:44 INFO orchestrator: agent started id=agent-8 name="Concurrency Review" tool=""
+2026/06/16 08:51:44 INFO orchestrator: resuming agent from step id=agent-8 resume_from=agent-3 start_step=4 total_steps=3
+2026/06/16 08:51:44 INFO orchestrator: resuming with previous MCP data id=agent-8 data_len=5755
+2026/06/16 08:51:44 INFO orchestrator: MCP data gathered id=agent-8 bytes=5755
+  ☠ KILL agent-4 (API Surface Review)  wave=1  status="analyzing with LLM..."  resurrected=0
+  ☠ KILL agent-5 (Change Impact Analysis)  wave=1  status="analyzing with LLM..."  resurrected=0
+2026/06/16 08:51:57 INFO orchestrator: agent completed id=agent-6 duration=22s
+
+━━━ [CHAOS WAVE 2] 27s ━━━  agents: 2 alive, 8 total
+  ☠ KILL agent-7 (Error Handling Review)  wave=2  status="analyzing with LLM..."  resurrected=1
+2026/06/16 08:52:00 ERROR orchestrator: agent failed id=agent-7 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:52:00 INFO orchestrator: agent killed, resurrecting id=agent-7 name="Error Handling Review" resurrection=2
+2026/06/16 08:52:00 INFO orchestrator: agent started id=agent-9 name="Error Handling Review" tool=""
+2026/06/16 08:52:00 INFO orchestrator: MCP data gathered id=agent-9 bytes=2392
+2026/06/16 08:52:04 INFO orchestrator: agent completed id=agent-8 duration=20s
+  ☠ KILL agent-8 (Concurrency Review)  wave=2  status="analyzing with LLM..."  resurrected=1
+
+━━━ [CHAOS WAVE 3] 37s ━━━  agents: 1 alive, 9 total
+  ☠ KILL agent-9 (Error Handling Review)  wave=3  status="analyzing with LLM..."  resurrected=2
+2026/06/16 08:52:10 ERROR orchestrator: agent failed id=agent-9 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:52:10 INFO orchestrator: agent killed, resurrecting id=agent-9 name="Error Handling Review" resurrection=3
+2026/06/16 08:52:10 INFO orchestrator: agent started id=agent-10 name="Error Handling Review" tool=""
+2026/06/16 08:52:10 INFO orchestrator: resuming agent from step id=agent-10 resume_from=agent-9 start_step=4 total_steps=3
+2026/06/16 08:52:10 INFO orchestrator: resuming with previous MCP data id=agent-10 data_len=2392
+2026/06/16 08:52:10 INFO orchestrator: MCP data gathered id=agent-10 bytes=2392
+
+━━━ [CHAOS WAVE 4] 42s ━━━  agents: 1 alive, 10 total
+  ☠ KILL agent-10 (Error Handling Review)  wave=4  status="analyzing with LLM..."  resurrected=3
+2026/06/16 08:52:15 ERROR orchestrator: agent failed id=agent-10 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/16 08:52:15 WARN orchestrator: agent exceeded max resurrections id=agent-10 name="Error Handling Review" count=3
+
+━━━ [CHAOS WAVE 5] 47s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 6] 48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 7] 50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 8] 52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 9] 54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 10] 56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 11] 58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 12] 1m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 13] 1m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 14] 1m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 15] 1m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 16] 1m8s ━━━  agents: 0 alive, 10 total
+2026/06/16 08:52:41 INFO arena: tool timeout on agent id=agent-2 success=false
+
+━━━ [CHAOS WAVE 17] 1m10s ━━━  agents: 0 alive, 10 total
+2026/06/16 08:52:43 INFO arena: memory corrupt on agent id=agent-2 success=false
+2026/06/16 08:52:44 INFO arena: mcp disconnect on agent id=agent-2 success=false
+
+━━━ [CHAOS WAVE 18] 1m12s ━━━  agents: 0 alive, 10 total
+2026/06/16 08:52:45 INFO arena: llm failure on agent id=agent-2 success=false
+
+━━━ [CHAOS WAVE 19] 1m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 20] 1m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 21] 1m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 22] 1m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 23] 1m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 24] 1m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 25] 1m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 26] 1m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 27] 1m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 28] 1m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 29] 1m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 30] 1m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 31] 1m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 32] 1m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 33] 1m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 34] 1m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 35] 1m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 36] 1m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 37] 1m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 38] 1m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 39] 1m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 40] 1m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 41] 1m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 42] 2m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 43] 2m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 44] 2m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 45] 2m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 46] 2m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 47] 2m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 48] 2m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 49] 2m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 50] 2m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 51] 2m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 52] 2m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 53] 2m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 54] 2m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 55] 2m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 56] 2m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 57] 2m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 58] 2m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 59] 2m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 60] 2m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 61] 2m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 62] 2m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 63] 2m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 64] 2m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 65] 2m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 66] 2m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 67] 2m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 68] 2m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 69] 2m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 70] 2m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 71] 2m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 72] 3m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 73] 3m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 74] 3m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 75] 3m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 76] 3m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 77] 3m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 78] 3m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 79] 3m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 80] 3m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 81] 3m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 82] 3m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 83] 3m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 84] 3m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 85] 3m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 86] 3m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 87] 3m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 88] 3m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 89] 3m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 90] 3m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 91] 3m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 92] 3m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 93] 3m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 94] 3m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 95] 3m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 96] 3m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 97] 3m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 98] 3m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 99] 3m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 100] 3m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 101] 3m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 102] 4m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 103] 4m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 104] 4m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 105] 4m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 106] 4m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 107] 4m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 108] 4m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 109] 4m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 110] 4m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 111] 4m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 112] 4m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 113] 4m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 114] 4m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 115] 4m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 116] 4m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 117] 4m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 118] 4m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 119] 4m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 120] 4m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 121] 4m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 122] 4m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 123] 4m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 124] 4m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 125] 4m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 126] 4m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 127] 4m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 128] 4m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 129] 4m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 130] 4m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 131] 4m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 132] 5m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 133] 5m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 134] 5m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 135] 5m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 136] 5m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 137] 5m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 138] 5m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 139] 5m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 140] 5m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 141] 5m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 142] 5m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 143] 5m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 144] 5m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 145] 5m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 146] 5m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 147] 5m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 148] 5m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 149] 5m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 150] 5m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 151] 5m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 152] 5m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 153] 5m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 154] 5m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 155] 5m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 156] 5m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 157] 5m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 158] 5m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 159] 5m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 160] 5m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 161] 5m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 162] 6m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 163] 6m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 164] 6m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 165] 6m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 166] 6m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 167] 6m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 168] 6m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 169] 6m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 170] 6m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 171] 6m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 172] 6m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 173] 6m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 174] 6m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 175] 6m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 176] 6m28s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 177] 6m30s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 178] 6m32s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 179] 6m34s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 180] 6m36s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 181] 6m38s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 182] 6m40s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 183] 6m42s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 184] 6m44s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 185] 6m46s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 186] 6m48s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 187] 6m50s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 188] 6m52s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 189] 6m54s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 190] 6m56s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 191] 6m58s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 192] 7m0s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 193] 7m2s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 194] 7m4s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 195] 7m6s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 196] 7m8s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 197] 7m10s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 198] 7m12s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 199] 7m14s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 200] 7m16s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 201] 7m18s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 202] 7m20s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 203] 7m22s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 204] 7m24s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 205] 7m26s ━━━  agents: 0 alive, 10 total
+
+━━━ [CHAOS WAVE 206] 7m28s ━━━  agents: 0 alive, 10 total
+
+╔═══ REPORT ═══════════════════════════════════════╗
+║  Duration:          7m28s                          ║
+║  Agents:            5 survived / 10 total          ║
+║  Total Kills:       8                              ║
+║  Total Data:        79858 bytes                    ║
+╚═══════════════════════════════════════════════════╝
+
+  ✅ VERDICT: CHAOS SURVIVED — Kill→Resurrect works!
+     Proved: MCP discovery OK | Kill resilience OK | Context preserved OK
+
 Shutdown complete. Logs: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
-2 agents...
-[22:30:52] [CHAOS] Wave 48 — scanning 12 agents...
-[22:30:54] [CHAOS] Wave 49 — scanning 12 agents...
-[22:30:55] 
-[REPORT] Agents:12 TotalKills:13 Survived:7/12
-[22:30:55] VERDICT: CHAOS SURVIVED — Kill->Resurrect works, context preserved!
-[22:30:55]   Proved: MCP discovery OK | Kill resilience OK | Context preserved OK
-[22:30:55] Shutdown complete. Logs: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
+tal
+[08:57:48] 
+[08:57:48] ━━━ [CHAOS WAVE 170] 6m16s ━━━  agents: 0 alive, 10 total
+[08:57:50] 
+[08:57:50] ━━━ [CHAOS WAVE 171] 6m18s ━━━  agents: 0 alive, 10 total
+[08:57:52] 
+[08:57:52] ━━━ [CHAOS WAVE 172] 6m20s ━━━  agents: 0 alive, 10 total
+[08:57:54] 
+[08:57:54] ━━━ [CHAOS WAVE 173] 6m22s ━━━  agents: 0 alive, 10 total
+[08:57:56] 
+[08:57:56] ━━━ [CHAOS WAVE 174] 6m24s ━━━  agents: 0 alive, 10 total
+[08:57:58] 
+[08:57:58] ━━━ [CHAOS WAVE 175] 6m26s ━━━  agents: 0 alive, 10 total
+[08:58:00] 
+[08:58:00] ━━━ [CHAOS WAVE 176] 6m28s ━━━  agents: 0 alive, 10 total
+[08:58:02] 
+[08:58:02] ━━━ [CHAOS WAVE 177] 6m30s ━━━  agents: 0 alive, 10 total
+[08:58:04] 
+[08:58:04] ━━━ [CHAOS WAVE 178] 6m32s ━━━  agents: 0 alive, 10 total
+[08:58:06] 
+[08:58:06] ━━━ [CHAOS WAVE 179] 6m34s ━━━  agents: 0 alive, 10 total
+[08:58:08] 
+[08:58:08] ━━━ [CHAOS WAVE 180] 6m36s ━━━  agents: 0 alive, 10 total
+[08:58:10] 
+[08:58:10] ━━━ [CHAOS WAVE 181] 6m38s ━━━  agents: 0 alive, 10 total
+[08:58:12] 
+[08:58:12] ━━━ [CHAOS WAVE 182] 6m40s ━━━  agents: 0 alive, 10 total
+[08:58:14] 
+[08:58:14] ━━━ [CHAOS WAVE 183] 6m42s ━━━  agents: 0 alive, 10 total
+[08:58:16] 
+[08:58:16] ━━━ [CHAOS WAVE 184] 6m44s ━━━  agents: 0 alive, 10 total
+[08:58:18] 
+[08:58:18] ━━━ [CHAOS WAVE 185] 6m46s ━━━  agents: 0 alive, 10 total
+[08:58:20] 
+[08:58:20] ━━━ [CHAOS WAVE 186] 6m48s ━━━  agents: 0 alive, 10 total
+[08:58:22] 
+[08:58:22] ━━━ [CHAOS WAVE 187] 6m50s ━━━  agents: 0 alive, 10 total
+[08:58:24] 
+[08:58:24] ━━━ [CHAOS WAVE 188] 6m52s ━━━  agents: 0 alive, 10 total
+[08:58:26] 
+[08:58:26] ━━━ [CHAOS WAVE 189] 6m54s ━━━  agents: 0 alive, 10 total
+[08:58:28] 
+[08:58:28] ━━━ [CHAOS WAVE 190] 6m56s ━━━  agents: 0 alive, 10 total
+[08:58:30] 
+[08:58:30] ━━━ [CHAOS WAVE 191] 6m58s ━━━  agents: 0 alive, 10 total
+[08:58:32] 
+[08:58:32] ━━━ [CHAOS WAVE 192] 7m0s ━━━  agents: 0 alive, 10 total
+[08:58:34] 
+[08:58:34] ━━━ [CHAOS WAVE 193] 7m2s ━━━  agents: 0 alive, 10 total
+[08:58:36] 
+[08:58:36] ━━━ [CHAOS WAVE 194] 7m4s ━━━  agents: 0 alive, 10 total
+[08:58:38] 
+[08:58:38] ━━━ [CHAOS WAVE 195] 7m6s ━━━  agents: 0 alive, 10 total
+[08:58:40] 
+[08:58:40] ━━━ [CHAOS WAVE 196] 7m8s ━━━  agents: 0 alive, 10 total
+[08:58:42] 
+[08:58:42] ━━━ [CHAOS WAVE 197] 7m10s ━━━  agents: 0 alive, 10 total
+[08:58:44] 
+[08:58:44] ━━━ [CHAOS WAVE 198] 7m12s ━━━  agents: 0 alive, 10 total
+[08:58:46] 
+[08:58:46] ━━━ [CHAOS WAVE 199] 7m14s ━━━  agents: 0 alive, 10 total
+[08:58:48] 
+[08:58:48] ━━━ [CHAOS WAVE 200] 7m16s ━━━  agents: 0 alive, 10 total
+[08:58:50] 
+[08:58:50] ━━━ [CHAOS WAVE 201] 7m18s ━━━  agents: 0 alive, 10 total
+[08:58:52] 
+[08:58:52] ━━━ [CHAOS WAVE 202] 7m20s ━━━  agents: 0 alive, 10 total
+[08:58:54] 
+[08:58:54] ━━━ [CHAOS WAVE 203] 7m22s ━━━  agents: 0 alive, 10 total
+[08:58:56] 
+[08:58:56] ━━━ [CHAOS WAVE 204] 7m24s ━━━  agents: 0 alive, 10 total
+[08:58:58] 
+[08:58:58] ━━━ [CHAOS WAVE 205] 7m26s ━━━  agents: 0 alive, 10 total
+[08:59:00] 
+[08:59:00] ━━━ [CHAOS WAVE 206] 7m28s ━━━  agents: 0 alive, 10 total
+[08:59:01] 
+[08:59:01] ╔═══ REPORT ═══════════════════════════════════════╗
+[08:59:01] ║  Duration:          7m28s                          ║
+[08:59:01] ║  Agents:            5 survived / 10 total          ║
+[08:59:01] ║  Total Kills:       8                              ║
+[08:59:01] ║  Total Data:        79858 bytes                    ║
+[08:59:01] ╚═══════════════════════════════════════════════════╝
+[08:59:01] 
+[08:59:01]   ✅ VERDICT: CHAOS SURVIVED — Kill→Resurrect works!
+[08:59:01]      Proved: MCP discovery OK | Kill resilience OK | Context preserved OK
+[08:59:01] 
+[08:59:01] Shutdown complete. Logs: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
