@@ -310,6 +310,10 @@ GoAgentX/
 ├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...
 ├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
+│   └── tools/           # Tool registry and invocation
+├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
+├── examples/            # Travel, knowledge-base, simple demos
+├── api/                 # Service interfaces and client
 └── benchmarks/          # Benchmark reports and logs
 ```
 
