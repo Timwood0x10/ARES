@@ -89,20 +89,4 @@ func TestWorkflowErrors(t *testing.T) {
 	})
 }
 
-func TestExecutor(t *testing.T) {
-	// Skip all executor tests - they have concurrency issues that cause tests to timeout
-	t.Skip("Executor tests have concurrency issues that cause timeouts, need refactoring")
-}
-
-func TestLoader(t *testing.T) {
-	// FileLoader requires a decoder, skip basic test
-	// The loader tests would require a valid decoder setup
-	t.Skip("FileLoader requires valid decoder setup")
-}
-
-func TestReloader(t *testing.T) {
-	// Skip tests that require full setup
-	t.Skip("Reloader tests require full setup")
-}
-
 // nolint: errcheck // Test code may ignore return values

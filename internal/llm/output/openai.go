@@ -288,8 +288,9 @@ type Choice struct {
 
 // Message represents a chat message.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // Usage represents token usage.
@@ -297,4 +298,148 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+// GenerateWithTools sends a prompt with available tools to the OpenAI API.
+func (a *OpenAIAdapter) GenerateWithTools(ctx context.Context, prompt string, tools []ToolDefinition, choice ToolChoice) (*ToolCallResponse, error) {
+	if prompt == "" {
+		return nil, stderrors.New("empty prompt")
+	}
+	if len(tools) == 0 {
+		return nil, stderrors.New("no tools provided")
+	}
+
+	messages := []map[string]interface{}{
+		{"role": "user", "content": prompt},
+	}
+
+	return a.sendToolRequest(ctx, messages, tools, choice)
+}
+
+// SendToolResult sends tool execution results back to continue the conversation.
+func (a *OpenAIAdapter) SendToolResult(ctx context.Context, messages []map[string]interface{}, toolResults []ToolResult) (*ToolCallResponse, error) {
+	if len(messages) == 0 {
+		return nil, stderrors.New("empty conversation messages")
+	}
+	if len(toolResults) == 0 {
+		return nil, stderrors.New("no tool results provided")
+	}
+
+	toolMsgs := BuildToolResultMessages(toolResults)
+	allMessages := make([]map[string]interface{}, 0, len(messages)+len(toolMsgs))
+	allMessages = append(allMessages, messages...)
+	allMessages = append(allMessages, toolMsgs...)
+
+	return a.sendToolRequest(ctx, allMessages, nil, ToolChoiceAuto)
+}
+
+// sendToolRequest sends a chat completion request with optional tools.
+func (a *OpenAIAdapter) sendToolRequest(ctx context.Context, messages []map[string]interface{}, tools []ToolDefinition, choice ToolChoice) (*ToolCallResponse, error) {
+	reqBody := map[string]interface{}{
+		"model":       a.config.Model,
+		"messages":    messages,
+		"max_tokens":  a.config.MaxTokens,
+		"temperature": a.config.Temperature,
+	}
+
+	if len(tools) > 0 {
+		reqBody["tools"] = BuildToolAPIDefinitions(tools)
+		reqBody["tool_choice"] = string(choice)
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal tool request")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		a.config.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.Wrap(err, "create tool request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send tool request")
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Error("close response body failed", "err", closeErr)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, errors.Newf("tool API request failed with status %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result OpenAIChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, errors.Wrap(err, "decode tool response")
+	}
+
+	if len(result.Choices) == 0 {
+		return nil, ErrInvalidResponse
+	}
+
+	return parseToolCallsFromResponse(&result.Choices[0])
+}
+
+// parseToolCallsFromResponse converts an OpenAI Choice into a ToolCallResponse.
+func parseToolCallsFromResponse(choice *Choice) (*ToolCallResponse, error) {
+	msg := choice.Message
+
+	assistantMsg := &AssistantMsg{
+		Role:    msg.Role,
+		Content: msg.Content,
+	}
+
+	resp := &ToolCallResponse{
+		Content: msg.Content,
+		Done:    true,
+		Message: assistantMsg,
+	}
+
+	if len(msg.ToolCalls) > 0 {
+		resp.Done = false
+		assistantCalls := make([]AssistantToolCall, 0, len(msg.ToolCalls))
+		respCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+
+		for _, tc := range msg.ToolCalls {
+			assistantCalls = append(assistantCalls, AssistantToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+				Function: AssistantToolFuncRef{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			})
+			respCalls = append(respCalls, ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+
+		assistantMsg.ToolCalls = assistantCalls
+		resp.ToolCalls = respCalls
+	}
+
+	return resp, nil
+}
+
+// openAIToolCall is the OpenAI API format for a tool call in the response.
+type openAIToolCall struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function openAIToolCallFuncRef `json:"function"`
+}
+
+// openAIToolCallFuncRef is the function reference in an OpenAI tool call.
+type openAIToolCallFuncRef struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }

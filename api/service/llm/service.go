@@ -10,6 +10,7 @@ import (
 	"goagentx/api/core"
 	"goagentx/internal/errors"
 	"goagentx/internal/llm"
+	"goagentx/internal/observability"
 )
 
 // Service provides LLM operations.
@@ -31,6 +32,8 @@ type Config struct {
 	Repo core.LLMRepository
 	// EmbeddingClient is the embedding service client (optional).
 	EmbeddingClient any
+	// Tracer is an optional observability tracer for LLM call tracing.
+	Tracer observability.Tracer
 }
 
 // NewService creates a new LLM service instance.
@@ -66,6 +69,10 @@ func NewService(config *Config) (*Service, error) {
 	client, err := llm.NewClient(internalConfig)
 	if err != nil {
 		return nil, errors.Wrap(err, "create LLM client")
+	}
+
+	if config.Tracer != nil {
+		client.SetTracer(config.Tracer)
 	}
 
 	return &Service{

@@ -1,7 +1,6 @@
 package output
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -59,20 +58,6 @@ func NewInputValidator() *InputValidator {
 		maxArrayLength:     MaxArrayLength,
 		maxStringLength:    MaxStringLength,
 		maxObjectKeyLength: MaxObjectKeyLength,
-	}
-}
-
-// NewInputValidatorWithLimits creates a new InputValidator with custom limits.
-func NewInputValidatorWithLimits(
-	maxInputLength, maxJSONLength, maxJSONDepth, maxArrayLength, maxStringLength, maxObjectKeyLength int,
-) *InputValidator {
-	return &InputValidator{
-		maxInputLength:     maxInputLength,
-		maxJSONLength:      maxJSONLength,
-		maxJSONDepth:       maxJSONDepth,
-		maxArrayLength:     maxArrayLength,
-		maxStringLength:    maxStringLength,
-		maxObjectKeyLength: maxObjectKeyLength,
 	}
 }
 
@@ -194,23 +179,4 @@ type InputValidatorConfig struct {
 	MaxArrayLength     int `json:"maxArrayLength"`
 	MaxStringLength    int `json:"maxStringLength"`
 	MaxObjectKeyLength int `json:"maxObjectKeyLength"`
-}
-
-// EstimateJSONSize estimates the size of parsed JSON content (simplified).
-func EstimateJSONSize(data interface{}) int {
-	// This is a simplified estimation
-	// For production, consider using encoding/json.Size()
-	if data == nil {
-		return 4 // "null" is 4 bytes
-	}
-
-	// Marshal to JSON and get the length
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		// Fallback to string length if marshaling fails
-		str := fmt.Sprintf("%v", data)
-		return len(str)
-	}
-
-	return len(bytes)
 }

@@ -70,6 +70,10 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 			http.Error(w, "Query is required", http.StatusBadRequest)
 			return
 		}
+		if len(req.Query) > 8192 {
+			http.Error(w, "Query too long", http.StatusBadRequest)
+			return
+		}
 
 		// Set SSE headers
 		w.Header().Set("Content-Type", "text/event-stream")

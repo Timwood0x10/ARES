@@ -22,9 +22,10 @@ type MemoryEventStore struct {
 }
 
 type subscription struct {
-	id     string
-	filter EventFilter
-	ch     chan *Event
+	id        string
+	filter    EventFilter
+	ch        chan *Event
+	closeOnce *sync.Once
 }
 
 // NewMemoryEventStore creates a new in-memory EventStore.
@@ -204,9 +205,10 @@ func (s *MemoryEventStore) Subscribe(ctx context.Context, filter EventFilter) (<
 
 	ch := make(chan *Event, 1)
 	sub := subscription{
-		id:     NewEventID(),
-		filter: filter,
-		ch:     ch,
+		id:        NewEventID(),
+		filter:    filter,
+		ch:        ch,
+		closeOnce: &sync.Once{},
 	}
 	s.subscribers = append(s.subscribers, sub)
 
@@ -246,7 +248,11 @@ func (s *MemoryEventStore) Close() error {
 	s.closed = true
 	s.cancel()
 	for _, sub := range s.subscribers {
-		close(sub.ch)
+		// Use sync.Once to ensure each channel is only closed once, preventing
+		// panic if unsubscribe() is called concurrently.
+		sub.closeOnce.Do(func() {
+			close(sub.ch)
+		})
 	}
 	s.subscribers = nil
 	return nil
@@ -310,7 +316,11 @@ func (s *MemoryEventStore) unsubscribe(id string) {
 
 	for i, sub := range s.subscribers {
 		if sub.id == id {
-			close(sub.ch)
+			// Use sync.Once to ensure the channel is only closed once, preventing
+			// panic if Close() is called concurrently.
+			sub.closeOnce.Do(func() {
+				close(sub.ch)
+			})
 			s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
 			return
 		}

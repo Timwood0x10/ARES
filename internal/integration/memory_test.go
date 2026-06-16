@@ -11,9 +11,54 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"goagentx/internal/memory"
+	"goagentx/internal/memory/distillation"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 )
+
+// testEmbedder is a minimal EmbeddingService mock for in-memory tests.
+type testEmbedder struct{}
+
+func (t *testEmbedder) Embed(_ context.Context, _ string) ([]float64, error) {
+	return []float64{0.1, 0.2, 0.3}, nil
+}
+
+func (t *testEmbedder) EmbedWithPrefix(_ context.Context, _, _ string) ([]float64, error) {
+	return []float64{0.1, 0.2, 0.3}, nil
+}
+
+func (t *testEmbedder) EmbedBatch(_ context.Context, _ []string) ([][]float64, error) {
+	return [][]float64{{0.1, 0.2, 0.3}}, nil
+}
+
+func (t *testEmbedder) HealthCheck(_ context.Context) error { return nil }
+func (t *testEmbedder) GetModel() string                    { return "test-model" }
+func (t *testEmbedder) GetTimeout() time.Duration           { return time.Second }
+
+var _ embedding.EmbeddingService = (*testEmbedder)(nil)
+
+// testExpRepo is a minimal ExperienceRepository mock for in-memory tests.
+type testExpRepo struct {
+	experiences []distillation.Experience
+}
+
+func (r *testExpRepo) SearchByVector(_ context.Context, _ []float64, _ string, _ int) ([]distillation.Experience, error) {
+	return r.experiences, nil
+}
+
+func (r *testExpRepo) GetByMemoryType(_ context.Context, _ string, _ distillation.MemoryType) ([]distillation.Experience, error) {
+	return r.experiences, nil
+}
+
+func (r *testExpRepo) Update(_ context.Context, _ *distillation.Experience) error { return nil }
+func (r *testExpRepo) Delete(_ context.Context, _ string) error                   { return nil }
+
+func (r *testExpRepo) Create(_ context.Context, experience *distillation.Experience) error {
+	r.experiences = append(r.experiences, *experience)
+	return nil
+}
+
+var _ distillation.ExperienceRepository = (*testExpRepo)(nil)
 
 // createTestMemoryManager creates a ProductionMemoryManager for integration tests.
 // Returns nil and skips if embedding client cannot be created.
@@ -337,7 +382,7 @@ func TestInMemoryMemoryManagerTaskPipeline(t *testing.T) {
 	config := memory.DefaultMemoryConfig()
 	config.VectorDim = 128
 
-	mgr, err := memory.NewMemoryManager(config)
+	mgr, err := memory.NewMemoryManagerWithDistiller(config, &testEmbedder{}, &testExpRepo{})
 	require.NoError(t, err)
 	require.NotNil(t, mgr)
 

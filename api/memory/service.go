@@ -10,6 +10,8 @@ import (
 	"goagentx/internal/memory"
 )
 
+const maxSessionIDLen = 256
+
 // Service provides memory management operations.
 type Service struct {
 	memoryMgr memory.MemoryManager
@@ -51,7 +53,7 @@ func (s *Service) CreateSession(ctx context.Context, userID string) (string, err
 // content - message content.
 // Returns error if operation fails.
 func (s *Service) AddMessage(ctx context.Context, sessionID, role, content string) error {
-	if sessionID == "" {
+	if sessionID == "" || len(sessionID) > maxSessionIDLen {
 		return ErrInvalidSessionID
 	}
 	if role == "" {
@@ -74,7 +76,7 @@ func (s *Service) AddMessage(ctx context.Context, sessionID, role, content strin
 // sessionID - session identifier.
 // Returns list of messages or error if retrieval fails.
 func (s *Service) GetMessages(ctx context.Context, sessionID string) ([]*Message, error) {
-	if sessionID == "" {
+	if sessionID == "" || len(sessionID) > maxSessionIDLen {
 		return nil, ErrInvalidSessionID
 	}
 
@@ -102,7 +104,7 @@ func (s *Service) GetMessages(ctx context.Context, sessionID string) ([]*Message
 // sessionID - session identifier.
 // Returns error if deletion fails.
 func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
-	if sessionID == "" {
+	if sessionID == "" || len(sessionID) > maxSessionIDLen {
 		return ErrInvalidSessionID
 	}
 

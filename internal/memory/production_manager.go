@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
+	"goagentx/internal/events"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -30,12 +32,9 @@ type ProductionMemoryManager struct {
 	tenantGuard      *postgres.TenantGuard
 	retrievalService *services.RetrievalService
 	embeddingClient  *embedding.EmbeddingClient
-	writeBuffer      *postgres.WriteBuffer    // Write buffer for rate limiting
-	embeddingQueue   *postgres.EmbeddingQueue // Async embedding queue
+	writeBuffer      *postgres.WriteBuffer // Write buffer for rate limiting
 
 	// Repositories
-	knowledgeRepository    *repositories.KnowledgeRepository
-	experienceRepository   *repositories.ExperienceRepository
 	conversationRepository *repositories.ConversationRepository
 	taskResultRepository   *repositories.TaskResultRepository
 
@@ -53,6 +52,10 @@ type ProductionMemoryManager struct {
 	// Optional: keep in-memory cache for hot data
 	sessionCache map[string]*SessionData
 	maxCacheSize int
+
+	// Event sourcing: optional EventStore for emitting lifecycle events.
+	eventStore events.EventStore
+	streamID   string // Stream ID used when appending events.
 }
 
 // SessionData holds session information with optional caching.
@@ -102,7 +105,6 @@ func NewProductionMemoryManager(
 	// Create repositories
 	dbConn := dbPool.GetDB()
 	knowledgeRepo := repositories.NewKnowledgeRepository(dbPool.GetDB(), dbConn)
-	experienceRepo := repositories.NewExperienceRepository(dbConn)
 	conversationRepo := repositories.NewConversationRepository(dbConn)
 	taskResultRepo := repositories.NewTaskResultRepository(dbConn)
 
@@ -141,32 +143,16 @@ func NewProductionMemoryManager(
 	)
 
 	return &ProductionMemoryManager{
-
-		dbPool: dbPool,
-
-		tenantGuard: tenantGuard,
-
-		retrievalService: retrievalService,
-
-		embeddingClient: embeddingClient,
-
-		writeBuffer: writeBuffer,
-
-		embeddingQueue: embeddingQueue,
-
-		knowledgeRepository: knowledgeRepo,
-
-		experienceRepository: experienceRepo,
-
+		dbPool:                 dbPool,
+		tenantGuard:            tenantGuard,
+		retrievalService:       retrievalService,
+		embeddingClient:        embeddingClient,
+		writeBuffer:            writeBuffer,
 		conversationRepository: conversationRepo,
-
-		taskResultRepository: taskResultRepo,
-
-		config: config,
-
-		sessionCache: make(map[string]*SessionData),
-
-		maxCacheSize: config.MaxSessions,
+		taskResultRepository:   taskResultRepo,
+		config:                 config,
+		sessionCache:           make(map[string]*SessionData),
+		maxCacheSize:           config.MaxSessions,
 	}, nil
 }
 
@@ -185,6 +171,28 @@ func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 
 	slog.Debug("Tenant ID set", "tenant_id", tenantID)
 	return nil
+}
+
+// SetEventStore configures an optional EventStore for emitting lifecycle events.
+// If store is nil, event emission is a no-op.
+func (m *ProductionMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+	m.eventStore = store
+	m.streamID = streamID
+}
+
+// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+	if m.eventStore == nil {
+		return
+	}
+	event := &events.Event{
+		StreamID: m.streamID,
+		Type:     eventType,
+		Payload:  payload,
+	}
+	if err := m.eventStore.Append(ctx, m.streamID, []*events.Event{event}, 0); err != nil {
+		slog.Warn("Failed to emit event", "type", eventType, "error", err)
+	}
 }
 
 // Start starts the memory manager and background workers.
@@ -255,7 +263,9 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 	// Clear cache
 	m.sessionCache = make(map[string]*SessionData)
 
+	// Reset lifecycle flags to allow restart
 	m.stopped = true
+	m.started = false
 	slog.Info("Production memory manager stopped")
 	return nil
 }
@@ -295,6 +305,12 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 			delete(m.sessionCache, oldestKey)
 		}
 	}
+
+	// Emit session created event.
+	m.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+		"session_id": sessionID,
+		"user_id":    userID,
+	})
 
 	slog.Debug("Session created", "session_id", sessionID, "user_id", userID)
 	return sessionID, nil
@@ -366,6 +382,12 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		sessionData.MessageCount++
 	}
 	m.mu.Unlock()
+
+	// Emit message added event.
+	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		"session_id": sessionID,
+		"role":       role,
+	})
 
 	slog.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
@@ -582,6 +604,16 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 		CreatedAt: taskResult.CreatedAt,
 	}
 
+	// Emit memory distilled event.
+	inputCount := 0
+	if content, ok := taskResult.Input["content"].(string); ok {
+		inputCount = len(content)
+	}
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":     taskID,
+		"input_count": inputCount,
+	})
+
 	slog.Debug("Task distilled", "task_id", taskID)
 	return task, nil
 }
@@ -623,6 +655,12 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	if err := m.writeBuffer.Write(ctx, writeItem); err != nil {
 		return errors.Wrap(err, "write to buffer")
 	}
+
+	// Emit memory distilled event.
+	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+		"task_id":      taskID,
+		"output_count": 1,
+	})
 
 	slog.Debug("Distilled task queued for async embedding", "task_id", taskID)
 	return nil
@@ -719,7 +757,9 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 
 	var sessionID string
 	if err := row.Scan(&sessionID); err != nil {
-		if err == sql.ErrNoRows {
+		// Handle both sql.ErrNoRows (database/sql driver) and pgx.ErrNoRows (pgx driver)
+		// to support different database drivers.
+		if err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows in result set") {
 			return "", nil
 		}
 		return "", errors.Wrap(err, "get latest session for leader")

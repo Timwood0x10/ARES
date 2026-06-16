@@ -88,12 +88,13 @@ type RetrievalRepository interface {
 	// Returns error if creation fails.
 	CreateKnowledge(ctx context.Context, item *KnowledgeItem) error
 
-	// GetKnowledge retrieves a knowledge item by ID.
+	// GetKnowledge retrieves a knowledge item by ID within a tenant scope.
 	// Args:
 	// ctx - operation context.
+	// tenantID - the tenant identifier for isolation.
 	// itemID - the knowledge item identifier.
 	// Returns the knowledge item or error if not found.
-	GetKnowledge(ctx context.Context, itemID string) (*KnowledgeItem, error)
+	GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error)
 
 	// UpdateKnowledge updates an existing knowledge item.
 	// Args:

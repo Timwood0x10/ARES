@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoAgentX — Chaos Arena</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="logo">
+      <span class="logo-icon">&#9760;</span>
+      <span class="logo-text">CHAOS ARENA</span>
+    </div>
+    <div id="score-bar" class="score-bar"></div>
+    <div id="fault-bar" class="fault-bar"></div>
+  </header>
+  <div class="main">
+    <section class="dag-panel">
+      <svg id="dag"></svg>
+      <div id="dag-info" class="dag-info"></div>
+    </section>
+    <section class="side-panel">
+      <div id="agent-grid" class="agent-grid"></div>
+      <div id="event-log" class="event-log"></div>
+    </section>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

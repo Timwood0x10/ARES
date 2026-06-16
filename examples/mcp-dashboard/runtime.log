@@ -1,0 +1,46 @@
+2026/06/14 19:46:26 INFO llm connected provider=ollama model=llama3.2
+2026/06/14 19:46:27 INFO mcp tools discovered count=10
+2026/06/14 19:46:27 INFO flight recorder started
+2026/06/14 19:46:27 INFO agent launched id=agent-1 name="Architecture Review"
+2026/06/14 19:46:27 INFO agent launched id=agent-2 name="Error Handling Review"
+2026/06/14 19:46:27 INFO agent launched id=agent-3 name="Concurrency Review"
+2026/06/14 19:46:27 INFO agent launched id=agent-4 name="API Surface Review"
+2026/06/14 19:46:27 INFO agent launched id=agent-5 name="Change Impact Analysis"
+2026/06/14 19:46:27 INFO service running
+2026/06/14 19:46:27 INFO dashboard started url=http://localhost:8090
+2026/06/14 19:46:27 INFO orchestrator: agent started id=agent-1 name="Architecture Review" tool=""
+2026/06/14 19:46:27 INFO orchestrator: agent started id=agent-3 name="Concurrency Review" tool=""
+2026/06/14 19:46:27 INFO orchestrator: agent started id=agent-4 name="API Surface Review" tool=""
+2026/06/14 19:46:27 INFO orchestrator: agent started id=agent-5 name="Change Impact Analysis" tool=""
+2026/06/14 19:46:27 INFO orchestrator: agent started id=agent-2 name="Error Handling Review" tool=""
+2026/06/14 19:46:27 INFO orchestrator: MCP data gathered id=agent-4 bytes=1384
+2026/06/14 19:46:27 INFO orchestrator: MCP data gathered id=agent-2 bytes=2392
+2026/06/14 19:46:27 INFO orchestrator: MCP data gathered id=agent-3 bytes=5632
+2026/06/14 19:46:27 INFO orchestrator: MCP data gathered id=agent-5 bytes=11090
+2026/06/14 19:46:27 INFO orchestrator: MCP data gathered id=agent-1 bytes=23420
+2026/06/14 19:46:29 INFO arena: killed agent id=agent-1
+2026/06/14 19:46:29 ERROR orchestrator: agent failed id=agent-1 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/14 19:46:29 INFO orchestrator: agent killed, resurrecting id=agent-1 name="Architecture Review"
+2026/06/14 19:46:29 INFO orchestrator: agent started id=agent-6 name="Architecture Review" tool=""
+2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-6 resume_from=agent-1 start_step=4 total_steps=3
+2026/06/14 19:46:29 INFO orchestrator: resuming with previous MCP data id=agent-6 data_len=23420
+2026/06/14 19:46:29 INFO orchestrator: MCP data gathered id=agent-6 bytes=23420
+2026/06/14 19:46:29 INFO arena: killed agent id=agent-3
+2026/06/14 19:46:29 ERROR orchestrator: agent failed id=agent-3 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/14 19:46:29 INFO orchestrator: agent killed, resurrecting id=agent-3 name="Concurrency Review"
+2026/06/14 19:46:29 INFO orchestrator: agent started id=agent-7 name="Concurrency Review" tool=""
+2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-7 resume_from=agent-3 start_step=4 total_steps=3
+2026/06/14 19:46:29 INFO orchestrator: resuming with previous MCP data id=agent-7 data_len=5632
+2026/06/14 19:46:29 INFO orchestrator: MCP data gathered id=agent-7 bytes=5632
+2026/06/14 19:46:29 INFO arena: killed agent id=agent-5
+2026/06/14 19:46:29 ERROR orchestrator: agent failed id=agent-5 error="send request: Post \"http://localhost:11434/api/generate\": context canceled"
+2026/06/14 19:46:29 INFO orchestrator: agent killed, resurrecting id=agent-5 name="Change Impact Analysis"
+2026/06/14 19:46:29 INFO orchestrator: agent started id=agent-8 name="Change Impact Analysis" tool=""
+2026/06/14 19:46:29 INFO orchestrator: resuming agent from step id=agent-8 resume_from=agent-5 start_step=4 total_steps=3
+2026/06/14 19:46:29 INFO orchestrator: resuming with previous MCP data id=agent-8 data_len=11090
+2026/06/14 19:46:29 INFO orchestrator: MCP data gathered id=agent-8 bytes=11090
+2026/06/14 19:46:31 INFO orchestrator: agent completed id=agent-4 duration=4s
+2026/06/14 19:46:35 INFO orchestrator: agent completed id=agent-2 duration=8s
+2026/06/14 19:46:43 INFO orchestrator: agent completed id=agent-6 duration=14s
+2026/06/14 19:46:47 INFO orchestrator: agent completed id=agent-7 duration=18s
+2026/06/14 19:46:53 INFO orchestrator: agent completed id=agent-8 duration=24s

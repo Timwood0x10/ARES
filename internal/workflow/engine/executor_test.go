@@ -4,6 +4,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -292,35 +293,49 @@ func TestExecutorHelperFunctionsCoverage(t *testing.T) {
 		var mu sync.Mutex
 
 		// Step1 should be executable (no dependencies)
-		if !executor.canExecute(step1, completed, &mu) {
+		mu.Lock()
+		if !executor.canExecute(step1, completed) {
 			t.Error("Step1 should be executable")
 		}
+		mu.Unlock()
 
 		// Step2 should not be executable yet
-		if executor.canExecute(step2, completed, &mu) {
+		mu.Lock()
+		if executor.canExecute(step2, completed) {
 			t.Error("Step2 should not be executable yet")
 		}
+		mu.Unlock()
 
 		// Mark step1 as completed
+		mu.Lock()
 		completed["step1"] = true
+		mu.Unlock()
 
 		// Step2 should now be executable
-		if !executor.canExecute(step2, completed, &mu) {
+		mu.Lock()
+		if !executor.canExecute(step2, completed) {
 			t.Error("Step2 should be executable after step1 completes")
 		}
+		mu.Unlock()
 
 		// Step3 should not be executable yet
-		if executor.canExecute(step3, completed, &mu) {
+		mu.Lock()
+		if executor.canExecute(step3, completed) {
 			t.Error("Step3 should not be executable yet")
 		}
+		mu.Unlock()
 
 		// Mark step2 as completed
+		mu.Lock()
 		completed["step2"] = true
+		mu.Unlock()
 
 		// Step3 should now be executable
-		if !executor.canExecute(step3, completed, &mu) {
+		mu.Lock()
+		if !executor.canExecute(step3, completed) {
 			t.Error("Step3 should be executable after step1 and step2 complete")
 		}
+		mu.Unlock()
 	})
 
 	t.Run("resolve input for step", func(t *testing.T) {
@@ -605,6 +620,231 @@ func TestWorkflowExecutionStateCoverage(t *testing.T) {
 
 		if execution.Status != WorkflowStatusRunning {
 			t.Errorf("Expected status %s, got %s", WorkflowStatusRunning, execution.Status)
+		}
+	})
+}
+
+// =====================================================
+// Concurrent Execution Tests
+// =====================================================
+
+func TestConcurrentExecution(t *testing.T) {
+	t.Run("fan-out fan-in workflow", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("branch-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "branch-agent", func(ctx context.Context, input any) (any, error) {
+				desc, _ := input.(string)
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{
+							ItemID:      "item1",
+							Name:        "Branch Result",
+							Description: desc,
+							Price:       100.0,
+						},
+					},
+				}, nil
+			}), nil
+		})
+
+		// Workflow: step1 -> step2a, step2b (parallel) -> step3 (join)
+		workflow := &Workflow{
+			ID:   "wf-fanout",
+			Name: "Fan-out Fan-in Workflow",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "Root Step",
+					AgentType: "branch-agent",
+					Input:     "root input",
+					Timeout:   10 * time.Second,
+				},
+				{
+					ID:        "step2a",
+					Name:      "Branch A",
+					AgentType: "branch-agent",
+					DependsOn: []string{"step1"},
+					Timeout:   10 * time.Second,
+				},
+				{
+					ID:        "step2b",
+					Name:      "Branch B",
+					AgentType: "branch-agent",
+					DependsOn: []string{"step1"},
+					Timeout:   10 * time.Second,
+				},
+				{
+					ID:        "step3",
+					Name:      "Join Step",
+					AgentType: "branch-agent",
+					DependsOn: []string{"step2a", "step2b"},
+					Timeout:   10 * time.Second,
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "initial input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected status %s, got %s", WorkflowStatusCompleted, result.Status)
+		}
+
+		if len(result.Steps) != 4 {
+			t.Errorf("Expected 4 step results, got %d", len(result.Steps))
+		}
+	})
+
+	t.Run("max parallel enforcement", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+		executor.maxParallel = 2
+
+		var mu sync.Mutex
+		concurrentCount := 0
+		maxConcurrent := 0
+
+		registry.Register("throttled-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "throttled-agent", func(ctx context.Context, input any) (any, error) {
+				mu.Lock()
+				concurrentCount++
+				if concurrentCount > maxConcurrent {
+					maxConcurrent = concurrentCount
+				}
+				mu.Unlock()
+
+				time.Sleep(50 * time.Millisecond)
+
+				mu.Lock()
+				concurrentCount--
+				mu.Unlock()
+
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		steps := make([]*Step, 5)
+		for i := range steps {
+			steps[i] = &Step{
+				ID:        fmt.Sprintf("step%d", i+1),
+				Name:      fmt.Sprintf("Step %d", i+1),
+				AgentType: "throttled-agent",
+				Timeout:   10 * time.Second,
+			}
+		}
+
+		workflow := &Workflow{
+			ID:    "wf-throttle",
+			Name:  "Throttle Workflow",
+			Steps: steps,
+		}
+
+		_, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if maxConcurrent > 2 {
+			t.Errorf("Expected max 2 concurrent steps, got %d", maxConcurrent)
+		}
+
+		if maxConcurrent < 2 {
+			t.Errorf("Expected up to 2 concurrent steps, got %d", maxConcurrent)
+		}
+	})
+
+	t.Run("cancellation mid-execution", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("blocking-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "blocking-agent", func(ctx context.Context, input any) (any, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-cancel",
+			Name: "Cancellation Test",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "Blocking Step",
+					AgentType: "blocking-agent",
+					Timeout:   30 * time.Second,
+				},
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		resultCh := make(chan error, 1)
+		go func() {
+			_, err := executor.Execute(ctx, workflow, "input")
+			resultCh <- err
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+
+		select {
+		case err := <-resultCh:
+			if err == nil {
+				t.Error("Expected error from cancelled context")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Executor did not respond to cancellation within 5s")
+		}
+	})
+
+	t.Run("step timeout", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("slow-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "slow-agent", func(ctx context.Context, input any) (any, error) {
+				select {
+				case <-time.After(200 * time.Millisecond):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Slow", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-timeout",
+			Name: "Timeout Test",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "Slow Step",
+					AgentType: "slow-agent",
+					Timeout:   50 * time.Millisecond,
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err == nil {
+			t.Error("Expected timeout error")
+		}
+
+		if result == nil || result.Status != WorkflowStatusFailed {
+			t.Errorf("Expected failed status, got %v", result)
 		}
 	})
 }

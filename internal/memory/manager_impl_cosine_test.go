@@ -66,8 +66,7 @@ func TestCosineSimilarity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := &memoryManager{}
-			result := m.cosineSimilarity(tt.v1, tt.v2)
+			result := cosineSimilarity(tt.v1, tt.v2)
 			if math.Abs(result-tt.expected) > tt.tolerance {
 				t.Errorf("cosineSimilarity() = %v, want %v", result, tt.expected)
 			}

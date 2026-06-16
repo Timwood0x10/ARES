@@ -16,6 +16,7 @@ import (
 
 	coreerrors "goagentx/internal/core/errors"
 	"goagentx/internal/errors"
+	"goagentx/internal/observability"
 )
 
 // HTTPError represents an HTTP request error.
@@ -64,6 +65,13 @@ type Client struct {
 	config       *Config
 	httpClient   *http.Client
 	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
+	tracer       observability.Tracer
+}
+
+// SetTracer sets an optional observability tracer on the client.
+// When set, Generate and GenerateStream will record LLM call spans.
+func (c *Client) SetTracer(t observability.Tracer) {
+	c.tracer = t
 }
 
 // NewClient creates a new LLM client.
@@ -96,32 +104,65 @@ func NewClient(config *Config) (*Client, error) {
 // prompt - the prompt text.
 // Returns generated text or error.
 func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
+	start := time.Now()
+
 	// Validate prompt input
 	if prompt == "" {
-		return "", coreerrors.ErrInvalidArgument
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return "", err
 	}
 
 	// Check if prompt is too long (max 8192 characters)
 	const maxPromptLength = 8192
 	if len(prompt) > maxPromptLength {
-		return "", fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return "", err
 	}
 
 	// Check if prompt contains only whitespace
 	trimmed := []byte(prompt)
 	trimmed = bytes.TrimSpace(trimmed)
 	if len(trimmed) == 0 {
-		return "", coreerrors.ErrInvalidArgument
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return "", err
 	}
 
+	var result string
+	var err error
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenRouter:
-		return c.generateOpenRouter(ctx, prompt)
+		result, err = c.generateOpenRouter(ctx, prompt)
 	case ProviderOllama:
-		return c.generateOllama(ctx, prompt)
+		result, err = c.generateOllama(ctx, prompt)
 	default:
-		return "", fmt.Errorf("unsupported provider: %s", c.config.Provider)
+		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
+
+	c.recordLLMCall(ctx, prompt, result, 0, start, err)
+	return result, err
+}
+
+// recordLLMCall records an LLM call via the tracer if set.
+func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tokens int, start time.Time, err error) {
+	if c.tracer == nil {
+		return
+	}
+	model := ""
+	if c.config != nil {
+		model = c.config.Model
+	}
+	c.tracer.RecordLLMCall(ctx, &observability.LLMCall{
+		TraceID:    c.tracer.GetTraceID(ctx),
+		Model:      model,
+		Prompt:     prompt,
+		Response:   response,
+		TokensUsed: tokens,
+		Duration:   time.Since(start),
+		Error:      err,
+	})
 }
 
 // generateOpenRouter generates text using OpenRouter API.
@@ -168,7 +209,10 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read error response body", "error", readErr)
+		}
 		return "", fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 	}
 
@@ -231,7 +275,10 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read error response body", "error", readErr)
+		}
 		return "", &HTTPError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("unexpected status code: %d, body: %s", resp.StatusCode, string(body)),
@@ -322,29 +369,68 @@ type StreamChunk struct {
 // GenerateStream sends a streaming text generation request.
 // Returns a channel of StreamChunk that is closed when streaming completes.
 func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	start := time.Now()
+
 	if prompt == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return nil, err
 	}
 
 	trimmed := []byte(prompt)
 	trimmed = bytes.TrimSpace(trimmed)
 	if len(trimmed) == 0 {
-		return nil, coreerrors.ErrInvalidArgument
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return nil, err
 	}
 
 	const maxPromptLength = 8192
 	if len(prompt) > maxPromptLength {
-		return nil, fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return nil, err
 	}
 
+	var rawCh <-chan StreamChunk
+	var err error
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenRouter:
-		return c.streamOpenRouter(ctx, prompt)
+		rawCh, err = c.streamOpenRouter(ctx, prompt)
 	case ProviderOllama:
-		return c.streamOllama(ctx, prompt)
+		rawCh, err = c.streamOllama(ctx, prompt)
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", c.config.Provider)
+		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
+
+	if err != nil {
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return nil, err
+	}
+
+	// Wrap the channel to record the LLM call when streaming completes.
+	ch := make(chan StreamChunk, 64)
+	go func() {
+		defer close(ch)
+		var fullResponse string
+		var streamErr error
+		for chunk := range rawCh {
+			fullResponse += chunk.Content
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+			if chunk.Done {
+				break
+			}
+			select {
+			case ch <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
+	}()
+	return ch, nil
 }
 
 // streamOllama streams text generation using Ollama API.
@@ -382,7 +468,10 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read error response body", "error", readErr)
+		}
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("ollama stream error (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -464,7 +553,10 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read error response body", "error", readErr)
+		}
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))
 	}

@@ -195,6 +195,24 @@ benchmark-save:
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 
+# Demo: MCP + Dashboard
+# Usage: make demo-mcp TARGET=/path/to/analyze ADDR=:8090
+demo-mcp: TARGET ?= .
+demo-mcp: ADDR ?= :8090
+demo-mcp:
+	@echo "Building MCP dashboard demo..."
+	@go build -o /tmp/mcp-dashboard ./examples/mcp-dashboard/
+	@echo "Starting in background..."
+	@PORT=$$(echo $(ADDR) | sed 's/://'); \
+		/tmp/mcp-dashboard -target $(TARGET) -addr $(ADDR) > /tmp/mcp-dashboard.log 2>&1 & \
+		PID=$$!; \
+		echo "PID: $$PID"; \
+		echo "Logs: tail -f /tmp/mcp-dashboard.log"; \
+		echo "Dashboard: http://localhost:$$PORT"; \
+		echo "Stop: kill $$PID"; \
+		sleep 2; \
+		open http://localhost:$$PORT 2>/dev/null || true
+
 # Help
 help:
 	@echo "Available targets:"

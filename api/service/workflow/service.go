@@ -159,17 +159,6 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		return nil, err
 	}
 
-	// Apply timeout.
-	timeout := req.Timeout
-	if timeout == 0 {
-		timeout = s.config.RequestTimeout
-	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
 	wf := s.buildEngineWorkflow(def, req.Variables)
 	steps := s.buildEngineSteps(def)
 
@@ -187,6 +176,19 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 	events := make(chan core.WorkflowEvent, 64)
 
 	go func() {
+		// Apply timeout inside the goroutine so cancel does not fire
+		// when ExecuteStream returns, which would prematurely cancel
+		// the running workflow.
+		execCtx := ctx
+		timeout := req.Timeout
+		if timeout == 0 {
+			timeout = s.config.RequestTimeout
+		}
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			execCtx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 		defer close(events)
 
 		// Emit workflow started event.
@@ -208,7 +210,7 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		}
 		resultCh := make(chan execResult, 1)
 
-		g, gctx := errgroup.WithContext(ctx)
+		g, gctx := errgroup.WithContext(execCtx)
 
 		// Goroutine 1: run execution.
 		g.Go(func() error {

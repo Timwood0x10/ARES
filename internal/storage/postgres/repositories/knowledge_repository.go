@@ -379,23 +379,7 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 // id - knowledge chunk identifier.
 // Returns error if delete operation fails.
 func (r *KnowledgeRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM knowledge_chunks_1024 WHERE id = $1`
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return errors.Wrap(err, "delete knowledge chunk")
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return errors.Wrap(err, "get rows affected")
-	}
-
-	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
-	}
-
-	return nil
+	return postgres.DeleteByID(ctx, r.db, "knowledge_chunks_1024", id)
 }
 
 // SearchByVector performs vector similarity search.

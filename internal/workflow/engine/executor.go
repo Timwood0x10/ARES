@@ -196,17 +196,21 @@ func (e *Executor) runSteps(
 		stepID := executionOrder[stepIndex]
 		step := e.findStep(workflow.Steps, stepID)
 		if step == nil {
-			errChan <- fmt.Errorf("step %q not found in workflow definition", stepID)
+			select {
+			case errChan <- fmt.Errorf("step %q not found in workflow definition", stepID):
+			default:
+			}
 			wg.Wait()
 			close(resultChan)
 			return
 		}
 
-		if !e.canExecute(step, completed, &mu) {
-			mu.Lock()
-			alreadyProcessed := processed[stepID]
-			mu.Unlock()
+		mu.Lock()
+		canExec := e.canExecute(step, completed)
+		alreadyProcessed := processed[stepID]
+		mu.Unlock()
 
+		if !canExec {
 			if alreadyProcessed {
 				stepIndex++
 				continue
@@ -214,17 +218,23 @@ func (e *Executor) runSteps(
 
 			// Wait for any step goroutine to complete via stepDone channel,
 			// instead of wg.Wait() which blocks until ALL goroutines finish.
+			deadlockTimer := time.NewTimer(5 * time.Second)
 			select {
 			case <-stepDone:
+				deadlockTimer.Stop()
 				// Some goroutine completed, re-check dependencies.
 				continue
-			case <-time.After(5 * time.Second):
+			case <-deadlockTimer.C:
 				// Timeout: potential deadlock detected, abort workflow.
-				errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies that may never complete", stepID)
+				select {
+				case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies that may never complete", stepID):
+				default:
+				}
 				wg.Wait()
 				close(resultChan)
 				return
 			case <-ctx.Done():
+				deadlockTimer.Stop()
 				wg.Wait()
 				close(resultChan)
 				return
@@ -311,15 +321,15 @@ func (e *Executor) runSteps(
 	for _, sid := range executionOrder {
 		mu.Lock()
 		isProcessed := processed[sid]
-		mu.Unlock()
-
 		if !isProcessed {
 			step := e.findStep(workflow.Steps, sid)
-			if step == nil || !e.canExecute(step, completed, &mu) {
+			if step == nil || !e.canExecute(step, completed) {
 				pending = true
+				mu.Unlock()
 				break
 			}
 		}
+		mu.Unlock()
 	}
 
 	if pending {
@@ -332,9 +342,8 @@ func (e *Executor) runSteps(
 }
 
 // canExecute checks if a step can be executed.
-func (e *Executor) canExecute(step *Step, completed map[string]bool, mu *sync.Mutex) bool {
-	mu.Lock()
-	defer mu.Unlock()
+// Caller must hold the mutex protecting completed.
+func (e *Executor) canExecute(step *Step, completed map[string]bool) bool {
 	for _, dep := range step.DependsOn {
 		if !completed[dep] {
 			return false

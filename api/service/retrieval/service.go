@@ -159,18 +159,13 @@ func (s *Service) GetKnowledge(ctx context.Context, tenantID, itemID string) (*c
 		return nil, ErrInvalidItemID
 	}
 
-	item, err := s.repo.GetKnowledge(ctx, itemID)
+	item, err := s.repo.GetKnowledge(ctx, tenantID, itemID)
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge")
 	}
 
 	if item == nil {
 		return nil, ErrKnowledgeNotFound
-	}
-
-	// Verify tenant access
-	if item.TenantID != tenantID {
-		return nil, ErrAccessDenied
 	}
 
 	return item, nil
@@ -196,17 +191,13 @@ func (s *Service) UpdateKnowledge(ctx context.Context, tenantID string, item *co
 	}
 
 	// Verify item exists and belongs to tenant
-	existing, err := s.repo.GetKnowledge(ctx, item.ID)
+	existing, err := s.repo.GetKnowledge(ctx, tenantID, item.ID)
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge")
 	}
 
 	if existing == nil {
 		return nil, ErrKnowledgeNotFound
-	}
-
-	if existing.TenantID != tenantID {
-		return nil, ErrAccessDenied
 	}
 
 	// Update timestamp
@@ -235,17 +226,13 @@ func (s *Service) DeleteKnowledge(ctx context.Context, tenantID, itemID string) 
 	}
 
 	// Verify item exists and belongs to tenant
-	existing, err := s.repo.GetKnowledge(ctx, itemID)
+	existing, err := s.repo.GetKnowledge(ctx, tenantID, itemID)
 	if err != nil {
 		return errors.Wrap(err, "get knowledge")
 	}
 
 	if existing == nil {
 		return ErrKnowledgeNotFound
-	}
-
-	if existing.TenantID != tenantID {
-		return ErrAccessDenied
 	}
 
 	if err := s.repo.DeleteKnowledge(ctx, itemID); err != nil {

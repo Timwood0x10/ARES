@@ -1,0 +1,77 @@
+# ============================================================================
+# Arena Scenario: Leader Assassination & Recovery
+# ============================================================================
+# What this tests:
+#   1. Can the system detect when its leader (coordinator) is killed?
+#   2. Does automatic leader election kick in within the expected window?
+#   3. Do surviving agents re-connect to the new leader?
+#   4. What's the recovery time from "leader dead" to "fully operational"?
+#
+# How to run:
+#   goagentx arena run examples/arena/leader_assassination.yaml --addr localhost:8080
+#   Or: POST /arena/scenario/run with this YAML as JSON body
+#
+# Expected outcome on a healthy cluster:
+#   - Grade: A or B (quick recovery = high Availability score)
+#   - Recovery time < 5s if election is working
+# ============================================================================
+
+name: leader-assassination-and-recovery
+description: |
+  Kill the elected leader, watch the system elect a new one,
+  then kill a random agent to verify the new leader can handle faults.
+  This is the most fundamental resilience test — if this fails,
+  nothing else matters.
+tags: [smoke, leader, election, critical]
+
+config:
+  stop_on_error: true       # Stop if any action fails to inject
+  warmup: 3s                # Let the system settle before we strike
+  cooldown: 10s             # Give it time to fully recover after chaos
+  timeout: 2m               # Hard cap on total scenario duration
+
+actions:
+  # ── Phase 1: The Strike ──────────────────────────────────────────────
+  # Kill whoever is currently the leader. The runtime should detect this
+  # and trigger an election among remaining agents.
+  - delay: 0s
+    action:
+      type: kill_leader
+    label: phase1-assassinate-leader
+    expect_success: true
+    depends_on: []
+
+  # ── Phase 2: Observation Window ───────────────────────────────────────
+  # Wait 8 seconds for election to complete and agents to reconnect.
+  # No fault injection here — pure observation of self-healing.
+  - delay: 8s
+    action:
+      type: kill_agent          # This won't actually kill; it proves
+      target_id: ""            # the NEW leader is responsive by succeeding.
+    label: phase2-verify-new-leader-alive
+    expect_success: true
+    depends_on: [phase1-assassinate-leader]
+
+  # ── Phase 3: Second Strike ────────────────────────────────────────────
+  # Now that a new leader is up, kill a regular agent. This tests whether
+  # the post-election topology is stable enough to handle member loss.
+  - delay: 5s
+    action:
+      type: kill_agent
+      target_id: ""            # Empty = let the system pick any agent
+    label: phase3-kill-random-agent
+    expect_success: true
+    depends_on: [phase2-verify-new-leader-alive]
+
+  # ── Phase 4: Stress Test New Leader ──────────────────────────────────
+  # Slow down another agent to see if the leader can still coordinate
+  # under degraded conditions (simulating network congestion / GC pause).
+  - delay: 6s
+    action:
+      type: slow_agent
+      target_id: ""
+      metadata:
+        duration: 8s           # Agent will respond slowly for 8 seconds
+    label: phase4-slow-agent-under-load
+    expect_success: true
+    depends_on: [phase3-kill-random-agent]

@@ -89,10 +89,38 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		default:
 		}
 
+		// Record agent step start
+		if g.tracer != nil {
+			g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+				TraceID:  g.tracer.GetTraceID(ctx),
+				AgentID:  nodeID,
+				StepName: "execute",
+			})
+		}
+
 		// Execute node
+		nodeStart := time.Now()
 		err := node.Execute(ctx, state)
 		if err != nil {
+			if g.tracer != nil {
+				g.tracer.RecordError(ctx, &observability.AgentError{
+					TraceID:   g.tracer.GetTraceID(ctx),
+					AgentID:   nodeID,
+					ErrorType: "execution_error",
+					Message:   err.Error(),
+				})
+			}
 			return nil, errors.Wrapf(err, "node %s execution failed", nodeID)
+		}
+
+		// Record agent step completion
+		if g.tracer != nil {
+			g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+				TraceID:  g.tracer.GetTraceID(ctx),
+				AgentID:  nodeID,
+				StepName: "execute",
+				Duration: time.Since(nodeStart),
+			})
 		}
 
 		// Mark as executed

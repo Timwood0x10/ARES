@@ -17,3 +17,5 @@ bin/
 
 *.log
 **/logs/
+!examples/**/*.log
+**/logs/

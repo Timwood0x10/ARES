@@ -1,7 +1,10 @@
 // Package distillation provides memory distillation functionality for agent experience extraction.
 package distillation
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // MemoryType defines the four types of memory.
 type MemoryType string
@@ -56,21 +59,17 @@ const (
 // ExperienceRepository defines the interface for experience storage and retrieval.
 type ExperienceRepository interface {
 	// SearchByVector searches for similar experiences by vector.
-	SearchByVector(ctx interface{}, vector []float64, tenantID string, limit int) ([]Experience, error)
+	SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]Experience, error)
 
 	// GetByMemoryType retrieves experiences by memory type.
-	GetByMemoryType(ctx interface{}, tenantID string, memoryType MemoryType) ([]Experience, error)
+	GetByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) ([]Experience, error)
 
 	// Update updates an existing experience.
-	Update(ctx interface{}, experience *Experience) error
+	Update(ctx context.Context, experience *Experience) error
 
 	// Delete deletes an experience by ID.
-	Delete(ctx interface{}, id string) error
+	Delete(ctx context.Context, id string) error
 
 	// Create creates a new experience.
-	// Args:
-	// ctx - operation context.
-	// experience - the experience to create.
-	// Returns error if creation fails.
-	Create(ctx interface{}, experience *Experience) error
+	Create(ctx context.Context, experience *Experience) error
 }

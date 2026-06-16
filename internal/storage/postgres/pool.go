@@ -165,35 +165,47 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...any) (sql.Result,
 // Query executes a query and returns rows.
 // The connection is released when rows are closed.
 func (p *Pool) Query(ctx context.Context, query string, args ...any) (*ManagedRows, error) {
-	// Add query timeout if not already set in context
+	// Add query timeout if not already set in context.
+	// The cancel function is stored in ManagedRows and called on Close(),
+	// so the context remains valid for the full lifetime of row scanning.
+	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.cfg.QueryTimeout)
-		defer cancel()
 	}
 
 	conn, err := p.Get(ctx)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 
 	rows, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		p.Release(conn)
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 
 	mr := &ManagedRows{
-		Rows: rows,
-		conn: conn,
-		pool: p,
+		Rows:   rows,
+		conn:   conn,
+		pool:   p,
+		cancel: cancel,
 	}
-	// Set finalizer to release connection if caller forgets to call Close()
+	// Set finalizer to release connection if caller forgets to call Close().
 	runtime.SetFinalizer(mr, func(m *ManagedRows) {
 		if m.conn != nil {
 			slog.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
+		}
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
 		}
 	})
 
@@ -203,18 +215,24 @@ func (p *Pool) Query(ctx context.Context, query string, args ...any) (*ManagedRo
 // ManagedRows wraps sql.Rows and manages connection lifecycle.
 type ManagedRows struct {
 	*sql.Rows
-	conn *sql.Conn
-	pool *Pool
+	conn   *sql.Conn
+	pool   *Pool
+	cancel context.CancelFunc
 }
 
 // Close closes the rows and releases the connection.
 func (m *ManagedRows) Close() error {
+	err := m.Rows.Close()
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
 	if m.conn != nil {
 		m.pool.Release(m.conn)
 		m.conn = nil
 		runtime.SetFinalizer(m, nil)
 	}
-	return m.Rows.Close()
+	return err
 }
 
 // QueryRow executes a query and returns a single row.
@@ -222,14 +240,16 @@ func (m *ManagedRows) Close() error {
 // This avoids the data race that would occur if the connection were released
 // before the caller finishes reading the row data.
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *ManagedRow {
+	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.cfg.QueryTimeout)
-		defer cancel()
 	}
 
 	conn, err := p.Get(ctx)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		slog.Error("Failed to acquire database connection for QueryRow", "error", err)
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -237,13 +257,17 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 	}
 
 	row := conn.QueryRowContext(ctx, query, args...)
-	mr := &ManagedRow{Row: row, conn: conn, pool: p}
+	mr := &ManagedRow{Row: row, conn: conn, pool: p, cancel: cancel}
 	// Set finalizer to release connection if caller never calls Scan().
 	runtime.SetFinalizer(mr, func(m *ManagedRow) {
 		if m.conn != nil {
 			slog.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
+		}
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
 		}
 	})
 	return mr
@@ -253,13 +277,18 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 // The caller MUST call Scan to consume the row, which releases the connection.
 type ManagedRow struct {
 	*sql.Row
-	conn *sql.Conn
-	pool *Pool
+	conn   *sql.Conn
+	pool   *Pool
+	cancel context.CancelFunc
 }
 
 // Scan scans the row and releases the connection.
 func (m *ManagedRow) Scan(dest ...any) error {
 	err := m.Row.Scan(dest...)
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
 	if m.conn != nil {
 		m.pool.Release(m.conn)
 		m.conn = nil

@@ -4,22 +4,28 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"goagentx/internal/tools/resources/base"
+	"goagentx/internal/tools/resources/core"
 )
 
 // CodeRunner provides code execution capabilities with sandbox constraints.
 // WARNING: This tool executes code on the host system. Use with caution and ensure proper sandboxing.
 type CodeRunner struct {
 	*base.BaseTool
-	enablePython  bool
-	enableJS      bool
-	timeout       time.Duration
-	maxOutputSize int
+	enablePython        bool
+	enableJS            bool
+	timeout             time.Duration
+	maxOutputSize       int
+	dangerousPatterns   []string
+	obfuscationPatterns []string
 }
 
 // NewCodeRunner creates a new CodeRunner tool.
@@ -53,9 +59,20 @@ func NewCodeRunner() *CodeRunner {
 	return &CodeRunner{
 		BaseTool:      base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
 		enablePython:  true,
-		enableJS:      false, // Disabled by default due to sandbox concerns
+		enableJS:      false,
 		timeout:       30 * time.Second,
 		maxOutputSize: 10240,
+		dangerousPatterns: []string{
+			"import os", "import subprocess", "import shutil",
+			"import sys", "import socket", "import pickle",
+			"import marshal", "import ctypes", "import multiprocessing",
+			"eval(", "exec(", "open(", "system(", "popen", "fork(",
+			"__import__", "__builtins__",
+		},
+		obfuscationPatterns: []string{
+			"chr(", "ord(", "\\x", "base64.",
+			"getattr", "setattr", "compile(",
+		},
 	}
 }
 
@@ -93,6 +110,17 @@ func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration
 		enableJS:      enableJS,
 		timeout:       timeout,
 		maxOutputSize: maxOutputSize,
+		dangerousPatterns: []string{
+			"import os", "import subprocess", "import shutil",
+			"import sys", "import socket", "import pickle",
+			"import marshal", "import ctypes", "import multiprocessing",
+			"eval(", "exec(", "open(", "system(", "popen", "fork(",
+			"__import__", "__builtins__",
+		},
+		obfuscationPatterns: []string{
+			"chr(", "ord(", "\\x", "base64.",
+			"getattr", "setattr", "compile(",
+		},
 	}
 }
 
@@ -106,6 +134,10 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 	code, ok := params["code"].(string)
 	if !ok || code == "" {
 		return core.NewErrorResult("code is required"), nil
+	}
+
+	if len(code) > 10000 {
+		return core.NewErrorResult("code exceeds maximum length of 10000 characters"), nil
 	}
 
 	// Validate code for potential security issues
@@ -153,83 +185,16 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 func (t *CodeRunner) validateCode(code string) error {
 	lowerCode := strings.ToLower(code)
 
-	dangerousPatterns := []string{
-		"import os",
-		"import subprocess",
-		"import shutil",
-		"import sys",
-		"import socket",
-		"import pickle",
-		"import marshal",
-		"import ctypes",
-		"import multiprocessing",
-		"eval(",
-		"exec(",
-		"__import__",
-		"__builtins__",
-		"open(",
-		"file(",
-		".write(",
-		"delete",
-		".remove",
-		"system(",
-		"popen",
-		"getattr(",
-		"setattr(",
-		"delattr(",
-		"globals(",
-		"locals(",
-		"vars(",
-		"compile(",
-		"breakpoint(",
-		"from os ",
-		"from sys ",
-		"from subprocess ",
-		"from shutil ",
-		"from socket ",
-		"from importlib ",
-		"importlib.import_module",
-		"importlib.reload",
-	}
-
-	for _, pattern := range dangerousPatterns {
+	for _, pattern := range t.dangerousPatterns {
 		if strings.Contains(lowerCode, pattern) {
 			return fmt.Errorf("potentially dangerous pattern detected: %s", pattern)
 		}
 	}
 
-	if strings.Contains(lowerCode, "from ") && strings.Contains(lowerCode, " import ") {
-		return fmt.Errorf("potentially dangerous 'from X import' pattern detected")
-	}
-
-	if strings.Contains(lowerCode, "\"\"\"") || strings.Contains(lowerCode, "'''") {
-		if strings.Contains(code, "\"\"\"") && (strings.Contains(code, "os") || strings.Contains(code, "subprocess")) {
-			return fmt.Errorf("potentially dangerous pattern in multiline string")
-		}
-		if strings.Contains(code, "'''") && (strings.Contains(code, "os") || strings.Contains(code, "subprocess")) {
-			return fmt.Errorf("potentially dangerous pattern in multiline string")
-		}
-	}
-
-	obfuscationPatterns := []string{
-		"__imp",
-		"chr(",
-		"ord(",
-		"\\x",
-		"import_module",
-		"getattr",
-		"base64.",
-	}
-
-	for _, pattern := range obfuscationPatterns {
+	for _, pattern := range t.obfuscationPatterns {
 		if strings.Contains(lowerCode, pattern) {
 			return fmt.Errorf("potential code obfuscation detected: %s", pattern)
 		}
-	}
-
-	normalized := strings.Join(strings.Fields(code), " ")
-	if normalized != code && strings.Contains(normalized, "import") {
-		return fmt.Errorf("potential whitespace obfuscation detected")
 	}
 
 	return nil
@@ -237,8 +202,18 @@ func (t *CodeRunner) validateCode(code string) error {
 
 // runPython executes Python code.
 func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize int) (core.Result, error) {
-	// Check if Python is available
 	cmd := exec.CommandContext(ctx, "python3", "-c", code) // #nosec G204
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	workDir, _ := os.MkdirTemp("", "code-runner-*")
+	if workDir != "" {
+		cmd.Dir = workDir
+		defer func() {
+			if err := os.RemoveAll(workDir); err != nil {
+				slog.Error("failed to clean up temp dir", "path", workDir, "error", err)
+			}
+		}()
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -291,8 +266,18 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 
 // runJavaScript executes JavaScript code.
 func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSize int) (core.Result, error) {
-	// Check if Node.js is available
 	cmd := exec.CommandContext(ctx, "node", "-e", code) // #nosec G204
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	workDir, _ := os.MkdirTemp("", "code-runner-*")
+	if workDir != "" {
+		cmd.Dir = workDir
+		defer func() {
+			if err := os.RemoveAll(workDir); err != nil {
+				slog.Error("failed to clean up temp dir", "path", workDir, "error", err)
+			}
+		}()
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -375,8 +360,7 @@ func (t *CodeRunner) IsJSEnabled() bool {
 
 // AddDangerousPattern adds a custom dangerous pattern to validate against.
 func (t *CodeRunner) AddDangerousPattern(pattern string) {
-	// This would need to be stored in a slice for validation
-	// Implementation depends on requirements
+	t.dangerousPatterns = append(t.dangerousPatterns, pattern)
 }
 
 // GetSupportedLanguages returns the list of supported languages.

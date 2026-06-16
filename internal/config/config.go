@@ -1,7 +1,9 @@
+// package config - provides configuration loading and validation for GoAgentX.
 package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,16 +28,18 @@ const (
 
 // Config holds all configuration for the server.
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	LLM        LLMConfig        `yaml:"llm"`
-	Agents     AgentsConfig     `yaml:"agents"`
-	Tools      ToolsConfig      `yaml:"tools"`
-	Prompts    PromptsConfig    `yaml:"prompts"`
-	Output     OutputConfig     `yaml:"output"`
-	Validation ValidationConfig `yaml:"validation"`
-	Workflow   WorkflowConfig   `yaml:"workflow"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Memory     MemoryConfig     `yaml:"memory"`
+	Server     ServerConfig       `yaml:"server"`
+	LLM        LLMConfig          `yaml:"llm"`
+	Agents     AgentsConfig       `yaml:"agents"`
+	Tools      ToolsConfig        `yaml:"tools"`
+	Prompts    PromptsConfig      `yaml:"prompts"`
+	Output     OutputConfig       `yaml:"output"`
+	Validation ValidationConfig   `yaml:"validation"`
+	Workflow   WorkflowConfig     `yaml:"workflow"`
+	Storage    StorageConfig      `yaml:"storage"`
+	Memory     MemoryConfig       `yaml:"memory"`
+	MCP        MCPConfig          `yaml:"mcp"`
+	Dashboard  DashboardAppConfig `yaml:"dashboard"`
 }
 
 // ServerConfig holds server configuration.
@@ -390,6 +394,19 @@ func (c *Config) setDefaults() {
 	if c.Workflow.ReloadInterval == 0 && c.Workflow.AutoReload {
 		c.Workflow.ReloadInterval = 30 // seconds
 	}
+	// MCP defaults
+	for i := range c.MCP.Servers {
+		if c.MCP.Servers[i].Timeout == 0 {
+			c.MCP.Servers[i].Timeout = 30
+		}
+	}
+	// Dashboard defaults
+	if c.Dashboard.Addr == "" {
+		c.Dashboard.Addr = ":8090"
+	}
+	if c.Dashboard.WSPingInterval == 0 {
+		c.Dashboard.WSPingInterval = 30
+	}
 }
 
 // Validate validates the configuration values.
@@ -466,6 +483,50 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid session memory max history: %d, must be non-negative", c.Memory.SessionMemory.MaxHistory)
 	}
 
+	// Validate MCP configuration
+	serverNames := make(map[string]bool)
+	for i, srv := range c.MCP.Servers {
+		if srv.Name == "" {
+			return fmt.Errorf("mcp server %d: name must not be empty", i)
+		}
+		if serverNames[srv.Name] {
+			return fmt.Errorf("mcp server %d: duplicate name %q", i, srv.Name)
+		}
+		serverNames[srv.Name] = true
+		if srv.Transport.Type != "stdio" && srv.Transport.Type != "sse" {
+			return fmt.Errorf("mcp server %q: transport type must be \"stdio\" or \"sse\", got %q", srv.Name, srv.Transport.Type)
+		}
+		if srv.Transport.Type == "stdio" {
+			if srv.Transport.Stdio == nil {
+				return fmt.Errorf("mcp server %q: stdio transport config must not be nil", srv.Name)
+			}
+			if srv.Transport.Stdio.Command == "" {
+				return fmt.Errorf("mcp server %q: stdio command must not be empty", srv.Name)
+			}
+		}
+		if srv.Transport.Type == "sse" {
+			if srv.Transport.SSE == nil {
+				return fmt.Errorf("mcp server %q: sse transport config must not be nil", srv.Name)
+			}
+			if srv.Transport.SSE.URL == "" {
+				return fmt.Errorf("mcp server %q: sse url must not be empty", srv.Name)
+			}
+		}
+		if srv.Timeout < 0 {
+			return fmt.Errorf("mcp server %q: timeout must be non-negative, got %d", srv.Name, srv.Timeout)
+		}
+	}
+
+	// Validate dashboard configuration (only if explicitly configured)
+	if c.Dashboard.Addr != "" {
+		if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
+			return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
+		}
+		if c.Dashboard.WSPingInterval < 1 {
+			return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
+		}
+	}
+
 	return nil
 }
 
@@ -481,4 +542,47 @@ type AgentToolConfig struct {
 	Description  string   `yaml:"description"`   // Agent description
 	SystemPrompt string   `yaml:"system_prompt"` // Custom system prompt for this agent
 	Tools        []string `yaml:"tools"`         // List of tool names this agent can use
+}
+
+// MCPConfig holds MCP client configuration.
+type MCPConfig struct {
+	Servers []MCPServerEntry `yaml:"servers"`
+}
+
+// MCPServerEntry holds configuration for a single MCP server.
+type MCPServerEntry struct {
+	Name      string         `yaml:"name"`
+	Enabled   bool           `yaml:"enabled"`
+	AutoStart bool           `yaml:"auto_start"`
+	Timeout   int            `yaml:"timeout"` // seconds
+	Transport TransportEntry `yaml:"transport"`
+}
+
+// TransportEntry holds transport configuration.
+type TransportEntry struct {
+	Type  string      `yaml:"type"` // "stdio" or "sse"
+	Stdio *StdioEntry `yaml:"stdio,omitempty"`
+	SSE   *SSEEntry   `yaml:"sse,omitempty"`
+}
+
+// StdioEntry holds stdio transport configuration.
+type StdioEntry struct {
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+	WorkDir string            `yaml:"work_dir"`
+}
+
+// SSEEntry holds SSE transport configuration.
+type SSEEntry struct {
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+	Timeout int               `yaml:"timeout"` // seconds
+}
+
+// DashboardAppConfig holds dashboard configuration.
+type DashboardAppConfig struct {
+	Addr           string `yaml:"addr"`
+	EnableAuth     bool   `yaml:"enable_auth"`
+	WSPingInterval int    `yaml:"ws_ping_interval"` // seconds
 }

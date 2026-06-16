@@ -1,7 +1,6 @@
 package output
 
 import (
-	"context"
 	"errors"
 	"fmt"
 )
@@ -70,14 +69,13 @@ func (f *Factory) ListProviders() []string {
 // Factory errors.
 var (
 	ErrUnsupportedProvider = errors.New("unsupported provider")
-	ErrInvalidConfig       = errors.New("invalid configuration")
 )
 
 // Global default factory.
 var defaultFactory = NewFactory()
 
 // CreateAdapter creates an adapter using the default factory.
-func CreateAdapter(ctx context.Context, provider string, config *Config) (LLMAdapter, error) {
+func CreateAdapter(provider string, config *Config) (LLMAdapter, error) {
 	return defaultFactory.Create(provider, config)
 }
 

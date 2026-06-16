@@ -302,23 +302,7 @@ func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) 
 // id - tool identifier.
 // Returns error if delete operation fails.
 func (r *ToolRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM tools WHERE id = $1`
-
-	result, err := r.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return errors.Wrap(err, "delete tool")
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return errors.Wrap(err, "get rows affected")
-	}
-
-	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
-	}
-
-	return nil
+	return postgres.DeleteByID(ctx, r.db, "tools", id)
 }
 
 // SearchByVector performs semantic search for tools using vector embedding.

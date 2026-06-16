@@ -31,14 +31,6 @@ func NewParser() *Parser {
 	}
 }
 
-// NewParserWithValidator creates a new Parser with custom input validation.
-func NewParserWithValidator(validator *InputValidator) *Parser {
-	return &Parser{
-		fixJSON:        true,
-		inputValidator: validator,
-	}
-}
-
 // ParseRecommendResult parses LLM output into RecommendResult.
 func (p *Parser) ParseRecommendResult(output string) (*models.RecommendResult, error) {
 	// Validate input length before processing
@@ -399,6 +391,137 @@ func (p *Parser) ParseArray(output string) ([]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+// ParseJSONSlice extracts a JSON array from LLM output and returns it as a slice.
+// It reuses extractJSON and fixJSONString for robust extraction.
+func (p *Parser) ParseJSONSlice(output string) ([]interface{}, error) {
+	if err := p.inputValidator.ValidateInput(output); err != nil {
+		return nil, gerr.Wrap(err, "input validation failed")
+	}
+
+	// extractJSON prefers { over [, so for array extraction we try the
+	// markdown path first and then look for [ directly before falling
+	// back to the generic extractJSON.
+	jsonStr := p.extractJSONArray(output)
+	if jsonStr == "" {
+		return nil, ErrInvalidJSON
+	}
+
+	if err := p.inputValidator.ValidateJSONLength(jsonStr); err != nil {
+		return nil, gerr.Wrap(err, "JSON validation failed")
+	}
+
+	jsonStr = strings.TrimSpace(jsonStr)
+	if !strings.HasPrefix(jsonStr, "[") {
+		return nil, ErrInvalidJSON
+	}
+
+	var result []interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		if !p.fixJSON {
+			return nil, gerr.WrapError(ErrInvalidJSON, err)
+		}
+
+		fixed, fixErr := p.fixJSONString(jsonStr)
+		if fixErr != nil {
+			return nil, fmt.Errorf("%w: tried fix: %v", ErrInvalidJSON, fixErr)
+		}
+
+		if err := json.Unmarshal([]byte(fixed), &result); err != nil {
+			return nil, gerr.WrapError(ErrInvalidJSON, err)
+		}
+	}
+
+	if len(result) > p.inputValidator.GetMaxArrayLength() {
+		return nil, gerr.Wrapf(ErrArrayTooLarge, "%d elements (max %d)", len(result), p.inputValidator.GetMaxArrayLength())
+	}
+
+	return result, nil
+}
+
+// extractJSONArray extracts a JSON array from output, preferring [ over {.
+func (p *Parser) extractJSONArray(output string) string {
+	output = strings.TrimSpace(output)
+
+	// Check markdown code blocks first.
+	matches := markdownPattern.FindStringSubmatch(output)
+	if len(matches) > 1 {
+		result := strings.TrimSpace(matches[1])
+		if strings.HasPrefix(result, "[") {
+			return result
+		}
+	}
+
+	// Look for array bracket directly.
+	start := strings.Index(output, "[")
+	if start != -1 {
+		end := findMatchingBracket(output, start, '[', ']')
+		if end != -1 {
+			return output[start:end]
+		}
+	}
+
+	// Fall back to generic extraction (may return an object).
+	return p.extractJSON(output)
+}
+
+// ParseStructured extracts JSON from LLM output and unmarshals into target.
+// It reuses extractJSON and fixJSONString for robust extraction.
+func (p *Parser) ParseStructured(output string, target interface{}) error {
+	if target == nil {
+		return fmt.Errorf("target must not be nil")
+	}
+
+	return p.ParseGeneric(output, target)
+}
+
+// ParseKeyValue extracts key-value pairs from text like "Key: Value" or "Key = Value".
+// It handles both colon and equals delimiters, trims whitespace, and skips empty lines.
+func (p *Parser) ParseKeyValue(output string) map[string]string {
+	result := make(map[string]string)
+	if output == "" {
+		return result
+	}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		key, value, ok := parseKeyValueLine(line)
+		if ok {
+			result[key] = value
+		}
+	}
+
+	return result
+}
+
+// parseKeyValueLine extracts a single key-value pair from a line.
+// It supports "Key: Value" and "Key = Value" formats.
+func parseKeyValueLine(line string) (key, value string, ok bool) {
+	// Try colon delimiter first.
+	if idx := strings.Index(line, ":"); idx > 0 {
+		key = strings.TrimSpace(line[:idx])
+		value = strings.TrimSpace(line[idx+1:])
+		if key != "" {
+			return key, value, true
+		}
+	}
+
+	// Try equals delimiter.
+	if idx := strings.Index(line, "="); idx > 0 {
+		key = strings.TrimSpace(line[:idx])
+		value = strings.TrimSpace(line[idx+1:])
+		if key != "" {
+			return key, value, true
+		}
+	}
+
+	return "", "", false
 }
 
 // Parser errors.

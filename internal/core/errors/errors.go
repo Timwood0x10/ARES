@@ -85,15 +85,6 @@ var (
 	ErrDispatchFailed              = errors.New("task dispatch failed")
 )
 
-// ModelValidationErrors returns validation errors for models package.
-var ModelValidationErrors = map[string]error{
-	"ErrInvalidUserID": ErrInvalidUserID,
-	"ErrInvalidAge":    ErrInvalidAge,
-	"ErrInvalidBudget": ErrInvalidBudget,
-	"ErrInvalidInput":  ErrInvalidInput,
-	"ErrNilPointer":    ErrNilPointer,
-}
-
 // Sentinel errors for Workflow module.
 var (
 	ErrWorkflowNotFound     = errors.New("workflow not found")

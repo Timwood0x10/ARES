@@ -376,7 +376,7 @@ func (m *mockRetrievalRepository) CreateKnowledge(ctx context.Context, item *Kno
 	return nil
 }
 
-func (m *mockRetrievalRepository) GetKnowledge(ctx context.Context, itemID string) (*KnowledgeItem, error) {
+func (m *mockRetrievalRepository) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
 	return nil, nil
 }
 
