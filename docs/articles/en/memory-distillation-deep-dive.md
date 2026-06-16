@@ -1,18 +1,18 @@
 # GoAgentX Architecture Deep Dive (3): Memory Distillation — When Agents Learn to Forget and Refine
 
-> **Series Index**
->
-> Part 1: [Coming soon] Multi-Agent Communication Protocol AHP
-> Part 2: [Coming soon] Leader Agent Work Pipeline
-> Part 3: Memory Distillation — When Agents Learn to Forget and Refine (this article)
+> You know that feeling when a chatbot starts rambling after 50 rounds? Context window's full. Token costs go through the roof. The agent forgets what it said five minutes ago.
+> Worse: it just solved a complex problem for you — then the next user asks something similar, and the agent starts from scratch.
+> I thought: **agents shouldn't just remember conversations — they should extract reusable experience from them.** That's what Memory Distillation is.
 
 ---
 
-## 1. The Problem: Agent Memory Dilemmas
+## 1. The Problem That Drove Me Crazy
 
-Any developer who has run an Agent in production will tell you: **the context window is the most expensive resource**.
+When I first ran agents in production, the issue wasn't "not smart enough" — it was memory explosion.
 
-After an Agent runs for hours, a session's conversation history may accumulate thousands of messages. Stuffing all of them into an LLM's context window is neither economical nor practical—GPT-4's 128K context isn't meant to be a chat log dumpster.
+After a few hours, a session might have thousands of messages. Stuffing all of them into GPT-4's 128K context? That's not what it's for. Token burn accelerates, response latency spikes, and eventually the agent becomes unusable.
+
+But the thing that annoyed me most: **an agent solves a complex bug, the next user asks something similar, and the agent starts from zero.** It's like the first solution never happened.
 
 But the deeper issue is: **Agents don't need to remember the conversation itself—they need to extract reusable *experience* from it.**
 
@@ -31,17 +31,30 @@ GoAgentX's **Memory Distillation** system was designed to solve these fundamenta
 
 The core of the memory system is a three-tier architecture. Each tier is more refined, more persistent, and more expensive than the one below it:
 
-```
-Session Memory          Task Memory             Distilled Memory
-┌──────────────┐       ┌──────────────┐        ┌──────────────┐
-│ Session-level │       │ Task-level   │        │ Experience   │
-│ Sliding window│  →    │ Execution log│   →    │ Structured   │
-│ TTL expiry    │       │ TTL expiry   │        │ knowledge    │
-│ Not persisted │       │ Persistable  │        │ Vector embed │
-│ Max 100 msgs  │       │ Max 1000     │        │ LRU eviction │
-│ In-memory only│       │ Memory/DB    │        │ Max 5000     │
-└──────────────┘       └──────────────┘        │ pgvector     │
-                                                └──────────────┘
+```mermaid
+graph LR
+    subgraph "Session Memory"
+        SM1[Sliding window]
+        SM2[TTL expiry]
+        SM3[Not persisted]
+        SM4[Max 100 msgs]
+        SM5[In-memory only]
+    end
+    subgraph "Task Memory"
+        TM1[Execution log]
+        TM2[TTL expiry]
+        TM3[Persistable]
+        TM4[Max 1000 records]
+        TM5[Memory / DB]
+    end
+    subgraph "Distilled Memory"
+        DM1[Structured knowledge]
+        DM2[Vector embed]
+        DM3[LRU eviction]
+        DM4[Max 5000 records]
+        DM5[pgvector]
+    end
+    SM --> TM --> DM
 ```
 
 **Design philosophy**: Not all data needs distillation, and not all experience needs vectorization.
@@ -738,15 +751,15 @@ Raw messages → Sliding window (Session) → Execution record (Task) → Struct
                                                                     Embedding                       async embedding
 ```
 
-Each layer performs a "less, better, more persistent" transformation:
+Each layer does the same thing: **less data, better signal, longer persistence**.
 
-- **Session**: "Remember" current context → sliding window keeps only latest N messages
-- **Task**: "Record" single task execution → **Distill** extracts key information
-- **Experience**: "Refine" reusable knowledge from tasks → **LLM** summary + **Vectorize** storage
-- **Dashboard**: Flight Recorder visualizes and manages memory state
+- **Session**: Remember the conversation → sliding window keeps only the latest N messages
+- **Task**: Record execution → Distill extracts what matters
+- **Experience**: Refine knowledge → LLM summarizes + vectorizes for future retrieval
+- **Dashboard**: Flight Recorder shows you what's in memory at a glance
 
-And the Runtime cognitive recovery mechanism closes the value loop—distilled experience isn't just retrieved by future tasks, it's also used to restore conversation context when an Agent crashes.
+What I'm most proud of isn't the distillation itself — it's the closed loop. Distilled experience isn't just retrieved by future tasks. When an Agent crashes and resurrects, the cognitive recovery system uses this same pipeline to restore conversation context. **Agents come back from the dead with their memories intact.**
 
 ---
 
-**Next in series**: Workflow Engine—a thread-safe DAG engine built with MutableDAG, supporting runtime dynamic node insert/delete, incremental cycle detection, semaphore-based parallel scheduling, and 5-second deadlock timeout. Plus, a pluggable Human-in-the-Loop system.
+**Next up**: Workflow Engine. I built this because I was sick of hardcoding workflows. Every time a process changed, I had to change code and redeploy. So I built a MutableDAG — you can add and remove nodes at runtime, right from the Dashboard. Plus thread-safe cycle detection, semaphore-based parallel scheduling, and a 5-second deadlock timeout. Human-in-the-Loop is pluggable too.

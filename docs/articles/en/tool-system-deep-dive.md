@@ -1,10 +1,21 @@
 # GoAgentX Architecture Deep Dive (5): Tool System -- Capability Matrix and Safe Execution
 
-## 1. Introduction
+> An agent that can't use tools is useless. You know the type: "Let me look that up for you..." — then nothing happens.
+> I figured: **an agent's capability is defined by the tools it can call**. So I made the tool system the thickest layer in the entire framework.
+> 22 built-in tools, from a calculator to a code runner, from web scraping to knowledge base CRUD. Not for show — each one earned its place through real usage.
 
-In any agent framework, the tool system is the bridge between language model reasoning and real-world action. Without tools, an LLM is confined to its training corpus -- it cannot calculate, search the web, read files, execute code, or access external knowledge bases. GoAgentX's tool system is designed as a layered, extensible architecture that addresses three fundamental challenges: **discoverability** (how does the agent know what tools exist?), **security** (how do we prevent malicious or accidental damage?), and **interoperability** (how do diverse tools present a uniform interface to the orchestration layer?).
+## Why the Tool Layer Is So Thick
 
-This article provides a deep-dive analysis of GoAgentX's tool system, covering its core interfaces, registry pattern, built-in tool categories, security model, capability detection engine, and extensibility mechanisms. We will examine source code from key files to understand the design decisions that make this system both powerful and safe.
+The most awkward moment when demoing an agent? It says "Let me search for that" — and does nothing, because it has no search tool. Or "Let me calculate that" — and outputs a text formula instead of a number, because it has no calculator.
+
+My first Python prototype registered tools in a giant dict of functions. It worked — until it didn't. No parameter validation, no error handling, no security isolation. One tool crashes, the whole agent goes down with it.
+
+When I designed GoAgentX's tool system, I set a few hard rules:
+
+1. **Every tool is a first-class citizen** — its own name, description, parameter schema, capability tags
+2. **One registry to rule them all** — tools don't scatter across the codebase
+3. **Security isn't an afterthought** — code execution, file operations, network requests had multi-layer protection from day one
+4. **Tools must be discoverable** — the agent needs to know what it can call, no hardcoding
 
 ## 2. Architecture Overview
 
@@ -28,7 +39,7 @@ At the top, agents and workflows discover and invoke tools through a **thread-sa
 
 ### 3.1 The Tool Interface
 
-The foundational abstraction is the `Tool` interface, defined in `/Users/scc/go/src/goagent/internal/tools/resources/core/tool.go`:
+The foundational abstraction is the `Tool` interface, defined in `internal/tools/resources/core/tool.go`:
 
 ```go
 type Tool interface {
@@ -84,7 +95,7 @@ This schema is JSON-serializable, making it directly usable for LLM function-cal
 
 ### 3.3 Result Type
 
-Every tool returns a `Result` struct, defined in `/Users/scc/go/src/goagent/internal/tools/resources/core/result.go`:
+Every tool returns a `Result` struct, defined in `internal/tools/resources/core/result.go`:
 
 ```go
 type Result struct {
@@ -125,7 +136,7 @@ type ResultList struct {
 
 ### 4.1 Thread-Safe Registry
 
-The `Registry` struct, in `/Users/scc/go/src/goagent/internal/tools/resources/core/registry.go`, is the central tool management hub:
+The `Registry` struct, in `internal/tools/resources/core/registry.go`, is the central tool management hub:
 
 ```go
 type Registry struct {
@@ -195,7 +206,7 @@ This enables logical organization -- for example, all knowledge base tools (sear
 
 ### 5.1 BaseTool
 
-The `BaseTool` struct, in `/Users/scc/go/src/goagent/internal/tools/resources/base/base_tool.go`, provides default implementations of all `Tool` interface methods plus lifecycle hooks:
+The `BaseTool` struct, in `internal/tools/resources/base/base_tool.go`, provides default implementations of all `Tool` interface methods plus lifecycle hooks:
 
 ```go
 type BaseTool struct {
@@ -249,7 +260,7 @@ This is a classic functional adapter pattern -- it converts any function with th
 
 ## 6. Built-in Tool Categories
 
-The `RegisterGeneralTools()` function in `/Users/scc/go/src/goagent/internal/tools/resources/builtin/builtin.go` registers all built-in tools:
+The `RegisterGeneralTools()` function in `internal/tools/resources/builtin/builtin.go` registers all built-in tools:
 
 ```go
 func RegisterGeneralTools() error {
@@ -302,7 +313,7 @@ This gives us approximately 20 built-in tools across 8 capability domains. Let's
 
 ### 6.1 Calculator -- Recursive Descent Parsing
 
-The Calculator tool, in `/Users/scc/go/src/goagent/internal/tools/resources/builtin/math/calculator.go`, implements a recursive descent parser with four mutually recursive functions:
+The Calculator tool, in `internal/tools/resources/builtin/math/calculator.go`, implements a recursive descent parser with four mutually recursive functions:
 
 ```go
 func parseAddSub(expr string) (float64, error)      // + and -
@@ -326,7 +337,7 @@ case '/':
 
 ### 6.2 HTTPRequest -- Full HTTP Client
 
-The HTTP Request tool (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/network/http_request.go`) supports GET, POST, PUT, DELETE, and PATCH methods. It includes:
+The HTTP Request tool (`internal/tools/resources/builtin/network/http_request.go`) supports GET, POST, PUT, DELETE, and PATCH methods. It includes:
 
 - Configurable timeout (default 30s, settable per-request)
 - Automatic JSON body parsing
@@ -352,7 +363,7 @@ The JSON parsing attempt means the response is always usable: if the server retu
 
 ### 6.3 WebScraper -- HTML Parsing with Dependency Injection
 
-The WebScraper tool (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/network/web_scraper.go`) uses dependency injection for its HTTP client:
+The WebScraper tool (`internal/tools/resources/builtin/network/web_scraper.go`) uses dependency injection for its HTTP client:
 
 ```go
 type WebScraper struct {
@@ -385,7 +396,7 @@ func extractBody(html string, removeNav bool) string {
 
 ### 6.4 JSONTools -- Deep Merge and Path Extraction
 
-The JSONTools tool (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/json_tools.go`) implements four operations: parse, extract, merge, and pretty-print.
+The JSONTools tool (`internal/tools/resources/builtin/text/json_tools.go`) implements four operations: parse, extract, merge, and pretty-print.
 
 The `extract` operation implements a simple path navigation supporting dot notation and array indices:
 
@@ -435,7 +446,7 @@ func (t *JSONTools) deepMerge(base, override map[string]interface{}) map[string]
 
 ### 6.5 LogAnalyzer -- Multi-Format Log Parsing
 
-The LogAnalyzer (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/log_analyzer.go`) supports auto-detect of log formats and can parse JSON logs, Common Log Format, Combined Log Format, and simple text logs:
+The LogAnalyzer (`internal/tools/resources/builtin/text/log_analyzer.go`) supports auto-detect of log formats and can parse JSON logs, Common Log Format, Combined Log Format, and simple text logs:
 
 ```go
 func (t *LogAnalyzer) parseLog(ctx context.Context, logContent, logFormat string) (core.Result, error) {
@@ -474,7 +485,7 @@ type KnowledgeService interface {
 
 ### 6.7 TaskPlanner -- LLM-Driven Planning
 
-The TaskPlanner tool (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/planning/task_planner.go`) is unique because it itself calls an LLM to generate plans, decompose tasks, and estimate time. It uses structured prompts with JSON response parsing:
+The TaskPlanner tool (`internal/tools/resources/builtin/planning/task_planner.go`) is unique because it itself calls an LLM to generate plans, decompose tasks, and estimate time. It uses structured prompts with JSON response parsing:
 
 ```go
 func (t *TaskPlanner) buildPlanningPrompt(goal, context string, availableTools []string) string {
@@ -522,7 +533,7 @@ func extractJSON(text string) string {
 
 ### 7.1 CodeRunner -- Sandboxed Execution
 
-The CodeRunner tool (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/execution/code_runner.go`) is the most security-critical tool. It implements a multi-layered defense:
+The CodeRunner tool (`internal/tools/resources/builtin/execution/code_runner.go`) is the most security-critical tool. It implements a multi-layered defense:
 
 **Layer 1 -- Dangerous Pattern Detection:**
 ```go
@@ -570,7 +581,7 @@ The `Setpgid: true` flag creates a new process group, ensuring that if the paren
 
 ### 7.2 FileTools -- Path Validation
 
-FileTools (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/file/file_tools.go`) implements path-based security with the `allowedDir` constraint:
+FileTools (`internal/tools/resources/builtin/file/file_tools.go`) implements path-based security with the `allowedDir` constraint:
 
 ```go
 type FileTools struct {
@@ -605,7 +616,7 @@ if !includeHidden {
 
 ## 8. Capability Detection Engine
 
-The capability engine (`/Users/scc/go/src/goagent/internal/tools/resources/core/capability.go`) provides semantic tool discovery. It maps natural language keywords to capabilities:
+The capability engine (`internal/tools/resources/core/capability.go`) provides semantic tool discovery. It maps natural language keywords to capabilities:
 
 ```go
 var capabilityKeywords = map[Capability][]string{
@@ -721,22 +732,14 @@ The tool system is designed for low-latency operation:
 - **Direct invocation**: `Registry.Execute` looks up the tool by name in O(1) average time and calls its `Execute` method directly -- no reflection, no serialization overhead for internal calls.
 - **Capability caching**: The `CapabilityEngine` builds its capability map once and rebuilds only when tools are registered or unregistered.
 
-## 12. Summary
+## 12. What I Learned Building 22 Tools
 
-GoAgentX's tool system is an exercise in pragmatic architecture. It combines:
+Twenty-two tools. Calculator, code runner, web scraper, file tools, knowledge CRUD, HTTP client, and more. Not an impressive number by itself — what matters is each one earned its place through real production need. No filler.
 
-1. **A minimal, clean interface** (`Tool`) with seven methods that every tool must implement
-2. **Thread-safe registration** via `sync.RWMutex` for concurrent access
-3. **Hierarchical categorization** through `ToolCategory` and `Capability` enums
-4. **Semantic discovery** with the `CapabilityEngine` for natural language tool matching
-5. **Deep security** with multi-layer sandboxing in CodeRunner and path validation in FileTools
-6. **Testability** through interface-based dependency injection
-7. **Extensibility** via the functional adapter pattern, grouped registries, and MCP protocol external tools
+What I'm most proud of isn't the count — it's the security design. Registry pattern for centralized management. Capability tags for fine-grained control. Multi-layer protection (static analysis → process isolation → timeout → scope restriction). This setup lets me sleep at night.
 
-The system balances power and safety: it provides rich tooling for LLM agents (web scraping, code execution, knowledge management, file operations) while implementing guardrails that prevent misuse. The separation of the tool interface, registry, and capability detection into distinct layers means each concern can be evolved independently.
-
-For developers extending GoAgentX, the tool system is the primary integration point. Whether adding a custom database query tool, a Slack integration, or a domain-specific calculator, the patterns documented here provide a clear path forward.
+There are rough edges. LogAnalyzer is missing capability tags — just forgot to add them. CodeRunner's static analysis could be smarter. They live in my TODO, waiting for users to complain before I prioritize. That's open source: you never know how people will use your tools until they file issues. 😄
 
 ---
 
-*This article is part of the GoAgentX Architecture Deep Dive series. Source code referenced from the `improve` branch.*
+*Next: Event System & Observability — how every agent action becomes an immutable record, enabling state recovery, audit trails, and the "black box flight recorder" for multi-agent debugging.*

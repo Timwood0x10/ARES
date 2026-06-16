@@ -25,6 +25,8 @@ func NewMemorySummaryRepository() *MemorySummaryRepository {
 }
 
 // Save persists an event summary to memory.
+// If a summary with the same ID already exists, it is updated in place
+// (consistent with the ON CONFLICT DO UPDATE behavior of PgSummaryRepository).
 func (r *MemorySummaryRepository) Save(_ context.Context, summary *EventSummary) error {
 	if summary.ID == "" {
 		return nil
@@ -33,21 +35,46 @@ func (r *MemorySummaryRepository) Save(_ context.Context, summary *EventSummary)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	existing, exists := r.summaries[summary.ID]
 	r.summaries[summary.ID] = summary
 
-	// Append to stream index, maintaining version order.
-	ids := r.byStream[summary.StreamID]
-	insertIdx := sort.Search(len(ids), func(i int) bool {
-		existing, ok := r.summaries[ids[i]]
-		if !ok {
-			return true
+	if !exists {
+		// New entry: insert into index maintaining start_version order.
+		ids := r.byStream[summary.StreamID]
+		insertIdx := sort.Search(len(ids), func(i int) bool {
+			existing, ok := r.summaries[ids[i]]
+			if !ok {
+				return true
+			}
+			return existing.StartVersion > summary.StartVersion
+		})
+		ids = append(ids, "")
+		copy(ids[insertIdx+1:], ids[insertIdx:])
+		ids[insertIdx] = summary.ID
+		r.byStream[summary.StreamID] = ids
+	} else if existing.StreamID != summary.StreamID {
+		// ID collision across streams — remove old index entry, add new one.
+		oldIDs := r.byStream[existing.StreamID]
+		for i, sid := range oldIDs {
+			if sid == summary.ID {
+				r.byStream[existing.StreamID] = append(oldIDs[:i], oldIDs[i+1:]...)
+				break
+			}
 		}
-		return existing.StartVersion > summary.StartVersion
-	})
-	ids = append(ids, "")
-	copy(ids[insertIdx+1:], ids[insertIdx:])
-	ids[insertIdx] = summary.ID
-	r.byStream[summary.StreamID] = ids
+		ids := r.byStream[summary.StreamID]
+		insertIdx := sort.Search(len(ids), func(i int) bool {
+			e, ok := r.summaries[ids[i]]
+			if !ok {
+				return true
+			}
+			return e.StartVersion > summary.StartVersion
+		})
+		ids = append(ids, "")
+		copy(ids[insertIdx+1:], ids[insertIdx:])
+		ids[insertIdx] = summary.ID
+		r.byStream[summary.StreamID] = ids
+	}
+	// Same ID, same stream → just updated in place, index stays correct.
 
 	return nil
 }

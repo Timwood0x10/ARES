@@ -225,12 +225,12 @@ func (r *PgSummaryRepository) FindLatestByStreamID(ctx context.Context, streamID
 
 	row := r.pool.QueryRow(ctx, query, streamID)
 
-	s, err := scanSummaryRow(row)
+	s, err := scanSummary(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, err
+		return nil, apperrors.Wrap(err, "scan event summary")
 	}
 	return s, nil
 }
@@ -334,66 +334,4 @@ func scanSummary(s summaryScanner) (*EventSummary, error) {
 	return &summary, nil
 }
 
-// scanSummaryRow wraps a single-row query result for scanning.
-func scanSummaryRow(row *postgres.ManagedRow) (*EventSummary, error) {
-	var summary EventSummary
-	var (
-		eventTypeCountsJSON []byte
-		tasksCreatedJSON    []byte
-		toolsCalledJSON     []byte
-		errorsJSON          []byte
-		metadataJSON        []byte
-	)
 
-	err := row.Scan(
-		&summary.ID,
-		&summary.StreamID,
-		&summary.AgentID,
-		&summary.TaskID,
-		&summary.SessionID,
-		&summary.UserID,
-		&summary.SummaryText,
-		&summary.EventCount,
-		&summary.StartVersion,
-		&summary.EndVersion,
-		&summary.StartTime,
-		&summary.EndTime,
-		&eventTypeCountsJSON,
-		&tasksCreatedJSON,
-		&toolsCalledJSON,
-		&errorsJSON,
-		&summary.RequestSummary,
-		&summary.Outcome,
-		&metadataJSON,
-		&summary.CreatedAt,
-	)
-	if err != nil {
-		return nil, apperrors.Wrap(err, "scan event summary")
-	}
-
-	if len(eventTypeCountsJSON) > 0 {
-		if err := json.Unmarshal(eventTypeCountsJSON, &summary.EventTypeCounts); err != nil {
-			return nil, apperrors.Wrap(err, "unmarshal event type counts")
-		}
-	}
-	if len(tasksCreatedJSON) > 0 {
-		if err := json.Unmarshal(tasksCreatedJSON, &summary.TasksCreated); err != nil {
-			return nil, apperrors.Wrap(err, "unmarshal tasks created")
-		}
-	}
-	if len(toolsCalledJSON) > 0 {
-		if err := json.Unmarshal(toolsCalledJSON, &summary.ToolsCalled); err != nil {
-			return nil, apperrors.Wrap(err, "unmarshal tools called")
-		}
-	}
-	if len(errorsJSON) > 0 {
-		if err := json.Unmarshal(errorsJSON, &summary.Errors); err != nil {
-			return nil, apperrors.Wrap(err, "unmarshal errors")
-		}
-	}
-	if len(metadataJSON) > 0 {
-		summary.Metadata = metadataJSON
-	}
-
-	return &summary, nil
-}

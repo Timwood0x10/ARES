@@ -78,22 +78,19 @@ func (s *MemoryTrimStore) TrimBefore(_ context.Context, streamID string, endVers
 		return 0, nil
 	}
 
-	// Find the split point.
-	var keepFrom int
+	// Find the first event beyond endVersion — everything before it is trimmed.
+	split := len(stream) // Default: trim all.
 	for i, evt := range stream {
 		if evt.Version > endVersion {
-			keepFrom = i
+			split = i
 			break
 		}
-		keepFrom = len(stream) // All events should be trimmed.
 	}
 
-	removed := int64(keepFrom)
-	if keepFrom > 0 {
-		// Trim the stream slice.
-		s.streams[streamID] = stream[keepFrom:]
+	removed := int64(split)
+	if split > 0 {
+		s.streams[streamID] = stream[split:]
 
-		// Also remove trimmed events from the flat events slice.
 		var kept []*Event
 		for _, evt := range s.events {
 			if evt.StreamID != streamID || evt.Version > endVersion {

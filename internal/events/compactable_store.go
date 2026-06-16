@@ -59,8 +59,6 @@ func NewCompactableEventStore(
 }
 
 // Append writes events to the store and then checks if compaction is needed.
-// Compaction runs synchronously but only when the threshold is exceeded,
-// and only once per threshold boundary per stream (debounced).
 func (s *CompactableEventStore) Append(
 	ctx context.Context,
 	streamID string,
@@ -73,27 +71,67 @@ func (s *CompactableEventStore) Append(
 	}
 
 	// Async compaction check — don't block the Append caller.
-	go s.maybeCompact(streamID)
+	go s.maybeCompact(ctx, streamID)
 
 	return nil
 }
 
+// Read returns events for a stream. When the underlying store returns empty
+// but summaries exist for the stream, it falls back to returning the summaries
+// as synthetic events. This prevents ReplaySession from breaking after compaction
+// has trimmed old raw events.
+func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts ReadOptions) ([]*Event, error) {
+	events, err := s.EventStore.Read(ctx, streamID, opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		return events, nil
+	}
+
+	// Underlying store returned empty — check summaries as fallback.
+	summaries, summaryErr := s.compactor.repo.FindByStreamID(ctx, streamID)
+	if summaryErr != nil || len(summaries) == 0 {
+		// No summaries either, return the original empty result.
+		return events, nil
+	}
+
+	// Convert summaries to synthetic events.
+	synthetic := make([]*Event, 0, len(summaries))
+	for _, sum := range summaries {
+		synthetic = append(synthetic, &Event{
+			ID:       sum.ID,
+			StreamID: sum.StreamID,
+			Type:     EventType("event.summary"),
+			Payload: map[string]any{
+				"summary_text": sum.SummaryText,
+				"event_count":  sum.EventCount,
+				"start_version": sum.StartVersion,
+				"end_version":  sum.EndVersion,
+				"outcome":      sum.Outcome,
+			},
+			Version:   sum.EndVersion,
+			Timestamp: sum.CreatedAt,
+		})
+	}
+	return synthetic, nil
+}
+
 // maybeCompact checks if a stream needs compaction and runs it if so.
 // Uses debouncing to avoid redundant checks on every Append.
-func (s *CompactableEventStore) maybeCompact(streamID string) {
-	s.mu.Lock()
-	version, err := s.StreamVersion(context.Background(), streamID)
+// The context is derived from the Append caller's context for cancellation.
+func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID string) {
+	// Get version outside the lock to avoid holding mu during I/O.
+	version, err := s.StreamVersion(ctx, streamID)
 	if err != nil {
-		s.mu.Unlock()
 		slog.Debug("compaction: failed to get version", "stream_id", streamID, "error", err)
 		return
 	}
 
+	s.mu.Lock()
 	lastCheck := s.lastChecked[streamID]
 	threshold := s.compactor.config.Threshold
 
-	// Only check compaction if we've crossed a new threshold boundary.
-	// This avoids checking on every single append.
 	if version <= int64(threshold) || version-lastCheck < int64(threshold)/4 {
 		s.mu.Unlock()
 		return
@@ -101,7 +139,6 @@ func (s *CompactableEventStore) maybeCompact(streamID string) {
 	s.lastChecked[streamID] = version
 	s.mu.Unlock()
 
-	ctx := context.Background()
 	didCompact, err := s.compactor.CheckAndCompact(ctx, streamID)
 	if err != nil {
 		slog.Error("compaction: automatic compaction failed",
@@ -112,7 +149,6 @@ func (s *CompactableEventStore) maybeCompact(streamID string) {
 	}
 
 	if didCompact && s.trimStore != nil && s.compactor.config.EnableTrimming {
-		// After successful compaction, trim old events from the live store.
 		summaries, err := s.compactor.repo.FindByStreamID(ctx, streamID)
 		if err == nil && len(summaries) > 0 {
 			latest := summaries[len(summaries)-1]

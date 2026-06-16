@@ -1,14 +1,22 @@
 # GoAgentX 架构深度解析（七）：运行时与生命周期 — 出生、死亡与复活
 
-## 一、概述
+> Agent 会死吗？会。LLM 超时会死、内存溢出会死、panic 会死、宿主重启也会死。
+> 但有没有一种机制，能让 Agent 死后带着记忆复活？我管这个叫**秽土转生**。
+> 这就是 Runtime 子系统的核心——Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
 
-在多 Agent 系统中，Agent 并非永生的实体。它们可能因为 LLM 调用超时、网络分区、内存溢出、Panic 乃至宿主进程重启而死亡。如何处理 Agent 的**出生**（启动与注册）、**死亡**（异常退出与检测）和**复活**（状态恢复与重生），是构建生产级 Agent 系统的核心挑战。
+## 一、Agent 不是永生的
 
-GoAgentX 的 Runtime 子系统专门解决这一问题。它的设计哲学写在 `internal/runtime/runtime.go` 的包注释中：
+在做 GoAgentX 之前，我用 Python 写过 Agent。Agent 挂了就是挂了——进程退出，所有状态丢失，用户得重新说一遍需求。最崩溃的一次是一个 Agent 跑了两个小时的分析，在最后一步 panic 了。所有工作白费。
+
+我当时就想：**Agent 不能就这么死了。它得能复活，而且复活后得记得之前干到哪了。**
+
+这就是 Runtime 子系统的设计起点。它的哲学写在 `internal/runtime/runtime.go` 的包注释里，一行代码就把态度说清楚了：
 
 ```go
 // Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
 ```
+
+翻译过来就是：Agent 是可以扔掉的执行器，但它们的出生、死亡和复活归 Runtime 管。
 
 本文将从源码层面深度剖析 Runtime 子系统的四大模块：**Runtime 核心管理层**、**Agent 接口契约**、**Leader Agent 编排与状态恢复**、**Sub Agent 执行模型**，以及**优雅关闭系统**。
 
@@ -139,38 +147,29 @@ type Messenger interface {
 
 ## 四、Agent 生命周期全景
 
-```
-                   Bootstrap
-                      |
-                      v
-             Runtime.Start(ctx)
-             /                \
-   健康检查循环(10s)      启动所有已注册Agent
-     |                          |
-     v                          v
- 心跳检测 / 状态检测      launchAgentGoroutine
-     |                          |
-     |                     +-- agent.Start(ctx)
-     |                     |      |
-     |                     |   goroutine exit (正常/panic)
-     |                     |      |
-     |                     |   NotifyAgentDead
-     |                     |      |
-     |                     +---> RestoreAgent
-     |                              |
-     |                         1. stopOldRestoredAgent
-     |                         2. factory() 创建新实例
-     |                         3. recoverAgentState:
-     |                            a) 事件回放(EventStore)
-     |                            b) 认知恢复(MemoryManager)
-     |                         4. launchAgentGoroutine
-     |
-     +----> Runtime.Stop()
-              |
-         1. 标记 isStopped = true
-         2. 取消 m.cancel()
-         3. 遍历所有Agent并发Stop
-         4. 等待 errgroup.Wait()
+```mermaid
+graph TB
+    B[Bootstrap] --> RS[Runtime.Start]
+    RS --> HC[健康检查循环 10s]
+    RS --> LAUNCH[启动所有已注册 Agent]
+    LAUNCH --> AG[launchAgentGoroutine]
+    AG --> AE[agent.Start]
+    AE --> GE[goroutine 退出<br/>正常 / panic]
+    GE --> NAD[NotifyAgentDead]
+    NAD --> RA[RestoreAgent]
+    RA --> S1[1. stopOldRestoredAgent]
+    RA --> S2[2. factory 创建新实例]
+    RA --> S3[3. recoverAgentState]
+    S3 --> S3A[a. 事件回放 EventStore]
+    S3 --> S3B[b. 认知恢复 MemoryManager]
+    S3 --> S4[4. launchAgentGoroutine]
+    HC --> HB[心跳检测 / 状态检测]
+    HB --> NAD
+    RS --> STOP[Runtime.Stop]
+    STOP --> M1[1. isStopped = true]
+    STOP --> M2[2. 取消 m.cancel]
+    STOP --> M3[3. 遍历 Agent 并发 Stop]
+    STOP --> M4[4. errgroup.Wait]
 ```
 
 ## 五、死亡与复活机制深究
@@ -620,6 +619,12 @@ func (r *Registry) Emit(ctx *Context) {
 
 ## 十一、结语
 
-GoAgentX 的运行时与生命周期系统展示了一个经过实战检验的 Agent 管理方案。它的核心洞见是：**Agent 是可丢弃的，但状态是可恢复的**。通过清晰的守卫模式、错误容忍的状态恢复链、以及多阶段的优雅关闭机制，系统能够在面对各种故障时保持韧性。无论是单 Agent 的意外崩溃，还是整个系统的计划内重启，Runtime 子系统都能确保 Agent 在正确的时间以正确的状态完成使命。
+Runtime 子系统是我花时间最多、改版次数最多的部分。不是因为技术难——是"Agent 到底该怎么复活"这个问题，我想了很久。
 
-下一篇文章将深入探讨 GoAgentX 的 Event 系统，看看事件溯源如何为状态恢复、审计追踪和系统可观测性提供基础设施支持。
+最后的结论很简单：**Agent 是可以扔掉的，但它的状态不能丢。**
+
+复活守卫模式防止了竞态、错误容忍的恢复链确保"部分恢复优于完全不恢复"、多阶段优雅关闭让进程在任何情况下都能有序退出。这一套组合拳下来，单 Agent 崩溃、整个系统重启——Runtime 都能兜住。
+
+最高兴的一次测试是什么？我开了 10 个 Agent 跑分析任务，然后手动 kill -9 了进程。重启后，所有 Agent 自动复活，继续干之前没干完的活。那一刻我知道：**这玩意儿成了。**
+
+下一篇聊**事件系统**——Agent 干的每一件事都被记录为不可变事件。复活靠它，审计靠它，调试也靠它。

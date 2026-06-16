@@ -1,37 +1,50 @@
 # GoAgentX 架构深度解析（五）：工具系统 -- 能力矩阵与安全执行
 
-## 一、引言
+> Agent 再聪明，不会用工具就是废物。你见过那种会说不会做的 Agent 吗？"我来帮你查一下"——然后半天没动静。
+> 我当时就想：Agent 的能力边界，就取决于它能调什么工具。所以我把工具系统设计成了整个框架最厚的一层。
+> 22 个内置工具，从计算器到代码执行器，从 Web 抓取到知识库 CRUD。这不是堆数量——每一个都有存在的理由。
 
-在上一篇文章中，我们深入探讨了 GoAgentX 的 Workflow Engine，了解了如何通过有向无环图（DAG）编排多 Agent 协作流程。然而，无论 Workflow 的编排多么精妙，最终任务的执行仍然需要落实到具体的工具调用上。
+## 一、先说说为什么工具层这么厚
 
-工具系统（Tool System）是 Agent 与外部世界交互的核心桥梁。一个 Agent 的能力边界，本质上是由其可调用的工具集合决定的。GoAgentX 的工具系统并非简单的工具集合，而是一套完整的能力抽象框架，涵盖了从**工具定义**、**注册发现**、**参数校验**到**安全执行**的完整生命周期。
+写 Agent 最尴尬的时刻是什么？Agent 说"我来帮你查一下资料"，然后没有然后了——因为没有搜网页的工具。或者 Agent 说"让我计算一下"，然后给你一段文字公式——因为不会调计算器。
 
-本文将深入分析 GoAgentX 工具系统的架构设计、核心接口、22+ 内置工具的实现细节、安全模型，以及已知的设计缺陷。
+我一开始用的 Python 方案，工具注册是在一个巨大的 dict 里塞函数。后来发现根本没法维护：没有参数校验、没有错误处理、没有安全隔离。一个工具写崩了，整个 Agent 跟着挂。
+
+所以设计 GoAgentX 的工具系统时，我定了几条死规矩：
+
+1. **每个工具都是独立公民**——有自己的名字、描述、参数 schema、能力标签
+2. **注册中心统一管理**——不能散落在代码各处
+3. **安全不是事后加的**——代码执行、文件操作这些高危工具，从第一天就有多层防护
+4. **能力可发现**——Agent 得知道自己能调什么工具，不能靠硬编码
 
 ## 二、架构总览：三层分层 + 注册中心模式
 
 GoAgentX 的工具系统采用经典的三层分层架构，配合注册中心（Registry）模式实现工具的管理与调度。
 
-```
-┌──────────────────────────────────────────────────────┐
-│                   Registry                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
-│  │ Tool A   │  │ Tool B   │  │ Tool C ...        │   │
-│  │ (Name: )  │  │ (Name: )  │  │ (Name: )          │   │
-│  └──────────┘  └──────────┘  └──────────────────┘   │
-│   sync.RWMutex + map[string]Tool                     │
-└──────────────────────────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-   Core Interface    Base Layer     Builtin Impls
-   (Tool, Result,    (BaseTool,     (Calculator,
-    Registry, ...)     ToolFunc)      CodeRunner, ...)
+```mermaid
+graph TB
+    subgraph "Registry"
+        REG[Registry<br/>sync.RWMutex + map]
+        T1[Tool A]
+        T2[Tool B]
+        TN[Tool C ...]
+        REG --- T1
+        REG --- T2
+        REG --- TN
+    end
+    subgraph "三层架构"
+        CI[Core Interface<br/>Tool, Result, Registry]
+        BL[Base Layer<br/>BaseTool, ToolFunc]
+        BI[Builtin Impls<br/>Calculator, CodeRunner, ...]
+    end
+    REG --> CI
+    CI --> BL
+    BL --> BI
 ```
 
 ### 2.1 核心接口层（Core Interface Layer）
 
-核心接口层定义在 `/Users/scc/go/src/goagent/internal/tools/resources/core/` 目录下，是整个工具系统的契约基础。
+核心接口层定义在 `/src/goagent/internal/tools/resources/core/` 目录下，是整个工具系统的契约基础。
 
 **Tool 接口**（`tool.go`）：
 
@@ -106,7 +119,7 @@ const (
 
 ### 2.2 基础实现层（Base Layer）
 
-基础实现层定义在 `/Users/scc/go/src/goagent/internal/tools/resources/base/` 目录下。
+基础实现层定义在 `internal/tools/resources/base/` 目录下。
 
 **BaseTool 结构体**：
 
@@ -145,7 +158,7 @@ func NewBaseToolWithCategory(name, description string, category core.ToolCategor
 
 ### 2.3 注册入口
 
-注册入口在 `/Users/scc/go/src/goagent/internal/tools/resources/builtin/builtin.go` 中定义：
+注册入口在 `internal/tools/resources/builtin/builtin.go` 中定义：
 
 ```go
 func RegisterGeneralTools() {
@@ -190,13 +203,13 @@ func RegisterGeneralTools() {
 
 ### 3.1 系统工具（System Category）
 
-**IDGenerator** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/system/id_generator.go`)
+**IDGenerator** (`internal/tools/resources/builtin/system/id_generator.go`)
 
 IDGenerator 使用 `github.com/google/uuid` 库生成 UUID v4 和短 ID（UUID 前 8 字符）。支持批量生成（1-100 个），适用于需要唯一标识符的场景。
 
 ### 3.2 执行工具（Execution）
 
-**CodeRunner** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/execution/code_runner.go`)
+**CodeRunner** (`internal/tools/resources/builtin/execution/code_runner.go`)
 
 CodeRunner 是系统中风险最高的工具，因此采用了多层安全防护：
 
@@ -210,7 +223,7 @@ CodeRunner 是系统中风险最高的工具，因此采用了多层安全防护
 
 ### 3.3 文件工具（File Tools）
 
-**FileTools** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/file/file_tools.go`)
+**FileTools** (`internal/tools/resources/builtin/file/file_tools.go`)
 
 FileTools 支持读、写、列出文件操作，实现了**安全作用域控制**：
 
@@ -230,7 +243,7 @@ type FileTools struct {
 
 ### 3.4 数学与文本工具（Math & Text）
 
-**Calculator** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/math/calculator.go`)
+**Calculator** (`internal/tools/resources/builtin/math/calculator.go`)
 
 Calculator 实现了完整的递归下降解析器，支持 `+`, `-`, `*`, `/`, `()`：
 
@@ -244,25 +257,25 @@ evaluateExpression("100*(100+1)/2")  // 5050
 
 **TextProcessor** 支持 count/split/replace/uppercase/lowercase/trim/contains 七种操作。
 
-**JSONTools** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/json_tools.go`)
+**JSONTools** (`internal/tools/resources/builtin/text/json_tools.go`)
 
 JSONTools 支持 parse/extract/merge/pretty 四种操作。其中的 `extract` 支持点号导航（`user.name`）和数组索引（`items[0]`），`merge` 实现了深度递归合并。
 
-**DataValidation** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/data_validation.go`)
+**DataValidation** (`internal/tools/resources/builtin/text/data_validation.go`)
 
 支持 validate_json / validate_email（简化版 RFC 5322）/ validate_url（仅 http/https）/ validate_schema（简化 JSON Schema 校验）。
 
-**DataTransform** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/data_transform.go`)
+**DataTransform** (`internal/tools/resources/builtin/text/data_transform.go`)
 
 支持 csv_to_json（header/row 两种模式）/ json_to_csv（自动提取所有 key）/ flatten_json（递归展开，可配置分隔符）。
 
-**RegexTool** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/regex_tool.go`)
+**RegexTool** (`internal/tools/resources/builtin/text/regex_tool.go`)
 
 支持 match/extract（捕获组）/ replace，支持 i/m/s 正则标记，max_results 限制匹配数量。
 
 ### 3.5 日志分析（Log Analyzer）
 
-**LogAnalyzer** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/text/log_analyzer.go`)
+**LogAnalyzer** (`internal/tools/resources/builtin/text/log_analyzer.go`)
 
 LogAnalyzer 支持三种操作：
 - `parse_log` -- 自动检测 JSON / Common Log Format / Combined Log Format / 简单格式，返回结构化条目
@@ -273,17 +286,17 @@ LogAnalyzer 支持三种操作：
 
 ### 3.6 网络工具（Network）
 
-**HTTPRequest** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/network/http_request.go`)
+**HTTPRequest** (`internal/tools/resources/builtin/network/http_request.go`)
 
 支持 GET/POST/PUT/DELETE/PATCH 五种方法，自动解析 JSON 响应，支持自定义请求头，通过 `SetClient()` 支持 HTTP client 的依赖注入。
 
-**WebScraper** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/network/web_scraper.go`)
+**WebScraper** (`internal/tools/resources/builtin/network/web_scraper.go`)
 
 通过 regexp 移除 script/style/nav/header/footer 等非内容元素，提取 title/body/links。支持 `HTTPGetter` 接口的依赖注入，默认使用 `DefaultHTTPClient`。
 
 ### 3.7 规划工具（Planning）
 
-**TaskPlanner** (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/planning/task_planner.go`)
+**TaskPlanner** (`internal/tools/resources/builtin/planning/task_planner.go`)
 
 TaskPlanner 是系统中唯一使用 LLM 驱动的工具，支持三种操作：
 
@@ -337,7 +350,7 @@ type KnowledgeService interface {
 
 `KnowledgeUpdate` 采用"读取-修改-写入"模式：先获取现有条目，然后只覆盖变更字段，保留其他字段不变。这使得 LLM 只需提供变更部分即可触发更新。
 
-`CorrectKnowledge` (`/Users/scc/go/src/goagent/internal/tools/resources/builtin/knowledge/correct_knowledge.go`) 直接操作 `repositories.KnowledgeRepositoryInterface`，通过添加 `corrected_at` 和 `correction` 元数据标记追踪纠正操作。
+`CorrectKnowledge` (`internal/tools/resources/builtin/knowledge/correct_knowledge.go`) 直接操作 `repositories.KnowledgeRepositoryInterface`，通过添加 `corrected_at` 和 `correction` 元数据标记追踪纠正操作。
 
 ### 3.9 记忆工具（Memory）
 
@@ -431,18 +444,18 @@ BaseTool: base.NewBaseToolWithCapabilities("log_analyzer", "Parse logs...", core
 - 编码绕过：Base64 解码后的代码可以完全绕过所有模式检测
 - Unicode 混淆：使用 Unicode 同形字符可以绕过关键词匹配
 
-这些局限性需要在后续版本中通过更高级的静态分析技术（AST 解析、语义分析）来解决。
+这些问题我列在 TODO 里了，等有需求再搞。毕竟开源项目嘛——你永远不知道用户会怎么用你的工具。
 
 ### 6.4 TaskPlanner 的 LLM 依赖
 
-TaskPlanner 在 LLM 客户端不可用时只能返回默认值（30 分钟估算），缺乏无 LLM 模式下的备选规划策略。
+TaskPlanner 在 LLM 不可用时只能返回默认值（30 分钟估算），说实话有点敷衍。后续应该加一个无 LLM 模式下的备选策略，比如基于历史执行时间的统计估算。
 
 ## 七、总结
 
-GoAgentX 的工具系统是一个经过精心设计的能力抽象框架。通过 Registry 模式实现了工具的集中管理，通过三层分层架构（Core Interface -> Base Layer -> Builtin Implementations）实现了关注点分离，通过 Capability 标记系统实现了细粒度的能力控制，通过多层安全防护（静态检测 / 进程隔离 / 超时控制 / 作用域限制）实现了安全执行。
+22 个内置工具，从计算器到代码执行器，从 Web 抓取到知识库 CRUD。说实话这个数量不算多，但每一个都是我实际用过的场景逼出来的。没有为了凑数加工具——每一个都有它存在的理由。
 
-22+ 内置工具覆盖了计算、文本处理、文件操作、网络请求、Web 抓取、代码执行、任务规划、知识库 CRUD、记忆搜索等常用能力，足以支撑大多数 Agent 应用场景。
+最让我满意的不是工具数量，是安全设计。Registry 模式集中管理、Capability 标记系统做细粒度控制、多层安全防护（静态检测 → 进程隔离 → 超时控制 → 作用域限制）——这套东西让我晚上睡得着觉。
 
-然而，系统中仍存在一些值得关注的缺陷和局限性，如 LogAnalyzer 缺少能力标记、UserProfile 偏好提取的边界情况、CodeRunner 静态分析的局限性等。这些问题为后续的优化和演进指明了方向。
+当然，也有很多不完美的地方：LogAnalyzer 忘记打能力标签了、CodeRunner 的静态分析还不够聪明……但这些都在 TODO 里躺着了，等用户来催的时候再修吧。这就是开源项目的现实——你永远不知道用户会怎么用你的工具，等他们发现了 bug，自然会来提 issue。😄
 
-在下一篇文章中，我们将探讨 GoAgentX 的事件系统和可观测性架构。
+下一篇聊**事件系统和可观测性**——怎么把 Agent 干的每一件事都记下来，出了问题好查。
