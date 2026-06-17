@@ -232,7 +232,7 @@ func TestRunWithResearchLayerIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := runWithResearchLayer(ctx, "AAPL", t.TempDir(), "./examples/quant-trading/data", false)
+	err := runWithResearchLayer(ctx, "AAPL", t.TempDir(), "./examples/quant-trading/data", false, "", "", "")
 	if err != nil {
 		t.Fatalf("runWithResearchLayer failed: %v", err)
 	}

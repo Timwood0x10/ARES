@@ -22,6 +22,7 @@ type ResearchState struct {
 	TraderProposal    *TraderProposal
 	PortfolioDecision *PortfolioDecision
 	MarketSnapshot    *VerifiedMarketSnapshot
+	MemoryContext     *PMContext // historical decisions injected before PM runs
 	CurrentStep       string
 	StepsCompleted    []string
 	Error             error
@@ -90,6 +91,7 @@ func (s *ResearchState) Reset() {
 	s.TraderProposal = nil
 	s.PortfolioDecision = nil
 	s.MarketSnapshot = nil
+	s.MemoryContext = nil
 	s.CurrentStep = ""
 	s.StepsCompleted = make([]string, 0, 12)
 	s.Error = nil
@@ -112,6 +114,7 @@ func (s *ResearchState) Clone() *ResearchState {
 		TraderProposal:    cloneTraderProposal(s.TraderProposal),
 		PortfolioDecision: clonePortfolioDecision(s.PortfolioDecision),
 		MarketSnapshot:    cloneMarketSnapshot(s.MarketSnapshot),
+		MemoryContext:     cloneMemoryContext(s.MemoryContext),
 		CurrentStep:       s.CurrentStep,
 		StepsCompleted:    cloneStrings(s.StepsCompleted),
 		Error:             s.Error,
@@ -283,4 +286,20 @@ func cloneFloat64Slice(s []float64) []float64 {
 	cp := make([]float64, len(s))
 	copy(cp, s)
 	return cp
+}
+
+func cloneMemoryContext(p *PMContext) *PMContext {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.PastDecisions = make([]*MemoryEntry, len(p.PastDecisions))
+	for i, e := range p.PastDecisions {
+		if e != nil {
+			ee := *e
+			cp.PastDecisions[i] = &ee
+		}
+	}
+	cp.CrossTickerLessons = cloneStrings(p.CrossTickerLessons)
+	return &cp
 }

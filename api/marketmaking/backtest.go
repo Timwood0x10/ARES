@@ -3,56 +3,28 @@ package marketmaking
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
+
+	"goagentx/internal/quant/portfolio"
 )
 
-// BacktestRunner defines the interface for executing backtests.
-// Implementations encapsulate data loading, strategy simulation, and
-// performance metric computation.
 type BacktestRunner interface {
-	// Run executes the backtest with the given parameters.
 	Run(ctx context.Context, req *BacktestRequest) (*BacktestResponse, error)
 }
 
-// DefaultBacktestRunner is a skeleton implementation of BacktestRunner.
-// It validates input and returns a zero-value response. Replace this with
-// a real implementation that loads historical data, runs strategy logic,
-// simulates fills, and computes metrics.
 type DefaultBacktestRunner struct {
-	// TODO: add fields for data source connector, strategy engine,
-	// fill simulator, and metric calculator once internal/quant
-	// exposes stable interfaces for these components.
+	dataDir string
 }
 
-// NewDefaultBacktestRunner creates a new skeleton backtest runner.
-//
-// Returns:
-//
-//	runner - a backtest runner instance (skeleton implementation).
 func NewDefaultBacktestRunner() *DefaultBacktestRunner {
 	return &DefaultBacktestRunner{}
 }
 
-// Run executes a backtest with the given request parameters.
-//
-// This is a skeleton implementation that validates inputs and returns an empty
-// response. A full implementation would:
-//
-//  1. Load historical OHLCV/tick data for req.Symbols from req.StartTime to req.EndTime.
-//  2. Initialize virtual account with req.InitialCapital.
-//  3. Iterate through data bars, calling strategy signal generation at each step.
-//  4. Simulate order fills (mid-price or configurable slippage model).
-//  5. Track positions, PnL, and trade log.
-//  6. Compute performance metrics: total PnL, Sharpe ratio, max drawdown, win rate.
-//
-// Args:
-//
-//	ctx - operation context supporting cancellation.
-//	req - backtest parameters including symbols, time window, and initial capital.
-//
-// Returns:
-//
-//	response - detailed backtest results with PnL, metrics, and trade log.
-//	err - validation error if request is invalid, or execution error.
+func NewDefaultBacktestRunnerWithDataDir(dataDir string) *DefaultBacktestRunner {
+	return &DefaultBacktestRunner{dataDir: dataDir}
+}
+
 func (r *DefaultBacktestRunner) Run(ctx context.Context, req *BacktestRequest) (*BacktestResponse, error) {
 	if req == nil {
 		return nil, errNilRequest
@@ -70,9 +42,136 @@ func (r *DefaultBacktestRunner) Run(ctx context.Context, req *BacktestRequest) (
 	default:
 	}
 
-	// FIX: return ErrNotImplemented instead of zero-value response so callers
-	// can distinguish "feature not wired" from legitimate empty results (code rule 9).
-	return nil, ErrNotImplemented
+	dataDir := req.DataDir
+	if dataDir == "" {
+		dataDir = r.dataDir
+	}
+
+	var aggregatedResponse *BacktestResponse
+
+	for _, symbol := range req.Symbols {
+		resp, err := r.runSingleSymbol(ctx, symbol, req, dataDir)
+		if err != nil {
+			return nil, fmt.Errorf("backtest %s: %w", symbol, err)
+		}
+		if aggregatedResponse == nil {
+			aggregatedResponse = resp
+		} else {
+			aggregatedResponse = mergeResponses(aggregatedResponse, resp)
+		}
+	}
+
+	return aggregatedResponse, nil
+}
+
+func (r *DefaultBacktestRunner) runSingleSymbol(ctx context.Context, symbol string, req *BacktestRequest, dataDir string) (*BacktestResponse, error) {
+	commission := req.Commission
+	if commission == 0 {
+		commission = 0.001
+	}
+	positionSize := req.PositionSize
+	if positionSize == 0 {
+		positionSize = 0.25
+	}
+
+	sim, err := portfolio.NewInvestmentSimulator(req.InitialCapital, positionSize, commission)
+	if err != nil {
+		return nil, fmt.Errorf("create simulator: %w", err)
+	}
+
+	signals := generateDefaultSignals(req.StartTime, req.EndTime)
+	result, err := sim.RunSimulation(ctx, symbol, dataDir, signals)
+	if err != nil {
+		return nil, fmt.Errorf("run simulation: %w", err)
+	}
+
+	return resultToResponse(result, req), nil
+}
+
+func resultToResponse(result *portfolio.SimulationResult, req *BacktestRequest) *BacktestResponse {
+	equityCurve := make([]EquityPoint, len(result.EquityCurve))
+	for i, ep := range result.EquityCurve {
+		equityCurve[i] = EquityPoint{
+			Time:     ep.Time,
+			Equity:   ep.Equity,
+			Cash:     ep.Cash,
+			Exposure: ep.Exposure,
+			Drawdown: ep.Drawdown,
+		}
+	}
+
+	tradeLog := make([]TradeRecord, len(result.TradeLog))
+	for i, tr := range result.TradeLog {
+		tradeLog[i] = TradeRecord{
+			ID:        tr.ID,
+			Symbol:    tr.Symbol,
+			Side:      tr.Side,
+			Price:     tr.Price,
+			Quantity:  tr.Quantity,
+			Timestamp: tr.Timestamp,
+			PnL:       tr.PnL,
+		}
+	}
+
+	return &BacktestResponse{
+		Request:       req,
+		TotalPnL:      result.TotalPnL,
+		TotalReturn:   result.TotalReturn,
+		SharpeRatio:   result.SharpeRatio,
+		MaxDrawdown:   result.MaxDrawdown,
+		TotalTrades:   result.TotalTrades,
+		WinRate:       result.WinRate,
+		EquityCurve:   equityCurve,
+		TradeLog:      tradeLog,
+		Summary:       result.Summary,
+		WinningTrades: result.WinningTrades,
+		LosingTrades:  result.LosingTrades,
+	}
+}
+
+func generateDefaultSignals(from, to time.Time) []portfolio.TradeSignal {
+	start := from
+	if start.IsZero() {
+		start = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	end := to
+	if end.IsZero() {
+		end = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+
+	var signals []portfolio.TradeSignal
+	for d := start; d.Before(end); d = d.AddDate(0, 0, 1) {
+		signals = append(signals, portfolio.TradeSignal{
+			Date:       d,
+			Action:     "BUY",
+			Reason:     "Daily buy signal",
+			Confidence: 0.5,
+		})
+	}
+	return signals
+}
+
+func mergeResponses(a, b *BacktestResponse) *BacktestResponse {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &BacktestResponse{
+		Request:       a.Request,
+		TotalPnL:      a.TotalPnL + b.TotalPnL,
+		TotalReturn:   (a.TotalReturn + b.TotalReturn) / 2,
+		SharpeRatio:   (a.SharpeRatio + b.SharpeRatio) / 2,
+		MaxDrawdown:   max(a.MaxDrawdown, b.MaxDrawdown),
+		TotalTrades:   a.TotalTrades + b.TotalTrades,
+		WinRate:       (a.WinRate + b.WinRate) / 2,
+		EquityCurve:   append(a.EquityCurve, b.EquityCurve...),
+		TradeLog:      append(a.TradeLog, b.TradeLog...),
+		Summary:       fmt.Sprintf("%s; %s", a.Summary, b.Summary),
+		WinningTrades: a.WinningTrades + b.WinningTrades,
+		LosingTrades:  a.LosingTrades + b.LosingTrades,
+	}
 }
 
 var (

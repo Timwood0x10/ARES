@@ -93,8 +93,23 @@ type BacktestRequest struct {
 	EndTime time.Time `json:"end_time"`
 	// InitialCapital is the starting capital in base currency.
 	InitialCapital float64 `json:"initial_capital"`
+	// Strategy identifies the trading strategy to use.
+	// Supported: "buy_hold", "research_signal", "csv_signal".
+	Strategy string `json:"strategy,omitempty"`
+	// DataDir is the directory containing CSV market data files.
+	DataDir string `json:"data_dir,omitempty"`
+	// DataSource identifies the data vendor (e.g., "yahoo", "csv").
+	DataSource string `json:"data_source,omitempty"`
+	// Commission is the per-trade fee rate (e.g., 0.001 for 0.1%).
+	Commission float64 `json:"commission,omitempty"`
+	// Slippage is the assumed slippage fraction (e.g., 0.0005 for 0.05%).
+	Slippage float64 `json:"slippage,omitempty"`
+	// AssetTypes maps symbol -> asset type: "us_stock", "cn_stock", "crypto", "custom".
+	AssetTypes map[string]string `json:"asset_types,omitempty"`
 	// ConfigPath points to a strategy configuration file (optional).
 	ConfigPath string `json:"config_path,omitempty"`
+	// PositionSize is the fraction of capital per trade (0-1).
+	PositionSize float64 `json:"position_size,omitempty"`
 }
 
 // BacktestResponse contains the results of a completed backtest.
@@ -103,19 +118,28 @@ type BacktestResponse struct {
 	Request *BacktestRequest `json:"request"`
 	// TotalPnL is the total profit and loss over the backtest period.
 	TotalPnL float64 `json:"total_pnl"`
+	// TotalReturn is the percentage return over the backtest period.
+	TotalReturn float64 `json:"total_return"`
 	// SharpeRatio is the annualized Sharpe ratio of the strategy.
 	SharpeRatio float64 `json:"sharpe_ratio"`
-	// MaxDrawdown is the maximum observed drawdown as a positive fraction.
+	// MaxDrawdown is the maximum observed drawdown as a positive fraction (0-1).
 	MaxDrawdown float64 `json:"max_drawdown"`
 	// TotalTrades is the number of trades executed during the backtest.
-	TotalTrades int64 `json:"total_trades"`
+	TotalTrades int `json:"total_trades"`
 	// WinRate is the fraction of profitable trades between 0 and 1.
 	WinRate float64 `json:"win_rate"`
 	// EquityCurve is the time series of portfolio equity across the backtest period.
-	// Each point represents a snapshot (e.g., daily or per-trade) for plotting.
 	EquityCurve []EquityPoint `json:"equity_curve,omitempty"`
 	// TradeLog contains per-trade details (optional, may be large).
 	TradeLog []TradeRecord `json:"trade_log,omitempty"`
+	// Summary provides a human-readable summary of the backtest results.
+	Summary string `json:"summary,omitempty"`
+	// Warnings lists any issues encountered during backtest execution.
+	Warnings []string `json:"warnings,omitempty"`
+	// WinningTrades is the count of profitable trades.
+	WinningTrades int `json:"winning_trades,omitempty"`
+	// LosingTrades is the count of unprofitable trades.
+	LosingTrades int `json:"losing_trades,omitempty"`
 }
 
 // EquityPoint represents a snapshot of portfolio equity at a point in time.

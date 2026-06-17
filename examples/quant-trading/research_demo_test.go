@@ -15,19 +15,31 @@ import (
 
 // TestRunResearchDemo verifies that runResearchDemo completes without error
 // using mock executor and produces valid output.
+//
+// NOTE: outputPath is treated as a directory by executeResearchGraph;
+// the actual file name is auto-generated as {ticker}_research_{timestamp}.json.
 func TestRunResearchDemo(t *testing.T) {
 	tmpDir := t.TempDir()
-	outPath := tmpDir + "/demo_output.json"
 
-	err := runResearchDemo(context.Background(), "AAPL", outPath)
+	err := runResearchDemo(context.Background(), "AAPL", tmpDir)
 	if err != nil {
 		t.Fatalf("runResearchDemo failed: %v", err)
 	}
 
-	// Verify output file was created.
-	data, err := os.ReadFile(outPath)
+	// Find the generated result file inside the output directory.
+	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
-		t.Fatalf("read output file: %v", err)
+		t.Fatalf("read output dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected at least one output file")
+	}
+
+	// Read the first (and should be only) JSON result file.
+	resultPath := tmpDir + "/" + entries[0].Name()
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read output file %s: %v", resultPath, err)
 	}
 
 	// Verify it's valid JSON containing expected fields.

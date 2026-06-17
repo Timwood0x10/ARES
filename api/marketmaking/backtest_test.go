@@ -50,19 +50,21 @@ func TestBacktestRunner_Run_InvalidCapital(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestBacktestRunner_Run_ValidRequest tests that valid request returns ErrNotImplemented (skeleton).
+// TestBacktestRunner_Run_ValidRequest tests that a valid request proceeds past
+// validation into data loading (which fails gracefully without CSV files).
 func TestBacktestRunner_Run_ValidRequest(t *testing.T) {
 	runner := NewDefaultBacktestRunner()
 	req := &BacktestRequest{
-		Symbols:        []string{"BTCUSDT", "ETHUSDT"},
-		StartTime:      time.Now().Add(-168 * time.Hour), // 7 days
+		Symbols:        []string{"BTCUSDT"},
+		StartTime:      time.Now().Add(-168 * time.Hour),
 		EndTime:        time.Now(),
 		InitialCapital: 100000.0,
-		ConfigPath:     "/tmp/strategy.yaml",
 	}
 	resp, err := runner.Run(context.Background(), req)
-	// FIX: Skeleton implementation returns ErrNotImplemented, not zero-value + nil.
-	require.ErrorIs(t, err, ErrNotImplemented)
+	// The runner now attempts data loading; without real CSV data it returns a
+	// file-not-found or similar error (not ErrNotImplemented).
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotImplemented)
 	require.Nil(t, resp)
 }
 

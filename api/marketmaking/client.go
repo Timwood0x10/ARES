@@ -46,14 +46,15 @@ type Signal struct {
 }
 
 // Client is the top-level facade for the market-making system.
-// It coordinates research, quoting, risk management, and execution through
-// injected interfaces — no internal/quant dependency leaks to callers.
+// It coordinates research, quoting, risk management, backtesting, and execution
+// through injected interfaces — no internal/quant dependency leaks to callers.
 type Client struct {
 	config         *MarketMakingConfig
 	researchEngine ResearchEngine
 	quoteEngine    QuoteEngine
 	riskManager    RiskManager
 	inventoryMgr   InventoryManager
+	backtestRunner BacktestRunner
 	mu             sync.RWMutex
 	started        bool
 	stopped        bool
@@ -122,6 +123,17 @@ func (c *Client) SetInventoryManager(mgr InventoryManager) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inventoryMgr = mgr
+}
+
+// SetBacktestRunner injects a backtest runner implementation.
+//
+// Args:
+//
+//	runner - the backtest runner to use for historical simulations.
+func (c *Client) SetBacktestRunner(runner BacktestRunner) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.backtestRunner = runner
 }
 
 // Start initializes and starts all subsystems: data connections, quote loops,
@@ -233,14 +245,14 @@ func (c *Client) Backtest(ctx context.Context, req *BacktestRequest) (*BacktestR
 		return nil, fmt.Errorf("backtest: InitialCapital must be positive, got %.2f", req.InitialCapital)
 	}
 
-	// TODO: wire to internal backtest executor via the BacktestRunner interface.
-	// Expected behavior: load historical data for req.Symbols from the data source,
-	// run the strategy logic over [StartTime, EndTime], simulate fills at mid-price
-	// or with configurable slippage, compute performance metrics, return results.
-	// FIX: return ErrNotImplemented instead of zero-value + nil so callers can
-	// distinguish "success with empty result" from "feature not wired" (code rule 9).
+	c.mu.RLock()
+	runner := c.backtestRunner
+	c.mu.RUnlock()
 
-	return nil, ErrNotImplemented
+	if runner == nil {
+		return nil, ErrNotImplemented
+	}
+	return runner.Run(ctx, req)
 }
 
 // PaperTrade starts or queries a paper trading session.

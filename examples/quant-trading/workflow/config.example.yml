@@ -1,34 +1,27 @@
-# GoAgentX Quantitative Trading Demo Configuration.
-# LLM 配置：选择一个取消注释即可使用.
+# GoAgentX Quantitative Trading Demo — configuration template.
+# Copy to config.yml and fill in your API key:
+#   cp config.example.yml config.yml
+#   # Edit config.yml, uncomment the LLM configuration you want to use
 
 server:
   host: "localhost"
   port: 8092
 
-# ── 选择 LLM 配置（取消注释一组，其余保持注释）──
+# ── Select LLM configuration (uncomment one group, keep others commented) ──
 
-# ── Ollama (本地, 默认) ──
-# llm:
-#   provider: "ollama"
-#   base_url: "http://localhost:11434"
-#   model: "llama3.2"
-#   api_key: ""
-#   timeout: 120
-
-# ── DeepSeek v4 Flash ──
+# ── Ollama (local, default) ──
 llm:
-  provider: "openai"
-  base_url: "https://token.sensenova.cn/v1"
-  model: "deepseek-v4-flash"
-  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
+  provider: "ollama"
+  base_url: "http://localhost:11434"
+  model: "llama3.2"
+  api_key: ""
   timeout: 120
 
-# ── GPT-5.5 ──
 # llm:
 #   provider: "openai"
-#   base_url: "https://vip-sg.freemodel.dev"
-#   model: "gpt-5.5"
-#   api_key: "${GPT_API_KEY}"  # FIX: replace hardcoded key with env var placeholder
+#   base_url: "https://api.openai.com/v1"
+#   model: "MODEL_NAME"  # e.g. "gpt-5.5"
+#   api_key: "YOUR_API_KEY"
 #   timeout: 120
 
 mcp:

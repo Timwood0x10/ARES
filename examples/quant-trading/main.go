@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"goagentx/api"
+	"goagentx/api/marketmaking"
 	"goagentx/examples/quant-trading/agents"
 	"goagentx/internal/quant"
 	"goagentx/internal/quant/dataflow"
@@ -60,8 +61,12 @@ func main() {
 	var cfgPath, agentsPath, modelName, dataDir, outDir, ticker string
 	var days int
 	var useResearchLayer, simulate bool
+	var mode, date, dataVendor, outputLang string
+	var capital float64
+	var symbols string
+	var from, to, strategy string
 
-	flag.StringVar(&cfgPath, "config", "./examples/quant-trading/config.yaml", "")
+	flag.StringVar(&cfgPath, "config", "./examples/quant-trading/config.yml", "")
 	flag.StringVar(&agentsPath, "agents", "./examples/quant-trading/config/agents.yaml", "")
 	flag.StringVar(&modelName, "model", "", "LLM model name")
 	flag.StringVar(&dataDir, "data", "./examples/quant-trading/data", "Market data CSV directory")
@@ -70,6 +75,19 @@ func main() {
 	flag.IntVar(&days, "days", 365, "Number of historical data days")
 	flag.BoolVar(&useResearchLayer, "use-research-layer", false, "Enable new research layer (12-node structured research graph)")
 	flag.BoolVar(&simulate, "simulate", false, "Run investment simulation (backtest) after analysis")
+
+	var signalsPath string
+
+	flag.StringVar(&mode, "mode", "analyze", "Execution mode: analyze or backtest")
+	flag.StringVar(&date, "date", "", "Analysis date (YYYY-MM-DD)")
+	flag.StringVar(&dataVendor, "data-vendor", "", "Data source vendor (yahoo, csv)")
+	flag.StringVar(&outputLang, "output-language", "", "Output language (en, zh, ja)")
+	flag.Float64Var(&capital, "capital", 100_000.0, "Initial capital for backtest")
+	flag.StringVar(&symbols, "symbols", "", "Comma-separated symbols for backtest")
+	flag.StringVar(&from, "from", "", "Backtest start date (YYYY-MM-DD)")
+	flag.StringVar(&to, "to", "", "Backtest end date (YYYY-MM-DD)")
+	flag.StringVar(&strategy, "strategy", "buy_hold", "Backtest strategy: buy_hold, research_signal, csv_signal")
+	flag.StringVar(&signalsPath, "signals", "", "Path to signals CSV file")
 	flag.Parse()
 
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
@@ -77,9 +95,16 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// FIX: Major #11 — route dispatch only; legacy logic extracted to runLegacyPipeline.
+	if mode == "backtest" {
+		if err := runBacktestMode(ctx, ticker, dataDir, outDir, capital, symbols, from, to, strategy, dataVendor, date, signalsPath); err != nil {
+			slog.Error("backtest execution failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if useResearchLayer {
-		if err := runWithResearchLayer(ctx, ticker, outDir, dataDir, simulate); err != nil {
+		if err := runWithResearchLayer(ctx, ticker, outDir, dataDir, simulate, date, dataVendor, outputLang); err != nil {
 			slog.Error("research layer execution failed", "err", err)
 			os.Exit(1)
 		}
@@ -116,6 +141,11 @@ func main() {
 func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	modelName string, ticker string, dataDir string, outDir string, days int) error {
 
+	// Try local config.yml first, fall back to config.example.yml.
+	if _, statErr := os.Stat(cfgPath); statErr != nil {
+		alt := cfgPath[:len(cfgPath)-4] + ".example.yml"
+		cfgPath = alt
+	}
 	cfg, err := api.LoadServiceConfig(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -323,15 +353,30 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 //
 // Returns:
 //   - error if any step of the pipeline fails.
-func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dataDir string, simulate bool) error {
+func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dataDir string, simulate bool, analysisDate string, dataVendor string, outputLang string) error {
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	log("\n╔══════════════════════════════════════════════╗")
 	log("║  GoAgentX Research Layer (12-Node Graph)    ║")
 	log("╚══════════════════════════════════════════════╝")
 	log("  Ticker: %s", ticker)
+	if analysisDate != "" {
+		log("  Date:   %s", analysisDate)
+	}
+	if dataVendor != "" {
+		log("  Vendor: %s", dataVendor)
+	}
+	if outputLang != "" {
+		log("  Lang:   %s", outputLang)
+	}
 
 	cfg := createResearchConfig(ticker)
+	if dataVendor != "" {
+		cfg.DataVendors = []string{dataVendor}
+	}
+	if outputLang != "" {
+		cfg.OutputLanguage = outputLang
+	}
 
 	router, validator, err := setupDataFlow(ticker)
 	if err != nil {
@@ -381,8 +426,26 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 	setupMockResponses(mockExec, ticker)
 	wireGraphHandlers(graph, mockExec, ticker)
 
+	// Load historical memory context for the Portfolio Manager prompt.
+	memStore, memErr := research.EnsureMemoryStore("")
+	if memErr != nil {
+		log("  ⚠️ Memory store init failed (continuing without memory): %v", memErr)
+	} else {
+		memLog := research.NewMemoryLog(memStore)
+		research.PopulateMemoryContext(ctx, memLog, state)
+		if state.MemoryContext != nil && len(state.MemoryContext.PastDecisions) > 0 {
+			log("  ✓ Historical memory loaded (%d past decisions)", len(state.MemoryContext.PastDecisions))
+		}
+		defer func() {
+			research.SaveDecisionToMemory(ctx, memLog, state)
+			if err := memStore.Close(); err != nil {
+				slog.Warn("memory store close", "err", err)
+			}
+		}()
+	}
+
 	// FIX: Minor #10 — use shared executeResearchGraph for core pipeline.
-	if err := executeResearchGraph(ctx, graph, state, ticker, outDir, log, nil); err != nil {
+	if err := executeResearchGraphWithDate(ctx, graph, state, ticker, outDir, log, nil, analysisDate); err != nil {
 		return err
 	}
 
@@ -392,6 +455,193 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 	}
 
 	return nil
+}
+
+// ─── Backtest Mode ─────────────────────────────────────────
+
+// runBacktestMode executes a standalone backtest using the portfolio simulator
+// and writes standard output files (summary.json, equity_curve.csv, trades.csv,
+// config.json) to the results directory.
+func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir string,
+	capital float64, symbols string, from string, to string, strategy string,
+	dataVendor string, date string, signalsPath string) error {
+
+	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
+
+	symList := []string{ticker}
+	if symbols != "" {
+		symList = strings.Split(symbols, ",")
+		for i := range symList {
+			symList[i] = strings.ToUpper(strings.TrimSpace(symList[i]))
+		}
+	}
+
+	var startTime, endTime time.Time
+	if from != "" {
+		t, err := time.Parse("2006-01-02", from)
+		if err != nil {
+			return fmt.Errorf("parse --from date: %w", err)
+		}
+		startTime = t
+	} else {
+		startTime = time.Now().AddDate(0, 0, -365)
+	}
+	if to != "" {
+		t, err := time.Parse("2006-01-02", to)
+		if err != nil {
+			return fmt.Errorf("parse --to date: %w", err)
+		}
+		endTime = t
+	} else {
+		endTime = time.Now()
+	}
+
+	log("\n═══ Backtest Mode ═══")
+	log("  Symbols: %v", symList)
+	log("  Period:  %s to %s", startTime.Format("2006-01-02"), endTime.Format("2006-01-02"))
+	log("  Capital: $%.2f", capital)
+	log("  Strategy: %s", strategy)
+
+	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dataDir)
+
+	req := &marketmaking.BacktestRequest{
+		Symbols:        symList,
+		StartTime:      startTime,
+		EndTime:        endTime,
+		InitialCapital: capital,
+		Strategy:       strategy,
+		DataDir:        dataDir,
+	}
+	if dataVendor != "" {
+		req.DataSource = dataVendor
+	}
+	if date != "" {
+		req.StartTime, _ = time.Parse("2006-01-02", date)
+	}
+
+	resp, err := runner.Run(ctx, req)
+	if err != nil {
+		return fmt.Errorf("backtest failed: %w", err)
+	}
+
+	log("════════════════════════════════════════════")
+	log("  Backtest Results")
+	log("════════════════════════════════════════════")
+	log("  Final Equity:  $%.2f", resp.TotalPnL+capital)
+	log("  Total P&L:     $%.2f", resp.TotalPnL)
+	log("  Total Return:  %.2f%%", resp.TotalReturn)
+	log("  Sharpe Ratio:  %.2f", resp.SharpeRatio)
+	log("  Max Drawdown:  %.2f%%", resp.MaxDrawdown*100)
+	log("  Win Rate:      %.1f%%", resp.WinRate*100)
+	log("  Total Trades:  %d", resp.TotalTrades)
+	log("  Summary:       %s", resp.Summary)
+
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	if err := writeBacktestSummary(outDir, resp); err != nil {
+		log("  ⚠️ Failed to write summary: %v", err)
+	}
+	if err := writeEquityCurveCSV(outDir, resp.EquityCurve); err != nil {
+		log("  ⚠️ Failed to write equity curve: %v", err)
+	}
+	if err := writeTradesCSV(outDir, resp.TradeLog); err != nil {
+		log("  ⚠️ Failed to write trades: %v", err)
+	}
+	if err := writeBacktestConfig(outDir, req); err != nil {
+		log("  ⚠️ Failed to write config: %v", err)
+	}
+
+	log("  Results saved to: %s", outDir)
+	log("")
+	return nil
+}
+
+// writeBacktestSummary writes summary.json with the backtest results.
+func writeBacktestSummary(outDir string, resp *marketmaking.BacktestResponse) error {
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(outDir, "summary.json"), data, 0o644)
+}
+
+// writeEquityCurveCSV writes equity_curve.csv from the equity curve.
+func writeEquityCurveCSV(outDir string, curve []marketmaking.EquityPoint) error {
+	f, err := os.Create(filepath.Join(outDir, "equity_curve.csv"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error("equity curve file close error", "err", err)
+		}
+	}()
+
+	writer := csv.NewWriter(f)
+	defer writer.Flush()
+
+	if err := writer.Write([]string{"time", "equity", "cash", "exposure", "drawdown"}); err != nil {
+		return err
+	}
+	for _, ep := range curve {
+		if err := writer.Write([]string{
+			ep.Time.Format(time.RFC3339),
+			fmt.Sprintf("%.2f", ep.Equity),
+			fmt.Sprintf("%.2f", ep.Cash),
+			fmt.Sprintf("%.2f", ep.Exposure),
+			fmt.Sprintf("%.6f", ep.Drawdown),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeTradesCSV writes trades.csv from the trade log.
+func writeTradesCSV(outDir string, trades []marketmaking.TradeRecord) error {
+	f, err := os.Create(filepath.Join(outDir, "trades.csv"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error("trades file close error", "err", err)
+		}
+	}()
+
+	writer := csv.NewWriter(f)
+	defer writer.Flush()
+
+	if err := writer.Write([]string{"id", "symbol", "side", "price", "quantity", "timestamp", "pnl"}); err != nil {
+		return err
+	}
+	for _, tr := range trades {
+		pnlStr := ""
+		if tr.PnL != 0 {
+			pnlStr = fmt.Sprintf("%.2f", tr.PnL)
+		}
+		if err := writer.Write([]string{
+			tr.ID, tr.Symbol, tr.Side,
+			fmt.Sprintf("%.2f", tr.Price),
+			fmt.Sprintf("%.4f", tr.Quantity),
+			tr.Timestamp.Format(time.RFC3339),
+			pnlStr,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeBacktestConfig writes config.json with the backtest configuration.
+func writeBacktestConfig(outDir string, req *marketmaking.BacktestRequest) error {
+	data, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(outDir, "config.json"), data, 0o644)
 }
 
 // runSimulation executes the investment backtest using the research layer's

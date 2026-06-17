@@ -1,5 +1,5 @@
 # DevAgent Workflow - DAG-based Developer Assistant
-# 支持并行和串行执行，提高开发效率
+# Supports parallel and sequential execution to improve development efficiency
 
 id: "dev-workflow"
 name: "Developer Assistant Workflow"

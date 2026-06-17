@@ -178,17 +178,17 @@ func (ar *AnalystReport) Validate() error {
 	if ar.Score < 0 || ar.Score > 100 {
 		return fmt.Errorf("score must be in [0,100], got %f", ar.Score)
 	}
-	// FIX: validate Verdict field against allowed whitelist values.
 	validVerdicts := map[string]bool{
 		"strong_buy": true, "buy": true, "overweight": true,
 		"hold": true, "underweight": true, "sell": true,
 		"strong_sell": true, "neutral": true, "avoid": true,
+		"bullish": true, "bearish": true,
 	}
 	if strings.TrimSpace(ar.Verdict) == "" {
 		return fmt.Errorf("verdict must not be empty")
 	}
 	if !validVerdicts[strings.ToLower(strings.TrimSpace(ar.Verdict))] {
-		return fmt.Errorf("invalid verdict %q: must be one of strong_buy/buy/overweight/hold/underweight/sell/strong_sell/neutral/avoid", ar.Verdict)
+		return fmt.Errorf("invalid verdict %q: must be one of strong_buy/buy/overweight/hold/underweight/sell/strong_sell/neutral/avoid/bullish/bearish", ar.Verdict)
 	}
 	if ar.Confidence < 0 || ar.Confidence > 1 {
 		return fmt.Errorf("confidence must be in [0,1], got %f", ar.Confidence)

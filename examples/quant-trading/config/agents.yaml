@@ -1,8 +1,8 @@
 # Quant Trading Agent Configuration.
-# 定义 8 个量化 Agent，遵循 GoAgentX YAML 配置风格.
+# Defines 8 quant agents, following the GoAgentX YAML configuration style.
 
 agents:
-  # ── 分析师团队 (并行执行) ──
+  # ── Analyst team (parallel execution) ──
   - id: "fundamentals"
     name: "Fundamentals Analyst"
     type: "sub"
@@ -41,7 +41,7 @@ agents:
     timeout: 120
     max_retries: 2
 
-  # ── 研究员团队 (依赖分析师结果) ──
+  # ── Researcher team (depends on analyst results) ──
   - id: "bull"
     name: "Bull Researcher"
     type: "sub"
@@ -58,7 +58,7 @@ agents:
     timeout: 120
     max_retries: 2
 
-  # ── 交易员 ──
+  # ── Trader ──
   - id: "trader"
     name: "Trader"
     type: "sub"
@@ -67,7 +67,7 @@ agents:
     timeout: 120
     max_retries: 2
 
-  # ── 风控经理 ──
+  # ── Risk Manager ──
   - id: "risk"
     name: "Risk Manager"
     type: "sub"
@@ -76,7 +76,7 @@ agents:
     timeout: 120
     max_retries: 2
 
-  # ── 投资组合经理 (Leader) ──
+  # ── Portfolio Manager (Leader) ──
   - id: "pm"
     name: "Portfolio Manager"
     type: "leader"

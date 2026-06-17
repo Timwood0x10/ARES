@@ -335,7 +335,7 @@ func (a *ArenaAdapter) GetResilienceScore() map[string]any {
 	return a.ResilienceScore()
 }
 
-// GetSurvivalStatus 返回生存模式状态。
+// GetSurvivalStatus returns the survival mode status.
 func (a *ArenaAdapter) GetSurvivalStatus() map[string]any {
 	return map[string]any{"running": false, "mode": "chaos_demo"}
 }

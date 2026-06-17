@@ -101,32 +101,29 @@ Research Graph (12 Nodes)
 - **Checkpoint Resume**: Research state can be serialized/deserialized for interrupted runs.
 - **Markdown Reporting**: Consistent render functions produce stable, parseable output.
 
+## Configuration
+
+```bash
+# first time: copy example config
+cp config.example.yml config.yml
+# edit config.yml to set your API key and choose LLM provider
+# 
+```
+
 ## Switch Model
 
-Edit `config.yaml`, uncomment the corresponding LLM config block:
+Edit `config.yml`, uncomment the corresponding LLM config block:
 
 ```yaml
 # Ollama (local, default)
 llm:
   provider: "ollama"
   model: "llama3.2"
-
-# DeepSeek v4 Flash
-# llm:
-#   provider: "openai"
-#   base_url: "https://token.sensenova.cn/v1"
-#   model: "deepseek-v4-flash"
-
-# GPT-5.5
-# llm:
-#   provider: "openai"
-#   base_url: "https://vip-sg.freemodel.dev"
-#   model: "gpt-5.5"
 ```
 
 ## Config: Research Layer
 
-The `research` section in `config.yaml` controls the new mode:
+The `research` section in `config.yml` controls the new mode:
 
 ```yaml
 research:
@@ -162,7 +159,7 @@ dataflow:
 ├── workflow/            DAG pipeline (legacy)
 ├── memory/              Cross-stock learning (legacy)
 ├── chaos/               Arena YAML scenarios (legacy)
-├── config.yaml          Service config (+ research/dataflow sections)
+├── config.example.yml   Service config template (复制为 config.yml 使用)
 ├── config/
 │   ├── agents.yaml      Agent definitions (legacy)
 │   └── workflow.yaml    DAG workflow (legacy)

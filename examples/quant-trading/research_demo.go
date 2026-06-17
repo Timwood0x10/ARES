@@ -129,15 +129,17 @@ func runResearchDemo(ctx context.Context, ticker string, outputPath string) erro
 //   - exec: mock executor to configure.
 //   - ticker: stock symbol used in response templates.
 func setupDemoMockResponses(exec *researchagents.MockLLMExecutor, ticker string) {
-	exec.SetResponse("Market Analyst", fmt.Sprintf(`{
-  "ticker": "%s",
-  "score": 6.8,
-  "trend": "uptrend",
-  "rsi_state": "neutral",
-  "macd_signal": "bullish",
+	exec.SetResponse("Market Analyst", `{
+  "score": 68,
   "verdict": "bullish",
-  "reasoning": "Price above key moving averages with expanding volume."
-}`, ticker))
+  "confidence": 0.72,
+  "findings": {
+    "trend": "uptrend",
+    "rsi_state": "neutral",
+    "macd_signal": "bullish",
+    "reasoning": "Price above key moving averages with expanding volume."
+  }
+}`)
 
 	exec.SetResponse("Sentiment Analyst", `{
   "band": "bullish",
@@ -147,40 +149,55 @@ func setupDemoMockResponses(exec *researchagents.MockLLMExecutor, ticker string)
 }`)
 
 	exec.SetResponse("News Analyst", `{
-  "sentiment_score": 0.65,
-  "key_headlines": ["Q3 earnings beat by 15%", "New AI product line announced"],
-  "overall_tone": "positive"
+  "score": 65,
+  "verdict": "bullish",
+  "confidence": 0.68,
+  "findings": {
+    "positive_factors": ["Q3 earnings beat by 15%", "New AI product line announced"],
+    "negative_factors": [],
+    "topics": ["earnings", "product", "AI"],
+    "reasoning": "Strong earnings beat and positive product momentum."
+  }
 }`)
 
 	exec.SetResponse("Fundamentals Analyst", `{
-  "pe_ratio": 26.5,
-  "peg_ratio": 1.1,
-  "revenue_growth": 0.12,
-  "debt_to_equity": 1.3,
-  "verdict": "undervalued",
-  "score": 7.5
+  "score": 75,
+  "verdict": "bullish",
+  "confidence": 0.78,
+  "findings": {
+    "revenue_growth": "12%",
+    "pe_ratio": "26.5",
+    "debt_to_equity": "1.3",
+    "strengths": ["Strong revenue growth", "Healthy margins"],
+    "risks": ["Elevated valuation", "Competitive pressure"],
+    "reasoning": "Fundamentals support continued growth with manageable risk."
+  }
 }`)
 
 	exec.SetResponse("Bull Researcher", fmt.Sprintf(`{
+  "score": 80,
   "thesis": "%s has strong moat with recurring revenue growth accelerating to 15%% YoY.",
-  "price_target": 250.0,
+  "arguments": ["AI tailwind", "Margin expansion", "Strong brand"],
+  "target": "250",
   "confidence": 0.75
 }`, ticker))
 
 	exec.SetResponse("Bear Researcher", fmt.Sprintf(`{
+  "score": 45,
   "thesis": "%s valuation at 28x earnings leaves limited margin of safety; competition intensifying.",
-  "price_target": 170.0,
+  "arguments": ["High valuation", "Competition risk", "Cyclical exposure"],
+  "target": "170",
   "confidence": 0.55
 }`, ticker))
 
 	exec.SetResponse("Research Manager", `{
   "recommendation": "Overweight",
   "rationale": "Strong fundamentals and product momentum outweigh valuation concerns.",
-  "strategic_action": "Accumulate on dips; target 20%% position size."
+  "strategic_action": "Accumulate on dips; target 20% position size."
 }`)
 
 	exec.SetResponse("Trader", fmt.Sprintf(`{
-  "action": "BUY",
+  "action": "buy",
   "reasoning": "Research plan for %s is Overweight with clear entry zone near current levels.",
   "entry_price": 195.0,
   "stop_loss": 175.0,
@@ -188,21 +205,28 @@ func setupDemoMockResponses(exec *researchagents.MockLLMExecutor, ticker string)
 }`, ticker))
 
 	exec.SetResponse("Aggressive Risk Analyst", `{
-  "view": "very_bullish",
-  "max_position_size": "15%",
-  "leverage_ok": true
+  "risk_level": "medium",
+  "tail_risks": ["Regulatory crackdown", "Black swan event"],
+  "max_drawdown_estimate": "15%",
+  "recommendation": "proceed",
+  "reasoning": "Acceptable risk-reward for aggressive stance."
 }`)
 
 	exec.SetResponse("Conservative Risk Analyst", `{
-  "view": "cautious_bullish",
-  "max_position_size": "3%",
-  "leverage_ok": false
+  "risk_level": "low",
+  "downside_risks": ["Valuation compression", "Earnings miss"],
+  "capital_preservation_score": 85,
+  "recommendation": "proceed",
+  "reasoning": "Conservative metrics within acceptable bounds."
 }`)
 
 	exec.SetResponse("Neutral Risk Analyst", `{
-  "view": "moderate_bullish",
-  "max_position_size": "7%",
-  "leverage_ok": false
+  "risk_level": "medium",
+  "var_estimate": "8%",
+  "expected_shortfall": "12%",
+  "probability_weighted_return": "15-25%",
+  "recommendation": "proceed",
+  "reasoning": "Balanced risk profile with favorable risk-adjusted return."
 }`)
 
 	exec.SetResponse("Portfolio Manager", fmt.Sprintf(`{

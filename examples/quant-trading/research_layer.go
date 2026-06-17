@@ -208,6 +208,13 @@ func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 	state *research.ResearchState, ticker string, outDir string,
 	log func(string, ...any), reporter ReporterFunc) error {
 
+	return executeResearchGraphWithDate(ctx, graph, state, ticker, outDir, log, reporter, "")
+}
+
+func executeResearchGraphWithDate(ctx context.Context, graph *research.ResearchGraph,
+	state *research.ResearchState, ticker string, outDir string,
+	log func(string, ...any), reporter ReporterFunc, analysisDate string) error {
+
 	totalNodes := len(graph.Order())
 	log("\n═══ Research graph execution (%d nodes) ═══\n", totalNodes)
 
@@ -229,12 +236,16 @@ func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 		if err != nil {
 			return fmt.Errorf("serialize state: %w", err)
 		}
-		outPath := filepath.Join(outDir, fmt.Sprintf("%s_research_%s.json",
-			ticker, time.Now().Format("20060102_150405")))
+		dateStr := analysisDate
+		if dateStr == "" {
+			dateStr = time.Now().Format("20060102")
+		}
+		outPath := filepath.Join(outDir, fmt.Sprintf("%s_%s_research.json",
+			ticker, dateStr))
 		if err := os.WriteFile(outPath, data, 0o644); err != nil {
 			return fmt.Errorf("save result: %w", err)
 		}
-		log("  📄 Research results saved: %s", outPath)
+		log("  Research results saved: %s", outPath)
 	}
 
 	return nil

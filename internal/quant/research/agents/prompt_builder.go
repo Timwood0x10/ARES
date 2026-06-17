@@ -11,39 +11,41 @@ import (
 // No network access, file I/O, or global state is used.
 
 // BuildMarketAnalystPrompt constructs the market analyst prompt.
+// Output JSON matches the AnalystReport schema (score 0-100, findings for domain data).
 // If state contains a VerifiedMarketSnapshot, it injects the snapshot data.
 func BuildMarketAnalystPrompt(state *research.ResearchState) string {
 	snapshotSection := ""
 	if state.MarketSnapshot != nil {
 		snapshotSection = formatSnapshot(state.MarketSnapshot, state.Symbol)
 	}
-	return fmt.Sprintf(`You are a Market Analyst. Your job is to analyze price action,
-technical indicators, and market structure for %s.
+	return fmt.Sprintf(`You are a Market Analyst. Analyze price action, technical indicators, and market structure for %s.
 
 %s
-Analyze the following aspects:
+Analyze these aspects:
 1. Price trend and momentum
 2. Key support and resistance levels
 3. Volume patterns
 4. Technical indicator signals (MACD, RSI, moving averages)
 5. Overall market structure
 
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <1-10>,
-  "trend": "<uptrend|downtrend|sideways>",
-  "rsi_state": "<overbought|oversold|neutral>",
-  "macd_signal": "<bullish|bearish|neutral>",
+  "score": <0-100>,
   "verdict": "<bullish|bearish|neutral>",
-  "reasoning": "<detailed analysis>"
+  "confidence": <0.0-1.0>,
+  "findings": {
+    "trend": "<uptrend|downtrend|sideways>",
+    "rsi_state": "<overbought|oversold|neutral>",
+    "macd_signal": "<bullish|bearish|neutral>",
+    "reasoning": "<detailed technical analysis>"
+  }
 }
 
-You are a Market Analyst. Analyze price trends, technical indicators, and market structure.
-Do not fabricate data; use only the provided data.`, state.Symbol, snapshotSection, state.Symbol)
+Do not fabricate data; use only the provided data.`, state.Symbol, snapshotSection)
 }
 
 // BuildSentimentAnalystPrompt constructs the sentiment analyst prompt.
+// Output JSON matches the SentimentReport schema (band, score 0-1, confidence, signals).
 func BuildSentimentAnalystPrompt(state *research.ResearchState) string {
 	return fmt.Sprintf(`You are a Sentiment Analyst. Gauge market sentiment for %s.
 
@@ -53,20 +55,17 @@ Analyze sentiment from these angles:
 3. Options flow and unusual activity signals
 4. Institutional vs retail positioning
 
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <0.0-1.0>,
   "band": "<strongly_bullish|bullish|neutral|bearish|strongly_bearish>",
+  "score": <0.0-1.0>,
   "confidence": <0.0-1.0>,
-  "signals": ["<signal1>", "<signal2>"],
-  "reasoning": "<sentiment analysis>"
-}
-
-You are a Sentiment Analyst. Assess market sentiment from prediction markets, news sentiment, options flow, and other angles.`, state.Symbol, state.Symbol)
+  "signals": ["<signal1>", "<signal2>"]
+}`, state.Symbol)
 }
 
 // BuildNewsAnalystPrompt constructs the news analyst prompt.
+// Output JSON matches the AnalystReport schema (score 0-100, findings for domain data).
 func BuildNewsAnalystPrompt(state *research.ResearchState) string {
 	return fmt.Sprintf(`You are a News Analyst. Assess recent news impact on %s.
 
@@ -77,21 +76,22 @@ Consider these categories:
 4. Industry-specific trends
 5. Competitive landscape moves
 
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <1-10>,
-  "positive": ["<positive factor1>", "<positive factor2>"],
-  "negative": ["<negative factor1>", "<negative factor2>"],
-  "topics": ["<topic1>", "<topic2>"],
+  "score": <0-100>,
   "verdict": "<bullish|bearish|neutral>",
-  "reasoning": "<news impact analysis>"
-}
-
-You are a News Analyst. Evaluate the impact of recent news and macro events on the stock.`, state.Symbol, state.Symbol)
+  "confidence": <0.0-1.0>,
+  "findings": {
+    "positive_factors": ["<positive factor1>", "<positive factor2>"],
+    "negative_factors": ["<negative factor1>", "<negative factor2>"],
+    "topics": ["<topic1>", "<topic2>"],
+    "reasoning": "<news impact analysis>"
+  }
+}`, state.Symbol)
 }
 
 // BuildFundamentalsAnalystPrompt constructs the fundamentals analyst prompt.
+// Output JSON matches the AnalystReport schema (score 0-100, findings for domain data).
 func BuildFundamentalsAnalystPrompt(state *research.ResearchState) string {
 	return fmt.Sprintf(`You are a Fundamentals Analyst. Evaluate financial health of %s.
 
@@ -102,23 +102,22 @@ Analyze these fundamental metrics:
 4. Debt levels and interest coverage
 5. Competitive position and moat
 
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <1-10>,
-  "metrics": {
+  "score": <0-100>,
+  "verdict": "<bullish|bearish|neutral>",
+  "confidence": <0.0-1.0>,
+  "findings": {
     "revenue_growth": "<value>",
     "pe_ratio": "<value>",
-    "debt_to_equity": "<value>"
-  },
-  "strengths": ["<strength1>", "<strength2>"],
-  "risks": ["<risk1>", "<risk2>"],
-  "verdict": "<bullish|bearish|neutral>",
-  "reasoning": "<fundamental assessment>"
+    "debt_to_equity": "<value>",
+    "strengths": ["<strength1>", "<strength2>"],
+    "risks": ["<risk1>", "<risk2>"],
+    "reasoning": "<fundamental assessment>"
+  }
 }
 
-You are a Fundamentals Analyst. Call financial data tools to evaluate the stock's financial health.
-Do not fabricate data — use tool outputs.`, state.Symbol, state.Symbol)
+Do not fabricate data.`, state.Symbol)
 }
 
 // BuildBullResearcherPrompt constructs the bull researcher prompt.
@@ -138,17 +137,14 @@ Be rigorous but advocate for the bullish view.
 
 %s
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <1-10>,
+  "score": <0-100>,
   "thesis": "<core bullish thesis>",
   "arguments": ["<argument1>", "<argument2>"],
   "target": "<price target or range>",
   "confidence": <0.0-1.0>
-}
-
-You are a Bull Researcher. Build the strongest bullish investment thesis based on analyst reports.`, state.Symbol, contextSection, debateHistory, state.Symbol)
+}`, state.Symbol, contextSection, debateHistory)
 }
 
 // BuildBearResearcherPrompt constructs the bear researcher prompt.
@@ -168,17 +164,14 @@ Be rigorous but advocate for the bearish view.
 
 %s
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
-  "ticker": "%s",
-  "score": <1-10>,
+  "score": <0-100>,
   "thesis": "<core bearish thesis>",
   "arguments": ["<argument1>", "<argument2>"],
   "target": "<downside target or range>",
   "confidence": <0.0-1.0>
-}
-
-You are a Bear Researcher. Build the strongest bearish investment thesis based on analyst reports.`, state.Symbol, contextSection, debateHistory, state.Symbol)
+}`, state.Symbol, contextSection, debateHistory)
 }
 
 // BuildResearchManagerPrompt constructs the research manager prompt.
@@ -206,18 +199,15 @@ func BuildResearchManagerPrompt(state *research.ResearchState) string {
 
 	return fmt.Sprintf(`You are the Research Manager. Synthesize the bull/bear debate into a coherent research plan for %s.
 
-Your role: Weigh arguments from both sides, identify consensus points, and produce
-a clear investment recommendation with actionable steps.
+Weigh arguments from both sides, identify consensus points, and produce a clear investment recommendation with actionable steps.
 
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "recommendation": "<Buy|Overweight|Hold|Underweight|Sell>",
   "rationale": "<balanced reasoning synthesizing both views>",
   "strategic_action": "<specific action items>"
-}
-
-You are the Research Manager. Synthesize the bull/bear debate into an investment plan and rating recommendation.`, state.Symbol, debateSection)
+}`, state.Symbol, debateSection)
 }
 
 // BuildTraderPrompt constructs the trader prompt.
@@ -235,20 +225,18 @@ func BuildTraderPrompt(state *research.ResearchState) string {
 
 	return fmt.Sprintf(`You are a Trader. Convert the research plan into a concrete trading proposal for %s.
 
-Your role: Translate investment thesis into executable trade parameters.
+Translate investment thesis into executable trade parameters.
 Consider entry timing, position sizing, risk management, and exit strategy.
 
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "action": "<buy|sell|hold>",
   "reasoning": "<trading rationale based on research plan>",
   "entry_price": <optional float>,
   "stop_loss": <optional float>,
   "position_sizing": "<sizing recommendation>"
-}
-
-You are a Trader. Convert the research plan into a concrete trading proposal.`, state.Symbol, planSection)
+}`, state.Symbol, planSection)
 }
 
 // BuildAggressiveRiskPrompt constructs the aggressive risk analyst prompt.
@@ -268,16 +256,14 @@ Focus on: tail risks, black swan scenarios, maximum drawdown potential,
 liquidity risk, and correlation breakdown scenarios.
 
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "risk_level": "<low|medium|high|critical>",
   "tail_risks": ["<risk1>", "<risk2>"],
   "max_drawdown_estimate": "<percentage>",
   "recommendation": "<proceed|modify|reject>",
   "reasoning": "<aggressive risk assessment>"
-}
-
-You are an Aggressive Risk Analyst. Assess tail risks and extreme scenarios from a tactical perspective.`, state.Symbol, traderSection)
+}`, state.Symbol, traderSection)
 }
 
 // BuildConservativeRiskPrompt constructs the conservative risk analyst prompt.
@@ -297,16 +283,14 @@ Focus on: capital preservation, downside protection, regulatory risk,
 valuation risk, and long-term sustainability.
 
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "risk_level": "<low|medium|high|critical>",
   "downside_risks": ["<risk1>", "<risk2>"],
-  "capital_preservation_score": <1-10>,
+  "capital_preservation_score": <0-100>,
   "recommendation": "<proceed|modify|reject>",
   "reasoning": "<conservative risk assessment>"
-}
-
-You are a Conservative Risk Analyst. Assess capital preservation and downside risk from a prudent perspective.`, state.Symbol, traderSection)
+}`, state.Symbol, traderSection)
 }
 
 // BuildNeutralRiskPrompt constructs the neutral risk analyst prompt.
@@ -326,7 +310,7 @@ Focus on: quantitative risk metrics, volatility-adjusted returns,
 Sharpe/sortino ratios, probability-weighted outcomes, and scenario analysis.
 
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "risk_level": "<low|medium|high|critical>",
   "var_estimate": "<value-at-risk estimate>",
@@ -334,9 +318,7 @@ Output as JSON:
   "probability_weighted_return": "<range>",
   "recommendation": "<proceed|modify|reject>",
   "reasoning": "<quantitative risk assessment>"
-}
-
-You are a Neutral Risk Analyst. Provide a balanced risk assessment from a quantitative perspective.`, state.Symbol, traderSection)
+}`, state.Symbol, traderSection)
 }
 
 // BuildPortfolioManagerPrompt constructs the portfolio manager prompt.
@@ -347,21 +329,18 @@ func BuildPortfolioManagerPrompt(state *research.ResearchState) string {
 
 	return fmt.Sprintf(`You are the Portfolio Manager. Make the final investment decision for %s.
 
-Your role: Review all research outputs, weigh risk assessments, consider
-historical context, and issue the final portfolio decision with conviction level.
+Review all research outputs, weigh risk assessments, consider historical context, and issue the final portfolio decision with conviction level.
 
 %s
 %s
-Output as JSON:
+Output valid JSON with these fields:
 {
   "rating": "<Buy|Overweight|Hold|Underweight|Sell>",
   "executive_summary": "<concise decision summary>",
   "investment_thesis": "<core thesis supporting decision>",
   "price_target": <optional float>,
   "time_horizon": "<short|medium|long term>"
-}
-
-You are the Portfolio Manager. Synthesize all research and risk assessments to make the final investment decision.`, state.Symbol, riskSection, memorySection)
+}`, state.Symbol, riskSection, memorySection)
 }
 
 // ─── Internal Helpers ──────────────────────────────────────
@@ -466,9 +445,25 @@ func buildRiskDebateContext(state *research.ResearchState) string {
 }
 
 func buildMemoryContext(state *research.ResearchState) string {
-	// Memory context is injected externally via PMContext; this is a placeholder.
-	// The actual memory injection happens at orchestration layer.
-	return ""
+	if state.MemoryContext == nil {
+		return ""
+	}
+	mc := state.MemoryContext
+	ctx := "\n## Historical Memory Context\n\n"
+	if mc.SameTickerSummary != "" {
+		ctx += fmt.Sprintf("### Past Decisions for %s\n%s\n", state.Symbol, mc.SameTickerSummary)
+	}
+	if mc.AvgAccuracy != 0 {
+		ctx += fmt.Sprintf("Average decision accuracy (alpha): %.2f%%\n\n", mc.AvgAccuracy)
+	}
+	if len(mc.CrossTickerLessons) > 0 {
+		ctx += "### Cross-Ticker Lessons\n"
+		for _, lesson := range mc.CrossTickerLessons {
+			ctx += fmt.Sprintf("- %s\n", lesson)
+		}
+		ctx += "\n"
+	}
+	return ctx
 }
 
 func max(a, b int) int {
