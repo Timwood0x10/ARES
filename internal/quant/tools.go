@@ -131,9 +131,9 @@ func technicalIndicatorsTool() core.Tool {
 		&core.ParameterSchema{
 			Type: "object",
 			Properties: map[string]*core.Parameter{
-				"ticker":   {Type: "string", Description: "Stock ticker symbol"},
+				"ticker":    {Type: "string", Description: "Stock ticker symbol"},
 				"indicator": {Type: "string", Description: "Indicator type: 'MACD', 'RSI', 'SMA', 'BOLLINGER', or 'ALL'"},
-				"period":   {Type: "number", Description: "Lookback period (default 14 for RSI, 20 for SMA/Bollinger)"},
+				"period":    {Type: "number", Description: "Lookback period (default 14 for RSI, 20 for SMA/Bollinger)"},
 			},
 			Required: []string{"ticker", "indicator"},
 		},
@@ -204,11 +204,11 @@ func computeRSIResult(ticker string, prices []float64, period int) core.Result {
 	rsi := indicators.RSI(prices, period)
 	v := lastVal(rsi)
 	return core.NewResult(true, map[string]interface{}{
-		"ticker":   ticker,
+		"ticker":    ticker,
 		"indicator": "RSI",
-		"period":   period,
-		"latest":   v,
-		"signal":   rsiSignal(v),
+		"period":    period,
+		"latest":    v,
+		"signal":    rsiSignal(v),
 	})
 }
 
@@ -237,14 +237,14 @@ func computeBollingerResult(ticker string, prices []float64, period int) core.Re
 		pct = (cp - l) / (u - l) * 100
 	}
 	return core.NewResult(true, map[string]interface{}{
-		"ticker":        ticker,
-		"indicator":     "BOLLINGER",
-		"period":        period,
-		"upper_band":    u,
-		"middle_band":   m,
-		"lower_band":    l,
-		"width":         u - l,
-		"position_pct":  pct,
+		"ticker":       ticker,
+		"indicator":    "BOLLINGER",
+		"period":       period,
+		"upper_band":   u,
+		"middle_band":  m,
+		"lower_band":   l,
+		"width":        u - l,
+		"position_pct": pct,
 	})
 }
 

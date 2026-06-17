@@ -28,7 +28,7 @@ llm:
 #   provider: "openai"
 #   base_url: "https://vip-sg.freemodel.dev"
 #   model: "gpt-5.5"
-#   api_key: "fe_oa_21b0bca4fe78f55e766eba45c31e6865da8bf350bf159777"
+#   api_key: "${GPT_API_KEY}"  # FIX: replace hardcoded key with env var placeholder
 #   timeout: 120
 
 mcp:
@@ -46,3 +46,25 @@ mcp:
 dashboard:
   addr: ":8092"
   ws_ping_interval: 30
+
+# Research Layer Configuration (optional)
+research:
+  enabled: true
+  selected_analysts:
+    - market
+    - sentiment
+    - news
+    - fundamentals
+  max_debate_rounds: 2
+  max_risk_rounds: 1
+  quick_model: "gpt-4o-mini"
+  deep_model: "gpt-4o"
+  output_language: "english"
+  data_vendors:
+    - yahoo
+  checkpoint_enabled: true
+  memory_enabled: true
+
+dataflow:
+  max_stale_duration: "120h"
+  holiday_grace_period: "72h"

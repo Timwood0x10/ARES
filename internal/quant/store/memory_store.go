@@ -10,9 +10,9 @@ import (
 // MemoryStore implements Store with in-memory maps.
 // Useful for testing and demo mode. Data is not persisted across restarts.
 type MemoryStore struct {
-	mu         sync.RWMutex
-	decisions  []Decision // Sorted by ticker + date desc
-	signals    []SignalRecord
+	mu                sync.RWMutex
+	decisions         []Decision // Sorted by ticker + date desc
+	signals           []SignalRecord
 	decisionsByTicker map[string][]Decision
 	signalsByKey      map[string]*SignalRecord
 }

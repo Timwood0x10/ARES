@@ -32,7 +32,7 @@ type Quote struct {
 
 // TimeSeries is a slice of Candle with query metadata.
 type TimeSeries struct {
-	Ticker string   `json:"ticker"`
+	Ticker string    `json:"ticker"`
 	Start  time.Time `json:"start"`
 	End    time.Time `json:"end"`
 	Bars   []Candle  `json:"bars"`
@@ -54,13 +54,13 @@ const (
 
 // Market represents a Polymarket prediction market.
 type Market struct {
-	ID          string  `json:"id"`
-	Question    string  `json:"question"`
-	YesPrice    float64 `json:"yes_price"`     // 0.0 - 1.0
-	NoPrice     float64 `json:"no_price"`      // 0.0 - 1.0
-	Volume      float64 `json:"volume"`
-	EndDate     string  `json:"end_date"`
-	Resolution  string  `json:"resolution,omitempty"` // "YES" / "NO" / ""
+	ID         string  `json:"id"`
+	Question   string  `json:"question"`
+	YesPrice   float64 `json:"yes_price"` // 0.0 - 1.0
+	NoPrice    float64 `json:"no_price"`  // 0.0 - 1.0
+	Volume     float64 `json:"volume"`
+	EndDate    string  `json:"end_date"`
+	Resolution string  `json:"resolution,omitempty"` // "YES" / "NO" / ""
 }
 
 // ─── Feed Interface ────────────────────────────────────────

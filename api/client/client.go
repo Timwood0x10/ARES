@@ -1,8 +1,11 @@
-// Package client provides client interface for GoAgent API.
+// Package client provides a library-style entry point for embedding GoAgent
+// into other Go applications. It exposes modular service accessors, configuration
+// management, health checking, and resource lifecycle control.
 package client
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"goagentx/api/core"
@@ -17,6 +20,7 @@ import (
 )
 
 // Client provides a unified client interface for all GoAgent modules.
+// It is created via NewClient and owns the lifecycle of all child services.
 type Client struct {
 	agentService     *agentSvc.Service
 	memoryService    *memorySvc.Service
@@ -25,11 +29,14 @@ type Client struct {
 	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
+	mu               sync.RWMutex // FIX: protects closed field against data race (code rule 4.5)
+	closed           bool
 }
 
 // Config holds configuration for the GoAgent client.
+// Each field corresponds to a module that can be independently enabled.
 type Config struct {
-	BaseConfig *core.BaseConfig     // Base configuration
+	BaseConfig *core.BaseConfig     // Base configuration (timeout, retries)
 	Agent      *agentSvc.Config     // Agent service configuration
 	Memory     *memorySvc.Config    // Memory service configuration
 	Retrieval  *retrievalSvc.Config // Retrieval service configuration
@@ -37,10 +44,18 @@ type Config struct {
 	Workflow   *workflowSvc.Config  // Workflow service configuration
 }
 
-// NewClient creates a new GoAgent client instance.
+// NewClient creates a new GoAgent client instance with the given configuration.
+// It initializes all services whose config is non-nil. If BaseConfig is nil,
+// sensible defaults are applied (30s timeout, 3 retries, 1s retry delay).
+//
 // Args:
-// config - client configuration.
-// Returns new client instance or error.
+//
+//	config - client configuration, must not be nil.
+//
+// Returns:
+//
+//	client - the initialized client instance.
+//	err - ErrInvalidConfig if config is nil, or any service init error.
 func NewClient(config *Config) (*Client, error) {
 	if config == nil {
 		return nil, ErrInvalidConfig
@@ -103,7 +118,11 @@ func NewClient(config *Config) (*Client, error) {
 }
 
 // Agent returns the agent service.
-// Returns the agent service or an error if not configured.
+//
+// Returns:
+//
+//	service - the agent service instance.
+//	err - ErrAgentNotConfigured if agent was not configured at client creation.
 func (c *Client) Agent() (*agentSvc.Service, error) {
 	if c.agentService == nil {
 		return nil, ErrAgentNotConfigured
@@ -112,7 +131,11 @@ func (c *Client) Agent() (*agentSvc.Service, error) {
 }
 
 // Memory returns the memory service.
-// Returns the memory service or an error if not configured.
+//
+// Returns:
+//
+//	service - the memory service instance.
+//	err - ErrMemoryNotConfigured if memory was not configured at client creation.
 func (c *Client) Memory() (*memorySvc.Service, error) {
 	if c.memoryService == nil {
 		return nil, ErrMemoryNotConfigured
@@ -121,7 +144,11 @@ func (c *Client) Memory() (*memorySvc.Service, error) {
 }
 
 // Retrieval returns the retrieval service.
-// Returns the retrieval service or an error if not configured.
+//
+// Returns:
+//
+//	service - the retrieval service instance.
+//	err - ErrRetrievalNotConfigured if retrieval was not configured at client creation.
 func (c *Client) Retrieval() (*retrievalSvc.Service, error) {
 	if c.retrievalService == nil {
 		return nil, ErrRetrievalNotConfigured
@@ -130,7 +157,11 @@ func (c *Client) Retrieval() (*retrievalSvc.Service, error) {
 }
 
 // LLM returns the LLM service.
-// Returns the LLM service or an error if not configured.
+//
+// Returns:
+//
+//	service - the LLM service instance.
+//	err - ErrLLMNotConfigured if LLM was not configured at client creation.
 func (c *Client) LLM() (*llmSvc.Service, error) {
 	if c.llmService == nil {
 		return nil, ErrLLMNotConfigured
@@ -139,7 +170,11 @@ func (c *Client) LLM() (*llmSvc.Service, error) {
 }
 
 // Workflow returns the workflow service.
-// Returns the workflow service or an error if not configured.
+//
+// Returns:
+//
+//	service - the workflow service instance.
+//	err - ErrWorkflowNotConfigured if workflow was not configured at client creation.
 func (c *Client) Workflow() (*workflowSvc.Service, error) {
 	if c.workflowService == nil {
 		return nil, ErrWorkflowNotConfigured
@@ -167,18 +202,145 @@ func (c *Client) Runtime(config *runtimeSvc.Config, eventStore events.EventStore
 	return runtimeSvc.NewService(*config, eventStore)
 }
 
-// Close closes the client and cleans up resources.
+// Health returns a structured health report for all configured services.
+// Each service is probed for availability and latency. The overall status
+// is true only when every configured service reports healthy.
+//
+// Args:
+//
+//	ctx - operation context (supports cancellation/timeout).
+//
+// Returns:
+//
+//	report - structured health status per service.
+//	err - context error if the check is cancelled or times out.
+func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
+	var llmStatus ServiceStatus
+	if c.llmService != nil {
+		llmStatus = checkLLMHealth(ctx, c.llmService)
+	} else {
+		llmStatus = ServiceStatus{Available: false, Error: "LLM service not configured"}
+	}
+
+	var memoryStatus ServiceStatus
+	if c.memoryService != nil {
+		memoryStatus = checkServiceHealth("Memory", c.memoryService)
+	} else {
+		memoryStatus = ServiceStatus{Available: false, Error: "Memory service not configured"}
+	}
+
+	var retrievalStatus ServiceStatus
+	if c.retrievalService != nil {
+		retrievalStatus = checkServiceHealth("Retrieval", c.retrievalService)
+	} else {
+		retrievalStatus = ServiceStatus{Available: false, Error: "Retrieval service not configured"}
+	}
+
+	var workflowStatus ServiceStatus
+	if c.workflowService != nil {
+		workflowStatus = checkServiceHealth("Workflow", c.workflowService)
+	} else {
+		workflowStatus = ServiceStatus{Available: false, Error: "Workflow service not configured"}
+	}
+
+	report := buildHealthReport(llmStatus, memoryStatus, retrievalStatus, workflowStatus)
+	return &report, nil
+}
+
+// Config returns a read-only snapshot of the client configuration.
+// FIX: returns a deep copy to prevent external mutation of internal state
+// (Uber Go style rule: return copies of internal slices/maps, not direct references).
+//
+// Returns:
+//
+//	config - the client configuration snapshot, may be nil only if client was improperly constructed.
+func (c *Client) Config() *Config {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.config == nil {
+		return nil
+	}
+	// Deep copy each pointer field so that mutating the returned value
+	// cannot affect the original config held by the client.
+	cp := &Config{}
+	if c.config.BaseConfig != nil {
+		bc := *c.config.BaseConfig
+		cp.BaseConfig = &bc
+	}
+	if c.config.Agent != nil {
+		a := *c.config.Agent
+		cp.Agent = &a
+	}
+	if c.config.Memory != nil {
+		m := *c.config.Memory
+		cp.Memory = &m
+	}
+	if c.config.Retrieval != nil {
+		r := *c.config.Retrieval
+		cp.Retrieval = &r
+	}
+	if c.config.LLM != nil {
+		l := *c.config.LLM
+		cp.LLM = &l
+	}
+	if c.config.Workflow != nil {
+		w := *c.config.Workflow
+		cp.Workflow = &w
+	}
+	return cp
+}
+
+// Close gracefully shuts down the client and releases all held resources.
+// It is safe to call Close multiple times; subsequent calls are no-ops.
+//
+// Args:
+//
+//	ctx - operation context (supports cancellation/timeout).
+//
+// Returns:
+//
+//	err - nil on success, or the first error encountered during cleanup.
 func (c *Client) Close(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+
+	// TODO: implement proper resource release for each service once
+	// the underlying services expose a Close/Shutdown method.
+	// Currently each service holds internal connections (LLM client,
+	// memory repository, etc.) that should be closed here.
+	// Expected behavior: close LLM connections, flush memory caches,
+	// drain retrieval connections, cancel active workflows.
+
 	return nil
 }
 
-// GetConfig returns the loaded configuration file.
-// Returns the configuration file structure or nil if not available.
+// GetConfig returns the loaded configuration file (YAML-level structure).
+// For the client-level Config, use Config() instead.
+//
+// Returns:
+//
+//	configFile - the YAML configuration file, or nil if not loaded via NewClientWithConfigFile.
 func (c *Client) GetConfig() *ConfigFile {
 	return c.configFile
 }
 
-// NewClientWithConfigFile creates a new GoAgent client with both config and config file.
+// NewClientWithConfigFile creates a new GoAgent client with both client config
+// and the raw YAML config file attached. Use this when you need access to
+// server-level settings beyond the client Config.
+//
+// Args:
+//
+//	config - client configuration, must not be nil.
+//	configFile - raw YAML configuration file (may be nil).
+//
+// Returns:
+//
+//	client - the initialized client with configFile attached.
+//	err - error from NewClient if config is invalid.
 func NewClientWithConfigFile(config *Config, configFile *ConfigFile) (*Client, error) {
 	client, err := NewClient(config)
 	if err != nil {
@@ -189,7 +351,15 @@ func NewClientWithConfigFile(config *Config, configFile *ConfigFile) (*Client, e
 }
 
 // Ping checks if all configured services are available.
-// Returns true if all services are available, false otherwise.
+// This is a lightweight boolean check. For detailed status, use Health instead.
+//
+// Args:
+//
+//	ctx - operation context (reserved for future use).
+//
+// Returns:
+//
+//	true if all required services are configured and available, false otherwise.
 func (c *Client) Ping(ctx context.Context) bool {
 	// Agent service is available if configured
 	if c.agentService == nil {

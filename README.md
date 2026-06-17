@@ -266,7 +266,7 @@ go run ./examples/advanced/mutable_dag/
 cd examples/mcp-dashboard && go run main.go
 
 # Quantitative analysis demo
-cd examples/quant-demo && go run main.go
+cd examples/quant-trading && go run . --ticker AAPL
 
 # Development agent demo
 cd examples/devagent && go run main.go

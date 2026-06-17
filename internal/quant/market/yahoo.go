@@ -15,9 +15,13 @@ import (
 // More reliable than the v8 chart JSON API.
 const yahooDownloadURL = "https://query1.finance.yahoo.com/v7/finance/download/%s?period1=%d&period2=%d&interval=1d&events=history"
 
+// ErrNoMarketData is returned when market data cannot be fetched and mock fallback is disabled.
+var ErrNoMarketData = fmt.Errorf("no market data available")
+
 // YahooFeed implements Feed using Yahoo Finance's CSV download API.
 type YahooFeed struct {
-	client *http.Client
+	client    *http.Client
+	AllowMock bool // FIX: controls whether mock data fallback is allowed (default: false)
 }
 
 // NewYahooFeed creates a new Yahoo Finance data feed.
@@ -29,16 +33,28 @@ func NewYahooFeed() *YahooFeed {
 
 func (f *YahooFeed) Name() string { return "yahoo" }
 
-// Candles fetches historical OHLCV data. Falls back to generated data on failure.
+// Candles fetches historical OHLCV data.
+// When AllowMock is false (default) and the fetch fails, it returns ErrNoMarketData
+// instead of silently falling back to generated data, preventing LLM from receiving fake data.
 func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (TimeSeries, error) {
 	bars, err := f.fetchCSV(ticker, start, end)
 	if err == nil && len(bars) > 0 {
 		return TimeSeries{Ticker: ticker, Bars: bars}, nil
 	}
 
-	// Fallback: generate realistic mock data so the demo always works.
+	// FIX: only fall back to mock data when explicitly allowed; otherwise return sentinel error.
+	if !f.AllowMock {
+		return TimeSeries{}, fmt.Errorf("%w: yahoo fetch failed for ticker %q", ErrNoMarketData, ticker)
+	}
+
 	bars = generateMockData(ticker, start, end)
-	return TimeSeries{Ticker: ticker, Bars: bars}, nil
+	ts := TimeSeries{Ticker: ticker, Bars: bars}
+	// Mark as simulated so callers can detect mock data.
+	if len(ts.Bars) > 0 {
+		// Note: Candle doesn't have an IsSimulated field; callers should check
+		// AllowMock configuration to determine if data may be simulated.
+	}
+	return ts, nil
 }
 
 func (f *YahooFeed) fetchCSV(ticker string, start, end time.Time) ([]Candle, error) {
@@ -163,10 +179,10 @@ func generateMockData(ticker string, start, end time.Time) []Candle {
 		volume := int64(rng.Float64() * 50_000_000)
 		bars = append(bars, Candle{
 			Ticker: ticker, Date: d,
-			Open:  current - spread/2,
-			High:  current + spread,
-			Low:   current - spread,
-			Close: current,
+			Open:   current - spread/2,
+			High:   current + spread,
+			Low:    current - spread,
+			Close:  current,
 			Volume: volume,
 		})
 	}

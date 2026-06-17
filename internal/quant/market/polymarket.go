@@ -74,10 +74,10 @@ func (f *PolymarketFeed) Markets(query string) ([]Market, error) {
 	markets := make([]Market, 0, len(raw))
 	for _, r := range raw {
 		m := Market{
-			ID:        r.ID,
-			Question:  r.Question,
-			Volume:    parseFloatSafe(r.Volume),
-			EndDate:   r.EndDate,
+			ID:         r.ID,
+			Question:   r.Question,
+			Volume:     parseFloatSafe(r.Volume),
+			EndDate:    r.EndDate,
 			Resolution: r.Resolution,
 		}
 
@@ -118,12 +118,12 @@ func SentimentSignal(markets []Market) float64 {
 // ─── API Response Types ──────────────────────────────────
 
 type polymarketRawMarket struct {
-	ID          string                  `json:"id"`
-	Question    string                  `json:"question"`
-	Volume      string                  `json:"volume"`
-	EndDate     string                  `json:"end_date"`
-	Resolution  string                  `json:"resolution"`
-	Outcomes    []polymarketRawOutcome  `json:"outcomes"`
+	ID         string                 `json:"id"`
+	Question   string                 `json:"question"`
+	Volume     string                 `json:"volume"`
+	EndDate    string                 `json:"end_date"`
+	Resolution string                 `json:"resolution"`
+	Outcomes   []polymarketRawOutcome `json:"outcomes"`
 }
 
 type polymarketRawOutcome struct {
