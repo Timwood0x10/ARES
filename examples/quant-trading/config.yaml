@@ -1,0 +1,48 @@
+# GoAgentX Quantitative Trading Demo Configuration.
+# LLM 配置：选择一个取消注释即可使用.
+
+server:
+  host: "localhost"
+  port: 8092
+
+# ── 选择 LLM 配置（取消注释一组，其余保持注释）──
+
+# ── Ollama (本地, 默认) ──
+# llm:
+#   provider: "ollama"
+#   base_url: "http://localhost:11434"
+#   model: "llama3.2"
+#   api_key: ""
+#   timeout: 120
+
+# ── DeepSeek v4 Flash ──
+llm:
+  provider: "openai"
+  base_url: "https://token.sensenova.cn/v1"
+  model: "deepseek-v4-flash"
+  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
+  timeout: 120
+
+# ── GPT-5.5 ──
+# llm:
+#   provider: "openai"
+#   base_url: "https://vip-sg.freemodel.dev"
+#   model: "gpt-5.5"
+#   api_key: "fe_oa_21b0bca4fe78f55e766eba45c31e6865da8bf350bf159777"
+#   timeout: 120
+
+mcp:
+  servers:
+    - name: null
+      enabled: true
+      auto_start: true
+      timeout: 30
+      transport:
+        type: stdio
+        stdio:
+          command: mcp-null
+          args: ["serve"]
+
+dashboard:
+  addr: ":8092"
+  ws_ping_interval: 30

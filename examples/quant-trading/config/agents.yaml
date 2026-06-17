@@ -1,0 +1,86 @@
+# Quant Trading Agent Configuration.
+# 定义 8 个量化 Agent，遵循 GoAgentX YAML 配置风格.
+
+agents:
+  # ── 分析师团队 (并行执行) ──
+  - id: "fundamentals"
+    name: "Fundamentals Analyst"
+    type: "sub"
+    category: "analyst"
+    mcp_tool: "financial_data"
+    mcp_args:
+      ticker: "{{.Ticker}}"
+    timeout: 120
+    max_retries: 2
+
+  - id: "sentiment"
+    name: "Sentiment Analyst"
+    type: "sub"
+    category: "analyst"
+    mcp_tool: "polymarket_sentiment"
+    mcp_args:
+      query: "{{.Ticker}} stock outlook"
+    timeout: 120
+    max_retries: 2
+
+  - id: "news"
+    name: "News Analyst"
+    type: "sub"
+    category: "analyst"
+    timeout: 120
+    max_retries: 2
+
+  - id: "technical"
+    name: "Technical Analyst"
+    type: "sub"
+    category: "analyst"
+    mcp_tool: "technical_indicators"
+    mcp_args:
+      ticker: "{{.Ticker}}"
+      indicator: "ALL"
+    timeout: 120
+    max_retries: 2
+
+  # ── 研究员团队 (依赖分析师结果) ──
+  - id: "bull"
+    name: "Bull Researcher"
+    type: "sub"
+    category: "researcher"
+    depends_on: ["fundamentals", "sentiment", "news", "technical"]
+    timeout: 120
+    max_retries: 2
+
+  - id: "bear"
+    name: "Bear Researcher"
+    type: "sub"
+    category: "researcher"
+    depends_on: ["fundamentals", "sentiment", "news", "technical"]
+    timeout: 120
+    max_retries: 2
+
+  # ── 交易员 ──
+  - id: "trader"
+    name: "Trader"
+    type: "sub"
+    category: "execution"
+    depends_on: ["bull", "bear"]
+    timeout: 120
+    max_retries: 2
+
+  # ── 风控经理 ──
+  - id: "risk"
+    name: "Risk Manager"
+    type: "sub"
+    category: "risk"
+    depends_on: ["trader"]
+    timeout: 120
+    max_retries: 2
+
+  # ── 投资组合经理 (Leader) ──
+  - id: "pm"
+    name: "Portfolio Manager"
+    type: "leader"
+    category: "management"
+    depends_on: ["risk"]
+    timeout: 120
+    max_retries: 2
