@@ -192,7 +192,7 @@ func TestPrintDemoReport(t *testing.T) {
 	var lines []string
 	logFn := func(f string, a ...any) { lines = append(lines, f) }
 
-	printDemoReport(state, logFn)
+	printDemoReport(state, logFn, 12)
 
 	if len(lines) == 0 {
 		t.Fatal("expected printDemoReport to produce output")

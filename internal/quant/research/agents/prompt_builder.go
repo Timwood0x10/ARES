@@ -39,8 +39,8 @@ Output as JSON:
   "reasoning": "<detailed analysis>"
 }
 
-你是市场分析师。分析价格走势、技术指标和市场结构。
-不要编造数据，只使用提供的数据。`, state.Symbol, snapshotSection, state.Symbol)
+You are a Market Analyst. Analyze price trends, technical indicators, and market structure.
+Do not fabricate data; use only the provided data.`, state.Symbol, snapshotSection, state.Symbol)
 }
 
 // BuildSentimentAnalystPrompt constructs the sentiment analyst prompt.
@@ -63,7 +63,7 @@ Output as JSON:
   "reasoning": "<sentiment analysis>"
 }
 
-你是情绪分析师。从预测市场、新闻情绪、期权流向等角度评估市场情绪。`, state.Symbol, state.Symbol)
+You are a Sentiment Analyst. Assess market sentiment from prediction markets, news sentiment, options flow, and other angles.`, state.Symbol, state.Symbol)
 }
 
 // BuildNewsAnalystPrompt constructs the news analyst prompt.
@@ -88,7 +88,7 @@ Output as JSON:
   "reasoning": "<news impact analysis>"
 }
 
-你是新闻分析师。评估近期新闻和宏观事件对股票的影响。`, state.Symbol, state.Symbol)
+You are a News Analyst. Evaluate the impact of recent news and macro events on the stock.`, state.Symbol, state.Symbol)
 }
 
 // BuildFundamentalsAnalystPrompt constructs the fundamentals analyst prompt.
@@ -117,8 +117,8 @@ Output as JSON:
   "reasoning": "<fundamental assessment>"
 }
 
-你是基本面分析师。调用财务数据工具，评估股票的财务健康度。
-不要编造数据——使用工具输出。`, state.Symbol, state.Symbol)
+You are a Fundamentals Analyst. Call financial data tools to evaluate the stock's financial health.
+Do not fabricate data — use tool outputs.`, state.Symbol, state.Symbol)
 }
 
 // BuildBullResearcherPrompt constructs the bull researcher prompt.
@@ -148,7 +148,7 @@ Output as JSON:
   "confidence": <0.0-1.0>
 }
 
-你是多头研究员。基于分析师报告构建最强的多头投资论点。`, state.Symbol, contextSection, debateHistory, state.Symbol)
+You are a Bull Researcher. Build the strongest bullish investment thesis based on analyst reports.`, state.Symbol, contextSection, debateHistory, state.Symbol)
 }
 
 // BuildBearResearcherPrompt constructs the bear researcher prompt.
@@ -178,7 +178,7 @@ Output as JSON:
   "confidence": <0.0-1.0>
 }
 
-你是空头研究员。基于分析师报告构建最强的空头投资论点。`, state.Symbol, contextSection, debateHistory, state.Symbol)
+You are a Bear Researcher. Build the strongest bearish investment thesis based on analyst reports.`, state.Symbol, contextSection, debateHistory, state.Symbol)
 }
 
 // BuildResearchManagerPrompt constructs the research manager prompt.
@@ -217,7 +217,7 @@ Output as JSON:
   "strategic_action": "<specific action items>"
 }
 
-你是研究经理。综合多空辩论，收敛成投资计划和评级建议。`, state.Symbol, debateSection)
+You are the Research Manager. Synthesize the bull/bear debate into an investment plan and rating recommendation.`, state.Symbol, debateSection)
 }
 
 // BuildTraderPrompt constructs the trader prompt.
@@ -248,7 +248,7 @@ Output as JSON:
   "position_sizing": "<sizing recommendation>"
 }
 
-你是交易员。将研究计划转化为具体的交易提案。`, state.Symbol, planSection)
+You are a Trader. Convert the research plan into a concrete trading proposal.`, state.Symbol, planSection)
 }
 
 // BuildAggressiveRiskPrompt constructs the aggressive risk analyst prompt.
@@ -277,7 +277,7 @@ Output as JSON:
   "reasoning": "<aggressive risk assessment>"
 }
 
-你是激进风险分析师。从战术角度评估尾部风险和极端情景。`, state.Symbol, traderSection)
+You are an Aggressive Risk Analyst. Assess tail risks and extreme scenarios from a tactical perspective.`, state.Symbol, traderSection)
 }
 
 // BuildConservativeRiskPrompt constructs the conservative risk analyst prompt.
@@ -306,7 +306,7 @@ Output as JSON:
   "reasoning": "<conservative risk assessment>"
 }
 
-你是保守风险分析师。从审慎角度评估资本保护和下行风险。`, state.Symbol, traderSection)
+You are a Conservative Risk Analyst. Assess capital preservation and downside risk from a prudent perspective.`, state.Symbol, traderSection)
 }
 
 // BuildNeutralRiskPrompt constructs the neutral risk analyst prompt.
@@ -336,7 +336,7 @@ Output as JSON:
   "reasoning": "<quantitative risk assessment>"
 }
 
-你是中性风险分析师。从量化角度提供平衡的风险评估。`, state.Symbol, traderSection)
+You are a Neutral Risk Analyst. Provide a balanced risk assessment from a quantitative perspective.`, state.Symbol, traderSection)
 }
 
 // BuildPortfolioManagerPrompt constructs the portfolio manager prompt.
@@ -361,7 +361,7 @@ Output as JSON:
   "time_horizon": "<short|medium|long term>"
 }
 
-你是投资组合经理。综合所有研究和风险评估，做出最终投资决策。`, state.Symbol, riskSection, memorySection)
+You are the Portfolio Manager. Synthesize all research and risk assessments to make the final investment decision.`, state.Symbol, riskSection, memorySection)
 }
 
 // ─── Internal Helpers ──────────────────────────────────────
@@ -412,7 +412,7 @@ func formatOHLCV(candle *research.Candle) string {
 func buildAnalystContext(state *research.ResearchState) string {
 	var ctx string
 	reports := state.AnalystReports
-	if reports == nil || len(reports) == 0 {
+	if len(reports) == 0 {
 		return ""
 	}
 	ctx = "\n## Analyst Reports\n\n"

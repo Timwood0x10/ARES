@@ -59,16 +59,17 @@ type AgentOutput struct {
 func main() {
 	var cfgPath, agentsPath, modelName, dataDir, outDir, ticker string
 	var days int
-	var useResearchLayer bool
+	var useResearchLayer, simulate bool
 
 	flag.StringVar(&cfgPath, "config", "./examples/quant-trading/config.yaml", "")
 	flag.StringVar(&agentsPath, "agents", "./examples/quant-trading/config/agents.yaml", "")
-	flag.StringVar(&modelName, "model", "", "LLM 模型名")
-	flag.StringVar(&dataDir, "data", "./examples/quant-trading/data", "行情 CSV 目录")
-	flag.StringVar(&outDir, "out", "./examples/quant-trading/results", "结果输出目录")
-	flag.StringVar(&ticker, "ticker", "AAPL", "股票代码")
-	flag.IntVar(&days, "days", 365, "历史数据天数")
-	flag.BoolVar(&useResearchLayer, "use-research-layer", false, "启用新的 research 层（12节点结构化研究图）")
+	flag.StringVar(&modelName, "model", "", "LLM model name")
+	flag.StringVar(&dataDir, "data", "./examples/quant-trading/data", "Market data CSV directory")
+	flag.StringVar(&outDir, "out", "./examples/quant-trading/results", "Output directory for results")
+	flag.StringVar(&ticker, "ticker", "AAPL", "Stock ticker symbol")
+	flag.IntVar(&days, "days", 365, "Number of historical data days")
+	flag.BoolVar(&useResearchLayer, "use-research-layer", false, "Enable new research layer (12-node structured research graph)")
+	flag.BoolVar(&simulate, "simulate", false, "Run investment simulation (backtest) after analysis")
 	flag.Parse()
 
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
@@ -78,15 +79,19 @@ func main() {
 
 	// FIX: Major #11 — route dispatch only; legacy logic extracted to runLegacyPipeline.
 	if useResearchLayer {
-		if err := runWithResearchLayer(ctx, ticker, outDir); err != nil {
-			slog.Error("research layer 执行失败", "err", err)
+		if err := runWithResearchLayer(ctx, ticker, outDir, dataDir, simulate); err != nil {
+			slog.Error("research layer execution failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	}
 
+	if simulate && !useResearchLayer {
+		slog.Warn("--simulate flag is only supported in research layer mode. Use --use-research-layer to enable simulation.")
+	}
+
 	if err := runLegacyPipeline(ctx, cfgPath, agentsPath, modelName, ticker, dataDir, outDir, days); err != nil {
-		slog.Error("legacy pipeline 执行失败", "err", err)
+		slog.Error("legacy pipeline execution failed", "err", err)
 		os.Exit(1)
 	}
 }
@@ -138,10 +143,10 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	log("\n╔════════════════════════════════════════════╗")
-	log("║  GoAgentX 量化分析                         ║")
+	log("║  GoAgentX Quantitative Analysis               ║")
 	log("╚════════════════════════════════════════════╝")
-	log("  标的: %s", ticker)
-	log("  模型: %s (%s)", cfg.LLM.Model, cfg.LLM.Provider)
+	log("  Ticker: %s", ticker)
+	log("  Model: %s (%s)", cfg.LLM.Model, cfg.LLM.Provider)
 
 	// ── Download market data ──
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -185,10 +190,10 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	if err := f.Close(); err != nil {
 		slog.Error("CSV file close error", "err", err)
 	}
-	log("  ✓ 行情数据: %s (%d 条)", csvPath, len(ts.Bars))
+	log("  ✓ Market data: %s (%d bars)", csvPath, len(ts.Bars))
 
 	// ── Execute pipeline ──
-	log("\n═══ 开始分析 ═══\n")
+	log("\n═══ Starting Analysis ═══\n")
 
 	orch := svc.Orchestrator()
 
@@ -225,7 +230,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 
 	// ── Print results ──
 	log("════════════════════════════════════════════")
-	log("  %s 分析报告", ticker)
+	log("  %s Analysis Report", ticker)
 	log("════════════════════════════════════════════\n")
 
 	for _, out := range outputs {
@@ -240,7 +245,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 			lines := strings.Split(formatted, "\n")
 			for j, line := range lines {
 				if j >= 8 {
-					log("     ... (共 %d 行)", len(lines))
+					log("     ... (%d lines total)", len(lines))
 					break
 				}
 				line = strings.TrimSpace(line)
@@ -252,7 +257,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 				}
 			}
 		} else if out.Status == "completed" {
-			log("     (分析内容为空)")
+			log("     (analysis output is empty)")
 		}
 		if out.Error != "" {
 			log("     ❌ %s", out.Error)
@@ -262,7 +267,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 
 	for _, out := range outputs {
 		if out.YamlID == "pm" && out.Analysis != "" {
-			log("  ─── 最终交易信号 (Portfolio Manager) ───")
+			log("  ─── Final Trading Signal (Portfolio Manager) ───")
 			formatted := agents.FormatOutput(out.Analysis)
 			for _, line := range strings.Split(formatted, "\n") {
 				line = strings.TrimSpace(line)
@@ -296,7 +301,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 		slog.Error("save result file failed", "path", outPath, "err", err)
 		return nil
 	}
-	log("  📄 完整分析结果已保存: %s", outPath)
+	log("  📄 Full analysis results saved: %s", outPath)
 
 	log("")
 	return nil
@@ -306,22 +311,25 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 
 // runWithResearchLayer executes the full research pipeline using the new
 // structured research layer. It creates config, data flow, graph, and runs
-// the 12-node research execution graph.
+// the 12-node research execution graph. If simulate is true, it also runs
+// the investment simulator on the research output.
 //
 // Args:
 //   - ctx: context for cancellation.
 //   - ticker: stock symbol to analyze (uppercased).
 //   - outDir: directory for output files.
+//   - dataDir: directory containing CSV market data.
+//   - simulate: if true, run backtest simulation after research completes.
 //
 // Returns:
 //   - error if any step of the pipeline fails.
-func runWithResearchLayer(ctx context.Context, ticker string, outDir string) error {
+func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dataDir string, simulate bool) error {
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	log("\n╔══════════════════════════════════════════════╗")
 	log("║  GoAgentX Research Layer (12-Node Graph)    ║")
 	log("╚══════════════════════════════════════════════╝")
-	log("  标的: %s", ticker)
+	log("  Ticker: %s", ticker)
 
 	cfg := createResearchConfig(ticker)
 
@@ -333,10 +341,10 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string) err
 	snapshotBuilder := dataflow.NewSnapshotBuilder(router, validator)
 	snapshot, err := snapshotBuilder.Build(ctx, ticker, time.Now())
 	if err != nil {
-		log("  ⚠️ 快照构建失败（继续空快照）: %v", err)
+		log("  ⚠️ Snapshot build failed (continuing with empty snapshot): %v", err)
 		snapshot = nil
 	} else {
-		log("  ✓ 市场快照: 最新数据 %s", snapshot.LatestRowDate.Format("2006-01-02"))
+		log("  ✓ Market snapshot: latest data %s", snapshot.LatestRowDate.Format("2006-01-02"))
 	}
 
 	state := research.NewResearchState(ticker, time.Now(), cfg)
@@ -351,7 +359,7 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string) err
 		}
 	} else {
 		// FIX: Minor — mark state when snapshot unavailable so downstream nodes
-		// and reports can indicate "数据不可用" instead of producing misleading results.
+		// and reports can indicate "data unavailable" instead of producing misleading results.
 		state.StepsCompleted = append(state.StepsCompleted, "market_data_unavailable")
 	}
 
@@ -374,7 +382,76 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string) err
 	wireGraphHandlers(graph, mockExec, ticker)
 
 	// FIX: Minor #10 — use shared executeResearchGraph for core pipeline.
-	return executeResearchGraph(ctx, graph, state, ticker, outDir, log, nil)
+	if err := executeResearchGraph(ctx, graph, state, ticker, outDir, log, nil); err != nil {
+		return err
+	}
+
+	// Run investment simulation if requested.
+	if simulate {
+		runSimulation(ctx, ticker, dataDir, outDir, state, log)
+	}
+
+	return nil
+}
+
+// runSimulation executes the investment backtest using the research layer's
+// PortfolioDecision. It generates trade signals from the decision, runs the
+// simulator, prints a report, and saves JSON results.
+func runSimulation(ctx context.Context, ticker string, dataDir string,
+	outDir string, state *research.ResearchState, log func(string, ...any)) {
+
+	log("\n═══ Investment Simulation (Backtest) ═══\n")
+
+	signals := GenerateSignalsFromResearch(state.PortfolioDecision)
+	if len(signals) == 0 {
+		log("  No signals generated; skipping simulation.")
+		return
+	}
+	log("  Generated %d signal(s) from research decision:", len(signals))
+	for _, sig := range signals {
+		log("    [%s] %s — %s (confidence: %.1f%%)",
+			sig.Date.Format("2006-01-02"), sig.Action, sig.Reason, sig.Confidence*100)
+	}
+
+	sim := &InvestmentSimulator{
+		InitialCapital: 100_000.0,
+		PositionSize:   0.10,
+		Commission:     0.001,
+	}
+
+	result, err := sim.RunSimulation(ctx, ticker, dataDir, signals)
+	if err != nil {
+		log("  Simulation failed: %v", err)
+		return
+	}
+
+	// Print simulation report.
+	log("════════════════════════════════════════════")
+	log("  Simulation Report for %s", result.Ticker)
+	log("════════════════════════════════════════════")
+	log("  Initial Capital: $%.2f", result.InitialCapital)
+	log("  Final Equity:    $%.2f", result.FinalEquity)
+	log("  Total P&L:       $%.2f", result.TotalPnL)
+	log("  Total Return:    %.2f%%", result.TotalReturn)
+	log("  Sharpe Ratio:    %.2f", result.SharpeRatio)
+	log("  Max Drawdown:    %.2f%%", result.MaxDrawdown*100)
+	log("  Win Rate:        %.1f%%", result.WinRate*100)
+	log("  Total Trades:    %d", result.TotalTrades)
+	log("  Winning Trades:  %d", result.WinningTrades)
+	log("  Losing Trades:   %d", result.LosingTrades)
+	log("  Equity Points:   %d", len(result.EquityCurve))
+	log("")
+	log("  Summary: %s", result.Summary)
+
+	// Save results to JSON.
+	simOutPath := filepath.Join(outDir, fmt.Sprintf("%s_simulation_%s.json",
+		ticker, time.Now().Format("20060102_150405")))
+	if err := SaveSimulationResult(result, simOutPath); err != nil {
+		log("  Failed to save simulation results: %v", err)
+	} else {
+		log("  Simulation results saved: %s", simOutPath)
+	}
+	log("")
 }
 
 // setupMockResponses pre-configures a MockLLMExecutor with realistic responses

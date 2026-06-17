@@ -65,12 +65,12 @@ func NewMemoryStore(path string) (*MemoryStore, error) {
 
 	// Enable WAL mode for better concurrent read performance.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close() // best-effort cleanup; primary error already captured above
 		return nil, fmt.Errorf("memory store set wal mode: %w", err)
 	}
 
 	if _, err := db.Exec(createMemoryTableSQL); err != nil {
-		db.Close()
+		_ = db.Close() // best-effort cleanup; primary error already captured above
 		return nil, fmt.Errorf("memory store create table: %w", err)
 	}
 
@@ -139,7 +139,7 @@ func (s *MemoryStore) GetEntries(ctx context.Context, symbol string, limit int) 
 	if err != nil {
 		return nil, fmt.Errorf("memory store get entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() /* best-effort */ }()
 
 	var entries []*MemoryEntry
 	for rows.Next() {
@@ -179,7 +179,7 @@ func (s *MemoryStore) GetPendingEntries(ctx context.Context) ([]*MemoryEntry, er
 	if err != nil {
 		return nil, fmt.Errorf("memory store get pending: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() /* best-effort */ }()
 
 	var entries []*MemoryEntry
 	for rows.Next() {
@@ -216,7 +216,7 @@ func (s *MemoryStore) UpdateOutcome(ctx context.Context, id string, outcome *Out
 	}
 	defer func() {
 		if err != nil {
-			_ = tx.Rollback()
+			_ = tx.Rollback() // best-effort cleanup; primary error already captured above
 		}
 	}()
 
@@ -269,7 +269,7 @@ func (s *MemoryStore) GetAllResolvedEntries(ctx context.Context, limit int) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("memory store get all resolved: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() /* best-effort */ }()
 
 	var entries []*MemoryEntry
 	for rows.Next() {

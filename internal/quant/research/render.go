@@ -12,9 +12,9 @@ func RenderMarkdown(rp *ResearchPlan) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Research Plan\n\n")
-	b.WriteString(fmt.Sprintf("- **Recommendation:** %s\n", rp.Recommendation))
-	b.WriteString(fmt.Sprintf("- **Rationale:** %s\n", rp.Rationale))
-	b.WriteString(fmt.Sprintf("- **Strategic Action:** %s\n", rp.StrategicAction))
+	fmt.Fprintf(&b, "- **Recommendation:** %s\n", rp.Recommendation)
+	fmt.Fprintf(&b, "- **Rationale:** %s\n", rp.Rationale)
+	fmt.Fprintf(&b, "- **Strategic Action:** %s\n", rp.StrategicAction)
 	return b.String()
 }
 
@@ -25,16 +25,16 @@ func RenderMarkdownTP(tp *TraderProposal) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Trader Proposal\n\n")
-	b.WriteString(fmt.Sprintf("- **Action:** %s\n", tp.Action))
-	b.WriteString(fmt.Sprintf("- **Reasoning:** %s\n", tp.Reasoning))
+	fmt.Fprintf(&b, "- **Action:** %s\n", tp.Action)
+	fmt.Fprintf(&b, "- **Reasoning:** %s\n", tp.Reasoning)
 	if tp.EntryPrice != nil {
-		b.WriteString(fmt.Sprintf("- **Entry Price:** %.2f\n", *tp.EntryPrice))
+		fmt.Fprintf(&b, "- **Entry Price:** %.2f\n", *tp.EntryPrice)
 	}
 	if tp.StopLoss != nil {
-		b.WriteString(fmt.Sprintf("- **Stop Loss:** %.2f\n", *tp.StopLoss))
+		fmt.Fprintf(&b, "- **Stop Loss:** %.2f\n", *tp.StopLoss)
 	}
 	if tp.PositionSizing != "" {
-		b.WriteString(fmt.Sprintf("- **Position Sizing:** %s\n", tp.PositionSizing))
+		fmt.Fprintf(&b, "- **Position Sizing:** %s\n", tp.PositionSizing)
 	}
 	return b.String()
 }
@@ -46,14 +46,14 @@ func RenderMarkdownPD(pd *PortfolioDecision) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Portfolio Decision\n\n")
-	b.WriteString(fmt.Sprintf("- **Rating:** %s\n", pd.Rating))
-	b.WriteString(fmt.Sprintf("- **Executive Summary:** %s\n", pd.ExecutiveSummary))
-	b.WriteString(fmt.Sprintf("- **Investment Thesis:** %s\n", pd.InvestmentThesis))
+	fmt.Fprintf(&b, "- **Rating:** %s\n", pd.Rating)
+	fmt.Fprintf(&b, "- **Executive Summary:** %s\n", pd.ExecutiveSummary)
+	fmt.Fprintf(&b, "- **Investment Thesis:** %s\n", pd.InvestmentThesis)
 	if pd.PriceTarget != nil {
-		b.WriteString(fmt.Sprintf("- **Price Target:** %.2f\n", *pd.PriceTarget))
+		fmt.Fprintf(&b, "- **Price Target:** %.2f\n", *pd.PriceTarget)
 	}
 	if pd.TimeHorizon != "" {
-		b.WriteString(fmt.Sprintf("- **Time Horizon:** %s\n", pd.TimeHorizon))
+		fmt.Fprintf(&b, "- **Time Horizon:** %s\n", pd.TimeHorizon)
 	}
 	return b.String()
 }
@@ -64,11 +64,11 @@ func RenderMarkdownAR(ar *AnalystReport) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Analyst Report: %s\n\n", ar.AnalystName))
-	b.WriteString(fmt.Sprintf("- **Type:** %s\n", ar.AnalystType))
-	b.WriteString(fmt.Sprintf("- **Score:** %.1f/100\n", ar.Score))
-	b.WriteString(fmt.Sprintf("- **Verdict:** %s\n", ar.Verdict))
-	b.WriteString(fmt.Sprintf("- **Confidence:** %.2f\n", ar.Confidence))
+	fmt.Fprintf(&b, "## Analyst Report: %s\n\n", ar.AnalystName)
+	fmt.Fprintf(&b, "- **Type:** %s\n", ar.AnalystType)
+	fmt.Fprintf(&b, "- **Score:** %.1f/100\n", ar.Score)
+	fmt.Fprintf(&b, "- **Verdict:** %s\n", ar.Verdict)
+	fmt.Fprintf(&b, "- **Confidence:** %.2f\n", ar.Confidence)
 	return b.String()
 }
 

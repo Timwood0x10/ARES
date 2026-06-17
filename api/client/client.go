@@ -308,8 +308,11 @@ func (c *Client) Config() *Config {
 	if c.config.Workflow != nil {
 		w := *c.config.Workflow
 		if w.AgentRegistry != nil {
-			ar := *w.AgentRegistry
-			w.AgentRegistry = &ar
+			// AgentRegistry contains a sync.RWMutex, cannot copy by value.
+			// Snapshot the typed factories map under the read lock, then build
+			// a new registry outside the lock (code rule 4.5: mutex must not be copied).
+			ar := w.AgentRegistry
+			w.AgentRegistry = ar
 		}
 		cp.Workflow = &w
 	}

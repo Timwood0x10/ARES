@@ -69,9 +69,9 @@ func (m *MarkdownParser) ParseRating(md string) (research.PortfolioRating, error
 //   - error if no score pattern is found.
 func (m *MarkdownParser) ParseScore(md string) (float64, error) {
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile("(?i)score[:\\s]+(\\d+(?:\\.\\d+)?)"),
-		regexp.MustCompile("(?i)rating[:\\s]+(\\d+(?:\\.\\d+)?)"),
-		regexp.MustCompile("(\\d+(?:\\.\\d+)?)\\s*/\\s*10"),
+		regexp.MustCompile(`(?i)score[:\s]+(\d+(?:\.\d+)?)`),
+		regexp.MustCompile(`(?i)rating[:\s]+(\d+(?:\.\d+)?)`),
+		regexp.MustCompile(`(\d+(?:\.\d+)?)\s*/\s*10`),
 	}
 	for _, re := range patterns {
 		matches := re.FindStringSubmatch(md)

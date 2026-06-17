@@ -230,7 +230,7 @@ func (c *Client) Backtest(ctx context.Context, req *BacktestRequest) (*BacktestR
 		req.Symbols = c.config.Symbols
 	}
 	if req.InitialCapital <= 0 {
-		req.InitialCapital = 100000.0
+		return nil, fmt.Errorf("backtest: InitialCapital must be positive, got %.2f", req.InitialCapital)
 	}
 
 	// TODO: wire to internal backtest executor via the BacktestRunner interface.
@@ -264,7 +264,7 @@ func (c *Client) PaperTrade(ctx context.Context, req *PaperTradeRequest) (*Paper
 		req.Symbols = c.config.Symbols
 	}
 	if req.InitialCapital <= 0 {
-		req.InitialCapital = 100000.0
+		return nil, fmt.Errorf("paper trade: InitialCapital must be positive, got %.2f", req.InitialCapital)
 	}
 
 	// TODO: wire to internal paper trading engine via the PaperTrader interface.

@@ -90,7 +90,7 @@ func (e *ParseError) RawOutput() string {
 
 var jsonCodeBlockRe = regexp.MustCompile("(?s)(?:```json\\s*\\n?)(.*?)(?:\\n?\\s*```)")
 
-var jsonObjectRe = regexp.MustCompile("(?s)\\{(?:[^{}]|\\{[^{}]*\\})*\\}")
+var jsonObjectRe = regexp.MustCompile(`(?s)\{(?:[^{}]|\{[^{}]*\})*\}`)
 
 func tryUnmarshal(data string, target interface{}) error {
 	data = strings.TrimSpace(data)

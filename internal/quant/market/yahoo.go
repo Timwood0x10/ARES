@@ -50,10 +50,9 @@ func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (
 	bars = generateMockData(ticker, start, end)
 	ts := TimeSeries{Ticker: ticker, Bars: bars}
 	// Mark as simulated so callers can detect mock data.
-	if len(ts.Bars) > 0 {
-		// Note: Candle doesn't have an IsSimulated field; callers should check
-		// AllowMock configuration to determine if data may be simulated.
-	}
+	// Reserved for future mock-data marking (e.g., IsSimulated field on TimeSeries).
+	// Currently a no-op; callers should check AllowMock config for simulation detection.
+	_ = len(ts.Bars) // non-empty check preserved for future mock-data marking (e.g., IsSimulated field on TimeSeries)
 	return ts, nil
 }
 

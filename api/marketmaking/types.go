@@ -111,8 +111,26 @@ type BacktestResponse struct {
 	TotalTrades int64 `json:"total_trades"`
 	// WinRate is the fraction of profitable trades between 0 and 1.
 	WinRate float64 `json:"win_rate"`
+	// EquityCurve is the time series of portfolio equity across the backtest period.
+	// Each point represents a snapshot (e.g., daily or per-trade) for plotting.
+	EquityCurve []EquityPoint `json:"equity_curve,omitempty"`
 	// TradeLog contains per-trade details (optional, may be large).
 	TradeLog []TradeRecord `json:"trade_log,omitempty"`
+}
+
+// EquityPoint represents a snapshot of portfolio equity at a point in time.
+// Used to construct equity curves for performance visualization.
+type EquityPoint struct {
+	// Time is the timestamp of this snapshot.
+	Time time.Time `json:"time"`
+	// Equity is the total portfolio value (cash + position market value).
+	Equity float64 `json:"equity"`
+	// Cash is the cash balance at this point.
+	Cash float64 `json:"cash"`
+	// Exposure is the gross market exposure (sum of absolute position values).
+	Exposure float64 `json:"exposure"`
+	// Drawdown is the peak-to-trough decline as a positive fraction (0-1).
+	Drawdown float64 `json:"drawdown"`
 }
 
 // TradeRecord represents a single executed trade within a backtest or paper session.

@@ -119,7 +119,7 @@ func TestPrintResearchReport(t *testing.T) {
 	foundDecision := false
 	for _, line := range lines {
 		// FIX: Info — use standard library strings.Contains instead of hand-rolled loop.
-		if strings.Contains(line, "研究报告") {
+		if strings.Contains(line, "Research Report") {
 			foundReport = true
 		}
 		if strings.Contains(line, "Research Plan") {
@@ -232,7 +232,7 @@ func TestRunWithResearchLayerIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := runWithResearchLayer(ctx, "AAPL", t.TempDir())
+	err := runWithResearchLayer(ctx, "AAPL", t.TempDir(), "./examples/quant-trading/data", false)
 	if err != nil {
 		t.Fatalf("runWithResearchLayer failed: %v", err)
 	}

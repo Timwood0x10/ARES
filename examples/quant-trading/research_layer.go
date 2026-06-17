@@ -81,7 +81,7 @@ func setupDataFlow(_ string) (*dataflow.VendorRouter, *dataflow.Validator, error
 // FIX: Minor — totalNodes parameter replaces hardcoded 12.
 func printResearchReport(state *research.ResearchState, log func(string, ...any), totalNodes int) {
 	log("════════════════════════════════════════════")
-	log("  %s 研究报告 (Research Layer)", state.Symbol)
+	log("  %s Research Report (Research Layer)", state.Symbol)
 	log("════════════════════════════════════════════\n")
 
 	for _, report := range state.AnalystReports {
@@ -100,18 +100,18 @@ func printResearchReport(state *research.ResearchState, log func(string, ...any)
 	}
 
 	if state.PortfolioDecision != nil {
-		log("  ─── 最终投资决策 (Portfolio Manager) ───")
+		log("  ─── Final Investment Decision (Portfolio Manager) ───")
 		log(research.RenderMarkdownPD(state.PortfolioDecision))
 		log("")
 	}
 
-	log("  完成步骤 (%d/%d):", len(state.StepsCompleted), totalNodes)
+	log("  Steps completed (%d/%d):", len(state.StepsCompleted), totalNodes)
 	for _, step := range state.StepsCompleted {
 		log("    ✓ %s", step)
 	}
 
 	if state.Error != nil {
-		log("\n  ⚠️ 执行错误: %v", state.Error)
+		log("\n  ⚠️ Execution error: %v", state.Error)
 	}
 	log("")
 }
@@ -209,7 +209,7 @@ func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 	log func(string, ...any), reporter ReporterFunc) error {
 
 	totalNodes := len(graph.Order())
-	log("\n═══ 研究图执行 (%d 节点) ═══\n", totalNodes)
+	log("\n═══ Research graph execution (%d nodes) ═══\n", totalNodes)
 
 	if err := graph.Execute(ctx, state); err != nil {
 		return fmt.Errorf("execute research graph: %w", err)
@@ -234,7 +234,7 @@ func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 		if err := os.WriteFile(outPath, data, 0o644); err != nil {
 			return fmt.Errorf("save result: %w", err)
 		}
-		log("  📄 研究结果已保存: %s", outPath)
+		log("  📄 Research results saved: %s", outPath)
 	}
 
 	return nil

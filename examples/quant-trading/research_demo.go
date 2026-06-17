@@ -60,8 +60,8 @@ func runResearchDemo(ctx context.Context, ticker string, outputPath string) erro
 	log("╔════════════════════════════════════════════════╗")
 	log("║  Research Layer Demo (Offline / No LLM Needed) ║")
 	log("╚════════════════════════════════════════════════╝")
-	log("  标的: %s", ticker)
-	log("  时间: %s\n", time.Now().Format(time.RFC3339))
+	log("  Ticker: %s", ticker)
+	log("  Time: %s\n", time.Now().Format(time.RFC3339))
 
 	// Step 1: Create state with default config.
 	cfg := &research.ResearchConfig{
@@ -89,7 +89,7 @@ func runResearchDemo(ctx context.Context, ticker string, outputPath string) erro
 		return fmt.Errorf("build graph: %w", err)
 	}
 
-	log("  研究图构建完成 (%d 节点):", len(graph.Order()))
+	log("  Research graph built (%d nodes):", len(graph.Order()))
 	for i, nodeID := range graph.Order() {
 		node := graph.Nodes()[nodeID]
 		if node != nil {
@@ -116,7 +116,7 @@ func runResearchDemo(ctx context.Context, ticker string, outputPath string) erro
 		if err != nil {
 			return fmt.Errorf("serialize state: %w", err)
 		}
-		log("\n  ─── 完整 State (JSON) ───\n%s\n", string(data))
+		log("\n  ─── Full State (JSON) ───\n%s\n", string(data))
 	}
 
 	return nil
@@ -372,7 +372,7 @@ func parseDemoResponse(state *research.ResearchState, nodeID string, nodeName st
 //   - totalNodes: total number of nodes in the graph for progress display.
 func printDemoReport(state *research.ResearchState, log func(string, ...any), totalNodes int) {
 	log("═════════════════════════════════════════════════")
-	log("  %s 研究报告 (Research Layer Demo)", state.Symbol)
+	log("  %s Research Report (Research Layer Demo)", state.Symbol)
 	log("═════════════════════════════════════════════════\n")
 
 	// Phase 1: Analyst Reports.

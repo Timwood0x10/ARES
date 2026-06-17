@@ -51,6 +51,117 @@ graph TB
 
 Guess what? **advancedRetrieval has always been nil in the API layer.** We'll get to that in the Honest Section.
 
+## Data Classification Storage: Not Redundancy, But Division of Labor
+
+Before diving into the embedding pipeline and search details, we need to answer a fundamental question: **Why use both pgvector and plain PostgreSQL tables?**
+
+First-time observers of GoAgentX's storage design often react: "Isn't this just vector retrieval? Why not use a dedicated vector database?" — I know that reaction well, because that's exactly what I thought when I started.
+
+### What Vector DBs Can and Can't Do
+
+Let's first be clear about vector databases' capabilities and limitations.
+
+**What vector DBs are good at:** At moderate scale (tens to hundreds of thousands of entries), they bring semantically similar things together. "Apples" and "oranges" can be found together, and "Python language" and "Golang language" can be associated — something traditional keyword search can't do.
+
+**What vector DBs are not good at:** As data volume grows, similarity in high-dimensional space loses its discriminative power. This isn't a bug in any particular product — it's a mathematical property of high-dimensional geometry known as the **Curse of Dimensionality**, directly manifesting in retrieval.
+
+In a 1024-dimensional space (GoAgentX's embedding dimension), the cosine similarity between two random unrelated vectors is typically around 0.7-0.8. This means when you dump 100,000 entries into a single vector bucket and search for "Python dependency install error," your top-10 results might look like this:
+
+```
+Rank 1: "pip freeze best practices"                — cosine sim 0.91, relevant
+Rank 2: "JavaScript EventLoop deep dive"            — cosine sim 0.87, completely irrelevant
+Rank 3: "pip install inside Docker containers"      — cosine sim 0.86, partially relevant
+Rank 4: "Vue3 reactivity explained"                 — cosine sim 0.84, completely irrelevant
+Rank 5: "Node.js package management troubleshooting" — cosine sim 0.83, superficially similar
+```
+
+Rank 2 and Rank 1 differ by only 0.04 in cosine similarity, but for an agent, one is a lifeline and the other is poison.
+
+This isn't a "failure" of vector search — it's the **boundary of what vector search can do**: it tells you "these texts are mathematically nearby," but mathematical proximity doesn't equal real relevance — especially when different data types share the same semantic space.
+
+### For LLMs, More Is Worse
+
+Now revisit the scenario from the article's opening: search "Python dependency install error" returns ten results, three of which are high-similarity JavaScript tutorials.
+
+What happens when the agent receives these ten results?
+
+It stuffs every single one into its context window. Then it sees Rank 2 — "JavaScript EventLoop deep dive" — and has to make sense of it. The LLM doesn't just ignore irrelevant content. It **tries to rationalize it**, because its training objective is to "generate the most coherent output given all available context."
+
+So it might produce: "Similar issues exist in Node.js. Consider checking whether the event loop is blocked..."
+
+This is the real path to hallucination: **the agent isn't making things up — it's trying its best to use every input it's given, including the inputs that should never have been there.**
+
+At larger scale (millions of entries), this problem compounds:
+- The absolute number of high-similarity false positives grows proportionally
+- Every retrieval cycle floods the context window with a new batch of noise
+- Agent reasoning quality doesn't degrade linearly — it **falls off a cliff** once noise exceeds a certain fraction of the context window
+
+### Solution: Data Type Split Storage
+
+Once you understand vector DB boundaries and the damage false positives do to LLMs, the solution is clear: **don't let a single vector bucket bear the retrieval burden for all data.** Split data by type, route each type through its own retrieval path.
+
+GoAgentX divides data into four domains, each in its own storage location with a distinct retrieval strategy:
+
+| Data Type | Storage | Retrieval Strategy | Weight | Key Signal |
+|-----------|---------|-------------------|--------|-----------|
+| **Knowledge** | pgvector (dedicated table) | Pure vector search | 0.4 | Semantic similarity |
+| **Experience** | PostgreSQL + metadata columns | Vector search + signal weighting | 0.3 | Success/failure rate, speed, reuse |
+| **Tools** | PostgreSQL (registry) | BM25 primary, vector fallback | 0.2 | Exact match |
+| **TaskResults** | PostgreSQL (archive) | BM25 + time decay | 0.1 | Recency |
+
+**Knowledge** is the "textbook" — curated, high-quality content that's been written and reviewed. Its vector space contains only knowledge articles, unpolluted by other data types. Pure vector search is sufficiently reliable here.
+
+**Experience** is the "lab notebook" — records of past problem-solving attempts. The key value isn't semantic similarity but **historical validation signals**. So it adds signal weighting on top of vector search: successful experiences ×1.2, failed ×0.7, fast execution ×1.2.
+
+**Tools** are the "toolbox manuals" — short, structured text with limited semantic density. Pure vector search is mostly wasted here. BM25 keyword matching + category filtering handles the vast majority of queries.
+
+**TaskResults** are the "scratch paper" — raw traces from every agent task execution. Highest volume, noisiest, lowest quality. Weight is only 0.1, with the heaviest time decay — task results older than 30 days barely participate in ranking.
+
+### How Classification Reduces Hallucination
+
+Returning to the hallucination path, classification cuts it at three points:
+
+**1. Smaller vector space = better discriminability**
+
+Each domain retrieves within its own independent vector space. The Knowledge space contains only knowledge articles. Inside this bounded space, cosine similarity reliably reflects semantic distance — no more "Python dependency → JavaScript" hits, because JavaScript content doesn't exist in this vector space.
+
+**2. Different data types use different strategies, each playing to its strengths**
+
+Experience data doesn't need "the most similar" result — it needs "the most successful" one. So signal weighting outperforms pure vector search here. Tool descriptions don't need semantic search — they need exact matching. Every strategy operates in its optimal zone.
+
+**3. Context window protection**
+
+Weight layering (Knowledge at 0.4 × TaskResults at 0.1 = 4× dominance), time decay, and precision-mode routing ensure the LLM's context window is preferentially filled with high-quality, high-confidence content.
+
+### Why Not Two Separate Databases?
+
+A more radical question: since we're already splitting data into four domains, why not go all the way with a dedicated vector DB (Milvus/Pinecone) plus PostgreSQL?
+
+Two words: **transactional consistency and operational simplicity.**
+
+Dedicated vector DBs (Milvus, Pinecone, Qdrant) perform better on raw vector search throughput, but the tradeoffs are significant:
+- **Eventual consistency** — writes aren't immediately queryable
+- **Cross-system JOIN impossible** — can't filter by `WHERE success_count > 3` while ordering by vector distance in a single query
+- **Operational overhead** — every independent DB adds a cluster to monitor, backup, and tune
+
+GoAgentX's choice: **store vectors in the pgvector plugin, structured metadata in related PostgreSQL tables.** One query handles vector similarity + metadata filtering + custom scoring:
+
+```sql
+SELECT e.content, e.metadata,
+       1 - (ke.embedding <=> $1) AS vector_score,
+       e.success_count, e.exec_time_ms
+FROM experience e
+JOIN knowledge_embeddings ke ON ke.content_id = e.id
+WHERE e.tenant_id = $2
+  AND e.success_count > 3
+ORDER BY (1 - (ke.embedding <=> $1)) * 1.1
+         * CASE WHEN e.exec_time_ms < 1000 THEN 1.2 ELSE 1.0 END
+         DESC
+LIMIT 10
+```
+
+In short: **This isn't pgvector vs. PostgreSQL, and it isn't a replacement for dedicated vector databases. It's a data classification architecture where "data type determines retrieval strategy, retrieval strategy determines storage location" — fully realized within the PostgreSQL ecosystem.**
+
 ## Embedding Pipeline
 
 Let's start with the foundation — no matter which retrieval strategy you use, embedding is the unavoidable first step.

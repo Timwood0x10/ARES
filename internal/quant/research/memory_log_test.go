@@ -24,7 +24,7 @@ func newTestMemoryStore(t *testing.T) *MemoryStore {
 
 func TestMemoryStore_AppendAndGetEntry(t *testing.T) {
 	store := newTestMemoryStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	entry := &MemoryEntry{
@@ -60,7 +60,7 @@ func TestMemoryStore_AppendAndGetEntry(t *testing.T) {
 
 func TestMemoryStore_DuplicateSymbolDate(t *testing.T) {
 	store := newTestMemoryStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	date := time.Date(2026, 6, 17, 0, 0, 0, 0, time.UTC)
@@ -90,7 +90,7 @@ func TestMemoryStore_DuplicateSymbolDate(t *testing.T) {
 
 func TestMemoryStore_UpdateOutcome(t *testing.T) {
 	store := newTestMemoryStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	entry := &MemoryEntry{
@@ -102,7 +102,7 @@ func TestMemoryStore_UpdateOutcome(t *testing.T) {
 		Status:       MemoryStatusPending,
 	}
 
-	store.AppendEntry(ctx, entry)
+	_ = store.AppendEntry(ctx, entry)
 
 	outcome := &Outcome{
 		ActualReturn:    12.5,
@@ -125,12 +125,12 @@ func TestMemoryStore_UpdateOutcome(t *testing.T) {
 
 func TestMemoryStore_GetPendingEntries(t *testing.T) {
 	store := newTestMemoryStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
 	// Add a pending entry.
-	store.AppendEntry(ctx, &MemoryEntry{
+	_ = store.AppendEntry(ctx, &MemoryEntry{
 		ID:           "test-pending-001",
 		Symbol:       "MSFT",
 		Rating:       RatingHold,
@@ -265,7 +265,7 @@ func TestMemoryLog_ResolvePending(t *testing.T) {
 	entry := &MemoryEntry{
 		Symbol: "GOOGL", Rating: RatingBuy, AnalysisDate: time.Now(),
 	}
-	log.Append(ctx, entry)
+	_ = log.Append(ctx, entry)
 
 	outcomes := map[string]*Outcome{
 		entry.ID: {ActualReturn: 8.5, BenchmarkReturn: 2.0, RealizedAlpha: 6.5},
@@ -286,7 +286,7 @@ func TestMemoryLog_GetSymbolHistory(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		log.Append(ctx, &MemoryEntry{
+		_ = log.Append(ctx, &MemoryEntry{
 			Symbol: "AMD", Rating: RatingHold, AnalysisDate: time.Now().AddDate(0, 0, -i),
 		})
 	}
@@ -305,7 +305,7 @@ func TestMemoryLog_GenerateContext(t *testing.T) {
 	log := NewMemoryLog(ms)
 
 	ctx := context.Background()
-	log.Append(ctx, &MemoryEntry{
+	_ = log.Append(ctx, &MemoryEntry{
 		Symbol: "META", Rating: RatingOverweight, AnalysisDate: time.Now(),
 	})
 
@@ -331,7 +331,7 @@ func TestNewMemoryStore_CreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new memory store: %v", err)
 	}
-	store.Close()
+	_ = store.Close()
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("database file should exist after creation")
