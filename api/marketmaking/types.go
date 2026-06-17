@@ -110,6 +110,22 @@ type BacktestRequest struct {
 	ConfigPath string `json:"config_path,omitempty"`
 	// PositionSize is the fraction of capital per trade (0-1).
 	PositionSize float64 `json:"position_size,omitempty"`
+	// Signals carries pre-generated trade signals from an external source
+	// (e.g., the research layer). When non-empty, the runner uses these instead
+	// of generating default signals internally.
+	Signals []TradeSignal `json:"signals,omitempty"`
+}
+
+// TradeSignal represents a time-based trading instruction for a backtest.
+type TradeSignal struct {
+	// Date is when this signal was generated.
+	Date time.Time `json:"date"`
+	// Action is the trade direction: "BUY", "SELL", or "HOLD".
+	Action string `json:"action"`
+	// Reason explains why this signal was generated.
+	Reason string `json:"reason,omitempty"`
+	// Confidence is the signal confidence level between 0 and 1.
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // BacktestResponse contains the results of a completed backtest.

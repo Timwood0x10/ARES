@@ -63,3 +63,49 @@ type priceBar struct {
 	Close  float64
 	Volume int64
 }
+
+// ─── Multi-Asset Types ──────────────────────────────────────
+
+// AssetType represents the classification of a trading instrument.
+type AssetType string
+
+const (
+	// AssetUSStock represents a US equity instrument.
+	AssetUSStock AssetType = "us_stock"
+	// AssetCNStock represents a Chinese A-share instrument.
+	AssetCNStock AssetType = "cn_stock"
+	// AssetCrypto represents a cryptocurrency instrument.
+	AssetCrypto AssetType = "crypto"
+	// AssetCustom represents a user-defined custom asset.
+	AssetCustom AssetType = "custom"
+)
+
+// PositionInfo holds per-symbol position data in a multi-asset portfolio.
+type PositionInfo struct {
+	Symbol      string    `json:"symbol"`
+	AssetType   AssetType `json:"asset_type"`
+	Shares      float64   `json:"shares"`
+	CostBasis   float64   `json:"cost_basis"`
+	LastPrice   float64   `json:"last_price"`
+	QualityFlag string    `json:"quality_flag,omitempty"`
+}
+
+// MultiAssetResult holds the output of a multi-asset backtest.
+type MultiAssetResult struct {
+	Symbols        []string                `json:"symbols"`
+	InitialCapital float64                 `json:"initial_capital"`
+	FinalEquity    float64                 `json:"final_equity"`
+	TotalPnL       float64                 `json:"total_pnl"`
+	TotalReturn    float64                 `json:"total_return"`
+	SharpeRatio    float64                 `json:"sharpe_ratio"`
+	MaxDrawdown    float64                 `json:"max_drawdown"`
+	WinRate        float64                 `json:"win_rate"`
+	TotalTrades    int                     `json:"total_trades"`
+	WinningTrades  int                     `json:"winning_trades"`
+	LosingTrades   int                     `json:"losing_trades"`
+	Positions      map[string]PositionInfo `json:"positions"`
+	EquityCurve    []EquityPoint           `json:"equity_curve"`
+	TradeLog       []TradeRecord           `json:"trade_log"`
+	Summary        string                  `json:"summary"`
+	Warnings       []string                `json:"warnings,omitempty"`
+}

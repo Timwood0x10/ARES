@@ -516,7 +516,11 @@ func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir 
 		req.DataSource = dataVendor
 	}
 	if date != "" {
-		req.StartTime, _ = time.Parse("2006-01-02", date)
+		parsed, err := time.Parse("2006-01-02", date)
+		if err != nil {
+			return fmt.Errorf("parse --date: %w", err)
+		}
+		req.StartTime = parsed
 	}
 
 	resp, err := runner.Run(ctx, req)
@@ -644,9 +648,18 @@ func writeBacktestConfig(outDir string, req *marketmaking.BacktestRequest) error
 	return os.WriteFile(filepath.Join(outDir, "config.json"), data, 0o644)
 }
 
-// runSimulation executes the investment backtest using the research layer's
-// PortfolioDecision. It generates trade signals from the decision, runs the
-// simulator, prints a report, and saves JSON results.
+// saveSimulationJSON writes a BacktestResponse to a JSON file for simulation results.
+func saveSimulationJSON(resp *marketmaking.BacktestResponse, outPath string) error {
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal simulation result: %w", err)
+	}
+	return os.WriteFile(outPath, data, 0o644)
+}
+
+// runSimulation executes the investment backtest using the public marketmaking API.
+// It converts the research layer's PortfolioDecision into trade signals, then
+// delegates to BacktestRunner for execution and reporting.
 func runSimulation(ctx context.Context, ticker string, dataDir string,
 	outDir string, state *research.ResearchState, log func(string, ...any)) {
 
@@ -663,43 +676,63 @@ func runSimulation(ctx context.Context, ticker string, dataDir string,
 			sig.Date.Format("2006-01-02"), sig.Action, sig.Reason, sig.Confidence*100)
 	}
 
-	sim := &InvestmentSimulator{
+	// Convert research signals to public API TradeSignal type.
+	apiSignals := make([]marketmaking.TradeSignal, len(signals))
+	for i, s := range signals {
+		apiSignals[i] = marketmaking.TradeSignal{
+			Date:       s.Date,
+			Action:     s.Action,
+			Reason:     s.Reason,
+			Confidence: s.Confidence,
+		}
+	}
+
+	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dataDir)
+	req := &marketmaking.BacktestRequest{
+		Symbols:        []string{ticker},
 		InitialCapital: 100_000.0,
 		PositionSize:   0.10,
 		Commission:     0.001,
+		Strategy:       "research_signal",
+		DataDir:        dataDir,
+		Signals:        apiSignals,
 	}
 
-	result, err := sim.RunSimulation(ctx, ticker, dataDir, signals)
+	resp, err := runner.Run(ctx, req)
 	if err != nil {
 		log("  Simulation failed: %v", err)
 		return
 	}
 
-	// Print simulation report.
+	// Print simulation report from public API response.
 	log("════════════════════════════════════════════")
-	log("  Simulation Report for %s", result.Ticker)
+	log("  Simulation Report for %s", ticker)
 	log("════════════════════════════════════════════")
-	log("  Initial Capital: $%.2f", result.InitialCapital)
-	log("  Final Equity:    $%.2f", result.FinalEquity)
-	log("  Total P&L:       $%.2f", result.TotalPnL)
-	log("  Total Return:    %.2f%%", result.TotalReturn)
-	log("  Sharpe Ratio:    %.2f", result.SharpeRatio)
-	log("  Max Drawdown:    %.2f%%", result.MaxDrawdown*100)
-	log("  Win Rate:        %.1f%%", result.WinRate*100)
-	log("  Total Trades:    %d", result.TotalTrades)
-	log("  Winning Trades:  %d", result.WinningTrades)
-	log("  Losing Trades:   %d", result.LosingTrades)
-	log("  Equity Points:   %d", len(result.EquityCurve))
+	log("  Initial Capital: $%.2f", req.InitialCapital)
+	log("  Final Equity:    $%.2f", resp.TotalPnL+req.InitialCapital)
+	log("  Total P&L:       $%.2f", resp.TotalPnL)
+	log("  Total Return:    %.2f%%", resp.TotalReturn*100)
+	log("  Sharpe Ratio:    %.2f", resp.SharpeRatio)
+	log("  Max Drawdown:    %.2f%%", resp.MaxDrawdown*100)
+	log("  Win Rate:        %.1f%%", resp.WinRate*100)
+	log("  Total Trades:    %d", resp.TotalTrades)
+	log("  Winning Trades:  %d", resp.WinningTrades)
+	log("  Losing Trades:   %d", resp.LosingTrades)
+	log("  Equity Points:   %d", len(resp.EquityCurve))
 	log("")
-	log("  Summary: %s", result.Summary)
+	log("  Summary: %s", resp.Summary)
 
-	// Save results to JSON.
-	simOutPath := filepath.Join(outDir, fmt.Sprintf("%s_simulation_%s.json",
-		ticker, time.Now().Format("20060102_150405")))
-	if err := SaveSimulationResult(result, simOutPath); err != nil {
-		log("  Failed to save simulation results: %v", err)
+	// Save results to JSON via standard backtest output helpers.
+	if err := writeBacktestSummary(outDir, resp); err != nil {
+		log("  Failed to write summary: %v", err)
 	} else {
-		log("  Simulation results saved: %s", simOutPath)
+		simOutPath := filepath.Join(outDir, fmt.Sprintf("%s_simulation_%s.json",
+			ticker, time.Now().Format("20060102_150405")))
+		if err := saveSimulationJSON(resp, simOutPath); err != nil {
+			log("  Failed to save simulation results: %v", err)
+		} else {
+			log("  Simulation results saved: %s", simOutPath)
+		}
 	}
 	log("")
 }

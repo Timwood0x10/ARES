@@ -34,16 +34,55 @@ func TestBuildMarketAnalystPrompt_InjectsSnapshot(t *testing.T) {
 			Close:  153.0,
 			Volume: 1000000,
 		},
-		Indicators:   map[string]float64{"RSI": 65.5, "MACD": 2.3},
+		Indicators:   map[string]float64{"RSI_14": 65.5, "MACD": 2.3, "SMA_20": 151.0},
 		RecentCloses: []float64{150.0, 151.0, 152.0, 153.0},
+		Warning:      "conflicting tool output must be flagged, not reconciled by imagination",
 	}
 	state := &research.ResearchState{Symbol: "AAPL", MarketSnapshot: snapshot}
 	prompt := BuildMarketAnalystPrompt(state)
+
+	// Verify snapshot section is present.
 	if !contains(prompt, "Verified Market Snapshot") {
 		t.Error("prompt should contain snapshot section when snapshot is provided")
 	}
-	if !contains(prompt, "RSI") {
-		t.Error("prompt should contain RSI indicator")
+
+	// Verify OHLCV data is present.
+	if !contains(prompt, "Open:") || !contains(prompt, "Close:") {
+		t.Error("prompt should contain OHLCV data fields")
+	}
+
+	// Verify indicators are present.
+	if !contains(prompt, "RSI_14") {
+		t.Error("prompt should contain RSI_14 indicator")
+	}
+	if !contains(prompt, "SMA_20") {
+		t.Error("prompt should contain SMA_20 indicator")
+	}
+
+	// Verify recent closes are present.
+	if !contains(prompt, "Recent Closes") {
+		t.Error("prompt should contain Recent Closes section")
+	}
+
+	// Verify MANDATORY constraint (both Chinese and English).
+	if !contains(prompt, "你必须且只能使用以上快照数据进行分析") {
+		t.Error("prompt must contain Chinese mandatory constraint about snapshot-only data")
+	}
+	if !contains(prompt, "MUST use ONLY") {
+		t.Error("prompt must contain English mandatory constraint about snapshot-only data")
+	}
+
+	// Verify warning text.
+	if !contains(prompt, "WARNING") {
+		t.Error("prompt should contain warning text from snapshot")
+	}
+
+	// Verify metadata fields.
+	if !contains(prompt, "requested_date") && !contains(prompt, "Requested Date") {
+		t.Error("prompt should contain requested_date metadata")
+	}
+	if !contains(prompt, "latest_row_date") && !contains(prompt, "Latest Data Date") {
+		t.Error("prompt should contain latest_row_date metadata")
 	}
 }
 

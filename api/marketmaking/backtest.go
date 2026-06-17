@@ -79,7 +79,10 @@ func (r *DefaultBacktestRunner) runSingleSymbol(ctx context.Context, symbol stri
 		return nil, fmt.Errorf("create simulator: %w", err)
 	}
 
-	signals := generateDefaultSignals(req.StartTime, req.EndTime)
+	signals := toPortfolioSignals(req.Signals)
+	if len(signals) == 0 {
+		signals = generateDefaultSignals(req.StartTime, req.EndTime)
+	}
 	result, err := sim.RunSimulation(ctx, symbol, dataDir, signals)
 	if err != nil {
 		return nil, fmt.Errorf("run simulation: %w", err)
@@ -179,3 +182,21 @@ var (
 	errNoSymbols      = errors.New("no symbols in backtest request")
 	errInvalidCapital = errors.New("initial capital must be > 0")
 )
+
+// toPortfolioSignals converts public API TradeSignal slices to internal
+// portfolio.TradeSignal slices for use by the simulator.
+func toPortfolioSignals(signals []TradeSignal) []portfolio.TradeSignal {
+	if len(signals) == 0 {
+		return nil
+	}
+	result := make([]portfolio.TradeSignal, len(signals))
+	for i, s := range signals {
+		result[i] = portfolio.TradeSignal{
+			Date:       s.Date,
+			Action:     s.Action,
+			Reason:     s.Reason,
+			Confidence: s.Confidence,
+		}
+	}
+	return result
+}

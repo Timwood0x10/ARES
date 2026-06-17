@@ -12,16 +12,16 @@ import (
 
 // BuildMarketAnalystPrompt constructs the market analyst prompt.
 // Output JSON matches the AnalystReport schema (score 0-100, findings for domain data).
-// If state contains a VerifiedMarketSnapshot, it injects the snapshot data.
+// When state contains a VerifiedMarketSnapshot, it injects the full snapshot data and
+// enforces that the analyst must use ONLY snapshot data — no external price data allowed.
 func BuildMarketAnalystPrompt(state *research.ResearchState) string {
 	snapshotSection := ""
 	if state.MarketSnapshot != nil {
-		snapshotSection = formatSnapshot(state.MarketSnapshot, state.Symbol)
+		snapshotSection = formatSnapshotForAnalyst(state.MarketSnapshot, state.Symbol)
 	}
 	return fmt.Sprintf(`You are a Market Analyst. Analyze price action, technical indicators, and market structure for %s.
 
-%s
-Analyze these aspects:
+%sAnalyze these aspects:
 1. Price trend and momentum
 2. Key support and resistance levels
 3. Volume patterns
@@ -345,47 +345,93 @@ Output valid JSON with these fields:
 
 // ─── Internal Helpers ──────────────────────────────────────
 
-func formatSnapshot(snapshot *research.VerifiedMarketSnapshot, symbol string) string {
+// formatSnapshotForAnalyst formats a VerifiedMarketSnapshot into a detailed prompt
+// section for the Market Analyst. It includes all OHLCV data, indicators, recent closes,
+// warning text, and a MANDATORY constraint that the analyst must use ONLY this data.
+func formatSnapshotForAnalyst(snapshot *research.VerifiedMarketSnapshot, symbol string) string {
 	if snapshot == nil {
 		return ""
 	}
-	indicatorStr := ""
+
+	// OHLCV data.
+	ohlcvStr := "No OHLCV data available."
+	if snapshot.OHLCV != nil {
+		ohlcvStr = fmt.Sprintf("Open: %.2f | High: %.2f | Low: %.2f | Close: %.2f | Volume: %d",
+			snapshot.OHLCV.Open, snapshot.OHLCV.High, snapshot.OHLCV.Low,
+			snapshot.OHLCV.Close, snapshot.OHLCV.Volume)
+	}
+
+	// Technical indicators — ordered for readability.
+	indicatorLines := ""
+	indicatorOrder := []string{"RSI_14", "SMA_20", "SMA_50", "MACD", "MACD_Signal", "MACD_Hist", "BB_Upper", "BB_Lower"}
 	if snapshot.Indicators != nil {
+		for _, key := range indicatorOrder {
+			if v, ok := snapshot.Indicators[key]; ok {
+				indicatorLines += fmt.Sprintf("- %s: %.4f\n", key, v)
+			}
+		}
+		// Include any remaining indicators not in the standard order.
 		for k, v := range snapshot.Indicators {
-			indicatorStr += fmt.Sprintf("- %s: %.2f\n", k, v)
+			found := false
+			for _, key := range indicatorOrder {
+				if k == key {
+					found = true
+					break
+				}
+			}
+			if !found {
+				indicatorLines += fmt.Sprintf("- %s: %.4f\n", k, v)
+			}
 		}
 	}
-	closesStr := ""
+
+	// Recent closing prices (last 10).
+	closesStr := "N/A"
 	if len(snapshot.RecentCloses) > 0 {
-		closesStr = "Recent closes: "
-		for _, c := range snapshot.RecentCloses {
-			closesStr += fmt.Sprintf("%.2f ", c)
+		closesStr = ""
+		for i, c := range snapshot.RecentCloses {
+			if i > 0 {
+				closesStr += ", "
+			}
+			closesStr += fmt.Sprintf("%.2f", c)
 		}
 	}
+
+	// Warning text.
 	warningStr := ""
 	if snapshot.Warning != "" {
-		warningStr = fmt.Sprintf("\n⚠ WARNING: %s\n", snapshot.Warning)
+		warningStr = fmt.Sprintf("\n⚠ WARNING: %s", snapshot.Warning)
 	}
-	return fmt.Sprintf(`
-## Verified Market Snapshot
+
+	return fmt.Sprintf(`## Verified Market Snapshot (MANDATORY DATA SOURCE)
+
+**IMPORTANT CONSTRAINT:** 你必须且只能使用以上快照数据进行分析，不得使用快照之外的任何价格数据。
+You MUST use ONLY the data below for your analysis. Do NOT use any price data outside of this snapshot.
+
+### Metadata
 - Symbol: %s
 - Requested Date: %s
-- Latest Data Date: %s
-%s
-%s
-Indicators:
-%s%s
-`, symbol, snapshot.RequestedDate.Format("2006-01-02"),
-		snapshot.LatestRowDate.Format("2006-01-02"),
-		formatOHLCV(snapshot.OHLCV), closesStr, indicatorStr, warningStr)
-}
+- Latest Data Date (latest_row_date): %s
 
-func formatOHLCV(candle *research.Candle) string {
-	if candle == nil {
-		return "No OHLCV data available."
-	}
-	return fmt.Sprintf("O:%.2f H:%.2f L:%.2f C:%.2f V:%d",
-		candle.Open, candle.High, candle.Low, candle.Close, candle.Volume)
+### OHLCV Data (Latest Candle)
+%s
+
+### Technical Indicators
+%s
+
+### Recent Closes (Last %d Closing Prices)
+[%s]
+%s
+
+---
+`, symbol,
+		snapshot.RequestedDate.Format("2006-01-02"),
+		snapshot.LatestRowDate.Format("2006-01-02"),
+		ohlcvStr,
+		indicatorLines,
+		len(snapshot.RecentCloses),
+		closesStr,
+		warningStr)
 }
 
 func buildAnalystContext(state *research.ResearchState) string {

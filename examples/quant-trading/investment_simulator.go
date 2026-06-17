@@ -1,42 +1,72 @@
-// Package main — CLI glue for the investment simulation backtest.
-// Core logic is in internal/quant/portfolio; this file re-exports types
-// and wraps functions so existing callers (main.go, tests) continue
-// to work without import changes.
+// Package main — signal generation bridge between research layer and simulation.
+// This file converts research PortfolioDecision into trade signal objects.
+// It does NOT depend on internal/quant/portfolio for simulation — that is
+// handled by main.go via the public marketmaking API.
 package main
 
 import (
-	"context"
+	"fmt"
+	"time"
 
-	"goagentx/internal/quant/portfolio"
 	"goagentx/internal/quant/research"
 )
 
-// TradeSignal re-exported from portfolio package.
-type TradeSignal = portfolio.TradeSignal
+// TradeSignal represents a time-based trading instruction produced by the
+// research layer. It mirrors the shape of marketmaking.TradeSignal but lives
+// here to avoid importing api/marketmaking (which would create a cycle through
+// internal/quant/marketmaking).
+type TradeSignal struct {
+	Date       time.Time `json:"date"`
+	Action     string    `json:"action"` // "BUY", "SELL", or "HOLD"
+	Reason     string    `json:"reason,omitempty"`
+	Confidence float64   `json:"confidence,omitempty"` // 0–1
+}
 
-// SimulationResult re-exported from portfolio package.
-type SimulationResult = portfolio.SimulationResult
-
-// InvestmentSimulator re-exported from portfolio package.
-type InvestmentSimulator = portfolio.InvestmentSimulator
-
-// GenerateSignalsFromResearch delegates to portfolio.GenerateSignalsFromResearch.
+// GenerateSignalsFromResearch converts a research PortfolioDecision into
+// a slice of TradeSignals. It creates:
+//   - A BUY signal when rating is Buy or Overweight.
+//   - A SELL signal when rating is Underweight or Sell.
+//   - A HOLD signal otherwise (Hold rating).
+//
+// Args:
+//   - decision: the portfolio decision from the research layer.
+//
+// Returns:
+//   - slice containing one TradeSignal, or a HOLD signal with explanation
+//     if the decision is nil or has an empty rating.
 func GenerateSignalsFromResearch(decision *research.PortfolioDecision) []TradeSignal {
-	return portfolio.GenerateSignalsFromResearch(decision)
-}
-
-// SaveSimulationResult delegates to portfolio.SaveSimulationResult.
-func SaveSimulationResult(result *SimulationResult, outPath string) error {
-	return portfolio.SaveSimulationResult((*portfolio.SimulationResult)(result), outPath)
-}
-
-// RunSimulation is a convenience wrapper that creates a simulator with
-// default parameters and runs a backtest.
-func RunSimulation(ctx context.Context, ticker string, dataDir string, signals []TradeSignal) (*SimulationResult, error) {
-	sim := &portfolio.InvestmentSimulator{
-		InitialCapital: 100_000.0,
-		PositionSize:   0.10,
-		Commission:     0.001,
+	if decision == nil {
+		return []TradeSignal{
+			{Date: time.Now(), Action: "HOLD", Reason: "no decision available"},
+		}
 	}
-	return sim.RunSimulation(ctx, ticker, dataDir, signals)
+	if decision.Rating == "" {
+		return []TradeSignal{
+			{Date: time.Now(), Action: "HOLD", Reason: "invalid decision: empty rating"},
+		}
+	}
+
+	action := "HOLD"
+	reason := fmt.Sprintf("Rating=%s: %s", decision.Rating, decision.ExecutiveSummary)
+
+	switch decision.Rating {
+	case research.RatingBuy, research.RatingOverweight:
+		action = "BUY"
+	case research.RatingUnderweight, research.RatingSell:
+		action = "SELL"
+	}
+
+	confidence := 0.7
+	if decision.PriceTarget != nil && *decision.PriceTarget > 0 {
+		confidence = 0.8
+	}
+
+	return []TradeSignal{
+		{
+			Date:       time.Now(),
+			Action:     action,
+			Reason:     reason,
+			Confidence: confidence,
+		},
+	}
 }

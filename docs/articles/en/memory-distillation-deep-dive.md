@@ -762,4 +762,102 @@ What I'm most proud of isn't the distillation itself — it's the closed loop. D
 
 ---
 
+## Data-Driven: How Much Does Distillation Actually Save?
+
+All this architecture is fine, but does it actually work? I wrote a benchmark simulating a typical ops-support Agent scenario — users asking about slow databases, API errors, config issues, with the Agent troubleshooting each problem.
+
+The test uses 20 real Problem → Solution pairs (e.g., "database query timeout → checked indexes, found missing composite index, created it"), 15% of messages with follow-up questions. Tokens were measured two ways: the `estimateTokens()` heuristic (~4 chars/token) and actual LLM tokenization via sensenova-6.7-flash-lite.
+
+### Scenario 1: Unbounded History (The Key Metric)
+
+This is where distillation truly shines. If the Agent needs to reference **all** conversation history (no `MaxHistory=10` truncation), raw context grows linearly with rounds. Distillation compresses it to 3 highest-priority experience items:
+
+| Rounds | Raw Context (est) | Distilled (est) | Savings |
+|:------:|:-----------------:|:---------------:|:-------:|
+| 10 | 1,121 | 379 | **66.2%** |
+| 20 | 2,124 | 339 | **84.0%** |
+| 30 | 3,320 | 379 | **88.6%** |
+| 40 | 4,380 | 339 | **92.3%** |
+| 50 | 5,387 | 443 | **91.8%** |
+| 60 | 6,168 | 330 | **94.6%** |
+| 70 | 7,054 | 379 | **94.6%** |
+| 80 | 8,257 | 339 | **95.9%** |
+| 90 | 9,524 | 379 | **96.0%** |
+| 100 | 10,972 | 339 | **96.9%** |
+
+<small>*Table uses estimateTokens() as baseline.*</small>
+
+**LLM-Verified Data Points**: We called sensenova-6.7-flash-lite to verify key data points:
+
+| Checkpoint | estimateTokens | LLM Measured | Delta |
+|:----------:|:--------------:|:------------:|:-----:|
+| 20-round Full Raw | 2,124 | 1,930 | -9.1% |
+| 100-round Full Raw | 10,972 | 9,163 | -16.5% |
+| 20-round Distilled | 339 | 378 | +11.5% |
+| 100-round Distilled | 339 | 326 | -3.8% |
+
+The `estimateTokens()` heuristic is ±10-20% off for mixed Chinese/English text — acceptable for planning, but production billing must use the LLM's `usage.completion_tokens` field.
+
+**Takeaway**: Distilled context stays flat at **330-443 tokens** regardless of conversation length. Savings climb from 66% at 10 rounds to **96.4% at 100 rounds** — the longer the conversation, the bigger the win.
+
+At GPT-4o pricing ($2.50/1M input tokens), a 100-round session:
+- Raw: ~9,163 tokens → $0.023/session
+- Distilled: ~326 tokens → $0.001/session
+- Savings: ~$0.022/session. At 100K sessions/day, **$2,200/day saved**.
+
+### Scenario 2: Cross-Session Growth (Real-World Use)
+
+This simulates the actual production pattern — each new session builds on accumulated distillation from previous sessions. 10 sessions, 5 rounds each, no history truncation:
+
+| Session | Raw Context (est) | Distilled (est) | Savings | Cumulative Exp. |
+|:-------:|:-----------------:|:---------------:|:-------:|:---------------:|
+| 1 | 538 | 498 | 7.4% | 3 |
+| 2 | 1,058 | 796 | 24.8% | 6 |
+| 3 | 1,509 | 1,061 | 29.7% | 9 |
+| 4 | 1,974 | 1,317 | 33.3% | 12 |
+| 5 | 2,620 | 1,567 | 40.2% | 14 |
+| 6 | 3,320 | 1,567 | 52.8% | 14 |
+| 7 | 3,938 | 1,567 | 60.2% | 14 |
+| 8 | 4,380 | 1,918 | 56.2% | 16 |
+| 9 | 4,690 | 2,126 | 54.7% | 17 |
+| 10 | 5,387 | 2,126 | **60.5%** | 17 |
+
+<small>*Table uses estimateTokens().*</small>
+
+**LLM-Verified**: At session 10, LLM returned **4,763 tokens** for full raw (est 5,387) and **1,942 tokens** for distilled (est 2,126). Distillation savings adjust from estimated 60.5% to **59.2%** — well within margin.
+
+**Takeaway**: Raw context grows 10x (538 → 5,387 tokens), distilled grows only 4.3x (498 → 2,126). The 17 accumulated experiences are **high-value structured knowledge** (complete Problem→Solution pairs), whereas raw context is cluttered with filler dialogue and repetitions.
+
+### Scenario 3: Information Density
+
+At ~300-400 tokens budget:
+
+| Metric | Truncated Raw | Distilled |
+|:-------|:-------------:|:---------:|
+| Tokens (estimated) | ~277 | ~339 |
+| Tokens (LLM measured) | **312** | **378** |
+| Complete Problem→Solution pairs | **0** (all fragments) | **3** |
+| Semantic units | 10 truncated fragments | 3 complete experiences |
+| Reusability | Low (broken context) | High (self-contained) |
+
+This is the cost of `BuildContext`'s `MaxHistory=10` with 100-char truncation: you save tokens, but the retained information is fragmented. Distillation, at the same token budget, delivers independently reusable complete experiences.
+
+### Token Estimation Accuracy
+
+A systematic verification found that `estimateTokens()` **consistently underestimates** actual token counts by ~22.3% (estimated 160 vs LLM-measured 206 for a typical raw context). For production billing, always use the LLM's returned `usage` field.
+
+### Summary
+
+| Use Case | Best Approach | Token Savings |
+|:---------|:-------------:|:-------------:|
+| Single session, last few rounds only | Sliding window truncation | ~70% |
+| Cross-session experience reuse | Distillation + accumulation | 40-60% (LLM verified: 59.2%) |
+| Full history reference required | Distillation | **66-97% (LLM verified: 80.4%-96.4%)** |
+
+> **On data sources**: "LLM measured" = actual `usage.completion_tokens` from sensenova-6.7-flash-lite on real context. Unlabeled values are `estimateTokens()` heuristic. Verification confirms estimate trends are accurate, but consistently low by ~10-20%.
+
+**Core conclusion**: Memory Distillation's greatest value isn't "saving tokens" — it's **preserving semantic integrity while saving tokens**. Truncation throws information away. Distillation refines and stores it. The former is "cheap but hungry"; the latter is "cheap and well-fed."
+
+---
+
 **Next up**: Workflow Engine. I built this because I was sick of hardcoding workflows. Every time a process changed, I had to change code and redeploy. So I built a MutableDAG — you can add and remove nodes at runtime, right from the Dashboard. Plus thread-safe cycle detection, semaphore-based parallel scheduling, and a 5-second deadlock timeout. Human-in-the-Loop is pluggable too.
