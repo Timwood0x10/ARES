@@ -385,4 +385,4 @@ Week 4: 打磨 (chaos + docs + run.sh)                  ← 310行
 
 ---
 
-*本文档对应实施计划详见 `plan/quant-implementation-plan.md`*
+*本文档对应实施计划详见 `plan/quan/quant-implementation-plan.md`*

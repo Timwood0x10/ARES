@@ -49,7 +49,8 @@ type Service struct {
 // dashboard, event store, and flight recorder. This is the complete application
 // startup sequence — do not call it if you only need a subset of components.
 //
-// Startup failures return an error immediately; no goroutine swallows errors.
+// Startup failures return an error immediately; all goroutine errors are
+// propagated via errgroup.
 //
 // Args:
 //
@@ -94,6 +95,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 
 	var allTools []mcp.MCPToolDef
+	var firstMCPClient *mcp.MCPClient
 	for i, srv := range cfg.MCP.Servers {
 		mcpClient := mcp.NewMCPClient(mcp.MCPClientConfig{
 			ServerName: srv.Name,
@@ -117,6 +119,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		// or prefixing to avoid collisions between servers.
 		if i == 0 {
 			allTools = tools
+			firstMCPClient = mcpClient
 		}
 		slog.Info("mcp server connected", "server", srv.Name, "tools", len(tools))
 	}
@@ -130,7 +133,14 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	// --- Hub + EventStore ---
 	hub := dashboard.NewWSHub()
 	s.g.Go(func() error {
+		// Run hub's main loop — exits when hub.Stop() closes h.done.
 		hub.Run()
+		return nil
+	})
+	s.g.Go(func() error {
+		// Watch service context and signal hub shutdown on cancel.
+		<-s.ctx.Done()
+		hub.Stop()
 		return nil
 	})
 	s.hub = hub
@@ -146,11 +156,12 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	// TODO: support multiple MCP clients in the orchestrator. Currently only
 	// the first MCP server's client is passed. The architecture should evolve
 	// to use a MultiMCPClient that aggregates tools from all connected servers.
+	if firstMCPClient == nil {
+		cancel()
+		return nil, fmt.Errorf("no mcp client available for orchestrator")
+	}
 	orch := dashboard.NewOrchestrator(
-		&MCPAdapter{Client: mcp.NewMCPClient(mcp.MCPClientConfig{
-			ServerName: cfg.MCP.Servers[0].Name,
-			Timeout:    60 * time.Second,
-		})},
+		&MCPAdapter{Client: firstMCPClient},
 		&LLMAdapter{Adapter: llm},
 	)
 	orch.SetToolAliases(BuildToolAliases(allTools))
@@ -174,7 +185,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: dashAPI.Handler()}
 	s.g.Go(func() error {
 		slog.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
-		_ = s.httpServer.ListenAndServe()
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("dashboard http server: %w", err)
+		}
 		return nil
 	})
 

@@ -107,3 +107,130 @@ func TestChaosExecute_CancelledContext(t *testing.T) {
 	// Result may be nil or partial depending on when cancellation occurred
 	_ = result
 }
+
+// TestChaosExecutor_WithFlags tests the WithFlags method and flag-based behavior.
+func TestChaosExecutor_WithFlags(t *testing.T) {
+	executor := NewDefaultChaosExecutor()
+
+	// Test WithFlags returns same executor for chaining.
+	flags := ChaosFlagConfig{
+		EnableLatency:   true,
+		EnableReject:    true,
+		EnableStaleData: true,
+	}
+	result := executor.WithFlags(flags)
+	require.Same(t, executor, result)
+}
+
+// TestChaosExecute_LatencyWithFlagEnabled tests latency scenario with latency flag enabled.
+func TestChaosExecute_LatencyWithFlagEnabled(t *testing.T) {
+	executor := NewDefaultChaosExecutor().WithFlags(ChaosFlagConfig{
+		EnableLatency: true,
+	})
+	scenario := &ChaosScenario{
+		Name:           "latency-enabled",
+		Type:           "latency",
+		Probability:    0.5,
+		DurationMillis: 1000,
+	}
+	result, err := executor.Execute(context.Background(), scenario)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Recovery time should be non-zero when faults are injected and flag enabled.
+	if result.InjectedFaults > 0 {
+		expectedBase := scenario.DurationMillis / 10
+		expectedOverhead := scenario.DurationMillis / 20
+		expectedRecovery := expectedBase + expectedOverhead
+		require.Equal(t, expectedRecovery, result.RecoveryTimeMillis)
+	}
+}
+
+// TestChaosExecute_RejectWithFlagEnabled tests reject scenario with reject flag enabled.
+func TestChaosExecute_RejectWithFlagEnabled(t *testing.T) {
+	executor := NewDefaultChaosExecutor().WithFlags(ChaosFlagConfig{
+		EnableReject: true,
+	})
+	scenario := &ChaosScenario{
+		Name:           "reject-enabled",
+		Type:           "reject",
+		Probability:    0.5,
+		DurationMillis: 1000,
+	}
+	result, err := executor.Execute(context.Background(), scenario)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Recovery time should be ~20% + 10% overhead when flag enabled.
+	if result.InjectedFaults > 0 {
+		expectedBase := scenario.DurationMillis / 5
+		expectedOverhead := scenario.DurationMillis / 10
+		expectedRecovery := expectedBase + expectedOverhead
+		require.Equal(t, expectedRecovery, result.RecoveryTimeMillis)
+	}
+}
+
+// TestChaosExecute_StaleDataWithFlagEnabled tests stale_data scenario with stale data flag enabled.
+func TestChaosExecute_StaleDataWithFlagEnabled(t *testing.T) {
+	executor := NewDefaultChaosExecutor().WithFlags(ChaosFlagConfig{
+		EnableStaleData: true,
+	})
+	scenario := &ChaosScenario{
+		Name:           "stale-data-enabled",
+		Type:           "stale_data",
+		Probability:    0.3,
+		DurationMillis: 1000,
+	}
+	result, err := executor.Execute(context.Background(), scenario)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// More aggressive degradation threshold (>25% instead of >50%).
+	if result.InjectedFaults > 0 {
+		// Should have recovery time calculated.
+		require.True(t, result.RecoveryTimeMillis > 0)
+	}
+}
+
+// TestChaosExecute_NetworkPartitionAlwaysDegraded tests network partition scenario.
+func TestChaosExecute_NetworkPartitionAlwaysDegraded(t *testing.T) {
+	executor := NewDefaultChaosExecutor()
+	scenario := &ChaosScenario{
+		Name:           "partition-test",
+		Type:           "network_partition",
+		Probability:    0.1,
+		DurationMillis: 500,
+	}
+	result, err := executor.Execute(context.Background(), scenario)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Network partition: any fault causes degradation.
+	if result.InjectedFaults > 0 {
+		require.True(t, result.SystemDegraded)
+		// Recovery time should be ~33% of duration.
+		expectedRecovery := scenario.DurationMillis / 3
+		require.Equal(t, expectedRecovery, result.RecoveryTimeMillis)
+	}
+}
+
+// TestChaosExecute_RecoveryTimeZeroWhenNoFaults tests that recovery time is zero when no faults injected.
+func TestChaosExecute_RecoveryTimeZeroWhenNoFaults(t *testing.T) {
+	executor := NewDefaultChaosExecutor().WithFlags(ChaosFlagConfig{
+		EnableLatency:   true,
+		EnableReject:    true,
+		EnableStaleData: true,
+	})
+	scenario := &ChaosScenario{
+		Name:           "no-faults",
+		Type:           "latency",
+		Probability:    0.0,
+		DurationMillis: 1000,
+	}
+	result, err := executor.Execute(context.Background(), scenario)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, int64(0), result.InjectedFaults)
+	require.Equal(t, int64(0), result.RecoveryTimeMillis)
+	require.False(t, result.SystemDegraded)
+}

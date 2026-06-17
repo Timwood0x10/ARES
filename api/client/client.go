@@ -248,8 +248,10 @@ func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
 }
 
 // Config returns a read-only snapshot of the client configuration.
-// FIX: returns a deep copy to prevent external mutation of internal state
-// (Uber Go style rule: return copies of internal slices/maps, not direct references).
+// Returns a deep copy so that mutating any field of the returned value
+// cannot affect the original config held by the client, including nested
+// pointer fields inside sub-config structs such as Agent.BaseConfig,
+// LLM.LLMConfig, and Workflow.AgentRegistry.
 //
 // Returns:
 //
@@ -269,22 +271,46 @@ func (c *Client) Config() *Config {
 	}
 	if c.config.Agent != nil {
 		a := *c.config.Agent
+		if a.BaseConfig != nil {
+			bc := *a.BaseConfig
+			a.BaseConfig = &bc
+		}
 		cp.Agent = &a
 	}
 	if c.config.Memory != nil {
 		m := *c.config.Memory
+		if m.BaseConfig != nil {
+			bc := *m.BaseConfig
+			m.BaseConfig = &bc
+		}
 		cp.Memory = &m
 	}
 	if c.config.Retrieval != nil {
 		r := *c.config.Retrieval
+		if r.BaseConfig != nil {
+			bc := *r.BaseConfig
+			r.BaseConfig = &bc
+		}
 		cp.Retrieval = &r
 	}
 	if c.config.LLM != nil {
 		l := *c.config.LLM
+		if l.BaseConfig != nil {
+			bc := *l.BaseConfig
+			l.BaseConfig = &bc
+		}
+		if l.LLMConfig != nil {
+			lc := *l.LLMConfig
+			l.LLMConfig = &lc
+		}
 		cp.LLM = &l
 	}
 	if c.config.Workflow != nil {
 		w := *c.config.Workflow
+		if w.AgentRegistry != nil {
+			ar := *w.AgentRegistry
+			w.AgentRegistry = &ar
+		}
 		cp.Workflow = &w
 	}
 	return cp
