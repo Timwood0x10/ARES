@@ -760,15 +760,15 @@ func TestCleaner_CleanWithTurns_ThreeTurns(t *testing.T) {
 
 	result := cl.CleanWithTurns(msgs)
 
-	// Completed turn 1: tool_call dropped (default mode).
+	// Completed turn 1: tool_call compressed (not dropped, per causal compression design).
 	// Completed turn 2: tool_result summarized (kept).
 	// Active turn 3: all preserved.
-	if len(result) != 7 {
-		t.Fatalf("expected 7 messages (8 - 1 tool_call dropped), got %d", len(result))
+	if len(result) != 8 {
+		t.Fatalf("expected 8 messages (all preserved, tool_call compressed not dropped), got %d", len(result))
 	}
 
-	// Message roles in order: user, assistant, user, tool_result, assistant, user, assistant.
-	roles := []string{RoleUser, RoleAssistant, RoleUser, RoleToolResult, RoleAssistant, RoleUser, RoleAssistant}
+	// Message roles in order: user, tool_call(compressed), assistant, user, tool_result(summarized), assistant, user, assistant.
+	roles := []string{RoleUser, RoleToolCall, RoleAssistant, RoleUser, RoleToolResult, RoleAssistant, RoleUser, RoleAssistant}
 	for i, role := range roles {
 		if result[i].Role != role {
 			t.Errorf("result[%d] expected role %s, got %s", i, role, result[i].Role)
@@ -840,9 +840,9 @@ func TestCleaner_CleanWithTurns_ByTurnID(t *testing.T) {
 
 	result := cl.CleanWithTurns(msgs)
 
-	// Completed turn (t1): tool_call dropped, tool_result summarized.
+	// Completed turn (t1): tool_call compressed (not dropped), tool_result summarized.
 	// Active turn (t2): all preserved.
-	expectedLen := 6 // 7 - 1 tool_call dropped
+	expectedLen := 7 // all preserved, tool_call compressed not dropped
 	if len(result) != expectedLen {
 		t.Fatalf("expected %d messages, got %d", expectedLen, len(result))
 	}
@@ -852,19 +852,23 @@ func TestCleaner_CleanWithTurns_ByTurnID(t *testing.T) {
 	if result[1].Role != RoleAssistant {
 		t.Errorf("expected result[1] role assistant, got %s", result[1].Role)
 	}
-	// Tool result summarized (kept).
-	if result[2].Role != RoleToolResult {
-		t.Errorf("expected result[2] role tool_result, got %s", result[2].Role)
+	// Tool call compressed (kept, not dropped).
+	if result[2].Role != RoleToolCall {
+		t.Errorf("expected result[2] role tool_call, got %s", result[2].Role)
 	}
-	if result[3].Role != RoleAssistant {
-		t.Errorf("expected result[3] role assistant, got %s", result[3].Role)
+	// Tool result summarized (kept).
+	if result[3].Role != RoleToolResult {
+		t.Errorf("expected result[3] role tool_result, got %s", result[3].Role)
+	}
+	if result[4].Role != RoleAssistant {
+		t.Errorf("expected result[4] role assistant, got %s", result[4].Role)
 	}
 	// Active turn preserved.
-	if result[4].Role != RoleUser {
-		t.Errorf("expected result[4] role user, got %s", result[4].Role)
+	if result[5].Role != RoleUser {
+		t.Errorf("expected result[5] role user, got %s", result[5].Role)
 	}
-	if result[5].Role != RoleAssistant {
-		t.Errorf("expected result[5] role assistant, got %s", result[5].Role)
+	if result[6].Role != RoleAssistant {
+		t.Errorf("expected result[6] role assistant, got %s", result[6].Role)
 	}
 }
 
@@ -1016,11 +1020,12 @@ func TestCleaner_ExtendedStats(t *testing.T) {
 	cl.CleanWithTurns(msgs)
 
 	stats := cl.Stats()
-	if stats.DroppedToolMessages < 1 {
-		t.Errorf("expected DroppedToolMessages >= 1 (tool_call dropped), got %d", stats.DroppedToolMessages)
+	// Tool calls are now compressed (not dropped), so DroppedToolMessages should be 0.
+	if stats.DroppedToolMessages != 0 {
+		t.Errorf("expected DroppedToolMessages == 0 (tool_call compressed, not dropped), got %d", stats.DroppedToolMessages)
 	}
 	if stats.SummarizedToolMessages < 1 {
-		t.Errorf("expected SummarizedToolMessages >= 1 (tool_result summarized), got %d", stats.SummarizedToolMessages)
+		t.Errorf("expected SummarizedToolMessages >= 1 (tool_call + tool_result summarized), got %d", stats.SummarizedToolMessages)
 	}
 	if stats.TurnsProcessed < 1 {
 		t.Errorf("expected TurnsProcessed >= 1, got %d", stats.TurnsProcessed)

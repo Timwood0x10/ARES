@@ -33,6 +33,8 @@ const (
 	EventFailoverTriggered EventType = "failover.triggered"
 	EventFailoverCompleted EventType = "failover.completed"
 	EventLLMCall           EventType = "llm.call"
+	EventToolCallStarted   EventType = "tool.call.started"
+	EventToolCallCompleted EventType = "tool.call.completed"
 )
 
 // ReadDirection controls the order in which events are returned.

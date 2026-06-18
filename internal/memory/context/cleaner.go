@@ -246,23 +246,19 @@ func (c *ContextCleaner) CleanWithTurns(messages []Message, opts ...CleanOptions
 					c.mu.Unlock()
 
 				case RoleToolCall:
-					if options.Mode == CleaningModeConservative {
-						// Conservative: keep tool call but compress.
-						cleaned := c.Clean([]Message{msg}, options)
-						if len(cleaned) > 0 {
-							result = append(result, cleaned[0])
-						}
-						c.mu.Lock()
-						c.stats.SummarizedToolMessages++
-						c.mu.Unlock()
-					} else {
-						// Default/Aggressive: drop tool call.
-						c.mu.Lock()
-						c.stats.BytesSaved += int64(len(msg.Content))
-						c.stats.ToolCalls++
-						c.stats.DroppedToolMessages++
-						c.mu.Unlock()
-					}
+					// Always keep tool call causality, compress the arguments.
+					// The event kind, tool name, and tool_call_id are preserved
+					// so the causal chain (intent → action → observation → decision)
+					// remains intact for prompt building and distillation.
+					tcSummary := summarizeToolCall(msg)
+					saved := int64(len(msg.Content) - len(tcSummary))
+					summarizedMsg := msg
+					summarizedMsg.Content = tcSummary
+					result = append(result, summarizedMsg)
+					c.mu.Lock()
+					c.stats.BytesSaved += saved
+					c.stats.SummarizedToolMessages++
+					c.mu.Unlock()
 
 				default:
 					// Keep user, assistant, system messages with normal cleaning.
@@ -455,7 +451,65 @@ type toolCallInfo struct {
 	args string
 }
 
-// buildToolCallMap builds a map from tool_call_id to tool call info for a turn.
+// summarizeToolCall produces a compact causal summary of a tool call message.
+// Includes tool_call_id, tool name, and argument keys for causal tracing.
+// Full argument values are not included to avoid bloating the summary.
+func summarizeToolCall(msg Message) string {
+	if msg.Role != RoleToolCall {
+		return extractGist(msg.Content, 100)
+	}
+	if len(msg.ToolCalls) > 0 {
+		var parts []string
+		for _, tc := range msg.ToolCalls {
+			// Build a compact summary: {id} call {name}({key1}, {key2}, ...)
+			argKeys := extractArgKeys(tc.Function.Arguments)
+			if tc.ID != "" {
+				parts = append(parts, fmt.Sprintf("%s: call %s(%s)", tc.ID, tc.Function.Name, argKeys))
+			} else {
+				parts = append(parts, fmt.Sprintf("call %s(%s)", tc.Function.Name, argKeys))
+			}
+		}
+		return strings.Join(parts, "; ")
+	}
+	return extractGist(msg.Content, 100)
+}
+
+// extractArgKeys extracts top-level JSON keys from a tool call arguments string.
+func extractArgKeys(args string) string {
+	if args == "" || args == "{}" {
+		return ""
+	}
+	// Parse as simple JSON object to get keys.
+	dec := json.NewDecoder(strings.NewReader(args))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		// Not a JSON object; return empty.
+		return ""
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		key, ok := tok.(string)
+		if !ok {
+			continue
+		}
+		keys = append(keys, key)
+		// Skip the value token.
+		tok, err = dec.Token()
+		if err != nil {
+			break
+		}
+		// If the value is a string, include a brief preview.
+		if str, ok := tok.(string); ok && len(str) <= 20 {
+			keys[len(keys)-1] = fmt.Sprintf("%s=%q", key, str)
+		}
+	}
+	return strings.Join(keys, ", ")
+}
+
 func buildToolCallMap(turn []Message) map[string]toolCallInfo {
 	m := make(map[string]toolCallInfo)
 	for _, msg := range turn {

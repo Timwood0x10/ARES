@@ -599,15 +599,42 @@ func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, ta
 
 	distMsgs := make([]distillation.Message, 0, len(cleaned)+2)
 	for _, msg := range cleaned {
-		distMsgs = append(distMsgs, distillation.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
+		dMsg := distillation.Message{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+			TurnID:     msg.TurnID,
+			EventKind:  msg.EventKind,
+			ParentID:   msg.ParentID,
+		}
+		if len(msg.ArtifactRefs) > 0 {
+			dMsg.ArtifactRefs = make([]string, len(msg.ArtifactRefs))
+			copy(dMsg.ArtifactRefs, msg.ArtifactRefs)
+		}
+		// Convert ToolCalls to generic format for the distillation package.
+		if len(msg.ToolCalls) > 0 {
+			tcs := make([]map[string]interface{}, len(msg.ToolCalls))
+			for i, tc := range msg.ToolCalls {
+				tcs[i] = map[string]interface{}{
+					"id":   tc.ID,
+					"type": tc.Type,
+					"function": map[string]interface{}{
+						"name":      tc.Function.Name,
+						"arguments": tc.Function.Arguments,
+					},
+				}
+			}
+			dMsg.ToolCalls = tcs
+		}
+		distMsgs = append(distMsgs, dMsg)
 	}
 	// Append the task input/output as additional context for the distiller.
+	// Tag them with a task-level TurnID so the distiller can associate evidence
+	// without text-based matching.
+	taskTurnID := "task_" + taskID
 	distMsgs = append(distMsgs,
-		distillation.Message{Role: "user", Content: inputStr},
-		distillation.Message{Role: "assistant", Content: outputStr},
+		distillation.Message{Role: "user", Content: inputStr, TurnID: taskTurnID},
+		distillation.Message{Role: "assistant", Content: outputStr, TurnID: taskTurnID},
 	)
 	return distMsgs
 }

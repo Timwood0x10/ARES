@@ -11,8 +11,14 @@ import (
 
 // Message represents a single message in a conversation.
 type Message struct {
-	Role    string
-	Content string
+	Role         string
+	Content      string
+	ToolCallID   string                   `json:"tool_call_id,omitempty"`
+	ToolCalls    []map[string]interface{} `json:"tool_calls,omitempty"`
+	TurnID       string                   `json:"turn_id,omitempty"`
+	EventKind    string                   `json:"event_kind,omitempty"`
+	ParentID     string                   `json:"parent_id,omitempty"`
+	ArtifactRefs []string                 `json:"artifact_refs,omitempty"`
 }
 
 // ExperienceExtractor extracts problem-solution pairs from conversations.

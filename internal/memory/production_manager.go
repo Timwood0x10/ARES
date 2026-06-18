@@ -468,6 +468,15 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 	if msg.ToolCallID != "" {
 		metadata["tool_call_id"] = msg.ToolCallID
 	}
+	if msg.EventKind != "" {
+		metadata["event_kind"] = msg.EventKind
+	}
+	if msg.ParentID != "" {
+		metadata["parent_id"] = msg.ParentID
+	}
+	if len(msg.ArtifactRefs) > 0 {
+		metadata["artifact_refs"] = msg.ArtifactRefs
+	}
 	if len(msg.ToolCalls) > 0 {
 		metadata["tool_calls"] = msg.ToolCalls
 	}

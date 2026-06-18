@@ -61,12 +61,15 @@ type ToolCall struct {
 
 // Message represents a chat message with optional tool call metadata.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	Time       time.Time  `json:"time"`
-	TurnID     string     `json:"turn_id,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role         string     `json:"role"`
+	Content      string     `json:"content"`
+	Time         time.Time  `json:"time"`
+	TurnID       string     `json:"turn_id,omitempty"`
+	ToolCallID   string     `json:"tool_call_id,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	EventKind    string     `json:"event_kind,omitempty"`
+	ParentID     string     `json:"parent_id,omitempty"`
+	ArtifactRefs []string   `json:"artifact_refs,omitempty"`
 }
 
 // NewSessionMemory creates a new SessionMemory.

@@ -279,6 +279,10 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 		}
 
 		// Create memory with UUID
+		// Extract causal evidence (tool observations) from the raw messages.
+		// Locate the turn by the user message's TurnID, not by text matching.
+		evidence := extractEvidenceFromMessages(messages, extractTurnID(messages, problem))
+
 		memory := Memory{
 			ID:         uuid.New().String(),
 			Type:       memoryType,
@@ -294,6 +298,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 				"extraction_method": string(exp.ExtractionMethod),
 				"problem":           problem,
 				"solution":          solution,
+				"evidence":          evidence,
 				"tenant_id":         tenantID,
 				"user_id":           userID,
 			},
@@ -707,4 +712,71 @@ func formatMemoryTypes(memories []Memory) string {
 		types[i] = string(mem.Type)
 	}
 	return fmt.Sprintf("%v", types)
+}
+
+// extractTurnID finds the TurnID of the user message that matches the given problem text.
+// This is a lightweight lookup that avoids text matching on every message.
+func extractTurnID(messages []Message, problem string) string {
+	problemTrunc := truncateStr(problem, 50)
+	for _, msg := range messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, problemTrunc) {
+			return msg.TurnID
+		}
+	}
+	return ""
+}
+
+// extractEvidenceFromMessages collects tool observation evidence from messages
+// belonging to the given turn. Uses TurnID for precise structured association
+// (not content text matching, which is fragile with truncated/duplicated text).
+// Tool result content comes from cleaner-generated summaries, not raw regexp extraction.
+func extractEvidenceFromMessages(messages []Message, turnID string) []string {
+	if turnID == "" || len(messages) == 0 {
+		return nil
+	}
+
+	var evidence []string
+	for _, msg := range messages {
+		if msg.TurnID != turnID {
+			continue
+		}
+		switch msg.Role {
+		case "tool_call":
+			for _, tc := range msg.ToolCalls {
+				if fn, ok := tc["function"].(map[string]interface{}); ok {
+					if name, ok := fn["name"].(string); ok {
+						id, _ := tc["id"].(string)
+						if id != "" {
+							evidence = append(evidence, fmt.Sprintf("Action %s: %s", id, name))
+						} else {
+							evidence = append(evidence, fmt.Sprintf("Action: %s", name))
+						}
+					}
+				}
+			}
+		case "tool_result":
+			if msg.Content != "" {
+				// Content is already a cleaner-generated summary (from buildCleanedDistillationMessages),
+				// not raw tool output. Truncate length only, no regexp extraction needed.
+				if len(msg.Content) > 120 {
+					evidence = append(evidence, fmt.Sprintf("Observed: %s...", msg.Content[:120]))
+				} else {
+					evidence = append(evidence, fmt.Sprintf("Observed: %s", msg.Content))
+				}
+			}
+		}
+	}
+	if len(evidence) == 0 {
+		return nil
+	}
+	return evidence
+}
+
+// truncateStr truncates a string to maxLen runes.
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
 }

@@ -598,17 +598,17 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 		distTokens := estimateTokens(distCtx)
 		ratio := float64(distTokens) / float64(rawTokens) * 100
 
-		buf.WriteString(fmt.Sprintf("| %d | %d | %d | %.1f%% | %d |\n",
-			session, rawTokens, distTokens, ratio, len(accumulatedDistilled)))
+		fmt.Fprintf(&buf, "| %d | %d | %d | %.1f%% | %d |\n",
+			session, rawTokens, distTokens, ratio, len(accumulatedDistilled))
 
 		time.Sleep(30 * time.Millisecond)
 	}
-	buf.WriteString("\n**结论**: 蒸馏后上下文始终保持在 ~300 tokens 内，但积累的知识量随会话线性增长。\n")
-	buf.WriteString("Raw 模式每次只看到最近 10 条消息，损失 97%+ 的历史信息。\n\n")
+	buf.WriteString("\n**Conclusion**: After distillation, context stays within ~300 tokens, while accumulated knowledge grows linearly across sessions.\n")
+	buf.WriteString("Raw mode only sees the latest 10 messages, losing 97%+ of historical information.\n\n")
 
 	// --- Scenario B ---
 	buf.WriteString("## Scenario B: Unbounded History (No Truncation)\n\n")
-	buf.WriteString("对比完整原始上下文（无截断）与蒸馏上下文在不同对话轮数下的 token 消耗。\n\n")
+	buf.WriteString("Comparing full raw context (no truncation) vs distilled context token consumption across different conversation rounds.\n\n")
 	buf.WriteString("| Rounds | Full Raw Tokens | Dist Tokens | Savings % | Expressions |\n")
 	buf.WriteString("|--------|-----------------|-------------|-----------|-------------|\n")
 
@@ -637,18 +637,18 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 		if fullRawTokens > 0 {
 			savingsPercent = float64(fullRawTokens-distTokens) / float64(fullRawTokens) * 100
 		}
-		buf.WriteString(fmt.Sprintf("| %d | %d | %d | %.1f%% | %d |\n",
-			rounds, fullRawTokens, distTokens, savingsPercent, len(memories)))
+		fmt.Fprintf(&buf, "| %d | %d | %d | %.1f%% | %d |\n",
+			rounds, fullRawTokens, distTokens, savingsPercent, len(memories))
 
 		totalRawTokens += fullRawTokens
 		totalDistTokens += distTokens
 		time.Sleep(30 * time.Millisecond)
 	}
-	buf.WriteString(fmt.Sprintf("\n**Token 总量对比**: Full Raw = %d, Distilled = %d\n\n", totalRawTokens, totalDistTokens))
+	fmt.Fprintf(&buf, "\n**Total Token Comparison**: Full Raw = %d, Distilled = %d\n\n", totalRawTokens, totalDistTokens)
 
 	// --- Scenario C ---
 	buf.WriteString("## Scenario C: Information Density\n\n")
-	buf.WriteString("在相同的 token 预算下，对比两种上下文包含的可用信息量。\n\n")
+	buf.WriteString("Comparing usable information in both context types under the same token budget.\n\n")
 
 	messages := generateConversation(20)
 	recentMsgs := messages
@@ -664,11 +664,11 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 	rawCtx := buildRawContext(messages, input, 10)
 	rawTokens := estimateTokens(rawCtx)
 
-	buf.WriteString(fmt.Sprintf("| 上下文类型 | Tokens | 完整问题→解决方案对数 |\n"))
-	buf.WriteString(fmt.Sprintf("|-----------|--------|---------------------|\n"))
-	buf.WriteString(fmt.Sprintf("| Raw (截断) | %d | 0 (全部片段化) |\n", rawTokens))
-	buf.WriteString(fmt.Sprintf("| Distilled | %d | %d |\n", distTokens, len(memories)))
-	buf.WriteString("\n蒸馏后的每个 memory 都是一个完整的问题→解决方案对，而不是被截断的片段。\n\n")
+	buf.WriteString("| Context Type | Tokens | Complete Q&A Pairs |\n")
+	buf.WriteString("|-----------|--------|--------------------|\n")
+	fmt.Fprintf(&buf, "| Raw (Truncated) | %d | 0 (all fragmented) |\n", rawTokens)
+	fmt.Fprintf(&buf, "| Distilled | %d | %d |\n", distTokens, len(memories))
+	buf.WriteString("\nEach distilled memory is a complete Q&A pair, not a truncated fragment.\n\n")
 
 	// --- Scenario D ---
 	buf.WriteString("## Scenario D: Growth Over Sessions\n\n")
@@ -712,15 +712,15 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 		distTokens := estimateTokens(distCtx)
 
 		savings := float64(fullRawTokens-distTokens) / float64(fullRawTokens) * 100
-		buf.WriteString(fmt.Sprintf("| %d | %d | %d | %d | %.1f%% |\n",
-			session, fullRawTokens, truncRawTokens, distTokens, savings))
+		fmt.Fprintf(&buf, "| %d | %d | %d | %d | %.1f%% |\n",
+			session, fullRawTokens, truncRawTokens, distTokens, savings)
 		time.Sleep(30 * time.Millisecond)
 	}
-	buf.WriteString("\n**结论**: 蒸馏在不丢失语义信息的前提下，实现了 90%+ 的 token 压缩率。\n\n")
+	buf.WriteString("\n**Conclusion**: Distillation achieves 90%+ token compression without losing semantic information.\n\n")
 
 	// --- Retention Accuracy ---
-	buf.WriteString("## Retention Accuracy (信息保留率)\n\n")
-	buf.WriteString("测试蒸馏后上下文对原始对话中关键主题的保留能力。\n\n")
+	buf.WriteString("## Retention Accuracy (Topic Retention Rate)\n\n")
+	buf.WriteString("Testing the ability of distilled context to retain key topics from the original conversation.\n\n")
 
 	topics := []string{
 		"database connection timeout",
@@ -758,31 +758,31 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 		}
 	}
 
-	buf.WriteString(fmt.Sprintf("| 指标 | 值 |\n"))
-	buf.WriteString(fmt.Sprintf("|------|-----|\n"))
-	buf.WriteString(fmt.Sprintf("| 输入主题数 | %d |\n", len(topics)))
-	buf.WriteString(fmt.Sprintf("| 蒸馏后保留的主题数 | %d/%d |\n", covered, len(topics)))
-	buf.WriteString(fmt.Sprintf("| 主题保留率 | %.1f%% |\n", float64(covered)/float64(len(topics))*100))
-	buf.WriteString(fmt.Sprintf("| 蒸馏后 Memories 数 | %d |\n", len(mems)))
-	buf.WriteString("\n**结论**: 纯内存版蒸馏通过 rule-based 提取，保留了关键信息，同时去除了冗余细节。\n\n")
+	buf.WriteString("| Metric | Value |\n")
+	buf.WriteString("|------|-----|\n")
+	fmt.Fprintf(&buf, "| Input Topics | %d |\n", len(topics))
+	fmt.Fprintf(&buf, "| Topics Retained After Distillation | %d/%d |\n", covered, len(topics))
+	fmt.Fprintf(&buf, "| Topic Retention Rate | %.1f%% |\n", float64(covered)/float64(len(topics))*100)
+	fmt.Fprintf(&buf, "| Memories After Distillation | %d |\n", len(mems))
+	buf.WriteString("\n**Conclusion**: Pure in-memory distillation uses rule-based extraction to retain key information while removing redundant details.\n\n")
 
 	// --- Summary ---
-	buf.WriteString("## Summary: 蒸馏前后 Token 消耗对比\n\n")
-	buf.WriteString("| 场景 | Before (Raw) | After (Distilled) | Compression |\n")
-	buf.WriteString("|------|-------------|-------------------|-------------|\n")
-	buf.WriteString(fmt.Sprintf("| 单会话 (5轮) | ~300 tokens | ~100-200 tokens | ~50%% |\n"))
-	buf.WriteString(fmt.Sprintf("| 10会话跨会话 | ~300 tokens/会话 | ~200-300 tokens (累积) | 90%%+ |\n"))
-	buf.WriteString(fmt.Sprintf("| 无截断长对话 | 线性增长 | 恒定 ~300 tokens | 95%%+ |\n\n"))
+	buf.WriteString("## Summary: Token Consumption Before vs After Distillation\n\n")
+	buf.WriteString("| Scenario | Before (Raw) | After (Distilled) | Compression |\n")
+	buf.WriteString("|----------|-------------|-------------------|-------------|\n")
+	buf.WriteString("| Single Session (5 rounds) | ~300 tokens | ~100-200 tokens | ~50%% |\n")
+	buf.WriteString("| 10-Session Cross-Session | ~300 tokens/session | ~200-300 tokens (cumulative) | 90%%+ |\n")
+	buf.WriteString("| Unbounded Long Conversation | Linear growth | Constant ~300 tokens | 95%%+ |\n\n")
 
-	buf.WriteString("## Summary: 检索准确率提升\n\n")
-	buf.WriteString("- Raw（截断）: 丢失 97%+ 历史信息，无法准确检索\n")
-	buf.WriteString("- Raw（完整）: 全部保留但 tokens 呈线性增长\n")
-	buf.WriteString("- Distilled: 通过 1024 维向量生成，保留语义相似性，高效去重\n")
-	buf.WriteString(fmt.Sprintf("- 蒸馏后主题保留率: %.1f%%\n", float64(covered)/float64(len(topics))*100))
-	buf.WriteString("\n## Summary: 上下文长度控制\n\n")
-	buf.WriteString("- Raw（MaxHistory=10, 100字符截断）: ~280-300 tokens, 恒定\n")
-	buf.WriteString("- Raw（无截断）: 随对话轮数线性增长, 100轮 ~6000 tokens\n")
-	buf.WriteString("- Distilled: 恒定 ~100-300 tokens, 随知识积累缓慢增长\n")
+	buf.WriteString("## Summary: Retrieval Accuracy Improvement\n\n")
+	buf.WriteString("- Raw (Truncated): Loses 97%+ historical information, cannot retrieve accurately\n")
+	buf.WriteString("- Raw (Full): Retains all but tokens grow linearly\n")
+	buf.WriteString("- Distilled: Uses 1024-dim vectors to retain semantic similarity, efficient deduplication\n")
+	fmt.Fprintf(&buf, "- Post-distillation topic retention rate: %.1f%%\n", float64(covered)/float64(len(topics))*100)
+	buf.WriteString("\n## Summary: Context Length Control\n\n")
+	buf.WriteString("- Raw (MaxHistory=10, 100-char truncation): ~280-300 tokens, constant\n")
+	buf.WriteString("- Raw (no truncation): Linear growth with rounds, 100 rounds ~6000 tokens\n")
+	buf.WriteString("- Distilled: Constant ~100-300 tokens, slow growth with knowledge accumulation\n")
 
 	if err := os.WriteFile(reportPath, buf.Bytes(), 0644); err != nil {
 		t.Fatalf("failed to write report: %v", err)

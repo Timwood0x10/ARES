@@ -127,7 +127,7 @@ func buildRawContext(messages []Message, input string, maxHistory int) string {
 			if len(content) > 100 {
 				content = content[:100] + "..."
 			}
-			buf.WriteString(fmt.Sprintf("%s%s\n", prefix, content))
+			fmt.Fprintf(&buf, "%s%s\n", prefix, content)
 		}
 		buf.WriteString("\nCurrent request:\n")
 	}
@@ -144,9 +144,9 @@ func buildFullRawContext(messages []Message, input string) string {
 		if msg.Role == "assistant" {
 			prefix = "Assistant: "
 		}
-		buf.WriteString(fmt.Sprintf("%s%s\n", prefix, msg.Content))
+		fmt.Fprintf(&buf, "%s%s\n", prefix, msg.Content)
 	}
-	buf.WriteString(fmt.Sprintf("\nCurrent request:\n%s", input))
+	fmt.Fprintf(&buf, "\nCurrent request:\n%s", input)
 	return buf.String()
 }
 
@@ -154,7 +154,7 @@ func buildDistilledContext(memories []Memory, input string) string {
 	var buf bytes.Buffer
 	buf.WriteString("Previous experiences:\n\n")
 	for _, mem := range memories {
-		buf.WriteString(fmt.Sprintf("- %s\n", mem.Content))
+		fmt.Fprintf(&buf, "- %s\n", mem.Content)
 	}
 	buf.WriteString("\nCurrent request:\n")
 	buf.WriteString(input)
