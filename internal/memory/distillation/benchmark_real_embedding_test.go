@@ -524,13 +524,13 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(42))
 
-	buf.WriteString("# 纯内存版蒸馏 Benchmark 报告\n")
-	buf.WriteString(fmt.Sprintf("## 测试时间：%s\n\n", time.Now().Format("2006-01-02 15:04:05")))
-	buf.WriteString("## Embedding 配置\n")
-	buf.WriteString("- 服务: qwen3-embedding:0.6b (localhost:8000)\n")
-	buf.WriteString("- 向量维度: 1024\n")
-	buf.WriteString("- 蒸馏策略: 纯内存版 (Rule-based, no LLM)\n")
-	buf.WriteString("- Redis: 未使用\n\n")
+	buf.WriteString("# Pure In-Memory Distillation Benchmark Report\n")
+	fmt.Fprintf(&buf, "## Test Time: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+	buf.WriteString("## Embedding Configuration\n")
+	buf.WriteString("- Service: qwen3-embedding:0.6b (localhost:8000)\n")
+	buf.WriteString("- Vector Dimension: 1024\n")
+	buf.WriteString("- Distillation Strategy: Pure In-Memory (Rule-based, no LLM)\n")
+	buf.WriteString("- Redis: Not Used\n\n")
 
 	// --- Scenario A ---
 	ctx := context.Background()
@@ -550,16 +550,16 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 	if sampleLLM != nil && sampleLLM.Usage != nil {
 		sampleActual = sampleLLM.Usage.PromptTokens
 	}
-	buf.WriteString("## Token 预估准确性验证\n\n")
-	buf.WriteString(fmt.Sprintf("| 指标 | 值 |\n"))
+	buf.WriteString("## Token Estimation Accuracy Verification\n\n")
+	buf.WriteString("| Metric | Value |\n")
 	buf.WriteString("|------|-----|\n")
-	buf.WriteString(fmt.Sprintf("| 预估 Token (estimateTokens) | %d |\n", sampleEst))
-	buf.WriteString(fmt.Sprintf("| LLM 实测 Token (sensenova-6.7-flash-lite) | %d |\n", sampleActual))
-	buf.WriteString(fmt.Sprintf("| 偏差率 | %.1f%% |\n", float64(sampleActual-sampleEst)/float64(sampleActual)*100))
+	fmt.Fprintf(&buf, "| Estimated Token (estimateTokens) | %d |\n", sampleEst)
+	fmt.Fprintf(&buf, "| LLM Actual Token (sensenova-6.7-flash-lite) | %d |\n", sampleActual)
+	fmt.Fprintf(&buf, "| Deviation Rate | %.1f%% |\n", float64(sampleActual-sampleEst)/float64(sampleActual)*100)
 	buf.WriteString("\n---\n\n")
 
 	buf.WriteString("## Scenario A: Cross-Session Memory Accumulation\n\n")
-	buf.WriteString("模拟 10 次会话，每次 5 轮对话，观察蒸馏对跨会话记忆的积累效果。\n\n")
+	buf.WriteString("Simulating 10 sessions, 5 rounds each, observing distillation effect on cross-session memory accumulation.\n\n")
 	buf.WriteString("| Session | Raw Tokens | Dist Tokens | Dist/Raw % | Expressions |\n")
 	buf.WriteString("|---------|------------|-------------|------------|-------------|\n")
 

@@ -22,6 +22,7 @@ import (
 	"goagentx/internal/errors"
 	"goagentx/internal/experience"
 	"goagentx/internal/llm"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -161,6 +162,9 @@ type RetrievalService struct {
 	distillationService *experience.DistillationService
 	rankingService      *experience.RankingService
 	conflictResolver    *experience.ConflictResolver
+
+	// Embedding pipeline for unified query embedding.
+	pipeline memembed.EmbeddingPipeline
 }
 
 // NewRetrievalService creates a new RetrievalService instance.
@@ -203,6 +207,13 @@ func NewRetrievalService(
 		queryCacheTTL:            10 * time.Minute, // Queries cached for 10 minutes
 		queryCacheMaxLen:         500,              // Limit cache to 500 entries
 	}
+}
+
+// SetEmbeddingPipeline configures the unified embedding pipeline for query embedding.
+// When set, getEmbedding uses the pipeline with canonical query specs instead of
+// calling the embedding client directly.
+func (s *RetrievalService) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	s.pipeline = pipeline
 }
 
 // SetExperienceServices sets the experience-specific services.
@@ -537,19 +548,35 @@ func (s *RetrievalService) getEmbedding(ctx context.Context, query string) []flo
 		return nil
 	}
 
+	// Use the unified embedding pipeline when available.
+	if s.pipeline != nil {
+		spec, err := s.pipeline.BuildSpec(memembed.KindMemoryQuery, query)
+		if err != nil {
+			s.logger.Warn("Failed to build query spec", "error", err)
+			return nil
+		}
+		vec, err := s.pipeline.Embed(ctx, spec)
+		if err != nil {
+			s.logger.Warn("Failed to get embedding via pipeline", "query", query, "error", err)
+			return nil
+		}
+		return vec
+	}
+
+	// Fallback to direct embedding client.
 	if s.embeddingClient == nil {
 		s.logger.Warn("Embedding client is nil, cannot get embedding")
 		return nil
 	}
 
-	embedding, err := s.embeddingClient.Embed(ctx, query)
+	vec, err := s.embeddingClient.Embed(ctx, query)
 	if err != nil {
 		s.logger.Warn("Failed to get embedding", "query", query, "error", err)
 		return nil
 	}
 
 	// Note: embedding service already returns normalized vectors, so no need to normalize again
-	return embedding
+	return vec
 }
 
 // getEmbeddingCached retrieves embedding with caching to reduce LLM calls.

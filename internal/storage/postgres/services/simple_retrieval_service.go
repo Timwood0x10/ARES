@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"goagentx/internal/errors"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres/embedding"
 	"goagentx/internal/storage/postgres/repositories"
 )
@@ -41,6 +42,31 @@ type SimpleRetrievalService struct {
 	repo      *repositories.KnowledgeRepository
 	embedding *embedding.EmbeddingClient
 	config    *SimpleRetrievalConfig
+	pipeline  memembed.EmbeddingPipeline
+}
+
+// SetEmbeddingPipeline configures the unified embedding pipeline for query embedding.
+// When set, Search uses the pipeline with canonical query specs instead of calling
+// the embedding client directly.
+func (s *SimpleRetrievalService) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	s.pipeline = pipeline
+}
+
+// embedQuery generates a query embedding using the pipeline when available,
+// falling back to direct embedder call.
+func (s *SimpleRetrievalService) embedQuery(ctx context.Context, query string) ([]float64, error) {
+	if s.pipeline != nil {
+		spec, err := s.pipeline.BuildSpec(memembed.KindMemoryQuery, query)
+		if err != nil {
+			return nil, errors.Wrap(err, "build query spec")
+		}
+		vec, err := s.pipeline.Embed(ctx, spec)
+		if err != nil {
+			return nil, errors.Wrap(err, "embed via pipeline")
+		}
+		return vec, nil
+	}
+	return s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
 }
 
 // NewSimpleRetrievalService creates a new simple retrieval service
@@ -82,8 +108,8 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 		return s.searchPrecision(ctx, tenantID, query), nil
 	}
 
-	// Generate embedding for the query with prefix handled by EmbedWithPrefix
-	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
+	// Generate embedding using unified pipeline when available.
+	queryEmbedding, err := s.embedQuery(ctx, query)
 	if err != nil {
 		slog.Error("Failed to embed query", "error", err)
 		return nil, errors.Wrap(err, "embed query")
@@ -259,8 +285,8 @@ func (s *SimpleRetrievalService) searchKeyword(ctx context.Context, tenantID, qu
 func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	slog.Debug("Running vector search", "query", query)
 
-	// Generate embedding for the query with prefix handled by EmbedWithPrefix
-	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
+	// Generate embedding using unified pipeline when available.
+	queryEmbedding, err := s.embedQuery(ctx, query)
 	if err != nil {
 		slog.Error("Failed to embed query", "error", err)
 		return nil, errors.Wrap(err, "embed query")

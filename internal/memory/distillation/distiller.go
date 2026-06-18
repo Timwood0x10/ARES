@@ -15,6 +15,7 @@ import (
 
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres/embedding"
 )
 
@@ -128,6 +129,7 @@ type Distiller struct {
 	resolver    *ConflictResolver
 	noiseFilter *NoiseFilter
 	embedder    embedding.EmbeddingService
+	pipeline    memembed.EmbeddingPipeline
 	repo        ExperienceRepository
 	metrics     atomicMetrics  // Thread-safe atomic counters
 	distillWg   sync.WaitGroup // Tracks event subscription goroutines
@@ -168,6 +170,13 @@ func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingServic
 		repo:        repo,
 		metrics:     atomicMetrics{},
 	}
+}
+
+// SetEmbeddingPipeline configures the unified embedding pipeline for conflict detection.
+// When set, DistillConversation uses the pipeline with canonical spec builders
+// instead of calling the raw embedder directly.
+func (d *Distiller) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	d.pipeline = pipeline
 }
 
 // DistillConversation distills memories from a conversation.
@@ -353,16 +362,31 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 		"memory_count", len(memories))
 	var finalMemories []Memory
 	for idx, memory := range memories {
-		// Generate embedding for conflict detection and retrieval
-		// Use "problem → solution" format for better retrieval
-		embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
-		slog.DebugContext(ctx, "[Memory Distillation] Generating embedding",
-			"conversation_id", conversationID,
-			"memory_index", idx,
-			"memory_type", memory.Type.String(),
-			"embedding_text", truncateString(embeddingText, 100))
-
-		embedding, err := d.embedder.EmbedWithPrefix(ctx, embeddingText, "memory:")
+		// Generate embedding for conflict detection and retrieval.
+		// Use the unified embedding pipeline when available.
+		var embedding []float64
+		var err error
+		if d.pipeline != nil {
+			problem, _ := memory.Metadata["problem"].(string)
+			solution, _ := memory.Metadata["solution"].(string)
+			spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+				MemoryType: memory.Type.String(),
+				Problem:    problem,
+				Solution:   solution,
+			})
+			if specErr != nil {
+				slog.WarnContext(ctx, "[Memory Distillation] ERROR Failed to build embedding spec",
+					"conversation_id", conversationID,
+					"memory_index", idx,
+					"error", specErr.Error(),
+					"action", "skipping this memory")
+				continue
+			}
+			embedding, err = d.pipeline.Embed(ctx, spec)
+		} else {
+			embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+			embedding, err = d.embedder.EmbedWithPrefix(ctx, embeddingText, "memory:")
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "[Memory Distillation] ERROR Failed to generate embedding for memory",
 				"conversation_id", conversationID,

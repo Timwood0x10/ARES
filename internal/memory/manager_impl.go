@@ -16,6 +16,7 @@ import (
 	"goagentx/internal/events"
 	memctx "goagentx/internal/memory/context"
 	"goagentx/internal/memory/distillation"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres/embedding"
 )
 
@@ -33,6 +34,9 @@ type memoryManager struct {
 	distiller *distillation.Distiller
 	embedder  embedding.EmbeddingService
 	expRepo   distillation.ExperienceRepository
+
+	// EmbeddingPipeline: unified embedding generation for memory and query paths.
+	pipeline memembed.EmbeddingPipeline
 
 	// Event sourcing: optional EventStore for emitting lifecycle events.
 	eventStore events.EventStore
@@ -99,12 +103,16 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.Embe
 	distillConfig := distillation.DefaultDistillationConfig()
 	distiller := distillation.NewDistiller(distillConfig, embedder, expRepo)
 
+	pipeline := memembed.NewEmbeddingPipeline(embedder)
+	distiller.SetEmbeddingPipeline(pipeline)
+
 	return &memoryManager{
 		sessionMemory: sessionMemory,
 		taskMemory:    taskMemory,
 		config:        config,
 		distiller:     distiller,
 		embedder:      embedder,
+		pipeline:      pipeline,
 		expRepo:       expRepo,
 		ctxCleaner:    memctx.NewContextCleaner(),
 	}, nil
@@ -456,7 +464,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 // SearchSimilarTasks searches for similar tasks using vector-based search.
 func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {
-	if m.embedder == nil || m.expRepo == nil {
+	if m.pipeline == nil || m.expRepo == nil {
 		return nil, errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
 	}
 
@@ -464,7 +472,8 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		"query", truncate(query, 50),
 		"limit", limit)
 
-	queryVector, err := m.embedder.EmbedWithPrefix(ctx, query, "query:")
+	spec := memembed.BuildMemoryQuerySpec(query, m.embedder.GetModel(), 1, 0)
+	queryVector, err := m.pipeline.Embed(ctx, spec)
 	if err != nil {
 		slog.Error("[Memory Search] Failed to generate query embedding", "error", err)
 		return nil, errors.Wrap(err, "generate query embedding")

@@ -18,6 +18,7 @@ import (
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
 	memctx "goagentx/internal/memory/context"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -34,6 +35,9 @@ type ProductionMemoryManager struct {
 	retrievalService *services.RetrievalService
 	embeddingClient  *embedding.EmbeddingClient
 	writeBuffer      *postgres.WriteBuffer // Write buffer for rate limiting
+
+	// Embedding pipeline
+	pipeline memembed.EmbeddingPipeline
 
 	// Repositories
 	conversationRepository *repositories.ConversationRepository
@@ -146,11 +150,18 @@ func NewProductionMemoryManager(
 		postgres.DefaultEmbeddingConfig(),
 	)
 
+	// Create embedding pipeline for unified embedding generation.
+	pipeline := memembed.NewEmbeddingPipeline(embeddingClient)
+
+	// Inject pipeline into retrieval service for unified query embedding.
+	retrievalService.SetEmbeddingPipeline(pipeline)
+
 	return &ProductionMemoryManager{
 		dbPool:                 dbPool,
 		tenantGuard:            tenantGuard,
 		retrievalService:       retrievalService,
 		embeddingClient:        embeddingClient,
+		pipeline:               pipeline,
 		writeBuffer:            writeBuffer,
 		conversationRepository: conversationRepo,
 		taskResultRepository:   taskResultRepo,
@@ -815,13 +826,24 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 		return errors.Wrap(err, "set tenant context")
 	}
 
+	// Extract problem and solution from distilled payload.
+	inputStr, _ := distilled.Payload["input"].(string)
+	outputStr, _ := distilled.Payload["output"].(string)
+
+	// Build canonical memory experience spec for unified embedding.
+	spec := memembed.BuildMemoryExperienceSpec("knowledge", inputStr, outputStr, m.embeddingClient.GetModel(), 1, 0)
+
 	// Use write buffer for async embedding chain (write backpressure layer per design standard)
 	writeItem := &postgres.WriteItem{
-		TenantID: tenantID,
-		Table:    "experiences_1024",
-		Content:  fmt.Sprintf("%v", distilled.Payload), // Use payload as content
+		TenantID:   tenantID,
+		Table:      "experiences_1024",
+		Content:    spec.Text, // Canonical memory experience text, not payload dump
+		SpecKind:   string(spec.Kind),
+		SpecPrefix: spec.Prefix,
+		SpecDim:    0,
+		SpecHash:   spec.Hash,
 		Metadata: map[string]interface{}{
-			"output":   "", // Extract from payload if available
+			"output":   outputStr,
 			"type":     "solution",
 			"agent_id": "style-agent",
 		},

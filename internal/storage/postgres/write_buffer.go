@@ -40,6 +40,12 @@ type WriteItem struct {
 	Table    string
 	Content  string
 	Metadata map[string]interface{}
+
+	// EmbeddingSpec fields for canonical spec tracking.
+	SpecKind   string
+	SpecPrefix string
+	SpecDim    int
+	SpecHash   string
 }
 
 // NewWriteBuffer creates a new WriteBuffer instance.
@@ -305,13 +311,27 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			}
 
 		case "experiences_1024":
+			// Embed spec metadata into the JSONB metadata field for traceability.
+			// This allows detection of embedding drift without schema changes.
+			md := item.Metadata
+			if md == nil {
+				md = make(map[string]interface{})
+			}
+			if item.SpecKind != "" {
+				md["embedding_kind"] = item.SpecKind
+				md["embedding_prefix"] = item.SpecPrefix
+				md["embedding_text_hash"] = item.SpecHash
+				if item.SpecDim > 0 {
+					md["embedding_dim"] = item.SpecDim
+				}
+			}
 			_, err := tx.Exec(`
 				INSERT INTO experiences_1024
 				(tenant_id, type, input, output, embedding, embedding_model, embedding_version,
 				 embedding_status, embedding_queued_at, agent_id, metadata, score, success, decay_at, created_at)
 				VALUES ($1, 'solution', $2, $3, $4, $5, $6, 'pending', NOW(), 'style-agent', $7, 0.8, true, NOW() + INTERVAL '30 days', NOW())
 			`, item.TenantID, item.Content, item.Metadata["output"], make([]float64, 1024),
-				b.embeddingConfig.DefaultModel, b.embeddingConfig.DefaultVersion, item.Metadata)
+				b.embeddingConfig.DefaultModel, b.embeddingConfig.DefaultVersion, md)
 			if err != nil {
 				return errors.Wrap(err, "insert experience")
 			}
@@ -332,6 +352,10 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			TenantID: item.TenantID,
 			Model:    b.embeddingConfig.DefaultModel,
 			Version:  b.embeddingConfig.DefaultVersion,
+			Kind:     item.SpecKind,
+			Prefix:   item.SpecPrefix,
+			Dim:      item.SpecDim,
+			SpecHash: item.SpecHash,
 		}
 		if err := b.queue.EnqueueTx(ctx, tx, task); err != nil {
 			if err == ErrDuplicateTask {

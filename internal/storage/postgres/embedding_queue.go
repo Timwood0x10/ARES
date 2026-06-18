@@ -35,6 +35,10 @@ type EmbeddingTask struct {
 	TenantID string
 	Model    string
 	Version  int
+	Kind     string // EmbeddingSpec.Kind for canonical spec tracking
+	Prefix   string // EmbeddingSpec.Prefix for canonical spec tracking
+	Dim      int    // EmbeddingSpec.Dim for canonical spec tracking
+	SpecHash string // EmbeddingSpec.Hash for deduplication
 }
 
 // NewEmbeddingQueue creates a new EmbeddingQueue instance.
@@ -65,7 +69,7 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 	}
 
 	// Generate dedupe key for idempotency.
-	dedupeKey := q.generateDedupeKey(task.Content, task.Model, task.Version)
+	dedupeKey := q.generateDedupeKey(task)
 
 	result, err := q.db.Exec(ctx, `
 		INSERT INTO embedding_queue
@@ -108,7 +112,7 @@ func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *Embedd
 	}
 
 	// Generate dedupe key for idempotency.
-	dedupeKey := q.generateDedupeKey(task.Content, task.Model, task.Version)
+	dedupeKey := q.generateDedupeKey(task)
 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO embedding_queue
@@ -133,14 +137,14 @@ func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *Embedd
 	return nil
 }
 
-// generateDedupeKey generates a unique key for idempotency based on content and model version.
-// Args:
-// content - text content to embed.
-// model - embedding model name.
-// version - embedding model version.
-// Returns dedupe key as hexadecimal string.
-func (q *EmbeddingQueue) generateDedupeKey(content, model string, version int) string {
-	key := fmt.Sprintf("%s|%s|%d", content, model, version)
+// generateDedupeKey generates a unique key for idempotency.
+// When SpecHash is set (from canonical EmbeddingSpec), it is used directly.
+// Otherwise falls back to content|model|version for backward compatibility.
+func (q *EmbeddingQueue) generateDedupeKey(task *EmbeddingTask) string {
+	if task.SpecHash != "" {
+		return task.SpecHash
+	}
+	key := fmt.Sprintf("%s|%s|%d", task.Content, task.Model, task.Version)
 	hash := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(hash[:16])
 }
@@ -375,7 +379,11 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 
 	// Insert each orphaned chunk into the queue with Go-computed dedupe key.
 	for _, chunk := range chunks {
-		dedupeKey := q.generateDedupeKey(chunk.Content, defaultModel, defaultVersion)
+		dedupeKey := q.generateDedupeKey(&EmbeddingTask{
+			Content: chunk.Content,
+			Model:   defaultModel,
+			Version: defaultVersion,
+		})
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO embedding_queue
 			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, dedupe_key, status, queued_at)
