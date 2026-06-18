@@ -81,6 +81,14 @@ func (m *MockMemoryManager) Stop(ctx context.Context) error {
 func (m *MockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
 }
 
+func (m *MockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {
+	return nil
+}
+
+func (m *MockMemoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+
 func (m *MockMemoryManager) Clear(ctx context.Context) error {
 	return nil
 }

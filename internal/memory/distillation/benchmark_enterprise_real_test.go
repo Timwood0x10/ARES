@@ -83,7 +83,7 @@ func callLLMFull(t *testing.T, cfg enterpriseConfig, contextName, content string
 		t.Logf("API call failed: %v", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result LLMResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -470,12 +470,10 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 	var logBuf bytes.Buffer
 	logBuf.WriteString("============================================================\n")
 	logBuf.WriteString(" 企业版蒸馏 Benchmark — 完整运行日志\n")
-	logBuf.WriteString(fmt.Sprintf(" 时间: %s\n", time.Now().Format("2006-01-02 15:04:05")))
-	logBuf.WriteString(fmt.Sprintf(" Embedding: qwen3-embedding:0.6b (localhost:8000, 1024维)\n"))
-	logBuf.WriteString(fmt.Sprintf(" LLM: %s (%s)\n", llmCfg.Model, llmCfg.BaseURL))
+	fmt.Fprintf(&logBuf, " 时间: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	logBuf.WriteString(" Embedding: qwen3-embedding:0.6b (localhost:8000, 1024维)\n")
+	fmt.Fprintf(&logBuf, " LLM: %s (%s)\n", llmCfg.Model, llmCfg.BaseURL)
 	logBuf.WriteString("============================================================\n\n")
-
-	// ===== Scenario A =====
 	logBuf.WriteString("// ========== SCENARIO A: Cross-Session Memory ==========\n\n")
 
 	var accumulatedDistilled []Memory
@@ -511,31 +509,31 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 		}
 		distCtx := buildDistilledContext(accumulatedDistilled, input)
 
-		logBuf.WriteString(fmt.Sprintf("--- Session %d (totalRounds=%d) ---\n", session, totalRounds))
-		logBuf.WriteString(fmt.Sprintf("\n[RAW CONTEXT sent to LLM]:\n%s\n\n", rawCtx))
-		logBuf.WriteString(fmt.Sprintf("[DISTILLED CONTEXT sent to LLM]:\n%s\n\n", distCtx))
+		fmt.Fprintf(&logBuf, "--- Session %d (totalRounds=%d) ---\n", session, totalRounds)
+		fmt.Fprintf(&logBuf, "\n[RAW CONTEXT sent to LLM]:\n%s\n\n", rawCtx)
+		fmt.Fprintf(&logBuf, "[DISTILLED CONTEXT sent to LLM]:\n%s\n\n", distCtx)
 
 		// 记录蒸馏产出的 memories
-		logBuf.WriteString(fmt.Sprintf("[DISTILLATION OUTPUT — %d memories]:\n", len(memories)))
+		fmt.Fprintf(&logBuf, "[DISTILLATION OUTPUT — %d memories]:\n", len(memories))
 		for i, mem := range memories {
-			logBuf.WriteString(fmt.Sprintf("  Memory %d: importance=%.2f, type=%s\n", i+1, mem.Importance, mem.Type))
-			logBuf.WriteString(fmt.Sprintf("    Content: %s\n\n", mem.Content))
+			fmt.Fprintf(&logBuf, "  Memory %d: importance=%.2f, type=%s\n", i+1, mem.Importance, mem.Type)
+			fmt.Fprintf(&logBuf, "    Content: %s\n\n", mem.Content)
 		}
 
 		// LLM 调用 raw
 		llmResp := callLLMFull(t, llmCfg, fmt.Sprintf("report-cross-%d-raw", session), rawCtx)
 		if llmResp != nil {
-			logBuf.WriteString(fmt.Sprintf("[LLM RESPONSE - raw context]:\n"))
+			logBuf.WriteString("[LLM RESPONSE - raw context]:\n")
 			j, _ := json.MarshalIndent(llmResp, "", "  ")
-			logBuf.WriteString(fmt.Sprintf("%s\n", string(j)))
+			fmt.Fprintf(&logBuf, "%s\n", string(j))
 		}
 
 		// LLM 调用 dist
 		llmResp2 := callLLMFull(t, llmCfg, fmt.Sprintf("report-cross-%d-dist", session), distCtx)
 		if llmResp2 != nil {
-			logBuf.WriteString(fmt.Sprintf("[LLM RESPONSE - distilled context]:\n"))
+			logBuf.WriteString("[LLM RESPONSE - distilled context]:\n")
 			j, _ := json.MarshalIndent(llmResp2, "", "  ")
-			logBuf.WriteString(fmt.Sprintf("%s\n", string(j)))
+			fmt.Fprintf(&logBuf, "%s\n", string(j))
 		}
 
 		logBuf.WriteString("\n")
@@ -558,22 +556,22 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 		}
 		distCtx := buildDistilledContext(memories, input)
 
-		logBuf.WriteString(fmt.Sprintf("--- Rounds %d ---\n", rounds))
-		logBuf.WriteString(fmt.Sprintf("[FULL RAW CONTEXT sent to LLM]:\n%s\n\n", fullCtx))
-		logBuf.WriteString(fmt.Sprintf("[DISTILLED CONTEXT sent to LLM]:\n%s\n\n", distCtx))
+		fmt.Fprintf(&logBuf, "--- Rounds %d ---\n", rounds)
+		fmt.Fprintf(&logBuf, "[FULL RAW CONTEXT sent to LLM]:\n%s\n\n", fullCtx)
+		fmt.Fprintf(&logBuf, "[DISTILLED CONTEXT sent to LLM]:\n%s\n\n", distCtx)
 
 		llmResp := callLLMFull(t, llmCfg, fmt.Sprintf("report-unbounded-%d-full", rounds), fullCtx)
 		if llmResp != nil {
-			logBuf.WriteString(fmt.Sprintf("[LLM RESPONSE - full raw]:\n"))
+			logBuf.WriteString("[LLM RESPONSE - full raw]:\n")
 			j, _ := json.MarshalIndent(llmResp, "", "  ")
-			logBuf.WriteString(fmt.Sprintf("%s\n", string(j)))
+			fmt.Fprintf(&logBuf, "%s\n", string(j))
 		}
 
 		llmResp2 := callLLMFull(t, llmCfg, fmt.Sprintf("report-unbounded-%d-dist", rounds), distCtx)
 		if llmResp2 != nil {
-			logBuf.WriteString(fmt.Sprintf("[LLM RESPONSE - distilled]:\n"))
+			logBuf.WriteString("[LLM RESPONSE - distilled]:\n")
 			j, _ := json.MarshalIndent(llmResp2, "", "  ")
-			logBuf.WriteString(fmt.Sprintf("%s\n", string(j)))
+			fmt.Fprintf(&logBuf, "%s\n", string(j))
 		}
 		logBuf.WriteString("\n")
 		time.Sleep(30 * time.Millisecond)
@@ -588,7 +586,7 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 	// ===== 报告文件 =====
 	var reportBuf bytes.Buffer
 	reportBuf.WriteString("# 企业版蒸馏 Benchmark 报告\n")
-	reportBuf.WriteString(fmt.Sprintf("## 测试时间：%s\n\n", time.Now().Format("2006-01-02 15:04:05")))
+	fmt.Fprintf(&reportBuf, "## 测试时间：%s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 	reportBuf.WriteString("## 配置\n")
 	reportBuf.WriteString("- Embedding: qwen3-embedding:0.6b (localhost:8000, 1024维)\n")
 	reportBuf.WriteString(fmt.Sprintf("- LLM: %s\n", llmCfg.Model))
@@ -596,7 +594,7 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 	reportBuf.WriteString("- 蒸馏策略: 企业版 (Rule-based + 真实Embedding + LLM实测Token)\n")
 	reportBuf.WriteString("- Redis: 未使用\n\n")
 	reportBuf.WriteString("## 日志文件\n")
-	reportBuf.WriteString(fmt.Sprintf("完整请求/响应日志: `enterprise_benchmark_log.txt`\n"))
+	reportBuf.WriteString("完整请求/响应日志: `enterprise_benchmark_log.txt`\n")
 	reportBuf.WriteString("该文件包含每次 LLM 调用的完整 request body 和 response body。\n\n")
 	reportBuf.WriteString("---\n\n")
 	reportBuf.WriteString("# 三份报告汇总\n\n")

@@ -425,7 +425,8 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 	}
 
 	// Create LLM executor: use real LLM if config available, fallback to mock.
-	llmExec, err := newLLMExecutor("./examples/quant-trading/config.yml")
+	cfgPath := resolveConfigPath()
+	llmExec, err := newLLMExecutor(cfgPath)
 	if err != nil {
 		log("  ⚠️ LLM executor init failed (using mock): %v", err)
 		llmExec = researchagents.NewMockLLMExecutor()
@@ -938,6 +939,21 @@ func (a *llmExecutorAdapter) Complete(ctx context.Context, messages []researchag
 // CompleteStructured is not yet supported for real LLM.
 func (a *llmExecutorAdapter) CompleteStructured(ctx context.Context, messages []researchagents.Message, schema any) (any, error) {
 	return nil, fmt.Errorf("structured completion not supported")
+}
+
+// resolveConfigPath finds config.yml relative to this source file.
+// Handles both go run (module root cwd) and go test (package dir cwd).
+func resolveConfigPath() string {
+	candidates := []string{
+		"./examples/quant-trading/config.yml", // module root
+		"./config.yml",                        // package dir
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return candidates[0] // return the first candidate; caller will produce a clear error
 }
 
 // newLLMExecutor creates a real LLM executor from the config file.

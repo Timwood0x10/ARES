@@ -216,6 +216,14 @@ func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
 func (m *mockMemoryManager) SetEventStore(_ events.EventStore, _ string) {
 }
 
+func (m *mockMemoryManager) AddStructuredMessage(_ context.Context, _ string, _ memory.Message) error {
+	return nil
+}
+
+func (m *mockMemoryManager) BuildPromptMessages(_ context.Context, _ string) ([]memory.Message, error) {
+	return nil, nil
+}
+
 // errEventStore is an EventStore that returns an error on Read.
 type errEventStore struct {
 	readErr error
@@ -296,6 +304,14 @@ func (m *errMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string
 func (m *errMemoryManager) Start(_ context.Context) error { return nil }
 func (m *errMemoryManager) Stop(_ context.Context) error  { return nil }
 func (m *errMemoryManager) SetEventStore(_ events.EventStore, _ string) {
+}
+
+func (m *errMemoryManager) AddStructuredMessage(_ context.Context, _ string, _ memory.Message) error {
+	return nil
+}
+
+func (m *errMemoryManager) BuildPromptMessages(_ context.Context, _ string) ([]memory.Message, error) {
+	return nil, nil
 }
 
 // slowStopAgent blocks in Stop until the provided channel is closed or context expires.

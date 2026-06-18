@@ -17,6 +17,7 @@ import (
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
+	memctx "goagentx/internal/memory/context"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -52,6 +53,9 @@ type ProductionMemoryManager struct {
 	// Optional: keep in-memory cache for hot data
 	sessionCache map[string]*SessionData
 	maxCacheSize int
+
+	// Context cleaner: intelligently strips tool noise and compresses verbose content.
+	ctxCleaner *memctx.ContextCleaner
 
 	// Event sourcing: optional EventStore for emitting lifecycle events.
 	eventStore events.EventStore
@@ -151,6 +155,7 @@ func NewProductionMemoryManager(
 		conversationRepository: conversationRepo,
 		taskResultRepository:   taskResultRepo,
 		config:                 config,
+		ctxCleaner:             memctx.NewContextCleaner(),
 		sessionCache:           make(map[string]*SessionData),
 		maxCacheSize:           config.MaxSessions,
 	}, nil
@@ -410,7 +415,7 @@ func (m *ProductionMemoryManager) GetMessages(ctx context.Context, sessionID str
 	}
 
 	// Retrieve conversations from database
-	conversations, err := m.conversationRepository.GetBySession(ctx, tenantID, sessionID, m.config.MaxHistory)
+	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, m.config.MaxHistory)
 	if err != nil {
 		return nil, errors.Wrap(err, "get conversations")
 	}
@@ -426,6 +431,158 @@ func (m *ProductionMemoryManager) GetMessages(ctx context.Context, sessionID str
 	}
 
 	return messages, nil
+}
+
+// AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
+// to the session. Structured fields are serialized into the metadata JSONB column.
+func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
+	if sessionID == "" {
+		return fmt.Errorf("session ID cannot be empty")
+	}
+	if msg.Role == "" {
+		return fmt.Errorf("role cannot be empty")
+	}
+
+	// Set tenant context
+	tenantID := m.getCurrentTenantID()
+	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
+		return errors.Wrap(err, "set tenant context")
+	}
+
+	// Build metadata from structured fields
+	metadata := make(map[string]interface{})
+	if msg.TurnID != "" {
+		metadata["turn_id"] = msg.TurnID
+	}
+	if msg.ToolCallID != "" {
+		metadata["tool_call_id"] = msg.ToolCallID
+	}
+	if len(msg.ToolCalls) > 0 {
+		metadata["tool_calls"] = msg.ToolCalls
+	}
+
+	// Get user ID from session cache
+	userID := ""
+	m.mu.RLock()
+	if sessionData, exists := m.sessionCache[sessionID]; exists {
+		userID = sessionData.UserID
+	}
+	m.mu.RUnlock()
+
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	// Set time if not set
+	msgTime := msg.Time
+	if msgTime.IsZero() {
+		msgTime = time.Now()
+	}
+
+	conv := &storage_models.Conversation{
+		SessionID: sessionID,
+		TenantID:  tenantID,
+		UserID:    userID,
+		AgentID:   "style-agent",
+		Role:      msg.Role,
+		Content:   msg.Content,
+		Metadata:  metadata,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: msgTime,
+	}
+
+	if err := m.conversationRepository.Create(ctx, conv); err != nil {
+		return errors.Wrap(err, "create structured conversation")
+	}
+
+	// Update session cache
+	m.mu.Lock()
+	if sessionData, exists := m.sessionCache[sessionID]; exists {
+		sessionData.UpdatedAt = time.Now()
+		sessionData.MessageCount++
+	}
+	m.mu.Unlock()
+
+	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		"session_id": sessionID,
+		"role":       msg.Role,
+	})
+
+	slog.Debug("Structured message added", "session_id", sessionID, "role", msg.Role)
+	return nil
+}
+
+// BuildPromptMessages returns all messages as a structured []Message slice,
+// reconstructing TurnID, ToolCallID, and ToolCalls from stored metadata.
+// This is the structured counterpoint to BuildContext.
+func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	if sessionID == "" {
+		return nil, errors.New("session ID cannot be empty")
+	}
+
+	// Set tenant context
+	tenantID := m.getCurrentTenantID()
+	if err := m.tenantGuard.SetTenantContext(ctx, tenantID); err != nil {
+		return nil, errors.Wrap(err, "set tenant context")
+	}
+
+	// Retrieve conversations with metadata
+	conversations, err := m.conversationRepository.GetBySession(ctx, sessionID, tenantID, m.config.MaxHistory)
+	if err != nil {
+		return nil, errors.Wrap(err, "get conversations")
+	}
+
+	// Convert to Message format, reconstructing structured fields from metadata
+	messages := make([]Message, 0, len(conversations))
+	for _, conv := range conversations {
+		msg := Message{
+			Role:    conv.Role,
+			Content: conv.Content,
+			Time:    conv.CreatedAt,
+		}
+
+		// Restore structured fields from metadata
+		if conv.Metadata != nil {
+			if turnID, ok := conv.Metadata["turn_id"].(string); ok {
+				msg.TurnID = turnID
+			}
+			if toolCallID, ok := conv.Metadata["tool_call_id"].(string); ok {
+				msg.ToolCallID = toolCallID
+			}
+			if toolCallsRaw, ok := conv.Metadata["tool_calls"]; ok {
+				if toolCalls, ok := toolCallsRaw.([]interface{}); ok {
+					msg.ToolCalls = convertToToolCalls(toolCalls)
+				}
+			}
+		}
+
+		messages = append(messages, msg)
+	}
+
+	// Apply max-history limit
+	maxHistory := m.config.MaxHistory
+	if len(messages) > maxHistory {
+		messages = messages[len(messages)-maxHistory:]
+	}
+
+	// Apply context cleaning with turn-aware mode and configured options
+	var opts []memctx.CleanOptions
+	if m.config.CleanOptions != nil {
+		opts = []memctx.CleanOptions{*m.config.CleanOptions}
+	}
+	cleaned := m.ctxCleaner.CleanWithTurns(messages, opts...)
+
+	stats := m.ctxCleaner.Stats()
+	if stats.BytesSaved > 0 || stats.DroppedToolMessages > 0 {
+		slog.Debug("Prompt messages cleaned", "session_id", sessionID,
+			"history_in", stats.HistoryIn,
+			"history_out", stats.HistoryOut,
+			"bytes_saved", stats.BytesSaved,
+			"dropped_tool_msgs", stats.DroppedToolMessages,
+			"turns_processed", stats.TurnsProcessed)
+	}
+
+	return cleaned, nil
 }
 
 // DeleteSession deletes a session and all its messages immediately.
@@ -478,23 +635,41 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 		messages = messages[len(messages)-maxHistory:]
 	}
 
+	// Apply intelligent context cleaning: strip tool noise, compress verbose content.
+	cleaned := m.ctxCleaner.Clean(messages)
+
 	// Build context string
 	var contextBuilder string
-	if len(messages) > 0 {
+	if len(cleaned) > 0 {
 		contextBuilder = "Previous conversation history:\n\n"
-		for _, msg := range messages {
+		for _, msg := range cleaned {
 			switch msg.Role {
-			case "user":
+			case memctx.RoleUser:
 				contextBuilder += fmt.Sprintf("User: %s\n", truncate(msg.Content, 100))
-			case "assistant":
+			case memctx.RoleAssistant:
 				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleToolCall:
+				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleToolResult:
+				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleSystem:
+				contextBuilder += fmt.Sprintf("System: %s\n", truncate(msg.Content, 100))
 			}
 		}
 		contextBuilder += "\nCurrent request:\n"
 	}
 	contextBuilder += input
 
-	slog.Debug("Context built", "session_id", sessionID, "history_length", len(messages))
+	stats := m.ctxCleaner.Stats()
+	if stats.BytesSaved > 0 {
+		slog.Debug("Context cleaned", "session_id", sessionID,
+			"history_in", stats.HistoryIn,
+			"history_out", stats.HistoryOut,
+			"bytes_saved", stats.BytesSaved,
+			"tool_calls", stats.ToolCalls)
+	}
+
+	slog.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
 	return contextBuilder, nil
 }
 
@@ -766,4 +941,35 @@ func (m *ProductionMemoryManager) GetLatestSessionForLeader(ctx context.Context,
 	}
 
 	return sessionID, nil
+}
+
+// convertToToolCalls converts a raw []interface{} from JSON-unmarshalled metadata
+// into a typed []ToolCall slice. Returns nil for non-convertible inputs.
+func convertToToolCalls(raw []interface{}) []ToolCall {
+	calls := make([]ToolCall, 0, len(raw))
+	for _, r := range raw {
+		m, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var tc ToolCall
+		if id, ok := m["id"].(string); ok {
+			tc.ID = id
+		}
+		if typ, ok := m["type"].(string); ok {
+			tc.Type = typ
+		}
+		if fn, ok := m["function"].(map[string]interface{}); ok {
+			tcf := ToolCallFunction{}
+			if name, ok := fn["name"].(string); ok {
+				tcf.Name = name
+			}
+			if args, ok := fn["arguments"].(string); ok {
+				tcf.Arguments = args
+			}
+			tc.Function = tcf
+		}
+		calls = append(calls, tc)
+	}
+	return calls
 }

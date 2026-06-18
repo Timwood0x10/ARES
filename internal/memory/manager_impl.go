@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"goagentx/api/core"
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
@@ -36,6 +37,9 @@ type memoryManager struct {
 	// Event sourcing: optional EventStore for emitting lifecycle events.
 	eventStore events.EventStore
 	streamID   string // Stream ID used when appending events.
+
+	// ContextCleaner: strips tool call noise and repetitive content before LLM calls.
+	ctxCleaner *memctx.ContextCleaner
 }
 
 // NewMemoryManager creates a new MemoryManager with the given configuration.
@@ -59,6 +63,7 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 		sessionMemory: sessionMemory,
 		taskMemory:    taskMemory,
 		config:        config,
+		ctxCleaner:    memctx.NewContextCleaner(),
 	}, nil
 }
 
@@ -101,6 +106,7 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.Embe
 		distiller:     distiller,
 		embedder:      embedder,
 		expRepo:       expRepo,
+		ctxCleaner:    memctx.NewContextCleaner(),
 	}, nil
 }
 
@@ -219,16 +225,56 @@ func (m *memoryManager) GetMessages(ctx context.Context, sessionID string) ([]Me
 		return nil, errors.Wrap(err, "get messages")
 	}
 
-	messages := make([]Message, len(sessionMemMessages))
-	for i, msg := range sessionMemMessages {
-		messages[i] = Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-			Time:    msg.Time,
-		}
+	return sessionMemMessages, nil
+}
+
+// AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
+// to the session. The underlying SessionMemory stores all Message fields faithfully.
+func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
+	msg.Time = time.Now()
+	if err := m.sessionMemory.AddMessage(ctx, sessionID, msg); err != nil {
+		return errors.Wrap(err, "add structured message")
 	}
 
-	return messages, nil
+	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		"session_id": sessionID,
+		"role":       msg.Role,
+	})
+	return nil
+}
+
+// BuildPromptMessages returns all messages as []Message without folding into a flat string.
+// This is the structured counterpart of BuildContext — it preserves the original message
+// structure (role, content, tool calls, turn IDs) for LLM prompt construction.
+func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	messages, err := m.sessionMemory.GetMessages(ctx, sessionID)
+	if err != nil {
+		return nil, errors.Wrap(err, "build prompt messages")
+	}
+
+	// Apply max-history limit
+	maxHistory := m.config.MaxHistory
+	if len(messages) > maxHistory {
+		messages = messages[len(messages)-maxHistory:]
+	}
+
+	// Apply intelligent context cleaning with configured options
+	var opts []memctx.CleanOptions
+	if m.config.CleanOptions != nil {
+		opts = []memctx.CleanOptions{*m.config.CleanOptions}
+	}
+	cleaned := m.ctxCleaner.CleanWithTurns(messages, opts...)
+
+	stats := m.ctxCleaner.Stats()
+	if stats.BytesSaved > 0 || stats.DroppedToolMessages > 0 {
+		slog.Debug("Prompt messages cleaned", "session_id", sessionID,
+			"history_in", stats.HistoryIn,
+			"history_out", stats.HistoryOut,
+			"bytes_saved", stats.BytesSaved,
+			"dropped_tool_msgs", stats.DroppedToolMessages,
+			"turns_processed", stats.TurnsProcessed)
+	}
+	return cleaned, nil
 }
 
 // DeleteSession deletes a session and all its messages immediately.
@@ -255,23 +301,42 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 		messages = messages[len(messages)-maxHistory:]
 	}
 
+	// Apply intelligent context cleaning: strip tool noise, compress verbose content.
+	cleaned := m.ctxCleaner.Clean(messages)
+
 	// Build context string.
 	var contextBuilder string
-	if len(messages) > 0 {
+	if len(cleaned) > 0 {
 		contextBuilder = "Previous conversation history:\n\n"
-		for _, msg := range messages {
+		for _, msg := range cleaned {
 			switch msg.Role {
-			case "user":
+			case memctx.RoleUser:
 				contextBuilder += fmt.Sprintf("User: %s\n", truncate(msg.Content, 100))
-			case "assistant":
+			case memctx.RoleAssistant:
 				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleToolCall:
+				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleToolResult:
+				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncate(msg.Content, 100))
+			case memctx.RoleSystem:
+				contextBuilder += fmt.Sprintf("System: %s\n", truncate(msg.Content, 100))
 			}
 		}
 		contextBuilder += "\nCurrent request:\n"
 	}
 	contextBuilder += input
 
-	slog.Debug("Context built", "session_id", sessionID, "history_length", len(messages))
+	// Emit cleaner stats periodically for observability.
+	stats := m.ctxCleaner.Stats()
+	if stats.BytesSaved > 0 {
+		slog.Debug("Context cleaned", "session_id", sessionID,
+			"history_in", stats.HistoryIn,
+			"history_out", stats.HistoryOut,
+			"bytes_saved", stats.BytesSaved,
+			"tool_calls", stats.ToolCalls)
+	}
+
+	slog.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
 	return contextBuilder, nil
 }
 
@@ -323,6 +388,8 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 }
 
 // StoreDistilledTask stores a distilled task using the distillation engine.
+// The input is cleaned through the context cleaner before being passed to the distiller.
+// Session messages (if available) are used to provide rich tool-result-summarized history.
 func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
 	if distilled == nil {
 		return errors.New("distilled task cannot be nil")
@@ -336,10 +403,8 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 	inputStr, _ := distilled.Payload["input"].(string)
 	outputStr := fmt.Sprintf("%v", distilled.Payload["output"])
 
-	messages := []distillation.Message{
-		{Role: "user", Content: inputStr},
-		{Role: "assistant", Content: outputStr},
-	}
+	// Try to get cleaned session messages for richer distillation input.
+	distMessages := m.buildCleanedDistillationMessages(ctx, taskID, inputStr, outputStr)
 
 	userID, _ := distilled.Payload["user_id"].(string)
 	tenantID, _ := distilled.Payload["tenant_id"].(string)
@@ -347,7 +412,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		tenantID = "default"
 	}
 
-	memories, err := m.distiller.DistillConversation(ctx, taskID, messages, tenantID, userID)
+	memories, err := m.distiller.DistillConversation(ctx, taskID, distMessages, tenantID, userID)
 	if err != nil {
 		slog.Error("[Memory Distillation] Failed to distill conversation",
 			"task_id", taskID, "error", err)
@@ -484,4 +549,56 @@ func cosineSimilarity(v1, v2 []float64) float64 {
 	}
 
 	return result
+}
+
+// buildCleanedDistillationMessages constructs a cleaned distillation message list.
+// It fetches the task's session messages, runs them through the context cleaner,
+// and converts to distillation.Message format. Falls back to input/output pair
+// when session messages are unavailable.
+func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, taskID, inputStr, outputStr string) []distillation.Message {
+	// Try to get session messages via the task's session.
+	taskData, ok := m.taskMemory.Get(ctx, taskID)
+	if !ok || taskData.SessionID == "" {
+		slog.Debug("[Memory Distillation] No session data for task, using raw input/output",
+			"task_id", taskID)
+		return []distillation.Message{
+			{Role: "user", Content: inputStr},
+			{Role: "assistant", Content: outputStr},
+		}
+	}
+
+	rawMessages, err := m.sessionMemory.GetMessages(ctx, taskData.SessionID)
+	if err != nil || len(rawMessages) == 0 {
+		slog.Debug("[Memory Distillation] No session messages for task, using raw input/output",
+			"task_id", taskID, "error", err)
+		return []distillation.Message{
+			{Role: "user", Content: inputStr},
+			{Role: "assistant", Content: outputStr},
+		}
+	}
+
+	// Clean the session messages for meaningful distillation.
+	cleanOpts := core.DefaultCleanOptions()
+	if m.config.CleanOptions != nil {
+		cleanOpts = *m.config.CleanOptions
+	}
+	cleaned := m.ctxCleaner.CleanWithTurns(rawMessages, cleanOpts)
+	slog.Debug("[Memory Distillation] Built cleaned distillation messages",
+		"task_id", taskID,
+		"raw_count", len(rawMessages),
+		"cleaned_count", len(cleaned))
+
+	distMsgs := make([]distillation.Message, 0, len(cleaned)+2)
+	for _, msg := range cleaned {
+		distMsgs = append(distMsgs, distillation.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	// Append the task input/output as additional context for the distiller.
+	distMsgs = append(distMsgs,
+		distillation.Message{Role: "user", Content: inputStr},
+		distillation.Message{Role: "assistant", Content: outputStr},
+	)
+	return distMsgs
 }

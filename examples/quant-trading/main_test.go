@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -228,8 +229,11 @@ func TestRunWithResearchLayerIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+	if os.Getenv("RUN_INTEGRATION") == "" {
+		t.Skip("skipping; set RUN_INTEGRATION=1 to run (needs network + LLM config)")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	err := runWithResearchLayer(ctx, "AAPL", t.TempDir(), "./examples/quant-trading/data", false, "", "", "")
