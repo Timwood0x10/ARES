@@ -1,37 +1,39 @@
-# GoAgentX Architecture Deep Dive (2): Agent Harmony Protocol — The Communication Bedrock for Multi-Agent Systems
+# GoAgentX Architecture Deep Dive (II): Agent Harmony Protocol — The Communication Foundation for Multi-Agent Systems
 
-> When people ask "how do your agents talk to each other?", they expect something like HTTP, WebSocket, or a message queue.
-> My answer was simpler: **They're in the same process. Why involve the network at all? Just use Go channels.**
-> That's how AHP was born — a protocol that never touches the wire.
+> When it comes to multi-Agent systems, most people's first reaction is: "How do Agents talk to each other? Via HTTP or WebSocket? Through a message queue?"
+> My answer is rather blunt: **Running in the same process, and you still want to communicate over the network? Just use Go channels and be done with it.**
+> And that's how AHP was born — a communication protocol that doesn't touch the wire.
 
-## The Problem I Hit
+## Foreword
 
-The most annoying thing about building multi-agent systems isn't that agents aren't smart enough — it's that they don't talk to each other.
+What's the most annoying thing about building a multi-Agent system? It's not that the Agents aren't smart enough — it's that the Agents don't talk to each other.
 
-The Leader assigns a task to a Sub. The Sub finishes and wants to report back — but the Leader already timed out. The Sub wants to send progress updates — nowhere to send them. The Leader wants to know if the Sub is still alive — no heartbeat mechanism.
+The Leader assigns a task to a Sub. The Sub finishes and wants to report back, only to find that the Leader has already timed out. The Sub wants to report its progress, but there's nowhere to do so. The Leader wants to know if the Sub is still alive, but there's no heartbeat mechanism.
 
-When I first built this in Python, I used Redis queues. When I switched to Go, I spent two days reading RabbitMQ documentation. I remember thinking: **Two goroutines in the same process, sending a message — and I need a message broker? That's insane.**
+When I first built this in Python, I used Redis queues. Later I switched to Go, spent two days reading RabbitMQ documentation — way too heavy. I thought: **Same process, two goroutines, sending a message still has to go through the network? That's just insane.**
 
-So I wrote a purely in-process protocol: no network, no serialization, no middleware. Just Go channels + shared memory.
+So I wrote a purely in-process communication protocol: no network, no serialization, no middleware dependency. Just channels + shared memory.
 
-## Why Roll Your Own?
+## I. Why reinvent the wheel?
 
-GoAgentX has two roles: Leader Agent (delegates work) and Sub Agent (does the work). The communication between them has to handle:
+GoAgentX has two roles: Leader Agent (who assigns work) and Sub Agent (who does the work). The communication between them needs to handle a bunch of annoyances:
 
-- **Async messaging**: Leader sends a task and moves on — doesn't block waiting for the Sub to finish
-- **Progress feedback**: Sub tells the Leader "I'm 50% done"
-- **Heartbeat detection**: Leader knows if a Sub is still alive
-- **Fault tolerance**: Failed message delivery needs a fallback
+- **Async messaging**: The Leader can toss out a task and move on, without waiting for the Sub to finish
+- **Progress feedback**: The Sub needs to let the Leader know when it's 50% done
+- **Heartbeat detection**: The Leader needs to know if the Sub has crashed
+- **Fault tolerance**: If a message fails to send, there needs to be a fallback
 
-I looked around and found: everything was either too heavy (RabbitMQ), too slow (Redis over network), or philosophically incompatible with Go's concurrency model. So I built my own.
+I looked around and found that everything was either too heavy (RabbitMQ), too slow (Redis over the network), or philosophically misaligned with Go. In the end I decided: **Build my own.**
 
-The reasons were dead simple:
+The reasoning is actually very simple:
 
-1. **It's fast**: Channel ops vs network RTT — not even close
-2. **It's simple**: No serialization, no network jitter, no partition tolerance nightmares
-3. **It's evolvable**: When I eventually need distributed deployment, I swap the channel backend for gRPC. The business logic above doesn't change a single line.
+1. **Fast**: Channel-based messaging vs. network RTT — the gap is so large there's no need to compare
+2. **Simple**: No need to deal with serialization, network jitter, partition tolerance, or any of those distributed system nightmares
+3. **Easy to change**: If we ever need to go microservice, just swap the underlying transport from channels to gRPC — the business code on top doesn't need to change a single line
 
-## Global Architecture
+## II. Overall Architecture
+
+The overall architecture of AHP can be summarized in one diagram:
 
 ```mermaid
 sequenceDiagram
@@ -48,30 +50,34 @@ sequenceDiagram
     LA->>DLQ: Failed messages
 ```
 
-| Component | Responsibility | Highlights |
-|-----------|---------------|------------|
-| `Protocol` | Unified facade, composes all sub-components | Facade pattern, one-stop interface |
-| `MessageQueue` | Per-agent message queue | Buffered channel + backup buffer + atomic.Bool |
-| `HeartbeatMonitor` | Heartbeat detection + timeout callbacks | Shared instance, no external dependencies |
-| `DLQ` | Dead letter storage and retry | Custom handlers + auto retry |
-| `QueueRegistry` | Manages all agent queues | Lazy initialization + double-checked locking |
-| `Codec` | Message serialization | JSON implementation, extensible via CodecRegistry |
+Core components include:
 
-## Message Model
+| Component | Responsibility | Implementation Highlight |
+|-----------|---------------|--------------------------|
+| `Protocol` | Unified facade, composes all sub-components | Facade pattern, provides all-in-one interface |
+| `MessageQueue` | Independent message queue per Agent | Based on buffered channel + backup buffer + atomic.Bool |
+| `HeartbeatMonitor` | Heartbeat detection + timeout callback | Shared instance, no extra components needed for distributed systems |
+| `DLQ` | Dead letter message storage and retry | Supports custom handlers and automatic retry |
+| `QueueRegistry` | Manages all Agent queues | Lazy loading + double-checked locking |
+| `Codec` | Message serialization | JSON implementation, CodecRegistry is extensible |
 
-### Five Message Types
+## III. Message Model
+
+### 3.1 Five Message Types
+
+AHP defines 5 message types, covering all scenarios in inter-Agent communication:
 
 ```go
 const (
     AHPMethodTask      AHPMethod = "TASK"      // Task assignment
     AHPMethodResult    AHPMethod = "RESULT"     // Task result
-    AHPMethodProgress  AHPMethod = "PROGRESS"   // Progress update
-    AHPMethodACK       AHPMethod = "ACK"        // Acknowledgment
-    AHPMethodHeartbeat AHPMethod = "HEARTBEAT"  // Liveness signal
+    AHPMethodProgress  AHPMethod = "PROGRESS"   // Progress feedback
+    AHPMethodACK       AHPMethod = "ACK"        // Acknowledgment reply
+    AHPMethodHeartbeat AHPMethod = "HEARTBEAT"  // Heartbeat signal
 )
 ```
 
-### Message Structure
+### 3.2 Message Structure
 
 ```go
 type AHPMessage struct {
@@ -86,9 +92,9 @@ type AHPMessage struct {
 }
 ```
 
-### MessageID Generation
+### 3.3 MessageID Generation
 
-The MessageID is a three-part composite:
+The MessageID is designed as a three-segment ID:
 
 ```go
 func generateMessageID() string {
@@ -99,11 +105,15 @@ func generateMessageID() string {
 }
 ```
 
-- **Timestamp prefix**: Human-readable, traceable
-- **Atomic counter**: Monotonic sequence within the same nanosecond
-- **Random suffix**: Collision-free across multiple processes
+- **Timestamp prefix**: Human-readable, makes debugging easier
+- **Atomic counter**: Incrementing sequence number for multiple messages within the same nanosecond
+- **Random suffix**: Avoids conflicts in multi-process scenarios
 
-### Constructor Functions
+This scheme doesn't rely on a global coordinator and guarantees uniqueness within a process.
+
+### 3.4 Helper Constructors
+
+AHP provides a set of constructors that abstract away the details of message building:
 
 ```go
 NewMessage(method, agentID, targetAgent, taskID, sessionID)
@@ -114,11 +124,13 @@ NewACKMessage(agentID, targetAgent, taskID, sessionID)
 NewHeartbeatMessage(agentID)
 ```
 
-`GetResult()` handles a tricky problem: after JSON deserialization, `TaskResult` loses its type and becomes `map[string]any`. The method's `reconstructTaskResult` function uses reflection and field mapping to rebuild the original struct — a classic solution to JSON polymorphism serialization.
+One notable case is `NewResultMessage`: it wraps `*models.TaskResult` into `Payload["result"]`, while `GetResult()` needs to handle the type loss that occurs after JSON deserialization — `TaskResult` becomes `map[string]any`. `GetResult()` internally implements the `reconstructTaskResult` function, which uses reflection and field mapping to rebuild the original struct.
 
-## MessageQueue
+## IV. Message Queue: MessageQueue
 
-### Core Implementation
+### 4.1 Core Implementation
+
+`MessageQueue` is built on top of a buffered Go channel:
 
 ```go
 type MessageQueue struct {
@@ -132,7 +144,7 @@ type MessageQueue struct {
 }
 ```
 
-### Enqueue: Non-Blocking Write
+### 4.2 Enqueue: Non-blocking Write
 
 ```go
 func (q *MessageQueue) Enqueue(ctx context.Context, msg *AHPMessage) (retErr error) {
@@ -149,13 +161,14 @@ func (q *MessageQueue) Enqueue(ctx context.Context, msg *AHPMessage) (retErr err
 }
 ```
 
-Key design choices:
-1. **Non-blocking**: Returns `ErrQueueFull` immediately when the channel is full
-2. **atomic.Bool**: Lock-free closed-state check
-3. **defer recover**: Gracefully handles `send on closed channel` panics
-4. **ctx parameter unused**: The `default` branch never selects `ctx.Done()`
+Design highlights:
 
-### Dequeue: Blocking Read
+1. **Non-blocking**: Returns `ErrQueueFull` immediately when the channel is full, does not block the caller
+2. **atomic.Bool for closed check**: Lock-free check of the closed flag
+3. **defer recover fallback**: Panic from `send on closed channel` is gracefully caught
+4. **Unused context parameter**: The `default` branch will never select `ctx.Done()`, making the context parameter effectively useless here
+
+### 4.3 Dequeue: Blocking Read
 
 ```go
 func (q *MessageQueue) Dequeue(ctx context.Context) (*AHPMessage, error) {
@@ -177,13 +190,15 @@ func (q *MessageQueue) Dequeue(ctx context.Context) (*AHPMessage, error) {
 }
 ```
 
-### Peek and Backup Buffer
+Dequeue supports context cancellation, which is Go's standard cancelable blocking pattern.
 
-`Peek()` inspects the head of the queue without removing the message. The challenge: once you take a message from a channel, you can't put it back if the channel is full. The solution is a `backupBuffer` — `Dequeue` checks the backup buffer first, ensuring no message is lost.
+### 4.4 Peek and Backup Buffer
 
-### QueueRegistry
+`Peek()` allows checking the front of the queue without removing the message. The core challenge is: once a message is taken out of a channel, if the channel is full, it cannot be put back. The solution is the `backupBuffer`, which serves as overflow storage — `Dequeue` reads from the backupBuffer first.
 
-Uses **Double-Checked Locking** for performance:
+### 4.5 QueueRegistry: Queue Manager
+
+`QueueRegistry`'s `GetOrCreate` method uses the **Double-Checked Locking** pattern:
 
 ```go
 func (r *QueueRegistry) GetOrCreate(agentID string) *MessageQueue {
@@ -193,48 +208,49 @@ func (r *QueueRegistry) GetOrCreate(agentID string) *MessageQueue {
     if ok { return q }
     r.mu.Lock()
     defer r.mu.Unlock()
-    if q, ok := r.queues[agentID]; ok { return q }
+    if q, ok := r.queues[agentID]; ok { return q } // Double-check
     q = NewMessageQueue(agentID, r.defaultOpts)
     r.queues[agentID] = q
     return q
 }
 ```
 
-## HeartbeatMonitor
+## V. Heartbeat Detection: HeartbeatMonitor
 
-### Core Flow
+### 5.1 Core Flow
 
-- Agents send heartbeats at a fixed interval (default 5s)
-- HeartbeatMonitor records the last heartbeat time
-- If the timeout is exceeded (default 30s) and `MissedCount >= MaxMissed` (default 3), the agent is marked offline
+- Each Agent sends heartbeats at a fixed interval (default 5s)
+- HeartbeatMonitor records the timestamp of the most recent heartbeat
+- If the timeout threshold (default 30s) is exceeded and the number of consecutive misses reaches the limit (default 3), the Agent is marked offline
 
-### Timeout Detection Algorithm
+### 5.2 Timeout Detection Algorithm
 
 ```go
 func (m *HeartbeatMonitor) CheckTimeouts() []string {
-    timedOut := m.checkAndMarkOffline()  // Under write lock
+    timedOut := m.checkAndMarkOffline()  // Detection under write lock
     for _, agentID := range timedOut {
-        m.notifyCallbacks(agentID)        // Outside the lock
+        m.notifyCallbacks(agentID)        // Execute callbacks outside the lock
     }
     return timedOut
 }
 ```
 
-Critical edge cases:
-1. **Gradual timeout**: 3 missed heartbeats before declaring offline — avoids false kills from transient network delays
-2. **No duplicate callbacks**: Already-offline agents won't trigger callbacks again
-3. **Callbacks outside the lock**: `notifyCallbacks` copies the callback slice under a read lock, releases it, then invokes callbacks. This prevents deadlocks.
+Key edge case handling:
 
-### Two HeartbeatSenders
+1. **Gradual timeout**: An Agent is only declared offline after 3 missed heartbeats, preventing false positives from occasional network latency
+2. **Avoid duplicate callbacks**: An Agent already marked Offline will not trigger callbacks again
+3. **Callbacks executed outside the lock**: `notifyCallbacks` copies the callback list, releases the lock, then executes — this is critical for preventing deadlocks
 
-1. **`ahp.HeartbeatSender`**: Sends `AHPMethodHeartbeat` messages into `MessageQueue` — **in-band** heartbeat
-2. **`heartbeatSender`** (in `internal/agents/sub/`): Calls `HeartbeatMonitor.RecordHeartbeat` directly — **out-of-band** heartbeat
+### 5.3 Two Types of HeartbeatSender
 
-Currently, Sub Agents use the second approach, which is more efficient in monolithic deployments.
+1. **`ahp.HeartbeatSender`**: Sends an `AHPMethodHeartbeat` message to the target's `MessageQueue` — this is **in-band** heartbeat
+2. **`heartbeatSender`** (in `internal/agents/sub/`): Directly calls `HeartbeatMonitor.RecordHeartbeat` — this is **out-of-band** heartbeat
 
-## Dead Letter Queue
+Currently, the Sub Agent uses the second approach, which is more efficient in a monolithic deployment.
 
-When `Enqueue` fails, `Protocol.SendMessage` routes the failed message to DLQ:
+## VI. Dead Letter Queue: DLQ
+
+When `Enqueue` returns an error, `Protocol.SendMessage` routes the failed message to the DLQ:
 
 ```go
 func classifyEnqueueError(err error) string {
@@ -248,13 +264,13 @@ func classifyEnqueueError(err error) string {
 }
 ```
 
-`DLQProcessor` supports custom handlers per error type and automatic retry:
+`DLQProcessor` supports registering custom handlers by error type, and supports automatic retry:
 
 - `MaxRetries = 0`: Unlimited retries
-- `MaxRetries > 0`: Exhausted after the configured count
-- No exponential backoff — a potential improvement area
+- `MaxRetries > 0`: Marked as exhausted after reaching the limit
+- Currently no exponential backoff — this is an area for improvement
 
-## Protocol Facade
+## VII. Protocol Facade
 
 ```go
 type Protocol struct {
@@ -266,19 +282,19 @@ type Protocol struct {
 }
 ```
 
-| Method | Purpose |
-|--------|---------|
-| `SendMessage(ctx, msg)` | Send message, auto-route to DLQ on failure |
-| `ReceiveMessage(ctx, agentID)` | Receive message, blocking |
-| `SendTask/SendResult` | Convenience wrappers |
-| `RecordHeartbeat(agentID)` | Record heartbeat |
-| `CheckTimeouts()` | Check for timed-out agents |
-| `Stats()` | Snapshot of runtime state |
-| `Close()` | Shutdown all resources |
+| Method | Function |
+|--------|----------|
+| `SendMessage(ctx, msg)` | Sends a message, routes to DLQ on failure |
+| `ReceiveMessage(ctx, agentID)` | Receives a message, blocks until available |
+| `SendTask/SendResult` | Convenience methods for sending |
+| `RecordHeartbeat(agentID)` | Records a heartbeat |
+| `CheckTimeouts()` | Checks for timeouts |
+| `Stats()` | Runtime status snapshot |
+| `Close()` | Closes all resources |
 
-## Agent Integration
+## VIII. AHP Integration in Agents
 
-### Messenger Interface
+### 8.1 Messenger Interface
 
 ```go
 type Messenger interface {
@@ -287,66 +303,70 @@ type Messenger interface {
 }
 ```
 
-Both `leaderAgent` and `subAgent` implement this, with `MessageQueue` and `HeartbeatMonitor` injected via constructors.
+Both Leader Agent and Sub Agent implement this interface. During construction, `MessageQueue` and `HeartbeatMonitor` are injected via dependency injection.
 
-### Dispatcher Task Distribution
+### 8.2 Dispatcher's Task Distribution
 
-`taskDispatcher` supports both **local execution** and **distributed dispatch**:
+`taskDispatcher` supports both **local execution** and **distributed dispatch** modes. The core logic is in `executeTask`:
 
 ```go
 if executor, ok := d.executorFuncs[task.Type]; ok {
-    return executor(ctx, task, agentAddr, sessionID)
+    return executor(ctx, task, agentAddr, sessionID)  // Local execution
 }
 if d.messageSender == nil { /* return error */ }
-msg := ahp.NewTaskMessage(...)
+msg := ahp.NewTaskMessage(...)                        // Send via AHP
 d.messageSender.Send(ctx, agentAddr, msg)
-return d.waitForResult(ctx, task.TaskID)
+return d.waitForResult(ctx, task.TaskID)              // Block waiting for result
 ```
 
-This design allows seamless switching between monolithic and distributed deployment.
+This design allows the Agent communication pattern to seamlessly switch between monolithic and distributed deployments.
 
-## Design Patterns Summary
+## IX. Design Pattern Summary
 
 | Pattern | Location | Description |
 |---------|----------|-------------|
-| **Facade** | `Protocol` | Unified interface over all components |
-| **Registry** | `QueueRegistry`, `CodecRegistry` | Named instance management, lazy init |
-| **Strategy** | `Codec` interface | Pluggable serialization |
-| **Observer** | `TimeoutCallback` | Heartbeat timeout callbacks |
+| **Facade** | `Protocol` | Unified interface, composes all components |
+| **Registry** | `QueueRegistry`, `CodecRegistry` | Named instance management, lazy loading |
+| **Strategy** | `Codec` interface | Replaceable serialization strategy |
+| **Observer** | `TimeoutCallback` | Heartbeat timeout callback |
 | **Dead Letter Queue** | `DLQ` + `DLQProcessor` | Failed message storage and retry |
-| **Double-Checked Locking** | `GetOrCreate` | Performance + correctness |
-| **Panic Recovery** | `Enqueue` | `defer recover()` for concurrent close |
-| **Lock-Free Read** | `atomic.Bool` | Lock-free closed flag check |
+| **Double-Checked Locking** | `GetOrCreate` | Balances performance and correctness |
+| **Panic Recovery** | `Enqueue` | `defer recover()` handles concurrent close |
+| **Lock-Free Read** | `atomic.Bool` | Lock-free reading of close state |
 
-## Design Decisions I Stand By
+## X. Key Design Decisions
 
-### Why Non-Blocking Enqueue?
+### 10.1 Why Non-blocking Enqueue?
 
-Agents run in a multi-threaded environment. Blocking one agent while it tries to send a message can cascade through the whole system. DLQ handles failures better — failed messages can be retried, and the caller decides what to do: immediate retry, deferred retry, or discard.
+- Agents run in a multi-threaded environment; blocking could lead to cascading waits
+- DLQ provides better fault-tolerance semantics — failed messages can be retried
+- Callers have greater control: retry immediately, retry later, or discard
 
-### Why No Check-Before-Send
+### 10.2 TOCTOU Avoidance
 
-`SendMessage` intentionally doesn't check `IsFull` first. If I did, there's a TOCTOU race: queue could go from non-full to full between the check and the send. Just send and handle the error. Simpler, safer.
+`SendMessage` has a critical design choice: **it does not check IsFull before enqueuing**. If it checked first and then enqueued, the queue could go from not-full to full between the check and the enqueue (a TOCTOU race condition), causing message loss. Directly performing the operation and handling errors is more robust.
 
-### Why a Codec Interface in an In-Process Protocol
+### 10.3 Serialization Extensibility
 
-Even though AHP runs in-process today, the `Codec` interface is my insurance policy for tomorrow:
-1. **Cross-process**: protobuf/msgpack when you go distributed
-2. **Persistence**: binary formats when you want DLQ messages on disk
+Currently AHP is purely in-process communication, so JSON is sufficient. But the Codec interface has reserved extensibility in two directions:
+1. **Cross-process communication**: protobuf/msgpack can provide smaller payloads
+2. **Persistence**: If DLQ messages need to be persisted to disk, binary formats are more advantageous
 
-## What's Missing (Honest Section)
+## XI. What's Missing? (Honest Section)
 
-AHP isn't perfect. Here are the things I'd fix if I had more time:
+To be honest, AHP isn't perfect. I've run into a few pain points myself:
 
-1. **In-process only**: Can't cross processes. You need to swap MessageQueue for a network transport when going distributed.
-2. **No broadcast**: Sending to multiple Subs? Do it one by one. I know, it's annoying.
-3. **No exponential backoff**: DLQ retries at a fixed interval. Under sustained failure, you might get a retry storm. Still on my TODO.
-4. **Static routing**: No content-based routing or topic subscriptions. Simple by design, inflexible by consequence.
+1. **Purely in-process**: Can't span processes. If you need distributed deployment, you'll need to swap out the MessageQueue implementation
+2. **No broadcast**: Want to send a message to multiple Sub Agents? You'll have to send them one by one
+3. **Retry strategy is too naive**: The DLQ retry interval is fixed — no exponential backoff. This could cause a retry storm during sustained failures
+4. **Routing is too rigid**: No support for content-based dynamic routing or Topic subscriptions
+
+But honestly, these limitations are all **trade-offs by design** — at the monolithic stage, the channel-based approach eliminates 90% of distributed system complexity. If we ever go microservice, we just swap out the underlying implementation — the business code on top stays untouched. That's the beauty of the abstraction layer.
 
 ## Summary
 
-AHP is the communication wheel I built for GoAgentX. Channels for message passing, DLQ for fault tolerance, HeartbeatMonitor for liveness detection — three pieces that make multi-agent communication work without the overhead of a distributed system.
+AHP is the communication wheel I built for GoAgentX. Channel-based messaging, DLQ as fallback, HeartbeatMonitor for liveness checks — three pieces combined, and the multi-Agent communication infrastructure is good to go.
 
-The interfaces I left in the code (`Codec`, DLQ handler, `MessageSender`) are my escape hatch: swap one layer, change the whole transport, don't touch anything above it. In a startup project, this kind of design flexibility is gold — because you never know what your architecture will look like next month.
+Those interfaces left in the code (Codec, DLQ handler, MessageSender) are essentially escape hatches I left for myself: if we ever need to switch to gRPC or RabbitMQ, just swap out one layer of implementation — the business code on top doesn't change. This kind of design is especially important in startup projects — you never know what the architecture will look like tomorrow.
 
-Next: **Memory Distillation** — how I taught agents to stop drowning in conversation history and actually learn from experience.
+Next up, let's talk about **Memory Distillation** — how Agents distill useful experience from hundreds of conversation histories and reuse them directly when encountering similar problems.

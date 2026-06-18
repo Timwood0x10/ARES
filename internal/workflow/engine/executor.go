@@ -352,6 +352,19 @@ func (e *Executor) canExecute(step *Step, completed map[string]bool) bool {
 	return true
 }
 
+// canExecuteWithDeps checks if a step can be executed given its dependencies.
+// Caller must hold the mutex protecting completed.
+// deps must not be the step's own DependsOn slice if concurrent mutations
+// may modify it (e.g., from ReplaceNode). Pass a copy for thread safety.
+func (e *Executor) canExecuteWithDeps(deps []string, completed map[string]bool) bool {
+	for _, dep := range deps {
+		if !completed[dep] {
+			return false
+		}
+	}
+	return true
+}
+
 // findStep finds a step by ID.
 func (e *Executor) findStep(steps []*Step, stepID string) *Step {
 	for _, step := range steps {

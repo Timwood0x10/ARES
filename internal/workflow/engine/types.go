@@ -50,21 +50,21 @@ const (
 
 // Step represents a single step in a workflow.
 type Step struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	AgentType   string            `json:"agent_type"`
-	Input       string            `json:"input"`
-	DependsOn   []string          `json:"depends_on"`
-	Timeout     time.Duration     `json:"timeout"`
-	RetryPolicy     *RetryPolicy      `json:"retry_policy,omitempty"`
-	RecoveryPolicy  *RecoveryPolicy   `json:"recovery_policy,omitempty"`
-	Interrupt       *InterruptConfig  `json:"interrupt,omitempty"`
-	Status      StepStatus        `json:"status"`
-	Output      string            `json:"output,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	StartedAt   time.Time         `json:"started_at,omitempty"`
-	FinishedAt  time.Time         `json:"finished_at,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	AgentType      string            `json:"agent_type"`
+	Input          string            `json:"input"`
+	DependsOn      []string          `json:"depends_on"`
+	Timeout        time.Duration     `json:"timeout"`
+	RetryPolicy    *RetryPolicy      `json:"retry_policy,omitempty"`
+	RecoveryPolicy *RecoveryPolicy   `json:"recovery_policy,omitempty"`
+	Interrupt      *InterruptConfig  `json:"interrupt,omitempty"`
+	Status         StepStatus        `json:"status"`
+	Output         string            `json:"output,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	StartedAt      time.Time         `json:"started_at,omitempty"`
+	FinishedAt     time.Time         `json:"finished_at,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 // RecoveryStrategy classifies the recovery approach for a failed step.

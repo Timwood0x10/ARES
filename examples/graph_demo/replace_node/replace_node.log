@@ -1,0 +1,17 @@
+=== Before ReplaceNode ===
+Execution order: [s1 s2 s3]
+
+=== After ReplaceNode ===
+Execution order: [s1 s2_v2 s3]
+  Step "s1" (name="Fetch Data", dependsOn=[])
+  Step "s2_v2" (name="Transform v2", dependsOn=[s1])
+  Step "s3" (name="Load", dependsOn=[s2_v2])
+
+=== In-place Replacement (same ID) ===
+  Step "s2_v2" (name="Transform v2", dependsOn=[s1])
+  Step "s3" (name="Load v2", dependsOn=[s2_v2])
+  Step "s1" (name="Fetch Data", dependsOn=[])
+
+ReplaceNode example completed successfully!
+  Event: type=4 node="s2_v2" oldNode="s2" success=true
+  Event: type=4 node="s3" oldNode="s3" success=true

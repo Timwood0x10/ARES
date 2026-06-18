@@ -1,0 +1,9 @@
+=== ApplyAtCheckpoint ===
+  Status: completed, steps: 2
+    "s1": status=completed output="processed: first"
+    "s1_child": status=completed output="processed: child_of_s1"
+
+=== ApplyImmediate ===
+  Status: completed, steps: 2
+    "s1": status=completed output="processed: first"
+    "s1_child": status=completed output="processed: child_of_s1"

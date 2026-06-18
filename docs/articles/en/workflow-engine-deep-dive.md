@@ -484,6 +484,218 @@ type GraphEventHub struct {
 
 Events are published non-blockingly -- if a subscriber's channel buffer (64 events) is full, events are dropped for that subscriber. This "best-effort" delivery is intentional: event consumers (such as monitoring dashboards) should tolerate message loss without affecting execution correctness.
 
+### 5.6 ReplaceNode: Atomic Edge Migration
+
+`ReplaceNode` is the core mutation primitive that enables mid-execution step substitution. Defined in `internal/workflow/engine/mutable_dag.go`:
+
+```go
+func (m *MutableDAG) ReplaceNode(oldID string, newStep *Step) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    if _, exists := m.steps[oldID]; !exists {
+        return fmt.Errorf("node %q not found: %w", oldID, ErrNodeNotFound)
+    }
+    if newStep.ID != oldID {
+        if _, exists := m.steps[newStep.ID]; exists {
+            return fmt.Errorf("new node ID %q already exists: %w", newStep.ID, ErrDuplicateID)
+        }
+    }
+    // Build simulated adjacency list for pre-mutation cycle validation
+    adjList := make(map[string][]string)
+    for id, step := range m.steps {
+        if id != oldID { adjList[id] = step.DependsOn }
+    }
+    adjList[newStep.ID] = newStep.DependsOn
+    for id, deps := range adjList {
+        for i, dep := range deps {
+            if dep == oldID { adjList[id][i] = newStep.ID }
+        }
+    }
+    if m.hasCycleInAdjList(adjList) {
+        return fmt.Errorf("replacement would create a cycle: %w", ErrCycleDetected)
+    }
+    // Perform the atomic replacement
+    delete(m.steps, oldID)
+    m.steps[newStep.ID] = newStep
+    m.recalculateDegrees()
+    m.version++
+    m.hub.Publish(GraphEvent{
+        Change: GraphChange{
+            Type:     ChangeReplaceNode,
+            NodeID:   newStep.ID,
+            OldNodeID: oldID,
+            Step:     newStep,
+            Timestamp: time.Now(),
+        },
+    })
+    return nil
+}
+```
+
+**Two scenarios:**
+
+| Scenario | oldID == newStep.ID | Behavior |
+|----------|---------------------|----------|
+| **Same-ID update** | Yes | In-place replacement. Edges preserved via `recalculateDegrees()`. No simulated remapping needed. |
+| **Different-ID migration** | No | Complete edge migration. Old node's edges are atomically transferred to the new node. |
+
+**Cycle detection via simulated adjacency list:** Before any mutation, `ReplaceNode` constructs an adjacency list that mirrors the *post-replacement* topology — the old node's edges are remapped to the new node. The three-color DFS (`hasCycleInAdjList`) runs on this simulated graph:
+
+```go
+func (m *MutableDAG) hasCycleInAdjList(adjList map[string][]string) bool {
+    const (white, gray, black = 0, 1, 2)
+    color := make(map[string]int)
+    for node := range adjList { color[node] = white }
+    var dfs func(node string) bool
+    dfs = func(node string) bool {
+        color[node] = gray
+        for _, neighbor := range adjList[node] {
+            switch color[neighbor] {
+            case gray:  return true
+            case white: if dfs(neighbor) { return true }
+            }
+        }
+        color[node] = black
+        return false
+    }
+    for node := range adjList {
+        if color[node] == white && dfs(node) { return true }
+    }
+    return false
+}
+```
+
+If a cycle is detected, the operation is rejected *before any real mutation occurs*. After a successful replacement, `recalculateDegrees()` rebuilds in-degree/out-degree from scratch, and a `ChangeReplaceNode` event is published to the `GraphEventHub`.
+
+### 5.7 Node-Level Recovery: From ReAct to Dynamic Runtime
+
+The traditional ReAct pattern is a tight loop: Thought → Action → Observation → (repeat). It works for simple agents, but fails at three things:
+
+1. **Brittle linearity** -- one failed step derails the entire chain with no escape hatch
+2. **Fixed topology** -- the loop structure is hardcoded, can't re-route around failures
+3. **Stateless recovery** -- a replacement agent starts from zero with no memory of what went wrong
+
+GoAgentX replaces this with a **Dynamic DAG Runtime**:
+
+```mermaid
+graph LR
+    subgraph "Traditional ReAct Loop"
+        A[Thought] --> B[Action]
+        B --> C{Observation}
+        C -->|repeat| A
+        C -->|done| D[End]
+    end
+    
+    subgraph "Dynamic DAG Runtime"
+        E[Node A] --> F[Node B]
+        F -.->|failure| G[Recovery Decision]
+        G --> H[ReplaceNode]
+        H --> I[New Node B']
+        I --> J[Node C]
+        F -->|success| J
+    end
+```
+
+#### 5.7.1 Step Failure Abstraction
+
+Types in `internal/workflow/engine/types.go`:
+
+```go
+type RecoveryStrategy int
+
+const (
+    RecoveryRetry       RecoveryStrategy = iota
+    RecoveryReplaceNode
+    RecoveryFailFast
+)
+
+type RecoveryPolicy struct {
+    MaxRetries int
+    RetryDelay time.Duration
+}
+
+type StepFailure struct {
+    StepID    string
+    StepName  string
+    Error     string
+    Input     string
+    Output    string
+    Attempts  int
+    ExecTime  time.Duration
+}
+
+type RecoveryDecision struct {
+    Strategy RecoveryStrategy
+    NewStep  *Step   // used only for RecoveryReplaceNode
+    Delay    time.Duration
+    Reason   string
+}
+
+type StepRecoveryHandler interface {
+    RecoverStep(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error)
+}
+```
+
+| Strategy | When | Effect |
+|----------|------|--------|
+| `RecoveryRetry` | Transient errors (network timeout, rate-limit) | Re-execute the same step after delay |
+| `RecoveryReplaceNode` | Semantic failure (wrong LLM output, logic error) | Swap the failed step via `ReplaceNode` |
+| `RecoveryFailFast` | Fatal errors (invalid config, auth failure) | Propagate error up, abort workflow |
+
+#### 5.7.2 RecoveryReplaceNode Flow
+
+The `DynamicExecutor` integrates recovery via the `handleStepFailure` method:
+
+```mermaid
+sequenceDiagram
+    participant S as Scheduler
+    participant E as DynamicExecutor
+    participant D as MutableDAG
+    participant H as StepRecoveryHandler
+
+    E->>E: Step failure detected
+    E->>H: RecoverStep(failure, dag)
+    H->>D: Read current topology & failure context
+    H-->>E: Return RecoveryDecision{ReplaceNode, NewStep}
+    E->>D: ReplaceNode(oldID, newStep)
+    D->>D: Build simulated adjacency list
+    D->>D: Three-color DFS cycle detection
+    D-->>E: OK / error
+    Note over E,S: recoveryCh signal
+    E->>S: Signal recovery channel
+    S->>E: Reset stepIndex = 0
+    E->>E: Fetch fresh execution order
+```
+
+Key implementation details:
+
+- **`handleStepFailure`** checks if a `StepRecoveryHandler` is configured and the step still exists in the DAG (not already replaced by a concurrent recovery)
+- **`recoveryCh`** is a dedicated channel that wakes the scheduler loop, which then resets `stepIndex = 0` and re-fetches the full execution order via `GetExecutionOrder()`
+- **5-round cap**: The `processed` map prevents infinite recovery loops — each step ID can be recovered at most once (with 5 total recovery rounds as a safety limit)
+- **`recomputeOrder` now replaces the entire order**: Instead of appending new steps, it re-fetches the full topological sort from `GetExecutionOrder()`, critical for ensuring the replacement node is correctly positioned before downstream steps
+
+#### 5.7.3 Memory Distillation Integration
+
+When `RecoveryReplaceNode` fires, the failed node's execution record is fed into the Memory/Distillation system:
+
+```mermaid
+flowchart LR
+    A[Agent_A fails] --> B[Extract context]
+    B --> C{Memory Distillation}
+    C --> D[Save error pattern]
+    C --> E[Extract input/output]
+    C --> F[Mark as negative example]
+    B --> G[Create replacement Agent_B]
+    G --> H[Agent_B inherits distilled experience]
+    H --> I[Resume execution]
+    I --> J[Agent_B aware of Agent_A's mistakes]
+```
+
+The `WithRecoveryEventSink` option on `DynamicExecutor` connects recovery events to the distillation pipeline. This is what the user calls "秽土转生" (Edo Tensei / reincarnation from impure soil):
+
+> "如果你的 Agent 挂了……Runtime Manager 能够带着刚才的认知记忆，瞬间在 DAG 图上秽土转生"
+
 ---
 
 ## 6. The Agent Registry and Output Store
@@ -665,7 +877,8 @@ The "C7 fix" ensures correct in-degree decrement semantics for conditional edges
 | **HITL** | Native (InterruptHandler + InterruptStore) | Not supported |
 | **Retry** | Native (exponential backoff) | Not supported |
 | **Hot Reload** | Native (fsnotify + polling) | Not supported |
-| **Runtime Mutation** | MutableDAG + DynamicExecutor | Not supported |
+| **Runtime Mutation** | MutableDAG.ReplaceNode + DynamicExecutor | Not supported |
+| **Recovery** | RecoveryReplaceNode + StepRecoveryHandler + Memory Distillation | Not supported |
 | **Template Variables** | `{{.input}}` + `{{.step_id}}` | Not supported |
 | **State Passing** | OutputStore (key-value) | State (key-value) |
 | **Observability** | Basic logging | Integrated tracer |
@@ -728,22 +941,69 @@ Each layer has a single responsibility: loading, parsing, graph construction, ex
 
 ---
 
-## 10. Bug Fixes and Robustness Improvements
+## 10. Honest Reflections — The Price of Breaking Paradigms
 
-The source code contains numerous fix markers (H3, H4, M5, M6, M7, M9, C6, C7) documenting lessons learned. Key fixes include:
+This section isn't about bugs. It's about design choices I've been wrestling with. I'm not here to tell you what's right — honestly, I'm not even sure I got it right. I just want to share some thought processes that might be useful if you're building a workflow system too.
 
-| Label | Issue | Fix |
-|-------|-------|-----|
-| H3 | Data race between `stepEg.Go()` and `stepEg.Wait()` | Dedicated `stepDone` channel for dependency waiting |
-| H4 | Duplicate step IDs silently overwritten | Explicit duplicate detection |
-| M5 | `MaxAttempts=0` skipped execution | Clamp to minimum 1 |
-| M6 | TOCTOU race in `scanAndLoad` | Hold lock across compare-and-swap |
-| M7 | Callbacks mutating internal state | Deep-copy workflows map before callback dispatch |
-| M9 | Duplicate steps appended by concurrent `recomputeOrder` | Lock entire version-check-and-update |
-| C6 | Panic recovery sending on closed channel | Recover before `wg.Done()` |
-| C7 | Silent node loss with conditional edges | `hasAnySatisfiedEdge` check |
+If you see things differently, I'd love to hear it. I'm genuinely curious how others approach these problems.
+
+### 10.1 One workflow engine or two?
+
+Here's a problem I've been wrestling with.
+
+I started out wanting to build one universal workflow engine — one solution for everything. But as I got deeper into it, I realized that workflow usage patterns are fundamentally different. Some people want to write a few lines of YAML and be done with a flow. Others need precise programmatic control over every step. Try to serve both with a single abstraction, and you end up satisfying neither.
+
+So I split it into two: a config-driven Workflow Engine (YAML/JSON) and a code-driven Graph System (Fluent Builder). Each does one thing well.
+
+The cost is obvious: two codebases, two docs, two learning curves. And I'm just one person — I have to write and maintain both. Sometimes I wonder: if I'd picked one path from the start, would I have saved half the effort? I still don't have a clear answer to that.
+
+### 10.2 Static topology or let it evolve?
+
+In most workflow systems, topology is set in stone at definition time. If a step fails, the whole thing rolls back or retries. Simple, predictable.
+
+But in LLM Agent scenarios, the workflow path is fundamentally unknowable at definition time — the model's output determines what happens next, and model outputs are inherently dynamic. Working with static topology in this context means pre-drawing every possible path, which is basically a giant state machine. More work than just writing the code.
+
+So I built MutableDAG — the topology can change during execution. Add nodes, replace nodes, attach Recovery Handlers, all without stopping the workflow.
+
+The catch: you can no longer assume the DAG is immutable. Every operation needs concurrency safety, cycle detection, version locks. ReplaceNode's three-color DFS looks elegant in a textbook, but in practice it only catches what the graph structure can express. If your application logic misses an edge, no graph algorithm will save you. It's a reliable primitive, not a safety net.
+
+### 10.3 Do you always need to retry everything?
+
+Most workflow systems handle failure by retrying the whole thing. Maybe with exponential backoff, maybe you tweak the retry count.
+
+I've never been comfortable with this. An LLM call returns malformed JSON — why roll back the entire Workflow? Why not just swap in a different model and retry that one node?
+
+I borrowed this idea from operating systems, not workflow systems. In a microkernel, when a service crashes, you restart that service, not the whole kernel. Same logic should apply here.
+
+So I built node-level RecoveryReplaceNode: replace only the failed node, preserve everything else. I even tried piping the failed node's context through distillation and injecting the result into the replacement node as structured experience.
+
+That said, I'm not confident this is production-ready yet. It needs full execution context tracking — which nodes ran, what they output, who they depended on. The recovery strategy engine is v0.1 (the 5-round cap was a gut feel number). The distillation pipeline is basic: push errors into EventSink, hope something useful comes out. The direction feels right, but the engineering has catching up to do.
+
+### 10.4 What does it mean to wait for a human?
+
+The typical approach to Human-in-the-Loop is: pause the workflow, wait for human input, resume. The human is a synchronous blocking gate in the pipeline.
+
+I've been thinking about whether HITL can just be a regular node on the workflow graph. It pauses execution, waits for an async event (someone types something), then continues downstream. The scheduler is never blocked, no goroutine is held, no resources consumed while waiting.
+
+This naturally supports "go do other things while waiting for someone to respond." The downside: no approval chains, no timeout auto-escalation, no multi-person decision-making. These are table stakes for production HITL, and I don't have them yet.
+
+I'm OK with this tradeoff for now — at least HITL doesn't become a system bottleneck. But if your use case needs complex approval workflows, this probably isn't enough.
+
+### 10.5 Do you need to restart for a config change?
+
+The standard playbook: change config → send signal → restart process. Simple, reliable, but your service goes down.
+
+I went with runtime hot reload instead — atomic swap of the entire Workflow map on file change, no restart, no dropped requests. The implementation is straightforward: fsnotify watcher, compare-and-swap under lock, deep-copy callbacks.
+
+What caught me off guard was the cross-platform gap. inotify (Linux) and kqueue (macOS) don't behave the same way. On macOS, some file events simply never fire. I ended up adding a polling fallback (5-second interval) to guarantee availability, but it's too slow for some scenarios.
+
+This made me question whether "no restart" was worth the complexity. If your SLA allows a few seconds of downtime, restarting is probably the simpler, better choice. It's not a technical decision — it's an SLA decision.
 
 ---
+
+These are the choices I keep revisiting. I'm writing them down not because I think they're right, but because the thinking process itself might be useful to someone facing similar problems.
+
+If you've dealt with any of these in your own system, I'd love to hear how you handled them. I'm still figuring this out.
 
 ## 11. Default Configuration Constants
 
@@ -768,7 +1028,7 @@ These constants establish a conservative baseline: workflows of up to 100 steps 
 
 ---
 
-## Reflection: Was Doubling the Code Worth It?
+## 12. Summary
 
 Two workflow systems. Double the code. Was it worth it?
 
@@ -776,17 +1036,17 @@ I've asked myself this more than once. But every time I watch an ops person modi
 
 The philosophy fits in one sentence: **Workflow Engine is for people who don't want to write code. Graph System is for people who do.**
 
-- **Workflow Engine**: config-driven, hot-reloadable, HITL, retry-aware. Modify a JSON file to adjust a production workflow.
+- **Workflow Engine**: config-driven, hot-reloadable, HITL, retry-aware, node-level recovery with memory distillation. Modify a JSON file to adjust a production workflow.
 - **Graph System**: Fluent Builder, conditional edges, pluggable schedulers. Compose workflows in Go code.
 
-The concurrency model (errgroup + WaitGroup + semaphore + stepDone channels) and the hot-reload implementation (dual-mode file watching + atomic reload + deep-copy callbacks) are the parts I'm most proud of. The concurrency bugs I fixed along the way taught me a humbling lesson: **writing `go` in front of a function call is not the same as writing correct concurrent code.**
+The concurrency model (errgroup + WaitGroup + semaphore + stepDone channels), the `ReplaceNode` atomic edge migration, and the `RecoveryReplaceNode` fault self-healing mechanism are the parts I'm most proud of.
 
 ### File Reference Index
 
-- Core types: `internal/workflow/engine/types.go`
+- Core types (incl. RecoveryStrategy, StepRecoveryHandler): `internal/workflow/engine/types.go`
 - Executor: `internal/workflow/engine/executor.go`
-- Dynamic Executor: `internal/workflow/engine/dynamic_executor.go`
-- Mutable DAG: `internal/workflow/engine/mutable_dag.go`
+- Dynamic Executor (incl. handleStepFailure): `internal/workflow/engine/dynamic_executor.go`
+- Mutable DAG (incl. ReplaceNode): `internal/workflow/engine/mutable_dag.go`
 - HITL support: `internal/workflow/engine/hitl.go`
 - File loading: `internal/workflow/engine/loader.go`
 - Hot reload: `internal/workflow/engine/reloader.go`

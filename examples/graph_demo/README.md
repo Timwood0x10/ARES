@@ -82,7 +82,89 @@ cd scheduler && go run *.go
 - Performance comparison
 - Flexible scheduling strategies
 
-### 5. Real-World Integration (`integration/`)
+### 6. ReplaceNode — Dynamic Step Replacement (`replace_node/`)
+
+Demonstrates `MutableDAG.ReplaceNode` for atomic in-graph step replacement:
+- Replacing a node with a new ID (edge migration, downstream `DependsOn` update)
+- In-place replacement (same ID, new dependencies added)
+- Cycle safety: `ReplaceNode` simulates the post-replacement graph before mutating
+- Graph events published for each replacement
+
+**Run it:**
+```bash
+cd replace_node && go run replace_node_example.go
+```
+
+**Output:**
+```
+=== Before ReplaceNode ===
+Execution order: [s1 s2 s3]
+=== After ReplaceNode ===
+Execution order: [s1 s2_v2 s3]
+  Step "s1" (name="Fetch Data", dependsOn=[])
+  Step "s2_v2" (name="Transform v2", dependsOn=["s1"])
+  Step "s3" (name="Load", dependsOn=["s2_v2"])
+...
+```
+
+### 7. Node-Level Recovery (`recovery/`)
+
+Shows automated recovery from step failure using `StepRecoveryHandler`:
+- A failing step with a `RecoveryPolicy` (strategy: `replace_node`)
+- Custom `StepRecoveryHandler` that returns a replacement step
+- Recovery events (`EventStepFailed`, `EventStepRecoveryStarted`, `EventStepRecoveryCompleted`)
+- Workflow continues seamlessly after replacement
+
+**Run it:**
+```bash
+cd recovery && go run recovery_example.go
+```
+
+**Output:**
+```
+Recovery triggered for step "s1" (error: step failed)
+Workflow status: completed
+Steps executed: 2
+  Step "s1": status=failed output=""
+  Step "s1_recovery": status=completed output="success: retry_s1"
+  Step "s2": status=completed output="success: process"
+Recovery events: [step.failed step.recovery.started step.recovery.completed]
+```
+
+### 8. GraphEventHub Subscription (`subscribe/`)
+
+Illustrates subscribing to the `GraphEventHub` for real-time graph mutation visibility:
+- Add/remove nodes and edges while an event subscriber prints each change
+- Shows all five event types: `ChangeAddNode`, `ChangeRemoveNode`, `ChangeAddEdge`, `ChangeRemoveEdge`, `ChangeReplaceNode`
+- Non-blocking publish with buffered channels
+
+**Run it:**
+```bash
+cd subscribe && go run subscribe_example.go
+```
+
+**Output (approx):**
+```
+[EVENT] AddNode node="s1" ...
+[EVENT] AddNode node="s2" ...
+[EVENT] AddEdge node="" from="s1" to="s2" ...
+[EVENT] ReplaceNode node="s2_v2" oldNode="s2" ...
+...
+```
+
+### 9. ApplyMode Comparison (`applymode/`)
+
+Compares `ApplyAtCheckpoint` vs `ApplyImmediate` modes in `DynamicExecutor`:
+- `ApplyAtCheckpoint`: DAG mutations are picked up after each step completes
+- `ApplyImmediate`: DAG mutations are picked up before each step starts
+- Both modes handle dynamically added steps during workflow execution
+
+**Run it:**
+```bash
+cd applymode && go run applymode_example.go
+```
+
+### 10. Real-World Integration (`integration/`)
 
 A complete customer support ticket processing system:
 - Ticket validation
