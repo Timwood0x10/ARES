@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"goagentx/internal/errors"
 	"goagentx/internal/storage/postgres/embedding"
@@ -81,13 +82,8 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 		return s.searchPrecision(ctx, tenantID, query), nil
 	}
 
-	// Generate embedding for the query with optional prefix
-	fullQuery := query
-	if s.config.QueryPrefix != "" {
-		fullQuery = s.config.QueryPrefix + query
-	}
-
-	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, fullQuery, s.config.QueryPrefix)
+	// Generate embedding for the query with prefix handled by EmbedWithPrefix
+	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
 	if err != nil {
 		slog.Error("Failed to embed query", "error", err)
 		return nil, errors.Wrap(err, "embed query")
@@ -144,16 +140,19 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 // isPrecisionMode determines if precision mode should be used for the query.
 // Precision mode is triggered for:
 // - Short queries (≤10 characters)
-// - Queries containing special symbols (=+-*/:)
+// - Queries containing special symbols (= or mathematical expressions)
 // This uses deterministic matching to cover semantic retrieval for precise queries.
 func (s *SimpleRetrievalService) isPrecisionMode(query string) bool {
 	// Short queries use exact/keyword matching for precision
-	if len(query) <= 10 {
+	if utf8.RuneCountInString(query) <= 10 {
 		return true
 	}
 
 	// Core expression patterns: containing equals sign or mathematical operators
-	if strings.ContainsAny(query, "=+-*/") {
+	// Note: - is intentionally excluded to avoid matching hyphens in compound words (e.g., "go-agent")
+	// Note: +, *, / are checked via regex requiring digit adjacency to avoid matching
+	//       programming symbols like "C++", "*args", "**kwargs"
+	if strings.Contains(query, "=") || mathExprPattern.MatchString(query) {
 		return true
 	}
 
@@ -167,8 +166,8 @@ func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, 
 	// 1. Exact Match (highest priority)
 	exact, err := s.searchExact(ctx, tenantID, query)
 	if err != nil {
-		slog.Error("Failed to execute exact match search", "error", err)
-		return []*SimpleSearchResult{}
+		slog.Error("Failed to execute exact match search, falling back to keyword", "error", err)
+		exact = nil
 	}
 	if len(exact) > 0 {
 		slog.Debug("Precision search: exact match found", "count", len(exact))
@@ -178,8 +177,8 @@ func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, 
 	// 2. Keyword Search (second priority)
 	keyword, err := s.searchKeyword(ctx, tenantID, query)
 	if err != nil {
-		slog.Error("Failed to execute keyword search", "error", err)
-		return []*SimpleSearchResult{}
+		slog.Error("Failed to execute keyword search, falling back to vector", "error", err)
+		keyword = nil
 	}
 	if len(keyword) > 0 {
 		slog.Debug("Precision search: keyword match found", "count", len(keyword))
@@ -201,7 +200,7 @@ func (s *SimpleRetrievalService) searchPrecision(ctx context.Context, tenantID, 
 func (s *SimpleRetrievalService) searchExact(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	slog.Debug("Running exact match search", "query", query)
 
-	chunks, err := s.repo.SearchBySubstring(ctx, query, tenantID, 5)
+	chunks, err := s.repo.SearchBySubstring(ctx, query, tenantID, s.config.TopK)
 	if err != nil {
 		slog.Error("Exact match search failed", "error", err)
 		return nil, errors.Wrap(err, "exact match search")
@@ -260,13 +259,8 @@ func (s *SimpleRetrievalService) searchKeyword(ctx context.Context, tenantID, qu
 func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, query string) ([]*SimpleSearchResult, error) {
 	slog.Debug("Running vector search", "query", query)
 
-	// Generate embedding for the query with optional prefix
-	fullQuery := query
-	if s.config.QueryPrefix != "" {
-		fullQuery = s.config.QueryPrefix + query
-	}
-
-	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, fullQuery, s.config.QueryPrefix)
+	// Generate embedding for the query with prefix handled by EmbedWithPrefix
+	queryEmbedding, err := s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
 	if err != nil {
 		slog.Error("Failed to embed query", "error", err)
 		return nil, errors.Wrap(err, "embed query")
@@ -289,6 +283,11 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 			if similarity, ok := chunk.Metadata["similarity"].(float64); ok {
 				score = similarity
 			}
+		}
+
+		// Apply min_score filter, consistent with normal Search path behavior
+		if score < s.config.MinScore {
+			continue
 		}
 
 		results = append(results, &SimpleSearchResult{

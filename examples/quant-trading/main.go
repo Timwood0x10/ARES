@@ -31,12 +31,15 @@ import (
 	"goagentx/api"
 	"goagentx/api/marketmaking"
 	"goagentx/examples/quant-trading/agents"
+	"goagentx/internal/llm"
 	"goagentx/internal/quant"
 	"goagentx/internal/quant/dataflow"
 	"goagentx/internal/quant/market"
 	"goagentx/internal/quant/research"
 	researchagents "goagentx/internal/quant/research/agents"
 	"goagentx/internal/tools/resources/core"
+
+	"gopkg.in/yaml.v3"
 )
 
 type AnalysisResult struct {
@@ -421,10 +424,14 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 		return fmt.Errorf("build research graph: %w", err)
 	}
 
-	// Wire mock executor and execute via shared pipeline.
-	mockExec := researchagents.NewMockLLMExecutor()
-	setupMockResponses(mockExec, ticker)
-	wireGraphHandlers(graph, mockExec, ticker)
+	// Create LLM executor: use real LLM if config available, fallback to mock.
+	llmExec, err := newLLMExecutor("./examples/quant-trading/config.yml")
+	if err != nil {
+		log("  ⚠️ LLM executor init failed (using mock): %v", err)
+		llmExec = researchagents.NewMockLLMExecutor()
+		setupMockResponses(llmExec.(*researchagents.MockLLMExecutor), ticker)
+	}
+	wireGraphHandlers(graph, llmExec, ticker)
 
 	// Load historical memory context for the Portfolio Manager prompt.
 	memStore, memErr := research.EnsureMemoryStore("")
@@ -833,8 +840,8 @@ func setupMockResponses(exec *researchagents.MockLLMExecutor, ticker string) {
 }`)
 }
 
-// wireGraphHandlers connects mock executor responses to each graph node.
-func wireGraphHandlers(graph *research.ResearchGraph, exec *researchagents.MockLLMExecutor, ticker string) {
+// wireGraphHandlers attaches handler functions to all nodes in the graph.
+func wireGraphHandlers(graph *research.ResearchGraph, exec researchagents.LLMExecutor, ticker string) {
 	for _, nodeID := range graph.Order() {
 		node := graph.Nodes()[nodeID]
 		if node == nil {
@@ -844,10 +851,47 @@ func wireGraphHandlers(graph *research.ResearchGraph, exec *researchagents.MockL
 	}
 }
 
+// buildNodePrompt selects the appropriate prompt for a graph node using
+// the real prompts from prompt_builder.go. Falls back to a simple
+// "Analyze {ticker}" prompt if no specific builder exists.
+func buildNodePrompt(nodeID string, state *research.ResearchState, ticker string) string {
+	switch nodeID {
+	case "market_analyst":
+		return researchagents.BuildMarketAnalystPrompt(state)
+	case "sentiment_analyst":
+		return researchagents.BuildSentimentAnalystPrompt(state)
+	case "news_analyst":
+		return researchagents.BuildNewsAnalystPrompt(state)
+	case "fundamentals_analyst":
+		return researchagents.BuildFundamentalsAnalystPrompt(state)
+	case "bull_researcher":
+		return researchagents.BuildBullResearcherPrompt(state)
+	case "bear_researcher":
+		return researchagents.BuildBearResearcherPrompt(state)
+	case "research_manager":
+		return researchagents.BuildResearchManagerPrompt(state)
+	case "trader":
+		return researchagents.BuildTraderPrompt(state)
+	case "aggressive_risk":
+		return researchagents.BuildAggressiveRiskPrompt(state)
+	case "conservative_risk":
+		return researchagents.BuildConservativeRiskPrompt(state)
+	case "neutral_risk":
+		return researchagents.BuildNeutralRiskPrompt(state)
+	case "portfolio_manager":
+		return researchagents.BuildPortfolioManagerPrompt(state)
+	default:
+		return fmt.Sprintf("Analyze %s as %s. Output JSON with your analysis.", ticker, nodeID)
+	}
+}
+
 // makeNodeHandler creates a ResearchHandler for a specific graph node.
-func makeNodeHandler(nodeID string, nodeName string, exec *researchagents.MockLLMExecutor, ticker string) research.ResearchHandler {
+// Uses real prompts from prompt_builder.go when the executor is real;
+// falls back to simple mock prompts when using MockLLMExecutor.
+func makeNodeHandler(nodeID string, nodeName string, exec researchagents.LLMExecutor, ticker string) research.ResearchHandler {
 	return func(ctx context.Context, state *research.ResearchState) error {
-		prompt := fmt.Sprintf("%s: Analyze %s", nodeName, ticker)
+		// Build prompt from the real prompt library, using the current state.
+		prompt := buildNodePrompt(nodeID, state, ticker)
 		messages := []researchagents.Message{{Role: "user", Content: prompt}}
 
 		raw, err := exec.Complete(ctx, messages)
@@ -858,4 +902,81 @@ func makeNodeHandler(nodeID string, nodeName string, exec *researchagents.MockLL
 		updateStateFromResponse(state, nodeID, nodeName, raw, ticker)
 		return nil
 	}
+}
+
+// ─── Real LLM Executor ─────────────────────────────────────
+
+// llmConfigFile is a minimal config file reader for the llm section.
+type llmConfigFile struct {
+	LLM struct {
+		Provider string `yaml:"provider"`
+		APIKey   string `yaml:"api_key"`
+		BaseURL  string `yaml:"base_url"`
+		Model    string `yaml:"model"`
+		Timeout  int    `yaml:"timeout"`
+	} `yaml:"llm"`
+}
+
+// llmExecutorAdapter wraps internal/llm.Client to implement researchagents.LLMExecutor.
+type llmExecutorAdapter struct {
+	client *llm.Client
+}
+
+// Complete sends a message to the LLM and returns the text response.
+func (a *llmExecutorAdapter) Complete(ctx context.Context, messages []researchagents.Message) (string, error) {
+	// Join all messages into a single prompt string.
+	var prompt string
+	for _, msg := range messages {
+		if prompt != "" {
+			prompt += "\n"
+		}
+		prompt += msg.Content
+	}
+	return a.client.Generate(ctx, prompt)
+}
+
+// CompleteStructured is not yet supported for real LLM.
+func (a *llmExecutorAdapter) CompleteStructured(ctx context.Context, messages []researchagents.Message, schema any) (any, error) {
+	return nil, fmt.Errorf("structured completion not supported")
+}
+
+// newLLMExecutor creates a real LLM executor from the config file.
+// Returns an error if the config file is missing or invalid.
+func newLLMExecutor(cfgPath string) (researchagents.LLMExecutor, error) {
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %s: %w", cfgPath, err)
+	}
+
+	var cfgFile llmConfigFile
+	if err := yaml.Unmarshal(data, &cfgFile); err != nil {
+		return nil, fmt.Errorf("parse config file: %w", err)
+	}
+
+	provider := cfgFile.LLM.Provider
+	// Map "openai" to "openrouter" — both use the same OpenAI-compatible
+	// chat completions API. The internal llm client only recognizes
+	// "openrouter" and "ollama" as valid providers.
+	if provider == "openai" {
+		provider = "openrouter"
+	}
+
+	llmCfg := &llm.Config{
+		Provider: provider,
+		APIKey:   cfgFile.LLM.APIKey,
+		BaseURL:  cfgFile.LLM.BaseURL,
+		Model:    cfgFile.LLM.Model,
+		Timeout:  cfgFile.LLM.Timeout,
+	}
+
+	if llmCfg.Provider == "" || llmCfg.Model == "" {
+		return nil, fmt.Errorf("incomplete LLM config: provider=%q model=%q", llmCfg.Provider, llmCfg.Model)
+	}
+
+	client, err := llm.NewClient(llmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create LLM client: %w", err)
+	}
+
+	return &llmExecutorAdapter{client: client}, nil
 }

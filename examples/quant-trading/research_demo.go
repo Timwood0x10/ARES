@@ -245,7 +245,7 @@ func setupDemoMockResponses(exec *researchagents.MockLLMExecutor, ticker string)
 //   - graph: research graph to wire handlers onto.
 //   - exec: mock LLM executor.
 //   - ticker: stock symbol for state updates.
-func wireDemoGraphHandlers(graph *research.ResearchGraph, exec *researchagents.MockLLMExecutor, ticker string) {
+func wireDemoGraphHandlers(graph *research.ResearchGraph, exec researchagents.LLMExecutor, ticker string) {
 	for _, nodeID := range graph.Order() {
 		node := graph.Nodes()[nodeID]
 		if node == nil {
@@ -266,7 +266,7 @@ func wireDemoGraphHandlers(graph *research.ResearchGraph, exec *researchagents.M
 //
 // Returns:
 //   - ResearchHandler function for graph execution.
-func makeDemoNodeHandler(nodeID string, nodeName string, exec *researchagents.MockLLMExecutor, ticker string) research.ResearchHandler {
+func makeDemoNodeHandler(nodeID string, nodeName string, exec researchagents.LLMExecutor, ticker string) research.ResearchHandler {
 	return func(ctx context.Context, state *research.ResearchState) error {
 		fmt.Printf("  → [%s] %s ...\n", nodeID, nodeName)
 

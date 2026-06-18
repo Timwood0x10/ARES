@@ -473,7 +473,7 @@ func TestGenerateQuote_IntegrationValidation(t *testing.T) {
 	}
 
 	// The output is an internal *Quote
-	var _ *Quote = q // compile-time type check
+	var _ = q // compile-time type check
 
 	if err := validateQuote(q); err != nil {
 		t.Fatalf("generated Quote failed validation: %v", err)

@@ -1,0 +1,11 @@
+
+
+{
+  "ticker": "AAPL",
+  "score": 7,
+  "trend": "uptrend",
+  "rsi_state": "neutral",
+  "macd_signal": "bullish",
+  "verdict": "bullish",
+  "reasoning": "Price holds above key SMAs (50-day > 200-day), MACD shows recent bullish crossover with expanding histogram, RSI at ~65 indicates momentum without overextension. Market structure confirms higher highs/lows. Caution advised near $200 resistance."
+}

@@ -800,10 +800,12 @@ The `estimateTokens()` heuristic is ±10-20% off for mixed Chinese/English text 
 
 **Takeaway**: Distilled context stays flat at **330-443 tokens** regardless of conversation length. Savings climb from 66% at 10 rounds to **96.4% at 100 rounds** — the longer the conversation, the bigger the win.
 
-At GPT-4o pricing ($2.50/1M input tokens), a 100-round session:
-- Raw: ~9,163 tokens → $0.023/session
-- Distilled: ~326 tokens → $0.001/session
-- Savings: ~$0.022/session. At 100K sessions/day, **$2,200/day saved**.
+At GPT-5.5 pricing ($5.00/1M input tokens), a 100-round session:
+- Raw: ~9,163 tokens → $0.046/session
+- Distilled: ~326 tokens → $0.002/session
+- Savings: ~$0.044/session. At 100K sessions/day, **$4,400/day saved**.
+
+Alternatively, with Claude Opus 4.8 at the same input price ($5.00/1M tokens), the savings are identical — the input cost structure is the same. The real savings difference shows in output tokens (GPT-5.5: $30/1M vs Claude Opus 4.8: $25/1M), but since distillation primarily reduces input context, the input-side economics are what matter here.
 
 ### Scenario 2: Cross-Session Growth (Real-World Use)
 

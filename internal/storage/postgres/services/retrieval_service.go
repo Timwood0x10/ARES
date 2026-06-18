@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -354,10 +355,15 @@ func (s *RetrievalService) validateRequest(req *SearchRequest) error {
 	return nil
 }
 
+// mathExprPattern matches mathematical expressions like "3+5", "a*2", "10/3".
+// Operators are only matched when adjacent to digits to avoid false positives
+// on programming language symbols (C++, *args, **kwargs).
+var mathExprPattern = regexp.MustCompile(`\d+\s*[+*/]\s*\d+`)
+
 // isPrecisionMode determines if precision mode should be used for the query.
 // Precision mode is triggered for:
 // - Short queries (≤10 characters)
-// - Queries containing special symbols (=+-*/:)
+// - Queries containing special symbols (= or mathematical expressions)
 // This uses deterministic matching to cover semantic retrieval for precise queries.
 func (s *RetrievalService) isPrecisionMode(query string) bool {
 	// Short queries use exact/keyword matching for precision
@@ -367,7 +373,10 @@ func (s *RetrievalService) isPrecisionMode(query string) bool {
 	}
 
 	// Core expression patterns: containing equals sign or mathematical operators
-	if strings.ContainsAny(query, "=+-*/:") {
+	// Note: - is intentionally excluded to avoid matching hyphens in compound words (e.g., "go-agent")
+	// Note: +, *, / are checked via regex requiring digit adjacency to avoid matching
+	//       programming symbols like "C++", "*args", "**kwargs"
+	if strings.ContainsAny(query, "=:") || mathExprPattern.MatchString(query) {
 		return true
 	}
 
@@ -419,7 +428,7 @@ func (s *RetrievalService) searchPrecision(ctx context.Context, req *SearchReque
 func (s *RetrievalService) searchExact(ctx context.Context, req *SearchRequest) ([]*SearchResult, error) {
 	s.logger.Debug("Running exact match search", "query", req.Query)
 
-	chunks, err := s.kbRepo.SearchBySubstring(ctx, req.Query, req.TenantID, 5)
+	chunks, err := s.kbRepo.SearchBySubstring(ctx, req.Query, req.TenantID, req.TopK)
 	if err != nil {
 		s.logger.Error("Exact match search failed", "error", err)
 		return nil, errors.Wrap(err, "exact match search")

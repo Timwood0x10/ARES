@@ -14,6 +14,7 @@ import (
 	"goagentx/internal/quant/dataflow"
 	"goagentx/internal/quant/market"
 	"goagentx/internal/quant/research"
+	researchagents "goagentx/internal/quant/research/agents"
 )
 
 // createResearchConfig builds a ResearchConfig from default values.
@@ -50,15 +51,18 @@ func createResearchConfig(_ string) *research.ResearchConfig {
 //   - error if setup fails.
 func setupDataFlow(_ string) (*dataflow.VendorRouter, *dataflow.Validator, error) {
 	routerCfg := &dataflow.RouterConfig{
-		CoreStockAPIs:       []string{"yahoo"},
-		TechnicalIndicators: []string{"yahoo"},
-		Fundamentals:        []string{"yahoo"},
+		CoreStockAPIs:       []string{"coingecko", "yahoo"},
+		TechnicalIndicators: []string{"coingecko", "yahoo"},
+		Fundamentals:        []string{"coingecko", "yahoo"},
 		News:                []string{"yahoo"},
 	}
 	router := dataflow.NewVendorRouter(routerCfg)
 
 	yahooVendor := &yahooVendorAdapter{feed: market.NewYahooFeed()}
 	router.Register(yahooVendor)
+
+	coingeckoVendor := &coingeckoVendorAdapter{feed: market.NewCoinGeckoFeed()}
+	router.Register(coingeckoVendor)
 
 	validator := dataflow.NewValidator(&dataflow.ValidationConfig{
 		MaxStaleDuration:   120 * time.Hour,
@@ -116,6 +120,33 @@ func printResearchReport(state *research.ResearchState, log func(string, ...any)
 	log("")
 }
 
+// ─── Raw LLM Response Structs ──────────────────────────────
+
+// researchPlanRaw matches the Research Manager prompt's output JSON schema.
+type researchPlanRaw struct {
+	Recommendation  string `json:"recommendation"`
+	Rationale       string `json:"rationale"`
+	StrategicAction string `json:"strategic_action"`
+}
+
+// traderProposalRaw matches the Trader prompt's output JSON schema.
+type traderProposalRaw struct {
+	Action         string   `json:"action"`
+	Reasoning      string   `json:"reasoning"`
+	EntryPrice     *float64 `json:"entry_price,omitempty"`
+	StopLoss       *float64 `json:"stop_loss,omitempty"`
+	PositionSizing string   `json:"position_sizing,omitempty"`
+}
+
+// portfolioDecisionRaw matches the Portfolio Manager prompt's output JSON schema.
+type portfolioDecisionRaw struct {
+	Rating           string   `json:"rating"`
+	ExecutiveSummary string   `json:"executive_summary"`
+	InvestmentThesis string   `json:"investment_thesis"`
+	PriceTarget      *float64 `json:"price_target,omitempty"`
+	TimeHorizon      string   `json:"time_horizon,omitempty"`
+}
+
 // updateStateFromResponse parses a raw LLM response string and updates
 // the research state with typed results depending on which node produced it.
 //
@@ -163,24 +194,76 @@ func updateStateFromResponse(state *research.ResearchState, nodeID string, nodeN
 		}
 		state.RiskDebateState.NeutralView = raw
 	case "research_manager":
-		state.ResearchPlan = &research.ResearchPlan{
-			Recommendation:  research.RatingHold,
-			Rationale:       "Balanced analyst views with moderate risk.",
-			StrategicAction: "Maintain position; monitor quarterly results.",
+		parser := researchagents.NewJSONParser[researchPlanRaw]()
+		if parsed, err := parser.Parse(raw); err == nil {
+			rating, _ := research.ParsePortfolioRating(parsed.Recommendation)
+			state.ResearchPlan = &research.ResearchPlan{
+				Recommendation:  rating,
+				Rationale:       parsed.Rationale,
+				StrategicAction: parsed.StrategicAction,
+			}
+		} else {
+			// Fallback: try markdown parser.
+			mdParser := researchagents.NewMarkdownParser()
+			plan, mdErr := mdParser.ParseResearchPlan(raw)
+			if mdErr == nil && plan != nil {
+				state.ResearchPlan = plan
+			} else {
+				state.ResearchPlan = &research.ResearchPlan{
+					Recommendation:  research.RatingHold,
+					Rationale:       "Balanced analyst views with moderate risk.",
+					StrategicAction: "Maintain position; monitor quarterly results.",
+				}
+			}
 		}
 	case "trader":
-		state.TraderProposal = &research.TraderProposal{
-			Action:         "HOLD",
-			Reasoning:      fmt.Sprintf("Research plan for %s indicates hold.", ticker),
-			PositionSizing: "maintain",
+		traderParser := researchagents.NewJSONParser[traderProposalRaw]()
+		if parsed, err := traderParser.Parse(raw); err == nil {
+			var entryPrice, stopLoss *float64
+			if parsed.EntryPrice != nil && *parsed.EntryPrice > 0 {
+				entryPrice = parsed.EntryPrice
+			}
+			if parsed.StopLoss != nil && *parsed.StopLoss > 0 {
+				stopLoss = parsed.StopLoss
+			}
+			state.TraderProposal = &research.TraderProposal{
+				Action:         parsed.Action,
+				Reasoning:      parsed.Reasoning,
+				EntryPrice:     entryPrice,
+				StopLoss:       stopLoss,
+				PositionSizing: parsed.PositionSizing,
+			}
+		} else {
+			// Fallback.
+			state.TraderProposal = &research.TraderProposal{
+				Action:         "HOLD",
+				Reasoning:      fmt.Sprintf("Research plan for %s indicates hold.", ticker),
+				PositionSizing: "maintain",
+			}
 		}
 	case "portfolio_manager":
-		state.PortfolioDecision = &research.PortfolioDecision{
-			Rating:           research.RatingHold,
-			ExecutiveSummary: "Mixed signals favor maintaining current allocation.",
-			InvestmentThesis: "Solid fundamentals offset by premium valuation.",
-			PriceTarget:      func(v float64) *float64 { return &v }(195.0),
-			TimeHorizon:      "6-12 months",
+		pmParser := researchagents.NewJSONParser[portfolioDecisionRaw]()
+		if parsed, err := pmParser.Parse(raw); err == nil {
+			rating, _ := research.ParsePortfolioRating(parsed.Rating)
+			var priceTarget *float64
+			if parsed.PriceTarget != nil && *parsed.PriceTarget > 0 {
+				priceTarget = parsed.PriceTarget
+			}
+			state.PortfolioDecision = &research.PortfolioDecision{
+				Rating:           rating,
+				ExecutiveSummary: parsed.ExecutiveSummary,
+				InvestmentThesis: parsed.InvestmentThesis,
+				PriceTarget:      priceTarget,
+				TimeHorizon:      parsed.TimeHorizon,
+			}
+		} else {
+			state.PortfolioDecision = &research.PortfolioDecision{
+				Rating:           research.RatingHold,
+				ExecutiveSummary: "Mixed signals favor maintaining current allocation.",
+				InvestmentThesis: "Solid fundamentals offset by premium valuation.",
+				PriceTarget:      func(v float64) *float64 { return &v }(195.0),
+				TimeHorizon:      "6-12 months",
+			}
 		}
 	}
 }
@@ -204,6 +287,8 @@ type ReporterFunc func(state *research.ResearchState, log func(string, ...any), 
 //
 // Returns:
 //   - error if graph execution or serialization fails.
+//
+//nolint:unused // used by research_demo.go (researchdemo build tag)
 func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 	state *research.ResearchState, ticker string, outDir string,
 	log func(string, ...any), reporter ReporterFunc) error {
@@ -283,3 +368,34 @@ func (a *yahooVendorAdapter) Quote(ctx context.Context, symbol string) (*market.
 
 // Available reports whether the Yahoo vendor is operational.
 func (a *yahooVendorAdapter) Available() bool { return true }
+
+// coingeckoVendorAdapter wraps market.CoinGeckoFeed to satisfy dataflow.Vendor.
+type coingeckoVendorAdapter struct {
+	feed *market.CoinGeckoFeed
+}
+
+// Name returns the vendor identifier.
+func (a *coingeckoVendorAdapter) Name() string { return "coingecko" }
+
+// Candles fetches historical OHLCV data via CoinGecko feed.
+func (a *coingeckoVendorAdapter) Candles(ctx context.Context, symbol string, days int) ([]market.Candle, error) {
+	end := time.Now()
+	start := end.AddDate(0, 0, -days)
+	ts, err := a.feed.Candles(symbol, start, end, market.Res1d)
+	if err != nil {
+		return nil, err
+	}
+	return ts.Bars, nil
+}
+
+// Quote fetches the latest quote via CoinGecko feed.
+func (a *coingeckoVendorAdapter) Quote(ctx context.Context, symbol string) (*market.Quote, error) {
+	q, err := a.feed.Quote(symbol)
+	if err != nil {
+		return nil, err
+	}
+	return &q, nil
+}
+
+// Available reports whether the CoinGecko vendor is operational.
+func (a *coingeckoVendorAdapter) Available() bool { return true }

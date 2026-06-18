@@ -1,0 +1,25 @@
+
+
+{
+  "ticker": "AAPL",
+  "score": 7,
+  "metrics": {
+    "revenue_growth": "2.8%",
+    "pe_ratio": "29.5",
+    "debt_to_equity": "1.65"
+  },
+  "strengths": [
+    "Dominant ecosystem lock-in (iOS/App Store)",
+    "Services revenue diversification (35%+ of profit)",
+    "Industry-leading gross margins (44%+)",
+    "Massive cash reserves ($160B+)"
+  ],
+  "risks": [
+    "China market dependency (19% revenue)",
+    "Antitrust pressures on App Store",
+    "Hardware innovation slowdown",
+    "Supply chain concentration risks"
+  ],
+  "verdict": "neutral",
+  "reasoning": "Apple maintains exceptional financial stability with fortress balance sheet and recurring revenue streams, but faces structural challenges in growth acceleration. The 2.8% revenue growth reflects mature market saturation, while 29.5x P/E suggests premium valuation already priced in. Debt levels remain manageable given $160B cash position, but regulatory threats to services ecosystem and China exposure create downside risks. Strong moat from ecosystem integration provides defense, but innovation cycles need acceleration to justify current multiples."
+}
