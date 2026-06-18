@@ -18,12 +18,15 @@ const (
 	ChangeAddEdge
 	// ChangeRemoveEdge indicates an edge was removed from the DAG.
 	ChangeRemoveEdge
+	// ChangeReplaceNode indicates a node was replaced (swap migration).
+	ChangeReplaceNode
 )
 
 // GraphChange describes a single mutation to the DAG.
 type GraphChange struct {
 	Type      ChangeType
 	NodeID    string
+	OldNodeID string // populated for ChangeReplaceNode
 	FromID    string
 	ToID      string
 	Step      *Step

@@ -32,9 +32,13 @@ const (
 	EventMemoryDistilled   EventType = "memory.distilled"
 	EventFailoverTriggered EventType = "failover.triggered"
 	EventFailoverCompleted EventType = "failover.completed"
-	EventLLMCall           EventType = "llm.call"
-	EventToolCallStarted   EventType = "tool.call.started"
-	EventToolCallCompleted EventType = "tool.call.completed"
+	EventLLMCall              EventType = "llm.call"
+	EventToolCallStarted      EventType = "tool.call.started"
+	EventToolCallCompleted    EventType = "tool.call.completed"
+	EventStepFailed           EventType = "step.failed"
+	EventStepRecoveryStarted  EventType = "step.recovery.started"
+	EventStepRecoveryCompleted EventType = "step.recovery.completed"
+	EventStepRecoveryFailed   EventType = "step.recovery.failed"
 )
 
 // ReadDirection controls the order in which events are returned.
