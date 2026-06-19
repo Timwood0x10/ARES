@@ -1,0 +1,9 @@
+# Arena Scenario: Analyst Crash During Analysis.
+# Tests: agent resurrection mid-computation.
+name: quant-analyst-crash
+description: "Kill the sentiment analyst mid-analysis, verify resurrection"
+actions:
+  - delay: 3s
+    action:
+      type: kill_agent
+      target_id: "sentiment-analyst"

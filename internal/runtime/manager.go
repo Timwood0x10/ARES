@@ -305,6 +305,9 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 	if err != nil {
 		return err
 	}
+	if newAgent == nil {
+		return fmt.Errorf("recover returned nil agent for %s", agentID)
+	}
 
 	prevRestarts := 0
 	m.mu.Lock()
@@ -465,14 +468,35 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 			m.mu.Unlock()
 		}()
 
-		restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
-		defer restoreCancel()
-
-		if err := m.RestoreAgent(restoreCtx, agentID, factory); err != nil {
+		// Exponential backoff: 1s, 2s, 4s, capped at 30s.
+		backoff := time.Second
+		const maxBackoff = 30 * time.Second
+		const maxAttempts = 5
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
+			err := m.RestoreAgent(restoreCtx, agentID, factory)
+			restoreCancel()
+			if err == nil {
+				return nil
+			}
 			slog.Error("runtime: restore failed",
-				"agent_id", agentID, "error", err,
+				"agent_id", agentID, "attempt", attempt, "error", err,
 			)
+			if attempt < maxAttempts {
+				select {
+				case <-m.gctx.Done():
+					return nil
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
 		}
+		slog.Error("runtime: restore exhausted all retries",
+			"agent_id", agentID, "max_attempts", maxAttempts,
+		)
 		return nil
 	})
 

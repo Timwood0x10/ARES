@@ -20,53 +20,53 @@ agents:
     max_validation_retry: 3     # Maximum retries on validation failure
     enable_cache: true          # Enable result caching
 
-  # User defines Agent数量和类型
-  # Here we define 5 sub-agents, 用户可以自由添加更多
+  # User defines agent count and types
+  # Here we define 5 sub-agents, users can freely add more
   sub:
     - id: "sub-top-1"
       type: "agent_top"
-      category: "上衣"
+      category: "tops"
       max_retries: 3
       timeout: 30
       model: "llama3.2"
 
     - id: "sub-bottom-1"
       type: "agent_bottom"
-      category: "下装"
+      category: "bottoms"
       max_retries: 3
       timeout: 30
       model: "llama3.2"
 
     - id: "sub-shoes-1"
       type: "agent_shoes"
-      category: "鞋子"
+      category: "shoes"
       max_retries: 3
       timeout: 30
       model: "llama3.2"
 
     - id: "sub-head-1"
       type: "agent_head"
-      category: "头部配饰"
+      category: "headwear"
       max_retries: 3
       timeout: 30
       model: "llama3.2"
 
     - id: "sub-accessory-1"
       type: "agent_accessory"
-      category: "配饰"
+      category: "accessories"
       max_retries: 3
       timeout: 30
       model: "llama3.2"
 
-# 用户自定义 Prompt 模板
+# User-defined prompt templates
 prompts:
   # Prompt for extracting user profile from natural language
   profile_extraction: |
-    从以下用户输入中提取穿搭偏好信息：
+     Extract outfit preference information from the following user input:
 
     {{.input}}
 
-    请严格按照以下 JSON Schema 返回，**只返回 JSON，不要其他文字**：
+    Return strictly in the following JSON Schema, **return only JSON, no other text**:
     ```json
     {
       "style": ["casual", "minimalist"],
@@ -79,22 +79,22 @@ prompts:
 
   # Prompt for generating recommendations
   recommendation: |
-    基于以下信息推荐 {{.category}} 类别的服装：
+    Based on the following information, recommend {{.category}} clothing:
 
-    用户风格偏好: {{.style}}
-    场合: {{.occasions}}
-    预算范围: {{.budget}}
+    User style preferences: {{.style}}
+    Occasion: {{.occasions}}
+    Budget range: {{.budget}}
 
-    请严格按照以下 JSON Schema 返回，**只返回 JSON，不要其他文字**：
+    Return strictly in the following JSON Schema, **return only JSON, no other text**:
     ```json
     {
       "items": [
         {
-          "item_id": "商品ID",
-          "name": "商品名称",
-          "category": "类别",
-          "price": 价格,
-          "match_reason": "推荐理由"
+          "item_id": "Item ID",
+          "name": "Product Name",
+          "category": "Category",
+          "price": price,
+          "match_reason": "Recommendation reason"
         }
       ]
     }
@@ -102,18 +102,18 @@ prompts:
 
   # Prompt for style analysis
   style_analysis: |
-    分析以下风格描述，识别关键特征：
+    Analyze the following style description and identify key characteristics:
 
     {{.description}}
 
-    请严格按照以下 JSON Schema 返回，**只返回 JSON，不要其他文字**：
+    Return strictly in the following JSON Schema, **return only JSON, no other text**:
     ```json
     {
-      "primary_style": "主风格",
-      "secondary_styles": ["辅助风格"],
-      "color_palette": ["颜色"],
-      "silhouette_preference": "版型偏好",
-      "key_elements": ["关键元素"]
+      "primary_style": "primary style",
+      "secondary_styles": ["secondary styles"],
+      "color_palette": ["colors"],
+      "silhouette_preference": "silhouette preference",
+      "key_elements": ["key elements"]
     }
     ```
 
@@ -158,5 +158,5 @@ memory:
     storage: "postgres"       # "memory" or "postgres" (requires storage.enabled=true)
     vector_store: false      # Store distilled results in pgvector for cross-session retrieval
     prompt: |                # Custom prompt for distillation
-      请简洁总结以下任务的关键信息，包括：用户需求、偏好、预算范围。
-      只需返回JSON对象：{"user_needs": "...", "preferences": "...", "budget": "..."}
+      Concisely summarize the key information of the following task, including: user needs, preferences, budget range.
+      Return only a JSON object: {"user_needs": "...", "preferences": "...", "budget": "..."}

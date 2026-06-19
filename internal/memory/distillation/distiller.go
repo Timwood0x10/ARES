@@ -12,9 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
+	memembed "goagentx/internal/memory/embedding"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 	"goagentx/internal/storage/postgres/embedding"
 )
 
@@ -128,9 +131,15 @@ type Distiller struct {
 	resolver    *ConflictResolver
 	noiseFilter *NoiseFilter
 	embedder    embedding.EmbeddingService
+	pipeline    memembed.EmbeddingPipeline
 	repo        ExperienceRepository
 	metrics     atomicMetrics  // Thread-safe atomic counters
 	distillWg   sync.WaitGroup // Tracks event subscription goroutines
+
+	// OnTaskCompleted is called when a task completion event is received.
+	// If set, the distiller invokes it with the task ID from the event payload.
+	// The handler should trigger the full distillation pipeline for the task.
+	OnTaskCompleted func(ctx context.Context, taskID string)
 }
 
 // NewDistiller creates a new Distiller instance.
@@ -168,6 +177,13 @@ func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingServic
 		repo:        repo,
 		metrics:     atomicMetrics{},
 	}
+}
+
+// SetEmbeddingPipeline configures the unified embedding pipeline for conflict detection.
+// When set, DistillConversation uses the pipeline with canonical spec builders
+// instead of calling the raw embedder directly.
+func (d *Distiller) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	d.pipeline = pipeline
 }
 
 // DistillConversation distills memories from a conversation.
@@ -270,6 +286,10 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 		}
 
 		// Create memory with UUID
+		// Extract causal evidence (tool observations) from the raw messages.
+		// Locate the turn by the user message's TurnID, not by text matching.
+		evidence := extractEvidenceFromMessages(messages, extractTurnID(messages, problem))
+
 		memory := Memory{
 			ID:         uuid.New().String(),
 			Type:       memoryType,
@@ -285,6 +305,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 				"extraction_method": string(exp.ExtractionMethod),
 				"problem":           problem,
 				"solution":          solution,
+				"evidence":          evidence,
 				"tenant_id":         tenantID,
 				"user_id":           userID,
 			},
@@ -295,7 +316,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			"experience_index", idx,
 			"memory_type", memoryType.String(),
 			"importance_score", score,
-			"content_preview", truncateString(memory.Content, 50))
+			"content_preview", truncpkg.WithEllipsis(memory.Content, 50))
 
 		memories = append(memories, memory)
 	}
@@ -351,48 +372,73 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 	slog.InfoContext(ctx, "[Memory Distillation] Generating embeddings and detecting conflicts",
 		"conversation_id", conversationID,
 		"memory_count", len(memories))
-	var finalMemories []Memory
-	for idx, memory := range memories {
-		// Generate embedding for conflict detection and retrieval
-		// Use "problem → solution" format for better retrieval
-		embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
-		slog.DebugContext(ctx, "[Memory Distillation] Generating embedding",
-			"conversation_id", conversationID,
-			"memory_index", idx,
-			"memory_type", memory.Type.String(),
-			"embedding_text", truncateString(embeddingText, 100))
 
-		embedding, err := d.embedder.EmbedWithPrefix(ctx, embeddingText, "memory:")
-		if err != nil {
-			slog.WarnContext(ctx, "[Memory Distillation] ERROR Failed to generate embedding for memory",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"memory_type", memory.Type.String(),
-				"error", err.Error(),
-				"action", "skipping this memory")
+	// Phase 4a: Embed all memories concurrently using errgroup.
+	type memWithEmbedding struct {
+		mem   Memory
+		valid bool
+	}
+	embedded := make([]memWithEmbedding, len(memories))
+	g, embedCtx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for idx := range memories {
+		idx := idx
+		g.Go(func() error {
+			memory := memories[idx]
+			var embedding []float64
+			var err error
+			if d.pipeline != nil {
+				problem, _ := memory.Metadata["problem"].(string)
+				solution, _ := memory.Metadata["solution"].(string)
+				spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+					MemoryType: memory.Type.String(),
+					Problem:    problem,
+					Solution:   solution,
+				})
+				if specErr != nil {
+					slog.WarnContext(embedCtx, "[Memory Distillation] Failed to build embedding spec",
+						"conversation_id", conversationID, "memory_index", idx, "error", specErr)
+					embedded[idx] = memWithEmbedding{valid: false}
+					return nil
+				}
+				embedding, err = d.pipeline.Embed(embedCtx, spec)
+			} else {
+				embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+				embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
+			}
+			if err != nil {
+				slog.WarnContext(embedCtx, "[Memory Distillation] Failed to generate embedding",
+					"conversation_id", conversationID, "memory_index", idx, "error", err)
+				embedded[idx] = memWithEmbedding{valid: false}
+				return nil
+			}
+			memory.Vector = embedding
+			embedded[idx] = memWithEmbedding{mem: memory, valid: true}
+			slog.InfoContext(embedCtx, "[Memory Distillation] Embedding generated",
+				"conversation_id", conversationID, "memory_index", idx,
+				"memory_type", memory.Type.String(), "dimensions", len(embedding))
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		slog.ErrorContext(ctx, "[Memory Distillation] Embedding phase failed", "error", err)
+	}
+
+	// Phase 4b: Conflict detection and resolution (sequential).
+	var finalMemories []Memory
+	for idx, ew := range embedded {
+		if !ew.valid {
 			continue
 		}
-		memory.Vector = embedding
+		memory := ew.mem
 
-		slog.InfoContext(ctx, "[Memory Distillation] Embedding generated successfully",
-			"conversation_id", conversationID,
-			"memory_index", idx,
-			"memory_type", memory.Type.String(),
-			"vector_dimensions", len(embedding),
-			"importance_score", memory.Importance)
-
-		// Detect conflicts with existing memories
-		// Extract problem and solution with type assertion and error handling
 		problem, problemOk := memory.Metadata["problem"].(string)
 		if !problemOk {
-			slog.WarnContext(ctx, "[Memory Distillation] Problem metadata is not a string", "conversation_id", conversationID)
-			problem = "" // Use empty string as fallback
+			problem = ""
 		}
-
 		solution, solutionOk := memory.Metadata["solution"].(string)
 		if !solutionOk {
-			slog.WarnContext(ctx, "[Memory Distillation] Solution metadata is not a string", "conversation_id", conversationID)
-			solution = "" // Use empty string as fallback
+			solution = ""
 		}
 
 		exp := &Experience{
@@ -401,41 +447,22 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			Confidence: memory.Importance,
 		}
 
-		slog.DebugContext(ctx, "[Memory Distillation] Detecting conflicts",
-			"conversation_id", conversationID,
-			"memory_index", idx)
-
 		conflict, err := d.resolver.DetectConflict(ctx, memory.Vector, tenantID)
 		if err != nil {
-			slog.WarnContext(ctx, "[Memory Distillation] WARNING Failed to detect memory conflicts",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"error", err.Error(),
-				"action", "proceeding without conflict check")
+			slog.WarnContext(ctx, "[Memory Distillation] Failed to detect conflicts",
+				"conversation_id", conversationID, "memory_index", idx, "error", err)
 		}
 		if conflict != nil {
-			// Resolve conflict based on confidence/importance
 			strategy := d.resolver.ResolveConflict(exp, conflict)
-			slog.InfoContext(ctx, "[Memory Distillation] Memory conflict detected and resolved",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"strategy", string(strategy),
-				"new_confidence", exp.Confidence,
-				"old_confidence", conflict.Confidence,
-				"conflict_content", truncateString(conflict.Problem, 50))
+			slog.InfoContext(ctx, "[Memory Distillation] Conflict resolved",
+				"conversation_id", conversationID, "memory_index", idx,
+				"strategy", string(strategy))
 			d.metrics.ConflictResolved.Add(1)
 
-			// Apply the resolution strategy
 			switch strategy {
 			case ReplaceOld:
-				// Replace the old memory with the new one
 				finalMemories = append(finalMemories, memory)
-				slog.DebugContext(ctx, "[Memory Distillation] Replaced old memory with new one",
-					"conversation_id", conversationID,
-					"memory_index", idx)
 			case KeepBoth:
-				// Keep both memories - add the old one back and then the new one
-				// Convert the conflicting experience back to memory format
 				oldMemory := Memory{
 					ID:         uuid.New().String(),
 					Content:    conflict.Problem,
@@ -447,11 +474,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 				}
 				finalMemories = append(finalMemories, oldMemory)
 				finalMemories = append(finalMemories, memory)
-				slog.DebugContext(ctx, "[Memory Distillation] Kept both old and new memories",
-					"conversation_id", conversationID,
-					"memory_index", idx)
 			default:
-				// Fallback to keeping the new memory
 				finalMemories = append(finalMemories, memory)
 				slog.WarnContext(ctx, "[Memory Distillation] WARNING Unknown resolution strategy, defaulting to keep new memory",
 					"conversation_id", conversationID,
@@ -639,26 +662,17 @@ func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
 			"role", event.Payload["role"],
 		)
 	case events.EventTaskCompleted:
+		taskID, _ := event.Payload["task_id"].(string)
 		slog.Debug("distiller received task completion",
 			"stream_id", event.StreamID,
-			"task_id", event.Payload["task_id"],
+			"task_id", taskID,
 		)
-		// TODO: trigger distillation from event payload (expected by 2026-07-01)
+		if taskID != "" && d.OnTaskCompleted != nil {
+			d.OnTaskCompleted(ctx, taskID)
+		}
 	default:
 		slog.Debug("distiller ignoring event type", "type", event.Type)
 	}
-}
-
-// truncateString truncates a string to the specified maximum length.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
 }
 
 // formatImportanceScores formats importance scores for logging.
@@ -683,4 +697,62 @@ func formatMemoryTypes(memories []Memory) string {
 		types[i] = string(mem.Type)
 	}
 	return fmt.Sprintf("%v", types)
+}
+
+// extractTurnID finds the TurnID of the user message that matches the given problem text.
+// This is a lightweight lookup that avoids text matching on every message.
+func extractTurnID(messages []Message, problem string) string {
+	problemTrunc := truncpkg.Plain(problem, 50)
+	for _, msg := range messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, problemTrunc) {
+			return msg.TurnID
+		}
+	}
+	return ""
+}
+
+// extractEvidenceFromMessages collects tool observation evidence from messages
+// belonging to the given turn. Uses TurnID for precise structured association
+// (not content text matching, which is fragile with truncated/duplicated text).
+// Tool result content comes from cleaner-generated summaries, not raw regexp extraction.
+func extractEvidenceFromMessages(messages []Message, turnID string) []string {
+	if turnID == "" || len(messages) == 0 {
+		return nil
+	}
+
+	var evidence []string
+	for _, msg := range messages {
+		if msg.TurnID != turnID {
+			continue
+		}
+		switch msg.Role {
+		case "tool_call":
+			for _, tc := range msg.ToolCalls {
+				if fn, ok := tc["function"].(map[string]interface{}); ok {
+					if name, ok := fn["name"].(string); ok {
+						id, _ := tc["id"].(string)
+						if id != "" {
+							evidence = append(evidence, fmt.Sprintf("Action %s: %s", id, name))
+						} else {
+							evidence = append(evidence, fmt.Sprintf("Action: %s", name))
+						}
+					}
+				}
+			}
+		case "tool_result":
+			if msg.Content != "" {
+				// Content is already a cleaner-generated summary (from buildCleanedDistillationMessages),
+				// not raw tool output. Truncate length only, no regexp extraction needed.
+				if len(msg.Content) > 120 {
+					evidence = append(evidence, fmt.Sprintf("Observed: %s...", msg.Content[:120]))
+				} else {
+					evidence = append(evidence, fmt.Sprintf("Observed: %s", msg.Content))
+				}
+			}
+		}
+	}
+	if len(evidence) == 0 {
+		return nil
+	}
+	return evidence
 }

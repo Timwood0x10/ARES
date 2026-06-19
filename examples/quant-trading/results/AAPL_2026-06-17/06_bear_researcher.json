@@ -1,0 +1,15 @@
+
+{
+  "ticker": "AAPL",
+  "score": 3,
+  "thesis": "Apple faces a convergence of structural headwinds: premium valuation (29.5x P/E) unsupported by growth (2.8% revenue), escalating regulatory threats to its services moat (35%+ of profit), and intensifying China exposure (19% revenue) amid Huawei resurgence and geopolitical tensions. The innovation cycle appears incremental rather than transformative, limiting catalyst potential while antitrust litigation could fundamentally restructure the App Store economics.",
+  "arguments": [
+    "Valuation disconnect: 29.5x P/E with only 2.8% revenue growth signals overextension; historical precedent shows mature tech companies at this multiple with sub-3% growth typically correct 20-30% when growth disappoints",
+    "Regulatory existential threat: DOJ antitrust lawsuit targets the core services ecosystem (App Store) that generates 35%+ of profits; adverse ruling could force structural changes reducing services margins by 15-25%",
+    "China vulnerability: 19% revenue dependency on China with Huawei resurgence eroding market share; geopolitical escalation could trigger sudden revenue shock of $25-40B annually",
+    "Innovation stagnation: Hardware cycles perceived as incremental; Apple Intelligence execution risk remains unproven; Vision Pro adoption uncertain at premium pricing",
+    "Technical resistance: Price approaching $200 resistance level with RSI at 65 (approaching overbought); failure to break through could trigger technical selling pressure"
+  ],
+  "target": "$165",
+  "confidence": 0.65
+}

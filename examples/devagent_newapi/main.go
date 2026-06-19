@@ -725,9 +725,9 @@ func generateAuditDocument(ctx context.Context, result *engine.WorkflowResult, c
 	docBuilder.WriteString("- Includes comprehensive tests\n\n")
 
 	docBuilder.WriteString("##### Areas for Review\n\n")
-	docBuilder.WriteString("- TODO: Add performance benchmarks\n")
-	docBuilder.WriteString("- TODO: Add integration tests\n")
-	docBuilder.WriteString("- TODO: Review and optimize memory usage\n\n")
+	docBuilder.WriteString("- Performance benchmarks: use `go test -bench=. ./...` to measure latency and throughput\n")
+	docBuilder.WriteString("- Integration tests: see `goagentx/test/integration/` for end-to-end workflow tests\n")
+	docBuilder.WriteString("- Memory usage: profile with `go test -memprofile=mem.out -bench=BenchmarkDistillation`\n\n")
 
 	docBuilder.WriteString("### Security Assessment\n\n")
 	docBuilder.WriteString("#### Potential Security Considerations\n\n")

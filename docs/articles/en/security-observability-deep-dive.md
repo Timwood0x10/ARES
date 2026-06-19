@@ -1,67 +1,42 @@
-# GoAgentX Architecture Deep Dive (6): Security & Observability — Defense in Depth and Transparent Tracing
+# GoAgentX Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
 
-> In production-grade Agent systems, security and observability are two sides of the same coin. The security module prevents sensitive information leakage, the observability module records every call's full trace, the rate limiter ensures the system isn't overwhelmed by burst traffic, and the graceful shutdown module guarantees clean process exit without orphaned resources.
+> The more powerful an Agent gets, the more damage it can do. You give your Agent a code executor, file read/write, network requests — and then it gets tricked by a prompt injection...
+> I kept asking myself one question while designing the tool system: **How do I prevent sensitive information from leaking when the Agent outputs?**
+> The answer: Don't wait until the leak happens to deal with it. Start sanitizing from the very first step of log output.
 
 ---
 
 ## 1. Why Security Can't Be an Afterthought
 
-Giving an agent tools is like giving a teenager car keys — they can go anywhere, but there's no guarantee they won't crash.
+Giving an Agent tools is like handing a teenager the car keys — they can go anywhere, but you can't guarantee they won't get into trouble.
 
-I've seen too many AI projects fail in production because of basic security lapses: agents printing API keys in logs, prompts leaking database credentials, LLM responses exposing phone numbers. These aren't "we'll fix it later" problems — compliance audit teams will hunt you down.
+I've seen too many AI projects crash and burn after going live: an Agent printing the user's API Key in a log, a prompt accidentally carrying a database password, an LLM response leaking a phone number... Once these problems happen, a simple "be more careful next time" won't cut it — compliance audits will be on your tail.
 
-So when I designed GoAgentX's infrastructure, I treated security and observability as first-class concerns from day one. Not "build features, add security later" — **security is in the foundation**.
+So when I designed GoAgentX's infrastructure, I considered security and observability together. Not "build features first, then add security", but **design them into the system from day one**.
 
-This article covers four infrastructure modules: **Security (Sanitizer)**, **Observability (Tracer)**, **Rate Limiting**, and **Graceful Shutdown**. They're not the flashiest part of the framework. But without them, running agents in production is like deploying without a seatbelt.
+This article covers four modules: **Security (Sanitization)**, **Observability (Tracing)**, **Rate Limiting**, and **Graceful Shutdown**. They don't directly face the user, but without them, putting your Agent into production is like running naked.
 
-```mermaid
-graph TB
-    subgraph "Infrastructure Layer"
-        S[Security\nSanitizer]
-        O[Observability\nTracer]
-        R[Rate Limiter]
-        G[Graceful\nShutdown]
-    end
+Core file list:
 
-    subgraph "Execution Layer"
-        GE[Graph Engine]
-        LC[LLM Client]
-    end
-
-    subgraph "API Layer"
-        D[Dashboard API]
-        A[Arena HTTP]
-    end
-
-    GE --> S
-    GE --> O
-    GE --> R
-    LC --> O
-    D --> G
-    A --> G
-```
-
-Core files:
-
-| Module | Path |
-|--------|------|
+| Module | File Path |
+|------|----------|
 | Security (Sanitizer) | `internal/security/sanitizer.go` |
 | Observability (Tracer) | `internal/observability/tracer.go`, `noop.go`, `log.go` |
-| Rate Limiting | `internal/ratelimit/` (4 source files) |
-| Graceful Shutdown | `internal/shutdown/` (4 source files) |
-| Middleware | `internal/dashboard/api.go`, `internal/arena/http.go` |
-| E2E Integration | `internal/workflow/graph/graph.go`, `.../executor.go` |
-| API Layer | `api/service/graph/service.go` |
+| Rate Limiting (Limiter) | `internal/ratelimit/` (four source files) |
+| Graceful Shutdown | `internal/shutdown/` (four source files) |
+| Middleware Pattern | `internal/dashboard/api.go`, `internal/arena/http.go` |
+| End-to-End Integration | `internal/workflow/graph/graph.go`, `.../executor.go` |
+| API Layer Integration | `api/service/graph/service.go` |
 
 ---
 
-## 2. Security Module: Regex-Based Sensitive Data Sanitization
+## 2. Security Module: Regex-Based Sensitive Information Sanitization
 
-The core design philosophy is **"field-type + regex detection → targeted masking strategy"**, not simple global string replacement. It provides two layers of defense.
+The core design philosophy of the security module is **"field type + regex detection → targeted sanitization strategy"**, rather than simple global string replacement. It provides two layers of defense:
 
-### 2.1 SensitiveFieldType — String Constants Instead of iota
+### 2.1 SensitiveFieldType — Using String Constants Instead of iota for Type Identification
 
-Unlike common iota-based enums, GoAgentX uses string constants for sensitive field types:
+Unlike common iota enumerations, GoAgentX uses string constants to define sensitive field types:
 
 ```go
 const (
@@ -74,15 +49,15 @@ const (
 )
 ```
 
-String constants are natively serializable (usable in JSON/YAML config) and enable runtime type identification via reflection or string matching.
+The advantage of this design: string constants are naturally serializable (can be directly referenced in JSON/YAML configs), and they make it easy to dynamically identify field types at runtime through reflection or string matching.
 
 ### 2.2 Two-Layer Detection Mechanism
 
-The Sanitizer's workflow operates in two layers:
+The Sanitizer workflow operates in two layers:
 
-**Layer 1: Field-name matching.** For structured JSON input (LLM requests/responses), the Sanitizer traverses field names and maps them to `SensitiveFieldType` via `getFieldType()`. A field name containing "key" or "token" is classified as APIKey.
+**Layer One: Match by field name.** For structured JSON input (e.g., LLM requests/responses), the Sanitizer iterates over field names, mapping them to `SensitiveFieldType` via the `getFieldType()` method. For instance, if a field name contains "key" or "token", it's classified as APIKey.
 
-**Layer 2: Regex matching.** For unstructured text or scenarios JSON cannot cover, the Sanitizer maintains a set of pre-compiled regex patterns to scan text content:
+**Layer Two: Match by regex.** For unstructured text or scenarios JSON cannot cover, the Sanitizer maintains a set of precompiled regex patterns that scan the text content comprehensively:
 
 ```go
 type Sanitizer struct {
@@ -95,7 +70,7 @@ type sanitizePattern struct {
 }
 ```
 
-Each sensitive type has a different masking strategy:
+Each sensitive type corresponds to a different masking strategy. Take the critical `maskAPIKey` as an example:
 
 ```go
 func (s *Sanitizer) maskAPIKey(input string) string {
@@ -106,30 +81,17 @@ func (s *Sanitizer) maskAPIKey(input string) string {
 }
 ```
 
-This "keep first 4 + last 4 characters, mask middle" strategy preserves format features for debugging while hiding the actual secret.
-
-```mermaid
-graph LR
-    A[Raw Input] --> B{Field-name\nmatch?}
-    B -->|Yes| C[Apply field-type\nmask strategy]
-    B -->|No| D{Regex\nmatch?}
-    D -->|Yes| C
-    D -->|No| E[Pass through\nunmodified]
-    C --> F[Masked Output]
-    E --> F
-```
+This strategy of "keeping the first and last 4 characters, replacing the middle with `*`" both conceals the sensitive content and preserves the format characteristics of the API Key, making it easier to distinguish different keys during debugging.
 
 Other masking strategies:
 
-| Type | Strategy | Example |
-|------|----------|---------|
-| **Password** | Full replacement | `********` |
-| **Email** | Keep domain, mask username | `j***@example.com` |
-| **Phone** | Keep prefix 3 + suffix 4 | `138****5678` |
-| **CreditCard** | Keep last 4 digits | `**** **** **** 1234` |
-| **SSN** | Keep last 4 digits | `***-**-1234` |
+- **Password**: Fully replaced with `*`
+- **Email**: Preserves the domain (after `@`), with the username part showing 1 character at each end + `***`
+- **Phone**: Preserves the first 3 and last 4 digits, replacing the middle with `****`
+- **CreditCard**: Preserves the last 4 digits
+- **SSN**: Preserves the last 4 digits
 
-### 2.3 SafeLogger — Secure Log Wrapper
+### 2.3 SafeLogger — A Safe Log Wrapper
 
 `SafeLogger` is an elegant application-layer wrapper around Sanitizer:
 
@@ -140,7 +102,7 @@ type SafeLogger struct {
 }
 ```
 
-It wraps any `func(string)` log function into an auto-sanitized version — all log output is automatically processed by the Sanitizer before being written. This design allows the security module to transparently embed into existing logging systems without modifying log consumer code.
+It wraps any `func(string)` logging function into an auto-sanitizing version, where all log output is automatically processed by the Sanitizer before being written. This design allows the security module to transparently integrate into existing logging systems without modifying log consumer code.
 
 ### 2.4 Package-Level Convenience Function
 
@@ -151,39 +113,15 @@ func SanitizeLog(logger func(string), message string) {
 }
 ```
 
-`SanitizeLog()` provides an "out-of-the-box" one-shot sanitization function for scripts or simple scenarios, eliminating the need to construct a Sanitizer instance in advance.
+`SanitizeLog()` is an "out-of-the-box" one-click sanitization function, suitable for scripts or simple scenarios where you don't need to construct a Sanitizer instance in advance.
 
 ---
 
-## 3. Observability Module: Tracer Interface with Two Implementations
+## 3. Observability Module: Tracer Interface and Two Implementations
 
-GoAgentX's observability uses the classic **Observer pattern**: an abstract `Tracer` interface with `NoopTracer` and `LogTracer` implementations.
+GoAgentX's observability follows the classic **Observer Pattern**: defining an abstract `Tracer` interface with two implementations: `NoopTracer` and `LogTracer`.
 
-```mermaid
-classDiagram
-    class Tracer {
-        <<interface>>
-        +RecordLLMCall(ctx, call)
-        +RecordToolCall(ctx, call)
-        +RecordAgentStep(ctx, step)
-        +RecordError(ctx, err)
-        +GetTraceID(ctx) string
-        +WithTrace(ctx) context.Context
-    }
-
-    class NoopTracer {
-        +generateTraceID() string
-    }
-
-    class LogTracer {
-        -logger *slog.Logger
-    }
-
-    Tracer <|-- NoopTracer
-    Tracer <|-- LogTracer
-```
-
-### 3.1 Tracer Interface
+### 3.1 Tracer Interface Definition
 
 ```go
 type Tracer interface {
@@ -197,12 +135,12 @@ type Tracer interface {
 ```
 
 This interface covers four key observation points during Agent execution:
-1. **LLM calls** (`RecordLLMCall`): model, prompt, response, token usage, latency
-2. **Tool calls** (`RecordToolCall`): tool name, input, output, latency
-3. **Agent steps** (`RecordAgentStep`): execution phase per node
-4. **Errors** (`RecordError`): error type and message
+1. **LLM Call** (`RecordLLMCall`): Records model, prompt, response, token usage, and duration
+2. **Tool Call** (`RecordToolCall`): Records tool name, input, output, and duration
+3. **Agent Step** (`RecordAgentStep`): Records the execution phase of each node
+4. **Error** (`RecordError`): Records error type and message
 
-### 3.2 NoopTracer — Zero-Overhead Default
+### 3.2 NoopTracer — Zero-Overhead Default Implementation
 
 ```go
 type NoopTracer struct{}
@@ -215,9 +153,9 @@ func (t *NoopTracer) generateTraceID() string {
 }
 ```
 
-`NoopTracer` is the default tracer in the Graph constructor. Its `Record*` methods are all empty implementations. `WithTrace` checks whether a trace ID already exists in the context to avoid redundant generation.
+`NoopTracer` is the default tracer for the Graph constructor (see `NewGraph()`). Its `Record*` methods are all empty implementations, but `generateTraceID()` uses `atomic.AddUint64` to generate auto-incrementing trace IDs — it's not a complete "zero-allocation" (since `fmt.Sprintf` does some heap allocation). The `WithTrace` method checks whether the context already has a trace ID to avoid generating a duplicate.
 
-### 3.3 LogTracer — Structured Logging via slog
+### 3.3 LogTracer — Structured Log Implementation Based on slog
 
 ```go
 type LogTracer struct {
@@ -225,42 +163,39 @@ type LogTracer struct {
 }
 ```
 
-`LogTracer` maps each Tracer event point to a structured log record. Key design points:
-- **Success/failure branches**: `ErrorContext` on failure, `InfoContext` on success
-- **Structured attributes**: all fields as key-value pairs for log collection systems (Loki, Datadog)
-- **Dependency injection**: `LogTracer` receives an external logger, following the dependency inversion principle
+`LogTracer` maps each Tracer event point to a structured log record. For example, `RecordLLMCall`:
+
+```go
+func (t *LogTracer) RecordLLMCall(ctx context.Context, call *LLMCall) {
+    if call.Error != nil {
+        t.logger.ErrorContext(ctx, "llm call failed",
+            "trace_id", call.TraceID,
+            "model", call.Model,
+            "prompt_len", len(call.Prompt),
+            "response_len", len(call.Response),
+            "tokens", call.TokensUsed,
+            "duration_ms", call.Duration.Milliseconds(),
+            "error", call.Error,
+        )
+    } else {
+        t.logger.InfoContext(ctx, "llm call completed",
+            "trace_id", call.TraceID,
+            // ... same fields ...
+        )
+    }
+}
+```
+
+Key design points:
+- **Success/Failure branches**: Uses `ErrorContext` for failures and `InfoContext` for successes
+- **Structured attributes**: All fields are passed as key-value pairs, making it easy for log collection systems (e.g., Loki, Datadog) to parse
+- **`slog.Logger` injection**: LogTracer doesn't create a logger itself, but accepts one from the outside, adhering to the dependency inversion principle
 
 ---
 
 ## 4. Rate Limiting Module: Three Algorithms + Factory Pattern
 
-The rate limiting module provides three built-in algorithms with factory-pattern extensibility.
-
-```mermaid
-graph TB
-    subgraph "Factory"
-        F[DefaultFactory]
-        R[Register\nname → constructor]
-        C[Create\nname + config → Limiter]
-    end
-
-    subgraph "Built-in Algorithms"
-        TB[TokenBucket]
-        SW[SlidingWindow]
-        SM[Semaphore]
-    end
-
-    subgraph "Client"
-        U[Caller]
-    end
-
-    U -->|Allow/Wait| TB
-    U -->|Allow/Wait| SW
-    U -->|Acquire/Release| SM
-    F -->|registers| TB
-    F -->|registers| SW
-    F -->|registers| SM
-```
+The rate limiting module provides three built-in algorithms and supports extensibility through the factory pattern.
 
 ### 4.1 Limiter Interface and Factory
 
@@ -277,23 +212,23 @@ type Factory struct {
 }
 ```
 
-`Factory` uses a register-create pattern: `Register(name, constructor)` registers a constructor, `Create(name, config)` creates by name. `DefaultFactory` is a package-level singleton, pre-registered with three built-in limiters.
+`Factory` follows a register-create pattern: use `Register(name, constructor)` to register a limiter constructor, and `Create(name, config)` to create one by name. `DefaultFactory` is a package-level global singleton, pre-registered with three built-in limiters.
 
-### 4.2 TokenBucketLimiter
+### 4.2 TokenBucketLimiter — Token Bucket Algorithm
 
 ```go
 type TokenBucketLimiter struct {
-    rate      float64
-    burst     int
-    tokens    float64
-    lastCheck time.Time
-    mu        sync.Mutex
+    rate       float64
+    burst      int
+    tokens     float64
+    lastCheck  time.Time
+    mu         sync.Mutex
 }
 ```
 
-Core logic in `Allow()`: calculates replenished tokens based on `time.Since(lastCheck).Seconds() * rate`, then decides whether to allow. `Wait()` implements busy-loop with `time.After(waitTime)`. Supports `SetRate()` and `SetBurst()` for runtime parameter adjustment.
+The core logic lives in `Allow()`: on each call, it first calculates how many tokens should be replenished via `time.Since(lastCheck).Seconds() * rate`, then determines whether to allow the request. `Wait()` is implemented as a busy-loop + `time.After(waitTime)`, where waitTime = `float64(time.Second) / rate`. Supports `SetRate()` and `SetBurst()` for runtime dynamic parameter adjustment.
 
-### 4.3 SlidingWindowLimiter
+### 4.3 SlidingWindowLimiter — Sliding Window Algorithm
 
 ```go
 type SlidingWindowLimiter struct {
@@ -304,9 +239,9 @@ type SlidingWindowLimiter struct {
 }
 ```
 
-Based on a timestamp array: each request appends the current time to the tail, `cleanup()` removes expired requests outside the window. `Allow()` checks `len(l.requests) < l.rate`. Supports `ResetAt(t time.Time)` for periodic resets.
+Implemented with a timestamp array: each request appends the current time to the end of the slice, and `cleanup()` removes expired requests outside the window. `Allow()` checks `len(l.requests) < l.rate`, while `Wait()` calculates the time until the oldest request expires: `waitTime = l.windowSize - time.Since(oldest)`. Supports `ResetAt(t time.Time)` for scheduled resets.
 
-### 4.4 SemaphoreLimiter
+### 4.4 SemaphoreLimiter — Semaphore-Based Rate Limiting
 
 ```go
 type SemaphoreLimiter struct {
@@ -314,34 +249,17 @@ type SemaphoreLimiter struct {
 }
 ```
 
-Channel-based semaphore: `Acquire()` reads from the channel, `Release()` writes back. `WeightedSemaphoreLimiter` is a weighted version using `sync.Cond` + `context.AfterFunc` for cancellation propagation, supporting per-key weight allocation (e.g., per-API-key quotas).
+A channel-based semaphore implementation: `Acquire()` reads from the channel, `Release()` writes back. `WeightedSemaphoreLimiter` is a weighted version using `sync.Cond` + `context.AfterFunc` for cancellation propagation, supporting weighted quota allocation by different keys (e.g., by API Key).
 
-### 4.5 Algorithm Comparison
+### 4.5 Comparison of the Three Algorithm Choices
 
-| Algorithm | Best For | Behavior |
-|-----------|----------|----------|
-| **TokenBucket** | Burst traffic | Smooths bursts with replenishment |
-| **SlidingWindow** | Precise rate control | Hard limit per time window |
-| **Semaphore** | Concurrent connection limit | Cap on in-flight requests |
-
-In production, the Graph executor entry typically uses TokenBucket because Agent workflows have a natural "burst" pattern — multiple nodes may become ready simultaneously.
+Each of these three rate-limiting algorithms has its own applicable scenarios: the token bucket algorithm is suitable for handling burst traffic, the sliding window algorithm can precisely control the total number of requests within a time window, and the semaphore algorithm excels at limiting concurrency rather than request rate. In real production environments, the token bucket is the most common choice at the entry point of the Graph executor, because Agent workflows inherently exhibit "bursty" characteristics — multiple nodes may arrive at the ready queue simultaneously, requiring short-term burst allowance. A special note: when rate limiting fails, the caller must handle the context cancellation error returned by `Wait()`, otherwise it may lead to request accumulation and goroutine leaks.
 
 ---
 
 ## 5. Graceful Shutdown Module: Four-Phase State Machine
 
-The graceful shutdown module is the last line of defense for system fault tolerance, ensuring orderly process exit under any circumstances.
-
-```mermaid
-stateDiagram-v2
-    [*] --> PreShutdown: Signal received
-    PreShutdown --> Graceful: Resource release
-    Graceful --> Force: Timeout / partial failure
-    Force --> Done: All callbacks completed
-    Graceful --> Done: All callbacks succeeded
-    Force --> Done: Force complete
-    Done --> [*]
-```
+The graceful shutdown module is the last line of defense for system fault tolerance. Its design ensures that the process can exit cleanly under any circumstances.
 
 ### 5.1 Manager — Four-Phase Execution
 
@@ -354,7 +272,7 @@ const (
 )
 ```
 
-Each phase executes callbacks concurrently with per-callback timeout:
+Execution logic for each phase:
 
 ```go
 func (m *Manager) executePhase(ctx context.Context, phase Phase) []CallbackResult {
@@ -366,9 +284,10 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) []CallbackResul
         wg.Add(1)
         go func(cb RegisteredCallback) {
             defer wg.Done()
-            defer func() {
-                if rec := recover(); rec != nil { /* panic recovery */ }
+            defer func() { // panic recovery
+                if rec := recover(); rec != nil { ... }
             }()
+            // Execute with per-callback timeout
             cbCtx, cancel := context.WithTimeout(ctx, cb.timeout)
             defer cancel()
             err := cb.fn(cbCtx)
@@ -380,9 +299,9 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) []CallbackResul
 }
 ```
 
-Each callback runs in its own goroutine with its own timeout context. Panic recovery ensures a single callback crash doesn't affect the overall shutdown flow. Each phase also has a 5-second hard timeout.
+Each callback executes in its own goroutine with its own timeout context. Panic recovery ensures a single callback crash doesn't affect the overall shutdown flow. The entire phase also has a 5-second hard timeout as a safety net.
 
-### 5.2 PhaseExecutor — Retry with Exponential Backoff
+### 5.2 PhaseExecutor — Retry State Machine with Exponential Backoff
 
 ```go
 type PhaseExecutor struct {
@@ -394,13 +313,19 @@ type PhaseExecutor struct {
 }
 ```
 
-State transitions: `Pending → Running → Completed / Failed`. Retry uses exponential backoff: `backoff = time.Duration(1 << uint(attempt)) * time.Second`. Attempt is capped at 29 to prevent overflow with `1<<30`.
+PhaseExecutor's state transitions: `Pending → Running → Completed / Failed`. The retry mechanism uses exponential backoff:
 
-### 5.3 CallbackRegistry — Priority-Sorted Registration
+```go
+backoff = time.Duration(1 << uint(attempt)) * time.Second
+```
 
-Callbacks are organized by phase via `map[Phase][]RegisteredCallback`, bubble-sorted by priority descending. `CallbackChain` supports both serial chain and parallel batch execution modes.
+Note: when attempt reaches 30, `1 << uint(30)` produces an overflow of approximately 1.07 billion seconds (about 34 years). Therefore, attempt is capped at 29 in the loop (consistent with the `1<<30` division guard).
 
-### 5.4 SignalHandler — OS Signal Listening
+### 5.3 CallbackRegistry — Priority-Based Callback Registration
+
+Callbacks are organized by phase via `map[Phase][]RegisteredCallback`, and executed in descending priority order using bubble sort. `CallbackChain` supports both serial chaining and parallel batch execution modes.
+
+### 5.4 SignalHandler — Signal Listening
 
 ```go
 type SignalHandler struct {
@@ -409,38 +334,17 @@ type SignalHandler struct {
 }
 ```
 
-Integrates standard library `os/signal`, listening for `SIGINT`, `SIGTERM`, `os.Interrupt`. Provides two blocking methods: `WaitForSignal()` and `WaitForContextOrSignal()`.
+Integrates with the standard library `os/signal`, listening for `SIGINT`, `SIGTERM`, and `os.Interrupt`. Provides two blocking wait methods: `WaitForSignal()` and `WaitForContextOrSignal()`.
 
-### 5.5 Complete Shutdown Sequence
+### 5.5 Full Shutdown Flow Timeline
 
-A typical graceful shutdown follows this sequence:
-
-```mermaid
-sequenceDiagram
-    participant OS as OS Signal
-    participant SH as SignalHandler
-    participant M as Manager
-    participant C as Callbacks
-
-    OS->>SH: SIGINT/SIGTERM
-    SH->>M: StartShutdown(ctx)
-    M->>M: Phase = PreShutdown
-    M->>C: Execute callbacks (parallel)
-    C-->>M: All completed
-    M->>M: Phase = Graceful
-    M->>C: Execute callbacks (parallel, timeout)
-    C-->>M: Partial timeout
-    M->>M: Phase = Force
-    M->>C: Force remaining callbacks
-    C-->>M: All done
-    M->>M: Phase = Done
-```
+A typical graceful shutdown flow works as follows: The system first receives a SIGINT or SIGTERM signal, and the SignalHandler forwards the signal to the Manager. The Manager enters the PhasePreShutdown phase, executing all pre-shutdown callbacks (e.g., disconnecting database connections, sending heartbeat stop signals). It then enters the PhaseGraceful phase, where each callback has its own timeout context and executes concurrently in goroutines. If all callbacks complete before the timeout, the Manager moves directly to PhaseDone; if some callbacks time out, the Manager enters the PhaseForce phase, forcefully executing remaining callbacks and recording timeout information. Finally, it enters the PhaseDone phase and the system completes its exit. The core idea of this tiered protection mechanism is "ask politely first, then enforce" — ensuring the system can exit in a predictable manner under any circumstances, without orphaned resources caused by a stuck callback.
 
 ---
 
 ## 6. Middleware Pattern: CORS and Panic Recovery
 
-### 6.1 Dashboard withCORS Middleware
+### 6.1 Dashboard's withCORS Middleware
 
 ```go
 func withCORS(next http.Handler) http.Handler {
@@ -456,6 +360,8 @@ func withCORS(next http.Handler) http.Handler {
     })
 }
 ```
+
+Supports wildcard CORS, returning 200 directly for OPTIONS preflight requests.
 
 ### 6.2 Unified withRecovery Middleware
 
@@ -473,7 +379,9 @@ func withRecovery(next http.Handler) http.Handler {
 }
 ```
 
-### 6.3 Middleware Composition
+The Arena module also has its own `RecoverMiddleware`, which behaves similarly but uses its own independent `slog` instance.
+
+### 6.3 Middleware Chain Composition
 
 ```go
 func (a *APIv2) Handler() http.Handler {
@@ -483,63 +391,39 @@ func (a *APIv2) Handler() http.Handler {
 }
 ```
 
-This onion-ring composition ensures all request paths are protected by CORS and panic recovery.
+This onion-ring style of middleware composition ensures all request paths are protected by both CORS and panic recovery.
 
 ---
 
 ## 7. End-to-End Integration: From Graph Service to LLM Client
 
-These four modules are not isolated — they collaborate tightly within the Graph execution engine.
+These four modules do not exist in isolation; they work closely together in the Graph execution engine. Below is the complete call chain:
 
-### 7.1 API Layer Injection
+### 7.1 Injection Entry Point at the API Layer
 
-In `api/service/graph/service.go` `Service.Execute()`:
+In `api/service/graph/service.go`'s `Service.Execute()`:
 
 ```go
 func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *ExecuteRequest) (*ExecuteResponse, error) {
+    // Inject Tracer and Limiter
     if s.tracer != nil {
         g.SetTracer(s.tracer)
     }
     if s.limiter != nil {
         g.SetLimiter(s.limiter)
     }
+    // Create State → Execute Graph
     result, err := g.Execute(ctx, state)
 }
 ```
 
-If `config.Tracer` is nil, the constructor defaults to `observability.NewNoopTracer()`, ensuring observability is always enabled.
+In the `Service` constructor, if `config.Tracer` is nil, it defaults to `observability.NewNoopTracer()`, ensuring observability is always enabled.
 
-### 7.2 Observation Points in Graph Executor
+### 7.2 Observation Points in the Graph Executor
 
-The full call chain in `internal/workflow/graph/executor.go`:
+In `internal/workflow/graph/executor.go`'s `Graph.Execute()`, observation points span the entire execution flow:
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Service as Graph Service
-    participant Graph as Graph Executor
-    participant Limiter
-    participant Tracer
-    participant Node as Agent Node
-
-    Client->>Service: Execute(graph, request)
-    Service->>Graph: Execute(ctx, state)
-    Graph->>Limiter: Wait(ctx)
-    Limiter-->>Graph: OK
-    loop Each Node
-        Graph->>Tracer: RecordAgentStep(start)
-        Graph->>Node: Execute node
-        Node-->>Graph: result/error
-        alt Error
-            Graph->>Tracer: RecordError
-        end
-        Graph->>Tracer: RecordAgentStep(end)
-    end
-    Graph-->>Service: result
-    Service-->>Client: response
-```
-
-**Step 1: Rate limiting check**
+**Step 1: Rate Limit Check**
 ```go
 if g.limiter != nil {
     if err := g.limiter.Wait(ctx); err != nil {
@@ -548,7 +432,7 @@ if g.limiter != nil {
 }
 ```
 
-**Step 2: AgentStep recording before and after each node**
+**Step 2: Record AgentStep Before and After Each Node Execution**
 ```go
 g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
     TraceID:  g.tracer.GetTraceID(ctx),
@@ -564,7 +448,7 @@ g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
 })
 ```
 
-**Step 3: Error recording on failure**
+**Step 3: Record Error on Failure**
 ```go
 if err != nil {
     g.tracer.RecordError(ctx, &observability.AgentError{
@@ -576,9 +460,22 @@ if err != nil {
 }
 ```
 
-### 7.3 LLM Client Observation
+**Step 4: Record ToolCall After Graph Execution Completes**
+```go
+if g.tracer != nil {
+    g.tracer.RecordToolCall(ctx, &observability.ToolCall{
+        TraceID:  g.tracer.GetTraceID(ctx),
+        ToolName: g.id,
+        Input:    state.ToParams(),
+        Output:   state.ToParams(),
+        Duration: time.Since(startTime),
+    })
+}
+```
 
-In `internal/llm/client.go`, `recordLLMCall()` is called from both `Generate()` and `GenerateStream()`:
+### 7.3 Observation Points in the LLM Client
+
+In `internal/llm/client.go`, `recordLLMCall()` is an internal method called in both `Generate()` and `GenerateStream()`:
 
 ```go
 func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tokens int, start time.Time, err error) {
@@ -597,96 +494,59 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 }
 ```
 
-For streaming calls (`GenerateStream`), `recordLLMCall` is called asynchronously after the stream ends, accumulating the full response in a goroutine before recording.
+For streaming calls (`GenerateStream`), `recordLLMCall` is invoked asynchronously after the stream ends, accumulating the full response in a goroutine before recording it.
 
 ---
 
-## 8. Architectural Observations
+## 8. Architectural Observations and Best Practices
 
-### 8.1 Layered Defense Philosophy
+### 8.1 Constructor Panic Pattern — Fail-Fast
 
-```mermaid
-graph TB
-    subgraph "Defense Layers"
-        L1[Layer 1: Rate Limiting\nGraph executor entry]
-        L2[Layer 2: Observability\nEvery call recorded]
-        L3[Layer 3: Security\nAll output sanitized]
-        L4[Layer 4: Graceful Shutdown\nClean exit guarantee]
-    end
+The Graph module's constructors directly panic when detecting invalid parameters (e.g., `NewGraph("")`, `NewGraphWithTracer("id", nil)`). The code comments explicitly state:
 
-    Request --> L1
-    L1 -->|Allowed| L2
-    L2 -->|Traced| Execution[Agent Execution]
-    Execution -->|Output| L3
-    L3 -->|Sanitized| Response
-    Signal[OS Signal] --> L4
-    L4 -->|Orderly| Exit[Process Exit]
-```
+> "This is intentional as it indicates a programming error in the calling code. These methods are used during workflow graph initialization (startup phase), and invalid parameters represent fatal startup failures."
 
-- **Security**: Independent of the execution pipeline, auto-sanitizes all log output — the last line of defense
-- **Observability**: Injected via interface into Graph and LLM Client — transparent tracing infrastructure
-- **Rate Limiting**: Intercepts at the Graph executor entry point — no per-node granular control
-- **Graceful Shutdown**: Completely independent, triggered by OS signals via SignalHandler — no business logic coupling
+This reflects the "Fail-Fast" philosophy prevalent in the Go community: programming errors at startup should surface as early as possible, rather than returning an error for the caller to handle.
 
-### 8.2 Module Coupling Analysis
+### 8.2 Layered Defense Design Philosophy
 
-The four modules have extremely low coupling:
+- **Security module** is independent of the entire execution pipeline — any log output is automatically sanitized before being written. This is the last layer of "defense in depth"
+- **Observability module** is injected via interfaces into the Graph and LLM Client, serving as the infrastructure for "transparent tracing"
+- **Rate limiting module** intercepts at the Graph execution entry point (the first line of the `Execute` method), without doing fine-grained per-node rate limiting
+- **Graceful shutdown module** is completely independent, triggered by system signals via `SignalHandler`, decoupled from business logic
 
-| Module | Couples To | Coupling Level |
-|--------|-----------|----------------|
-| Security | Nothing (standalone) | None |
-| Observability | Graph + LLM Client (via Tracer interface) | Loose (swappable) |
-| Rate Limiting | Graph (via Limiter interface) | Loose |
-| Graceful Shutdown | OS signals (via SignalHandler) | None |
+### 8.3 Coupling Analysis Between Modules
 
-Each module can be independently tested, replaced, or even removed without affecting the others.
+It's worth noting that although all four modules affect the Graph's execution behavior, their coupling with each other is extremely low. The security module is entirely independent, with zero code-level intrusion into the Graph or LLM Client. The observability module maintains loose coupling with the Graph and LLM Client through the Tracer interface, allowing implementation swaps via `SetTracer()` at any time. The rate limiting module also couples with the Graph through an interface, and has nothing to do with observability — rate limiting success or failure does not produce observation events. The graceful shutdown module is completely detached from the business execution path, only intervening at the end of the process lifecycle. This "each minding its own business" design allows each module to be independently tested, independently replaced, or even independently removed, greatly reducing system maintenance complexity.
 
-### 8.3 Default Safe vs Explicit Configuration
+### 8.4 Safe by Default vs. Explicit Configuration
 
-| Feature | Default | Philosophy |
-|---------|---------|------------|
-| Tracer | `NoopTracer` (non-nil) | Always on, even if no-op |
-| Limiter | nil (no rate limiting) | Explicit opt-in |
-| Sanitizer | Must construct explicitly | Explicit opt-in |
+- `NewGraph()` defaults to using `NoopTracer` — observability is on by default (even if it's just a noop implementation)
+- `NewService()` also defaults to `NoopTracer` if `config.Tracer` is nil
+- Rate limiter defaults to nil, meaning no rate limiting — requires explicit configuration
+- The security module has no global default instance; the caller must construct it themselves
 
-The "safe by default" design ensures Tracer call sites never panic even without a real tracer configured.
+This "safe by default" design ensures that even without a configured tracer, the Tracer's calling code will never panic (because the default is a non-nil NoopTracer instance). This is a Go idiom worth learning from — for optional interface dependencies, provide a non-nil default implementation (noop), which both avoids nil checks before every use and preserves the ability to swap in a real implementation later. In contrast, the rate limiting and security modules have no default implementation because they are "opt-in": not every deployment environment needs rate limiting, nor does every log entry need sanitization. Letting the caller choose on demand is a better design.
+
+### 8.5 The "Reverse" Application of Security and Observability in Arena
+
+Interestingly, the Arena module (chaos engineering testing framework) simultaneously uses patterns from both the security and observability modules, but for entirely opposite purposes: the Tracer interface from observability is used by Arena to record fault injection events and recovery processes, helping analyze the system's fault tolerance behavior; while the middleware pattern from the security module (RecoverMiddleware) is used by Arena to catch expected panics that may occur during fault injection, ensuring that Arena's core loop is not affected by the crash of a single Agent. All of Arena's 28 route handler functions are protected by RecoverMiddleware, demonstrating a unique synergy between "security" and "observability" in the context of chaos engineering: observability lets you see the failures, security lets you survive them.
 
 ---
 
 ## 9. Summary
 
-GoAgentX's security, observability, rate limiting, and graceful shutdown modules form the infrastructure backbone of a production-grade Agent system:
+Four modules, each with its own job:
 
-```mermaid
-graph TB
-    subgraph "Production Infrastructure"
-        SEC[Security\nRegex + field-type masking]
-        OBS[Observability\nTracer interface + slog]
-        RAT[Rate Limiting\n3 algorithms + Factory]
-        SHD[Graceful Shutdown\n4-phase state machine]
-    end
+- **Security module**: Dual detection via regex + field names, automatic sanitization before log output
+- **Observability module**: Tracer interface decouples "what to record" from "how to record"
+- **Rate limiting module**: Factory pattern, three algorithms you can swap at will
+- **Graceful shutdown module**: Four-phase state machine + exponential backoff, clean exit under any circumstances
 
-    subgraph "Execution Path"
-        GRAPH[Graph Engine]
-        LLM[LLM Client]
-    end
+To be honest, these four modules aren't the "coolest" parts — they're the "least cool but absolutely necessary" parts. No sanitization? Compliance will be on your tail. No rate limiting? Burst traffic will take you down. No graceful shutdown? Process exit leaves a trail of orphaned resources.
 
-    SEC -->|Sanitizes| LOG[Log Output]
-    OBS -->|Traces| GRAPH
-    OBS -->|Traces| LLM
-    RAT -->|Limits| GRAPH
-    SHD -->|Protects| GRAPH
-```
-
-- **Security** uses dual detection (field-name + regex) for sensitive data masking
-- **Observability** decouples "what to record" from "how to record" via the Tracer interface
-- **Rate Limiting** provides three algorithms with flexible switching via the Factory pattern
-- **Graceful Shutdown** uses a four-phase state machine with exponential-backoff retry for orderly exit under any circumstances
-
-These aren't the coolest part of GoAgentX. They're the **uncool but essential** parts. No sanitizer? Compliance will find you. No rate limiter? A traffic spike takes you down. No graceful shutdown? Orphaned resources everywhere.
-
-But if I did my job right, you won't notice them. They just work. **That's what infrastructure should be — there when you need it, invisible when you don't.**
+But when they're in the codebase, you barely notice their existence. That's exactly what infrastructure should be — **there when you need it, out of your way when you don't.**
 
 ---
 
-*Next: Runtime & Lifecycle — how an agent is born, how it dies, and how it comes back from the dead with its memory intact. I call this the "resurrection mechanic."*
+*Next up: Runtime and Lifecycle — How Agents are born, die, and come back. I call it the "Impure World Reincarnation" mechanism.*

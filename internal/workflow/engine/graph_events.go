@@ -18,12 +18,15 @@ const (
 	ChangeAddEdge
 	// ChangeRemoveEdge indicates an edge was removed from the DAG.
 	ChangeRemoveEdge
+	// ChangeReplaceNode indicates a node was replaced (swap migration).
+	ChangeReplaceNode
 )
 
 // GraphChange describes a single mutation to the DAG.
 type GraphChange struct {
 	Type      ChangeType
 	NodeID    string
+	OldNodeID string // populated for ChangeReplaceNode
 	FromID    string
 	ToID      string
 	Step      *Step
@@ -70,15 +73,15 @@ func (h *GraphEventHub) Subscribe() (string, <-chan GraphEvent) {
 // Unsubscribe removes a subscriber and closes its channel.
 func (h *GraphEventHub) Unsubscribe(id string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	ch, exists := h.subscribers[id]
-	if !exists {
-		return
+	if exists {
+		delete(h.subscribers, id)
 	}
+	h.mu.Unlock()
 
-	delete(h.subscribers, id)
-	close(ch)
+	if exists {
+		close(ch)
+	}
 }
 
 // Publish sends an event to all subscribers. Non-blocking (drops if buffer full).

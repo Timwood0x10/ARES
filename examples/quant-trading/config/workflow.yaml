@@ -1,0 +1,112 @@
+# Quant Trading Agent Configuration — YAML defines 8 agents and their DAG pipeline.
+# Follows the steps specification of GoAgentX Workflow Engine.
+id: "quant-trading-pipeline"
+name: "Quantitative Trading Pipeline"
+version: "1.0.0"
+description: "8-agent quantitative trading analysis pipeline: Analysts → Researchers → Trader → Risk → PM"
+
+steps:
+  # ── Phase 1: Analyst parallel analysis ──
+  - id: "fundamentals"
+    name: "Fundamentals Analyst"
+    agent_type: "sub"
+    depends_on: []
+    mcp_tool: "financial_data"
+    mcp_args:
+      ticker: "{{.ticker}}"
+    input: |
+      You are a Fundamentals Analyst. Evaluate the stock's financial health.
+      Call financial_data tool, analyze: revenue, margins, P/E, debt, competitive position.
+      Output JSON: {ticker, fundamental_score(1-10), key_metrics, strengths, risks, verdict(bullish|bearish|neutral), reasoning}
+    timeout: 120s
+
+  - id: "sentiment"
+    name: "Sentiment Analyst"
+    agent_type: "sub"
+    depends_on: []
+    mcp_tool: "polymarket_sentiment"
+    mcp_args:
+      query: "{{.ticker}} stock"
+    input: |
+      You are a Sentiment Analyst. Gauge market sentiment from prediction markets.
+      Call polymarket_sentiment tool, analyze prediction market probabilities.
+      Output JSON: {ticker, sentiment_score(0-1), sentiment_label, sources, key_signals, reasoning}
+    timeout: 120s
+
+  - id: "news"
+    name: "News Analyst"
+    agent_type: "sub"
+    depends_on: []
+    input: |
+      You are a News Analyst. Assess recent news and macroeconomic impact.
+      Evaluate: earnings news, regulatory changes, macro indicators, industry trends.
+      Output JSON: {ticker, news_score(1-10), positive_developments, negative_developments, verdict, reasoning}
+    timeout: 120s
+
+  - id: "technical"
+    name: "Technical Analyst"
+    agent_type: "sub"
+    depends_on: []
+    mcp_tool: "technical_indicators"
+    mcp_args:
+      ticker: "{{.ticker}}"
+      indicator: "ALL"
+    input: |
+      You are a Technical Analyst. Analyze price action and indicators.
+      Call technical_indicators tool, analyze MACD/RSI/SMA/Bollinger.
+      Output JSON: {ticker, technical_score(1-10), trend, rsi_signal, macd_signal, verdict, reasoning}
+    timeout: 120s
+
+  # ── Phase 2: Researcher debate ──
+  - id: "bull"
+    name: "Bull Researcher"
+    agent_type: "sub"
+    depends_on: ["fundamentals", "sentiment", "news", "technical"]
+    input: |
+      You are a Bull Researcher. Construct the strongest bullish case.
+      Review analyst reports (fundamentals, sentiment, news, technical).
+      Output JSON: {ticker, bull_score(1-10), primary_thesis, supporting_arguments, upside_target, confidence(0-1)}
+    timeout: 120s
+
+  - id: "bear"
+    name: "Bear Researcher"
+    agent_type: "sub"
+    depends_on: ["fundamentals", "sentiment", "news", "technical"]
+    input: |
+      You are a Bear Researcher. Construct the strongest bearish case.
+      Review analyst reports (fundamentals, sentiment, news, technical).
+      Output JSON: {ticker, bear_score(1-10), primary_thesis, supporting_arguments, downside_target, confidence(0-1)}
+    timeout: 120s
+
+  # ── Phase 3: Trading decision ──
+  - id: "trader"
+    name: "Trader"
+    agent_type: "sub"
+    depends_on: ["bull", "bear"]
+    input: |
+      You are a Trader. Synthesize bull/bear research into trading decision.
+      Weigh evidence, assess risk/reward. Consider timing and position sizing.
+      Output JSON: {ticker, signal(buy|sell|hold), confidence(0-1), quantity, entry_price, stop_loss, take_profit, rationale}
+    timeout: 120s
+
+  # ── Phase 4: Risk management ──
+  - id: "risk"
+    name: "Risk Manager"
+    agent_type: "sub"
+    depends_on: ["trader"]
+    input: |
+      You are a Risk Manager. Review the proposed trade.
+      Check: position concentration, sector exposure, volatility.
+      Output JSON: {ticker, decision(approve|reject|modify), risk_score(1-10), risk_factors, max_position_size, reasoning}
+    timeout: 120s
+
+  # ── Phase 5: Portfolio Manager ──
+  - id: "pm"
+    name: "Portfolio Manager"
+    agent_type: "leader"
+    depends_on: ["risk"]
+    input: |
+      You are a Portfolio Manager. Make the final trading decision.
+      Review all inputs: analyst reports, researcher debates, trader recommendation, risk assessment.
+      Output JSON: {ticker, final_signal(buy|sell|hold), quantity, confidence(0-1), rationale, risk_assessment}
+    timeout: 120s

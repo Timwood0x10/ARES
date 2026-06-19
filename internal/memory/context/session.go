@@ -37,11 +37,39 @@ type SessionData struct {
 	CreatedAt  time.Time
 }
 
-// Message represents a chat message.
+// Standard role constants for typed message routing.
+const (
+	RoleUser       = "user"
+	RoleAssistant  = "assistant"
+	RoleSystem     = "system"
+	RoleToolCall   = "tool_call"
+	RoleToolResult = "tool_result"
+)
+
+// ToolCallFunction holds the function details of a tool invocation.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolCall represents a single tool invocation.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// Message represents a chat message with optional tool call metadata.
 type Message struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	Time    time.Time `json:"time"`
+	Role         string     `json:"role"`
+	Content      string     `json:"content"`
+	Time         time.Time  `json:"time"`
+	TurnID       string     `json:"turn_id,omitempty"`
+	ToolCallID   string     `json:"tool_call_id,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	EventKind    string     `json:"event_kind,omitempty"`
+	ParentID     string     `json:"parent_id,omitempty"`
+	ArtifactRefs []string   `json:"artifact_refs,omitempty"`
 }
 
 // NewSessionMemory creates a new SessionMemory.

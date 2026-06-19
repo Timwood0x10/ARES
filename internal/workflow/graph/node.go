@@ -4,10 +4,13 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"time"
 
 	"goagentx/internal/agents/base"
 	"goagentx/internal/errors"
+	"goagentx/internal/events"
 	"goagentx/internal/tools/resources/core"
 )
 
@@ -70,8 +73,25 @@ func (n *AgentNode) ID() string {
 }
 
 // ToolNode wraps an existing tool to be used as a node.
+// It supports optional lifecycle hooks for structured message recording
+// and event emission during tool execution.
 type ToolNode struct {
-	tool core.Tool
+	tool        core.Tool
+	nodeID      string
+	executionID string
+	eventSink   func(ctx context.Context, eventType events.EventType, payload map[string]any)
+}
+
+// WithNodeID sets the node identifier for event payload correlation.
+func (n *ToolNode) WithNodeID(id string) *ToolNode {
+	n.nodeID = id
+	return n
+}
+
+// WithExecutionID sets the execution/graph instance identifier for event correlation.
+func (n *ToolNode) WithExecutionID(id string) *ToolNode {
+	n.executionID = id
+	return n
 }
 
 // NewToolNode creates a new tool node.
@@ -92,24 +112,98 @@ func NewToolNode(tool core.Tool) *ToolNode {
 	return &ToolNode{tool: tool}
 }
 
-// Execute runs the tool node.
+// WithEventSink attaches an event sink for lifecycle events.
+// The sink is called before and after tool execution with EventToolCallStarted
+// and EventToolCallCompleted events respectively.
+func (n *ToolNode) WithEventSink(sink func(ctx context.Context, eventType events.EventType, payload map[string]any)) *ToolNode {
+	n.eventSink = sink
+	return n
+}
+
+// Execute runs the tool node with optional lifecycle hooks.
+// Before execution, emits EventToolCallStarted; after execution,
+// emits EventToolCallCompleted with the result summary.
+// The event payload includes correlation IDs for ReAct Runtime Trace.
 func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 	if n == nil || n.tool == nil {
 		return fmt.Errorf("tool node is not initialized")
 	}
 
+	startTime := time.Now()
+	toolName := n.tool.Name()
+	nodeID := n.nodeID
+	if nodeID == "" {
+		nodeID = toolName
+	}
+	// Generate deterministic input hash (used for both tool_call_id and event payload).
 	params := state.ToParams()
+	inputHash := hashInput(params)
+
+	// tool_call_id: deterministic so event replay produces the same ID.
+	toolCallID := fmt.Sprintf("tool_%s_%s", nodeID, inputHash)
+
+	// Pre-execution hook: emit tool call started event with correlation IDs.
+	if n.eventSink != nil {
+		n.eventSink(ctx, events.EventToolCallStarted, map[string]any{
+			"tool":         toolName,
+			"tool_call_id": toolCallID,
+			"node_id":      nodeID,
+			"execution_id": n.executionID,
+			"input_hash":   inputHash,
+			"timestamp":    startTime,
+		})
+	}
+
 	result, err := n.tool.Execute(ctx, params)
+
+	durationMs := time.Since(startTime).Milliseconds()
+
+	// Post-execution hook: emit tool call completed event with structured result.
+	if n.eventSink != nil {
+		payload := map[string]any{
+			"tool":         toolName,
+			"tool_call_id": toolCallID,
+			"node_id":      nodeID,
+			"execution_id": n.executionID,
+			"input_hash":   inputHash,
+			"duration_ms":  durationMs,
+			"timestamp":    time.Now(),
+		}
+		if err != nil {
+			payload["status"] = "error"
+			payload["error"] = err.Error()
+		} else if !result.Success {
+			payload["status"] = "failed"
+			payload["summary"] = truncateString(result.Error, 200)
+		} else {
+			payload["status"] = "success"
+			payload["summary"] = truncateString(fmt.Sprintf("%v", result.Data), 200)
+		}
+		n.eventSink(ctx, events.EventToolCallCompleted, payload)
+	}
+
 	if err != nil {
-		return errors.Wrapf(err, "tool %s execution failed", n.ID())
+		return errors.Wrapf(err, "tool %s execution failed", toolName)
 	}
 
 	if result.Success {
-		state.Set("node."+n.ID(), result.Data)
+		state.Set("node."+toolName, result.Data)
 	} else {
-		state.Set("node."+n.ID(), result.Error)
+		state.Set("node."+toolName, result.Error)
 	}
 	return nil
+}
+
+// truncateString truncates a string to maxLen runes.
+func truncateString(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 // ID returns the tool name.
@@ -168,4 +262,11 @@ func (n *FuncNode) ID() string {
 		return ""
 	}
 	return n.id
+}
+
+// hashInput generates a deterministic hash from tool input parameters.
+func hashInput(params map[string]any) string {
+	data := fmt.Sprintf("%v", params)
+	h := sha256.Sum256([]byte(data))
+	return fmt.Sprintf("%x", h[:8])
 }

@@ -4,6 +4,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"goagentx/internal/agents/base"
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 )
 
 // TestNewDynamicExecutor verifies that NewDynamicExecutor returns a valid
@@ -617,6 +619,288 @@ func TestDynamicExecutor_HITLWithStore(t *testing.T) {
 	pending, err := store.ListPending(context.Background(), workflow.ID)
 	require.NoError(t, err)
 	assert.Empty(t, pending, "interrupt should be cleaned up after approval")
+}
+
+// =====================================================
+// DynamicExecutor Recovery Tests
+// =====================================================
+
+// failingAgentFactory returns an AgentFactory that always returns the given error.
+func failingAgentFactory(failErr error) AgentFactory {
+	return func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("failing", "failing-agent", func(ctx context.Context, input any) (any, error) {
+			return nil, failErr
+		}), nil
+	}
+}
+
+// TestDynamicExecutor_StepFailureNoPolicy verifies that a failed step with no
+// RecoveryPolicy still fails the workflow.
+func TestDynamicExecutor_StepFailureNoPolicy(t *testing.T) {
+	registry := NewAgentRegistry()
+	require.NoError(t, registry.Register("failing-agent", failingAgentFactory(errors.New("step failed"))))
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+
+	dag, _ := NewMutableDAG([]*Step{
+		{
+			ID:        "step1",
+			Name:      "Failing Step",
+			AgentType: "failing-agent",
+			Input:     "test input",
+			Timeout:   10 * time.Second,
+		},
+	})
+
+	workflow := &Workflow{
+		ID:    "wf-fail-no-policy",
+		Name:  "fail no policy workflow",
+		Steps: dag.Steps(),
+	}
+
+	result, err := executor.ExecuteDynamic(context.Background(), workflow, "input", dag)
+	require.Error(t, err, "workflow should fail when no recovery policy")
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusFailed, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusFailed, result.Steps[0].Status)
+}
+
+// TestDynamicExecutor_StepFailureWithReplaceNode verifies that a failed step
+// with RecoveryReplaceNode continues without failing the workflow.
+func TestDynamicExecutor_StepFailureWithReplaceNode(t *testing.T) {
+	registry := NewAgentRegistry()
+	require.NoError(t, registry.Register("failing-agent", failingAgentFactory(errors.New("step failed"))))
+	require.NoError(t, registry.Register("recovery-agent", testAgentFactory(
+		func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{
+					{ItemID: "item1", Name: "Recovered Item", Description: "recovered output"},
+				},
+			}, nil
+		},
+	)))
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithRecoveryHandler(&mockRecoveryHandler{
+			recoverFn: func(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error) {
+				return &RecoveryDecision{
+					Strategy: RecoveryReplaceNode,
+					NewStep: &Step{
+						ID:        failure.StepID + "_recovery",
+						Name:      failure.StepID + " Recovery",
+						AgentType: "recovery-agent",
+						Input:     "recovery input",
+						Timeout:   10 * time.Second,
+						DependsOn: []string{}, // Will be set by ReplaceNode edge migration.
+					},
+				}, nil
+			},
+		})
+
+	step1 := &Step{
+		ID:        "step1",
+		Name:      "Failing Step",
+		AgentType: "failing-agent",
+		Input:     "test input",
+		Timeout:   10 * time.Second,
+		RecoveryPolicy: &RecoveryPolicy{
+			Strategy: RecoveryReplaceNode,
+		},
+	}
+
+	dag, _ := NewMutableDAG([]*Step{step1})
+
+	workflow := &Workflow{
+		ID:    "wf-replace",
+		Name:  "replace node workflow",
+		Steps: dag.Steps(),
+	}
+
+	result, err := executor.ExecuteDynamic(context.Background(), workflow, "input", dag)
+	require.NoError(t, err, "workflow should succeed after replace_node recovery")
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Failed step is preserved in results.
+	foundFailed := false
+	foundRecovery := false
+	for _, sr := range result.Steps {
+		if sr.StepID == "step1" {
+			foundFailed = true
+			assert.Equal(t, StepStatusFailed, sr.Status, "original step should be failed")
+		}
+		if sr.StepID == "step1_recovery" {
+			foundRecovery = true
+			assert.Equal(t, StepStatusCompleted, sr.Status, "replacement step should be completed")
+		}
+	}
+	assert.True(t, foundFailed, "failed step should be in results")
+	assert.True(t, foundRecovery, "replacement step should be in results")
+}
+
+// TestDynamicExecutor_ReplaceNodeChain verifies that a replacement step can
+// enable downstream steps to continue.
+func TestDynamicExecutor_ReplaceNodeChain(t *testing.T) {
+	registry := NewAgentRegistry()
+	require.NoError(t, registry.Register("failing-agent", failingAgentFactory(errors.New("step failed"))))
+	require.NoError(t, registry.Register("recovery-agent", testAgentFactory(
+		func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{
+					{ItemID: "item1", Name: "Recovered Item", Description: "recovered output"},
+				},
+			}, nil
+		},
+	)))
+	require.NoError(t, registry.Register("analyze-agent", testAgentFactory(
+		func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{
+					{ItemID: "analysis", Name: "Analysis", Description: "analysis done"},
+				},
+			}, nil
+		},
+	)))
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithRecoveryHandler(&mockRecoveryHandler{
+			recoverFn: func(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error) {
+				return &RecoveryDecision{
+					Strategy: RecoveryReplaceNode,
+					NewStep: &Step{
+						ID:        failure.StepID + "_recovery",
+						Name:      failure.StepID + " Recovery",
+						AgentType: "recovery-agent",
+						Input:     "recovery input",
+						Timeout:   10 * time.Second,
+					},
+				}, nil
+			},
+		})
+
+	// Topology: step1 -> step2 (step2 depends on step1)
+	// After recovery: step1 (failed) is replaced by step1_recovery, step2 depends on step1_recovery.
+	step1 := &Step{
+		ID:        "step1",
+		Name:      "Failing Step",
+		AgentType: "failing-agent",
+		Input:     "test input",
+		Timeout:   10 * time.Second,
+		RecoveryPolicy: &RecoveryPolicy{
+			Strategy: RecoveryReplaceNode,
+		},
+	}
+	step2 := &Step{
+		ID:        "step2",
+		Name:      "Analysis Step",
+		AgentType: "analyze-agent",
+		Input:     "analyze",
+		DependsOn: []string{"step1"},
+		Timeout:   10 * time.Second,
+	}
+
+	dag, _ := NewMutableDAG([]*Step{step1, step2})
+
+	workflow := &Workflow{
+		ID:    "wf-replace-chain",
+		Name:  "replace node chain workflow",
+		Steps: dag.Steps(),
+	}
+
+	result, err := executor.ExecuteDynamic(context.Background(), workflow, "input", dag)
+	require.NoError(t, err, "workflow should succeed with chain recovery")
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify the replacement step ran and step2 also ran.
+	stepResults := make(map[string]*StepResult)
+	for _, sr := range result.Steps {
+		stepResults[sr.StepID] = sr
+	}
+
+	assert.Equal(t, StepStatusFailed, stepResults["step1"].Status, "original step should be failed")
+	assert.Equal(t, StepStatusCompleted, stepResults["step1_recovery"].Status, "replacement step should be completed")
+	assert.Equal(t, StepStatusCompleted, stepResults["step2"].Status, "downstream step should be completed")
+}
+
+// TestDynamicExecutor_RecoveryEvents verifies that recovery events are emitted
+// in the correct order.
+func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
+	registry := NewAgentRegistry()
+	require.NoError(t, registry.Register("failing-agent", failingAgentFactory(errors.New("step failed"))))
+	require.NoError(t, registry.Register("recovery-agent", testAgentFactory(
+		func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{
+					{ItemID: "item1", Name: "Recovered Item", Description: "recovered output"},
+				},
+			}, nil
+		},
+	)))
+
+	var eventsMu sync.Mutex
+	var emittedEvents []string
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithRecoveryHandler(&mockRecoveryHandler{
+			recoverFn: func(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error) {
+				return &RecoveryDecision{
+					Strategy: RecoveryReplaceNode,
+					NewStep: &Step{
+						ID:        failure.StepID + "_recovery",
+						Name:      failure.StepID + " Recovery",
+						AgentType: "recovery-agent",
+						Input:     "recovery input",
+						Timeout:   10 * time.Second,
+					},
+				}, nil
+			},
+		}).
+		WithRecoveryEventSink(func(ctx context.Context, eventType events.EventType, payload map[string]any) {
+			eventsMu.Lock()
+			emittedEvents = append(emittedEvents, string(eventType))
+			eventsMu.Unlock()
+		})
+
+	step1 := &Step{
+		ID:        "step1",
+		Name:      "Failing Step",
+		AgentType: "failing-agent",
+		Input:     "test input",
+		Timeout:   10 * time.Second,
+		RecoveryPolicy: &RecoveryPolicy{
+			Strategy: RecoveryReplaceNode,
+		},
+	}
+
+	dag, _ := NewMutableDAG([]*Step{step1})
+
+	workflow := &Workflow{
+		ID:    "wf-recovery-events",
+		Name:  "recovery events workflow",
+		Steps: dag.Steps(),
+	}
+
+	_, err := executor.ExecuteDynamic(context.Background(), workflow, "input", dag)
+	require.NoError(t, err, "workflow should succeed")
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+
+	require.Len(t, emittedEvents, 3, "should emit step.failed, step.recovery.started, step.recovery.completed")
+	assert.Equal(t, string(events.EventStepFailed), emittedEvents[0])
+	assert.Equal(t, string(events.EventStepRecoveryStarted), emittedEvents[1])
+	assert.Equal(t, string(events.EventStepRecoveryCompleted), emittedEvents[2])
+}
+
+// mockRecoveryHandler implements StepRecoveryHandler for testing.
+type mockRecoveryHandler struct {
+	recoverFn func(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error)
+}
+
+func (m *mockRecoveryHandler) RecoverStep(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error) {
+	return m.recoverFn(ctx, failure, dag)
 }
 
 // TestDynamicExecutor_HITLBuilderMethods verifies that WithHitlHandler and

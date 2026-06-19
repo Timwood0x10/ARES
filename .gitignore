@@ -6,8 +6,10 @@
 .codegraph/
 
 plan/
-
 bin/
+
+# Local config overrides — copy from config.example.yml and edit.
+config.yml
 
 /**/.venv/
 
@@ -19,3 +21,5 @@ bin/
 **/logs/
 !examples/**/*.log
 **/logs/
+
+examples/quant-trading/workflow/config.yml

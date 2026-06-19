@@ -1,0 +1,14 @@
+
+
+{
+  "ticker": "AAPL",
+  "score": 0.55,
+  "band": "neutral",
+  "confidence": 0.45,
+  "signals": [
+    "Limited real-time data access",
+    "General market conditions apply",
+    "Historical volatility patterns"
+  ],
+  "reasoning": "IMPORTANT DISCLAIMER: I do not have access to real-time market data, news feeds, options flow, or institutional positioning data. This analysis is based on general knowledge up to my training cutoff and should NOT be used for trading decisions. For actual AAPL sentiment analysis, you would need: (1) Real-time news sentiment from financial news APIs, (2) Options flow data showing call/put ratios and unusual activity, (3) Institutional 13F filings and positioning data, (4) Technical indicators and price action. A proper analysis would weigh recent earnings reports, product launches, regulatory concerns, supply chain news, and broader market conditions. Please consult a financial data provider like Bloomberg, Reuters, or your brokerage platform for accurate, current sentiment analysis."
+}

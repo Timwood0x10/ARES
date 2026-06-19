@@ -4,6 +4,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -34,6 +35,16 @@ func NewConversationRepository(db postgres.DBTX) *ConversationRepository {
 // conv - conversation message to create. ID should be empty to let database generate it.
 // Returns error if insert operation fails.
 func (r *ConversationRepository) Create(ctx context.Context, conv *storage_models.Conversation) error {
+	// Prepare metadata as JSONB for storage
+	var metadataArg interface{}
+	if conv.Metadata != nil {
+		metadataJSON, err := json.Marshal(conv.Metadata)
+		if err != nil {
+			return errors.Wrap(err, "marshal metadata")
+		}
+		metadataArg = metadataJSON
+	}
+
 	// Build query based on whether ID is provided
 	var query string
 	var args []interface{}
@@ -47,24 +58,24 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 		if createdAtIsZero {
 			query = `
 				INSERT INTO conversations
-				(session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+				(session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 				RETURNING id
 			`
 			args = []interface{}{
 				conv.SessionID, conv.TenantID, conv.UserID,
-				conv.AgentID, conv.Role, conv.Content, conv.ExpiresAt,
+				conv.AgentID, conv.Role, conv.Content, metadataArg, conv.ExpiresAt,
 			}
 		} else {
 			query = `
 				INSERT INTO conversations
-				(session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				(session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 				RETURNING id
 			`
 			args = []interface{}{
 				conv.SessionID, conv.TenantID, conv.UserID,
-				conv.AgentID, conv.Role, conv.Content, conv.ExpiresAt, conv.CreatedAt,
+				conv.AgentID, conv.Role, conv.Content, metadataArg, conv.ExpiresAt, conv.CreatedAt,
 			}
 		}
 	} else {
@@ -72,24 +83,24 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 		if createdAtIsZero {
 			query = `
 				INSERT INTO conversations
-				(id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+				(id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 				RETURNING id
 			`
 			args = []interface{}{
 				conv.ID, conv.SessionID, conv.TenantID, conv.UserID,
-				conv.AgentID, conv.Role, conv.Content, conv.ExpiresAt,
+				conv.AgentID, conv.Role, conv.Content, metadataArg, conv.ExpiresAt,
 			}
 		} else {
 			query = `
 				INSERT INTO conversations
-				(id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				(id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 				RETURNING id
 			`
 			args = []interface{}{
 				conv.ID, conv.SessionID, conv.TenantID, conv.UserID,
-				conv.AgentID, conv.Role, conv.Content, conv.ExpiresAt, conv.CreatedAt,
+				conv.AgentID, conv.Role, conv.Content, metadataArg, conv.ExpiresAt, conv.CreatedAt,
 			}
 		}
 	}
@@ -116,16 +127,22 @@ func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*stora
 	}
 
 	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
 		FROM conversations
 		WHERE id = $1
 	`
 
 	conv := &storage_models.Conversation{}
+	var metadataBytes []byte
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-		&conv.AgentID, &conv.Role, &conv.Content, &conv.ExpiresAt, &conv.CreatedAt,
+		&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 	)
+	if metadataBytes != nil {
+		if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
+			slog.Warn("Failed to unmarshal metadata", "error", err)
+		}
+	}
 
 	if err == sql.ErrNoRows {
 		return nil, coreerrors.ErrRecordNotFound
@@ -146,7 +163,7 @@ func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*stora
 // Returns list of conversation messages ordered by created time (ascending).
 func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]*storage_models.Conversation, error) {
 	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
 		FROM conversations
 		WHERE session_id = $1 AND tenant_id = $2
 		ORDER BY created_at ASC
@@ -166,13 +183,19 @@ func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, te
 	conversations := make([]*storage_models.Conversation, 0)
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
+		var metadataBytes []byte
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			slog.Error("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if metadataBytes != nil {
+			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
+				slog.Warn("Failed to unmarshal metadata", "error", err)
+			}
 		}
 		conversations = append(conversations, conv)
 	}
@@ -228,7 +251,7 @@ func (r *ConversationRepository) Delete(ctx context.Context, id string) error {
 // Returns list of recent conversation messages ordered by created time (descending).
 func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID string, limit int) ([]*storage_models.Conversation, error) {
 	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
 		FROM conversations
 		WHERE user_id = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
@@ -248,13 +271,19 @@ func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID
 	conversations := make([]*storage_models.Conversation, 0)
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
+		var metadataBytes []byte
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			slog.Warn("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if metadataBytes != nil {
+			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
+				slog.Warn("Failed to unmarshal metadata", "error", err)
+			}
 		}
 		conversations = append(conversations, conv)
 	}
@@ -276,7 +305,7 @@ func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID
 // Returns list of recent conversation messages ordered by created time (descending).
 func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenantID string, limit int) ([]*storage_models.Conversation, error) {
 	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, expires_at, created_at
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
 		FROM conversations
 		WHERE agent_id = $1 AND tenant_id = $2
 		ORDER BY created_at DESC
@@ -296,13 +325,19 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 	conversations := make([]*storage_models.Conversation, 0)
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
+		var metadataBytes []byte
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			slog.Error("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if metadataBytes != nil {
+			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
+				slog.Warn("Failed to unmarshal metadata", "error", err)
+			}
 		}
 		conversations = append(conversations, conv)
 	}

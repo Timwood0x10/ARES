@@ -250,6 +250,13 @@ func (s *Service) buildPrompt(messages []*core.LLMMessage) string {
 	return prompt
 }
 
+// Close releases resources held by the LLM service.
+func (s *Service) Close() {
+	if s.client != nil {
+		s.client.Close()
+	}
+}
+
 // getModel returns the model name to use.
 func (s *Service) getModel() string {
 	if s.llmConfig != nil && s.llmConfig.Model != "" {

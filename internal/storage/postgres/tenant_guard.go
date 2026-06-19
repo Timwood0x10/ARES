@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	coreerrors "goagentx/internal/core/errors"
 	"goagentx/internal/errors"
 )
 
@@ -34,8 +33,8 @@ func NewTenantGuard(pool *Pool) *TenantGuard {
 // tenantID - tenant identifier, must be non-empty.
 // Returns error if setting tenant context fails.
 func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) error {
-	if tenantID == "" {
-		return coreerrors.ErrInvalidArgument
+	if err := validateUserInput(tenantID, 255); err != nil {
+		return err
 	}
 
 	// Manually escape single quotes for SQL literal

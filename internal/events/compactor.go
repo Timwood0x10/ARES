@@ -190,7 +190,7 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 			} else if aid, ok := evt.Payload["agent_id"].(string); ok && aid != "" {
 				summary.AgentID = aid
 			} else {
-				summary.AgentID = streamID
+				summary.AgentID = "unknown"
 			}
 		}
 

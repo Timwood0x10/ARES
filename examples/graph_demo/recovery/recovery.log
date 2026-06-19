@@ -1,0 +1,8 @@
+Recovery triggered for step "s1" (error: step failed)
+Workflow status: completed
+Steps executed: 3
+  Step "s1": status=failed output=""
+  Step "s1_recovery": status=completed output="success: retry_s1"
+  Step "s2": status=completed output="success: process"
+Recovery events: [step.failed step.recovery.started step.recovery.completed]
+Recovery example completed successfully!

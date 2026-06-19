@@ -611,7 +611,7 @@ func TestCompactor_BuildSummary_ExtractsTaskInfo(t *testing.T) {
 	require.Len(t, summaries, 1)
 	s := summaries[0]
 
-	assert.Equal(t, streamID, s.AgentID)
+	assert.Equal(t, "unknown", s.AgentID)
 	assert.Contains(t, s.TasksCreated, "alpha")
 	assert.Contains(t, s.TasksCreated, "beta")
 	assert.Contains(t, s.TasksCreated, "gamma")
@@ -955,12 +955,20 @@ func TestCompactableEventStore_GetSummariesForAgent(t *testing.T) {
 	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
 	ctx := context.Background()
 
-	appendNEventsToWrapped(t, wrapped, ctx, "agent-1-stream", 5)
+	// Append events WITH agent_id metadata so the summary captures it.
+	for i := 0; i < 5; i++ {
+		evt := &Event{
+			Type:     EventMessageAdded,
+			Metadata: map[string]any{"agent_id": "agent-1-stream"},
+			Payload:  map[string]any{"role": "user", "content": "hello"},
+		}
+		err := wrapped.Append(ctx, "agent-1-stream", []*Event{evt}, 0)
+		require.NoError(t, err)
+	}
 	time.Sleep(200 * time.Millisecond)
 
 	summaries, err := wrapped.GetSummariesForAgent(ctx, "agent-1-stream")
 	require.NoError(t, err)
-	// AgentID defaults to streamID when no agent_id in metadata.
 	assert.NotEmpty(t, summaries)
 }
 
@@ -1102,7 +1110,7 @@ func TestBuildSummary_SingleEvent_MinimalFields(t *testing.T) {
 	assert.Equal(t, 1, result.EventCount)
 	assert.Equal(t, int64(42), result.StartVersion)
 	assert.Equal(t, int64(42), result.EndVersion)
-	assert.Equal(t, "single-stream", result.AgentID)
+	assert.Equal(t, "unknown", result.AgentID)
 	assert.Equal(t, "active", result.Outcome)
 	assert.NotEmpty(t, result.SummaryText)
 	assert.NotEmpty(t, result.ID)
@@ -1120,7 +1128,7 @@ func TestBuildSummary_EventsWithoutMetadata_UsesStreamIDAsAgent(t *testing.T) {
 
 	result := c.buildSummary("my-agent", events)
 	require.NotNil(t, result)
-	assert.Equal(t, "my-agent", result.AgentID, "should fall back to streamID as agent ID")
+	assert.Equal(t, "unknown", result.AgentID, "should use 'unknown' when no agent_id available")
 }
 
 func TestBuildSummary_MetadataAgentID_TakesPrecedence(t *testing.T) {

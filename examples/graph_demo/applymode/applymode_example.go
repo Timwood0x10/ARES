@@ -1,0 +1,137 @@
+// Package main compares ApplyAtCheckpoint vs ApplyImmediate in DynamicExecutor.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"goagentx/internal/agents/base"
+	"goagentx/internal/core/models"
+	"goagentx/internal/workflow/engine"
+)
+
+type dynAgent struct {
+	id        string
+	agentType string
+	fn        func(ctx context.Context, input any) (any, error)
+}
+
+func (a *dynAgent) ID() string                                          { return a.id }
+func (a *dynAgent) Type() models.AgentType                              { return models.AgentType(a.agentType) }
+func (a *dynAgent) Status() models.AgentStatus                          { return models.AgentStatusReady }
+func (a *dynAgent) Start(ctx context.Context) error                     { return nil }
+func (a *dynAgent) Stop(ctx context.Context) error                      { return nil }
+func (a *dynAgent) Process(ctx context.Context, input any) (any, error) { return a.fn(ctx, input) }
+func (a *dynAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	return nil, nil
+}
+
+func makeResult(desc string) *models.RecommendResult {
+	return &models.RecommendResult{Items: []*models.RecommendItem{{Description: desc}}}
+}
+
+// agentWithDAG dynamically adds a downstream step during Process.
+type agentWithDAG struct {
+	id         string
+	agentType  string
+	dag        *engine.MutableDAG
+	ctx        context.Context
+	stepID     string
+	childName  string
+	childInput string
+	mu         sync.Mutex
+	childAdded bool
+}
+
+func (a *agentWithDAG) ID() string                      { return a.id }
+func (a *agentWithDAG) Type() models.AgentType          { return models.AgentType(a.agentType) }
+func (a *agentWithDAG) Status() models.AgentStatus      { return models.AgentStatusReady }
+func (a *agentWithDAG) Start(ctx context.Context) error { return nil }
+func (a *agentWithDAG) Stop(ctx context.Context) error  { return nil }
+func (a *agentWithDAG) Process(ctx context.Context, input any) (any, error) {
+	time.Sleep(50 * time.Millisecond)
+
+	a.mu.Lock()
+	if !a.childAdded {
+		a.childAdded = true
+		err := a.dag.AddNode(a.ctx, &engine.Step{
+			ID:        a.stepID + "_child",
+			Name:      a.childName,
+			AgentType: "worker",
+			Input:     a.childInput,
+			DependsOn: []string{a.stepID},
+		})
+		if err != nil {
+			a.mu.Unlock()
+			return nil, fmt.Errorf("AddNode: %w", err)
+		}
+	}
+	a.mu.Unlock()
+
+	return makeResult("processed: " + fmt.Sprint(input)), nil
+}
+func (a *agentWithDAG) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	return nil, nil
+}
+
+func main() {
+	fmt.Println("=== ApplyAtCheckpoint ===")
+	runDemo(engine.ApplyAtCheckpoint)
+
+	fmt.Println("\n=== ApplyImmediate ===")
+	runDemo(engine.ApplyImmediate)
+}
+
+func runDemo(mode engine.ApplyMode) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dag, err := engine.NewMutableDAG([]*engine.Step{
+		{ID: "s1", Name: "First", AgentType: "adder", Input: "first"},
+	})
+	if err != nil {
+		log.Fatalf("NewMutableDAG: %v", err)
+	}
+
+	wf := &engine.Workflow{
+		ID:    fmt.Sprintf("applymode-%d", mode),
+		Name:  "ApplyMode Demo",
+		Steps: dag.Steps(),
+	}
+
+	registry := engine.NewAgentRegistry()
+	_ = registry.Register("adder", func(actx context.Context, config interface{}) (base.Agent, error) {
+		return &agentWithDAG{
+			id:         "adder-instance",
+			agentType:  "adder",
+			dag:        dag,
+			ctx:        ctx,
+			stepID:     "s1",
+			childName:  "Child (added dynamically)",
+			childInput: "child_of_s1",
+		}, nil
+	})
+	_ = registry.Register("worker", func(actx context.Context, config interface{}) (base.Agent, error) {
+		return &dynAgent{id: "w", agentType: "worker",
+			fn: func(actx context.Context, input any) (any, error) {
+				return makeResult("processed: " + fmt.Sprint(input)), nil
+			},
+		}, nil
+	})
+
+	executor := engine.NewDynamicExecutor(registry, mode, engine.WithMaxParallel(1))
+
+	result, err := executor.ExecuteDynamic(ctx, wf, "start", dag)
+	if err != nil {
+		log.Printf("ExecuteDynamic (mode=%d): %v", mode, err)
+	}
+	if result != nil {
+		fmt.Printf("  Status: %s, steps: %d\n", result.Status, len(result.Steps))
+		for _, s := range result.Steps {
+			fmt.Printf("    %q: status=%s output=%q\n", s.StepID, s.Status, s.Output)
+		}
+	}
+}

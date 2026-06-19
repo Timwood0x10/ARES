@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -49,20 +50,59 @@ const (
 
 // Step represents a single step in a workflow.
 type Step struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	AgentType   string            `json:"agent_type"`
-	Input       string            `json:"input"`
-	DependsOn   []string          `json:"depends_on"`
-	Timeout     time.Duration     `json:"timeout"`
-	RetryPolicy *RetryPolicy      `json:"retry_policy,omitempty"`
-	Interrupt   *InterruptConfig  `json:"interrupt,omitempty"`
-	Status      StepStatus        `json:"status"`
-	Output      string            `json:"output,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	StartedAt   time.Time         `json:"started_at,omitempty"`
-	FinishedAt  time.Time         `json:"finished_at,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	AgentType      string            `json:"agent_type"`
+	Input          string            `json:"input"`
+	DependsOn      []string          `json:"depends_on"`
+	Timeout        time.Duration     `json:"timeout"`
+	RetryPolicy    *RetryPolicy      `json:"retry_policy,omitempty"`
+	RecoveryPolicy *RecoveryPolicy   `json:"recovery_policy,omitempty"`
+	Interrupt      *InterruptConfig  `json:"interrupt,omitempty"`
+	Status         StepStatus        `json:"status"`
+	Output         string            `json:"output,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	StartedAt      time.Time         `json:"started_at,omitempty"`
+	FinishedAt     time.Time         `json:"finished_at,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+}
+
+// RecoveryStrategy classifies the recovery approach for a failed step.
+type RecoveryStrategy string
+
+const (
+	RecoveryRetry       RecoveryStrategy = "retry"
+	RecoveryReplaceNode RecoveryStrategy = "replace_node"
+	RecoveryFailFast    RecoveryStrategy = "fail_fast"
+)
+
+// RecoveryPolicy defines how the engine should recover when a step fails.
+type RecoveryPolicy struct {
+	Strategy         RecoveryStrategy `json:"strategy"`
+	MaxAttempts      int              `json:"max_attempts,omitempty"`
+	ReplacementAgent string           `json:"replacement_agent,omitempty"`
+}
+
+// StepFailure contains the context for a step failure that may be recoverable.
+type StepFailure struct {
+	ExecutionID string
+	WorkflowID  string
+	StepID      string
+	Error       string
+	Input       string
+}
+
+// RecoveryDecision is the outcome of a recovery handler invocation.
+type RecoveryDecision struct {
+	Strategy RecoveryStrategy
+	NewStep  *Step // populated for replace_node
+}
+
+// StepRecoveryHandler defines the interface for recovering failed workflow steps.
+// Implementations receive the failure context and the mutable DAG, and return
+// a decision specifying whether to retry, replace, or fail.
+type StepRecoveryHandler interface {
+	RecoverStep(ctx context.Context, failure StepFailure, dag *MutableDAG) (*RecoveryDecision, error)
 }
 
 // InterruptConfig marks a step as requiring human approval before execution.

@@ -34,6 +34,15 @@ type Message struct {
 	Time time.Time
 	// Metadata is optional metadata.
 	Metadata Metadata
+
+	// TurnID identifies the ReAct turn this message belongs to for causal tracing.
+	TurnID string
+	// EventKind categorises the message for event-sourcing reconstruction.
+	EventKind string
+	// ParentID references the tool_call_id or message this is a response to.
+	ParentID string
+	// ArtifactRefs lists external artifact references produced by this message.
+	ArtifactRefs []string
 }
 
 // Session represents a conversation session.

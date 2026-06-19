@@ -216,8 +216,13 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			return errors.Wrap(err, "marshal metadata")
 		}
 
-		// Convert embedding vector to pgvector format
-		embeddingStr := float64ToVectorString(chunk.Embedding)
+		// Handle nil or empty embedding vector
+		var embeddingStr interface{}
+		if len(chunk.Embedding) == 0 {
+			embeddingStr = nil
+		} else {
+			embeddingStr = float64ToVectorString(chunk.Embedding)
+		}
 
 		// Handle optional document_id
 		var documentID interface{}
@@ -227,20 +232,45 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			documentID = nil
 		}
 
-		query := `
+		// Build INSERT dynamically to handle optional embedding and timestamps.
+		// Three variable parts:
+		//   1. embedding:  NULL (no vector) or ::vector cast
+		//   2. created_at: NOW() or $N
+		//   3. updated_at: NOW() or $N
+		// Using dynamic SQL avoids 4-way branch explosion (embedding×timestamp)
+		// while keeping a single query template with positional parameters.
+		columns := "tenant_id, content, embedding, embedding_model, embedding_version, " +
+			"embedding_status, source_type, source, metadata, document_id, " +
+			"chunk_index, content_hash, access_count, created_at, updated_at"
+
+		var embeddingPlaceholder string
+		if embeddingStr == nil {
+			embeddingPlaceholder = "NULL"
+		} else {
+			embeddingPlaceholder = "$3::vector"
+		}
+
+		createdAtPlaceholder := "$14"
+		if chunk.CreatedAt.IsZero() {
+			createdAtPlaceholder = "NOW()"
+		}
+		updatedAtPlaceholder := "$15"
+		if chunk.UpdatedAt.IsZero() {
+			updatedAtPlaceholder = "NOW()"
+		}
+
+		query := fmt.Sprintf(`
 			INSERT INTO knowledge_chunks_1024
-			(tenant_id, content, embedding, embedding_model, embedding_version,
-			 embedding_status, source_type, source, metadata, document_id,
-			 chunk_index, content_hash, access_count, created_at, updated_at)
-			VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			(%s)
+			VALUES ($1, $2, %s, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, %s, %s)
 			ON CONFLICT (content_hash) DO UPDATE SET
 				access_count = knowledge_chunks_1024.access_count + 1,
 				updated_at = NOW()
-			RETURNING id
-		`
+			RETURNING id`, columns, embeddingPlaceholder, createdAtPlaceholder, updatedAtPlaceholder)
 
+		// Always send CreatedAt and UpdatedAt; they are ignored via NOW() placeholder.
 		var id string
-		err = tx.QueryRowContext(ctx, query,
+		qerr := tx.QueryRowContext(ctx, query,
 			chunk.TenantID, chunk.Content, embeddingStr,
 			chunk.EmbeddingModel, chunk.EmbeddingVersion, chunk.EmbeddingStatus,
 			chunk.SourceType, chunk.Source, metadataJSON, documentID,
@@ -248,8 +278,8 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			chunk.CreatedAt, chunk.UpdatedAt,
 		).Scan(&id)
 
-		if err != nil {
-			return errors.Wrapf(err, "create knowledge chunk %d", i)
+		if qerr != nil {
+			return errors.Wrapf(qerr, "create knowledge chunk %d", i)
 		}
 
 		// Fill the ID for the chunk

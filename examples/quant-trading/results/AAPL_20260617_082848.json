@@ -1,0 +1,71 @@
+{
+  "ticker": "AAPL",
+  "model": "deepseek-v4-flash",
+  "analyzed_at": "2026-06-17T08:28:48+08:00",
+  "bars": 262,
+  "agents": [
+    {
+      "id": "fundamentals",
+      "name": "Fundamentals Analyst",
+      "phase": 0,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "sentiment",
+      "name": "Sentiment Analyst",
+      "phase": 0,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "news",
+      "name": "News Analyst",
+      "phase": 0,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "technical",
+      "name": "Technical Analyst",
+      "phase": 0,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "bull",
+      "name": "Bull Researcher",
+      "phase": 1,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "bear",
+      "name": "Bear Researcher",
+      "phase": 1,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "trader",
+      "name": "Trader",
+      "phase": 2,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "risk",
+      "name": "Risk Manager",
+      "phase": 3,
+      "status": "completed",
+      "analysis": ""
+    },
+    {
+      "id": "pm",
+      "name": "Portfolio Manager",
+      "phase": 4,
+      "status": "completed",
+      "analysis": ""
+    }
+  ]
+}

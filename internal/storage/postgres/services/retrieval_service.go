@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"goagentx/internal/errors"
 	"goagentx/internal/experience"
 	"goagentx/internal/llm"
+	memembed "goagentx/internal/memory/embedding"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -160,6 +162,9 @@ type RetrievalService struct {
 	distillationService *experience.DistillationService
 	rankingService      *experience.RankingService
 	conflictResolver    *experience.ConflictResolver
+
+	// Embedding pipeline for unified query embedding.
+	pipeline memembed.EmbeddingPipeline
 }
 
 // NewRetrievalService creates a new RetrievalService instance.
@@ -202,6 +207,13 @@ func NewRetrievalService(
 		queryCacheTTL:            10 * time.Minute, // Queries cached for 10 minutes
 		queryCacheMaxLen:         500,              // Limit cache to 500 entries
 	}
+}
+
+// SetEmbeddingPipeline configures the unified embedding pipeline for query embedding.
+// When set, getEmbedding uses the pipeline with canonical query specs instead of
+// calling the embedding client directly.
+func (s *RetrievalService) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	s.pipeline = pipeline
 }
 
 // SetExperienceServices sets the experience-specific services.
@@ -354,10 +366,15 @@ func (s *RetrievalService) validateRequest(req *SearchRequest) error {
 	return nil
 }
 
+// mathExprPattern matches mathematical expressions like "3+5", "a*2", "10/3".
+// Operators are only matched when adjacent to digits to avoid false positives
+// on programming language symbols (C++, *args, **kwargs).
+var mathExprPattern = regexp.MustCompile(`\d+\s*[+*/]\s*\d+`)
+
 // isPrecisionMode determines if precision mode should be used for the query.
 // Precision mode is triggered for:
 // - Short queries (≤10 characters)
-// - Queries containing special symbols (=+-*/:)
+// - Queries containing special symbols (= or mathematical expressions)
 // This uses deterministic matching to cover semantic retrieval for precise queries.
 func (s *RetrievalService) isPrecisionMode(query string) bool {
 	// Short queries use exact/keyword matching for precision
@@ -367,7 +384,10 @@ func (s *RetrievalService) isPrecisionMode(query string) bool {
 	}
 
 	// Core expression patterns: containing equals sign or mathematical operators
-	if strings.ContainsAny(query, "=+-*/:") {
+	// Note: - is intentionally excluded to avoid matching hyphens in compound words (e.g., "go-agent")
+	// Note: +, *, / are checked via regex requiring digit adjacency to avoid matching
+	//       programming symbols like "C++", "*args", "**kwargs"
+	if strings.ContainsAny(query, "=:") || mathExprPattern.MatchString(query) {
 		return true
 	}
 
@@ -419,7 +439,7 @@ func (s *RetrievalService) searchPrecision(ctx context.Context, req *SearchReque
 func (s *RetrievalService) searchExact(ctx context.Context, req *SearchRequest) ([]*SearchResult, error) {
 	s.logger.Debug("Running exact match search", "query", req.Query)
 
-	chunks, err := s.kbRepo.SearchBySubstring(ctx, req.Query, req.TenantID, 5)
+	chunks, err := s.kbRepo.SearchBySubstring(ctx, req.Query, req.TenantID, req.TopK)
 	if err != nil {
 		s.logger.Error("Exact match search failed", "error", err)
 		return nil, errors.Wrap(err, "exact match search")
@@ -528,19 +548,35 @@ func (s *RetrievalService) getEmbedding(ctx context.Context, query string) []flo
 		return nil
 	}
 
+	// Use the unified embedding pipeline when available.
+	if s.pipeline != nil {
+		spec, err := s.pipeline.BuildSpec(memembed.KindMemoryQuery, query)
+		if err != nil {
+			s.logger.Warn("Failed to build query spec", "error", err)
+			return nil
+		}
+		vec, err := s.pipeline.Embed(ctx, spec)
+		if err != nil {
+			s.logger.Warn("Failed to get embedding via pipeline", "query", query, "error", err)
+			return nil
+		}
+		return vec
+	}
+
+	// Fallback to direct embedding client.
 	if s.embeddingClient == nil {
 		s.logger.Warn("Embedding client is nil, cannot get embedding")
 		return nil
 	}
 
-	embedding, err := s.embeddingClient.Embed(ctx, query)
+	vec, err := s.embeddingClient.Embed(ctx, query)
 	if err != nil {
 		s.logger.Warn("Failed to get embedding", "query", query, "error", err)
 		return nil
 	}
 
 	// Note: embedding service already returns normalized vectors, so no need to normalize again
-	return embedding
+	return vec
 }
 
 // getEmbeddingCached retrieves embedding with caching to reduce LLM calls.

@@ -219,7 +219,7 @@ func TestRepository_Coverage(t *testing.T) {
 		defer pool.Close()
 
 		repo := NewRepository(pool)
-		_, err = repo.WithTransaction(context.TODO())
+		_, err = repo.WithTransaction(context.Background())
 		if err != nil {
 			t.Logf("Expected error with nil context: %v", err)
 		}

@@ -143,6 +143,14 @@ func (m *mockMemoryManager) Stop(ctx context.Context) error {
 
 func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {}
 
+func (m *mockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {
+	return nil
+}
+
+func (m *mockMemoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+
 // TestNewService tests the NewService constructor.
 func TestNewService(t *testing.T) {
 	tests := []struct {

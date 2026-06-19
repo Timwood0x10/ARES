@@ -34,6 +34,8 @@ import (
 
 // SearchResult simple search result (local type for backward compatibility)
 type SearchResult struct {
+	ID      string
+	IsKB    bool
 	Content string
 	Source  string
 	Score   float64
@@ -672,26 +674,66 @@ func (kb *KnowledgeBase) ImportDocuments(ctx context.Context, tenantID, docPath 
 func (kb *KnowledgeBase) Search(ctx context.Context, tenantID, question string) ([]*SearchResult, error) {
 	log.Printf("Searching for: %s (tenant: %s)", question, tenantID)
 
-	// Use SimpleRetrievalService for pure vector similarity search
-	// This follows ChromaDB's simple approach: direct vector similarity without complex weights
+	// Generate query embedding once, reuse for both searches
+	queryEmbedding, embedErr := kb.embedding.EmbedWithPrefix(ctx, question, "query:")
+	if embedErr != nil {
+		log.Printf("Embedding failed: %v", embedErr)
+	}
+
+	// Search knowledge base chunks via SimpleRetrievalService
 	results, err := kb.retrieval.Search(ctx, tenantID, question)
 	if err != nil {
 		log.Printf("Search error: %v", err)
 		return nil, err
 	}
 
-	// Search results details removed for cleaner output
-	log.Printf("Search returned %d results", len(results))
+	log.Printf("Search returned %d results from knowledge base", len(results))
 
-	// Convert to local SearchResult type for backward compatibility
+	// Get KB chunk IDs
+	var kbChunkIDs map[int]string
+	if queryEmbedding != nil && kb.repo != nil {
+		chunks, chunkErr := kb.repo.SearchByVector(ctx, queryEmbedding, tenantID, len(results))
+		if chunkErr == nil {
+			kbChunkIDs = make(map[int]string)
+			for i, c := range chunks {
+				kbChunkIDs[i] = c.ID
+			}
+		}
+	}
+
+	// Also search distilled memories for user corrections
+	var distilledResults []*SearchResult
+	if kb.distilledRepo != nil && queryEmbedding != nil {
+		memories, searchErr := kb.distilledRepo.SearchByVector(ctx, queryEmbedding, tenantID, 5)
+		if searchErr == nil {
+			for _, mem := range memories {
+				distilledResults = append(distilledResults, &SearchResult{
+					ID:      mem.ID,
+					IsKB:    false,
+					Content: mem.Content,
+					Source:  fmt.Sprintf("Memory (Type: %s, Importance: %.2f)", mem.MemoryType, mem.Importance),
+					Score:   mem.Importance + 0.1,
+				})
+			}
+			log.Printf("Found %d results from distilled memories", len(distilledResults))
+		}
+	}
+
 	var localResults []*SearchResult
-	for _, r := range results {
+	for i, r := range results {
+		id := ""
+		if kbChunkIDs != nil {
+			id = kbChunkIDs[i]
+		}
 		localResults = append(localResults, &SearchResult{
+			ID:      id,
+			IsKB:    true,
 			Content: r.Content,
 			Source:  r.Source,
 			Score:   r.Score,
 		})
 	}
+	localResults = append(localResults, distilledResults...)
 
 	return localResults, nil
 }
@@ -712,6 +754,7 @@ func (kb *KnowledgeBase) GenerateAnswer(ctx context.Context, tenantID, question 
 	// Step 0.5: Detect user intent
 	lowerQuestion := strings.ToLower(question)
 	isCorrection := strings.Contains(lowerQuestion, "纠正") ||
+		strings.Contains(lowerQuestion, "纠错") ||
 		strings.Contains(lowerQuestion, "改正") ||
 		strings.Contains(lowerQuestion, "修正") ||
 		strings.Contains(lowerQuestion, "不对") ||
@@ -952,53 +995,96 @@ Answer:`, question, profileContext.String())
 		// Search for relevant distilled memories
 		var memoryResults []*repositories.DistilledMemory
 		if kb.distilledRepo != nil {
-			// Search for memories (for now, get recent memories; in production, this would use vector search)
-			memories, err := kb.distilledRepo.GetByUserID(ctx, tenantID, "default", 10)
-			if err == nil && len(memories) > 0 {
-				memoryResults = memories
-				log.Printf("👤 Found %d user distilled memories for correction", len(memories))
-			} else {
-				log.Printf("No user memories found or error: %v", err)
+			embedding, embedErr := kb.embedding.EmbedWithPrefix(ctx, question, "query:")
+			if embedErr == nil {
+				memories, searchErr := kb.distilledRepo.SearchByVector(ctx, embedding, tenantID, 10)
+				if searchErr == nil && len(memories) > 0 {
+					memoryResults = memories
+					log.Printf("👤 Found %d user distilled memories for correction", len(memories))
+				} else {
+					log.Printf("No user memories found or error: %v", searchErr)
+				}
 			}
-		}
-
-		// Prepare context for LLM to handle correction
-		var correctionContext strings.Builder
-		correctionContext.WriteString("CORRECTION REQUEST: The user wants to correct or update information.\n\n")
-
-		// Add knowledge base results
-		if len(kbResults) > 0 {
-			correctionContext.WriteString("Current Knowledge Base Information:\n")
-			for idx, result := range kbResults {
-				fmt.Fprintf(&correctionContext, "  [%d] %s (Score: %.3f)\n", idx+1, result.Content, result.Score)
-			}
-			correctionContext.WriteString("\n")
-		}
-
-		// Add distilled memory results
-		if len(memoryResults) > 0 {
-			correctionContext.WriteString("Current User Memory (to potentially update):\n")
-			for idx, mem := range memoryResults {
-				fmt.Fprintf(&correctionContext, "  [%d] %s (Type: %s, Importance: %.2f, ID: %s)\n",
-					idx+1, mem.Content, mem.MemoryType, mem.Importance, mem.ID)
-			}
-			correctionContext.WriteString("\n")
-		}
-
-		correctionContext.WriteString("Please identify which information needs correction and provide the correct version. Format your response as:\n")
-		correctionContext.WriteString("CORRECTION: [Memory ID or KB chunk] -> Corrected information\n\n")
-		correctionContext.WriteString("For example: CORRECTION: memory_id -> Ken is now an AI engineer using Python and TensorFlow instead of frontend development.\n")
-
-		log.Printf("🔄 Injecting correction context into conversation")
-		if kb.memMgr != nil {
-			_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "system", correctionContext.String())
 		}
 
 		if len(kbResults) == 0 && len(memoryResults) == 0 {
 			return "No relevant information found for correction. Please provide more details about what needs to be corrected.", nil
 		}
 
-		return fmt.Sprintf("I detected you want to correct or update information. I've analyzed both the knowledge base and your stored memories.\n\nFound %d relevant items that might need correction. Please provide the correct information and I'll update your memories accordingly.", len(kbResults)+len(memoryResults)), nil
+		// Build correction context
+		var correctionContext strings.Builder
+		correctionContext.WriteString("CORRECTION REQUEST: The user wants to correct or update information.\n\n")
+
+		if len(kbResults) > 0 {
+			correctionContext.WriteString("Current Knowledge Base Information:\n")
+			for idx, result := range kbResults {
+				idStr := result.ID
+				if idStr == "" {
+					idStr = fmt.Sprintf("KB:%d", idx+1)
+				} else {
+					idStr = fmt.Sprintf("KB:%s", idStr)
+				}
+				fmt.Fprintf(&correctionContext, "  [%s] %s (Score: %.3f)\n", idStr, result.Content, result.Score)
+			}
+			correctionContext.WriteString("\n")
+		}
+		if len(memoryResults) > 0 {
+			correctionContext.WriteString("Current User Memory (to potentially update):\n")
+			for _, mem := range memoryResults {
+				label := fmt.Sprintf("MEM:%s", mem.ID)
+				fmt.Fprintf(&correctionContext, "  [%s] %s (Type: %s, Importance: %.2f)\n",
+					label, mem.Content, mem.MemoryType, mem.Importance)
+			}
+			correctionContext.WriteString("\n")
+		}
+
+		fmt.Fprintf(&correctionContext, `User correction: %s
+
+Based on the user's correction, output ONLY the needed changes.
+CRITICAL RULES:
+- Output each command AT MOST ONCE (no duplicates).
+- Each target appears in only ONE UPDATE or DELETE command.
+- Do NOT repeat the same command.
+
+Formats:
+UPDATE: MEM:<id> -> <corrected content>
+DELETE: MEM:<id>
+UPDATE: KB:<id> -> <corrected content>
+DELETE: KB:<id>
+CREATE: <new knowledge to store>
+
+For UPDATE and CREATE commands, provide DETAILED and COMPLETE information.
+Enrich with relevant context so it serves as a comprehensive replacement.
+
+If no changes are needed, output only: NOCHANGE
+`, question)
+
+		llmResponse, llmErr := kb.llmClient.Generate(ctx, correctionContext.String())
+		if llmErr != nil {
+			log.Printf("LLM correction generation failed: %v, falling back to passive correction", llmErr)
+			return "I detected you want to correct information, but I'm having trouble processing it right now. Please try again.", nil
+		}
+
+		log.Printf("📋 LLM correction response: %s", llmResponse)
+
+		// Parse and execute correction commands
+		updated, deleted, executed := kb.executeCorrectionCommands(ctx, tenantID, llmResponse, memoryResults)
+		if !executed {
+			return "Unable to process the correction. Please rephrase.", nil
+		}
+
+		var result strings.Builder
+		result.WriteString("✅ 知识库已更新：\n")
+		if updated > 0 {
+			fmt.Fprintf(&result, "  - 更新 %d 条记忆\n", updated)
+		}
+		if deleted > 0 {
+			fmt.Fprintf(&result, "  - 删除 %d 条记忆\n", deleted)
+		}
+		if updated == 0 && deleted == 0 {
+			result.WriteString("  (未执行修改，请检查输入)\n")
+		}
+		return result.String(), nil
 	}
 	// Step 1: Determine if RAG is needed using LLM
 	needsRAG := true
@@ -1053,7 +1139,7 @@ Needs knowledge base search? Answer YES/NO only:`, question)
 
 			// Step 5: Generate answer with LLM
 			if kb.llmClient != nil {
-				prompt := fmt.Sprintf(`You are a helpful assistant that answers questions based on the provided knowledge base and conversation history.
+				prompt := fmt.Sprintf(`You are a helpful assistant that answers questions based on the provided knowledge base, conversation history, and corrected user memories.
 
 User Question: %s
 
@@ -1064,13 +1150,14 @@ Knowledge Base Context:
 %s
 
 CRITICAL INSTRUCTIONS:
-1. Answer the user's question based ONLY on the provided knowledge base context.
-2. If the user's question contains INCORRECT ASSUMPTIONS or MISUNDERSTANDINGS, POLITELY CORRECT them with FACTS from the context.
-3. DO NOT simply agree with the user if they are wrong - use facts to correct them.
-4. DO NOT make up information that is not in the context.
-5. If the context doesn't contain the answer, say "I don't have enough information to answer this question."
-6. Be concise and direct.
-7. Cite the relevant document numbers (e.g., [Document 1]) when using information from specific documents.
+1. Answer the user's question based on ALL provided context.
+2. If any "User Memory (Type: knowledge)" items appear in the context, they represent USER-CORRECTED information that takes PRIORITY over the original knowledge base.
+3. If the user's question contains INCORRECT ASSUMPTIONS or MISUNDERSTANDINGS, POLITELY CORRECT them with FACTS from the context.
+4. DO NOT simply agree with the user if they are wrong - use facts to correct them.
+5. DO NOT make up information that is not in the context.
+6. If the context doesn't contain the answer, say "I don't have enough information to answer this question."
+7. Be concise and direct.
+8. Cite the relevant document numbers (e.g., [Document 1]) when using information from specific documents.
 
 Answer:`, question, historyContext.String(), contextBuilder.String())
 
@@ -1706,6 +1793,220 @@ func NewExperienceRepositoryAdapter(repo *repositories.DistilledMemoryRepository
 	return &experienceRepositoryAdapter{
 		repo: repo,
 	}
+}
+
+// executeCorrectionCommands parses LLM correction commands and executes DB operations.
+func (kb *KnowledgeBase) executeCorrectionCommands(ctx context.Context, tenantID, llmResponse string, memories []*repositories.DistilledMemory) (int, int, bool) {
+	lines := strings.Split(llmResponse, "\n")
+	var updated, deleted int
+	hasCommand := false
+	seen := make(map[string]bool) // dedup by command type + target
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "NOCHANGE" {
+			continue
+		}
+
+		var dedupKey string
+
+		switch {
+		case strings.HasPrefix(line, "UPDATE:"):
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "UPDATE:"))
+			if idx := strings.Index(rest, "->"); idx > 0 {
+				idPart := strings.TrimSpace(rest[:idx])
+				newContent := strings.TrimSpace(rest[idx+2:])
+				if newContent == "" {
+					continue
+				}
+				dedupKey = "UPDATE:" + idPart
+				if seen[dedupKey] {
+					continue
+				}
+				seen[dedupKey] = true
+				hasCommand = true
+
+				switch {
+				case strings.HasPrefix(idPart, "MEM:"):
+					memID := strings.TrimSpace(strings.TrimPrefix(idPart, "MEM:"))
+					if !isValidUUID(memID) {
+						log.Printf("⚠️  Skipping UPDATE MEM: invalid UUID: %s", memID)
+						continue
+					}
+					if err := kb.updateMemory(ctx, tenantID, memID, newContent); err != nil {
+						log.Printf("❌ Failed to update memory %s: %v", memID, err)
+					} else {
+						updated++
+					}
+				case strings.HasPrefix(idPart, "KB:"):
+					chunkID := strings.TrimSpace(strings.TrimPrefix(idPart, "KB:"))
+					if !isValidUUID(chunkID) {
+						log.Printf("⚠️  Skipping UPDATE KB: invalid UUID: %s", chunkID)
+						continue
+					}
+					if err := kb.updateKnowledgeChunk(ctx, chunkID, newContent); err != nil {
+						log.Printf("❌ Failed to update KB chunk %s: %v", chunkID, err)
+					} else {
+						updated++
+					}
+				}
+			}
+
+		case strings.HasPrefix(line, "DELETE:"):
+			idPart := strings.TrimSpace(strings.TrimPrefix(line, "DELETE:"))
+			dedupKey = "DELETE:" + idPart
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			hasCommand = true
+
+			switch {
+			case strings.HasPrefix(idPart, "MEM:"):
+				memID := strings.TrimSpace(strings.TrimPrefix(idPart, "MEM:"))
+				if !isValidUUID(memID) {
+					log.Printf("⚠️  Skipping DELETE MEM: invalid UUID: %s", memID)
+					continue
+				}
+				if err := kb.distilledRepo.Delete(ctx, tenantID, memID); err != nil {
+					log.Printf("❌ Failed to delete memory %s: %v", memID, err)
+				} else {
+					deleted++
+				}
+			case strings.HasPrefix(idPart, "KB:"):
+				chunkID := strings.TrimSpace(strings.TrimPrefix(idPart, "KB:"))
+				if !isValidUUID(chunkID) {
+					log.Printf("⚠️  Skipping DELETE KB: invalid UUID: %s", chunkID)
+					continue
+				}
+				if err := kb.repo.Delete(ctx, chunkID); err != nil {
+					log.Printf("❌ Failed to delete KB chunk %s: %v", chunkID, err)
+				} else {
+					deleted++
+				}
+			}
+
+		case strings.HasPrefix(line, "CREATE:"):
+			newContent := strings.TrimSpace(strings.TrimPrefix(line, "CREATE:"))
+			if newContent == "" {
+				continue
+			}
+			dedupKey = "CREATE:" + newContent
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			hasCommand = true
+
+			if err := kb.createCorrectionMemory(ctx, tenantID, newContent); err != nil {
+				log.Printf("❌ Failed to create correction memory: %v", err)
+			} else {
+				updated++
+			}
+		}
+	}
+
+	return updated, deleted, hasCommand
+}
+
+// isValidUUID checks if a string is a valid UUID.
+func isValidUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// updateMemory updates a distilled memory with corrected content.
+func (kb *KnowledgeBase) updateMemory(ctx context.Context, tenantID, memID, newContent string) error {
+	all, err := kb.distilledRepo.GetByUserID(ctx, tenantID, "", 100)
+	if err != nil {
+		return fmt.Errorf("lookup memories: %w", err)
+	}
+	var target *repositories.DistilledMemory
+	for _, m := range all {
+		if m.ID == memID {
+			target = m
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("memory %s not found", memID)
+	}
+
+	embedding, err := kb.embedding.EmbedWithPrefix(ctx, newContent, "passage:")
+	if err != nil {
+		return fmt.Errorf("generate embedding: %w", err)
+	}
+
+	target.Content = newContent
+	target.Embedding = embedding
+	target.Importance = 0.8
+	if target.Metadata == nil {
+		target.Metadata = make(map[string]interface{})
+	}
+	target.Metadata["correction"] = true
+	target.Metadata["corrected_at"] = time.Now().Format(time.RFC3339)
+
+	return kb.distilledRepo.Update(ctx, target)
+}
+
+// createCorrectionMemory creates a new distilled memory with corrected information.
+func (kb *KnowledgeBase) createCorrectionMemory(ctx context.Context, tenantID, newContent string) error {
+	embedding, err := kb.embedding.EmbedWithPrefix(ctx, newContent, "passage:")
+	if err != nil {
+		return fmt.Errorf("generate embedding: %w", err)
+	}
+
+	mem := &repositories.DistilledMemory{
+		ID:               uuid.New().String(),
+		TenantID:         tenantID,
+		UserID:           "",
+		SessionID:        "",
+		Content:          newContent,
+		Embedding:        embedding,
+		EmbeddingModel:   "intfloat/e5-large",
+		EmbeddingVersion: 1,
+		MemoryType:       "knowledge",
+		Importance:       0.8,
+		Metadata: map[string]interface{}{
+			"source":       "correction",
+			"corrected_at": time.Now().Format(time.RFC3339),
+		},
+		AccessCount:    0,
+		LastAccessedAt: nil,
+		ExpiresAt:      time.Now().Add(90 * 24 * time.Hour),
+		CreatedAt:      time.Now(),
+	}
+
+	return kb.distilledRepo.Create(ctx, mem)
+}
+
+// updateKnowledgeChunk updates a knowledge base chunk with corrected content.
+func (kb *KnowledgeBase) updateKnowledgeChunk(ctx context.Context, chunkID, newContent string) error {
+	// Fetch existing chunk first to preserve other fields
+	existing, err := kb.repo.GetByID(ctx, chunkID)
+	if err != nil {
+		return fmt.Errorf("fetch chunk %s: %w", chunkID, err)
+	}
+
+	embedding, err := kb.embedding.EmbedWithPrefix(ctx, newContent, "passage:")
+	if err != nil {
+		return fmt.Errorf("generate embedding: %w", err)
+	}
+
+	existing.Content = newContent
+	existing.Embedding = embedding
+	return kb.repo.Update(ctx, existing)
 }
 
 // experienceRepositoryAdapter adapts DistilledMemoryRepository to ExperienceRepository interface

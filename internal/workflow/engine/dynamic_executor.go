@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 )
 
 // ApplyMode controls when graph mutations take effect during execution.
@@ -44,9 +45,11 @@ func WithStepTimeout(d time.Duration) ExecutorOption {
 // DynamicExecutor extends Executor to support mid-execution graph mutations.
 type DynamicExecutor struct {
 	*Executor
-	applyMode   ApplyMode
-	hitlHandler InterruptHandler
-	hitlStore   InterruptStore
+	applyMode         ApplyMode
+	hitlHandler       InterruptHandler
+	hitlStore         InterruptStore
+	recoveryHandler   StepRecoveryHandler
+	recoveryEventSink func(ctx context.Context, eventType events.EventType, payload map[string]any)
 }
 
 // NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
@@ -74,6 +77,18 @@ func (e *DynamicExecutor) WithHitlHandler(handler InterruptHandler) *DynamicExec
 // WithHitlStore sets the interrupt store for crash recovery.
 func (e *DynamicExecutor) WithHitlStore(store InterruptStore) *DynamicExecutor {
 	e.hitlStore = store
+	return e
+}
+
+// WithRecoveryHandler sets the step recovery handler for failed steps.
+func (e *DynamicExecutor) WithRecoveryHandler(handler StepRecoveryHandler) *DynamicExecutor {
+	e.recoveryHandler = handler
+	return e
+}
+
+// WithRecoveryEventSink sets a sink for step recovery events.
+func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, eventType events.EventType, payload map[string]any)) *DynamicExecutor {
+	e.recoveryEventSink = sink
 	return e
 }
 
@@ -138,6 +153,9 @@ func (e *DynamicExecutor) ExecuteDynamic(
 	copy(orderSlice, executionOrder)
 	currentOrder := &orderSlice
 
+	// recoveryCh signals the scheduler that recovery has added new steps.
+	recoveryCh := make(chan struct{}, 1)
+
 	var stepResults []*StepResult
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -161,76 +179,41 @@ func (e *DynamicExecutor) ExecuteDynamic(
 			resultChan,
 			errChan,
 			localOutputStore,
+			recoveryCh,
 		)
 		return nil
 	})
 
-	// Collect results. Update expected count after each result to handle DAG expansion.
-	collected := 0
+	// Collect results from resultChan until the scheduler closes it (all steps done).
+	// No expectedResults tracking: the scheduler sends exactly one result per step,
+	// including replacement steps from recovery, and closes the channel when all
+	// goroutines finish.
 	for {
-		// Re-read expected count under lock to pick up DAG expansions.
-		mu.Lock()
-		expectedResults := len(*currentOrder)
-		mu.Unlock()
-		if collected >= expectedResults {
-			// Check once more after a brief yield to catch late-arriving results.
-			select {
-			case result, ok := <-resultChan:
-				if !ok {
-					break
-				}
-				if result != nil {
-					collected++
-					stepResults = append(stepResults, result)
-					execution.StepStates[result.StepID] = &StepState{
-						StepID:     result.StepID,
-						Status:     result.Status,
-						Output:     result.Output,
-						Error:      result.Error,
-						FinishedAt: time.Now(),
-					}
-					if result.Status == StepStatusFailed {
-						execution.Status = WorkflowStatusFailed
-						execution.Error = result.Error
-						execution.FinishedAt = time.Now()
-						<-done
-						return &WorkflowResult{
-							ExecutionID: execution.ID,
-							WorkflowID:  workflow.ID,
-							Status:      WorkflowStatusFailed,
-							Error:       result.Error,
-							Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-							Steps:       stepResults,
-						}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
-					}
-				}
-			default:
-				// No more results pending. Re-check expected in case DAG grew.
-				mu.Lock()
-				newExpected := len(*currentOrder)
-				mu.Unlock()
-				if collected >= newExpected {
-					break
-				}
-				// DAG expanded, continue collecting.
-				continue
-			}
-			// Final check after drain.
-			mu.Lock()
-			finalExpected := len(*currentOrder)
-			mu.Unlock()
-			if collected >= finalExpected {
-				break
-			}
-			continue
-		}
-
 		select {
-		case result := <-resultChan:
+		case result, ok := <-resultChan:
+			if !ok {
+				// Channel closed — scheduler is done.
+				<-done
+				execution.Status = WorkflowStatusCompleted
+				execution.FinishedAt = time.Now()
+
+				output := make(map[string]interface{})
+				for _, r := range stepResults {
+					output[r.StepID] = r.Output
+				}
+
+				return &WorkflowResult{
+					ExecutionID: execution.ID,
+					WorkflowID:  workflow.ID,
+					Status:      execution.Status,
+					Output:      output,
+					Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+					Steps:       stepResults,
+				}, nil
+			}
 			if result == nil {
 				continue
 			}
-			collected++
 			stepResults = append(stepResults, result)
 			execution.StepStates[result.StepID] = &StepState{
 				StepID:     result.StepID,
@@ -239,7 +222,12 @@ func (e *DynamicExecutor) ExecuteDynamic(
 				Error:      result.Error,
 				FinishedAt: time.Now(),
 			}
+
 			if result.Status == StepStatusFailed {
+				if e.handleStepFailure(ctx, result, workflow, execution, mutableDAG, &lastVersion, currentOrder, completed, processed, &mu, recoveryCh) {
+					// Recovery replaced the failed step; continue waiting for the replacement.
+					continue
+				}
 				execution.Status = WorkflowStatusFailed
 				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
@@ -253,6 +241,7 @@ func (e *DynamicExecutor) ExecuteDynamic(
 					Steps:       stepResults,
 				}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
 			}
+
 		case err := <-errChan:
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
@@ -265,6 +254,7 @@ func (e *DynamicExecutor) ExecuteDynamic(
 				Duration:    execution.FinishedAt.Sub(execution.StartedAt),
 				Steps:       stepResults,
 			}, err
+
 		case <-ctx.Done():
 			execution.Status = WorkflowStatusCancelled
 			execution.FinishedAt = time.Now()
@@ -272,28 +262,11 @@ func (e *DynamicExecutor) ExecuteDynamic(
 			return nil, ctx.Err()
 		}
 	}
-
-	<-done
-
-	execution.Status = WorkflowStatusCompleted
-	execution.FinishedAt = time.Now()
-
-	output := make(map[string]interface{})
-	for _, result := range stepResults {
-		output[result.StepID] = result.Output
-	}
-
-	return &WorkflowResult{
-		ExecutionID: execution.ID,
-		WorkflowID:  workflow.ID,
-		Status:      execution.Status,
-		Output:      output,
-		Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-		Steps:       stepResults,
-	}, nil
 }
 
 // runDynamicSteps runs workflow steps with support for dynamic reordering.
+// The outer recovery loop allows the scheduler to re-enter step dispatch after
+// recovery adds replacement nodes.
 func (e *DynamicExecutor) runDynamicSteps(
 	ctx context.Context,
 	execution *WorkflowExecution,
@@ -310,6 +283,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 	resultChan chan *StepResult,
 	errChan chan error,
 	outputStore *OutputStore,
+	recoveryCh chan struct{},
 ) {
 	stepIndex := 0
 
@@ -317,160 +291,237 @@ func (e *DynamicExecutor) runDynamicSteps(
 	// instead of stepEg.Wait() which races with stepEg.Go().
 	stepDone := make(chan struct{}, 1)
 
-	for {
-		mu.Lock()
-		orderLen := len(*currentOrder)
-		mu.Unlock()
-		if stepIndex >= orderLen {
-			break
+	// Outer recovery loop: recovery may add steps after the inner dispatch
+	// loop exits. When that happens, the inner loop re-enters so the
+	// replacement steps get dispatched.
+	var recoveryPending bool
+	for recoveryRound := 0; recoveryRound < 5; recoveryRound++ {
+		// When the outer loop re-enters after recovery, reset stepIndex so
+		// the scheduler re-processes the new order from the beginning.
+		// Already-processed steps are skipped via the processed map.
+		if recoveryRound > 0 {
+			stepIndex = 0
 		}
-		select {
-		case <-ctx.Done():
-			_ = stepEg.Wait()
-			close(resultChan)
-			return
-		default:
-		}
-
-		// In ApplyImmediate mode, check for mutations before each step.
-		if e.applyMode == ApplyImmediate {
-			e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
-		}
-
-		mu.Lock()
-		order := *currentOrder
-		mu.Unlock()
-		stepID := order[stepIndex]
-		step := e.findStepInDAG(mutableDAG, stepID)
-		if step == nil {
-			// H2 fix: send synthetic result so the collection loop does not hang.
+		// Inner dispatch loop.
+	innerLoop:
+		for {
 			mu.Lock()
-			processed[stepID] = true
+			orderLen := len(*currentOrder)
 			mu.Unlock()
+			if stepIndex >= orderLen {
+				break
+			}
 			select {
-			case resultChan <- &StepResult{
-				StepID: stepID,
-				Status: StepStatusSkipped,
-			}:
 			case <-ctx.Done():
 				_ = stepEg.Wait()
 				close(resultChan)
 				return
+			default:
 			}
-			stepIndex++
-			continue
-		}
 
-		mu.Lock()
-		canExec := e.canExecute(step, completed)
-		alreadyProcessed := processed[stepID]
-		mu.Unlock()
+			// In ApplyImmediate mode, check for mutations before each step.
+			if e.applyMode == ApplyImmediate {
+				e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
+			}
 
-		if !canExec {
+			mu.Lock()
+			order := *currentOrder
+			mu.Unlock()
+			stepID := order[stepIndex]
+			step := e.findStepInDAG(mutableDAG, stepID)
+			if step == nil {
+				// H2 fix: send synthetic result so the collection loop does not hang.
+				mu.Lock()
+				processed[stepID] = true
+				mu.Unlock()
+				select {
+				case resultChan <- &StepResult{
+					StepID: stepID,
+					Status: StepStatusSkipped,
+				}:
+				case <-ctx.Done():
+					_ = stepEg.Wait()
+					close(resultChan)
+					return
+				}
+				stepIndex++
+				continue
+			}
+
+			// Read dependencies under DAG read lock to avoid data race
+			// with ReplaceNode (which modifies step.DependsOn under the
+			// DAG write lock during recovery).
+			mutableDAG.mu.RLock()
+			depsCopy := make([]string, len(step.DependsOn))
+			copy(depsCopy, step.DependsOn)
+			mutableDAG.mu.RUnlock()
+
+			mu.Lock()
+			canExec := e.canExecuteWithDeps(depsCopy, completed)
+			alreadyProcessed := processed[stepID]
+			mu.Unlock()
+
 			if alreadyProcessed {
 				stepIndex++
 				continue
 			}
 
-			// H3 fix: wait for any step goroutine to complete via stepDone channel,
-			// instead of stepEg.Wait() which blocks until ALL goroutines finish
-			// and races with concurrent stepEg.Go() calls.
-			deadlockTimer := time.NewTimer(5 * time.Second)
-			select {
-			case <-stepDone:
-				deadlockTimer.Stop()
-				// Some goroutine completed, re-check dependencies.
-				continue
-			case <-deadlockTimer.C:
-				// Timeout: potential deadlock detected.
+			if !canExec {
+				// H3 fix: wait for any step goroutine to complete via stepDone channel,
+				// instead of stepEg.Wait() which blocks until ALL goroutines finish
+				// and races with concurrent stepEg.Go() calls.
+				deadlockTimer := time.NewTimer(5 * time.Second)
 				select {
-				case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies", stepID):
-				default:
-				}
-				_ = stepEg.Wait()
-				close(resultChan)
-				return
-			case <-ctx.Done():
-				deadlockTimer.Stop()
-				_ = stepEg.Wait()
-				close(resultChan)
-				return
-			}
-		}
-
-		sem <- struct{}{}
-
-		stepIndex++
-
-		sid := stepID
-
-		// Check for HITL interrupt before dispatching the step goroutine.
-		if step.Interrupt != nil && e.hitlHandler == nil {
-			slog.Warn("step has interrupt config but no HITL handler, skipping interrupt check",
-				"step_id", step.ID)
-		}
-		if step.Interrupt != nil && e.hitlHandler != nil {
-			if handled := e.handleDynamicInterrupt(
-				ctx, execution.ID, step, resultChan, mu, processed,
-			); handled {
-				// stepIndex already incremented above; release semaphore and continue.
-				<-sem
-				continue
-			}
-		}
-
-		stepEg.Go(func() error {
-			defer func() {
-				<-sem
-
-				if r := recover(); r != nil {
-					mu.Lock()
-					processed[sid] = true
-					mu.Unlock()
-
-					result := &StepResult{
-						StepID: sid,
-						Status: StepStatusFailed,
-						Error:  fmt.Sprintf("panic: %v", r),
-					}
+				case <-stepDone:
+					deadlockTimer.Stop()
+					// Some goroutine completed, re-check dependencies.
+					continue
+				case <-recoveryCh:
+					deadlockTimer.Stop()
+					stepIndex = 0
+					recoveryPending = true
+					// Recovery added steps that may unblock this step.
+					// Break out of the inner loop so the outer recovery
+					// loop can re-enter with stepIndex reset.
+					break innerLoop
+				case <-deadlockTimer.C:
+					// Timeout: potential deadlock detected.
 					select {
-					case resultChan <- result:
-					case <-ctx.Done():
+					case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies", stepID):
+					default:
 					}
+					_ = stepEg.Wait()
+					close(resultChan)
+					return
+				case <-ctx.Done():
+					deadlockTimer.Stop()
+					_ = stepEg.Wait()
+					close(resultChan)
+					return
+				}
+			}
+
+			sem <- struct{}{}
+
+			stepIndex++
+
+			sid := stepID
+
+			// Check for HITL interrupt before dispatching the step goroutine.
+			if step.Interrupt != nil && e.hitlHandler == nil {
+				slog.Warn("step has interrupt config but no HITL handler, skipping interrupt check",
+					"step_id", step.ID)
+			}
+			if step.Interrupt != nil && e.hitlHandler != nil {
+				if handled := e.handleDynamicInterrupt(
+					ctx, execution.ID, step, resultChan, mu, processed,
+				); handled {
+					// stepIndex already incremented above; release semaphore and continue.
+					<-sem
+					continue
+				}
+			}
+
+			stepEg.Go(func() error {
+				defer func() {
+					<-sem
+
+					if r := recover(); r != nil {
+						mu.Lock()
+						processed[sid] = true
+						mu.Unlock()
+
+						result := &StepResult{
+							StepID: sid,
+							Status: StepStatusFailed,
+							Error:  fmt.Sprintf("panic: %v", r),
+						}
+						select {
+						case resultChan <- result:
+						case <-ctx.Done():
+						}
+					}
+
+					// H3 fix: signal stepDone so the scheduler can re-check dependencies.
+					select {
+					case stepDone <- struct{}{}:
+					default:
+					}
+				}()
+
+				startTime := time.Now()
+				result := e.executeStepCore(ctx, step, sid, initialInput, completed, outputStore, mu, startTime)
+
+				mu.Lock()
+				processed[sid] = true
+				if result.Status == StepStatusCompleted {
+					completed[sid] = true
+				}
+				mu.Unlock()
+
+				// Check for mutations after each step completes, regardless of mode.
+				// This ensures steps added dynamically (e.g., by the step's own agent)
+				// are picked up even when the scheduler loop has already exhausted
+				// the original topological order.
+				if result.Status == StepStatusCompleted {
+					e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
 				}
 
-				// H3 fix: signal stepDone so the scheduler can re-check dependencies.
 				select {
-				case stepDone <- struct{}{}:
+				case resultChan <- result:
+				case <-ctx.Done():
+				}
+				return nil
+			})
+		}
+		// Wait for all step goroutines to complete.
+		_ = stepEg.Wait()
+
+		// Recovery may be triggered by the collection loop processing a
+		// step failure result. After stepEg.Wait() returns, the collection
+		// loop goroutine may not have had CPU time yet. We wait for
+		// recoveryCh (up to 10ms) so the collection loop can signal it.
+		if recoveryPending {
+			recoveryPending = false
+			select {
+			case <-recoveryCh:
+			default:
+			}
+			e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
+			stepIndex = 0
+		} else {
+			select {
+			case <-recoveryCh:
+				e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
+				stepIndex = 0
+			case <-time.After(10 * time.Millisecond):
+				// Give collection loop time to process pending results.
+				// Poll one more time in case recovery was signaled
+				// during the timeout.
+				select {
+				case <-recoveryCh:
+					e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
+					stepIndex = 0
 				default:
 				}
-			}()
-
-			startTime := time.Now()
-			result := e.executeStepCore(ctx, step, sid, initialInput, completed, outputStore, mu, startTime)
-
-			mu.Lock()
-			processed[sid] = true
-			if result.Status == StepStatusCompleted {
-				completed[sid] = true
 			}
+		}
+
+		// Check for recovery-added steps that haven't been dispatched yet.
+		mu.Lock()
+		if stepIndex >= len(*currentOrder) {
 			mu.Unlock()
+			break
+		}
+		mu.Unlock()
 
-			// In ApplyAtCheckpoint mode, check for mutations after each step completes.
-			if e.applyMode == ApplyAtCheckpoint && result.Status == StepStatusCompleted {
-				e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
-			}
-
-			select {
-			case resultChan <- result:
-			case <-ctx.Done():
-			}
-			return nil
-		})
+		// Recovery added more steps. Before re-entering the dispatch loop,
+		// drain any stale stepDone signals so we don't get spurious wake-ups.
+		select {
+		case <-stepDone:
+		default:
+		}
 	}
-
-	// Wait for all step goroutines to complete.
-	_ = stepEg.Wait()
 
 	select {
 	case <-ctx.Done():
@@ -579,7 +630,10 @@ func (e *DynamicExecutor) handleDynamicInterrupt(
 	return false
 }
 
-// recomputeOrder checks if the DAG version changed and appends new steps to the order.
+// recomputeOrder checks if the DAG version changed and updates the execution
+// order to match the new topological sort. Replacing the entire order (rather
+// than appending) ensures that replacement nodes appear before their downstream
+// steps, preventing deadlock when a failed node is replaced.
 func (e *DynamicExecutor) recomputeOrder(
 	mutableDAG *MutableDAG,
 	lastVersion *uint64,
@@ -612,17 +666,10 @@ func (e *DynamicExecutor) recomputeOrder(
 
 	*lastVersion = currentVersion
 
-	// Find steps in newOrder not yet in currentOrder.
-	existing := make(map[string]bool, len(*currentOrder))
-	for _, id := range *currentOrder {
-		existing[id] = true
-	}
-
-	for _, id := range newOrder {
-		if !existing[id] {
-			*currentOrder = append(*currentOrder, id)
-		}
-	}
+	// Replace the order entirely so that the topological sort is preserved.
+	// This is critical when a replacement node (e.g. step1_recovery) needs
+	// to appear before downstream steps (e.g. step2) in the order.
+	*currentOrder = newOrder
 }
 
 // findStepInDAG finds a step by ID in the MutableDAG.
@@ -634,4 +681,119 @@ func (e *DynamicExecutor) findStepInDAG(mutableDAG *MutableDAG, stepID string) *
 		}
 	}
 	return nil
+}
+
+// handleStepFailure attempts to recover a failed step. Returns true if the
+// failure was handled and the workflow should continue. Returns false if the
+// workflow should fail. The caller is responsible for not recording the failure
+// result as terminal when true is returned.
+//
+// Requires lastVersion/currentOrder/mu to match those used by the active
+// runDynamicSteps goroutine so that recomputeOrder works correctly.
+//
+// recoveryCh is used to wake the scheduler when recovery adds new steps.
+func (e *DynamicExecutor) handleStepFailure(
+	ctx context.Context,
+	result *StepResult,
+	workflow *Workflow,
+	execution *WorkflowExecution,
+	mutableDAG *MutableDAG,
+	lastVersion *uint64,
+	currentOrder *[]string,
+	completed map[string]bool,
+	processed map[string]bool,
+	mu *sync.Mutex,
+	recoveryCh chan struct{},
+) bool {
+	step := e.findStepInDAG(mutableDAG, result.StepID)
+	if step == nil || step.RecoveryPolicy == nil || e.recoveryHandler == nil {
+		return false
+	}
+
+	if e.recoveryEventSink != nil {
+		e.recoveryEventSink(ctx, events.EventStepFailed, map[string]any{
+			"execution_id": execution.ID,
+			"workflow_id":  workflow.ID,
+			"step_id":      result.StepID,
+			"error":        result.Error,
+		})
+	}
+
+	failure := StepFailure{
+		ExecutionID: execution.ID,
+		WorkflowID:  workflow.ID,
+		StepID:      result.StepID,
+		Error:       result.Error,
+		Input:       "",
+	}
+
+	decision, err := e.recoveryHandler.RecoverStep(ctx, failure, mutableDAG)
+	if err != nil {
+		slog.Warn("recovery handler returned error, failing workflow",
+			"step_id", result.StepID,
+			"error", err,
+		)
+		return false
+	}
+	if decision == nil {
+		return false
+	}
+
+	switch decision.Strategy {
+	case RecoveryReplaceNode:
+		if decision.NewStep == nil {
+			slog.Warn("replace_node decision missing NewStep, failing workflow",
+				"step_id", result.StepID,
+			)
+			return false
+		}
+
+		if e.recoveryEventSink != nil {
+			e.recoveryEventSink(ctx, events.EventStepRecoveryStarted, map[string]any{
+				"execution_id":   execution.ID,
+				"workflow_id":    workflow.ID,
+				"failed_step_id": result.StepID,
+				"strategy":       decision.Strategy,
+			})
+		}
+
+		if err := mutableDAG.ReplaceNode(ctx, result.StepID, decision.NewStep); err != nil {
+			slog.Warn("ReplaceNode failed during recovery, failing workflow",
+				"step_id", result.StepID,
+				"error", err,
+			)
+			if e.recoveryEventSink != nil {
+				e.recoveryEventSink(ctx, events.EventStepRecoveryFailed, map[string]any{
+					"execution_id":   execution.ID,
+					"workflow_id":    workflow.ID,
+					"failed_step_id": result.StepID,
+					"error":          err.Error(),
+				})
+			}
+			return false
+		}
+
+		e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
+
+		// Wake the scheduler so it picks up the replacement step.
+		select {
+		case recoveryCh <- struct{}{}:
+		default:
+		}
+
+		if e.recoveryEventSink != nil {
+			e.recoveryEventSink(ctx, events.EventStepRecoveryCompleted, map[string]any{
+				"execution_id":        execution.ID,
+				"workflow_id":         workflow.ID,
+				"failed_step_id":      result.StepID,
+				"replacement_step_id": decision.NewStep.ID,
+				"strategy":            decision.Strategy,
+			})
+		}
+
+		return true
+
+	default:
+		return false
+	}
 }

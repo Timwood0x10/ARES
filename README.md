@@ -116,7 +116,9 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 **Memory System**
 - Session memory: short-term conversation context
 - Task memory: per-task working memory
-- Distilled memory: long-term compressed knowledge via 6-step pipeline
+- Distilled memory: long-term compressed knowledge via 6-step pipeline (errgroup-based concurrent embedding)
+- Multi-language experience extraction with Chinese keyword detection and importance scoring
+- Content-hash deduplication for idempotent memory storage
 - pgvector-backed semantic search
 
 **Storage Layer**
@@ -124,6 +126,7 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Built-in implementations: PostgreSQL + pgvector (production), in-memory (dev/test)
 - Repository pattern abstraction
 - Built-in cache layer + circuit breaker for fault tolerance
+- Idempotent DDL migrations, safe for repeated execution
 - See [Custom Vector Store Guide](docs/en/development/custom-vector-store.md)
 
 **Agent System**
@@ -236,6 +239,11 @@ export OPENROUTER_API_KEY="your-api-key"
 ### 2. Start Database (Optional)
 
 ```bash
+# One-click restart with migration (optionally import a doc)
+./scripts/docker/restart.sh
+./scripts/docker/restart.sh --save examples/knowledge-base/README.md
+
+# Or manually:
 docker run -d \
   --name goagentx-db \
   -e POSTGRES_PASSWORD=postgres \
@@ -252,8 +260,9 @@ cd examples/travel && go run main.go
 
 # Knowledge base Q&A (requires database + embedding service)
 cd examples/knowledge-base
-go run main.go --save README.md   # Import document
-go run main.go --chat              # Start Q&A
+go run main.go --save README.md              # Import document
+go run main.go --save docs/goagent-overview.md  # Import framework overview
+go run main.go --chat                         # Start Q&A (supports knowledge correction)
 
 # Advanced examples (v2 features)
 go run ./examples/advanced/leader_failover/
@@ -266,7 +275,7 @@ go run ./examples/advanced/mutable_dag/
 cd examples/mcp-dashboard && go run main.go
 
 # Quantitative analysis demo
-cd examples/quant-demo && go run main.go
+cd examples/quant-trading && go run . --ticker AAPL
 
 # Development agent demo
 cd examples/devagent && go run main.go

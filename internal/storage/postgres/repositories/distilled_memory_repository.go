@@ -3,6 +3,7 @@ package repositories
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ type DistilledMemory struct {
 	UserID           string
 	SessionID        string
 	Content          string
+	ContentHash      string
 	Embedding        []float64
 	EmbeddingModel   string
 	EmbeddingVersion int
@@ -94,7 +96,7 @@ func (r *DistilledMemoryRepository) withTenantTx(ctx context.Context, tenantID s
 	return nil
 }
 
-// Create creates a new distilled memory.
+// Create creates a new distilled memory with content-hash deduplication.
 func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *DistilledMemory) error {
 	slog.InfoContext(ctx, "Starting distilled memory storage",
 		"memory_id", memory.ID,
@@ -110,19 +112,29 @@ func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *Distille
 		return errors.Wrap(err, "marshal metadata")
 	}
 
+	// Compute content hash for deduplication.
+	h := sha256.Sum256([]byte(memory.Content))
+	memory.ContentHash = fmt.Sprintf("%x", h[:])
+
+	// Use tenant_id + content_hash for conflict resolution.
+	// When the same content is stored again (even with different IDs),
+	// the existing row is retained (ON CONFLICT DO NOTHING).
 	return r.withTenantTx(ctx, memory.TenantID, func(tx *sql.Tx) error {
 		query := `
             INSERT INTO distilled_memories
-            (id, tenant_id, user_id, session_id, content, embedding, embedding_model,
-             embedding_version, memory_type, importance, metadata, access_count,
-             last_accessed_at, expires_at, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-            ON CONFLICT DO NOTHING
+            (id, tenant_id, user_id, session_id, content, content_hash, embedding,
+             embedding_model, embedding_version, memory_type, importance, metadata,
+             access_count, last_accessed_at, expires_at, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ON CONFLICT (tenant_id, content_hash) WHERE content_hash IS NOT NULL
+            DO NOTHING
         `
 
 		_, err := tx.ExecContext(ctx, query,
 			memory.ID, memory.TenantID, memory.UserID, memory.SessionID, memory.Content,
-			postgres.FormatVector(memory.Embedding), memory.EmbeddingModel, memory.EmbeddingVersion,
+			memory.ContentHash,
+			postgres.FormatVector(memory.Embedding), memory.EmbeddingModel,
+			memory.EmbeddingVersion,
 			memory.MemoryType, memory.Importance, metadataJSON, memory.AccessCount,
 			memory.LastAccessedAt, memory.ExpiresAt, memory.CreatedAt,
 		)

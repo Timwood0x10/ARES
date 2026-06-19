@@ -148,7 +148,7 @@ func TestServiceWithBridge(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	result := svc.Execute(context.TODO(), action)
+	result := svc.Execute(context.Background(), action)
 	assert.True(t, result.Success)
 
 	events := recorder.Timeline().Events()

@@ -79,7 +79,7 @@ func (d *DLQ) GetByAgent(agentID string) []*DLQEntry {
 
 	var entries []*DLQEntry
 	for _, entry := range d.messages {
-		if entry.Message.AgentID == agentID {
+		if entry.Message != nil && entry.Message.AgentID == agentID {
 			entries = append(entries, entry)
 		}
 	}
@@ -93,7 +93,7 @@ func (d *DLQ) GetBySession(sessionID string) []*DLQEntry {
 
 	var entries []*DLQEntry
 	for _, entry := range d.messages {
-		if entry.Message.SessionID == sessionID {
+		if entry.Message != nil && entry.Message.SessionID == sessionID {
 			entries = append(entries, entry)
 		}
 	}

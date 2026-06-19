@@ -1,0 +1,44 @@
+# Arena Scenario: Research Layer Tool Failure
+# Tests: research agent resilience to tool execution failures
+name: quant-research-tool-failure
+description: |
+  Inject tool execution failures (e.g., data source unavailable,
+  API rate limit) during research agent analysis. Verifies that the
+  agent degrades gracefully and continues operation.
+tags: [quant, research, tool, failure, chaos]
+
+config:
+  stop_on_error: false
+  warmup: 2s
+  cooldown: 5s
+  timeout: 1m
+
+actions:
+  - delay: 0s
+    action:
+      type: tool_timeout
+      target_id: "research-analyst"
+      metadata:
+        tool_name: "data_fetcher"
+        timeout_ms: 5000
+    label: inject-tool-timeout
+    expect_success: true
+    depends_on: []
+
+  - delay: 4s
+    action:
+      type: mcp_disconnect
+      target_id: "research-analyst"
+      metadata:
+        reconnect_delay_ms: 10000
+    label: inject-mcp-disconnect
+    expect_success: true
+    depends_on: [inject-tool-timeout]
+
+  - delay: 6s
+    action:
+      type: kill_agent
+      target_id: "research-analyst"
+    label: verify-agent-alive-after-tools-fail
+    expect_success: true
+    depends_on: [inject-mcp-disconnect]

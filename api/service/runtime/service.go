@@ -13,6 +13,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -179,6 +180,11 @@ func (s *Service) Stop() error {
 	}
 	if err := s.rt.Stop(); err != nil {
 		return fmt.Errorf("runtime: stop manager: %w", err)
+	}
+	if c, ok := s.eventStore.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			slog.Warn("runtime: event store close error", "error", err)
+		}
 	}
 	slog.Info("runtime: service stopped")
 	return nil

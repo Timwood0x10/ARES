@@ -133,9 +133,18 @@ func (t *StdioTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 
 // Receive reads the next JSON-RPC message from the subprocess stdout.
 func (t *StdioTransport) Receive(ctx context.Context) (*JSONRPCMessage, error) {
+	// Check context before acquiring lock to avoid deadlock with Close.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	t.receiveMu.Lock()
 	defer t.receiveMu.Unlock()
 
+	// Re-check after acquiring lock; state may have changed.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if !t.started.Load() {
 		return nil, fmt.Errorf("transport not started")
 	}

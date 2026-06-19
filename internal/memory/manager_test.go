@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"goagentx/api/core"
 	"goagentx/internal/core/models"
 	"goagentx/internal/events"
 	"goagentx/internal/memory/distillation"
@@ -496,6 +497,178 @@ func TestMemoryManager_ContextLimit(t *testing.T) {
 	messageCount := countOccurrences(context, "Message")
 	if messageCount > config.MaxHistory {
 		t.Errorf("Expected at most %d messages in context, got %d", config.MaxHistory, messageCount)
+	}
+}
+
+// ──────────────────────────── Conversion helpers ────────────────────────────
+
+func TestToCoreMessage(t *testing.T) {
+	now := time.Now()
+	msg := Message{
+		Role:       RoleAssistant,
+		Content:    "Hello",
+		Time:       now,
+		TurnID:     "turn_1",
+		ToolCallID: "call_1",
+		ToolCalls: []ToolCall{
+			{ID: "tc1", Type: "function", Function: ToolCallFunction{Name: "test", Arguments: `{}`}},
+		},
+	}
+
+	coreMsg := ToCoreMessage("session_1", msg)
+	if coreMsg == nil {
+		t.Fatal("ToCoreMessage returned nil")
+	}
+	if string(coreMsg.Role) != RoleAssistant {
+		t.Errorf("expected role %s, got %s", RoleAssistant, string(coreMsg.Role))
+	}
+	if coreMsg.Content != "Hello" {
+		t.Errorf("expected content 'Hello', got %q", coreMsg.Content)
+	}
+	if coreMsg.SessionID != "session_1" {
+		t.Errorf("expected sessionID 'session_1', got %q", coreMsg.SessionID)
+	}
+}
+
+func TestToLLMMessage(t *testing.T) {
+	msg := Message{
+		Role:       RoleAssistant,
+		Content:    "Let me search",
+		ToolCallID: "call_1",
+		ToolCalls: []ToolCall{
+			{ID: "tc1", Type: "function", Function: ToolCallFunction{Name: "search", Arguments: `{"q":"test"}`}},
+		},
+	}
+
+	llmMsg := ToLLMMessage(msg)
+	if llmMsg == nil {
+		t.Fatal("ToLLMMessage returned nil")
+	}
+	if llmMsg.Role != RoleAssistant {
+		t.Errorf("expected role %s, got %s", RoleAssistant, llmMsg.Role)
+	}
+	if llmMsg.ToolCallID != "call_1" {
+		t.Errorf("expected ToolCallID 'call_1', got %q", llmMsg.ToolCallID)
+	}
+	if len(llmMsg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 ToolCall, got %d", len(llmMsg.ToolCalls))
+	}
+	if llmMsg.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected function name 'search', got %q", llmMsg.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestFromCoreMessage(t *testing.T) {
+	now := time.Now()
+	coreMsg := &core.Message{
+		SessionID: "session_1",
+		Role:      core.MessageRoleUser,
+		Content:   "Hello from core",
+		Time:      now,
+		Metadata: core.Metadata{
+			"turn_id":      "turn_1",
+			"tool_call_id": "call_1",
+		},
+	}
+
+	msg := FromCoreMessage("session_1", coreMsg)
+	if msg.Role != string(core.MessageRoleUser) {
+		t.Errorf("expected role 'user', got %q", msg.Role)
+	}
+	if msg.Content != "Hello from core" {
+		t.Errorf("expected content 'Hello from core', got %q", msg.Content)
+	}
+	if msg.TurnID != "turn_1" {
+		t.Errorf("expected TurnID 'turn_1', got %q", msg.TurnID)
+	}
+	if msg.ToolCallID != "call_1" {
+		t.Errorf("expected ToolCallID 'call_1', got %q", msg.ToolCallID)
+	}
+}
+
+func TestFromCoreMessage_Nil(t *testing.T) {
+	msg := FromCoreMessage("session_1", nil)
+	if msg.Role != "" || msg.Content != "" {
+		t.Errorf("expected empty Message for nil input, got %+v", msg)
+	}
+}
+
+func TestFromLLMMessage(t *testing.T) {
+	llmMsg := &core.LLMMessage{
+		Role:       "assistant",
+		Content:    "Let me search",
+		ToolCallID: "call_1",
+		ToolCalls: []core.ToolCall{
+			{ID: "tc1", Type: "function", Function: core.FunctionCall{Name: "search", Arguments: `{"q":"test"}`}},
+		},
+	}
+
+	msg := FromLLMMessage(llmMsg)
+	if msg.Role != "assistant" {
+		t.Errorf("expected role 'assistant', got %q", msg.Role)
+	}
+	if msg.ToolCallID != "call_1" {
+		t.Errorf("expected ToolCallID 'call_1', got %q", msg.ToolCallID)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 ToolCall, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].Function.Name != "search" {
+		t.Errorf("expected function name 'search', got %q", msg.ToolCalls[0].Function.Name)
+	}
+}
+
+func TestFromLLMMessage_Nil(t *testing.T) {
+	msg := FromLLMMessage(nil)
+	if msg.Role != "" || msg.Content != "" {
+		t.Errorf("expected empty Message for nil input, got %+v", msg)
+	}
+}
+
+func TestToBuildContextFormat(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleSystem, Content: "You are a bot."},
+		{Role: RoleUser, Content: "Hello"},
+		{Role: RoleAssistant, Content: "Hi there!"},
+		{Role: RoleToolCall, Content: "search('test')"},
+		{Role: RoleToolResult, Content: "result data"},
+	}
+
+	output := ToBuildContextFormat(msgs)
+	if output == "" {
+		t.Fatal("expected non-empty output")
+	}
+	if !contains(output, "System") {
+		t.Errorf("expected 'System' in output, got: %s", output)
+	}
+	if !contains(output, "User") {
+		t.Errorf("expected 'User' in output, got: %s", output)
+	}
+	if !contains(output, "Assistant") {
+		t.Errorf("expected 'Assistant' in output, got: %s", output)
+	}
+	if !contains(output, "Tool call") {
+		t.Errorf("expected 'Tool call' in output, got: %s", output)
+	}
+	if !contains(output, "Tool result") {
+		t.Errorf("expected 'Tool result' in output, got: %s", output)
+	}
+}
+
+func TestToBuildContextFormat_Empty(t *testing.T) {
+	output := ToBuildContextFormat(nil)
+	if output != "" {
+		t.Errorf("expected empty for nil input, got %q", output)
+	}
+}
+
+func TestDefaultMemoryConfig_HasCleanOptions(t *testing.T) {
+	config := DefaultMemoryConfig()
+	if config.CleanOptions == nil {
+		t.Fatal("expected CleanOptions to be non-nil")
+	}
+	if config.CleanOptions.MaxUserLen <= 0 {
+		t.Errorf("expected MaxUserLen > 0, got %d", config.CleanOptions.MaxUserLen)
 	}
 }
 

@@ -444,3 +444,210 @@ func (m *MutableDAG) removeEdgeFromSlice(from, to string) bool {
 	}
 	return false
 }
+
+// hasCycleInAdjList returns true if the directed graph represented by the
+// adjacency list contains a cycle. Uses three-color DFS marking.
+func hasCycleInAdjList(adjList map[string][]string) bool {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(adjList))
+	for node := range adjList {
+		color[node] = white
+	}
+
+	var dfs func(node string) bool
+	dfs = func(node string) bool {
+		color[node] = gray
+		for _, neighbor := range adjList[node] {
+			switch color[neighbor] {
+			case gray:
+				return true
+			case white:
+				if dfs(neighbor) {
+					return true
+				}
+			}
+		}
+		color[node] = black
+		return false
+	}
+
+	for node := range adjList {
+		if color[node] == white {
+			if dfs(node) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recalculateDegrees recomputes InDegree and OutDegree for all DAGNodes
+// from the current Edges map. Called after structural mutations that affect
+// multiple edges at once. Must be called with m.mu held.
+func (m *MutableDAG) recalculateDegrees() {
+	for _, node := range m.dag.Nodes {
+		node.InDegree = 0
+		node.OutDegree = 0
+	}
+	for src, targets := range m.dag.Edges {
+		if _, ok := m.dag.Nodes[src]; !ok {
+			continue
+		}
+		m.dag.Nodes[src].OutDegree = len(targets)
+		for _, tgt := range targets {
+			if node, ok := m.dag.Nodes[tgt]; ok {
+				node.InDegree++
+			}
+		}
+	}
+}
+
+// ReplaceNode atomically replaces the node identified by oldID with newStep,
+// migrating all incoming and outgoing edges to the new node.
+//
+// Behavior depends on whether the ID changes:
+//   - Same ID (newStep.ID == oldID): in-place update, new DependsOn edges are added.
+//   - Different ID: all incoming edges are redirected to newStep.ID, all outgoing
+//     edges are moved from oldID to newStep.ID, new DependsOn edges are added,
+//     then the old node is removed.
+//
+// Cycle detection is performed on a simulated adjacency list of the post-replacement
+// graph before any mutation is applied, so the operation is atomic with respect to
+// consistency — no rollback logic is needed.
+func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Step) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if newStep == nil {
+		return errors.New("step must not be nil")
+	}
+	if newStep.ID == "" {
+		return errors.New("step ID must not be empty")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.dag.Nodes[oldID]; !exists {
+		return ErrNodeNotFound
+	}
+
+	if newStep.ID != oldID {
+		if _, exists := m.dag.Nodes[newStep.ID]; exists {
+			return ErrDuplicateID
+		}
+	}
+
+	// Self-loop check must come before DependsOn existence check:
+	// a DependsOn referencing the new ID is a self-loop (since the target
+	// is the node being introduced), but the node does not yet exist.
+	for _, dep := range newStep.DependsOn {
+		if dep == newStep.ID {
+			return ErrCycleDetected
+		}
+	}
+
+	for _, dep := range newStep.DependsOn {
+		if _, exists := m.dag.Nodes[dep]; !exists {
+			return ErrInvalidDependency
+		}
+	}
+
+	// Build simulated adjacency list for cycle detection.
+	adjList := make(map[string][]string)
+	for nodeID := range m.dag.Nodes {
+		if nodeID == oldID && newStep.ID != oldID {
+			continue
+		}
+		adjList[nodeID] = nil
+	}
+	if newStep.ID != oldID {
+		adjList[newStep.ID] = nil
+	}
+	for src, targets := range m.dag.Edges {
+		effSrc := src
+		if src == oldID && newStep.ID != oldID {
+			effSrc = newStep.ID
+		}
+		if _, ok := adjList[effSrc]; !ok {
+			continue
+		}
+		for _, t := range targets {
+			effTgt := t
+			if t == oldID && newStep.ID != oldID {
+				effTgt = newStep.ID
+			}
+			if _, ok := adjList[effTgt]; !ok {
+				continue
+			}
+			adjList[effSrc] = append(adjList[effSrc], effTgt)
+		}
+	}
+	for _, dep := range newStep.DependsOn {
+		adjList[dep] = append(adjList[dep], newStep.ID)
+	}
+
+	if hasCycleInAdjList(adjList) {
+		return ErrCycleDetected
+	}
+
+	// Apply mutation.
+	if newStep.ID != oldID {
+		m.dag.Nodes[newStep.ID] = &DAGNode{StepID: newStep.ID}
+		m.dag.Edges[newStep.ID] = m.dag.Edges[oldID]
+		delete(m.dag.Edges, oldID)
+		for src, targets := range m.dag.Edges {
+			for i, t := range targets {
+				if t == oldID {
+					m.dag.Edges[src][i] = newStep.ID
+				}
+			}
+		}
+		// Update downstream steps' DependsOn to reflect the edge migration.
+		for _, step := range m.steps {
+			for i, dep := range step.DependsOn {
+				if dep == oldID {
+					step.DependsOn[i] = newStep.ID
+				}
+			}
+		}
+		delete(m.dag.Nodes, oldID)
+		delete(m.steps, oldID)
+		m.steps[newStep.ID] = newStep
+	} else {
+		m.steps[oldID] = newStep
+		// Add new DependsOn edges, checking for duplicates.
+		for _, dep := range newStep.DependsOn {
+			duplicate := false
+			for _, target := range m.dag.Edges[dep] {
+				if target == oldID {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				m.dag.Edges[dep] = append(m.dag.Edges[dep], oldID)
+			}
+		}
+	}
+
+	m.recalculateDegrees()
+	m.version++
+
+	m.hub.Publish(GraphEvent{
+		Change: GraphChange{
+			Type:      ChangeReplaceNode,
+			NodeID:    newStep.ID,
+			OldNodeID: oldID,
+			Step:      newStep,
+			Timestamp: time.Now(),
+		},
+		Success: true,
+	})
+
+	return nil
+}
