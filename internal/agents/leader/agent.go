@@ -824,25 +824,23 @@ func (a *leaderAgent) Snapshot() (map[string]any, error) {
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	a.processingMu.Lock()
+	defer a.processingMu.Unlock()
 
 	// Atomically check status and transition to Busy.
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil {
-			a.processingMu.Unlock()
 			return nil, err
 		}
 		a.mu.Lock()
 	}
 	if a.status != models.AgentStatusReady {
 		a.mu.Unlock()
-		a.processingMu.Unlock()
 		return nil, coreerrors.ErrAgentNotReady
 	}
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
-	a.processingMu.Unlock()
 
 	strInput, err := parseInput(input)
 	if err != nil {

@@ -313,12 +313,18 @@ func (c *MCPClient) dispatchResponse(msg *JSONRPCMessage) {
 
 	c.pendingMu.Lock()
 	ch, ok := c.pending[*msg.ID]
+	if ok {
+		// Remove from pending map; we now own the response delivery.
+		delete(c.pending, *msg.ID)
+	}
 	c.pendingMu.Unlock()
 
 	if ok {
 		select {
 		case ch <- msg:
 		default:
+			// Channel full means caller already stopped waiting (timeout/cancel).
+			// Discard the stale response.
 		}
 	}
 }

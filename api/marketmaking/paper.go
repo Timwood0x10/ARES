@@ -83,10 +83,8 @@ func (t *DefaultPaperTrader) Start(ctx context.Context, req *PaperTradeRequest) 
 		return nil, errors.New("initial capital must be > 0")
 	}
 
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
-	default:
 	}
 
 	t.mu.Lock()
@@ -126,10 +124,8 @@ func (t *DefaultPaperTrader) Status(ctx context.Context, sessionID string) (*Pap
 		return nil, errors.New("session ID must not be empty")
 	}
 
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
-	default:
 	}
 
 	t.mu.RLock()
@@ -171,10 +167,8 @@ func (t *DefaultPaperTrader) Stop(ctx context.Context, sessionID string) (*Paper
 		return nil, errors.New("session ID must not be empty")
 	}
 
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
-	default:
 	}
 
 	t.mu.Lock()

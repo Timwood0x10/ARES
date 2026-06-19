@@ -89,9 +89,6 @@ func NewMemoryStore(path string) (*MemoryStore, error) {
 // Returns:
 //   - error if the insert operation fails.
 func (s *MemoryStore) AppendEntry(ctx context.Context, entry *MemoryEntry) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	traderJSON := marshalOptionalJSON(entry.TraderProposal)
 	decisionJSON := marshalOptionalJSON(entry.FinalDecision)
 	resolvedAtStr := formatTimePtr(entry.ResolvedAt)
@@ -406,7 +403,7 @@ func marshalOptionalJSON(v interface{}) string {
 	}
 	// Check for typed nil pointer (e.g., *TraderProposal(nil)).
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+	if rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return ""
 	}
 	b, err := json.Marshal(v)

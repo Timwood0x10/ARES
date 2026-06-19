@@ -35,6 +35,7 @@ type SSETransport struct {
 	mu         sync.Mutex
 	started    bool
 	postURL    string
+	respBody   io.Closer // closed by Close() to interrupt blocking read in receiveLoop
 }
 
 // NewSSETransport creates a new SSE transport with the given config.
@@ -97,11 +98,21 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sse connect: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		if err := resp.Body.Close(); err != nil {
+			return fmt.Errorf("sse endpoint returned status %d: %w", resp.StatusCode, err)
+		}
+
 		return fmt.Errorf("sse endpoint returned status %d", resp.StatusCode)
 	}
+
+	t.mu.Lock()
+	t.respBody = resp.Body
+	t.mu.Unlock()
+
+	// Ensure body is released when receiveLoop returns for any reason.
+	defer func() { _ = resp.Body.Close() }()
 
 	// POST URL defaults to config.URL (set in constructor). If the SSE endpoint
 	// returns an "endpoint" event, handleSSEEvent updates it under t.mu.
@@ -237,6 +248,10 @@ func (t *SSETransport) Close() error {
 	t.started = false
 	if t.cancel != nil {
 		t.cancel()
+	}
+	// Close response body to interrupt blocking ReadString in receiveLoop.
+	if t.respBody != nil {
+		_ = t.respBody.Close()
 	}
 	t.mu.Unlock()
 

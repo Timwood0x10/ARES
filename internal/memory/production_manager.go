@@ -19,6 +19,7 @@ import (
 	"goagentx/internal/events"
 	memctx "goagentx/internal/memory/context"
 	memembed "goagentx/internal/memory/embedding"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 	"goagentx/internal/storage/postgres"
 	"goagentx/internal/storage/postgres/embedding"
 	storage_models "goagentx/internal/storage/postgres/models"
@@ -665,15 +666,15 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:
-				contextBuilder += fmt.Sprintf("User: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleAssistant:
-				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolCall:
-				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolResult:
-				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleSystem:
-				contextBuilder += fmt.Sprintf("System: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			}
 		}
 		contextBuilder += "\nCurrent request:\n"

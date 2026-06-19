@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	truncpkg "goagentx/internal/memory/internal/truncate"
 )
 
 // Test helpers.
@@ -283,31 +285,31 @@ func TestExtractGist(t *testing.T) {
 
 func TestTruncateContent(t *testing.T) {
 	t.Run("empty string", func(t *testing.T) {
-		if got := truncateContent("", 10); got != "" {
+		if got := truncpkg.WithEllipsis("", 10); got != "" {
 			t.Errorf("expected empty, got %q", got)
 		}
 	})
 
 	t.Run("within limit", func(t *testing.T) {
-		if got := truncateContent("hello", 10); got != "hello" {
+		if got := truncpkg.WithEllipsis("hello", 10); got != "hello" {
 			t.Errorf("expected 'hello', got %q", got)
 		}
 	})
 
 	t.Run("exceeds limit", func(t *testing.T) {
-		if got := truncateContent("hello world", 5); got != "hello..." {
+		if got := truncpkg.WithEllipsis("hello world", 5); got != "hello..." {
 			t.Errorf("expected 'hello...', got %q", got)
 		}
 	})
 
 	t.Run("zero maxLen", func(t *testing.T) {
-		if got := truncateContent("hello", 0); got != "" {
+		if got := truncpkg.WithEllipsis("hello", 0); got != "" {
 			t.Errorf("expected empty, got %q", got)
 		}
 	})
 
 	t.Run("negative maxLen", func(t *testing.T) {
-		if got := truncateContent("hello", -1); got != "" {
+		if got := truncpkg.WithEllipsis("hello", -1); got != "" {
 			t.Errorf("expected empty, got %q", got)
 		}
 	})
@@ -315,7 +317,7 @@ func TestTruncateContent(t *testing.T) {
 	t.Run("multi-byte UTF-8", func(t *testing.T) {
 		// 5 runes: 日本語です
 		s := "日本語です"
-		got := truncateContent(s, 3)
+		got := truncpkg.WithEllipsis(s, 3)
 		if got != "日本語..." {
 			t.Errorf("expected '日本語...', got %q", got)
 		}

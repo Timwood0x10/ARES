@@ -1,73 +1,146 @@
-// Package main provides database setup for testing.
+// Package main creates and migrates the test database.
+// It respects TEST_POSTGRES_DSN first, then falls back to DB_* env vars.
+// Default: postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable
 package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
-	"strconv"
+	"strings"
 	"time"
 
 	"goagentx/internal/storage/postgres"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
-	}
-	return defaultValue
-}
-
 func main() {
-	ctx := context.Background()
-
-	// Create database config
-	cfg := &postgres.Config{
-		Host:            getEnv("DB_HOST", "localhost"),
-		Port:            getEnvInt("DB_PORT", 5433),
-		User:            getEnv("DB_USER", "postgres"),
-		Password:        getEnv("DB_PASSWORD", ""),
-		Database:        getEnv("DB_NAME", "goagent"),
-		MaxOpenConns:    25,
-		MaxIdleConns:    10,
-		ConnMaxLifetime: 5 * time.Minute,
-		ConnMaxIdleTime: 1 * time.Minute,
-		QueryTimeout:    2 * time.Second,
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		host := getEnv("DB_HOST", "localhost")
+		port := getEnv("DB_PORT", "5433")
+		user := getEnv("DB_USER", "postgres")
+		password := getEnv("DB_PASSWORD", "postgres")
+		dbname := getEnv("DB_NAME", "goagent_test")
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+			url.QueryEscape(user), url.QueryEscape(password),
+			host, port, dbname)
 	}
 
-	// Create pool
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		slog.Error("invalid DSN", "dsn", dsn, "error", err)
+		os.Exit(1)
+	}
+	dbname := strings.TrimPrefix(parsed.Path, "/")
+
+	adminDB := connectAdmin(changeDB(dsn, "postgres"))
+	defer adminDB.Close()
+
+	ensureDatabase(adminDB, dbname)
+	adminDB.Close()
+
+	cfg := &postgres.Config{
+		Host:            parsed.Hostname(),
+		Port:            parsePort(parsed.Port(), 5432),
+		User:            parsed.User.Username(),
+		Password:        passwordFromURL(parsed),
+		Database:        dbname,
+		MaxOpenConns:    5,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: 0,
+		ConnMaxIdleTime: 0,
+		QueryTimeout:    10 * time.Second,
+	}
+
 	pool, err := postgres.NewPool(cfg)
 	if err != nil {
-		slog.Error("Failed to create pool", "error", err)
+		slog.Error("failed to connect to target database", "database", dbname, "error", err)
+		os.Exit(1)
 	}
-	defer func() {
-		if err := pool.Close(); err != nil {
-			slog.Error("Failed to close pool", "error", err)
-		}
-	}()
+	defer pool.Close()
 
-	fmt.Println("Connected to database successfully")
+	ctx := context.Background()
 
-	// Enable pgvector extension
-	_, err = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-	if err != nil {
-		slog.Error("Failed to create vector extension", "error", err)
+	if _, err := pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
+		slog.Error("failed to enable pgvector", "error", err)
+		os.Exit(1)
 	}
-	fmt.Println("Enabled pgvector extension")
+	fmt.Println("pgvector extension enabled")
 
-	// Run migrations
 	if err := postgres.MigrateStorage(ctx, pool); err != nil {
-		slog.Error("Failed to run migrations", "error", err)
+		slog.Error("migration failed", "error", err)
+		os.Exit(1)
 	}
-	fmt.Println("Migrations completed successfully")
+	fmt.Println("Test database migrations completed successfully")
+}
+
+func connectAdmin(dsn string) *sql.DB {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		slog.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
+	}
+	if err := db.Ping(); err != nil {
+		slog.Error("failed to ping postgres", "error", err)
+		os.Exit(1)
+	}
+	return db
+}
+
+func ensureDatabase(db *sql.DB, name string) {
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
+		slog.Error("failed to check database existence", "database", name, "error", err)
+		os.Exit(1)
+	}
+	if !exists {
+		if _, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
+			slog.Error("failed to create database", "database", name, "error", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Created database: %s\n", name)
+	}
+}
+
+func getEnv(key, defaultValue string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultValue
+}
+
+func changeDB(dsn, dbname string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	u.Path = "/" + dbname
+	return u.String()
+}
+
+func parsePort(port string, defaultPort int) int {
+	if port == "" {
+		return defaultPort
+	}
+	var p int
+	if _, err := fmt.Sscanf(port, "%d", &p); err != nil || p <= 0 {
+		return defaultPort
+	}
+	return p
+}
+
+func passwordFromURL(u *url.URL) string {
+	if pw, ok := u.User.Password(); ok {
+		return pw
+	}
+	return ""
+}
+
+func pqQuoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

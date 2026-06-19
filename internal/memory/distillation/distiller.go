@@ -16,6 +16,7 @@ import (
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
 	memembed "goagentx/internal/memory/embedding"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 	"goagentx/internal/storage/postgres/embedding"
 )
 
@@ -314,7 +315,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			"experience_index", idx,
 			"memory_type", memoryType.String(),
 			"importance_score", score,
-			"content_preview", truncateString(memory.Content, 50))
+			"content_preview", truncpkg.WithEllipsis(memory.Content, 50))
 
 		memories = append(memories, memory)
 	}
@@ -456,7 +457,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 				"strategy", string(strategy),
 				"new_confidence", exp.Confidence,
 				"old_confidence", conflict.Confidence,
-				"conflict_content", truncateString(conflict.Problem, 50))
+				"conflict_content", truncpkg.WithEllipsis(conflict.Problem, 50))
 			d.metrics.ConflictResolved.Add(1)
 
 			// Apply the resolution strategy
@@ -686,18 +687,6 @@ func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
 	}
 }
 
-// truncateString truncates a string to the specified maximum length.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
-}
-
 // formatImportanceScores formats importance scores for logging.
 func formatImportanceScores(memories []Memory) string {
 	if len(memories) == 0 {
@@ -725,7 +714,7 @@ func formatMemoryTypes(memories []Memory) string {
 // extractTurnID finds the TurnID of the user message that matches the given problem text.
 // This is a lightweight lookup that avoids text matching on every message.
 func extractTurnID(messages []Message, problem string) string {
-	problemTrunc := truncateStr(problem, 50)
+	problemTrunc := truncpkg.Plain(problem, 50)
 	for _, msg := range messages {
 		if msg.Role == "user" && strings.Contains(msg.Content, problemTrunc) {
 			return msg.TurnID
@@ -778,13 +767,4 @@ func extractEvidenceFromMessages(messages []Message, turnID string) []string {
 		return nil
 	}
 	return evidence
-}
-
-// truncateStr truncates a string to maxLen runes.
-func truncateStr(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen])
 }

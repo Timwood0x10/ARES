@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"goagentx/api/core"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 )
 
 // CleanerStats, CleaningMode, CleanOptions are now defined in api/core.
@@ -79,7 +80,7 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 
 		switch msg.Role {
 		case RoleUser:
-			result[i].Content = truncateContent(msg.Content, options.MaxUserLen)
+			result[i].Content = truncpkg.WithEllipsis(msg.Content, options.MaxUserLen)
 
 		case RoleAssistant:
 			if len(msg.ToolCalls) > 0 {
@@ -90,18 +91,18 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 				// Pure reasoning → keep more context.
 				llmCount++
 				cleaned := c.compressCodeBlocks(msg.Content)
-				result[i].Content = truncateContent(cleaned, options.MaxAssistantLen)
+				result[i].Content = truncpkg.WithEllipsis(cleaned, options.MaxAssistantLen)
 			}
 
 		case RoleSystem:
-			result[i].Content = truncateContent(msg.Content, options.MaxSystemLen)
+			result[i].Content = truncpkg.WithEllipsis(msg.Content, options.MaxSystemLen)
 
 		case RoleToolCall, RoleToolResult:
 			toolCount++
 			result[i].Content = extractGist(msg.Content, options.MaxToolLen)
 
 		default:
-			result[i].Content = truncateContent(msg.Content, options.MaxAssistantLen)
+			result[i].Content = truncpkg.WithEllipsis(msg.Content, options.MaxAssistantLen)
 		}
 
 		saved += int64(origLen - len(result[i].Content))
@@ -151,19 +152,7 @@ func extractGist(content string, maxLen int) string {
 		}
 	}
 
-	return truncateContent(trimmed, maxLen)
-}
-
-// truncateContent truncates to maxLen runes with "..." if truncated.
-func truncateContent(s string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
+	return truncpkg.WithEllipsis(trimmed, maxLen)
 }
 
 // CleanWithTurns performs turn-aware context cleaning.
@@ -284,7 +273,7 @@ func SummarizeToolResult(msg Message) string {
 	if summary != "" {
 		return summary
 	}
-	return truncateContent(msg.Content, 200)
+	return truncpkg.WithEllipsis(msg.Content, 200)
 }
 
 // SummarizeToolResultWithCall generates a type-aware tool result summary.
@@ -321,7 +310,7 @@ func summarizeFileToolResult(msg Message, args map[string]interface{}) string {
 	content := msg.Content
 
 	if strings.HasPrefix(content, "Error:") || strings.HasPrefix(content, "error:") {
-		return fmt.Sprintf("File %s (%s): %s", path, op, truncateContent(content, 150))
+		return fmt.Sprintf("File %s (%s): %s", path, op, truncpkg.WithEllipsis(content, 150))
 	}
 	switch op {
 	case "read":
@@ -334,7 +323,7 @@ func summarizeFileToolResult(msg Message, args map[string]interface{}) string {
 			preview = strings.TrimSpace(lines[1])
 		}
 		if utf8.RuneCountInString(preview) > 100 {
-			preview = truncateContent(preview, 100)
+			preview = truncpkg.WithEllipsis(preview, 100)
 		}
 		if preview != "" {
 			return fmt.Sprintf("Read %s: %s", path, preview)
@@ -367,7 +356,7 @@ func summarizeCodeRunnerResult(msg Message, args map[string]interface{}) string 
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
 		if t != "" && !strings.HasPrefix(t, "exit code:") && !strings.HasPrefix(t, "Exit code:") {
-			preview = truncateContent(t, 100)
+			preview = truncpkg.WithEllipsis(t, 100)
 			break
 		}
 	}
@@ -408,7 +397,7 @@ func summarizeHTTPRequestResult(msg Message, args map[string]interface{}) string
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
 		if t != "" && !strings.HasPrefix(t, "Status:") && !strings.HasPrefix(t, "status:") {
-			preview = truncateContent(t, 100)
+			preview = truncpkg.WithEllipsis(t, 100)
 			break
 		}
 	}
@@ -428,7 +417,7 @@ func summarizeWebScraperResult(msg Message, args map[string]interface{}) string 
 		url, _ = args["URL"].(string)
 	}
 	content := msg.Content
-	preview := truncateContent(content, 120)
+	preview := truncpkg.WithEllipsis(content, 120)
 	return fmt.Sprintf("Scraped %s: %s", url, preview)
 }
 
@@ -441,7 +430,7 @@ func summarizeSearchResult(msg Message, args map[string]interface{}) string {
 	if count > 3 {
 		count = len(strings.Split(content, "\n"))
 	}
-	preview := truncateContent(content, 120)
+	preview := truncpkg.WithEllipsis(content, 120)
 	return fmt.Sprintf("Search %q (%d results): %s", query, count, preview)
 }
 

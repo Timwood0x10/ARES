@@ -11,6 +11,7 @@ import (
 	"goagentx/internal/core/models"
 	"goagentx/internal/events"
 	memctx "goagentx/internal/memory/context"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 )
 
 // MemoryManager provides unified memory management.
@@ -279,7 +280,7 @@ func ToBuildContextFormat(messages []Message) string {
 		case memctx.RoleSystem:
 			label = "System"
 		}
-		b += fmt.Sprintf("%s: %s\n", label, truncate(msg.Content, 100))
+		b += fmt.Sprintf("%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
 	}
 	return b
 }

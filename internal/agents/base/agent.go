@@ -3,12 +3,15 @@ package base
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"goagentx/internal/core/models"
 	"goagentx/internal/events"
 	"goagentx/internal/protocol/ahp"
 )
+
+var agentIDSeq atomic.Int64
 
 // EventType represents the type of agent event.
 type EventType int
@@ -105,7 +108,7 @@ type Config struct {
 // DefaultConfig returns default agent configuration.
 func DefaultConfig(agentType models.AgentType) *Config {
 	return &Config{
-		ID:                fmt.Sprintf("agent-%d", time.Now().UnixNano()),
+		ID:                fmt.Sprintf("agent-%d", agentIDSeq.Add(1)),
 		Type:              agentType,
 		HeartbeatInterval: 30 * time.Second,
 		MaxRetries:        3,

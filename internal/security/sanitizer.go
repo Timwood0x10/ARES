@@ -173,15 +173,32 @@ func maskAPIKey(match string) string {
 		return maskString(match, 4)
 	}
 
-	// Mask the longest match (likely the actual key)
-	longest := allMatches[0]
+	// Prefer the match nearest to a known key-related keyword.
+	kwRe := regexp.MustCompile(`(?i)(key|secret|token|credential|auth)`)
+	bestScore := -1
+	best := allMatches[0]
 	for _, m := range allMatches {
-		if len(m) > len(longest) {
-			longest = m
+		score := len(m)
+		// Bonus for being near a keyword — boost score by proximity.
+		if loc := kwRe.FindStringIndex(match); loc != nil {
+			// Find match position in match string.
+			if idx := strings.Index(match, m); idx >= 0 {
+				dist := idx - loc[1]
+				if dist < 0 {
+					dist = -dist
+				}
+				if dist < 20 {
+					score += 100 - dist
+				}
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = m
 		}
 	}
 
-	return strings.Replace(match, longest, maskString(longest, 4), 1)
+	return strings.Replace(match, best, maskString(best, 4), 1)
 }
 
 // maskPassword masks a password completely.
@@ -214,14 +231,30 @@ func maskToken(match string) string {
 		return maskString(match, 4)
 	}
 
-	longest := allMatches[0]
+	// Prefer the match nearest to a known token-related keyword.
+	kwRe := regexp.MustCompile(`(?i)(token|bearer|auth|credential|jwt)`)
+	bestScore := -1
+	best := allMatches[0]
 	for _, m := range allMatches {
-		if len(m) > len(longest) {
-			longest = m
+		score := len(m)
+		if loc := kwRe.FindStringIndex(match); loc != nil {
+			if idx := strings.Index(match, m); idx >= 0 {
+				dist := idx - loc[1]
+				if dist < 0 {
+					dist = -dist
+				}
+				if dist < 20 {
+					score += 100 - dist
+				}
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = m
 		}
 	}
 
-	return strings.Replace(match, longest, maskString(longest, 4), 1)
+	return strings.Replace(match, best, maskString(best, 4), 1)
 }
 
 // maskEmail masks an email address.
@@ -231,11 +264,15 @@ func maskEmail(match string) string {
 		return "***@***.***"
 	}
 
-	// For email, preserve first 2 chars of username and domain
+	// For email, preserve first 2 chars of username (clamped to length) and domain
 	username := parts[0]
 	domain := parts[1]
 
-	maskedUsername := maskString(username, 2)
+	preserve := 2
+	if len(username) < preserve {
+		preserve = len(username)
+	}
+	maskedUsername := maskString(username, preserve)
 	maskedDomain := maskString(domain, 2)
 
 	return maskedUsername + "@" + maskedDomain
@@ -251,7 +288,11 @@ func maskPhone(match string) string {
 
 	// For phone, preserve first 3 and last 4 digits
 	if len(cleaned) >= 7 {
-		return cleaned[:3] + strings.Repeat("*", len(cleaned)-7) + cleaned[len(cleaned)-4:]
+		maskLen := len(cleaned) - 7
+		if maskLen == 0 {
+			return maskString(cleaned, 3)
+		}
+		return cleaned[:3] + strings.Repeat("*", maskLen) + cleaned[len(cleaned)-4:]
 	}
 
 	return maskString(cleaned, 3)
@@ -267,20 +308,28 @@ func maskCreditCard(match string) string {
 
 	// For credit card, preserve first 4 and last 4 digits
 	if len(cleaned) >= 8 {
-		return cleaned[:4] + strings.Repeat("*", len(cleaned)-8) + cleaned[len(cleaned)-4:]
+		maskLen := len(cleaned) - 8
+		if maskLen == 0 {
+			return maskString(cleaned, 4)
+		}
+		return cleaned[:4] + strings.Repeat("*", maskLen) + cleaned[len(cleaned)-4:]
 	}
 
 	return maskString(cleaned, 4)
 }
 
-// maskSSN masks a social security number.
+// maskSSN masks a social security number, preserving the original separator format.
 func maskSSN(match string) string {
-	// Remove spaces and dashes
 	cleaned := regexp.MustCompile(`[^\d]`).ReplaceAllString(match, "")
 	if len(cleaned) != 9 {
 		return "***-**-****"
 	}
-	return "***-**-****"
+	// Determine separator from the original input.
+	sep := "-"
+	if strings.Contains(match, ".") {
+		sep = "."
+	}
+	return "***" + sep + "**" + sep + "****"
 }
 
 // maskString masks a string, preserving n characters from the beginning and end.

@@ -1,0 +1,63 @@
+version: "3.8"
+
+# GoAgent Demo Stack — Start with:
+#   docker compose up -d
+#
+# Then run integration tests:
+#   export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
+#   go test -v ./internal/integration/...
+#
+# Tear down:
+#   docker compose down -v
+
+services:
+  # ──────────────────────────────────────────────
+  # PostgreSQL + pgvector — required for all tests
+  # ──────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: goagent-pg
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: goagent_test
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/docker/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ──────────────────────────────────────────────
+  # Embedding service (optional)
+  # Build requires model files; see services/embedding/README.md
+  # Uncomment to enable:
+  # ──────────────────────────────────────────────
+  # embedding:
+  #   build:
+  #     context: ./services/embedding
+  #     dockerfile: Dockerfile
+  #   container_name: goagent-embedding
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - MODEL_NAME=qwen3-embedding:0.6b
+  #     - HOST=0.0.0.0
+  #     - PORT=8000
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     start_period: 60s
+  #     retries: 3
+
+volumes:
+  pgdata:
+    driver: local

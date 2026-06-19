@@ -17,6 +17,7 @@ import (
 	memctx "goagentx/internal/memory/context"
 	"goagentx/internal/memory/distillation"
 	memembed "goagentx/internal/memory/embedding"
+	truncpkg "goagentx/internal/memory/internal/truncate"
 	"goagentx/internal/storage/postgres/embedding"
 )
 
@@ -319,17 +320,17 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:
-				contextBuilder += fmt.Sprintf("User: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleAssistant:
-				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolCall:
-				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolResult:
-				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleSystem:
-				contextBuilder += fmt.Sprintf("System: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			default:
-				contextBuilder += fmt.Sprintf("Unknown: %s\n", truncate(msg.Content, 100))
+				contextBuilder += fmt.Sprintf("Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			}
 		}
 		contextBuilder += "\nCurrent request:\n"
@@ -474,7 +475,7 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 	}
 
 	slog.Info("[Memory Search] Searching for similar tasks",
-		"query", truncate(query, 50),
+		"query", truncpkg.WithEllipsis(query, 50),
 		"limit", limit)
 
 	spec := memembed.BuildMemoryQuerySpec(query, m.pipeline.Model(), 1, 0)
@@ -517,14 +518,6 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 // Session recovery requires persistent storage; use ProductionMemoryManager for that.
 func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
 	return "", nil
-}
-
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
 }
 
 // cosineSimilarity calculates cosine similarity between two vectors.

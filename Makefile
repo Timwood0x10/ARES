@@ -213,6 +213,54 @@ demo-mcp:
 		sleep 2; \
 		open http://localhost:$$PORT 2>/dev/null || true
 
+# ──────────────────────────────────────────────
+# Demo: Docker + Integration Tests
+# ──────────────────────────────────────────────
+# Start all demo services (pgvector + optional embedding)
+demo-up:
+	@echo "Starting GoAgent demo services..."
+	@docker compose up -d
+	@echo "Waiting for PostgreSQL to be ready..."
+	@until docker compose exec -T postgres pg_isready -U postgres >/dev/null 2>&1; do \
+		sleep 1; \
+	done
+	@echo ""
+	@echo "✅ PostgreSQL is ready!"
+	@echo "   DSN: postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
+	@echo ""
+	@echo "Run tests:       make demo-test"
+	@echo "View logs:       make demo-logs"
+	@echo "Shutdown:        make demo-down"
+	@echo ""
+
+# Stop and clean up demo services
+demo-down:
+	@echo "Stopping GoAgent demo services..."
+	@docker compose down -v
+	@echo "✅ Demo services stopped"
+
+# Run integration tests against demo services
+demo-test:
+	@echo "Running integration tests against demo services..."
+	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable" \
+		go test -v -count=1 -timeout=180s ./internal/integration/... ./internal/events/... 2>&1 | \
+		grep -E "^(=== RUN|--- |ok |FAIL|--- FAIL|PASS|SKIP)"
+	@echo ""
+	@echo "✅ Integration tests completed"
+
+# Tail logs from demo services
+demo-logs:
+	@docker compose logs -f
+
+# Quick smoke test — just verify the database connection
+demo-smoke:
+	@echo "Checking PostgreSQL connection..."
+	@docker compose exec postgres psql -U postgres -d goagent_test -c "SELECT '✅ pgvector OK' AS status, extname, extversion FROM pg_extension WHERE extname='vector';"
+	@echo ""
+	@echo "Checking test databases..."
+	@docker compose exec postgres psql -U postgres -c "\l goagent_test"
+	@docker compose exec postgres psql -U postgres -c "\l testdb"
+
 # Help
 help:
 	@echo "Available targets:"
@@ -246,6 +294,15 @@ help:
 	@echo "  ci-lint       - Run golangci-lint"
 	@echo "  ci-build      - Build all packages"
 	@echo "  ci-test-race  - Run tests with race detection"
+	@echo ""
+	@echo "Required tools:"
+	@echo ""
+	@echo "Demo targets (require Docker):"
+	@echo "  demo-up       - Start demo services (pgvector:5432)"
+	@echo "  demo-down     - Stop and clean up demo services"
+	@echo "  demo-test     - Run integration tests against demo services"
+	@echo "  demo-logs     - Tail demo service logs"
+	@echo "  demo-smoke    - Quick check that pgvector is running"
 	@echo ""
 	@echo "Required tools:"
 	@echo "  - go: https://go.dev/dl/"
