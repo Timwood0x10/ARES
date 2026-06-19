@@ -115,7 +115,9 @@ flowchart LR
 **记忆系统**
 - 会话记忆：短期对话上下文
 - 任务记忆：单任务工作记忆
-- 蒸馏记忆：6 步管线压缩长期知识
+- 蒸馏记忆：6 步管线压缩长期知识（基于 errgroup 的并发嵌入加速）
+- 多语言经验提取：中文关键词检测 + 中文重要性评分
+- 内容哈希去重，幂等存储
 - 向量语义搜索（可插拔后端）
 
 **存储层**
@@ -123,6 +125,7 @@ flowchart LR
 - 内置实现：PostgreSQL + pgvector（生产）、纯内存（开发测试）
 - Repository 模式抽象
 - 内置缓存层 + 熔断器
+- 幂等 DDL 迁移，可安全重复执行
 - 详见 [自定义向量存储指南](docs/zh/development/custom-vector-store.md)
 
 **Agent 系统**
@@ -235,6 +238,11 @@ export OPENROUTER_API_KEY="your-api-key"
 ### 2. 启动数据库（可选）
 
 ```bash
+# 一键重启 + 迁移（可选导入文档）
+./scripts/docker/restart.sh
+./scripts/docker/restart.sh --save examples/knowledge-base/README.md
+
+# 或手动：
 docker run -d \
   --name goagentx-db \
   -e POSTGRES_PASSWORD=postgres \
@@ -251,8 +259,9 @@ cd examples/travel && go run main.go
 
 # 知识库问答（需要数据库 + Embedding 服务）
 cd examples/knowledge-base
-go run main.go --save README.md   # 导入文档
-go run main.go --chat             # 开始问答
+go run main.go --save README.md              # 导入文档
+go run main.go --save docs/goagent-overview.md  # 导入框架概述
+go run main.go --chat                         # 开始问答（支持知识纠错）
 
 # Advanced examples（v2 功能）
 go run ./examples/advanced/leader_failover/
