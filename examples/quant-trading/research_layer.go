@@ -288,7 +288,7 @@ type ReporterFunc func(state *research.ResearchState, log func(string, ...any), 
 // Returns:
 //   - error if graph execution or serialization fails.
 //
-//nolint:unused // used by research_demo.go (researchdemo build tag)
+//lint:ignore U1000 used by research_demo.go (researchdemo build tag)
 func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 	state *research.ResearchState, ticker string, outDir string,
 	log func(string, ...any), reporter ReporterFunc) error {
