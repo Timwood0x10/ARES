@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -41,6 +42,62 @@ func (a *MCPAdapter) ListTools(ctx context.Context) ([]dashboard.MCPToolInfo, er
 	return infos, nil
 }
 
+// clientTools associates an MCP client with its server name and tools.
+type clientTools struct {
+	client *mcp.MCPClient
+	name   string
+	tools  []mcp.MCPToolDef
+}
+
+// MultiMCPAdapter aggregates multiple MCP servers and routes tool calls to the
+// correct client based on the tool name.
+type MultiMCPAdapter struct {
+	entries []clientTools
+	toolMap map[string]*mcp.MCPClient // tool name → owning client
+}
+
+// NewMultiMCPAdapter creates an adapter from multiple MCP clients and their tools.
+func NewMultiMCPAdapter(entries []clientTools) *MultiMCPAdapter {
+	toolMap := make(map[string]*mcp.MCPClient)
+	for _, e := range entries {
+		for _, t := range e.tools {
+			toolMap[t.Name] = e.client
+		}
+	}
+	return &MultiMCPAdapter{entries: entries, toolMap: toolMap}
+}
+
+func (a *MultiMCPAdapter) CallTool(ctx context.Context, name string, args map[string]any) (*dashboard.MCPToolResult, error) {
+	client, ok := a.toolMap[name]
+	if !ok {
+		return nil, fmt.Errorf("tool %q not found on any MCP server", name)
+	}
+	r, err := client.CallTool(ctx, name, args)
+	if err != nil {
+		return nil, err
+	}
+	blocks := make([]dashboard.MCPContentBlock, len(r.Content))
+	for i, b := range r.Content {
+		blocks[i] = dashboard.MCPContentBlock{Type: b.Type, Text: b.Text}
+	}
+	return &dashboard.MCPToolResult{Content: blocks, IsError: r.IsError}, nil
+}
+
+func (a *MultiMCPAdapter) ListTools(ctx context.Context) ([]dashboard.MCPToolInfo, error) {
+	seen := make(map[string]bool)
+	var infos []dashboard.MCPToolInfo
+	for _, e := range a.entries {
+		for _, t := range e.tools {
+			if seen[t.Name] {
+				continue
+			}
+			seen[t.Name] = true
+			infos = append(infos, dashboard.MCPToolInfo{Name: t.Name, Description: t.Description})
+		}
+	}
+	return infos, nil
+}
+
 // LLMAdapter bridges output.LLMAdapter to dashboard.LLMExecutor.
 type LLMAdapter struct {
 	Adapter interface {
@@ -53,15 +110,41 @@ func (w *LLMAdapter) Generate(ctx context.Context, prompt string) (string, error
 }
 
 // MCPStatusBridge provides MCP server status to the dashboard.
-type MCPStatusBridge struct{ Tools []mcp.MCPToolDef }
+type MCPStatusBridge struct {
+	Tools   []mcp.MCPToolDef
+	Servers []MCPStatusServer
+}
+
+// MCPStatusServer describes a connected MCP server for the dashboard.
+type MCPStatusServer struct {
+	Name  string
+	Tools []mcp.MCPToolDef
+}
 
 func (b *MCPStatusBridge) ListServers() []dashboard.MCPServerStatusView {
+	if len(b.Servers) > 0 {
+		views := make([]dashboard.MCPServerStatusView, 0, len(b.Servers))
+		for _, s := range b.Servers {
+			toolViews := make([]dashboard.MCPToolView, len(s.Tools))
+			for i, t := range s.Tools {
+				toolViews[i] = dashboard.MCPToolView{
+					Name: t.Name, Description: t.Description, ServerName: s.Name,
+				}
+			}
+			views = append(views, dashboard.MCPServerStatusView{
+				Name: s.Name, Connected: true, ToolCount: len(s.Tools),
+				Version: "connected", Tools: toolViews,
+			})
+		}
+		return views
+	}
+	// Fallback for callers that only populate Tools.
 	views := make([]dashboard.MCPToolView, len(b.Tools))
 	for i, t := range b.Tools {
-		views[i] = dashboard.MCPToolView{Name: t.Name, Description: t.Description, ServerName: "codegraph"}
+		views[i] = dashboard.MCPToolView{Name: t.Name, Description: t.Description, ServerName: "mcp"}
 	}
 	return []dashboard.MCPServerStatusView{{
-		Name: "codegraph", Connected: true, ToolCount: len(b.Tools), Version: "connected", Tools: views,
+		Name: "mcp", Connected: true, ToolCount: len(b.Tools), Version: "connected", Tools: views,
 	}}
 }
 

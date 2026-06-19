@@ -133,6 +133,11 @@ type Distiller struct {
 	repo        ExperienceRepository
 	metrics     atomicMetrics  // Thread-safe atomic counters
 	distillWg   sync.WaitGroup // Tracks event subscription goroutines
+
+	// OnTaskCompleted is called when a task completion event is received.
+	// If set, the distiller invokes it with the task ID from the event payload.
+	// The handler should trigger the full distillation pipeline for the task.
+	OnTaskCompleted func(ctx context.Context, taskID string)
 }
 
 // NewDistiller creates a new Distiller instance.
@@ -668,11 +673,14 @@ func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
 			"role", event.Payload["role"],
 		)
 	case events.EventTaskCompleted:
+		taskID, _ := event.Payload["task_id"].(string)
 		slog.Debug("distiller received task completion",
 			"stream_id", event.StreamID,
-			"task_id", event.Payload["task_id"],
+			"task_id", taskID,
 		)
-		// TODO: trigger distillation from event payload (expected by 2026-07-01)
+		if taskID != "" && d.OnTaskCompleted != nil {
+			d.OnTaskCompleted(ctx, taskID)
+		}
 	default:
 		slog.Debug("distiller ignoring event type", "type", event.Type)
 	}

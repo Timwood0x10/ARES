@@ -1,6 +1,4 @@
 
-
-```json
 {
   "ticker": "AAPL",
   "score": 3,
@@ -15,4 +13,3 @@
   "target": "$165",
   "confidence": 0.65
 }
-```

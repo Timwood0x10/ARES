@@ -68,6 +68,12 @@ type Client struct {
 	tracer       observability.Tracer
 }
 
+// Close releases idle HTTP connections held by the client.
+func (c *Client) Close() {
+	c.httpClient.CloseIdleConnections()
+	c.streamClient.CloseIdleConnections()
+}
+
 // SetTracer sets an optional observability tracer on the client.
 // When set, Generate and GenerateStream will record LLM call spans.
 func (c *Client) SetTracer(t observability.Tracer) {

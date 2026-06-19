@@ -337,12 +337,9 @@ func (c *Client) Close(ctx context.Context) error {
 	}
 	c.closed = true
 
-	// TODO: implement proper resource release for each service once
-	// the underlying services expose a Close/Shutdown method.
-	// Currently each service holds internal connections (LLM client,
-	// memory repository, etc.) that should be closed here.
-	// Expected behavior: close LLM connections, flush memory caches,
-	// drain retrieval connections, cancel active workflows.
+	if c.llmService != nil {
+		c.llmService.Close()
+	}
 
 	return nil
 }

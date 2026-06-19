@@ -241,8 +241,8 @@ func TestClient_PaperTrade_NilRequest(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestClient_PaperTrade_ValidRequest tests paper trade returns ErrNotImplemented (skeleton).
-func TestClient_PaperTrade_ValidRequest(t *testing.T) {
+// TestClient_PaperTrade_NoTrader tests paper trade returns ErrNotInitialized.
+func TestClient_PaperTrade_NoTrader(t *testing.T) {
 	cfg := DefaultConfig()
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
@@ -253,9 +253,29 @@ func TestClient_PaperTrade_ValidRequest(t *testing.T) {
 		Duration:       time.Hour,
 	}
 	resp, err := client.PaperTrade(context.Background(), req)
-	// FIX: Skeleton implementation returns ErrNotImplemented.
-	require.ErrorIs(t, err, ErrNotImplemented)
+	require.ErrorIs(t, err, ErrNotInitialized)
 	require.Nil(t, resp)
+}
+
+// TestClient_PaperTrade_WithTrader tests paper trade delegates to PaperTrader.
+func TestClient_PaperTrade_WithTrader(t *testing.T) {
+	cfg := DefaultConfig()
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+
+	trader := NewDefaultPaperTrader()
+	client.SetPaperTrader(trader)
+
+	req := &PaperTradeRequest{
+		Symbols:        []string{"BTCUSDT"},
+		InitialCapital: 100000.0,
+		Duration:       time.Hour,
+	}
+	resp, err := client.PaperTrade(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotEmpty(t, resp.SessionID)
+	require.Equal(t, 100000.0, resp.Equity)
 }
 
 // TestClient_Close_Unstarted tests close on unstarted client.

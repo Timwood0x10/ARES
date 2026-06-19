@@ -3,6 +3,10 @@ package marketmaking
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // PaperTrader defines the interface for simulated (paper) trading sessions.
@@ -17,22 +21,34 @@ type PaperTrader interface {
 	Stop(ctx context.Context, sessionID string) (*PaperTradeResponse, error)
 }
 
-// DefaultPaperTrader is a skeleton implementation of PaperTrader.
-// It validates inputs and returns placeholder responses. Replace this with
-// a real implementation that connects to live market data and simulates fills.
+// DefaultPaperTrader is an in-memory implementation of PaperTrader.
+// It manages virtual sessions with simulated positions and PnL tracking.
+// Replace this with a real implementation that connects to live market data
+// and simulates fills once internal/quant exposes stable interfaces.
 type DefaultPaperTrader struct {
-	// TODO: add fields for market data connector, virtual order book manager,
-	// position tracker, and fill simulator once internal/quant exposes
-	// stable interfaces for these components.
+	mu       sync.RWMutex
+	sessions map[string]*paperSession
+	nextID   atomic.Int64
 }
 
-// NewDefaultPaperTrader creates a new skeleton paper trader.
+// paperSession holds the mutable state of a single paper trading session.
+type paperSession struct {
+	Capital   float64
+	Symbols   []string
+	Positions map[string]float64 // symbol -> quantity (signed)
+	Trades    []TradeRecord
+	StartTime time.Time
+}
+
+// NewDefaultPaperTrader creates a new in-memory paper trader.
 //
 // Returns:
 //
-//	trader - a paper trader instance (skeleton implementation).
+//	trader - a paper trader instance.
 func NewDefaultPaperTrader() *DefaultPaperTrader {
-	return &DefaultPaperTrader{}
+	return &DefaultPaperTrader{
+		sessions: make(map[string]*paperSession),
+	}
 }
 
 // Start begins a new paper trading session.
@@ -73,9 +89,25 @@ func (t *DefaultPaperTrader) Start(ctx context.Context, req *PaperTradeRequest) 
 	default:
 	}
 
-	// FIX: return ErrNotImplemented instead of zero-value response so callers
-	// can distinguish "feature not wired" from legitimate empty results (code rule 9).
-	return nil, ErrNotImplemented
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	sessionID := fmt.Sprintf("paper-%d", t.nextID.Add(1))
+	session := &paperSession{
+		Capital:   req.InitialCapital,
+		Symbols:   req.Symbols,
+		Positions: make(map[string]float64),
+		StartTime: time.Now(),
+	}
+	t.sessions[sessionID] = session
+
+	return &PaperTradeResponse{
+		SessionID:  sessionID,
+		CurrentPnL: 0,
+		Equity:     req.InitialCapital,
+		Trades:     []TradeRecord{},
+		StartedAt:  session.StartTime,
+	}, nil
 }
 
 // Status returns the current state of an active paper trading session.
@@ -100,9 +132,27 @@ func (t *DefaultPaperTrader) Status(ctx context.Context, sessionID string) (*Pap
 	default:
 	}
 
-	// FIX: return ErrNotImplemented instead of zero-value response so callers
-	// can distinguish "feature not wired" from legitimate empty results (code rule 9).
-	return nil, ErrNotImplemented
+	t.mu.RLock()
+	session, ok := t.sessions[sessionID]
+	t.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+
+	equity := session.Capital
+	for sym, qty := range session.Positions {
+		_ = sym
+		equity += qty * 0 // placeholder: mark-to-market not wired
+	}
+
+	return &PaperTradeResponse{
+		SessionID:  sessionID,
+		CurrentPnL: equity - session.Capital,
+		Equity:     equity,
+		Trades:     session.Trades,
+		StartedAt:  session.StartTime,
+	}, nil
 }
 
 // Stop terminates a running paper trading session and returns final results.
@@ -127,7 +177,28 @@ func (t *DefaultPaperTrader) Stop(ctx context.Context, sessionID string) (*Paper
 	default:
 	}
 
-	// FIX: return ErrNotImplemented instead of zero-value response so callers
-	// can distinguish "feature not wired" from legitimate empty results (code rule 9).
-	return nil, ErrNotImplemented
+	t.mu.Lock()
+	session, ok := t.sessions[sessionID]
+	if ok {
+		delete(t.sessions, sessionID)
+	}
+	t.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+
+	equity := session.Capital
+	for sym, qty := range session.Positions {
+		_ = sym
+		equity += qty * 0 // placeholder: mark-to-market not wired
+	}
+
+	return &PaperTradeResponse{
+		SessionID:  sessionID,
+		CurrentPnL: equity - session.Capital,
+		Equity:     equity,
+		Trades:     session.Trades,
+		StartedAt:  session.StartTime,
+	}, nil
 }

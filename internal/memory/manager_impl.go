@@ -328,6 +328,8 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncate(msg.Content, 100))
 			case memctx.RoleSystem:
 				contextBuilder += fmt.Sprintf("System: %s\n", truncate(msg.Content, 100))
+			default:
+				contextBuilder += fmt.Sprintf("Unknown: %s\n", truncate(msg.Content, 100))
 			}
 		}
 		contextBuilder += "\nCurrent request:\n"
@@ -376,8 +378,6 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 
 	task, err := m.taskMemory.Distill(ctx, taskID)
 	if err != nil {
-		slog.Error("[Memory Distillation] Failed to distill task",
-			"task_id", taskID, "error", err)
 		return nil, errors.Wrap(err, "distill task")
 	}
 
@@ -409,7 +409,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 	slog.Info("[Memory Distillation] Storing distilled task", "task_id", taskID)
 
 	inputStr, _ := distilled.Payload["input"].(string)
-	outputStr := fmt.Sprintf("%v", distilled.Payload["output"])
+	outputStr, _ := distilled.Payload["output"].(string)
 
 	// Try to get cleaned session messages for richer distillation input.
 	distMessages := m.buildCleanedDistillationMessages(ctx, taskID, inputStr, outputStr)
@@ -422,11 +422,10 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 	memories, err := m.distiller.DistillConversation(ctx, taskID, distMessages, tenantID, userID)
 	if err != nil {
-		slog.Error("[Memory Distillation] Failed to distill conversation",
-			"task_id", taskID, "error", err)
 		return errors.Wrap(err, "distill conversation")
 	}
 
+	var storedCount int
 	for _, mem := range memories {
 		problem, _ := mem.Metadata["problem"].(string)
 		solution, _ := mem.Metadata["solution"].(string)
@@ -441,6 +440,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 			Solution:         solution,
 			Confidence:       confidence,
 			ExtractionMethod: distillation.ExtractionMethod(extractionMethodStr),
+			Vector:           mem.Vector,
 		}
 
 		if err := m.expRepo.Create(ctx, exp); err != nil {
@@ -448,16 +448,21 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 				"task_id", taskID, "error", err)
 			continue
 		}
+		storedCount++
+	}
+
+	if len(memories) > 0 && storedCount == 0 {
+		return errors.New("all experiences failed to store")
 	}
 
 	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
 		"task_id":      taskID,
-		"output_count": len(memories),
+		"output_count": storedCount,
 	})
 
 	slog.Info("[Memory Distillation] Distillation completed",
 		"task_id", taskID,
-		"memories_created", len(memories))
+		"memories_created", storedCount)
 
 	return nil
 }
@@ -472,16 +477,14 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		"query", truncate(query, 50),
 		"limit", limit)
 
-	spec := memembed.BuildMemoryQuerySpec(query, m.embedder.GetModel(), 1, 0)
+	spec := memembed.BuildMemoryQuerySpec(query, m.pipeline.Model(), 1, 0)
 	queryVector, err := m.pipeline.Embed(ctx, spec)
 	if err != nil {
-		slog.Error("[Memory Search] Failed to generate query embedding", "error", err)
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
 
 	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, "default", limit)
 	if err != nil {
-		slog.Error("[Memory Search] Failed to search experiences", "error", err)
 		return nil, errors.Wrap(err, "search experiences")
 	}
 
@@ -516,18 +519,11 @@ func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (
 	return "", nil
 }
 
-// truncate truncates a string to the maximum length (in runes) and adds "..." if truncated.
-// This correctly handles multi-byte UTF-8 characters by using runes instead of bytes.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-
 	runes := []rune(s)
 	if len(runes) <= maxLen {
 		return s
 	}
-
 	return string(runes[:maxLen]) + "..."
 }
 

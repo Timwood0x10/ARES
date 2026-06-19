@@ -3,9 +3,11 @@ package research
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -364,9 +366,18 @@ func scanMemoryRow(rows *sql.Rows) (*MemoryEntry, error) {
 		}
 	}
 
-	// TODO: unmarshal trader proposal and final decision JSON if needed.
-	_ = traderJSON
-	_ = decisionJSON
+	if traderJSON != nil && *traderJSON != "" {
+		var tp TraderProposal
+		if err := json.Unmarshal([]byte(*traderJSON), &tp); err == nil {
+			entry.TraderProposal = &tp
+		}
+	}
+	if decisionJSON != nil && *decisionJSON != "" {
+		var fd PortfolioDecision
+		if err := json.Unmarshal([]byte(*decisionJSON), &fd); err == nil {
+			entry.FinalDecision = &fd
+		}
+	}
 
 	return &entry, nil
 }
@@ -393,6 +404,14 @@ func marshalOptionalJSON(v interface{}) string {
 	if v == nil {
 		return ""
 	}
-	// TODO: implement JSON marshaling for optional fields.
-	return ""
+	// Check for typed nil pointer (e.g., *TraderProposal(nil)).
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

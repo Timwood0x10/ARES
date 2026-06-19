@@ -48,7 +48,7 @@ func TestPaperTrader_Start_InvalidCapital(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestPaperTrader_Start_ValidRequest tests that start returns ErrNotImplemented (skeleton).
+// TestPaperTrader_Start_ValidRequest tests that start creates a session and returns it.
 func TestPaperTrader_Start_ValidRequest(t *testing.T) {
 	trader := NewDefaultPaperTrader()
 	req := &PaperTradeRequest{
@@ -57,9 +57,10 @@ func TestPaperTrader_Start_ValidRequest(t *testing.T) {
 		Duration:       2 * time.Hour,
 	}
 	resp, err := trader.Start(context.Background(), req)
-	// FIX: Skeleton implementation returns ErrNotImplemented.
-	require.ErrorIs(t, err, ErrNotImplemented)
-	require.Nil(t, resp)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotEmpty(t, resp.SessionID)
+	require.Equal(t, 100000.0, resp.Equity)
 }
 
 // TestPaperTrader_Status_EmptySessionID tests status with empty session ID.
@@ -71,14 +72,21 @@ func TestPaperTrader_Status_EmptySessionID(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestPaperTrader_Status_ValidSessionID tests that status returns ErrNotImplemented (skeleton).
+// TestPaperTrader_Status_ValidSessionID tests that status returns session data for started session.
 func TestPaperTrader_Status_ValidSessionID(t *testing.T) {
 	trader := NewDefaultPaperTrader()
-	sessionID := "test-session-001"
-	resp, err := trader.Status(context.Background(), sessionID)
-	// FIX: Skeleton implementation returns ErrNotImplemented.
-	require.ErrorIs(t, err, ErrNotImplemented)
-	require.Nil(t, resp)
+	req := &PaperTradeRequest{
+		Symbols:        []string{"BTCUSDT"},
+		InitialCapital: 50000.0,
+		Duration:       time.Hour,
+	}
+	created, err := trader.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	resp, err := trader.Status(context.Background(), created.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, created.SessionID, resp.SessionID)
 }
 
 // TestPaperTrader_Stop_EmptySessionID tests stop with empty session ID.
@@ -90,14 +98,26 @@ func TestPaperTrader_Stop_EmptySessionID(t *testing.T) {
 	require.Nil(t, resp)
 }
 
-// TestPaperTrader_Stop_ValidSessionID tests that stop returns ErrNotImplemented (skeleton).
+// TestPaperTrader_Stop_ValidSessionID tests that stop returns session data and removes it.
 func TestPaperTrader_Stop_ValidSessionID(t *testing.T) {
 	trader := NewDefaultPaperTrader()
-	sessionID := "test-session-002"
-	resp, err := trader.Stop(context.Background(), sessionID)
-	// FIX: Skeleton implementation returns ErrNotImplemented.
-	require.ErrorIs(t, err, ErrNotImplemented)
-	require.Nil(t, resp)
+	req := &PaperTradeRequest{
+		Symbols:        []string{"BTCUSDT"},
+		InitialCapital: 50000.0,
+		Duration:       time.Hour,
+	}
+	created, err := trader.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	resp, err := trader.Stop(context.Background(), created.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, created.SessionID, resp.SessionID)
+
+	// Verify session was removed
+	_, err = trader.Status(context.Background(), created.SessionID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
 }
 
 // TestPaperTrader_CancelledContext tests context cancellation on Start.

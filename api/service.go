@@ -95,7 +95,8 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 
 	var allTools []mcp.MCPToolDef
-	var firstMCPClient *mcp.MCPClient
+	var clientEntries []clientTools
+	seenTools := make(map[string]bool)
 	for i, srv := range cfg.MCP.Servers {
 		mcpClient := mcp.NewMCPClient(mcp.MCPClientConfig{
 			ServerName: srv.Name,
@@ -113,14 +114,17 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		if listErr != nil {
 			slog.Warn("mcp list tools failed", "server", srv.Name, "error", listErr)
 		}
-		// TODO: accumulate tools from all servers into a unified tool registry.
-		// Currently only the first server's tools are used by the orchestrator.
-		// Expected behavior: merge tools from all MCP servers with namespacing
-		// or prefixing to avoid collisions between servers.
-		if i == 0 {
-			allTools = tools
-			firstMCPClient = mcpClient
+		for _, t := range tools {
+			if !seenTools[t.Name] {
+				seenTools[t.Name] = true
+				allTools = append(allTools, t)
+			}
 		}
+		clientEntries = append(clientEntries, clientTools{
+			client: mcpClient,
+			name:   srv.Name,
+			tools:  tools,
+		})
 		slog.Info("mcp server connected", "server", srv.Name, "tools", len(tools))
 	}
 	slog.Info("mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
@@ -153,15 +157,18 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 
 	// --- Orchestrator ---
-	// TODO: support multiple MCP clients in the orchestrator. Currently only
-	// the first MCP server's client is passed. The architecture should evolve
-	// to use a MultiMCPClient that aggregates tools from all connected servers.
-	if firstMCPClient == nil {
+	if len(clientEntries) == 0 {
 		cancel()
 		return nil, fmt.Errorf("no mcp client available for orchestrator")
 	}
+	var mcpExecutor dashboard.MCPExecutor
+	if len(clientEntries) == 1 {
+		mcpExecutor = &MCPAdapter{Client: clientEntries[0].client}
+	} else {
+		mcpExecutor = NewMultiMCPAdapter(clientEntries)
+	}
 	orch := dashboard.NewOrchestrator(
-		&MCPAdapter{Client: firstMCPClient},
+		mcpExecutor,
 		&LLMAdapter{Adapter: llm},
 	)
 	orch.SetToolAliases(BuildToolAliases(allTools))
@@ -178,7 +185,11 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	orch.SetFlightRecorder(fr)
 
 	// --- Dashboard HTTP server ---
-	dashAPI := dashboard.NewAPIv2(orch, &MCPStatusBridge{Tools: allTools}, hub)
+	statusServers := make([]MCPStatusServer, 0, len(clientEntries))
+	for _, e := range clientEntries {
+		statusServers = append(statusServers, MCPStatusServer{Name: e.name, Tools: e.tools})
+	}
+	dashAPI := dashboard.NewAPIv2(orch, &MCPStatusBridge{Tools: allTools, Servers: statusServers}, hub)
 	adapter := &ArenaAdapter{Orch: orch, Store: eventStore}
 	dashAPI.SetArena(adapter)
 	dashAPI.SetSurvival(adapter)
@@ -228,11 +239,15 @@ func (s *Service) Stop(ctx context.Context) error {
 		}
 	}
 
-	// TODO: add explicit hub.Close() / eventStore.Close() once the underlying
-	// types expose a graceful shutdown method. Currently hub.Run() blocks on
-	// its own channel and will exit when the context is cancelled.
-	// Expected behavior: drain active WebSocket connections, flush pending
-	// events to the event store before closing.
+	// Stop hub and event store explicitly.
+	if s.hub != nil {
+		s.hub.Stop()
+	}
+	if s.eventStore != nil {
+		if closeErr := s.eventStore.RawStore().Close(); closeErr != nil {
+			errs = append(errs, fmt.Errorf("event store close: %w", closeErr))
+		}
+	}
 
 	if len(errs) > 0 {
 		return errs[0]

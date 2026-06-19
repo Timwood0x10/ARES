@@ -38,7 +38,8 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 }
 
 // LeaderSupervisor monitors leader health and triggers failover.
-// TODO: legacy — still used in tests; production code should migrate to Runtime-level supervision.
+// Deprecated: production code should use Runtime-level supervision.
+// Retained for test compatibility until all test consumers are migrated.
 type LeaderSupervisor struct {
 	mu           sync.RWMutex
 	leaders      map[string]base.Agent
