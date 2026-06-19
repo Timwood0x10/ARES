@@ -8,7 +8,10 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"goagentx/api/core"
 	"goagentx/internal/core/models"
@@ -426,33 +429,39 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		return errors.Wrap(err, "distill conversation")
 	}
 
-	var storedCount int
+	var storedCount int64
+	g, storeCtx := errgroup.WithContext(ctx)
 	for _, mem := range memories {
-		problem, _ := mem.Metadata["problem"].(string)
-		solution, _ := mem.Metadata["solution"].(string)
-		confidence, _ := mem.Metadata["confidence"].(float64)
-		extractionMethodStr, _ := mem.Metadata["extraction_method"].(string)
-		if extractionMethodStr == "" {
-			extractionMethodStr = string(distillation.ExtractionDirect)
-		}
+		mem := mem
+		g.Go(func() error {
+			problem, _ := mem.Metadata["problem"].(string)
+			solution, _ := mem.Metadata["solution"].(string)
+			confidence, _ := mem.Metadata["confidence"].(float64)
+			extractionMethodStr, _ := mem.Metadata["extraction_method"].(string)
+			if extractionMethodStr == "" {
+				extractionMethodStr = string(distillation.ExtractionDirect)
+			}
 
-		exp := &distillation.Experience{
-			Problem:          problem,
-			Solution:         solution,
-			Confidence:       confidence,
-			ExtractionMethod: distillation.ExtractionMethod(extractionMethodStr),
-			Vector:           mem.Vector,
-		}
+			exp := &distillation.Experience{
+				Problem:          problem,
+				Solution:         solution,
+				Confidence:       confidence,
+				ExtractionMethod: distillation.ExtractionMethod(extractionMethodStr),
+				Vector:           mem.Vector,
+			}
 
-		if err := m.expRepo.Create(ctx, exp); err != nil {
-			slog.Error("[Memory Distillation] Failed to store experience",
-				"task_id", taskID, "error", err)
-			continue
-		}
-		storedCount++
+			if err := m.expRepo.Create(storeCtx, exp); err != nil {
+				slog.Error("[Memory Distillation] Failed to store experience",
+					"task_id", taskID, "error", err)
+				return nil
+			}
+			atomic.AddInt64(&storedCount, 1)
+			return nil
+		})
 	}
+	_ = g.Wait()
 
-	if len(memories) > 0 && storedCount == 0 {
+	if len(memories) > 0 && atomic.LoadInt64(&storedCount) == 0 {
 		return errors.New("all experiences failed to store")
 	}
 

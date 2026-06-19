@@ -38,10 +38,12 @@ var storageMigrations = []string{
 	`ALTER TABLE knowledge_chunks_1024 ENABLE ROW LEVEL SECURITY`,
 
 	// Create tenant isolation policy
+	`DROP POLICY IF EXISTS tenant_isolation_knowledge_1024 ON knowledge_chunks_1024`,
 	`CREATE POLICY tenant_isolation_knowledge_1024 ON knowledge_chunks_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
 	// Create auto-update trigger for tsv
+	`DROP TRIGGER IF EXISTS tsvector_update_knowledge_1024 ON knowledge_chunks_1024`,
 	`CREATE TRIGGER tsvector_update_knowledge_1024 BEFORE INSERT OR UPDATE ON knowledge_chunks_1024
 		FOR EACH ROW EXECUTE FUNCTION
 		tsvector_update_trigger(tsv, 'pg_catalog.simple', content)`,
@@ -88,6 +90,7 @@ var storageMigrations = []string{
 
 	`ALTER TABLE experiences_1024 ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_experiences_1024 ON experiences_1024`,
 	`CREATE POLICY tenant_isolation_experiences_1024 ON experiences_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -132,6 +135,7 @@ var storageMigrations = []string{
 
 	`ALTER TABLE tools ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_tools ON tools`,
 	`CREATE POLICY tenant_isolation_tools ON tools
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -168,6 +172,7 @@ var storageMigrations = []string{
 
 	`ALTER TABLE conversations ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_conversations ON conversations`,
 	`CREATE POLICY tenant_isolation_conversations ON conversations
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -208,6 +213,7 @@ var storageMigrations = []string{
 
 	`ALTER TABLE task_results_1024 ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_task_results_1024 ON task_results_1024`,
 	`CREATE POLICY tenant_isolation_task_results_1024 ON task_results_1024
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -247,6 +253,7 @@ var storageMigrations = []string{
 
 	`ALTER TABLE secrets ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_secrets ON secrets`,
 	`CREATE POLICY tenant_isolation_secrets ON secrets
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -282,9 +289,9 @@ var storageMigrations = []string{
 		)`,
 
 	// Create indexes for embedding_queue
-	`CREATE UNIQUE INDEX idx_embedding_queue_dedupe ON embedding_queue(dedupe_key)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_embedding_queue_dedupe ON embedding_queue(dedupe_key)`,
 
-	`CREATE INDEX idx_embedding_queue_status ON embedding_queue(status, queued_at) 
+	`CREATE INDEX IF NOT EXISTS idx_embedding_queue_status ON embedding_queue(status, queued_at) 
 		WHERE status IN ('pending', 'processing')`,
 
 	// 8. embedding_dead_letter table - Failed embedding tasks
@@ -302,8 +309,8 @@ var storageMigrations = []string{
 		)`,
 
 	// Create indexes for embedding_dead_letter
-	`CREATE INDEX idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
-	`CREATE INDEX idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_tenant ON embedding_dead_letter(tenant_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_created ON embedding_dead_letter(created_at)`,
 
 	// 9. distilled_memories table - Distilled conversation memories for cross-session context
 	`CREATE TABLE IF NOT EXISTS distilled_memories (
@@ -321,11 +328,13 @@ var storageMigrations = []string{
 			access_count INTEGER DEFAULT 0,
 			last_accessed_at TIMESTAMP,
 			expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '90 days',
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
 
 	`ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`,
 
+	`DROP POLICY IF EXISTS tenant_isolation_distilled_memories ON distilled_memories`,
 	`CREATE POLICY tenant_isolation_distilled_memories ON distilled_memories
 		USING (tenant_id = current_setting('app.tenant_id', true))`,
 
@@ -352,6 +361,17 @@ var storageMigrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_distilled_memories_tenant
 		ON distilled_memories(tenant_id)`,
+
+	// 10. Add content_hash column for deduplication.
+	`ALTER TABLE distilled_memories ADD COLUMN IF NOT EXISTS content_hash TEXT`,
+
+	// 11. Unique constraint on (tenant_id, content_hash) for upsert dedup.
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_distilled_memories_dedup
+		ON distilled_memories(tenant_id, content_hash)
+		WHERE content_hash IS NOT NULL`,
+
+	// 12. Add updated_at column for existing tables.
+	`ALTER TABLE distilled_memories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`,
 }
 
 // MigrateStorage runs the storage system database migrations.

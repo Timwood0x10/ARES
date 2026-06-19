@@ -31,17 +31,27 @@ func main() {
 	dbname = strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer adminDB.Close()
+	defer func() {
+		if err := adminDB.Close(); err != nil {
+			slog.Warn("adminDB.Close", "error", err)
+		}
+	}()
 
 	ensureDatabase(adminDB, dbname)
-	adminDB.Close()
+	if err := adminDB.Close(); err != nil {
+		slog.Warn("adminDB.Close", "error", err)
+	}
 
 	pool, err := sql.Open("pgx", dsn)
 	if err != nil {
 		slog.Error("failed to connect", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer func() {
+		if err := pool.Close(); err != nil {
+			slog.Warn("pool.Close", "error", err)
+		}
+	}()
 
 	ctx := context.Background()
 

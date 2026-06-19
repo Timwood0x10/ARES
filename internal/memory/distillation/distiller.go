@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
@@ -371,63 +372,73 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 	slog.InfoContext(ctx, "[Memory Distillation] Generating embeddings and detecting conflicts",
 		"conversation_id", conversationID,
 		"memory_count", len(memories))
-	var finalMemories []Memory
-	for idx, memory := range memories {
-		// Generate embedding for conflict detection and retrieval.
-		// Use the unified embedding pipeline when available.
-		var embedding []float64
-		var err error
-		if d.pipeline != nil {
-			problem, _ := memory.Metadata["problem"].(string)
-			solution, _ := memory.Metadata["solution"].(string)
-			spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
-				MemoryType: memory.Type.String(),
-				Problem:    problem,
-				Solution:   solution,
-			})
-			if specErr != nil {
-				slog.WarnContext(ctx, "[Memory Distillation] ERROR Failed to build embedding spec",
-					"conversation_id", conversationID,
-					"memory_index", idx,
-					"error", specErr.Error(),
-					"action", "skipping this memory")
-				continue
+
+	// Phase 4a: Embed all memories concurrently using errgroup.
+	type memWithEmbedding struct {
+		mem   Memory
+		valid bool
+	}
+	embedded := make([]memWithEmbedding, len(memories))
+	g, embedCtx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for idx := range memories {
+		idx := idx
+		g.Go(func() error {
+			memory := memories[idx]
+			var embedding []float64
+			var err error
+			if d.pipeline != nil {
+				problem, _ := memory.Metadata["problem"].(string)
+				solution, _ := memory.Metadata["solution"].(string)
+				spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+					MemoryType: memory.Type.String(),
+					Problem:    problem,
+					Solution:   solution,
+				})
+				if specErr != nil {
+					slog.WarnContext(embedCtx, "[Memory Distillation] Failed to build embedding spec",
+						"conversation_id", conversationID, "memory_index", idx, "error", specErr)
+					embedded[idx] = memWithEmbedding{valid: false}
+					return nil
+				}
+				embedding, err = d.pipeline.Embed(embedCtx, spec)
+			} else {
+				embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+				embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
 			}
-			embedding, err = d.pipeline.Embed(ctx, spec)
-		} else {
-			embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
-			embedding, err = d.embedder.EmbedWithPrefix(ctx, embeddingText, "memory:")
-		}
-		if err != nil {
-			slog.WarnContext(ctx, "[Memory Distillation] ERROR Failed to generate embedding for memory",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"memory_type", memory.Type.String(),
-				"error", err.Error(),
-				"action", "skipping this memory")
+			if err != nil {
+				slog.WarnContext(embedCtx, "[Memory Distillation] Failed to generate embedding",
+					"conversation_id", conversationID, "memory_index", idx, "error", err)
+				embedded[idx] = memWithEmbedding{valid: false}
+				return nil
+			}
+			memory.Vector = embedding
+			embedded[idx] = memWithEmbedding{mem: memory, valid: true}
+			slog.InfoContext(embedCtx, "[Memory Distillation] Embedding generated",
+				"conversation_id", conversationID, "memory_index", idx,
+				"memory_type", memory.Type.String(), "dimensions", len(embedding))
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		slog.ErrorContext(ctx, "[Memory Distillation] Embedding phase failed", "error", err)
+	}
+
+	// Phase 4b: Conflict detection and resolution (sequential).
+	var finalMemories []Memory
+	for idx, ew := range embedded {
+		if !ew.valid {
 			continue
 		}
-		memory.Vector = embedding
+		memory := ew.mem
 
-		slog.InfoContext(ctx, "[Memory Distillation] Embedding generated successfully",
-			"conversation_id", conversationID,
-			"memory_index", idx,
-			"memory_type", memory.Type.String(),
-			"vector_dimensions", len(embedding),
-			"importance_score", memory.Importance)
-
-		// Detect conflicts with existing memories
-		// Extract problem and solution with type assertion and error handling
 		problem, problemOk := memory.Metadata["problem"].(string)
 		if !problemOk {
-			slog.WarnContext(ctx, "[Memory Distillation] Problem metadata is not a string", "conversation_id", conversationID)
-			problem = "" // Use empty string as fallback
+			problem = ""
 		}
-
 		solution, solutionOk := memory.Metadata["solution"].(string)
 		if !solutionOk {
-			slog.WarnContext(ctx, "[Memory Distillation] Solution metadata is not a string", "conversation_id", conversationID)
-			solution = "" // Use empty string as fallback
+			solution = ""
 		}
 
 		exp := &Experience{
@@ -436,41 +447,22 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			Confidence: memory.Importance,
 		}
 
-		slog.DebugContext(ctx, "[Memory Distillation] Detecting conflicts",
-			"conversation_id", conversationID,
-			"memory_index", idx)
-
 		conflict, err := d.resolver.DetectConflict(ctx, memory.Vector, tenantID)
 		if err != nil {
-			slog.WarnContext(ctx, "[Memory Distillation] WARNING Failed to detect memory conflicts",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"error", err.Error(),
-				"action", "proceeding without conflict check")
+			slog.WarnContext(ctx, "[Memory Distillation] Failed to detect conflicts",
+				"conversation_id", conversationID, "memory_index", idx, "error", err)
 		}
 		if conflict != nil {
-			// Resolve conflict based on confidence/importance
 			strategy := d.resolver.ResolveConflict(exp, conflict)
-			slog.InfoContext(ctx, "[Memory Distillation] Memory conflict detected and resolved",
-				"conversation_id", conversationID,
-				"memory_index", idx,
-				"strategy", string(strategy),
-				"new_confidence", exp.Confidence,
-				"old_confidence", conflict.Confidence,
-				"conflict_content", truncpkg.WithEllipsis(conflict.Problem, 50))
+			slog.InfoContext(ctx, "[Memory Distillation] Conflict resolved",
+				"conversation_id", conversationID, "memory_index", idx,
+				"strategy", string(strategy))
 			d.metrics.ConflictResolved.Add(1)
 
-			// Apply the resolution strategy
 			switch strategy {
 			case ReplaceOld:
-				// Replace the old memory with the new one
 				finalMemories = append(finalMemories, memory)
-				slog.DebugContext(ctx, "[Memory Distillation] Replaced old memory with new one",
-					"conversation_id", conversationID,
-					"memory_index", idx)
 			case KeepBoth:
-				// Keep both memories - add the old one back and then the new one
-				// Convert the conflicting experience back to memory format
 				oldMemory := Memory{
 					ID:         uuid.New().String(),
 					Content:    conflict.Problem,
@@ -482,11 +474,7 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 				}
 				finalMemories = append(finalMemories, oldMemory)
 				finalMemories = append(finalMemories, memory)
-				slog.DebugContext(ctx, "[Memory Distillation] Kept both old and new memories",
-					"conversation_id", conversationID,
-					"memory_index", idx)
 			default:
-				// Fallback to keeping the new memory
 				finalMemories = append(finalMemories, memory)
 				slog.WarnContext(ctx, "[Memory Distillation] WARNING Unknown resolution strategy, defaulting to keep new memory",
 					"conversation_id", conversationID,

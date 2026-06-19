@@ -3,6 +3,24 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+SAVE_PATH=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --save)
+      SAVE_PATH="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 [--save <doc_path>]"
+      echo ""
+      echo "  --save <doc_path>    Import a document after migration"
+      exit 1
+      ;;
+  esac
+done
+
 echo "=== Stopping existing containers ==="
 docker compose -f "$ROOT/docker-compose.yml" down -v 2>/dev/null || true
 
@@ -25,6 +43,12 @@ echo ""
 echo "=== Running production database migrations ==="
 export DB_NAME="goagent"
 cd "$ROOT" && go run ./cmd/migrate_goagentx
+
+if [ -n "$SAVE_PATH" ]; then
+  echo ""
+  echo "=== Importing document: $SAVE_PATH ==="
+  cd "$ROOT/examples/knowledge-base" && go run main.go --save "$SAVE_PATH"
+fi
 
 echo ""
 echo "✅ All services are up and databases are migrated."

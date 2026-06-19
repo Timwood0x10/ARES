@@ -19,17 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quant Trading Example**: Complete quantitative trading example with SQLite backend, demonstrating end-to-end quant trading workflow.
 - **Tool Lifecycle Events**: Emit lifecycle events for tool execution, enabling observability and monitoring of tool calls throughout their lifecycle.
 - **Memory Metadata Propagation**: Expanded metadata propagation across memory operations, enriching context with session and agent metadata.
+- **Concurrent Distillation Pipeline**: errgroup-based parallel embedding in distiller (concurrency limit 5), and concurrent experience storage in manager_impl.go, reducing end-to-end distillation latency.
+- **Content Hash Dedup**: SHA-256 `content_hash` column on `distilled_memeries` with `ON CONFLICT (tenant_id, content_hash) WHERE content_hash IS NOT NULL DO NOTHING` for idempotent memory storage.
+- **Idempotent Migrations**: All DDL operations now safe to re-run — `DROP IF EXISTS` + `CREATE` for policies/triggers, `IF NOT EXISTS` for indexes, `ADD COLUMN IF NOT EXISTS` for schema evolution.
+- **Chinese Language Support**: Chinese keyword detection in `detector.go` (介绍/是什么/怎么/有哪些/区别/说说/推荐 etc.) and Chinese importance scoring in `scorer.go` (错误/修复/配置/框架/架构/优化 etc.), enabling experience extraction from Chinese Q&A.
+- **Knowledge Correction Flow**: End-to-end correction pipeline in knowledge-base example — detects correction intent, calls LLM for structured commands (`UPDATE:`/`DELETE:`/`CREATE:`), executes DB writes for both `distilled_memories` and `knowledge_chunks_1024`. Supports correction via "纠错" keyword.
+- **RAG Search Includes Corrected Memories**: `KnowledgeBase.Search()` now queries both `knowledge_chunks_1024` and `distilled_memories`, with corrected memories boosted in ranking.
+- **Restart Script Import**: `scripts/docker/restart.sh --save <path>` option to import a document immediately after DB migration.
 
 ### Refactors
 
 - Enhanced configuration safety with improved validation and error handling in the API layer (`api/config.go`, `api/service.go`).
 - Renamed `quant-demo` to `quant-trading` with updated configuration and documentation.
 - Enforced snapshot-only data constraint in analyst prompts to ensure data consistency.
+- Replaced `WriteString(fmt.Sprintf(...))` with `fmt.Fprintf` across correction flow.
+- Simplified loop with `append(..., distilledResults...)`.
 
 ### Bug Fixes
 
 - Resolved data race and timing issues in `DynamicExecutor` recovery path.
 - Fixed documentation file naming inconsistencies.
+- Fixed all errcheck issues (unchecked `Close()` calls) in `cmd/` migration tools.
+- Fixed De Morgan's law simplification in UUID validation.
 
 ## [0.2.1] - 2026-06-16
 

@@ -64,6 +64,39 @@ func TestImportanceScorer_ScoreMemory(t *testing.T) {
 			minScore:   0.5,
 			maxScore:   0.7,
 		},
+		// Chinese keyword tests
+		{
+			name:       "chinese problem keyword",
+			memoryType: MemoryInteraction,
+			problem:    "我有一个错误",
+			solution:   "修复方法如下",
+			minScore:   0.7,
+			maxScore:   1.0,
+		},
+		{
+			name:       "chinese framework keyword",
+			memoryType: MemoryKnowledge,
+			problem:    "介绍一下go框架",
+			solution:   "GoFrame是一个企业级Go框架",
+			minScore:   0.6,
+			maxScore:   0.9,
+		},
+		{
+			name:       "chinese config keyword",
+			memoryType: MemoryPreference,
+			problem:    "怎么配置数据库",
+			solution:   "在config.yaml中设置",
+			minScore:   0.6,
+			maxScore:   0.9,
+		},
+		{
+			name:       "chinese no keyword",
+			memoryType: MemoryKnowledge,
+			problem:    "你好",
+			solution:   "今天天气不错",
+			minScore:   0.2,
+			maxScore:   0.3,
+		},
 	}
 
 	for _, tt := range tests {
