@@ -448,6 +448,8 @@ func buildInheritanceDesc(fromA, fromB []string, method string) string {
 
 // generateCrossoverPoints generates k unique crossover point indices in range [1, n-1].
 // If k >= n-1, returns all possible split positions.
+// Uses O(k) average-case allocation via rejection sampling; falls back to
+// O(N) shuffle for dense selections (k > N/2).
 func generateCrossoverPoints(rng *rand.Rand, k, n int) []int {
 	maxPoints := n - 1
 	if maxPoints <= 0 {
@@ -457,18 +459,33 @@ func generateCrossoverPoints(rng *rand.Rand, k, n int) []int {
 		k = maxPoints
 	}
 
-	// Use reservoir sampling via shuffle to pick k unique positions.
-	positions := make([]int, maxPoints)
-	for i := 0; i < maxPoints; i++ {
-		positions[i] = i + 1
-	}
-	// Fisher-Yates shuffle first k elements.
-	for i := 0; i < k; i++ {
-		j := rng.Intn(maxPoints-i) + i
-		positions[i], positions[j] = positions[j], positions[i]
+	// For dense selections, O(N) shuffle is fine.
+	// k == maxPoints guard prevents any theoretical infinite-loop edge case
+	// if the upper-bound cap logic is ever removed or refactored.
+	if k > maxPoints/2 || k == maxPoints {
+		positions := make([]int, maxPoints)
+		for i := 0; i < maxPoints; i++ {
+			positions[i] = i + 1
+		}
+		for i := 0; i < k; i++ {
+			j := rng.Intn(maxPoints-i) + i
+			positions[i], positions[j] = positions[j], positions[i]
+		}
+		result := positions[:k]
+		sort.Ints(result)
+		return result
 	}
 
-	result := positions[:k]
-	sort.Ints(result) // Ensure points are in ascending order.
+	// Rejection sampling: O(k) average-case allocation.
+	seen := make(map[int]struct{}, k)
+	result := make([]int, 0, k)
+	for len(result) < k {
+		candidate := rng.Intn(maxPoints) + 1
+		if _, exists := seen[candidate]; !exists {
+			seen[candidate] = struct{}{}
+			result = append(result, candidate)
+		}
+	}
+	sort.Ints(result)
 	return result
 }

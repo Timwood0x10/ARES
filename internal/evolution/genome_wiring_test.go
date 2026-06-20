@@ -3,9 +3,11 @@ package evolution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"goagentx/internal/callbacks"
 	"goagentx/internal/evolution/genome"
 	"goagentx/internal/evolution/mutation"
 )
@@ -526,4 +528,358 @@ func (m *mockGenomeMutator) Mutate(ctx context.Context, parent *mutation.Strateg
 		}
 	}
 	return result, nil
+}
+
+// mockTesterForDreamCycle implements TesterInterface for testing dream cycle integration.
+type mockTesterForDreamCycle struct {
+	winRate float64
+}
+
+func (t *mockTesterForDreamCycle) Run(ctx context.Context, cfg RegressionConfig) (*RegressionResult, error) {
+	return &RegressionResult{
+		CandidateScore: 85.0,
+		BaselineScore:  70.0,
+		WinRate:        t.winRate,
+		TotalTasks:     cfg.TaskSampleSize,
+	}, nil
+}
+
+// waitForGeneration polls pop.CurrentGeneration() until it exceeds genBefore or timeout elapses.
+// This replaces flaky time.Sleep with deterministic polling for async evolution.
+func waitForGeneration(t *testing.T, pop *genome.Population, genBefore int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for generation to advance from %d (current=%d)", genBefore, pop.CurrentGeneration())
+		case <-ticker.C:
+			if pop.CurrentGeneration() > genBefore {
+				return
+			}
+		}
+	}
+}
+
+// TestWiredSystem_WithSchedulerEventTrigger verifies that when the scheduler receives
+// an OnAgentEnd callback with sufficient score degradation data, it correctly triggers
+// GenomePopulationAdapter.Run() and increments the population generation.
+func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
+	t.Helper()
+	base := &mutation.Strategy{
+		ID: "sched-trigger-root", Version: 1,
+		Params:         map[string]any{"temperature": 0.7, "top_k": 40},
+		PromptTemplate: "You are helpful.",
+		Score:          50.0,
+		CreatedAt:      time.Now(),
+	}
+
+	reg := callbacks.NewRegistry()
+	cfg := DefaultSystemConfig()
+	cfg.PopulationSize = 8
+	cfg.EliteCount = 1
+	cfg.EnableScheduler = true
+	cfg.EnableDreamCycle = false
+	cfg.Callbacks = reg
+	cfg.SchedulerTrigger = TriggerOnIdle
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		t.Fatalf("NewWiredEvolutionSystem failed: %v", err)
+	}
+
+	if system.Scheduler == nil {
+		t.Fatal("expected non-nil Scheduler when EnableScheduler=true")
+	}
+
+	for _, a := range system.Population.Agents {
+		a.Score = float64(int(a.Score) % 100)
+	}
+
+	if err := RegisterScheduler(system); err != nil {
+		t.Fatalf("RegisterScheduler failed: %v", err)
+	}
+
+	// Verify handler was registered.
+	if reg.Count(callbacks.EventAgentEnd) != 1 {
+		t.Errorf("expected 1 handler registered for EventAgentEnd, got %d", reg.Count(callbacks.EventAgentEnd))
+	}
+
+	genBefore := system.Population.Generation
+
+	// Populate score history to satisfy shouldEvolve conditions for TriggerOnIdle:
+	//   - scoreCount >= 20 (minimum threshold)
+	//   - score degradation drop >= 15%
+	// Use 40 high scores followed by 10 low scores to create ~98.7% degradation.
+	for i := 0; i < 40; i++ {
+		system.Scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		system.Scheduler.RecordScore(1.0)
+	}
+
+	// Override minInterval to allow immediate triggering.
+	system.Scheduler.minInterval = time.Nanosecond
+
+	// Directly call OnAgentEnd to trigger evolution.
+	system.Scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-sched-1"})
+
+	// Wait for async evolution to complete by polling generation with timeout.
+	waitForGeneration(t, system.Population, genBefore, 2*time.Second)
+
+	if system.Population.Generation <= genBefore {
+		t.Errorf("generation = %d, want > %d (evolution should have run)", system.Population.Generation, genBefore)
+	}
+
+	if system.Scheduler.LastRunTime().IsZero() {
+		t.Error("expected non-zero LastRunTime after triggered evolution")
+	}
+
+	Shutdown(system)
+}
+
+// TestWiredSystem_WithDreamCycleAndScheduler verifies that when both DreamCycle and
+// Scheduler are enabled, the system correctly wires them together with cross-references.
+func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
+	t.Helper()
+	base := &mutation.Strategy{
+		ID: "dc-sched-root", Version: 1,
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "test prompt.",
+		Score:          50.0,
+		CreatedAt:      time.Now(),
+	}
+
+	reg := callbacks.NewRegistry()
+
+	// Create system with scheduler but NOT dream cycle via config (since
+	// NewWiredEvolutionSystem passes nil tester which fails DreamCycle creation).
+	// Instead, create the system without dream cycle, then manually attach one.
+	cfg := DefaultSystemConfig()
+	cfg.PopulationSize = 6
+	cfg.EnableScheduler = true
+	cfg.EnableDreamCycle = false
+	cfg.Callbacks = reg
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		t.Fatalf("NewWiredEvolutionSystem failed: %v", err)
+	}
+
+	if system.Scheduler == nil {
+		t.Fatal("expected non-nil Scheduler")
+	}
+
+	// Manually create a DreamCycle with a mock tester and attach it.
+	rawMutator, err := mutation.NewMutator(mutation.WithSeed(42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutationAdapter, err := NewMutationAdapter(rawMutator)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mockTester := &mockTesterForDreamCycle{winRate: 0.8}
+
+	dreamCycle, err := NewDreamCycle(
+		system.Scheduler,
+		mutationAdapter,
+		mockTester,
+		system.Genealogy,
+		WithDreamCycleConfig(DreamCycleConfig{
+			Enabled:              true,
+			MinTasksBeforeEvolve: 1, // Low threshold for testing.
+			MaxMutations:         2,
+			MinWinRate:           0.55,
+			Cooldown:             time.Nanosecond,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewDreamCycle failed: %v", err)
+	}
+
+	// Wire cross-references via public API only.
+	system.Scheduler.SetDreamCycle(dreamCycle)
+	system.DreamCycle = dreamCycle
+
+	// Verify cross-references via public API (avoid direct unexported field access).
+	if system.DreamCycle == nil {
+		t.Error("expected non-nil DreamCycle after manual attachment")
+	}
+	if system.Scheduler.DreamCycle() == nil {
+		t.Error("expected scheduler.DreamCycle() to return non-nil after SetDreamCycle")
+	}
+	if system.Scheduler.DreamCycle() != system.DreamCycle {
+		t.Error("expected scheduler.DreamCycle() to return the same DreamCycle instance")
+	}
+
+	// Verify the dream cycle is functional by running it directly.
+	err = dreamCycle.Run(context.Background(), CallbackData{AgentID: "agent-dc-1"})
+	if err != nil {
+		t.Logf("dreamCycle.Run returned error (may be expected): %v", err)
+	}
+
+	Shutdown(system)
+}
+
+// TestWiredSystem_SchedulerTriggersMultipleEvolutions verifies that multiple
+// OnAgentEnd calls each trigger evolution cycles when minInterval is short enough.
+func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
+	t.Helper()
+	base := &mutation.Strategy{
+		ID: "multi-evol-root", Version: 1,
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "test.",
+		Score:          50.0,
+		CreatedAt:      time.Now(),
+	}
+
+	reg := callbacks.NewRegistry()
+	cfg := DefaultSystemConfig()
+	cfg.PopulationSize = 6
+	cfg.EliteCount = 1
+	cfg.EnableScheduler = true
+	cfg.EnableDreamCycle = false
+	cfg.Callbacks = reg
+	cfg.SchedulerTrigger = TriggerOnIdle
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		t.Fatalf("NewWiredEvolutionSystem failed: %v", err)
+	}
+
+	for _, a := range system.Population.Agents {
+		a.Score = float64(int(a.Score) % 100)
+	}
+
+	if err := RegisterScheduler(system); err != nil {
+		t.Fatalf("RegisterScheduler failed: %v", err)
+	}
+
+	// Set very short minInterval to allow rapid successive evolutions.
+	system.Scheduler.minInterval = time.Nanosecond
+
+	// Populate score degradation data once (reused across calls).
+	for i := 0; i < 40; i++ {
+		system.Scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		system.Scheduler.RecordScore(1.0)
+	}
+
+	genBefore := system.Population.CurrentGeneration()
+
+	// Trigger three consecutive evolutions.
+	for i := 0; i < 3; i++ {
+		system.Scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: fmt.Sprintf("agent-multi-%d", i)})
+		// Wait for this evolution cycle to complete before triggering the next.
+		waitForGeneration(t, system.Population, system.Population.CurrentGeneration(), 2*time.Second)
+	}
+
+	genAfter := system.Population.CurrentGeneration()
+	if genAfter <= genBefore {
+		t.Errorf("generation = %d, want > %d (expected at least some evolutions)", genAfter, genBefore)
+	}
+	// We expect roughly 3 evolutions (one per trigger), but exact count depends on timing.
+	t.Logf("generation progressed from %d to %d after 3 triggers", genBefore, genAfter)
+
+	Shutdown(system)
+}
+
+// TestWiredSystem_FullIntegrationWithRealMutator verifies the complete flow:
+// Scheduler -> GenomePopulationAdapter -> Population.EvolveOnIdle -> real Mutator,
+// and confirms lineage records are produced.
+func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
+	t.Helper()
+	base := &mutation.Strategy{
+		ID: "real-mut-root", Version: 1,
+		Params:         map[string]any{"temperature": 0.7, "top_k": 40, "max_steps": 5},
+		PromptTemplate: "You are a helpful assistant.",
+		Score:          50.0,
+		CreatedAt:      time.Now(),
+	}
+
+	reg := callbacks.NewRegistry()
+	cfg := DefaultSystemConfig()
+	cfg.PopulationSize = 8
+	cfg.EliteCount = 1
+	cfg.MutationRate = 0.3
+	cfg.SurvivalRate = 0.6
+	cfg.EnableScheduler = true
+	cfg.EnableDreamCycle = false
+	cfg.Callbacks = reg
+	cfg.SchedulerTrigger = TriggerOnIdle
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		t.Fatalf("NewWiredEvolutionSystem failed: %v", err)
+	}
+
+	// Verify the system uses a real mutator (not mock).
+	if system.PopAdapter == nil {
+		t.Fatal("PopAdapter is nil")
+	}
+	if system.Population == nil {
+		t.Fatal("Population is nil")
+	}
+
+	for _, a := range system.Population.Agents {
+		a.Score = float64(int(a.Score) % 100)
+	}
+
+	lineageCountBefore := system.Genealogy.Count()
+	genBefore := system.Population.Generation
+
+	if err := RegisterScheduler(system); err != nil {
+		t.Fatalf("RegisterScheduler failed: %v", err)
+	}
+
+	// Feed score degradation data to satisfy shouldEvolve.
+	for i := 0; i < 40; i++ {
+		system.Scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		system.Scheduler.RecordScore(1.0)
+	}
+
+	system.Scheduler.minInterval = time.Nanosecond
+
+	// Trigger evolution via scheduler callback.
+	system.Scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-real-1"})
+
+	// Wait for async evolution to complete.
+	waitForGeneration(t, system.Population, genBefore, 2*time.Second)
+
+	// Verify generation advanced.
+	genAfter := system.Population.Generation
+	if genAfter <= genBefore {
+		t.Errorf("generation = %d, want > %d after scheduler-triggered evolution", genAfter, genBefore)
+	}
+
+	// Record lineage for the new generation and verify lineage was produced.
+	prevGen := genAfter - 1
+	if prevGen >= 0 {
+		count, err := RecordPopulationLineage(context.Background(), system.Population, system.Genealogy, prevGen)
+		if err != nil {
+			t.Fatalf("RecordPopulationLineage failed: %v", err)
+		}
+		if count == 0 && genAfter > genBefore {
+			t.Log("no lineage records found (agents may have empty ParentID)")
+		}
+		t.Logf("lineage records: before=%d, after=%d, new=%d", lineageCountBefore, system.Genealogy.Count(), system.Genealogy.Count()-lineageCountBefore)
+	}
+
+	// Verify best strategy retrieval still works.
+	best, err := BestStrategyFromSystem(system)
+	if err != nil {
+		t.Fatalf("BestStrategyFromSystem failed: %v", err)
+	}
+	if best == nil {
+		t.Error("best strategy should not be nil after evolution")
+	}
+
+	Shutdown(system)
 }

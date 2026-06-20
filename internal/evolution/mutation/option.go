@@ -42,9 +42,30 @@ func WithPromptPool(pool []string) MutatorOption {
 		if len(pool) == 0 {
 			return fmt.Errorf("prompt pool must not be empty")
 		}
-		copied := make([]string, len(pool))
-		copy(copied, pool)
-		m.promptPool = copied
+		m.promptPool = make([]string, len(pool))
+		copy(m.promptPool, pool)
+		return nil
+	}
+}
+
+// WithToolPool sets the available tool configurations for tool mutation.
+// Each entry in the pool represents a distinct tool configuration string
+// (e.g., "web_search,calculator,code_exec").
+//
+// Args:
+//
+//	tools - the list of tool configuration strings.
+//
+// Returns:
+//
+//	MutatorOption - the configuration function.
+func WithToolPool(tools []string) MutatorOption {
+	return func(m *Mutator) error {
+		if len(tools) == 0 {
+			return fmt.Errorf("tool pool must not be empty")
+		}
+		m.toolPool = make([]string, len(tools))
+		copy(m.toolPool, tools)
 		return nil
 	}
 }

@@ -17,11 +17,12 @@ var ErrNilParent = fmt.Errorf("parent strategy must not be nil")
 var ErrInvalidCount = fmt.Errorf("mutation count must be positive")
 
 // Mutator generates mutated strategies from a parent strategy.
-// It supports parameter value mutations and prompt template mutations
-// with configurable parameter ranges and randomness sources.
+// It supports parameter value mutations, prompt template mutations, and tool
+// configuration mutations with configurable ranges, pools, and randomness sources.
 type Mutator struct {
 	paramRanges map[string]ParamRange // Configurable parameter ranges.
 	promptPool  []string              // Available prompt templates for mutation.
+	toolPool    []string              // Available tool configurations for mutation.
 	rng         *rand.Rand            // Deterministic randomness source.
 }
 
@@ -30,11 +31,12 @@ type Mutator struct {
 // Default configuration:
 //   - paramRanges: DefaultParamRanges (temperature, top_k, max_steps, etc.)
 //   - promptPool: empty (prompt mutation disabled unless configured)
+//   - toolPool: empty (tool mutation disabled unless configured)
 //   - rng: seeded with current time (non-deterministic)
 //
 // Args:
 //
-//	opts - optional configuration functions (WithParamRanges, WithPromptPool, WithSeed).
+//	opts - optional configuration functions (WithParamRanges, WithPromptPool, WithToolPool, WithSeed).
 //
 // Returns:
 //
@@ -44,6 +46,7 @@ func NewMutator(opts ...MutatorOption) (*Mutator, error) {
 	m := &Mutator{
 		paramRanges: deepCopyParamRanges(DefaultParamRanges),
 		promptPool:  []string{},
+		toolPool:    []string{},
 		rng:         rand.New(rand.NewSource(rand.Int63())), // #nosec G404 — strategy mutation doesn't need crypto rand
 	}
 
@@ -60,9 +63,13 @@ func NewMutator(opts ...MutatorOption) (*Mutator, error) {
 // Each child is guaranteed to differ from parent in at least one parameter,
 // or be a deep copy if no valid mutation is possible.
 //
-// Mutation distribution per child:
-//   - 80% probability: parameter value mutation
-//   - 20% probability: prompt template mutation (requires non-empty promptPool)
+// Mutation distribution per child (when pools are non-empty):
+//   - 70% probability: parameter value mutation
+//   - 15% probability: prompt template mutation (requires non-empty promptPool)
+//   - 15% probability: tool configuration mutation (requires non-empty toolPool)
+//
+// If a pool is empty, its probability is redistributed among the remaining
+// available mutation types.
 //
 // Args:
 //
@@ -101,16 +108,42 @@ func (m *Mutator) Mutate(ctx context.Context, parent *Strategy, n int) ([]*Strat
 }
 
 // mutateOne performs a single mutation on the parent strategy.
-// It randomly selects between parameter and prompt mutation based on probability,
-// then applies the chosen mutation method.
+// It randomly selects between parameter, prompt, and tool mutation based on
+// probability and pool availability, then applies the chosen mutation method.
+//
+// Probability distribution:
+//   - All pools available: 70% parameter, 15% prompt, 15% tool
+//   - Only prompt available: 80% parameter, 20% prompt
+//   - Only tool available: 80% parameter, 20% tool
+//   - No pools available: 100% parameter
 func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
-	usePrompt := len(m.promptPool) > 0 && m.rng.Float64() < 0.2
+	hasPrompt := len(m.promptPool) > 0
+	hasTool := len(m.toolPool) > 0
+	r := m.rng.Float64()
 
 	var child *Strategy
 	var err error
 
-	if usePrompt {
-		child, err = m.mutatePrompt(parent)
+	if hasPrompt && hasTool {
+		if r < 0.70 {
+			child, err = m.mutateParameter(parent)
+		} else if r < 0.85 {
+			child, err = m.mutatePrompt(parent)
+		} else {
+			child, err = m.mutateTool(parent)
+		}
+	} else if hasPrompt {
+		if r < 0.80 {
+			child, err = m.mutateParameter(parent)
+		} else {
+			child, err = m.mutatePrompt(parent)
+		}
+	} else if hasTool {
+		if r < 0.80 {
+			child, err = m.mutateParameter(parent)
+		} else {
+			child, err = m.mutateTool(parent)
+		}
 	} else {
 		child, err = m.mutateParameter(parent)
 	}
@@ -196,6 +229,49 @@ func (m *Mutator) mutatePrompt(parent *Strategy) (*Strategy, error) {
 	return child, nil
 }
 
+// mutateTool replaces the tool configuration with a different one from the pool.
+// The tool configuration is stored in Params["tools"] as a string.
+//
+// If the parent strategy does not have a "tools" key in Params and the toolPool
+// is non-empty, this method initializes the tools field to the first pool entry
+// and returns the deep copy (similar to mutateParameter's "no mutable params"
+// handling). This prevents silently adding a tools configuration that did not
+// exist in the parent.
+//
+// Returns a deep copy of parent if no alternative configuration is available.
+func (m *Mutator) mutateTool(parent *Strategy) (*Strategy, error) {
+	child := parent.Clone()
+
+	if len(m.toolPool) <= 1 {
+		child.MutationDesc = "insufficient tool configurations for mutation"
+		child.StrategyMutationType = MutationTool
+		return child, nil
+	}
+
+	currentTools, hasToolsKey := parent.Params["tools"].(string)
+	if !hasToolsKey && len(m.toolPool) > 0 {
+		// Parent has no "tools" config; initialize with first pool entry
+		// instead of silently picking a random different value.
+		child.Params["tools"] = m.toolPool[0]
+		child.MutationDesc = fmt.Sprintf("tool configuration initialized to %q (parent had no tools key)", m.toolPool[0])
+		child.StrategyMutationType = MutationTool
+		return child, nil
+	}
+
+	newTools := m.pickDifferentString(m.toolPool, currentTools)
+	if newTools == "" {
+		child.MutationDesc = "no alternative tool configuration available"
+		child.StrategyMutationType = MutationTool
+		return child, nil
+	}
+
+	child.Params["tools"] = newTools
+	child.MutationDesc = fmt.Sprintf("tool configuration changed to %q", newTools)
+	child.StrategyMutationType = MutationTool
+
+	return child, nil
+}
+
 // mutableParamNames returns sorted parameter names that exist in both
 // the configured ranges and the parent strategy params.
 // Sorting ensures deterministic iteration order for reproducible mutations.
@@ -275,7 +351,8 @@ func deepCopyParamRanges(src map[string]ParamRange) map[string]ParamRange {
 }
 
 // valuesEqual checks if two interface values are equal.
-// Supports comparison of numeric types, strings, booleans, and nil.
+// Supports cross-type numeric comparison (int/float64/int64) and
+// standard comparison of strings, booleans, and nil.
 func valuesEqual(a, b any) bool {
 	if a == nil && b == nil {
 		return true
@@ -286,14 +363,35 @@ func valuesEqual(a, b any) bool {
 
 	switch va := a.(type) {
 	case int:
-		vb, ok := b.(int)
-		return ok && va == vb
+		switch vb := b.(type) {
+		case int:
+			return va == vb
+		case float64:
+			return float64(va) == vb
+		case int64:
+			return int64(va) == vb
+		}
+		return false
 	case int64:
-		vb, ok := b.(int64)
-		return ok && va == vb
+		switch vb := b.(type) {
+		case int64:
+			return va == vb
+		case int:
+			return va == int64(vb)
+		case float64:
+			return float64(va) == vb
+		}
+		return false
 	case float64:
-		vb, ok := b.(float64)
-		return ok && va == vb
+		switch vb := b.(type) {
+		case float64:
+			return va == vb
+		case int:
+			return va == float64(vb)
+		case int64:
+			return va == float64(vb)
+		}
+		return false
 	case string:
 		vb, ok := b.(string)
 		return ok && va == vb

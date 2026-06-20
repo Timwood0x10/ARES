@@ -1,12 +1,14 @@
 // Package main demonstrates GoAgentX Autonomous Evolution (Dream Mode v1) workflow.
 //
-// This example showcases 5 core capabilities of the autonomous evolution system:
+// This example showcases 7 core capabilities of the autonomous evolution system:
 //
 //	Scenario 1: Bandit Feedback Loop - Experience reinforcement via success/failure signals
 //	Scenario 2: Callback Event System - Lifecycle event hooks for LLM/Tool/Agent events
 //	Scenario 3: Strategy Mutation Engine - Generating candidate strategy variants
 //	Scenario 4: Arena Regression Testing - A/B comparison with statistical significance
 //	Scenario 5: Dream Cycle Orchestration - Full evolution loop from trigger to genealogy
+//	Scenario 6: Multi-Generation GA Evolution - Population-based genetic algorithm
+//	Scenario 7: Wired Evolution System - Fully wired high-level API integration
 //
 // All dependencies use mock implementations - no external services required.
 package main
@@ -17,6 +19,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -418,7 +421,7 @@ func demoBanditFeedbackLoop() {
 
 	fmt.Println("\n--- Final State ---")
 	fmt.Printf("%-12s %-15s %-12s\n", "Experience", "Usage Count", "Rank (Score)")
-	fmt.Println(stringsRepeat("-", 42))
+	fmt.Println(strings.Repeat("-", 42))
 	for _, id := range expIDs {
 		count := repo.getUsageCount(id)
 		rank := repo.getRank(id)
@@ -556,7 +559,7 @@ func demoCallbackSystem() {
 
 	fmt.Println("\n--- Handler Invocation Summary ---")
 	fmt.Printf("%-20s %-10s\n", "Event Type", "Invocations")
-	fmt.Println(stringsRepeat("-", 32))
+	fmt.Println(strings.Repeat("-", 32))
 	fmt.Printf("%-20s %-10d\n", "EventLLMStart", llmStartCount)
 	fmt.Printf("%-20s %-10d\n", "EventLLMEnd", llmEndCount)
 	fmt.Printf("%-20s %-10d\n", "EventToolStart", toolStartCount)
@@ -757,7 +760,7 @@ func demoArenaRegressionTest() {
 
 	fmt.Println("\n  Individual Run Scores:")
 	fmt.Printf("  %-8s %-25s %-25s\n", "Run#", "Old Strategy", "New Strategy")
-	fmt.Println(stringsRepeat("-", 60))
+	fmt.Println(strings.Repeat("-", 60))
 	minLen := len(result.OldScores)
 	if len(result.NewScores) < minLen {
 		minLen = len(result.NewScores)
@@ -1004,7 +1007,7 @@ func demoGeneticAlgorithmEvolution() {
 
 	fmt.Printf("\n--- Running %d Generations of Evolution ---\n\n", nGenerations)
 	fmt.Printf("%-6s %-8s %-10s %-10s %-10s %-12s\n", "Gen", "PopSize", "Best", "Avg", "Worst", "BestParams(t)")
-	fmt.Println(stringsRepeat("-", 60))
+	fmt.Println(strings.Repeat("-", 60))
 
 	bestScoreHistory := make([]float64, 0, nGenerations)
 	avgScoreHistory := make([]float64, 0, nGenerations)
@@ -1049,7 +1052,7 @@ func demoGeneticAlgorithmEvolution() {
 
 	fmt.Println("\n--- Score Progression Summary ---")
 	fmt.Printf("%-12s %-12s %-12s\n", "Metric", "Start", "End")
-	fmt.Println(stringsRepeat("-", 38))
+	fmt.Println(strings.Repeat("-", 38))
 	fmt.Printf("%-12s %-12.2f %-12.2f\n", "Best", bestScoreHistory[0], bestScoreHistory[len(bestScoreHistory)-1])
 	fmt.Printf("%-12s %-12.2f %-12.2f\n", "Average", avgScoreHistory[0], avgScoreHistory[len(avgScoreHistory)-1])
 
@@ -1082,21 +1085,169 @@ func demoGeneticAlgorithmEvolution() {
 	fmt.Println("  • The GA finds strategies that balance exploration and exploitation")
 }
 
+// demoWiredEvolutionSystem demonstrates the high-level WiredEvolutionSystem API.
+// It shows how NewWiredEvolutionSystem wires all components together and
+// RunIdleEvolution + RecordPopulationLineage drive multi-generation evolution.
+func demoWiredEvolutionSystem() {
+	phaseSeparator("Scenario 7: Wired Evolution System")
+
+	ctx := context.Background()
+
+	base := &mutation.Strategy{
+		ID:      "wired-root-v1",
+		Version: 1,
+		Params: map[string]any{
+			"temperature":        0.7,
+			"top_k":              40,
+			"max_steps":          10,
+			"learning_rate":      0.01,
+			"batch_size":         32,
+		},
+		PromptTemplate: "You are a helpful assistant.",
+		CreatedAt:      time.Now(),
+	}
+
+	cfg := evolution.DefaultSystemConfig()
+	cfg.PopulationSize = 10
+	cfg.EliteCount = 1
+	cfg.SurvivalRate = 0.5
+	cfg.MutationRate = 0.3
+
+	system, err := evolution.NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		slog.Error("Failed to create wired system", "error", err)
+		return
+	}
+	defer evolution.Shutdown(system)
+
+	promptPool := []string{
+		"You are a careful assistant.",
+		"You are a creative assistant.",
+		"You are a precise assistant.",
+	}
+	mutator, err := mutation.NewMutator(
+		mutation.WithPromptPool(promptPool),
+		mutation.WithSeed(42),
+	)
+	if err != nil {
+		slog.Error("Failed to create mutator", "error", err)
+		return
+	}
+	genomeMutator, err := evolution.NewGenomeMutatorAdapter(mutator)
+	if err != nil {
+		slog.Error("Failed to create genome mutator", "error", err)
+		return
+	}
+
+	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	if err != nil {
+		slog.Error("Failed to create crossover", "error", err)
+		return
+	}
+
+	rng := rand.New(rand.NewSource(99))
+
+	pop := system.Population
+	fmt.Println("Wired System Components:")
+	fmt.Println("  • Population: size=10, elite=1, survival=0.5, mutation=0.3")
+	fmt.Println("  • Mutator:    production mutator (seed=42)")
+	fmt.Println("  • Crossover:  uniform + multi-point (seed=42)")
+	fmt.Println("  • Genealogy:  PopulationGenealogyRecorder (in-memory)")
+	fmt.Println()
+
+	const nGenerations = 10
+	fmt.Printf("--- Running %d Wired Evolution Generations ---\n\n", nGenerations)
+	fmt.Printf("%-6s %-10s %-10s %-10s %-12s\n", "Gen", "Best", "Avg", "Worst", "LineageRec")
+	fmt.Println(strings.Repeat("-", 52))
+
+	for gen := 1; gen <= nGenerations; gen++ {
+		agents, _ := pop.Snapshot()
+		for _, agent := range agents {
+			temp := 0.7
+			if v, ok := agent.Params["temperature"].(float64); ok {
+				temp = v
+			}
+			proximity := 1.0 - abs(temp-0.7)*2.5
+			agent.Score = 50.0 + rng.Float64()*30.0 + proximity*20.0
+			if agent.Score > 100 {
+				agent.Score = 100
+			}
+			if agent.Score < 0 {
+				agent.Score = 0
+			}
+		}
+
+		err := pop.EvolveOnIdle(ctx, genomeMutator, crosser)
+		if err != nil {
+			slog.Error("Evolution failed at generation", "gen", gen, "error", err)
+			return
+		}
+
+		if gen > 1 {
+			_, err = evolution.RecordPopulationLineage(ctx, pop, system.Genealogy, gen-1)
+			if err != nil {
+				slog.Warn("Failed to record lineage", "generation", gen, "error", err)
+			}
+		}
+
+		stats := pop.Stats()
+		lineageCount := system.Genealogy.Count()
+		fmt.Printf("%-6d %-10.2f %-10.2f %-10.2f %-12d\n",
+			stats.Generation, stats.BestScore, stats.AvgScore, stats.WorstScore, lineageCount)
+	}
+
+	best, err := evolution.BestStrategyFromSystem(system)
+	if err != nil {
+		slog.Error("Failed to get best strategy", "error", err)
+		return
+	}
+
+	fmt.Println("\n--- Final State ---")
+	fmt.Printf("Best Strategy: %s (version=%d, score=%.2f)\n", best.ID, best.Version, best.Score)
+	fmt.Println("Params:")
+	for k, v := range best.Params {
+		baseVal := base.Params[k]
+		marker := ""
+		if fmt.Sprintf("%v", v) != fmt.Sprintf("%v", baseVal) {
+			marker = " ← MUTATED"
+		}
+		fmt.Printf("  %s: %v%s\n", k, v, marker)
+	}
+	fmt.Printf("Prompt: %s\n", best.PromptTemplate)
+
+	lineages := system.Genealogy.Lineages()
+	fmt.Printf("\nGenealogy: %d total lineage records\n", len(lineages))
+	displayCount := 5
+	if len(lineages) < displayCount {
+		displayCount = len(lineages)
+	}
+	for i := 0; i < displayCount; i++ {
+		entry := lineages[i]
+		childShort := entry.ChildID
+		if len(childShort) > 12 {
+			childShort = childShort[:12]
+		}
+		fmt.Printf("  %s → %s [%s]\n", entry.ParentID[:12], childShort, entry.MutationType)
+	}
+	if len(lineages) > displayCount {
+		fmt.Printf("  ... and %d more records\n", len(lineages)-displayCount)
+	}
+
+	fmt.Println("\nKey Observations:")
+	fmt.Println("  • NewWiredEvolutionSystem wires all components in a single call")
+	fmt.Println("  • RunIdleEvolution drives evolution across generations")
+	fmt.Println("  • RecordPopulationLineage bridges Population and Genealogy")
+	fmt.Println("  • BestStrategyFromSystem returns the top performer")
+	fmt.Println("  • Genealogy.Lineages enables post-hoc analysis of evolution history")
+	fmt.Println("  • Shutdown ensures clean resource release")
+}
+
 // abs returns the absolute value of a float64.
 func abs(x float64) float64 {
 	if x < 0 {
 		return -x
 	}
 	return x
-}
-
-// stringsRepeat repeats the given string n times.
-func stringsRepeat(s string, n int) string {
-	result := make([]byte, 0, len(s)*n)
-	for i := 0; i < n; i++ {
-		result = append(result, s...)
-	}
-	return string(result)
 }
 
 // ============================================================
@@ -1109,7 +1260,7 @@ func main() {
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
 	fmt.Println("║     GoAgentX Autonomous Evolution (Dream Mode v1) Demo       ║")
 	fmt.Println("║                                                              ║")
-	fmt.Println("║  This demo showcases 5 core capabilities of the              ║")
+	fmt.Println("║  This demo showcases 7 core capabilities of the              ║")
 	fmt.Println("║  autonomous evolution system using mock implementations.     ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 
@@ -1119,10 +1270,11 @@ func main() {
 	demoArenaRegressionTest()
 	demoDreamCycle()
 	demoGeneticAlgorithmEvolution()
+	demoWiredEvolutionSystem()
 
 	phaseSeparator("Demo Complete")
 
-	fmt.Println("All 6 scenarios executed successfully!")
+	fmt.Println("All 7 scenarios executed successfully!")
 	fmt.Println()
 	fmt.Println("Summary:")
 	fmt.Println("  1. Bandit Feedback Loop          - Experience reinforcement via success/failure")
@@ -1131,6 +1283,7 @@ func main() {
 	fmt.Println("  4. Arena Regression Test         - A/B comparison with statistical significance")
 	fmt.Println("  5. Dream Cycle                  - Full orchestration from trigger to genealogy")
 	fmt.Println("  6. Multi-Gen GA Evolution       - 15 generations of Population-based evolution")
+	fmt.Println("  7. Wired Evolution System        - Fully wired high-level API integration")
 	fmt.Println()
 	fmt.Println("The autonomous evolution system enables agents to:")
 	fmt.Println("  • Learn from experience through feedback loops")
@@ -1139,4 +1292,5 @@ func main() {
 	fmt.Println("  • Validate improvements with statistical rigor")
 	fmt.Println("  • Self-evolve through automated dream cycles")
 	fmt.Println("  • Adapt across generations via genetic algorithm")
+	fmt.Println("  • Wire all components together through a single high-level API")
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sort"
 	"testing"
 	"time"
 
@@ -55,15 +56,13 @@ func (m *benchMutator) Mutate(ctx context.Context, parent *mutation.Strategy, n 
 		cloned.Score = -1
 
 		if len(cloned.Params) > 0 {
-			idx := m.rng.Intn(len(cloned.Params))
-			j := 0
+			keys := make([]string, 0, len(cloned.Params))
 			for k := range cloned.Params {
-				if j == idx {
-					cloned.Params[k] = m.rng.Float64()
-					break
-				}
-				j++
+				keys = append(keys, k)
 			}
+			sort.Strings(keys)
+			idx := m.rng.Intn(len(keys))
+			cloned.Params[keys[idx]] = m.rng.Float64()
 		}
 		result[i] = cloned
 	}

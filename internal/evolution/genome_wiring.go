@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"goagentx/internal/callbacks"
 	"goagentx/internal/evolution/genome"
@@ -147,7 +148,7 @@ func (a *GenomeMutatorAdapter) Mutate(
 // into the evolution package's genealogy system. It implements GenealogyRecorder
 // by extracting lineage data from population state after each evolution cycle.
 type PopulationGenealogyRecorder struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	lineages []StrategyLineage
 }
 
@@ -194,8 +195,8 @@ func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage Strate
 //
 //	[]StrategyLineage - copy of recorded lineages.
 func (r *PopulationGenealogyRecorder) Lineages() []StrategyLineage {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	result := make([]StrategyLineage, len(r.lineages))
 	copy(result, r.lineages)
@@ -208,8 +209,8 @@ func (r *PopulationGenealogyRecorder) Lineages() []StrategyLineage {
 //
 //	int - number of lineages.
 func (r *PopulationGenealogyRecorder) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return len(r.lineages)
 }
 
@@ -237,8 +238,11 @@ func RecordPopulationLineage(
 		return 0, nil
 	}
 
+	// Snapshot provides a thread-safe locked read of all agents and generation.
+	agents, generation := pop.Snapshot()
+
 	count := 0
-	for _, agent := range pop.Agents {
+	for _, agent := range agents {
 		if agent.ParentID == "" {
 			continue
 		}
@@ -262,7 +266,7 @@ func RecordPopulationLineage(
 	if count > 0 {
 		slog.InfoContext(ctx, "[Genealogy] Recorded population lineage",
 			"new_records", count,
-			"generation", pop.Generation,
+			"generation", generation,
 		)
 	}
 
@@ -421,7 +425,7 @@ func NewWiredEvolutionSystem(
 				MinTasksBeforeEvolve: cfg.MinTasksBeforeEvolve,
 				MaxMutations:         3,
 				MinWinRate:           0.55,
-				Cooldown:             5 * 60 * 1000000000, // 5 minutes in nanoseconds
+				Cooldown:             5 * time.Minute,
 			}),
 		)
 		if err != nil {
@@ -491,8 +495,10 @@ func RunIdleEvolution(
 			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
 		}
 
-		// Record lineage after each evolution cycle.
-		prevGen := system.Population.Generation - 1
+			// Record lineage after each evolution cycle.
+		// Use Snapshot() for thread-safe read of population state.
+		_, gen := system.Population.Snapshot()
+		prevGen := gen - 1
 		if prevGen >= 0 {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, prevGen)
 			if err != nil {

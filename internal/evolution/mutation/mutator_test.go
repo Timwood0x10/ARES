@@ -2,6 +2,7 @@ package mutation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -436,6 +437,216 @@ func TestValuesEqual(t *testing.T) {
 		got := valuesEqual(tt.a, tt.b)
 		if got != tt.want {
 			t.Errorf("valuesEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// TestMutate_ToolMutation verifies that tool mutation produces child strategies
+// with MutationTool type and changed tool configuration.
+func TestMutate_ToolMutation(t *testing.T) {
+	m, err := NewMutator(
+		WithSeed(42),
+		WithToolPool([]string{
+			"web_search,calculator",
+			"web_search,calculator,code_exec",
+			"web_search,file_read,file_write",
+			"calculator,code_exec",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewMutator failed: %v", err)
+	}
+
+	parent := &Strategy{
+		ID:             fmt.Sprintf("tool-parent-%d", time.Now().UnixNano()),
+		Version:        1,
+		Params:         map[string]any{"temperature": 0.5, "tools": "web_search,calculator"},
+		PromptTemplate: "default prompt",
+		CreatedAt:      time.Now(),
+	}
+
+	children, err := m.Mutate(context.Background(), parent, 100)
+	if err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	foundToolMutation := false
+	for _, child := range children {
+		if child.StrategyMutationType == MutationTool {
+			foundToolMutation = true
+			// Verify tool configuration actually changed.
+			childTools, _ := child.Params["tools"].(string)
+			parentTools, _ := parent.Params["tools"].(string)
+			if childTools == parentTools {
+				t.Error("tool-mutated child should have different tool configuration")
+			}
+			// Verify MutationDesc is set.
+			if child.MutationDesc == "" {
+				t.Error("tool-mutated child should have non-empty MutationDesc")
+			}
+		}
+	}
+
+	if !foundToolMutation {
+		t.Error("expected at least one MutationTool child in 100 iterations (probabilistic test)")
+	}
+}
+
+// TestMutate_ToolPoolEmptyFallsBack verifies that when toolPool is empty,
+// no MutationTool type children are produced (fallback to parameter mutation).
+func TestMutate_ToolPoolEmptyFallsBack(t *testing.T) {
+	m, err := NewMutator(WithSeed(42))
+	if err != nil {
+		t.Fatalf("NewMutator failed: %v", err)
+	}
+
+	parent := &Strategy{
+		ID:        fmt.Sprintf("no-tool-parent-%d", time.Now().UnixNano()),
+		Version:   1,
+		Params:    map[string]any{"temperature": 0.5},
+		CreatedAt: time.Now(),
+	}
+
+	children, err := m.Mutate(context.Background(), parent, 20)
+	if err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	for _, child := range children {
+		if child.StrategyMutationType == MutationTool {
+			t.Error("expected no MutationTool children when toolPool is empty")
+		}
+	}
+}
+
+// TestMutate_AllThreeTypes verifies that all three mutation types
+// (parameter, prompt, tool) can be produced when all pools are configured.
+func TestMutate_AllThreeTypes(t *testing.T) {
+	m, err := NewMutator(
+		WithSeed(99),
+		WithPromptPool([]string{"prompt-a", "prompt-b", "prompt-c"}),
+		WithToolPool([]string{
+			"web_search,calculator",
+			"web_search,code_exec",
+			"file_read,file_write",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewMutator failed: %v", err)
+	}
+
+	parent := &Strategy{
+		ID:             fmt.Sprintf("all-types-parent-%d", time.Now().UnixNano()),
+		Version:        1,
+		Params:         map[string]any{"temperature": 0.7, "tools": "web_search,calculator"},
+		PromptTemplate: "prompt-a",
+		CreatedAt:      time.Now(),
+	}
+
+	children, err := m.Mutate(context.Background(), parent, 50)
+	if err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	foundParam := false
+	foundPrompt := false
+	foundTool := false
+
+	for _, child := range children {
+		switch child.StrategyMutationType {
+		case MutationParameter:
+			foundParam = true
+		case MutationPrompt:
+			foundPrompt = true
+		case MutationTool:
+			foundTool = true
+		}
+	}
+
+	if !foundParam {
+		t.Error("expected at least one MutationParameter child")
+	}
+	if !foundPrompt {
+		t.Error("expected at least one MutationPrompt child")
+	}
+	if !foundTool {
+		t.Error("expected at least one MutationTool child")
+	}
+}
+
+// TestWithToolPool verifies that WithToolPool correctly configures the tool pool.
+func TestWithToolPool(t *testing.T) {
+	tools := []string{"tool-a", "tool-b", "tool-c"}
+
+	m, err := NewMutator(WithToolPool(tools))
+	if err != nil {
+		t.Fatalf("NewMutator failed: %v", err)
+	}
+
+	if len(m.toolPool) != len(tools) {
+		t.Errorf("expected toolPool length %d, got %d", len(tools), len(m.toolPool))
+	}
+	for i, expected := range tools {
+		if m.toolPool[i] != expected {
+			t.Errorf("toolPool[%d] = %q, want %q", i, m.toolPool[i], expected)
+		}
+	}
+
+	// Verify that modifying the original slice does not affect the mutator.
+	tools[0] = "modified"
+	if m.toolPool[0] == "modified" {
+		t.Error("WithToolPool should copy the input slice")
+	}
+}
+
+// TestWithToolPool_EmptyError verifies that empty tool pool returns error.
+func TestWithToolPool_EmptyError(t *testing.T) {
+	_, err := NewMutator(WithToolPool(nil))
+	if err == nil {
+		t.Error("expected error for nil tool pool")
+	}
+
+	_, err = NewMutator(WithToolPool([]string{}))
+	if err == nil {
+		t.Error("expected error for empty tool pool")
+	}
+}
+
+// TestMutateTool_SingleToolInPool verifies that a toolPool with only 1 element
+// returns a deep copy without panicking.
+func TestMutateTool_SingleToolInPool(t *testing.T) {
+	m, err := NewMutator(
+		WithSeed(42),
+		WithToolPool([]string{"only_tool_config"}),
+	)
+	if err != nil {
+		t.Fatalf("NewMutator failed: %v", err)
+	}
+
+	parent := &Strategy{
+		ID:        fmt.Sprintf("single-tool-parent-%d", time.Now().UnixNano()),
+		Version:   1,
+		Params:    map[string]any{"tools": "only_tool_config"},
+		CreatedAt: time.Now(),
+	}
+
+	children, err := m.Mutate(context.Background(), parent, 10)
+	if err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	for _, child := range children {
+		if child.StrategyMutationType == MutationTool {
+			// Should be a deep copy with fallback description.
+			if child.MutationDesc == "" {
+				t.Error("expected non-empty MutationDesc for single-tool fallback")
+			}
+			// Tools value should remain unchanged.
+			childTools, _ := child.Params["tools"].(string)
+			parentTools, _ := parent.Params["tools"].(string)
+			if childTools != parentTools {
+				t.Error("single-tool pool should not change tool configuration")
+			}
 		}
 	}
 }

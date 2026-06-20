@@ -34,6 +34,9 @@ var ErrInvalidMutationRate = fmt.Errorf("mutation rate must be between 0 and 1")
 // ErrInvalidEliteCount is returned when elite count is negative or exceeds size.
 var ErrInvalidEliteCount = fmt.Errorf("elite count must be non-negative and <= population size")
 
+// ErrInvalidBreedingPoolRatio is returned when breeding pool ratio is out of range [0, 1].
+var ErrInvalidBreedingPoolRatio = fmt.Errorf("breeding pool ratio must be between 0 and 1")
+
 // MutatorInterface wraps mutation.Strategy mutation for the genome package.
 // Implementations generate mutated child strategies from a parent strategy.
 type MutatorInterface interface {
@@ -166,11 +169,11 @@ func WithEliteCount(count int) PopulationOption {
 // Returns:
 //
 //	PopulationOption - functional option to apply the setting.
-//	error - ErrInvalidSurvivalRate if ratio is out of range.
+//	error - ErrInvalidBreedingPoolRatio if ratio is out of range.
 func WithBreedingPoolRatio(ratio float64) PopulationOption {
 	return func(cfg *PopulationConfig) error {
 		if ratio < 0 || ratio > 1 {
-			return fmt.Errorf("survival rate must be between 0 and 1, got %v", ratio)
+			return fmt.Errorf("%w: breeding pool ratio must be between 0 and 1, got %v", ErrInvalidBreedingPoolRatio, ratio)
 		}
 		cfg.BreedingPoolRatio = ratio
 		return nil
@@ -449,6 +452,25 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 	return offspring, nil
 }
 
+// Snapshot returns a thread-safe copy of all agents and the current generation.
+// This is the safe way for external code to read population state without
+// holding the internal mutex.
+//
+// Returns:
+//
+//	[]*mutation.Strategy - a copy of all agents (deep-cloned).
+//	int - the current generation number.
+func (p *Population) Snapshot() ([]*mutation.Strategy, int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	agents := make([]*mutation.Strategy, len(p.Agents))
+	for i, a := range p.Agents {
+		agents[i] = a.Clone()
+	}
+	return agents, p.Generation
+}
+
 // Best returns the highest-scoring strategy in the current population.
 // If multiple strategies share the same highest score, the first one
 // encountered during iteration is returned.
@@ -567,6 +589,14 @@ func (p *Population) Stats() *PopulationStats {
 	stats.WorstScore = worstScore
 
 	return stats
+}
+
+// CurrentGeneration returns the current generation number under read lock.
+// This is the thread-safe way to access Generation from outside the package.
+func (p *Population) CurrentGeneration() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Generation
 }
 
 // PopulationStats holds statistical information about a population's state.

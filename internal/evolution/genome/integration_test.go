@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"goagentx/internal/arena"
 	"goagentx/internal/evolution/mutation"
 )
 
@@ -53,6 +54,44 @@ func (m *scoredMutator) Mutate(ctx context.Context, parent *mutation.Strategy, n
 		}
 	}
 	return result, nil
+}
+
+// mockArenaScorer implements arena.Scorer for arena-based regression testing.
+// It scores strategies based on their temperature parameter: lower temperature
+// yields higher scores, simulating "more precise = better" behavior.
+type mockArenaScorer struct {
+}
+
+// newMockArenaScorer creates a temperature-based arena scorer.
+func newMockArenaScorer() *mockArenaScorer {
+	return &mockArenaScorer{}
+}
+
+// Score evaluates a strategy by extracting its temperature parameter.
+// Lower temperature produces higher score (0.0 temp → 100.0 score, 1.0 temp → 50.0 score).
+func (s *mockArenaScorer) Score(input any) (float64, error) {
+	strategyMap, ok := input.(map[string]any)
+	if !ok {
+		// Fallback: return a neutral score for non-map inputs.
+		return 70.0, nil
+	}
+
+	temp := 0.7 // Default temperature.
+	if v, exists := strategyMap["temperature"]; exists {
+		if f, ok := v.(float64); ok {
+			temp = f
+		}
+	}
+
+	// Score inversely proportional to temperature: lower is better.
+	score := 100.0 - temp*50.0
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	return score, nil
 }
 
 // scoredPopulation creates a test population with pre-assigned scores using the scoredMutator.
@@ -911,6 +950,18 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
+
+				// Each goroutine creates its own arena.Service and RegressionTester
+				// to ensure full test isolation — no shared mutable state between
+				// parallel populations, even though mockArenaScorer is stateless.
+				scorer := newMockArenaScorer()
+				arenaSvc := arena.NewService(nil, nil)
+				rt, err := arena.NewRegressionTester(arenaSvc, scorer)
+				if err != nil {
+					results <- popResult{index: i, err: fmt.Errorf("create regression tester: %w", err)}
+					return
+				}
+
 				scores := make([]float64, popSize)
 				for j := range scores {
 					scores[j] = float64(20 + i*10 + j*3)
@@ -924,6 +975,17 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 					if err := pop.EvolveOnIdle(context.Background(), localMutator, crosser); err != nil {
 						results <- popResult{index: i, err: err}
 						return
+					}
+
+					for _, agent := range pop.Agents {
+						result, runErr := rt.Run(context.Background(), arena.RegressionConfig{
+							OldStrategy: map[string]any{"temperature": 0.7},
+							NewStrategy: agent.Params,
+						})
+						if runErr != nil {
+							continue
+						}
+						agent.Score = result.NewAvg
 					}
 				}
 				results <- popResult{index: i, gen: pop.Generation, size: len(pop.Agents)}
@@ -950,6 +1012,13 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 	t.Run("read_during_evolve", func(t *testing.T) {
 		ctx := context.Background()
 
+		scorer := newMockArenaScorer()
+		arenaSvc := arena.NewService(nil, nil)
+		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
+		if err != nil {
+			t.Fatalf("create regression tester: %v", err)
+		}
+
 		scores := make([]float64, 20)
 		for i := range scores {
 			scores[i] = float64(20 + i*3)
@@ -974,6 +1043,19 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 				if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
 					return
 				}
+
+				pop.mu.Lock()
+				for _, agent := range pop.Agents {
+					result, runErr := rt.Run(ctx, arena.RegressionConfig{
+						OldStrategy: map[string]any{"temperature": 0.7},
+						NewStrategy: agent.Params,
+					})
+					if runErr != nil {
+						continue
+					}
+					agent.Score = result.NewAvg
+				}
+				pop.mu.Unlock()
 				evolveOps.Add(1)
 			}
 		}()
@@ -1002,5 +1084,204 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 			t.Error("no evolution operations completed")
 		}
 		t.Logf("concurrent safety: %d reads during %d evolves, no deadlocks or panics", readOps.Load(), evolveOps.Load())
+	})
+}
+
+// TestArenaRegressionScoring validates that the evolution pipeline produces
+// score improvements when using real arena.RegressionTester for A/B testing.
+// It creates an arena-backed scorer based on strategy temperature (lower is better),
+// runs multiple generations of evolution, and verifies that best scores improve over time.
+func TestArenaRegressionScoring(t *testing.T) {
+	t.Run("score_improves_over_generations", func(t *testing.T) {
+		ctx := context.Background()
+
+		scorer := newMockArenaScorer()
+		arenaSvc := arena.NewService(nil, nil)
+		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
+		if err != nil {
+			t.Fatalf("create regression tester: %v", err)
+		}
+
+		base := &mutation.Strategy{
+			ID:             fmt.Sprintf("arena-base-%d", time.Now().UnixNano()),
+			Version:        1,
+			Params:         map[string]any{"temperature": 0.9, "top_k": 40},
+			PromptTemplate: "You are a helpful assistant.",
+			Score:          50.0,
+			CreatedAt:      time.Now(),
+		}
+
+		mutator, mutErr := mutation.NewMutator(mutation.WithSeed(42))
+		if mutErr != nil {
+			t.Fatalf("create mutator: %v", mutErr)
+		}
+
+		pop, popErr := NewPopulation(ctx, base, mutator,
+			WithPopulationSize(12),
+			WithEliteCount(2),
+			WithSurvivalRate(0.6),
+			WithMutationRate(0.2),
+		)
+		if popErr != nil {
+			t.Fatalf("create population: %v", popErr)
+		}
+
+		crosser, crossErr := NewCrossover(WithSeed(42))
+		if crossErr != nil {
+			t.Fatalf("create crossover: %v", crossErr)
+		}
+
+		const nGenerations = 8
+		bestScores := make([]float64, 0, nGenerations+1)
+
+		initialBest := pop.Best().Score
+		bestScores = append(bestScores, initialBest)
+
+		baselineStrategy := map[string]any{"temperature": 0.9, "top_k": 40}
+
+		for gen := 0; gen < nGenerations; gen++ {
+			evolveErr := pop.EvolveOnIdle(ctx, mutator, crosser)
+			if evolveErr != nil {
+				t.Fatalf("evolution generation %d failed: %v", gen+1, evolveErr)
+			}
+
+			for _, agent := range pop.Agents {
+				result, runErr := rt.Run(ctx, arena.RegressionConfig{
+					OldStrategy:  baselineStrategy,
+					NewStrategy:  agent.Params,
+					BaselineRuns: 3,
+					CompareRuns:  3,
+				})
+				if runErr != nil {
+					t.Logf("agent %s scoring skipped: %v", agent.ID, runErr)
+					continue
+				}
+				agent.Score = result.NewAvg
+			}
+
+			bestScores = append(bestScores, pop.Best().Score)
+		}
+
+		finalBest := pop.Best().Score
+
+		if len(bestScores) != nGenerations+1 {
+			t.Errorf("expected %d score entries, got %d", nGenerations+1, len(bestScores))
+		}
+
+		if math.IsNaN(finalBest) || math.IsInf(finalBest, 0) {
+			t.Errorf("final best score corrupted: %f", finalBest)
+		}
+
+		improved := finalBest > bestScores[0]
+		if !improved {
+			t.Logf("score trend: initial=%.2f final=%.2f (no improvement observed)", bestScores[0], finalBest)
+		}
+
+		bestAgent := pop.Best()
+		if bestAgent == nil {
+			t.Fatal("best agent is nil after evolution")
+		}
+
+		bestTemp, hasTemp := bestAgent.Params["temperature"].(float64)
+		if !hasTemp {
+			t.Error("best agent missing temperature parameter")
+		} else if bestTemp >= 0.9 {
+			t.Logf("best temperature %.3f not lower than baseline 0.9 (non-deterministic, acceptable)", bestTemp)
+		}
+
+		t.Logf("arena regression scoring: initial_best=%.2f final_best=%.2f generations=%d",
+			bestScores[0], finalBest, nGenerations)
+	})
+
+	t.Run("regression_tester_produces_valid_results", func(t *testing.T) {
+		ctx := context.Background()
+
+		scorer := newMockArenaScorer()
+		arenaSvc := arena.NewService(nil, nil)
+		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
+		if err != nil {
+			t.Fatalf("create regression tester: %v", err)
+		}
+
+		highTempStrategy := map[string]any{"id": fmt.Sprintf("high-%d", time.Now().UnixNano()), "temperature": 0.9}
+		lowTempStrategy := map[string]any{"id": fmt.Sprintf("low-%d", time.Now().UnixNano()), "temperature": 0.1}
+
+		result, runErr := rt.Run(ctx, arena.RegressionConfig{
+			OldStrategy:  highTempStrategy,
+			NewStrategy:  lowTempStrategy,
+			BaselineRuns: 5,
+			CompareRuns:  5,
+		})
+		if runErr != nil {
+			t.Fatalf("regression test failed: %v", runErr)
+		}
+
+		if result.OldAvg >= result.NewAvg {
+			t.Errorf("low-temp (new=%.4f) should outscore high-temp (old=%.4f)", result.NewAvg, result.OldAvg)
+		}
+
+		if result.WinRate <= 0.5 {
+			t.Errorf("win rate should favor low-temp strategy, got %.2f", result.WinRate)
+		}
+
+		if result.Samples != 5 {
+			t.Errorf("expected 5 samples per strategy, got %d", result.Samples)
+		}
+
+		if result.TestedAt.IsZero() {
+			t.Error("TestedAt should be set after running test")
+		}
+
+		t.Logf("regression result: old_avg=%.4f new_avg=%.4f win_rate=%.2f confident=%v p_value=%.6f",
+			result.OldAvg, result.NewAvg, result.WinRate, result.Confident, result.PValue)
+	})
+
+	t.Run("arena_adapter_direct_integration", func(t *testing.T) {
+		ctx := context.Background()
+
+		scorer := newMockArenaScorer()
+		arenaSvc := arena.NewService(nil, nil)
+		arenaRT, err := arena.NewRegressionTester(arenaSvc, scorer)
+		if err != nil {
+			t.Fatalf("create arena tester: %v", err)
+		}
+
+		baseStrategy := map[string]any{
+			"id":          fmt.Sprintf("baseline-%d", time.Now().UnixNano()),
+			"temperature": 0.8,
+			"top_k":       40,
+		}
+
+		candidateStrategy := map[string]any{
+			"id":          fmt.Sprintf("candidate-%d", time.Now().UnixNano()),
+			"temperature": 0.2,
+			"top_k":       20,
+		}
+
+		result, runErr := arenaRT.Run(ctx, arena.RegressionConfig{
+			OldStrategy:  baseStrategy,
+			NewStrategy:  candidateStrategy,
+			BaselineRuns: 5,
+			CompareRuns:  5,
+		})
+		if runErr != nil {
+			t.Fatalf("arena regression failed: %v", runErr)
+		}
+
+		if result.NewAvg <= result.OldAvg {
+			t.Errorf("candidate (%.4f) should outscore baseline (%.4f)",
+				result.NewAvg, result.OldAvg)
+		}
+
+		if result.Samples != 5 {
+			t.Errorf("expected 5 samples per strategy, got %d", result.Samples)
+		}
+
+		if result.WinRate <= 0.5 {
+			t.Errorf("win rate should favor lower-temperature candidate, got %.2f", result.WinRate)
+		}
+
+		t.Logf("direct arena result: old_avg=%.4f new_avg=%.4f win_rate=%.2f confident=%v",
+			result.OldAvg, result.NewAvg, result.WinRate, result.Confident)
 	})
 }

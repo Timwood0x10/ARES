@@ -15,9 +15,9 @@ const (
 	// MutationPrompt indicates a prompt template mutation.
 	MutationPrompt
 
-	// MutationTool indicates a tool generation mutation.
-	// TODO: reserved for future use in Iteration 3 - tool configuration mutations.
-	// Currently no code path generates this mutation type.
+	// MutationTool indicates a tool configuration mutation.
+	// The tool configuration (stored in Params["tools"]) is replaced with
+	// a different configuration from the tool pool.
 	MutationTool
 
 	// MutationCrossover indicates a strategy created via crossover (genetic algorithm).
@@ -133,6 +133,22 @@ func cloneValue(v any) any {
 		copied := make([]string, len(val))
 		copy(copied, val)
 		return copied
+	case []int:
+		copied := make([]int, len(val))
+		copy(copied, val)
+		return copied
+	case []int64:
+		copied := make([]int64, len(val))
+		copy(copied, val)
+		return copied
+	case []float64:
+		copied := make([]float64, len(val))
+		copy(copied, val)
+		return copied
+	case []bool:
+		copied := make([]bool, len(val))
+		copy(copied, val)
+		return copied
 	case map[string]any:
 		copied := make(map[string]any, len(val))
 		for k, vv := range val {
@@ -140,7 +156,6 @@ func cloneValue(v any) any {
 		}
 		return copied
 	default:
-		// Primitives (int, float64, string, bool) are safe to assign directly.
 		return v
 	}
 }
