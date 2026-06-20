@@ -133,8 +133,10 @@ type Distiller struct {
 	embedder    embedding.EmbeddingService
 	pipeline    memembed.EmbeddingPipeline
 	repo        ExperienceRepository
-	metrics     atomicMetrics  // Thread-safe atomic counters
-	distillWg   sync.WaitGroup // Tracks event subscription goroutines
+	expStore    ExperienceStore // Optional: writes distilled memories to experience store
+	metrics     atomicMetrics   // Thread-safe atomic counters
+	distillWg   sync.WaitGroup  // Tracks event subscription goroutines
+	distillEg   *errgroup.Group // Manages async distillation goroutines
 
 	// OnTaskCompleted is called when a task completion event is received.
 	// If set, the distiller invokes it with the task ID from the event payload.
@@ -176,6 +178,7 @@ func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingServic
 		embedder:    embedder,
 		repo:        repo,
 		metrics:     atomicMetrics{},
+		distillEg:   &errgroup.Group{},
 	}
 }
 
@@ -186,60 +189,76 @@ func (d *Distiller) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
 	d.pipeline = pipeline
 }
 
-// DistillConversation distills memories from a conversation.
-// This is the main entry point for the distillation process.
+// WithExperienceStore configures the optional experience store for syncing memories.
+// When set, DistillConversation will also write distilled memories as experiences.
+//
+// Args:
+//
+//	store - the experience store implementation. May be nil to disable syncing.
+func (d *Distiller) WithExperienceStore(store ExperienceStore) {
+	d.expStore = store
+}
+
+// memWithEmbedding holds a memory with its embedding validity status.
+type memWithEmbedding struct {
+	mem   Memory
+	valid bool
+}
+
+// extractPhase extracts raw experiences from conversation messages.
 //
 // Args:
 //
 //	ctx - operation context.
 //	conversationID - unique identifier for the conversation.
 //	messages - conversation messages.
-//	tenantID - tenant ID for multi-tenancy.
-//	userID - user ID for the conversation.
 //
 // Returns:
 //
-//	[]Memory - distilled memories.
+//	[]Experience - extracted experiences.
 //	error - any error encountered.
-func (d *Distiller) DistillConversation(ctx context.Context, conversationID string, messages []Message, tenantID, userID string) ([]Memory, error) {
-	startTime := time.Now()
-	slog.InfoContext(ctx, "[Memory Distillation] Starting distillation process",
-		"conversation_id", conversationID,
-		"tenant_id", tenantID,
-		"user_id", userID,
-		"message_count", len(messages),
-		"timestamp", startTime.Format(time.RFC3339))
-
-	d.metrics.AttemptTotal.Add(1)
-
-	if ctx.Err() != nil {
-		slog.ErrorContext(ctx, "[Memory Distillation] ERROR Context cancelled",
-			"conversation_id", conversationID,
-			"error", ctx.Err())
-		return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
-	}
-
-	// Step 1: Extract experiences
+func (d *Distiller) extractPhase(ctx context.Context, conversationID string, messages []Message) ([]Experience, error) {
 	slog.DebugContext(ctx, "[Memory Distillation] Extracting experiences from conversation",
 		"conversation_id", conversationID)
+
 	experiences := d.extractor.ExtractExperiences(messages)
 	if len(experiences) == 0 {
 		slog.InfoContext(ctx, "[Memory Distillation] WARNING No experiences extracted from conversation",
 			"conversation_id", conversationID,
 			"reason", "filtered as noise")
 		d.metrics.FilteredNoise.Add(1)
-		return []Memory{}, nil
+		return []Experience{}, nil
 	}
+
 	slog.InfoContext(ctx, "[Memory Distillation] Experiences extracted",
 		"conversation_id", conversationID,
 		"experience_count", len(experiences))
 
-	// Step 2: Classify experiences and create memory candidates
+	return experiences, nil
+}
+
+// classifyAndScorePhase classifies experiences, applies filters, scores importance,
+// and creates memory candidates.
+//
+// Args:
+//
+//	ctx - operation context.
+//	conversationID - unique identifier for the conversation.
+//	messages - original conversation messages for evidence extraction.
+//	experiences - raw experiences to process.
+//	tenantID - tenant ID for multi-tenancy.
+//	userID - user ID for the conversation.
+//
+// Returns:
+//
+//	[]Memory - classified and scored memory candidates.
+func (d *Distiller) classifyAndScorePhase(ctx context.Context, conversationID string, messages []Message, experiences []Experience, tenantID, userID string) []Memory {
 	slog.DebugContext(ctx, "[Memory Distillation] Classifying and scoring experiences",
 		"conversation_id", conversationID)
+
 	var memories []Memory
 	for idx, exp := range experiences {
-		// Security filter (always apply)
+		// Security filter (always apply).
 		if !SecurityFilter(exp.Problem) || !SecurityFilter(exp.Solution) {
 			slog.DebugContext(ctx, "[Memory Distillation] Experience filtered by security filter",
 				"conversation_id", conversationID,
@@ -249,11 +268,10 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			continue
 		}
 
-		// Classify memory type FIRST (before noise filtering)
+		// Classify memory type FIRST (before noise filtering).
 		memoryType := d.classifier.ClassifyMemory(&exp)
 
-		// Noise filter: skip for user profiles, apply for others
-		// User profiles contain personal info and should not be filtered as noise
+		// Noise filter: skip for user profiles, apply for others.
 		if memoryType != MemoryProfile && d.noiseFilter.IsNoise(exp.Solution) {
 			slog.DebugContext(ctx, "[Memory Distillation] Experience filtered as noise",
 				"conversation_id", conversationID,
@@ -264,15 +282,13 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			continue
 		}
 
-		// Score importance
+		// Score importance.
 		problem := exp.Problem
 		solution := exp.Solution
 		score := d.scorer.ScoreMemory(memoryType, problem, solution)
-
-		// Update confidence with importance score
 		exp.Confidence = score
 
-		// Skip low importance memories
+		// Skip low importance memories.
 		if !d.scorer.ShouldKeep(score) {
 			slog.DebugContext(ctx, "[Memory Distillation] Experience filtered by importance score",
 				"conversation_id", conversationID,
@@ -285,11 +301,8 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			continue
 		}
 
-		// Create memory with UUID
-		// Extract causal evidence (tool observations) from the raw messages.
-		// Locate the turn by the user message's TurnID, not by text matching.
+		// Create memory with UUID.
 		evidence := extractEvidenceFromMessages(messages, extractTurnID(messages, problem))
-
 		memory := Memory{
 			ID:         uuid.New().String(),
 			Type:       memoryType,
@@ -321,66 +334,76 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 		memories = append(memories, memory)
 	}
 
-	if len(memories) == 0 {
-		slog.InfoContext(ctx, "[Memory Distillation] WARNING No memories passed all filters",
-			"conversation_id", conversationID,
-			"initial_experiences", len(experiences))
-		return []Memory{}, nil
+	return memories
+}
+
+// topNBeforeConflictPhase applies Top-N filtering before conflict detection
+// to improve performance when there are many candidates.
+//
+// Args:
+//
+//	ctx - operation context.
+//	conversationID - unique identifier for the conversation.
+//	memories - candidate memories to filter.
+//
+// Returns:
+//
+//	[]Memory - filtered memories.
+func (d *Distiller) topNBeforeConflictPhase(ctx context.Context, conversationID string, memories []Memory) []Memory {
+	if !d.config.TopNBeforeConflict || len(memories) <= d.config.MaxMemoriesPerDistillation {
+		return memories
 	}
 
-	slog.InfoContext(ctx, "[Memory Distillation] Memory candidates created",
-		"conversation_id", conversationID,
-		"candidate_count", len(memories),
-		"filtered_count", len(experiences)-len(memories))
-
-	// Step 3: Top-N filtering (before conflict detection for performance)
-	if d.config.TopNBeforeConflict && len(memories) > d.config.MaxMemoriesPerDistillation {
-		// Convert to experiences for scoring
-		var exps []Experience
-		for _, mem := range memories {
-			// Extract problem and solution with type assertion and error handling
-			problem, problemOk := mem.Metadata["problem"].(string)
-			if !problemOk {
-				slog.WarnContext(ctx, "[Memory Distillation] Problem metadata is not a string", "conversation_id", conversationID)
-				problem = "" // Use empty string as fallback
-			}
-
-			solution, solutionOk := mem.Metadata["solution"].(string)
-			if !solutionOk {
-				slog.WarnContext(ctx, "[Memory Distillation] Solution metadata is not a string", "conversation_id", conversationID)
-				solution = "" // Use empty string as fallback
-			}
-
-			exps = append(exps, Experience{
-				Problem:    problem,
-				Solution:   solution,
-				Confidence: mem.Importance,
-			})
+	// Convert to experiences for scoring.
+	var exps []Experience
+	for _, mem := range memories {
+		problem, problemOk := mem.Metadata["problem"].(string)
+		if !problemOk {
+			slog.WarnContext(ctx, "[Memory Distillation] Problem metadata is not a string", "conversation_id", conversationID)
+			problem = ""
 		}
 
-		filtered := d.scorer.TopNFilter(exps, d.config.MaxMemoriesPerDistillation)
-
-		// Rebuild memories from filtered experiences
-		memories = memories[:len(filtered)]
-		for i, exp := range filtered {
-			memories[i].Importance = exp.Confidence
-			memories[i].Metadata["confidence"] = exp.Confidence
+		solution, solutionOk := mem.Metadata["solution"].(string)
+		if !solutionOk {
+			slog.WarnContext(ctx, "[Memory Distillation] Solution metadata is not a string", "conversation_id", conversationID)
+			solution = ""
 		}
+
+		exps = append(exps, Experience{
+			Problem:    problem,
+			Solution:   solution,
+			Confidence: mem.Importance,
+		})
 	}
 
-	// Step 4: Conflict detection and resolution with vector generation
-	slog.InfoContext(ctx, "[Memory Distillation] Generating embeddings and detecting conflicts",
-		"conversation_id", conversationID,
-		"memory_count", len(memories))
+	filtered := d.scorer.TopNFilter(exps, d.config.MaxMemoriesPerDistillation)
 
-	// Phase 4a: Embed all memories concurrently using errgroup.
-	type memWithEmbedding struct {
-		mem   Memory
-		valid bool
+	// Rebuild memories from filtered experiences.
+	memories = memories[:len(filtered)]
+	for i, exp := range filtered {
+		memories[i].Importance = exp.Confidence
+		memories[i].Metadata["confidence"] = exp.Confidence
 	}
+
+	return memories
+}
+
+// embedPhase generates embeddings for all memories concurrently using errgroup.
+//
+// Args:
+//
+//	ctx - operation context.
+//	conversationID - unique identifier for the conversation.
+//	memories - memories to embed.
+//
+// Returns:
+//
+//	[]memWithEmbedding - embedded memories with validity flags.
+func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memories []Memory) []memWithEmbedding {
 	embedded := make([]memWithEmbedding, len(memories))
 	g, embedCtx := errgroup.WithContext(ctx)
 	g.SetLimit(5)
+
 	for idx := range memories {
 		idx := idx
 		g.Go(func() error {
@@ -420,12 +443,29 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 			return nil
 		})
 	}
+
 	if err := g.Wait(); err != nil {
 		slog.ErrorContext(ctx, "[Memory Distillation] Embedding phase failed", "error", err)
 	}
 
-	// Phase 4b: Conflict detection and resolution (sequential).
+	return embedded
+}
+
+// resolveConflictsPhase detects and resolves conflicts among embedded memories.
+//
+// Args:
+//
+//	ctx - operation context.
+//	conversationID - unique identifier for the conversation.
+//	tenantID - tenant ID for multi-tenancy.
+//	embedded - embedded memories with validity flags.
+//
+// Returns:
+//
+//	[]Memory - resolved memories after conflict handling.
+func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, tenantID string, embedded []memWithEmbedding) []Memory {
 	var finalMemories []Memory
+
 	for idx, ew := range embedded {
 		if !ew.valid {
 			continue
@@ -482,44 +522,127 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 					"strategy", string(strategy))
 			}
 		} else {
-			// No conflict, keep the memory
 			finalMemories = append(finalMemories, memory)
 		}
 	}
 
-	// Step 5: Final Top-N filtering (after conflict resolution)
-	if len(finalMemories) > d.config.MaxMemoriesPerDistillation {
-		sort.Slice(finalMemories, func(i, j int) bool {
-			return finalMemories[i].Importance > finalMemories[j].Importance
-		})
-		finalMemories = finalMemories[:d.config.MaxMemoriesPerDistillation]
+	return finalMemories
+}
+
+// finalTopNPhase applies final Top-N filtering after conflict resolution.
+//
+// Args:
+//
+//	memories - resolved memories to filter.
+//
+// Returns:
+//
+//	[]Memory - filtered memories.
+func (d *Distiller) finalTopNPhase(memories []Memory) []Memory {
+	if len(memories) <= d.config.MaxMemoriesPerDistillation {
+		return memories
 	}
 
-	// Step 6: Enforce solution cap
+	sort.Slice(memories, func(i, j int) bool {
+		return memories[i].Importance > memories[j].Importance
+	})
+	return memories[:d.config.MaxMemoriesPerDistillation]
+}
 
-	slog.DebugContext(ctx, "[Memory Distillation] Enforcing solution cap",
-
+// DistillConversation distills memories from a conversation.
+// This is the main entry point for the distillation process.
+// It orchestrates the full pipeline: extraction, classification, scoring,
+// embedding, conflict resolution, and optional syncing to experience store.
+//
+// Args:
+//
+//	ctx - operation context.
+//	conversationID - unique identifier for the conversation.
+//	messages - conversation messages.
+//	tenantID - tenant ID for multi-tenancy.
+//	userID - user ID for the conversation.
+//
+// Returns:
+//
+//	[]Memory - distilled memories.
+//	error - any error encountered.
+func (d *Distiller) DistillConversation(ctx context.Context, conversationID string, messages []Message, tenantID, userID string) ([]Memory, error) {
+	startTime := time.Now()
+	slog.InfoContext(ctx, "[Memory Distillation] Starting distillation process",
 		"conversation_id", conversationID,
-
 		"tenant_id", tenantID,
+		"user_id", userID,
+		"message_count", len(messages),
+		"timestamp", startTime.Format(time.RFC3339))
 
+	d.metrics.AttemptTotal.Add(1)
+
+	if ctx.Err() != nil {
+		slog.ErrorContext(ctx, "[Memory Distillation] ERROR Context cancelled",
+			"conversation_id", conversationID,
+			"error", ctx.Err())
+		return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+	}
+
+	// Phase 1: Extract experiences.
+	experiences, err := d.extractPhase(ctx, conversationID, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 2: Classify and score experiences into memory candidates.
+	memories := d.classifyAndScorePhase(ctx, conversationID, messages, experiences, tenantID, userID)
+	if len(memories) == 0 {
+		slog.InfoContext(ctx, "[Memory Distillation] WARNING No memories passed all filters",
+			"conversation_id", conversationID,
+			"initial_experiences", len(experiences))
+		return []Memory{}, nil
+	}
+
+	slog.InfoContext(ctx, "[Memory Distillation] Memory candidates created",
+		"conversation_id", conversationID,
+		"candidate_count", len(memories),
+		"filtered_count", len(experiences)-len(memories))
+
+	// Phase 3: Top-N filtering before conflict detection.
+	memories = d.topNBeforeConflictPhase(ctx, conversationID, memories)
+
+	// Phase 4: Generate embeddings concurrently.
+	slog.InfoContext(ctx, "[Memory Distillation] Generating embeddings and detecting conflicts",
+		"conversation_id", conversationID,
+		"memory_count", len(memories))
+
+	embedded := d.embedPhase(ctx, conversationID, memories)
+
+	// Phase 5: Conflict detection and resolution.
+	finalMemories := d.resolveConflictsPhase(ctx, conversationID, tenantID, embedded)
+
+	// Phase 6: Final Top-N filtering.
+	finalMemories = d.finalTopNPhase(finalMemories)
+
+	// Phase 7: Enforce solution cap.
+	slog.DebugContext(ctx, "[Memory Distillation] Enforcing solution cap",
+		"conversation_id", conversationID,
+		"tenant_id", tenantID,
 		"current_memories", len(finalMemories))
 
-	err := d.enforceSolutionCap(ctx, tenantID)
-
-	if err != nil {
-
+	if err := d.enforceSolutionCap(ctx, tenantID); err != nil {
 		slog.WarnContext(ctx, "[Memory Distillation] WARNING Failed to enforce solution cap",
-
 			"tenant_id", tenantID,
-
 			"error", err.Error())
-
 	}
 
 	d.metrics.SuccessTotal.Add(1)
-
 	d.metrics.MemoriesCreated.Add(int64(len(finalMemories)))
+
+	// Phase 8: Sync to experience store if configured.
+	if d.expStore != nil {
+		if err := d.syncToExperienceStore(ctx, finalMemories, tenantID); err != nil {
+			slog.WarnContext(ctx, "[Memory Distillation] Failed to sync to experience store",
+				"conversation_id", conversationID,
+				"error", err)
+		}
+	}
 
 	slog.InfoContext(ctx, "[Memory Distillation] Distillation completed successfully",
 		"conversation_id", conversationID,
@@ -532,7 +655,6 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 		"duration_ms", time.Since(startTime).Milliseconds())
 
 	return finalMemories, nil
-
 }
 
 // enforceSolutionCap enforces the global cap on solution memories per tenant.
@@ -635,14 +757,26 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventS
 		return
 	}
 
+	slog.InfoContext(ctx, "[Memory Distillation] Event subscription started")
+
 	// Track goroutine lifecycle so callers can wait for drain.
 	d.distillWg.Add(1)
-	go func() {
+	d.distillEg.Go(func() error {
 		defer d.distillWg.Done()
-		for event := range ch {
-			d.processEvent(ctx, event)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.InfoContext(ctx, "[Memory Distillation] Event subscription stopped by context")
+				return ctx.Err()
+			case event, ok := <-ch:
+				if !ok {
+					slog.InfoContext(ctx, "[Memory Distillation] Event channel closed")
+					return nil
+				}
+				d.processEvent(ctx, event)
+			}
 		}
-	}()
+	})
 }
 
 // processEvent handles a single event for distillation.
@@ -755,4 +889,102 @@ func extractEvidenceFromMessages(messages []Message, turnID string) []string {
 		return nil
 	}
 	return evidence
+}
+
+// syncToExperienceStore writes distilled memories to the experience store.
+// It converts each memory to an experience using type mapping rules.
+//
+// Args:
+//
+//	ctx - operation context.
+//	memories - the distilled memories to sync.
+//	tenantID - tenant ID for multi-tenancy.
+//
+// Returns:
+//
+//	error - the first error encountered, or nil.
+func (d *Distiller) syncToExperienceStore(ctx context.Context, memories []Memory, tenantID string) error {
+	for _, mem := range memories {
+		exp := d.convertMemoryToExperience(&mem, tenantID)
+		if err := d.expStore.Create(ctx, exp); err != nil {
+			return fmt.Errorf("sync memory %s to experience store: %w", mem.ID, err)
+		}
+		slog.DebugContext(ctx, "[Memory Distillation] Synced memory to experience store",
+			"memory_id", mem.ID,
+			"experience_type", exp.Type)
+	}
+	return nil
+}
+
+// convertMemoryToExperience converts a Memory to a StoredExperience using type mapping rules.
+//
+// Mapping rules:
+//
+//	MemoryKnowledge   → TypeSolution
+//	MemoryInteraction → TypeSolution
+//	MemoryPreference  → TypeHeuristic
+//	MemoryProfile     → TypeStrategy
+//
+// Args:
+//
+//	mem - the memory to convert.
+//	tenantID - tenant ID for multi-tenancy.
+//
+// Returns:
+//
+//	*StoredExperience - the converted experience.
+func (d *Distiller) convertMemoryToExperience(mem *Memory, tenantID string) *StoredExperience {
+	problem, _ := mem.Metadata["problem"].(string)
+	solution, _ := mem.Metadata["solution"].(string)
+
+	return &StoredExperience{
+		TenantID: tenantID,
+		Type:     memoryTypeToExperienceType(mem.Type),
+		Problem:  problem,
+		Solution: solution,
+		Score:    mem.Importance,
+		Source:   "memory_distillation",
+		Metadata: map[string]interface{}{
+			"memory_id":   mem.ID,
+			"memory_type": mem.Type.String(),
+			"content":     mem.Content,
+			"source":      mem.Source,
+			"importance":  mem.Importance,
+			"created_at":  mem.CreatedAt.Format(time.RFC3339),
+		},
+	}
+}
+
+// Experience type constants for the experience store.
+const (
+	TypeSolution  = "solution"
+	TypeHeuristic = "heuristic"
+	TypeStrategy  = "strategy"
+	TypeFailure   = "failure"
+	TypeGeneral   = "general"
+)
+
+// memoryTypeToExperienceType maps Memory types to Experience types.
+// This bridges the memory distillation system with the experience system.
+//
+// Args:
+//
+//	mt - the memory type.
+//
+// Returns:
+//
+//	string - the corresponding experience type.
+func memoryTypeToExperienceType(mt MemoryType) string {
+	switch mt {
+	case MemoryKnowledge:
+		return TypeSolution
+	case MemoryInteraction:
+		return TypeSolution
+	case MemoryPreference:
+		return TypeHeuristic
+	case MemoryProfile:
+		return TypeStrategy
+	default:
+		return TypeGeneral
+	}
 }

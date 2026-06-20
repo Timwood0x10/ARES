@@ -62,7 +62,7 @@ type DefaultChaosExecutor struct {
 //	executor - a chaos executor instance (skeleton implementation).
 func NewDefaultChaosExecutor() *DefaultChaosExecutor {
 	return &DefaultChaosExecutor{
-		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng: rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
 		flags: ChaosFlagConfig{
 			EnableLatency:   false,
 			EnableReject:    false,

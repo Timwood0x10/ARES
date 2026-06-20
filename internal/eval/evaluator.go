@@ -4,7 +4,10 @@ package eval
 
 import (
 	"context"
+	"errors"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Evaluator evaluates test results and produces scores.
@@ -110,4 +113,73 @@ func (e *ToolUsageEvaluator) Evaluate(ctx context.Context, testCase TestCase, re
 			Details: "checks if expected tools were used",
 		},
 	}, nil
+}
+
+// ErrEmptyName is returned when an empty name is passed to Register.
+var ErrEmptyName = errors.New("evaluator name must not be empty")
+
+// ErrNilEvaluator is returned when a nil evaluator is passed to Register.
+var ErrNilEvaluator = errors.New("evaluator must not be nil")
+
+// EvaluatorRegistry manages named evaluator instances.
+// It provides thread-safe registration and retrieval of evaluators by name,
+// enabling dynamic evaluator selection during test execution.
+type EvaluatorRegistry struct {
+	mu         sync.RWMutex
+	evaluators map[string]Evaluator
+}
+
+// NewEvaluatorRegistry creates an empty evaluator registry ready for use.
+func NewEvaluatorRegistry() *EvaluatorRegistry {
+	return &EvaluatorRegistry{
+		evaluators: make(map[string]Evaluator),
+	}
+}
+
+// Register adds an evaluator by name.
+//
+// Args:
+//   - name: unique identifier for the evaluator (must not be empty).
+//   - eval: evaluator instance to register (must not be nil).
+//
+// Returns error if name is empty or eval is nil.
+func (r *EvaluatorRegistry) Register(name string, eval Evaluator) error {
+	if name == "" {
+		return ErrEmptyName
+	}
+	if eval == nil {
+		return ErrNilEvaluator
+	}
+	r.mu.Lock()
+	r.evaluators[name] = eval
+	r.mu.Unlock()
+	return nil
+}
+
+// Get retrieves an evaluator by name.
+//
+// Args:
+//   - name: the registered name of the desired evaluator.
+//
+// Returns:
+//   - Evaluator: the matching evaluator instance, or nil if not found.
+//   - bool: true if the evaluator was found, false otherwise.
+func (r *EvaluatorRegistry) Get(name string) (Evaluator, bool) {
+	r.mu.RLock()
+	eval, ok := r.evaluators[name]
+	r.mu.RUnlock()
+	return eval, ok
+}
+
+// Names returns all registered evaluator names in sorted order.
+// The returned slice is a copy; modifications do not affect the registry.
+func (r *EvaluatorRegistry) Names() []string {
+	r.mu.RLock()
+	names := make([]string, 0, len(r.evaluators))
+	for name := range r.evaluators {
+		names = append(names, name)
+	}
+	r.mu.RUnlock()
+	sort.Strings(names)
+	return names
 }

@@ -4,15 +4,16 @@ import "time"
 
 // Task represents a recommendation task.
 type Task struct {
-	TaskID      string         `json:"task_id"`
-	TaskType    AgentType      `json:"task_type"`
-	AgentType   AgentType      `json:"agent_type"`
-	UserProfile *UserProfile   `json:"user_profile"`
-	Context     *TaskContext   `json:"context"`
-	Payload     map[string]any `json:"payload"`
-	Priority    int            `json:"priority"`
-	Deadline    time.Time      `json:"deadline"`
-	CreatedAt   time.Time      `json:"created_at"`
+	TaskID           string         `json:"task_id"`
+	TaskType         AgentType      `json:"task_type"`
+	AgentType        AgentType      `json:"agent_type"`
+	UserProfile      *UserProfile   `json:"user_profile"`
+	Context          *TaskContext   `json:"context"`
+	Payload          map[string]any `json:"payload"`
+	Priority         int            `json:"priority"`
+	Deadline         time.Time      `json:"deadline"`
+	UsedExperienceID string         `json:"used_experience_id,omitempty"` // Experience ID used for this task (bandit feedback).
+	CreatedAt        time.Time      `json:"created_at"`
 }
 
 // TaskContext contains task dependencies and coordination data.

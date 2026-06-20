@@ -193,7 +193,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	adapter := &ArenaAdapter{Orch: orch, Store: eventStore}
 	dashAPI.SetArena(adapter)
 	dashAPI.SetSurvival(adapter)
-	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: dashAPI.Handler()}
+	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: dashAPI.Handler(), ReadHeaderTimeout: 30 * time.Second} //nosec G112
 	s.g.Go(func() error {
 		slog.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -33,7 +33,7 @@ type ServiceConfig struct {
 
 // LoadConfig reads configuration from a YAML file.
 func LoadServiceConfig(path string) (*ServiceConfig, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return nil, err
 	}

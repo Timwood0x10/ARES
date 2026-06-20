@@ -93,6 +93,13 @@ func (fr *FlightRecorder) Diagnostics() *DiagnosticsEngine {
 	return fr.collector.Diagnostics()
 }
 
+// EventStoreRef returns the underlying event store for direct subscription.
+// This allows external subscribers (e.g., evolution adapters) to receive events
+// without going through the Collector's internal processing pipeline.
+func (fr *FlightRecorder) EventStoreRef() events.EventStore {
+	return fr.eventStore
+}
+
 // Genealogy returns the agent genealogy tree. May be nil if not configured.
 func (fr *FlightRecorder) Genealogy() *Genealogy {
 	fr.mu.RLock()

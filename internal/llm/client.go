@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"goagentx/internal/callbacks"
 	coreerrors "goagentx/internal/core/errors"
 	"goagentx/internal/errors"
 	"goagentx/internal/observability"
@@ -66,6 +67,18 @@ type Client struct {
 	httpClient   *http.Client
 	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
 	tracer       observability.Tracer
+	callbacks    callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
+}
+
+// Option configures a Client instance during construction.
+type Option func(*Client)
+
+// WithCallbacks sets the callback emitter on the LLM client.
+// When set, Generate and GenerateStream will emit lifecycle events.
+func WithCallbacks(emitter callbacks.Emitter) Option {
+	return func(c *Client) {
+		c.callbacks = emitter
+	}
 }
 
 // Close releases idle HTTP connections held by the client.
@@ -81,7 +94,7 @@ func (c *Client) SetTracer(t observability.Tracer) {
 }
 
 // NewClient creates a new LLM client.
-func NewClient(config *Config) (*Client, error) {
+func NewClient(config *Config, opts ...Option) (*Client, error) {
 	if config == nil {
 		return nil, coreerrors.ErrInvalidArgument
 	}
@@ -90,7 +103,7 @@ func NewClient(config *Config) (*Client, error) {
 		config.Timeout = 60
 	}
 
-	return &Client{
+	c := &Client{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: time.Duration(config.Timeout) * time.Second,
@@ -101,7 +114,13 @@ func NewClient(config *Config) (*Client, error) {
 		streamClient: &http.Client{
 			Transport: http.DefaultTransport,
 		},
-	}, nil
+	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c, nil
 }
 
 // Generate sends a text generation request to the LLM.
@@ -111,11 +130,28 @@ func NewClient(config *Config) (*Client, error) {
 // Returns generated text or error.
 func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	start := time.Now()
+	model := ""
+	if c.config != nil {
+		model = c.config.Model
+	}
+
+	// Emit LLM start event.
+	c.emitCallback(&callbacks.Context{
+		Event: callbacks.EventLLMStart,
+		Model: model,
+		Input: prompt,
+	})
 
 	// Validate prompt input
 	if prompt == "" {
 		err := coreerrors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return "", err
 	}
 
@@ -124,6 +160,12 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	if len(prompt) > maxPromptLength {
 		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return "", err
 	}
 
@@ -133,6 +175,12 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	if len(trimmed) == 0 {
 		err := coreerrors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return "", err
 	}
 
@@ -147,7 +195,28 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
 
+	duration := time.Since(start)
 	c.recordLLMCall(ctx, prompt, result, 0, start, err)
+
+	// Emit LLM end or error event.
+	if err != nil {
+		c.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventLLMError,
+			Model:    model,
+			Input:    prompt,
+			Error:    err,
+			Duration: duration,
+		})
+	} else {
+		c.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventLLMEnd,
+			Model:    model,
+			Input:    prompt,
+			Output:   result,
+			Duration: duration,
+		})
+	}
+
 	return result, err
 }
 
@@ -169,6 +238,14 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 		Duration:   time.Since(start),
 		Error:      err,
 	})
+}
+
+// emitCallback emits a lifecycle event via the callback emitter if set.
+func (c *Client) emitCallback(ctx *callbacks.Context) {
+	if c.callbacks == nil {
+		return
+	}
+	c.callbacks.Emit(ctx)
 }
 
 // generateOpenRouter generates text using OpenRouter API.
@@ -376,10 +453,20 @@ type StreamChunk struct {
 // Returns a channel of StreamChunk that is closed when streaming completes.
 func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	start := time.Now()
+	model := ""
+	if c.config != nil {
+		model = c.config.Model
+	}
 
 	if prompt == "" {
 		err := coreerrors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return nil, err
 	}
 
@@ -388,6 +475,12 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	if len(trimmed) == 0 {
 		err := coreerrors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return nil, err
 	}
 
@@ -395,6 +488,12 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	if len(prompt) > maxPromptLength {
 		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return nil, err
 	}
 
@@ -411,8 +510,21 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	if err != nil {
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.emitCallback(&callbacks.Context{
+			Event: callbacks.EventLLMError,
+			Model: model,
+			Input: prompt,
+			Error: err,
+		})
 		return nil, err
 	}
+
+	// Emit LLM start event here: all validation passed, streaming will actually begin.
+	c.emitCallback(&callbacks.Context{
+		Event: callbacks.EventLLMStart,
+		Model: model,
+		Input: prompt,
+	})
 
 	// Wrap the channel to record the LLM call when streaming completes.
 	ch := make(chan StreamChunk, 64)
@@ -434,7 +546,27 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 				return
 			}
 		}
+		duration := time.Since(start)
 		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
+
+		// Emit LLM end or error event for streaming.
+		if streamErr != nil {
+			c.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventLLMError,
+				Model:    model,
+				Input:    prompt,
+				Error:    streamErr,
+				Duration: duration,
+			})
+		} else {
+			c.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventLLMEnd,
+				Model:    model,
+				Input:    prompt,
+				Output:   fullResponse,
+				Duration: duration,
+			})
+		}
 	}()
 	return ch, nil
 }

@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -12,6 +13,11 @@ import (
 	"unicode"
 
 	"goagentx/internal/core/models"
+)
+
+// Sentinel errors for taskPlanner validation.
+var (
+	ErrNilProfile = errors.New("profile cannot be nil")
 )
 
 // taskIDCounter is used to generate unique task IDs.
@@ -43,35 +49,61 @@ type SubAgentConfig struct {
 	Priority int // Optional. Defaults to 1 if unset or <= 0.
 }
 
+// ExperienceLocator returns the best matching experience ID for a given input.
+// Returns empty string if no relevant experience is found (e.g., first run, no match).
+// This enables the planner to record which experience aided its decision for bandit feedback.
+type ExperienceLocator func(inputText string) string
+
+// PlannerOption configures a taskPlanner instance.
+type PlannerOption func(*taskPlanner)
+
+// WithExperienceLocator sets the experience locator for UsedExperienceID tracking.
+// When set, each created task will have its UsedExperienceID populated from
+// the best-matching experience found by the locator.
+func WithExperienceLocator(locator ExperienceLocator) PlannerOption {
+	return func(p *taskPlanner) {
+		p.expLocator = locator
+	}
+}
+
 // taskPlanner creates tasks based on user profile and config.
 type taskPlanner struct {
 	maxTasks          int
 	subAgents         []SubAgentConfig
 	fallbackOnNoMatch bool // When true, include all subAgents if no triggers match. Default: true.
+	expLocator        ExperienceLocator
 }
 
 // NewTaskPlanner creates a new TaskPlanner.
-func NewTaskPlanner(maxTasks int) TaskPlanner {
+func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
 		maxTasks = 5
 	}
-	return &taskPlanner{
+	p := &taskPlanner{
 		maxTasks:          maxTasks,
 		subAgents:         nil,
 		fallbackOnNoMatch: true,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // NewTaskPlannerWithConfig creates a TaskPlanner with sub-agent configuration.
-func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig) TaskPlanner {
+func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
 		maxTasks = 5
 	}
-	return &taskPlanner{
+	p := &taskPlanner{
 		maxTasks:          maxTasks,
 		subAgents:         subAgents,
 		fallbackOnNoMatch: true,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Plan creates tasks based on user profile and input text.
@@ -92,13 +124,13 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 		if lowerInput == "" {
 			for _, sa := range p.subAgents {
 				if len(sa.Triggers) == 0 {
-					tasks = append(tasks, p.createTask(sa, profile))
+					tasks = append(tasks, p.createTask(sa, profile, inputText))
 				}
 			}
 			// If no subAgent without triggers exists, fallback to all.
 			if len(tasks) == 0 && p.fallbackOnNoMatch {
 				for _, sa := range p.subAgents {
-					tasks = append(tasks, p.createTask(sa, profile))
+					tasks = append(tasks, p.createTask(sa, profile, inputText))
 				}
 			}
 		} else {
@@ -133,7 +165,7 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 
 			// Create one task per matched subAgent.
 			for _, sa := range matched {
-				tasks = append(tasks, p.createTask(sa, profile))
+				tasks = append(tasks, p.createTask(sa, profile, inputText))
 			}
 		}
 	} else {
@@ -146,6 +178,10 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 			Payload:     map[string]any{"action": "analyze_profile"},
 			Priority:    1,
 			CreatedAt:   time.Now(),
+		}
+		// Populate UsedExperienceID if an experience locator is configured.
+		if p.expLocator != nil {
+			task.UsedExperienceID = p.expLocator(inputText)
 		}
 		tasks = append(tasks, task)
 	}
@@ -161,12 +197,12 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 // createTask builds a Task from a SubAgentConfig.
 // sa.Type must be a non-empty string representing a valid agent type;
 // validation is the caller's responsibility (config loading or YAML schema).
-func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile) *models.Task {
+func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile, inputText string) *models.Task {
 	priority := sa.Priority
 	if priority <= 0 {
 		priority = 1
 	}
-	return &models.Task{
+	task := &models.Task{
 		TaskID:      generateTaskID(),
 		TaskType:    models.AgentType(sa.Type),
 		AgentType:   models.AgentType(sa.Type),
@@ -175,6 +211,15 @@ func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile)
 		Priority:    priority,
 		CreatedAt:   time.Now(),
 	}
+
+	// Populate UsedExperienceID if an experience locator is configured.
+	// This enables bandit feedback: successful tasks increment usage count,
+	// failed tasks decrement rank score.
+	if p.expLocator != nil {
+		task.UsedExperienceID = p.expLocator(inputText)
+	}
+
+	return task
 }
 
 // matchWordBoundary checks if keyword appears in text as a whole word
@@ -216,7 +261,7 @@ func isAlphaNum(c rune) bool {
 // It appends the feedback to the input text for re-planning.
 func (p *taskPlanner) Replan(ctx context.Context, profile *models.UserProfile, inputText string, previousResult *models.RecommendResult, feedback string) ([]*models.Task, error) {
 	if profile == nil {
-		return nil, fmt.Errorf("profile cannot be nil")
+		return nil, fmt.Errorf("replan tasks: %w", ErrNilProfile)
 	}
 
 	// Append feedback to input for re-planning

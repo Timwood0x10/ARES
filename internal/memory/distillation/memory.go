@@ -73,3 +73,28 @@ type ExperienceRepository interface {
 	// Create creates a new experience.
 	Create(ctx context.Context, experience *Experience) error
 }
+
+// ExperienceStore defines the interface for writing experiences to the experience store.
+// This is used by the distiller to sync distilled memories to the experience system.
+type ExperienceStore interface {
+	// Create persists a new experience entry.
+	Create(ctx context.Context, exp *StoredExperience) error
+}
+
+// StoredExperience represents an experience entry to be stored in the experience store.
+type StoredExperience struct {
+	// TenantID is the tenant identifier for multi-tenancy isolation.
+	TenantID string
+	// Type is the experience type (e.g., "solution", "heuristic", "strategy", "failure", "general").
+	Type string
+	// Problem is the abstract problem statement.
+	Problem string
+	// Solution is the concise solution approach.
+	Solution string
+	// Score is the importance score (0-1).
+	Score float64
+	// Source indicates where this experience originated from.
+	Source string
+	// Metadata holds additional structured data.
+	Metadata map[string]interface{}
+}

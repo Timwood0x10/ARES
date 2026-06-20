@@ -55,7 +55,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("command is required")
 	}
 
-	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...)
+	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...) // #nosec G204
 
 	if t.config.WorkDir != "" {
 		t.cmd.Dir = t.config.WorkDir

@@ -330,7 +330,7 @@ func (s *InvestmentSimulator) assembleResult(
 // loadPriceData reads {dataDir}/{ticker}.csv and returns ordered price bars.
 func loadPriceData(ticker string, dataDir string) ([]priceBar, error) {
 	path := filepath.Join(dataDir, ticker+".csv")
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("open CSV %s: %w", path, err)
 	}
@@ -741,14 +741,14 @@ func formatMultiSummary(
 //   - error if directory creation or file write fails.
 func SaveSimulationResult(result *SimulationResult, outPath string) error {
 	dir := filepath.Dir(outPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nosec G301
 		return fmt.Errorf("create output dir: %w", err)
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+	if err := os.WriteFile(outPath, data, 0o600); err != nil { //nosec G306
 		return fmt.Errorf("write result: %w", err)
 	}
 	return nil

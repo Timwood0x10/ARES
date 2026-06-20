@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"goagentx/internal/agents/base"
+	"goagentx/internal/callbacks"
 	coreerrors "goagentx/internal/core/errors"
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
+	"goagentx/internal/experience"
 	"goagentx/internal/memory"
 	"goagentx/internal/protocol/ahp"
 
@@ -71,6 +73,20 @@ func WithEventStore(store events.EventStore) LeaderOption {
 	}
 }
 
+// WithCallbacks sets the callback emitter for lifecycle event emission.
+func WithCallbacks(emitter callbacks.Emitter) LeaderOption {
+	return func(a *leaderAgent) {
+		a.callbacks = emitter
+	}
+}
+
+// WithFeedbackService sets the experience feedback service for bandit reinforcement.
+func WithFeedbackService(svc *experience.FeedbackService) LeaderOption {
+	return func(a *leaderAgent) {
+		a.feedbackSvc = svc
+	}
+}
+
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
 	mu            sync.RWMutex
@@ -85,9 +101,11 @@ type leaderAgent struct {
 	messageQueue  *ahp.MessageQueue
 	heartbeatMon  *ahp.HeartbeatMonitor
 	memoryManager memory.MemoryManager
+	feedbackSvc   *experience.FeedbackService
 	sessionID     string
 	checkpoint    *CheckpointRepository
 	eventStore    events.EventStore
+	callbacks     callbacks.Emitter // Optional: emits lifecycle callback events.
 
 	// Lifecycle management
 	stopCh       chan struct{}   // Channel to signal shutdown
@@ -291,10 +309,16 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 		// Wait for background goroutines to complete.
 		a.distillWg.Wait()
 		if a.distillEg != nil {
-			_ = a.distillEg.Wait()
+			if err := a.distillEg.Wait(); err != nil {
+				slog.Warn("Errors from distillation goroutines during shutdown",
+					"error", err)
+			}
 		}
 		if a.streamEg != nil {
-			_ = a.streamEg.Wait()
+			if err := a.streamEg.Wait(); err != nil {
+				slog.Warn("Errors from streaming goroutines during shutdown",
+					"error", err)
+			}
 		}
 
 		// Cleanup heartbeat monitor if provided.
@@ -492,6 +516,14 @@ func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType,
 	}
 }
 
+// emitCallback emits a lifecycle callback event if the emitter is set.
+func (a *leaderAgent) emitCallback(ctx *callbacks.Context) {
+	if a.callbacks == nil {
+		return
+	}
+	a.callbacks.Emit(ctx)
+}
+
 // finalizeMemory updates task output, records assistant message, and triggers
 // background distillation. Must be called after aggregation succeeds.
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
@@ -606,6 +638,48 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	})
 }
 
+// recordExperienceFeedback records bandit feedback for experiences used in tasks.
+// For each task with a non-empty UsedExperienceID:
+// - If task succeeded: increment usage count (positive reinforcement).
+// - If task failed: decrement rank score (negative reinforcement).
+// No-op if feedbackSvc is nil or no tasks used experiences.
+//
+// Results are matched to tasks by TaskID rather than array index to handle
+// cases where the dispatcher may return results in a different order than tasks.
+func (a *leaderAgent) recordExperienceFeedback(ctx context.Context, tasks []*models.Task, results []*models.TaskResult) {
+	if a.feedbackSvc == nil {
+		return
+	}
+
+	// Build a TaskID-to-result index for O(1) lookup instead of fragile index matching.
+	resultByTaskID := make(map[string]*models.TaskResult, len(results))
+	for _, r := range results {
+		if r != nil {
+			resultByTaskID[r.TaskID] = r
+		}
+	}
+
+	for _, task := range tasks {
+		if task.UsedExperienceID == "" {
+			continue
+		}
+
+		var success bool
+		if result, ok := resultByTaskID[task.TaskID]; ok && result != nil {
+			success = result.Success
+		}
+
+		if err := a.feedbackSvc.RecordFeedback(ctx, task.UsedExperienceID, success); err != nil {
+			slog.Warn("Failed to record experience feedback",
+				"task_id", task.TaskID,
+				"experience_id", task.UsedExperienceID,
+				"success", success,
+				"error", err,
+			)
+		}
+	}
+}
+
 // Process handles user input and orchestrates the recommendation workflow with automatic memory management.
 func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
@@ -628,16 +702,38 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
 
+	startTime := time.Now()
+
+	// Emit agent start event.
+	a.emitCallback(&callbacks.Context{
+		Event:   callbacks.EventAgentStart,
+		AgentID: a.id,
+	})
+
 	stepCount := 0
 	maxSteps := a.config.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
 	}
 
-	defer a.setStatus(models.AgentStatusReady)
+	defer func() {
+		a.setStatus(models.AgentStatusReady)
+		duration := time.Since(startTime)
+		// Emit agent end event on exit (success or error will be handled below).
+		a.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventAgentEnd,
+			AgentID:  a.id,
+			Duration: duration,
+		})
+	}()
 
 	strInput, err := parseInput(input)
 	if err != nil {
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 
@@ -647,12 +743,24 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	// Step 1: Parse profile
 	stepCount++
 	if stepCount > maxSteps {
-		return nil, coreerrors.ErrMaxStepsExceeded
+		err := coreerrors.ErrMaxStepsExceeded
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	}
 
 	select {
 	case <-a.stopCh:
-		return nil, coreerrors.ErrAgentNotRunning
+		err := coreerrors.ErrAgentNotRunning
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	default:
 	}
 
@@ -662,18 +770,35 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	profile, err := a.parser.Parse(ctx, strInput)
 	if err != nil {
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 
 	// Step 2: Plan tasks
 	stepCount++
 	if stepCount > maxSteps {
-		return nil, coreerrors.ErrMaxStepsExceeded
+		err := coreerrors.ErrMaxStepsExceeded
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	}
 
 	select {
 	case <-a.stopCh:
-		return nil, coreerrors.ErrAgentNotRunning
+		err := coreerrors.ErrAgentNotRunning
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	default:
 	}
 
@@ -683,6 +808,11 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 	slog.Info("Leader tasks created", "module", "leader", "count", len(tasks))
@@ -690,12 +820,24 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	// Step 3: Dispatch tasks
 	stepCount++
 	if stepCount > maxSteps {
-		return nil, coreerrors.ErrMaxStepsExceeded
+		err := coreerrors.ErrMaxStepsExceeded
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	}
 
 	select {
 	case <-a.stopCh:
-		return nil, coreerrors.ErrAgentNotRunning
+		err := coreerrors.ErrAgentNotRunning
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	default:
 	}
 
@@ -706,6 +848,11 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	slog.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
 	if err != nil {
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 	slog.Info("Leader dispatch completed", "module", "leader", "result_count", len(results))
@@ -716,22 +863,44 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	// Step 4: Aggregate results
 	stepCount++
 	if stepCount > maxSteps {
-		return nil, coreerrors.ErrMaxStepsExceeded
+		err := coreerrors.ErrMaxStepsExceeded
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	}
 
 	select {
 	case <-a.stopCh:
-		return nil, coreerrors.ErrAgentNotRunning
+		err := coreerrors.ErrAgentNotRunning
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
+		return nil, err
 	default:
 	}
 
 	result, err := a.aggregator.Aggregate(ctx, results, tasks)
 	if err != nil {
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 
 	// Finalize memory (update task, record assistant message, distill).
 	a.finalizeMemory(ctx, sessionID, taskID, result)
+
+	// Record bandit feedback for experiences used in tasks.
+	// This closes the feedback loop: successful tasks increment usage count,
+	// failed tasks decrement rank score.
+	a.recordExperienceFeedback(ctx, tasks, results)
 
 	return result, nil
 }
@@ -842,9 +1011,16 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
 
+	startTime := time.Now()
+
 	strInput, err := parseInput(input)
 	if err != nil {
 		a.setStatus(models.AgentStatusReady)
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentError,
+			AgentID: a.id,
+			Error:   err,
+		})
 		return nil, err
 	}
 
@@ -854,8 +1030,22 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	ch := make(chan base.AgentEvent, 64)
 
 	a.streamEg.Go(func() error {
+		// Emit start event inside the goroutine so it's always paired with end.
+		a.emitCallback(&callbacks.Context{
+			Event:   callbacks.EventAgentStart,
+			AgentID: a.id,
+		})
+
 		defer close(ch)
-		defer a.setStatus(models.AgentStatusReady)
+		defer func() {
+			a.setStatus(models.AgentStatusReady)
+			duration := time.Since(startTime)
+			a.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventAgentEnd,
+				AgentID:  a.id,
+				Duration: duration,
+			})
+		}()
 
 		// Send planning event.
 		select {
@@ -873,6 +1063,11 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		profile, err := a.parser.Parse(ctx, strInput)
 		if err != nil {
+			a.emitCallback(&callbacks.Context{
+				Event:   callbacks.EventAgentError,
+				AgentID: a.id,
+				Error:   err,
+			})
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
@@ -888,6 +1083,11 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		tasks, err := a.planner.Plan(ctx, profile, strInput)
 		if err != nil {
+			a.emitCallback(&callbacks.Context{
+				Event:   callbacks.EventAgentError,
+				AgentID: a.id,
+				Error:   err,
+			})
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
@@ -913,6 +1113,11 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		results, err := a.dispatcher.Dispatch(ctx, tasks)
 		if err != nil {
+			a.emitCallback(&callbacks.Context{
+				Event:   callbacks.EventAgentError,
+				AgentID: a.id,
+				Error:   err,
+			})
 			for _, task := range tasks {
 				select {
 				case ch <- base.AgentEvent{Type: base.EventTaskComplete, Source: a.id, Data: &models.TaskResult{TaskID: task.TaskID, Success: false, Error: err.Error()}}:
@@ -948,6 +1153,11 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		result, err := a.aggregator.Aggregate(ctx, allResults, tasks)
 		if err != nil {
+			a.emitCallback(&callbacks.Context{
+				Event:   callbacks.EventAgentError,
+				AgentID: a.id,
+				Error:   err,
+			})
 			select {
 			case ch <- base.AgentEvent{Type: base.EventComplete, Source: a.id, Err: err}:
 			case <-ctx.Done():
@@ -958,6 +1168,9 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		// Finalize memory (update task, record assistant message, distill).
 		a.finalizeMemory(ctx, sessionID, taskID, result)
+
+		// Record bandit feedback for experiences used in tasks.
+		a.recordExperienceFeedback(ctx, tasks, allResults)
 
 		// Send final result.
 		select {

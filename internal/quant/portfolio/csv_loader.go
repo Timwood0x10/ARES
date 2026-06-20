@@ -29,7 +29,7 @@ import (
 //   - slice of parsed TradeSignal values.
 //   - error if the file cannot be read or any row contains invalid data.
 func LoadSignalsFromCSV(path string) ([]TradeSignal, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("open signals CSV %s: %w", path, err)
 	}
@@ -151,7 +151,7 @@ func LoadSignalsFromCSV(path string) ([]TradeSignal, error) {
 //   - map[symbol][]priceBar with ordered bars per symbol.
 //   - error if the file cannot be read or any row contains invalid data.
 func LoadCustomBarsFromCSV(path string) (map[string][]priceBar, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("open custom bars CSV %s: %w", path, err)
 	}

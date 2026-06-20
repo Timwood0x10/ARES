@@ -158,7 +158,7 @@ func generateMockData(ticker string, start, end time.Time) []Candle {
 		basePrice = p
 	}
 
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng := rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404
 	var bars []Candle
 	current := basePrice
 

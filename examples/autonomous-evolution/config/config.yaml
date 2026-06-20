@@ -1,0 +1,30 @@
+# Autonomous Evolution Demo Configuration
+# This demo uses mock implementations and does not require external services.
+
+dream_cycle:
+  enabled: true
+  min_tasks_before_evolve: 5
+  min_score_drop: 0.15
+  max_mutations: 3
+  min_win_rate: 0.55
+  cooldown: 1m
+
+mutation:
+  seed: 42
+  param_ranges:
+    temperature: [0.1, 0.3, 0.5, 0.7, 0.9]
+    top_k: [10, 20, 40, 80]
+    max_steps: [5, 10, 15, 20]
+
+arena:
+  baseline_runs: 5
+  compare_runs: 5
+  confidence_level: 0.05
+  min_win_rate: 0.55
+
+feedback:
+  rank_decay_factor: 0.9
+
+logging:
+  level: info
+  format: text

@@ -658,3 +658,40 @@ func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id strin
 
 	return nil
 }
+
+// DecrementRank decreases the score of an experience as negative feedback.
+// This applies a penalty to the score when an experience leads to a failed task.
+// The penalty is capped to prevent the score from going below 0.
+// Args:
+// ctx - database operation context.
+// id - experience identifier.
+// Returns error if update operation fails.
+func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) error {
+	if id == "" {
+		return coreerrors.ErrInvalidArgument
+	}
+
+	// Apply a 10% score penalty, with a floor of 0.
+	query := `
+		UPDATE experiences_1024
+		SET score = GREATEST(score - (score * 0.1), 0),
+		    updated_at = NOW()
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return errors.Wrap(err, "decrement rank")
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return errors.Wrap(err, "get rows affected")
+	}
+
+	if rows == 0 {
+		return coreerrors.ErrRecordNotFound
+	}
+
+	return nil
+}

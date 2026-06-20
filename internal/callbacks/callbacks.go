@@ -40,6 +40,28 @@ type Context struct {
 // Handler processes a lifecycle event.
 type Handler func(ctx *Context)
 
+// Emitter dispatches lifecycle events to registered handlers.
+// Components should depend on this interface rather than the concrete Registry.
+type Emitter interface {
+	Emit(ctx *Context)
+}
+
+// CallbackRegistrar registers and queries callback event handlers.
+// This interface decouples consumers from the concrete Registry implementation,
+// following the Dependency Inversion Principle.
+type CallbackRegistrar interface {
+	// On registers a handler for the given event type.
+	On(event Event, handler Handler)
+	// Count returns the number of registered handlers for the given event type.
+	Count(event Event) int
+}
+
+// Ensure Registry implements CallbackRegistrar at compile time.
+var _ CallbackRegistrar = (*Registry)(nil)
+
+// Ensure Registry implements Emitter at compile time.
+var _ Emitter = (*Registry)(nil)
+
 // Registry manages event handlers and dispatches events.
 type Registry struct {
 	handlers map[Event][]Handler

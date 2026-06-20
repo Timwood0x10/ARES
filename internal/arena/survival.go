@@ -230,7 +230,7 @@ func (s *Service) randomChaosAction() Action {
 		ActionMCPDisconnect,
 		ActionLLMFailure,
 	}
-	actionType := actionTypes[rand.Intn(len(actionTypes))] //nolint:gosec // non-crypto rand is fine for chaos testing
+	actionType := actionTypes[rand.Intn(len(actionTypes))] // #nosec G404
 
 	action := Action{
 		ID:        randomID(),
@@ -242,18 +242,18 @@ func (s *Service) randomChaosAction() Action {
 	case ActionKillAgent:
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) > 0 {
-			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
+			action.TargetID = ids[rand.Intn(len(ids))] // #nosec G404
 		}
 	case ActionRemoveNode:
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) > 0 {
-			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
+			action.TargetID = ids[rand.Intn(len(ids))] // #nosec G404
 		}
 	case ActionRemoveEdge:
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) >= 2 {
-			fromIdx := rand.Intn(len(ids))   //nolint:gosec
-			toIdx := rand.Intn(len(ids) - 1) //nolint:gosec
+			fromIdx := rand.Intn(len(ids))   // #nosec G404
+			toIdx := rand.Intn(len(ids) - 1) // #nosec G404
 			if toIdx >= fromIdx {
 				toIdx++
 			}
@@ -266,21 +266,21 @@ func (s *Service) randomChaosAction() Action {
 		ActionToolTimeout, ActionMemoryCorrupt, ActionMCPDisconnect, ActionLLMFailure:
 		ids := s.injector.AvailableAgentIDs()
 		if len(ids) > 0 {
-			action.TargetID = ids[rand.Intn(len(ids))] //nolint:gosec
+			action.TargetID = ids[rand.Intn(len(ids))] // #nosec G404
 			if actionType == ActionSlowAgent {
 				action.Metadata = map[string]any{
-					"duration": time.Duration(5+rand.Intn(10)) * time.Second,
+					"duration": time.Duration(5+rand.Intn(10)) * time.Second, // #nosec G404
 				}
 			}
 			if actionType == ActionToolTimeout {
 				action.Metadata = map[string]any{
-					"duration": time.Duration(5+rand.Intn(10)) * time.Second,
+					"duration": time.Duration(5+rand.Intn(10)) * time.Second, // #nosec G404
 				}
 			}
 			if actionType == ActionLLMFailure {
 				errTypes := []string{"rate_limit", "overloaded", "timeout"}
 				action.Metadata = map[string]any{
-					"error_type": errTypes[rand.Intn(len(errTypes))], //nolint:gosec
+					"error_type": errTypes[rand.Intn(len(errTypes))], // #nosec G404
 				}
 			}
 		}
@@ -294,7 +294,7 @@ func randomID() string {
 	const hex = "0123456789abcdef"
 	b := make([]byte, 16)
 	for i := range b {
-		b[i] = hex[rand.Intn(16)] //nolint:gosec
+		b[i] = hex[rand.Intn(16)] // #nosec G404
 	}
 	return string(b)
 }

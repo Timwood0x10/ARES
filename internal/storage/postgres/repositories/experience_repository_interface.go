@@ -30,6 +30,10 @@ type ExperienceRepositoryInterface interface {
 	// IncrementUsageCount increments the usage count of an experience.
 	IncrementUsageCount(ctx context.Context, id string) error
 
+	// DecrementRank decreases the score of an experience as negative feedback.
+	// This is used when an experience leads to a failed task.
+	DecrementRank(ctx context.Context, id string) error
+
 	// ListByType retrieves experiences by type.
 	ListByType(ctx context.Context, expType, tenantID string, limit int) ([]*storage_models.Experience, error)
 

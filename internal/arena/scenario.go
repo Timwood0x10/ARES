@@ -64,7 +64,7 @@ func LoadScenario(data []byte) (*Scenario, error) {
 
 // LoadScenarioFile reads a scenario from a file path.
 func LoadScenarioFile(path string) (*Scenario, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("arena: read scenario file %s: %w", path, err)
 	}

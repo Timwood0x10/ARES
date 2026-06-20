@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goagentx/api/core"
+	"goagentx/internal/callbacks"
 	"goagentx/internal/errors"
 	"goagentx/internal/llm"
 	"goagentx/internal/observability"
@@ -34,6 +35,9 @@ type Config struct {
 	EmbeddingClient any
 	// Tracer is an optional observability tracer for LLM call tracing.
 	Tracer observability.Tracer
+	// CallbackRegistry is an optional callback registry for lifecycle event emission.
+	// When set, Generate and GenerateStream calls will emit events to this registry.
+	CallbackRegistry *callbacks.Registry
 }
 
 // NewService creates a new LLM service instance.
@@ -73,6 +77,10 @@ func NewService(config *Config) (*Service, error) {
 
 	if config.Tracer != nil {
 		client.SetTracer(config.Tracer)
+	}
+
+	if config.CallbackRegistry != nil {
+		llm.WithCallbacks(config.CallbackRegistry)(client)
 	}
 
 	return &Service{

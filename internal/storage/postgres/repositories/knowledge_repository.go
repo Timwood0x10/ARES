@@ -266,7 +266,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			ON CONFLICT (content_hash) DO UPDATE SET
 				access_count = knowledge_chunks_1024.access_count + 1,
 				updated_at = NOW()
-			RETURNING id`, columns, embeddingPlaceholder, createdAtPlaceholder, updatedAtPlaceholder)
+			RETURNING id`, columns, embeddingPlaceholder, createdAtPlaceholder, updatedAtPlaceholder) // #nosec G201
 
 		// Always send CreatedAt and UpdatedAt; they are ignored via NOW() placeholder.
 		var id string

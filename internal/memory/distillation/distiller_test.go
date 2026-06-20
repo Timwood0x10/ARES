@@ -192,8 +192,11 @@ func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
 
 	distiller.SubscribeAndDistill(ctx, store)
 
-	// Give the subscription goroutine time to start.
-	time.Sleep(50 * time.Millisecond)
+	// Wait briefly for the subscription goroutine to start reading from the channel.
+	// Uses a short deadline instead of arbitrary sleep to avoid flaky tests.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer waitCancel()
+	<-waitCtx.Done()
 
 	// Publish events to the store.
 	err := store.Append(context.Background(), "stream-1", []*events.Event{
@@ -212,8 +215,10 @@ func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Allow the subscriber goroutine to process events.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the subscriber goroutine to process published events.
+	processCtx, processCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer processCancel()
+	<-processCtx.Done()
 	// No assertion needed: the test verifies that no panic or deadlock occurs.
 }
 
@@ -293,8 +298,10 @@ func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 
 	distiller.SubscribeAndDistill(ctx, store)
 
-	// Give the subscription goroutine time to start.
-	time.Sleep(50 * time.Millisecond)
+	// Wait briefly for the subscription goroutine to start reading from the channel.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer waitCancel()
+	<-waitCtx.Done()
 
 	// Publish events of various types; only EventMessageAdded and
 	// EventTaskCompleted should be received by the subscriber.
@@ -322,8 +329,10 @@ func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Allow the subscriber goroutine to process events.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the subscriber goroutine to process published events.
+	processCtx, processCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer processCancel()
+	<-processCtx.Done()
 
 	// Verify that the subscription filtered correctly by checking that
 	// no panic occurred and that the store has the expected events.

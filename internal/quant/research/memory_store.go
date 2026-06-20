@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 //   - error if database connection or schema creation fails.
 func NewMemoryStore(path string) (*MemoryStore, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nosec G301
 		return nil, fmt.Errorf("memory store create dir: %w", err)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"goagentx/internal/callbacks"
 	apperrors "goagentx/internal/core/errors"
 	"goagentx/internal/core/models"
 	"goagentx/internal/errors"
@@ -26,6 +27,19 @@ type taskExecutor struct {
 	logger      *slog.Logger
 	eventStore  events.EventStore // Optional: emits events for tool/LLM calls
 	agentID     string            // Agent ID for event emission
+	callbacks   callbacks.Emitter // Optional: emits lifecycle callback events.
+}
+
+// TaskExecutorOption configures a taskExecutor instance during construction.
+type TaskExecutorOption func(*taskExecutor)
+
+// WithTaskExecutorCallbacks returns a TaskExecutorOption that sets the callback emitter.
+// The emitter will receive lifecycle events (tool.start, tool.end, tool.error)
+// during task execution.
+func WithTaskExecutorCallbacks(emitter callbacks.Emitter) TaskExecutorOption {
+	return func(e *taskExecutor) {
+		e.callbacks = emitter
+	}
 }
 
 // NewTaskExecutor creates a new TaskExecutor with LLM support.
@@ -36,8 +50,9 @@ func NewTaskExecutor(
 	promptTpl string,
 	validator *output.Validator,
 	maxRetries int,
+	opts ...TaskExecutorOption,
 ) TaskExecutor {
-	return NewTaskExecutorWithValidation(toolBinder, llmAdapter, template, promptTpl, validator, maxRetries, false, false)
+	return NewTaskExecutorWithValidation(toolBinder, llmAdapter, template, promptTpl, validator, maxRetries, false, false, opts...)
 }
 
 // NewTaskExecutorWithValidation creates a new TaskExecutor with validation config.
@@ -50,11 +65,12 @@ func NewTaskExecutorWithValidation(
 	maxRetries int,
 	retryOnFail bool,
 	strictMode bool,
+	opts ...TaskExecutorOption,
 ) TaskExecutor {
 	if maxRetries <= 0 {
 		maxRetries = 3
 	}
-	return &taskExecutor{
+	e := &taskExecutor{
 		toolBinder:  toolBinder,
 		llmAdapter:  llmAdapter,
 		template:    template,
@@ -65,12 +81,29 @@ func NewTaskExecutorWithValidation(
 		strictMode:  strictMode,
 		logger:      slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // SetEventStore configures the executor to emit events for tool/LLM calls.
 func (e *taskExecutor) SetEventStore(store events.EventStore, agentID string) {
 	e.eventStore = store
 	e.agentID = agentID
+}
+
+// SetCallbacks configures the callback emitter for lifecycle event emission.
+func (e *taskExecutor) SetCallbacks(emitter callbacks.Emitter) {
+	e.callbacks = emitter
+}
+
+// emitCallback emits a lifecycle callback event if the emitter is set.
+func (e *taskExecutor) emitCallback(ctx *callbacks.Context) {
+	if e.callbacks == nil {
+		return
+	}
+	e.callbacks.Emit(ctx)
 }
 
 // emitEvent appends a single event to the event store. No-op if eventStore is nil.
@@ -99,15 +132,33 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 	result = models.NewTaskResult(task.TaskID, task.AgentType)
 	startTime := time.Now()
 
+	// Emit tool start event.
+	e.emitCallback(&callbacks.Context{
+		Event:   callbacks.EventToolStart,
+		AgentID: e.agentID,
+		Input:   task.TaskID,
+	})
+
 	// If no LLM adapter, use fallback execution
 	if e.llmAdapter == nil {
 		items, reason, err := e.executeByType(ctx, task)
 		if err != nil {
 			result.SetError(err.Error())
+			e.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventToolError,
+				AgentID:  e.agentID,
+				Error:    err,
+				Duration: time.Since(startTime),
+			})
 			return result, nil
 		}
 		result.SetSuccess(items, reason)
 		result.Duration = time.Since(startTime)
+		e.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventToolEnd,
+			AgentID:  e.agentID,
+			Duration: time.Since(startTime),
+		})
 		return result, nil
 	}
 
@@ -126,10 +177,21 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		items, reason, err := e.executeByType(ctx, task)
 		if err != nil {
 			result.SetError(err.Error())
+			e.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventToolError,
+				AgentID:  e.agentID,
+				Error:    err,
+				Duration: time.Since(startTime),
+			})
 			return result, nil
 		}
 		result.SetSuccess(items, reason)
 		result.Duration = time.Since(startTime)
+		e.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventToolEnd,
+			AgentID:  e.agentID,
+			Duration: time.Since(startTime),
+		})
 		return result, nil
 	}
 
@@ -142,16 +204,32 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		if fallbackErr != nil {
 			slog.Debug("Fallback also failed", "error", fallbackErr)
 			result.SetError(err.Error())
+			e.emitCallback(&callbacks.Context{
+				Event:    callbacks.EventToolError,
+				AgentID:  e.agentID,
+				Error:    err,
+				Duration: time.Since(startTime),
+			})
 			return result, nil
 		}
 		slog.Debug("Using fallback", "item_count", len(fallbackItems))
 		result.SetSuccess(fallbackItems, reason)
 		result.Duration = time.Since(startTime)
+		e.emitCallback(&callbacks.Context{
+			Event:    callbacks.EventToolEnd,
+			AgentID:  e.agentID,
+			Duration: time.Since(startTime),
+		})
 		return result, nil
 	}
 
 	result.SetSuccess(items, "LLM recommendation completed")
 	result.Duration = time.Since(startTime)
+	e.emitCallback(&callbacks.Context{
+		Event:    callbacks.EventToolEnd,
+		AgentID:  e.agentID,
+		Duration: time.Since(startTime),
+	})
 	return result, nil
 }
 
