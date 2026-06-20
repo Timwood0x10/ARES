@@ -67,10 +67,15 @@ func (a *MutationAdapter) Mutate(ctx context.Context, parent Strategy, n int) ([
 // evolutionToMutationStrategy converts an evolution.Strategy to a mutation.Strategy.
 func evolutionToMutationStrategy(s Strategy) mutation.Strategy {
 	return mutation.Strategy{
-		ID:       s.ID,
-		ParentID: s.ParentID,
-		Version:  s.Version,
-		Params:   s.Params,
+		ID:                   s.ID,
+		ParentID:             s.ParentID,
+		Version:              s.Version,
+		Params:               s.Params,
+		PromptTemplate:       s.PromptTemplate,
+		StrategyMutationType: mutationTypeFromString(s.StrategyMutationType),
+		MutationDesc:         s.MutationDesc,
+		Score:                s.Score,
+		CreatedAt:            s.CreatedAt,
 	}
 }
 
@@ -80,10 +85,31 @@ func mutationToEvolutionStrategy(s *mutation.Strategy) Strategy {
 		return Strategy{}
 	}
 	return Strategy{
-		ID:       s.ID,
-		Name:     s.PromptTemplate, // Map PromptTemplate to Name for compatibility.
-		Version:  s.Version,
-		Params:   s.Params,
-		ParentID: s.ParentID,
+		ID:                   s.ID,
+		Name:                 s.PromptTemplate,
+		Version:              s.Version,
+		Params:               s.Params,
+		ParentID:             s.ParentID,
+		PromptTemplate:       s.PromptTemplate,
+		StrategyMutationType: s.StrategyMutationType.String(),
+		MutationDesc:         s.MutationDesc,
+		Score:                s.Score,
+		CreatedAt:            s.CreatedAt,
+	}
+}
+
+// mutationTypeFromString converts a string to mutation.MutationType.
+func mutationTypeFromString(s string) mutation.MutationType {
+	switch s {
+	case "parameter":
+		return mutation.MutationParameter
+	case "prompt":
+		return mutation.MutationPrompt
+	case "tool":
+		return mutation.MutationTool
+	case "crossover":
+		return mutation.MutationCrossover
+	default:
+		return mutation.MutationParameter
 	}
 }

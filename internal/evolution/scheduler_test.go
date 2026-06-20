@@ -116,6 +116,19 @@ func TestOnAgentEnd_Enabled(t *testing.T) {
 		WithMinInterval(time.Nanosecond), // Very short interval for testing
 	)
 
+	// TriggerOnIdle requires either score degradation (drop >= 15%) or
+	// scoreCount >= 100 for periodic exploration. Since scoreWindowSize=50
+	// caps the sliding window at 50 entries, we use degradation:
+	//   - 40 scores of 100.0 fill most of the window
+	//   - 10 scores of 1.0 create recent avg ≈ 1.0 vs overall avg ≈ 80.2
+	//   - drop = (80.2-1.0)/80.2 = 98.7% >> 15% threshold
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
+
 	scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-1"})
 
 	// Wait for the adapter Run() to complete deterministically.
@@ -135,6 +148,14 @@ func TestOnAgentEnd_MinIntervalProtection(t *testing.T) {
 		WithEnabled(true),
 		WithMinInterval(1*time.Hour), // Long interval
 	)
+
+	// Populate scores to pass shouldEvolve in TriggerOnIdle mode.
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
 
 	// First call should succeed
 	scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-1"})
@@ -173,18 +194,27 @@ func TestRegister_NilRegistry(t *testing.T) {
 	scheduler.Register()
 }
 
-// TestShouldEvolve_Defaults tests default shouldEvolve behavior.
+// TestShouldEvolve_Defaults tests shouldEvolve returns true when preconditions are met.
 func TestShouldEvolve_Defaults(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
 	scheduler := NewEvolutionScheduler(reg, adapter,
 		WithEnabled(true),
 	)
 
+	// TriggerOnIdle needs score degradation or 100+ scores (impossible
+	// due to scoreWindowSize=50). Provide degradation data.
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
+
 	result := scheduler.shouldEvolve(context.Background(), CallbackData{AgentID: "agent-1"})
 	if !result {
-		t.Error("expected shouldEvolve to return true by default")
+		t.Error("expected shouldEvolve=true with enabled scheduler and score degradation")
 	}
 }
 
@@ -220,6 +250,15 @@ func TestLastRunTime(t *testing.T) {
 	initialTime := scheduler.LastRunTime()
 	if !initialTime.IsZero() {
 		t.Error("expected zero LastRunTime initially")
+	}
+
+	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
+	// the sliding window, so scoreCount can never reach 100).
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
 	}
 
 	scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: "agent-1"})

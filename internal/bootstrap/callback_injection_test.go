@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestNewLLMClientWithCallbacks(t *testing.T) {
 		t.Fatal("expected non-nil client")
 	}
 
-	_, _ = client.Generate(nil, "test prompt")
+	_, _ = client.Generate(context.TODO(), "test prompt")
 	if !emitted {
 		t.Error("expected LLM start event to be emitted via callback registry")
 	}
@@ -87,7 +88,7 @@ func TestWireTaskExecutorCallbacks(t *testing.T) {
 		AgentType: models.AgentTypeDestination,
 	}
 
-	_, _ = executor.Execute(nil, task)
+	_, _ = executor.Execute(context.TODO(), task)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -174,12 +175,12 @@ func TestCallbackInjectionChain(t *testing.T) {
 		callbackOpt,
 	)
 
-	_, _ = taskExec.Execute(nil, &models.Task{
+	_, _ = taskExec.Execute(context.TODO(), &models.Task{
 		TaskID:    "chain-test",
 		AgentType: models.AgentTypeDestination,
 	})
 
-	_, _ = llmClient.Generate(nil, "chain test")
+	_, _ = llmClient.Generate(context.TODO(), "chain test")
 
 	mu.Lock()
 	defer mu.Unlock()

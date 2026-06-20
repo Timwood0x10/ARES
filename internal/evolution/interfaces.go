@@ -5,6 +5,7 @@ package evolution
 
 import (
 	"context"
+	"time"
 
 	"goagentx/internal/events"
 )
@@ -135,6 +136,21 @@ type Strategy struct {
 
 	// ParentID references the parent strategy this was evolved from (empty for root strategies).
 	ParentID string
+
+	// PromptTemplate is the behavior prompt template for the agent.
+	PromptTemplate string
+
+	// StrategyMutationType records the mutation type that created this strategy.
+	StrategyMutationType string
+
+	// MutationDesc is a human-readable description of the mutation applied.
+	MutationDesc string
+
+	// Score is the current evaluation score (-1 = unevaluated).
+	Score float64
+
+	// CreatedAt is the timestamp when this strategy was created.
+	CreatedAt time.Time
 }
 
 // MutatorInterface abstracts strategy mutation capability.
@@ -204,4 +220,18 @@ type StrategyLineage struct {
 type GenealogyRecorder interface {
 	// Record persists a strategy lineage entry for future analysis.
 	Record(ctx context.Context, lineage StrategyLineage) error
+}
+
+// StrategyStore abstracts persistent strategy storage.
+// Implementations load and save strategies across system restarts.
+type StrategyStore interface {
+	// GetActive returns the currently deployed strategy.
+	// Returns nil if no strategy has been stored yet.
+	GetActive(ctx context.Context) (*Strategy, error)
+
+	// SetActive persists a strategy as the active deployment.
+	SetActive(ctx context.Context, s Strategy) error
+
+	// List returns the last n strategies ordered by version descending.
+	List(ctx context.Context, n int) ([]Strategy, error)
 }

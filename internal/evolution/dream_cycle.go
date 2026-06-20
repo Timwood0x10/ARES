@@ -64,14 +64,15 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // It connects: Callback trigger -> Flight->Exp Adapter -> Scheduler ->
 // Mutator -> Arena Regression -> Genealogy recording.
 type DreamCycle struct {
-	scheduler *EvolutionScheduler
-	mutator   MutatorInterface
-	tester    TesterInterface
-	genealogy GenealogyRecorder
-	config    DreamCycleConfig
-	mu        sync.Mutex // Protects taskCount and lastCycle from concurrent access.
-	taskCount int64
-	lastCycle time.Time
+	scheduler     *EvolutionScheduler
+	mutator       MutatorInterface
+	tester        TesterInterface
+	genealogy     GenealogyRecorder
+	strategyStore StrategyStore
+	config        DreamCycleConfig
+	mu            sync.Mutex // Protects taskCount and lastCycle from concurrent access.
+	taskCount     int64
+	lastCycle     time.Time
 }
 
 // NewDreamCycle creates a new dream cycle orchestrator with required dependencies.
@@ -185,7 +186,7 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		"task_count", taskCount)
 
 	// Step 1: Get current active strategy as parent for mutation.
-	parent, err := dc.getCurrentStrategy()
+	parent, err := dc.getCurrentStrategy(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "[DreamCycle] Failed to get active strategy", "error", err)
 		return nil
@@ -250,20 +251,54 @@ type candidateResult struct {
 	scoreImprovement float64
 }
 
-// getCurrentStrategy returns the currently active strategy.
-// TODO: integrate with actual strategy store once Task E (Mutator) is complete.
-// This is a placeholder implementation that returns a default root strategy.
-// In production, this should read the active strategy from configuration or persistent storage.
+// WithStrategyStore sets the strategy store for persisting evolved strategies.
+//
+// Args:
+//
+//	store - the strategy store implementation (may be nil to disable persistence).
 //
 // Returns:
 //
-//	Strategy - the active strategy, or zero-value Strategy if unavailable.
-//	error - ErrStrategyUnavailable if no strategy store is configured.
-func (dc *DreamCycle) getCurrentStrategy() (Strategy, error) {
-	// TODO: replace with real strategy store lookup.
-	// Expected implementation: dc.strategyStore.GetActive(ctx)
-	// For now, return a placeholder root strategy and log a warning.
-	slog.Warn("[DreamCycle] Using placeholder strategy; integrate with strategy store for production")
+//	DreamCycleOption - the option function.
+func WithStrategyStore(store StrategyStore) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.strategyStore = store
+		return nil
+	}
+}
+
+// getCurrentStrategy returns the currently deployed strategy from the strategy store.
+// Falls back to a default root strategy if none has been stored yet.
+//
+// Args:
+//
+//	ctx - operation context for store lookup.
+//
+// Returns:
+//
+//	Strategy - the active strategy, or a default on first run.
+//	error - non-nil if store lookup fails.
+func (dc *DreamCycle) getCurrentStrategy(ctx context.Context) (Strategy, error) {
+	if dc.strategyStore == nil {
+		slog.WarnContext(ctx, "[DreamCycle] No strategy store configured; using default")
+		return defaultRootStrategy(), nil
+	}
+
+	stored, err := dc.strategyStore.GetActive(ctx)
+	if err != nil {
+		return Strategy{}, fmt.Errorf("get active strategy: %w", err)
+	}
+
+	if stored == nil {
+		slog.InfoContext(ctx, "[DreamCycle] No stored strategy found; initializing with default")
+		return defaultRootStrategy(), nil
+	}
+
+	return *stored, nil
+}
+
+// defaultRootStrategy returns a sensible root strategy for first-time initialization.
+func defaultRootStrategy() Strategy {
 	return Strategy{
 		ID:      "root-strategy-v1",
 		Name:    "DefaultStrategy",
@@ -274,7 +309,10 @@ func (dc *DreamCycle) getCurrentStrategy() (Strategy, error) {
 			"retry_count":  3,
 			"timeout_secs": 120,
 		},
-	}, nil
+		StrategyMutationType: "",
+		Score:                -1,
+		CreatedAt:            time.Now(),
+	}
 }
 
 // findWinner tests all candidates in arena and returns the best one above threshold.

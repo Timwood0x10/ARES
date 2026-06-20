@@ -275,11 +275,17 @@ func TestHalfSplitPromptCrossover(t *testing.T) {
 			}
 
 			if tt.wantPrompt == "" && tt.promptA == "你好世界Hello" {
-				mid := len(tt.promptA) / 2
-				if mid == 0 {
+				runesA := []rune(tt.promptA)
+				runesB := []rune(tt.promptB)
+				mid := len(runesA) / 2
+				if len(runesA) > 0 && mid == 0 {
 					mid = 1
 				}
-				tt.wantPrompt = tt.promptA[:mid] + tt.promptB[mid:]
+				if len(runesB) <= mid {
+					tt.wantPrompt = string(runesA[:mid]) + tt.promptB
+				} else {
+					tt.wantPrompt = string(runesA[:mid]) + string(runesB[mid:])
+				}
 			}
 
 			if got != tt.wantPrompt {

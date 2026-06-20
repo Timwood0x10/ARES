@@ -312,18 +312,21 @@ func (c *Crossover) halfSplitPromptCrossover(a, b *mutation.Strategy) string {
 		return c.selectPromptTemplate(a, b)
 	}
 
-	// mid is based on len(tmplA). For very short templates (< 2 chars),
-	// take the full A string as the first half. tmplB[mid:] would panic
-	// if mid > len(tmplB), so guard before slicing.
-	mid := len(tmplA) / 2
-	if len(tmplA) > 0 && mid == 0 {
+	// mid is based on rune count, not byte count, so multi-byte characters
+	// (Chinese, emoji, etc.) are never split in the middle of a character.
+	// tmplB's rune-buffer slicing avoids panics when mid > len(runesB).
+	runesA := []rune(tmplA)
+	runesB := []rune(tmplB)
+
+	mid := len(runesA) / 2
+	if len(runesA) > 0 && mid == 0 {
 		mid = 1
 	}
-	if len(tmplB) <= mid {
-		return tmplA[:mid] + tmplB
+	if len(runesB) <= mid {
+		return string(runesA[:mid]) + tmplB
 	}
 
-	result := tmplA[:mid] + tmplB[mid:]
+	result := string(runesA[:mid]) + string(runesB[mid:])
 
 	slog.Debug("half-split prompt crossover",
 		"parent_a_len", len(tmplA),

@@ -231,6 +231,15 @@ func TestRun_FullCycleHappyPath(t *testing.T) {
 	// Pre-warm to pass threshold.
 	dc.taskCount = int64(dc.config.MinTasksBeforeEvolve)
 
+	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
+	// the sliding window, so scoreCount can never reach 100).
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
+
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -326,6 +335,15 @@ func TestRun_OneCandidateWins(t *testing.T) {
 
 	dc.taskCount = int64(dc.config.MinTasksBeforeEvolve)
 
+	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
+	// the sliding window, so scoreCount can never reach 100).
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
+
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -368,6 +386,15 @@ func TestRun_MutatorError(t *testing.T) {
 	)
 
 	dc.taskCount = int64(dc.config.MinTasksBeforeEvolve)
+
+	// TriggerOnIdle requires score degradation (scoreWindowSize=50 caps
+	// the sliding window, so scoreCount can never reach 100).
+	for i := 0; i < 40; i++ {
+		scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		scheduler.RecordScore(1.0)
+	}
 
 	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
 	if err == nil {
@@ -468,10 +495,14 @@ func TestShouldEvolve_NotEnoughTasks(t *testing.T) {
 		WithMinInterval(time.Nanosecond),
 	)
 
-	// With TriggerOnIdle and interval passed, should return true by default.
+	// TriggerOnIdle requires at least 20 scores; with fewer it should return false.
+	for i := 0; i < 15; i++ {
+		scheduler.RecordScore(50.0)
+	}
+
 	result := scheduler.shouldEvolve(context.Background(), CallbackData{AgentID: "agent-1"})
-	if !result {
-		t.Error("expected shouldEvolve=true with idle trigger and interval passed")
+	if result {
+		t.Error("expected shouldEvolve=false with insufficient score history")
 	}
 }
 

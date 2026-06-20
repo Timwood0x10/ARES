@@ -105,6 +105,12 @@ func WithEnabled(enabled bool) SchedulerOption {
 	}
 }
 
+// scoreWindowSize is the number of recent task scores to track for trend detection.
+const scoreWindowSize = 50
+
+// degradationThreshold is the fraction of score drop that triggers evolution (15%).
+const degradationThreshold = 0.15
+
 // EvolutionScheduler triggers evolution cycles based on callback events.
 // It registers handlers with the callback registry and decides when to run
 // the FlightToExperienceAdapter based on configurable trigger conditions.
@@ -119,6 +125,8 @@ type EvolutionScheduler struct {
 	egCtx       context.Context    // Context for errgroup cancellation.
 	egCancel    context.CancelFunc // Cancel function for errgroup context.
 	dreamCycle  *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
+	scores      []float64          // Sliding window of recent task scores for trend detection.
+	scoreMu     sync.Mutex         // Protects scores slice from concurrent access.
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -156,6 +164,62 @@ func NewEvolutionScheduler(callbacks callbacks.CallbackRegistrar, adapter Adapte
 	}
 
 	return s
+}
+
+// RecordScore adds a task score to the sliding window for trend detection.
+// Thread-safe. Keeps only the most recent scoreWindowSize scores.
+//
+// Args:
+//
+//	score - the task execution score to record (0-100).
+func (s *EvolutionScheduler) RecordScore(score float64) {
+	s.scoreMu.Lock()
+	defer s.scoreMu.Unlock()
+
+	if len(s.scores) >= scoreWindowSize {
+		s.scores = s.scores[1:]
+	}
+	s.scores = append(s.scores, score)
+}
+
+// averageScore returns the mean of all recorded scores.
+// Returns 0 if no scores have been recorded.
+func (s *EvolutionScheduler) averageScore() float64 {
+	s.scoreMu.Lock()
+	defer s.scoreMu.Unlock()
+
+	if len(s.scores) == 0 {
+		return 0
+	}
+
+	var total float64
+	for _, v := range s.scores {
+		total += v
+	}
+	return total / float64(len(s.scores))
+}
+
+// recentAverage returns the mean of the last n scores.
+// If fewer than n scores are available, returns the average of all scores.
+func (s *EvolutionScheduler) recentAverage(n int) float64 {
+	s.scoreMu.Lock()
+	defer s.scoreMu.Unlock()
+
+	if len(s.scores) == 0 {
+		return 0
+	}
+
+	window := n
+	if window > len(s.scores) {
+		window = len(s.scores)
+	}
+
+	recent := s.scores[len(s.scores)-window:]
+	var total float64
+	for _, v := range recent {
+		total += v
+	}
+	return total / float64(len(recent))
 }
 
 // OnAgentEnd handles agent completion events as a callback handler.
@@ -241,7 +305,6 @@ func (s *EvolutionScheduler) Register() {
 //   - Minimum interval protection (minInterval must have elapsed since lastRun)
 //   - Minimum task count threshold (enough data collected for meaningful decision)
 //   - Score degradation detection (recent performance dropping significantly)
-//   - Consecutive success exploration opportunity
 //
 // Args:
 //
@@ -252,53 +315,79 @@ func (s *EvolutionScheduler) Register() {
 //
 //	true if evolution should run, false otherwise.
 func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData) bool {
-	// Check minimum interval protection with mutex for thread-safe access.
+	// Step 1: Check minimum interval protection.
 	s.mu.Lock()
 	lastRun := s.lastRun
 	s.mu.Unlock()
 
 	if !lastRun.IsZero() && time.Since(lastRun) < s.minInterval {
-		slog.DebugContext(ctx, "[Evolution] Skipping evolution: minimum interval not elapsed",
+		slog.DebugContext(ctx, "[Evolution] Skipping: minimum interval not elapsed",
 			"last_run", lastRun.Format(time.RFC3339),
 			"min_interval", s.minInterval)
 		return false
 	}
 
-	// Check task count threshold via experience repo score trend.
-	// TODO: integrate with actual ExperienceRepository to query task count and scores.
-	// Currently using a simple internal counter fallback; replace with real query once
-	// the experience pipeline provides CountRecent() / GetRecentScores() methods.
-	minTasks := 10 // Default minimum tasks before considering evolution.
-
-	// Score degradation check: detect when recent average drops below historical baseline.
-	// TODO: wire into EvalEngine or Flight Diagnostics for real score data.
-	// Expected interface: GetRollingScores(window int) ([]float64, error)
-	// Fallback: allow evolution when enough tasks have passed (conservative approach).
-
+	// Step 2: Check trigger mode.
 	switch s.trigger {
-	case TriggerOnThreshold:
-		// Threshold mode: only evolve when diagnostic count exceeds limit.
-		// TODO: query diagnostics count from flight recorder.
-		// For now, rely on interval protection only.
-		slog.DebugContext(ctx, "[Evolution] Threshold trigger: checking conditions",
-			"min_tasks", minTasks)
-
 	case TriggerOnDemand:
-		// Demand mode: only evolve when explicitly requested.
-		// The scheduler itself should not auto-trigger; external API call needed.
+		return false
+
+	case TriggerOnThreshold:
+		// Threshold mode: evolve when enough scores have accumulated
+		// and score degradation is detected.
+		avg := s.averageScore()
+		recent := s.recentAverage(10)
+		if avg <= 0 || recent <= 0 {
+			return false
+		}
+		drop := (avg - recent) / avg
+		if drop >= degradationThreshold {
+			slog.InfoContext(ctx, "[Evolution] Score degradation detected",
+				"overall_avg", avg,
+				"recent_avg", recent,
+				"drop_pct", drop)
+			return true
+		}
 		return false
 
 	case TriggerOnIdle:
-		// Idle mode: evolve when system has been idle long enough.
-		// Already covered by minInterval check above.
+		// Idle mode: evolve when the system has enough score history
+		// and recent performance shows a meaningful drop, or periodically
+		// for exploration even without degradation.
+		avg := s.averageScore()
+		recent := s.recentAverage(10)
+
+		// Need at least 20 scores for a meaningful baseline.
+		s.scoreMu.Lock()
+		scoreCount := len(s.scores)
+		s.scoreMu.Unlock()
+		if scoreCount < 20 {
+			return false
+		}
+
+		if avg > 0 && recent > 0 {
+			drop := (avg - recent) / avg
+			if drop >= degradationThreshold {
+				slog.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",
+					"overall_avg", avg,
+					"recent_avg", recent,
+					"drop_pct", drop)
+				return true
+			}
+		}
+
+		// Periodic exploration: even without degradation, evolve after enough
+		// tasks to explore the strategy space. This prevents stagnation.
+		if scoreCount >= 100 {
+			slog.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
+				"score_count", scoreCount)
+			return true
+		}
+		return false
+
 	default:
-		// Unknown trigger mode: default to safe behavior (no auto-evolution).
 		return false
 	}
-
-	// Default: allow evolution when interval check passes and we have enough signal.
-	// This conservative default ensures the system can start evolving once warmed up.
-	return true
 }
 
 // SetEnabled enables or disables the scheduler at runtime.
