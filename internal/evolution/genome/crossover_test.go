@@ -3,6 +3,8 @@ package genome
 import (
 	"context"
 	"math/rand"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -413,13 +415,13 @@ func TestCrossover(t *testing.T) {
 			},
 		},
 		{
-			name:    "parentID format combines both IDs with plus sign",
+			name:    "parentID format combines both IDs with multiplication sign",
 			a:       makeTestStrategy("id-parent-A", 0.5, 1, map[string]any{"k": 1}, "p"),
 			b:       makeTestStrategy("id-parent-B", 0.5, 1, map[string]any{"k": 2}, "p"),
 			seed:    42,
 			wantErr: false,
 			checkChild: func(t *testing.T, child *mutation.Strategy, a, b *mutation.Strategy) {
-				wantParentID := a.ID + "+" + b.ID
+				wantParentID := a.ID + "\u00d7" + b.ID
 				if child.ParentID != wantParentID {
 					t.Errorf("ParentID = %q, want %q", child.ParentID, wantParentID)
 				}
@@ -479,7 +481,7 @@ func TestCrossover(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tt.errContains != "" && !containsString(err.Error(), tt.errContains) {
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
 				}
 				return
@@ -662,7 +664,7 @@ func TestMultiPointCrossover(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tt.errContains != "" && !containsString(err.Error(), tt.errContains) {
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
 				}
 				return
@@ -757,8 +759,8 @@ func TestCollectParamKeys(t *testing.T) {
 
 func TestFormatParentIDs(t *testing.T) {
 	result := formatParentIDs("aaa", "bbb")
-	if result != "aaa+bbb" {
-		t.Errorf("formatParentIDs = %q, want %q", result, "aaa+bbb")
+	if result != "aaa\u00d7bbb" {
+		t.Errorf("formatParentIDs = %q, want %q", result, "aaa\u00d7bbb")
 	}
 }
 
@@ -840,46 +842,8 @@ func fmtParamKey(format string, args ...int) string {
 func replaceFirstPlaceholder(s string, val int) string {
 	for i := 0; i < len(s)-1; i++ {
 		if s[i] == '%' && s[i+1] == 'd' {
-			return s[:i] + itoa(val) + s[i+2:]
+			return s[:i] + strconv.Itoa(val) + s[i+2:]
 		}
 	}
 	return s
-}
-
-// itoa converts an integer to its decimal string representation without using strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}
-
-// containsString checks if s contains substr.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-// searchSubstring performs a simple substring search without using strings.Contains to avoid extra import.
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

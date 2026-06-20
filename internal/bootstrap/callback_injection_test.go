@@ -47,7 +47,7 @@ func TestNewLLMClientWithCallbacks(t *testing.T) {
 		t.Fatal("expected non-nil client")
 	}
 
-	client.Generate(nil, "test prompt")
+	_, _ = client.Generate(nil, "test prompt")
 	if !emitted {
 		t.Error("expected LLM start event to be emitted via callback registry")
 	}
@@ -87,7 +87,7 @@ func TestWireTaskExecutorCallbacks(t *testing.T) {
 		AgentType: models.AgentTypeDestination,
 	}
 
-	executor.Execute(nil, task)
+	_, _ = executor.Execute(nil, task)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -174,12 +174,12 @@ func TestCallbackInjectionChain(t *testing.T) {
 		callbackOpt,
 	)
 
-	taskExec.Execute(nil, &models.Task{
+	_, _ = taskExec.Execute(nil, &models.Task{
 		TaskID:    "chain-test",
 		AgentType: models.AgentTypeDestination,
 	})
 
-	llmClient.Generate(nil, "chain test")
+	_, _ = llmClient.Generate(nil, "chain test")
 
 	mu.Lock()
 	defer mu.Unlock()

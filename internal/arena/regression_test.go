@@ -38,23 +38,6 @@ func (m *mockScorer) Score(runResult any) (float64, error) {
 	return score, nil
 }
 
-// resetCallCount resets the internal counter for reuse.
-func (m *mockScorer) resetCallCount() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.callCount = 0
-}
-
-// errorScorer always returns an error for testing failure paths.
-type errorScorer struct {
-	err error
-}
-
-// Score returns the configured error.
-func (e *errorScorer) Score(runResult any) (float64, error) {
-	return 0, e.err
-}
-
 // TestRegressionResult_DefaultFields verifies zero-value initialization.
 func TestRegressionResult_DefaultFields(t *testing.T) {
 	var result RegressionResult

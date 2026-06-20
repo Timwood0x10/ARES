@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"goagentx/internal/arena"
 	"goagentx/internal/callbacks"
 	"goagentx/internal/evolution"
+	"goagentx/internal/evolution/genome"
 	"goagentx/internal/evolution/mutation"
 	"goagentx/internal/experience"
 	storageModels "goagentx/internal/storage/postgres/models"
@@ -780,7 +782,6 @@ func demoArenaRegressionTest() {
 type compositeScorerImpl struct {
 	baselineScorer  *mockScorer
 	candidateScorer *mockScorer
-	mu              sync.Mutex
 }
 
 // newCompositeScorer creates a scorer that routes based on strategy ID field.
@@ -938,6 +939,157 @@ func demoDreamCycle() {
 	fmt.Println("  The system continuously explores, evaluates, and adopts better strategies.")
 }
 
+// demoGeneticAlgorithmEvolution demonstrates a complete multi-generation
+// genetic algorithm evolution process using genome.Population.
+// It shows how a population of strategies evolves over generations through
+// selection, crossover, and mutation — tracking score improvement over time.
+func demoGeneticAlgorithmEvolution() {
+	phaseSeparator("Scenario 6: Multi-Generation GA Evolution")
+
+	ctx := context.Background()
+
+	base := &mutation.Strategy{
+		ID:      "ga-root-v1",
+		Version: 1,
+		Params: map[string]any{
+			"temperature":        0.7,
+			"top_k":              40,
+			"max_steps":          10,
+			"memory_limit":       5,
+			"conflict_threshold": 0.90,
+		},
+		PromptTemplate: "You are a helpful assistant.",
+		CreatedAt:      time.Now(),
+	}
+
+	promptPool := []string{
+		"You are a careful assistant. Think step by step.",
+		"You are a creative assistant. Explore multiple solutions.",
+		"You are a precise assistant. Focus on accuracy.",
+	}
+
+	mutator, err := mutation.NewMutator(
+		mutation.WithPromptPool(promptPool),
+		mutation.WithSeed(42),
+	)
+	if err != nil {
+		slog.Error("Failed to create mutator", "error", err)
+		return
+	}
+
+	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	if err != nil {
+		slog.Error("Failed to create crossover", "error", err)
+		return
+	}
+
+	pop, err := genome.NewPopulation(ctx, base, mutator,
+		genome.WithPopulationSize(20),
+		genome.WithEliteCount(2),
+		genome.WithMutationRate(0.2),
+		genome.WithSurvivalRate(0.6),
+	)
+	if err != nil {
+		slog.Error("Failed to create population", "error", err)
+		return
+	}
+
+	const nGenerations = 15
+	rng := rand.New(rand.NewSource(99))
+
+	fmt.Println("Initial Population:")
+	initStats := pop.Stats()
+	fmt.Printf("  Size: %d | Gen: %d | Best: %.2f | Avg: %.2f | Worst: %.2f\n",
+		initStats.Size, initStats.Generation, initStats.BestScore, initStats.AvgScore, initStats.WorstScore)
+
+	fmt.Printf("\n--- Running %d Generations of Evolution ---\n\n", nGenerations)
+	fmt.Printf("%-6s %-8s %-10s %-10s %-10s %-12s\n", "Gen", "PopSize", "Best", "Avg", "Worst", "BestParams(t)")
+	fmt.Println(stringsRepeat("-", 60))
+
+	bestScoreHistory := make([]float64, 0, nGenerations)
+	avgScoreHistory := make([]float64, 0, nGenerations)
+
+	for gen := 1; gen <= nGenerations; gen++ {
+		for _, agent := range pop.Agents {
+			temp := 0.7
+			if v, ok := agent.Params["temperature"].(float64); ok {
+				temp = v
+			}
+			proximity := 1.0 - abs(temp-0.7)*2.5
+			agent.Score = 50.0 + rng.Float64()*30.0 + proximity*20.0
+			if agent.Score > 100 {
+				agent.Score = 100
+			}
+			if agent.Score < 0 {
+				agent.Score = 0
+			}
+		}
+
+		err := pop.EvolveOnIdle(ctx, mutator, crosser)
+		if err != nil {
+			slog.Error("Evolution failed", "generation", gen, "error", err)
+			return
+		}
+
+		stats := pop.Stats()
+		bestScoreHistory = append(bestScoreHistory, stats.BestScore)
+		avgScoreHistory = append(avgScoreHistory, stats.AvgScore)
+
+		best := pop.Best()
+		bestTemp := "N/A"
+		if best != nil {
+			if v, ok := best.Params["temperature"].(float64); ok {
+				bestTemp = fmt.Sprintf("%.2f", v)
+			}
+		}
+
+		fmt.Printf("%-6d %-8d %-10.2f %-10.2f %-10.2f %-12s\n",
+			stats.Generation, stats.Size, stats.BestScore, stats.AvgScore, stats.WorstScore, bestTemp)
+	}
+
+	fmt.Println("\n--- Score Progression Summary ---")
+	fmt.Printf("%-12s %-12s %-12s\n", "Metric", "Start", "End")
+	fmt.Println(stringsRepeat("-", 38))
+	fmt.Printf("%-12s %-12.2f %-12.2f\n", "Best", bestScoreHistory[0], bestScoreHistory[len(bestScoreHistory)-1])
+	fmt.Printf("%-12s %-12.2f %-12.2f\n", "Average", avgScoreHistory[0], avgScoreHistory[len(avgScoreHistory)-1])
+
+	improvement := bestScoreHistory[len(bestScoreHistory)-1] - bestScoreHistory[0]
+	fmt.Printf("\nBest score improvement over %d generations: %+.2f\n", nGenerations, improvement)
+
+	finalBest := pop.BestStrategy()
+	if finalBest != nil {
+		fmt.Println("\nFinal Best Strategy:")
+		fmt.Printf("  ID:      %s\n", finalBest.ID)
+		fmt.Printf("  Version: %d\n", finalBest.Version)
+		fmt.Printf("  Score:   %.2f\n", finalBest.Score)
+		fmt.Println("  Params:")
+		for k, v := range finalBest.Params {
+			baseVal := base.Params[k]
+			marker := ""
+			if fmt.Sprintf("%v", v) != fmt.Sprintf("%v", baseVal) {
+				marker = " ← MUTATED"
+			}
+			fmt.Printf("    %s: %v%s\n", k, v, marker)
+		}
+		fmt.Printf("  Prompt:  %s\n", finalBest.PromptTemplate)
+	}
+
+	fmt.Println("\nKey Observations:")
+	fmt.Println("  • Elite preservation keeps the best strategies across generations")
+	fmt.Println("  • Crossover recombines successful parameter combinations")
+	fmt.Println("  • Mutation introduces controlled diversity to escape local optima")
+	fmt.Println("  • Score trends show the population adapting over time")
+	fmt.Println("  • The GA finds strategies that balance exploration and exploitation")
+}
+
+// abs returns the absolute value of a float64.
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // stringsRepeat repeats the given string n times.
 func stringsRepeat(s string, n int) string {
 	result := make([]byte, 0, len(s)*n)
@@ -966,17 +1118,19 @@ func main() {
 	demoMutationEngine()
 	demoArenaRegressionTest()
 	demoDreamCycle()
+	demoGeneticAlgorithmEvolution()
 
 	phaseSeparator("Demo Complete")
 
-	fmt.Println("All 5 scenarios executed successfully!")
+	fmt.Println("All 6 scenarios executed successfully!")
 	fmt.Println()
 	fmt.Println("Summary:")
-	fmt.Println("  1. Bandit Feedback Loop     - Experience reinforcement via success/failure")
-	fmt.Println("  2. Callback Event System    - Lifecycle hooks for LLM/Tool/Agent events")
-	fmt.Println("  3. Strategy Mutation Engine - Parameter and prompt template variations")
-	fmt.Println("  4. Arena Regression Test    - A/B comparison with statistical significance")
-	fmt.Println("  5. Dream Cycle             - Full orchestration from trigger to genealogy")
+	fmt.Println("  1. Bandit Feedback Loop          - Experience reinforcement via success/failure")
+	fmt.Println("  2. Callback Event System         - Lifecycle hooks for LLM/Tool/Agent events")
+	fmt.Println("  3. Strategy Mutation Engine      - Parameter and prompt template variations")
+	fmt.Println("  4. Arena Regression Test         - A/B comparison with statistical significance")
+	fmt.Println("  5. Dream Cycle                  - Full orchestration from trigger to genealogy")
+	fmt.Println("  6. Multi-Gen GA Evolution       - 15 generations of Population-based evolution")
 	fmt.Println()
 	fmt.Println("The autonomous evolution system enables agents to:")
 	fmt.Println("  • Learn from experience through feedback loops")
@@ -984,4 +1138,5 @@ func main() {
 	fmt.Println("  • Explore strategy space through controlled mutations")
 	fmt.Println("  • Validate improvements with statistical rigor")
 	fmt.Println("  • Self-evolve through automated dream cycles")
+	fmt.Println("  • Adapt across generations via genetic algorithm")
 }

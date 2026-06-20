@@ -10,9 +10,6 @@ import (
 // TestEmitterInterfaceVerification verifies that Registry satisfies Emitter interface.
 func TestEmitterInterfaceVerification(t *testing.T) {
 	var e Emitter = NewRegistry()
-	if e == nil {
-		t.Fatal("Registry should satisfy Emitter interface")
-	}
 
 	// Should be able to call Emit without panicking.
 	e.Emit(&Context{Event: EventAgentStart})

@@ -1,0 +1,564 @@
+// Package evolution provides wiring between the genome population system
+// and the DreamCycle/EvolutionScheduler orchestration layer.
+//
+// This file bridges the type gap between genome.Population (which operates
+// on *mutation.Strategy) and the evolution package (which uses evolution.Strategy).
+// It provides adapters and factory functions for building a fully connected
+// autonomous evolution system.
+package evolution
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	"goagentx/internal/callbacks"
+	"goagentx/internal/evolution/genome"
+	"goagentx/internal/evolution/mutation"
+)
+
+// GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
+// It allows the EvolutionScheduler to trigger genome-based evolution cycles
+// when agents complete tasks.
+type GenomePopulationAdapter struct {
+	pop     *genome.Population
+	mutator genome.MutatorInterface
+	crosser genome.CrossoverInterface
+}
+
+// NewGenomePopulationAdapter creates an adapter around a genome population.
+//
+// Args:
+//
+//	pop - the managed population (must not be nil).
+//	mutator - the genome-compatible mutator (must not be nil).
+//	crosser - the genome-compatible crossover engine (must not be nil).
+//
+// Returns:
+//
+//	*GenomePopulationAdapter - the configured adapter.
+//	error - non-nil if any required dependency is nil.
+func NewGenomePopulationAdapter(
+	pop *genome.Population,
+	mutator genome.MutatorInterface,
+	crosser genome.CrossoverInterface,
+) (*GenomePopulationAdapter, error) {
+	if pop == nil {
+		return nil, fmt.Errorf("population must not be nil")
+	}
+	if mutator == nil {
+		return nil, fmt.Errorf("mutator must not be nil")
+	}
+	if crosser == nil {
+		return nil, fmt.Errorf("crosser must not be nil")
+	}
+	return &GenomePopulationAdapter{
+		pop:     pop,
+		mutator: mutator,
+		crosser: crosser,
+	}, nil
+}
+
+// Run executes one genome evolution cycle (EvolveOnIdle) when triggered by scheduler.
+// This implements the AdapterRunner interface for use with EvolutionScheduler.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//
+// Returns:
+//
+//	error - non-nil if evolution fails.
+func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
+	if err := a.pop.EvolveOnIdle(ctx, a.mutator, a.crosser); err != nil {
+		return fmt.Errorf("genome evolve on idle: %w", err)
+	}
+
+	stats := a.pop.Stats()
+	slog.InfoContext(ctx, "[GenomeAdapter] Evolution cycle completed",
+		"generation", stats.Generation,
+		"population_size", stats.Size,
+		"best_score", stats.BestScore,
+		"avg_score", stats.AvgScore,
+	)
+
+	return nil
+}
+
+// Population returns the underlying genome population for direct access.
+//
+// Returns:
+//
+//	*genome.Population - the managed population.
+func (a *GenomePopulationAdapter) Population() *genome.Population {
+	return a.pop
+}
+
+// GenomeMutatorAdapter wraps a *mutation.Mutator to implement genome.MutatorInterface.
+// This enables genome.Population to use the production mutator directly.
+type GenomeMutatorAdapter struct {
+	mutator *mutation.Mutator
+}
+
+// NewGenomeMutatorAdapter creates a genome-compatible mutator adapter.
+//
+// Args:
+//
+//	m - the production mutator to wrap (must not be nil).
+//
+// Returns:
+//
+//	*GenomeMutatorAdapter - the adapter instance.
+//	error - non-nil if mutator is nil.
+func NewGenomeMutatorAdapter(m *mutation.Mutator) (*GenomeMutatorAdapter, error) {
+	if m == nil {
+		return nil, fmt.Errorf("mutator must not be nil")
+	}
+	return &GenomeMutatorAdapter{mutator: m}, nil
+}
+
+// Mutate delegates to the wrapped mutation.Mutator.
+// The signature matches genome.MutatorInterface (uses *mutation.Strategy).
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	parent - the parent strategy to mutate.
+//	n - number of children to generate.
+//
+// Returns:
+//
+//	[]*mutation.Strategy - the generated child strategies.
+//	error - delegation error from the wrapped mutator.
+func (a *GenomeMutatorAdapter) Mutate(
+	ctx context.Context,
+	parent *mutation.Strategy,
+	n int,
+) ([]*mutation.Strategy, error) {
+	children, err := a.mutator.Mutate(ctx, parent, n)
+	if err != nil {
+		return nil, fmt.Errorf("genome mutator adapter: %w", err)
+	}
+	return children, nil
+}
+
+// PopulationGenealogyRecorder records strategy lineage from genome evolution
+// into the evolution package's genealogy system. It implements GenealogyRecorder
+// by extracting lineage data from population state after each evolution cycle.
+type PopulationGenealogyRecorder struct {
+	mu       sync.Mutex
+	lineages []StrategyLineage
+}
+
+// NewPopulationGenealogyRecorder creates a new genealogy recorder.
+//
+// Returns:
+//
+//	*PopulationGenealogyRecorder - the recorder instance.
+func NewPopulationGenealogyRecorder() *PopulationGenealogyRecorder {
+	return &PopulationGenealogyRecorder{
+		lineages: make([]StrategyLineage, 0),
+	}
+}
+
+// Record persists a strategy lineage entry from genome evolution results.
+// It extracts parent-child relationships from evolved population agents.
+//
+// Args:
+//
+//	ctx - operation context.
+//	lineage - the lineage record to persist.
+//
+// Returns:
+//
+//	error - always nil for in-memory implementation.
+func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage StrategyLineage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.lineages = append(r.lineages, lineage)
+
+	slog.DebugContext(ctx, "[Genealogy] Lineage recorded",
+		"parent_id", lineage.ParentID,
+		"child_id", lineage.ChildID,
+		"mutation_type", lineage.MutationType,
+	)
+
+	return nil
+}
+
+// Lineages returns all recorded lineage entries (thread-safe).
+//
+// Returns:
+//
+//	[]StrategyLineage - copy of recorded lineages.
+func (r *PopulationGenealogyRecorder) Lineages() []StrategyLineage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result := make([]StrategyLineage, len(r.lineages))
+	copy(result, r.lineages)
+	return result
+}
+
+// Count returns the number of recorded lineage entries.
+//
+// Returns:
+//
+//	int - number of lineages.
+func (r *PopulationGenealogyRecorder) Count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.lineages)
+}
+
+// RecordPopulationLineage extracts parent-child relationships from a genome
+// population after evolution and records them into the genealogy system.
+// This bridges genome.Population's ParentID tracking with evolution.GenealogyRecorder.
+//
+// Args:
+//
+//	ctx - operation context.
+//	pop - the post-evolution population to extract lineage from.
+//	prevGeneration - the generation number before evolution (for filtering).
+//
+// Returns:
+//
+//	int - number of new lineage records created.
+//	error - non-nil if recording fails.
+func RecordPopulationLineage(
+	ctx context.Context,
+	pop *genome.Population,
+	recorder GenealogyRecorder,
+	prevGeneration int,
+) (int, error) {
+	if pop == nil || recorder == nil {
+		return 0, nil
+	}
+
+	count := 0
+	for _, agent := range pop.Agents {
+		if agent.ParentID == "" {
+			continue
+		}
+		if agent.Version <= 1 {
+			continue
+		}
+
+		lineage := StrategyLineage{
+			ParentID:     agent.ParentID,
+			ChildID:      agent.ID,
+			MutationType: agent.StrategyMutationType.String(),
+			Timestamp:    agent.CreatedAt.Unix(),
+		}
+
+		if err := recorder.Record(ctx, lineage); err != nil {
+			return count, fmt.Errorf("record lineage for agent %s: %w", agent.ID, err)
+		}
+		count++
+	}
+
+	if count > 0 {
+		slog.InfoContext(ctx, "[Genealogy] Recorded population lineage",
+			"new_records", count,
+			"generation", pop.Generation,
+		)
+	}
+
+	return count, nil
+}
+
+// WiredEvolutionSystem holds a fully wired autonomous evolution system.
+// It contains all components pre-connected and ready for production use.
+type WiredEvolutionSystem struct {
+	Scheduler  *EvolutionScheduler
+	DreamCycle *DreamCycle
+	PopAdapter *GenomePopulationAdapter
+	Population *genome.Population
+	Genealogy  *PopulationGenealogyRecorder
+}
+
+// SystemConfig holds configuration for creating a wired evolution system.
+type SystemConfig struct {
+	// PopulationSize is the target population size for genome evolution.
+	PopulationSize int
+
+	// EliteCount is the number of elite strategies to preserve per generation.
+	EliteCount int
+
+	// MutationRate is the probability of mutating each offspring.
+	MutationRate float64
+
+	// SurvivalRate is the fraction of top performers to keep.
+	SurvivalRate float64
+
+	// Callbacks is the callback registrar for event subscription.
+	Callbacks callbacks.CallbackRegistrar
+
+	// EnableDreamCycle enables the dream cycle orchestrator.
+	EnableDreamCycle bool
+
+	// EnableScheduler enables the evolution scheduler.
+	EnableScheduler bool
+
+	// MinTasksBeforeEvolve is the minimum tasks before first evolution.
+	MinTasksBeforeEvolve int
+
+	// SchedulerTrigger is the trigger mode for the scheduler.
+	SchedulerTrigger EvolutionTrigger
+}
+
+// DefaultSystemConfig returns sensible defaults for a wired evolution system.
+//
+// Returns:
+//
+//	SystemConfig - configuration with default values.
+func DefaultSystemConfig() SystemConfig {
+	return SystemConfig{
+		PopulationSize:       20,
+		EliteCount:           1,
+		MutationRate:         0.2,
+		SurvivalRate:         0.6,
+		EnableDreamCycle:     false,
+		EnableScheduler:      false,
+		MinTasksBeforeEvolve: 10,
+		SchedulerTrigger:     TriggerOnIdle,
+	}
+}
+
+// NewWiredEvolutionSystem creates a fully connected evolution system.
+// It creates and wires together all components:
+//
+//  1. mutation.Mutator (production mutator)
+//  2. genome.MutatorAdapter (genome-compatible wrapper)
+//  3. genome.Crossover (crossover engine)
+//  4. genome.Population (managed population)
+//  5. GenomePopulationAdapter (scheduler-compatible runner)
+//  6. PopulationGenealogyRecorder (lineage tracking)
+//  7. MutationAdapter (dream-cycle-compatible mutator)
+//  8. DreamCycle (orchestrator, optional)
+//  9. EvolutionScheduler (event-driven trigger, optional)
+//
+// Args:
+//
+//	baseStrategy - the root strategy to evolve from (must not be nil).
+//	cfg - system configuration (use DefaultSystemConfig() for sensible defaults).
+//
+// Returns:
+//
+//	*WiredEvolutionSystem - the fully wired system ready for use.
+//	error - non-nil if any component creation or wiring fails.
+func NewWiredEvolutionSystem(
+	baseStrategy *mutation.Strategy,
+	cfg SystemConfig,
+) (*WiredEvolutionSystem, error) {
+	if baseStrategy == nil {
+		return nil, fmt.Errorf("base strategy must not be nil")
+	}
+
+	// Step 1: Create production mutator.
+	rawMutator, err := mutation.NewMutator()
+	if err != nil {
+		return nil, fmt.Errorf("create mutator: %w", err)
+	}
+
+	// Step 2: Wrap for genome compatibility.
+	genomeMutator, err := NewGenomeMutatorAdapter(rawMutator)
+	if err != nil {
+		return nil, fmt.Errorf("create genome mutator adapter: %w", err)
+	}
+
+	// Step 3: Create crossover engine.
+	crosser, err := genome.NewCrossover()
+	if err != nil {
+		return nil, fmt.Errorf("create crossover: %w", err)
+	}
+
+	// Step 4: Create genome population.
+	pop, err := genome.NewPopulation(
+		context.Background(),
+		baseStrategy,
+		genomeMutator,
+		genome.WithPopulationSize(cfg.PopulationSize),
+		genome.WithEliteCount(cfg.EliteCount),
+		genome.WithMutationRate(cfg.MutationRate),
+		genome.WithSurvivalRate(cfg.SurvivalRate),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create population: %w", err)
+	}
+
+	// Step 5: Create scheduler-compatible adapter.
+	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser)
+	if err != nil {
+		return nil, fmt.Errorf("create population adapter: %w", err)
+	}
+
+	// Step 6: Create genealogy recorder.
+	genealogy := NewPopulationGenealogyRecorder()
+
+	system := &WiredEvolutionSystem{
+		PopAdapter: popAdapter,
+		Population: pop,
+		Genealogy:  genealogy,
+	}
+
+	// Step 7: Optionally create dream cycle with evolution-layer adapters.
+	if cfg.EnableDreamCycle {
+		mutationAdapter, err := NewMutationAdapter(rawMutator)
+		if err != nil {
+			return nil, fmt.Errorf("create dream cycle mutator adapter: %w", err)
+		}
+
+		dreamCycle, err := NewDreamCycle(
+			nil, // Scheduler attached later if needed.
+			mutationAdapter,
+			nil, // Tester requires arena integration; use nil for now.
+			genealogy,
+			WithDreamCycleConfig(DreamCycleConfig{
+				Enabled:              true,
+				MinTasksBeforeEvolve: cfg.MinTasksBeforeEvolve,
+				MaxMutations:         3,
+				MinWinRate:           0.55,
+				Cooldown:             5 * 60 * 1000000000, // 5 minutes in nanoseconds
+			}),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create dream cycle: %w", err)
+		}
+		system.DreamCycle = dreamCycle
+	}
+
+	// Step 8: Optionally create scheduler with callback registration.
+	if cfg.EnableScheduler && cfg.Callbacks != nil {
+		scheduler := NewEvolutionScheduler(
+			cfg.Callbacks,
+			popAdapter,
+			WithTrigger(cfg.SchedulerTrigger),
+			WithEnabled(true),
+		)
+
+		// Attach dream cycle if available.
+		if system.DreamCycle != nil {
+			scheduler.SetDreamCycle(system.DreamCycle)
+			system.DreamCycle.scheduler = scheduler
+		}
+
+		system.Scheduler = scheduler
+	}
+
+	slog.Info("[WiredSystem] Evolution system created and wired",
+		"population_size", cfg.PopulationSize,
+		"elite_count", cfg.EliteCount,
+		"mutation_rate", cfg.MutationRate,
+		"dream_cycle_enabled", cfg.EnableDreamCycle,
+		"scheduler_enabled", cfg.EnableScheduler,
+	)
+
+	return system, nil
+}
+
+// RunIdleEvolution performs N idle evolution cycles on the wired system.
+// This is the primary entry point for zero-cost background evolution.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	system - the wired evolution system to run.
+//	generations - number of generations to evolve.
+//
+// Returns:
+//
+//	error - non-nil if any evolution cycle fails.
+func RunIdleEvolution(
+	ctx context.Context,
+	system *WiredEvolutionSystem,
+	generations int,
+) error {
+	if system == nil || system.PopAdapter == nil {
+		return fmt.Errorf("system or population adapter is nil")
+	}
+
+	for i := 0; i < generations; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := system.PopAdapter.Run(ctx); err != nil {
+			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
+		}
+
+		// Record lineage after each evolution cycle.
+		prevGen := system.Population.Generation - 1
+		if prevGen >= 0 {
+			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, prevGen)
+			if err != nil {
+				slog.WarnContext(ctx, "[WiredSystem] Failed to record lineage",
+					"generation", i+1,
+					"error", err,
+				)
+			}
+		}
+	}
+
+	return nil
+}
+
+// BestStrategyFromSystem returns the best strategy from the wired system's population.
+// This is the deployment-ready strategy after evolution completes.
+//
+// Args:
+//
+//	system - the wired evolution system.
+//
+// Returns:
+//
+//	*mutation.Strategy - cloned best strategy, or nil if empty.
+//	error - non-nil if system is nil.
+func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, error) {
+	if system == nil || system.Population == nil {
+		return nil, fmt.Errorf("system or population is nil")
+	}
+	best := system.Population.BestStrategy()
+	if best == nil {
+		return nil, fmt.Errorf("population has no strategies")
+	}
+	return best, nil
+}
+
+// RegisterScheduler registers the wired system's scheduler with callbacks.
+// Call this after NewWiredEvolutionSystem to start receiving evolution triggers.
+//
+// Args:
+//
+//	system - the wired evolution system with scheduler enabled.
+//
+// Returns:
+//
+//	error - non-nil if scheduler is not configured or registration fails.
+func RegisterScheduler(system *WiredEvolutionSystem) error {
+	if system == nil || system.Scheduler == nil {
+		return fmt.Errorf("scheduler not configured in system")
+	}
+	system.Scheduler.Register()
+	return nil
+}
+
+// Shutdown gracefully stops the wired evolution system.
+// It cancels pending evolution goroutines and releases resources.
+//
+// Args:
+//
+//	system - the wired evolution system to shut down.
+func Shutdown(system *WiredEvolutionSystem) {
+	if system == nil {
+		return
+	}
+	if system.Scheduler != nil {
+		system.Scheduler.Shutdown()
+	}
+	slog.Info("[WiredSystem] Evolution system shut down")
+}

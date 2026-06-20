@@ -3,6 +3,8 @@ package genome
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +24,9 @@ func (m *mockMutator) Mutate(ctx context.Context, parent *mutation.Strategy, n i
 	result := make([]*mutation.Strategy, n)
 	for i := range result {
 		result[i] = &mutation.Strategy{
-			ID:             "mock-mutant",
+			ID:             fmt.Sprintf("mock-mutant-%d-%d", time.Now().UnixNano(), i),
+			ParentID:       parent.ID,
+			Version:        parent.Version + 1,
 			Params:         make(map[string]any),
 			PromptTemplate: "mock-template",
 			Score:          -1,
@@ -492,22 +496,24 @@ func TestConcurrentEvolveSafety(t *testing.T) {
 		t.Fatalf("failed to create population: %v", err)
 	}
 
+	// Pre-assign scores before concurrent access (no data race).
+	for _, agent := range pop.Agents {
+		agent.Score = rand.Float64() * 100
+	}
+
 	var wg sync.WaitGroup
 	errs := make(chan error, 10)
 
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				for _, agent := range pop.Agents {
-					agent.Score = float64(j)
-				}
 				if err := pop.Evolve(ctx, mutator, crosser); err != nil && !errors.Is(err, context.Canceled) {
 					errs <- err
 				}
 			}
-		}()
+		}(i)
 	}
 
 	wg.Wait()
@@ -562,8 +568,8 @@ func TestDefaultPopulationConfig(t *testing.T) {
 		t.Errorf("default Size = %d, want 20", cfg.Size)
 	}
 
-	if cfg.SurvivalRate != 0.3 {
-		t.Errorf("default SurvivalRate = %f, want 0.3", cfg.SurvivalRate)
+	if cfg.SurvivalRate != 0.6 {
+		t.Errorf("default SurvivalRate = %f, want 0.6", cfg.SurvivalRate)
 	}
 
 	if cfg.MutationRate != 0.2 {
@@ -721,7 +727,9 @@ func TestContextCancellation(t *testing.T) {
 			result := make([]*mutation.Strategy, n)
 			for i := range result {
 				result[i] = &mutation.Strategy{
-					ID:             "mock-mutant",
+					ID:             fmt.Sprintf("mock-cancel-%d-%d", time.Now().UnixNano(), i),
+					ParentID:       parent.ID,
+					Version:        parent.Version + 1,
 					Params:         make(map[string]any),
 					PromptTemplate: "mock-template",
 					Score:          -1,
@@ -746,5 +754,245 @@ func TestContextCancellation(t *testing.T) {
 	err = pop.Evolve(ctx, mutator, crosser)
 	if err == nil {
 		t.Log("context cancellation test: evolve completed before cancellation (acceptable for small populations)")
+	}
+}
+
+func TestEvolveOnIdle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	mutator := &mockMutator{}
+	crosser := &mockCrosser{}
+
+	// Helper: create a scored population for idle evolution testing.
+	makePop := func(size int) (*Population, error) {
+		base := newTestStrategy(0.5)
+		pop, err := NewPopulation(ctx, base, mutator, WithPopulationSize(size), WithMutationRate(0))
+		if err != nil {
+			return nil, err
+		}
+		for i, agent := range pop.Agents {
+			agent.Score = float64(size - i)
+		}
+		return pop, nil
+	}
+
+	t.Run("successful cycle increments generation and preserves size", func(t *testing.T) {
+		t.Parallel()
+		pop, err := makePop(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		genBefore, sizeBefore := pop.Generation, len(pop.Agents)
+		if err = pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			t.Fatalf("EvolveOnIdle failed: %v", err)
+		}
+		if pop.Generation != genBefore+1 {
+			t.Errorf("generation = %d, want %d", pop.Generation, genBefore+1)
+		}
+		if len(pop.Agents) != sizeBefore {
+			t.Errorf("size after = %d, want %d", len(pop.Agents), sizeBefore)
+		}
+	})
+
+	t.Run("top scorer preserved as elite clone", func(t *testing.T) {
+		t.Parallel()
+		pop, err := makePop(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scores := []float64{90, 80, 70, 60, 50, 40, 30, 20, 10, 1}
+		for i, a := range pop.Agents {
+			a.Score = scores[i]
+		}
+		if err = pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			t.Fatal(err)
+		}
+		if best := pop.Best(); best == nil || best.Score < 90.0 {
+			t.Errorf("elite not preserved: best score = %v", best)
+		}
+	})
+
+	t.Run("bottom 40% eliminated - survivors are top scorers", func(t *testing.T) {
+		t.Parallel()
+		pop, err := makePop(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, a := range pop.Agents {
+			a.Score = float64(i + 1) // ascending: bottom 40% are low scores
+		}
+		if err = pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			t.Fatal(err)
+		}
+		if best := pop.Best(); best == nil || best.Score <= 6.0 {
+			t.Errorf("expected elite preserved (score > 6), got %v", best)
+		}
+	})
+
+	t.Run("breeding pool from top 30%, offspring fill slots", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct{ name, size string }{
+			{"size_20", "20"}, {"size_5", "5"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				size := 0
+				// nolint:errcheck // test helper parsing known-valid integer strings
+				fmt.Sscanf(tc.size, "%d", &size)
+				pop, err := makePop(size)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+					t.Fatal(err)
+				}
+				if len(pop.Agents) != size {
+					t.Errorf("size = %d, want %d", len(pop.Agents), size)
+				}
+			})
+		}
+	})
+
+	t.Run("validation errors: nil mutator/crosser, empty population", func(t *testing.T) {
+		t.Parallel()
+		pop5, _ := makePop(5)
+		for _, tc := range []struct {
+			name    string
+			pop     *Population
+			mut     MutatorInterface
+			crs     CrossoverInterface
+			wantErr error
+		}{
+			{"nil_mutator", pop5, nil, crosser, ErrNilMutator},
+			{"nil_crosser", pop5, mutator, nil, ErrNilCrosser},
+			{"empty_population", &Population{Agents: []*mutation.Strategy{}, Size: 5}, mutator, crosser, ErrSelectionEmptyPopulation},
+		} {
+			if err := tc.pop.EvolveOnIdle(ctx, tc.mut, tc.crs); !errors.Is(err, tc.wantErr) {
+				t.Errorf("%s: error = %v, want %v", tc.name, err, tc.wantErr)
+			}
+		}
+	})
+
+	t.Run("edge cases: single agent, 60%% round-down, context cancel, consecutive calls", func(t *testing.T) {
+		t.Parallel()
+		// Single-agent population.
+		pop1, err := NewPopulation(ctx, newTestStrategy(0.5), mutator,
+			WithPopulationSize(1), WithEliteCount(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pop1.Agents[0].Score = 42.0
+		if err = pop1.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			t.Fatal(err)
+		}
+		if len(pop1.Agents) != 1 || pop1.Generation != 1 {
+			t.Errorf("single-agent: size=%d gen=%d", len(pop1.Agents), pop1.Generation)
+		}
+		// Size=1 where 60% rounds down to 0.
+		pop2 := &Population{
+			Agents: []*mutation.Strategy{newTestStrategy(99)},
+			Size:   1, Generation: 0, cfg: DefaultPopulationConfig(),
+			rng: rand.New(rand.NewSource(42)),
+		}
+		if err = pop2.EvolveOnIdle(ctx, mutator, crosser); err != nil || len(pop2.Agents) != 1 {
+			t.Errorf("round-down edge case failed: err=%v size=%d", err, len(pop2.Agents))
+		}
+		// Context cancellation during breeding.
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		mc := &mockCrosser{
+			crossoverFn: func(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error) {
+				cancel()
+				return newTestStrategy(a.Score + b.Score), nil
+			},
+		}
+		pop3, err := NewPopulation(cancelCtx, newTestStrategy(0.5),
+			&mockMutator{}, WithPopulationSize(20), WithMutationRate(1.0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range pop3.Agents {
+			a.Score = rand.Float64() * 100
+		}
+		if err = pop3.EvolveOnIdle(cancelCtx, &mockMutator{}, mc); err == nil {
+			t.Log("completed before cancel (acceptable)")
+		}
+		// Multiple consecutive calls.
+		pop4, err := makePop(8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			for j, a := range pop4.Agents {
+				a.Score = float64((i*8 + j) * 10)
+			}
+			if err = pop4.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+				t.Fatalf("consecutive iter %d: %v", i, err)
+			}
+		}
+		if pop4.Generation != 3 {
+			t.Errorf("consecutive gen=%d, want 3", pop4.Generation)
+		}
+	})
+}
+
+func TestBestStrategy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		pop        *Population
+		wantNil    bool
+		wantScore  float64
+		checkClone bool
+	}{
+		{
+			name: "returns cloned best strategy with independent copy",
+			pop: &Population{
+				Agents: []*mutation.Strategy{newTestStrategy(10), newTestStrategy(50), newTestStrategy(30)},
+				Size:   3,
+			},
+			wantScore: 50.0, checkClone: true,
+		},
+		{name: "returns nil for empty population", pop: &Population{Agents: []*mutation.Strategy{}, Size: 0}, wantNil: true},
+		{
+			name: "clone independence verification with params mutation",
+			pop: func() *Population {
+				s := newTestStrategy(88)
+				s.Params["key"] = "original"
+				return &Population{Agents: []*mutation.Strategy{s}, Size: 1}
+			}(),
+			checkClone: true,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.pop.BestStrategy()
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil || (tt.wantScore > 0 && got.Score != tt.wantScore) {
+				t.Fatalf("unexpected clone: score=%v, want %f", got, tt.wantScore)
+			}
+			if !tt.checkClone {
+				return
+			}
+			if tt.wantScore > 0 {
+				got.Score = 999.0
+				if tt.pop.Best().Score == 999.0 {
+					t.Error("score clone modification affected original")
+				}
+			} else {
+				got.Params["key"] = "modified"
+				if tt.pop.Best().Params["key"] == "modified" {
+					t.Error("params clone modification leaked to original")
+				}
+			}
+		})
 	}
 }

@@ -19,6 +19,10 @@ const (
 	// TODO: reserved for future use in Iteration 3 - tool configuration mutations.
 	// Currently no code path generates this mutation type.
 	MutationTool
+
+	// MutationCrossover indicates a strategy created via crossover (genetic algorithm).
+	// Two parent strategies are combined to produce a child strategy.
+	MutationCrossover
 )
 
 // String returns the human-readable name of the mutation type.
@@ -30,6 +34,8 @@ func (mt MutationType) String() string {
 		return "prompt"
 	case MutationTool:
 		return "tool"
+	case MutationCrossover:
+		return "crossover"
 	default:
 		return "unknown"
 	}

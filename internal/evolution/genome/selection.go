@@ -115,7 +115,7 @@ type TournamentSelection struct {
 func NewTournamentSelection(opts ...TournamentOption) (*TournamentSelection, error) {
 	ts := &TournamentSelection{
 		tournamentSize: 3,
-		rng:            rand.New(rand.NewSource(rand.Int63())), // #nosec G404 — selection doesn't need crypto rand
+		rng:            rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
 	}
 
 	for _, opt := range opts {
@@ -164,7 +164,7 @@ func WithTournamentSize(k int) TournamentOption {
 //	TournamentOption - configuration function.
 func WithTournamentSeed(seed int64) TournamentOption {
 	return func(ts *TournamentSelection) error {
-		ts.rng = rand.New(rand.NewSource(seed)) // #nosec G404 — deterministic selection for reproducibility
+		ts.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
 		return nil
 	}
 }
@@ -270,7 +270,7 @@ type RouletteWheelSelection struct {
 //	error - non-nil if any option fails validation.
 func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
 	rw := &RouletteWheelSelection{
-		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 — selection doesn't need crypto rand
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
 	}
 
 	for _, opt := range opts {
@@ -297,7 +297,7 @@ type RouletteOption func(*RouletteWheelSelection) error
 //	RouletteOption - configuration function.
 func WithRouletteSeed(seed int64) RouletteOption {
 	return func(rw *RouletteWheelSelection) error {
-		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 — deterministic selection for reproducibility
+		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
 		return nil
 	}
 }
@@ -321,14 +321,30 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 		return nil, err
 	}
 
-	normalized := rw.normalizeScores(population)
-	totalScore := sumFloat64(normalized)
+	// Filter out unevaluated strategies (Score == -1) for roulette wheel selection.
+	// Unevaluated strategies have no meaningful fitness value and should not
+	// participate in proportionate selection. They get zero probability.
+	evaluated := make([]*mutation.Strategy, 0, len(population))
+	for _, s := range population {
+		if s.Score != -1 {
+			evaluated = append(evaluated, s)
+		}
+	}
 
-	selected := make([]*mutation.Strategy, 0, n)
+	// If no evaluated strategies exist, fall back to uniform random selection
+	// from the entire population (all are unevaluated).
+	if len(evaluated) == 0 {
+		return rw.selectUniform(ctx, population, n)
+	}
+
+	result := make([]*mutation.Strategy, 0, n)
+	normalized := rw.normalizeScores(evaluated)
+	totalScore := rw.sumScores(normalized)
+
 	for i := 0; i < n; i++ {
 		select {
 		case <-ctx.Done():
-			return selected, fmt.Errorf("roulette select %d: %w", i, ctx.Err())
+			return result, fmt.Errorf("roulette select %d: %w", i, ctx.Err())
 		default:
 		}
 
@@ -336,14 +352,15 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 		if err != nil {
 			return nil, fmt.Errorf("spin wheel %d: %w", i, err)
 		}
-		selected = append(selected, population[idx])
+		result = append(result, evaluated[idx])
 	}
 
-	return selected, nil
+	return result, nil
 }
 
 // normalizeScores shifts all scores to be non-negative by subtracting the minimum.
-// This handles negative scores gracefully while preserving relative differences.
+// Callers must ensure no strategies with Score == -1 (unevaluated) are included,
+// as those should be filtered out before roulette wheel selection.
 func (rw *RouletteWheelSelection) normalizeScores(population []*mutation.Strategy) []float64 {
 	minScore := findMinScore(population)
 	normalized := make([]float64, len(population))
@@ -351,6 +368,37 @@ func (rw *RouletteWheelSelection) normalizeScores(population []*mutation.Strateg
 		normalized[i] = s.Score - minScore
 	}
 	return normalized
+}
+
+// selectUniform picks n individuals uniformly at random.
+// Used as fallback when all strategies are unevaluated.
+func (rw *RouletteWheelSelection) selectUniform(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	selected := make([]*mutation.Strategy, 0, n)
+	available := make([]*mutation.Strategy, len(population))
+	copy(available, population)
+
+	for i := 0; i < n && len(available) > 0; i++ {
+		select {
+		case <-ctx.Done():
+			return selected, ctx.Err()
+		default:
+		}
+		idx := rw.rng.Intn(len(available))
+		selected = append(selected, available[idx])
+		// Remove selected element (swap with last, truncate).
+		available[idx] = available[len(available)-1]
+		available = available[:len(available)-1]
+	}
+	return selected, nil
+}
+
+// sumScores returns the sum of all normalized scores.
+func (rw *RouletteWheelSelection) sumScores(normalized []float64) float64 {
+	var total float64
+	for _, v := range normalized {
+		total += v
+	}
+	return total
 }
 
 // spinWheel performs one roulette wheel spin and returns the selected index.

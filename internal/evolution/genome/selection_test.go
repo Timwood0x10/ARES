@@ -535,7 +535,9 @@ func TestRouletteWheelSelection(t *testing.T) {
 		rw, _ := NewRouletteWheelSelection(WithRouletteSeed(88))
 
 		// All negative scores; should still work by shifting to non-negative.
-		pop := makePopulation(-10.0, -5.0, -1.0)
+		// Note: Score == -1 is reserved for unevaluated strategies and will be
+		// filtered out by roulette wheel selection. Use -0.5 instead of -1.0.
+		pop := makePopulation(-10.0, -5.0, -0.5)
 
 		counts := make(map[string]int)
 		iterations := 3000
@@ -547,15 +549,15 @@ func TestRouletteWheelSelection(t *testing.T) {
 			counts[result[0].ID]++
 		}
 
-		// Highest (-1.0) should be selected most often.
-		cCount := counts["C"] // -1.0 is highest
+		// Highest (-0.5) should be selected most often.
+		cCount := counts["C"] // -0.5 is highest
 		bCount := counts["B"] // -5.0
 		aCount := counts["A"] // -10.0
 
-		t.Logf("distribution (neg): A(-10)=%d, B(-5)=%d, C(-1)=%d", aCount, bCount, cCount)
+		t.Logf("distribution (neg): A(-10)=%d, B(-5)=%d, C(-0.5)=%d", aCount, bCount, cCount)
 
 		if cCount <= bCount || cCount <= aCount {
-			t.Error("highest negative score (-1) should be selected most often after normalization")
+			t.Error("highest negative score (-0.5) should be selected most often after normalization")
 		}
 	})
 
@@ -683,7 +685,7 @@ func TestPickParent(t *testing.T) {
 
 	t.Run("returns valid strategy", func(t *testing.T) {
 		ts, _ := NewTournamentSelection(WithTournamentSeed(42))
-		rng := rand.New(rand.NewSource(99)) // #nosec G404 — test code
+		rng := rand.New(rand.NewSource(99)) // #nosec G404 - test code
 
 		pop := makePopulation(10.0, 50.0, 30.0)
 		parent, err := PickParent(ctx, pop, ts, rng)
@@ -701,7 +703,7 @@ func TestPickParent(t *testing.T) {
 
 	t.Run("error on empty population", func(t *testing.T) {
 		ts, _ := NewTournamentSelection()
-		rng := rand.New(rand.NewSource(1)) // #nosec G404 — test code
+		rng := rand.New(rand.NewSource(1)) // #nosec G404 - test code
 
 		_, err := PickParent(ctx, []*mutation.Strategy{}, ts, rng)
 		if err == nil {
@@ -711,7 +713,7 @@ func TestPickParent(t *testing.T) {
 
 	t.Run("works with truncation selection", func(t *testing.T) {
 		trunc := NewTruncationSelection()
-		rng := rand.New(rand.NewSource(55)) // #nosec G404 — test code
+		rng := rand.New(rand.NewSource(55)) // #nosec G404 - test code
 
 		pop := makePopulation(10.0, 80.0, 30.0, 60.0)
 		parent, err := PickParent(ctx, pop, trunc, rng)
@@ -725,7 +727,7 @@ func TestPickParent(t *testing.T) {
 	})
 
 	t.Run("nil selector uses default tournament", func(t *testing.T) {
-		rng := rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 — test code
+		rng := rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 - test code
 
 		pop := makePopulation(10.0, 90.0, 30.0)
 		parent, err := PickParent(ctx, pop, nil, rng)
@@ -740,7 +742,7 @@ func TestPickParent(t *testing.T) {
 
 	t.Run("works with roulette wheel", func(t *testing.T) {
 		rw, _ := NewRouletteWheelSelection(WithRouletteSeed(333))
-		rng := rand.New(rand.NewSource(77)) // #nosec G404 — test code
+		rng := rand.New(rand.NewSource(77)) // #nosec G404 - test code
 
 		pop := makePopulation(10.0, 100.0, 50.0)
 		parent, err := PickParent(ctx, pop, rw, rng)

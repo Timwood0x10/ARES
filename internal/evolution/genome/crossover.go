@@ -46,7 +46,7 @@ type Crossover struct {
 //	error - non-nil if any option fails validation.
 func NewCrossover(opts ...CrossoverOption) (*Crossover, error) {
 	c := &Crossover{
-		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 — strategy crossover doesn't need crypto rand
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - strategy crossover doesn't need crypto rand
 	}
 
 	for _, opt := range opts {
@@ -73,7 +73,7 @@ type CrossoverOption func(*Crossover) error
 //	CrossoverOption - the configuration function.
 func WithSeed(seed int64) CrossoverOption {
 	return func(c *Crossover) error {
-		c.rng = rand.New(rand.NewSource(seed)) // #nosec G404 — strategy crossover doesn't need crypto rand
+		c.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - strategy crossover doesn't need crypto rand
 		return nil
 	}
 }
@@ -113,7 +113,7 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
 		PromptTemplate:       promptTemplate,
-		StrategyMutationType: mutation.MutationParameter, // Reuse existing type; described as crossover in MutationDesc.
+		StrategyMutationType: mutation.MutationCrossover,
 		MutationDesc:         desc,
 		Score:                -1, // Unevaluated.
 		CreatedAt:            time.Now(),
@@ -171,7 +171,7 @@ func (c *Crossover) MultiPointCrossover(ctx context.Context, a, b *mutation.Stra
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
 		PromptTemplate:       promptTemplate,
-		StrategyMutationType: mutation.MutationParameter,
+		StrategyMutationType: mutation.MutationCrossover,
 		MutationDesc:         desc,
 		Score:                -1,
 		CreatedAt:            time.Now(),
@@ -296,6 +296,100 @@ func (c *Crossover) selectPromptTemplate(a, b *mutation.Strategy) string {
 	return b.PromptTemplate
 }
 
+// halfSplitPromptCrossover performs half-split crossover on prompt templates.
+// The child inherits the first half of parent A's template and the second half
+// of parent B's template. This is the "半句交叉" (half-sentence crossover)
+// from the genetic algorithm design document.
+//
+// If either template is empty, falls back to selectPromptTemplate behavior.
+// If both are empty, returns empty string.
+func (c *Crossover) halfSplitPromptCrossover(a, b *mutation.Strategy) string {
+	tmplA := a.PromptTemplate
+	tmplB := b.PromptTemplate
+
+	// Fall back if either template is empty.
+	if tmplA == "" || tmplB == "" {
+		return c.selectPromptTemplate(a, b)
+	}
+
+	// mid is based on len(tmplA). For very short templates (< 2 chars),
+	// take the full A string as the first half. tmplB[mid:] would panic
+	// if mid > len(tmplB), so guard before slicing.
+	mid := len(tmplA) / 2
+	if len(tmplA) > 0 && mid == 0 {
+		mid = 1
+	}
+	if len(tmplB) <= mid {
+		return tmplA[:mid] + tmplB
+	}
+
+	result := tmplA[:mid] + tmplB[mid:]
+
+	slog.Debug("half-split prompt crossover",
+		"parent_a_len", len(tmplA),
+		"parent_b_len", len(tmplB),
+		"mid_point", mid,
+		"child_len", len(result),
+	)
+
+	return result
+}
+
+// CrossoverWithHalfSplit performs uniform crossover on parameters like Crossover(),
+// but uses half-split crossover for the PromptTemplate instead of selecting from
+// the higher-scoring parent. This matches the design document's "法则二" specification.
+//
+// Args:
+//
+//   - ctx: operation context for cancellation.
+//   - a: first parent strategy (must not be nil).
+//   - b: second parent strategy (must not be nil).
+//
+// Returns:
+//
+//   - *mutation.Strategy: the generated child strategy.
+//   - error: ErrNilParent if either parent is nil, ctx.Err() if cancelled.
+func (c *Crossover) CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error) {
+	if a == nil || b == nil {
+		return nil, fmt.Errorf("%w: both parents must be non-nil", ErrNilParent)
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("half-split crossover cancelled: %w", ctx.Err())
+	default:
+	}
+
+	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
+	promptTemplate := c.halfSplitPromptCrossover(a, b)
+
+	child := &mutation.Strategy{
+		ID:                   uuid.New().String(),
+		ParentID:             formatParentIDs(a.ID, b.ID),
+		Version:              maxVersion(a.Version, b.Version) + 1,
+		Params:               childParams,
+		PromptTemplate:       promptTemplate,
+		StrategyMutationType: mutation.MutationCrossover,
+		MutationDesc:         desc + " | half_split_prompt",
+		Score:                -1,
+		CreatedAt:            time.Now(),
+	}
+
+	slog.Debug("half-split crossover completed",
+		"child_id", child.ID,
+		"parent_a", a.ID,
+		"parent_b", b.ID,
+		"version", child.Version,
+	)
+
+	return child, nil
+}
+
+// HalfSplitCrossoverInterface defines crossover with half-split prompt template.
+type HalfSplitCrossoverInterface interface {
+	CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error)
+}
+
 // CrossoverInterface defines the contract for crossover operations.
 // Implementations combine two parent strategies to produce a child strategy.
 type CrossoverInterface interface {
@@ -323,7 +417,7 @@ func collectParamKeys(paramsA, paramsB map[string]any) []string {
 
 // formatParentIDs combines two parent IDs into a single ParentID field.
 func formatParentIDs(idA, idB string) string {
-	return idA + "+" + idB
+	return idA + "\u00d7" + idB // × symbol (Unicode multiplication sign)
 }
 
 // maxVersion returns the larger of two version numbers.

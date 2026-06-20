@@ -11,6 +11,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// contextKey is a custom type for context value keys to avoid collisions.
+type contextKey string
+
 // CallbackData holds data passed to callback handlers during evolution triggers.
 type CallbackData struct {
 	// AgentID is the identifier of the agent that triggered the event.
@@ -223,10 +226,10 @@ func (s *EvolutionScheduler) Register() {
 		callbackCtx := context.Background()
 		if ctx.Extra != nil {
 			for k, v := range ctx.Extra {
-				callbackCtx = context.WithValue(callbackCtx, k, v)
+				callbackCtx = context.WithValue(callbackCtx, contextKey(k), v)
 			}
 		}
-		callbackCtx = context.WithValue(callbackCtx, "agent_id", ctx.AgentID)
+		callbackCtx = context.WithValue(callbackCtx, contextKey("agent_id"), ctx.AgentID)
 		s.OnAgentEnd(callbackCtx, data)
 	})
 

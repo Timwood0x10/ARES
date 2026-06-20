@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"sort"
 	"sync"
 	"time"
 
@@ -47,7 +46,7 @@ type PopulationConfig struct {
 	// Size is the target population size (default 20).
 	Size int
 
-	// SurvivalRate is the fraction of top performers to keep (default 0.3).
+	// SurvivalRate is the fraction of top performers to keep (default 0.6, i.e., eliminate bottom 40%).
 	SurvivalRate float64
 
 	// MutationRate is the probability of mutation after crossover (default 0.2).
@@ -55,6 +54,11 @@ type PopulationConfig struct {
 
 	// EliteCount is the number of best individuals to preserve unchanged (default 1).
 	EliteCount int
+
+	// BreedingPoolRatio is the fraction of survivors eligible as parents (default 0.3).
+	// Only the top BreedingPoolRatio of survivors form the breeding pool.
+	// Used by EvolveOnIdle to restrict reproduction to the best survivors.
+	BreedingPoolRatio float64
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -64,10 +68,11 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:         20,
-		SurvivalRate: 0.3,
-		MutationRate: 0.2,
-		EliteCount:   1,
+		Size:              20,
+		SurvivalRate:      0.6, // Keep 60%, eliminate bottom 40% per design doc
+		MutationRate:      0.2,
+		EliteCount:        1,
+		BreedingPoolRatio: 0.3, // Top 30% of survivors form the breeding pool
 	}
 }
 
@@ -150,6 +155,28 @@ func WithEliteCount(count int) PopulationOption {
 	}
 }
 
+// WithBreedingPoolRatio sets the fraction of survivors that form the breeding pool.
+// Only the top BreedingPoolRatio of survivors are eligible as parents during idle evolution.
+// Value must be in [0, 1]. Default is 0.3 (top 30%).
+//
+// Args:
+//
+//	ratio - fraction of survivors used for breeding (0.0-1.0).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+//	error - ErrInvalidSurvivalRate if ratio is out of range.
+func WithBreedingPoolRatio(ratio float64) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if ratio < 0 || ratio > 1 {
+			return fmt.Errorf("survival rate must be between 0 and 1, got %v", ratio)
+		}
+		cfg.BreedingPoolRatio = ratio
+		return nil
+	}
+}
+
 // Population holds a collection of agent strategies that evolve together.
 // It manages the lifecycle of strategies across generations using
 // selection, crossover, and mutation operations.
@@ -212,7 +239,7 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		Size:       cfg.Size,
 		Generation: 0,
 		cfg:        cfg,
-		rng:        rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 — GA doesn't need crypto rand
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 - GA doesn't need crypto rand
 	}
 
 	err := pop.initializeFromBase(ctx, base, mutator)
@@ -239,7 +266,9 @@ func (p *Population) initializeFromBase(ctx context.Context, base *mutation.Stra
 
 	if p.Size > 1 {
 		variantsNeeded := p.Size - 1
-		variants, err := mutator.Mutate(ctx, base, variantsNeeded)
+		// Use baseClone (our own copy) instead of the external base reference.
+		// This avoids potential data races if external code modifies base concurrently.
+		variants, err := mutator.Mutate(ctx, baseClone, variantsNeeded)
 		if err != nil {
 			return fmt.Errorf("generate initial variants: %w", err)
 		}
@@ -251,13 +280,8 @@ func (p *Population) initializeFromBase(ctx context.Context, base *mutation.Stra
 }
 
 // Evolve runs one generation of evolution on the population.
-// The process consists of six steps:
-//  1. Evaluate all agents (scores are pre-set on strategies)
-//  2. Select survivors (keep top SurvivalRate%)
-//  3. Preserve elites (top EliteCount copied unchanged)
-//  4. Crossover survivors to fill remaining slots
-//  5. Mutate offspring based on MutationRate
-//  6. Increment generation counter
+// Delegates to doEvolve with standard configuration: configurable survival rate,
+// all survivors as parent pool, and configured elite preservation.
 //
 // Args:
 //
@@ -269,6 +293,28 @@ func (p *Population) initializeFromBase(ctx context.Context, base *mutation.Stra
 //
 //	error - non-nil if validation fails or any evolution step encounters an error.
 func (p *Population) Evolve(ctx context.Context, mutator MutatorInterface, crosser CrossoverInterface) error {
+	return p.doEvolve(ctx, mutator, crosser, evolveConfig{
+		survivalRate: p.cfg.SurvivalRate,
+		parentPoolFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
+			return survivors // All survivors are eligible parents
+		},
+		eliteFn:  p.preserveElites,
+		logLabel: "evolution completed",
+	})
+}
+
+// doEvolve runs the core evolution loop shared by Evolve and EvolveOnIdle.
+// It performs: validate → lock → sort → select → elite → crossover → mutate → assemble → increment.
+//
+// Args:
+//   - ctx: operation context.
+//   - mutator: mutation engine.
+//   - crosser: crossover engine.
+//   - cfg: evolution configuration capturing behavioral differences.
+//
+// Returns:
+//   - error: non-nil if validation or any step fails.
+func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, crosser CrossoverInterface, cfg evolveConfig) error {
 	if mutator == nil {
 		return ErrNilMutator
 	}
@@ -283,43 +329,61 @@ func (p *Population) Evolve(ctx context.Context, mutator MutatorInterface, cross
 		return ErrSelectionEmptyPopulation
 	}
 
-	survivors := p.selectSurvivors()
-	elites := p.preserveElites(survivors)
-	offspring, err := p.generateOffspring(ctx, survivors, mutator, crosser)
+	// Step 1: Sort by score and select survivors.
+	sorted := make([]*mutation.Strategy, len(p.Agents))
+	copy(sorted, p.Agents)
+	SortByScore(sorted)
+
+	survivorCount := max(1, int(float64(len(sorted))*cfg.survivalRate))
+	survivorCount = min(survivorCount, len(sorted))
+	survivors := sorted[:survivorCount]
+
+	// Step 2: Preserve elites (method-specific).
+	elites := cfg.eliteFn(survivors)
+
+	// Step 3: Generate offspring using method-specific parent pool.
+	parentPool := cfg.parentPoolFn(survivors)
+	remainingSlots := p.Size - len(elites)
+	if remainingSlots <= 0 && len(elites) >= p.Size {
+		// No room for offspring; use elites as next gen (trim if needed).
+		nextGen := elites[:min(len(elites), p.Size)]
+		p.Agents = nextGen
+		p.Generation++
+		slog.InfoContext(ctx, cfg.logLabel,
+			"generation", p.Generation,
+			"population_size", len(p.Agents),
+			"elite_count", len(elites),
+		)
+		return nil
+	}
+
+	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, remainingSlots)
 	if err != nil {
 		return fmt.Errorf("generate offspring: %w", err)
 	}
 
+	// Step 4: Assemble next generation.
 	nextGen := make([]*mutation.Strategy, 0, p.Size)
 	nextGen = append(nextGen, elites...)
 	nextGen = append(nextGen, offspring...)
 
+	// Pad if under target size.
+	for len(nextGen) < p.Size && len(survivors) > 0 {
+		idx := len(nextGen) % len(survivors)
+		nextGen = append(nextGen, survivors[idx].Clone())
+	}
+
 	p.Agents = nextGen
 	p.Generation++
 
-	slog.InfoContext(ctx, "evolution completed",
+	slog.InfoContext(ctx, cfg.logLabel,
 		"generation", p.Generation,
 		"population_size", len(p.Agents),
+		"survivor_count", survivorCount,
 		"elite_count", len(elites),
 	)
 
 	return nil
-}
-
-// selectSurvivors sorts agents by score descending and returns the top
-// survivors based on the configured SurvivalRate.
-func (p *Population) selectSurvivors() []*mutation.Strategy {
-	sorted := make([]*mutation.Strategy, len(p.Agents))
-	copy(sorted, p.Agents)
-
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Score > sorted[j].Score
-	})
-
-	survivorCount := max(1, int(float64(len(sorted))*p.cfg.SurvivalRate))
-	survivorCount = min(survivorCount, len(sorted))
-
-	return sorted[:survivorCount]
 }
 
 // preserveElites copies the top EliteCount survivors without modification.
@@ -339,38 +403,44 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 }
 
 // generateOffspring creates new strategies through crossover and mutation
-// to fill remaining population slots after elites are placed.
-func (p *Population) generateOffspring(ctx context.Context, survivors []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface) ([]*mutation.Strategy, error) {
-	remainingSlots := p.Size - min(p.cfg.EliteCount, len(survivors))
-	if remainingSlots <= 0 {
+// to fill the specified number of population slots.
+func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, count int) ([]*mutation.Strategy, error) {
+	if count <= 0 {
 		return []*mutation.Strategy{}, nil
 	}
 
-	offspring := make([]*mutation.Strategy, 0, remainingSlots)
+	offspring := make([]*mutation.Strategy, 0, count)
 
-	for len(offspring) < remainingSlots {
+	for len(offspring) < count {
 		select {
 		case <-ctx.Done():
 			return offspring, ctx.Err()
 		default:
 		}
 
-		parentA := survivors[p.rng.Intn(len(survivors))]
-		parentB := survivors[p.rng.Intn(len(survivors))]
+		parentA := parentPool[p.rng.Intn(len(parentPool))]
+		parentB := parentPool[p.rng.Intn(len(parentPool))]
 
 		child, err := crosser.Crossover(ctx, parentA, parentB)
 		if err != nil {
 			return nil, fmt.Errorf("crossover failed: %w", err)
 		}
 
+		// Apply mutation based on configured rate.
+		// The Mutate call is only triggered when the probability check passes,
+		// ensuring mutators with side effects (e.g., counters) are not invoked
+		// on offspring that skip mutation.
 		if p.rng.Float64() < p.cfg.MutationRate {
 			mutated, err := mutator.Mutate(ctx, child, 1)
 			if err != nil {
 				return nil, fmt.Errorf("mutate offspring: %w", err)
 			}
+			// Mutate(n=1) returns exactly one variant; use it as the mutated child.
 			if len(mutated) > 0 {
 				child = mutated[0]
 			}
+			// If len(mutated) == 0, the mutator returned no variants;
+			// keep the unmutated crossover child as-is.
 		}
 
 		offspring = append(offspring, child)
@@ -402,6 +472,61 @@ func (p *Population) Best() *mutation.Strategy {
 	}
 
 	return best
+}
+
+// EvolveOnIdle runs a simplified evolution cycle triggered during system idle time.
+// Delegates to doEvolve with idle-specific configuration: configurable survival rate,
+// top BreedingPoolRatio of survivors as breeding pool, and single elite preservation.
+//
+// This is the zero-token evolution loop specified in the design document:
+// it uses pre-computed task scores (no LLM calls needed) and performs
+// selection → crossover → mutation purely as data operations.
+//
+// This method is designed to be called from Callback EventAgentEnd handler,
+// requiring no additional LLM API calls (zero token cost for evolution itself).
+//
+// Args:
+//
+//   - ctx: operation context for cancellation.
+//   - mutator: mutation engine for generating variations (must not be nil).
+//   - crosser: crossover engine for combining parent strategies (must not be nil).
+//
+// Returns:
+//
+//   - error: non-nil if validation fails or any step encounters an error.
+func (p *Population) EvolveOnIdle(ctx context.Context, mutator MutatorInterface, crosser CrossoverInterface) error {
+	return p.doEvolve(ctx, mutator, crosser, evolveConfig{
+		survivalRate: p.cfg.SurvivalRate, // Use configured rate (default 0.6), not hardcoded value
+		parentPoolFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
+			poolSize := int(float64(len(survivors)) * p.cfg.BreedingPoolRatio)
+			if poolSize < 2 {
+				poolSize = min(2, len(survivors))
+			}
+			return survivors[:poolSize]
+		},
+		eliteFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
+			if len(survivors) == 0 {
+				return []*mutation.Strategy{}
+			}
+			return []*mutation.Strategy{survivors[0].Clone()}
+		},
+		logLabel: "evolve_on_idle completed",
+	})
+}
+
+// BestStrategy returns a deep clone of the highest-scoring strategy in the population.
+// This is intended for deployment to production after evolution completes.
+// Returns nil if the population is empty.
+//
+// Returns:
+//
+//   - *mutation.Strategy: cloned best strategy, or nil if empty.
+func (p *Population) BestStrategy() *mutation.Strategy {
+	best := p.Best()
+	if best == nil {
+		return nil
+	}
+	return best.Clone()
 }
 
 // Stats returns population statistics for the current generation.
@@ -460,4 +585,19 @@ type PopulationStats struct {
 
 	// WorstScore is the lowest score among all agents.
 	WorstScore float64
+}
+
+// evolveConfig captures the configurable differences between Evolve and EvolveOnIdle.
+type evolveConfig struct {
+	// survivalRate is the fraction of survivors to keep (0.0-1.0).
+	survivalRate float64
+
+	// parentPoolFn selects which survivors are eligible as parents.
+	parentPoolFn func(survivors []*mutation.Strategy) []*mutation.Strategy
+
+	// eliteFn preserves elite individuals from the survivor set.
+	eliteFn func(survivors []*mutation.Strategy) []*mutation.Strategy
+
+	// logLabel is the label used in slog output for this evolution run.
+	logLabel string
 }
