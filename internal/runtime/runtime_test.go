@@ -607,7 +607,7 @@ func TestManager_RestoreAgent_ReplaysEvents(t *testing.T) {
 	newAgent := factory.lastAgent()
 	require.NotNil(t, newAgent)
 	assert.NotNil(t, newAgent.replayedEvts, "events should have been replayed")
-	assert.Len(t, newAgent.replayedEvts, 2)
+	assert.Len(t, newAgent.replayedEvts, 3) // 2 pre-populated + 1 failover.triggered emitted by RestoreAgent
 }
 
 func TestManager_RestoreAgent_RestoresState(t *testing.T) {
@@ -1021,7 +1021,7 @@ func TestManager_RestoreAgent_WithEventStore(t *testing.T) {
 
 	// Events must have been replayed to the StatefulAgent.
 	require.NotNil(t, restoredAgent.replayedEvts, "events should have been replayed")
-	assert.Len(t, restoredAgent.replayedEvts, 2)
+	assert.Len(t, restoredAgent.replayedEvts, 3) // 2 pre-populated + 1 failover.triggered
 
 	// State should contain session_id extracted from EventSessionCreated.
 	require.NotNil(t, restoredAgent.restoredState, "state should have been restored")
@@ -1070,7 +1070,7 @@ func TestManager_RestoreAgent_WithMemoryManager(t *testing.T) {
 
 	// Events should have been replayed.
 	require.NotNil(t, restoredAgent.replayedEvts)
-	assert.Len(t, restoredAgent.replayedEvts, 1)
+	assert.Len(t, restoredAgent.replayedEvts, 2) // 1 pre-populated + 1 failover.triggered
 }
 
 // TestManager_RestoreAgent_AgentNotStatefulAgent verifies that RestoreAgent works

@@ -426,20 +426,9 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 	}, nil
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if a.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: a.id,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
 		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }

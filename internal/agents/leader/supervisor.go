@@ -27,6 +27,8 @@ type LeaderSupervisorConfig struct {
 	CheckInterval       time.Duration `yaml:"check_interval"`
 	FailoverTimeout     time.Duration `yaml:"failover_timeout"`
 	MaxFailoverAttempts int           `yaml:"max_failover_attempts"`
+	InitialBackoff      time.Duration `yaml:"initial_backoff"`
+	MaxBackoff          time.Duration `yaml:"max_backoff"`
 }
 
 // DefaultLeaderSupervisorConfig returns sensible defaults.
@@ -35,6 +37,8 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 		CheckInterval:       10 * time.Second,
 		FailoverTimeout:     2 * time.Minute,
 		MaxFailoverAttempts: 3,
+		InitialBackoff:      time.Second,
+		MaxBackoff:          30 * time.Second,
 	}
 }
 
@@ -42,20 +46,21 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 // Deprecated: production code should use Runtime-level supervision.
 // Retained for test compatibility until all test consumers are migrated.
 type LeaderSupervisor struct {
-	mu           sync.RWMutex
-	leaders      map[string]base.Agent
-	heartbeatMon *ahp.HeartbeatMonitor
-	strategy     FailoverStrategy
-	recovery     *TaskRecovery
-	checkpoint   *CheckpointRepository
-	eventStore   events.EventStore
-	config       *LeaderSupervisorConfig
-	g            *errgroup.Group
-	ctx          context.Context
-	gctx         context.Context
-	cancel       context.CancelFunc
-	started      bool
-	stopped      bool
+	mu              sync.RWMutex
+	leaders         map[string]base.Agent
+	heartbeatMon    *ahp.HeartbeatMonitor
+	strategy        FailoverStrategy
+	recovery        *TaskRecovery
+	checkpoint      *CheckpointRepository
+	eventStore      events.EventStore
+	config          *LeaderSupervisorConfig
+	g               *errgroup.Group
+	ctx             context.Context
+	gctx            context.Context
+	cancel          context.CancelFunc
+	started         bool
+	stopped         bool
+	failoverRunning map[string]bool
 }
 
 // NewLeaderSupervisor creates a LeaderSupervisor.
@@ -77,13 +82,14 @@ func NewLeaderSupervisor(
 		config = DefaultLeaderSupervisorConfig()
 	}
 	return &LeaderSupervisor{
-		leaders:      make(map[string]base.Agent),
-		heartbeatMon: heartbeatMon,
-		strategy:     strategy,
-		recovery:     recovery,
-		checkpoint:   checkpoint,
-		eventStore:   eventStore,
-		config:       config,
+		leaders:         make(map[string]base.Agent),
+		failoverRunning: make(map[string]bool),
+		heartbeatMon:    heartbeatMon,
+		strategy:        strategy,
+		recovery:        recovery,
+		checkpoint:      checkpoint,
+		eventStore:      eventStore,
+		config:          config,
 	}, nil
 }
 
@@ -167,6 +173,16 @@ func (s *LeaderSupervisor) handleFailover(leaderID string) {
 		return
 	}
 
+	// Dedup: skip if a failover is already running for this leader.
+	s.mu.Lock()
+	if s.failoverRunning[leaderID] {
+		s.mu.Unlock()
+		slog.Debug("failover already running, skipping", "leader_id", leaderID)
+		return
+	}
+	s.failoverRunning[leaderID] = true
+	s.mu.Unlock()
+
 	g.Go(func() error {
 		s.doFailover(gctx, leaderID)
 		return nil
@@ -176,6 +192,13 @@ func (s *LeaderSupervisor) handleFailover(leaderID string) {
 // doFailover executes the full failover sequence for a failed leader.
 func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	slog.Warn("leader failover triggered", "leader_id", leaderID)
+
+	// Clear failoverRunning flag when done.
+	defer func() {
+		s.mu.Lock()
+		delete(s.failoverRunning, leaderID)
+		s.mu.Unlock()
+	}()
 
 	s.mu.RLock()
 	agent, exists := s.leaders[leaderID]
@@ -190,19 +213,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		return
 	}
 
-	// Emit failover triggered event for event sourcing.
-	if eventStore != nil {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventFailoverTriggered,
-				Payload: map[string]any{
-					"leader_id": leaderID,
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit failover triggered event", "error", err)
-		}
-	}
+	events.Emit(ctx, eventStore, leaderID, events.EventFailoverTriggered, map[string]any{"leader_id": leaderID})
 
 	// Use a detached context for Stop because the incoming ctx (gctx) may already
 	// be cancelled during supervisor shutdown, which would cause Stop to fail
@@ -247,6 +258,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 
 	var newAgent base.Agent
 	var failoverErr error
+	backoff := s.config.InitialBackoff
 	for attempt := 1; attempt <= s.config.MaxFailoverAttempts; attempt++ {
 		failoverCtx, failoverCancel := context.WithTimeout(ctx, s.config.FailoverTimeout)
 		newAgent, failoverErr = s.strategy.HandleFailover(failoverCtx, leaderID, cp)
@@ -260,6 +272,17 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 			"attempt", attempt,
 			"error", failoverErr,
 		)
+		if attempt < s.config.MaxFailoverAttempts {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > s.config.MaxBackoff {
+				backoff = s.config.MaxBackoff
+			}
+		}
 	}
 
 	if failoverErr != nil {
@@ -293,20 +316,10 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	s.leaders[leaderID] = newAgent
 	s.mu.Unlock()
 
-	// Emit failover completed event for event sourcing.
-	if eventStore != nil {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventFailoverCompleted,
-				Payload: map[string]any{
-					"leader_id":    leaderID,
-					"new_agent_id": newAgent.ID(),
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit failover completed event", "error", err)
-		}
-	}
+	events.Emit(ctx, eventStore, leaderID, events.EventFailoverCompleted, map[string]any{
+		"leader_id":    leaderID,
+		"new_agent_id": newAgent.ID(),
+	})
 
 	slog.Info("failover completed, new leader registered",
 		"leader_id", leaderID,

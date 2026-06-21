@@ -166,19 +166,9 @@ func (m *memoryManager) SetEventStore(store events.EventStore, streamID string) 
 	m.streamID = streamID
 }
 
-// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+// emitEvent appends a single event using the canonical events.Emit.
 func (m *memoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if m.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: m.streamID,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := m.eventStore.Append(ctx, m.streamID, []*events.Event{event}, 0); err != nil {
-		slog.Warn("Failed to emit event", "type", eventType, "error", err)
-	}
+	events.Emit(ctx, m.eventStore, m.streamID, eventType, payload)
 }
 
 // CreateSession creates a new session and returns the session ID.

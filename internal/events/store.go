@@ -2,6 +2,8 @@ package events
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -29,7 +31,42 @@ type EventStore interface {
 	StreamVersion(ctx context.Context, streamID string) (int64, error)
 }
 
+// EventAppender is the minimal subset of EventStore required by Emit.
+// Accepting this interface lets callers with narrower store types
+// (e.g. arena.EventStore) use the canonical helper without adapting.
+type EventAppender interface {
+	Append(ctx context.Context, streamID string, events []*Event, expectedVersion int64) error
+}
+
+// Ensure EventStore satisfies EventAppender at compile time.
+var _ EventAppender = (EventStore)(nil)
+
 // NewEventID generates a new unique event identifier.
 func NewEventID() string {
 	return uuid.New().String()
+}
+
+// Emit appends a single event to the store with a consistent format.
+// This is the canonical emit helper — prefer it over inline Event construction.
+// Returns false on failure (logs a warning internally).
+func Emit(ctx context.Context, store EventAppender, streamID string, eventType EventType, payload map[string]any) bool {
+	if store == nil {
+		return false
+	}
+	event := &Event{
+		ID:        NewEventID(),
+		StreamID:  streamID,
+		Type:      eventType,
+		Payload:   payload,
+		Timestamp: time.Now(),
+	}
+	if err := store.Append(ctx, streamID, []*Event{event}, 0); err != nil {
+		slog.Warn("events: emit failed",
+			"stream_id", streamID,
+			"type", eventType,
+			"error", err,
+		)
+		return false
+	}
+	return true
 }

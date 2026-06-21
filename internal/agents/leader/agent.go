@@ -371,7 +371,6 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	a.mu.RLock()
 	sessionID = a.sessionID
 	checkpoint := a.checkpoint
-	eventStore := a.eventStore
 	leaderID := a.id
 	a.mu.RUnlock()
 
@@ -411,20 +410,10 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 				}
 			}
 
-			// Emit session created event for event sourcing.
-			if eventStore != nil {
-				if err := eventStore.Append(ctx, leaderID, []*events.Event{
-					{
-						Type: events.EventSessionCreated,
-						Payload: map[string]any{
-							"session_id": sessionID,
-							"user_id":    a.getUserID(),
-						},
-					},
-				}, 0); err != nil {
-					slog.Warn("Failed to emit session created event", "error", err)
-				}
-			}
+			a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+				"session_id": sessionID,
+				"user_id":    a.getUserID(),
+			})
 		}
 	}
 
@@ -433,19 +422,11 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
-	// Emit message added event for event sourcing.
-	if eventStore != nil && sessionID != "" {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventMessageAdded,
-				Payload: map[string]any{
-					"session_id": sessionID,
-					"role":       "user",
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit message added event", "error", err)
-		}
+	if sessionID != "" {
+		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+			"session_id": sessionID,
+			"role":       "user",
+		})
 	}
 
 	// Build input with conversation context.
@@ -479,39 +460,18 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	} else {
 		taskID = tID
 
-		// Emit task created event for event sourcing.
-		if eventStore != nil {
-			if err := eventStore.Append(ctx, leaderID, []*events.Event{
-				{
-					Type: events.EventTaskCreated,
-					Payload: map[string]any{
-						"task_id":    taskID,
-						"session_id": sessionID,
-					},
-				},
-			}, 0); err != nil {
-				slog.Warn("Failed to emit task created event", "error", err)
-			}
-		}
+		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			"task_id":    taskID,
+			"session_id": sessionID,
+		})
 	}
 
 	return enrichedInput, sessionID, taskID
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if a.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: a.id,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
 		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }
@@ -545,23 +505,11 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
-	// Emit assistant message added event for event sourcing.
-	a.mu.RLock()
-	eventStore := a.eventStore
-	leaderID := a.id
-	a.mu.RUnlock()
-	if eventStore != nil && sessionID != "" {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventMessageAdded,
-				Payload: map[string]any{
-					"session_id": sessionID,
-					"role":       "assistant",
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit message added event", "error", err)
-		}
+	if sessionID != "" {
+		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+			"session_id": sessionID,
+			"role":       "assistant",
+		})
 	}
 
 	// Emit task completed event for event sourcing.

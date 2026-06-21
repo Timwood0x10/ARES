@@ -686,23 +686,13 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 }
 
-// emitEvent stores an event in the event store (if configured).
+// emitEvent stores an event using the canonical events.Emit.
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
 	store := o.getStore()
 	if store == nil {
 		return
 	}
-	ctx := context.Background()
-	evt := &events.Event{
-		ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
-		StreamID:  streamID,
-		Type:      events.EventType(eventType),
-		Payload:   payload,
-		Timestamp: time.Now(),
-	}
-	if err := store.Append(ctx, streamID, []*events.Event{evt}, 0); err != nil {
-		slog.Warn("orchestrator: failed to append event", "stream", streamID, "type", eventType, "error", err)
-	}
+	events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload)
 }
 
 // getHub returns the current hub under a read lock. Safe for concurrent use.

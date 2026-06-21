@@ -47,19 +47,9 @@ func (p *profileParser) WithEventStore(store events.EventStore) {
 	p.eventStore = store
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (p *profileParser) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if p.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		Type:    eventType,
-		Payload: payload,
-	}
-	if err := p.eventStore.Append(ctx, "profile-parser", []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, p.eventStore, "profile-parser", eventType, payload) {
 		slog.Debug("event emitted", "type", eventType)
 	}
 }

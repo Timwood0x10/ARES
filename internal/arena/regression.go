@@ -323,7 +323,7 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 		default:
 		}
 
-		var input any = strategy
+		var input = strategy
 		if len(testCases) > 0 {
 			input = TestCaseInput{
 				Strategy: strategy,

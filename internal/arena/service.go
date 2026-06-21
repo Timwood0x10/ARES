@@ -210,7 +210,7 @@ func (s *Service) Subscribe(ctx context.Context) (<-chan *events.Event, error) {
 	return ch, nil
 }
 
-// emitEvent publishes an arena event to the event store.
+// emitEvent publishes an arena event using the canonical events.Emit.
 func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 	if s.store == nil {
 		return
@@ -221,31 +221,15 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		eventType = "arena.action.failed"
 	}
 
-	ev := &events.Event{
-		ID:       events.NewEventID(),
-		StreamID: arenaStreamID,
-		Type:     events.EventType(eventType),
-		Payload: map[string]any{
-			"action_id": action.ID,
-			"type":      string(action.Type),
-			"target_id": action.TargetID,
-			"source_id": action.SourceID,
-			"success":   result.Success,
-			"error":     result.Error,
-			"duration":  result.Duration.String(),
-		},
-		Timestamp: time.Now(),
-	}
-
-	// Use expectedVersion = 0 to allow the event store to auto-detect the current version.
-	// This avoids race conditions between StreamVersion() and Append() calls when
-	// multiple goroutines are emitting events concurrently.
-	if err := s.store.Append(ctx, arenaStreamID, []*events.Event{ev}, 0); err != nil {
-		slog.Error("arena: failed to emit event",
-			"action_id", action.ID,
-			"error", err,
-		)
-	}
+	events.Emit(ctx, s.store, arenaStreamID, events.EventType(eventType), map[string]any{
+		"action_id": action.ID,
+		"type":      string(action.Type),
+		"target_id": action.TargetID,
+		"source_id": action.SourceID,
+		"success":   result.Success,
+		"error":     result.Error,
+		"duration":  result.Duration.String(),
+	})
 }
 
 // mergeMap combines two maps into a new map. The second map's values win on conflict.

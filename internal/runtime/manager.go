@@ -148,7 +148,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 
 	m.launchAgentGoroutine(agentCtx, id, agent)
 
-	m.emitEvent(ctx, "lifecycle:"+id, events.EventAgentStarted, map[string]any{
+	m.emitEvent(ctx, id, events.EventAgentStarted, map[string]any{
 		"agent_id": id,
 		"type":     string(agent.Type()),
 	})
@@ -187,7 +187,7 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 		}
 	}
 
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctx, agentID, events.EventAgentStopped, map[string]any{
 		"agent_id": agentID,
 		"reason":   "explicit_stop",
 	})
@@ -196,22 +196,10 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
-// emitEvent appends a lifecycle event to the EventStore.
-// No-op if eventStore is nil. Failures are logged as warnings (non-critical).
+// emitEvent appends a lifecycle event to the EventStore using the canonical
+// events.Emit helper. No-op if eventStore is nil.
 func (m *Manager) emitEvent(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any) {
-	if m.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		ID:        events.NewEventID(),
-		StreamID:  streamID,
-		Type:      eventType,
-		Payload:   payload,
-		Timestamp: time.Now(),
-	}
-	if err := m.eventStore.Append(ctx, streamID, []*events.Event{event}, 0); err != nil {
-		slog.Warn("runtime: failed to emit event", "type", eventType, "stream_id", streamID, "error", err)
-	}
+	events.Emit(ctx, m.eventStore, streamID, eventType, payload)
 }
 
 // GetAgent returns the current instance of a managed agent, or nil if not found.
@@ -244,7 +232,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	prevRestarts := ma.restarts
 	m.mu.Unlock()
 
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctx, agentID, events.EventAgentStopped, map[string]any{
 		"agent_id": agentID,
 		"reason":   "restart",
 	})
@@ -281,7 +269,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 
 	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
 
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventAgentStarted, map[string]any{
+	m.emitEvent(ctx, agentID, events.EventAgentStarted, map[string]any{
 		"agent_id": agentID,
 		"type":     "restart",
 	})
@@ -296,7 +284,7 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 		return ErrNilFactory
 	}
 
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverTriggered, map[string]any{
+	m.emitEvent(ctx, agentID, events.EventFailoverTriggered, map[string]any{
 		"agent_id": agentID,
 	})
 
@@ -326,7 +314,7 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 
 	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
 
-	m.emitEvent(ctx, "lifecycle:"+agentID, events.EventFailoverCompleted, map[string]any{
+	m.emitEvent(ctx, agentID, events.EventFailoverCompleted, map[string]any{
 		"agent_id": agentID,
 		"type":     newAgent.Type(),
 	})
@@ -507,7 +495,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id", agentID, "reason", reason,
 	)
 
-	m.emitEvent(ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), agentID, events.EventAgentStopped, map[string]any{
 		"agent_id":     agentID,
 		"reason":       reason,
 		"auto_restore": true,
@@ -659,9 +647,10 @@ func (m *Manager) Stats() RuntimeStats {
 	}
 
 	return RuntimeStats{
-		ActiveAgents:  active,
-		TotalRestarts: m.totalRestarts,
-		Uptime:        uptime,
+		ActiveAgents:    active,
+		TotalRestarts:   m.totalRestarts,
+		Uptime:          uptime,
+		BackgroundTasks: ctxutil.BackgroundStats(),
 	}
 }
 

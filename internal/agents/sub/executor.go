@@ -123,19 +123,10 @@ func (e *taskExecutor) emitCallback(ctx *callbacks.Context) {
 	e.callbacks.Emit(ctx)
 }
 
-// emitEvent appends a single event to the event store. No-op if eventStore is nil.
+// emitEvent appends a single event using the canonical events.Emit helper.
+// No-op if eventStore is nil.
 func (e *taskExecutor) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if e.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: e.agentID,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := e.eventStore.Append(ctx, e.agentID, []*events.Event{event}, 0); err != nil {
-		e.logger.Warn("failed to emit event", "agent_id", e.agentID, "type", eventType, "error", err)
-	}
+	events.Emit(ctx, e.eventStore, e.agentID, eventType, payload)
 }
 
 // Execute executes a task and returns result.

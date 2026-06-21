@@ -35,6 +35,10 @@ type RuntimeStats struct {
 	TotalRestarts int
 	// Uptime is the duration since the runtime was started.
 	Uptime time.Duration
+	// BackgroundTasks is a snapshot of active detached-context operations,
+	// sourced from ctxutil.BackgroundStats. Labels may include
+	// "runtime:notify-agent-dead", "runtime:stop", "resurrection:stop-old", etc.
+	BackgroundTasks map[string]int64
 }
 
 // Config holds runtime configuration.

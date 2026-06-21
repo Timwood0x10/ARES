@@ -508,20 +508,27 @@ func (s *Supervisor) resurrect(agentID string) {
 	delete(s.resurrecting, agentID)
 	s.mu.Unlock()
 
-	s.verifyResurrection(agentID, newAgent)
+	healthy := s.verifyResurrection(agentID, newAgent)
 
-	slog.Info("resurrection: agent resurrected",
-		"agent_id", agentID,
-		"type", newAgent.Type(),
-		"total_resurrects", total,
-	)
+	if healthy {
+		slog.Info("resurrection: agent resurrected",
+			"agent_id", agentID,
+			"type", newAgent.Type(),
+			"total_resurrects", total,
+		)
+	} else {
+		slog.Error("resurrection: revived agent unhealthy, re-triggering",
+			"agent_id", agentID,
+			"total_resurrects", total,
+		)
+	}
 }
 
 // verifyResurrection does a quick health check after resurrection.
 // If the agent is unhealthy, immediately re-triggers failure detection
 // so the supervisor cycles back into resurrection rather than waiting
 // for the next periodic health check tick.
-func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) {
+func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) bool {
 	healthy := true
 	if hb, ok := agent.(base.Heartbeater); ok {
 		if !hb.IsAlive() {
@@ -545,4 +552,5 @@ func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) {
 		s.health.RecordAlive(agentID)
 		s.onFailure(agentID)
 	}
+	return healthy
 }

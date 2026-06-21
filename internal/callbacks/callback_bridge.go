@@ -3,7 +3,6 @@ package callbacks
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"goagentx/internal/events"
 )
@@ -54,21 +53,7 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	evt := &events.Event{
-		ID:        events.NewEventID(),
-		StreamID:  b.agentID,
-		Type:      eventType,
-		Payload:   payload,
-		Timestamp: time.Now(),
-	}
-	if err := b.store.Append(context.Background(), b.agentID, []*events.Event{evt}, 0); err != nil {
-		slog.Warn("callback bridge: failed to append event",
-			"agent_id", b.agentID,
-			"callback_event", ctx.Event,
-			"event_type", eventType,
-			"error", err,
-		)
-	}
+	events.Emit(context.Background(), b.store, b.agentID, eventType, payload)
 }
 
 // mapEventType translates callback Event constants to events.EventType.
