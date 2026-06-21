@@ -70,6 +70,24 @@ func WithToolPool(tools []string) MutatorOption {
 	}
 }
 
+// WithDeterministicIDs enables counter-based strategy IDs instead of UUIDs.
+// When enabled, each mutated strategy gets an ID like "det-mut-{parentShortID}-{counter}".
+// This produces reproducible IDs across runs with the same inputs and seed.
+//
+// Args:
+//
+//	enabled - whether to use deterministic IDs.
+//
+// Returns:
+//
+//	MutatorOption - the configuration function.
+func WithDeterministicIDs(enabled bool) MutatorOption {
+	return func(m *Mutator) error {
+		m.deterministicIDs = enabled
+		return nil
+	}
+}
+
 // WithSeed sets a deterministic seed for the random number generator.
 // Using the same seed produces reproducible mutation results.
 //

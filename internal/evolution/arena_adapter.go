@@ -60,12 +60,18 @@ func (a *TesterAdapter) Run(ctx context.Context, cfg RegressionConfig) (*Regress
 
 // evolutionToArenaConfig converts an evolution.RegressionConfig to arena.RegressionConfig.
 func evolutionToArenaConfig(cfg RegressionConfig) arena.RegressionConfig {
-	return arena.RegressionConfig{
+	acfg := arena.RegressionConfig{
 		OldStrategy:  cfg.Baseline,
 		NewStrategy:  cfg.Candidate,
 		BaselineRuns: cfg.TaskSampleSize,
 		CompareRuns:  cfg.TaskSampleSize,
 	}
+	if cfg.AdaptiveBatchSize > 0 {
+		acfg.AdaptiveBatchSize = cfg.AdaptiveBatchSize
+		acfg.MaxAdaptiveRuns = cfg.TaskSampleSize
+		acfg.MinAdaptiveRuns = 10
+	}
+	return acfg
 }
 
 // arenaToEvolutionResult converts an arena.RegressionResult to evolution.RegressionResult.

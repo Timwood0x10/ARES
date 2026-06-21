@@ -261,6 +261,10 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 				"error", err)
 			return err
 		}
+		// Update lastRun only after successful evolution.
+		s.mu.Lock()
+		s.lastRun = time.Now()
+		s.mu.Unlock()
 		return nil
 	})
 

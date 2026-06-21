@@ -148,8 +148,9 @@ func (a *GenomeMutatorAdapter) Mutate(
 // into the evolution package's genealogy system. It implements GenealogyRecorder
 // by extracting lineage data from population state after each evolution cycle.
 type PopulationGenealogyRecorder struct {
-	mu       sync.RWMutex
-	lineages []StrategyLineage
+	mu          sync.RWMutex
+	lineages    []StrategyLineage
+	maxLineages int // Maximum number of lineage records; 0 = unlimited (default 10000).
 }
 
 // NewPopulationGenealogyRecorder creates a new genealogy recorder.
@@ -159,7 +160,8 @@ type PopulationGenealogyRecorder struct {
 //	*PopulationGenealogyRecorder - the recorder instance.
 func NewPopulationGenealogyRecorder() *PopulationGenealogyRecorder {
 	return &PopulationGenealogyRecorder{
-		lineages: make([]StrategyLineage, 0),
+		lineages:    make([]StrategyLineage, 0),
+		maxLineages: 10000,
 	}
 }
 
@@ -179,6 +181,12 @@ func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage Strate
 	defer r.mu.Unlock()
 
 	r.lineages = append(r.lineages, lineage)
+
+	// Trim oldest records if exceeding max capacity.
+	if r.maxLineages > 0 && len(r.lineages) > r.maxLineages {
+		trimCount := len(r.lineages) - r.maxLineages
+		r.lineages = r.lineages[trimCount:]
+	}
 
 	slog.DebugContext(ctx, "[Genealogy] Lineage recorded",
 		"parent_id", lineage.ParentID,
@@ -281,36 +289,58 @@ type WiredEvolutionSystem struct {
 	PopAdapter *GenomePopulationAdapter
 	Population *genome.Population
 	Genealogy  *PopulationGenealogyRecorder
+
+	// config is the configuration used to create this system, stored for serialization.
+	config SystemConfig
+
+	// StrategyStore persists deployed strategies (optional, may be nil).
+	StrategyStore StrategyStore
 }
 
 // SystemConfig holds configuration for creating a wired evolution system.
 type SystemConfig struct {
 	// PopulationSize is the target population size for genome evolution.
-	PopulationSize int
+	PopulationSize int `json:"population_size"`
 
 	// EliteCount is the number of elite strategies to preserve per generation.
-	EliteCount int
+	EliteCount int `json:"elite_count"`
 
 	// MutationRate is the probability of mutating each offspring.
-	MutationRate float64
+	MutationRate float64 `json:"mutation_rate"`
 
 	// SurvivalRate is the fraction of top performers to keep.
-	SurvivalRate float64
+	SurvivalRate float64 `json:"survival_rate"`
 
 	// Callbacks is the callback registrar for event subscription.
-	Callbacks callbacks.CallbackRegistrar
+	Callbacks callbacks.CallbackRegistrar `json:"-"`
 
 	// EnableDreamCycle enables the dream cycle orchestrator.
-	EnableDreamCycle bool
+	EnableDreamCycle bool `json:"enable_dream_cycle"`
 
 	// EnableScheduler enables the evolution scheduler.
-	EnableScheduler bool
+	EnableScheduler bool `json:"enable_scheduler"`
 
 	// MinTasksBeforeEvolve is the minimum tasks before first evolution.
-	MinTasksBeforeEvolve int
+	MinTasksBeforeEvolve int `json:"min_tasks_before_evolve"`
 
 	// SchedulerTrigger is the trigger mode for the scheduler.
-	SchedulerTrigger EvolutionTrigger
+	SchedulerTrigger EvolutionTrigger `json:"scheduler_trigger"`
+
+	// MutatorSeed is the random seed for the mutator (0 = non-deterministic).
+	MutatorSeed int64 `json:"mutator_seed,omitempty"`
+
+	// CrossoverSeed is the random seed for the crossover engine (0 = non-deterministic).
+	CrossoverSeed int64 `json:"crossover_seed,omitempty"`
+
+	// PopulationSeed is the random seed for the population (0 = non-deterministic).
+	PopulationSeed int64 `json:"population_seed,omitempty"`
+
+	// UseDeterministicIDs enables counter-based IDs instead of UUIDs.
+	// Produces reproducible strategy IDs across runs with the same seeds.
+	UseDeterministicIDs bool `json:"use_deterministic_ids,omitempty"`
+
+	// StrategyStore persists deployed strategies (optional, may be nil).
+	StrategyStore StrategyStore `json:"-"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -361,8 +391,15 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("base strategy must not be nil")
 	}
 
-	// Step 1: Create production mutator.
-	rawMutator, err := mutation.NewMutator()
+	// Step 1: Create production mutator with optional seed and deterministic IDs.
+	var mutatorOpts []mutation.MutatorOption
+	if cfg.MutatorSeed != 0 {
+		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.MutatorSeed))
+	}
+	if cfg.UseDeterministicIDs {
+		mutatorOpts = append(mutatorOpts, mutation.WithDeterministicIDs(true))
+	}
+	rawMutator, err := mutation.NewMutator(mutatorOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create mutator: %w", err)
 	}
@@ -373,21 +410,34 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create genome mutator adapter: %w", err)
 	}
 
-	// Step 3: Create crossover engine.
-	crosser, err := genome.NewCrossover()
+	// Step 3: Create crossover engine with optional seed and deterministic IDs.
+	var crosserOpts []genome.CrossoverOption
+	if cfg.CrossoverSeed != 0 {
+		crosserOpts = append(crosserOpts, genome.WithSeed(cfg.CrossoverSeed))
+	}
+	if cfg.UseDeterministicIDs {
+		crosserOpts = append(crosserOpts, genome.WithDeterministicIDs(true))
+	}
+	crosser, err := genome.NewCrossover(crosserOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create crossover: %w", err)
 	}
 
-	// Step 4: Create genome population.
-	pop, err := genome.NewPopulation(
-		context.Background(),
-		baseStrategy,
-		genomeMutator,
+	// Step 4: Create genome population with optional seed.
+	popOpts := []genome.PopulationOption{
 		genome.WithPopulationSize(cfg.PopulationSize),
 		genome.WithEliteCount(cfg.EliteCount),
 		genome.WithMutationRate(cfg.MutationRate),
 		genome.WithSurvivalRate(cfg.SurvivalRate),
+	}
+	if cfg.PopulationSeed != 0 {
+		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.PopulationSeed))
+	}
+	pop, err := genome.NewPopulation(
+		context.Background(),
+		baseStrategy,
+		genomeMutator,
+		popOpts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create population: %w", err)
@@ -406,9 +456,15 @@ func NewWiredEvolutionSystem(
 		PopAdapter: popAdapter,
 		Population: pop,
 		Genealogy:  genealogy,
+		config:     cfg,
 	}
 
-	// Step 7: Optionally create dream cycle with evolution-layer adapters.
+	// Step 7: Attach optional strategy store.
+	if cfg.StrategyStore != nil {
+		system.StrategyStore = cfg.StrategyStore
+	}
+
+	// Step 8: Optionally create dream cycle with evolution-layer adapters.
 	if cfg.EnableDreamCycle {
 		mutationAdapter, err := NewMutationAdapter(rawMutator)
 		if err != nil {
@@ -495,7 +551,7 @@ func RunIdleEvolution(
 			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
 		}
 
-			// Record lineage after each evolution cycle.
+		// Record lineage after each evolution cycle.
 		// Use Snapshot() for thread-safe read of population state.
 		_, gen := system.Population.Snapshot()
 		prevGen := gen - 1

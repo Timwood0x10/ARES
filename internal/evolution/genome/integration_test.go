@@ -70,6 +70,11 @@ func newMockArenaScorer() *mockArenaScorer {
 // Score evaluates a strategy by extracting its temperature parameter.
 // Lower temperature produces higher score (0.0 temp → 100.0 score, 1.0 temp → 50.0 score).
 func (s *mockArenaScorer) Score(input any) (float64, error) {
+	// Unwrap TestCaseInput if provided (the arena now wraps strategy + test case).
+	if tci, ok := input.(arena.TestCaseInput); ok {
+		input = tci.Strategy
+	}
+
 	strategyMap, ok := input.(map[string]any)
 	if !ok {
 		// Fallback: return a neutral score for non-map inputs.

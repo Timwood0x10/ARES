@@ -123,34 +123,34 @@ const (
 // Strategy represents an agent decision strategy that can be mutated and evolved.
 type Strategy struct {
 	// ID is the unique identifier of this strategy.
-	ID string
+	ID string `json:"id"`
 
 	// Name is the human-readable name of the strategy.
-	Name string
+	Name string `json:"name,omitempty"`
 
 	// Version is the version number of this strategy (monotonically increasing).
-	Version int
+	Version int `json:"version"`
 
 	// Params holds the configurable parameters of the strategy.
-	Params map[string]any
+	Params map[string]any `json:"params,omitempty"`
 
 	// ParentID references the parent strategy this was evolved from (empty for root strategies).
-	ParentID string
+	ParentID string `json:"parent_id,omitempty"`
 
 	// PromptTemplate is the behavior prompt template for the agent.
-	PromptTemplate string
+	PromptTemplate string `json:"prompt_template,omitempty"`
 
 	// StrategyMutationType records the mutation type that created this strategy.
-	StrategyMutationType string
+	StrategyMutationType string `json:"strategy_mutation_type"`
 
 	// MutationDesc is a human-readable description of the mutation applied.
-	MutationDesc string
+	MutationDesc string `json:"mutation_desc,omitempty"`
 
 	// Score is the current evaluation score (-1 = unevaluated).
-	Score float64
+	Score float64 `json:"score"`
 
 	// CreatedAt is the timestamp when this strategy was created.
-	CreatedAt time.Time
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // MutatorInterface abstracts strategy mutation capability.
@@ -170,6 +170,11 @@ type RegressionConfig struct {
 
 	// TaskSampleSize is the number of historical tasks to replay for testing.
 	TaskSampleSize int
+
+	// AdaptiveBatchSize enables batched scoring with early stopping.
+	// When > 0, scores are collected in batches of this size and significance
+	// is checked after each batch. Stops early if the outcome is already clear.
+	AdaptiveBatchSize int
 }
 
 // RegressionResult holds the outcome of an arena regression test.
@@ -197,22 +202,22 @@ type TesterInterface interface {
 // StrategyLineage records the genealogical relationship between strategies.
 type StrategyLineage struct {
 	// ParentID is the ID of the parent (source) strategy.
-	ParentID string
+	ParentID string `json:"parent_id"`
 
 	// ChildID is the ID of the new (mutated) strategy.
-	ChildID string
+	ChildID string `json:"child_id"`
 
 	// MutationType describes what kind of mutation was applied.
-	MutationType string
+	MutationType string `json:"mutation_type"`
 
 	// WinRate achieved by the child strategy in arena testing.
-	WinRate float64
+	WinRate float64 `json:"win_rate"`
 
 	// ScoreImprovement is the delta between child and parent scores.
-	ScoreImprovement float64
+	ScoreImprovement float64 `json:"score_improvement"`
 
 	// Timestamp when this lineage record was created.
-	Timestamp int64
+	Timestamp int64 `json:"timestamp"`
 }
 
 // GenealogyRecorder abstracts strategy lineage recording capability.

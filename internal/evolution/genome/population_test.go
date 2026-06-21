@@ -679,6 +679,78 @@ func TestPopulationConfigValidation(t *testing.T) {
 	}
 }
 
+func TestWithPopulationSeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := newTestStrategy(0.7)
+
+	detMut := &mockMutator{
+		mutateFn: func(_ context.Context, parent *mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+			result := make([]*mutation.Strategy, n)
+			for i := range result {
+				result[i] = &mutation.Strategy{
+					ID:       fmt.Sprintf("det-mut-%d", i),
+					ParentID: parent.ID,
+					Version:  parent.Version + 1,
+					Params:   make(map[string]any),
+				}
+			}
+			return result, nil
+		},
+	}
+
+	detCrosser := &mockCrosser{
+		crossoverFn: func(_ context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error) {
+			childParams := make(map[string]any)
+			for k, v := range a.Params {
+				childParams[k] = v
+			}
+			return &mutation.Strategy{
+				ID:       "det-cross-child",
+				ParentID: a.ID + "x" + b.ID,
+				Version:  max(a.Version, b.Version) + 1,
+				Params:   childParams,
+			}, nil
+		},
+	}
+
+	seed := int64(42)
+	pop1, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	if err != nil {
+		t.Fatalf("NewPopulation (1) failed: %v", err)
+	}
+
+	pop2, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	if err != nil {
+		t.Fatalf("NewPopulation (2) failed: %v", err)
+	}
+
+	// Same scores + same seed = identical evolution outcome.
+	for _, agent := range pop1.Agents {
+		agent.Score = 50.0
+	}
+	if err := pop1.EvolveOnIdle(ctx, detMut, detCrosser); err != nil {
+		t.Fatalf("EvolveOnIdle (1) failed: %v", err)
+	}
+
+	for _, agent := range pop2.Agents {
+		agent.Score = 50.0
+	}
+	if err := pop2.EvolveOnIdle(ctx, detMut, detCrosser); err != nil {
+		t.Fatalf("EvolveOnIdle (2) failed: %v", err)
+	}
+
+	if len(pop1.Agents) != len(pop2.Agents) {
+		t.Fatalf("evolved sizes differ: %d vs %d", len(pop1.Agents), len(pop2.Agents))
+	}
+	for i := range pop1.Agents {
+		if pop1.Agents[i].ID != pop2.Agents[i].ID {
+			t.Fatalf("evolved agent %d ID differs: %s vs %s", i, pop1.Agents[i].ID, pop2.Agents[i].ID)
+		}
+	}
+}
+
 func TestEvolvePreservesElites(t *testing.T) {
 	t.Parallel()
 

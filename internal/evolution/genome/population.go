@@ -47,21 +47,24 @@ type MutatorInterface interface {
 // PopulationConfig holds configuration for creating a population.
 type PopulationConfig struct {
 	// Size is the target population size (default 20).
-	Size int
+	Size int `json:"size"`
 
 	// SurvivalRate is the fraction of top performers to keep (default 0.6, i.e., eliminate bottom 40%).
-	SurvivalRate float64
+	SurvivalRate float64 `json:"survival_rate"`
 
 	// MutationRate is the probability of mutation after crossover (default 0.2).
-	MutationRate float64
+	MutationRate float64 `json:"mutation_rate"`
 
 	// EliteCount is the number of best individuals to preserve unchanged (default 1).
-	EliteCount int
+	EliteCount int `json:"elite_count"`
 
 	// BreedingPoolRatio is the fraction of survivors eligible as parents (default 0.3).
 	// Only the top BreedingPoolRatio of survivors form the breeding pool.
 	// Used by EvolveOnIdle to restrict reproduction to the best survivors.
-	BreedingPoolRatio float64
+	BreedingPoolRatio float64 `json:"breeding_pool_ratio"`
+
+	// Seed is the random seed for deterministic population creation (0 = non-deterministic).
+	Seed int64 `json:"seed,omitempty"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -158,6 +161,25 @@ func WithEliteCount(count int) PopulationOption {
 	}
 }
 
+// WithPopulationSeed sets the random seed for deterministic population behavior.
+// When set to a non-zero value, the population's internal RNG produces
+// reproducible results across runs. When zero (default), the RNG is seeded
+// from the current time and results are non-deterministic.
+//
+// Args:
+//
+//	seed - the random seed value (0 = non-deterministic).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+func WithPopulationSeed(seed int64) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		cfg.Seed = seed
+		return nil
+	}
+}
+
 // WithBreedingPoolRatio sets the fraction of survivors that form the breeding pool.
 // Only the top BreedingPoolRatio of survivors are eligible as parents during idle evolution.
 // Value must be in [0, 1]. Default is 0.3 (top 30%).
@@ -237,12 +259,16 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		return nil, fmt.Errorf("%w: elite count %d exceeds size %d", ErrInvalidEliteCount, cfg.EliteCount, cfg.Size)
 	}
 
+	seed := cfg.Seed
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
 	pop := &Population{
 		Agents:     make([]*mutation.Strategy, 0, cfg.Size),
 		Size:       cfg.Size,
 		Generation: 0,
 		cfg:        cfg,
-		rng:        rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 - GA doesn't need crypto rand
+		rng:        rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
 	}
 
 	err := pop.initializeFromBase(ctx, base, mutator)

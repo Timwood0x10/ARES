@@ -44,31 +44,31 @@ func (mt MutationType) String() string {
 // Strategy represents an agent's execution strategy configuration.
 type Strategy struct {
 	// ID is the unique strategy identifier.
-	ID string
+	ID string `json:"id"`
 
 	// ParentID is the parent strategy ID (empty for root strategies).
-	ParentID string
+	ParentID string `json:"parent_id,omitempty"`
 
 	// Version is the monotonically increasing version number.
-	Version int
+	Version int `json:"version"`
 
 	// Params holds mutable parameters (temperature, top_k, etc.).
-	Params map[string]any
+	Params map[string]any `json:"params,omitempty"`
 
 	// PromptTemplate is the behavior prompt template.
-	PromptTemplate string
+	PromptTemplate string `json:"prompt_template,omitempty"`
 
 	// StrategyMutationType records how this strategy was created.
-	StrategyMutationType MutationType
+	StrategyMutationType MutationType `json:"strategy_mutation_type"`
 
 	// MutationDesc is a human-readable description of the mutation.
-	MutationDesc string
+	MutationDesc string `json:"mutation_desc,omitempty"`
 
 	// Score is the current evaluation score (-1 = unevaluated).
-	Score float64
+	Score float64 `json:"score"`
 
 	// CreatedAt is the timestamp when this strategy was created.
-	CreatedAt time.Time
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Clone returns a deep copy of the strategy.

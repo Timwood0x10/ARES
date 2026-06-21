@@ -1,16 +1,63 @@
 # GoAgentX Architecture Deep Dive (7): Runtime & Lifecycle — Birth, Death, and Resurrection
 
-> Will an Agent die? Yes. LLM timeout can kill it, memory exhaustion can kill it, panic can kill it, host restart can kill it.
-> But is there a mechanism that lets an Agent come back with its memories intact? I call this **resurrection**.
+> Other Agent frameworks compete on features and flashiness. I have only one obsession: **Bugs I can accept. Crashes I absolutely cannot.**
+> One day I started thinking — what if I just `kill -9` a running Agent right now? How would I bring it back?
+> Manually? First locate which process, dig through logs to find the cause, write a patch, then `go run main.go --args`… I'm already annoyed just thinking about it.
+> So what if there's a mechanism where an Agent can die and then **get back up on its own, with its memories intact**? I call this **resurrection**.
 > This is the core of the Runtime subsystem — Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
 
-## 1. Agents Are Not Immortal
+## 1. The Rabbit Hole
 
-Before GoAgentX, I wrote Agents in Python. When an Agent died, it died — process exited, all state lost, the user had to re-explain everything from scratch. The most devastating case was an Agent that ran for two hours analyzing data, then panicked on the last step. All that work, wasted.
+Let me walk you through how I **agonized** over this design.
 
-I thought to myself: **An Agent shouldn't just die like that. It needs to be able to come back, and when it does, it should remember where it left off.**
+My first idea was simple: spawn a separate monitor task that checks every Agent's heartbeat. If one dies, report it — then restart it. Sounds solid, right? Then I asked myself: **what happens when the monitor itself dies?** Spawn another monitor to watch the monitor? It's turtles all the way down.
 
-That's where the Runtime subsystem's design started. Its philosophy is written in the package comment in `internal/runtime/runtime.go`, one line that makes the attitude crystal clear:
+OK, different approach: spin up a backup Leader. Hot standby, disaster recovery, the whole deal. Then the next question hit me — **what about Sub Agents?** I can't give every Sub its own backup. So... a pool of rotating Subs? Cool, cool. Sounds great.
+
+Then came the question that shut me up: **what about the interrupted task?**
+
+The user asked the Agent to write a file. It got halfway through and the system crashed. System restarts, Agent auto-resurrects, and tells the user: **"Hey, the system just went down. I know you're frustrated — grab some tea, and we'll pick up where we left off!"**
+
+Even if the user wants to curse the developer's ancestors, I'd say that's fair. More importantly — what about all those tokens that were already spent? Start over, spend them all again? That's real money.
+
+So the Runtime subsystem's design wasn't about "how to make an Agent never die." It was about three much more pragmatic questions:
+
+1. **How does an Agent get itself back up after dying?** (auto-resurrection)
+2. **How does it remember what it was doing?** (state recovery)
+3. **How does an interrupted task resume without wasting tokens?** (checkpoint resume)
+
+Answer those three, and you can say "crashes don't happen."
+
+---
+
+## 2. Architecture: The Runtime Owns Life and Death
+
+```mermaid
+graph TB
+    subgraph Full Lifecycle
+        B[Boot] --> RS[Runtime.Start]
+        RS --> HC[Health check every 10s]
+        RS --> LAUNCH[Launch all registered Agents]
+        LAUNCH --> AG[launchAgentGoroutine]
+        AG --> AE[agent.Start — works]
+        AE --> GE[Dies — normal exit or panic]
+        GE --> NAD[NotifyAgentDead]
+        NAD --> RA[RestoreAgent resurrection]
+        RA --> S3[Two-phase state recovery]
+        S3 --> AG
+        HC --> HB{Still alive?}
+        HB -->|dead| NAD
+    end
+
+    subgraph Two-Phase Recovery
+        S3 --> S3A[Phase 1: Event replay<br/>EventStore rebuilds operational state]
+        S3 --> S3B[Phase 2: Cognitive recovery<br/>MemoryManager restores conversation history]
+        S3A -->|fail? skip| S3B
+        S3B -->|fail? skip| LAUNCH
+    end
+```
+
+The core philosophy fits in one line:
 
 ```go
 // Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
@@ -18,263 +65,96 @@ That's where the Runtime subsystem's design started. Its philosophy is written i
 
 Translation: Agents are throwaway executors — but their birth, death, and resurrection belong to the Runtime.
 
-This article provides a source-code-level deep dive into four major Runtime modules: **Runtime Core Management**, **Agent Interface Contract**, **Leader Agent Orchestration & State Recovery**, **Sub Agent Execution Model**, and the **Graceful Shutdown System**.
+---
 
-## 2. Runtime Core Interface and Manager Implementation
+## 3. The Resurrection Guard: Why `stopped` Must Come Before `cancel`
 
-### 2.1 Runtime Interface
-
-`internal/runtime/runtime.go` defines Runtime's core contract:
-
-```go
-type Runtime interface {
-    StartAgent(ctx context.Context, agent base.Agent) error
-    StopAgent(ctx context.Context, agentID string) error
-    RestartAgent(ctx context.Context, agentID string) error
-    RestoreAgent(ctx context.Context, agentID string, factory AgentFactory) error
-    NotifyAgentDead(agentID string, reason string)
-    RegisterAgent(agent base.Agent, factory AgentFactory)
-    Start(ctx context.Context) error
-    Stop() error
-    Stats() RuntimeStats
-}
-```
-
-Key semantics:
-
-- `RegisterAgent` registers an Agent and its factory; the factory creates new instances during resurrection.
-- `StartAgent` starts an Agent inside an errgroup-managed goroutine with panic recovery.
-- `NotifyAgentDead` is called by the Agent or health check to trigger the async resurrection flow.
-- `RestoreAgent` performs complete two-phase state recovery: operational state (EventStore event replay) + cognitive state (MemoryManager conversation history restoration).
-
-The configuration constants reflect the system's fault tolerance boundaries:
-
-```go
-func DefaultConfig() *Config {
-    return &Config{
-        HealthCheckInterval: 10 * time.Second,
-        MaxRestartsPerAgent: 10,
-        MaxReplayEvents:     10000,
-        AgentStopTimeout:    10 * time.Second,
-        OverallStopTimeout:  30 * time.Second,
-        RestoreTimeout:      60 * time.Second,
-    }
-}
-```
-
-### 2.2 Manager Data Structure
-
-`internal/runtime/manager.go` contains the `Manager`, the default Runtime interface implementation:
-
-```go
-type Manager struct {
-    mu            sync.RWMutex
-    agents        map[string]*managedAgent
-    factories     map[string]AgentFactory
-    eventStore    events.EventStore
-    memManager    memory.MemoryManager
-    g             *errgroup.Group
-    gctx          context.Context
-    cancel        context.CancelFunc
-    config        *Config
-    totalRestarts int
-    startTime     time.Time
-    isStarted     bool
-    isStopped     bool
-}
-```
-
-Key design point: `g` is `*errgroup.Group`, but the Manager's constructor initializes with `errgroup.WithContext(context.Background())` to avoid panic when `m.g.Go()` is called before `Start()`. When `Start()` is invoked, `g` is replaced with a new errgroup using the caller's context.
-
-### 2.3 managedAgent Metadata
-
-```go
-type managedAgent struct {
-    agent        base.Agent
-    factory      AgentFactory
-    cancel       context.CancelFunc
-    restarts     int
-    stopped      bool      // Voluntary stop flag
-    resurrecting bool      // Resurrection-in-progress flag
-}
-```
-
-`stopped` and `resurrecting` are two critical guard flags, discussed in detail in the "Resurrection Guard" section below.
-
-## 3. Agent Interface Hierarchy
-
-`internal/agents/base/agent.go` defines the multi-layer Agent interface:
-
-### 3.1 Core Agent Interface
-
-```go
-type Agent interface {
-    ID() string
-    Type() models.AgentType
-    Status() models.AgentStatus
-    Start(ctx context.Context) error
-    Stop(ctx context.Context) error
-    Process(ctx context.Context, input any) (any, error)
-    ProcessStream(ctx context.Context, input any) (<-chan AgentEvent, error)
-}
-```
-
-### 3.2 Stateful Agent Interface
-
-```go
-type StatefulAgent interface {
-    RestoreState(state map[string]any) error
-    ReplayEvents(events []*events.Event) error
-    Snapshot() (map[string]any, error)
-}
-```
-
-Agents implementing this interface can have their state reconstructed during resurrection. Both `leaderAgent` and `subAgent` verify compliance at compile time via `var _ base.StatefulAgent = (*leaderAgent)(nil)`.
-
-### 3.3 Optional Interfaces
-
-```go
-type Heartbeater interface {
-    Heartbeat(ctx context.Context) error
-    IsAlive() bool
-}
-
-type Messenger interface {
-    SendMessage(ctx context.Context, msg *ahp.AHPMessage) error
-    ReceiveMessage(ctx context.Context) (*ahp.AHPMessage, error)
-}
-```
-
-## 4. Complete Agent Lifecycle
-
-```mermaid
-graph TB
-    B[Bootstrap] --> RS[Runtime.Start]
-    RS --> HC[Health check loop 10s]
-    RS --> LAUNCH[Launch all registered Agents]
-    LAUNCH --> AG[launchAgentGoroutine]
-    AG --> AE[agent.Start]
-    AE --> GE[goroutine exit<br/>normal / panic]
-    GE --> NAD[NotifyAgentDead]
-    NAD --> RA[RestoreAgent]
-    RA --> S1[1. stopOldRestoredAgent]
-    RA --> S2[2. factory creates new instance]
-    RA --> S3[3. recoverAgentState]
-    S3 --> S3A[a. Event replay EventStore]
-    S3 --> S3B[b. Cognitive recovery MemoryManager]
-    S3 --> S4[4. launchAgentGoroutine]
-    HC --> HB[Heartbeat / Status detection]
-    HB --> NAD
-    RS --> STOP[Runtime.Stop]
-    STOP --> M1[1. isStopped = true]
-    STOP --> M2[2. cancel m.cancel]
-    STOP --> M3[3. Iterate Agents, concurrent Stop]
-    STOP --> M4[4. errgroup.Wait]
-```
-
-## 5. Death and Resurrection Deep Dive
-
-### 5.1 Resurrection Guard
-
-This is the most important concurrency safety pattern in the entire system. Its core is in the interaction between `StopAgent` and `NotifyAgentDead`:
+This is the most important concurrency detail in the entire system. Here's the key sequence:
 
 ```go
 func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
     m.mu.Lock()
-    ma, exists := m.agents[agentID]
     // Step 1: Mark as "voluntary stop" FIRST
     ma.stopped = true
     cancel := ma.cancel
     m.mu.Unlock()
 
     // Step 2: Cancel context SECOND
-    if cancel != nil {
-        cancel()    // This triggers goroutine exit
-    }
-    // ... graceful agent stop ...
+    if cancel != nil { cancel() }  // triggers goroutine exit
 }
 ```
 
-Why must `ma.stopped = true` come before `ma.cancel()`? Consider this race condition:
+Why must `stopped = true` come before `cancel()`? Consider this race:
 
-1. Thread A (StopAgent) calls `ma.cancel()`.
-2. Agent goroutine detects context cancellation, calls `NotifyAgentDead`.
-3. Thread B (NotifyAgentDead) reads `ma.stopped` — if `stopped` hasn't been set to true yet, it would incorrectly trigger the resurrection flow.
+1. Thread A calls `ma.cancel()`, Agent goroutine detects context cancellation
+2. Goroutine exits and calls `NotifyAgentDead`
+3. If `ma.stopped` hasn't been set to true yet, `NotifyAgentDead` thinks it's an accidental death and **incorrectly triggers resurrection**
 
-By setting `stopped = true` before cancelling the context, even if the goroutine immediately calls `NotifyAgentDead` after cancellation, it sees `ma.stopped == true` and skips resurrection.
+Mark first, cancel second — that's the **Resurrection Guard**.
 
-### 5.2 NotifyAgentDead Full Guard Logic
+The full guard logic has four conditions; any match skips resurrection:
 
 ```go
-func (m *Manager) NotifyAgentDead(agentID string, reason string) {
-    m.mu.Lock()
-    // Four guard conditions; any match skips resurrection:
-    if m.isStopped ||               // Runtime already stopped
-       ma.stopped ||                // Agent voluntarily stopped
-       ma.resurrecting ||           // Resurrection already in progress
-       ma.restarts >= MaxRestarts   // Max restarts exceeded
-    {
-        m.mu.Unlock()
-        return
-    }
-    ma.restarts++
-    ma.resurrecting = true
-    m.totalRestarts++
-
-    // Async resurrection — doesn't block caller
-    m.g.Go(func() error {
-        defer func() {
-            ma.resurrecting = false
-        }()
-        restoreCtx, cancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
-        defer cancel()
-        return m.RestoreAgent(restoreCtx, agentID, factory)
-    })
-    m.mu.Unlock()
+if m.isStopped ||         // Runtime itself is stopping
+   ma.stopped ||           // Agent was voluntarily stopped
+   ma.resurrecting ||      // Resurrection already in progress
+   ma.restarts >= MaxRestarts  // Too many resurrections
+{
+    return  // Don't resurrect
 }
 ```
 
-### 5.3 Two-Phase State Recovery
+**Honest reflection**: `MaxRestarts = 10` is a number I pulled out of thin air. Why 10, not 3 or 20? No basis whatsoever. We once hit a real issue: an Agent kept dying one second after startup due to a config error. It got resurrected, died, resurrected, died — all 10 restarts burned, stone dead. The logs were full of resurrection spam, and debugging was a nightmare. Should've used **exponential backoff** instead of a hard counter. Never got around to fixing it.
 
-`RestoreAgent`'s core logic lives in `recoverAgentState`:
+---
+
+## 4. Two-Phase State Recovery: Dying is Fine, Amnesia is Not
+
+The core of resurrection is `recoverAgentState`:
+
+```mermaid
+graph LR
+    subgraph At the crash scene
+        A[Agent died] --> F[Factory creates new instance]
+    end
+    subgraph Phase 1: Operational state
+        F --> ES[Query EventStore<br/>Replay what the Agent did]
+        ES --> ST[Rebuild state snapshot<br/>Session ID / Pending tasks / Execution context]
+    end
+    subgraph Phase 2: Cognitive state
+        ST --> MM[Query MemoryManager<br/>Restore conversation history]
+        MM --> RE[RestoreState — load snapshot]
+        RE --> RP[ReplayEvents — replay incremental events]
+    end
+    RP --> OK[New Agent starts up<br/>Resumes work]
+```
+
+**The most critical fault tolerance design**: the two phases are independent. Either one can fail without blocking the entire resurrection:
 
 ```go
-func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory AgentFactory) (base.Agent, error) {
-    newAgent := factory()  // Factory creates fresh instance
+func (m *Manager) recoverAgentState(ctx context.Context, ...) (base.Agent, error) {
+    newAgent := factory()  // Fresh instance
 
-    evts := m.replayEvents(ctx, agentID)  // Phase A: operational state recovery
+    evts := m.replayEvents(ctx, agentID)  // Phase 1
+    // replayEvents failure logs a warning and returns empty list
 
     if sa, ok := newAgent.(base.StatefulAgent); ok {
-        // Build state from events
         state := buildStateFromEvents(evts)
-
-        // Phase B: cognitive state recovery
-        if m.memManager != nil {
-            cognitiveState := m.buildCognitiveState(ctx, agentID, state)
-            for k, v := range cognitiveState {
-                state[k] = v
-            }
-        }
-
-        // First restore state snapshot
         sa.RestoreState(state)
-        // Then replay incremental events
         sa.ReplayEvents(evts)
+        // Phase 2 is also fault-tolerant
     }
-    return newAgent, nil
+    return newAgent, nil  // Agent starts regardless of recovery completeness
 }
 ```
 
-**Fault tolerance strategy**: The entire recovery chain is error-tolerant. EventStore read failure → skip event replay; MemoryManager read failure → skip cognitive recovery. The Agent still starts successfully. This design ensures "partial recovery is better than no recovery at all."
-
-The `buildCognitiveState` method loads conversation history from MemoryManager:
-
 ```go
+// Cognitive recovery: pull conversation history from MemoryManager
 func (m *Manager) buildCognitiveState(ctx context.Context, ...) map[string]any {
     sessionID, _ := operationalState["session_id"].(string)
     if sessionID == "" {
         sid, err := m.memManager.GetLatestSessionForLeader(ctx, agentID)
-        sessionID = sid
+        sessionID = sid  // Not found? Leave empty. Not fatal.
     }
     messages, _ := m.memManager.GetMessages(ctx, sessionID)
     state["session_id"] = sessionID
@@ -283,89 +163,56 @@ func (m *Manager) buildCognitiveState(ctx context.Context, ...) map[string]any {
 }
 ```
 
-### 5.4 Health Check Loop
+**Honest reflection**: This "partial recovery is better than none" design was inspired by Kubernetes' Init Container strategy. But there's a big problem — if event replay only recovers 80% of the state, the Agent might think it completed a task it didn't. How do you verify recovery completeness? There's no mechanism today. The fix should be an integrity check in the event stream (like WAL checksum).
 
-The `healthCheck` method runs in a dedicated goroutine started by `Start()`, executing every 10 seconds:
+---
 
-```go
-func (m *Manager) healthCheck() {
-    for _, c := range checks {
-        if h, ok := c.agent.(base.Heartbeater); ok {
-            if !h.IsAlive() {
-                m.NotifyAgentDead(c.id, "health check: heartbeat failed")
-            }
-            continue
-        }
-        // Fall back to status check
-        status := c.agent.Status()
-        if status == models.AgentStatusOffline || status == models.AgentStatusStopping {
-            m.NotifyAgentDead(c.id, "health check: status="+string(status))
-        }
-    }
-}
+## 5. Leader Agent's Orchestration Pipeline: stopCh Everywhere
+
+The Leader's `Process` method runs a four-stage pipeline:
+
+```mermaid
+graph LR
+    Input --> MEM[initMemoryContext<br/>Recover or create session]
+    MEM --> P[Parse — analyze profile]
+    P --> PLAN[Plan — break into sub-tasks]
+    PLAN --> DISPATCH[Dispatch — parallel execution<br/>semaphore concurrency control]
+    DISPATCH --> AGG[Aggregate — merge results]
+    AGG --> FINAL[finalizeMemory<br/>record response + background distillation]
 ```
 
-## 6. Leader Agent Lifecycle Management
-
-### 6.1 Orchestration Pipeline
-
-In `internal/agents/leader/agent.go`, the Leader's `Process` method implements a four-stage orchestration pipeline:
-
-```
-strInput -> parseInput -> string
-    |
-    v
-initMemoryContext (session recovery/create -> record message -> build context -> search similar tasks -> create task record)
-    |
-    v
-parser.Parse          Step 1: Parse user profile
-    |
-    v
-planner.Plan          Step 2: Plan sub-tasks
-    |
-    v
-dispatcher.Dispatch   Step 3: Parallel task dispatch (semaphore concurrency control)
-    |
-    v
-aggregator.Aggregate  Step 4: Aggregate sub-task results
-    |
-    v
-finalizeMemory (update task output -> record assistant reply -> background distillation)
-```
-
-Each step includes a `stopCh` check:
+Each step checks for a stop signal:
 
 ```go
 select {
 case <-a.stopCh:
-    return nil, coreerrors.ErrAgentNotRunning
+    return nil, ErrAgentNotRunning
 default:
 }
 ```
 
-This enables fast response to stop requests without waiting for the entire orchestration pipeline to complete.
+This means: even if the user hits Ctrl+C at step 2, the Agent doesn't plow through the entire pipeline before stopping.
 
-### 6.2 Safe Distillation Pattern (Context Detachment)
+### Context Detachment in Distillation: The Easiest Bug to Miss
 
-The distillation logic in `finalizeMemory` demonstrates an important concurrency safety pattern:
+The distillation logic in `finalizeMemory` hides a classic concurrency problem:
 
 ```go
-func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-    // Check if stopping to prevent Add after Wait panic
+func (a *leaderAgent) finalizeMemory(...) {
     a.distillMu.Lock()
     select {
     case <-a.stopCh:
         a.distillMu.Unlock()
-        return  // Agent is stopping, skip distillation
+        return  // Stopping, skip distillation
     default:
     }
-    a.distillWg.Add(1)
+    a.distillWg.Add(1)         // Must Add inside the lock
     a.distillMu.Unlock()
 
     a.distillEg.Go(func() error {
         defer a.distillWg.Done()
 
-        // Use context.Background() to detach from parent context
+        // Key: use context.Background() to detach from parent
         // Distillation continues even if client disconnects
         distillCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
         defer cancel()
@@ -376,191 +223,174 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 }
 ```
 
-Key design points:
+Three things to notice:
 
-- **Context detachment**: Uses `context.Background()` rather than the passed-in `ctx`, so distillation continues even after client disconnection or request timeout.
-- **distillMu lock**: The `stopCh` check and `WaitGroup.Add(1)` must happen atomically under the same lock. Otherwise, `Add` could be called after `Wait`, causing `panic: Add after Wait`.
-- **Stop order**: `close(stopCh)` -> `distillWg.Wait()` -> `distillEg.Wait()` -> `streamEg.Wait()`, ensuring all background tasks complete before resource release.
+1. **`distillMu` protects the atomicity of `stopCh` check + `Wg.Add(1)`**: Without the lock, `Wait` could run before `Add` → `panic: Add after Wait`
+2. **`context.Background()`**: Distillation is independent of the client connection
+3. **Stop order**: `close(stopCh)` → `distillWg.Wait()` → `distillEg.Wait()`
 
-### 6.3 Sub Agent Execution Model
+**Honest reflection**: `context.Background()` detaches from parent cancellation, but also loses the cancellation chain — what if distillation takes 2 hours? There is a `2*time.Minute` timeout, but again, it's a number I made up. There's also no documentation telling users "distillation may take up to 2 minutes and uses X MB of RAM." That's an operational visibility gap.
 
-Sub Agents in `internal/agents/sub/` use a simplified lifecycle management:
+---
+
+## 6. Health Check and Heartbeat: The Thinnest Safety Net
+
+```mermaid
+graph TB
+    subgraph Health check loop every 10s
+        CHECK[Iterate all Agents] --> HEART{Implements Heartbeater?}
+        HEART -->|yes| ALIVE{IsAlive?}
+        ALIVE -->|false| NAD[NotifyAgentDead]
+        ALIVE -->|true| NEXT
+        HEART -->|no| STATUS{Status check}
+        STATUS -->|Offline or Stopping| NAD
+        STATUS -->|Running| NEXT
+    end
+```
 
 ```go
-type subAgent struct {
-    // ... core dependencies
-    stopCh   chan struct{}   // Notifies all goroutines to stop
-    streamWg sync.WaitGroup  // Tracks active ProcessStream goroutines
-}
-```
-
-The **taskExecutor** (`executor.go`) implements LLM execution with retry and degradation:
-
-```
-LLM Execution Path:
-  executeWithLLM(ctx, task, profile)
-    -> retry loop (maxRetries=3)
-       -> executeWithLLMSingle -> template rendering -> LLM call
-       -> validator.ValidateRecommendResult validate result
-       -> validation failure + retryOnFail=true -> retry
-       -> strictMode=true -> return error, otherwise use unvalidated result
-  => All LLM calls fail -> executeByType degradation (fallback)
-```
-
-**heartbeatSender** (`heartbeat.go`) uses `sync.Once` for defensive shutdown:
-
-```go
-func (s *heartbeatSender) Stop() {
-    s.stopOnce.Do(func() {
-        close(s.stopCh)
-    })
-}
-```
-
-**toolBinder** (`tools.go`) implements a local tool Registry bridge pattern:
-
-```go
-func (b *toolBinder) BridgeFromRegistry(registry *core.Registry) {
-    for _, name := range registry.List() {
-        if _, exists := b.tools[name]; exists {
-            continue  // Locally registered tools are not overwritten
+func (m *Manager) healthCheck() {
+    for _, c := range checks {
+        if h, ok := c.agent.(base.Heartbeater); ok {
+            if !h.IsAlive() {
+                m.NotifyAgentDead(c.id, "heartbeat failed")
+            }
+            continue
         }
-        b.tools[name] = func(ctx context.Context, args map[string]any) (any, error) {
-            return t.Execute(ctx, args)
+        // Fall back to status polling
+        status := c.agent.Status()
+        if status == models.AgentStatusOffline {
+            m.NotifyAgentDead(c.id, "status=offline")
         }
     }
 }
 ```
 
-## 7. Leader Supervisor Failover
+There's a subtle problem here: **`NotifyAgentDead` is called from the health check goroutine**, but `NotifyAgentDead` triggers async resurrection (`m.g.Go(func()...)`). This means health check detects a death -> triggers resurrection -> but has no idea whether the resurrection succeeded, how long it took, or whether the Agent died again.
 
-`internal/agents/leader/supervisor.go` contains the `LeaderSupervisor`, which monitors Leader heartbeats and triggers failover on timeout:
+**Honest reflection**: The health check loop is one-way. It only says "found problem -> threw to resurrection" without ever confirming "problem is resolved." The ideal design would let health check observe resurrection status — e.g., a flag that gets set on successful resurrection, letting health check reset its counter. This would also detect "resurrection loops" and alert instead of silently retrying 10 times.
 
+---
+
+## 7. Supervisor Failover: Cold Restart Strategy
+
+When a Leader's heartbeat times out, `LeaderSupervisor` executes failover:
+
+```mermaid
+graph TB
+    TIMEOUT[Heartbeat timeout] --> EMIT[Emit EventFailoverTriggered]
+    EMIT --> STOP[Stop old Leader<br/>use detached context<br/>prevent cancellation propagation]
+    STOP --> CP[Read checkpoint from DB]
+    CP --> ER[EventRecovery — event replay<br/>rebuild RecoveryState]
+    ER --> RETRY[Retry loop max 3 attempts]
+    RETRY --> COLD[ColdRestartStrategy<br/>factory creates new Agent]
+    COLD --> START[Start new Leader]
+    START --> CLEAN[Clean up orphan tasks]
+    CLEAN --> DONE[Register new Leader<br/>emit EventFailoverCompleted]
 ```
-handleFailover(leaderID) -- Heartbeat timeout callback
-    |
-    v
-1. Emit EventFailoverTriggered event
-    |
-    v
-2. Agent.Stop(detachedCtx) -- Use detached context to prevent cancellation propagation
-    |
-    v
-3. checkpoint.GetLatest() -- Restore checkpoint from database
-    |
-    v
-4. EventRecovery.RecoverFromEvents() -- Event replay degradation strategy
-    |
-    v
-5. Retry loop (MaxFailoverAttempts=3):
-      ColdRestartStrategy.HandleFailover()
-        -> factory(ctx, config) create new Agent
-        -> Inject CheckpointRepository
-        -> agent.Start(ctx)
-    |
-    v
-6. TaskRecovery.RecoverStaleTasks() -- Clean up orphan tasks
-    |
-    v
-7. Register new Leader -> Emit EventFailoverCompleted
-```
-
-Note: `EventRecovery` (`event_recovery.go`) implements incremental state reconstruction from the event stream, including session ID, pending task list, and last failover time:
 
 ```go
 type RecoveryState struct {
     SessionID     string
-    PendingTasks  []string
-    LastVersion   int64
-    LastFailover  time.Time
+    PendingTasks  []string    // Work not yet completed
+    LastVersion   int64       // Event version number
+    LastFailover  time.Time   // Last failover time
 }
 ```
 
-## 8. Graceful Shutdown System
+**Honest reflection**: `EventRecovery.RecoverFromEvents()` uses a degradation strategy — if an event field is corrupted, it skips instead of erroring. This guarantees "recover as much as possible," but might produce a "looks normal but logically wrong" state. E.g., there's a task in `PendingTasks` that was actually already completed in the event stream, but a corrupted field makes it appear unprocessed. The Agent re-executes, potentially producing duplicate results.
 
-`internal/shutdown/manager.go` implements the four-phase shutdown pipeline:
+Current philosophy: **Better to redo than to miss.** This aligns with the "robustness first" principle, but assumes idempotency — not all tools are idempotent. The fix is to add idempotency markers to tools, so the recovery system knows which can be safely retried and which must be skipped.
 
-```
-PhasePreShutdown  ->  PhaseGraceful  ->  PhaseForce  ->  PhaseDone
-    (Pre-shutdown,      (Graceful,        (Force,          (Done,
-     resource release)   gradual stop)     timeout fallback) cleanup)
-```
+---
 
-### 8.1 Phase Executor
+## 8. Sub Agent: Simplified Lifecycle
 
-`PhaseExecutor` (`phase.go`) supports retry, exponential backoff, and rollback:
+Sub Agent is much simpler than Leader:
 
 ```go
+type subAgent struct {
+    stopCh   chan struct{}   // Signals all goroutines to stop
+    streamWg sync.WaitGroup  // Tracks active stream goroutines
+}
+```
+
+The executor's retry and degradation is the most interesting part of the Sub layer:
+
+```mermaid
+graph TB
+    LLMCALL[executeWithLLM] --> RETRY{Retry loop maxRetries=3}
+    RETRY -->|success| VALIDATE[Validate result]
+    VALIDATE -->|pass| OK[Return result]
+    VALIDATE -->|fail + retryOnFail| RETRY
+    RETRY -->|all failed| DEGRADE{strictMode?}
+    DEGRADE -->|yes| ERROR[Return error]
+    DEGRADE -->|no| FALLBACK[executeByType degradation]
+    FALLBACK --> OK
+```
+
+Heartbeat sender uses `sync.Once` for defensive close:
+
+```go
+func (s *heartbeatSender) Stop() {
+    s.stopOnce.Do(func() { close(s.stopCh) })
+}
+```
+
+**Honest reflection**: Sub Agent's `executeByType` degradation is a crude fallback — when all LLM calls fail, it dispatches to hardcoded handling logic based on task type. "Analysis" tasks return empty results, "generation" tasks return cached versions. The quality depends entirely on how many task types are covered. Currently only 4 types are covered — everything else just errors out, making the fallback essentially useless.
+
+---
+
+## 9. Graceful Shutdown: Four-Phase Pipeline
+
+```mermaid
+graph LR
+    SIG[Received SIGINT/SIGTERM] --> PHASES
+    subgraph PHASES[Four-phase shutdown]
+        P1[PhasePreShutdown<br/>Release resources<br/>Close DB connections]
+        P2[PhaseGraceful<br/>Notify Agents to stop<br/>Wait for distillation]
+        P3[PhaseForce<br/>Timeout fallback<br/>Force cancel contexts]
+        P4[PhaseDone<br/>Clean temp files<br/>Mark shutdown complete]
+    end
+    P1 -->|10s timeout| P2
+    P2 -->|timeout or all done| P3
+    P3 -->|complete| P4
+```
+
+```go
+// PhaseExecutor supports retry and exponential backoff
 func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context) error) error {
     for attempt := 0; attempt <= e.maxRetries; attempt++ {
         if err := fn(ctx); err != nil {
             backoff := time.Duration(1<<uint(attempt)) * time.Second
-            if e.onFailure != nil {
-                e.onFailure(err)
-            }
+            if e.onFailure != nil { e.onFailure(err) }
             continue
         }
         break
     }
-    if e.onComplete != nil {
-        return e.onComplete()
-    }
+    if e.onComplete != nil { return e.onComplete() }
 }
 ```
 
-### 8.2 Callback Registry
-
-`CallbackRegistry` (`callbacks.go`) supports priority-sorted callback registration:
+The callback registry supports priority-sorted shutdown:
 
 ```go
 type RegisteredCallback struct {
     ID       string
-    Priority int       // Higher priority executes first
+    Priority int       // Higher = executes first
     Fn       Callback
     Timeout  time.Duration
     OnError  func(error)
 }
 ```
 
-### 8.3 Signal Handler
+---
 
-`SignalHandler` (`signal.go`) converts OS signals into the shutdown flow:
+## 10. Callbacks: Lifecycle Hooks
 
-```go
-type SignalHandler struct {
-    signals []os.Signal  // Default: SIGINT, SIGTERM
-    manager *Manager
-}
-
-func (h *SignalHandler) handleSignal(sig os.Signal) {
-    switch sig {
-    case os.Interrupt, syscall.SIGINT, syscall.SIGTERM:
-        shutdownCtx, cancel := context.WithTimeout(context.Background(), h.manager.timeout)
-        defer cancel()
-        h.manager.StartShutdown(shutdownCtx)
-    }
-}
-```
-
-## 9. Callbacks Lifecycle Hooks
-
-`internal/callbacks/callbacks.go` provides a lightweight event hook system:
+A lightweight event hook system — each handler has independent panic recovery:
 
 ```go
-const (
-    EventLLMStart   Event = "llm.start"
-    EventLLMEnd     Event = "llm.end"
-    EventLLMError   Event = "llm.error"
-    EventLLMToken   Event = "llm.token"
-    EventAgentStart Event = "agent.start"
-    EventAgentEnd   Event = "agent.end"
-    EventToolStart  Event = "tool.start"
-    EventToolEnd    Event = "tool.end"
-    EventToolError  Event = "tool.error"
-)
-
-type Handler func(ctx *Context)
-
 func (r *Registry) Emit(ctx *Context) {
     handlers := r.handlers[ctx.Event]
     for _, h := range handlers {
@@ -576,55 +406,73 @@ func (r *Registry) Emit(ctx *Context) {
 }
 ```
 
-Each handler has independent panic recovery — one handler's panic doesn't affect subsequent handlers.
+**Honest reflection**: This system lives in an awkward state. It was designed early on for LLM/Agent/Tool lifecycle event notifications. Later, `events.EventStore` was added for event sourcing. Their functionality overlaps. The only reason it's still here is that some things still depend on callbacks (logging, metrics) and migrating is more expensive than keeping it. Classic "old and new system coexistence" — both emit events, but consumers are different, and debugging requires checking two places.
 
-## 10. Architectural Summary
+---
 
-### Design Patterns
+## 11. Known Issues & Design Flaws
 
-| Pattern | Location | Purpose |
-|---------|----------|---------|
-| Resurrection Guard | `manager.go` | `stopped` set before `cancel()`, prevents race conditions |
-| Context Detachment | `leader/agent.go` | Distillation uses `context.Background()` independent of request |
-| Semaphore Concurrency Control | `leader/dispatcher.go` | `chan struct{}` limits parallel tasks |
-| Error-Tolerant Recovery Chain | `manager.go` | EventStore and MemoryManager independently recoverable, Agent still starts on failure |
-| Dual-State Recovery | `manager.go` | Operational (events) + Cognitive (messages) independent recovery paths |
-| Factory Pattern | `runtime.go` | `AgentFactory` creates new instances |
-| sync.Once + Mutex | `leader/agent.go` | Prevents WaitGroup Add after Wait |
-| Priority Callbacks | `shutdown/callbacks.go` | Priority-sorted shutdown handlers |
-| Multi-Phase Shutdown | `shutdown/manager.go` | PreShutdown -> Graceful -> Force -> Done |
+**1. Restart count has no exponential backoff**
 
-### Key File Index
+`MaxRestarts` is a hard cap of 10. Repeated resurrection failures flood the logs. Should use exponential backoff (1s, 2s, 4s...) to gradually reduce frequency.
 
-| File | Core Contribution |
-|------|------------------|
+**2. Health check has no feedback loop**
+
+It only says "found problem, tossed it to resurrection" — never confirms whether the problem was actually solved. Resurrection loops go undetected.
+
+**3. Event replay completeness is unverifiable**
+
+If the event stream is corrupted or replay is incomplete, the Agent can resurrect with "partial amnesia" — thinking it completed tasks it didn't. Needs WAL-level integrity checks.
+
+**4. Context detachment (distillation) is invisible to ops**
+
+`context.Background()` ensures distillation doesn't get cancelled, but it also means **nobody knows it's running**. No visibility into background tasks.
+
+**5. Sub Agent degradation coverage is incomplete**
+
+`executeByType` only covers 4 task types. For everything else, degradation = just error out — same as not having degradation at all.
+
+**6. Non-idempotent tools are at risk**
+
+"Better to redo than miss" is catastrophic for non-idempotent tools (place order, send email). Needs tool-level idempotency markers.
+
+**7. Callbacks and Events coexist**
+
+Both emit events, both consume events, but there's no unified event model. Debugging requires checking two places.
+
+---
+
+## 12. Architecture Summary
+
+| Pattern | Problem Solved | Gap |
+|---------|---------------|-----|
+| Resurrection Guard (stopped before cancel) | Prevents voluntary stop from being misidentified as accidental death | — |
+| Error-tolerant recovery chain | Partial recovery > no recovery | Recovery completeness unverifiable |
+| Context detachment (Background) | Distillation survives request cancellation | Invisible to operations |
+| Semaphore concurrency control | Limits parallel sub-tasks | — |
+| Factory pattern + event replay | State reconstruction | Unsafe for non-idempotent tools |
+| sync.Once + Mutex | Prevents Add after Wait panic | — |
+| Multi-phase shutdown | Ordered resource release | — |
+
+The most satisfying test I ever ran: I started 10 Agents running analysis tasks, then manually `kill -9`'d the process. When it restarted, every Agent auto-resurrected and continued where it left off.
+
+That moment I knew: **the money wasn't wasted.**
+
+---
+
+**Appendix: Key File Index**
+
+| File | Core Responsibility |
+|------|-------------------|
 | `internal/runtime/runtime.go` | Runtime interface and config definition |
-| `internal/runtime/manager.go` | Core lifecycle management: register, start, stop, resurrect, health check |
-| `internal/agents/base/agent.go` | Agent interface hierarchy definition |
-| `internal/agents/leader/agent.go` | Leader orchestration pipeline and state recovery implementation |
-| `internal/agents/leader/dispatcher.go` | Semaphore concurrent task dispatch |
-| `internal/agents/leader/supervisor.go` | Failover monitoring and cold restart strategy |
-| `internal/agents/leader/event_recovery.go` | Event log state reconstruction |
-| `internal/agents/leader/checkpoint.go` | PostgreSQL checkpoint persistence |
-| `internal/agents/leader/recovery.go` | Orphan task cleanup |
-| `internal/agents/sub/agent.go` | Sub Agent lifecycle and streaming |
+| `internal/runtime/manager.go` | Register, start, stop, resurrect, health check |
+| `internal/agents/base/agent.go` | Agent interface hierarchy: Agent / StatefulAgent / Heartbeater |
+| `internal/agents/leader/agent.go` | Leader pipeline + state recovery + safe distillation |
+| `internal/agents/leader/dispatcher.go` | Semaphore concurrent dispatch |
+| `internal/agents/leader/supervisor.go` | Heartbeat monitor + failover + cold restart |
+| `internal/agents/leader/event_recovery.go` | Rebuild RecoveryState from event stream |
+| `internal/agents/sub/agent.go` | Sub Agent lifecycle |
 | `internal/agents/sub/executor.go` | LLM execution engine (retry + degradation) |
-| `internal/agents/sub/heartbeat.go` | ID-level heartbeat sender |
-| `internal/agents/sub/tools.go` | Tool binding and Registry bridge |
-| `internal/shutdown/manager.go` | Multi-phase shutdown manager |
-| `internal/shutdown/phase.go` | Phase executor with retry and rollback |
-| `internal/shutdown/callbacks.go` | Priority-sorted shutdown callback registry |
-| `internal/shutdown/signal.go` | OS signal forwarding |
+| `internal/agents/sub/heartbeat.go` | Heartbeat sender + sync.Once shutdown |
+| `internal/shutdown/manager.go` | Four-phase shutdown |
 | `internal/callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
-
-## 11. Conclusion
-
-The Runtime subsystem is the part I spent the most time on and revised the most times. Not because the technology was hard — it's that the question "how should an Agent come back from the dead?" took a long time to answer.
-
-The answer turned out simple: **Agents are disposable, but their state is not.**
-
-The Resurrection Guard pattern prevents race conditions. The error-tolerant recovery chain ensures "partial recovery is better than none." The multi-phase graceful shutdown lets the process exit cleanly no matter what scenario.
-
-The most satisfying test I ever ran: I started 10 Agents running analysis tasks, then manually `kill -9`'d the process. When it restarted, every Agent auto-resurrected and continued where it left off. That moment I knew: **this thing worked.**
-
-Next up is the **Event System** — every action an Agent takes is recorded as an immutable event. Resurrection depends on it, auditing depends on it, debugging depends on it.

@@ -584,15 +584,21 @@ type compositeScorer struct {
 }
 
 // Score routes to the appropriate scorer based on the input key.
+// If the input is a TestCaseInput, it unpacks the embedded strategy as the key.
 func (c *compositeScorer) Score(input any) (float64, error) {
+	key := input
+	if tci, ok := input.(TestCaseInput); ok {
+		key = tci.Strategy
+	}
+
 	c.mu.Lock()
-	scorer, ok := c.scorers[input]
+	scorer, ok := c.scorers[key]
 	c.mu.Unlock()
 
 	if !ok {
 		return 0.0, fmt.Errorf("composite scorer: no scorer for input %v", input)
 	}
-	return scorer.Score(input)
+	return scorer.Score(key)
 }
 
 // mathAbs is a helper to avoid importing math in test file.

@@ -1,461 +1,479 @@
-# GoAgentX 架构深度解析（五）：工具系统 -- 能力矩阵与安全执行
+# GoAgentX 架构深度解析（五）：工具调用层拆解 -- 三条路径与一个缺口
 
-> Agent 再聪明，不会用工具就是废物。你见过那种会说不会做的 Agent 吗？"我来帮你查一下"——然后半天没动静。
-> 我当时就想：Agent 的能力边界，就取决于它能调什么工具。所以我把工具系统设计成了整个框架最厚的一层。
-> 22 个内置工具，从计算器到代码执行器，从 Web 抓取到知识库 CRUD。这不是堆数量——每一个都有存在的理由。
+> 22 个工具注册好之后，我以为万事大吉了。结果第一个集成测试就把我打回了原型——LLM 生成的参数传进去直接 panic，因为类型断言失败了。
+> 我意识到一件事：定义工具只是第一步。真正复杂的，是工具**怎么被调起来**的这条链路。
+> 参数怎么从 LLM 的 JSON 落到 Go 的函数里？结果怎么回去？谁负责超时？谁负责重试？这些才是工具系统的核心复杂度所在。
 
-## 一、先说说为什么工具层这么厚
+## 一、工具调用的三条路径
 
-写 Agent 最尴尬的时刻是什么？Agent 说"我来帮你查一下资料"，然后没有然后了——因为没有搜网页的工具。或者 Agent 说"让我计算一下"，然后给你一段文字公式——因为不会调计算器。
-
-我一开始用的 Python 方案，工具注册是在一个巨大的 dict 里塞函数。后来发现根本没法维护：没有参数校验、没有错误处理、没有安全隔离。一个工具写崩了，整个 Agent 跟着挂。
-
-所以设计 GoAgentX 的工具系统时，我定了几条死规矩：
-
-1. **每个工具都是独立公民**——有自己的名字、描述、参数 schema、能力标签
-2. **注册中心统一管理**——不能散落在代码各处
-3. **安全不是事后加的**——代码执行、文件操作这些高危工具，从第一天就有多层防护
-4. **能力可发现**——Agent 得知道自己能调什么工具，不能靠硬编码
-
-## 二、架构总览：三层分层 + 注册中心模式
-
-GoAgentX 的工具系统采用经典的三层分层架构，配合注册中心（Registry）模式实现工具的管理与调度。
+很多人看完工具注册那一套，以为工具调用就是 `registry.Execute(name, params)` 一把梭。但实际跑起来，你会发现有三条完全不同的调用路径，各有各的考量：
 
 ```mermaid
 graph TB
-    subgraph "Registry"
-        REG[Registry<br/>sync.RWMutex + map]
-        T1[Tool A]
-        T2[Tool B]
-        TN[Tool C ...]
-        REG --- T1
-        REG --- T2
-        REG --- TN
+    LLM[LLM Response<br/>tool_calls]
+    subgraph "Path 1: LLM 驱动调用"
+        P1A[parseToolCallsFromResponse]
+        P1B[toolBinder.CallTool<br/>sub/tools.go]
+        P1C[Registry.Execute]
     end
-    subgraph "三层架构"
-        CI[Core Interface<br/>Tool, Result, Registry]
-        BL[Base Layer<br/>BaseTool, ToolFunc]
-        BI[Builtin Impls<br/>Calculator, CodeRunner, ...]
+    subgraph "Path 2: Workflow Graph"
+        P2A[ToolNode.Execute<br/>graph/node.go]
+        P2B[ToolNode.eventSink<br/>事件追踪]
     end
-    REG --> CI
-    CI --> BL
-    BL --> BI
+    subgraph "Path 3: MCP 外部工具"
+        P3A[MCPTool.Execute<br/>mcp/mcp_tool.go]
+        P3B[MCPClient.CallTool<br/>JSON-RPC over stdin/SSE]
+    end
+    LLM --> P1A --> P1B --> P1C
+    LLM --> P2A --> P2B
+    P3A --> P3B
+    P1C --> TOOL[core.Tool.Execute]
+    P2A --> TOOL
+    P3A --> TOOL
 ```
 
-### 2.1 核心接口层（Core Interface Layer）
+当 LLM 决定调用一个工具时，数据长这样流：
 
-核心接口层定义在 `/src/goagent/internal/tools/resources/core/` 目录下，是整个工具系统的契约基础。
+```
+LLM 返回 tool_calls (OpenAI JSON)
+    ↓
+parseToolCallsFromResponse()     [internal/llm/output/openai.go]
+    ↓ ToolCallResponse { ToolCalls: [{ID, Name, Arguments}] }
+sub-agent executor               [internal/agents/sub/executor.go]
+    ↓ 遍历 ToolCalls
+toolBinder.CallTool(name, args)  [internal/agents/sub/tools.go]
+    ↓ 查找闭包映射
+Registry.Execute(ctx, params)    [internal/tools/resources/core/registry.go]
+    ↓ 按名查找 Tool
+Tool.Execute(ctx, params)        [core/tool.go]
+    ↓
+core.Result { Success, Data, Error }
+```
 
-**Tool 接口**（`tool.go`）：
+这是**最常用**的一条路径，也是问题最多的。我们一条条拆。
+
+---
+
+## 二、路径一：LLM 驱动的工具调用
+
+### 2.1 toolBinder：Registry 到 Agent 的桥梁
+
+子 Agent 不能直接拿 `GlobalRegistry` 到处用。中间隔了一层 `toolBinder`：
 
 ```go
-type Tool interface {
-    Name() string
-    Description() string
-    Category() ToolCategory
-    Capabilities() []Capability
-    Execute(ctx context.Context, params map[string]interface{}) (Result, error)
-    Parameters() *ParameterSchema
+// internal/agents/sub/tools.go
+type toolBinder struct {
+    mu       sync.RWMutex
+    tools    map[string]func(ctx context.Context, args map[string]any) (any, error)
+    registry *core.Registry
+}
+
+func (b *toolBinder) BridgeFromRegistry(registry *core.Registry) {
+    // 遍历 registry，为每个工具创建闭包
+    // 实际效果：b.tools[name] = func(ctx, args) { return t.Execute(ctx, args) }
 }
 ```
 
-每个工具必须实现六个方法：
-- `Name()` -- 全局唯一的工具标识符，用于注册与查找
-- `Description()` -- 工具的功能描述，供 LLM 理解何时使用
-- `Category()` -- 工具分类（System / Core / Data / Knowledge / Memory / Domain / External）
-- `Capabilities()` -- 能力标记数组，支持运行时能力过滤
-- `Execute()` -- 实际的工具执行逻辑，接收 `map[string]interface{}` 参数
-- `Parameters()` -- 参数模式的元数据定义，用于参数校验与 LLM 的参数生成引导
+为什么多这一层？三个理由：
 
-**Result 结构体**（`result.go`）：
+1. **接口隔离**：子 Agent 不需要知道 `Registry` 的存在，它只需要 "按名字调函数"
+2. **本地优先**：`toolBinder.GetTool` 有本地 → Registry 的 fallback 链，支持子 Agent 注入私有工具
+3. **测试友好**：测试时可以直接 mock toolBinder，不需要启动整个 Registry
+
+### 2.2 LLM 工具调用协议适配
+
+参数从 LLM 的 JSON 到 Go 的 `map[string]interface{}`，这条链路看起来简单，实际上藏着不少弯弯绕：
 
 ```go
-type Result struct {
-    Success  bool                   `json:"success"`
-    Data     interface{}            `json:"data,omitempty"`
-    Error    string                 `json:"error,omitempty"`
-    Metadata map[string]interface{} `json:"metadata,omitempty"`
+// internal/llm/output/openai.go
+func parseToolCallsFromResponse(choice *Choice) (*ToolCallResponse, error) {
+    // OpenAI 返回的 tool_calls 是这种结构：
+    // {
+    //   "tool_calls": [{
+    //     "id": "call_xxx",
+    //     "function": {
+    //       "name": "calculator",
+    //       "arguments": "{\"expression\": \"1+1\"}"
+    //     }
+    //   }]
+    // }
+    // arguments 是 JSON **字符串**，不是对象
+    // 需要二次反序列化
 }
 ```
 
-Result 结构体通过 `Success` 字段区分成功与失败，`Data` 携带执行结果，`Metadata` 携带执行元数据。配套的辅助函数 `NewResult()`、`NewErrorResult()`、`ResultWithTiming()` 提供了便捷的构造方式。
+这里有个容易忽略的点：`arguments` 是 JSON `string`，不是 JSON `object`。如果 LLM 返回非法 JSON，就会在这里崩。OpenAI 和 Anthropic 的工具调用格式还不一样——Anthropic 的 content block 里直接带 JSON object。
 
-**Registry 注册中心**（`registry.go`）：
+为了统一，框架内部定义了自己的抽象：
 
 ```go
-type Registry struct {
-    tools map[string]Tool
-    mu    sync.RWMutex
+// internal/llm/output/toolcall.go
+type ToolCapable interface {
+    GenerateWithTools(ctx context.Context, prompt string, 
+        tools []ToolDefinition, choice ToolChoice) (*ToolCallResponse, error)
+    SendToolResult(ctx context.Context, messages []map[string]interface{},
+        toolResults []ToolResult) (*ToolCallResponse, error)
 }
 
-func NewRegistry() *Registry
-func (r *Registry) Register(tool Tool) error
-func (r *Registry) Get(name string) Tool
-func (r *Registry) List() []Tool
-func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (Result, error)
-func (r *Registry) Filter(filter ToolFilter) []Tool
-```
-
-Registry 使用 `sync.RWMutex` 保证并发安全，提供了 `Register`、`Unregister`、`Get`、`List`、`Execute`、`Filter` 等核心操作。配套的 `ToolGroup` 类型支持工具的逻辑分组，`ToolFilter` 支持按 Enabled/Disabled/Categories 进行运行时过滤。
-
-全局单例 `GlobalRegistry` 与包级便利函数（`Register`、`Get`、`List`、`Execute`）使得工具的注册和使用都非常简洁。
-
-**Capability 能力标记系统**：
-
-```go
-const (
-    CapabilityMath     Capability = "math"
-    CapabilityKnowledge Capability = "knowledge"
-    CapabilityMemory   Capability = "memory"
-    CapabilityNetwork  Capability = "network"
-    CapabilityFile     Capability = "file"
-    CapabilityText     Capability = "text"
-    CapabilityTime     Capability = "time"
-    CapabilityExternal Capability = "external"
-)
-```
-
-能力标记系统支持 Agent 根据自身权限过滤可用工具，例如禁用网络访问的 Agent 将无法调用带有 `CapabilityNetwork` 标记的工具。
-
-### 2.2 基础实现层（Base Layer）
-
-基础实现层定义在 `internal/tools/resources/base/` 目录下。
-
-**BaseTool 结构体**：
-
-```go
-type BaseTool struct {
-    name, description string
-    category          core.ToolCategory
-    capabilities      []core.Capability
-    parameters        *core.ParameterSchema
-    metadata          *core.ToolMetadata
+type ToolCall struct {
+    ID        string `json:"id"`
+    Name      string `json:"name"`
+    Arguments string `json:"arguments"`  // JSON string
 }
 ```
 
-BaseTool 为 `Tool` 接口的 5 个方法提供了默认实现（除了 `Execute`），开发者只需关注 `Execute` 方法的实现。配套的 `ToolLifecycle` 接口支持 `Init()` 和 `Stop()` 钩子方法（默认 no-op）。
+每一家 LLM 的 adapter 自己负责把供应商格式转成 `ToolCallResponse`。这样一来，**工具注册、调度、执行**对 LLM 供应商完全透明。
 
-**ToolFunc 函数式适配器**：
+### 2.3 参数校验的缺口
 
-```go
-func ToolFunc(name, description string, category core.ToolCategory,
-    capabilities []core.Capability, params *core.ParameterSchema,
-    execute func(context.Context, map[string]interface{}) (core.Result, error)) *BaseTool
-```
-
-ToolFunc 提供了函数式的工具定义方式，适用于简单的工具，无需定义新的结构体类型。
-
-**工厂函数**：
+这是整个调用链路里最让我睡不着的一个问题。看代码：
 
 ```go
-func NewBaseTool(name, description string, category core.ToolCategory, params *ParameterSchema) *BaseTool
-func NewBaseToolWithCapabilities(name, description string, category core.ToolCategory,
-    capabilities []core.Capability, params *ParameterSchema) *BaseTool
-func NewBaseToolWithCategory(name, description string, category core.ToolCategory, params *ParameterSchema) *BaseTool
-```
-
-注意：`NewBaseToolWithCategory` 创建的工具具有空的 `capabilities` 列表，这是已知问题（详见下文）。
-
-### 2.3 注册入口
-
-注册入口在 `internal/tools/resources/builtin/builtin.go` 中定义：
-
-```go
-func RegisterGeneralTools() {
-    // -- 系统工具 --
-    Register(NewIDGenerator())
-    // -- 执行工具 --
-    Register(NewCodeRunner())
-    // -- 文件工具 --
-    Register(NewFileTools())
-    // -- 数学工具 --
-    Register(NewCalculator())
-    Register(NewDateTime())
-    Register(NewTextProcessor())
-    // -- 数据工具 --
-    Register(NewJSONTools())
-    Register(NewDataValidation())
-    Register(NewDataTransform())
-    Register(NewRegexTool())
-    // -- 日志分析 --
-    Register(NewLogAnalyzer())
-    // -- 网络工具 --
-    Register(NewHTTPRequest())
-    Register(NewWebScraper(nil))
-    // -- 规划工具 --
-    Register(NewTaskPlanner(nil))
-    // -- 知识库工具 --
-    Register(NewKnowledgeSearch(nil))
-    Register(NewKnowledgeAdd(nil))
-    Register(NewKnowledgeUpdate(nil))
-    Register(NewKnowledgeDelete(nil))
-    Register(NewCorrectKnowledge(nil))
-    // -- 记忆工具 --
-    Register(NewMemorySearch(nil))
-    Register(NewUserProfile(nil, nil))
-    Register(NewDistilledMemorySearch(nil))
+// internal/tools/resources/builtin/math/calculator.go
+func (t *Calculator) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+    expression, ok := params["expression"].(string)  // 手动类型断言
+    if !ok || expression == "" {
+        return core.NewErrorResult("invalid_expression"), nil
+    }
+    // ...
 }
 ```
 
-总共注册了 22 个工具，覆盖 8 大类别。
-
-## 三、22+ 工具能力矩阵
-
-### 3.1 系统工具（System Category）
-
-**IDGenerator** (`internal/tools/resources/builtin/system/id_generator.go`)
-
-IDGenerator 使用 `github.com/google/uuid` 库生成 UUID v4 和短 ID（UUID 前 8 字符）。支持批量生成（1-100 个），适用于需要唯一标识符的场景。
-
-### 3.2 执行工具（Execution）
-
-**CodeRunner** (`internal/tools/resources/builtin/execution/code_runner.go`)
-
-CodeRunner 是系统中风险最高的工具，因此采用了多层安全防护：
-
-1. **危险模式检测**：拦截 18 种危险代码模式（import os, import subprocess, eval(, exec(, open(, system( 等）
-2. **混淆检测**：拦截 7 种混淆模式（chr(, ord(, \\x, base64., getattr, setattr, compile(）
-3. **超时控制**：默认 30s，最大 60s
-4. **输出限制**：默认 10KB 输出，最小 1KB
-5. **代码长度限制**：最多 10000 字符
-6. **进程组隔离**：`cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}`，可单独终止整个进程树
-7. **临时工作目录**：执行在临时目录中进行，执行完毕后自动清理
-
-### 3.3 文件工具（File Tools）
-
-**FileTools** (`internal/tools/resources/builtin/file/file_tools.go`)
-
-FileTools 支持读、写、列出文件操作，实现了**安全作用域控制**：
+**问题在哪？** `ParameterSchema` 定义了参数的类型、格式、枚举值，但**没有任何通用代码在调用 Execute 之前去校验参数**。
 
 ```go
-type FileTools struct {
+// core/tool.go - ParameterSchema 定义
+type ParameterSchema struct {
+    Type       string                `json:"type"`
+    Properties map[string]*Parameter `json:"properties"`
+    Required   []string              `json:"required"`
+}
+
+// core/registry.go - Execute 实现
+func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (Result, error) {
+    tool := r.Get(name)
+    if tool == nil {
+        return NewErrorResult("tool not found"), nil
+    }
+    return tool.Execute(ctx, params)  // 直接执行，无 schema 校验
+}
+```
+
+这就是说，`ParameterSchema` 只对 LLM"有参考价值"（用于生成正确的参数），对代码执行没有约束力。每个工具自己用 `params["xxx"].(string)` 手写类型断言。写对了还好，写错了就是 panic。
+
+这个缺口我知道，但一直没堵。原因是：参数校验器要处理嵌套的 JSON Schema、enum、最小/最大值、pattern 等等——这在 Go 里写起来很重。另一个更关键的原因是，有时候 LLM 传的参数在 validate 的边缘情况（比如传了多余字段），宽松的参数处理反而更鲁棒。这是个取舍，我选择了"信任 LLM + 工具自我保护"的策略。
+
+---
+
+## 三、路径二：Workflow Graph 的 ToolNode
+
+这是第二条调用路径，用的是 Workflow 引擎的图执行机制。
+
+```go
+// internal/workflow/graph/node.go
+type ToolNode struct {
+    tool        core.Tool
+    nodeID      string
+    executionID string
+    eventSink   func(ctx context.Context, eventType events.EventType, payload map[string]any)
+}
+
+func (n *ToolNode) Execute(ctx context.Context, state *State) error {
+    // 1. 生成确定性 inputHash
+    inputHash := n.hashInput(params)
+    // 2. 生成 tool_call_id
+    toolCallID := fmt.Sprintf("tool_%s_%s", n.nodeID, inputHash)
+    // 3. Pre-hook: emit EventToolCallStarted
+    n.eventSink(ctx, EventToolCallStarted, map[string]any{
+        "tool_call_id":  toolCallID,
+        "execution_id":  n.executionID,
+        "input_hash":    inputHash,
+        "tool_name":     n.tool.Name(),
+        "params":        params,
+    })
+    // 4. 执行工具
+    result, err := n.tool.Execute(ctx, params)
+    // 5. Post-hook: emit EventToolCallCompleted
+    status := "success"
+    if err != nil || !result.Success { status = "error" }
+    n.eventSink(ctx, EventToolCallCompleted, map[string]any{
+        "status":      status,
+        "summary":     truncateString(fmt.Sprintf("%v", result.Data), 200),
+        "duration_ms": time.Since(start).Milliseconds(),
+    })
+    // 6. 写入 state
+    state.Set("node."+toolName, result.Data)
+}
+```
+
+这条路径和 LLM 驱动的路径有什么不同？
+
+| 维度 | Path 1: LLM 驱动 | Path 2: ToolNode |
+|------|-------------------|-------------------|
+| **参数来源** | LLM 生成 | Workflow state 或上游节点 |
+| **调用时机** | Agent 对话循环中 | 图编排的确定性执行 |
+| **事件追踪** | callbacks.EventToolStart/End/Error | eventSink + ToolCallStarted/Completed |
+| **结果处理** | 格式化为文本送回 LLM | 写入 state，供下游节点读取 |
+| **可重复性** | 每次对话可能不同 | 确定性（同一 inputHash 同一结果） |
+
+ToolNode 的设计暗示了另一种使用场景：**当你不依赖 LLM 决策时**。比如一个固定的 pipeline："抓取网页 → 提取文本 → 总结"，三步不需要 LLM 反复决策，直接用图编排。
+
+---
+
+## 四、路径三：MCP 外部工具适配
+
+MCP（Model Context Protocol）是 Anthropic 提出的工具协议，标准化的 JSON-RPC over stdin/SSE。GoAgentX 的 MCP 适配器把外部工具包装成了标准的 `core.Tool`：
+
+```go
+// internal/mcp/mcp_tool.go
+type MCPTool struct {
     *base.BaseTool
-    allowedDir string
+    client     *MCPClient
+    serverName string
+    toolDef    *MCPToolDef
+}
+
+func NewMCPTool(client *MCPClient, serverName string, def *MCPToolDef) *MCPTool {
+    // MCP 的 InputSchema 是 JSON Schema 格式
+    // 需要转换为 GoAgentX 的 ParameterSchema
+    params := ConvertJSONSchema(def.InputSchema)
+    // 命名约定："mcp.{serverName}.{toolName}"
+    name := fmt.Sprintf("mcp.%s.%s", serverName, def.Name)
+    return &MCPTool{...}
+}
+
+func (t *MCPTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+    result, err := t.client.CallTool(ctx, t.toolDef.Name, params)
+    if err != nil {
+        return core.NewErrorResult(err.Error()), nil
+    }
+    // MCP 返回的是 Content 数组，提取文本内容
+    text := extractText(result.Content)
+    return core.NewResult(true, map[string]interface{}{
+        "content": text,
+        "blocks":  result.Content,
+    }), nil
 }
 ```
 
-安全机制：
-- `allowedDir` 字段限制了文件操作的范围（通过 `WithAllowedDir` 选项设置）
-- 写文件时，如果父目录不存在则自动创建（`os.MkdirAll(dir, 0750)`）
-- 读文件时支持 `offset`/`limit` 分页读取
-- 文件不存在时，通过 `findSimilarFiles()` 提供路径推荐
-- 列出文件支持递归、隐藏文件过滤、Glob 模式匹配
+这里的关键设计：
 
-### 3.4 数学与文本工具（Math & Text）
+1. **命名隔离**：`mcp.{serverName}.{toolName}` 避免了和内置工具命名冲突
+2. **Schema 转换**：`ConvertJSONSchema()` 把 MCP 的 JSON Schema 转成 `ParameterSchema`——注意，这同样只用于 LLM 的工具定义，不做运行时校验
+3. **结果适配**：MCP 返回的是 Content Block 数组（多种类型：text/image/resource），取 text 为主要内容，保留 blocks 供需要
 
-**Calculator** (`internal/tools/resources/builtin/math/calculator.go`)
+MCP 的好处是**标准化**——一个 MCP server 可以在任何支持 MCP 的框架里复用。坏处是性能——每次工具调用都有一次 JSON-RPC 的序列化/反序列化开销。
 
-Calculator 实现了完整的递归下降解析器，支持 `+`, `-`, `*`, `/`, `()`：
+---
 
-```go
-evaluateExpression("100*(100+1)/2")  // 5050
-```
+## 五、结果格式化：被低估的一层
 
-解析流程：`parseAddSub` -> `parseMulDiv` -> `parseFactor` -> `parseNumber`，正确处理了运算符优先级和括号嵌套。
-
-**DateTime** 支持 now/format/parse/add/diff 五种操作，支持多种常见时间格式的自动识别。
-
-**TextProcessor** 支持 count/split/replace/uppercase/lowercase/trim/contains 七种操作。
-
-**JSONTools** (`internal/tools/resources/builtin/text/json_tools.go`)
-
-JSONTools 支持 parse/extract/merge/pretty 四种操作。其中的 `extract` 支持点号导航（`user.name`）和数组索引（`items[0]`），`merge` 实现了深度递归合并。
-
-**DataValidation** (`internal/tools/resources/builtin/text/data_validation.go`)
-
-支持 validate_json / validate_email（简化版 RFC 5322）/ validate_url（仅 http/https）/ validate_schema（简化 JSON Schema 校验）。
-
-**DataTransform** (`internal/tools/resources/builtin/text/data_transform.go`)
-
-支持 csv_to_json（header/row 两种模式）/ json_to_csv（自动提取所有 key）/ flatten_json（递归展开，可配置分隔符）。
-
-**RegexTool** (`internal/tools/resources/builtin/text/regex_tool.go`)
-
-支持 match/extract（捕获组）/ replace，支持 i/m/s 正则标记，max_results 限制匹配数量。
-
-### 3.5 日志分析（Log Analyzer）
-
-**LogAnalyzer** (`internal/tools/resources/builtin/text/log_analyzer.go`)
-
-LogAnalyzer 支持三种操作：
-- `parse_log` -- 自动检测 JSON / Common Log Format / Combined Log Format / 简单格式，返回结构化条目
-- `find_errors` -- 使用 8 个默认错误模式（error, exception, failed, fatal, panic, stack trace, timeout, denied）
-- `extract_metrics` -- 使用 6 个默认指标模式（response_time_ms, latency_seconds, request_count, memory_mb, cpu_percent, throughput_rps），支持自定义模式
-
-**已知问题**：LogAnalyzer 使用了 `NewBaseToolWithCategory()` 而非 `NewBaseToolWithCapabilities()`，导致其 `capabilities` 为空列表，在基于能力过滤时可能被错误排除。
-
-### 3.6 网络工具（Network）
-
-**HTTPRequest** (`internal/tools/resources/builtin/network/http_request.go`)
-
-支持 GET/POST/PUT/DELETE/PATCH 五种方法，自动解析 JSON 响应，支持自定义请求头，通过 `SetClient()` 支持 HTTP client 的依赖注入。
-
-**WebScraper** (`internal/tools/resources/builtin/network/web_scraper.go`)
-
-通过 regexp 移除 script/style/nav/header/footer 等非内容元素，提取 title/body/links。支持 `HTTPGetter` 接口的依赖注入，默认使用 `DefaultHTTPClient`。
-
-### 3.7 规划工具（Planning）
-
-**TaskPlanner** (`internal/tools/resources/builtin/planning/task_planner.go`)
-
-TaskPlanner 是系统中唯一使用 LLM 驱动的工具，支持三种操作：
+工具执行完返回 `core.Result`，不能直接扔给 LLM——LLM 需要的是**人类可读的文本**。这就是 `ResultFormatter` 的活儿。
 
 ```go
-type TaskPlanner struct {
-    *base.BaseTool
-    llmClient *llm.Client
+// internal/tools/resources/formatter/result_formatter.go
+func (rf *ResultFormatter) Format(
+    toolName string, 
+    params map[string]interface{}, 
+    result core.Result, 
+    duration time.Duration,
+) string {
+    if !result.Success {
+        return fmt.Sprintf("调用工具 %s 时出错: %s", toolName, result.Error)
+    }
+    return rf.formatByToolType(toolName, params, result)
 }
-```
 
-- `plan_tasks` -- 根据目标和可用工具生成完整的任务计划
-- `decompose_task` -- 将复杂任务分解为更小的子任务，含依赖关系和优先级
-- `estimate_time` -- 估算任务完成时间（LLM 不可用时返回默认值 30 分钟）
-
-核心实现中包含一个精巧的 `extractJSON()` 函数，能正确处理嵌套括号、转义序列和引号字符串，从 LLM 的文本回复中提取 JSON 块：
-
-```go
-func extractJSON(text string) string {
-    start := strings.Index(text, "{")
-    // 括号计数 + 引号状态机 + 转义处理
-    for i := start; i < len(text); i++ {
-        if escapeNext { escapeNext = false; continue }
-        if char == '\\' { escapeNext = true; continue }
-        if char == '"' { inString = !inString; continue }
-        if !inString {
-            if char == '{' { braceCount++ }
-            if char == '}' { braceCount--; if braceCount == 0 { return text[start:i+1] } }
-        }
+func (rf *ResultFormatter) formatByToolType(
+    toolName string, 
+    params map[string]interface{}, 
+    result core.Result,
+) string {
+    switch toolName {
+    case "datetime":   return rf.formatDateTime(params, result.Data)
+    case "calculator": return rf.formatCalculator(params, result.Data)
+    case "file_tools": return rf.formatFileTools(params, result.Data)
+    case "web_scraper": return rf.formatWebScraper(params, result.Data)
+    // ... 约 15 种类型特定格式化器
+    default: return rf.formatDefault(toolName, params, result.Data)
     }
 }
 ```
 
-### 3.8 知识库工具（Knowledge Base）
+格式化器有两个层面的考量：
 
-知识库工具组包含四种 CRUD 操作的工具：`KnowledgeSearch`、`KnowledgeAdd`、`KnowledgeUpdate`、`KnowledgeDelete`，以及一个专用的 `CorrectKnowledge`。
+**第一层：格式化结果直接影响 LLM 的理解质量。**
 
-这些工具实现了**多租户隔离**，所有操作都需要 `tenant_id` 参数。它们通过接口（`KnowledgeSearcher`、`KnowledgeService`）进行依赖注入，便于测试和替换实现。
-
-```go
-type KnowledgeSearcher interface {
-    Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error)
-}
-
-type KnowledgeService interface {
-    GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error)
-    UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error)
-    AddKnowledge(ctx context.Context, item *KnowledgeItem) (*KnowledgeItem, error)
-    DeleteKnowledge(ctx context.Context, tenantID, itemID string) error
-}
-```
-
-`KnowledgeUpdate` 采用"读取-修改-写入"模式：先获取现有条目，然后只覆盖变更字段，保留其他字段不变。这使得 LLM 只需提供变更部分即可触发更新。
-
-`CorrectKnowledge` (`internal/tools/resources/builtin/knowledge/correct_knowledge.go`) 直接操作 `repositories.KnowledgeRepositoryInterface`，通过添加 `corrected_at` 和 `correction` 元数据标记追踪纠正操作。
-
-### 3.9 记忆工具（Memory）
-
-记忆工具组包含三个工具：
-
-**MemorySearch** -- 通过 `MemoryManager.SearchSimilarTasks()` 进行语义搜索，结果整理为统一的 memory 格式，limit 范围 1-20。
-
-**UserProfile** -- 从蒸馏记忆中提取用户画像，包括技术栈（从"精通"/"擅长"关键词中解析）和偏好（从"喜欢"关键词中解析）。
-
-**DistilledMemorySearch** -- 直接从数据库的蒸馏记忆中搜索，支持按 `user_id` 查询或向量搜索（向量搜索目前占位）。
-
-## 四、安全模型
-
-GoAgentX 工具系统的安全模型采用了**纵深防御**策略：
-
-### 4.1 CodeRunner 沙箱
-
-CodeRunner 是攻击面最大的工具，其安全防护覆盖了多个层面：
-
-| 安全层 | 措施 | 实现 |
-|--------|------|------|
-| 静态分析 | 危险模式检测（18 种） | `strings.Contains` 匹配 |
-| 静态分析 | 混淆检测（7 种） | `strings.Contains` 匹配 |
-| 运行时 | 超时控制 | `context.WithTimeout` |
-| 进程隔离 | 进程组隔离 | `Setpgid: true` |
-| 资源限制 | 输出大小限制 | 截断 + 最大长度 |
-| 资源限制 | 代码长度限制 | 10000 字符 |
-| 环境隔离 | 临时工作目录 | `os.MkdirTemp` |
-| 环境隔离 | 最小环境变量 | 仅提供 PATH |
-| 功能开关 | Python/JS 可独立启用 | `enablePython` / `enableJS` |
-
-### 4.2 FileTools 作用域控制
-
-FileTools 通过 `allowedDir` 实现路径白名单，所有文件路径在操作前都会经过安全校验：
-
-```
-if t.allowedDir != "" {
-    absPath, _ := filepath.Abs(filePath)
-    absDir, _ := filepath.Abs(t.allowedDir)
-    if !strings.HasPrefix(absPath, absDir) {
-        return core.NewErrorResult("access denied: path is outside allowed directory")
-    }
-}
-```
-
-### 4.3 知识库多租户隔离
-
-所有知识库工具都要求 `tenant_id` 参数，在数据层面实现了租户隔离。
-
-### 4.4 LLM 参数引导
-
-`ParameterSchema` 通过 `Type`、`Description`、`Enum`、`Required` 等字段为 LLM 提供参数生成的引导信息，减少了参数错误注入的风险。
-
-## 五、扩展性设计
-
-GoAgentX 工具系统的扩展性体现在多个维度：
-
-1. **接口驱动**：`Tool` 接口使得新增工具只需实现接口方法
-2. **函数式适配**：`ToolFunc` 支持零样板代码的工具定义
-3. **依赖注入**：`KnowledgeSearcher`、`KnowledgeService`、`HTTPGetter`、`MemoryManager` 等接口支持
-4. **装饰器模式**：`WithMetadata` 函数包装器可在不修改工具代码的情况下添加元数据
-5. **组合模式**：`ToolGroup` 支持对工具进行逻辑分组
-6. **运行时过滤**：`ToolFilter` 和 `Registry.Filter()` 支持运行时动态筛选
-
-## 六、已知问题与设计缺陷
-
-### 6.1 LogAnalyzer 缺少能力标记
+比如 Calculator 的格式化：
 
 ```go
-// 问题代码（NewBaseToolWithCategory 不会设置 capabilities）
-BaseTool: base.NewBaseToolWithCategory("log_analyzer", "Parse logs...", core.CategoryCore, params),
-
-// 应该使用（NewBaseToolWithCapabilities 会设置 capabilities）
-BaseTool: base.NewBaseToolWithCapabilities("log_analyzer", "Parse logs...", core.CategoryCore,
-    []core.Capability{core.CapabilityText}, params),
+func (rf *ResultFormatter) formatCalculator(params map[string]interface{}, data interface{}) string {
+    resultMap, _ := data.(map[string]interface{})
+    expression, _ := resultMap["expression"].(string)
+    result, _ := resultMap["result"].(float64)
+    return fmt.Sprintf("表达式 `%s` 的计算结果是：**%s**", expression, formatNumber(result))
+}
 ```
 
-### 6.2 UserProfile 偏好提取缺陷
+LLM 读到 "表达式 `100*(100+1)/2` 的计算结果是：**5050**"，不需要二次解析——直接能用。
 
-在 `memory_tools.go` 中，`extractPreferences` 函数存在多个缺陷：
+**第二层：格式化器是按工具名硬编码匹配的。**
 
-1. **"不喜欢" 被 "喜欢" 误匹配**：`strings.Contains(content, "喜欢")` 会匹配包含"不喜欢"的内容，导致偏好提取错误
-2. **只处理第一个 "喜欢"**：`strings.Split(content, "喜欢")` 只处理分割后的第一个元素
-3. **不区分大小写缺失**：`addUniqueString` 虽然使用了 `strings.EqualFold` 做去重，但偏好提取逻辑中未使用
+`switch toolName` 这种方式，新增工具必须同步更新格式化器。如果忘了加，就走 `formatDefault`——纯 JSON dump，LLM 也能读，但体验差一截。
 
-### 6.3 CodeRunner 静态分析局限性
+这层我至今不太满意。理想方案应该是基于 `ToolCategory` 或 `Capability` 做格式化路由，可惜一直没排上优先级。
 
-当前的危险模式检测基于简单的 `strings.Contains` 字符串匹配，可以轻易被绕过：
+---
 
-- 字符串拼接：`"im" + "port os"` 可绕过 `"import os"` 检测
-- 编码绕过：Base64 解码后的代码可以完全绕过所有模式检测
-- Unicode 混淆：使用 Unicode 同形字符可以绕过关键词匹配
+## 六、事件与回调：两套系统并存
 
-这些问题我列在 TODO 里了，等有需求再搞。毕竟开源项目嘛——你永远不知道用户会怎么用你的工具。
+工具调用过程中有两个独立的事件系统：
 
-### 6.4 TaskPlanner 的 LLM 依赖
+```mermaid
+graph LR
+    subgraph "callbacks 系统"
+        CB[callbacks.Registry]
+        E1[EventToolStart]
+        E2[EventToolEnd]  
+        E3[EventToolError]
+    end
+    subgraph "events 系统"
+        ES[EventStore]
+        E4[EventToolCallStarted]
+        E5[EventToolCallCompleted]
+    end
+    subgraph "ToolNode"
+        TN[ToolNode.Execute]
+        ES -->|eventSink| E4
+        ES -->|eventSink| E5
+    end
+    subgraph "sub-agent"
+        SA[taskExecutor]
+        CB -->|emitCallback| E1
+        CB -->|emitCallback| E2
+        CB -->|emitCallback| E3
+    end
+```
 
-TaskPlanner 在 LLM 不可用时只能返回默认值（30 分钟估算），说实话有点敷衍。后续应该加一个无 LLM 模式下的备选策略，比如基于历史执行时间的统计估算。
+为什么会搞出两套？
 
-## 七、总结
+`callbacks` 系统是早期的设计，通用事件钩子，支持用户在 `EventToolStart` 时打日志、发 metrics。`events` 系统（EventStore）是为了事件溯源和 ReAct Runtime Trace 设计的——它记录了更细粒度的执行上下文（execution_id, tool_call_id, input_hash）。
 
-22 个内置工具，从计算器到代码执行器，从 Web 抓取到知识库 CRUD。说实话这个数量不算多，但每一个都是我实际用过的场景逼出来的。没有为了凑数加工具——每一个都有它存在的理由。
+历史原因：先有 callbacks，后加 events，没来得及合并。目前它们各管各的，互不干扰。
 
-最让我满意的不是工具数量，是安全设计。Registry 模式集中管理、Capability 标记系统做细粒度控制、多层安全防护（静态检测 → 进程隔离 → 超时控制 → 作用域限制）——这套东西让我晚上睡得着觉。
+---
 
-当然，也有很多不完美的地方：LogAnalyzer 忘记打能力标签了、CodeRunner 的静态分析还不够聪明……但这些都在 TODO 里躺着了，等用户来催的时候再修吧。这就是开源项目的现实——你永远不知道用户会怎么用你的工具，等他们发现了 bug，自然会来提 issue。😄
+## 七、横切关注点
 
-下一篇聊**事件系统和可观测性**——怎么把 Agent 干的每一件事都记下来，出了问题好查。
+### 7.1 超时控制
+
+目前工具调用的超时完全靠 `context.Context`：
+
+```go
+// sub/executor.go
+ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
+defer cancel()
+result, err := toolBinder.CallTool(ctx, name, args)
+```
+
+但这是**调用方设置**的超时，不是工具层统一的超时。每个调用方可能设不同的 timeout——sub-agent 设 30s，ToolNode 设 60s，没有统一的兜底。如果某个调用方忘了设 timeout，工具可以永远跑下去。
+
+### 7.2 并发与限流
+
+`GlobalRegistry` 本身是并发安全的（`sync.RWMutex`），但它**没有为单个工具提供并发控制**。这意味着：
+
+- 如果 10 个子 Agent 同时掉同一个 `CodeRunner`，没有排队机制
+- 没有工具级别的限流（比如 WebScraper 每秒最多调 5 次）
+- 没有配额管理（某个用户一天最多调多少次 CodeRunner）
+
+目前的策略是"相信 Agent 的串行调用模式"——在单个 Agent 对话中，工具调用是串行的。但跨 Agent 的并发调用是真实存在并且没有防护的。
+
+### 7.3 日志与追踪
+
+工具调用的日志散布在三个地方：
+
+1. `callbacks.Emit(EventToolStart)` —— 简单的生命周期日志
+2. `ToolNode.eventSink` —— 详细的执行追踪（含 execution_id）
+3. `events.EventStore` —— 完整的事件溯源
+
+这对调试来说不太友好——你要查一个工具调用出了什么问题，得翻三个地方。
+
+---
+
+## 八、已知问题与设计缺陷
+
+### 8.1 参数校验缺失（最严重）
+
+如前所述，`ParameterSchema` 定义了一大堆类型约束，但**没有任何代码在 `Execute` 之前做校验**。如果 LLM 传了 `"expression": 123` 而不是 `"expression": "1+1"`，`params["expression"].(string)` 直接 panic。
+
+**短期内**的修复方案：在 `Registry.Execute` 里加一层自动 Validate，用 JSON Schema 的 Go 实现（如 `gojsonschema`）。
+
+**长期方案**：让 `ParameterSchema` 支持 `Validate(params) error` 方法，纳入调用链标准流程。
+
+### 8.2 ResultFormatter 硬编码匹配
+
+`formatByToolType` 用 `switch toolName` 硬编码了约 15 种工具的格式化逻辑。新增工具时：
+
+- 要么记得更新格式化器（容易忘）
+- 要么走 `formatDefault`（JSON dump，LLM 体验差）
+
+**理想方案**：把格式化逻辑收进工具自己——让 `Tool` 接口加一个 `FormatResult(data interface{}) string` 方法。这样新增工具时，格式化逻辑和工具一起注册，不会漏。
+
+### 8.3 无统一的工具调用重试
+
+当工具调用因网络波动或临时错误失败时，没有任何重试机制。`CodeRunner` 超时了，就是失败了——不会再试一次。
+
+不是所有工具都适合重试（比如 `KnowledgeAdd` 不能重复调），但至少可重试的工具（如 `HTTPRequest`、`WebScraper`）应该有一个统一的 retry middleware。
+
+### 8.4 ToolNode 与 sub-agent 的重叠
+
+两条调用路径（ToolNode 和 sub-agent toolBinder）有大量的功能重叠——参数传递、结果处理、事件追踪。如果把 ToolNode 的事件系统和 sub-agent 打通，可以减少一次适配。
+
+但目前它们在各自的包里，互不知道对方的存在。这个"不知道"是刻意为之——我不想让 agent 层依赖于 workflow 层。但如果后续有人在 agent 层想用 ToolNode 的事件模型，就得自己再搭一套。
+
+### 8.5 MCP 命名冲突风险
+
+`NewMCPTool` 的命名是 `"mcp.{serverName}.{toolName}"`，但 `BridgeFromRegistry` 直接拿 `tool.Name()` 当 key 注册到 `toolBinder.tools`。这意味着：
+
+- Agent 看到的工具名是完整的 `"mcp.weather-server.get_weather"`
+- LLM 可能不太理解这个前缀，或者生成的 tool call 里不带 `mcp.` 前缀
+- 如果两个 MCP server 暴露了同名的工具（概率不大，但不是不可能），会发生静默覆盖
+
+**好的方面**：命名空间前缀减少了和内置工具的冲突风险。这一点比把所有工具摊在同一个命名空间里强。
+
+---
+
+## 九、总结
+
+回头看，工具调用层比工具**定义**层复杂得多。三条调用路径：
+
+- **LLM 驱动**（sub-agent toolBinder）——最常用，但参数校验裸奔
+- **Workflow Graph**（ToolNode）——确定性强，事件追踪完整
+- **MCP 外部工具**——标准化接入，但多一层序列化开销
+
+最让我纠结的是参数校验的缺口——`ParameterSchema` 定义了规则，却没人执行校验。这种"定义和执行脱节"的设计，放在其他系统里可能还好，但在工具调用场景里，LLM 生成参数的不确定性让这个问题变得致命。
+
+不过话说回来，这就是做 Agent 框架的现实——你不可能在 LLM 的输出上施加编译时类型安全。你能做的，就是在运行时把错误兜住、把日志记全、把结果格式好。这三件事做好了，工具调用层就算站稳了。
+
+下一篇聊**记忆系统和知识蒸馏**——Agent 怎么在多次对话中记住重要信息，不会每次都是"初次见面"。
+
+---
+
+**附录：关键文件索引**
+
+| 组件 | 文件路径 |
+|------|----------|
+| 核心 Tool 接口 | `internal/tools/resources/core/tool.go` |
+| Registry | `internal/tools/resources/core/registry.go` |
+| CapabilityEngine | `internal/tools/resources/core/capability.go` |
+| 工具绑定器 | `internal/agents/sub/tools.go` |
+| 子 Agent 执行器 | `internal/agents/sub/executor.go` |
+| LLM 工具调用协议 | `internal/llm/output/toolcall.go` |
+| OpenAI 适配器 | `internal/llm/output/openai.go` |
+| 结果格式化器 | `internal/tools/resources/formatter/result_formatter.go` |
+| ToolNode (Workflow) | `internal/workflow/graph/node.go` |
+| MCP 工具适配器 | `internal/mcp/mcp_tool.go` |
+| MCP 客户端 | `internal/mcp/client.go` |
+| 回调系统 | `internal/callbacks/callbacks.go` |
+| 事件系统 | `internal/events/` |
+| 内建工具注册 | `internal/tools/resources/builtin/builtin.go` |

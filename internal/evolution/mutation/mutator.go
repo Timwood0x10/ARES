@@ -20,10 +20,12 @@ var ErrInvalidCount = fmt.Errorf("mutation count must be positive")
 // It supports parameter value mutations, prompt template mutations, and tool
 // configuration mutations with configurable ranges, pools, and randomness sources.
 type Mutator struct {
-	paramRanges map[string]ParamRange // Configurable parameter ranges.
-	promptPool  []string              // Available prompt templates for mutation.
-	toolPool    []string              // Available tool configurations for mutation.
-	rng         *rand.Rand            // Deterministic randomness source.
+	paramRanges      map[string]ParamRange // Configurable parameter ranges.
+	promptPool       []string              // Available prompt templates for mutation.
+	toolPool         []string              // Available tool configurations for mutation.
+	rng              *rand.Rand            // Deterministic randomness source.
+	deterministicIDs bool                  // When true, use counter-based IDs instead of UUID.
+	idCounter        int64                 // Monotonic counter for deterministic ID generation.
 }
 
 // NewMutator creates a new strategy mutator with default configuration.
@@ -153,11 +155,20 @@ func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	}
 
 	// Fill in metadata for the new child strategy.
-	now := parent.CreatedAt // Preserve parent's creation time as baseline.
-	child.ID = uuid.New().String()
+	now := parent.CreatedAt
+	if m.deterministicIDs {
+		m.idCounter++
+		parentShort := parent.ID
+		if len(parentShort) > 8 {
+			parentShort = parentShort[:8]
+		}
+		child.ID = fmt.Sprintf("det-mut-%s-%d", parentShort, m.idCounter)
+	} else {
+		child.ID = uuid.New().String()
+	}
 	child.ParentID = parent.ID
 	child.Version = parent.Version + 1
-	child.Score = -1 // Unevaluated.
+	child.Score = -1
 	child.CreatedAt = now
 
 	return child, nil

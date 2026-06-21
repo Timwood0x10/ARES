@@ -35,6 +35,16 @@ type RegressionResult struct {
 	TestedAt      time.Time // when this regression was run
 }
 
+// TestCaseInput wraps a strategy with its test case context for scoring.
+// When RegressionConfig.TestCases is set, the Scorer receives this instead
+// of the raw strategy. Scorers should type-assert input to TestCaseInput
+// to access both the strategy and the specific test case.
+type TestCaseInput struct {
+	Strategy any
+	TestCase any
+	Index    int // iteration index, shared between baseline and compare
+}
+
 // RegressionConfig configures a regression test between two strategies.
 type RegressionConfig struct {
 	OldStrategy  any     // old strategy (baseline)
@@ -44,6 +54,18 @@ type RegressionConfig struct {
 	TestSuite    string  // test suite name or identifier
 	Confidence   float64 // significance level for statistical test, default 0.05
 	MinWinRate   float64 // minimum win rate to consider new strategy better, default 0.55
+	// MinAdaptiveRuns is the minimum runs before early stopping kicks in (adaptive mode only, default 10).
+	// Adaptive mode scores in batches and stops early when statistical significance is reached.
+	MinAdaptiveRuns int
+	// AdaptiveBatchSize is the number of scores to collect per batch in adaptive mode, default 5.
+	AdaptiveBatchSize int
+	// MaxAdaptiveRuns overrides BaselineRuns/CompareRuns as the upper bound for adaptive mode, default 0 (use BaselineRuns/CompareRuns).
+	MaxAdaptiveRuns int
+	// TestCases provides a fixed list of test cases for paired scoring.
+	// When set, iteration i of both baseline and compare receives TestCaseInput
+	// with the same TestCase and Index, ensuring fair paired comparison.
+	// Length should cover max(BaselineRuns, CompareRuns).
+	TestCases []any
 }
 
 // DefaultRegressionConfig returns a RegressionConfig with sensible defaults.
@@ -94,6 +116,12 @@ func NewRegressionTester(arena *Service, scorer Scorer) (*RegressionTester, erro
 // It runs oldStrategy baselineRuns times and newStrategy compareRuns times,
 // then computes statistical significance using Welch's t-test approximation.
 //
+// When cfg.AdaptiveBatchSize > 0, runs in batches with early stopping:
+//   - Scores are collected in batches of AdaptiveBatchSize for both strategies
+//   - After each batch, Welch's t-test is computed
+//   - Stops early if p < confidence (winner found) or if p > 0.5 after MinAdaptiveRuns
+//   - Caps at MaxAdaptiveRuns if set, otherwise at BaselineRuns/CompareRuns
+//
 // Args:
 //   - ctx: context for cancellation and timeout.
 //   - cfg: configuration for the regression test.
@@ -120,13 +148,46 @@ func (rt *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Reg
 	if cfg.MinWinRate <= 0 {
 		cfg.MinWinRate = 0.55
 	}
+	if cfg.MinAdaptiveRuns <= 0 {
+		cfg.MinAdaptiveRuns = 10
+	}
+	if cfg.AdaptiveBatchSize <= 0 {
+		cfg.AdaptiveBatchSize = 5
+	}
+	if cfg.AdaptiveBatchSize >= cfg.BaselineRuns && cfg.AdaptiveBatchSize >= cfg.CompareRuns {
+		// Batch size covers all runs, no adaptive benefit; fall through to standard mode.
+		cfg.AdaptiveBatchSize = 0
+	}
+	if cfg.MaxAdaptiveRuns <= 0 {
+		cfg.MaxAdaptiveRuns = cfg.BaselineRuns
+		if cfg.CompareRuns > cfg.MaxAdaptiveRuns {
+			cfg.MaxAdaptiveRuns = cfg.CompareRuns
+		}
+	}
 
-	// Run both strategies concurrently using errgroup.
+	// Adaptive batched mode with early stopping.
+	if cfg.AdaptiveBatchSize > 0 && cfg.MaxAdaptiveRuns > 0 {
+		return rt.runAdaptive(ctx, cfg)
+	}
+
+	// Pre-sample test cases for paired scoring.
+	testCases := cfg.TestCases
+	if len(testCases) == 0 {
+		// Generate a deterministic sequence of nil test cases so both strategies
+		// at least agree on the iteration index (Index field in TestCaseInput).
+		totalRuns := cfg.BaselineRuns
+		if cfg.CompareRuns > totalRuns {
+			totalRuns = cfg.CompareRuns
+		}
+		testCases = make([]any, totalRuns)
+	}
+
+	// Standard mode: run both strategies concurrently using errgroup.
 	var oldScores, newScores []float64
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		scores, err := rt.runStrategy(gCtx, cfg.OldStrategy, cfg.BaselineRuns)
+		scores, err := rt.runStrategy(gCtx, cfg.OldStrategy, cfg.BaselineRuns, testCases)
 		if err != nil {
 			return fmt.Errorf("arena: run old strategy: %w", err)
 		}
@@ -135,7 +196,7 @@ func (rt *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Reg
 	})
 
 	g.Go(func() error {
-		scores, err := rt.runStrategy(gCtx, cfg.NewStrategy, cfg.CompareRuns)
+		scores, err := rt.runStrategy(gCtx, cfg.NewStrategy, cfg.CompareRuns, testCases)
 		if err != nil {
 			return fmt.Errorf("arena: run new strategy: %w", err)
 		}
@@ -152,9 +213,101 @@ func (rt *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Reg
 	return result, nil
 }
 
+// runAdaptive runs regression in batches with early stopping via sequential testing.
+// Both strategies are scored in parallel batches. After each batch, significance is
+// computed. Stops early if the outcome is already clear.
+func (rt *RegressionTester) runAdaptive(ctx context.Context, cfg RegressionConfig) (*RegressionResult, error) {
+	var oldScores, newScores []float64
+	maxRuns := cfg.MaxAdaptiveRuns
+	batchSize := cfg.AdaptiveBatchSize
+	minRuns := cfg.MinAdaptiveRuns
+
+	// Pre-sample test cases for paired scoring across all batches.
+	testCases := cfg.TestCases
+	if len(testCases) == 0 {
+		testCases = make([]any, maxRuns)
+	}
+
+	for len(oldScores) < maxRuns || len(newScores) < maxRuns {
+		// Determine next batch size (last batch may be smaller).
+		offset := len(oldScores)
+		if len(newScores) < offset {
+			offset = len(newScores)
+		}
+		oldRemaining := maxRuns - len(oldScores)
+		newRemaining := maxRuns - len(newScores)
+		thisBatch := batchSize
+		if oldRemaining < thisBatch {
+			thisBatch = oldRemaining
+		}
+		if newRemaining < thisBatch {
+			thisBatch = newRemaining
+		}
+		if thisBatch <= 0 {
+			break
+		}
+
+		// Both strategies score the same test case slice (paired by index).
+		batchTestCases := testCases[offset : offset+thisBatch]
+
+		// Run one batch for both strategies in parallel.
+		var batchOld, batchNew []float64
+		g, gCtx := errgroup.WithContext(ctx)
+
+		g.Go(func() error {
+			scores, err := rt.runStrategy(gCtx, cfg.OldStrategy, thisBatch, batchTestCases)
+			if err != nil {
+				return fmt.Errorf("arena: run old strategy: %w", err)
+			}
+			batchOld = scores
+			return nil
+		})
+
+		g.Go(func() error {
+			scores, err := rt.runStrategy(gCtx, cfg.NewStrategy, thisBatch, batchTestCases)
+			if err != nil {
+				return fmt.Errorf("arena: run new strategy: %w", err)
+			}
+			batchNew = scores
+			return nil
+		})
+
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
+
+		oldScores = append(oldScores, batchOld...)
+		newScores = append(newScores, batchNew...)
+
+		// Check for early stopping after reaching minimum runs.
+		n := len(oldScores)
+		if len(newScores) < n {
+			n = len(newScores)
+		}
+		if n >= minRuns && n >= 2 {
+			_, pVal := computeSignificance(oldScores[:n], newScores[:n], cfg.Confidence)
+			// Stop if significant (p < confidence) or hopeless (p > 0.5).
+			if pVal < cfg.Confidence || pVal > 0.5 {
+				break
+			}
+		}
+	}
+
+	// Trim to equal length for win rate calculation.
+	n := len(oldScores)
+	if len(newScores) < n {
+		n = len(newScores)
+	}
+
+	result := rt.buildResult(cfg, oldScores[:n], newScores[:n])
+	return result, nil
+}
+
 // runStrategy executes a single strategy multiple times and collects scores.
 // Each execution is scored via the configured Scorer interface.
-func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int) ([]float64, error) {
+// When testCases is provided, the Scorer receives TestCaseInput wrapping both
+// the strategy and the specific test case for that iteration.
+func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int, testCases []any) ([]float64, error) {
 	if strategy == nil {
 		return nil, ErrNilStrategy
 	}
@@ -170,10 +323,16 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 		default:
 		}
 
-		// Score the strategy directly.
-		// In production, this could involve executing the strategy through the arena
-		// service first, but for flexibility we delegate all logic to the scorer.
-		score, err := rt.scorer.Score(strategy)
+		var input any = strategy
+		if len(testCases) > 0 {
+			input = TestCaseInput{
+				Strategy: strategy,
+				TestCase: testCases[i%len(testCases)],
+				Index:    i,
+			}
+		}
+
+		score, err := rt.scorer.Score(input)
 		if err != nil {
 			return nil, fmt.Errorf("arena: score run %d: %w", i, err)
 		}

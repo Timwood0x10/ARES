@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +29,9 @@ var ErrInvalidCrossoverPoints = fmt.Errorf("crossover points must be non-negativ
 // uniform crossover by default. Each parameter is independently selected
 // from either parent A or parent B with equal probability.
 type Crossover struct {
-	rng *rand.Rand // Deterministic randomness source.
+	rng              *rand.Rand   // Deterministic randomness source.
+	deterministicIDs bool         // When true, use counter-based IDs instead of UUID.
+	idCounter        atomic.Int64 // Monotonic counter for deterministic ID generation (thread-safe).
 }
 
 // NewCrossover creates a new crossover operator with default configuration.
@@ -78,6 +81,24 @@ func WithSeed(seed int64) CrossoverOption {
 	}
 }
 
+// WithDeterministicIDs enables counter-based child strategy IDs instead of UUIDs.
+// When enabled, each crossover child gets an ID like "det-cross-{counter}".
+// This ensures reproducible IDs across runs with the same inputs and seed.
+//
+// Args:
+//
+//	enabled - whether to use deterministic IDs.
+//
+// Returns:
+//
+//	CrossoverOption - the configuration function.
+func WithDeterministicIDs(enabled bool) CrossoverOption {
+	return func(c *Crossover) error {
+		c.deterministicIDs = enabled
+		return nil
+	}
+}
+
 // Crossover performs uniform crossover on two parent strategies.
 // For each parameter key present in either parent, the child inherits
 // from parent A or B with 50% probability each. The PromptTemplate
@@ -107,15 +128,31 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
 	promptTemplate := c.selectPromptTemplate(a, b)
 
+	var childID string
+	if c.deterministicIDs {
+		counter := c.idCounter.Add(1)
+		aShort := a.ID
+		if len(aShort) > 8 {
+			aShort = aShort[:8]
+		}
+		bShort := b.ID
+		if len(bShort) > 8 {
+			bShort = bShort[:8]
+		}
+		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
+	} else {
+		childID = uuid.New().String()
+	}
+
 	child := &mutation.Strategy{
-		ID:                   uuid.New().String(),
+		ID:                   childID,
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
 		PromptTemplate:       promptTemplate,
 		StrategyMutationType: mutation.MutationCrossover,
 		MutationDesc:         desc,
-		Score:                -1, // Unevaluated.
+		Score:                -1,
 		CreatedAt:            time.Now(),
 	}
 
@@ -165,8 +202,24 @@ func (c *Crossover) MultiPointCrossover(ctx context.Context, a, b *mutation.Stra
 	childParams, desc := c.multiPointSelect(allKeys, a.Params, b.Params, k)
 	promptTemplate := c.selectPromptTemplate(a, b)
 
+	var childID string
+	if c.deterministicIDs {
+		counter := c.idCounter.Add(1)
+		aShort := a.ID
+		if len(aShort) > 8 {
+			aShort = aShort[:8]
+		}
+		bShort := b.ID
+		if len(bShort) > 8 {
+			bShort = bShort[:8]
+		}
+		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
+	} else {
+		childID = uuid.New().String()
+	}
+
 	child := &mutation.Strategy{
-		ID:                   uuid.New().String(),
+		ID:                   childID,
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
@@ -366,8 +419,24 @@ func (c *Crossover) CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.S
 	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
 	promptTemplate := c.halfSplitPromptCrossover(a, b)
 
+	var childID string
+	if c.deterministicIDs {
+		counter := c.idCounter.Add(1)
+		aShort := a.ID
+		if len(aShort) > 8 {
+			aShort = aShort[:8]
+		}
+		bShort := b.ID
+		if len(bShort) > 8 {
+			bShort = bShort[:8]
+		}
+		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
+	} else {
+		childID = uuid.New().String()
+	}
+
 	child := &mutation.Strategy{
-		ID:                   uuid.New().String(),
+		ID:                   childID,
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,

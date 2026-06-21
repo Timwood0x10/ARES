@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // DreamCycleConfig holds configuration for the dream cycle orchestrator.
@@ -27,6 +29,15 @@ type DreamCycleConfig struct {
 
 	// Cooldown is the minimum time between consecutive dream cycles.
 	Cooldown time.Duration
+
+	// TaskSampleSize is the number of scoring runs per strategy for the final evaluation.
+	// Default 50. With adaptive batching, actual calls may be less.
+	TaskSampleSize int
+
+	// QuickRejectRuns is the number of runs for the first-pass screening.
+	// Candidates below MinWinRate after this many runs are discarded without full eval.
+	// Default 5. Set to 0 to skip quick rejection.
+	QuickRejectRuns int
 }
 
 // DefaultDreamCycleConfig returns sensible defaults for dream cycle configuration.
@@ -38,6 +49,8 @@ func DefaultDreamCycleConfig() DreamCycleConfig {
 		MaxMutations:         3,
 		MinWinRate:           0.55,
 		Cooldown:             5 * time.Minute,
+		TaskSampleSize:       50,
+		QuickRejectRuns:      5,
 	}
 }
 
@@ -316,43 +329,134 @@ func defaultRootStrategy() Strategy {
 }
 
 // findWinner tests all candidates in arena and returns the best one above threshold.
+//
+// Uses a two-stage approach:
+//  1. Quick reject: all candidates are screened in parallel with N=QuickRejectRuns (default 5).
+//     Those below MinWinRate are discarded.
+//  2. Full eval: survivors are evaluated in parallel with N=TaskSampleSize (default 50)
+//     and adaptive batching. The best is returned.
 func (dc *DreamCycle) findWinner(
 	ctx context.Context,
 	candidates []Strategy,
 	baseline Strategy,
 ) (*candidateResult, error) {
-	var best *candidateResult
+	if len(candidates) == 0 {
+		return nil, nil
+	}
 
-	for _, cand := range candidates {
-		result, err := dc.tester.Run(ctx, RegressionConfig{
-			Candidate:      cand,
-			Baseline:       baseline,
-			TaskSampleSize: 50,
+	// Stage 1: Quick reject — screen all candidates in parallel with small N.
+	quickRejectN := dc.config.QuickRejectRuns
+	survivors := candidates
+
+	if quickRejectN > 0 {
+		type quickResult struct {
+			candidate Strategy
+			winRate   float64
+		}
+
+		quickResults := make([]*quickResult, len(candidates))
+		g, gCtx := errgroup.WithContext(ctx)
+
+		for i, cand := range candidates {
+			i, cand := i, cand
+			g.Go(func() error {
+				result, err := dc.tester.Run(gCtx, RegressionConfig{
+					Candidate:         cand,
+					Baseline:          baseline,
+					TaskSampleSize:    quickRejectN,
+					AdaptiveBatchSize: quickRejectN, // single batch, no adaptive benefit
+				})
+				if err != nil {
+					slog.WarnContext(ctx, "[DreamCycle] Quick reject failed",
+						"candidate_id", cand.ID, "error", err)
+					return nil // skip on error
+				}
+				quickResults[i] = &quickResult{candidate: cand, winRate: result.WinRate}
+				return nil
+			})
+		}
+
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
+
+		survivors = nil
+		for _, qr := range quickResults {
+			if qr == nil {
+				continue
+			}
+			if qr.winRate >= dc.config.MinWinRate {
+				survivors = append(survivors, qr.candidate)
+			} else {
+				slog.DebugContext(ctx, "[DreamCycle] Candidate rejected in quick pass",
+					"candidate_id", qr.candidate.ID,
+					"win_rate", qr.winRate,
+					"threshold", dc.config.MinWinRate)
+			}
+		}
+
+		rejected := len(candidates) - len(survivors)
+		if rejected > 0 {
+			slog.InfoContext(ctx, "[DreamCycle] Quick reject filtered candidates",
+				"total", len(candidates),
+				"survivors", len(survivors),
+				"rejected", rejected)
+		}
+	}
+
+	if len(survivors) == 0 {
+		return nil, nil
+	}
+
+	// Stage 2: Full evaluation — run survivors in parallel with full N.
+	type evalResult struct {
+		candidateResult
+		err error
+	}
+
+	evalResults := make([]*evalResult, len(survivors))
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for i, cand := range survivors {
+		i, cand := i, cand
+		g.Go(func() error {
+			result, err := dc.tester.Run(gCtx, RegressionConfig{
+				Candidate:         cand,
+				Baseline:          baseline,
+				TaskSampleSize:    dc.config.TaskSampleSize,
+				AdaptiveBatchSize: 5,
+			})
+			if err != nil {
+				evalResults[i] = &evalResult{err: err}
+				return nil // skip on error
+			}
+			evalResults[i] = &evalResult{
+				candidateResult: candidateResult{
+					strategy:         cand,
+					winRate:          result.WinRate,
+					scoreImprovement: result.CandidateScore - result.BaselineScore,
+				},
+			}
+			return nil
 		})
-		if err != nil {
-			slog.WarnContext(ctx, "[DreamCycle] Candidate test failed",
-				"candidate_id", cand.ID,
-				"error", err)
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	// Pick the best among survivors above threshold.
+	var best *candidateResult
+	for _, er := range evalResults {
+		if er == nil || er.err != nil {
 			continue
 		}
-
-		// Skip candidates below minimum win rate threshold.
-		if result.WinRate < dc.config.MinWinRate {
-			slog.DebugContext(ctx, "[DreamCycle] Candidate below threshold",
-				"candidate_id", cand.ID,
-				"win_rate", result.WinRate,
-				"threshold", dc.config.MinWinRate)
+		if er.winRate < dc.config.MinWinRate {
 			continue
 		}
-
-		cr := &candidateResult{
-			strategy:         cand,
-			winRate:          result.WinRate,
-			scoreImprovement: result.CandidateScore - result.BaselineScore,
-		}
-
-		if best == nil || cr.scoreImprovement > best.scoreImprovement {
-			best = cr
+		if best == nil || er.scoreImprovement > best.scoreImprovement {
+			cr := er.candidateResult
+			best = &cr
 		}
 	}
 
