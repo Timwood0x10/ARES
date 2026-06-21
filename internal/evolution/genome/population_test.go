@@ -576,8 +576,8 @@ func TestDefaultPopulationConfig(t *testing.T) {
 		t.Errorf("default MutationRate = %f, want 0.2", cfg.MutationRate)
 	}
 
-	if cfg.EliteCount != 1 {
-		t.Errorf("default EliteCount = %d, want 1", cfg.EliteCount)
+	if cfg.EliteCount != 3 {
+		t.Errorf("default EliteCount = %d, want 3", cfg.EliteCount)
 	}
 }
 

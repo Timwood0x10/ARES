@@ -341,6 +341,19 @@ type SystemConfig struct {
 
 	// StrategyStore persists deployed strategies (optional, may be nil).
 	StrategyStore StrategyStore `json:"-"`
+
+	// MinMutationRate is the floor for adaptive mutation rate clamping.
+	MinMutationRate float64 `json:"min_mutation_rate"`
+
+	// MaxMutationRate is the ceiling for adaptive mutation rate clamping.
+	MaxMutationRate float64 `json:"max_mutation_rate"`
+
+	// MaxStagnantGenerations is the stagnation threshold for bottom-performer reset.
+	MaxStagnantGenerations int `json:"max_stagnant_generations"`
+
+	// DiversityThreshold minimum average pairwise distance before adaptive
+	// mutation becomes more aggressive.
+	DiversityThreshold float64 `json:"diversity_threshold"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -350,14 +363,18 @@ type SystemConfig struct {
 //	SystemConfig - configuration with default values.
 func DefaultSystemConfig() SystemConfig {
 	return SystemConfig{
-		PopulationSize:       20,
-		EliteCount:           1,
-		MutationRate:         0.2,
-		SurvivalRate:         0.6,
-		EnableDreamCycle:     false,
-		EnableScheduler:      false,
-		MinTasksBeforeEvolve: 10,
-		SchedulerTrigger:     TriggerOnIdle,
+		PopulationSize:           20,
+		EliteCount:               3,
+		MutationRate:             0.2,
+		SurvivalRate:             0.6,
+		EnableDreamCycle:         false,
+		EnableScheduler:          false,
+		MinTasksBeforeEvolve:     10,
+		SchedulerTrigger:         TriggerOnIdle,
+		MinMutationRate:          0.05,
+		MaxMutationRate:          0.5,
+		MaxStagnantGenerations:   10,
+		DiversityThreshold:       0.15,
 	}
 }
 
@@ -423,12 +440,16 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create crossover: %w", err)
 	}
 
-	// Step 4: Create genome population with optional seed.
+	// Step 4: Create genome population with optional seed and adaptive config.
 	popOpts := []genome.PopulationOption{
 		genome.WithPopulationSize(cfg.PopulationSize),
 		genome.WithEliteCount(cfg.EliteCount),
 		genome.WithMutationRate(cfg.MutationRate),
 		genome.WithSurvivalRate(cfg.SurvivalRate),
+		genome.WithMinMutationRate(cfg.MinMutationRate),
+		genome.WithMaxMutationRate(cfg.MaxMutationRate),
+		genome.WithMaxStagnantGenerations(cfg.MaxStagnantGenerations),
+		genome.WithDiversityThreshold(cfg.DiversityThreshold),
 	}
 	if cfg.PopulationSeed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.PopulationSeed))
@@ -490,7 +511,7 @@ func NewWiredEvolutionSystem(
 		system.DreamCycle = dreamCycle
 	}
 
-	// Step 8: Optionally create scheduler with callback registration.
+	// Step 9: Optionally create scheduler with callback registration.
 	if cfg.EnableScheduler && cfg.Callbacks != nil {
 		scheduler := NewEvolutionScheduler(
 			cfg.Callbacks,

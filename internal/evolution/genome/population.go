@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand"
 	"sync"
 	"time"
@@ -37,6 +38,18 @@ var ErrInvalidEliteCount = fmt.Errorf("elite count must be non-negative and <= p
 // ErrInvalidBreedingPoolRatio is returned when breeding pool ratio is out of range [0, 1].
 var ErrInvalidBreedingPoolRatio = fmt.Errorf("breeding pool ratio must be between 0 and 1")
 
+// ErrInvalidMinMutationRate is returned when min mutation rate is out of range [0, 1].
+var ErrInvalidMinMutationRate = fmt.Errorf("min mutation rate must be between 0 and 1")
+
+// ErrInvalidMaxMutationRate is returned when max mutation rate is out of range [0, 1].
+var ErrInvalidMaxMutationRate = fmt.Errorf("max mutation rate must be between 0 and 1")
+
+// ErrInvalidMaxStagnantGenerations is returned when max stagnant generations is negative.
+var ErrInvalidMaxStagnantGenerations = fmt.Errorf("max stagnant generations must be non-negative")
+
+// ErrInvalidDiversityThreshold is returned when diversity threshold is out of range [0, 1].
+var ErrInvalidDiversityThreshold = fmt.Errorf("diversity threshold must be between 0 and 1")
+
 // MutatorInterface wraps mutation.Strategy mutation for the genome package.
 // Implementations generate mutated child strategies from a parent strategy.
 type MutatorInterface interface {
@@ -55,7 +68,7 @@ type PopulationConfig struct {
 	// MutationRate is the probability of mutation after crossover (default 0.2).
 	MutationRate float64 `json:"mutation_rate"`
 
-	// EliteCount is the number of best individuals to preserve unchanged (default 1).
+	// EliteCount is the number of best individuals to preserve unchanged (default 3).
 	EliteCount int `json:"elite_count"`
 
 	// BreedingPoolRatio is the fraction of survivors eligible as parents (default 0.3).
@@ -65,6 +78,22 @@ type PopulationConfig struct {
 
 	// Seed is the random seed for deterministic population creation (0 = non-deterministic).
 	Seed int64 `json:"seed,omitempty"`
+
+	// MinMutationRate is the floor for adaptive mutation rate clamping (default 0.05).
+	MinMutationRate float64 `json:"min_mutation_rate"`
+
+	// MaxMutationRate is the ceiling for adaptive mutation rate clamping (default 0.5).
+	MaxMutationRate float64 `json:"max_mutation_rate"`
+
+	// MaxStagnantGenerations is the number of generations without best-score improvement
+	// before triggering a reset of bottom performers (default 10).
+	MaxStagnantGenerations int `json:"max_stagnant_generations"`
+
+	// DiversityThreshold is the minimum average pairwise distance in parameter space.
+	// When actual diversity drops below this threshold, the adaptive mutation rate
+	// becomes more aggressive and stagnation reset may inject random individuals.
+	// Range [0, 1], default 0.15.
+	DiversityThreshold float64 `json:"diversity_threshold"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -74,11 +103,15 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:              20,
-		SurvivalRate:      0.6, // Keep 60%, eliminate bottom 40% per design doc
-		MutationRate:      0.2,
-		EliteCount:        1,
-		BreedingPoolRatio: 0.3, // Top 30% of survivors form the breeding pool
+		Size:                    20,
+		SurvivalRate:            0.6,
+		MutationRate:            0.2,
+		EliteCount:              3,
+		BreedingPoolRatio:       0.3,
+		MinMutationRate:         0.05,
+		MaxMutationRate:         0.5,
+		MaxStagnantGenerations:  10,
+		DiversityThreshold:      0.15,
 	}
 }
 
@@ -202,6 +235,88 @@ func WithBreedingPoolRatio(ratio float64) PopulationOption {
 	}
 }
 
+// WithMinMutationRate sets the minimum adaptive mutation rate floor.
+// The adaptive mutation rate will never go below this value.
+//
+// Args:
+//
+//	rate - floor mutation rate (must be in [0, 1]).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+func WithMinMutationRate(rate float64) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if rate < 0 || rate > 1 {
+			return fmt.Errorf("%w: got %v", ErrInvalidMinMutationRate, rate)
+		}
+		cfg.MinMutationRate = rate
+		return nil
+	}
+}
+
+// WithMaxMutationRate sets the maximum adaptive mutation rate ceiling.
+// The adaptive mutation rate will never exceed this value.
+//
+// Args:
+//
+//	rate - ceiling mutation rate (must be in [0, 1]).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+func WithMaxMutationRate(rate float64) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if rate < 0 || rate > 1 {
+			return fmt.Errorf("%w: got %v", ErrInvalidMaxMutationRate, rate)
+		}
+		cfg.MaxMutationRate = rate
+		return nil
+	}
+}
+
+// WithMaxStagnantGenerations sets the stagnation threshold for triggering reset.
+// After this many generations without best-score improvement, the bottom
+// performers are reset to inject fresh genetic material.
+//
+// Args:
+//
+//	n - number of generations before reset trigger (must be >= 0).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+func WithMaxStagnantGenerations(n int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if n < 0 {
+			return fmt.Errorf("%w: got %d", ErrInvalidMaxStagnantGenerations, n)
+		}
+		cfg.MaxStagnantGenerations = n
+		return nil
+	}
+}
+
+// WithDiversityThreshold sets the minimum diversity threshold.
+// When actual population diversity drops below this value, the adaptive
+// mutation rate becomes more aggressive to restore exploration.
+//
+// Args:
+//
+//	threshold - minimum average pairwise distance (must be in [0, 1], default 0.15).
+//
+// Returns:
+//
+//	PopulationOption - functional option to apply the setting.
+func WithDiversityThreshold(threshold float64) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if threshold < 0 || threshold > 1 {
+			return fmt.Errorf("%w: got %v", ErrInvalidDiversityThreshold, threshold)
+		}
+		cfg.DiversityThreshold = threshold
+		return nil
+	}
+}
+
 // Population holds a collection of agent strategies that evolve together.
 // It manages the lifecycle of strategies across generations using
 // selection, crossover, and mutation operations.
@@ -223,6 +338,17 @@ type Population struct {
 
 	// rng provides deterministic randomness for reproducible evolution.
 	rng *rand.Rand
+
+	// bestScore tracks the highest score seen across generations for stagnation detection.
+	bestScore float64
+
+	// stagnantGens counts consecutive generations without best-score improvement.
+	stagnantGens int
+
+	// currentMutationRate is the runtime mutation rate adjusted by adaptive logic.
+	// Initialized from cfg.MutationRate and modified by adjustMutationRateLocked.
+	// The original cfg.MutationRate is preserved as the base rate for drift-back.
+	currentMutationRate float64
 }
 
 // NewPopulation creates a new population from a base strategy.
@@ -259,16 +385,22 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		return nil, fmt.Errorf("%w: elite count %d exceeds size %d", ErrInvalidEliteCount, cfg.EliteCount, cfg.Size)
 	}
 
+	if cfg.MinMutationRate > cfg.MaxMutationRate {
+		return nil, fmt.Errorf("min mutation rate %f exceeds max mutation rate %f", cfg.MinMutationRate, cfg.MaxMutationRate)
+	}
+
 	seed := cfg.Seed
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
 	pop := &Population{
-		Agents:     make([]*mutation.Strategy, 0, cfg.Size),
-		Size:       cfg.Size,
-		Generation: 0,
-		cfg:        cfg,
-		rng:        rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
+		Agents:               make([]*mutation.Strategy, 0, cfg.Size),
+		Size:                 cfg.Size,
+		Generation:           0,
+		cfg:                  cfg,
+		rng:                  rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
+		bestScore:            math.Inf(-1),
+		currentMutationRate:  cfg.MutationRate,
 	}
 
 	err := pop.initializeFromBase(ctx, base, mutator)
@@ -378,10 +510,15 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		nextGen := elites[:min(len(elites), p.Size)]
 		p.Agents = nextGen
 		p.Generation++
+
+		// Skip adaptive adjustments when no offspring were produced — no new
+		// genetic material entered the pool, so diversity/stagnation signals
+		// would be misleading.
 		slog.InfoContext(ctx, cfg.logLabel,
 			"generation", p.Generation,
 			"population_size", len(p.Agents),
 			"elite_count", len(elites),
+			"mutation_rate", p.currentMutationRate,
 		)
 		return nil
 	}
@@ -405,11 +542,15 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	p.Agents = nextGen
 	p.Generation++
 
+	p.adjustMutationRateLocked()
+	p.handleStagnationLocked()
+
 	slog.InfoContext(ctx, cfg.logLabel,
 		"generation", p.Generation,
 		"population_size", len(p.Agents),
 		"survivor_count", survivorCount,
 		"elite_count", len(elites),
+		"mutation_rate", p.currentMutationRate,
 	)
 
 	return nil
@@ -459,7 +600,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 		// The Mutate call is only triggered when the probability check passes,
 		// ensuring mutators with side effects (e.g., counters) are not invoked
 		// on offspring that skip mutation.
-		if p.rng.Float64() < p.cfg.MutationRate {
+		if p.rng.Float64() < p.currentMutationRate {
 			mutated, err := mutator.Mutate(ctx, child, 1)
 			if err != nil {
 				return nil, fmt.Errorf("mutate offspring: %w", err)
@@ -524,7 +665,7 @@ func (p *Population) Best() *mutation.Strategy {
 
 // EvolveOnIdle runs a simplified evolution cycle triggered during system idle time.
 // Delegates to doEvolve with idle-specific configuration: configurable survival rate,
-// top BreedingPoolRatio of survivors as breeding pool, and single elite preservation.
+// top BreedingPoolRatio of survivors as breeding pool, and configured elite count.
 //
 // This is the zero-token evolution loop specified in the design document:
 // it uses pre-computed task scores (no LLM calls needed) and performs
@@ -552,12 +693,7 @@ func (p *Population) EvolveOnIdle(ctx context.Context, mutator MutatorInterface,
 			}
 			return survivors[:poolSize]
 		},
-		eliteFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
-			if len(survivors) == 0 {
-				return []*mutation.Strategy{}
-			}
-			return []*mutation.Strategy{survivors[0].Clone()}
-		},
+		eliteFn: p.preserveElites,
 		logLabel: "evolve_on_idle completed",
 	})
 }
