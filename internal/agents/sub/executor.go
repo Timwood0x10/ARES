@@ -14,20 +14,25 @@ import (
 	"goagentx/internal/llm/output"
 )
 
+// FallbackHandler produces a recommendation fallback result for a given task type.
+// Used when the LLM is unavailable or fails. Returns items, explanation, error.
+type FallbackHandler func(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error)
+
 // taskExecutor executes recommendation tasks.
 type taskExecutor struct {
-	toolBinder  ToolBinder
-	llmAdapter  output.LLMAdapter
-	template    *output.TemplateEngine
-	promptTpl   string
-	validator   *output.Validator
-	maxRetries  int
-	retryOnFail bool // Retry LLM call when validation fails
-	strictMode  bool // Return error on validation failure
-	logger      *slog.Logger
-	eventStore  events.EventStore // Optional: emits events for tool/LLM calls
-	agentID     string            // Agent ID for event emission
-	callbacks   callbacks.Emitter // Optional: emits lifecycle callback events.
+	toolBinder       ToolBinder
+	llmAdapter       output.LLMAdapter
+	template         *output.TemplateEngine
+	promptTpl        string
+	validator        *output.Validator
+	maxRetries       int
+	retryOnFail      bool // Retry LLM call when validation fails
+	strictMode       bool // Return error on validation failure
+	logger           *slog.Logger
+	eventStore       events.EventStore // Optional: emits events for tool/LLM calls
+	agentID          string            // Agent ID for event emission
+	callbacks        callbacks.Emitter // Optional: emits lifecycle callback events.
+	fallbackHandlers map[models.AgentType]FallbackHandler
 }
 
 // TaskExecutorOption configures a taskExecutor instance during construction.
@@ -81,10 +86,22 @@ func NewTaskExecutorWithValidation(
 		strictMode:  strictMode,
 		logger:      slog.Default(),
 	}
+	e.fallbackHandlers = make(map[models.AgentType]FallbackHandler)
 	for _, opt := range opts {
 		opt(e)
 	}
 	return e
+}
+
+// RegisterFallback registers a type-specific fallback handler used when
+// the LLM is unavailable or execution fails. If no handler is registered
+// for an agent type, executeByType returns an empty result with a warning
+// instead of erroring out.
+func (e *taskExecutor) RegisterFallback(agentType models.AgentType, handler FallbackHandler) {
+	if handler == nil {
+		return
+	}
+	e.fallbackHandlers[agentType] = handler
 }
 
 // SetEventStore configures the executor to emit events for tool/LLM calls.
@@ -234,14 +251,19 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 }
 
 func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, profile *models.UserProfile) ([]*models.RecommendItem, error) {
-	// Retry loop
 	var lastErr error
 	for attempt := 0; attempt < e.maxRetries; attempt++ {
 		if attempt > 0 {
-			slog.Debug("Retry attempt", "attempt", attempt+1, "max_retries", e.maxRetries)
+			if nonIdempotent := e.listNonIdempotentTools(); len(nonIdempotent) > 0 {
+				slog.Error("LLM retry blocked: non-idempotent tools may have been called",
+					"attempt", attempt+1,
+					"max_retries", e.maxRetries,
+					"tools", nonIdempotent,
+				)
+				return nil, errors.Wrap(lastErr, "retry aborted: non-idempotent tools may have been called")
+			}
 		}
 
-		// Execute LLM call
 		items, err := e.executeWithLLMSingle(ctx, task, profile)
 		if err != nil {
 			lastErr = err
@@ -343,8 +365,32 @@ func formatBudget(budget *models.PriceRange) string {
 	return fmt.Sprintf("%.0f - %.0f", budget.Min, budget.Max)
 }
 
+// listNonIdempotentTools returns names of non-idempotent tools bound to this executor.
+func (e *taskExecutor) listNonIdempotentTools() []string {
+	var names []string
+	if e.toolBinder == nil {
+		return nil
+	}
+	all := e.toolBinder.ListTools()
+	for _, n := range all {
+		if !e.toolBinder.IsToolIdempotent(n) {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
 // executeByType dispatches to type-specific handlers.
+// If no handler is registered for the agent type, returns an empty result
+// with a warning (graceful degradation instead of hard error).
 func (e *taskExecutor) executeByType(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error) {
-	slog.Debug("executeByType called", "agent_type", task.AgentType)
-	return nil, "", fmt.Errorf("no fallback handler for agent type %s, LLM execution required", task.AgentType)
+	if handler, ok := e.fallbackHandlers[task.AgentType]; ok {
+		slog.Debug("executeByType: using registered fallback", "agent_type", task.AgentType)
+		return handler(ctx, task)
+	}
+	slog.Warn("executeByType: no fallback handler registered",
+		"agent_type", task.AgentType,
+		"task_id", task.TaskID,
+	)
+	return []*models.RecommendItem{}, "fallback: empty result (no handler)", nil
 }

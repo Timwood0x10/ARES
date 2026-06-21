@@ -18,6 +18,7 @@ import (
 
 	"goagentx/internal/agents/base"
 	"goagentx/internal/core/models"
+	"goagentx/internal/ctxutil"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
 
@@ -68,6 +69,14 @@ type Config struct {
 
 	// HeartbeatInterval is how often to send heartbeats for alive agents.
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+
+	// MaxBackoff is the maximum backoff between resurrection attempts.
+	// Defaults to 30s.
+	MaxBackoff time.Duration `yaml:"max_backoff"`
+
+	// InitialBackoff is the initial backoff before the first retry.
+	// Defaults to 1s. Subsequent retries double until MaxBackoff.
+	InitialBackoff time.Duration `yaml:"initial_backoff"`
 }
 
 // DefaultConfig returns sensible defaults.
@@ -77,6 +86,8 @@ func DefaultConfig() Config {
 		ResurrectTimeout:  60 * time.Second,
 		MaxAttempts:       3,
 		HeartbeatInterval: 5 * time.Second,
+		MaxBackoff:        30 * time.Second,
+		InitialBackoff:    time.Second,
 	}
 }
 
@@ -132,6 +143,12 @@ func New(health HealthChecker, config Config, eventStore events.EventStore) (*Su
 	}
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = defaults.HeartbeatInterval
+	}
+	if config.MaxBackoff == 0 {
+		config.MaxBackoff = defaults.MaxBackoff
+	}
+	if config.InitialBackoff == 0 {
+		config.InitialBackoff = defaults.InitialBackoff
 	}
 	return &Supervisor{
 		agents:       make(map[string]*watched),
@@ -320,9 +337,27 @@ func (s *Supervisor) onFailure(agentID string) {
 	})
 }
 
+// backoffWait sleeps with exponential backoff between resurrection attempts.
+// backoff is mutated (doubled) on each call, capped at config.MaxBackoff.
+func (s *Supervisor) backoffWait(attempt int, backoff *time.Duration) {
+	if attempt >= s.config.MaxAttempts {
+		return
+	}
+	select {
+	case <-s.gctx.Done():
+		return
+	case <-time.After(*backoff):
+	}
+	*backoff *= 2
+	if *backoff > s.config.MaxBackoff {
+		*backoff = s.config.MaxBackoff
+	}
+}
+
 // replayEvents reads all events for the given agent stream and reconstructs
 // state that can be restored via StatefulAgent.RestoreState.
 // Returns nil if eventStore is nil or no events are found.
+// Verifies event stream integrity; logs warnings on gaps or corruption.
 func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[string]any {
 	if s.eventStore == nil {
 		return nil
@@ -331,6 +366,34 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 	if err != nil || len(evts) == 0 {
 		return nil
 	}
+
+	if err := events.VerifyStreamIntegrity(evts); err != nil {
+		slog.Error("resurrection: event stream integrity check failed",
+			"agent_id", agentID,
+			"event_count", len(evts),
+			"error", err,
+			"hash", events.StreamHash(evts),
+		)
+	}
+
+	// Semantic completeness: check if the stream was truncated.
+	if streamVersion, svErr := s.eventStore.StreamVersion(ctx, agentID); svErr == nil {
+		lastVersion := evts[len(evts)-1].Version
+		if lastVersion != streamVersion {
+			slog.Error("resurrection: event stream truncated",
+				"agent_id", agentID,
+				"last_replayed", lastVersion,
+				"stream_version", streamVersion,
+				"missing_events", streamVersion-lastVersion,
+				"hash", events.StreamHash(evts),
+			)
+		}
+	} else if svErr != events.ErrStreamNotFound {
+		slog.Warn("resurrection: failed to check stream version",
+			"agent_id", agentID, "error", svErr,
+		)
+	}
+
 	state := make(map[string]any)
 	for _, ev := range evts {
 		switch ev.Type {
@@ -345,13 +408,6 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 
 // resurrect creates and starts a new agent instance.
 func (s *Supervisor) resurrect(agentID string) {
-	// Ensure we clear the resurrecting flag when done.
-	defer func() {
-		s.mu.Lock()
-		delete(s.resurrecting, agentID)
-		s.mu.Unlock()
-	}()
-
 	s.mu.RLock()
 	w, exists := s.agents[agentID]
 	s.mu.RUnlock()
@@ -359,11 +415,21 @@ func (s *Supervisor) resurrect(agentID string) {
 		return
 	}
 
+	// Clean up resurrecting flag when done.
+	// Note: cleared explicitly before verifyResurrection below;
+	// this defer covers early-return paths.
+	defer func() {
+		s.mu.Lock()
+		delete(s.resurrecting, agentID)
+		s.mu.Unlock()
+	}()
+
 	var newAgent base.Agent
 	var lastErr error
+	var state map[string]any
 
+	backoff := s.config.InitialBackoff
 	for attempt := 1; attempt <= s.config.MaxAttempts; attempt++ {
-		// Check context cancellation between attempts.
 		if s.gctx.Err() != nil {
 			return
 		}
@@ -374,11 +440,11 @@ func (s *Supervisor) resurrect(agentID string) {
 		if newAgent == nil {
 			lastErr = errors.New("resurrection: factory returned nil")
 			cancel()
+			s.backoffWait(attempt, &backoff)
 			continue
 		}
 
-		// Replay events and restore state before starting the new agent.
-		state := s.replayEvents(resCtx, agentID)
+		state = s.replayEvents(resCtx, agentID)
 		if state != nil {
 			if sa, ok := newAgent.(base.StatefulAgent); ok {
 				if restoreErr := sa.RestoreState(state); restoreErr != nil {
@@ -387,10 +453,10 @@ func (s *Supervisor) resurrect(agentID string) {
 			}
 		}
 
-		// Start with timeout-bounded context.
 		if err := newAgent.Start(resCtx); err != nil {
 			lastErr = errors.Wrap(err, "resurrection: start failed")
 			cancel()
+			s.backoffWait(attempt, &backoff)
 			continue
 		}
 
@@ -417,7 +483,7 @@ func (s *Supervisor) resurrect(agentID string) {
 	}
 	oldAgent := oldEntry.agent
 	if oldAgent != nil {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopCtx, stopCancel := ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
 		if err := oldAgent.Stop(stopCtx); err != nil {
 			slog.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
 		}
@@ -436,9 +502,47 @@ func (s *Supervisor) resurrect(agentID string) {
 
 	s.health.RecordAlive(agentID)
 
+	// Clear the resurrecting flag so verifyResurrection can re-trigger
+	// onFailure if the revived agent is unhealthy.
+	s.mu.Lock()
+	delete(s.resurrecting, agentID)
+	s.mu.Unlock()
+
+	s.verifyResurrection(agentID, newAgent)
+
 	slog.Info("resurrection: agent resurrected",
 		"agent_id", agentID,
 		"type", newAgent.Type(),
 		"total_resurrects", total,
 	)
+}
+
+// verifyResurrection does a quick health check after resurrection.
+// If the agent is unhealthy, immediately re-triggers failure detection
+// so the supervisor cycles back into resurrection rather than waiting
+// for the next periodic health check tick.
+func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) {
+	healthy := true
+	if hb, ok := agent.(base.Heartbeater); ok {
+		if !hb.IsAlive() {
+			slog.Error("resurrection: revived agent reports not alive",
+				"agent_id", agentID,
+			)
+			healthy = false
+		}
+	}
+	if agent.Status() == models.AgentStatusOffline {
+		slog.Error("resurrection: revived agent is offline",
+			"agent_id", agentID,
+		)
+		healthy = false
+	}
+
+	if !healthy {
+		slog.Warn("resurrection: re-triggering failure for unhealthy revived agent",
+			"agent_id", agentID,
+		)
+		s.health.RecordAlive(agentID)
+		s.onFailure(agentID)
+	}
 }

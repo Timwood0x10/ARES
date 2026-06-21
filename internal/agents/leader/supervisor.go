@@ -9,6 +9,7 @@ import (
 	"goagentx/internal/agents/base"
 	coreerrors "goagentx/internal/core/errors"
 	"goagentx/internal/core/models"
+	"goagentx/internal/ctxutil"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
 	"goagentx/internal/protocol/ahp"
@@ -206,7 +207,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	// Use a detached context for Stop because the incoming ctx (gctx) may already
 	// be cancelled during supervisor shutdown, which would cause Stop to fail
 	// immediately without actually cleaning up the agent.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	stopCtx, stopCancel := ctxutil.WithDetachedTimeout("leader:stop-old", 30*time.Second)
 	if err := agent.Stop(stopCtx); err != nil {
 		slog.Error("failed to stop old leader", "leader_id", leaderID, "error", err)
 	}

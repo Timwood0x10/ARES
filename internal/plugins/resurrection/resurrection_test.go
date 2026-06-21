@@ -193,6 +193,8 @@ func TestNew_CustomConfig_PreservesValues(t *testing.T) {
 		ResurrectTimeout:  10 * time.Second,
 		MaxAttempts:       5,
 		HeartbeatInterval: 1 * time.Second,
+		MaxBackoff:        30 * time.Second,
+		InitialBackoff:    time.Second,
 	}
 	sup, err := New(health, custom, nil)
 	require.NoError(t, err)
@@ -432,6 +434,8 @@ func TestResurrection_FactoryReturnsNil_RetriesAndFails(t *testing.T) {
 		ResurrectTimeout:  1 * time.Second,
 		MaxAttempts:       2,
 		HeartbeatInterval: 50 * time.Millisecond,
+		InitialBackoff:    50 * time.Millisecond,
+		MaxBackoff:        200 * time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 
@@ -468,6 +472,8 @@ func TestResurrection_FactoryFailsOnFirstAttempts_SucceedsOnNth(t *testing.T) {
 		ResurrectTimeout:  1 * time.Second,
 		MaxAttempts:       maxAttempts,
 		HeartbeatInterval: 50 * time.Millisecond,
+		InitialBackoff:    50 * time.Millisecond,
+		MaxBackoff:        200 * time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 
@@ -494,7 +500,7 @@ func TestResurrection_FactoryFailsOnFirstAttempts_SucceedsOnNth(t *testing.T) {
 	require.NoError(t, sup.Start(ctx))
 
 	health.triggerFailure("a1")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	assert.GreaterOrEqual(t, attemptCount.Load(), int32(3))
 
@@ -515,6 +521,8 @@ func TestResurrection_StartFails_RetriesUntilSuccess(t *testing.T) {
 		ResurrectTimeout:  1 * time.Second,
 		MaxAttempts:       3,
 		HeartbeatInterval: 50 * time.Millisecond,
+		InitialBackoff:    50 * time.Millisecond,
+		MaxBackoff:        200 * time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 
@@ -539,7 +547,7 @@ func TestResurrection_StartFails_RetriesUntilSuccess(t *testing.T) {
 	require.NoError(t, sup.Start(ctx))
 
 	health.triggerFailure("a1")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	assert.Equal(t, int32(3), attemptCount.Load())
 	assert.Equal(t, 1, sup.Stats().Resurrects)

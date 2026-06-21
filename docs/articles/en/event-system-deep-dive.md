@@ -8,7 +8,15 @@
 
 ## 1. Why Record Every Single Thing
 
-Back in the early days when I was building Agents, I managed state with a global struct. Everything crammed into one big map — what step the Agent was on, what data it had processed, what errors it hit. It looked simple, but problems surfaced:
+Back in the early days when I was building Agents, I managed state with a global struct. Everything crammed into one big map — what step the Agent was on, what data it had processed, what errors it hit. It looked simple, but problems surfaced.
+
+I still remember the worst one: an Agent had been running in production all afternoon, handling 30+ user requests, each involving multiple rounds of conversation and tool calls. Then the process crashed — OOM killed, with only a single "signal: killed" line in the logs.
+
+All state was gone. No checkpoint, no recovery path, no way to tell what it was working on when it died.
+
+Users came asking: "Why isn't the Agent responding?" I said: "It lost its memory." That was the moment I realized: without persistent state, an Agent is a disposable consumable — use it once and you can't get it back.
+
+To put it bluntly, the global map approach has three hard problems:
 
 1. Agent crashes → map is gone → state is lost
 2. Want to know what the Agent did five minutes ago? No record.
@@ -391,7 +399,11 @@ graph TB
 
 Event Sourcing + CQRS + pluggable stores + auto-compaction — this combination isn't anything new in enterprise systems. But placed within an Agent framework, I think it's a pretty interesting experiment.
 
-What was the most satisfying experience? An Agent crashed, I opened the Dashboard, replayed its entire event stream, and watched step by step where it went wrong. At that moment, I felt like I wasn't debugging — I was watching a black box flight recorder.
+What was the most satisfying experience? An Agent was running a complex multi-step workflow with multiple tool calls and LLM interactions when it crashed halfway through. In the old days, I'd be staring at logs, guessing: was it a prompt problem? An LLM hallucination? Wrong tool parameters? Guess, fix, rerun, repeat — three or four cycles just to pinpoint the issue.
+
+But this time I opened the Dashboard, found the Agent's event stream, and replayed it step by step from the beginning. By event 7 I was already grinning — the Agent's `tool.call:7` had returned an empty result from the search API, and it blindly concatenated that empty result into the next LLM prompt without a null check. The bug itself wasn't complicated — what was new is that I **saw the full causal chain** unfolding event by event. Not guessing — watching.
+
+At that moment, I felt like I wasn't debugging — I was watching a black box flight recorder.
 
 **That's the value of the event system: it doesn't make you run faster. It tells you exactly why things went wrong when they do.**
 

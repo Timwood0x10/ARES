@@ -22,6 +22,9 @@ type Agent interface {
 // TaskExecutor executes tasks.
 type TaskExecutor interface {
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
+	// RegisterFallback registers a type-specific handler used when the LLM
+	// is unavailable or execution fails.
+	RegisterFallback(agentType models.AgentType, handler FallbackHandler)
 }
 
 // MessageHandler handles incoming messages.
@@ -33,6 +36,9 @@ type MessageHandler interface {
 type ToolBinder interface {
 	BindTool(name string, toolFunc func(ctx context.Context, args map[string]any) (any, error))
 	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
+	ListTools() []string
+	IsToolIdempotent(name string) bool
+	ListIdempotentTools() []string
 }
 
 // Compile-time check: subAgent must satisfy base.StatefulAgent.

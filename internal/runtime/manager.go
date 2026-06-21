@@ -11,6 +11,7 @@ import (
 
 	"goagentx/internal/agents/base"
 	"goagentx/internal/core/models"
+	"goagentx/internal/ctxutil"
 	"goagentx/internal/events"
 	"goagentx/internal/memory"
 )
@@ -63,10 +64,10 @@ func New(config *Config, eventStore events.EventStore, memManager memory.MemoryM
 	if config == nil {
 		config = DefaultConfig()
 	}
-	// Initialize errgroup with a background context so that m.g.Go() never
+	// Initialize errgroup with a labeled detached context so that m.g.Go() never
 	// panics even if called before Start(). Start() will re-initialize with
 	// the caller's context.
-	g, gctx := errgroup.WithContext(context.Background())
+	g, gctx := errgroup.WithContext(ctxutil.WithDetachedLabel("runtime:pre-start"))
 	return &Manager{
 		agents:     make(map[string]*managedAgent),
 		factories:  make(map[string]AgentFactory),
@@ -506,7 +507,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id", agentID, "reason", reason,
 	)
 
-	m.emitEvent(context.Background(), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), "lifecycle:"+agentID, events.EventAgentStopped, map[string]any{
 		"agent_id":     agentID,
 		"reason":       reason,
 		"auto_restore": true,
@@ -587,8 +588,8 @@ func (m *Manager) Stop() error {
 	m.mu.Unlock()
 
 	// Stop all agents concurrently with an overall timeout.
-	// Use Background because m.gctx is already cancelled by m.cancel() above.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), m.config.OverallStopTimeout)
+	// Use a detached context because m.gctx is already cancelled by m.cancel() above.
+	stopCtx, stopCancel := ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
 	defer stopCancel()
 
 	// Snapshot agents under write lock and mark all as stopped before launching goroutines.
@@ -667,6 +668,7 @@ func (m *Manager) Stats() RuntimeStats {
 // replayEvents reads events for the given agent stream from EventStore.
 // Limits the number of events to prevent unbounded memory usage.
 // Returns nil if eventStore is nil or an error occurs.
+// Verifies event stream integrity; logs warnings on gaps or corruption.
 func (m *Manager) replayEvents(ctx context.Context, agentID string) []*events.Event {
 	if m.eventStore == nil {
 		return nil
@@ -688,6 +690,37 @@ func (m *Manager) replayEvents(ctx context.Context, agentID string) []*events.Ev
 		)
 		return nil
 	}
+
+	if len(evts) > 1 {
+		if err := events.VerifyStreamIntegrity(evts); err != nil {
+			slog.Error("runtime: event stream integrity check failed",
+				"agent_id", agentID,
+				"event_count", len(evts),
+				"error", err,
+				"hash", events.StreamHash(evts),
+			)
+		}
+
+		// Semantic completeness: detect truncation by comparing last replayed
+		// version against the store's stream version.
+		if streamVersion, svErr := m.eventStore.StreamVersion(ctx, streamID); svErr == nil {
+			lastVersion := evts[len(evts)-1].Version
+			if lastVersion != streamVersion {
+				slog.Error("runtime: event stream truncated",
+					"agent_id", agentID,
+					"last_replayed", lastVersion,
+					"stream_version", streamVersion,
+					"missing_events", streamVersion-lastVersion,
+					"hash", events.StreamHash(evts),
+				)
+			}
+		} else if svErr != events.ErrStreamNotFound {
+			slog.Warn("runtime: failed to check stream version",
+				"agent_id", agentID, "error", svErr,
+			)
+		}
+	}
+
 	return evts
 }
 

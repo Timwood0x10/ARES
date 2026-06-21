@@ -115,6 +115,16 @@ func SanitizeLog(logger func(string), message string) {
 
 `SanitizeLog()` is an "out-of-the-box" one-click sanitization function, suitable for scripts or simple scenarios where you don't need to construct a Sanitizer instance in advance.
 
+### 2.5 A Lesson That Made My Blood Run Cold
+
+The first version of the Sanitizer wasn't as complete as I'd like to admit.
+
+Initially, I only handled structured JSON input with field name matching — API keys were masked, passwords were masked. But if the LLM response's `content` field happened to contain a phone number or email, it went straight through untouched. I assumed, naively: "LLM-generated text shouldn't contain sensitive data, right?"
+
+Then the ops team came over and told me they'd found unredacted phone numbers in the logging system — not `138****5678`, but plain `13812345678` sitting there in the logs. When I traced it back, the root cause was clear: the first version's regex layer only matched against JSON keys, not against arbitrary text content. The phone number the user had mentioned in conversation passed through the LLM round-trip entirely in plaintext, and the logger dutifully wrote it down without a second thought.
+
+Luckily it was caught early — the logs had only been retained in the test environment for two days. But that experience fundamentally changed how I think about sanitization: **Sensitive information can appear in any field, not just the ones you anticipate.** That's exactly why the final Sanitizer has two detection layers — when field name matching can't catch everything, full-text regex scanning has your back.
+
 ---
 
 ## 3. Observability Module: Tracer Interface and Two Implementations

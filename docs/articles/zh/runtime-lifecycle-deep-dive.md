@@ -225,7 +225,7 @@ func (a *leaderAgent) finalizeMemory(...) {
 
 三个要点：
 
-1. **`distillMu` 保护 `stopCh` 检查和 `Wg.Add(1)` 的原子性**：不加锁的话，可能出现 `Wait` 先읽完，`Add` 后调用 → `panic: Add after Wait`
+1. **`distillMu` 保护 `stopCh` 检查和 `Wg.Add(1)` 的原子性**：不加锁的话，可能出现 `Wait` 先跑完，`Add` 后调用 → `panic: Add after Wait`
 2. **`context.Background()`**：蒸馏不受客户端断开影响，后台默默跑完
 3. **Stop 顺序**：`close(stopCh)` → `distillWg.Wait()` → `distillEg.Wait()`，确保后台蒸馏先完成
 
@@ -476,3 +476,7 @@ func (r *Registry) Emit(ctx *Context) {
 | `internal/agents/sub/heartbeat.go` | 心跳发送 + sync.Once 关闭 |
 | `internal/shutdown/manager.go` | 四阶段关闭 |
 | `internal/callbacks/callbacks.go` | LLM/Agent/Tool 生命周期钩子 |
+
+
+Agent 挂了怎么办？这是所有 Agent 框架都绕不开的问题，但很少有人认真回答。这篇文章会带你走一遍 Runtime 子系统的设计历程——从"怎么不让 Agent 
+死"到"死了怎么自己爬起来"，再到"爬起来怎么记得之前干到哪了"。你会看到复活守卫的并发陷阱、两阶段状态恢复的容错哲学、Context 脱离的蒸馏设计，以及每个方案背后的纠结和已知缺陷。适合正在做 Agent 稳定性、分布式编排、或有状态服务自动恢复的开发者阅读。

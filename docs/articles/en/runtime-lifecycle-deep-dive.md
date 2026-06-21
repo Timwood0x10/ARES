@@ -1,5 +1,7 @@
 # GoAgentX Architecture Deep Dive (7): Runtime & Lifecycle — Birth, Death, and Resurrection
 
+What happens when an Agent dies? Every framework has to answer this, but few do it well. This article walks through the Runtime subsystem's design journey — from "how to prevent crashes" to "how to resurrect with memories intact" and "how to resume interrupted work without wasting tokens." You'll see the concurrency trap behind the Resurrection Guard, the fault-tolerance philosophy of two-phase state recovery, the detached-context distillation pattern, and the honest trade-offs behind every decision. Written for developers working on agent reliability, distributed orchestration, or stateful service auto-recovery.
+
 > Other Agent frameworks compete on features and flashiness. I have only one obsession: **Bugs I can accept. Crashes I absolutely cannot.**
 > One day I started thinking — what if I just `kill -9` a running Agent right now? How would I bring it back?
 > Manually? First locate which process, dig through logs to find the cause, write a patch, then `go run main.go --args`… I'm already annoyed just thinking about it.
@@ -476,3 +478,7 @@ That moment I knew: **the money wasn't wasted.**
 | `internal/agents/sub/heartbeat.go` | Heartbeat sender + sync.Once shutdown |
 | `internal/shutdown/manager.go` | Four-phase shutdown |
 | `internal/callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
+
+---
+
+**Next up: [Event System](/docs/articles/en/event-system.md) — how Agents communicate, how events are sourced, and how state is rebuilt.**
