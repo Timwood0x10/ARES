@@ -411,3 +411,5 @@ func (t *LogAnalyzer) extractMetrics(ctx context.Context, logContent string, cus
 		"statistics": statistics,
 	}), nil
 }
+
+func (t *LogAnalyzer) IsIdempotent() bool { return true }

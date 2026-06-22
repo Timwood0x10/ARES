@@ -109,6 +109,8 @@ func (t *IDGenerator) generateShortID(ctx context.Context, count int) (core.Resu
 	return core.NewResult(true, result), nil
 }
 
+func (t *IDGenerator) IsIdempotent() bool { return true }
+
 // getInt safely gets an int parameter.
 func getInt(params map[string]interface{}, key string, defaultVal int) int {
 	switch v := params[key].(type) {

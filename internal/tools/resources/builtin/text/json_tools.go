@@ -279,6 +279,8 @@ func getStringSlice(params map[string]interface{}, key string) []string {
 	return nil
 }
 
+func (t *JSONTools) IsIdempotent() bool { return true }
+
 func getInt(params map[string]interface{}, key string, defaultVal int) int {
 	switch v := params[key].(type) {
 	case float64:

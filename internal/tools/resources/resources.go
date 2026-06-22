@@ -56,7 +56,6 @@ const (
 	CategoryData      = core.CategoryData
 	CategoryKnowledge = core.CategoryKnowledge
 	CategoryMemory    = core.CategoryMemory
-	CategoryDomain    = core.CategoryDomain
 )
 
 // Core functions
@@ -91,7 +90,7 @@ var (
 var (
 	DefaultAgentToolConfig       = agent.DefaultAgentToolConfig
 	NewAgentTools                = agent.NewAgentTools
-	RegisterBuiltinToolsForAgent = agent.RegisterBuiltinToolsForAgent
+
 )
 
 // Agent tool config presets

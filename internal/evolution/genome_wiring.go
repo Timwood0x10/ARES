@@ -363,18 +363,18 @@ type SystemConfig struct {
 //	SystemConfig - configuration with default values.
 func DefaultSystemConfig() SystemConfig {
 	return SystemConfig{
-		PopulationSize:           20,
-		EliteCount:               3,
-		MutationRate:             0.2,
-		SurvivalRate:             0.6,
-		EnableDreamCycle:         false,
-		EnableScheduler:          false,
-		MinTasksBeforeEvolve:     10,
-		SchedulerTrigger:         TriggerOnIdle,
-		MinMutationRate:          0.05,
-		MaxMutationRate:          0.5,
-		MaxStagnantGenerations:   10,
-		DiversityThreshold:       0.15,
+		PopulationSize:         20,
+		EliteCount:             3,
+		MutationRate:           0.2,
+		SurvivalRate:           0.6,
+		EnableDreamCycle:       false,
+		EnableScheduler:        false,
+		MinTasksBeforeEvolve:   10,
+		SchedulerTrigger:       TriggerOnIdle,
+		MinMutationRate:        0.05,
+		MaxMutationRate:        0.5,
+		MaxStagnantGenerations: 10,
+		DiversityThreshold:     0.15,
 	}
 }
 

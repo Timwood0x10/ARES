@@ -23,3 +23,6 @@ config.yml
 **/logs/
 
 examples/quant-trading/workflow/config.yml
+
+# Compiled binaries
+/autonomous-evolution

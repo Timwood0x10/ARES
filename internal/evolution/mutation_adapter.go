@@ -70,7 +70,7 @@ func evolutionToMutationStrategy(s Strategy) mutation.Strategy {
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
 		Version:              s.Version,
-		Params:               s.Params,
+		Params:               cloneParams(s.Params),
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: mutationTypeFromString(s.StrategyMutationType),
 		MutationDesc:         s.MutationDesc,
@@ -85,8 +85,7 @@ func mutationToEvolutionStrategy(s *mutation.Strategy) Strategy {
 		return Strategy{}
 	}
 	return Strategy{
-		ID:                   s.ID,
-		Name:                 s.PromptTemplate,
+		ID: s.ID,
 		Version:              s.Version,
 		Params:               s.Params,
 		ParentID:             s.ParentID,
@@ -96,6 +95,18 @@ func mutationToEvolutionStrategy(s *mutation.Strategy) Strategy {
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
 	}
+}
+
+// cloneParams creates a shallow copy of a params map to avoid shared state.
+func cloneParams(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // mutationTypeFromString converts a string to mutation.MutationType.

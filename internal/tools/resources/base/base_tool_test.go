@@ -114,10 +114,6 @@ func TestNewBaseToolWithCategory(t *testing.T) {
 			name:     "memory category",
 			category: core.CategoryMemory,
 		},
-		{
-			name:     "domain category",
-			category: core.CategoryDomain,
-		},
 	}
 
 	for _, tt := range tests {

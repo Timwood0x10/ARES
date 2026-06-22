@@ -190,6 +190,16 @@ flowchart LR
 - 事件自动压缩，可配置保留策略
 - 可插拔健康检测（用于 Agent 复活）
 
+**自主进化（遗传算法）**
+- 多代种群进化：选择、交叉、变异
+- 策略变异引擎：支持确定性种子控制，结果可复现
+- Arena 回归测试：Welch's t-test 统计显著性检验
+- Dream Cycle 编排：触发 → 变异 → 评估 → 采用 → 记录谱系
+- Bandit 反馈循环：持续优化经验质量
+- 事件驱动回调系统：LLM/工具/Agent 生命周期钩子
+- 高层 API：`NewWiredEvolutionSystem` 一键组装全部组件
+- 精英保留策略 + 自适应存活率
+
 ## 性能数据
 
 32 个 benchmark，2573 测试通过（`-race`），覆盖 49 个包。
@@ -281,6 +291,9 @@ cd examples/devagent && go run main.go
 
 # 工具能力演示
 cd examples/capability-demo && go run main.go
+
+# 自主进化（遗传算法）演示
+cd examples/autonomous-evolution && go run main.go
 ```
 
 详见 [示例文档](docs/zh/development/examples.md)。
@@ -363,6 +376,7 @@ memory:
 - [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)
 - [性能报告](benchmarks/benchmark_report.md)
+- [自主进化指南](docs/zh/features/autonomous-evolution.md)
 
 ## LICENSE
 Apache 2.0

@@ -191,6 +191,16 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Event auto-compaction with retention policies
 - Pluggable health checking for agent resurrection
 
+**Autonomous Evolution (Genetic Algorithm)**
+- Multi-generation population-based evolution with selection, crossover, and mutation
+- Strategy mutation engine with deterministic reproducibility (seed-controlled)
+- Arena regression testing with Welch's t-test statistical significance
+- Dream cycle orchestration: trigger → mutate → evaluate → adopt → record lineage
+- Bandit feedback loop for continuous experience quality optimization
+- Event-driven callback system for LLM/Tool/Agent lifecycle hooks
+- Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
+- Elite preservation and adaptive survival rate across generations
+
 ## Benchmark Highlights
 
 32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
@@ -282,6 +292,9 @@ cd examples/devagent && go run main.go
 
 # Tool capability demo
 cd examples/capability-demo && go run main.go
+
+# Autonomous evolution (genetic algorithm) demo
+cd examples/autonomous-evolution && go run main.go
 ```
 
 See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
@@ -395,6 +408,7 @@ See `examples/travel/config.yaml` for a complete example.
 - [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)
 - [Benchmark Report](benchmarks/benchmark_report.md)
+- [Autonomous Evolution Guide](docs/en/features/autonomous-evolution.md)
 
 ## LICENSE
 Apache 2.0

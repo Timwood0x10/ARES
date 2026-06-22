@@ -223,6 +223,8 @@ func parseNumber(expr string) (float64, string, error) {
 	return value, expr[i:], nil
 }
 
+func (t *Calculator) IsIdempotent() bool { return true }
+
 // DateTime provides date and time operations.
 type DateTime struct {
 	*base.BaseTool
@@ -383,6 +385,8 @@ func (t *DateTime) Execute(ctx context.Context, params map[string]interface{}) (
 	}
 }
 
+func (t *DateTime) IsIdempotent() bool { return true }
+
 // TextProcessor provides text processing operations.
 type TextProcessor struct {
 	*base.BaseTool
@@ -503,6 +507,8 @@ func (t *TextProcessor) Execute(ctx context.Context, params map[string]interface
 		return core.NewErrorResult(fmt.Sprintf("unsupported operation: %s", operation)), nil
 	}
 }
+
+func (t *TextProcessor) IsIdempotent() bool { return true }
 
 // getString safely gets a string parameter.
 func getString(params map[string]interface{}, key string) string {

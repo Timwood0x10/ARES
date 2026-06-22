@@ -16,8 +16,6 @@ const (
 	CategoryKnowledge ToolCategory = "knowledge"
 	// CategoryMemory represents memory-related tools
 	CategoryMemory ToolCategory = "memory"
-	// CategoryDomain represents domain-specific tools (weather, search, etc.)
-	CategoryDomain ToolCategory = "domain"
 	// CategoryExternal represents external MCP tools connected via MCP protocol.
 	CategoryExternal ToolCategory = "external"
 )
@@ -87,6 +85,15 @@ type Tool interface {
 	Execute(ctx context.Context, params map[string]interface{}) (Result, error)
 	// Parameters returns the parameter schema.
 	Parameters() *ParameterSchema
+}
+
+// IdempotentTool is an optional interface that tools can implement to
+// indicate they are safe to retry on partial failure. Pure computation
+// tools (calculators, text processors, validators, etc.) should return
+// true. Tools with side effects (file I/O, network calls, state
+// mutations) should not implement this interface or return false.
+type IdempotentTool interface {
+	IsIdempotent() bool
 }
 
 // ToolSchema represents the schema of a tool for capability export.

@@ -118,11 +118,15 @@ func (b *toolBinder) BridgeFromRegistry(registry *core.Registry) {
 		}
 		// capture tool for closure
 		t := tool
+		idempotent := false
+		if idempTool, ok := t.(core.IdempotentTool); ok {
+			idempotent = idempTool.IsIdempotent()
+		}
 		b.tools[name] = toolEntry{
 			fn: func(ctx context.Context, args map[string]any) (any, error) {
 				return t.Execute(ctx, args)
 			},
-			idempotent: false,
+			idempotent: idempotent,
 		}
 	}
 }

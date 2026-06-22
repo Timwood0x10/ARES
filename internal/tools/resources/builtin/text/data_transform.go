@@ -261,6 +261,8 @@ func (t *DataTransform) flatten(data interface{}, prefix string, separator strin
 	return result
 }
 
+func (t *DataTransform) IsIdempotent() bool { return true }
+
 // getStringWithDefault safely gets a string parameter with default.
 func getStringWithDefault(params map[string]interface{}, key, defaultVal string) string {
 	if val, ok := params[key].(string); ok && val != "" {

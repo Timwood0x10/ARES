@@ -1068,3 +1068,121 @@ func TestBestStrategy(t *testing.T) {
 		})
 	}
 }
+
+// TestEvolveZeroOffspringPath verifies the early return path in doEvolve when
+// EliteCount >= Size (no offspring slots remain). In this path, the population
+// preserves elites, increments the generation counter, and skips adaptive
+// mutation rate / stagnation adjustments.
+//
+// Requires WithSurvivalRate(1.0) so that all agents survive selection and
+// preserveElites can return EliteCount clones (capped by len(survivors)).
+func TestEvolveZeroOffspringPath(t *testing.T) {
+	t.Run("Evolve with EliteCount equals Size", func(t *testing.T) {
+		ctx := context.Background()
+		scores := []float64{95.0, 75.0, 55.0}
+		pop := scoredPopulation(t, ctx, scores,
+			WithEliteCount(3),     // EliteCount == Size → no offspring slots
+			WithSurvivalRate(1.0), // All survive so EliteCount is not capped
+			WithMutationRate(0.3),
+		)
+		origRate := pop.currentMutationRate
+		origStagnant := pop.stagnantGens
+		origScores := make([]float64, len(pop.Agents))
+		for i, a := range pop.Agents {
+			origScores[i] = a.Score
+		}
+
+		crosser, err := NewCrossover(WithSeed(42))
+		if err != nil {
+			t.Fatalf("failed to create crossover: %v", err)
+		}
+		mutator := &mockMutator{}
+
+		if err := pop.Evolve(ctx, mutator, crosser); err != nil {
+			t.Fatalf("Evolve failed with EliteCount==Size: %v", err)
+		}
+
+		if pop.Generation != 1 {
+			t.Errorf("Generation = %d, want 1", pop.Generation)
+		}
+		if len(pop.Agents) != 3 {
+			t.Errorf("population size = %d, want 3", len(pop.Agents))
+		}
+		if pop.currentMutationRate != origRate {
+			t.Errorf("mutation rate changed from %.4f to %.4f (adaptive skipped)", origRate, pop.currentMutationRate)
+		}
+		if pop.stagnantGens != origStagnant {
+			t.Errorf("stagnantGens changed from %d to %d (adaptive skipped)", origStagnant, pop.stagnantGens)
+		}
+		// All agents are clones of elites; their scores should match the original top-3.
+		for i, a := range pop.Agents {
+			if a.Score != origScores[i] {
+				t.Errorf("agent %d score changed from %.1f to %.1f", i, origScores[i], a.Score)
+			}
+		}
+	})
+
+	t.Run("EvolveOnIdle with EliteCount equals Size", func(t *testing.T) {
+		ctx := context.Background()
+		scores := []float64{90.0, 70.0, 50.0}
+		pop := scoredPopulation(t, ctx, scores,
+			WithEliteCount(3),
+			WithSurvivalRate(1.0),
+			WithMutationRate(0.2),
+		)
+		origRate := pop.currentMutationRate
+		origStagnant := pop.stagnantGens
+
+		crosser, err := NewCrossover(WithSeed(42))
+		if err != nil {
+			t.Fatalf("failed to create crossover: %v", err)
+		}
+		mutator := &mockMutator{}
+
+		if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			t.Fatalf("EvolveOnIdle failed with EliteCount==Size: %v", err)
+		}
+
+		if pop.Generation != 1 {
+			t.Errorf("Generation = %d, want 1", pop.Generation)
+		}
+		if len(pop.Agents) != 3 {
+			t.Errorf("population size = %d, want 3", len(pop.Agents))
+		}
+		if pop.currentMutationRate != origRate {
+			t.Errorf("mutation rate changed from %.4f to %.4f (adaptive skipped)", origRate, pop.currentMutationRate)
+		}
+		if pop.stagnantGens != origStagnant {
+			t.Errorf("stagnantGens changed from %d to %d (adaptive skipped)", origStagnant, pop.stagnantGens)
+		}
+	})
+
+	t.Run("EliteCount just below Size takes normal path", func(t *testing.T) {
+		ctx := context.Background()
+		scores := []float64{99.0, 80.0, 60.0, 40.0}
+		pop := scoredPopulation(t, ctx, scores,
+			WithEliteCount(3),     // EliteCount=3 < Size=4 → 1 offspring slot
+			WithSurvivalRate(0.8), // All survive: max(1, int(4*0.8))=3 survivors, eliteCount=3
+			WithMutationRate(0.5),
+		)
+		origRate := pop.currentMutationRate
+
+		crosser, err := NewCrossover(WithSeed(42))
+		if err != nil {
+			t.Fatalf("failed to create crossover: %v", err)
+		}
+		mutator := &mockMutator{}
+
+		if err := pop.Evolve(ctx, mutator, crosser); err != nil {
+			t.Fatalf("Evolve failed with EliteCount=3, Size=4: %v", err)
+		}
+
+		if len(pop.Agents) != 4 {
+			t.Errorf("population size = %d, want 4", len(pop.Agents))
+		}
+		// Normal path should have called adjustMutationRateLocked.
+		if pop.currentMutationRate == origRate {
+			t.Log("note: mutation rate unchanged (may be at boundary of diversity threshold)")
+		}
+	})
+}

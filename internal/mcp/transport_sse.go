@@ -16,6 +16,13 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	sseEventPrefix         = "event:"
+	sseDataPrefix          = "data:"
+	sseEventTypeEndpoint   = "endpoint"
+	sseEventTypeMessage    = "message"
+)
+
 // SSEConfig holds configuration for an SSE-based MCP transport.
 type SSEConfig struct {
 	URL     string            `yaml:"url" json:"url"`
@@ -143,10 +150,10 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 			continue
 		}
 
-		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
-			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if strings.HasPrefix(line, sseEventPrefix) {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, sseEventPrefix))
+		} else if strings.HasPrefix(line, sseDataPrefix) {
+			dataStr := strings.TrimSpace(strings.TrimPrefix(line, sseDataPrefix))
 			if dataBuilder.Len() > 0 {
 				dataBuilder.WriteByte('\n')
 			}
@@ -158,12 +165,12 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 // handleSSEEvent processes a single SSE event.
 func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data string) {
 	switch eventType {
-	case "endpoint":
+	case sseEventTypeEndpoint:
 		// Server provides the POST URL for sending messages.
 		t.mu.Lock()
 		t.postURL = strings.TrimSpace(data)
 		t.mu.Unlock()
-	case "message":
+	case sseEventTypeMessage:
 		var msg JSONRPCMessage
 		if err := json.Unmarshal([]byte(data), &msg); err != nil {
 			return

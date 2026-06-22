@@ -280,9 +280,9 @@ func TestStagnationTriggersReset(t *testing.T) {
 			EliteCount:             2,
 			MaxStagnantGenerations: 1,
 		},
-		bestScore:          10,
-		stagnantGens:       1,
-		rng:                rand.New(rand.NewSource(42)),
+		bestScore:           10,
+		stagnantGens:        1,
+		rng:                 rand.New(rand.NewSource(42)),
 		currentMutationRate: 0.2,
 	}
 

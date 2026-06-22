@@ -311,15 +311,118 @@
       }
     }
   },
+  "wired_system": {
+    "dream_cycle_single_run": {
+      "name": "BenchmarkDreamCycle_SingleRun",
+      "ns_per_op": 25000,
+      "bytes_per_op": 4500,
+      "allocs_per_op": 65,
+      "rating": "good",
+      "tier": "normal",
+      "source": "estimated"
+    },
+    "system_creation_pop_10": {
+      "name": "BenchmarkWiredSystem_Creation/pop_10",
+      "ns_per_op": 45000,
+      "bytes_per_op": 12000,
+      "allocs_per_op": 180,
+      "rating": "good",
+      "tier": "normal",
+      "source": "estimated"
+    },
+    "system_creation_pop_20": {
+      "name": "BenchmarkWiredSystem_Creation/pop_20",
+      "ns_per_op": 62000,
+      "bytes_per_op": 18500,
+      "allocs_per_op": 280,
+      "rating": "good",
+      "tier": "normal",
+      "source": "estimated"
+    },
+    "system_creation_pop_50": {
+      "name": "BenchmarkWiredSystem_Creation/pop_50",
+      "ns_per_op": 105000,
+      "bytes_per_op": 38000,
+      "allocs_per_op": 520,
+      "rating": "acceptable",
+      "tier": "normal",
+      "source": "estimated"
+    },
+    "system_creation_pop_100": {
+      "name": "BenchmarkWiredSystem_Creation/pop_100",
+      "ns_per_op": 175000,
+      "bytes_per_op": 68000,
+      "allocs_per_op": 920,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    },
+    "idle_evolution_10gens": {
+      "name": "BenchmarkWiredSystem_IdleEvolution/10_generations",
+      "ns_per_op": 420000,
+      "bytes_per_op": 150000,
+      "allocs_per_op": 5000,
+      "rating": "acceptable",
+      "tier": "normal",
+      "source": "estimated"
+    },
+    "idle_evolution_50gens": {
+      "name": "BenchmarkWiredSystem_IdleEvolution/50_generations",
+      "ns_per_op": 2000000,
+      "bytes_per_op": 750000,
+      "allocs_per_op": 25000,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    },
+    "idle_evolution_100gens": {
+      "name": "BenchmarkWiredSystem_IdleEvolution/100_generations",
+      "ns_per_op": 4100000,
+      "bytes_per_op": 1500000,
+      "allocs_per_op": 50000,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    },
+    "full_pipeline": {
+      "name": "BenchmarkFullPipeline",
+      "ns_per_op": 2300000,
+      "bytes_per_op": 850000,
+      "allocs_per_op": 28000,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    }
+  },
+  "adaptive_behavior": {
+    "mutation_fixed_rate": {
+      "name": "BenchmarkAdaptiveMutation/fixed_rate",
+      "ns_per_op": 1600000,
+      "bytes_per_op": 600000,
+      "allocs_per_op": 20000,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    },
+    "mutation_adaptive_rate": {
+      "name": "BenchmarkAdaptiveMutation/adaptive_rate",
+      "ns_per_op": 1700000,
+      "bytes_per_op": 620000,
+      "allocs_per_op": 20500,
+      "rating": "acceptable",
+      "tier": "cold",
+      "source": "estimated"
+    }
+  },
   "summary": {
-    "total_benchmarks": 36,
+    "total_benchmarks": 47,
     "excellent_count": 13,
-    "good_count": 17,
-    "acceptable_count": 6,
+    "good_count": 19,
+    "acceptable_count": 15,
     "zero_allocation_count": 10,
     "hot_count": 21,
-    "normal_count": 12,
-    "cold_count": 3
+    "normal_count": 14,
+    "cold_count": 12
   },
   "performance_tiers": {
     "excellent": {

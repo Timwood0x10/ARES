@@ -196,3 +196,5 @@ func (t *RegexTool) replace(ctx context.Context, text string, re *regexp.Regexp,
 		"replacements": matchCount,
 	}), nil
 }
+
+func (t *RegexTool) IsIdempotent() bool { return true }

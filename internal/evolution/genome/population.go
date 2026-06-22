@@ -103,15 +103,15 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:                    20,
-		SurvivalRate:            0.6,
-		MutationRate:            0.2,
-		EliteCount:              3,
-		BreedingPoolRatio:       0.3,
-		MinMutationRate:         0.05,
-		MaxMutationRate:         0.5,
-		MaxStagnantGenerations:  10,
-		DiversityThreshold:      0.15,
+		Size:                   20,
+		SurvivalRate:           0.6,
+		MutationRate:           0.2,
+		EliteCount:             3,
+		BreedingPoolRatio:      0.3,
+		MinMutationRate:        0.05,
+		MaxMutationRate:        0.5,
+		MaxStagnantGenerations: 10,
+		DiversityThreshold:     0.15,
 	}
 }
 
@@ -394,13 +394,13 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		seed = time.Now().UnixNano()
 	}
 	pop := &Population{
-		Agents:               make([]*mutation.Strategy, 0, cfg.Size),
-		Size:                 cfg.Size,
-		Generation:           0,
-		cfg:                  cfg,
-		rng:                  rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
-		bestScore:            math.Inf(-1),
-		currentMutationRate:  cfg.MutationRate,
+		Agents:              make([]*mutation.Strategy, 0, cfg.Size),
+		Size:                cfg.Size,
+		Generation:          0,
+		cfg:                 cfg,
+		rng:                 rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
+		bestScore:           math.Inf(-1),
+		currentMutationRate: cfg.MutationRate,
 	}
 
 	err := pop.initializeFromBase(ctx, base, mutator)
@@ -693,7 +693,7 @@ func (p *Population) EvolveOnIdle(ctx context.Context, mutator MutatorInterface,
 			}
 			return survivors[:poolSize]
 		},
-		eliteFn: p.preserveElites,
+		eliteFn:  p.preserveElites,
 		logLabel: "evolve_on_idle completed",
 	})
 }

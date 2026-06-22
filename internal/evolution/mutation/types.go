@@ -41,6 +41,22 @@ func (mt MutationType) String() string {
 	}
 }
 
+// ParseMutationType converts a string to a MutationType.
+func ParseMutationType(s string) MutationType {
+	switch s {
+	case "parameter":
+		return MutationParameter
+	case "prompt":
+		return MutationPrompt
+	case "tool":
+		return MutationTool
+	case "crossover":
+		return MutationCrossover
+	default:
+		return MutationParameter
+	}
+}
+
 // Strategy represents an agent's execution strategy configuration.
 type Strategy struct {
 	// ID is the unique strategy identifier.
