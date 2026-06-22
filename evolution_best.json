@@ -1,0 +1,12 @@
+{
+  "id": "wired-root",
+  "version": 1,
+  "params": {
+    "temperature": 0.7,
+    "top_k": 40
+  },
+  "prompt_template": "helpful",
+  "mutation_type": "parameter",
+  "score": 0,
+  "created_at": "0001-01-01T00:00:00Z"
+}

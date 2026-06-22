@@ -5,14 +5,22 @@ package evolution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"goagentx/internal/evolution"
 	"goagentx/internal/evolution/genome"
 	"goagentx/internal/evolution/mutation"
+)
+
+const (
+	// concurrentScoreLimit is the maximum number of concurrent LLM scoring calls.
+	concurrentScoreLimit = 5
 )
 
 // Service provides high-level genetic algorithm evolution operations.
@@ -25,6 +33,9 @@ type Service struct {
 	mutator     *mutation.Mutator
 	crosser     *genome.Crossover
 	config      *SystemConfig
+
+	// lineages tracks recorded parent-child lineages for non-wired mode.
+	lineages []StrategyLineage
 }
 
 // NewService creates a new evolution service instance with the given configuration.
@@ -230,12 +241,19 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
 
+			// Re-score with custom scorer (wired system uses its own internal scorer
+			// during EvolveOnIdle, which doesn't know about the custom ScorerFunc).
+			s.initScores(0)
+
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
 
 			lineages := s.collectLineages()
 			result.Lineages = append(result.Lineages, lineages...)
 		} else if s.population != nil && s.mutator != nil && s.crosser != nil {
+			prevSnapshot, _ := s.population.Snapshot()
+			prevBest := bestFromStrategies(prevSnapshot)
+
 			mutAdapter, err := s.genomeMutatorAdapter()
 			if err != nil {
 				return nil, fmt.Errorf("get mutator adapter gen %d: %w", i+1, err)
@@ -247,8 +265,15 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			// Re-score after each evolution so next generation selects on fresh data.
 			s.initScores(0)
 
+			// Record lineages for non-wired mode: link parent→child.
+			s.recordGenealogy(prevBest)
+
+			// Record lineages for non-wired mode: track each offspring's parent-child relationship.
+			s.recordLineages()
+
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
+			result.Lineages = append(result.Lineages, s.lineages...)
 		} else {
 			return nil, ErrNotInitialized
 		}
@@ -331,8 +356,10 @@ func (s *Service) Lineages() ([]StrategyLineage, error) {
 		}
 		return apiLineages, nil
 	}
-
-	return []StrategyLineage{}, nil
+	// Non-wired mode: return tracked lineages.
+	result := make([]StrategyLineage, len(s.lineages))
+	copy(result, s.lineages)
+	return result, nil
 }
 
 // Shutdown gracefully stops the evolution system and releases resources.
@@ -342,6 +369,49 @@ func (s *Service) Shutdown() {
 		evolution.Shutdown(s.wiredSystem)
 	}
 	slog.Info("evolution service shut down")
+}
+
+// SaveBestStrategy persists the best strategy to a JSON file at the given path.
+// Returns an error if serialization or file I/O fails.
+func (s *Service) SaveBestStrategy(path string) error {
+	best, err := s.BestStrategy()
+	if err != nil {
+		return fmt.Errorf("get best strategy: %w", err)
+	}
+	if best == nil {
+		return fmt.Errorf("no best strategy available")
+	}
+
+	dir := filepath.Dir(path)
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+
+	data, err := json.MarshalIndent(best, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal strategy: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	slog.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)
+	return nil
+}
+
+// LoadBestStrategy loads a best strategy from a JSON file at the given path.
+// Returns the loaded strategy, or an error if the file cannot be read.
+func LoadBestStrategy(path string) (*Strategy, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var s Strategy
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("unmarshal strategy: %w", err)
+	}
+	return &s, nil
 }
 
 // --- Internal helpers ---
@@ -449,58 +519,156 @@ func (s *Service) collectLineages() []StrategyLineage {
 
 // Default scorer constants used by scoreAgents when no custom scorer is configured.
 const (
-	defaultTargetTemp    = 0.7
-	defaultProximityGain = 2.5
-	defaultBaseScore     = 50.0
-	defaultNoiseRange    = 30.0
-	defaultBonusRange    = 20.0
-	defaultMaxScore      = 100.0
+	defaultBaseScore    = 50.0
+	defaultTopKOptimal  = 30.0
+	defaultTopKPenalty  = 10.0
+	defaultPromptReward = 15.0
+	defaultMaxScore     = 100.0
+	defaultMinScore     = 5.0
 )
 
 // scoreAgents assigns fitness scores to agents in the population.
 // If s.config.Scorer is set, it delegates to that. Otherwise it uses a
-// temperature-proximity heuristic (target=0.7, base=50 + noise + proximity bonus).
-func (s *Service) scoreAgents(pop *genome.Population, rng *rand.Rand) {
+// deterministic parameter-aware heuristic (no random noise):
+//   - temperature: lower is better (0.0→+25, 1.0→+0)
+//   - top_k near 30 balances focus vs breadth (penalty dist²/10)
+//   - "precise" prompt template earns a bonus (+15)
+func (s *Service) scoreAgents(pop *genome.Population) {
+	// Fast path: deterministic scorer — no clone/concurrency overhead.
+	if s.config.Scorer == nil {
+		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+			apiStrategy := toAPIStrategy(agent)
+			score := defaultBaseScore
+
+			if temp, ok := apiStrategy.Params["temperature"].(float64); ok {
+				score += (1.0 - temp) * 25
+			}
+			if tk, ok := apiStrategy.Params["top_k"].(float64); ok {
+				dist := tk - 30.0
+				score -= (dist * dist) / 10.0
+			}
+
+			promptVal := ""
+			if pt, ok := apiStrategy.Params["prompt_template"].(string); ok {
+				promptVal = pt
+			} else if pt, ok := apiStrategy.Params["PromptTemplate"].(string); ok {
+				promptVal = pt
+			} else if apiStrategy.PromptTemplate != "" {
+				promptVal = apiStrategy.PromptTemplate
+			}
+			switch promptVal {
+			case "precise":
+				score += defaultPromptReward
+			case "careful":
+				score += 8
+			case "creative":
+				score += 4
+			}
+
+			if score > defaultMaxScore {
+				score = defaultMaxScore
+			}
+			if score < defaultMinScore {
+				score = defaultMinScore
+			}
+			return score
+		})
+		return
+	}
+
+	// Slow path: custom scorer (e.g. LLM) — snapshot + concurrent eval + apply.
+	snap, _ := pop.Snapshot()
+	scores := make([]float64, len(snap))
+
+	sem := make(chan struct{}, concurrentScoreLimit)
+	var wg sync.WaitGroup
+
+	for i, agent := range snap {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, a *mutation.Strategy) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			scores[idx] = s.config.Scorer(toAPIStrategy(a))
+		}(i, agent)
+	}
+	wg.Wait()
+
+	scoreMap := make(map[string]float64, len(snap))
+	for i, a := range snap {
+		scoreMap[a.ID] = scores[i]
+	}
+
 	pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
-		if s.config.Scorer != nil {
-			return s.config.Scorer(agent.Params)
+		if sc, ok := scoreMap[agent.ID]; ok {
+			return sc
 		}
-		temp := defaultTargetTemp
-		if v, ok := agent.Params["temperature"].(float64); ok {
-			temp = v
-		}
-		proximity := 1 - absFloat64(temp-defaultTargetTemp)*defaultProximityGain
-		score := defaultBaseScore + rng.Float64()*defaultNoiseRange + proximity*defaultBonusRange
-		if score > defaultMaxScore {
-			score = defaultMaxScore
-		}
-		if score < 0 {
-			score = 0
-		}
-		return score
+		return 0
 	})
 }
 
-func absFloat64(x float64) float64 {
-	if x < 0 {
-		return -x
+// initScores initializes scores for all agents in the population.
+func (s *Service) initScores(seed int64) {
+	if s.wiredSystem != nil && s.wiredSystem.Population != nil {
+		s.scoreAgents(s.wiredSystem.Population)
+	} else if s.population != nil {
+		s.scoreAgents(s.population)
 	}
-	return x
 }
 
-// initScores initializes scores for all agents in the population using the provided seed.
-// If seed is 0, the current time is used as seed.
-func (s *Service) initScores(seed int64) {
-	var r *rand.Rand
-	if seed != 0 {
-		r = rand.New(rand.NewSource(seed)) // #nosec G404 - scoring doesn't need crypto rand
-	} else {
-		r = rand.New(rand.NewSource(time.Now().UnixNano()))
+// bestFromStrategies returns the strategy with the highest score from a slice.
+func bestFromStrategies(agents []*mutation.Strategy) *mutation.Strategy {
+	if len(agents) == 0 {
+		return nil
 	}
+	best := agents[0]
+	for _, a := range agents[1:] {
+		if a.Score > best.Score {
+			best = a
+		}
+	}
+	return best
+}
 
-	if s.wiredSystem != nil && s.wiredSystem.Population != nil {
-		s.scoreAgents(s.wiredSystem.Population, r)
-	} else if s.population != nil {
-		s.scoreAgents(s.population, r)
+// recordGenealogy records a lineage entry between the previous generation's best
+// and the current best if they differ and both exist (non-wired mode).
+func (s *Service) recordGenealogy(prevBest *mutation.Strategy) {
+	agents, _ := s.population.Snapshot()
+	if len(agents) == 0 || prevBest == nil {
+		return
+	}
+	currentBest := bestFromStrategies(agents)
+	if currentBest == nil || currentBest.ID == prevBest.ID {
+		return
+	}
+	scoreDelta := currentBest.Score - prevBest.Score
+	s.lineages = append(s.lineages, StrategyLineage{
+		ParentID:     prevBest.ID,
+		ChildID:      currentBest.ID,
+		MutationType: "evolution",
+		WinRate:      0,
+		ScoreDelta:   scoreDelta,
+		Timestamp:    time.Now().UnixMilli(),
+	})
+}
+
+// recordLineages records lineage entries for each offspring in non-wired mode,
+// capturing parent-child relationships from the population snapshot.
+func (s *Service) recordLineages() {
+	if s.population == nil {
+		return
+	}
+	snapshot, _ := s.population.Snapshot()
+	for _, agent := range snapshot {
+		if agent.ParentID != "" {
+			s.lineages = append(s.lineages, StrategyLineage{
+				ParentID:     agent.ParentID,
+				ChildID:      agent.ID,
+				MutationType: agent.StrategyMutationType.String(),
+				WinRate:      0, // Not measured in simple GA mode
+				ScoreDelta:   agent.Score,
+				Timestamp:    time.Now().Unix(),
+			})
+		}
 	}
 }

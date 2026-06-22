@@ -3,7 +3,10 @@
 // create, configure, and run evolution systems without depending on internal packages.
 package evolution
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Strategy represents an evolved agent decision strategy.
 type Strategy struct {
@@ -56,9 +59,15 @@ type StrategyLineage struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
-// ScorerFunc evaluates an agent and returns its fitness score.
-// Return a score in [0, 100]. Higher = better.
-type ScorerFunc func(params map[string]any) float64
+// ScorerFunc evaluates an agent strategy and returns its fitness score.
+// Higher scores are better. The score range is [0, 100].
+type ScorerFunc func(agent *Strategy) float64
+
+// LLMClient defines the interface for LLM-based scoring.
+// Implementations can wrap internal/llm.Client or provide mock implementations.
+type LLMClient interface {
+	Generate(ctx context.Context, prompt string) (string, error)
+}
 
 // SystemConfig holds configuration for creating an EvolutionSystem via NewService.
 type SystemConfig struct {

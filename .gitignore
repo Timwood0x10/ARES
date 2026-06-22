@@ -27,5 +27,9 @@ examples/quant-trading/workflow/config.yml
 
 .reasonix/
 
-# Compiled binaries
-/autonomous-evolution
+examples/autonomous-evolution/config/config.y*ml
+
+# Runtime artifacts from the autonomous evolution example
+evolution_best.json
+examples/autonomous-evolution/autonomous-evolution
+

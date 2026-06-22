@@ -94,6 +94,10 @@ type PopulationConfig struct {
 	// becomes more aggressive and stagnation reset may inject random individuals.
 	// Range [0, 1], default 0.15.
 	DiversityThreshold float64 `json:"diversity_threshold"`
+
+	// PromptPool is an optional set of prompt templates used during stagnation reset.
+	// When non-empty, reset agents may randomly adopt a template from this pool.
+	PromptPool []string `json:"prompt_pool,omitempty"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -542,6 +546,11 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	p.Agents = nextGen
 	p.Generation++
 
+	// Apply fitness sharing to penalize crowded regions of parameter space
+	// before adaptive adjustments, so diversity metrics reflect shared scores.
+	// Elites are protected from penalty to preserve their scores.
+	p.applyFitnessSharing(len(elites))
+
 	p.adjustMutationRateLocked()
 	p.handleStagnationLocked()
 
@@ -617,6 +626,45 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 	}
 
 	return offspring, nil
+}
+
+// applyFitnessSharing reduces scores of agents in crowded regions of parameter space.
+// This prevents all agents from converging to the same local optimum by penalizing
+// similarity — agents that occupy the same niche share their fitness.
+//
+// eliteCount specifies how many leading agents (already sorted by score) are
+// protected from penalty so that elite preservation guarantees are upheld.
+func (p *Population) applyFitnessSharing(eliteCount int) {
+	n := len(p.Agents)
+	if n < 2 {
+		return
+	}
+
+	const (
+		shareSigma  = 0.3  // sharing coefficient
+		nicheRadius = 0.15 // distance threshold for "same niche"
+	)
+
+	keys := collectAgentParamKeys(p.Agents)
+	ranges := computeParamRanges(p.Agents, keys)
+
+	// Only penalize non-elite agents; elites are preserved unchanged.
+	for i := eliteCount; i < n; i++ {
+		crowdCount := 0
+		for j := 0; j < n; j++ {
+			if i == j {
+				continue
+			}
+			dist := paramDistance(p.Agents[i], p.Agents[j], keys, ranges)
+			if dist < nicheRadius {
+				crowdCount++
+			}
+		}
+		if crowdCount > 0 {
+			penalty := shareSigma * float64(crowdCount)
+			p.Agents[i].Score /= (1.0 + penalty)
+		}
+	}
 }
 
 // Snapshot returns a thread-safe copy of all agents and the current generation.

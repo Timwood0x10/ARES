@@ -169,29 +169,61 @@ func absFloat(x float64) float64 {
 
 // adjustMutationRateLocked updates currentMutationRate based on population diversity.
 // Called after each generation to prevent premature convergence.
-// operates on p.currentMutationRate (runtime field) instead of p.cfg.MutationRate
-// to preserve the user-configured base rate for drift-back.
+//
+// Key behaviors:
+//   - Emergency mode: critically low diversity (<0.05) forces max mutation rate.
+//   - Low diversity: aggressive boost proportional to deficit below threshold.
+//   - High diversity: gentle decay allowed.
+//   - Moderate diversity: maintain current rate (no drift toward base).
+//   - Floor protection: never drop below 0.15 unless diversity is genuinely high (>0.3).
 func (p *Population) adjustMutationRateLocked() {
 	div := p.measureDiversityLocked()
-	base := p.cfg.MutationRate
 
+	// Emergency mode: critically low diversity — force maximum exploration.
+	if div < 0.05 {
+		slog.Warn("emergency mutation rate boost: critically low diversity",
+			"diversity", div,
+			"generation", p.Generation,
+			"mutation_rate", p.cfg.MaxMutationRate,
+		)
+		p.currentMutationRate = p.cfg.MaxMutationRate
+		return
+	}
+
+	// Low diversity: aggressive boost proportional to how far below threshold.
 	if div < p.cfg.DiversityThreshold {
-		p.currentMutationRate = minFloat(p.currentMutationRate*1.5, p.cfg.MaxMutationRate)
-	} else if div > p.cfg.DiversityThreshold*2 && p.currentMutationRate > p.cfg.MinMutationRate {
-		p.currentMutationRate = maxFloat(p.currentMutationRate*0.85, p.cfg.MinMutationRate)
+		deficit := p.cfg.DiversityThreshold - div
+		boostFactor := 1.5 + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
+		p.currentMutationRate = minFloat(p.currentMutationRate*boostFactor, p.cfg.MaxMutationRate)
+	} else if div > p.cfg.DiversityThreshold*3 {
+		// Very high diversity: allow gentle decay toward floor.
+		p.currentMutationRate = maxFloat(p.currentMutationRate*0.95, p.cfg.MinMutationRate)
 	} else {
-		if p.currentMutationRate > base {
-			p.currentMutationRate = maxFloat(p.currentMutationRate*0.95, base)
-		} else if p.currentMutationRate < base {
-			p.currentMutationRate = minFloat(p.currentMutationRate*1.05, base)
+		// Moderate diversity: maintain current rate — only drift down if
+		// significantly above base to avoid unnecessary reduction.
+		if p.currentMutationRate > p.cfg.MutationRate*2 {
+			p.currentMutationRate = maxFloat(p.currentMutationRate*0.98, p.cfg.MutationRate*1.5)
 		}
 	}
 
-	p.currentMutationRate = clampFloat(p.currentMutationRate, p.cfg.MinMutationRate, p.cfg.MaxMutationRate)
+	// Floor: keep minimum at 0.15 unless diversity is genuinely high.
+	effectiveMin := p.cfg.MinMutationRate
+	if div < 0.3 {
+		effectiveMin = maxFloat(0.15, p.cfg.MinMutationRate)
+	}
+	p.currentMutationRate = clampFloat(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
+
+	slog.Debug("adaptive mutation rate adjusted",
+		"diversity", div,
+		"mutation_rate", p.currentMutationRate,
+		"effective_min", effectiveMin,
+		"generation", p.Generation,
+	)
 }
 
 // handleStagnationLocked checks for best-score stagnation and resets bottom
-// performers if the threshold has been exceeded.
+// performers if the threshold has been exceeded. Instead of copying top performers
+// exactly, it injects strongly perturbed clones to introduce novel genetic material.
 func (p *Population) handleStagnationLocked() {
 	if p.cfg.MaxStagnantGenerations <= 0 {
 		return
@@ -223,18 +255,32 @@ func (p *Population) handleStagnationLocked() {
 
 	SortByScore(p.Agents)
 	startIdx := len(p.Agents) - resetCount
+
+	// Inject random mutations from elites instead of exact copies.
+	// Each reset agent is a heavily perturbed clone of a random elite,
+	// ensuring genuinely novel individuals enter the population.
 	for i := startIdx; i < len(p.Agents); i++ {
 		template := p.Agents[p.rng.Intn(startIdx)]
-		p.Agents[i].PromptTemplate = template.PromptTemplate
-		p.Agents[i].Params = make(map[string]any, len(template.Params))
-		for k, v := range template.Params {
-			p.Agents[i].Params[k] = v
+		clone := template.Clone()
+
+		// Apply strong random perturbation to each numeric param.
+		for k, v := range clone.Params {
+			if f, ok := v.(float64); ok {
+				// Perturb by ±40% of original value: 60%–140% range.
+				perturbation := f * (0.6 + p.rng.Float64()*0.8)
+				clone.Params[k] = perturbation
+			} else if iVal, ok := v.(int); ok {
+				delta := p.rng.Intn(iVal/2+1) - iVal/4
+				clone.Params[k] = iVal + delta
+			}
 		}
-		p.Agents[i].Score = -1
+
+		clone.Score = -1
+		p.Agents[i] = clone
 	}
 
 	p.stagnantGens = 0
-	slog.Warn("stagnation detected, reset bottom performers",
+	slog.Warn("stagnation detected, injected random mutants from elites",
 		"reset_count", resetCount,
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,
