@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"goagentx/internal/callbacks"
@@ -101,7 +102,7 @@ func WithTrigger(trigger EvolutionTrigger) SchedulerOption {
 //	SchedulerOption - the option function.
 func WithEnabled(enabled bool) SchedulerOption {
 	return func(s *EvolutionScheduler) {
-		s.enabled = enabled
+		s.enabled.Store(enabled)
 	}
 }
 
@@ -121,7 +122,7 @@ type EvolutionScheduler struct {
 	mu          sync.Mutex // Protects lastRun from concurrent access.
 	lastRun     time.Time
 	trigger     EvolutionTrigger
-	enabled     bool
+	enabled     atomic.Bool
 	egCtx       context.Context    // Context for errgroup cancellation.
 	egCancel    context.CancelFunc // Cancel function for errgroup context.
 	dreamCycle  *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
@@ -154,10 +155,10 @@ func NewEvolutionScheduler(callbacks callbacks.CallbackRegistrar, adapter Adapte
 		minInterval: 5 * time.Minute,
 		lastRun:     time.Time{},
 		trigger:     TriggerOnIdle,
-		enabled:     false,
 		egCtx:       egCtx,
 		egCancel:    egCancel,
 	}
+	// enabled defaults to false (atomic.Bool zero value).
 
 	for _, opt := range opts {
 		opt(s)
@@ -230,7 +231,7 @@ func (s *EvolutionScheduler) recentAverage(n int) float64 {
 //	ctx - operation context.
 //	data - the callback data containing agent completion information.
 func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) {
-	if !s.enabled {
+	if !s.enabled.Load() {
 		return
 	}
 
@@ -400,7 +401,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 //
 //	enabled - true to enable, false to disable.
 func (s *EvolutionScheduler) SetEnabled(enabled bool) {
-	s.enabled = enabled
+	s.enabled.Store(enabled)
 }
 
 // IsEnabled returns whether the scheduler is currently enabled.
@@ -409,7 +410,7 @@ func (s *EvolutionScheduler) SetEnabled(enabled bool) {
 //
 //	bool - true if enabled, false otherwise.
 func (s *EvolutionScheduler) IsEnabled() bool {
-	return s.enabled
+	return s.enabled.Load()
 }
 
 // LastRunTime returns the timestamp of the last evolution cycle.

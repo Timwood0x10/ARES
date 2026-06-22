@@ -135,6 +135,13 @@ func paramDistance(a, b *mutation.Strategy, keys []string, ranges map[string]flo
 		totalDist += absFloat(fa-fb) / r
 		count++
 	}
+
+	// Categorical distance for PromptTemplate: different template = max distance (1.0).
+	if a.PromptTemplate != b.PromptTemplate {
+		totalDist += 1.0
+		count++
+	}
+
 	if count == 0 {
 		return 0.0
 	}

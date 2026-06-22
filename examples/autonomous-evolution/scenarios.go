@@ -419,9 +419,13 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 // It uses the high-level api/evolution.Service to run a population-based GA
 // with elite selection, crossover, and mutation, in either wired or raw mode.
 //
-// When LLM configuration is available, it uses the api/evolution LLMScorer for strategy
-// scoring via the LLMClient interface; otherwise falls back to a deterministic
-// parameter-aware scorer.
+// Scoring uses a hybrid approach:
+//   - First 12 generations: deterministic parameter-aware scorer (stable gradient).
+//   - Last 3 generations: LLM-based scorer (semantic validation on top candidates).
+//
+// This hybrid gives the GA clean convergence for most of the run, then applies
+// LLM judgment to validate and rank the final strategies. When LLM config is
+// unavailable, the deterministic scorer is used for all generations.
 //
 // Post-evolution, it prints an Evolution Insight Report showing trajectory,
 // mutation analysis, genealogy tree, and key learnings.
@@ -443,51 +447,66 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 		PromptTemplate: "helpful",
 	}
 
-	// Build scorer: prefer real LLM API when configured, otherwise use deterministic fallback.
-	// The fallback scorer is fully deterministic (no random components) and evaluates
-	// strategy params on: temperature (lower is better), top_k (optimal near 30),
-	// and prompt template quality ("precise" > "careful" > "creative").
-	var scorerFn apievol.ScorerFunc
+	// Build deterministic fallback scorer (used for first 12 generations).
+	// Fully deterministic (no random components). Evaluates strategy params on:
+	//   - temperature: lower is better (0.0→+25, 1.0→+0)
+	//   - top_k: optimal near 30 (penalty dist²/10)
+	//   - prompt template: "precise" > "careful" > "creative"
+	deterministicScorer := func(agent *apievol.Strategy) float64 {
+		score := 50.0
+		if temp, ok := agent.Params["temperature"].(float64); ok {
+			score += (1.0 - temp) * 25
+		}
+		if tk, ok := agent.Params["top_k"].(float64); ok {
+			dist := tk - 30.0
+			score -= (dist * dist) / 10.0
+		}
+		switch agent.PromptTemplate {
+		case "precise":
+			score += 15
+		case "careful":
+			score += 8
+		case "creative":
+			score += 4
+		}
+		if score < 5 {
+			score = 5
+		}
+		if score > 100 {
+			score = 100
+		}
+		return score
+	}
+
+	// Build LLM scorer (used for last 3 generations).
+	// When LLM config is unavailable, falls back to deterministic scorer for all gens.
+	var llmScorerFn apievol.ScorerFunc
 	if llmCfg, err := loadLLMConfig(); err == nil && llmCfg != nil {
 		client := newHTTPLLMClient(*llmCfg)
 		llmScorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
-			Client: client,
-			Model:  llmCfg.Model,
+			Client:     client,
+			Model:      llmCfg.Model,
+			Seed:       llmCfg.Seed,
+			NumSamples: 3,
+			Fallback:   deterministicScorer,
 		})
 		if err == nil {
-			scorerFn = llmScorer.AsScorerFunc()
-			slog.InfoContext(ctx, "Using real LLM scorer for strategy evaluation",
+			llmScorerFn = llmScorer.AsScorerFunc()
+			slog.InfoContext(ctx, "LLM scorer ready for final validation",
 				"model", llmCfg.Model,
+				"switch_gen", cfg.NGen-3,
 			)
 		}
 	}
-	if scorerFn == nil {
-		scorerFn = func(agent *apievol.Strategy) float64 {
-			score := 50.0
-			if temp, ok := agent.Params["temperature"].(float64); ok {
-				score += (1.0 - temp) * 25
-			}
-			if tk, ok := agent.Params["top_k"].(float64); ok {
-				dist := tk - 30.0
-				score -= (dist * dist) / 10.0
-			}
-			switch agent.PromptTemplate {
-			case "precise":
-				score += 15
-			case "careful":
-				score += 8
-			case "creative":
-				score += 4
-			}
-			if score < 5 {
-				score = 5
-			}
-			if score > 100 {
-				score = 100
-			}
-			return score
-		}
+
+	// Hybrid scorer: deterministic for first (N-3) gens, LLM for last 3.
+	// If LLM scorer isn't available, uses deterministic for all generations.
+	hybridGen := cfg.NGen - 3
+	if hybridGen < 0 {
+		hybridGen = 0
 	}
+	phaseScorer := newPhaseScorer(deterministicScorer, llmScorerFn, hybridGen, cfg.PopSize)
+	scorerFn := phaseScorer.AsScorerFunc()
 
 	svc, err := apievol.NewService(&apievol.SystemConfig{
 		BaseStrategy:    parent,

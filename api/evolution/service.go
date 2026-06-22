@@ -123,6 +123,12 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.MutatorSeed = cfg.Seed
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
+	internalCfg.PromptCrossoverMode = cfg.PromptCrossoverMode
+	// Note: Adapter-level scorer (internalCfg.Scorer) is intentionally
+	// NOT set here to avoid double-scoring in Service.Evolve's wired path
+	// (RunIdleEvolution adapter scoring + initScores). The adapter scorer
+	// is only needed for the scheduler-triggered path and should be
+	// configured separately when creating a scheduler-only system.
 	if cfg.Seed != 0 {
 		internalCfg.UseDeterministicIDs = true
 	}

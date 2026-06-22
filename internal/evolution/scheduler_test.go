@@ -51,7 +51,7 @@ func TestNewEvolutionScheduler(t *testing.T) {
 	if scheduler.trigger != TriggerOnIdle {
 		t.Errorf("expected default trigger TriggerOnIdle, got %v", scheduler.trigger)
 	}
-	if scheduler.enabled {
+	if scheduler.enabled.Load() {
 		t.Error("expected disabled by default")
 	}
 }
@@ -73,7 +73,7 @@ func TestNewEvolutionScheduler_WithOptions(t *testing.T) {
 	if scheduler.trigger != TriggerOnThreshold {
 		t.Errorf("expected trigger TriggerOnThreshold, got %v", scheduler.trigger)
 	}
-	if !scheduler.enabled {
+	if !scheduler.enabled.Load() {
 		t.Error("expected enabled")
 	}
 }

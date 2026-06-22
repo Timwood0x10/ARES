@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sort"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -24,8 +25,8 @@ type Mutator struct {
 	promptPool       []string              // Available prompt templates for mutation.
 	toolPool         []string              // Available tool configurations for mutation.
 	rng              *rand.Rand            // Deterministic randomness source.
-	deterministicIDs bool                  // When true, use counter-based IDs instead of UUID.
-	idCounter        int64                 // Monotonic counter for deterministic ID generation.
+	deterministicIDs bool         // When true, use counter-based IDs instead of UUID.
+	idCounter        atomic.Int64 // Monotonic counter for deterministic ID generation (thread-safe).
 }
 
 // NewMutator creates a new strategy mutator with default configuration.
@@ -157,12 +158,12 @@ func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	// Fill in metadata for the new child strategy.
 	now := parent.CreatedAt
 	if m.deterministicIDs {
-		m.idCounter++
+		counter := m.idCounter.Add(1)
 		parentShort := parent.ID
 		if len(parentShort) > 8 {
 			parentShort = parentShort[:8]
 		}
-		child.ID = fmt.Sprintf("det-mut-%s-%d", parentShort, m.idCounter)
+		child.ID = fmt.Sprintf("det-mut-%s-%d", parentShort, counter)
 	} else {
 		child.ID = uuid.New().String()
 	}

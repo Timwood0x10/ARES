@@ -22,10 +22,14 @@ import (
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
 // It allows the EvolutionScheduler to trigger genome-based evolution cycles
 // when agents complete tasks.
+//
+// When a scorer is set, new offspring (Score < 0) are automatically scored
+// after each evolution cycle, closing the scoring loop for the scheduler path.
 type GenomePopulationAdapter struct {
 	pop     *genome.Population
 	mutator genome.MutatorInterface
 	crosser genome.CrossoverInterface
+	scorer  func(*mutation.Strategy) float64
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -44,6 +48,7 @@ func NewGenomePopulationAdapter(
 	pop *genome.Population,
 	mutator genome.MutatorInterface,
 	crosser genome.CrossoverInterface,
+	opts ...GenomeAdapterOption,
 ) (*GenomePopulationAdapter, error) {
 	if pop == nil {
 		return nil, fmt.Errorf("population must not be nil")
@@ -54,15 +59,41 @@ func NewGenomePopulationAdapter(
 	if crosser == nil {
 		return nil, fmt.Errorf("crosser must not be nil")
 	}
-	return &GenomePopulationAdapter{
+	adapter := &GenomePopulationAdapter{
 		pop:     pop,
 		mutator: mutator,
 		crosser: crosser,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(adapter)
+	}
+	return adapter, nil
+}
+
+// GenomeAdapterOption configures a GenomePopulationAdapter.
+type GenomeAdapterOption func(*GenomePopulationAdapter)
+
+// WithAdapterScorer sets a scoring function that is called after each evolution
+// cycle to assign scores to newly generated offspring (Score < 0).
+// Without this, the scheduler path produces unevaluated agents that distort
+// selection and diversity metrics.
+//
+// Args:
+//
+//	scorer - function that takes an internal strategy and returns its fitness score.
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.scorer = scorer
+	}
 }
 
 // Run executes one genome evolution cycle (EvolveOnIdle) when triggered by scheduler.
-// This implements the AdapterRunner interface for use with EvolutionScheduler.
+// After evolution, if a scorer is configured, all unevaluated agents (Score < 0)
+// receive a fitness score — closing the scoring loop for the scheduler path.
 //
 // Args:
 //
@@ -74,6 +105,17 @@ func NewGenomePopulationAdapter(
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	if err := a.pop.EvolveOnIdle(ctx, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
+	}
+
+	// Score newly generated offspring so next generation's selection
+	// operates on valid fitness values instead of Score=-1 defaults.
+	if a.scorer != nil {
+		a.pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+			if agent.Score < 0 {
+				return a.scorer(agent)
+			}
+			return agent.Score
+		})
 	}
 
 	stats := a.pop.Stats()
@@ -357,6 +399,17 @@ type SystemConfig struct {
 
 	// BreedingPoolRatio limits breeding to the top fraction of survivors.
 	BreedingPoolRatio float64 `json:"breeding_pool_ratio"`
+
+	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
+	// 0 = PromptInherit (higher-scoring parent), 1 = PromptHalfSplit (half-sentence),
+	// 2 = PromptPoolMutation (random parent pick). Default is 0.
+	PromptCrossoverMode int `json:"prompt_crossover_mode"`
+
+	// Scorer is an optional function that evaluates strategy fitness after each
+	// evolution cycle. When set, newly generated offspring receive valid scores
+	// instead of the Score=-1 default, closing the scoring loop for the
+	// scheduler-triggered path. When nil, the caller must score externally.
+	Scorer func(*mutation.Strategy) float64 `json:"-"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -378,7 +431,7 @@ func DefaultSystemConfig() SystemConfig {
 		MaxMutationRate:        0.5,
 		MaxStagnantGenerations: 10,
 		DiversityThreshold:     0.15,
-		BreedingPoolRatio:      0.3,
+		BreedingPoolRatio:      0.6,
 	}
 }
 
@@ -439,6 +492,12 @@ func NewWiredEvolutionSystem(
 	if cfg.UseDeterministicIDs {
 		crosserOpts = append(crosserOpts, genome.WithDeterministicIDs(true))
 	}
+	switch cfg.PromptCrossoverMode {
+	case 1:
+		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptHalfSplit))
+	case 2:
+		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptPoolMutation))
+	}
 	crosser, err := genome.NewCrossover(crosserOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create crossover: %w", err)
@@ -469,8 +528,12 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create population: %w", err)
 	}
 
-	// Step 5: Create scheduler-compatible adapter.
-	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser)
+	// Step 5: Create scheduler-compatible adapter with optional scorer.
+	var adapterOpts []GenomeAdapterOption
+	if cfg.Scorer != nil {
+		adapterOpts = append(adapterOpts, WithAdapterScorer(cfg.Scorer))
+	}
+	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser, adapterOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create population adapter: %w", err)
 	}

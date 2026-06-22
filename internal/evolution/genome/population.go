@@ -632,6 +632,10 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 // This prevents all agents from converging to the same local optimum by penalizing
 // similarity — agents that occupy the same niche share their fitness.
 //
+// Agents with Score < 0 (unevaluated) are excluded from both the distance
+// calculation and penalty, preventing fitness sharing from operating on
+// meaningless default scores that would distort diversity metrics.
+//
 // eliteCount specifies how many leading agents (already sorted by score) are
 // protected from penalty so that elite preservation guarantees are upheld.
 func (p *Population) applyFitnessSharing(eliteCount int) {
@@ -645,17 +649,39 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 		nicheRadius = 0.15 // distance threshold for "same niche"
 	)
 
-	keys := collectAgentParamKeys(p.Agents)
-	ranges := computeParamRanges(p.Agents, keys)
+	// Build a filtered index of scored agents only (Score >= 0).
+	// Unevaluated agents (Score=-1) should not participate in fitness sharing
+	// because their score is meaningless and would distort the shared fitness signal.
+	scoredIdx := make([]int, 0, n)
+	for i, a := range p.Agents {
+		if a.Score >= 0 {
+			scoredIdx = append(scoredIdx, i)
+		}
+	}
 
-	// Only penalize non-elite agents; elites are preserved unchanged.
-	for i := eliteCount; i < n; i++ {
+	scoredAgents := make([]*mutation.Strategy, len(scoredIdx))
+	for k, idx := range scoredIdx {
+		scoredAgents[k] = p.Agents[idx]
+	}
+
+	if len(scoredAgents) < 2 {
+		return
+	}
+
+	keys := collectAgentParamKeys(scoredAgents)
+	ranges := computeParamRanges(scoredAgents, keys)
+
+	// Map back from filtered index to original agent index.
+	for ki, i := range scoredIdx {
+		if i < eliteCount {
+			continue // skip elites
+		}
 		crowdCount := 0
-		for j := 0; j < n; j++ {
-			if i == j {
+		for kj := range scoredIdx {
+			if ki == kj {
 				continue
 			}
-			dist := paramDistance(p.Agents[i], p.Agents[j], keys, ranges)
+			dist := paramDistance(scoredAgents[ki], scoredAgents[kj], keys, ranges)
 			if dist < nicheRadius {
 				crowdCount++
 			}

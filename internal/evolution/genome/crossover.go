@@ -25,6 +25,22 @@ var ErrNilParent = fmt.Errorf("parent strategy must not be nil")
 // ErrInvalidCrossoverPoints is returned when the number of crossover points is invalid.
 var ErrInvalidCrossoverPoints = fmt.Errorf("crossover points must be non-negative")
 
+// PromptCrossoverMode controls how PromptTemplate is inherited during crossover.
+type PromptCrossoverMode int
+
+const (
+	// PromptInherit inherits the prompt template from the higher-scoring parent.
+	// This is the default mode and matches the original behavior.
+	PromptInherit PromptCrossoverMode = iota
+	// PromptHalfSplit performs half-sentence crossover on prompt templates
+	// (first half of parent A, second half of parent B).
+	PromptHalfSplit
+	// PromptPoolMutation randomly picks from either parent's prompt template.
+	// Unlike PromptInherit, it does not use score — both parents have equal
+	// chance, promoting prompt diversity in the population.
+	PromptPoolMutation
+)
+
 // Crossover combines two parent strategies into a child strategy using
 // uniform crossover by default. Each parameter is independently selected
 // from either parent A or parent B with equal probability.
@@ -32,12 +48,14 @@ type Crossover struct {
 	rng              *rand.Rand   // Deterministic randomness source.
 	deterministicIDs bool         // When true, use counter-based IDs instead of UUID.
 	idCounter        atomic.Int64 // Monotonic counter for deterministic ID generation (thread-safe).
+	promptMode       PromptCrossoverMode
 }
 
 // NewCrossover creates a new crossover operator with default configuration.
 //
 // Default configuration:
 //   - rng: seeded with current time (non-deterministic).
+//   - promptMode: PromptInherit.
 //
 // Args:
 //
@@ -49,7 +67,8 @@ type Crossover struct {
 //	error - non-nil if any option fails validation.
 func NewCrossover(opts ...CrossoverOption) (*Crossover, error) {
 	c := &Crossover{
-		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - strategy crossover doesn't need crypto rand
+		rng:        rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - strategy crossover doesn't need crypto rand
+		promptMode: PromptInherit,
 	}
 
 	for _, opt := range opts {
@@ -99,6 +118,24 @@ func WithDeterministicIDs(enabled bool) CrossoverOption {
 	}
 }
 
+// WithPromptMode sets the prompt crossover mode for combining parent prompt templates.
+// Supported modes: PromptInherit, PromptHalfSplit, PromptPoolMutation.
+// Default is PromptInherit.
+//
+// Args:
+//
+//	mode - the prompt crossover mode to use.
+//
+// Returns:
+//
+//	CrossoverOption - the configuration function.
+func WithPromptMode(mode PromptCrossoverMode) CrossoverOption {
+	return func(c *Crossover) error {
+		c.promptMode = mode
+		return nil
+	}
+}
+
 // Crossover performs uniform crossover on two parent strategies.
 // For each parameter key present in either parent, the child inherits
 // from parent A or B with 50% probability each. The PromptTemplate
@@ -126,7 +163,24 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 	}
 
 	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
-	promptTemplate := c.selectPromptTemplate(a, b)
+
+	var promptTemplate string
+	switch c.promptMode {
+	case PromptHalfSplit:
+		promptTemplate = c.halfSplitPromptCrossover(a, b)
+		if promptTemplate != a.PromptTemplate && promptTemplate != b.PromptTemplate {
+			desc += " | half_split_prompt"
+		}
+	case PromptPoolMutation:
+		if c.rng.Intn(2) == 0 {
+			promptTemplate = a.PromptTemplate
+		} else {
+			promptTemplate = b.PromptTemplate
+		}
+		desc += " | pool_prompt"
+	default: // PromptInherit
+		promptTemplate = c.selectPromptTemplate(a, b)
+	}
 
 	var childID string
 	if c.deterministicIDs {

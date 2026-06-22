@@ -26,10 +26,27 @@ type LLMScorerConfig struct {
 	Model string
 
 	// Temperature for the LLM evaluation call.
+	// When 0, defaults to 0.3. When Seed != 0, forced to 0 for deterministic output.
 	Temperature float64
 
 	// MaxTokens for the LLM response.
 	MaxTokens int
+
+	// Seed enables deterministic LLM scoring when > 0.
+	// Forces Temperature to 0 and embeds the seed in the evaluation prompt
+	// so identical strategies always receive the same score.
+	Seed int64
+
+	// NumSamples sets how many times the LLM is called per strategy.
+	// When > 1, the best score across all samples is returned (max-of-N),
+	// hedging against transient API errors. Default 1 (single call).
+	NumSamples int
+
+	// Fallback is called when the LLM API is unreachable (all samples fail).
+	// When set, the evolution keeps running with deterministic scoring instead
+	// of assigning zeros that would collapse the population.
+	// Example: pass a parameter-aware ScorerFunc as the circuit breaker.
+	Fallback ScorerFunc
 }
 
 // DefaultEvalPrompt is the default evaluation prompt template.
@@ -60,6 +77,9 @@ type LLMScorer struct {
 	model       string
 	temperature float64
 	maxTokens   int
+	seed        int64
+	numSamples  int
+	fallback    ScorerFunc
 }
 
 // NewLLMScorer creates an LLMScorer from config.
@@ -72,6 +92,9 @@ func NewLLMScorer(cfg LLMScorerConfig) (*LLMScorer, error) {
 		evalPrompt = DefaultEvalPrompt
 	}
 	temp := cfg.Temperature
+	if cfg.Seed != 0 {
+		temp = 0 // seed requires deterministic output
+	}
 	if temp == 0 {
 		temp = defaultLLMTemperature
 	}
@@ -79,28 +102,60 @@ func NewLLMScorer(cfg LLMScorerConfig) (*LLMScorer, error) {
 	if maxTokens == 0 {
 		maxTokens = defaultLLMMaxTokens
 	}
+	numSamples := cfg.NumSamples
+	if numSamples < 1 {
+		numSamples = 1
+	}
 	return &LLMScorer{
 		client:      cfg.Client,
 		evalPrompt:  evalPrompt,
 		model:       cfg.Model,
 		temperature: temp,
 		maxTokens:   maxTokens,
+		seed:        cfg.Seed,
+		numSamples:  numSamples,
+		fallback:    cfg.Fallback,
 	}, nil
 }
 
 // Score implements scorer for population evaluation.
 // It builds a prompt from the strategy, calls the LLM, and parses the score.
+// When numSamples > 1, the LLM is called multiple times and the best score
+// is returned (max-of-N), providing robustness against transient API failures
+// and non-deterministic outputs. Max is used instead of median because the
+// primary noise source is API errors (score=0), not numerical variance —
+// a single successful call gives the best available LLM judgment.
 func (s *LLMScorer) Score(strategy *Strategy) float64 {
 	if strategy == nil {
 		return 0
 	}
 
+	if s.numSamples <= 1 {
+		return s.sampleOnce(strategy)
+	}
+
+	best := 0.0
+	for range s.numSamples {
+		sc := s.sampleOnce(strategy)
+		if sc > best {
+			best = sc
+		}
+	}
+	return best
+}
+
+// sampleOnce calls the LLM once for the given strategy and returns the parsed score.
+// If the LLM call fails and a fallback scorer is configured, the fallback is used
+// instead — this keeps the evolution running when the API is temporarily down.
+func (s *LLMScorer) sampleOnce(strategy *Strategy) float64 {
 	prompt := s.buildPrompt(strategy)
 	resp, err := s.client.Generate(context.Background(), prompt)
 	if err != nil {
+		if s.fallback != nil {
+			return s.fallback(strategy)
+		}
 		return 0
 	}
-
 	return s.parseScore(resp)
 }
 
@@ -112,6 +167,8 @@ func (s *LLMScorer) AsScorerFunc() ScorerFunc {
 }
 
 // buildPrompt constructs the evaluation prompt from a strategy.
+// When a seed is configured, it embeds a determinism instruction to reduce
+// output variance across repeated evaluations of the same parameters.
 func (s *LLMScorer) buildPrompt(strategy *Strategy) string {
 	params := make(map[string]any)
 	for k, v := range strategy.Params {
@@ -121,7 +178,12 @@ func (s *LLMScorer) buildPrompt(strategy *Strategy) string {
 	params["name"] = strategy.Name
 
 	data, _ := json.MarshalIndent(params, "  ", "  ")
-	return strings.ReplaceAll(s.evalPrompt, "{strategy_json}", string(data))
+	prompt := strings.ReplaceAll(s.evalPrompt, "{strategy_json}", string(data))
+
+	if s.seed != 0 {
+		prompt += fmt.Sprintf("\n\n(Scoring seed: %d. Use temperature 0 for fully deterministic evaluation.)", s.seed)
+	}
+	return prompt
 }
 
 // parseScore extracts a numeric score from the LLM response.

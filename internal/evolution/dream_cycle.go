@@ -112,15 +112,12 @@ func NewDreamCycle(
 	genealogy GenealogyRecorder,
 	opts ...DreamCycleOption,
 ) (*DreamCycle, error) {
-	if scheduler == nil {
-		return nil, fmt.Errorf("scheduler is required")
-	}
 	if mutator == nil {
 		return nil, fmt.Errorf("mutator is required")
 	}
-	if tester == nil {
-		return nil, fmt.Errorf("tester is required")
-	}
+	// scheduler and tester may be nil at construction time and wired later
+	// via direct field assignment (e.g., in NewWiredEvolutionSystem).
+	// Run() checks them at invocation time before use.
 
 	dc := &DreamCycle{
 		scheduler: scheduler,
@@ -179,6 +176,16 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		slog.DebugContext(ctx, "[DreamCycle] Cooldown active, skipping",
 			"last_cycle", lastCycle.Format(time.RFC3339),
 			"cooldown", dc.config.Cooldown)
+		return nil
+	}
+
+	// Runtime guard: scheduler and tester may be nil when wired lazily.
+	if dc.scheduler == nil {
+		slog.WarnContext(ctx, "[DreamCycle] Scheduler not wired yet, skipping cycle")
+		return nil
+	}
+	if dc.tester == nil {
+		slog.WarnContext(ctx, "[DreamCycle] Tester not wired yet, skipping cycle")
 		return nil
 	}
 
@@ -248,7 +255,10 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		}
 	}
 
+	dc.mu.Lock()
 	dc.lastCycle = time.Now()
+	dc.mu.Unlock()
+
 	slog.InfoContext(ctx, "[DreamCycle] Evolution cycle complete",
 		"winner_id", winner.strategy.ID,
 		"win_rate", winner.winRate,

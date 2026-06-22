@@ -22,6 +22,7 @@ type LLMConfig struct {
 	Temperature    float64 `yaml:"temperature"`
 	MaxTokens      int     `yaml:"max_tokens"`
 	TimeoutSeconds int     `yaml:"timeout_seconds"`
+	Seed           int64   `yaml:"seed"`
 }
 
 type llmRequest struct {
@@ -29,6 +30,7 @@ type llmRequest struct {
 	Messages    []llmMessage `json:"messages"`
 	Temperature float64      `json:"temperature"`
 	MaxTokens   int          `json:"max_tokens"`
+	Seed        *int64       `json:"seed,omitempty"`
 }
 
 type llmMessage struct {
@@ -66,6 +68,7 @@ type httpLLMClient struct {
 	endpoint    string
 	temperature float64
 	maxTokens   int
+	seed        *int64
 }
 
 // newHTTPLLMClient creates an httpLLMClient from an LLMConfig.
@@ -82,6 +85,12 @@ func newHTTPLLMClient(cfg LLMConfig) *httpLLMClient {
 	if cfg.MaxTokens > 0 {
 		maxTok = cfg.MaxTokens
 	}
+	var seed *int64
+	if cfg.Seed != 0 {
+		s := cfg.Seed
+		seed = &s
+	}
+
 	return &httpLLMClient{
 		client:      &http.Client{Timeout: timeout},
 		apiKey:      cfg.APIKey,
@@ -89,6 +98,7 @@ func newHTTPLLMClient(cfg LLMConfig) *httpLLMClient {
 		endpoint:    chatEndpoint(cfg.BaseURL),
 		temperature: temp,
 		maxTokens:   maxTok,
+		seed:        seed,
 	}
 }
 
@@ -101,6 +111,7 @@ func (c *httpLLMClient) Generate(ctx context.Context, prompt string) (string, er
 		},
 		Temperature: c.temperature,
 		MaxTokens:   c.maxTokens,
+		Seed:        c.seed,
 	}
 
 	body, err := json.Marshal(payload)

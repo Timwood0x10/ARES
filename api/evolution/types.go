@@ -101,6 +101,11 @@ type SystemConfig struct {
 	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.3).
 	BreedingPoolRatio float64
 
+	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
+	// 0 = inherit from higher-scoring parent (default), 1 = half-sentence split,
+	// 2 = random parent pick (pool mutation style).
+	PromptCrossoverMode int
+
 	// Generations is total generations to run (default 15).
 	Generations int
 
@@ -135,7 +140,7 @@ func DefaultConfig() *SystemConfig {
 		MaxMutationRate:        0.5,
 		MaxStagnantGenerations: 10,
 		DiversityThreshold:     0.15,
-		BreedingPoolRatio:      0.3,
+		BreedingPoolRatio:      0.6,
 		Generations:            15,
 		Seed:                   0,
 		PromptPool:             []string{},
