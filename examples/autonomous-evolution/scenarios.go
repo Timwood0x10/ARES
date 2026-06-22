@@ -453,29 +453,7 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 	//   - top_k: optimal near 30 (penalty dist²/10)
 	//   - prompt template: "precise" > "careful" > "creative"
 	deterministicScorer := func(agent *apievol.Strategy) float64 {
-		score := 50.0
-		if temp, ok := agent.Params["temperature"].(float64); ok {
-			score += (1.0 - temp) * 25
-		}
-		if tk, ok := agent.Params["top_k"].(float64); ok {
-			dist := tk - 30.0
-			score -= (dist * dist) / 10.0
-		}
-		switch agent.PromptTemplate {
-		case "precise":
-			score += 15
-		case "careful":
-			score += 8
-		case "creative":
-			score += 4
-		}
-		if score < 5 {
-			score = 5
-		}
-		if score > 100 {
-			score = 100
-		}
-		return score
+		return apievol.DeterministicScore(agent)
 	}
 
 	// Build LLM scorer (used for last 3 generations).

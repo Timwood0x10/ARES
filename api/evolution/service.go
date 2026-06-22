@@ -250,7 +250,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 	}
 
 	// Initialize scores before first generation so selection has meaningful data.
-	s.initScores(s.config.Seed)
+	s.initScores()
 
 	for i := 0; i < generations; i++ {
 		select {
@@ -265,7 +265,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			}
 
 			// Re-score after each evolution so next generation selects on fresh data.
-			s.initScores(0)
+			s.initScores()
 
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
@@ -285,7 +285,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			}
 
 			// Re-score after each evolution so next generation selects on fresh data.
-			s.initScores(0)
+			s.initScores()
 
 			// Record lineages for non-wired mode: link parent→child.
 			s.recordGenealogy(prevBest)
@@ -539,16 +539,6 @@ func (s *Service) collectLineages() []StrategyLineage {
 	return []StrategyLineage{}
 }
 
-// Default scorer constants used by scoreAgents when no custom scorer is configured.
-const (
-	defaultBaseScore    = 50.0
-	defaultTopKOptimal  = 30.0
-	defaultTopKPenalty  = 10.0
-	defaultPromptReward = 15.0
-	defaultMaxScore     = 100.0
-	defaultMinScore     = 5.0
-)
-
 // scoreAgents assigns fitness scores to agents in the population.
 // If s.config.Scorer is set, it delegates to that. Otherwise it uses a
 // deterministic parameter-aware heuristic (no random noise):
@@ -559,41 +549,7 @@ func (s *Service) scoreAgents(pop *genome.Population) {
 	// Fast path: deterministic scorer — no clone/concurrency overhead.
 	if s.config.Scorer == nil {
 		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
-			apiStrategy := toAPIStrategy(agent)
-			score := defaultBaseScore
-
-			if temp, ok := apiStrategy.Params["temperature"].(float64); ok {
-				score += (1.0 - temp) * 25
-			}
-			if tk, ok := apiStrategy.Params["top_k"].(float64); ok {
-				dist := tk - 30.0
-				score -= (dist * dist) / 10.0
-			}
-
-			promptVal := ""
-			if pt, ok := apiStrategy.Params["prompt_template"].(string); ok {
-				promptVal = pt
-			} else if pt, ok := apiStrategy.Params["PromptTemplate"].(string); ok {
-				promptVal = pt
-			} else if apiStrategy.PromptTemplate != "" {
-				promptVal = apiStrategy.PromptTemplate
-			}
-			switch promptVal {
-			case "precise":
-				score += defaultPromptReward
-			case "careful":
-				score += 8
-			case "creative":
-				score += 4
-			}
-
-			if score > defaultMaxScore {
-				score = defaultMaxScore
-			}
-			if score < defaultMinScore {
-				score = defaultMinScore
-			}
-			return score
+			return DeterministicScore(toAPIStrategy(agent))
 		})
 		return
 	}
@@ -630,7 +586,7 @@ func (s *Service) scoreAgents(pop *genome.Population) {
 }
 
 // initScores initializes scores for all agents in the population.
-func (s *Service) initScores(seed int64) {
+func (s *Service) initScores() {
 	if s.wiredSystem != nil && s.wiredSystem.Population != nil {
 		s.scoreAgents(s.wiredSystem.Population)
 	} else if s.population != nil {

@@ -52,19 +52,3 @@ type Stats struct {
 	FailedActions     int       `json:"failed_actions"`
 	LastAction        time.Time `json:"last_action"`
 }
-
-// VerifyResult holds the result of a single verification test.
-type VerifyResult struct {
-	Name     string        `json:"name"`
-	Passed   bool          `json:"passed"`
-	Detail   string        `json:"detail"`
-	Duration time.Duration `json:"duration"`
-}
-
-// VerifyReport holds the full verification report.
-type VerifyReport struct {
-	Tests  []VerifyResult `json:"tests"`
-	Passed int            `json:"passed"`
-	Failed int            `json:"failed"`
-	Total  int            `json:"total"`
-}

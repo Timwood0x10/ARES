@@ -6,6 +6,30 @@ import (
 	"goagentx/internal/evolution/mutation"
 )
 
+// adaptive mutation rate tuning constants.
+
+// emergencyDiversityThreshold is the diversity level below which
+// emergency maximum mutation rate is forced.
+const emergencyDiversityThreshold = 0.05
+
+// lowDiversityBoostFactor is the base multiplier applied when diversity
+// is below the configured threshold. Range extends to 2.5x via deficit scaling.
+const lowDiversityBoostFactor = 1.5
+
+// highDecayRate is the decay factor applied when diversity is very high (>3x threshold).
+const highDecayRate = 0.95
+
+// moderateDecayRate is the gentle decay factor when current rate is far above base.
+const moderateDecayRate = 0.98
+
+// diversityFloorThreshold is the diversity level above which the minimum
+// mutation rate floor is relaxed to the configured MinMutationRate.
+const diversityFloorThreshold = 0.3
+
+// minMutationFloor is the absolute minimum mutation rate enforced when
+// diversity is below diversityFloorThreshold.
+const minMutationFloor = 0.15
+
 // computeBestScoreLocked returns the highest score in the current agents.
 // Caller must hold at least a read lock.
 func (p *Population) computeBestScoreLocked() float64 {
@@ -201,7 +225,7 @@ func (p *Population) adjustMutationRateLocked() {
 	div := p.measureDiversityLocked()
 
 	// Emergency mode: critically low diversity — force maximum exploration.
-	if div < 0.05 {
+	if div < emergencyDiversityThreshold {
 		slog.Warn("emergency mutation rate boost: critically low diversity",
 			"diversity", div,
 			"generation", p.Generation,
@@ -214,23 +238,23 @@ func (p *Population) adjustMutationRateLocked() {
 	// Low diversity: aggressive boost proportional to how far below threshold.
 	if div < p.cfg.DiversityThreshold {
 		deficit := p.cfg.DiversityThreshold - div
-		boostFactor := 1.5 + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
+		boostFactor := lowDiversityBoostFactor + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
 		p.currentMutationRate = minFloat(p.currentMutationRate*boostFactor, p.cfg.MaxMutationRate)
 	} else if div > p.cfg.DiversityThreshold*3 {
 		// Very high diversity: allow gentle decay toward floor.
-		p.currentMutationRate = maxFloat(p.currentMutationRate*0.95, p.cfg.MinMutationRate)
+		p.currentMutationRate = maxFloat(p.currentMutationRate*highDecayRate, p.cfg.MinMutationRate)
 	} else {
 		// Moderate diversity: maintain current rate — only drift down if
 		// significantly above base to avoid unnecessary reduction.
 		if p.currentMutationRate > p.cfg.MutationRate*2 {
-			p.currentMutationRate = maxFloat(p.currentMutationRate*0.98, p.cfg.MutationRate*1.5)
+			p.currentMutationRate = maxFloat(p.currentMutationRate*moderateDecayRate, p.cfg.MutationRate*lowDiversityBoostFactor)
 		}
 	}
 
 	// Floor: keep minimum at 0.15 unless diversity is genuinely high.
 	effectiveMin := p.cfg.MinMutationRate
-	if div < 0.3 {
-		effectiveMin = maxFloat(0.15, p.cfg.MinMutationRate)
+	if div < diversityFloorThreshold {
+		effectiveMin = maxFloat(minMutationFloor, p.cfg.MinMutationRate)
 	}
 	p.currentMutationRate = clampFloat(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
 

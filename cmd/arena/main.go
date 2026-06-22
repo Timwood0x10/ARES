@@ -817,8 +817,8 @@ func printReport(report *arena.ScenarioReport) {
 	fmt.Printf("  Finished:   %s\n", report.FinishedAt.Format(time.RFC3339))
 	fmt.Printf("  Duration:   %s\n", report.Duration.Truncate(time.Millisecond))
 	fmt.Println()
-	fmt.Printf("  Results:    %d passed, %d failed, %d skipped\n",
-		report.Passed, report.Failed, report.Skipped)
+	fmt.Printf("  Results:    %d passed, %d failed\n",
+		report.Passed, report.Failed)
 	fmt.Printf("  Score:      %.1f (%s)\n", report.Score.Score, report.Score.Grade)
 	fmt.Printf("  Verified:   %t\n", report.Verified)
 	fmt.Println()

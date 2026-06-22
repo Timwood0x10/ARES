@@ -20,6 +20,11 @@ const (
 
 // CircuitBreaker provides failure detection and automatic fallback for unreliable services.
 // This implements the circuit breaker pattern to prevent cascading failures.
+//
+// Semantics:
+//   - failureCount tracks CONSECUTIVE failures in Closed state (reset on each success).
+//   - failureThreshold therefore means "open after N consecutive failures", not cumulative.
+//   - In HalfOpen state, a single failure immediately re-opens the circuit.
 type CircuitBreaker struct {
 	mu               sync.RWMutex
 	state            CircuitBreakerState
@@ -37,10 +42,16 @@ type CircuitBreaker struct {
 }
 
 // NewCircuitBreaker creates a new CircuitBreaker instance.
+//
 // Args:
-// failureThreshold - number of failures before opening the circuit.
-// openTimeout - time to wait before attempting half-open state.
-// Returns new CircuitBreaker instance.
+//
+//	failureThreshold - number of CONSECUTIVE failures before opening the circuit.
+//	  A success between failures resets the counter, so this is not a cumulative count.
+//	openTimeout - time to wait before attempting half-open state.
+//
+// Returns:
+//
+//	*CircuitBreaker - the configured circuit breaker instance.
 func NewCircuitBreaker(failureThreshold int, openTimeout time.Duration) *CircuitBreaker {
 	cb := &CircuitBreaker{
 		state:            CircuitBreakerStateClosed,
@@ -91,11 +102,16 @@ func (cb *CircuitBreaker) AllowRequest() error {
 }
 
 // RecordSuccess records a successful operation.
+// In Closed state, this resets the consecutive failure count to zero,
+// meaning failureThreshold tracks CONSECUTIVE failures (not cumulative).
+// In HalfOpen state, this counts toward the success threshold needed to
+// fully close the circuit.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == CircuitBreakerStateHalfOpen {
+	switch cb.state {
+	case CircuitBreakerStateHalfOpen:
 		cb.halfOpenSuccess++
 		cb.halfOpenInflight.Add(-1)
 		if cb.halfOpenSuccess >= cb.successThreshold {
@@ -103,9 +119,18 @@ func (cb *CircuitBreaker) RecordSuccess() {
 			cb.failureCount = 0
 			cb.halfOpenSuccess = 0
 		}
-	}
 
-	cb.failureCount = 0
+	case CircuitBreakerStateClosed:
+		// Reset consecutive failure count on each success.
+		// This means failureThreshold behaves as "N consecutive failures"
+		// rather than "N cumulative failures". This is intentional: it allows
+		// intermittent failures without opening the circuit, while still
+		// protecting against sustained outage patterns.
+		cb.failureCount = 0
+
+	default:
+		// Unknown state: no-op. Future states must explicitly handle success semantics.
+	}
 }
 
 // cleanupHalfOpenInflight cleans up leaked inflight counters.
@@ -132,6 +157,8 @@ func (cb *CircuitBreaker) cleanupHalfOpenInflight() {
 }
 
 // RecordFailure records a failed operation.
+// In Closed state, this increments the consecutive failure count.
+// In HalfOpen state, this immediately re-opens the circuit.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

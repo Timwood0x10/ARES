@@ -126,9 +126,6 @@ type ParamRange struct {
 
 	// Values contains candidate values for this parameter.
 	Values []any
-
-	// Current is the current value of this parameter.
-	Current any
 }
 
 // DefaultParamRanges provides sensible default parameter ranges for LLM agents.

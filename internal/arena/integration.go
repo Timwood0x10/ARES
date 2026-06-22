@@ -103,6 +103,14 @@ func arenaActionToCategory(at ActionType) flight.DiagnosticCategory {
 		return flight.DiagConcurrencyError
 	case ActionSlowAgent:
 		return flight.DiagToolTimeout
+	case ActionToolTimeout:
+		return flight.DiagToolTimeout
+	case ActionMemoryCorrupt:
+		return flight.DiagMemoryError
+	case ActionMCPDisconnect:
+		return flight.DiagNetworkError
+	case ActionLLMFailure:
+		return flight.DiagLLMError
 	default:
 		return flight.DiagUnknown
 	}

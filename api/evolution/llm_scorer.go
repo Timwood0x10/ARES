@@ -12,6 +12,90 @@ const (
 	defaultLLMMaxTokens   = 256
 )
 
+// Default deterministic scorer constants.
+const (
+	// deterministicBaseScore is the starting score before parameter adjustments.
+	deterministicBaseScore = 50.0
+
+	// deterministicMaxScore is the upper clamp limit for the deterministic scorer.
+	deterministicMaxScore = 100.0
+
+	// deterministicMinScore is the lower clamp limit for the deterministic scorer.
+	deterministicMinScore = 5.0
+
+	// deterministicPromptReward is the bonus for "precise" prompt template.
+	deterministicPromptReward = 15.0
+
+	// deterministicCarefulReward is the bonus for "careful" prompt template.
+	deterministicCarefulReward = 8.0
+
+	// deterministicCreativeReward is the bonus for "creative" prompt template.
+	deterministicCreativeReward = 4.0
+)
+
+// DeterministicScore computes a parameter-aware fitness score for a strategy.
+// This is a pure heuristic (no random noise / no LLM call) used as fallback
+// scorer when no custom LLM scorer is configured. The scoring formula:
+//
+//   - Base score: 50.0
+//   - temperature: lower is better → (1.0 - temp) * 25  (range [0, +25])
+//   - top_k near 30 is optimal → penalty = dist²/10 where dist = top_k - 30
+//   - prompt template: "precise" +15, "careful" +8, "creative" +4
+//   - Final score clamped to [deterministicMinScore, deterministicMaxScore]
+//
+// Args:
+//
+//	s - the strategy to score (must not be nil).
+//
+// Returns:
+//
+//	float64 - fitness score in [deterministicMinScore, deterministicMaxScore].
+func DeterministicScore(s *Strategy) float64 {
+	if s == nil {
+		return deterministicBaseScore
+	}
+
+	score := deterministicBaseScore
+
+	// Temperature: lower is better (0.0 -> +25, 1.0 -> +0).
+	if temp, ok := s.Params["temperature"].(float64); ok {
+		score += (1.0 - temp) * 25
+	}
+
+	// Top_k: optimal near 30. Penalty is quadratic distance from optimum.
+	if tk, ok := s.Params["top_k"].(float64); ok {
+		dist := tk - 30.0
+		score -= (dist * dist) / 10.0
+	}
+
+	// Prompt template bonus.
+	promptVal := ""
+	if pt, ok := s.Params["prompt_template"].(string); ok {
+		promptVal = pt
+	} else if pt, ok := s.Params["PromptTemplate"].(string); ok {
+		promptVal = pt
+	} else if s.PromptTemplate != "" {
+		promptVal = s.PromptTemplate
+	}
+	switch promptVal {
+	case "precise":
+		score += deterministicPromptReward
+	case "careful":
+		score += deterministicCarefulReward
+	case "creative":
+		score += deterministicCreativeReward
+	}
+
+	// Clamp to valid range.
+	if score > deterministicMaxScore {
+		score = deterministicMaxScore
+	}
+	if score < deterministicMinScore {
+		score = deterministicMinScore
+	}
+	return score
+}
+
 // LLMScorerConfig configures an LLMScorer instance.
 type LLMScorerConfig struct {
 	// Client is the LLM client used for scoring (must not be nil).
@@ -92,10 +176,12 @@ func NewLLMScorer(cfg LLMScorerConfig) (*LLMScorer, error) {
 		evalPrompt = DefaultEvalPrompt
 	}
 	temp := cfg.Temperature
+	forcedDeterministic := false
 	if cfg.Seed != 0 {
 		temp = 0 // seed requires deterministic output
+		forcedDeterministic = true
 	}
-	if temp == 0 {
+	if temp == 0 && !forcedDeterministic {
 		temp = defaultLLMTemperature
 	}
 	maxTokens := cfg.MaxTokens

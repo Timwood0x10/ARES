@@ -104,20 +104,7 @@ type Experience struct {
 
 // Experience type constants used by the evolution package.
 const (
-	// TypeFailure represents a failure experience learned from errors.
 	TypeFailure = "failure"
-
-	// TypeSolution represents a solution experience learned from successful patterns.
-	TypeSolution = "solution"
-
-	// TypeHeuristic represents a heuristic experience learned from recurring patterns.
-	TypeHeuristic = "heuristic"
-
-	// TypeStrategy represents a strategy experience learned from decision patterns.
-	TypeStrategy = "strategy"
-
-	// TypeGeneral represents a general-purpose experience.
-	TypeGeneral = "general"
 )
 
 // Strategy represents an agent decision strategy that can be mutated and evolved.

@@ -97,3 +97,11 @@ func (g *RetrievalGuard) GetCircuitBreakerState() CircuitBreakerState {
 func (g *RetrievalGuard) ResetCircuitBreaker() {
 	g.circuitBreaker.Reset()
 }
+
+// Close stops the internal circuit breaker cleanup goroutine and releases resources.
+// It should be called when the RetrievalGuard is no longer needed to prevent goroutine leaks.
+func (g *RetrievalGuard) Close() {
+	if g.circuitBreaker != nil {
+		g.circuitBreaker.Close()
+	}
+}

@@ -23,7 +23,7 @@ import (
 // It allows the EvolutionScheduler to trigger genome-based evolution cycles
 // when agents complete tasks.
 //
-// When a scorer is set, new offspring (Score < 0) are automatically scored
+// When a scorer is set, new offspring (IsScoreEvaluated() == false) are automatically scored
 // after each evolution cycle, closing the scoring loop for the scheduler path.
 type GenomePopulationAdapter struct {
 	pop     *genome.Population
@@ -74,7 +74,7 @@ func NewGenomePopulationAdapter(
 type GenomeAdapterOption func(*GenomePopulationAdapter)
 
 // WithAdapterScorer sets a scoring function that is called after each evolution
-// cycle to assign scores to newly generated offspring (Score < 0).
+// cycle to assign scores to newly generated offspring (IsScoreEvaluated() == false).
 // Without this, the scheduler path produces unevaluated agents that distort
 // selection and diversity metrics.
 //
@@ -92,7 +92,7 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 }
 
 // Run executes one genome evolution cycle (EvolveOnIdle) when triggered by scheduler.
-// After evolution, if a scorer is configured, all unevaluated agents (Score < 0)
+// After evolution, if a scorer is configured, all unevaluated agents (IsScoreEvaluated() == false)
 // receive a fitness score — closing the scoring loop for the scheduler path.
 //
 // Args:
@@ -111,7 +111,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// operates on valid fitness values instead of Score=-1 defaults.
 	if a.scorer != nil {
 		a.pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
-			if agent.Score < 0 {
+			if !genome.IsScoreEvaluated(agent.Score) {
 				return a.scorer(agent)
 			}
 			return agent.Score
@@ -332,9 +332,6 @@ type WiredEvolutionSystem struct {
 	Population *genome.Population
 	Genealogy  *PopulationGenealogyRecorder
 
-	// config is the configuration used to create this system, stored for serialization.
-	config SystemConfig
-
 	// StrategyStore persists deployed strategies (optional, may be nil).
 	StrategyStore StrategyStore
 }
@@ -545,7 +542,6 @@ func NewWiredEvolutionSystem(
 		PopAdapter: popAdapter,
 		Population: pop,
 		Genealogy:  genealogy,
-		config:     cfg,
 	}
 
 	// Step 7: Attach optional strategy store.
@@ -680,19 +676,19 @@ func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, e
 	return best, nil
 }
 
-// RegisterScheduler registers the wired system's scheduler with callbacks.
-// Call this after NewWiredEvolutionSystem to start receiving evolution triggers.
+// Deprecated: Kept for backward compatibility with tests.
+// RegisterScheduler registers the wired system's scheduler callback handlers.
 //
 // Args:
 //
-//	system - the wired evolution system with scheduler enabled.
+//	system - the wired evolution system whose scheduler should be registered.
 //
 // Returns:
 //
-//	error - non-nil if scheduler is not configured or registration fails.
+//	error - non-nil if the scheduler is nil.
 func RegisterScheduler(system *WiredEvolutionSystem) error {
 	if system == nil || system.Scheduler == nil {
-		return fmt.Errorf("scheduler not configured in system")
+		return fmt.Errorf("system or scheduler is nil")
 	}
 	system.Scheduler.Register()
 	return nil

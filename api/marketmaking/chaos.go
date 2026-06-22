@@ -194,6 +194,8 @@ func (e *DefaultChaosExecutor) effectiveProbability(scenario *ChaosScenario, fla
 //	faultCount - number of faults actually injected.
 func (e *DefaultChaosExecutor) injectFaults(ctx context.Context, totalEvents int64, probability float64) int64 {
 	faultCount := int64(0)
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	for i := int64(0); i < totalEvents; i++ {
 		if e.rng.Float64() < probability {
 			faultCount++

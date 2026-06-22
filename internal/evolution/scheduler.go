@@ -112,22 +112,30 @@ const scoreWindowSize = 50
 // degradationThreshold is the fraction of score drop that triggers evolution (15%).
 const degradationThreshold = 0.15
 
+// minScoreCountForReliability is the minimum number of scores required before
+// the trend data is considered reliable enough for evolution decisions.
+const minScoreCountForReliability = 20
+
+// periodicEvolutionScoreThreshold is the score count threshold that triggers
+// periodic exploration evolution even without detected degradation.
+const periodicEvolutionScoreThreshold = 100
+
 // EvolutionScheduler triggers evolution cycles based on callback events.
 // It registers handlers with the callback registry and decides when to run
 // the FlightToExperienceAdapter based on configurable trigger conditions.
 type EvolutionScheduler struct {
-	callbacks   callbacks.CallbackRegistrar
-	adapter     AdapterRunner
-	minInterval time.Duration
-	mu          sync.Mutex // Protects lastRun from concurrent access.
-	lastRun     time.Time
-	trigger     EvolutionTrigger
-	enabled     atomic.Bool
-	egCtx       context.Context    // Context for errgroup cancellation.
-	egCancel    context.CancelFunc // Cancel function for errgroup context.
-	dreamCycle  *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
-	scores      []float64          // Sliding window of recent task scores for trend detection.
-	scoreMu     sync.Mutex         // Protects scores slice from concurrent access.
+	callbacks    callbacks.CallbackRegistrar
+	adapter      AdapterRunner
+	minInterval  time.Duration
+	mu           sync.Mutex // Protects lastRun from concurrent access.
+	lastRun      time.Time
+	trigger      EvolutionTrigger
+	enabled      atomic.Bool
+	evolveMu     sync.Mutex         // Protects evolveCancel from concurrent access.
+	evolveCancel context.CancelFunc // Cancels the currently running evolution goroutine.
+	dreamCycle   *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
+	scores       []float64          // Sliding window of recent task scores for trend detection.
+	scoreMu      sync.Mutex         // Protects scores slice from concurrent access.
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -147,16 +155,12 @@ type EvolutionScheduler struct {
 //
 //	*EvolutionScheduler - the configured scheduler instance.
 func NewEvolutionScheduler(callbacks callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
-	egCtx, egCancel := context.WithCancel(context.Background())
-
 	s := &EvolutionScheduler{
 		callbacks:   callbacks,
 		adapter:     adapter,
 		minInterval: 5 * time.Minute,
 		lastRun:     time.Time{},
 		trigger:     TriggerOnIdle,
-		egCtx:       egCtx,
-		egCancel:    egCancel,
 	}
 	// enabled defaults to false (atomic.Bool zero value).
 
@@ -244,17 +248,30 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return
 	}
 
-	// Update lastRun with mutex protection.
-	s.mu.Lock()
-	s.lastRun = time.Now()
-	s.mu.Unlock()
-
 	slog.InfoContext(ctx, "[Evolution] Starting evolution cycle",
 		"agent_id", data.AgentID,
 		"trigger", s.trigger.String())
 
+	// Cancel any previously running evolution before starting a new one
+	// to prevent concurrent evolution cycles and goroutine leaks.
+	{
+		s.evolveMu.Lock()
+		if s.evolveCancel != nil {
+			s.evolveCancel()
+		}
+		s.evolveMu.Unlock()
+	}
+
 	// Run the adapter asynchronously via errgroup with context for cancellation support.
-	eg, egCtx := errgroup.WithContext(ctx)
+	// lastRun is only updated after successful completion so that failures
+	// do not incorrectly trigger the cooldown timer and suppress retries.
+	egCtx, egCancel := context.WithCancel(ctx)
+	eg, _ := errgroup.WithContext(egCtx)
+
+	s.evolveMu.Lock()
+	s.evolveCancel = egCancel
+	s.evolveMu.Unlock()
+
 	eg.Go(func() error {
 		if err := s.adapter.Run(egCtx); err != nil {
 			slog.ErrorContext(ctx, "[Evolution] Evolution cycle failed",
@@ -270,6 +287,9 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	})
 
 	// Start error group in background; errors are logged above.
+	// NOTE: bare goroutine is used intentionally here because OnAgentEnd must return
+	// immediately (it's a callback handler). The errgroup itself manages the lifecycle
+	// of the inner work, and evolveCancel provides external cancellation via Shutdown().
 	go func() {
 		if err := eg.Wait(); err != nil {
 			slog.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
@@ -366,7 +386,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		s.scoreMu.Lock()
 		scoreCount := len(s.scores)
 		s.scoreMu.Unlock()
-		if scoreCount < 20 {
+		if scoreCount < minScoreCountForReliability {
 			return false
 		}
 
@@ -383,7 +403,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 
 		// Periodic exploration: even without degradation, evolve after enough
 		// tasks to explore the strategy space. This prevents stagnation.
-		if scoreCount >= 100 {
+		if scoreCount >= periodicEvolutionScoreThreshold {
 			slog.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
 				"score_count", scoreCount)
 			return true
@@ -448,7 +468,9 @@ func (s *EvolutionScheduler) DreamCycle() *DreamCycle {
 // Shutdown gracefully stops the scheduler and cancels all pending evolution goroutines.
 // It should be called when the scheduler is no longer needed to prevent goroutine leaks.
 func (s *EvolutionScheduler) Shutdown() {
-	if s.egCancel != nil {
-		s.egCancel()
+	s.evolveMu.Lock()
+	defer s.evolveMu.Unlock()
+	if s.evolveCancel != nil {
+		s.evolveCancel()
 	}
 }

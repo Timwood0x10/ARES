@@ -83,7 +83,7 @@ type DreamCycle struct {
 	genealogy     GenealogyRecorder
 	strategyStore StrategyStore
 	config        DreamCycleConfig
-	mu            sync.Mutex // Protects taskCount and lastCycle from concurrent access.
+	mu            sync.Mutex // Protects taskCount, lastCycle, and config.Enabled from concurrent access.
 	taskCount     int64
 	lastCycle     time.Time
 }
@@ -160,13 +160,15 @@ func NewDreamCycle(
 //	error - non-nil if a critical error occurs during orchestration.
 func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	// Increment task counter unconditionally for threshold tracking.
+	// Also read Enabled under lock to prevent data races.
 	dc.mu.Lock()
 	dc.taskCount++
 	taskCount := dc.taskCount
 	lastCycle := dc.lastCycle
+	enabled := dc.config.Enabled
 	dc.mu.Unlock()
 
-	if !dc.config.Enabled {
+	if !enabled {
 		slog.DebugContext(ctx, "[DreamCycle] Disabled, skipping cycle")
 		return nil
 	}
@@ -482,20 +484,26 @@ func (dc *DreamCycle) recordFailure(ctx context.Context, parent Strategy) {
 }
 
 // SetEnabled enables or disables the dream cycle at runtime.
+// Thread-safe: uses mutex to protect concurrent access to config.Enabled.
 //
 // Args:
 //
 //	enabled - true to enable, false to disable.
 func (dc *DreamCycle) SetEnabled(enabled bool) {
+	dc.mu.Lock()
 	dc.config.Enabled = enabled
+	dc.mu.Unlock()
 }
 
 // IsEnabled returns whether the dream cycle is currently enabled.
+// Thread-safe: uses mutex to protect concurrent access to config.Enabled.
 //
 // Returns:
 //
 //	bool - true if enabled, false otherwise.
 func (dc *DreamCycle) IsEnabled() bool {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
 	return dc.config.Enabled
 }
 

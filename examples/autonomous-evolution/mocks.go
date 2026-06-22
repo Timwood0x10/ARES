@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	apievol "goagentx/api/evolution"
 	"goagentx/internal/arena"
 	"goagentx/internal/evolution"
 	"goagentx/internal/evolution/genome"
@@ -174,46 +175,43 @@ func (s *unifiedScorer) Score(input any) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	score := 50.0 // base
-	if m, ok := input.(map[string]any); ok {
-		if temp, ok := m["temperature"].(float64); ok {
-			score += (1.0 - temp) * 25
-		} else if temp, ok := m["temp"].(float64); ok {
-			score += (1.0 - temp) * 25
-		}
-		if tk, ok := m["top_k"].(float64); ok {
-			optimal := 30.0
-			dist := tk - optimal
-			score -= (dist * dist) / 10.0
-		}
-		if pt, ok := m["prompt_template"].(string); ok {
-			switch pt {
-			case "precise":
-				score += 15
-			case "careful":
-				score += 8
-			case "creative":
-				score += 4
-			}
-		} else if pt, ok := m["PromptTemplate"].(string); ok {
-			switch pt {
-			case "precise":
-				score += 15
-			case "careful":
-				score += 8
-			case "creative":
-				score += 4
-			}
-		}
-	}
+	score := apievol.DeterministicScore(&apievol.Strategy{
+		Params:         extractParams(input),
+		PromptTemplate: extractPromptTemplate(input),
+	})
 
-	if score < 5 {
-		score = 5
-	}
-	if score > 100 {
-		score = 100
-	}
 	return score, nil
+}
+
+// extractParams attempts to extract a Params map from an input value.
+// Returns an empty map if extraction fails.
+func extractParams(input any) map[string]any {
+	if m, ok := input.(map[string]any); ok {
+		return m
+	}
+	return make(map[string]any)
+}
+
+// extractPromptTemplate attempts to extract PromptTemplate from an input value.
+// Returns empty string if extraction fails.
+func extractPromptTemplate(input any) string {
+	if m, ok := input.(map[string]any); ok {
+		if pt, ok := m["prompt_template"].(string); ok {
+			return pt
+		}
+		if pt, ok := m["PromptTemplate"].(string); ok {
+			return pt
+		}
+	}
+	// Also handle "temp" as alias for "temperature" compatibility.
+	if m, ok := input.(map[string]any); ok {
+		if _, hasTemp := m["temp"]; hasTemp {
+			if _, ok := m["temperature"].(float64); !ok {
+				m["temperature"] = m["temp"]
+			}
+		}
+	}
+	return ""
 }
 
 type mockGenealogyRecorder struct {

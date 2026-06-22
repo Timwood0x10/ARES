@@ -1,6 +1,5 @@
 // Package genome provides selection operators for the genetic algorithm evolution engine.
-// It implements multiple natural selection strategies including truncation,
-// tournament, and roulette wheel (fitness proportionate) selection.
+// It implements tournament selection for choosing parent strategies during evolution.
 package genome
 
 import (
@@ -45,50 +44,6 @@ var ErrInvalidSelectionSize = fmt.Errorf("selection size must be positive")
 
 // ErrInvalidTournamentSize is returned when tournament size k is less than 2.
 var ErrInvalidTournamentSize = fmt.Errorf("tournament size must be at least 2")
-
-// TruncationSelection selects the top-n individuals by score.
-// Simple but effective: just take the best scoring individuals.
-// This is a deterministic selection method that always picks the highest scorers.
-type TruncationSelection struct{}
-
-// NewTruncationSelection creates a new truncation selector.
-//
-// Returns:
-//
-//	*TruncationSelection - a configured truncation selector instance.
-func NewTruncationSelection() *TruncationSelection {
-	return &TruncationSelection{}
-}
-
-// Select returns the top-n highest-scoring individuals from the population.
-// If n exceeds the population size, all individuals are returned.
-// Individuals are sorted by score in descending order before selection.
-//
-// Args:
-//
-//	ctx - operation context (used for cancellation).
-//	population - candidate strategies (must not be nil or empty).
-//	n - number of individuals to select (must be > 0).
-//
-// Returns:
-//
-//	[]*mutation.Strategy - the n highest-scoring strategies.
-//	error - ErrEmptyPopulation if population is empty, ErrInvalidSelectionSize if n <= 0.
-func (t *TruncationSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
-	if err := validateSelectInputs(ctx, population, n); err != nil {
-		return nil, err
-	}
-
-	sorted := make([]*mutation.Strategy, len(population))
-	copy(sorted, population)
-	SortByScore(sorted)
-
-	if n > len(sorted) {
-		n = len(sorted)
-	}
-
-	return sorted[:n], nil
-}
 
 // TournamentSelection selects individuals via tournament.
 // Randomly pick k individuals, return the best among them. Repeat n times.
@@ -248,214 +203,8 @@ func (ts *TournamentSelection) pickUniqueIndices(poolSize, n int) []int {
 	return indices[:n]
 }
 
-// RouletteWheelSelection (aka Fitness Proportionate Selection) selects individuals
-// with probability proportional to their fitness score. Higher-scoring individuals
-// have a larger slice of the "roulette wheel" and are more likely to be selected.
-type RouletteWheelSelection struct {
-	rng *rand.Rand // Deterministic randomness source.
-}
-
-// NewRouletteWheelSelection creates a new roulette wheel selector.
-//
-// Default configuration:
-//   - rng: seeded with current time (non-deterministic)
-//
-// Args:
-//
-//	opts - optional configuration functions (WithRouletteSeed).
-//
-// Returns:
-//
-//	*RouletteWheelSelection - the configured roulette wheel selector instance.
-//	error - non-nil if any option fails validation.
-func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
-	rw := &RouletteWheelSelection{
-		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
-	}
-
-	for _, opt := range opts {
-		if err := opt(rw); err != nil {
-			return nil, fmt.Errorf("apply roulette option: %w", err)
-		}
-	}
-
-	return rw, nil
-}
-
-// RouletteOption configures RouletteWheelSelection.
-type RouletteOption func(*RouletteWheelSelection) error
-
-// WithRouletteSeed sets the random seed for deterministic selection.
-// Useful for reproducible experiments and testing.
-//
-// Args:
-//
-//	seed - random seed value.
-//
-// Returns:
-//
-//	RouletteOption - configuration function.
-func WithRouletteSeed(seed int64) RouletteOption {
-	return func(rw *RouletteWheelSelection) error {
-		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
-		return nil
-	}
-}
-
-// Select picks n individuals with probability proportional to their score.
-// Scores are normalized to be non-negative (min score subtracted) before selection.
-// All-zero or identical scores result in uniform probability distribution.
-//
-// Args:
-//
-//	ctx - operation context (used for cancellation).
-//	population - candidate strategies (must not be nil or empty).
-//	n - number of individuals to select (must be > 0).
-//
-// Returns:
-//
-//	[]*mutation.Strategy - n selected strategies.
-//	error - non-nil if inputs are invalid or context is cancelled.
-func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
-	if err := validateSelectInputs(ctx, population, n); err != nil {
-		return nil, err
-	}
-
-	// Filter out unevaluated strategies (Score == -1) for roulette wheel selection.
-	// Unevaluated strategies have no meaningful fitness value and should not
-	// participate in proportionate selection. They get zero probability.
-	evaluated := make([]*mutation.Strategy, 0, len(population))
-	for _, s := range population {
-		if s.Score != -1 {
-			evaluated = append(evaluated, s)
-		}
-	}
-
-	// If no evaluated strategies exist, fall back to uniform random selection
-	// from the entire population (all are unevaluated).
-	if len(evaluated) == 0 {
-		return rw.selectUniform(ctx, population, n)
-	}
-
-	result := make([]*mutation.Strategy, 0, n)
-	normalized := rw.normalizeScores(evaluated)
-	totalScore := rw.sumScores(normalized)
-
-	for i := 0; i < n; i++ {
-		select {
-		case <-ctx.Done():
-			return result, fmt.Errorf("roulette select %d: %w", i, ctx.Err())
-		default:
-		}
-
-		idx, err := rw.spinWheel(normalized, totalScore)
-		if err != nil {
-			return nil, fmt.Errorf("spin wheel %d: %w", i, err)
-		}
-		result = append(result, evaluated[idx])
-	}
-
-	return result, nil
-}
-
-// normalizeScores shifts all scores to be non-negative by subtracting the minimum.
-// Callers must ensure no strategies with Score == -1 (unevaluated) are included,
-// as those should be filtered out before roulette wheel selection.
-func (rw *RouletteWheelSelection) normalizeScores(population []*mutation.Strategy) []float64 {
-	minScore := findMinScore(population)
-	normalized := make([]float64, len(population))
-	for i, s := range population {
-		normalized[i] = s.Score - minScore
-	}
-	return normalized
-}
-
-// selectUniform picks n individuals uniformly at random.
-// Used as fallback when all strategies are unevaluated.
-func (rw *RouletteWheelSelection) selectUniform(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
-	selected := make([]*mutation.Strategy, 0, n)
-	available := make([]*mutation.Strategy, len(population))
-	copy(available, population)
-
-	for i := 0; i < n && len(available) > 0; i++ {
-		select {
-		case <-ctx.Done():
-			return selected, ctx.Err()
-		default:
-		}
-		idx := rw.rng.Intn(len(available))
-		selected = append(selected, available[idx])
-		// Remove selected element (swap with last, truncate).
-		available[idx] = available[len(available)-1]
-		available = available[:len(available)-1]
-	}
-	return selected, nil
-}
-
-// sumScores returns the sum of all normalized scores.
-func (rw *RouletteWheelSelection) sumScores(normalized []float64) float64 {
-	var total float64
-	for _, v := range normalized {
-		total += v
-	}
-	return total
-}
-
-// spinWheel performs one roulette wheel spin and returns the selected index.
-// Uses cumulative probability distribution for O(n) selection per spin.
-func (rw *RouletteWheelSelection) spinWheel(normalized []float64, total float64) (int, error) {
-	if total <= 0 {
-		// Uniform distribution when all scores are equal (including all zero).
-		return rw.rng.Intn(len(normalized)), nil
-	}
-
-	target := rw.rng.Float64() * total
-	cumulative := 0.0
-	for i, score := range normalized {
-		cumulative += score
-		if cumulative >= target {
-			return i, nil
-		}
-	}
-
-	// Fallback: return last index (handles floating-point edge cases).
-	return len(normalized) - 1, nil
-}
-
-// PickParent is a convenience function that uses tournament selection
-// to pick a single parent from survivors. Used by Population.Evolve().
-// Falls back to truncation if the provided selector is nil.
-//
-// Args:
-//
-//	ctx - operation context (used for cancellation).
-//	population - candidate strategies (must not be nil or empty).
-//	sel - selection strategy to use (may be nil, defaults to truncation).
-//	rng - random number generator for fallback tournament creation (may be nil).
-//
-// Returns:
-//
-//	*mutation.Strategy - the selected parent strategy.
-//	error - non-nil if population is empty or selection fails.
-func PickParent(ctx context.Context, population []*mutation.Strategy, sel Selection, rng *rand.Rand) (*mutation.Strategy, error) {
-	if sel == nil {
-		var err error
-		sel, err = NewTournamentSelection(WithTournamentSeed(rng.Int63()))
-		if err != nil {
-			return nil, fmt.Errorf("create default selector: %w", err)
-		}
-	}
-
-	parents, err := sel.Select(ctx, population, 1)
-	if err != nil {
-		return nil, fmt.Errorf("pick parent: %w", err)
-	}
-
-	return parents[0], nil
-}
-
 // SortByScore sorts a slice of strategies in descending order by score.
-// Unevaluated strategies (Score == -1) go to the end of the slice.
+// Unevaluated strategies (IsScoreEvaluated() == false) go to the end of the slice.
 // Uses stable sort to preserve original ordering among equal-scored strategies.
 //
 // Args:
@@ -466,13 +215,13 @@ func SortByScore(strategies []*mutation.Strategy) {
 		si, sj := strategies[i].Score, strategies[j].Score
 
 		// Unevaluated strategies (score == -1) always sort last.
-		if si == -1 && sj == -1 {
+		if !IsScoreEvaluated(si) && !IsScoreEvaluated(sj) {
 			return false
 		}
-		if si == -1 {
+		if !IsScoreEvaluated(si) {
 			return false
 		}
-		if sj == -1 {
+		if !IsScoreEvaluated(sj) {
 			return true
 		}
 
@@ -507,9 +256,140 @@ func findMinScore(population []*mutation.Strategy) float64 {
 	return min
 }
 
+// --- Deprecated APIs kept for backward compatibility with tests and benchmarks ---
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TruncationSelection selects the top n individuals by score (elite selection).
+type TruncationSelection struct{}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+func NewTruncationSelection() *TruncationSelection {
+	return &TruncationSelection{}
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+func (ts *TruncationSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+	sorted := make([]*mutation.Strategy, len(population))
+	copy(sorted, population)
+	SortByScore(sorted)
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+	return sorted[:n], nil
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+// RouletteWheelSelection selects individuals with probability proportional to fitness.
+type RouletteWheelSelection struct {
+	rng *rand.Rand
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+type RouletteOption func(*RouletteWheelSelection) error
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+func WithRouletteSeed(seed int64) RouletteOption {
+	return func(rw *RouletteWheelSelection) error {
+		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
+		return nil
+	}
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
+	rw := &RouletteWheelSelection{
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
+	}
+	for _, opt := range opts {
+		if err := opt(rw); err != nil {
+			return nil, fmt.Errorf("apply roulette option: %w", err)
+		}
+	}
+	return rw, nil
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+
+	// Filter out unevaluated strategies (score == -1).
+	var scored []*mutation.Strategy
+	for _, s := range population {
+		if IsScoreEvaluated(s.Score) {
+			scored = append(scored, s)
+		}
+	}
+	if len(scored) == 0 {
+		return nil, ErrSelectionEmptyPopulation
+	}
+
+	// Shift scores to non-negative range.
+	minScore := findMinScore(scored)
+	weights := make([]float64, len(scored))
+	totalWeight := 0.0
+	for i, s := range scored {
+		w := s.Score - minScore + 1e-9 // small epsilon to avoid zero weight
+		weights[i] = w
+		totalWeight += w
+	}
+
+	result := make([]*mutation.Strategy, 0, n)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return result, fmt.Errorf("roulette select %d: %w", i, ctx.Err())
+		default:
+		}
+
+		spin := rw.rng.Float64() * totalWeight
+		cumulative := 0.0
+		for j, w := range weights {
+			cumulative += w
+			if spin <= cumulative {
+				result = append(result, scored[j])
+				break
+			}
+		}
+		// Fallback: if spin exceeds cumulative due to floating-point, pick last.
+		if len(result) <= i {
+			result = append(result, scored[len(scored)-1])
+		}
+	}
+
+	return result, nil
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
+// PickParent selects a single parent from the population using the given selector and RNG.
+func PickParent(ctx context.Context, population []*mutation.Strategy, sel Selection, rng *rand.Rand) (*mutation.Strategy, error) {
+	if sel == nil {
+		var err error
+		sel, err = NewTournamentSelection()
+		if err != nil {
+			return nil, fmt.Errorf("create default tournament selector: %w", err)
+		}
+	}
+	selected, err := sel.Select(ctx, population, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("no parent selected")
+	}
+	// Apply RNG-based index selection for reproducibility in tests.
+	idx := rng.Intn(len(selected))
+	return selected[idx], nil
+}
+
+// Deprecated: Kept for backward compatibility with tests and benchmarks.
 // sumFloat64 returns the sum of all float64 values in the slice.
 func sumFloat64(values []float64) float64 {
-	total := 0.0
+	var total float64
 	for _, v := range values {
 		total += v
 	}

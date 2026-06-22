@@ -48,7 +48,6 @@ type ScenarioReport struct {
 	Results      []Result        `json:"results"`
 	Passed       int             `json:"passed"`
 	Failed       int             `json:"failed"`
-	Skipped      int             `json:"skipped"`
 	Score        ResilienceScore `json:"score"`
 	Verified     bool            `json:"verified"` // all expect_success matched actual
 }
@@ -132,6 +131,31 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 		"warmup", cfg.Warmup,
 		"timeout", cfg.Timeout,
 	)
+
+	// Warn about configured fields that are not yet implemented.
+	if cfg.ParallelActions {
+		slog.Warn("arena: parallel_actions is configured but not yet supported; actions will run sequentially",
+			"name", scenario.Name,
+		)
+	}
+	if cfg.MaxConcurrent > 0 {
+		slog.Warn("arena: max_concurrent is configured but not yet supported; actions will run sequentially",
+			"name", scenario.Name,
+			"max_concurrent", cfg.MaxConcurrent,
+		)
+	}
+	hasDependsOn := false
+	for _, sa := range scenario.Actions {
+		if len(sa.DependsOn) > 0 {
+			hasDependsOn = true
+			break
+		}
+	}
+	if hasDependsOn {
+		slog.Warn("arena: depends_on is configured on one or more actions but not yet enforced; execution order follows action list order",
+			"name", scenario.Name,
+		)
+	}
 
 	// Warmup delay before first action.
 	if cfg.Warmup > 0 {

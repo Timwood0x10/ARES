@@ -21,9 +21,6 @@ type MetricsSnapshot struct {
 	// Data consistency
 	DataConsistencyRate float64 `json:"data_consistency_rate"` // 0-100
 
-	// Uptime tracking
-	FaultWindowUptime float64 `json:"fault_window_uptime"` // 0-100, % uptime during fault injection window
-
 	// Per-action-type breakdown
 	ActionStats map[string]ActionMetric `json:"action_stats"`
 }
@@ -58,20 +55,6 @@ func NewMetricsCollector() *MetricsCollector {
 	}
 }
 
-// RecordRecovery records a successful recovery duration.
-func (mc *MetricsCollector) RecordRecovery(duration time.Duration) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	mc.recoveries = append(mc.recoveries, duration)
-}
-
-// RecordFailover records a failover event.
-func (mc *MetricsCollector) RecordFailover() {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	mc.failoverCount++
-}
-
 // RecordActionResult records the result of an action for per-type metrics.
 func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bool, duration time.Duration) {
 	mc.mu.Lock()
@@ -91,7 +74,24 @@ func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bo
 	}
 }
 
-// RecordConsistency records a data consistency sample (0-100).
+// RecordRecovery records a recovery duration sample.
+// Deprecated: Kept for backward compatibility with tests.
+func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.recoveries = append(mc.recoveries, d)
+}
+
+// RecordFailover records a failover event.
+// Deprecated: Kept for backward compatibility with tests.
+func (mc *MetricsCollector) RecordFailover() {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.failoverCount++
+}
+
+// RecordConsistency records a data consistency rate sample (0-100).
+// Deprecated: Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordConsistency(rate float64) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()

@@ -50,6 +50,14 @@ var ErrInvalidMaxStagnantGenerations = fmt.Errorf("max stagnant generations must
 // ErrInvalidDiversityThreshold is returned when diversity threshold is out of range [0, 1].
 var ErrInvalidDiversityThreshold = fmt.Errorf("diversity threshold must be between 0 and 1")
 
+// FitnessSharingSigma is the sharing coefficient for fitness sharing.
+// It controls how strongly crowded niches are penalized.
+const FitnessSharingSigma = 0.3
+
+// FitnessNicheRadius is the distance threshold below which two agents
+// are considered to occupy the same niche in parameter space.
+const FitnessNicheRadius = 0.15
+
 // MutatorInterface wraps mutation.Strategy mutation for the genome package.
 // Implementations generate mutated child strategies from a parent strategy.
 type MutatorInterface interface {
@@ -94,10 +102,6 @@ type PopulationConfig struct {
 	// becomes more aggressive and stagnation reset may inject random individuals.
 	// Range [0, 1], default 0.15.
 	DiversityThreshold float64 `json:"diversity_threshold"`
-
-	// PromptPool is an optional set of prompt templates used during stagnation reset.
-	// When non-empty, reset agents may randomly adopt a template from this pool.
-	PromptPool []string `json:"prompt_pool,omitempty"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -111,7 +115,7 @@ func DefaultPopulationConfig() PopulationConfig {
 		SurvivalRate:           0.6,
 		MutationRate:           0.2,
 		EliteCount:             3,
-		BreedingPoolRatio:      0.3,
+		BreedingPoolRatio:      0.6,
 		MinMutationRate:        0.05,
 		MaxMutationRate:        0.5,
 		MaxStagnantGenerations: 10,
@@ -632,7 +636,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 // This prevents all agents from converging to the same local optimum by penalizing
 // similarity — agents that occupy the same niche share their fitness.
 //
-// Agents with Score < 0 (unevaluated) are excluded from both the distance
+// Agents with IsScoreEvaluated() == false (unevaluated) are excluded from both the distance
 // calculation and penalty, preventing fitness sharing from operating on
 // meaningless default scores that would distort diversity metrics.
 //
@@ -645,16 +649,16 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 	}
 
 	const (
-		shareSigma  = 0.3  // sharing coefficient
-		nicheRadius = 0.15 // distance threshold for "same niche"
+		shareSigma  = FitnessSharingSigma // sharing coefficient
+		nicheRadius = FitnessNicheRadius  // distance threshold for "same niche"
 	)
 
-	// Build a filtered index of scored agents only (Score >= 0).
-	// Unevaluated agents (Score=-1) should not participate in fitness sharing
+	// Build a filtered index of scored agents only (IsScoreEvaluated()).
+	// Unevaluated agents (Score=ScoreUnevaluated) should not participate in fitness sharing
 	// because their score is meaningless and would distort the shared fitness signal.
 	scoredIdx := make([]int, 0, n)
 	for i, a := range p.Agents {
-		if a.Score >= 0 {
+		if IsScoreEvaluated(a.Score) {
 			scoredIdx = append(scoredIdx, i)
 		}
 	}

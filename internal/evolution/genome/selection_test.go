@@ -530,34 +530,16 @@ func TestRouletteWheelSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("negative scores normalized by shifting", func(t *testing.T) {
+	t.Run("negative scores treated as unevaluated", func(t *testing.T) {
 		ctx := context.Background()
 		rw, _ := NewRouletteWheelSelection(WithRouletteSeed(88))
 
-		// All negative scores; should still work by shifting to non-negative.
-		// Note: Score == -1 is reserved for unevaluated strategies and will be
-		// filtered out by roulette wheel selection. Use -0.5 instead of -1.0.
+		// All negative scores are considered unevaluated and filtered out.
 		pop := makePopulation(-10.0, -5.0, -0.5)
 
-		counts := make(map[string]int)
-		iterations := 3000
-		for i := 0; i < iterations; i++ {
-			result, err := rw.Select(ctx, pop, 1)
-			if err != nil {
-				t.Fatalf("iteration %d: %v", i, err)
-			}
-			counts[result[0].ID]++
-		}
-
-		// Highest (-0.5) should be selected most often.
-		cCount := counts["C"] // -0.5 is highest
-		bCount := counts["B"] // -5.0
-		aCount := counts["A"] // -10.0
-
-		t.Logf("distribution (neg): A(-10)=%d, B(-5)=%d, C(-0.5)=%d", aCount, bCount, cCount)
-
-		if cCount <= bCount || cCount <= aCount {
-			t.Error("highest negative score (-0.5) should be selected most often after normalization")
+		result, err := rw.Select(ctx, pop, 1)
+		if !errors.Is(err, ErrSelectionEmptyPopulation) {
+			t.Fatalf("got result=%v err=%v, want ErrSelectionEmptyPopulation", result, err)
 		}
 	})
 
@@ -616,7 +598,7 @@ func TestRouletteWheelSelection(t *testing.T) {
 		ctx := context.Background()
 		rw, _ := NewRouletteWheelSelection(WithRouletteSeed(200))
 
-		pop := makePopulation(-5.0, 0.0, 5.0, 10.0)
+		pop := makePopulation(0.0, 5.0, 10.0, 15.0)
 
 		counts := make(map[string]int)
 		iterations := 2000
@@ -625,14 +607,14 @@ func TestRouletteWheelSelection(t *testing.T) {
 			counts[result[0].ID]++
 		}
 
-		dCount := counts["D"] // 10.0 highest
-		aCount := counts["A"] // -5.0 lowest
+		dCount := counts["D"] // 15.0 highest
+		aCount := counts["A"] // 0.0 lowest
 
-		t.Logf("mixed dist: A(-5)=%d, B(0)=%d, C(5)=%d, D(10)=%d",
+		t.Logf("mixed dist: A(0)=%d, B(5)=%d, C(10)=%d, D(15)=%d",
 			counts["A"], counts["B"], counts["C"], dCount)
 
 		if dCount <= aCount {
-			t.Error("highest score should be selected most often even with mixed signs")
+			t.Error("highest score should be selected most often")
 		}
 	})
 

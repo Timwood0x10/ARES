@@ -354,9 +354,8 @@ func deepCopyParamRanges(src map[string]ParamRange) map[string]ParamRange {
 			clonedValues = nil
 		}
 		dst[k] = ParamRange{
-			Name:    v.Name,
-			Values:  clonedValues,
-			Current: v.Current,
+			Name:   v.Name,
+			Values: clonedValues,
 		}
 	}
 	return dst

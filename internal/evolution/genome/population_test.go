@@ -579,6 +579,10 @@ func TestDefaultPopulationConfig(t *testing.T) {
 	if cfg.EliteCount != 3 {
 		t.Errorf("default EliteCount = %d, want 3", cfg.EliteCount)
 	}
+
+	if cfg.BreedingPoolRatio != 0.6 {
+		t.Errorf("default BreedingPoolRatio = %f, want 0.6", cfg.BreedingPoolRatio)
+	}
 }
 
 func TestPopulationConfigValidation(t *testing.T) {

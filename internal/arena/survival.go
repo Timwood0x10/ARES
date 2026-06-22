@@ -10,9 +10,8 @@ import (
 
 // SurvivalConfig configures a survival test run.
 type SurvivalConfig struct {
-	Duration   time.Duration `json:"duration"`
-	Interval   time.Duration `json:"interval"`
-	AgentCount int           `json:"agent_count"`
+	Duration time.Duration `json:"duration"`
+	Interval time.Duration `json:"interval"`
 }
 
 // defaultSurvivalConfig returns sensible defaults for a survival run.
@@ -155,15 +154,22 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 }
 
 // GetSurvivalStatus returns the current status of the survival run.
+// The returned Timeline is a deep copy of the internal events slice to prevent
+// data races between the survival goroutine (which appends events) and callers
+// (which may iterate over the returned slice after the lock is released).
 func (s *Service) GetSurvivalStatus() SurvivalStatus {
 	s.survival.mu.RLock()
 	defer s.survival.mu.RUnlock()
+
+	// Copy the events slice to avoid returning a reference to internal state.
+	timeline := make([]SurvivalEvent, len(s.survival.events))
+	copy(timeline, s.survival.events)
 
 	status := SurvivalStatus{
 		Running:    s.survival.running,
 		Config:     s.survival.config,
 		ActionsRun: len(s.survival.events),
-		Timeline:   s.survival.events,
+		Timeline:   timeline,
 	}
 	if s.survival.running {
 		status.StartedAt = s.survival.started
