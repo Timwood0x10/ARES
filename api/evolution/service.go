@@ -21,6 +21,10 @@ import (
 const (
 	// concurrentScoreLimit is the maximum number of concurrent LLM scoring calls.
 	concurrentScoreLimit = 5
+
+	// maxLineages caps the total recorded lineage entries to prevent
+	// unbounded memory growth during long-running evolution sessions.
+	maxLineages = 1000
 )
 
 // Service provides high-level genetic algorithm evolution operations.
@@ -124,11 +128,18 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
 	internalCfg.PromptCrossoverMode = cfg.PromptCrossoverMode
-	// Note: Adapter-level scorer (internalCfg.Scorer) is intentionally
-	// NOT set here to avoid double-scoring in Service.Evolve's wired path
-	// (RunIdleEvolution adapter scoring + initScores). The adapter scorer
-	// is only needed for the scheduler-triggered path and should be
-	// configured separately when creating a scheduler-only system.
+
+	// Thread the API-level scorer into the wired system's adapter so the
+	// scheduler path automatically scores new offspring after each generation.
+	// This ensures both Service.Evolve and scheduler-triggered paths have
+	// a closed scoring loop.
+	if cfg.Scorer != nil {
+		apiScorer := cfg.Scorer
+		internalCfg.Scorer = func(agent *mutation.Strategy) float64 {
+			return apiScorer(toAPIStrategy(agent))
+		}
+	}
+
 	if cfg.Seed != 0 {
 		internalCfg.UseDeterministicIDs = true
 	}
@@ -180,6 +191,12 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 	}
 	if useDetIDs {
 		crosserOpts = append(crosserOpts, genome.WithDeterministicIDs(true))
+	}
+	switch cfg.PromptCrossoverMode {
+	case 1:
+		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptHalfSplit))
+	case 2:
+		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptUniform))
 	}
 
 	crosser, err := genome.NewCrossover(crosserOpts...)
@@ -247,8 +264,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
 
-			// Re-score with custom scorer (wired system uses its own internal scorer
-			// during EvolveOnIdle, which doesn't know about the custom ScorerFunc).
+			// Re-score after each evolution so next generation selects on fresh data.
 			s.initScores(0)
 
 			stats := s.collectStats()
@@ -660,6 +676,7 @@ func (s *Service) recordGenealogy(prevBest *mutation.Strategy) {
 
 // recordLineages records lineage entries for each offspring in non-wired mode,
 // capturing parent-child relationships from the population snapshot.
+// Lineages are capped at maxLineages entries to prevent unbounded growth.
 func (s *Service) recordLineages() {
 	if s.population == nil {
 		return
@@ -676,5 +693,11 @@ func (s *Service) recordLineages() {
 				Timestamp:    time.Now().Unix(),
 			})
 		}
+	}
+
+	// Trim oldest entries if over cap.
+	if len(s.lineages) > maxLineages {
+		excess := len(s.lineages) - maxLineages
+		s.lineages = append(s.lineages[:0], s.lineages[excess:]...)
 	}
 }

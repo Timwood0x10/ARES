@@ -16,6 +16,12 @@ type StoreDB interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 }
 
+// txBeginner allows starting a SQL transaction from a StoreDB.
+// *sql.DB implements this interface; *sql.Tx does not (it's already a transaction).
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
 // EvolutionStore implements StrategyStore using a relational database.
 // It persists strategies and manages the active deployment marker.
 // Tables must be created by running the evolution migration DDL.
@@ -88,40 +94,60 @@ func (s *EvolutionStore) GetActive(ctx context.Context) (*Strategy, error) {
 
 // SetActive persists a strategy as the active deployment.
 // It uses a two-step process: first deactivates all existing strategies,
-// then inserts/updates the new active strategy. When StoreDB is *sql.Tx,
-// both operations share the same transaction for atomicity.
+// then inserts/updates the new active strategy. When StoreDB is *sql.DB,
+// both operations are wrapped in a single transaction for atomicity.
+// When StoreDB is already *sql.Tx, the parent transaction provides atomicity.
 func (s *EvolutionStore) SetActive(ctx context.Context, st Strategy) error {
 	paramsJSON, err := json.Marshal(st.Params)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE evolution_strategies SET is_active = FALSE WHERE is_active = TRUE`); err != nil {
+	// decide runs the two SQL operations against the given StoreDB.
+	decide := func(db StoreDB) error {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE evolution_strategies SET is_active = FALSE WHERE is_active = TRUE`); err != nil {
+			return err
+		}
+
+		createdAt := st.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		query := `
+			INSERT INTO evolution_strategies
+				(id, parent_id, name, version, params, prompt_template,
+				 strategy_mutation_type, mutation_desc, score, is_active, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, NOW())
+			ON CONFLICT (id) DO UPDATE SET
+				is_active = TRUE,
+				score = $9,
+				updated_at = NOW()
+		`
+		_, err := db.ExecContext(ctx, query,
+			st.ID, st.ParentID, st.Name, st.Version, paramsJSON,
+			st.PromptTemplate, st.StrategyMutationType, st.MutationDesc,
+			st.Score, createdAt,
+		)
 		return err
 	}
 
-	createdAt := st.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now()
+	// If the underlying db is *sql.DB, wrap in a transaction for atomicity.
+	if tb, ok := s.db.(txBeginner); ok {
+		tx, err := tb.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := decide(tx); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		return tx.Commit()
 	}
 
-	query := `
-		INSERT INTO evolution_strategies
-			(id, parent_id, name, version, params, prompt_template,
-			 strategy_mutation_type, mutation_desc, score, is_active, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, NOW())
-		ON CONFLICT (id) DO UPDATE SET
-			is_active = TRUE,
-			score = $9,
-			updated_at = NOW()
-	`
-	_, err = s.db.ExecContext(ctx, query,
-		st.ID, st.ParentID, st.Name, st.Version, paramsJSON,
-		st.PromptTemplate, st.StrategyMutationType, st.MutationDesc,
-		st.Score, createdAt,
-	)
-	return err
+	// Already inside a transaction (*sql.Tx), run directly.
+	return decide(s.db)
 }
 
 // List returns the last n strategies ordered by version descending.

@@ -25,8 +25,8 @@ type Mutator struct {
 	promptPool       []string              // Available prompt templates for mutation.
 	toolPool         []string              // Available tool configurations for mutation.
 	rng              *rand.Rand            // Deterministic randomness source.
-	deterministicIDs bool         // When true, use counter-based IDs instead of UUID.
-	idCounter        atomic.Int64 // Monotonic counter for deterministic ID generation (thread-safe).
+	deterministicIDs bool                  // When true, use counter-based IDs instead of UUID.
+	idCounter        atomic.Int64          // Monotonic counter for deterministic ID generation (thread-safe).
 }
 
 // NewMutator creates a new strategy mutator with default configuration.

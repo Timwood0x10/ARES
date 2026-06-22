@@ -98,14 +98,18 @@ func TestNewDreamCycle_ValidArgs(t *testing.T) {
 	}
 }
 
-// TestNewDreamCycle_NilScheduler tests that nil scheduler returns error.
+// TestNewDreamCycle_NilScheduler tests that nil scheduler is accepted for deferred wiring.
+// Run() guards against nil scheduler at invocation time.
 func TestNewDreamCycle_NilScheduler(t *testing.T) {
 	mutator := &mockMutator{}
 	tester := &mockTester{}
 
-	_, err := NewDreamCycle(nil, mutator, tester, nil)
-	if err == nil {
-		t.Fatal("expected error for nil scheduler")
+	dc, err := NewDreamCycle(nil, mutator, tester, nil)
+	if err != nil {
+		t.Fatalf("expected no error for nil scheduler (deferred wiring), got %v", err)
+	}
+	if dc == nil {
+		t.Fatal("expected non-nil dream cycle")
 	}
 }
 
@@ -120,14 +124,58 @@ func TestNewDreamCycle_NilMutator(t *testing.T) {
 	}
 }
 
-// TestNewDreamCycle_NilTester tests that nil tester returns error.
+// TestNewDreamCycle_NilTester tests that nil tester is accepted for deferred wiring.
+// Run() guards against nil tester at invocation time.
 func TestNewDreamCycle_NilTester(t *testing.T) {
 	scheduler := NewEvolutionScheduler(nil, nil)
 	mutator := &mockMutator{}
 
-	_, err := NewDreamCycle(scheduler, mutator, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for nil tester")
+	dc, err := NewDreamCycle(scheduler, mutator, nil, nil)
+	if err != nil {
+		t.Fatalf("expected no error for nil tester (deferred wiring), got %v", err)
+	}
+	if dc == nil {
+		t.Fatal("expected non-nil dream cycle")
+	}
+}
+
+// TestRun_NilSchedulerGuard tests that Run returns early when scheduler is nil.
+func TestRun_NilSchedulerGuard(t *testing.T) {
+	mutator := &mockMutator{}
+	tester := &mockTester{}
+
+	dc, _ := NewDreamCycle(nil, mutator, tester, nil,
+		WithDreamCycleConfig(DreamCycleConfig{
+			Enabled:              true,
+			MinTasksBeforeEvolve: 1,
+			Cooldown:             time.Nanosecond,
+		}),
+	)
+	dc.taskCount = 10
+
+	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
+	if err != nil {
+		t.Fatalf("expected nil error for nil scheduler guard, got %v", err)
+	}
+}
+
+// TestRun_NilTesterGuard tests that Run returns early when tester is nil.
+func TestRun_NilTesterGuard(t *testing.T) {
+	scheduler := NewEvolutionScheduler(nil, nil)
+	mutator := &mockMutator{}
+
+	dc, _ := NewDreamCycle(scheduler, mutator, nil, nil,
+		WithDreamCycleConfig(DreamCycleConfig{
+			Enabled:              true,
+			MinTasksBeforeEvolve: 1,
+			Cooldown:             time.Nanosecond,
+		}),
+	)
+	dc.taskCount = 10
+
+	err := dc.Run(context.Background(), CallbackData{AgentID: "agent-1"})
+	if err != nil {
+		t.Fatalf("expected nil error for nil tester guard, got %v", err)
 	}
 }
 

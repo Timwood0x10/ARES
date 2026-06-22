@@ -402,7 +402,7 @@ type SystemConfig struct {
 
 	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
 	// 0 = PromptInherit (higher-scoring parent), 1 = PromptHalfSplit (half-sentence),
-	// 2 = PromptPoolMutation (random parent pick). Default is 0.
+	// 2 = PromptUniform (random parent pick). Default is 0.
 	PromptCrossoverMode int `json:"prompt_crossover_mode"`
 
 	// Scorer is an optional function that evaluates strategy fitness after each
@@ -496,7 +496,7 @@ func NewWiredEvolutionSystem(
 	case 1:
 		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptHalfSplit))
 	case 2:
-		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptPoolMutation))
+		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptUniform))
 	}
 	crosser, err := genome.NewCrossover(crosserOpts...)
 	if err != nil {

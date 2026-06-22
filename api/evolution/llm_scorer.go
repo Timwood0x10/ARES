@@ -126,17 +126,24 @@ func NewLLMScorer(cfg LLMScorerConfig) (*LLMScorer, error) {
 // primary noise source is API errors (score=0), not numerical variance —
 // a single successful call gives the best available LLM judgment.
 func (s *LLMScorer) Score(strategy *Strategy) float64 {
+	return s.ScoreWithContext(context.Background(), strategy)
+}
+
+// ScoreWithContext evaluates a strategy using the LLM with a provided context.
+// This is the context-aware variant of Score, useful when the caller has an
+// active request context for cancellation or timeout control.
+func (s *LLMScorer) ScoreWithContext(ctx context.Context, strategy *Strategy) float64 {
 	if strategy == nil {
 		return 0
 	}
 
 	if s.numSamples <= 1 {
-		return s.sampleOnce(strategy)
+		return s.sampleOnce(ctx, strategy)
 	}
 
 	best := 0.0
 	for range s.numSamples {
-		sc := s.sampleOnce(strategy)
+		sc := s.sampleOnce(ctx, strategy)
 		if sc > best {
 			best = sc
 		}
@@ -147,9 +154,9 @@ func (s *LLMScorer) Score(strategy *Strategy) float64 {
 // sampleOnce calls the LLM once for the given strategy and returns the parsed score.
 // If the LLM call fails and a fallback scorer is configured, the fallback is used
 // instead — this keeps the evolution running when the API is temporarily down.
-func (s *LLMScorer) sampleOnce(strategy *Strategy) float64 {
+func (s *LLMScorer) sampleOnce(ctx context.Context, strategy *Strategy) float64 {
 	prompt := s.buildPrompt(strategy)
-	resp, err := s.client.Generate(context.Background(), prompt)
+	resp, err := s.client.Generate(ctx, prompt)
 	if err != nil {
 		if s.fallback != nil {
 			return s.fallback(strategy)
@@ -160,9 +167,12 @@ func (s *LLMScorer) sampleOnce(strategy *Strategy) float64 {
 }
 
 // AsScorerFunc returns a ScorerFunc that delegates to this LLMScorer.
+// Note: the returned function uses context.Background() since ScorerFunc
+// does not carry context. Callers that need context propagation should
+// use ScoreWithContext directly.
 func (s *LLMScorer) AsScorerFunc() ScorerFunc {
 	return func(agent *Strategy) float64 {
-		return s.Score(agent)
+		return s.ScoreWithContext(context.Background(), agent)
 	}
 }
 

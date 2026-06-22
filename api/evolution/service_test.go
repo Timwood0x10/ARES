@@ -31,8 +31,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.PopulationSize != 20 {
 		t.Errorf("PopulationSize = %d, want 20", cfg.PopulationSize)
 	}
-	if cfg.EliteCount != 2 {
-		t.Errorf("EliteCount = %d, want 2", cfg.EliteCount)
+	if cfg.EliteCount != 3 {
+		t.Errorf("EliteCount = %d, want 3", cfg.EliteCount)
 	}
 	if cfg.SurvivalRate != 0.6 {
 		t.Errorf("SurvivalRate = %f, want 0.6", cfg.SurvivalRate)

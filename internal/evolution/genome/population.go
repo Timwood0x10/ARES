@@ -659,19 +659,20 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 		}
 	}
 
-	scoredAgents := make([]*mutation.Strategy, len(scoredIdx))
-	for k, idx := range scoredIdx {
-		scoredAgents[k] = p.Agents[idx]
-	}
-
-	if len(scoredAgents) < 2 {
+	if len(scoredIdx) < 2 {
 		return
 	}
 
-	keys := collectAgentParamKeys(scoredAgents)
-	ranges := computeParamRanges(scoredAgents, keys)
+	// Build temp slice for key/range collection from scored agents only.
+	scored := make([]*mutation.Strategy, len(scoredIdx))
+	for k, idx := range scoredIdx {
+		scored[k] = p.Agents[idx]
+	}
+	keys := collectAgentParamKeys(scored)
+	ranges := computeParamRanges(scored, keys)
 
-	// Map back from filtered index to original agent index.
+	// Apply fitness sharing penalty using original agent slices (indexed through
+	// scoredIdx) to avoid maintaining a parallel slice alongside the index list.
 	for ki, i := range scoredIdx {
 		if i < eliteCount {
 			continue // skip elites
@@ -681,7 +682,7 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 			if ki == kj {
 				continue
 			}
-			dist := paramDistance(scoredAgents[ki], scoredAgents[kj], keys, ranges)
+			dist := paramDistance(p.Agents[scoredIdx[ki]], p.Agents[scoredIdx[kj]], keys, ranges)
 			if dist < nicheRadius {
 				crowdCount++
 			}

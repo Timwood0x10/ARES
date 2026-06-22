@@ -35,10 +35,10 @@ const (
 	// PromptHalfSplit performs half-sentence crossover on prompt templates
 	// (first half of parent A, second half of parent B).
 	PromptHalfSplit
-	// PromptPoolMutation randomly picks from either parent's prompt template.
+	// PromptUniform randomly picks from either parent's prompt template.
 	// Unlike PromptInherit, it does not use score — both parents have equal
 	// chance, promoting prompt diversity in the population.
-	PromptPoolMutation
+	PromptUniform
 )
 
 // Crossover combines two parent strategies into a child strategy using
@@ -119,7 +119,7 @@ func WithDeterministicIDs(enabled bool) CrossoverOption {
 }
 
 // WithPromptMode sets the prompt crossover mode for combining parent prompt templates.
-// Supported modes: PromptInherit, PromptHalfSplit, PromptPoolMutation.
+// Supported modes: PromptInherit, PromptHalfSplit, PromptUniform.
 // Default is PromptInherit.
 //
 // Args:
@@ -171,35 +171,19 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 		if promptTemplate != a.PromptTemplate && promptTemplate != b.PromptTemplate {
 			desc += " | half_split_prompt"
 		}
-	case PromptPoolMutation:
+	case PromptUniform:
 		if c.rng.Intn(2) == 0 {
 			promptTemplate = a.PromptTemplate
 		} else {
 			promptTemplate = b.PromptTemplate
 		}
-		desc += " | pool_prompt"
+		desc += " | uniform_prompt"
 	default: // PromptInherit
 		promptTemplate = c.selectPromptTemplate(a, b)
 	}
 
-	var childID string
-	if c.deterministicIDs {
-		counter := c.idCounter.Add(1)
-		aShort := a.ID
-		if len(aShort) > 8 {
-			aShort = aShort[:8]
-		}
-		bShort := b.ID
-		if len(bShort) > 8 {
-			bShort = bShort[:8]
-		}
-		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
-	} else {
-		childID = uuid.New().String()
-	}
-
 	child := &mutation.Strategy{
-		ID:                   childID,
+		ID:                   c.generateChildID(a.ID, b.ID),
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
@@ -256,24 +240,8 @@ func (c *Crossover) MultiPointCrossover(ctx context.Context, a, b *mutation.Stra
 	childParams, desc := c.multiPointSelect(allKeys, a.Params, b.Params, k)
 	promptTemplate := c.selectPromptTemplate(a, b)
 
-	var childID string
-	if c.deterministicIDs {
-		counter := c.idCounter.Add(1)
-		aShort := a.ID
-		if len(aShort) > 8 {
-			aShort = aShort[:8]
-		}
-		bShort := b.ID
-		if len(bShort) > 8 {
-			bShort = bShort[:8]
-		}
-		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
-	} else {
-		childID = uuid.New().String()
-	}
-
 	child := &mutation.Strategy{
-		ID:                   childID,
+		ID:                   c.generateChildID(a.ID, b.ID),
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
@@ -473,24 +441,8 @@ func (c *Crossover) CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.S
 	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
 	promptTemplate := c.halfSplitPromptCrossover(a, b)
 
-	var childID string
-	if c.deterministicIDs {
-		counter := c.idCounter.Add(1)
-		aShort := a.ID
-		if len(aShort) > 8 {
-			aShort = aShort[:8]
-		}
-		bShort := b.ID
-		if len(bShort) > 8 {
-			bShort = bShort[:8]
-		}
-		childID = fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
-	} else {
-		childID = uuid.New().String()
-	}
-
 	child := &mutation.Strategy{
-		ID:                   childID,
+		ID:                   c.generateChildID(a.ID, b.ID),
 		ParentID:             formatParentIDs(a.ID, b.ID),
 		Version:              maxVersion(a.Version, b.Version) + 1,
 		Params:               childParams,
@@ -521,6 +473,24 @@ type HalfSplitCrossoverInterface interface {
 type CrossoverInterface interface {
 	// Crossover performs crossover on two parent strategies and returns a child.
 	Crossover(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error)
+}
+
+// generateChildID returns a unique child strategy ID using either a deterministic
+// counter or a random UUID, depending on configuration.
+func (c *Crossover) generateChildID(parentA, parentB string) string {
+	if c.deterministicIDs {
+		counter := c.idCounter.Add(1)
+		aShort := parentA
+		if len(aShort) > 8 {
+			aShort = aShort[:8]
+		}
+		bShort := parentB
+		if len(bShort) > 8 {
+			bShort = bShort[:8]
+		}
+		return fmt.Sprintf("det-cross-%s-%s-%d", aShort, bShort, counter)
+	}
+	return uuid.New().String()
 }
 
 // collectParamKeys returns the sorted union of all parameter keys from both parent maps.

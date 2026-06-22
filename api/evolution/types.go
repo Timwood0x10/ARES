@@ -77,7 +77,7 @@ type SystemConfig struct {
 	// PopulationSize is the number of agents per generation (default 20).
 	PopulationSize int
 
-	// EliteCount is how many top strategies to preserve unchanged (default 2).
+	// EliteCount is how many top strategies to preserve unchanged (default 3).
 	EliteCount int
 
 	// SurvivalRate is fraction of top performers to keep [0-1] (default 0.6).
@@ -98,12 +98,12 @@ type SystemConfig struct {
 	// DiversityThreshold below which mutation rate is boosted (default 0.15).
 	DiversityThreshold float64
 
-	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.3).
+	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.6).
 	BreedingPoolRatio float64
 
 	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
 	// 0 = inherit from higher-scoring parent (default), 1 = half-sentence split,
-	// 2 = random parent pick (pool mutation style).
+	// 2 = random parent pick (uniform).
 	PromptCrossoverMode int
 
 	// Generations is total generations to run (default 15).
@@ -133,7 +133,7 @@ type SystemConfig struct {
 func DefaultConfig() *SystemConfig {
 	return &SystemConfig{
 		PopulationSize:         20,
-		EliteCount:             2,
+		EliteCount:             3,
 		SurvivalRate:           0.6,
 		MutationRate:           0.2,
 		MinMutationRate:        0.05,

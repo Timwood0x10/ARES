@@ -142,13 +142,21 @@ func paramDistance(a, b *mutation.Strategy, keys []string, ranges map[string]flo
 		count++
 	}
 
+	// Categorical distance for tools: different tool configuration = max distance (1.0).
+	if ta, okA := a.Params["tools"].(string); okA {
+		if tb, okB := b.Params["tools"].(string); okB && ta != tb {
+			totalDist += 1.0
+			count++
+		}
+	}
+
 	if count == 0 {
 		return 0.0
 	}
 	return totalDist / float64(count)
 }
 
-// toFloat64 attempts to convert an arbitrary value to float64.
+// toFloat64 attempts to convert an arbitrary numeric value to float64.
 func toFloat64(v any) (float64, bool) {
 	switch val := v.(type) {
 	case float64:
@@ -160,6 +168,12 @@ func toFloat64(v any) (float64, bool) {
 	case int64:
 		return float64(val), true
 	case int32:
+		return float64(val), true
+	case uint:
+		return float64(val), true
+	case uint64:
+		return float64(val), true
+	case uint32:
 		return float64(val), true
 	default:
 		return 0, false

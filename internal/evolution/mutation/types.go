@@ -3,7 +3,10 @@
 // parameters, prompt templates, or tool configurations.
 package mutation
 
-import "time"
+import (
+	"log/slog"
+	"time"
+)
 
 // MutationType represents the type of strategy mutation applied.
 type MutationType int
@@ -42,6 +45,8 @@ func (mt MutationType) String() string {
 }
 
 // ParseMutationType converts a string to a MutationType.
+// Unknown strings are logged as a warning and return MutationParameter
+// as a safe default, avoiding silent degradation.
 func ParseMutationType(s string) MutationType {
 	switch s {
 	case "parameter":
@@ -53,6 +58,9 @@ func ParseMutationType(s string) MutationType {
 	case "crossover":
 		return MutationCrossover
 	default:
+		slog.Warn("unknown mutation type string, falling back to MutationParameter",
+			"input", s,
+		)
 		return MutationParameter
 	}
 }
