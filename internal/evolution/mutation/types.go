@@ -68,6 +68,9 @@ type Strategy struct {
 	// Version is the monotonically increasing version number.
 	Version int `json:"version"`
 
+	// Name is the human-readable name of the strategy.
+	Name string `json:"name,omitempty"`
+
 	// Params holds mutable parameters (temperature, top_k, etc.).
 	Params map[string]any `json:"params,omitempty"`
 
@@ -94,16 +97,12 @@ func (s *Strategy) Clone() *Strategy {
 		return nil
 	}
 
-	clonedParams := make(map[string]any, len(s.Params))
-	for k, v := range s.Params {
-		clonedParams[k] = cloneValue(v)
-	}
-
 	return &Strategy{
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
 		Version:              s.Version,
-		Params:               clonedParams,
+		Name:                 s.Name,
+		Params:               CloneParams(s.Params),
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: s.StrategyMutationType,
 		MutationDesc:         s.MutationDesc,
@@ -131,6 +130,18 @@ var DefaultParamRanges = map[string]ParamRange{
 	"max_steps":          {Name: "max_steps", Values: []any{5, 10, 15, 20}},
 	"memory_limit":       {Name: "memory_limit", Values: []any{3, 5, 10}},
 	"conflict_threshold": {Name: "conflict_threshold", Values: []any{0.85, 0.90, 0.95}},
+}
+
+// CloneParams creates a shallow copy of a params map to avoid shared state.
+func CloneParams(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = cloneValue(v)
+	}
+	return dst
 }
 
 // cloneValue performs a shallow-to-moderate copy of a value.

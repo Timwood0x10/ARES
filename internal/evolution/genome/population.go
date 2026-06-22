@@ -638,6 +638,22 @@ func (p *Population) Snapshot() ([]*mutation.Strategy, int) {
 	return agents, p.Generation
 }
 
+// ScoreAgents applies the given scoring function to each agent in-place.
+// This is thread-safe: it acquires a write lock and updates each agent's Score
+// field directly, unlike Snapshot() which returns deep clones that discard writes.
+//
+// Args:
+//
+//	scorer - function that takes an agent (read-only) and returns its fitness score.
+func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, agent := range p.Agents {
+		agent.Score = scorer(agent)
+	}
+}
+
 // Best returns the highest-scoring strategy in the current population.
 // If multiple strategies share the same highest score, the first one
 // encountered during iteration is returned.

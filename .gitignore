@@ -24,5 +24,8 @@ config.yml
 
 examples/quant-trading/workflow/config.yml
 
+
+.reasonix/
+
 # Compiled binaries
 /autonomous-evolution

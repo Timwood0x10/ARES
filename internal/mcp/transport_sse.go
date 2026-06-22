@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	sseEventPrefix         = "event:"
-	sseDataPrefix          = "data:"
-	sseEventTypeEndpoint   = "endpoint"
-	sseEventTypeMessage    = "message"
+	sseEventPrefix       = "event:"
+	sseDataPrefix        = "data:"
+	sseEventTypeEndpoint = "endpoint"
+	sseEventTypeMessage  = "message"
 )
 
 // SSEConfig holds configuration for an SSE-based MCP transport.

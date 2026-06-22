@@ -313,6 +313,7 @@ func SetupEvolution(
 	expRepo evolution.ExperienceRepository,
 	callbackReg *callbacks.Registry,
 	dreamDeps *DreamCycleDeps,
+	cfg *config.EvolutionConfig, // <-- 新增：GA 参数来源
 	opts ...evolution.SchedulerOption,
 ) (*EvolutionComponents, error) {
 	if flightRecorder == nil || expRepo == nil || callbackReg == nil {
@@ -324,11 +325,22 @@ func SetupEvolution(
 	flightWrapper := &flightRecorderWrapper{recorder: flightRecorder}
 	adapter := evolution.NewFlightToExperienceAdapter(flightWrapper, expRepo)
 
-	// Create scheduler with sensible defaults.
-	scheduler := evolution.NewEvolutionScheduler(callbackReg, adapter,
+	// Build scheduler options from config or use defaults.
+	schedulerOpts := []evolution.SchedulerOption{
 		evolution.WithEnabled(true),
-		evolution.WithMinInterval(5*time.Minute),
-	)
+	}
+	if cfg != nil && cfg.MinInterval != "" {
+		if d, err := time.ParseDuration(cfg.MinInterval); err == nil {
+			schedulerOpts = append(schedulerOpts, evolution.WithMinInterval(d))
+		} else {
+			slog.WarnContext(ctx, "bootstrap: invalid min_interval format, using default", "value", cfg.MinInterval, "error", err)
+			schedulerOpts = append(schedulerOpts, evolution.WithMinInterval(5*time.Minute))
+		}
+	} else {
+		schedulerOpts = append(schedulerOpts, evolution.WithMinInterval(5*time.Minute))
+	}
+
+	scheduler := evolution.NewEvolutionScheduler(callbackReg, adapter, schedulerOpts...)
 
 	// Register scheduler handlers to callback registry.
 	scheduler.Register()
@@ -354,7 +366,7 @@ func SetupEvolution(
 	}
 
 	slog.InfoContext(ctx, "bootstrap: evolution system initialized",
-		"min_interval", 5*time.Minute,
+		"min_interval", schedulerOpts[1], // 使用实际配置的值
 		"enabled", true,
 		"dream_cycle", dreamCycle != nil)
 
@@ -878,6 +890,7 @@ func NewExperienceLocator(
 func WireAllEvolutionComponents(
 	ctx context.Context,
 	deps *WireDependencies,
+	cfg *config.EvolutionConfig, // <-- 新增：可以是 nil（向后兼容）
 ) (*WiredComponents, error) {
 	result := &WiredComponents{}
 
@@ -914,8 +927,17 @@ func WireAllEvolutionComponents(
 		}
 	}
 
-	// Step 6: Create evolution system if flight recorder and repo are available.
-	if deps.FlightRecorder != nil && deps.ExpRepo != nil {
+	// Step 6: Create evolution system if explicitly enabled and dependencies available.
+	if cfg != nil && cfg.Enabled {
+		if deps.FlightRecorder == nil || deps.ExpRepo == nil {
+			slog.WarnContext(ctx, "bootstrap: evolution enabled but missing dependencies",
+				"flight_recorder", deps.FlightRecorder != nil,
+				"exp_repo", deps.ExpRepo != nil,
+			)
+			// Don't fail hard — just skip evolution with a warning.
+			return result, nil
+		}
+
 		// Adapt postgres repo interface to evolution domain interface.
 		evolutionRepo := &evolutionExpRepoAdapter{repo: deps.ExpRepo}
 
@@ -925,13 +947,25 @@ func WireAllEvolutionComponents(
 			evolutionRepo,
 			result.CallbackReg,
 			deps.DreamDeps,
+			cfg, // <-- 新增参数
 		)
 		if err != nil {
 			return nil, fmt.Errorf("setup evolution: %w", err)
 		}
 		result.Evolution = evolutionComps
+		slog.InfoContext(ctx, "bootstrap: evolution system initialized (config-enabled)",
+			"population_size", cfg.PopulationSize,
+			"generations", cfg.Generations,
+		)
 	} else {
-		slog.InfoContext(ctx, "bootstrap: wire evolution skipped (missing flight recorder or exp repo)")
+		reason := "disabled"
+		if cfg == nil {
+			reason = "no config provided"
+		}
+		slog.InfoContext(ctx, "bootstrap: wire evolution skipped",
+			"reason", reason,
+			"enabled", cfg != nil && cfg.Enabled,
+		)
 	}
 
 	slog.InfoContext(ctx, "bootstrap: WireAllEvolutionComponents completed",

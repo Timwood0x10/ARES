@@ -10,6 +10,9 @@ type Strategy struct {
 	// ID is the unique identifier of this strategy.
 	ID string `json:"id"`
 
+	// Name is the human-readable name of the strategy.
+	Name string `json:"name,omitempty"`
+
 	// Version is the version number of this strategy (monotonically increasing).
 	Version int `json:"version"`
 
@@ -53,6 +56,10 @@ type StrategyLineage struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
+// ScorerFunc evaluates an agent and returns its fitness score.
+// Return a score in [0, 100]. Higher = better.
+type ScorerFunc func(params map[string]any) float64
+
 // SystemConfig holds configuration for creating an EvolutionSystem via NewService.
 type SystemConfig struct {
 	// BaseStrategy is the root strategy to evolve from.
@@ -70,11 +77,29 @@ type SystemConfig struct {
 	// MutationRate is probability of mutating each offspring [0-1] (default 0.2).
 	MutationRate float64
 
+	// MinMutationRate is the floor for adaptive mutation rate (default 0.05).
+	MinMutationRate float64
+
+	// MaxMutationRate is the ceiling for adaptive mutation rate (default 0.5).
+	MaxMutationRate float64
+
+	// MaxStagnantGenerations triggers bottom-1/3 reset when best score plateaus (default 10).
+	MaxStagnantGenerations int
+
+	// DiversityThreshold below which mutation rate is boosted (default 0.15).
+	DiversityThreshold float64
+
+	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.3).
+	BreedingPoolRatio float64
+
 	// Generations is total generations to run (default 15).
 	Generations int
 
 	// Seed makes evolution deterministic when > 0 (default 0 = random).
 	Seed int64
+
+	// UseDeterministicIDs enables counter-based strategy IDs (default: true when Seed != 0).
+	UseDeterministicIDs *bool
 
 	// PromptPool is candidate prompt templates for mutation.
 	PromptPool []string
@@ -82,8 +107,8 @@ type SystemConfig struct {
 	// EnableWiredMode uses WiredEvolutionSystem (full wiring) vs raw Population.
 	EnableWiredMode bool
 
-	// MinWinRate is arena test win rate threshold to accept mutations (default 0.55).
-	MinWinRate float64
+	// Scorer evaluates agent fitness. When nil, a temperature-proximity scorer is used.
+	Scorer ScorerFunc
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.
@@ -93,15 +118,19 @@ type SystemConfig struct {
 //	*SystemConfig - configuration with default values applied.
 func DefaultConfig() *SystemConfig {
 	return &SystemConfig{
-		PopulationSize:  20,
-		EliteCount:      2,
-		SurvivalRate:    0.6,
-		MutationRate:    0.2,
-		Generations:     15,
-		Seed:            0,
-		PromptPool:      []string{},
-		EnableWiredMode: true,
-		MinWinRate:      0.55,
+		PopulationSize:         20,
+		EliteCount:             2,
+		SurvivalRate:           0.6,
+		MutationRate:           0.2,
+		MinMutationRate:        0.05,
+		MaxMutationRate:        0.5,
+		MaxStagnantGenerations: 10,
+		DiversityThreshold:     0.15,
+		BreedingPoolRatio:      0.3,
+		Generations:            15,
+		Seed:                   0,
+		PromptPool:             []string{},
+		EnableWiredMode:        true,
 	}
 }
 

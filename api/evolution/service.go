@@ -53,8 +53,17 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 	if cfg.MutationRate < 0 || cfg.MutationRate > 1 {
 		return nil, fmt.Errorf("%w: mutation_rate=%v", ErrInvalidRate, cfg.MutationRate)
 	}
-	if cfg.MinWinRate < 0 || cfg.MinWinRate > 1 {
-		return nil, fmt.Errorf("%w: min_win_rate=%v", ErrInvalidRate, cfg.MinWinRate)
+	if cfg.MinMutationRate < 0 || cfg.MinMutationRate > 1 {
+		return nil, fmt.Errorf("%w: min_mutation_rate=%v", ErrInvalidRate, cfg.MinMutationRate)
+	}
+	if cfg.MaxMutationRate < 0 || cfg.MaxMutationRate > 1 {
+		return nil, fmt.Errorf("%w: max_mutation_rate=%v", ErrInvalidRate, cfg.MaxMutationRate)
+	}
+	if cfg.MinMutationRate > cfg.MaxMutationRate {
+		return nil, fmt.Errorf("min_mutation_rate=%v > max_mutation_rate=%v", cfg.MinMutationRate, cfg.MaxMutationRate)
+	}
+	if cfg.BreedingPoolRatio < 0 || cfg.BreedingPoolRatio > 1 {
+		return nil, fmt.Errorf("%w: breeding_pool_ratio=%v", ErrInvalidRate, cfg.BreedingPoolRatio)
 	}
 
 	s := &Service{
@@ -95,11 +104,19 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.EliteCount = cfg.EliteCount
 	internalCfg.SurvivalRate = cfg.SurvivalRate
 	internalCfg.MutationRate = cfg.MutationRate
+	internalCfg.MinMutationRate = cfg.MinMutationRate
+	internalCfg.MaxMutationRate = cfg.MaxMutationRate
+	internalCfg.MaxStagnantGenerations = cfg.MaxStagnantGenerations
+	internalCfg.DiversityThreshold = cfg.DiversityThreshold
+	internalCfg.BreedingPoolRatio = cfg.BreedingPoolRatio
 	internalCfg.MutatorSeed = cfg.Seed
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
 	if cfg.Seed != 0 {
 		internalCfg.UseDeterministicIDs = true
+	}
+	if cfg.UseDeterministicIDs != nil {
+		internalCfg.UseDeterministicIDs = *cfg.UseDeterministicIDs
 	}
 
 	system, err := evolution.NewWiredEvolutionSystem(baseStrategy, internalCfg)
@@ -114,9 +131,16 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *mutation.Mutator, *genome.Crossover, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 
+	useDetIDs := cfg.Seed != 0
+	if cfg.UseDeterministicIDs != nil {
+		useDetIDs = *cfg.UseDeterministicIDs
+	}
+
 	var mutatorOpts []mutation.MutatorOption
 	if cfg.Seed != 0 {
 		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.Seed))
+	}
+	if useDetIDs {
 		mutatorOpts = append(mutatorOpts, mutation.WithDeterministicIDs(true))
 	}
 	if len(cfg.PromptPool) > 0 {
@@ -136,6 +160,8 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 	var crosserOpts []genome.CrossoverOption
 	if cfg.Seed != 0 {
 		crosserOpts = append(crosserOpts, genome.WithSeed(cfg.Seed))
+	}
+	if useDetIDs {
 		crosserOpts = append(crosserOpts, genome.WithDeterministicIDs(true))
 	}
 
@@ -149,6 +175,11 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 		genome.WithEliteCount(cfg.EliteCount),
 		genome.WithMutationRate(cfg.MutationRate),
 		genome.WithSurvivalRate(cfg.SurvivalRate),
+		genome.WithMinMutationRate(cfg.MinMutationRate),
+		genome.WithMaxMutationRate(cfg.MaxMutationRate),
+		genome.WithMaxStagnantGenerations(cfg.MaxStagnantGenerations),
+		genome.WithDiversityThreshold(cfg.DiversityThreshold),
+		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
 	}
 	if cfg.Seed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.Seed))
@@ -322,8 +353,9 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 	}
 	return &Strategy{
 		ID:             s.ID,
+		Name:           s.Name,
 		Version:        s.Version,
-		Params:         cloneParams(s.Params),
+		Params:         mutation.CloneParams(s.Params),
 		ParentID:       s.ParentID,
 		PromptTemplate: s.PromptTemplate,
 		MutationType:   s.StrategyMutationType.String(),
@@ -339,8 +371,9 @@ func toInternalStrategy(s *Strategy) *mutation.Strategy {
 	}
 	return &mutation.Strategy{
 		ID:                   s.ID,
+		Name:                 s.Name,
 		Version:              s.Version,
-		Params:               cloneParams(s.Params),
+		Params:               mutation.CloneParams(s.Params),
 		ParentID:             s.ParentID,
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: mutation.ParseMutationType(s.MutationType),
@@ -359,18 +392,6 @@ func toAPILineage(l evolution.StrategyLineage) StrategyLineage {
 		ScoreDelta:   l.ScoreImprovement,
 		Timestamp:    l.Timestamp,
 	}
-}
-
-// cloneParams creates a shallow copy of a params map to avoid shared state.
-func cloneParams(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }
 
 // genomeMutatorAdapter creates a genome-compatible mutator adapter from the raw mutator.
@@ -426,28 +447,38 @@ func (s *Service) collectLineages() []StrategyLineage {
 	return []StrategyLineage{}
 }
 
+// Default scorer constants used by scoreAgents when no custom scorer is configured.
+const (
+	defaultTargetTemp    = 0.7
+	defaultProximityGain = 2.5
+	defaultBaseScore     = 50.0
+	defaultNoiseRange    = 30.0
+	defaultBonusRange    = 20.0
+	defaultMaxScore      = 100.0
+)
+
 // scoreAgents assigns fitness scores to agents in the population.
-// Uses temperature-proximity scoring (consistent with demo's scorePop):
-// agents with temperature closer to 0.7 receive higher base scores,
-// plus random noise to simulate arena evaluation variance.
-// In production, this would be replaced with actual arena regression testing.
-func scoreAgents(pop *genome.Population, rng *rand.Rand) {
-	agents, _ := pop.Snapshot()
-	for _, agent := range agents {
-		temp := 0.7
+// If s.config.Scorer is set, it delegates to that. Otherwise it uses a
+// temperature-proximity heuristic (target=0.7, base=50 + noise + proximity bonus).
+func (s *Service) scoreAgents(pop *genome.Population, rng *rand.Rand) {
+	pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+		if s.config.Scorer != nil {
+			return s.config.Scorer(agent.Params)
+		}
+		temp := defaultTargetTemp
 		if v, ok := agent.Params["temperature"].(float64); ok {
 			temp = v
 		}
-		proximity := 1 - absFloat64(temp-0.7)*2.5
-		score := 50 + rng.Float64()*30 + proximity*20
-		if score > 100 {
-			score = 100
+		proximity := 1 - absFloat64(temp-defaultTargetTemp)*defaultProximityGain
+		score := defaultBaseScore + rng.Float64()*defaultNoiseRange + proximity*defaultBonusRange
+		if score > defaultMaxScore {
+			score = defaultMaxScore
 		}
 		if score < 0 {
 			score = 0
 		}
-		agent.Score = score
-	}
+		return score
+	})
 }
 
 func absFloat64(x float64) float64 {
@@ -468,8 +499,8 @@ func (s *Service) initScores(seed int64) {
 	}
 
 	if s.wiredSystem != nil && s.wiredSystem.Population != nil {
-		scoreAgents(s.wiredSystem.Population, r)
+		s.scoreAgents(s.wiredSystem.Population, r)
 	} else if s.population != nil {
-		scoreAgents(s.population, r)
+		s.scoreAgents(s.population, r)
 	}
 }

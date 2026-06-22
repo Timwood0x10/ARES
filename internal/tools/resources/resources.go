@@ -88,9 +88,8 @@ var (
 
 // Agent functions
 var (
-	DefaultAgentToolConfig       = agent.DefaultAgentToolConfig
-	NewAgentTools                = agent.NewAgentTools
-
+	DefaultAgentToolConfig = agent.DefaultAgentToolConfig
+	NewAgentTools          = agent.NewAgentTools
 )
 
 // Agent tool config presets

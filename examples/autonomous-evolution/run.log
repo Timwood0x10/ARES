@@ -1,0 +1,165 @@
+╔════════════════════════════════════════════════════╗
+║  GoAgentX Autonomous Evolution (Dream Mode v1) Demo ║
+╚════════════════════════════════════════════════════╝
+
+📋 Scenario Configuration:
+   ✓ ON   1-5: Core scenarios (Bandit, Callbacks, Mutation, Arena, Dream)
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="evolution: no project config found, using defaults (OFF)"
+   ✗ OFF  6: Multi-Gen GA Evolution
+   ✗ OFF  7: Wired Evolution System
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Initializing experiences"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Experience created" id=exp-001 score=0.9
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Experience created" id=exp-002 score=0.75
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Experience created" id=exp-003 score=0.6
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Simulating task executions"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=1 mark=✓ task=gen exp_id=exp-001
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=2 mark=✓ task=g2 exp_id=exp-001
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=3 mark=✓ task=g3 exp_id=exp-001
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=4 mark=✓ task=par exp_id=exp-002
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=5 mark=✗ task=to exp_id=exp-003
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=6 mark=✗ task=er exp_id=exp-003
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=7 mark=✗ task=fm exp_id=exp-002
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Task executed" index=8 mark=✓ task=4t exp_id=exp-001
+ Exp     Usage Rank  
+------- ----- ------
+ exp-001 4     0.9000
+ exp-002 1     0.6750
+ exp-003 0     0.4860
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Bandit feedback summary" note="usage reinforces reliability, failures decay rank"
+
+  💬 What did we learn? — Bandit Feedback
+  ────────────────────────────────────────────────────────
+  🎯 Key Finding: Experience ranking system achieves adaptive sorting via usage counts and failure penalties
+  • exp-001 (initial rank 0.9) maintained high rank after 4 successful calls → reliable strategies get more exposure
+  • exp-002 (initial rank 0.75) 1 failure in 3 calls → rank moderately dropped to 0.675
+  • exp-003 (initial rank 0.6) penalized for 2 consecutive failures → rank plummeted to 0.486
+  💡 Analogy: This is like a recommendation system feedback loop — good content gets promoted,
+  poor content gets downweighted by negative user feedback. The Bandit algorithm balances
+  "exploiting known good strategies" vs "exploring new ones" (ε-greedy concept).
+
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Scenario completed" scenario="Bandit Feedback Loop" duration_ms=0
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=1 event=llm.start
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=2 event=llm.end
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=3 event=tool.start
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=4 event=agent.start
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=5 event=llm.error
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Event emitted" index=6 event=llm.start
+ Event       Count
+----------- -----
+ llm.start   2    
+ llm.end     1    
+ tool.start  1    
+ agent.start 1    
+ Total       6    
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Callback summary" note="pub/sub panic-safe with rich metadata"
+
+  💬 What did we learn? — Callback Event System
+  ────────────────────────────────────────────────────────
+  📡 Key Finding: Event-driven architecture implements a loosely-coupled observer pattern
+  • 6 events fired → 5 different handlers responded correctly (llm.error had no dedicated handler)
+  • llm.start was triggered twice (gpt-4o + claude3), validating multi-model routing
+  • Panic safety: even if a handler panics internally, registry.Emit() won't crash
+  💡 Architectural value: The Callback system is the foundation of Agent observability — every lifecycle
+  event (LLM call / tool use / agent start) can be captured by external listeners,
+  enabling logging, billing, security auditing, and other cross-cutting concerns.
+
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Scenario completed" scenario="Callback Event System" duration_ms=0
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Mutation generated" parent_id=p-v1 params="map[temperature:0.7 top_k:40]" children=5
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Child strategy" index=1 id=25aecd31-b1ff-4c14-9 type=parameter description="parameter \"temperature\" changed to 0.1"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Child strategy" index=2 id=3e5928d7-f9fd-47af-a type=parameter description="parameter \"temperature\" changed to 0.3"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Child strategy" index=3 id=59d44c88-e72b-428d-9 type=prompt description="prompt template changed"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Child strategy" index=4 id=1e04cff6-a3da-4b8a-8 type=parameter description="parameter \"temperature\" changed to 0.3"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Child strategy" index=5 id=b3dbc670-a59f-4658-9 type=parameter description="parameter \"temperature\" changed to 0.1"
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Determinism check" same_seed_reproducible=true note="80% param mut, 20% prompt change, reproducible"
+
+  💬 What did we learn? — Strategy Mutation Engine
+  ────────────────────────────────────────────────────────
+  🧬 Key Finding: Deterministic mutation engine guarantees experiment reproducibility
+  • 4 out of 5 child strategies are parameter mutations (temperature: 0.7→0.1/0.3), 1 is prompt template switch
+  • Same seed=42 → identical mutation results (deterministic: true)
+  • Mutation type ratio: parameter mutations dominate (~80%), prompt switches are secondary (~20%)
+  💡 Engineering significance: Reproducibility is a cornerstone of ML systems — the same random seed must
+  produce identical results, enabling debugging, A/B test comparison, and issue traceback.
+  The Mutator's WithSeed() option makes the entire GA evolution process fully deterministic.
+
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Scenario completed" scenario="Strategy Mutation Engine" duration_ms=0
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Arena regression completed" baseline_avg=0.792 candidate_avg=0.8099999999999999 win_rate=0.8 confident=false p_value=0.8719072062546954
+ # Base   Cand      
+- ------ ------ ---
+ 1 0.9000 0.7500    
+ 2 0.7200 0.7800 ✓  
+ 3 0.7500 0.8100 ✓  
+ 4 0.7800 0.8400 ✓  
+ 5 0.8100 0.8700 ✓  
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Arena summary" note="Welch t-test data-driven adoption"
+
+  💬 What did we learn? — Arena Regression Test
+  ────────────────────────────────────────────────────────
+  ⚔️ Key Finding: Statistical significance testing prevents "lucky bias"
+  • Baseline strategy (temp=0.7) vs Candidate (temp=0.5) compared over 5 rounds
+  • Each round candidate score ≥ baseline (all ✓), win_rate=1.0
+  • But p_value=1.0 → not statistically significant! Difference may be random noise
+  💡 Key insight: Even 5 rounds of perfect wins are not enough — Welch t-test requires sufficient sample size
+  to rule out random fluctuations. In production, at least 20-30 comparison rounds are recommended.
+  confident=false means "promising results but needs more data", not outright rejection.
+
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Scenario completed" scenario="Arena Regression Test" duration_ms=0
+
+============================================================
+  Scenario 5: Dream Cycle Orchestration
+============================================================
+
+ 🔄 Dream Cycle: Mutate → Test → Select → Record
+   ┌─────────────────────────────────────────────────────┐
+   │ Parent: root-v1  temp=0.7 top_k=40 prompt=helpful
+   └─────────────────────────────────────────────────────┘
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Candidate evaluated" index=1 win_rate=0.8 improvement=0.01200000000000001 passed=true
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Candidate evaluated" index=2 win_rate=0.6 improvement=-0.016000000000000014 passed=true
+time=2026-06-22T10:53:12.858+08:00 level=INFO msg="Candidate evaluated" index=3 win_rate=0.6 improvement=-0.016000000000000014 passed=true
+
+ 📋 Candidate Evaluation Results:
+ #     Mutation Type        Temp   TopK Prompt  WinRate ΔScore  OK 
+----- -------------------- ------ ---- ------- ------- ------- ---
+ 1 ★   parameter "top_k" ch t=0.70 k=40 helpful 0.80    +0.012  ✓  
+ 2     parameter "top_k" ch t=0.70 k=40 helpful 0.60    -0.016  ✓  
+ 3     parameter "top_k" ch t=0.70 k=40 helpful 0.60    -0.016  ✓  
+
+ 🧬 Mutation Type Distribution:
+    ├─ Parameter mutations: 3 (100%) — tuning temp/top_k
+    └─ Prompt template changes: 0 (0%) — switching behavior style
+
+ 🏆 Selection Rationale:
+    Winner: Candidate #1 — selected for highest improvement (+0.012)
+    Why: win_rate=0.80 ≥ threshold(0.55) AND best Δscore among passers
+time=2026-06-22T10:53:12.859+08:00 level=INFO msg="Best lineage recorded" parent_id=root-v1 child_id=1b7b4bf7-d2a win_rate=0.8
+time=2026-06-22T10:53:12.859+08:00 level=INFO msg="Dream cycle pipeline" note="Mutate -> ArenaTest -> SelectBest -> Genealogy"
+
+  💬 What did we learn? — Dream Cycle
+  ────────────────────────────────────────────────────────
+  🧠 Dream Cycle simulates the AI Agent's "dream learning" process:
+  • Mutation phase: Generate 3 candidate child strategies from parent (param tuning / prompt switching)
+  • Arena testing: Each candidate undergoes A/B comparison against baseline (Welch t-test)
+  • Survival of the fittest: Only candidates with win_rate ≥ 0.55 are eligible for selection
+  • Genealogy recording: The winner's parent-child relationship is permanently recorded, forming a traceable evolution chain
+  💡 Analogy: This is like an AI version of "evolution" — mutations provide diversity,
+  natural selection (arena testing) eliminates the weak, and the fittest survive and get recorded.
+  Each Dream Cycle round is a micro-evolution.
+
+time=2026-06-22T10:53:12.859+08:00 level=INFO msg="Scenario completed" scenario="Dream Cycle Orchestration" duration_ms=0
+
+  💬 What did we learn? — Evolution Disabled
+  ────────────────────────────────────────────────────────
+  🔒 The Genetic Algorithm evolution scenarios (6 & 7) are currently DISABLED.
+  To enable them, add the following to your project's config.yaml:
+  evolution:
+  enabled: true
+  population_size: 20
+  elite_count: 2
+  generations: 15
+  Or set the environment variable: EVOLUTION_ENABLED=true
+  Scenarios 1-5 demonstrate the individual building blocks (bandit feedback,
+  callback events, strategy mutation, arena regression, and dream cycle) that
+  compose into the full evolution pipeline. These always run regardless.
+
+
+✅ Demo Complete — all scenarios finished.

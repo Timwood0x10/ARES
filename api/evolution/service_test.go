@@ -150,21 +150,6 @@ func TestNewService_WithInvalidMutationRate_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestNewService_WithInvalidMinWinRate_ReturnsError(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.BaseStrategy = testBaseStrategy()
-	cfg.MinWinRate = 1.5
-
-	svc, err := NewService(cfg)
-	if err == nil {
-		t.Error("expected error, got nil")
-		defer svc.Shutdown()
-	}
-	if !errors.Is(err, ErrInvalidRate) {
-		t.Errorf("error = %v, want ErrInvalidRate", err)
-	}
-}
-
 func TestBestStrategy_BeforeEvolve_ReturnsStrategy(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BaseStrategy = testBaseStrategy()
@@ -383,5 +368,107 @@ func TestToAPILineage_Conversion(t *testing.T) {
 	}
 	if api.Timestamp != 1234567890 {
 		t.Errorf("Timestamp = %d, want 1234567890", api.Timestamp)
+	}
+}
+
+func TestNewService_WithInvalidMinMutationRate_Negative(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BaseStrategy = testBaseStrategy()
+	cfg.MinMutationRate = -0.1
+
+	svc, err := NewService(cfg)
+
+	if err == nil {
+		t.Error("expected error for negative MinMutationRate, got nil")
+		defer svc.Shutdown()
+	}
+	if !errors.Is(err, ErrInvalidRate) {
+		t.Errorf("error = %v, want ErrInvalidRate", err)
+	}
+}
+
+func TestNewService_WithInvalidMinMutationRate_GTOne(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BaseStrategy = testBaseStrategy()
+	cfg.MinMutationRate = 1.5
+
+	svc, err := NewService(cfg)
+
+	if err == nil {
+		t.Error("expected error for MinMutationRate > 1, got nil")
+		defer svc.Shutdown()
+	}
+	if !errors.Is(err, ErrInvalidRate) {
+		t.Errorf("error = %v, want ErrInvalidRate", err)
+	}
+}
+
+func TestNewService_WithInvalidMaxMutationRate(t *testing.T) {
+	tests := []struct {
+		name    string
+		rate    float64
+		wantErr error
+	}{
+		{"negative max mutation rate", -0.3, ErrInvalidRate},
+		{"max mutation rate > 1", 2.0, ErrInvalidRate},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.BaseStrategy = testBaseStrategy()
+			cfg.MaxMutationRate = tt.rate
+
+			svc, err := NewService(cfg)
+			if err == nil {
+				t.Error("expected error, got nil")
+				defer svc.Shutdown()
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewService_WithInvalidBreedingPoolRatio(t *testing.T) {
+	tests := []struct {
+		name    string
+		ratio   float64
+		wantErr error
+	}{
+		{"negative breeding pool ratio", -0.5, ErrInvalidRate},
+		{"breeding pool ratio > 1", 1.5, ErrInvalidRate},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.BaseStrategy = testBaseStrategy()
+			cfg.BreedingPoolRatio = tt.ratio
+
+			svc, err := NewService(cfg)
+			if err == nil {
+				t.Error("expected error, got nil")
+				defer svc.Shutdown()
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewService_WithMinGtMaxMutationRate(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BaseStrategy = testBaseStrategy()
+	cfg.MinMutationRate = 0.8
+	cfg.MaxMutationRate = 0.3
+
+	svc, err := NewService(cfg)
+
+	if err == nil {
+		t.Error("expected error for MinMutationRate > MaxMutationRate, got nil")
+		defer svc.Shutdown()
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"goagentx/internal/callbacks"
+	"goagentx/internal/config"
 	"goagentx/internal/events"
 	"goagentx/internal/evolution"
 	"goagentx/internal/flight"
@@ -116,7 +117,7 @@ func TestWireAllEvolutionComponents_AllDepsProvided(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestWireAllEvolutionComponents_MissingOptionalDeps(t *testing.T) {
 		ExpRepo: expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with minimal deps: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestWireAllEvolutionComponents_NilLLMClient(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with nil LLM client: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestWireAllEvolutionComponents_NilLLMClient(t *testing.T) {
 func TestWireAllEvolutionComponents_NilDeps(t *testing.T) {
 	ctx := context.Background()
 
-	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{})
+	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{}, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with nil deps: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestWireAllEvolutionComponents_NilDeps(t *testing.T) {
 func TestWireAllEvolutionComponents_CallbackRegImplementsEmitter(t *testing.T) {
 	ctx := context.Background()
 
-	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{})
+	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{}, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents error: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestWireAllEvolutionComponents_WithDreamDeps(t *testing.T) {
 		},
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		// Dream cycle creation may fail due to internal validation; assert error is meaningful.
 		errMsg := err.Error()

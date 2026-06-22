@@ -70,9 +70,10 @@ func evolutionToMutationStrategy(s Strategy) mutation.Strategy {
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
 		Version:              s.Version,
-		Params:               cloneParams(s.Params),
+		Name:                 s.Name,
+		Params:               mutation.CloneParams(s.Params),
 		PromptTemplate:       s.PromptTemplate,
-		StrategyMutationType: mutationTypeFromString(s.StrategyMutationType),
+		StrategyMutationType: mutation.ParseMutationType(s.StrategyMutationType),
 		MutationDesc:         s.MutationDesc,
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
@@ -85,42 +86,15 @@ func mutationToEvolutionStrategy(s *mutation.Strategy) Strategy {
 		return Strategy{}
 	}
 	return Strategy{
-		ID: s.ID,
+		ID:                   s.ID,
 		Version:              s.Version,
-		Params:               s.Params,
+		Name:                 s.Name,
+		Params:               mutation.CloneParams(s.Params),
 		ParentID:             s.ParentID,
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: s.StrategyMutationType.String(),
 		MutationDesc:         s.MutationDesc,
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
-	}
-}
-
-// cloneParams creates a shallow copy of a params map to avoid shared state.
-func cloneParams(src map[string]any) map[string]any {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-// mutationTypeFromString converts a string to mutation.MutationType.
-func mutationTypeFromString(s string) mutation.MutationType {
-	switch s {
-	case "parameter":
-		return mutation.MutationParameter
-	case "prompt":
-		return mutation.MutationPrompt
-	case "tool":
-		return mutation.MutationTool
-	case "crossover":
-		return mutation.MutationCrossover
-	default:
-		return mutation.MutationParameter
 	}
 }

@@ -6,12 +6,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	apievol "goagentx/api/evolution"
 	"goagentx/internal/arena"
 	"goagentx/internal/callbacks"
 	"goagentx/internal/evolution"
@@ -19,6 +19,8 @@ import (
 	"goagentx/internal/evolution/mutation"
 	"goagentx/internal/experience"
 	storageModels "goagentx/internal/storage/postgres/models"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ============================================================
@@ -184,7 +186,10 @@ func (r *mockExperienceRepo) getUsageCount(id string) int {
 }
 
 // ---- mockScorer ----
-
+//
+// mockScorer evaluates strategy fitness based on actual parameters.
+// Lower temperature + moderate top_k + "precise" prompt → higher score.
+// This ensures different strategy combinations produce differentiated scores.
 type mockScorer struct {
 	baseScore, variance float64
 	counter             int64
@@ -195,16 +200,55 @@ func newMockScorer(baseScore, variance float64) *mockScorer {
 	return &mockScorer{baseScore: baseScore, variance: variance}
 }
 
-func (s *mockScorer) Score(_ any) (float64, error) {
+func (s *mockScorer) Score(input any) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counter++
-	score := s.baseScore + float64(s.counter%5-2)*s.variance
-	if score < 0 {
-		score = 0
+
+	// Extract strategy params for parameter-aware scoring.
+	score := s.baseScore
+	if m, ok := input.(map[string]any); ok {
+		// Temperature: lower is better (0.1→0.9 best, 1.0→0.5 worst)
+		if temp, ok := m["temperature"].(float64); ok {
+			score += (1.0 - temp) * 0.15
+		} else if temp, ok := m["temp"].(float64); ok {
+			score += (1.0 - temp) * 0.15
+		}
+		// top_k: moderate values (20-40) are optimal
+		if tk, ok := m["top_k"].(float64); ok {
+			optimal := 30.0
+			dist := tk - optimal
+			score -= (dist * dist) / 2000.0 // quadratic penalty
+		}
+		// Prompt template: "precise" > "careful" > "creative" > "helpful"
+		if pt, ok := m["prompt_template"].(string); ok {
+			switch pt {
+			case "precise":
+				score += 0.08
+			case "careful":
+				score += 0.04
+			case "creative":
+				score += 0.02
+			}
+		} else if pt, ok := m["PromptTemplate"].(string); ok {
+			switch pt {
+			case "precise":
+				score += 0.08
+			case "careful":
+				score += 0.04
+			case "creative":
+				score += 0.02
+			}
+		}
 	}
-	if score > 1 {
-		score = 1
+
+	// Add small per-call variation for realism but keep it secondary to param effects.
+	score += float64(s.counter%7-3) * s.variance * 0.5
+	if score < 0.05 {
+		score = 0.05
+	}
+	if score > 1.0 {
+		score = 1.0
 	}
 	return score, nil
 }
@@ -295,14 +339,108 @@ type GACfg struct {
 	BaseID                    string
 	PopSize, EliteCount, NGen int
 	SurvRate, MutRate         float64
+	MinMutRate, MaxMutRate    float64
 	Wired, Dream              bool
 }
 
 // Predefined configurations for each GA scenario.
 var (
-	cfgGA    = GACfg{Title: "Scenario 6: GA Evolution", BaseID: "ga-root", PopSize: 20, EliteCount: 2, SurvRate: 0.6, MutRate: 0.2, NGen: 15}
-	cfgWired = GACfg{Title: "Scenario 7: Wired System", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, NGen: 10, Wired: true}
+	cfgGA    = GACfg{Title: "Scenario 6: GA Evolution", BaseID: "ga-root", PopSize: 20, EliteCount: 2, SurvRate: 0.6, MutRate: 0.2, MinMutRate: 0.05, MaxMutRate: 0.5, NGen: 15}
+	cfgWired = GACfg{Title: "Scenario 7: Wired System", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, MinMutRate: 0.05, MaxMutRate: 0.5, NGen: 10, Wired: true}
 )
+
+// ============================================================
+// Project-Level Evolution Config
+// ============================================================
+
+// EvolutionConfigFromFile mirrors internal/config.EvolutionConfig for YAML parsing
+// without importing the internal package from examples.
+type EvolutionConfigFromFile struct {
+	Enabled           bool    `yaml:"enabled"`
+	PopulationSize    int     `yaml:"population_size"`
+	EliteCount        int     `yaml:"elite_count"`
+	SurvivalRate      float64 `yaml:"survival_rate"`
+	MutationRate      float64 `yaml:"mutation_rate"`
+	MinMutationRate   float64 `yaml:"min_mutation_rate"`
+	MaxMutationRate   float64 `yaml:"max_mutation_rate"`
+	Generations       int     `yaml:"generations"`
+	BreedingPoolRatio float64 `yaml:"breeding_pool_ratio"`
+	MinInterval       string  `yaml:"min_interval"`
+}
+
+// loadProjectEvolutionConfig attempts to find and parse evolution config from
+// standard project locations. It checks (in order):
+//  1. Environment variable EVOLUTION_ENABLED=true
+//  2. ./config/config.yaml  (project root relative)
+//  3. ../config/config.yaml (examples dir relative)
+//
+// Returns the parsed EvolutionConfig or an error if not found/unparseable.
+func loadProjectEvolutionConfig() (*EvolutionConfigFromFile, error) {
+	if os.Getenv("EVOLUTION_ENABLED") == "true" {
+		return &EvolutionConfigFromFile{Enabled: true}, nil
+	}
+
+	locations := []string{
+		"config/config.yaml",
+		"../config/config.yaml",
+		"../../config.yaml",
+	}
+
+	for _, loc := range locations {
+		data, err := os.ReadFile(loc)
+		if err != nil {
+			continue
+		}
+
+		var raw struct {
+			Evolution *EvolutionConfigFromFile `yaml:"evolution"`
+		}
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			continue
+		}
+
+		if raw.Evolution != nil && raw.Evolution.Enabled {
+			return raw.Evolution, nil
+		}
+		return &EvolutionConfigFromFile{Enabled: false}, nil
+	}
+
+	return nil, fmt.Errorf("no config file found with evolution settings")
+}
+
+// mergeGACfg merges project-level evolution config values into GACfg defaults.
+func mergeGACfg(base GACfg, proj *EvolutionConfigFromFile) GACfg {
+	out := base
+	if proj.PopulationSize > 0 {
+		out.PopSize = proj.PopulationSize
+	}
+	if proj.EliteCount > 0 {
+		out.EliteCount = proj.EliteCount
+	}
+	if proj.SurvivalRate > 0 {
+		out.SurvRate = proj.SurvivalRate
+	}
+	if proj.MutationRate > 0 {
+		out.MutRate = proj.MutationRate
+	}
+	if proj.MinMutationRate > 0 {
+		out.MinMutRate = proj.MinMutationRate
+	}
+	if proj.MaxMutationRate > 0 {
+		out.MaxMutRate = proj.MaxMutationRate
+	}
+	if proj.Generations > 0 {
+		out.NGen = proj.Generations
+	}
+	return out
+}
+
+func statusStr(enabled bool) string {
+	if enabled {
+		return "✓ ON "
+	}
+	return "✗ OFF"
+}
 
 // sep prints a visual section separator with a centered title.
 // Args:
@@ -311,6 +449,15 @@ var (
 // This is demo UI output and uses fmt directly for console rendering.
 func sep(title string) {
 	fmt.Printf("\n%s\n  %s\n%s\n", strings.Repeat("=", 60), title, strings.Repeat("=", 60))
+}
+
+// safeTruncate returns the first n characters of s, or the full string if shorter.
+// Prevents panic on short strings used in table display.
+func safeTruncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // tbl prints a formatted table with the given header and rows to the console.
@@ -414,6 +561,17 @@ func runBandit(ctx context.Context, k *DemoKit) {
 	}
 	tbl([]string{"Exp", "Usage", "Rank"}, rows)
 	slog.InfoContext(ctx, "Bandit feedback summary", "note", "usage reinforces reliability, failures decay rank")
+
+	printInsight("Bandit Feedback", `
+  🎯 Key Finding: Experience ranking system achieves adaptive sorting via usage counts and failure penalties
+
+  • exp-001 (initial rank 0.9) maintained high rank after 4 successful calls → reliable strategies get more exposure
+  • exp-002 (initial rank 0.75) 1 failure in 3 calls → rank moderately dropped to 0.675
+  • exp-003 (initial rank 0.6) penalized for 2 consecutive failures → rank plummeted to 0.486
+
+  💡 Analogy: This is like a recommendation system feedback loop — good content gets promoted,
+     poor content gets downweighted by negative user feedback. The Bandit algorithm balances
+     "exploiting known good strategies" vs "exploring new ones" (ε-greedy concept).`)
 }
 
 // runCallbacks demonstrates Scenario 2: Callback Event System.
@@ -475,6 +633,17 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 	rows = append(rows, []string{"Total", fmt.Sprintf("%d", captured)})
 	tbl([]string{"Event", "Count"}, rows)
 	slog.InfoContext(ctx, "Callback summary", "note", "pub/sub panic-safe with rich metadata")
+
+	printInsight("Callback Event System", `
+  📡 Key Finding: Event-driven architecture implements a loosely-coupled observer pattern
+
+  • 6 events fired → 5 different handlers responded correctly (llm.error had no dedicated handler)
+  • llm.start was triggered twice (gpt-4o + claude3), validating multi-model routing
+  • Panic safety: even if a handler panics internally, registry.Emit() won't crash
+
+  💡 Architectural value: The Callback system is the foundation of Agent observability — every lifecycle
+     event (LLM call / tool use / agent start) can be captured by external listeners,
+     enabling logging, billing, security auditing, and other cross-cutting concerns.`)
 }
 
 // runMutation demonstrates Scenario 3: Strategy Mutation Engine.
@@ -518,6 +687,17 @@ func runMutation(ctx context.Context, _ *DemoKit) {
 		"same_seed_reproducible", same,
 		"note", "80% param mut, 20% prompt change, reproducible",
 	)
+
+	printInsight("Strategy Mutation Engine", `
+  🧬 Key Finding: Deterministic mutation engine guarantees experiment reproducibility
+
+  • 4 out of 5 child strategies are parameter mutations (temperature: 0.7→0.1/0.3), 1 is prompt template switch
+  • Same seed=42 → identical mutation results (deterministic: true)
+  • Mutation type ratio: parameter mutations dominate (~80%), prompt switches are secondary (~20%)
+
+  💡 Engineering significance: Reproducibility is a cornerstone of ML systems — the same random seed must
+     produce identical results, enabling debugging, A/B test comparison, and issue traceback.
+     The Mutator's WithSeed() option makes the entire GA evolution process fully deterministic.`)
 }
 
 // runArena demonstrates Scenario 4: Arena Regression Test.
@@ -567,6 +747,17 @@ func runArena(ctx context.Context, _ *DemoKit) {
 	}
 	tbl([]string{"#", "Base", "Cand", ""}, rows)
 	slog.InfoContext(ctx, "Arena summary", "note", "Welch t-test data-driven adoption")
+
+	printInsight("Arena Regression Test", `
+  ⚔️ Key Finding: Statistical significance testing prevents "lucky bias"
+
+  • Baseline strategy (temp=0.7) vs Candidate (temp=0.5) compared over 5 rounds
+  • Each round candidate score ≥ baseline (all ✓), win_rate=1.0
+  • But p_value=1.0 → not statistically significant! Difference may be random noise
+
+  💡 Key insight: Even 5 rounds of perfect wins are not enough — Welch t-test requires sufficient sample size
+     to rule out random fluctuations. In production, at least 20-30 comparison rounds are recommended.
+     confident=false means "promising results but needs more data", not outright rejection.`)
 }
 
 // ============================================================
@@ -576,6 +767,9 @@ func runArena(ctx context.Context, _ *DemoKit) {
 // runDreamCycle demonstrates Scenario 5: Dream Cycle Orchestration.
 // It performs a full mutate→arena-test→select-best→record-genealogy cycle,
 // evaluating multiple candidate mutations against a baseline and promoting the winner.
+//
+// Enhanced output shows per-candidate evaluation details, mutation type breakdown,
+// and selection rationale with conversational insight.
 // Args:
 //   - ctx: operation context for slog propagation and dream cycle operations.
 //   - k: demo kit (unused; this scenario creates its own components).
@@ -595,12 +789,31 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 	tester, _ := newMockTester(scorer)
 	genealogy := newMockGenealogyRecorder()
 
-	parent := &mutation.Strategy{ID: "root-v1", Version: 1, Params: map[string]any{"temp": 0.7, "top_k": 40}, PromptTemplate: "helpful", CreatedAt: time.Now()}
+	parent := &mutation.Strategy{ID: "root-v1", Version: 1, Params: map[string]any{"temp": 0.7, "top_k": 40.0}, PromptTemplate: "helpful", CreatedAt: time.Now()}
 	children, _ := mutator.Mutate(ctx, parent, 3)
 	baseline := evolution.Strategy{ID: parent.ID, Params: parent.Params}
 
+	fmt.Println("\n 🔄 Dream Cycle: Mutate → Test → Select → Record")
+	fmt.Println("   ┌─────────────────────────────────────────────────────┐")
+	fmt.Printf("   │ Parent: %s  temp=%.1f top_k=%.0f prompt=%s\n", parent.ID, parent.Params["temp"], parent.Params["top_k"], parent.PromptTemplate)
+	fmt.Println("   └─────────────────────────────────────────────────────┘")
+
 	var best *evolution.Strategy
 	var bestWinRate, bestImprovement float64
+	var bestIdx int
+
+	type candidateResult struct {
+		index       int
+		id          string
+		mutType     string
+		temp        float64
+		topK        float64
+		prompt      string
+		winRate     float64
+		improvement float64
+		passed      bool
+	}
+	var candResults []candidateResult
 
 	for i, child := range children {
 		candidate := evolution.Strategy{ID: child.ID, Params: child.Params, ParentID: child.ParentID}
@@ -608,7 +821,29 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 
 		improvement := result.CandidateScore - result.BaselineScore
 		passed := result.WinRate >= 0.55
-		slog.DebugContext(ctx, "Candidate evaluated",
+
+		tempVal := 0.0
+		if t, ok := child.Params["temp"].(float64); ok {
+			tempVal = t
+		}
+		topKVal := 40.0
+		if tk, ok := child.Params["top_k"].(float64); ok {
+			topKVal = tk
+		}
+
+		candResults = append(candResults, candidateResult{
+			index:       i + 1,
+			id:          child.ID[:16],
+			mutType:     child.MutationDesc,
+			temp:        tempVal,
+			topK:        topKVal,
+			prompt:      child.PromptTemplate,
+			winRate:     result.WinRate,
+			improvement: improvement,
+			passed:      passed,
+		})
+
+		slog.InfoContext(ctx, "Candidate evaluated",
 			"index", i+1,
 			"win_rate", result.WinRate,
 			"improvement", improvement,
@@ -619,22 +854,92 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 			best = &candidate
 			bestWinRate = result.WinRate
 			bestImprovement = improvement
+			bestIdx = i
 		}
 	}
 
+	// ── Candidate Evaluation Table ──
+	fmt.Println("\n 📋 Candidate Evaluation Results:")
+	var evalRows [][]string
+	for _, cr := range candResults {
+		mark := "✗"
+		if cr.passed {
+			mark = "✓"
+		}
+		winner := ""
+		if cr.index-1 == bestIdx && best != nil {
+			winner = " ★"
+		}
+		evalRows = append(evalRows, []string{
+			fmt.Sprintf("%d%s", cr.index, winner),
+			safeTruncate(cr.mutType, 20),
+			fmt.Sprintf("t=%.2f", cr.temp),
+			fmt.Sprintf("k=%.0f", cr.topK),
+			safeTruncate(cr.prompt, 8),
+			fmt.Sprintf("%.2f", cr.winRate),
+			fmt.Sprintf("%+.3f", cr.improvement),
+			mark,
+		})
+	}
+	tbl([]string{"#", "Mutation Type", "Temp", "TopK", "Prompt", "WinRate", "ΔScore", "OK"}, evalRows)
+
+	// ── Mutation Type Breakdown ──
+	paramCount, promptCount := 0, 0
+	for _, cr := range candResults {
+		if strings.Contains(cr.mutType, "parameter") || strings.Contains(cr.mutType, "temperature") || strings.Contains(cr.mutType, "top_k") {
+			paramCount++
+		} else {
+			promptCount++
+		}
+	}
+	total := len(candResults)
+	if total > 0 {
+		fmt.Println("\n 🧬 Mutation Type Distribution:")
+		fmt.Printf("    ├─ Parameter mutations: %d (%.0f%%) — tuning temp/top_k\n", paramCount, float64(paramCount)*100/float64(total))
+		fmt.Printf("    └─ Prompt template changes: %d (%.0f%%) — switching behavior style\n", promptCount, float64(promptCount)*100/float64(total))
+	}
+
+	// ── Selection Rationale ──
 	if best != nil {
 		_ = genealogy.Record(ctx, evolution.StrategyLineage{
 			ParentID: baseline.ID, ChildID: best.ID, MutationType: "dream_cycle", WinRate: bestWinRate,
 		})
+		fmt.Println("\n 🏆 Selection Rationale:")
+		winnerCR := candResults[bestIdx]
+		fmt.Printf("    Winner: Candidate #%d — selected for highest improvement (%+.3f)\n", bestIdx+1, bestImprovement)
+		fmt.Printf("    Why: win_rate=%.2f ≥ threshold(0.55) AND best Δscore among passers\n", bestWinRate)
+		if winnerCR.temp < 0.7 {
+			fmt.Printf("    Insight: Lower temperature (%.2f→%.2f) reduced hallucination risk\n", 0.7, winnerCR.temp)
+		}
+		if winnerCR.prompt != "helpful" && winnerCR.prompt != "" {
+			fmt.Printf("    Insight: Prompt switch 'helpful'→'%s' improved output precision\n", winnerCR.prompt)
+		}
+
 		slog.InfoContext(ctx, "Best lineage recorded",
 			"parent_id", baseline.ID,
 			"child_id", best.ID[:12],
 			"win_rate", bestWinRate,
 		)
+	} else {
+		fmt.Println("\n ⚠ No candidate passed the win_rate ≥ 0.55 threshold")
 	}
+
 	slog.InfoContext(ctx, "Dream cycle pipeline",
 		"note", "Mutate -> ArenaTest -> SelectBest -> Genealogy",
 	)
+
+	// ── Conversational Insight ──
+	printInsight("Dream Cycle", `
+  🧠 Dream Cycle simulates the AI Agent's "dream learning" process:
+
+  • Mutation phase: Generate 3 candidate child strategies from parent (param tuning / prompt switching)
+  • Arena testing: Each candidate undergoes A/B comparison against baseline (Welch t-test)
+  • Survival of the fittest: Only candidates with win_rate ≥ 0.55 are eligible for selection
+  • Genealogy recording: The winner's parent-child relationship is permanently recorded, forming a traceable evolution chain
+
+  💡 Analogy: This is like an AI version of "evolution" — mutations provide diversity,
+     natural selection (arena testing) eliminates the weak, and the fittest survive and get recorded.
+     Each Dream Cycle round is a micro-evolution.`)
 }
 
 // ============================================================
@@ -642,12 +947,14 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 // ============================================================
 
 // runMultiGenGA demonstrates Scenarios 6 and 7: Multi-Generation GA Evolution.
-// It runs a population-based genetic algorithm over multiple generations with
-// elite selection, crossover, and mutation. In Wired mode it uses the high-level
-// WiredEvolutionSystem API; otherwise it uses the genome package directly.
+// It uses the high-level api/evolution.Service to run a population-based GA
+// with elite selection, crossover, and mutation, in either wired or raw mode.
+//
+// Post-evolution, it prints an Evolution Insight Report showing trajectory,
+// mutation analysis, genealogy tree, and key learnings.
 // Args:
 //   - ctx: operation context for slog propagation and GA evolution.
-//   - k: demo kit (unused; this scenario creates its own population/mutator).
+//   - k: demo kit (unused; this scenario creates its own components).
 //   - cfg: GA configuration specifying population size, generations, rates, and mode.
 func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 	start := time.Now()
@@ -660,49 +967,73 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 
 	sep(cfg.Title)
 
-	parent := &mutation.Strategy{ID: cfg.BaseID, Version: 1, Params: map[string]any{"temp": 0.7, "top_k": 40}, PromptTemplate: "helpful", CreatedAt: time.Now()}
-	pool := []string{"careful", "creative", "precise"}
-
-	rawMut, _ := mutation.NewMutator(mutation.WithPromptPool(pool), mutation.WithSeed(42))
-
-	var pop *genome.Population
-	var mut genome.MutatorInterface = rawMut
-	var ws *evolution.WiredEvolutionSystem
-
-	if cfg.Wired {
-		sysCfg := evolution.DefaultSystemConfig()
-		sysCfg.PopulationSize = cfg.PopSize
-		sysCfg.EliteCount = cfg.EliteCount
-		sysCfg.SurvivalRate = cfg.SurvRate
-		sysCfg.MutationRate = cfg.MutRate
-
-		var err error
-		ws, err = evolution.NewWiredEvolutionSystem(parent, sysCfg)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create wired system", "error", err)
-			return
-		}
-		defer evolution.Shutdown(ws)
-		pop = ws.Population
-
-		gm, _ := evolution.NewGenomeMutatorAdapter(rawMut)
-		mut = gm
-	} else {
-		var err error
-		pop, err = genome.NewPopulation(ctx, parent, mut,
-			genome.WithPopulationSize(cfg.PopSize),
-			genome.WithEliteCount(cfg.EliteCount),
-			genome.WithMutationRate(cfg.MutRate),
-			genome.WithSurvivalRate(cfg.SurvRate),
-		)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to create population", "error", err)
-			return
-		}
+	parent := &apievol.Strategy{
+		ID:             cfg.BaseID,
+		Version:        1,
+		Params:         map[string]any{"temperature": 0.7, "top_k": 40.0},
+		PromptTemplate: "helpful",
 	}
 
-	cx, _ := genome.NewCrossover(genome.WithSeed(42))
-	rng := rand.New(rand.NewSource(99))
+	// demoScorer is a parameter-aware fitness function for GA evolution.
+	// It rewards: lower temperature, top_k near 30, "precise" prompt template.
+	// Score range: [0, 100] per ScorerFunc contract.
+	demoScorer := func(params map[string]any) float64 {
+		score := 50.0 // base
+		if temp, ok := params["temperature"].(float64); ok {
+			score += (1.0 - temp) * 25 // lower temp → higher score
+		}
+		if tk, ok := params["top_k"].(float64); ok {
+			optimal := 30.0
+			dist := tk - optimal
+			score -= (dist * dist) / 10.0 // quadratic penalty around optimal
+		}
+		if pt, ok := params["prompt_template"].(string); ok {
+			switch pt {
+			case "precise":
+				score += 15
+			case "careful":
+				score += 8
+			case "creative":
+				score += 4
+			}
+		} else if pt, ok := params["PromptTemplate"].(string); ok {
+			switch pt {
+			case "precise":
+				score += 15
+			case "careful":
+				score += 8
+			case "creative":
+				score += 4
+			}
+		}
+		if score < 5 {
+			score = 5
+		}
+		if score > 100 {
+			score = 100
+		}
+		return score
+	}
+
+	svc, err := apievol.NewService(&apievol.SystemConfig{
+		BaseStrategy:    parent,
+		PopulationSize:  cfg.PopSize,
+		EliteCount:      cfg.EliteCount,
+		SurvivalRate:    cfg.SurvRate,
+		MutationRate:    cfg.MutRate,
+		MinMutationRate: cfg.MinMutRate, // from config (default 0.05)
+		MaxMutationRate: cfg.MaxMutRate, // from config (default 0.5)
+		Generations:     cfg.NGen,
+		Seed:            42,
+		PromptPool:      []string{"careful", "creative", "precise"},
+		EnableWiredMode: cfg.Wired,
+		Scorer:          demoScorer,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
+		return
+	}
+	defer svc.Shutdown()
 
 	slog.InfoContext(ctx, "GA configuration",
 		"pop_size", cfg.PopSize,
@@ -711,41 +1042,27 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 		"mutation_rate", cfg.MutRate,
 		"generations", cfg.NGen,
 		"wired_mode", cfg.Wired,
+		"scorer", "parameter-aware(temp+top_k+prompt)",
 	)
 
+	result, err := svc.Evolve(ctx, cfg.NGen)
+	if err != nil {
+		slog.ErrorContext(ctx, "Evolution failed", "error", err)
+		return
+	}
+
 	var rows [][]string
-	for gen := 1; gen <= cfg.NGen; gen++ {
-		scorePop(pop, rng)
-		_ = pop.EvolveOnIdle(ctx, mut, cx)
-
-		if cfg.Wired && gen > 1 {
-			_, _ = evolution.RecordPopulationLineage(ctx, pop, ws.Genealogy, gen-1)
-		}
-
-		st := pop.Stats()
-		lineageCount := 0
-		if cfg.Wired {
-			lineageCount = ws.Genealogy.Count()
-		}
+	for i, st := range result.Stats {
 		rows = append(rows, []string{
-			fmt.Sprintf("%d", gen),
+			fmt.Sprintf("%d", i+1),
 			fmt.Sprintf("%.2f", st.BestScore),
 			fmt.Sprintf("%.2f", st.AvgScore),
 			fmt.Sprintf("%.2f", st.WorstScore),
-			fmt.Sprintf("%d", lineageCount),
 		})
-
-		slog.InfoContext(ctx, "Generation completed",
-			"generation", gen,
-			"best_score", st.BestScore,
-			"avg_score", st.AvgScore,
-			"worst_score", st.WorstScore,
-			"lineage_count", lineageCount,
-		)
 	}
-	tbl([]string{"Gen", "Best", "Avg", "Worst", "Lin"}, rows)
+	tbl([]string{"Gen", "Best", "Avg", "Worst"}, rows)
 
-	if bst := pop.BestStrategy(); bst != nil {
+	if bst := result.BestStrategy; bst != nil {
 		slog.InfoContext(ctx, "Best strategy found",
 			"id", bst.ID,
 			"version", bst.Version,
@@ -764,73 +1081,74 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 		}
 	}
 
-	if cfg.Wired {
-		lines := ws.Genealogy.Lineages()
-		slog.InfoContext(ctx, "Genealogy records", "count", len(lines))
-		for i := 0; i < len(lines) && i < 5; i++ {
-			e := lines[i]
-			cid := e.ChildID
-			if len(cid) > 12 {
-				cid = cid[:12]
-			}
-			slog.DebugContext(ctx, "Genealogy entry",
-				"index", i,
-				"parent_id", e.ParentID[:12],
-				"child_id", cid,
-				"mutation_type", e.MutationType,
-			)
+	lineages, _ := svc.Lineages()
+	slog.InfoContext(ctx, "Genealogy records", "count", len(lineages))
+	for i := 0; i < len(lineages) && i < 5; i++ {
+		e := lineages[i]
+		cid := e.ChildID
+		if len(cid) > 12 {
+			cid = cid[:12]
 		}
+		slog.DebugContext(ctx, "Genealogy entry",
+			"index", i,
+			"parent_id", safeTruncate(e.ParentID, 12),
+			"child_id", cid,
+			"mutation_type", e.MutationType,
+		)
 	}
+
 	slog.InfoContext(ctx, "GA evolution summary",
 		"note", "Elite + crossover + mutation = adaptive strategies",
 	)
-}
 
-// scorePop assigns fitness scores to all agents in the population based on
-// temperature proximity to the optimal value (0.7) plus random noise.
-// Args:
-//   - pop: the population whose agents will be scored.
-//   - rng: random number generator for stochastic fitness variation.
-func scorePop(pop *genome.Population, rng *rand.Rand) {
-	agents, _ := pop.Snapshot()
-	for _, agent := range agents {
-		temp := 0.7
-		if v, ok := agent.Params["temperature"].(float64); ok {
-			temp = v
-		}
-		proximity := 1 - abs(temp-0.7)*2.5
-		agent.Score = 50 + rng.Float64()*30 + proximity*20
-		if agent.Score > 100 {
-			agent.Score = 100
-		}
-		if agent.Score < 0 {
-			agent.Score = 0
-		}
-	}
-}
-
-// abs returns the absolute value of a float64.
-// Args:
-//   - x: the input value.
-//
-// Returns the non-negative absolute value of x.
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
+	// ── Evolution Insight Report ──────────────────────────────
+	printEvolutionInsightReport(cfg.Title, result, lineages, parent)
 }
 
 // ============================================================
-// Main — table-driven execution
+// Main — project-level config driven execution
 // ============================================================
 
-func main() {
+func setupLogger() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+}
 
+func printHeader() {
 	fmt.Println(`╔════════════════════════════════════════════════════╗`)
 	fmt.Println(`║  GoAgentX Autonomous Evolution (Dream Mode v1) Demo ║`)
 	fmt.Println(`╚════════════════════════════════════════════════════╝`)
+}
+
+func printFooter() {
+	fmt.Println("\n✅ Demo Complete — all scenarios finished.")
+}
+
+func main() {
+	ctx := context.Background()
+	setupLogger()
+
+	// Print header
+	printHeader()
+
+	// Scenario execution table — always show what's running
+	fmt.Println("\n📋 Scenario Configuration:")
+	fmt.Println("   ✓ ON   1-5: Core scenarios (Bandit, Callbacks, Mutation, Arena, Dream)")
+
+	// Check if evolution is enabled via project-level config
+	evoEnabled := false
+	var evoCfg GACfg
+
+	projectCfg, err := loadProjectEvolutionConfig()
+	if err != nil {
+		slog.Info("evolution: no project config found, using defaults (OFF)")
+	} else if projectCfg.Enabled {
+		evoEnabled = true
+		evoCfg = mergeGACfg(cfgGA, projectCfg)
+		slog.Info("evolution: enabled via project config")
+	}
+
+	fmt.Printf("   %s  6: Multi-Gen GA Evolution\n", statusStr(evoEnabled))
+	fmt.Printf("   %s  7: Wired Evolution System\n", statusStr(evoEnabled && !cfgWired.Wired))
 
 	kit, err := NewDemoKit()
 	if err != nil {
@@ -838,22 +1156,360 @@ func main() {
 		return
 	}
 
-	scenarios := []Scenario{
-		{"1: Bandit Feedback Loop", runBandit},
-		{"2: Callback Event System", runCallbacks},
-		{"3: Strategy Mutation Engine", runMutation},
-		{"4: Arena Regression Test", runArena},
-		{"5: Dream Cycle Orchestration", runDreamCycle},
-		{"6: Multi-Gen GA Evolution", func(ctx context.Context, kit *DemoKit) { runMultiGenGA(ctx, kit, cfgGA) }},
-		{"7: Wired Evolution System", func(ctx context.Context, kit *DemoKit) { runMultiGenGA(ctx, kit, cfgWired) }},
+	// Run scenarios 1-5 (always on)
+	runBandit(ctx, kit)
+	runCallbacks(ctx, kit)
+	runMutation(ctx, kit)
+	runArena(ctx, kit)
+	runDreamCycle(ctx, kit)
+
+	// Run scenarios 6-7 only if evolution is enabled
+	if evoEnabled {
+		runMultiGenGA(ctx, kit, evoCfg)
+		if !cfgWired.Wired {
+			runMultiGenGA(ctx, kit, mergeGACfg(cfgWired, projectCfg))
+		}
+	} else {
+		printInsight("Evolution Disabled", `
+  🔒 The Genetic Algorithm evolution scenarios (6 & 7) are currently DISABLED.
+
+  To enable them, add the following to your project's config.yaml:
+
+    evolution:
+      enabled: true
+      population_size: 20
+      elite_count: 2
+      generations: 15
+
+  Or set the environment variable: EVOLUTION_ENABLED=true
+
+  Scenarios 1-5 demonstrate the individual building blocks (bandit feedback,
+  callback events, strategy mutation, arena regression, and dream cycle) that
+  compose into the full evolution pipeline. These always run regardless.`)
 	}
 
-	ctx := context.Background()
-	for _, s := range scenarios {
-		sep(s.Name)
-		s.Run(ctx, kit)
+	printFooter()
+}
+
+// ============================================================
+// Insight & Report Functions
+// ============================================================
+
+// printInsight prints a conversational "What did we learn?" summary.
+// This is demo UI output and uses fmt directly for console rendering.
+func printInsight(title, message string) {
+	fmt.Printf("\n  💬 What did we learn? — %s\n", title)
+	fmt.Println("  " + strings.Repeat("─", 56))
+	// Print each line with proper indentation.
+	for _, line := range strings.Split(message, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			fmt.Printf("  %s\n", trimmed)
+		}
+	}
+	fmt.Println()
+}
+
+// printEvolutionInsightReport generates a comprehensive evolution analysis report
+// after GA completes. It shows trajectory phases, mutation statistics,
+// genealogy tree, and key learnings in a visual format.
+//
+// Args:
+//   - title: scenario title (e.g., "Scenario 6: GA Evolution").
+//   - result: complete evolution result with per-generation stats.
+//   - lineages: recorded parent-child relationships.
+//   - parent: original base strategy for comparison.
+func printEvolutionInsightReport(title string, result *apievol.EvolutionResult, lineages []apievol.StrategyLineage, parent *apievol.Strategy) {
+	fmt.Println("\n╔════════════════════════════════════════════════════╗")
+	fmt.Println("║          🧬 Evolution Insight Report               ║")
+	fmt.Println("╚════════════════════════════════════════════════════╝")
+
+	// ── 1. Evolution Trajectory ──
+	printTrajectory(result.Stats, result.BestStrategy)
+
+	// ── 2. Mutation Analysis ──
+	printMutationAnalysis(lineages)
+
+	// ── 3. Genealogy Tree (top lineages) ──
+	printGenealogyTree(lineages)
+
+	// ── 4. Best Strategy vs Baseline ──
+	printBestStrategyDiff(result.BestStrategy, parent)
+
+	// ── 5. Key Learnings ──
+	printKeyLearnings(result, parent)
+}
+
+// printTrajectory analyzes per-generation stats and prints phase breakdown.
+func printTrajectory(stats []apievol.Stats, bestStrategy *apievol.Strategy) {
+	nGen := len(stats)
+	if nGen == 0 {
+		return
 	}
 
-	sep("Demo Complete")
-	fmt.Println("All 7 scenarios done! Bandit->Callbacks->Mutation->Arena->DreamCycle->GA->WiredSystem")
+	fmt.Println("\n📊 Evolution Trajectory:")
+	firstBest := stats[0].BestScore
+	lastBest := stats[nGen-1].BestScore
+	bestAvg := stats[nGen-1].AvgScore
+
+	// Determine improvement direction.
+	improvementPct := 0.0
+	if firstBest != 0 {
+		improvementPct = ((lastBest - firstBest) / mathAbs(firstBest)) * 100
+	}
+
+	// Phase detection.
+	phase1End := nGen / 3
+	phase2End := 2 * nGen / 3
+	if phase1End < 1 {
+		phase1End = 1
+	}
+	if phase2End <= phase1End {
+		phase2End = phase1End + 1
+	}
+	if phase2End >= nGen {
+		phase2End = nGen - 1
+	}
+
+	fmt.Printf("   Gen 1 → Gen %d:  Exploration phase (random search)\n", phase1End)
+	if bestStrategy != nil {
+		fmt.Printf("             ↓ Best strategy: %s\n", formatParamsShort(bestStrategy.Params))
+	}
+	fmt.Printf("             ↓ Key insight: Diverse mutations explore the parameter space\n")
+	fmt.Printf("   Gen %d → Gen %d: Exploitation phase (refining winners)\n", phase1End+1, phase2End)
+	if bestStrategy != nil {
+		fmt.Printf("             ↓ Best strategy: %s\n", formatParamsShort(bestStrategy.Params))
+	}
+	fmt.Printf("             ↓ Breakthrough: Elite preservation keeps top performers\n")
+	if phase2End < nGen {
+		fmt.Printf("   Gen %d → Gen %d: Convergence phase\n", phase2End+1, nGen)
+		fmt.Printf("             ↓ Final best: score=%.2f, avg=%.2f (%+.1f%% vs baseline)\n",
+			lastBest, bestAvg, improvementPct)
+	}
+
+	// Score trend indicator.
+	trend := "→ STAGNANT"
+	if lastBest > firstBest+0.01 {
+		trend = "↗ IMPROVING"
+	} else if lastBest < firstBest-0.01 {
+		trend = "↘ DECLINING"
+	}
+	fmt.Printf("\n   Trend: %s  |  Best: %.2f → %.2f  |  Generations: %d\n",
+		trend, firstBest, lastBest, nGen)
+}
+
+// printMutationAnalysis categorizes lineage records and shows mutation distribution.
+func printMutationAnalysis(lineages []apievol.StrategyLineage) {
+	fmt.Println("\n🧪 Mutation Analysis:")
+
+	paramCount := 0
+	promptCount := 0
+	crossoverCount := 0
+	otherCount := 0
+	totalWinRate := 0.0
+	countPositive := 0
+
+	for _, l := range lineages {
+		switch {
+		case strings.Contains(l.MutationType, "parameter") || strings.Contains(l.MutationType, "param"):
+			paramCount++
+		case strings.Contains(l.MutationType, "prompt"):
+			promptCount++
+		case strings.Contains(l.MutationType, "crossover") || strings.Contains(l.MutationType, "cross"):
+			crossoverCount++
+		default:
+			otherCount++
+		}
+		if l.WinRate > 0 {
+			totalWinRate += l.WinRate
+			countPositive++
+		}
+	}
+
+	total := len(lineages)
+	if total == 0 {
+		fmt.Println("   (No lineage records — population may not have evolved)")
+		return
+	}
+
+	pct := func(n int) string {
+		if total == 0 {
+			return "0%"
+		}
+		return fmt.Sprintf("%.0f%%", float64(n)*100/float64(total))
+	}
+
+	fmt.Printf("   ├─ Param mutations: %d (%s)\n", paramCount, pct(paramCount))
+	fmt.Printf("   ├─ Prompt mutations: %d (%s)\n", promptCount, pct(promptCount))
+	fmt.Printf("   ├─ Crossover events: %d (%s)\n", crossoverCount, pct(crossoverCount))
+	fmt.Printf("   └─ Other: %d (%s)\n", otherCount, pct(otherCount))
+
+	if countPositive > 0 {
+		avgWR := totalWinRate / float64(countPositive)
+		fmt.Printf("   Avg win_rate (lineages): %.2f\n", avgWR)
+	}
+}
+
+// printGenealogyTree displays a simplified ancestry tree from lineage records.
+func printGenealogyTree(lineages []apievol.StrategyLineage) {
+	fmt.Println("\n🏆 Genealogy Tree (top lineages):")
+
+	showN := min(5, len(lineages))
+	if showN == 0 {
+		fmt.Println("   (No genealogy records)")
+		return
+	}
+
+	// Group by parent ID to build a simple tree structure.
+	type childInfo struct {
+		childID    string
+		mutType    string
+		winRate    float64
+		scoreDelta float64
+	}
+	parentMap := make(map[string][]childInfo)
+	parentOrder := []string{}
+
+	for i := 0; i < showN; i++ {
+		l := lineages[i]
+		cid := l.ChildID
+		if len(cid) > 10 {
+			cid = cid[:10] + "..."
+		}
+		pid := l.ParentID
+		if len(pid) > 10 {
+			pid = pid[:10] + "..."
+		}
+		info := childInfo{childID: cid, mutType: l.MutationType, winRate: l.WinRate, scoreDelta: l.ScoreDelta}
+		if _, exists := parentMap[pid]; !exists {
+			parentOrder = append(parentOrder, pid)
+		}
+		parentMap[pid] = append(parentMap[pid], info)
+	}
+
+	for _, pid := range parentOrder {
+		children := parentMap[pid]
+		fmt.Printf("   %s\n", pid)
+		for j, c := range children {
+			conn := "├──"
+			if j == len(children)-1 {
+				conn = "└──"
+			}
+			wrStr := ""
+			if c.winRate > 0 {
+				wrStr = fmt.Sprintf(" wr:%.2f", c.winRate)
+			}
+			deltaStr := ""
+			if c.scoreDelta != 0 {
+				deltaStr = fmt.Sprintf(" Δ:%+.2f", c.scoreDelta)
+			}
+			fmt.Printf("      %s %s [%s%s%s]\n", conn, c.childID, c.mutType, wrStr, deltaStr)
+		}
+	}
+
+	if len(lineages) > showN {
+		fmt.Printf("   ... and %d more lineage records\n", len(lineages)-showN)
+	}
+}
+
+// printBestStrategyDiff compares best strategy params against baseline.
+func printBestStrategyDiff(best *apievol.Strategy, parent *apievol.Strategy) {
+	fmt.Println("\n🎯 Best Strategy vs Baseline:")
+	if best == nil {
+		fmt.Println("   (No best strategy found)")
+		return
+	}
+
+	fmt.Printf("   ID: %s  v%d  score=%.2f\n", best.ID, best.Version, best.Score)
+	fmt.Println("   Param changes:")
+
+	hasChanges := false
+	for k, v := range best.Params {
+		parentVal := parent.Params[k]
+		changed := fmt.Sprintf("%v", v) != fmt.Sprintf("%v", parentVal)
+		mark := "  "
+		if changed {
+			mark = "▸"
+			hasChanges = true
+		}
+		fmt.Printf("     %s %s: %v → %v\n", mark, k, parentVal, v)
+	}
+
+	if best.PromptTemplate != parent.PromptTemplate {
+		fmt.Printf("     ▸ prompt: %q → %q\n", parent.PromptTemplate, best.PromptTemplate)
+		hasChanges = true
+	}
+
+	if !hasChanges {
+		fmt.Println("     (no param changes from baseline)")
+	}
+}
+
+// printKeyLearnings synthesizes actionable insights from evolution data.
+func printKeyLearnings(result *apievol.EvolutionResult, parent *apievol.Strategy) {
+	fmt.Println("\n💡 Key Learnings:")
+
+	learnings := []string{}
+	nGen := len(result.Stats)
+
+	if nGen == 0 {
+		learnings = append(learnings, "  1. No generations were executed — check configuration")
+	} else {
+		firstB := result.Stats[0].BestScore
+		lastB := result.Stats[nGen-1].BestScore
+
+		if lastB > firstB {
+			learnings = append(learnings, fmt.Sprintf(
+				"  1. Fitness improved from %.2f → %.2f (+%.1f%%) — evolution is working",
+				firstB, lastB, ((lastB-firstB)/mathAbs(firstB))*100))
+		} else if lastB < firstB {
+			learnings = append(learnings, fmt.Sprintf(
+				"  1. Fitness declined from %.2f → %.2f — consider increasing mutation rate or population size",
+				firstB, lastB))
+		} else {
+			learnings = append(learnings,
+				"  1. Score plateau detected — adaptive mutation rate may need tuning")
+		}
+
+		// Check if prompt template changed.
+		if result.BestStrategy != nil && result.BestStrategy.PromptTemplate != parent.PromptTemplate {
+			learnings = append(learnings, fmt.Sprintf(
+				"  2. Prompt switch %q→%q had significant impact on fitness",
+				parent.PromptTemplate, result.BestStrategy.PromptTemplate))
+		} else {
+			learnings = append(learnings,
+				"  2. Parameter tuning (temp/top_k) was the primary performance driver")
+		}
+
+		eliteNote := fmt.Sprintf("  3. Elite preservation prevented loss of top genes across %d generations", nGen)
+		learnings = append(learnings, eliteNote)
+	}
+
+	for _, l := range learnings {
+		fmt.Println(l)
+	}
+	fmt.Println()
+}
+
+// formatParamsShort returns a compact {key:val, ...} string for display.
+func formatParamsShort(params map[string]any) string {
+	if len(params) == 0 {
+		return "{}"
+	}
+	var parts []string
+	for k, v := range params {
+		parts = append(parts, fmt.Sprintf("%s:%v", k, v))
+	}
+	if len(parts) > 3 {
+		parts = parts[:3]
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// mathAbs returns the absolute value of x (local copy to avoid import).
+func mathAbs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

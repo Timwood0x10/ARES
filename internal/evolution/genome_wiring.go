@@ -354,6 +354,9 @@ type SystemConfig struct {
 	// DiversityThreshold minimum average pairwise distance before adaptive
 	// mutation becomes more aggressive.
 	DiversityThreshold float64 `json:"diversity_threshold"`
+
+	// BreedingPoolRatio limits breeding to the top fraction of survivors.
+	BreedingPoolRatio float64 `json:"breeding_pool_ratio"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -375,6 +378,7 @@ func DefaultSystemConfig() SystemConfig {
 		MaxMutationRate:        0.5,
 		MaxStagnantGenerations: 10,
 		DiversityThreshold:     0.15,
+		BreedingPoolRatio:      0.3,
 	}
 }
 
@@ -450,6 +454,7 @@ func NewWiredEvolutionSystem(
 		genome.WithMaxMutationRate(cfg.MaxMutationRate),
 		genome.WithMaxStagnantGenerations(cfg.MaxStagnantGenerations),
 		genome.WithDiversityThreshold(cfg.DiversityThreshold),
+		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
 	}
 	if cfg.PopulationSeed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.PopulationSeed))
