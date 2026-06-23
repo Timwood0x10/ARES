@@ -110,9 +110,9 @@ func WithMaxLineageShare(share float64) GuardrailOption {
 //   - error: always nil (reserved for future validation)
 func NewEvolutionGuardrails(opts ...GuardrailOption) (*EvolutionGuardrails, error) {
 	g := &EvolutionGuardrails{
-		BaselineScore:           0,
+		BaselineScore:          0,
 		MaxStagnantGenerations: 10,
-		MaxLineageShare:         0.8,
+		MaxLineageShare:        0.8,
 		MaxEvents:              1000,
 	}
 	for _, opt := range opts {

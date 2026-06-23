@@ -12,14 +12,14 @@ import (
 
 // GenerationStats holds per-generation statistics collected during evolution.
 type GenerationStats struct {
-	Generation     int             `json:"generation"`
-	PopulationSize int             `json:"population_size"`
-	BestScore      float64         `json:"best_score"`
-	AvgScore       float64         `json:"avg_score"`
-	WorstScore     float64         `json:"worst_score"`
-	Diversity      float64         `json:"diversity"`           // overall diversity metric
-	NumDiverse     int             `json:"num_diverse"`         // count of diverse lineages
-	MutationTypes  map[string]int  `json:"mutation_types"`      // mutation type distribution
+	Generation     int            `json:"generation"`
+	PopulationSize int            `json:"population_size"`
+	BestScore      float64        `json:"best_score"`
+	AvgScore       float64        `json:"avg_score"`
+	WorstScore     float64        `json:"worst_score"`
+	Diversity      float64        `json:"diversity"`      // overall diversity metric
+	NumDiverse     int            `json:"num_diverse"`    // count of diverse lineages
+	MutationTypes  map[string]int `json:"mutation_types"` // mutation type distribution
 }
 
 // EvolutionReport is a comprehensive data-driven report for an evolution run.
@@ -37,8 +37,9 @@ type EvolutionReport struct {
 	FinalBestScore float64 `json:"final_best_score"`
 
 	// GenerationTrajectory is per-generation stats in order.
-	// Note: If the population does not store history, this contains only
-	// the current generation. Future work can add history tracking to Population.
+	// When population history is enabled (WithHistoryEnabled), this contains
+	// one entry per recorded generation. Otherwise, only the current generation
+	// is included.
 	GenerationTrajectory []GenerationStats `json:"generation_trajectory"`
 
 	// ScorerCostSummary holds scoring cost information (if tiered scorer used).
@@ -59,10 +60,10 @@ type ScorerCostSummary struct {
 
 // LineageConcentration tracks lineage distribution in the population.
 type LineageConcentration struct {
-	TopLineageShare float64         `json:"top_lineage_share"`
-	TopLineageID    string          `json:"top_lineage_id"`
-	LineageCounts   map[string]int  `json:"lineage_counts"`
-	UniqueLineages  int             `json:"unique_lineages"`
+	TopLineageShare float64        `json:"top_lineage_share"`
+	TopLineageID    string         `json:"top_lineage_id"`
+	LineageCounts   map[string]int `json:"lineage_counts"`
+	UniqueLineages  int            `json:"unique_lineages"`
 }
 
 // ReportOption configures GenerateReport behavior.
@@ -70,8 +71,8 @@ type ReportOption func(*reportConfig)
 
 // reportConfig holds optional configuration for report generation.
 type reportConfig struct {
-	scoringStats    map[string]int64
-	budgetUsage     []int // [used, max, cacheHits, fallbacks]
+	scoringStats map[string]int64
+	budgetUsage  []int // [used, max, cacheHits, fallbacks]
 }
 
 // WithScoringStats injects scorer cost data into the report.
@@ -129,21 +130,31 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 
 		// Current generation stats.
 		popStats := pop.Stats()
-		currentGen := buildGenerationStats(pop, popStats)
-		report.GenerationTrajectory = []GenerationStats{currentGen}
 		report.FinalBestScore = popStats.BestScore
+
+		// Build generation trajectory from history if available.
+		if hist := pop.History(); len(hist) > 0 {
+			report.GenerationTrajectory = make([]GenerationStats, len(hist))
+			for i, entry := range hist {
+				report.GenerationTrajectory[i] = historyEntryToGenerationStats(entry, pop)
+			}
+		} else {
+			// Fallback: just current generation when history is not enabled.
+			report.GenerationTrajectory = []GenerationStats{
+				buildGenerationStats(pop, popStats),
+			}
+		}
 
 		// Best ever strategy.
 		best := pop.BestStrategy()
 		if best != nil {
 			report.BestEverScore = best.Score
-			report.BestEverGeneration = pop.Generation // best-ever is tracked at current gen
+			report.BestEverGeneration = pop.BestEverGeneration()
 		}
 
 		// Diversity / lineage concentration from population snapshot.
 		diversityReport := pop.DiversityStats()
 		if diversityReport.Overall > 0 {
-			currentGen.Diversity = diversityReport.Overall
 			report.LineageConcentration = &LineageConcentration{
 				TopLineageShare: diversityReport.DominantLineageShare,
 				UniqueLineages:  countUniqueLineages(pop),
@@ -208,6 +219,46 @@ func buildGenerationStats(pop *genome.Population, stats *genome.PopulationStats)
 	return gs
 }
 
+// historyEntryToGenerationStats converts a GenerationHistoryEntry to GenerationStats.
+// Each history entry carries its own per-generation MutationTypes and NumDiverse,
+// so no approximation from the current population is needed.
+func historyEntryToGenerationStats(entry genome.GenerationHistoryEntry, pop *genome.Population) GenerationStats {
+	gs := GenerationStats{
+		Generation:     entry.Generation,
+		PopulationSize: entry.PopulationSize,
+		BestScore:      entry.BestScore,
+		AvgScore:       entry.AvgScore,
+		WorstScore:     entry.WorstScore,
+		Diversity:      entry.Diversity,
+		MutationTypes:  entry.MutationTypes,
+		NumDiverse:     entry.NumDiverse,
+	}
+
+	// If the history entry lacks MutationTypes (e.g., recorded before field was added),
+	// fall back to current population snapshot for backward compatibility.
+	if gs.MutationTypes == nil {
+		gs.MutationTypes = make(map[string]int)
+		agents, _ := pop.Snapshot()
+		for _, agent := range agents {
+			mt := agent.StrategyMutationType.String()
+			if mt == "" {
+				mt = "unknown"
+			}
+			gs.MutationTypes[mt]++
+		}
+
+		parentSet := make(map[string]struct{})
+		for _, agent := range agents {
+			if agent.ParentID != "" {
+				parentSet[agent.ParentID] = struct{}{}
+			}
+		}
+		gs.NumDiverse = len(parentSet)
+	}
+
+	return gs
+}
+
 // countUniqueLineages counts unique parent IDs in the population.
 //
 // Args:
@@ -246,24 +297,24 @@ func ReportString(r *EvolutionReport) string {
 	var b strings.Builder
 
 	b.WriteString("=== Evolution Report ===\n")
-	b.WriteString(fmt.Sprintf("Total Generations:    %d\n", r.TotalGenerations))
-	b.WriteString(fmt.Sprintf("Best Ever Score:      %.4f (gen %d)\n", r.BestEverScore, r.BestEverGeneration))
-	b.WriteString(fmt.Sprintf("Final Best Score:     %.4f\n", r.FinalBestScore))
+	fmt.Fprintf(&b, "Total Generations:    %d\n", r.TotalGenerations)
+	fmt.Fprintf(&b, "Best Ever Score:      %.4f (gen %d)\n", r.BestEverScore, r.BestEverGeneration)
+	fmt.Fprintf(&b, "Final Best Score:     %.4f\n", r.FinalBestScore)
 
 	// Generation trajectory.
 	for _, gs := range r.GenerationTrajectory {
-		b.WriteString(fmt.Sprintf("\n--- Generation %d ---\n", gs.Generation))
-		b.WriteString(fmt.Sprintf("  Population Size:  %d\n", gs.PopulationSize))
-		b.WriteString(fmt.Sprintf("  Best Score:       %.4f\n", gs.BestScore))
-		b.WriteString(fmt.Sprintf("  Avg Score:        %.4f\n", gs.AvgScore))
-		b.WriteString(fmt.Sprintf("  Worst Score:      %.4f\n", gs.WorstScore))
-		b.WriteString(fmt.Sprintf("  Diversity:        %.4f\n", gs.Diversity))
-		b.WriteString(fmt.Sprintf("  Diverse Lineages: %d\n", gs.NumDiverse))
+		fmt.Fprintf(&b, "\n--- Generation %d ---\n", gs.Generation)
+		fmt.Fprintf(&b, "  Population Size:  %d\n", gs.PopulationSize)
+		fmt.Fprintf(&b, "  Best Score:       %.4f\n", gs.BestScore)
+		fmt.Fprintf(&b, "  Avg Score:        %.4f\n", gs.AvgScore)
+		fmt.Fprintf(&b, "  Worst Score:      %.4f\n", gs.WorstScore)
+		fmt.Fprintf(&b, "  Diversity:        %.4f\n", gs.Diversity)
+		fmt.Fprintf(&b, "  Diverse Lineages: %d\n", gs.NumDiverse)
 
 		if len(gs.MutationTypes) > 0 {
 			b.WriteString("  Mutation Types:\n")
 			for mt, count := range gs.MutationTypes {
-				b.WriteString(fmt.Sprintf("    %s: %d\n", mt, count))
+				fmt.Fprintf(&b, "    %s: %d\n", mt, count)
 			}
 		}
 	}
@@ -272,17 +323,17 @@ func ReportString(r *EvolutionReport) string {
 	if r.ScorerCostSummary != nil {
 		cs := r.ScorerCostSummary
 		b.WriteString("\n--- Scorer Cost Summary ---\n")
-		b.WriteString(fmt.Sprintf("  LLM Calls:        %d / %d\n", cs.LLMBudgetUsed, cs.LLMBudgetMax))
-		b.WriteString(fmt.Sprintf("  Cache Hits:       %d\n", cs.TotalCacheHits))
-		b.WriteString(fmt.Sprintf("  Fallbacks:        %d\n", cs.TotalFallbacks))
+		fmt.Fprintf(&b, "  LLM Calls:        %d / %d\n", cs.LLMBudgetUsed, cs.LLMBudgetMax)
+		fmt.Fprintf(&b, "  Cache Hits:       %d\n", cs.TotalCacheHits)
+		fmt.Fprintf(&b, "  Fallbacks:        %d\n", cs.TotalFallbacks)
 	}
 
 	// Lineage concentration.
 	if r.LineageConcentration != nil {
 		lc := r.LineageConcentration
 		b.WriteString("\n--- Lineage Concentration ---\n")
-		b.WriteString(fmt.Sprintf("  Top Lineage Share: %.2f%%\n", lc.TopLineageShare*100))
-		b.WriteString(fmt.Sprintf("  Unique Lineages:   %d\n", lc.UniqueLineages))
+		fmt.Fprintf(&b, "  Top Lineage Share: %.2f%%\n", lc.TopLineageShare*100)
+		fmt.Fprintf(&b, "  Unique Lineages:   %d\n", lc.UniqueLineages)
 	}
 
 	b.WriteString("========================\n")

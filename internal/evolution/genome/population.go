@@ -50,6 +50,22 @@ var ErrInvalidMaxStagnantGenerations = fmt.Errorf("max stagnant generations must
 // ErrInvalidDiversityThreshold is returned when diversity threshold is out of range [0, 1].
 var ErrInvalidDiversityThreshold = fmt.Errorf("diversity threshold must be between 0 and 1")
 
+// GenerationHistoryEntry captures a per-generation snapshot for trajectory reporting.
+type GenerationHistoryEntry struct {
+	Generation     int
+	PopulationSize int
+	BestScore      float64
+	AvgScore       float64
+	WorstScore     float64
+	Diversity      float64 // overall diversity metric
+
+	// MutationTypes records the mutation type distribution at this generation.
+	MutationTypes map[string]int `json:"mutation_types"`
+
+	// NumDiverse counts distinct lineages (agents with unique ParentIDs) at this generation.
+	NumDiverse int `json:"num_diverse"`
+}
+
 // DiversityWeightConfig holds relative weights for diversity metric components.
 // Each weight represents the contribution of its component to Overall diversity.
 type DiversityWeightConfig struct {
@@ -198,6 +214,10 @@ type PopulationConfig struct {
 	// FitnessSharingSampleSize is the number of random neighbors checked per agent
 	// when in sampled fitness sharing mode. Default 30.
 	FitnessSharingSampleSize int `json:"fitness_sharing_size"`
+
+	// HistoryMaxSize limits the number of historical generation entries (0 = unlimited).
+	// When > 0, each evolution cycle appends a GenerationHistoryEntry to the history.
+	HistoryMaxSize int `json:"history_max_size"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -494,6 +514,27 @@ func WithFitnessSharingSampling(limit, size int) PopulationOption {
 	}
 }
 
+// WithHistoryEnabled enables per-generation history tracking for trajectory reporting.
+// When maxSize > 0, each evolution cycle appends a GenerationHistoryEntry.
+// HistoryMaxSize limits the number of stored entries (0 = unlimited).
+//
+// Args:
+//
+//	maxSize - maximum number of historical entries to keep (0 = unlimited).
+//
+// Returns:
+//
+//	PopulationOption - functional option to enable history tracking.
+func WithHistoryEnabled(maxSize int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if maxSize < 0 {
+			return fmt.Errorf("history max size must be >= 0, got %d", maxSize)
+		}
+		cfg.HistoryMaxSize = maxSize
+		return nil
+	}
+}
+
 // Population holds a collection of agent strategies that evolve together.
 // It manages the lifecycle of strategies across generations using
 // selection, crossover, and mutation operations.
@@ -523,6 +564,10 @@ type Population struct {
 	// Updated after each scoring pass. Used by BestStrategy() for deployment.
 	bestEver *mutation.Strategy
 
+	// bestEverGeneration records the generation number when the best-ever score
+	// was discovered. Used by BestEverGeneration() for accurate reporting.
+	bestEverGeneration int
+
 	// stagnantGens counts consecutive generations without best-score improvement.
 	stagnantGens int
 
@@ -530,6 +575,13 @@ type Population struct {
 	// Initialized from cfg.MutationRate and modified by adjustMutationRateLocked.
 	// The original cfg.MutationRate is preserved as the base rate for drift-back.
 	currentMutationRate float64
+
+	// history stores per-generation stats snapshots for trajectory reporting.
+	// When HistoryEnabled is true, each evolution cycle appends a snapshot.
+	history []GenerationHistoryEntry
+
+	// HistoryMaxSize limits the number of historical entries (0 = unlimited).
+	HistoryMaxSize int
 }
 
 // NewPopulation creates a new population from a base strategy.
@@ -582,6 +634,7 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		rng:                 rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
 		bestScore:           math.Inf(-1),
 		currentMutationRate: cfg.MutationRate,
+		HistoryMaxSize:      cfg.HistoryMaxSize,
 	}
 
 	err := pop.initializeFromBase(ctx, base, mutator)
@@ -702,7 +755,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		p.Agents = nextGen
 		p.Generation++
 
-		// Update best-ever tracking even in the zero-offspring path.
+		// Update best-ever tracking after assembling the new generation.
 		p.updateBestEverLocked()
 
 		// Skip adaptive adjustments when no offspring were produced — no new
@@ -777,7 +830,6 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	slog.InfoContext(ctx, cfg.logLabel,
 		"generation", p.Generation,
 		"population_size", len(p.Agents),
-		"survivor_count", survivorCount,
 		"elite_count", len(elites),
 		"mutation_rate", p.currentMutationRate,
 	)
@@ -929,6 +981,7 @@ func (p *Population) updateBestEverLocked() {
 		}
 		if p.bestEver == nil || a.Score > p.bestEver.Score {
 			p.bestEver = a.Clone()
+			p.bestEverGeneration = p.Generation
 		}
 	}
 }
@@ -1041,6 +1094,21 @@ func (p *Population) BestEverScore() float64 {
 	return p.bestEver.Score
 }
 
+// BestEverGeneration returns the generation number when the best-ever score was discovered.
+// Returns 0 if no strategy has ever been evaluated (generation 0 is the initial population).
+//
+// Returns:
+//
+//	int - the generation number of the best-ever discovery.
+func (p *Population) BestEverGeneration() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.bestEver == nil {
+		return 0
+	}
+	return p.bestEverGeneration
+}
+
 // Stats returns population statistics for the current generation.
 // The statistics include score distribution metrics across all agents.
 //
@@ -1080,6 +1148,86 @@ func (p *Population) Stats() *PopulationStats {
 	stats.Diversity = p.measureDiversityReportLocked()
 
 	return stats
+}
+
+// appendHistoryLocked appends a generation snapshot to the history.
+// Caller must hold p.mu write lock. Handles HistoryMaxSize truncation.
+func (p *Population) appendHistoryLocked() {
+	if p.HistoryMaxSize == 0 {
+		return // history not enabled (default)
+	}
+
+	entry := GenerationHistoryEntry{
+		Generation:     p.Generation,
+		PopulationSize: len(p.Agents),
+		Diversity:      p.measureDiversityReportLocked().Overall,
+	}
+
+	if len(p.Agents) == 0 {
+		p.history = append(p.history, entry)
+		return
+	}
+
+	var totalScore float64
+	bestScore := p.Agents[0].Score
+	worstScore := p.Agents[0].Score
+
+	for _, agent := range p.Agents {
+		totalScore += agent.Score
+		if agent.Score > bestScore {
+			bestScore = agent.Score
+		}
+		if agent.Score < worstScore {
+			worstScore = agent.Score
+		}
+	}
+
+	entry.BestScore = bestScore
+	entry.AvgScore = totalScore / float64(len(p.Agents))
+	entry.WorstScore = worstScore
+
+	// Record mutation type distribution and diverse lineage count.
+	entry.MutationTypes = make(map[string]int)
+	parentSet := make(map[string]struct{})
+	for _, agent := range p.Agents {
+		mt := agent.StrategyMutationType.String()
+		if mt == "" {
+			mt = "unknown"
+		}
+		entry.MutationTypes[mt]++
+		if agent.ParentID != "" {
+			parentSet[agent.ParentID] = struct{}{}
+		}
+	}
+	entry.NumDiverse = len(parentSet)
+
+	p.history = append(p.history, entry)
+
+	// Truncate if exceeding max size.
+	if p.HistoryMaxSize > 0 && len(p.history) > p.HistoryMaxSize {
+		p.history = p.history[len(p.history)-p.HistoryMaxSize:]
+	}
+}
+
+// History returns all recorded generation history entries (deep copy).
+// Returns nil if history is empty or not enabled.
+func (p *Population) History() []GenerationHistoryEntry {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if len(p.history) == 0 {
+		return nil
+	}
+	cp := make([]GenerationHistoryEntry, len(p.history))
+	copy(cp, p.history)
+	return cp
+}
+
+// HistoryCount returns the number of recorded history entries.
+func (p *Population) HistoryCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.history)
 }
 
 // CurrentGeneration returns the current generation number under read lock.
@@ -1198,6 +1346,11 @@ func (p *Population) EvolveAfterScoring(ctx context.Context, scorer ScorerFunc, 
 
 	// Phase 3: Post-score newly created offspring (Score=-1 from mutator).
 	p.ScoreAgents(scorer)
+
+	// Record generation history after post-scoring so stats reflect all scored agents.
+	p.mu.Lock()
+	p.appendHistoryLocked()
+	p.mu.Unlock()
 
 	return nil
 }

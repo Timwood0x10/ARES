@@ -11,7 +11,7 @@ import (
 )
 
 var testStrategy = &mutation.Strategy{
-	ID:             "cached-test-strat",
+	ID:             "cached-test-strategy",
 	Params:         map[string]any{"temperature": 0.7, "top_k": 40},
 	PromptTemplate: "think-prompt",
 }

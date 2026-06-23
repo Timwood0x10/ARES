@@ -53,12 +53,12 @@ type TieredScorer struct {
 	heuristic genome.ScorerFunc // always-available cheap scorer
 	llm       genome.ScorerFunc // optional expensive LLM scorer (may be nil)
 
-	mu           sync.Mutex
-	cacheHits    int64
-	llmCalls     int64
+	mu             sync.Mutex
+	cacheHits      int64
+	llmCalls       int64
 	heuristicCalls int64
-	fallbacks    int64
-	totalScored  int64
+	fallbacks      int64
+	totalScored    int64
 }
 
 // TieredScorerConfig holds configuration for creating a tiered scorer.

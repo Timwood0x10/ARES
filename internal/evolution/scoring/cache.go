@@ -164,11 +164,11 @@ var nowUnixNano = func() int64 {
 //	CacheEntry - the constructed cache entry.
 func MakeEntry(hash uint64, score float64, scorerType string, sampleCount int, confidence float64) CacheEntry {
 	return CacheEntry{
-		Hash:         hash,
-		Score:        score,
-		ScorerType:   scorerType,
-		Timestamp:    nowUnixNano(),
-		SampleCount:  sampleCount,
-		Confidence:   confidence,
+		Hash:        hash,
+		Score:       score,
+		ScorerType:  scorerType,
+		Timestamp:   nowUnixNano(),
+		SampleCount: sampleCount,
+		Confidence:  confidence,
 	}
 }

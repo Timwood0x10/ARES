@@ -52,11 +52,11 @@ func StrategyHash(s *mutation.Strategy) (uint64, error) {
 
 	for _, k := range keys {
 		v := s.Params[k]
-		fmt.Fprintf(h, "%s=%v|", k, v)
+		_, _ = fmt.Fprintf(h, "%s=%v|", k, v)
 	}
 
 	// Hash prompt template.
-	fmt.Fprintf(h, "prompt=%s|", s.PromptTemplate)
+	_, _ = fmt.Fprintf(h, "prompt=%s|", s.PromptTemplate)
 
 	return h.Sum64(), nil
 }

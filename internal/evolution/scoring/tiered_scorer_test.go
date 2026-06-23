@@ -43,8 +43,8 @@ func TestNewTieredScorer(t *testing.T) {
 		{
 			name: "nil cache rejected",
 			giveCfg: TieredScorerConfig{
-				Cache:          nil,
-				Budget:         mustNewBudget(t, 5),
+				Cache:           nil,
+				Budget:          mustNewBudget(t, 5),
 				HeuristicScorer: constantScorer(0.5),
 			},
 			wantErr: ErrNilTieredCache,
@@ -52,8 +52,8 @@ func TestNewTieredScorer(t *testing.T) {
 		{
 			name: "nil budget rejected",
 			giveCfg: TieredScorerConfig{
-				Cache:          NewScoreCache(0),
-				Budget:         nil,
+				Cache:           NewScoreCache(0),
+				Budget:          nil,
 				HeuristicScorer: constantScorer(0.5),
 			},
 			wantErr: ErrNilBudget,
@@ -61,8 +61,8 @@ func TestNewTieredScorer(t *testing.T) {
 		{
 			name: "nil heuristic scorer rejected",
 			giveCfg: TieredScorerConfig{
-				Cache:          NewScoreCache(0),
-				Budget:         mustNewBudget(t, 5),
+				Cache:           NewScoreCache(0),
+				Budget:          mustNewBudget(t, 5),
 				HeuristicScorer: nil,
 			},
 			wantErr: ErrNilHeuristicScorer,
@@ -70,8 +70,8 @@ func TestNewTieredScorer(t *testing.T) {
 		{
 			name: "valid config with LLM scorer",
 			giveCfg: TieredScorerConfig{
-				Cache:          NewScoreCache(0),
-				Budget:         mustNewBudget(t, 5),
+				Cache:           NewScoreCache(0),
+				Budget:          mustNewBudget(t, 5),
 				HeuristicScorer: constantScorer(0.3),
 				LLMScorer:       constantScorer(0.9),
 			},
@@ -80,8 +80,8 @@ func TestNewTieredScorer(t *testing.T) {
 		{
 			name: "valid config without LLM scorer",
 			giveCfg: TieredScorerConfig{
-				Cache:          NewScoreCache(0),
-				Budget:         mustNewBudget(t, 5),
+				Cache:           NewScoreCache(0),
+				Budget:          mustNewBudget(t, 5),
 				HeuristicScorer: constantScorer(0.3),
 				LLMScorer:       nil,
 			},
@@ -118,8 +118,8 @@ func TestScoreCacheHit(t *testing.T) {
 	cache.Put(hash, MakeEntry(hash, 0.85, "llm", 1, 1.0))
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.3),
 		LLMScorer:       constantScorer(0.9),
 	})
@@ -151,8 +151,8 @@ func TestScoreUsesLLMWhenBudgetAvailable(t *testing.T) {
 	s := newTestStrategy("llm-score")
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.3),
 		LLMScorer:       constantScorer(0.92),
 	})
@@ -180,8 +180,8 @@ func TestScoreFallsBackToHeuristicWhenBudgetExhausted(t *testing.T) {
 	s := newTestStrategy("budget-exhausted")
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.4),
 		LLMScorer:       constantScorer(0.95),
 	})
@@ -215,8 +215,8 @@ func TestScoreUsesHeuristicWhenLLMScorerIsNil(t *testing.T) {
 	s := newTestStrategy("no-llm")
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.6),
 		LLMScorer:       nil,
 	})
@@ -245,8 +245,8 @@ func TestScoreFallsBackOnLLMPanic(t *testing.T) {
 	panicErr := errors.New("LLM service unavailable")
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.35),
 		LLMScorer:       panickingScorer(panicErr),
 	})
@@ -280,8 +280,8 @@ func TestStats(t *testing.T) {
 	budget := mustNewBudget(t, 3) // Only 3 LLM calls allowed.
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.3),
 		LLMScorer:       constantScorer(0.9),
 	})
@@ -291,13 +291,13 @@ func TestStats(t *testing.T) {
 	// Score 3 strategies via LLM (exhausts budget).
 	for i := 0; i < 3; i++ {
 		s := newTestStrategy(string(rune('a' + i)))
-		ts.Score(ctx, s)
+		_, _, _ = ts.Score(ctx, s)
 	}
 
 	// Score 7 more that exhaust budget → heuristic.
 	for i := 0; i < 7; i++ {
 		s := newTestStrategy(string(rune('d' + i)))
-		ts.Score(ctx, s)
+		_, _, _ = ts.Score(ctx, s)
 	}
 
 	stats := ts.Stats()
@@ -317,15 +317,15 @@ func TestResetForGeneration(t *testing.T) {
 	budget := mustNewBudget(t, 5)
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.3),
 		LLMScorer:       constantScorer(0.9),
 	})
 
 	ctx := context.Background()
-	ts.Score(ctx, newTestStrategy("gen1-a"))
-	ts.Score(ctx, newTestStrategy("gen1-b"))
+	_, _, _ = ts.Score(ctx, newTestStrategy("gen1-a"))
+	_, _, _ = ts.Score(ctx, newTestStrategy("gen1-b"))
 
 	// Pre-reset: should have stats.
 	preStats := ts.Stats()
@@ -361,8 +361,8 @@ func TestFullPipelineIntegration(t *testing.T) {
 	}
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.5),
 		LLMScorer:       llmScorer,
 	})
@@ -428,8 +428,8 @@ func TestScoreNilStrategy(t *testing.T) {
 	budget := mustNewBudget(t, 5)
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
-		Cache:          cache,
-		Budget:         budget,
+		Cache:           cache,
+		Budget:          budget,
 		HeuristicScorer: constantScorer(0.5),
 	})
 

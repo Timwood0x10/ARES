@@ -38,6 +38,11 @@ type GenomePopulationAdapter struct {
 	tieredScorer *scoring.TieredScorer
 	budget       *scoring.Budget
 	scoreCache   *scoring.ScoreCache
+
+	// Guardrails for pre/post evolution safety checks (optional).
+	// When set via WithAdapterGuardrails, Run() runs safety checks before
+	// and after each evolution cycle.
+	guardrails *EvolutionGuardrails
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -120,6 +125,23 @@ func WithAdapterTieredScoring(ts *scoring.TieredScorer, budget *scoring.Budget, 
 	}
 }
 
+// WithAdapterGuardrails sets the evolution guardrails for pre/post safety checks.
+// When set, Run() calls PreEvolveCheck before evolution and PostEvolveCheck after.
+// Without this, guardrails are disabled and behavior is unchanged.
+//
+// Args:
+//
+//	g - the configured guardrails instance (may be nil to disable).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterGuardrails(g *EvolutionGuardrails) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.guardrails = g
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -161,8 +183,70 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		scorer = buildScorer(a.scorer)
 	}
 
+	// --- Pre-evolution guardrails checkpoint ---
+	if a.guardrails != nil {
+		preStats := a.pop.Stats()
+		agents, _ := a.pop.Snapshot()
+		unevaluated := countUnevaluated(agents)
+
+		preResult := a.guardrails.PreEvolveCheck(ctx,
+			preStats.BestScore,
+			preStats.Generation,
+			preStats.Size,
+			unevaluated,
+		)
+
+		// Log all pre-check events
+		for _, evt := range preResult.Events {
+			slog.WarnContext(ctx, "[GenomeAdapter] Pre-evolve guardrail triggered",
+				"rule", evt.Rule,
+				"level", evt.Level,
+				"message", evt.Message,
+				"suggested_action", evt.SuggestedAction,
+			)
+		}
+
+		if preResult.ShouldStop {
+			return fmt.Errorf("[GenomeAdapter] pre-evolve guardrail check failed (generation %d): %d event(s), best_score=%.2f, unevaluated=%d/%d",
+				preStats.Generation, len(preResult.Events), preStats.BestScore, unevaluated, preStats.Size)
+		}
+	}
+
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
+	}
+
+	// --- Post-evolution guardrails checkpoint ---
+	if a.guardrails != nil {
+		postStats := a.pop.Stats()
+		agents, _ := a.pop.Snapshot()
+		lineageShares := computeLineageShares(agents)
+
+		postResult := a.guardrails.PostEvolveCheck(ctx,
+			postStats.BestScore,
+			postStats.Generation,
+			lineageShares,
+		)
+
+		// Log all post-check events
+		for _, evt := range postResult.Events {
+			slog.WarnContext(ctx, "[GenomeAdapter] Post-evolve guardrail triggered",
+				"rule", evt.Rule,
+				"level", evt.Level,
+				"message", evt.Message,
+				"suggested_action", evt.SuggestedAction,
+			)
+		}
+
+		if postResult.ShouldStop {
+			// Evolution already completed; log warning but still return error.
+			slog.WarnContext(ctx, "[GenomeAdapter] post-evolve guardrail signals stop, but evolution already completed",
+				"generation", postStats.Generation,
+				"event_count", len(postResult.Events),
+			)
+			return fmt.Errorf("[GenomeAdapter] post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
+				postStats.Generation, len(postResult.Events), postStats.BestScore)
+		}
 	}
 
 	stats := a.pop.Stats()
@@ -194,6 +278,29 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 	// HeuristicScorer). When those are set, Run() uses the tiered pipeline instead of this
 	// fallback path. The ConstantScorer default is retained for backward compatibility.
 	return genome.ConstantScorer(50.0)
+}
+
+// countUnevaluated counts agents with Score == ScoreUnevaluated.
+func countUnevaluated(agents []*mutation.Strategy) int {
+	n := 0
+	for _, a := range agents {
+		if a.Score == genome.ScoreUnevaluated {
+			n++
+		}
+	}
+	return n
+}
+
+// computeLineageShares computes ParentID distribution from a population snapshot.
+// Returns a map of parentID -> count. Root strategies (empty ParentID) are excluded.
+func computeLineageShares(agents []*mutation.Strategy) map[string]int {
+	shares := make(map[string]int)
+	for _, a := range agents {
+		if a.ParentID != "" {
+			shares[a.ParentID]++
+		}
+	}
+	return shares
 }
 
 // Population returns the underlying genome population for direct access.
@@ -493,6 +600,16 @@ type SystemConfig struct {
 	// that swap the strategy's prompt template with alternatives from this pool.
 	// Empty (default) means prompt mutation is disabled.
 	PromptTemplates []string `json:"prompt_templates,omitempty"`
+
+	// Guardrails provides pre/post evolution safety checks (optional).
+	// When set, the adapter runs guardrail checks before and after each
+	// evolution cycle. Nil (default) means guardrails are disabled.
+	Guardrails *EvolutionGuardrails `json:"-"`
+
+	// HistoryMaxSize limits the number of per-generation history entries
+	// stored for trajectory reporting. When > 0, each evolution cycle
+	// appends a GenerationHistoryEntry to the population history (default 0 = disabled).
+	HistoryMaxSize int `json:"history_max_size"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -602,6 +719,9 @@ func NewWiredEvolutionSystem(
 		genome.WithDiversityThreshold(cfg.DiversityThreshold),
 		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
 	}
+	if cfg.HistoryMaxSize > 0 {
+		popOpts = append(popOpts, genome.WithHistoryEnabled(cfg.HistoryMaxSize))
+	}
 	if cfg.PopulationSeed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.PopulationSeed))
 	}
@@ -656,6 +776,11 @@ func NewWiredEvolutionSystem(
 		}
 
 		adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
+	}
+
+	// Step 5c: Optionally attach guardrails for pre/post evolution safety checks.
+	if cfg.Guardrails != nil {
+		adapterOpts = append(adapterOpts, WithAdapterGuardrails(cfg.Guardrails))
 	}
 
 	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser, adapterOpts...)

@@ -50,27 +50,27 @@ func TestStrategyHash_SameContentSameHash(t *testing.T) {
 
 func TestStrategyHash_DifferentContentDifferentHash(t *testing.T) {
 	tests := []struct {
-		name        string
-		giveA       *mutation.Strategy
-		giveB       *mutation.Strategy
+		name  string
+		giveA *mutation.Strategy
+		giveB *mutation.Strategy
 	}{
 		{
-			name: "different temperature",
+			name:  "different temperature",
 			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
 			giveB: makeStrategy(map[string]any{"temperature": 0.5}, "think"),
 		},
 		{
-			name: "different param key",
+			name:  "different param key",
 			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
 			giveB: makeStrategy(map[string]any{"top_k": 40}, "think"),
 		},
 		{
-			name: "different prompt",
+			name:  "different prompt",
 			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
 			giveB: makeStrategy(map[string]any{"temperature": 0.7}, "creative"),
 		},
 		{
-			name: "empty vs non-empty params",
+			name:  "empty vs non-empty params",
 			giveA: makeStrategy(map[string]any{}, "think"),
 			giveB: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
 		},
@@ -90,33 +90,33 @@ func TestStrategyHash_DifferentContentDifferentHash(t *testing.T) {
 
 func TestStrategyHash_MetadataIgnored(t *testing.T) {
 	base := &mutation.Strategy{
-		ID:                   "id-aaa",
-		ParentID:            "parent-111",
-		Version:             5,
-		Name:                "name-alpha",
-		Params:              map[string]any{"temperature": 0.7},
-		PromptTemplate:      "think",
-		Score:               99.9,
+		ID:             "id-aaa",
+		ParentID:       "parent-111",
+		Version:        5,
+		Name:           "name-alpha",
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "think",
+		Score:          99.9,
 	}
 
 	variants := []*mutation.Strategy{
 		{
-			ID:                   "id-bbb",
-			ParentID:            "parent-222",
-			Version:             99,
-			Name:                "name-beta",
-			Params:              map[string]any{"temperature": 0.7},
-			PromptTemplate:      "think",
-			Score:               -1,
+			ID:             "id-bbb",
+			ParentID:       "parent-222",
+			Version:        99,
+			Name:           "name-beta",
+			Params:         map[string]any{"temperature": 0.7},
+			PromptTemplate: "think",
+			Score:          -1,
 		},
 		{
-			ID:                   "id-ccc",
-			ParentID:            "",
-			Version:             0,
-			Name:                "",
-			Params:              map[string]any{"temperature": 0.7},
-			PromptTemplate:      "think",
-			Score:               0,
+			ID:             "id-ccc",
+			ParentID:       "",
+			Version:        0,
+			Name:           "",
+			Params:         map[string]any{"temperature": 0.7},
+			PromptTemplate: "think",
+			Score:          0,
 		},
 	}
 

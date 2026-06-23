@@ -135,8 +135,8 @@ func TestScoreCache_Stats(t *testing.T) {
 	c.Put(2, CacheEntry{Hash: 2, Score: 20})
 
 	// Generate hits and misses.
-	c.Get(1) // hit
-	c.Get(2) // hit
+	c.Get(1)   // hit
+	c.Get(2)   // hit
 	c.Get(999) // miss
 
 	hits, misses, size, evictions := c.Stats()
