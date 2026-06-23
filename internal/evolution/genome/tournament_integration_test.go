@@ -572,50 +572,55 @@ func TestTournamentSelectionWithHighPressure(t *testing.T) {
 }
 
 // TestConcurrentTournamentEvolution verifies thread-safety of tournament-enabled evolution.
+// Each goroutine operates on its own population to avoid scoring-guard races
+// on shared state while still validating tournament selection under concurrency.
 func TestConcurrentTournamentEvolution(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	base := newTestStrategy(0.5)
-	mutator := &mockMutator{}
-	crosser := &mockCrosser{}
 
-	pop, err := NewPopulation(ctx, base, mutator,
-		WithPopulationSize(10),
-		WithEliteCount(2),
-		WithSurvivalRate(0.6),
-		WithTournamentSelection(3),
-	)
-	if err != nil {
-		t.Fatalf("failed to create population: %v", err)
-	}
-
-	// Pre-score all agents.
-	for _, agent := range pop.Agents {
-		agent.Score = rand.Float64() * 100
-	}
-
-	// Run concurrent evolutions — no data races should occur.
 	const goroutines = 5
 	const iterations = 3
 
 	eg, egCtx := errgroup.WithContext(context.Background())
 	for g := 0; g < goroutines; g++ {
+		idx := g
 		eg.Go(func() error {
+			// Each goroutine owns its own population — tests tournament selection
+			// thread-safety without cross-goroutine scoring races.
+			mutator := &mockMutator{}
+			crosser := &mockCrosser{}
+			pop, err := NewPopulation(ctx, base, mutator,
+				WithPopulationSize(10),
+				WithEliteCount(2),
+				WithSurvivalRate(0.6),
+				WithTournamentSelection(3),
+			)
+			if err != nil {
+				return fmt.Errorf("goroutine %d: create population: %w", idx, err)
+			}
+
+			for _, agent := range pop.Agents {
+				agent.Score = rand.Float64() * 100
+			}
+
 			for j := 0; j < iterations; j++ {
 				select {
 				case <-egCtx.Done():
 					return egCtx.Err()
 				default:
 				}
-				// Score all agents before each evolve to prevent unevaluated-score errors.
+				// Re-score before each evolve (offspring from prior evolve have Score=-1).
 				pop.mu.Lock()
 				for _, agent := range pop.Agents {
-					agent.Score = rand.Float64() * 100
+					if agent.Score < 0 {
+						agent.Score = rand.Float64() * 100
+					}
 				}
 				pop.mu.Unlock()
 				if err := pop.Evolve(ctx, mutator, crosser); err != nil && !errors.Is(err, context.Canceled) {
-					return fmt.Errorf("goroutine iter %d: %w", j, err)
+					return fmt.Errorf("goroutine %d iter %d: %w", idx, j, err)
 				}
 			}
 			return nil

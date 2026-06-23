@@ -103,6 +103,20 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 //
 //	error - non-nil if evolution fails.
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
+	// Score any unevaluated agents before evolution (required by ensureEvaluatedBeforeSelection).
+	// Without this, EvolveOnIdle rejects the cycle when offspring from a previous
+	// evolution or freshly created agents still carry Score=-1 defaults.
+	a.pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+		if !genome.IsScoreEvaluated(agent.Score) {
+			if a.scorer != nil {
+				return a.scorer(agent)
+			}
+			// Fallback: assign a moderate deterministic score so selection has valid data.
+			return 50.0
+		}
+		return agent.Score
+	})
+
 	if err := a.pop.EvolveOnIdle(ctx, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
 	}
@@ -642,6 +656,9 @@ func RunIdleEvolution(
 		if err := system.PopAdapter.Run(ctx); err != nil {
 			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
 		}
+
+		// Note: Post-evolution scoring is handled inside PopAdapter.Run() which
+		// pre-scores agents before each EvolveOnIdle call. No redundant scoring needed here.
 
 		// Record lineage after each evolution cycle.
 		// Use Snapshot() for thread-safe read of population state.

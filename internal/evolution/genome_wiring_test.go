@@ -79,6 +79,15 @@ func TestGenomePopulationAdapter_Run(t *testing.T) {
 		a.Score = float64(int(a.Score) % 100)
 	}
 
+	// Ensure all agents have evaluated scores before evolution.
+	// The mock mutator returns Score=-1 offspring, and int(-1)%100 == -1,
+	// so the loop above does not fix unevaluated agents.
+	for i, a := range pop.Agents {
+		if !genome.IsScoreEvaluated(a.Score) {
+			a.Score = 50.0 + float64(i%50)
+		}
+	}
+
 	adapter, err := NewGenomePopulationAdapter(pop, mut, crosser)
 	if err != nil {
 		t.Fatal(err)

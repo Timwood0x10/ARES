@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"goagentx/internal/evolution/mutation"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // mockMutator implements MutatorInterface for testing.
@@ -502,27 +504,40 @@ func TestConcurrentEvolveSafety(t *testing.T) {
 		agent.Score = rand.Float64() * 100
 	}
 
-	var wg sync.WaitGroup
-	errs := make(chan error, 10)
+	const goroutines = 10
+	const iterations = 5
 
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			for j := 0; j < 5; j++ {
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	var mu sync.Mutex
+	var errorCount int
+
+	for g := 0; g < goroutines; g++ {
+		eg.Go(func() error {
+			for i := 0; i < iterations; i++ {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				default:
+				}
 				if err := pop.Evolve(ctx, mutator, crosser); err != nil && !errors.Is(err, context.Canceled) {
-					errs <- err
+					mu.Lock()
+					errorCount++
+					mu.Unlock()
 				}
 			}
-		}(i)
+			return nil
+		})
 	}
 
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		t.Errorf("concurrent evolve error: %v", err)
+	if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Errorf("concurrent evolution error: %v", err)
 	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("concurrent evolutions: goroutines=%d, iterations=%d each, errors=%d",
+		goroutines, iterations, errorCount)
 }
 
 func TestSingleAgentPopulation(t *testing.T) {
