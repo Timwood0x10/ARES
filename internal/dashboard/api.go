@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/flight"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 
 	"github.com/gorilla/websocket"
 )

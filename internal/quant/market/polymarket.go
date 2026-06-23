@@ -48,7 +48,7 @@ func (f *PolymarketFeed) Markets(query string) ([]Market, error) {
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "GoAgentX/1.0")
+	req.Header.Set("User-Agent", "github.com/Timwood0x10/ares/1.0")
 
 	resp, err := f.client.Do(req)
 	if err != nil {

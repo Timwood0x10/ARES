@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/tools/resources/core"
-	"goagentx/internal/tools/resources/formatter"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/formatter"
 )
 
 // AgentToolConfig defines tool configuration for an agent.

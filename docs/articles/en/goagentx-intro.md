@@ -1,4 +1,4 @@
-# GoAgentX Series: Building Your Own Agent Framework When You're Bored
+# ares Series: Building Your Own Agent Framework When You're Bored
 
 > I've always believed the best way to learn is to build your own wheel.
 > Not because the wheels out there aren't good enough — but because once you've built one, you'll never get stuck by one again.
@@ -30,7 +30,7 @@ That frustration carried over. I kept learning, building two interactive visuali
 
 Both were built from my personal study notes. Then I shipped a Rust project to crates.io — good reception, even the foreign devs loved it.
 
-And then came the main character of today's story: **GoAgentX**.
+And then came the main character of today's story: **ares**.
 
 ## Why Go?
 
@@ -59,7 +59,7 @@ I knew: **there has to be a better way.**
 
 Go's simplicity, raw performance, and built-in concurrency primitives caught my eye. So I decided: rewrite the entire agent system from scratch in Go.
 
-**Shedding old baggage, I designed my own agent framework** — that's the origin story of GoAgentX.
+**Shedding old baggage, I designed my own agent framework** — that's the origin story of ares.
 
 I started with the basics: LLM calls, simple RAG. But this time, everything felt different:
 

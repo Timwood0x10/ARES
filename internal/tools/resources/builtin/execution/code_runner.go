@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // CodeRunner provides code execution capabilities with sandbox constraints.

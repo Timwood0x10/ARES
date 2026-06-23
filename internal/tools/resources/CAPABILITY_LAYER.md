@@ -51,7 +51,7 @@ The following capabilities are defined:
 
 ```go
 import (
-    "goagentx/internal/tools/resources"
+    "ares/internal/tools/resources"
 )
 
 // Create registry and register tools

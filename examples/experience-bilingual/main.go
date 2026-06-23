@@ -20,12 +20,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"goagentx/api/experience"
-	"goagentx/internal/llm"
-	"goagentx/internal/storage/postgres"
-	"goagentx/internal/storage/postgres/embedding"
-	storageModels "goagentx/internal/storage/postgres/models"
-	"goagentx/internal/storage/postgres/repositories"
+	experience "github.com/Timwood0x10/ares/api/ares_experience"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	storageModels "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 const (

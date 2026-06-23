@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/storage/postgres/adapters"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/adapters"
 )
 
 func TestSecretRepository_Import_JSON(t *testing.T) {

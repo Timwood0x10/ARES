@@ -25,13 +25,13 @@
 在你的项目中添加 GoAgent 作为依赖：
 
 ```bash
-go get github.com/Timwood0x10/goagentx@latest
+go get github.com/Timwood0x10/ares@latest
 ```
 
 或使用 go.mod：
 
 ```go
-require github.com/Timwood0x10/goagentx v1.0.0
+require github.com/Timwood0x10/ares v1.0.0
 ```
 
 #### 步骤 2: 初始化 Agent
@@ -43,8 +43,8 @@ package main
 
 import (
     "context"
-    "github.com/Timwood0x10/goagentx/api/service"
-    "github.com/Timwood0x10/goagentx/internal/config"
+    "github.com/Timwood0x10/ares/api/service"
+    "github.com/Timwood0x10/ares/internal/config"
 )
 
 func main() {
@@ -114,8 +114,8 @@ storage:
 
 ```bash
 # 克隆项目
-git clone https://github.com/Timwood0x10/goagentx.git
-cd GoAgentX
+git clone https://github.com/Timwood0x10/ares.git
+cd ares
 
 # 配置服务
 cp config/server.example.yaml config/server.yaml
@@ -165,7 +165,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/Timwood0x10/goagentx/api/service"
+    "github.com/Timwood0x10/ares/api/service"
 )
 
 func main() {
@@ -369,7 +369,7 @@ import (
     "context"
     "fmt"
     "os"
-    "github.com/Timwood0x10/goagentx/api/service"
+    "github.com/Timwood0x10/ares/api/service"
 )
 
 func main() {

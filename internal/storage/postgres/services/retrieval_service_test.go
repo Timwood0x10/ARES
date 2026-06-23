@@ -11,10 +11,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/core/errors"
-	"goagentx/internal/storage/postgres"
-	"goagentx/internal/storage/postgres/embedding"
-	"goagentx/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // TestDefaultRetrievalPlan tests the default retrieval plan configuration.

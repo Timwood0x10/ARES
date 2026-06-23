@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/agents/leader"
-	"goagentx/internal/agents/sub"
-	"goagentx/internal/config"
-	"goagentx/internal/core/models"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/memory"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 /*

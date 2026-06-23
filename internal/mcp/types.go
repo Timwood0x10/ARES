@@ -6,7 +6,7 @@ import "encoding/json"
 const ProtocolVersion = "2024-11-05"
 
 // ClientName identifies this MCP client implementation.
-const ClientName = "GoAgentX"
+const ClientName = "ares"
 
 // --- Initialize handshake types ---
 

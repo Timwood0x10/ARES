@@ -484,7 +484,7 @@ result, _ := registry.Execute(ctx, "code_runner", map[string]interface{}{
 ### 5.1 全局注册
 
 ```go
-import "goagentx/internal/tools/resources"
+import "ares/internal/tools/resources"
 
 // 注册所有内置工具
 resources.RegisterGeneralTools()

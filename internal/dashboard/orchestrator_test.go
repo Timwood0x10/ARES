@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // mockMCPExecutor implements MCPExecutor for testing.

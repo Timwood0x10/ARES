@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/memory"
-	"goagentx/internal/memory/distillation"
-	"goagentx/internal/storage/postgres"
-	"goagentx/internal/storage/postgres/embedding"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // testEmbedder is a minimal EmbeddingService mock for in-memory tests.

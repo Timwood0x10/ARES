@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (XII): Security Hardening — When Agents Learn to Defend Themselves
+# ares Architecture Deep Dive (XII): Security Hardening — When Agents Learn to Defend Themselves
 
 > Have you ever watched an AI agent write SQL and felt a chill run down your spine?
 > Not because it's smart — but because it's **dangerously naive**.
@@ -7,7 +7,7 @@
 > The userInput happened to be `'; DROP TABLE users; --` that day.
 > And that's how I learned: agents don't just make mistakes — they make **exploitable** mistakes. RCE, Prompt Injection, SSRF, Path Traversal, Command Injection... basically half the OWASP Top 10, all packed into one innocent-looking "helpful assistant."
 > So I built a multi-layer defense system: Input Sanitizer -> Permission Guard -> Audit Logger -> Rate Limiter -> Runtime Kill Switch. Detect anomalous behavior and fuse within 100ms.
-> This is the story of how GoAgentX learned to defend itself.
+> This is the story of how ares learned to defend itself.
 
 ---
 
@@ -890,7 +890,7 @@ import (
 	"time"
 )
 
-// DefaultRoles returns the standard role definitions for GoAgentX deployments.
+// DefaultRoles returns the standard role definitions for ares deployments.
 func DefaultRoles() []*Role {
 	return []*Role{
 		{
@@ -3006,7 +3006,7 @@ The gaps (A02 Cryptographic Failures, A06 Vulnerable Components, A07 Authenticat
 
 ## 14. Conclusion
 
-GoAgentX's security hardening system translates a simple insight into five coordinated layers: **agents are autonomous processes with natural language input and broad execution capabilities — that combination is inherently dangerous unless every step is guarded.**
+ares's security hardening system translates a simple insight into five coordinated layers: **agents are autonomous processes with natural language input and broad execution capabilities — that combination is inherently dangerous unless every step is guarded.**
 
 The complete defense pipeline:
 

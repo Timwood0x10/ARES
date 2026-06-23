@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# GoAgentX Chaos Demo — MCP Dashboard
+# ares Chaos Demo — MCP Dashboard
 #
 # Starts the demo and tails logs. Kills existing process on the same port.
 # Usage:
@@ -67,7 +67,7 @@ if [ "$1" = "--status" ]; then
 fi
 
 # ---- Pre-flight checks ----
-echo -e "\n${CYAN}${BOLD}═══ GoAgentX Chaos Demo ═══${NC}\n"
+echo -e "\n${CYAN}${BOLD}═══ ares Chaos Demo ═══${NC}\n"
 
 # Check port.
 if lsof -i ":$PORT" >/dev/null 2>&1; then

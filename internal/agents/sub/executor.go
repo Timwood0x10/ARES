@@ -6,12 +6,12 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/callbacks"
-	apperrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // FallbackHandler produces a recommendation fallback result for a given task type.

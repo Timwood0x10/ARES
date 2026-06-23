@@ -1,4 +1,4 @@
-# GoAgentX Quantitative Trading Demo — configuration template.
+# ares Quantitative Trading Demo — configuration template.
 # Copy to config.yml and fill in your API key:
 #   cp config.example.yml config.yml
 #   # Edit config.yml, uncomment the LLM configuration you want to use

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"goagentx/internal/eval"
-	"goagentx/internal/llm"
+	"github.com/Timwood0x10/ares/internal/eval"
+	"github.com/Timwood0x10/ares/internal/llm"
 )
 
 // newTestLLMClient creates a minimal *llm.Client for testing.

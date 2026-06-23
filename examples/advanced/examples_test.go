@@ -5,14 +5,14 @@ import (
 	"os/exec"
 	"testing"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/memory"
-	"goagentx/internal/plugins/resurrection"
-	"goagentx/internal/protocol/ahp"
-	"goagentx/internal/runtime"
-	"goagentx/internal/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // exampleDirs lists all advanced example directories.
@@ -32,7 +32,7 @@ func TestExamples_Compile(t *testing.T) {
 	for _, dir := range exampleDirs {
 		t.Run(dir, func(t *testing.T) {
 			t.Parallel()
-			cmd := exec.Command("go", "build", "-o", "/dev/null", "goagentx/examples/advanced/"+dir)
+			cmd := exec.Command("go", "build", "-o", "/dev/null", "github.com/Timwood0x10/ares/examples/advanced/"+dir)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("example %s failed to compile: %v\n%s", dir, err, output)

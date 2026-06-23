@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/callbacks"
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
-	"goagentx/internal/observability"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 // HTTPError represents an HTTP request error.

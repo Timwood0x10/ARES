@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/quant/market"
 )
 
 // ValidationConfig configures the data freshness and lookahead guard behavior.

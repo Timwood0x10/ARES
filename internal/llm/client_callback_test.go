@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"goagentx/internal/callbacks"
-	coreerrors "goagentx/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // TestClientGenerateEmitsCallbacks verifies that Generate() emits

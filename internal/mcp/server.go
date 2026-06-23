@@ -1,4 +1,4 @@
-// Package mcp provides MCP (Model Context Protocol) server implementation for GoAgentX.
+// Package mcp provides MCP (Model Context Protocol) server implementation for ares.
 package mcp
 
 import (

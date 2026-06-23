@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"goagentx/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
 // AgentDef defines a single agent from YAML config.

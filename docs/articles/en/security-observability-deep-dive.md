@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
+# ares Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
 
 > The more powerful an Agent gets, the more damage it can do. You give your Agent a code executor, file read/write, network requests — and then it gets tricked by a prompt injection...
 > I kept asking myself one question while designing the tool system: **How do I prevent sensitive information from leaking when the Agent outputs?**
@@ -12,7 +12,7 @@ Giving an Agent tools is like handing a teenager the car keys — they can go an
 
 I've seen too many AI projects crash and burn after going live: an Agent printing the user's API Key in a log, a prompt accidentally carrying a database password, an LLM response leaking a phone number... Once these problems happen, a simple "be more careful next time" won't cut it — compliance audits will be on your tail.
 
-So when I designed GoAgentX's infrastructure, I considered security and observability together. Not "build features first, then add security", but **design them into the system from day one**.
+So when I designed ares's infrastructure, I considered security and observability together. Not "build features first, then add security", but **design them into the system from day one**.
 
 This article covers four modules: **Security (Sanitization)**, **Observability (Tracing)**, **Rate Limiting**, and **Graceful Shutdown**. They don't directly face the user, but without them, putting your Agent into production is like running naked.
 
@@ -36,7 +36,7 @@ The core design philosophy of the security module is **"field type + regex detec
 
 ### 2.1 SensitiveFieldType — Using String Constants Instead of iota for Type Identification
 
-Unlike common iota enumerations, GoAgentX uses string constants to define sensitive field types:
+Unlike common iota enumerations, ares uses string constants to define sensitive field types:
 
 ```go
 const (
@@ -129,7 +129,7 @@ Luckily it was caught early — the logs had only been retained in the test envi
 
 ## 3. Observability Module: Tracer Interface and Two Implementations
 
-GoAgentX's observability follows the classic **Observer Pattern**: defining an abstract `Tracer` interface with two implementations: `NoopTracer` and `LogTracer`.
+ares's observability follows the classic **Observer Pattern**: defining an abstract `Tracer` interface with two implementations: `NoopTracer` and `LogTracer`.
 
 ### 3.1 Tracer Interface Definition
 

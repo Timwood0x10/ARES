@@ -3,7 +3,7 @@ package evalapi
 import (
 	"net/http"
 
-	"goagentx/api/router"
+	"github.com/Timwood0x10/ares/api/router"
 )
 
 // RegisterRoutes registers all eval API routes on the given router.

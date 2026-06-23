@@ -2,7 +2,7 @@
 
 ## 概述
 
-GoAgentX 的**自主进化（Autonomous Evolution）**系统实现了一套用于自主 Agent 策略优化的**遗传算法（Genetic Algorithm, GA）**。该系统也被称为 **Dream Mode（梦境模式）**，使 Agent 能够在无需人工干预的情况下持续探索、评估并采纳更优的决策策略。
+ares 的**自主进化（Autonomous Evolution）**系统实现了一套用于自主 Agent 策略优化的**遗传算法（Genetic Algorithm, GA）**。该系统也被称为 **Dream Mode（梦境模式）**，使 Agent 能够在无需人工干预的情况下持续探索、评估并采纳更优的决策策略。
 
 系统的核心思想是将 Agent 策略视为一个**策略种群（Population）**，通过多代的**选择（Selection）、交叉（Crossover/重组）、变异（Mutation）**操作进行演化。每条策略编码了 LLM temperature、top_k、max_steps、提示词模板和工具配置等参数。遗传算法在高维参数空间中搜索，以发现能够最大化任务性能评分的策略组合。
 
@@ -521,9 +521,9 @@ import (
     "math/rand"
     "time"
 
-    "goagentx/internal/evolution"
-    "goagentx/internal/evolution/genome"
-    "goagentx/internal/evolution/mutation"
+    "ares/internal/evolution"
+    "ares/internal/evolution/genome"
+    "ares/internal/evolution/mutation"
 )
 
 func main() {
@@ -600,9 +600,9 @@ package main
 import (
     "context"
 
-    "goagentx/internal/evolution"
-    "goagentx/internal/evolution/genome"
-    "goagentx/internal/evolution/mutation"
+    "ares/internal/evolution"
+    "ares/internal/evolution/genome"
+    "ares/internal/evolution/mutation"
 )
 
 func main() {

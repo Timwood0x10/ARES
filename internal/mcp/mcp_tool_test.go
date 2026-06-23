@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 func TestNewMCPTool(t *testing.T) {

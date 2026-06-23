@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 func writeTestEvents(t *testing.T, path string) {

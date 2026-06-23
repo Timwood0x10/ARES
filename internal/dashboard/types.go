@@ -1,4 +1,4 @@
-// package dashboard - provides a web dashboard for monitoring GoAgentX runtime.
+// package dashboard - provides a web dashboard for monitoring ares runtime.
 package dashboard
 
 import (

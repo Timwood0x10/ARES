@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"sync"
 
-	"goagentx/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // Validator validates data against schemas.

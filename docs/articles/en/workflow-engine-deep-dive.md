@@ -1,9 +1,9 @@
-# GoAgentX Architecture Deep Dive (4): Workflow Engine -- From DAG to Dynamic Orchestration
+# ares Architecture Deep Dive (4): Workflow Engine -- From DAG to Dynamic Orchestration
 
 > I used to hardcode workflows. If step 1 finishes, run step 2. If step 2 finishes, run step 3.
 > Then requirements changed. Logic got tangled. Code turned into spaghetti.
 > I thought: **workflows shouldn't be hardcoded. They should be like LEGO — snap together, pull apart, swap pieces at runtime.**
-> That's why GoAgentX has two workflow systems. Yes, two. I built one, found it wasn't enough, then built another.
+> That's why ares has two workflow systems. Yes, two. I built one, found it wasn't enough, then built another.
 
 ## Why Two?
 
@@ -576,7 +576,7 @@ The traditional ReAct pattern is a tight loop: Thought → Action → Observatio
 2. **Fixed topology** -- the loop structure is hardcoded, can't re-route around failures
 3. **Stateless recovery** -- a replacement agent starts from zero with no memory of what went wrong
 
-GoAgentX replaces this with a **Dynamic DAG Runtime**:
+ares replaces this with a **Dynamic DAG Runtime**:
 
 ```mermaid
 graph LR

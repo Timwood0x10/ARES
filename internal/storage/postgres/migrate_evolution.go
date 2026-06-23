@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // evolutionMigrationStatements contains DDL for autonomous evolution storage tables.

@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	gerr "goagentx/internal/errors"
+	gerr "github.com/Timwood0x10/ares/internal/errors"
 
 	"golang.org/x/crypto/blake2b"
 )

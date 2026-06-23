@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/observability"
-	"goagentx/internal/ratelimit"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ratelimit"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // Service provides graph orchestration operations.

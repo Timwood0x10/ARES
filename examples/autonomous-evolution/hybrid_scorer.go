@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	apievol "goagentx/api/evolution"
+	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
 )
 
 // phaseScorer switches between two scorer functions at a given generation boundary.

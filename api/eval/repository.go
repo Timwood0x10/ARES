@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // EvalResultRepository defines the data access interface for evaluation results.

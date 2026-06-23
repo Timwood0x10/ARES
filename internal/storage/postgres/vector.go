@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
-	"goagentx/internal/storage"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage"
 )
 
 // VectorSearcher handles vector similarity search.

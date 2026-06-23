@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (7): Runtime & Lifecycle — Birth, Death, and Resurrection
+# ares Architecture Deep Dive (7): Runtime & Lifecycle — Birth, Death, and Resurrection
 
 What happens when an Agent dies? Every framework has to answer this, but few do it well. This article walks through the Runtime subsystem's design journey — from "how to prevent crashes" to "how to resurrect with memories intact" and "how to resume interrupted work without wasting tokens." You'll see the concurrency trap behind the Resurrection Guard, the fault-tolerance philosophy of two-phase state recovery, the detached-context distillation pattern, and the honest trade-offs behind every decision. Written for developers working on agent reliability, distributed orchestration, or stateful service auto-recovery.
 

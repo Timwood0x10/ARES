@@ -2,10 +2,10 @@
 //
 // Usage:
 //
-//	goagentx arena run <scenario.yaml> [--addr=localhost:8080]
-//	goagentx arena validate <scenario.yaml>
-//	goagentx arena list [dir]
-//	goagentx arena serve [--addr=:8080]
+//	ares arena run <scenario.yaml> [--addr=localhost:8080]
+//	ares arena validate <scenario.yaml>
+//	ares arena list [dir]
+//	ares arena serve [--addr=:8080]
 package main
 
 import (
@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/internal/arena"
+	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 )
 
 func main() {
@@ -75,7 +75,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: goagentx arena <command> [options]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: ares arena <command> [options]\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  run       Run a scenario file (remote mode via HTTP)\n")
 	fmt.Fprintf(os.Stderr, "  validate  Validate a scenario file\n")

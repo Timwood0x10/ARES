@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 var agentIDSeq atomic.Int64

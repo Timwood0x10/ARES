@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // OpenAIAdapter implements LLMAdapter for OpenAI.

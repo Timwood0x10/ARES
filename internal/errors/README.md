@@ -8,7 +8,7 @@ This document defines the three error handling mechanisms used in GoAgent and wh
 **Use for:** Wrapping errors with context in high-frequency paths
 
 ```go
-import "goagentx/internal/errors"
+import "ares/internal/errors"
 
 // Wrap an error with context
 return errors.Wrap(err, "database query failed")

@@ -25,13 +25,13 @@ Best for:
 Add GoAgent as a dependency in your project:
 
 ```bash
-go get github.com/Timwood0x10/goagentx@latest
+go get github.com/Timwood0x10/ares@latest
 ```
 
 Or use go.mod:
 
 ```go
-require github.com/Timwood0x10/goagentx v1.0.0
+require github.com/Timwood0x10/ares v1.0.0
 ```
 
 #### Step 2: Initialize Agent
@@ -43,8 +43,8 @@ package main
 
 import (
     "context"
-    "github.com/Timwood0x10/goagentx/api/service"
-    "github.com/Timwood0x10/goagentx/internal/config"
+    "github.com/Timwood0x10/ares/api/service"
+    "github.com/Timwood0x10/ares/internal/config"
 )
 
 func main() {
@@ -114,8 +114,8 @@ Best for:
 
 ```bash
 # Clone project
-git clone https://github.com/Timwood0x10/goagentx.git
-cd GoAgentX
+git clone https://github.com/Timwood0x10/ares.git
+cd ares
 
 # Configure service
 cp config/server.example.yaml config/server.yaml
@@ -165,7 +165,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/Timwood0x10/goagentx/api/service"
+    "github.com/Timwood0x10/ares/api/service"
 )
 
 func main() {
@@ -369,7 +369,7 @@ import (
     "context"
     "fmt"
     "os"
-    "github.com/Timwood0x10/goagentx/api/service"
+    "github.com/Timwood0x10/ares/api/service"
 )
 
 func main() {

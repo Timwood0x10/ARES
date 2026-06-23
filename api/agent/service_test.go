@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/memory"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // mockMemoryManager is a mock implementation of memory.MemoryManager for testing.

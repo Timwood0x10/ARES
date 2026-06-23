@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# GoAgentX Quantitative Multi-Agent Demo
+# ares Quantitative Multi-Agent Demo
 #
 # Starts the quant demo with dashboard.
 # Usage:
@@ -63,7 +63,7 @@ if [ "$1" = "--status" ]; then
     exit 0
 fi
 
-echo -e "\n${CYAN}${BOLD}═══ GoAgentX Quant Demo ═══${NC}\n"
+echo -e "\n${CYAN}${BOLD}═══ ares Quant Demo ═══${NC}\n"
 
 # Pre-flight: check port.
 if lsof -i ":$PORT" >/dev/null 2>&1; then

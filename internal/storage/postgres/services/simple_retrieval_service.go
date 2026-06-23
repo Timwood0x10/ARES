@@ -10,10 +10,10 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"goagentx/internal/errors"
-	memembed "goagentx/internal/memory/embedding"
-	"goagentx/internal/storage/postgres/embedding"
-	"goagentx/internal/storage/postgres/repositories"
+	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // SimpleRetrievalConfig configuration for simple retrieval service

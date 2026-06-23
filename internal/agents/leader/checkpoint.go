@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // Sentinel errors for checkpoint operations.

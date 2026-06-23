@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"goagentx/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 // BenchmarkStreamHandler_HandleStream benchmarks the SSE streaming handler.

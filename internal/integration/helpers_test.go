@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // getTestPool creates a PostgreSQL connection pool for integration tests.

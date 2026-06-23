@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"goagentx/api/service/graph"
-	"goagentx/internal/observability"
+	"github.com/Timwood0x10/ares/api/service/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 func main() {

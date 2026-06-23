@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	apievol "goagentx/api/evolution"
-	"goagentx/internal/arena"
-	"goagentx/internal/callbacks"
-	"goagentx/internal/evolution"
-	"goagentx/internal/evolution/mutation"
-	"goagentx/internal/experience"
-	storageModels "goagentx/internal/storage/postgres/models"
+	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
+	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	storageModels "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // runBandit demonstrates Scenario 1: Bandit Feedback Loop.

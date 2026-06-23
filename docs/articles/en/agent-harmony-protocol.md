@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (II): Agent Harmony Protocol — The Communication Foundation for Multi-Agent Systems
+# ares Architecture Deep Dive (II): Agent Harmony Protocol — The Communication Foundation for Multi-Agent Systems
 
 > When it comes to multi-Agent systems, most people's first reaction is: "How do Agents talk to each other? Via HTTP or WebSocket? Through a message queue?"
 > My answer is rather blunt: **Running in the same process, and you still want to communicate over the network? Just use Go channels and be done with it.**
@@ -18,7 +18,7 @@ So I wrote a purely in-process communication protocol: no network, no serializat
 
 ## I. Why reinvent the wheel?
 
-GoAgentX has two roles: Leader Agent (who assigns work) and Sub Agent (who does the work). The communication between them needs to handle a bunch of annoyances:
+ares has two roles: Leader Agent (who assigns work) and Sub Agent (who does the work). The communication between them needs to handle a bunch of annoyances:
 
 - **Async messaging**: The Leader can toss out a task and move on, without waiting for the Sub to finish
 - **Progress feedback**: The Sub needs to let the Leader know when it's 50% done
@@ -369,7 +369,7 @@ All that said, these limitations are **acceptable trade-offs** at the monolithic
 
 ## Summary
 
-AHP is the communication wheel I built for GoAgentX. Channel-based messaging, DLQ as fallback, HeartbeatMonitor for liveness checks — three pieces combined, and the multi-Agent communication infrastructure is good to go.
+AHP is the communication wheel I built for ares. Channel-based messaging, DLQ as fallback, HeartbeatMonitor for liveness checks — three pieces combined, and the multi-Agent communication infrastructure is good to go.
 
 Those interfaces left in the code (Codec, DLQ handler, MessageSender) are essentially escape hatches I left for myself: if we ever need to switch to gRPC or RabbitMQ, just swap out one layer of implementation — the business code on top doesn't change. This kind of design is especially important in startup projects — you never know what the architecture will look like tomorrow.
 

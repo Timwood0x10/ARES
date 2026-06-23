@@ -1,4 +1,4 @@
-// Package api provides the application-level entry point for GoAgentX.
+// Package api provides the application-level entry point for ares.
 // It is designed as a "complete application launcher" that wires up LLM, MCP,
 // dashboard, event store, and flight recorder in a single call.
 //
@@ -9,7 +9,7 @@
 //	svc.RunReview()
 //	svc.Wait()
 //
-// For library-style embedding (modular access), use goagentx/api/client instead.
+// For library-style embedding (modular access), use ares/api/client instead.
 package api
 
 import (
@@ -22,10 +22,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagentx/internal/dashboard"
-	"goagentx/internal/flight"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/mcp"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/mcp"
 )
 
 // Service is the top-level application entry point. One call to StartService

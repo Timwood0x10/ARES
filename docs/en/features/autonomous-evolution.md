@@ -2,7 +2,7 @@
 
 ## Overview
 
-GoAgentX's **Autonomous Evolution** system implements a genetic algorithm (GA) for autonomous agent strategy optimization. The system — also known as **Dream Mode** — enables agents to continuously explore, evaluate, and adopt better decision-making strategies without human intervention.
+ares's **Autonomous Evolution** system implements a genetic algorithm (GA) for autonomous agent strategy optimization. The system — also known as **Dream Mode** — enables agents to continuously explore, evaluate, and adopt better decision-making strategies without human intervention.
 
 At its core, the system treats agent strategies as a **population of individuals** that evolve over generations through selection, crossover (recombination), and mutation. Each strategy encodes parameters such as LLM temperature, top_k, max_steps, prompt templates, and tool configurations. The GA searches this high-dimensional parameter space to discover strategies that maximize task performance scores.
 
@@ -521,9 +521,9 @@ import (
     "math/rand"
     "time"
 
-    "goagentx/internal/evolution"
-    "goagentx/internal/evolution/genome"
-    "goagentx/internal/evolution/mutation"
+    "ares/internal/evolution"
+    "ares/internal/evolution/genome"
+    "ares/internal/evolution/mutation"
 )
 
 func main() {
@@ -599,9 +599,9 @@ package main
 import (
     "context"
 
-    "goagentx/internal/evolution"
-    "goagentx/internal/evolution/genome"
-    "goagentx/internal/evolution/mutation"
+    "ares/internal/evolution"
+    "ares/internal/evolution/genome"
+    "ares/internal/evolution/mutation"
 )
 
 func main() {

@@ -5,16 +5,16 @@ import (
 	"strings"
 	"testing"
 
-	"goagentx/internal/callbacks"
-	"goagentx/internal/config"
-	"goagentx/internal/events"
-	"goagentx/internal/evolution"
-	"goagentx/internal/flight"
-	"goagentx/internal/llm"
-	"goagentx/internal/memory"
-	"goagentx/internal/memory/distillation"
-	"goagentx/internal/storage/postgres/models"
-	"goagentx/internal/storage/postgres/repositories"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // mockExpRepo implements repositories.ExperienceRepositoryInterface for testing.

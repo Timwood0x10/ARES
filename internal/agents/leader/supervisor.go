@@ -6,13 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/agents/base"
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/ctxutil"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/ctxutil"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )

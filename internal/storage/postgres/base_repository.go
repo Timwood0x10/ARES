@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Scannable is satisfied by *sql.Row and *sql.Rows.

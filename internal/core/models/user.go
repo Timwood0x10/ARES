@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"goagentx/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // UserProfile represents user profile information.

@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/api/core"
-	agentSvc "goagentx/api/service/agent"
-	llmSvc "goagentx/api/service/llm"
-	memorySvc "goagentx/api/service/memory"
-	retrievalSvc "goagentx/api/service/retrieval"
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/api/core"
+	agentSvc "github.com/Timwood0x10/ares/api/service/agent"
+	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
+	memorySvc "github.com/Timwood0x10/ares/api/service/memory"
+	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
+	"github.com/Timwood0x10/ares/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Phase represents a shutdown phase.

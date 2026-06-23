@@ -2,7 +2,7 @@
 
 ## 概述
 
-Experience System（经验系统）是 GoAgentX 框架中用于从任务执行中自动学习和复用经验的智能组件。该系统通过蒸馏成功的任务结果，提取可复用的知识，并在后续任务中智能检索和应用这些经验，实现 Agent 的持续学习和优化。
+Experience System（经验系统）是 ares 框架中用于从任务执行中自动学习和复用经验的智能组件。该系统通过蒸馏成功的任务结果，提取可复用的知识，并在后续任务中智能检索和应用这些经验，实现 Agent 的持续学习和优化。
 
 ---
 
@@ -410,7 +410,7 @@ conflictResolver.Configure(0.9) // 90% 相似度阈值
 ### 1. 基础蒸馏
 
 ```go
-import "goagentx/api/experience"
+import "ares/api/experience"
 
 // 创建任务结果
 task := &experience.TaskResult{

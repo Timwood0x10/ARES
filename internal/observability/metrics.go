@@ -32,7 +32,7 @@ type Metrics struct {
 //   - error: non-nil if any instrument creation fails.
 func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	llmCallsTotal, err := meter.Int64Counter(
-		"goagentx_llm_calls_total",
+		"ares_llm_calls_total",
 		metric.WithDescription("Total number of LLM calls"),
 	)
 	if err != nil {
@@ -40,7 +40,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}
 
 	toolCallsTotal, err := meter.Int64Counter(
-		"goagentx_tool_calls_total",
+		"ares_tool_calls_total",
 		metric.WithDescription("Total number of tool calls"),
 	)
 	if err != nil {
@@ -48,7 +48,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}
 
 	agentErrorsTotal, err := meter.Int64Counter(
-		"goagentx_agent_errors_total",
+		"ares_agent_errors_total",
 		metric.WithDescription("Total number of agent errors"),
 	)
 	if err != nil {
@@ -56,7 +56,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}
 
 	llmCallDuration, err := meter.Float64Histogram(
-		"goagentx_llm_call_duration_seconds",
+		"ares_llm_call_duration_seconds",
 		metric.WithDescription("LLM call duration in seconds"),
 		metric.WithExplicitBucketBoundaries(0.1, 0.5, 1, 2, 5, 10, 30, 60),
 	)
@@ -65,7 +65,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}
 
 	agentStepDuration, err := meter.Float64Histogram(
-		"goagentx_agent_step_duration_seconds",
+		"ares_agent_step_duration_seconds",
 		metric.WithDescription("Agent step duration in seconds"),
 		metric.WithExplicitBucketBoundaries(0.1, 0.5, 1, 2, 5, 10, 30, 60),
 	)
@@ -74,7 +74,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}
 
 	toolCallDuration, err := meter.Float64Histogram(
-		"goagentx_tool_call_duration_seconds",
+		"ares_tool_call_duration_seconds",
 		metric.WithDescription("Tool call duration in seconds"),
 		metric.WithExplicitBucketBoundaries(0.1, 0.5, 1, 2, 5, 10, 30, 60),
 	)

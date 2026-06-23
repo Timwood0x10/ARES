@@ -1,4 +1,4 @@
-module goagentx
+module github.com/Timwood0x10/ares
 
 go 1.26.1
 

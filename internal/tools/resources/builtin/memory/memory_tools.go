@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"goagentx/internal/memory"
-	"goagentx/internal/storage/postgres/repositories"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // MemorySearch searches distilled memories and user preferences.

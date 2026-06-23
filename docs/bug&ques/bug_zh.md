@@ -25,8 +25,8 @@ panic: runtime error: invalid memory address or nil pointer dereference [recover
 [signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x10448566c]
 
 goroutine 122 [running]:
-goagentx/internal/tools/resources/core.(*Registry).Filter(0x2cb030286580, 0x0)
-        /Users/scc/go/src/goagentxx/internal/tools/resources/core/registry.go:111 +0x1ac
+ares/internal/tools/resources/core.(*Registry).Filter(0x2cb030286580, 0x0)
+        /Users/scc/go/src/aresx/internal/tools/resources/core/registry.go:111 +0x1ac
 ```
 
 ### Root Cause Analysis
@@ -1486,21 +1486,21 @@ High - 数据竞争导致测试在 `go test -race` 模式下失败
 ```
 WARNING: DATA RACE
 Write at 0x00c00019411f by goroutine 42:
-  goagentx/internal/core/errors.TestRealHeartbeatMissed.func1.1()
+  ares/internal/core/errors.TestRealHeartbeatMissed.func1.1()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:534 +0x84
 
 Previous read at 0x00c00019411f by goroutine 41:
-  goagentx/internal/core/errors.TestRealHeartbeatMissed.func1.2()
+  ares/internal/core/errors.TestRealHeartbeatMissed.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:551 +0x168
 
 ==================
 WARNING: DATA RACE
 Read at 0x00c00029c3d0 by goroutine 57:
-  goagentx/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
+  ares/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:756 +0x20c
 
 Previous write at 0x00c00029c3d0 by goroutine 56:
-  goagentx/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
+  ares/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:756 +0x21c
 ```
 
@@ -3136,9 +3136,9 @@ import (
 
     "github.com/lib/pq"  // ← 添加 pq 包
 
-    "goagentx/internal/core/errors"
-    "goagentx/internal/storage/postgres"
-    storage_models "goagentx/internal/storage/postgres/models"
+    "ares/internal/core/errors"
+    "ares/internal/storage/postgres"
+    storage_models "ares/internal/storage/postgres/models"
 )
 ```
 

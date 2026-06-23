@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
 // DebateConfig controls the debate loop.

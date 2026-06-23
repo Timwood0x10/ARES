@@ -1,10 +1,10 @@
-# GoAgentX Architecture Deep Dive (XI): Autonomous Evolution — When Agents Learn to Improve Themselves
+# ares Architecture Deep Dive (XI): Autonomous Evolution — When Agents Learn to Improve Themselves
 
 > Have you ever wondered why agents can't get smarter with use?
 > They make the same mistake twice. Every time they solve a problem, next time they start from scratch.
 > If humans can learn from mistakes, why can't agents?
 > **What if we borrowed a page from biology?** Mutation, selection, inheritance, crossover — evolution itself is just a feedback loop running for 3.8 billion years.
-> And so GoAgentX's Autonomous Evolution system was born — teaching agents to dream, mutate, test, and evolve.
+> And so ares's Autonomous Evolution system was born — teaching agents to dream, mutate, test, and evolve.
 
 ---
 
@@ -72,7 +72,7 @@ So I went back to fundamentals and asked: what does an agent actually need to ev
 
 Mapping concepts from biological evolution:
 
-| Biological Concept | Agent Evolution Equivalent | GoAgentX Implementation |
+| Biological Concept | Agent Evolution Equivalent | ares Implementation |
 |---|---|---|
 | **Mutation** | Change parameters / prompts / tools | `Mutator.Mutate()` |
 | **Selection** | Arena regression testing (new vs old) | `RegressionTester.Run()` + Welch's t-test |
@@ -135,7 +135,7 @@ Key design decisions:
 
 When I started seriously designing the evolution system, I discovered something interesting: **most of the infrastructure already existed.**
 
-GoAgentX had quietly accumulated pieces — Experience System, Flight Recorder, Eval Engine, Callback System, Arena, Memory Distillation, DevAgent. Each managed its own domain separately, but together they formed the complete puzzle of evolution.
+ares had quietly accumulated pieces — Experience System, Flight Recorder, Eval Engine, Callback System, Arena, Memory Distillation, DevAgent. Each managed its own domain separately, but together they formed the complete puzzle of evolution.
 
 ### 3.1 Experience System — Bandit Ranking
 
@@ -1805,7 +1805,7 @@ Step by step, each step delivers independent value. Genome package is icing on t
 
 ## Conclusion
 
-GoAgentX's autonomous evolution system isn't black magic. It translates biology's most fundamental concept — **mutation, selection, inheritance, crossover** — into code:
+ares's autonomous evolution system isn't black magic. It translates biology's most fundamental concept — **mutation, selection, inheritance, crossover** — into code:
 
 ```
 Callback trigger -> Scheduler decides -> DreamCycle orchestrates

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	apperrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/llm/output"
+	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // profileParser parses user profile from natural language input.

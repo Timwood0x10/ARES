@@ -1,4 +1,4 @@
-// Package main demonstrates GoAgentX Autonomous Evolution (Dream Mode v1) workflow.
+// Package main demonstrates ares Autonomous Evolution (Dream Mode v1) workflow.
 // Showcases 7 core capabilities using mock implementations — no external services required.
 package main
 
@@ -15,7 +15,7 @@ func setupLogger() {
 
 func printHeader() {
 	fmt.Println(`╔════════════════════════════════════════════════════╗`)
-	fmt.Println(`║  GoAgentX Autonomous Evolution (Dream Mode v1) Demo ║`)
+	fmt.Println(`║  ares Autonomous Evolution (Dream Mode v1) Demo ║`)
 	fmt.Println(`╚════════════════════════════════════════════════════╝`)
 }
 

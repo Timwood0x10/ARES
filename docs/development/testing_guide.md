@@ -330,8 +330,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/goagentx/api/service"
-	"github.com/Timwood0x10/goagentx/internal/config"
+	"github.com/Timwood0x10/ares/api/service"
+	"github.com/Timwood0x10/ares/internal/config"
 )
 
 func TestEndToEndFlow(t *testing.T) {
@@ -567,7 +567,7 @@ go tool cover -func=coverage.out | grep total
 ```bash
 # 启动 PostgreSQL
 docker run -d \
-  --name goagentx-test-db \
+  --name ares-test-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \

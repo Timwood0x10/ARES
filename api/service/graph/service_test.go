@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/observability"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 func TestNewService(t *testing.T) {

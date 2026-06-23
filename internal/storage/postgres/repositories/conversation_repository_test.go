@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/core/errors"
-	storage_models "goagentx/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/core/errors"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // TestConversationRepository_Create tests creating a conversation message.

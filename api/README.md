@@ -120,12 +120,12 @@ import (
     "context"
     "log"
     
-    "goagentx/api/client"
-    "goagentx/api/core"
-    "goagentx/api/service/agent"
-    "goagentx/api/service/memory"
-    "goagentx/api/service/retrieval"
-    "goagentx/api/service/llm"
+    "ares/api/client"
+    "ares/api/core"
+    "ares/api/service/agent"
+    "ares/api/service/memory"
+    "ares/api/service/retrieval"
+    "ares/api/service/llm"
 )
 
 func main() {

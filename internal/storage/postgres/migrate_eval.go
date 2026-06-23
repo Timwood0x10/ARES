@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // evalMigrationStatements contains DDL for evaluation results storage tables.

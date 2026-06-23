@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	apperrors "goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // TrimAwareStore wraps an EventStore with the ability to delete (trim) old events

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // testCSVData is inline fixture data for simulator tests.

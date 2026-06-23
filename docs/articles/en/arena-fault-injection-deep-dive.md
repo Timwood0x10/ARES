@@ -1,7 +1,7 @@
-# GoAgentX Architecture Deep Dive (9): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal
+# ares Architecture Deep Dive (9): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal
 
 > Other agent frameworks show you how smart the agent is: fluent conversations, strong reasoning, smooth tool usage.
-> GoAgentX shows you something else: **when you deliberately kill its agents, can it survive?**
+> ares shows you something else: **when you deliberately kill its agents, can it survive?**
 > I call this "Edo Tensei Verification" — click a button on the Dashboard, assassinate a working agent, and see if it can pick itself back up.
 
 ---
@@ -28,7 +28,7 @@ graph TB
         M[Metrics Collector]
     end
 
-    subgraph "GoAgentX Runtime"
+    subgraph "ares Runtime"
         RT[Runtime]
         DAG[MutableDAG]
         ES[EventStore]
@@ -280,7 +280,7 @@ Two built-in scenarios:
 Survival mode continuously injects random faults for a configured duration:
 
 ```bash
-goagentx arena survival --addr http://localhost:8080 --duration 30m --interval 10s
+ares arena survival --addr http://localhost:8080 --duration 30m --interval 10s
 ```
 
 Live output:
@@ -340,7 +340,7 @@ graph TB
 ### 8.2 Post-Mortem Inspect
 
 ```bash
-goagentx arena inspect --addr http://localhost:8080
+ares arena inspect --addr http://localhost:8080
 ```
 
 ```
@@ -362,12 +362,12 @@ goagentx arena inspect --addr http://localhost:8080
 
 | Command | Description |
 |---------|-------------|
-| `goagentx arena run <scenario.yaml>` | Run a scenario against remote server |
-| `goagentx arena validate <scenario.yaml>` | Validate scenario file locally |
-| `goagentx arena list [dir]` | List scenario files in directory |
-| `goagentx arena serve [--addr]` | Start Arena HTTP server |
-| `goagentx arena survival [--addr] [--duration]` | Start survival mode (live progress) |
-| `goagentx arena inspect [--addr]` | Post-mortem inspection report |
+| `ares arena run <scenario.yaml>` | Run a scenario against remote server |
+| `ares arena validate <scenario.yaml>` | Validate scenario file locally |
+| `ares arena list [dir]` | List scenario files in directory |
+| `ares arena serve [--addr]` | Start Arena HTTP server |
+| `ares arena survival [--addr] [--duration]` | Start survival mode (live progress) |
+| `ares arena inspect [--addr]` | Post-mortem inspection report |
 
 ---
 
@@ -388,7 +388,7 @@ goagentx arena inspect --addr http://localhost:8080
 
 ```mermaid
 graph TB
-    subgraph "Arena Proves GoAgentX is a Self-Healing Runtime"
+    subgraph "Arena Proves ares is a Self-Healing Runtime"
         A[Kill Leader] --> LA[Leader Election ✓]
         A --> CK[Checkpoint Recovery ✓]
         A --> ER[Event Replay ✓]
@@ -412,12 +412,12 @@ graph TB
 
 ## 11. Conclusion
 
-Arena is the feature I find most interesting in GoAgentX. Not because the technology is particularly impressive — but because it shows something most other frameworks don't: **can the system survive when it's being continuously destroyed?**
+Arena is the feature I find most interesting in ares. Not because the technology is particularly impressive — but because it shows something most other frameworks don't: **can the system survive when it's being continuously destroyed?**
 
-13 fault types, scenario orchestration, survival mode, real-time Dashboard, Flight Recorder integration, three-dimensional resilience scoring... All of these together turn `goagentx arena run cascading_storm.yaml` from a test command into a demo that says: "Look how resilient my system is."
+13 fault types, scenario orchestration, survival mode, real-time Dashboard, Flight Recorder integration, three-dimensional resilience scoring... All of these together turn `ares arena run cascading_storm.yaml` from a test command into a demo that says: "Look how resilient my system is."
 
 I once showed a friend: opened the Dashboard, clicked "Assassinate Leader," the agent died... then 1.4 seconds later it auto-resurrected. He said: "Holy shit, it does that?"
 
 I thought: **Yeah. That's exactly why I spent so much time building this.**
 
-> "Break it deliberately. Watch it self-heal." — This is GoAgentX's most impressive demo, and the biggest source of satisfaction I've had in building this framework.
+> "Break it deliberately. Watch it self-heal." — This is ares's most impressive demo, and the biggest source of satisfaction I've had in building this framework.

@@ -71,7 +71,7 @@ psql -d goagent -c "CREATE EXTENSION vector;"
 ```bash
 # 启动 PostgreSQL + pgvector
 docker run -d \
-  --name goagentx-db \
+  --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
@@ -81,7 +81,7 @@ docker run -d \
 sleep 5
 
 # 验证连接
-docker exec -it goagentx-db psql -U postgres -d goagent -c "SELECT version();"
+docker exec -it ares-db psql -U postgres -d goagent -c "SELECT version();"
 ```
 
 ### 4. 配置示例
@@ -250,7 +250,7 @@ llm:
 ## 获取帮助
 
 - 查看 [常见问题](faq.md)
-- 提交 [Issue](https://github.com/Timwood0x10/goagentx/issues)
+- 提交 [Issue](https://github.com/Timwood0x10/ares/issues)
 
 ---
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // mockAgent implements the Agent interface for testing.

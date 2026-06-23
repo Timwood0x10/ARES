@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/api/client"
-	"goagentx/api/core"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/workflow/engine"
+	"github.com/Timwood0x10/ares/api/client"
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 const (
@@ -726,7 +726,7 @@ func generateAuditDocument(ctx context.Context, result *engine.WorkflowResult, c
 
 	docBuilder.WriteString("##### Areas for Review\n\n")
 	docBuilder.WriteString("- Performance benchmarks: use `go test -bench=. ./...` to measure latency and throughput\n")
-	docBuilder.WriteString("- Integration tests: see `goagentx/test/integration/` for end-to-end workflow tests\n")
+	docBuilder.WriteString("- Integration tests: see `ares/test/integration/` for end-to-end workflow tests\n")
 	docBuilder.WriteString("- Memory usage: profile with `go test -memprofile=mem.out -bench=BenchmarkDistillation`\n\n")
 
 	docBuilder.WriteString("### Security Assessment\n\n")

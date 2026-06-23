@@ -140,6 +140,6 @@ go test -bench=. -benchmem -count=1 -timeout=300s ./...
 Add to README:
 
 ```markdown
-![CI](https://github.com/Timwood0x10/GoAgentX/actions/workflows/ci.yml/badge.svg)
-![Integration](https://github.com/Timwood0x10/GoAgentX/actions/workflows/integration-test.yml/badge.svg)
+![CI](https://github.com/Timwood0x10/ares/actions/workflows/ci.yml/badge.svg)
+![Integration](https://github.com/Timwood0x10/ares/actions/workflows/integration-test.yml/badge.svg)
 ```

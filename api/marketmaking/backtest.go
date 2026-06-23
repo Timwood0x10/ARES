@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/portfolio"
+	"github.com/Timwood0x10/ares/internal/quant/portfolio"
 )
 
 type BacktestRunner interface {

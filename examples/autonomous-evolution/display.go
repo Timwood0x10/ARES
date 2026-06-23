@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	apievol "goagentx/api/evolution"
+	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
 )
 
 // sep prints a visual section separator with a centered title.

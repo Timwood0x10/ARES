@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagentx/internal/events"
-	"goagentx/internal/flight"
-	"goagentx/internal/llm/output"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // AgentTemplate defines a reusable agent configuration.

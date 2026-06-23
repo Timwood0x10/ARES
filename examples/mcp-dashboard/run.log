@@ -1,7 +1,7 @@
 2026/06/16 08:51:32 INFO llm connected provider=ollama model=llama3.2
 2026/06/16 08:51:32 INFO mcp tools discovered count=10
 2026/06/16 08:51:32 INFO flight recorder started
-GoAgentX Chaos Demo LIVE @ http://localhost8090 | Log: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
+ares Chaos Demo LIVE @ http://localhost8090 | Log: /Users/scc/go/src/goagent/examples/mcp-dashboard/run.log
 -> Open Arena tab, click 'Kill Agent', watch die->resurrect->cnt++
 2026/06/16 08:51:32 INFO dashboard started url=http://localhost:8090
 

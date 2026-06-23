@@ -1,4 +1,4 @@
-# GoAgentX
+# ares
 
 ```shell
            _____  ______  _____ 
@@ -7,7 +7,7 @@
    / /\ \ |  _  /|  __|  \___ \ 
   / ____ \| | \ \| |____ ____) |
  /_/    \_\_|  \_\______|_____/ 
-                    
+
 ```
 
 ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime for Autonomous Agents
@@ -255,7 +255,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 # Or manually:
 docker run -d \
-  --name goagentx-db \
+  --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
@@ -310,7 +310,7 @@ go test -bench=. ./...             # Benchmarks
 ## Project Structure
 
 ```
-GoAgentX/
+ares/
 ├── internal/
 │   ├── agents/          # Leader/Sub agent system
 │   ├── runtime/         # Runtime lifecycle management

@@ -3,7 +3,7 @@ package base
 import (
 	"context"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // Compile-time check: BaseTool satisfies ToolLifecycle.

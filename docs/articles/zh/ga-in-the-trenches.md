@@ -6,7 +6,7 @@
 
 ## 动机
 
-在上一篇文章（[autonomous-evolution-overview](./autonomous-evolution-overview.md)）里，我讲了 GoAgentX 进化系统的两条路径。其中 Genome GA 路径被我描述为"零 token 进化"——不需要 LLM 调用，纯 CPU 计算，只在已有的高分策略池里做基因重组。
+在上一篇文章（[autonomous-evolution-overview](./autonomous-evolution-overview.md)）里，我讲了 ares 进化系统的两条路径。其中 Genome GA 路径被我描述为"零 token 进化"——不需要 LLM 调用，纯 CPU 计算，只在已有的高分策略池里做基因重组。
 
 这个描述在架构层面没错，但"零 token 成本"这句话容易给人一种错觉：**好像 GA 是一件按个按钮就跑得很完美的事情。**
 

@@ -1,4 +1,4 @@
-// package config - provides configuration loading and validation for GoAgentX.
+// package config - provides configuration loading and validation for ares.
 package config
 
 import (
@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )

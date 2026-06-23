@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
-	storage_models "goagentx/internal/storage/postgres/models"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // KnowledgeRepository provides data access for knowledge chunks.

@@ -1,5 +1,5 @@
 // Command mcp-server provides an example MCP server demonstrating
-// tool, resource, and prompt registration with GoAgentX MCP SDK.
+// tool, resource, and prompt registration with ares MCP SDK.
 //
 // Usage: mcp-server serve
 package main
@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"goagentx/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/mcp"
 
 	"golang.org/x/sync/errgroup"
 )

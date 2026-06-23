@@ -5,11 +5,11 @@ import (
 	"sync"
 	"testing"
 
-	"goagentx/internal/agents/sub"
-	"goagentx/internal/callbacks"
-	"goagentx/internal/core/models"
-	"goagentx/internal/llm"
-	"goagentx/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // TestNewCallbackRegistry verifies that NewCallbackRegistry returns a non-nil

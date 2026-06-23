@@ -1,13 +1,13 @@
-# GoAgentX Autonomous Evolution (Dream Mode v1) Demo
+# ares Autonomous Evolution (Dream Mode v1) Demo
 
 ## Overview
 
-This demo showcases the **Autonomous Evolution System** of GoAgentX, also known as **Dream Mode v1**. It demonstrates how agents can self-improve through a closed-loop evolution process that includes feedback collection, strategy mutation, arena testing, and genealogy tracking.
+This demo showcases the **Autonomous Evolution System** of ares, also known as **Dream Mode v1**. It demonstrates how agents can self-improve through a closed-loop evolution process that includes feedback collection, strategy mutation, arena testing, and genealogy tracking.
 
 ## Prerequisites
 
 - **Go**: 1.26.1 or later
-- **Module**: `goagentx` (this project)
+- **Module**: `ares` (this project)
 
 ## How to Run
 
@@ -107,7 +107,7 @@ Trigger → Mutate(N candidates) → Arena Test → Select Best → Genealogy Re
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║     GoAgentX Autonomous Evolution (Dream Mode v1) Demo       ║
+║     ares Autonomous Evolution (Dream Mode v1) Demo       ║
 ╚══════════════════════════════════════════════════════════════╝
 
 ============================================================

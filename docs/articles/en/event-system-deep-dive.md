@@ -1,8 +1,8 @@
-# GoAgentX Architecture Deep Dive (8): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
+# ares Architecture Deep Dive (8): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
 
 > Agent startup is an event, task assignment is an event, tool call is an event, LLM response is an event, Agent crash is an event too.
 > I thought at the time: **If I record every single thing the Agent does, can I fully reconstruct its state after it crashes?**
-> The answer is yes. That's how Event Sourcing works in GoAgentX.
+> The answer is yes. That's how Event Sourcing works in ares.
 
 ---
 
@@ -189,7 +189,7 @@ ON CONFLICT (stream_id, version) DO NOTHING
 
 ## 4. Event Compaction Pipeline
 
-Without compaction, the event store grows unboundedly. GoAgentX's Compactor solves this by summarizing old events into compact snapshots.
+Without compaction, the event store grows unboundedly. ares's Compactor solves this by summarizing old events into compact snapshots.
 
 ### 4.1 CompactionConfig
 
@@ -409,4 +409,4 @@ At that moment, I felt like I wasn't debugging — I was watching a black box fl
 
 ---
 
-*Next preview: Arena / Fault Injection — possibly the most unhinged feature in GoAgentX. You can click a button on the Dashboard, assassinate a running Agent, and then watch it resurrect from the ashes.*
+*Next preview: Arena / Fault Injection — possibly the most unhinged feature in ares. You can click a button on the Dashboard, assassinate a running Agent, and then watch it resurrect from the ashes.*

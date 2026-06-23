@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 func TestMCPManagerStartStop(t *testing.T) {

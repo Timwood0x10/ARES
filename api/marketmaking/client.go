@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // DataFeed defines the interface for streaming market data.

@@ -267,7 +267,7 @@ response, err := service.Execute(context.Background(), g, request)
 
 Run all graph tests:
 ```bash
-cd /Users/scc/go/src/goagentx
+cd /Users/scc/go/src/ares
 go test ./internal/workflow/graph/... ./api/service/graph/... -v
 ```
 

@@ -1,6 +1,6 @@
 //go:build !researchdemo
 
-// Package main — GoAgentX Quantitative Trading Demo.
+// Package main — ares Quantitative Trading Demo.
 // Supports two execution modes:
 //
 //   - Legacy mode (default): 8 agents via Orchestrator, YAML-driven pipeline.
@@ -28,16 +28,16 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/api"
-	"goagentx/api/marketmaking"
-	"goagentx/examples/quant-trading/agents"
-	"goagentx/internal/llm"
-	"goagentx/internal/quant"
-	"goagentx/internal/quant/dataflow"
-	"goagentx/internal/quant/market"
-	"goagentx/internal/quant/research"
-	researchagents "goagentx/internal/quant/research/agents"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/api"
+	"github.com/Timwood0x10/ares/api/marketmaking"
+	"github.com/Timwood0x10/ares/examples/quant-trading/agents"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/quant"
+	"github.com/Timwood0x10/ares/internal/quant/dataflow"
+	"github.com/Timwood0x10/ares/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/quant/research"
+	researchagents "github.com/Timwood0x10/ares/internal/quant/research/agents"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 
 	"gopkg.in/yaml.v3"
 )
@@ -176,7 +176,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	log("\n╔════════════════════════════════════════════╗")
-	log("║  GoAgentX Quantitative Analysis               ║")
+	log("║  ares Quantitative Analysis               ║")
 	log("╚════════════════════════════════════════════╝")
 	log("  Ticker: %s", ticker)
 	log("  Model: %s (%s)", cfg.LLM.Model, cfg.LLM.Provider)
@@ -360,7 +360,7 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	log("\n╔══════════════════════════════════════════════╗")
-	log("║  GoAgentX Research Layer (12-Node Graph)    ║")
+	log("║  ares Research Layer (12-Node Graph)    ║")
 	log("╚══════════════════════════════════════════════╝")
 	log("  Ticker: %s", ticker)
 	if analysisDate != "" {

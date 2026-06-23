@@ -12,8 +12,8 @@ import (
 	"log/slog"
 	"time"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // ErrDuplicateTask is returned when Enqueue or EnqueueTx detects a duplicate

@@ -4,7 +4,7 @@ package postgres
 import (
 	"context"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // storageMigrations contains the DDL statements for the vector-based storage schema.

@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (10): Retrieval System — Hybrid Search and Scoring Pipeline
+# ares Architecture Deep Dive (10): Retrieval System — Hybrid Search and Scoring Pipeline
 
 > The agent says: "Based on your past experience, I suggest..." — but the suggestion is completely irrelevant.
 > Even worse: the agent solved this exact problem before, but now it's starting from scratch.
@@ -21,7 +21,7 @@ So I concluded: **A retrieval system isn't something you build with a vector dat
 
 ## 2. Architecture Overview: Two Retrieval Systems + Shared Infrastructure
 
-GoAgentX's retrieval system has two layers:
+ares's retrieval system has two layers:
 
 ```mermaid
 graph TB
@@ -55,7 +55,7 @@ Guess what? **advancedRetrieval has always been nil in the API layer.** We'll un
 
 Before diving into the embedding and search details, we need to answer a fundamental question: **Why use both pgvector and plain PostgreSQL tables?**
 
-First-time observers of GoAgentX's storage design often react: "Isn't this just vector retrieval? Why not use a dedicated vector database?" — I know that reaction well, because that's exactly what I thought when I started.
+First-time observers of ares's storage design often react: "Isn't this just vector retrieval? Why not use a dedicated vector database?" — I know that reaction well, because that's exactly what I thought when I started.
 
 ### 3.1 What Vector DBs Can and Can't Do
 
@@ -65,7 +65,7 @@ Let's first demystify vector databases.
 
 **What vector DBs are not good at:** As data volume grows, similarity in high-dimensional space gradually loses its discriminative power. This isn't a bug in any particular product — it's a mathematical property of high-dimensional geometry known as the **Curse of Dimensionality**, directly manifesting in retrieval.
 
-In a 1024-dimensional space (GoAgentX's embedding dimension), the cosine similarity between two random unrelated vectors is typically around 0.7-0.8. This means when you dump 100,000 entries into a single vector bucket and search for "Python dependency install error," your top-10 results might have five that look like:
+In a 1024-dimensional space (ares's embedding dimension), the cosine similarity between two random unrelated vectors is typically around 0.7-0.8. This means when you dump 100,000 entries into a single vector bucket and search for "Python dependency install error," your top-10 results might have five that look like:
 
 ```
 Rank 1: "pip freeze best practices"                — cosine sim 0.91, precisely relevant
@@ -100,7 +100,7 @@ At larger scale (millions, tens of millions of entries), this problem's conseque
 
 Once you understand vector DB boundaries and the damage false positives do to LLMs, the solution is clear: **don't let a single vector bucket bear the retrieval burden for all data.** Split data by type, route different types through different retrieval paths, so they don't interfere with each other.
 
-GoAgentX divides data into four domains:
+ares divides data into four domains:
 
 | Data Domain | Storage Location | Retrieval Strategy | Weight | Core Signal |
 |-------------|-----------------|-------------------|--------|-------------|
@@ -144,7 +144,7 @@ Dedicated vector databases (Milvus, Pinecone, Qdrant) are indeed stronger at vec
 - **Cross-system JOIN impossible** — can't simultaneously do vector search and structured filtering in a single query
 - **Operational overhead** — every additional independent database means another cluster to monitor, back up, and tune
 
-GoAgentX's choice: **store vectors in the pgvector plugin, and structured metadata in related tables within the same PostgreSQL. One query completes vector + metadata combined filtering and sorting at the SQL level.**
+ares's choice: **store vectors in the pgvector plugin, and structured metadata in related tables within the same PostgreSQL. One query completes vector + metadata combined filtering and sorting at the SQL level.**
 
 ```sql
 SELECT e.content, e.metadata,
@@ -642,7 +642,7 @@ Anyway, the code is already written. We'll talk about it when someone actually c
 
 ## 10. Summary
 
-GoAgentX's retrieval system in one sentence: **The foundation is a simple pure-vector solution, the nuclear option is hybrid search + multi-layer scoring pipeline, but the launch button for the nuclear option hasn't been pressed yet.**
+ares's retrieval system in one sentence: **The foundation is a simple pure-vector solution, the nuclear option is hybrid search + multi-layer scoring pipeline, but the launch button for the nuclear option hasn't been pressed yet.**
 
 Key design points:
 

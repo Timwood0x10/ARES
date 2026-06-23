@@ -1,4 +1,4 @@
-# GoAgentX Quantitative Trading Demo
+# ares Quantitative Trading Demo
 
 A self-healing multi-agent trading system supporting **two execution modes**:
 

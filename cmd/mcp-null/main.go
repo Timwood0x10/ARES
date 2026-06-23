@@ -1,5 +1,5 @@
 // Command mcp-null provides a minimal MCP server for demos that don't need
-// external MCP tools. It uses the GoAgentX MCP SDK to respond to initialize,
+// external MCP tools. It uses the ares MCP SDK to respond to initialize,
 // tools/list, and tools/call with proper responses.
 //
 // Usage: mcp-null serve
@@ -14,7 +14,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"goagentx/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/mcp"
 
 	"golang.org/x/sync/errgroup"
 )

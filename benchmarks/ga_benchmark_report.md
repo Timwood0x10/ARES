@@ -3,7 +3,7 @@
 **Date**: 2026-06-21
 **Platform**: darwin/arm64 (Apple M3 Max)
 **Go**: 1.26
-**Package**: `goagentx/internal/evolution/genome`
+**Package**: `ares/internal/evolution/genome`
 
 ## Overview
 

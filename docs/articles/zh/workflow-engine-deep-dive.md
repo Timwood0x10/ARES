@@ -1,4 +1,4 @@
-# GoAgentX 架构深度解析（四）：工作流引擎 -- GoAgentX 世界的 ReAct，从 DAG 到动态响应式编排
+# ares 架构深度解析（四）：工作流引擎 -- ares 世界的 ReAct，从 DAG 到动态响应式编排
 
 > 最早写工作流的时候，我用的是硬编码——if step1 done then step2, if step2 done then step3……
 > 后来需求越来越多、逻辑越来越绕，代码变成了一坨 spaghetti。
@@ -494,7 +494,7 @@ if step == nil {
 ## 五、节点级故障自愈：从 ReAct 到动态演进的 Runtime
 
 > 传统的 ReAct 是微观的、线性的。模型"思考"然后"行动"，再思考再行动——一个死循环走到黑。
-> 在 GoAgentX 里，我们不写死循环。我们为智能体提供可以自由演进的 DAG 运行时。
+> 在 ares 里，我们不写死循环。我们为智能体提供可以自由演进的 DAG 运行时。
 > 如果你的 Agent 挂了，Runtime 能够带着刚才的认知记忆，在图上稳住肉身。
 
 ### 5.1 从 ReAct 的死循环到 Dynamic DAG
@@ -513,7 +513,7 @@ Thought → Action → Observation → Thought → Action → ...
 2. **僵化拓扑**：每一步的"下一步"是在 LlM 输出里自描述的，框架无法感知和控制
 3. **无状态恢复**：没有事件溯源，没有 checkpoint，挂了就是真挂了
 
-GoAgentX 的选择是：**把 ReAct 的微观循环升级为宏观的、动态演进的分布式 Runtime**。
+ares 的选择是：**把 ReAct 的微观循环升级为宏观的、动态演进的分布式 Runtime**。
 
 模型不再通过字符串来约定"下一步做什么"，而是通过 MutableDAG 来直接操作 DAG 拓扑。Thought 和 Action 不再是 while 循环里的字符串，而是 Dynamic DAG 上的 Node 和 Edge。
 
@@ -628,7 +628,7 @@ sequenceDiagram
 
 RecoveryReplaceNode 最强大的场景是在节点替换时结合记忆蒸馏（Memory Distillation）。
 
-传统的 ReAct 里，Agent 挂了就是挂了——上下文丢失，记忆清零。但在 GoAgentX 中，当故障触发 RecoveryReplaceNode 时：
+传统的 ReAct 里，Agent 挂了就是挂了——上下文丢失，记忆清零。但在 ares 中，当故障触发 RecoveryReplaceNode 时：
 
 1. 原节点的执行结果和失败上下文被封装为 `StepFailure`
 2. `StepRecoveryHandler` 可以读取原节点的 Input、Output 和 Error

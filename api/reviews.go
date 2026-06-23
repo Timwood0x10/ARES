@@ -3,8 +3,8 @@ package api
 import (
 	"fmt"
 
-	"goagentx/internal/dashboard"
-	"goagentx/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/mcp"
 )
 
 // ReviewTask defines a data-driven review agent configuration.

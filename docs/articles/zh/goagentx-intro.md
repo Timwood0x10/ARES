@@ -1,4 +1,4 @@
-# GoAgentX 系列开篇：无聊自己搓一个 Agent 框架
+# ares 系列开篇：无聊自己搓一个 Agent 框架
 
 > 我一直觉得，最好的学习方式就是自己造一个轮子。
 > 不是因为轮子不够用——是因为造完之后，你再也不会被轮子卡住了。
@@ -30,7 +30,7 @@
 
 都是基于我自己的笔记做的。后来做了个独立项目上了 crates.io，反响不错，洋哥们儿用得也挺开心。
 
-然后就到了今天的主角：**GoAgentX**。
+然后就到了今天的主角：**ares**。
 
 ## 技术选型：为什么是 Go？
 
@@ -59,7 +59,7 @@
 
 Go 的简洁、极致性能和天生的并发支持让我眼前一亮。于是我决定：从头用 Go 重写整个 Agent 系统。
 
-**Shedding Old Baggage, I Designed My Own Agent Framework** —— 这就是 GoAgentX 的诞生故事。
+**Shedding Old Baggage, I Designed My Own Agent Framework** —— 这就是 ares 的诞生故事。
 
 从最基础的 LLM 调用和简单 RAG 开始，但这次感觉完全不一样：
 

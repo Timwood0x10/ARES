@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 func main() {

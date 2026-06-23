@@ -1,6 +1,6 @@
 # Agent Crash Recovery
 
-When an agent crashes in GoAgentX, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
+When an agent crashes in ares, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
 
 ## Recovery Architecture
 

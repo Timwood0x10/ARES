@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // MCPServerConfig holds configuration for a single MCP server.

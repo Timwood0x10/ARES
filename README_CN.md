@@ -1,4 +1,4 @@
-# GoAgentX
+# ares
 
 ```shell
            _____  ______  _____ 
@@ -255,7 +255,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 # 或手动：
 docker run -d \
-  --name goagentx-db \
+  --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \

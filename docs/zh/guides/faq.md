@@ -8,8 +8,8 @@
 
 **症状**:
 ```
-go: downloading goagentx/api v0.0.0
-go: module goagentx/api: Get "https://proxy.golang.org/goagentx/api/@v/list": dial tcp: lookup proxy.golang.org
+go: downloading ares/api v0.0.0
+go: module ares/api: Get "https://proxy.golang.org/ares/api/@v/list": dial tcp: lookup proxy.golang.org
 ```
 
 **解决方案**:
@@ -430,7 +430,7 @@ go build ./...
 
 - 查看 [架构文档](arch.md)
 - 查看 [快速开始](quick_start.md)
-- 提交 [Issue](https://github.com/Timwood0x10/goagentx/issues)
+- 提交 [Issue](https://github.com/Timwood0x10/ares/issues)
 
 ---
 

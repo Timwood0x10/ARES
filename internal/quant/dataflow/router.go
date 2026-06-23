@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/quant/market"
 )
 
 // Vendor is the interface that data source implementations must satisfy.

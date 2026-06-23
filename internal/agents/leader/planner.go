@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode"
 
-	"goagentx/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // Sentinel errors for taskPlanner validation.

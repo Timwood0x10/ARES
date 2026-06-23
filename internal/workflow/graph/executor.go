@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/observability"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 // Execute runs the graph with the given state.

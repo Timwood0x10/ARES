@@ -1,4 +1,4 @@
-# GoAgentX 架构深度解析（二）：Agent Harmony Protocol — 多智能体的通信基石
+# ares 架构深度解析（二）：Agent Harmony Protocol — 多智能体的通信基石
 
 > 聊到多 Agent 系统，很多人第一反应是："Agent 之间怎么说话？用 HTTP 还是 WebSocket？走消息队列？"
 > 我的回答比较粗暴：**同一个进程里跑着，聊个天还要走网络？直接用 Go channel 干不就完了。**
@@ -18,7 +18,7 @@ Leader 派了个活给 Sub，Sub 干完了想汇报，结果发现 Leader 已经
 
 ## 一、为什么自己造轮子？
 
-GoAgentX 里有两种角色：Leader Agent（管分活的）和 Sub Agent（管干活的）。它俩之间通信需要搞定的破事：
+ares 里有两种角色：Leader Agent（管分活的）和 Sub Agent（管干活的）。它俩之间通信需要搞定的破事：
 
 - **异步发消息**：Leader 把任务丢出去就能干别的，不用等 Sub 搞完
 - **进度反馈**：Sub 干到 50% 了，得让 Leader 知道
@@ -369,7 +369,7 @@ return d.waitForResult(ctx, task.TaskID)              // 阻塞等待结果
 
 ## 总结
 
-AHP 是我给 GoAgentX 搓的通信轮子。channel 传消息、DLQ 兜底、HeartbeatMonitor 看死活——三个东西加一起，多 Agent 通信的基础设施就齐活了。
+AHP 是我给 ares 搓的通信轮子。channel 传消息、DLQ 兜底、HeartbeatMonitor 看死活——三个东西加一起，多 Agent 通信的基础设施就齐活了。
 
 代码里留的那些接口（Codec、DLQ handler、MessageSender），说白了就是给自己留的后路：以后要上 gRPC 还是 RabbitMQ，换一层实现就完事，上面业务代码不用动。这种设计在创业项目里特别重要——你永远不知道明天架构要改成啥样。
 

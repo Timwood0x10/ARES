@@ -42,7 +42,7 @@ cd "$ROOT" && go run ./cmd/setup_test_db
 echo ""
 echo "=== Running production database migrations ==="
 export DB_NAME="goagent"
-cd "$ROOT" && go run ./cmd/migrate_goagentx
+cd "$ROOT" && go run ./cmd/migrate_db
 
 if [ -n "$SAVE_PATH" ]; then
   echo ""

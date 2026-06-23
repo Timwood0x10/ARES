@@ -1,4 +1,4 @@
-// package main — GoAgentX Chaos Engineering Demo.
+// package main — ares Chaos Engineering Demo.
 //
 // Demonstrates:
 //  1. MCP Discovery: auto-discovers local codegraph + tools.
@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/api"
-	"goagentx/internal/dashboard"
+	"github.com/Timwood0x10/ares/api"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
 func main() {
@@ -65,7 +65,7 @@ func main() {
 	go chaosDemo(ctx, svc, log)
 
 	addr := strings.TrimPrefix(cfg.Dashboard.Addr, ":")
-	log("GoAgentX Chaos Demo LIVE @ http://localhost%s | Log: %s", addr, logPath)
+	log("ares Chaos Demo LIVE @ http://localhost%s | Log: %s", addr, logPath)
 	log("-> Open Arena tab, click 'Kill Agent', watch die->resurrect->cnt++")
 
 	svc.Wait()

@@ -11,8 +11,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Pool represents a database connection pool with "get usage release" pattern.

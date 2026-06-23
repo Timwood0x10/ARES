@@ -257,7 +257,7 @@ type Message struct {
 **Code Location**: `internal/storage/postgres/pool.go:30-50`
 
 ```go
-import "goagentx/internal/storage/postgres"
+import "ares/internal/storage/postgres"
 
 config := &postgres.Config{
     Host:            "localhost",

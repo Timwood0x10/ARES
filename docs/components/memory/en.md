@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The Memory System manages session memory, task memory, and distilled memories for the GoAgentX framework.
+The Memory System manages session memory, task memory, and distilled memories for the ares framework.
 
 **Core Features**: session context management, task execution tracking, memory distillation (experience extraction), vector-based semantic search.
 

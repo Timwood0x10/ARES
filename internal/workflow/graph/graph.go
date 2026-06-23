@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/observability"
-	"goagentx/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ratelimit"
 )
 
 // Edge represents a connection between two nodes with optional condition.

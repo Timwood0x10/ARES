@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"goagentx/internal/storage"
+	"github.com/Timwood0x10/ares/internal/storage"
 )
 
 // VectorStore is an in-memory implementation of storage.VectorStore.

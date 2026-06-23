@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	apperrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
+	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // Protocol represents the AHP protocol manager.

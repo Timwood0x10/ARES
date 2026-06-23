@@ -17,11 +17,11 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/events"
-	"goagentx/internal/plugins/resurrection"
-	"goagentx/internal/protocol/ahp"
-	"goagentx/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // Config holds configuration for the runtime service.

@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"goagentx/api/core"
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Service provides retrieval operations for knowledge base.

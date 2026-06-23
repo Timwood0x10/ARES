@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"goagentx/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 // Ensure MemorySnapshotStore implements SnapshotStore.

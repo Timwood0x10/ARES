@@ -2,8 +2,8 @@
 //
 // Usage:
 //
-//	goagentx flight inspect <taskID> [--format=text|mermaid|dot|json] [--input=file]
-//	goagentx flight replay <taskID> [--step=N] [--input=file]
+//	ares flight inspect <taskID> [--format=text|mermaid|dot|json] [--input=file]
+//	ares flight replay <taskID> [--step=N] [--input=file]
 package main
 
 import (
@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/events"
-	"goagentx/internal/flight"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 func main() {
@@ -48,7 +48,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: goagentx flight <command> [options]\n\n")
+	fmt.Fprintf(os.Stderr, "Usage: ares flight <command> [options]\n\n")
 	fmt.Fprintf(os.Stderr, "Commands:\n")
 	fmt.Fprintf(os.Stderr, "  inspect   Show flight data for a task\n")
 	fmt.Fprintf(os.Stderr, "  replay    Step-by-step replay of a task\n")

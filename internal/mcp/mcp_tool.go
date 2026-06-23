@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// MCPTool wraps an MCP tool definition as a GoAgentX Tool.
+// MCPTool wraps an MCP tool definition as a ares Tool.
 type MCPTool struct {
 	*base.BaseTool
 	client     *MCPClient

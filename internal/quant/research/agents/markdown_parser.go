@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // MarkdownParser extracts structured data from markdown-rendered research outputs.

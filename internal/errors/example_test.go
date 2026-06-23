@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // ExampleWrap demonstrates how to use Wrap instead of fmt.Errorf.

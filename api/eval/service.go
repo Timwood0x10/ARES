@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
-	"goagentx/internal/eval"
+	"github.com/Timwood0x10/ares/internal/eval"
 )
 
 // Service orchestrates evaluation runs: loading suites, running tests via

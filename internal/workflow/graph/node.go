@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // Node represents an executable unit in the graph.

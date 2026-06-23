@@ -112,8 +112,8 @@ func NewOTelTracer(serviceName string, opts ...OTelOption) (*OTelTracer, error) 
 		sdkmetric.WithReader(cfg.metricReader),
 	)
 
-	tracer := provider.Tracer("goagentx")
-	meter := meterProvider.Meter("goagentx")
+	tracer := provider.Tracer("ares")
+	meter := meterProvider.Meter("ares")
 
 	metrics, err := NewMetrics(meter)
 	if err != nil {
