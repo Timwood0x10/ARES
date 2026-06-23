@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1189,4 +1190,96 @@ func TestEvolveZeroOffspringPath(t *testing.T) {
 			t.Log("note: mutation rate unchanged (may be at boundary of diversity threshold)")
 		}
 	})
+}
+
+func TestEvolveRejectsUnevaluated(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := newTestStrategy(0.5)
+	mutator := &mockMutator{}
+	crosser := &mockCrosser{}
+
+	pop, err := NewPopulation(ctx, base, mutator, WithPopulationSize(4))
+	if err != nil {
+		t.Fatalf("failed to create population: %v", err)
+	}
+
+	// Leave agents unevaluated (Score defaults to 0 from newTestStrategy, but
+	// we need at least one agent with Score < 0 to trigger the guard).
+	for i, agent := range pop.Agents {
+		if i == 2 {
+			agent.Score = -1.0 // Unevaluated sentinel
+		} else {
+			agent.Score = float64(i + 1) // Evaluated scores
+		}
+	}
+
+	err = pop.Evolve(ctx, mutator, crosser)
+	if err == nil {
+		t.Fatal("expected error when evolving with unevaluated agent, got nil")
+	}
+
+	// Error should mention "unevaluated" or "pre-evolution validation".
+	wantMsg := "unevaluated"
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("error message should contain %q, got: %v", wantMsg, err)
+	}
+}
+
+func TestEvolveAcceptsAllEvaluated(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := newTestStrategy(0.5)
+	mutator := &mockMutator{}
+	crosser := &mockCrosser{}
+
+	pop, err := NewPopulation(ctx, base, mutator,
+		WithPopulationSize(6), WithSurvivalRate(0.5), WithEliteCount(1),
+	)
+	if err != nil {
+		t.Fatalf("failed to create population: %v", err)
+	}
+
+	// Score all agents (all >= 0 means evaluated).
+	for i, agent := range pop.Agents {
+		agent.Score = float64(i + 10)
+	}
+
+	err = pop.Evolve(ctx, mutator, crosser)
+	if err != nil {
+		t.Fatalf("evolve should succeed with all evaluated agents: %v", err)
+	}
+
+	if pop.Generation != 1 {
+		t.Errorf("generation = %d, want 1 after successful evolve", pop.Generation)
+	}
+}
+
+func TestRootStrategyHasCorrectMutationType(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := newTestStrategy(0.5)
+
+	pop, err := NewPopulation(ctx, base, &mockMutator{}, WithPopulationSize(5))
+	if err != nil {
+		t.Fatalf("failed to create population: %v", err)
+	}
+
+	if len(pop.Agents) == 0 {
+		t.Fatal("population has no agents")
+	}
+
+	rootAgent := pop.Agents[0]
+	if rootAgent.StrategyMutationType != mutation.MutationRoot {
+		t.Errorf("root strategy MutationType = %d (%q), want %d (root)",
+			rootAgent.StrategyMutationType, rootAgent.StrategyMutationType.String(),
+			mutation.MutationRoot)
+	}
+
+	if rootAgent.MutationDesc != "root strategy" {
+		t.Errorf("root strategy MutationDesc = %q, want %q", rootAgent.MutationDesc, "root strategy")
+	}
 }

@@ -56,6 +56,7 @@ const (
 	CategoryData      = core.CategoryData
 	CategoryKnowledge = core.CategoryKnowledge
 	CategoryMemory    = core.CategoryMemory
+	CategoryExternal  = core.CategoryExternal
 )
 
 // Core functions

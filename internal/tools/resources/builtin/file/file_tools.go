@@ -30,7 +30,7 @@ func WithAllowedDir(dir string) FileToolsOption {
 }
 
 // NewFileTools creates a new FileTools tool.
-func NewFileTools() *FileTools {
+func NewFileTools(opts ...FileToolsOption) *FileTools {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
@@ -83,9 +83,15 @@ func NewFileTools() *FileTools {
 		Required: []string{"operation"},
 	}
 
-	return &FileTools{
+	ft := &FileTools{
 		BaseTool: base.NewBaseToolWithCapabilities("file_tools", "Read, write, and list files and directories", core.CategorySystem, []core.Capability{core.CapabilityFile}, params),
 	}
+
+	for _, opt := range opts {
+		opt(ft)
+	}
+
+	return ft
 }
 
 // Execute performs the file operation.
@@ -122,6 +128,8 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		}
 		filePath = absPath
 	}
+
+	filePath = filepath.Clean(filePath)
 
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -218,6 +226,8 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 		filePath = absPath
 	}
 
+	filePath = filepath.Clean(filePath)
+
 	// Security: validate path is within allowed directory
 	if t.allowedDir != "" {
 		absPath, err := filepath.Abs(filePath)
@@ -245,30 +255,30 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 		return core.NewErrorResult(fmt.Sprintf("failed to create directory: %v", err)), nil
 	}
 
-	var err error
+	var writeErr error
 	if mode == "append" {
 		// Append mode
-		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to open file: %v", err)), nil
+		file, openErr := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304
+		if openErr != nil {
+			return core.NewErrorResult(fmt.Sprintf("failed to open file: %v", openErr)), nil
 		}
 		defer func() {
-			if err := file.Close(); err != nil {
-				slog.Error("failed to close file: ", "error", err)
+			if closeErr := file.Close(); closeErr != nil {
+				slog.Error("failed to close file: ", "error", closeErr)
 			}
 		}()
 
-		_, err = file.WriteString(content)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to write to file: %v", err)), nil
+		_, writeErr = file.WriteString(content)
+		if writeErr != nil {
+			return core.NewErrorResult(fmt.Sprintf("failed to write to file: %v", writeErr)), nil
 		}
 	} else {
 		// Write mode (overwrite)
-		err = os.WriteFile(filePath, []byte(content), 0600)
+		writeErr = os.WriteFile(filePath, []byte(content), 0600)
 	}
 
-	if err != nil {
-		return core.NewErrorResult(fmt.Sprintf("failed to write file: %v", err)), nil
+	if writeErr != nil {
+		return core.NewErrorResult(fmt.Sprintf("failed to write file: %v", writeErr)), nil
 	}
 
 	return core.NewResult(true, map[string]interface{}{
@@ -294,6 +304,23 @@ func (t *FileTools) listFiles(ctx context.Context, params map[string]interface{}
 			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
 		}
 		dirPath = absPath
+	}
+
+	dirPath = filepath.Clean(dirPath)
+
+	// Security: validate path is within allowed directory
+	if t.allowedDir != "" {
+		absDir, err := filepath.Abs(dirPath)
+		if err != nil {
+			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
+		}
+		allowedAbs, err := filepath.Abs(t.allowedDir)
+		if err != nil {
+			return core.NewErrorResult(fmt.Sprintf("failed to resolve allowed directory: %v", err)), nil
+		}
+		if !strings.HasPrefix(absDir, allowedAbs) {
+			return core.NewErrorResult(fmt.Sprintf("access denied: path %s is outside allowed directory %s", dirPath, t.allowedDir)), nil
+		}
 	}
 
 	// Check if directory exists

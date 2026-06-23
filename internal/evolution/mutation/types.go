@@ -26,6 +26,11 @@ const (
 	// MutationCrossover indicates a strategy created via crossover (genetic algorithm).
 	// Two parent strategies are combined to produce a child strategy.
 	MutationCrossover
+
+	// MutationRoot indicates a root/initial strategy that was not created via
+	// mutation or crossover. It represents the baseline strategy from which
+	// evolution begins.
+	MutationRoot
 )
 
 // String returns the human-readable name of the mutation type.
@@ -39,13 +44,16 @@ func (mt MutationType) String() string {
 		return "tool"
 	case MutationCrossover:
 		return "crossover"
+	case MutationRoot:
+		return "root"
 	default:
 		return "unknown"
 	}
 }
 
 // ParseMutationType converts a string to a MutationType.
-// Unknown strings are logged as a warning and return MutationParameter
+// Empty strings are treated as root (default for initial strategies).
+// Unknown non-empty strings are logged as a warning and return MutationRoot
 // as a safe default, avoiding silent degradation.
 func ParseMutationType(s string) MutationType {
 	switch s {
@@ -57,11 +65,14 @@ func ParseMutationType(s string) MutationType {
 		return MutationTool
 	case "crossover":
 		return MutationCrossover
+	case "root", "":
+		// Empty string is treated as root (default for initial strategies).
+		return MutationRoot
 	default:
-		slog.Warn("unknown mutation type string, falling back to MutationParameter",
+		slog.Warn("unknown mutation type string, falling back to MutationRoot",
 			"input", s,
 		)
-		return MutationParameter
+		return MutationRoot
 	}
 }
 

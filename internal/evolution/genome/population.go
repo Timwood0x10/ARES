@@ -102,6 +102,14 @@ type PopulationConfig struct {
 	// becomes more aggressive and stagnation reset may inject random individuals.
 	// Range [0, 1], default 0.15.
 	DiversityThreshold float64 `json:"diversity_threshold"`
+
+	// TournamentSize is the number of competitors per tournament round (default 3).
+	// Used when UseTournamentSelection is true. Values < 2 fall back to random selection.
+	TournamentSize int `json:"tournament_size"`
+
+	// UseTournamentSelection enables tournament-based parent selection during offspring generation.
+	// When false (default), parents are chosen randomly from the breeding pool.
+	UseTournamentSelection bool `json:"use_tournament_selection"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -120,6 +128,8 @@ func DefaultPopulationConfig() PopulationConfig {
 		MaxMutationRate:        0.5,
 		MaxStagnantGenerations: 10,
 		DiversityThreshold:     0.15,
+		TournamentSize:         3,
+		UseTournamentSelection: false, // Opt-in for backward compatibility
 	}
 }
 
@@ -325,6 +335,30 @@ func WithDiversityThreshold(threshold float64) PopulationOption {
 	}
 }
 
+// WithTournamentSelection enables tournament-based parent selection with the given size.
+// When enabled, generateOffspring uses TournamentSelection to pick parents instead of
+// random selection from the breeding pool. This increases selection pressure toward
+// higher-scoring individuals.
+//
+// Args:
+//
+//	size - number of competitors per tournament (must be >= 2).
+//
+// Returns:
+//
+//	PopulationOption - functional option to enable tournament selection.
+//	error - ErrInvalidTournamentSize if size < 2.
+func WithTournamentSelection(size int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if size < 2 {
+			return fmt.Errorf("%w: got %d", ErrInvalidTournamentSize, size)
+		}
+		cfg.UseTournamentSelection = true
+		cfg.TournamentSize = size
+		return nil
+	}
+}
+
 // Population holds a collection of agent strategies that evolve together.
 // It manages the lifecycle of strategies across generations using
 // selection, crossover, and mutation operations.
@@ -349,6 +383,10 @@ type Population struct {
 
 	// bestScore tracks the highest score seen across generations for stagnation detection.
 	bestScore float64
+
+	// bestEver holds the highest-scoring strategy seen across all generations.
+	// Updated after each scoring pass. Used by BestStrategy() for deployment.
+	bestEver *mutation.Strategy
 
 	// stagnantGens counts consecutive generations without best-score improvement.
 	stagnantGens int
@@ -431,6 +469,8 @@ func (p *Population) initializeFromBase(ctx context.Context, base *mutation.Stra
 	defer p.mu.Unlock()
 
 	baseClone := base.Clone()
+	baseClone.StrategyMutationType = mutation.MutationRoot
+	baseClone.MutationDesc = "root strategy"
 	p.Agents = append(p.Agents, baseClone)
 
 	if p.Size > 1 {
@@ -451,6 +491,9 @@ func (p *Population) initializeFromBase(ctx context.Context, base *mutation.Stra
 // Evolve runs one generation of evolution on the population.
 // Delegates to doEvolve with standard configuration: configurable survival rate,
 // all survivors as parent pool, and configured elite preservation.
+//
+// Pre-condition: all agents in the population must have been evaluated (Score >= 0)
+// before calling this method. Call ScoreAgents first if needed.
 //
 // Args:
 //
@@ -498,6 +541,11 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return ErrSelectionEmptyPopulation
 	}
 
+	// Guard: refuse to select parents from unevaluated population.
+	if err := p.ensureEvaluatedBeforeSelection(); err != nil {
+		return fmt.Errorf("pre-evolution validation: %w", err)
+	}
+
 	// Step 1: Sort by score and select survivors.
 	sorted := make([]*mutation.Strategy, len(p.Agents))
 	copy(sorted, p.Agents)
@@ -519,6 +567,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		p.Agents = nextGen
 		p.Generation++
 
+		// Update best-ever tracking even in the zero-offspring path.
+		p.updateBestEverLocked()
+
 		// Skip adaptive adjustments when no offspring were produced — no new
 		// genetic material entered the pool, so diversity/stagnation signals
 		// would be misleading.
@@ -531,7 +582,20 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return nil
 	}
 
-	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, remainingSlots)
+	// Prepare tournament selector once for reproducibility.
+	var ts *TournamentSelection
+	if p.cfg.UseTournamentSelection {
+		var err error
+		ts, err = NewTournamentSelection(
+			WithTournamentSize(p.cfg.TournamentSize),
+			WithTournamentSeed(p.rng.Int63()),
+		)
+		if err != nil {
+			return fmt.Errorf("create tournament selector: %w", err)
+		}
+	}
+
+	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, ts, remainingSlots)
 	if err != nil {
 		return fmt.Errorf("generate offspring: %w", err)
 	}
@@ -550,6 +614,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	p.Agents = nextGen
 	p.Generation++
 
+	// Update best-ever tracking after assembling the new generation.
+	p.updateBestEverLocked()
+
 	// Apply fitness sharing to penalize crowded regions of parameter space
 	// before adaptive adjustments, so diversity metrics reflect shared scores.
 	// Elites are protected from penalty to preserve their scores.
@@ -557,6 +624,20 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 
 	p.adjustMutationRateLocked()
 	p.handleStagnationLocked()
+
+	// Check for diversity collapse and inject fresh mutants if needed.
+	report := p.measureDiversityReportLocked()
+	if report.Overall < p.cfg.DiversityThreshold || report.DominantLineageShare > 0.6 {
+		p.injectFreshMutantsLocked(len(elites))
+		slog.Warn("diversity collapse detected, injected fresh mutants",
+			"generation", p.Generation,
+			"overall_diversity", report.Overall,
+			"dominant_lineage_share", report.DominantLineageShare,
+			"numeric_diversity", report.Numeric,
+			"categorical_diversity", report.Categorical,
+			"lineage_diversity", report.Lineage,
+		)
+	}
 
 	slog.InfoContext(ctx, cfg.logLabel,
 		"generation", p.Generation,
@@ -569,25 +650,26 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	return nil
 }
 
-// preserveElites copies the top EliteCount survivors without modification.
-// Elites are deep-cloned to prevent shared state across generations.
-func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.Strategy {
-	eliteCount := min(p.cfg.EliteCount, len(survivors))
-	if eliteCount <= 0 {
-		return []*mutation.Strategy{}
-	}
-
-	elites := make([]*mutation.Strategy, 0, eliteCount)
-	for i := 0; i < eliteCount; i++ {
-		elites = append(elites, survivors[i].Clone())
-	}
-
-	return elites
-}
-
 // generateOffspring creates new strategies through crossover and mutation
 // to fill the specified number of population slots.
-func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, count int) ([]*mutation.Strategy, error) {
+// When UseTournamentSelection is configured, parents are chosen via tournament
+// selection (higher-scoring individuals have higher probability). Otherwise,
+// parents are selected randomly from the breeding pool (backward compatible).
+//
+// Args:
+//
+//	ctx - operation context (used for cancellation).
+//	parentPool - eligible parent strategies for crossover.
+//	mutator - the mutation engine for generating variations.
+//	crosser - the crossover engine for combining parents.
+//	ts - optional tournament selector (nil for random selection).
+//	count - number of offspring to generate.
+//
+// Returns:
+//
+//	[]*mutation.Strategy - generated offspring strategies.
+//	error - non-nil if generation fails or context is cancelled.
+func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, ts *TournamentSelection, count int) ([]*mutation.Strategy, error) {
 	if count <= 0 {
 		return []*mutation.Strategy{}, nil
 	}
@@ -601,8 +683,27 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 		default:
 		}
 
-		parentA := parentPool[p.rng.Intn(len(parentPool))]
-		parentB := parentPool[p.rng.Intn(len(parentPool))]
+		var parentA, parentB *mutation.Strategy
+		if ts != nil {
+			// Tournament selection: run 2 tournaments to pick 2 parents.
+			winners, err := ts.Select(ctx, parentPool, 2)
+			if err != nil {
+				return nil, fmt.Errorf("tournament select parents: %w", err)
+			}
+			if len(winners) >= 2 {
+				parentA = winners[0]
+				parentB = winners[1]
+			} else if len(winners) == 1 {
+				parentA = winners[0]
+				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
+			} else {
+				return nil, fmt.Errorf("tournament returned no winners")
+			}
+		} else {
+			// Original random selection (backward compatible).
+			parentA = parentPool[p.rng.Intn(len(parentPool))]
+			parentB = parentPool[p.rng.Intn(len(parentPool))]
+		}
 
 		child, err := crosser.Crossover(ctx, parentA, parentB)
 		if err != nil {
@@ -630,72 +731,6 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 	}
 
 	return offspring, nil
-}
-
-// applyFitnessSharing reduces scores of agents in crowded regions of parameter space.
-// This prevents all agents from converging to the same local optimum by penalizing
-// similarity — agents that occupy the same niche share their fitness.
-//
-// Agents with IsScoreEvaluated() == false (unevaluated) are excluded from both the distance
-// calculation and penalty, preventing fitness sharing from operating on
-// meaningless default scores that would distort diversity metrics.
-//
-// eliteCount specifies how many leading agents (already sorted by score) are
-// protected from penalty so that elite preservation guarantees are upheld.
-func (p *Population) applyFitnessSharing(eliteCount int) {
-	n := len(p.Agents)
-	if n < 2 {
-		return
-	}
-
-	const (
-		shareSigma  = FitnessSharingSigma // sharing coefficient
-		nicheRadius = FitnessNicheRadius  // distance threshold for "same niche"
-	)
-
-	// Build a filtered index of scored agents only (IsScoreEvaluated()).
-	// Unevaluated agents (Score=ScoreUnevaluated) should not participate in fitness sharing
-	// because their score is meaningless and would distort the shared fitness signal.
-	scoredIdx := make([]int, 0, n)
-	for i, a := range p.Agents {
-		if IsScoreEvaluated(a.Score) {
-			scoredIdx = append(scoredIdx, i)
-		}
-	}
-
-	if len(scoredIdx) < 2 {
-		return
-	}
-
-	// Build temp slice for key/range collection from scored agents only.
-	scored := make([]*mutation.Strategy, len(scoredIdx))
-	for k, idx := range scoredIdx {
-		scored[k] = p.Agents[idx]
-	}
-	keys := collectAgentParamKeys(scored)
-	ranges := computeParamRanges(scored, keys)
-
-	// Apply fitness sharing penalty using original agent slices (indexed through
-	// scoredIdx) to avoid maintaining a parallel slice alongside the index list.
-	for ki, i := range scoredIdx {
-		if i < eliteCount {
-			continue // skip elites
-		}
-		crowdCount := 0
-		for kj := range scoredIdx {
-			if ki == kj {
-				continue
-			}
-			dist := paramDistance(p.Agents[scoredIdx[ki]], p.Agents[scoredIdx[kj]], keys, ranges)
-			if dist < nicheRadius {
-				crowdCount++
-			}
-		}
-		if crowdCount > 0 {
-			penalty := shareSigma * float64(crowdCount)
-			p.Agents[i].Score /= (1.0 + penalty)
-		}
-	}
 }
 
 // Snapshot returns a thread-safe copy of all agents and the current generation.
@@ -730,6 +765,21 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 
 	for _, agent := range p.Agents {
 		agent.Score = scorer(agent)
+	}
+
+	p.updateBestEverLocked()
+}
+
+// updateBestEverLocked checks all evaluated agents against the current bestEver
+// and updates it if a higher score is found. Caller must hold p.mu write lock.
+func (p *Population) updateBestEverLocked() {
+	for _, a := range p.Agents {
+		if !IsScoreEvaluated(a.Score) {
+			continue
+		}
+		if p.bestEver == nil || a.Score > p.bestEver.Score {
+			p.bestEver = a.Clone()
+		}
 	}
 }
 
@@ -769,6 +819,9 @@ func (p *Population) Best() *mutation.Strategy {
 // This method is designed to be called from Callback EventAgentEnd handler,
 // requiring no additional LLM API calls (zero token cost for evolution itself).
 //
+// Pre-condition: all agents in the population must have been evaluated (Score >= 0)
+// before calling this method. Call ScoreAgents first if needed.
+//
 // Args:
 //
 //   - ctx: operation context for cancellation.
@@ -793,19 +846,49 @@ func (p *Population) EvolveOnIdle(ctx context.Context, mutator MutatorInterface,
 	})
 }
 
-// BestStrategy returns a deep clone of the highest-scoring strategy in the population.
-// This is intended for deployment to production after evolution completes.
-// Returns nil if the population is empty.
+// BestStrategy returns a deep clone of the best-ever strategy across all generations.
+// If no strategy has ever been evaluated, falls back to the current population's best.
+// Returns nil if the population is empty and no best-ever exists.
 //
 // Returns:
 //
-//   - *mutation.Strategy: cloned best strategy, or nil if empty.
+//	*mutation.Strategy: cloned best-ever strategy, current best clone, or nil.
 func (p *Population) BestStrategy() *mutation.Strategy {
-	best := p.Best()
-	if best == nil {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.bestEver != nil {
+		return p.bestEver.Clone()
+	}
+
+	// Fallback: return current population best if bestEver not yet set.
+	if len(p.Agents) == 0 {
+		return nil
+	}
+	best := p.Agents[0]
+	for _, agent := range p.Agents[1:] {
+		if IsScoreEvaluated(agent.Score) && agent.Score > best.Score {
+			best = agent
+		}
+	}
+	if !IsScoreEvaluated(best.Score) {
 		return nil
 	}
 	return best.Clone()
+}
+
+// BestEverScore returns the score of the best-ever strategy, or ScoreUnevaluated if none exists.
+//
+// Returns:
+//
+//	float64 - the best-ever score, or ScoreUnevaluated if no strategy has been evaluated.
+func (p *Population) BestEverScore() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.bestEver == nil {
+		return ScoreUnevaluated
+	}
+	return p.bestEver.Score
 }
 
 // Stats returns population statistics for the current generation.
@@ -844,6 +927,7 @@ func (p *Population) Stats() *PopulationStats {
 	stats.AvgScore = totalScore / float64(len(p.Agents))
 	stats.BestScore = bestScore
 	stats.WorstScore = worstScore
+	stats.Diversity = p.measureDiversityReportLocked()
 
 	return stats
 }
@@ -872,6 +956,9 @@ type PopulationStats struct {
 
 	// WorstScore is the lowest score among all agents.
 	WorstScore float64
+
+	// Diversity is the detailed diversity breakdown of the population.
+	Diversity DiversityReport
 }
 
 // evolveConfig captures the configurable differences between Evolve and EvolveOnIdle.

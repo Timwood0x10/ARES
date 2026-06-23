@@ -100,7 +100,7 @@ func TestFormatDateTime(t *testing.T) {
 			name:   "invalid datetime data",
 			params: map[string]interface{}{},
 			data:   "invalid",
-			want:   "时间工具返回了意外的数据格式",
+			want:   "datetime tool returned unexpected data format: string",
 		},
 	}
 
@@ -152,7 +152,7 @@ func TestFormatCalculator(t *testing.T) {
 			name:   "invalid calculator data",
 			params: map[string]interface{}{},
 			data:   "invalid",
-			want:   "计算工具返回了意外的数据格式",
+			want:   "calculator tool returned unexpected data format: string",
 		},
 	}
 

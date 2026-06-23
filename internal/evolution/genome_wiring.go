@@ -463,6 +463,13 @@ func NewWiredEvolutionSystem(
 	}
 
 	// Step 1: Create production mutator with optional seed and deterministic IDs.
+	//
+	// TODO(known-gap): Prompt mutations are disabled in wired mode because
+	// WithPromptPool() is not passed to NewMutator(). The mutator's promptPool
+	// defaults to []string{}, so mutation.MutationPromptType mutations are never
+	// generated. To enable prompt evolution, add a PromptTemplates field to
+	// SystemConfig and pass mutation.WithPromptPool(templates) here.
+	// See hardening plan Phase 2 Item 6.
 	var mutatorOpts []mutation.MutatorOption
 	if cfg.MutatorSeed != 0 {
 		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.MutatorSeed))

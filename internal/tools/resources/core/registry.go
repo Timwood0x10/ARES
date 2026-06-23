@@ -112,10 +112,14 @@ func (r *Registry) Filter(filter *ToolFilter) *Registry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// If filter is nil, return all tools
+	// If filter is nil, return all tools (deep copy to avoid data race)
 	if filter == nil {
+		toolsCopy := make(map[string]Tool, len(r.tools))
+		for k, v := range r.tools {
+			toolsCopy[k] = v
+		}
 		return &Registry{
-			tools: r.tools,
+			tools: toolsCopy,
 		}
 	}
 
@@ -163,24 +167,22 @@ func (r *Registry) GetSchemas() []ToolSchema {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if !r.schemaDirty && r.schemaCache != nil {
-		return r.schemaCache
+	if r.schemaDirty || r.schemaCache == nil {
+		schemas := make([]ToolSchema, 0, len(r.tools))
+		for _, tool := range r.tools {
+			schemas = append(schemas, ToolSchema{
+				Name:        tool.Name(),
+				Description: tool.Description(),
+				Category:    tool.Category(),
+				Parameters:  tool.Parameters(),
+			})
+		}
+
+		r.schemaCache = schemas
+		r.schemaDirty = false
 	}
 
-	schemas := make([]ToolSchema, 0, len(r.tools))
-	for _, tool := range r.tools {
-		schemas = append(schemas, ToolSchema{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Category:    tool.Category(),
-			Parameters:  tool.Parameters(),
-		})
-	}
-
-	r.schemaCache = schemas
-	r.schemaDirty = false
-	return schemas
+	return r.schemaCache
 }
 
 // ToolFilter defines filter criteria for tools.

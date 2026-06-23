@@ -131,8 +131,3 @@ type metadataTool struct {
 	core.Tool
 	Metadata core.ToolMetadata
 }
-
-// IsDeprecated returns true if tool is deprecated.
-func (m *metadataTool) IsDeprecated() bool {
-	return m.Metadata.Deprecated
-}

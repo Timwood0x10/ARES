@@ -6,6 +6,32 @@ import (
 	"goagentx/internal/evolution/mutation"
 )
 
+// DiversityReport provides a detailed breakdown of population diversity metrics.
+// It splits overall diversity into numeric, categorical, and lineage components
+// for targeted intervention decisions.
+type DiversityReport struct {
+	// Overall is the weighted average of all diversity components [0, 1].
+	Overall float64
+
+	// Numeric is the average pairwise normalized parameter distance [0, 1].
+	Numeric float64
+
+	// Categorical measures differences in prompt templates, tool configs, etc. [0, 1].
+	Categorical float64
+
+	// Lineage measures parent ID concentration; 1.0 = all different parents, 0.0 = same parent.
+	Lineage float64
+
+	// DominantLineageShare is the fraction of population sharing the most common ParentID [0, 1].
+	// Values above configured threshold (default 0.6) indicate lineage collapse.
+	DominantLineageShare float64
+}
+
+// DiversityMetricVersion indicates the current diversity metric version.
+// v2 (introduced 0.1.1): Weighted components (numeric 40%, categorical 40%, lineage 20%).
+// v1 (legacy): Single aggregate paramDistance including numeric + categorical.
+const DiversityMetricVersion = 2
+
 // adaptive mutation rate tuning constants.
 
 // emergencyDiversityThreshold is the diversity level below which
@@ -42,13 +68,51 @@ func (p *Population) computeBestScoreLocked() float64 {
 	return best
 }
 
-// measureDiversityLocked computes the average pairwise normalized parameter
-// distance across all agents. Only numeric parameters (float64, int, int64, etc.)
-// participate in the distance calculation; string or other types are skipped.
-// Returns a value in [0, 1] where 0 means all agents have identical parameters
-// and 1 means maximum divergence.
-// Caller must hold at least a read lock.
+// measureDiversityReportLocked computes a detailed diversity breakdown of the population.
+// Splits diversity into numeric (parameter distance), categorical (prompt/tools/model),
+// and lineage (parent concentration) components.
+// Caller must hold at least a read lock on p.mu.
+//
+// NOTE: The weighted Overall formula (v2) may produce different values than the
+// legacy paramDistance-based metric (v1). Adaptive thresholds configured for
+// v1 may need recalibration. See DiversityMetricVersion.
+func (p *Population) measureDiversityReportLocked() DiversityReport {
+	n := len(p.Agents)
+	report := DiversityReport{
+		Overall:     1.0,
+		Numeric:     1.0,
+		Categorical: 1.0,
+		Lineage:     1.0,
+	}
+
+	if n < 2 {
+		return report
+	}
+
+	// Numeric diversity: average pairwise normalized parameter distance.
+	report.Numeric = p.measureNumericDiversityLocked()
+
+	// Categorical diversity: differences in prompt templates, tool configs, etc.
+	report.Categorical = p.measureCategoricalDiversityLocked()
+
+	// Lineage diversity: parent ID concentration analysis.
+	report.Lineage, report.DominantLineageShare = p.measureLineageDiversityLocked()
+
+	// Weighted overall: numeric 40%, categorical 40%, lineage 20%.
+	report.Overall = report.Numeric*0.4 + report.Categorical*0.4 + report.Lineage*0.2
+
+	return report
+}
+
+// measureDiversityLocked returns the overall diversity score for backward compatibility.
+// Prefer measureDiversityReportLocked for detailed analysis.
 func (p *Population) measureDiversityLocked() float64 {
+	return p.measureDiversityReportLocked().Overall
+}
+
+// measureNumericDiversityLocked computes average pairwise normalized parameter distance.
+// Only numeric parameters participate. Returns [0, 1].
+func (p *Population) measureNumericDiversityLocked() float64 {
 	n := len(p.Agents)
 	if n < 2 {
 		return 1.0
@@ -65,16 +129,125 @@ func (p *Population) measureDiversityLocked() float64 {
 	var pairCount int
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
-			dist := paramDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
+			dist := numericParamDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
 			totalDist += dist
 			pairCount++
 		}
 	}
-
 	if pairCount == 0 {
 		return 1.0
 	}
 	return totalDist / float64(pairCount)
+}
+
+// numericParamDistance computes normalized distance using only numeric parameters.
+// Returns the average normalized difference across all shared numeric keys [0, 1].
+func numericParamDistance(a, b *mutation.Strategy, keys []string, ranges map[string]float64) float64 {
+	var totalDist float64
+	var count int
+	for _, k := range keys {
+		va, okA := a.Params[k]
+		vb, okB := b.Params[k]
+		if !okA || !okB {
+			continue
+		}
+		fa, okA := toFloat64(va)
+		fb, okB := toFloat64(vb)
+		if !okA || !okB {
+			continue
+		}
+		r := ranges[k]
+		if r < 1e-10 {
+			r = 1.0
+		}
+		totalDist += absFloat(fa-fb) / r
+		count++
+	}
+	if count == 0 {
+		return 0.0
+	}
+	return totalDist / float64(count)
+}
+
+// measureCategoricalDiversityLocked computes diversity based on categorical attributes
+// (prompt template, tools configuration). Returns [0, 1].
+func (p *Population) measureCategoricalDiversityLocked() float64 {
+	n := len(p.Agents)
+	if n < 2 {
+		return 1.0
+	}
+
+	var totalDist float64
+	var pairCount int
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			dist := 0.0
+			count := 0
+
+			// Prompt template difference.
+			if p.Agents[i].PromptTemplate != p.Agents[j].PromptTemplate {
+				dist += 1.0
+			}
+			count++
+
+			// Tools configuration difference.
+			ta, okA := p.Agents[i].Params["tools"].(string)
+			tb, okB := p.Agents[j].Params["tools"].(string)
+			if okA && okB && ta != tb {
+				dist += 1.0
+			} else if okA != okB {
+				dist += 1.0
+			}
+			count++
+
+			if count > 0 {
+				totalDist += dist / float64(count)
+			}
+			pairCount++
+		}
+	}
+	if pairCount == 0 {
+		return 1.0
+	}
+	return totalDist / float64(pairCount)
+}
+
+// measureLineageDiversityLocked computes lineage (parent ID) diversity.
+//
+// Returns:
+//
+//	float64: lineage diversity score [0, 1] where 1 = all unique parents.
+//	float64: dominant lineage share [0, 1] fraction of population from most common parent.
+func (p *Population) measureLineageDiversityLocked() (float64, float64) {
+	n := len(p.Agents)
+	if n < 2 {
+		return 1.0, 1.0
+	}
+
+	// Count occurrences of each parent ID.
+	parentCount := make(map[string]int, n)
+	for _, a := range p.Agents {
+		pid := a.ParentID
+		if pid == "" {
+			pid = "(root)" // Treat empty ParentID as root lineage.
+		}
+		parentCount[pid]++
+	}
+
+	// Find dominant lineage.
+	maxCount := 0
+	for _, c := range parentCount {
+		if c > maxCount {
+			maxCount = c
+		}
+	}
+	dominantShare := float64(maxCount) / float64(n)
+
+	// Lineage diversity: unique parent ratio.
+	uniqueParents := len(parentCount)
+	lineageDiv := float64(uniqueParents) / float64(n)
+
+	return lineageDiv, dominantShare
 }
 
 // collectAgentParamKeys returns the union of all parameter keys across agents.

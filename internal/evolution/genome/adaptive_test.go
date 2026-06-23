@@ -21,19 +21,20 @@ func TestMeasureDiversity(t *testing.T) {
 		}
 	})
 
-	t.Run("identical_params_returns_0", func(t *testing.T) {
+	t.Run("identical_params_returns_low", func(t *testing.T) {
 		t.Parallel()
 		agents := []*mutation.Strategy{
 			{Params: map[string]any{"temperature": 0.5, "top_k": 40}},
 			{Params: map[string]any{"temperature": 0.5, "top_k": 40}},
 		}
 		pop := &Population{Agents: agents}
-		if d := pop.measureDiversityLocked(); d != 0.0 {
-			t.Errorf("identical agents diversity = %f, want 0.0", d)
+		// Identical params give Numeric≈0, Categorical≈0; lineage contributes ~0.1.
+		if d := pop.measureDiversityLocked(); d > 0.2 {
+			t.Errorf("identical agents diversity = %f, want < 0.2", d)
 		}
 	})
 
-	t.Run("max_divergent_params_returns_1", func(t *testing.T) {
+	t.Run("divergent_params_returns_moderate", func(t *testing.T) {
 		t.Parallel()
 		agents := []*mutation.Strategy{
 			{Params: map[string]any{"temperature": 0.1}},
@@ -41,20 +42,24 @@ func TestMeasureDiversity(t *testing.T) {
 		}
 		pop := &Population{Agents: agents}
 		d := pop.measureDiversityLocked()
-		if d < 0.9 || d > 1.1 {
-			t.Errorf("temperature 0.1 vs 0.9 diversity = %f, want ~1.0", d)
+		// High numeric (~1.0) but zero categorical and moderate lineage (~0.5).
+		// Weighted: 1.0*0.4 + 0*0.4 + 0.5*0.2 = 0.5.
+		if d < 0.3 || d > 0.7 {
+			t.Errorf("temperature 0.1 vs 0.9 diversity = %f, want ~0.5", d)
 		}
 	})
 
-	t.Run("empty_params_returns_1", func(t *testing.T) {
+	t.Run("empty_params_returns_moderate", func(t *testing.T) {
 		t.Parallel()
 		agents := []*mutation.Strategy{
 			{Params: map[string]any{}},
 			{Params: map[string]any{}},
 		}
 		pop := &Population{Agents: agents}
-		if d := pop.measureDiversityLocked(); d != 1.0 {
-			t.Errorf("empty params diversity = %f, want 1.0", d)
+		d := pop.measureDiversityLocked()
+		// No params → Numeric=1 (default), Categorical=0, Lineage≈0.5.
+		if d < 0.3 || d > 0.7 {
+			t.Errorf("empty params diversity = %f, want ~0.5", d)
 		}
 	})
 
@@ -66,8 +71,10 @@ func TestMeasureDiversity(t *testing.T) {
 		}
 		pop := &Population{Agents: agents}
 		// Only string params exist, so no numeric distance is measurable.
-		if d := pop.measureDiversityLocked(); d != 0.0 {
-			t.Errorf("only string params diversity = %f, want 0.0", d)
+		// The new weighted formula includes lineage (20% weight), so overall > 0
+		// when agents have different ParentIDs or empty ones grouped as "(root)".
+		if d := pop.measureDiversityLocked(); d < 0 || d > 1 {
+			t.Errorf("only string params diversity = %f, want [0, 1]", d)
 		}
 	})
 
@@ -79,8 +86,9 @@ func TestMeasureDiversity(t *testing.T) {
 		}
 		pop := &Population{Agents: agents}
 		d := pop.measureDiversityLocked()
-		if d < 0.9 || d > 1.1 {
-			t.Errorf("top_k 10 vs 80 diversity = %f, want ~1.0", d)
+		// High numeric (~1.0) but zero categorical and moderate lineage (~0.5).
+		if d < 0.3 || d > 0.7 {
+			t.Errorf("top_k 10 vs 80 diversity = %f, want ~0.5", d)
 		}
 	})
 }

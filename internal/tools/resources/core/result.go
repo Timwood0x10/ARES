@@ -61,7 +61,7 @@ func ResultWithTiming(result Result, duration time.Duration) Result {
 		result.Metadata = make(map[string]interface{})
 	}
 	result.Metadata["duration_ms"] = duration.Milliseconds()
-	result.Metadata["timestamp"] = time.Now().Unix()
+	result.Metadata["executed_at"] = time.Now().Unix()
 	return result
 }
 
