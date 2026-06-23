@@ -420,6 +420,12 @@ type SystemConfig struct {
 	// instead of the Score=-1 default, closing the scoring loop for the
 	// scheduler-triggered path. When nil, the caller must score externally.
 	Scorer func(*mutation.Strategy) float64 `json:"-"`
+
+	// PromptTemplates is the pool of prompt templates for prompt mutation.
+	// When non-empty, the mutator can generate MutationPrompt type mutations
+	// that swap the strategy's prompt template with alternatives from this pool.
+	// Empty (default) means prompt mutation is disabled.
+	PromptTemplates []string `json:"prompt_templates,omitempty"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -475,20 +481,17 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("base strategy must not be nil")
 	}
 
-	// Step 1: Create production mutator with optional seed and deterministic IDs.
-	//
-	// TODO(known-gap): Prompt mutations are disabled in wired mode because
-	// WithPromptPool() is not passed to NewMutator(). The mutator's promptPool
-	// defaults to []string{}, so mutation.MutationPromptType mutations are never
-	// generated. To enable prompt evolution, add a PromptTemplates field to
-	// SystemConfig and pass mutation.WithPromptPool(templates) here.
-	// See hardening plan Phase 2 Item 6.
+	// Step 1: Create production mutator with optional seed, deterministic IDs,
+	// and prompt template pool for prompt mutation support.
 	var mutatorOpts []mutation.MutatorOption
 	if cfg.MutatorSeed != 0 {
 		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.MutatorSeed))
 	}
 	if cfg.UseDeterministicIDs {
 		mutatorOpts = append(mutatorOpts, mutation.WithDeterministicIDs(true))
+	}
+	if len(cfg.PromptTemplates) > 0 {
+		mutatorOpts = append(mutatorOpts, mutation.WithPromptPool(cfg.PromptTemplates))
 	}
 	rawMutator, err := mutation.NewMutator(mutatorOpts...)
 	if err != nil {

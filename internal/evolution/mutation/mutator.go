@@ -223,14 +223,14 @@ func (m *Mutator) mutatePrompt(parent *Strategy) (*Strategy, error) {
 
 	if len(m.promptPool) <= 1 {
 		child.MutationDesc = "insufficient prompt templates for mutation"
-		child.StrategyMutationType = MutationPrompt
+		child.StrategyMutationType = MutationParameter
 		return child, nil
 	}
 
 	newTemplate := m.pickDifferentString(m.promptPool, parent.PromptTemplate)
 	if newTemplate == "" {
 		child.MutationDesc = "no alternative prompt template available"
-		child.StrategyMutationType = MutationPrompt
+		child.StrategyMutationType = MutationParameter
 		return child, nil
 	}
 
