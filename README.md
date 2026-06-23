@@ -1,16 +1,16 @@
 # GoAgentX
 
 ```shell
-   _____                               _  __   __
-  / ____|        /\                   | | \ \ / /
- | |  __  ___   /  \   __ _  ___ _ __ | |_ \ V / 
- | | |_ |/ _ \ / /\ \ / _` |/ _ \ '_ \| __| > <  
- | |__| | (_) / ____ \ (_| |  __/ | | | |_ / . \ 
-  \_____|\___/_/    \_\__, |\___|_| |_|\__/_/ \_\
-                       __/ |                     
-                      |___/                      
+           _____  ______  _____ 
+     /\   |  __ \|  ____|/ ____|
+    /  \  | |__) | |__  | (___  
+   / /\ \ |  _  /|  __|  \___ \ 
+  / ____ \| | \ \| |____ ____) |
+ /_/    \_\_|  \_\______|_____/ 
+                    
 ```
 
+ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime for Autonomous Agents
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
