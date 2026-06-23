@@ -61,8 +61,18 @@ func LoadScenario(data []byte) (*Scenario, error) {
 	return &s, nil
 }
 
-// LoadScenarioFile reads a scenario from a file path.
+// LoadScenarioFile reads a scenario from a file path with size limit.
 func LoadScenarioFile(path string) (*Scenario, error) {
+	const maxFileSize = 10 * 1024 * 1024 // 10MB
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("arena: stat scenario file %s: %w", path, err)
+	}
+	if fi.Size() > maxFileSize {
+		return nil, fmt.Errorf("arena: scenario file too large: %d bytes (max: %d)", fi.Size(), maxFileSize)
+	}
+
 	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("arena: read scenario file %s: %w", path, err)
@@ -292,8 +302,9 @@ func (r *ScenarioReport) checkVerified(scenario Scenario) {
 
 // RunScenario executes all actions in a scenario with the specified delays.
 // Returns the results of all executed actions. Stops if the context is cancelled.
-// NOTE: This function preserves backward compatibility. New code should use RunScenarioReport.
+// Deprecated: Use RunScenarioReport instead. This function will be removed in a future version.
 func RunScenario(ctx context.Context, service *Service, scenario Scenario) ([]Result, error) {
+	slog.Warn("RunScenario is deprecated, use RunScenarioReport instead")
 	if service == nil {
 		return nil, fmt.Errorf("arena: service is nil")
 	}

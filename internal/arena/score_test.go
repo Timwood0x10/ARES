@@ -29,10 +29,10 @@ func TestCalculateScore_ZeroActions(t *testing.T) {
 	stats := Stats{}
 	score := CalculateScoreV1(stats, 0)
 
-	// With no actions: Availability=100 (default), Recovery=0, Consistency=100 (heuristic)
-	// Score = 100*0.4 + 0*0.3 + 100*0.3 = 70
-	assert.InDelta(t, 70.0, score.Score, 1.0)
-	assert.Equal(t, "C", score.Grade)
+	// With no actions: Availability=0, Recovery=0, Consistency=100 (heuristic)
+	// Score = 0*0.4 + 0*0.3 + 100*0.3 = 30
+	assert.InDelta(t, 30.0, score.Score, 1.0)
+	assert.Equal(t, "F", score.Grade)
 	assert.Equal(t, 0, score.TotalFaults)
 }
 
@@ -267,7 +267,7 @@ func TestCalculateScore_DimensionBreakdown(t *testing.T) {
 
 func TestCalcAvailability_ZeroFaults(t *testing.T) {
 	avail := calcAvailability(0, 0, 0)
-	assert.InDelta(t, 100.0, avail, 0.01)
+	assert.InDelta(t, 0.0, avail, 0.01)
 }
 
 func TestCalcAvailability_AllPassed(t *testing.T) {

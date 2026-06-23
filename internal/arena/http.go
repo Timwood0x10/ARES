@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -78,8 +79,8 @@ func (h *Handler) handleKillLeader(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleKillAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -94,8 +95,8 @@ func (h *Handler) handleKillAgent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleRemoveNode(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing node id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -116,6 +117,14 @@ func (h *Handler) handleRemoveEdge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.From == "" || req.To == "" {
 		writeError(w, http.StatusBadRequest, "both 'from' and 'to' are required")
+		return
+	}
+	if errMsg := validAgentID(req.From); errMsg != "" {
+		writeError(w, http.StatusBadRequest, "from: "+errMsg)
+		return
+	}
+	if errMsg := validAgentID(req.To); errMsg != "" {
+		writeError(w, http.StatusBadRequest, "to: "+errMsg)
 		return
 	}
 	action := Action{
@@ -141,8 +150,8 @@ func (h *Handler) handleKillOrchestrator(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) handleNetworkPartition(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -162,8 +171,8 @@ type slowRequest struct {
 
 func (h *Handler) handlePauseAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -178,8 +187,8 @@ func (h *Handler) handlePauseAgent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleResumeAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -194,8 +203,8 @@ func (h *Handler) handleResumeAgent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleSlowAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	var req slowRequest
@@ -226,8 +235,8 @@ type toolTimeoutRequest struct {
 
 func (h *Handler) handleToolTimeout(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	var req toolTimeoutRequest
@@ -248,8 +257,8 @@ func (h *Handler) handleToolTimeout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleMemoryCorrupt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -264,8 +273,8 @@ func (h *Handler) handleMemoryCorrupt(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleMCPDisconnect(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	action := Action{
@@ -285,8 +294,8 @@ type llmFailureRequest struct {
 
 func (h *Handler) handleLLMFailure(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing agent id")
+	if errMsg := validAgentID(id); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
 	var req llmFailureRequest
@@ -382,9 +391,12 @@ func (h *Handler) handleSurvivalStart(w http.ResponseWriter, r *http.Request) {
 		cfg.Interval = 10 * time.Second
 	}
 
-	// Run survival in background.
+	// Run survival in background. Use context.Background() as parent because
+	// survival is a long-running background task that outlives the HTTP request lifecycle.
 	go func() {
-		report := h.service.RunSurvival(context.Background(), cfg)
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration*2)
+		defer cancel()
+		report := h.service.RunSurvival(ctx, cfg)
 		slog.Info("arena: survival run finished in background",
 			"actions", report.ActionsRun,
 			"score", report.Score.Score,
@@ -518,6 +530,23 @@ func RecoverMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validAgentID validates an agent/node ID for basic format constraints.
+// Returns an error message if invalid, or empty string if valid.
+func validAgentID(id string) string {
+	if id == "" {
+		return "missing agent id"
+	}
+	if len(id) > 256 {
+		return "agent id too long (max 256 characters)"
+	}
+	for _, r := range id {
+		if unicode.IsSpace(r) {
+			return "agent id must not contain whitespace"
+		}
+	}
+	return ""
 }
 
 // ValidateAction checks that an action has the required fields for its type.

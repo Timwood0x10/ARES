@@ -78,11 +78,11 @@ func CalculateScoreV1(stats Stats, avgRecovery time.Duration) ResilienceScore {
 }
 
 // calcAvailability computes the availability dimension score (0-100).
-// Base: (TotalFaults - FailedFaults) / TotalFaults * 100. Defaults to 100 when TotalFaults=0.
+// Base: (TotalFaults - FailedFaults) / TotalFaults * 100. Returns 0 when TotalFaults=0.
 // Applies uptime decay factor from metrics if available.
 func calcAvailability(total, _ /*recovered*/, failed int) float64 {
 	if total == 0 {
-		return 100
+		return 0
 	}
 	base := float64(total-failed) / float64(total) * 100
 	return clamp(base, 0, 100)

@@ -278,7 +278,7 @@ actions:
 func TestLoadScenario_FileNotFound(t *testing.T) {
 	_, err := LoadScenarioFile("/nonexistent/path/scenario.yaml")
 	assert.Error(t, err)
-	assert.ErrorContains(t, err, "read scenario file")
+	assert.ErrorContains(t, err, "stat scenario file")
 }
 
 // ---------------------------------------------------------------------------
