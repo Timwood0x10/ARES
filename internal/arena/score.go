@@ -121,6 +121,9 @@ func calcConsistency(failed int, metrics *MetricsSnapshot) float64 {
 	if failed == 0 {
 		return 100
 	}
+	// dataRelated assumes roughly half of failures stem from data quality issues
+	// (missing context, ambiguous inputs, conflicting examples) based on operational
+	// experience. This is a heuristic, not a measured value.
 	dataRelated := max(1, failed/2)
 	return clamp(100-float64(dataRelated)*5, 0, 100)
 }

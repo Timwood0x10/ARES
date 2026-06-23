@@ -17,6 +17,7 @@ import (
 	"goagentx/internal/callbacks"
 	"goagentx/internal/evolution/genome"
 	"goagentx/internal/evolution/mutation"
+	"goagentx/internal/evolution/scoring"
 )
 
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
@@ -30,6 +31,13 @@ type GenomePopulationAdapter struct {
 	mutator genome.MutatorInterface
 	crosser genome.CrossoverInterface
 	scorer  func(*mutation.Strategy) float64
+
+	// Scoring infrastructure for cost-controlled evaluation (optional).
+	// When set via WithAdapterTieredScoring, Run() uses TieredScorer pipeline
+	// instead of the plain scorer path.
+	tieredScorer *scoring.TieredScorer
+	budget       *scoring.Budget
+	scoreCache   *scoring.ScoreCache
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -91,6 +99,27 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 	}
 }
 
+// WithAdapterTieredScoring configures the adapter to use a TieredScorer pipeline
+// instead of the plain scorer. This enables LLM budget control, score caching,
+// and automatic fallback from LLM to heuristic scoring.
+//
+// Args:
+//
+//	ts - the configured tiered scorer (must not be nil).
+//	budget - the budget tracker (must not be nil).
+//	cache - the shared score cache (must not be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterTieredScoring(ts *scoring.TieredScorer, budget *scoring.Budget, cache *scoring.ScoreCache) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.tieredScorer = ts
+		a.budget = budget
+		a.scoreCache = cache
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -103,8 +132,34 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 //
 //	error - non-nil if evolution fails.
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
-	// Build scorer: prefer configured scorer, fall back to constant baseline.
-	scorer := buildScorer(a.scorer)
+	var scorer genome.ScorerFunc
+
+	if a.tieredScorer != nil {
+		// Use tiered scorer pipeline: cache → LLM(budget-gated) → heuristic.
+		// Reset per-generation budget at start of each cycle.
+		a.tieredScorer.ResetForGeneration()
+		scorer = func(s *mutation.Strategy) float64 {
+			score, _, err := a.tieredScorer.Score(ctx, s)
+			if err != nil {
+				slog.WarnContext(ctx, "[GenomeAdapter] tiered scorer failed, using baseline",
+					"error", err, "strategy_id", s.ID)
+				return 50.0 // fallback baseline on error
+			}
+			return score
+		}
+		// Log scoring stats after evolution.
+		defer func() {
+			stats := a.tieredScorer.Stats()
+			used, max, cacheHits, fallbacks := a.budget.Usage()
+			slog.InfoContext(ctx, "[GenomeAdapter] Tiered scoring stats",
+				"llm_used", used, "llm_max", max,
+				"cache_hits", cacheHits, "fallbacks", fallbacks,
+				"tier_stats", stats,
+			)
+		}()
+	} else {
+		scorer = buildScorer(a.scorer)
+	}
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
@@ -135,10 +190,9 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 		slog.Warn("[GenomeAdapter] No scorer configured, using constant baseline (50.0). " +
 			"Configure a real scorer for production use.")
 	})
-	// FIXME(production): Replace ConstantScorer with a real evaluation pipeline.
-	// In production, always configure a scorer that calls LLM/arena evaluation.
-	// The constant baseline is acceptable only for demo/wired mode where real
-	// scoring happens asynchronously after evolution completes.
+	// Note: TieredScorer is now available via SystemConfig options (MaxLLMCallsPerGeneration,
+	// HeuristicScorer). When those are set, Run() uses the tiered pipeline instead of this
+	// fallback path. The ConstantScorer default is retained for backward compatibility.
 	return genome.ConstantScorer(50.0)
 }
 
@@ -421,6 +475,19 @@ type SystemConfig struct {
 	// scheduler-triggered path. When nil, the caller must score externally.
 	Scorer func(*mutation.Strategy) float64 `json:"-"`
 
+	// MaxLLMCallsPerGeneration is the LLM call budget per evolution generation.
+	// When 0 or unset, LLM tier is disabled and all scoring uses heuristic.
+	MaxLLMCallsPerGeneration int `json:"max_llm_calls_per_generation,omitempty"`
+
+	// ScoreCacheSize is the maximum entries in the strategy score cache.
+	// When 0, cache is unlimited.
+	ScoreCacheSize int `json:"score_cache_size,omitempty"`
+
+	// HeuristicScorer is a fast, cheap scoring function used as fallback
+	// when LLM budget is exhausted or unavailable. If nil, defaults to
+	// ConstantScorer(50.0).
+	HeuristicScorer func(*mutation.Strategy) float64 `json:"-"`
+
 	// PromptTemplates is the pool of prompt templates for prompt mutation.
 	// When non-empty, the mutator can generate MutationPrompt type mutations
 	// that swap the strategy's prompt template with alternatives from this pool.
@@ -548,11 +615,49 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create population: %w", err)
 	}
 
-	// Step 5: Create scheduler-compatible adapter with optional scorer.
+	// Step 5: Build adapter options (scorer + optional tiered scoring pipeline).
 	var adapterOpts []GenomeAdapterOption
 	if cfg.Scorer != nil {
 		adapterOpts = append(adapterOpts, WithAdapterScorer(cfg.Scorer))
 	}
+
+	// Step 5b: Optionally create tiered scorer pipeline for cost-controlled scoring.
+	if cfg.MaxLLMCallsPerGeneration > 0 || cfg.HeuristicScorer != nil {
+		cacheSize := cfg.ScoreCacheSize
+		if cacheSize <= 0 {
+			cacheSize = 0 // unlimited
+		}
+		scoreCache := scoring.NewScoreCache(cacheSize)
+
+		budget, err := scoring.NewBudget(cfg.MaxLLMCallsPerGeneration)
+		if err != nil {
+			return nil, fmt.Errorf("create scoring budget: %w", err)
+		}
+
+		heuristic := cfg.HeuristicScorer
+		if heuristic == nil {
+			heuristic = genome.ConstantScorer(50.0)
+		}
+
+		// LLM scorer is the configured adapter-level scorer (may be nil).
+		var llmScorer genome.ScorerFunc
+		if cfg.Scorer != nil {
+			llmScorer = cfg.Scorer
+		}
+
+		tiered, err := scoring.NewTieredScorer(scoring.TieredScorerConfig{
+			Cache:           scoreCache,
+			Budget:          budget,
+			HeuristicScorer: heuristic,
+			LLMScorer:       llmScorer,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create tiered scorer: %w", err)
+		}
+
+		adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
+	}
+
 	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser, adapterOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create population adapter: %w", err)

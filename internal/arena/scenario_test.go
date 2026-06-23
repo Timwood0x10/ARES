@@ -503,7 +503,7 @@ func TestRunScenarioReport_StopOnError(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, report)
 	// Only first action should have run (second was skipped due to stop_on_error).
-	assert.LessOrEqual(t, len(report.Results), 1)
+	assert.Len(t, report.Results, 1)
 	if len(report.Results) > 0 {
 		assert.False(t, report.Results[0].Success)
 	}
