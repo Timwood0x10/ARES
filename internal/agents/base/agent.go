@@ -92,8 +92,23 @@ type StatefulAgent interface {
 	ReplayEvents(events []*events.Event) error
 
 	// Snapshot returns a serializable snapshot of current state.
-	// NOTE: Not yet wired into the resurrection flow; will be used when snapshot-based recovery is implemented.
+	// Snapshots are periodically captured and used during resurrection
+	// to restore the agent's full state.
 	Snapshot() (map[string]any, error)
+}
+
+// SnapshotStore persists agent snapshots for resurrection recovery.
+// Implementations must be safe for concurrent use.
+type SnapshotStore interface {
+	// Save persists a snapshot for the given agent.
+	Save(ctx context.Context, agentID string, snapshot map[string]any) error
+
+	// Load retrieves the latest snapshot for the given agent.
+	// Returns nil, nil if no snapshot exists.
+	Load(ctx context.Context, agentID string) (map[string]any, error)
+
+	// Delete removes the snapshot for the given agent.
+	Delete(ctx context.Context, agentID string) error
 }
 
 // Config holds common agent configuration.

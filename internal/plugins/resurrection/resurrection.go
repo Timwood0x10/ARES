@@ -21,6 +21,7 @@ import (
 	"goagentx/internal/ctxutil"
 	"goagentx/internal/errors"
 	"goagentx/internal/events"
+	"goagentx/internal/runtime"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -77,6 +78,10 @@ type Config struct {
 	// InitialBackoff is the initial backoff before the first retry.
 	// Defaults to 1s. Subsequent retries double until MaxBackoff.
 	InitialBackoff time.Duration `yaml:"initial_backoff"`
+
+	// SnapshotInterval is how often to capture snapshots of stateful agents.
+	// If zero, periodic snapshots are disabled. Defaults to 0 (disabled).
+	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
 }
 
 // DefaultConfig returns sensible defaults.
@@ -101,18 +106,19 @@ type watched struct {
 // It depends only on the HealthChecker interface — not on any
 // specific heartbeat implementation.
 type Supervisor struct {
-	mu           sync.RWMutex
-	agents       map[string]*watched
-	health       HealthChecker
-	config       Config
-	eventStore   events.EventStore
-	cancel       context.CancelFunc
-	g            *errgroup.Group
-	gctx         context.Context
-	isStarted    bool
-	isStopped    bool
-	resurrecting map[string]bool // prevents concurrent resurrection for same agent
-	resurrects   int
+	mu            sync.RWMutex
+	agents        map[string]*watched
+	health        HealthChecker
+	config        Config
+	eventStore    events.EventStore
+	snapshotStore base.SnapshotStore
+	cancel        context.CancelFunc
+	g             *errgroup.Group
+	gctx          context.Context
+	isStarted     bool
+	isStopped     bool
+	resurrecting  map[string]bool // prevents concurrent resurrection for same agent
+	resurrects    int
 }
 
 // New creates a new resurrection Supervisor.
@@ -233,6 +239,13 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		}
 	})
 
+	// Background: periodic snapshot persistence for stateful agents.
+	if s.snapshotStore != nil && s.config.SnapshotInterval > 0 {
+		s.g.Go(func() error {
+			return s.snapshotLoop()
+		})
+	}
+
 	slog.Info("resurrection: supervisor started", "check_interval", s.config.CheckInterval)
 	return nil
 }
@@ -298,6 +311,21 @@ type Stats struct {
 	Statuses   map[string]string `json:"statuses"`
 }
 
+// WithSnapshotStore sets the snapshot store for periodic state persistence.
+// When set, the supervisor periodically calls Snapshot() on stateful agents
+// and persists the result. On resurrection, the latest snapshot is loaded
+// and restored before replaying events.
+//
+// Args:
+//
+//	store - the snapshot store implementation (e.g., MemorySnapshotStore).
+func (s *Supervisor) WithSnapshotStore(store base.SnapshotStore) *Supervisor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshotStore = store
+	return s
+}
+
 // sendHeartbeats signals liveness for all non-offline agents.
 func (s *Supervisor) sendHeartbeats() {
 	s.mu.RLock()
@@ -358,6 +386,11 @@ func (s *Supervisor) backoffWait(attempt int, backoff *time.Duration) {
 // state that can be restored via StatefulAgent.RestoreState.
 // Returns nil if eventStore is nil or no events are found.
 // Verifies event stream integrity; logs warnings on gaps or corruption.
+//
+// Supported event types for state reconstruction:
+//   - EventSessionCreated: extracts session_id and user_id
+//   - EventTaskCreated: extracts last_task_id
+//   - EventAgentStarted/Stopped: tracks status transitions
 func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[string]any {
 	if s.eventStore == nil {
 		return nil
@@ -395,14 +428,29 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 	}
 
 	state := make(map[string]any)
+
 	for _, ev := range evts {
 		switch ev.Type {
 		case events.EventSessionCreated:
 			state["session_id"] = ev.Payload["session_id"]
+			state["user_id"] = ev.Payload["user_id"]
+
+		case events.EventTaskCreated:
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				state["last_task_id"] = tid
+			}
+
+		case events.EventAgentStarted:
+			state["agent_status"] = string(models.AgentStatusReady)
+
+		case events.EventAgentStopped:
+			state["agent_status"] = string(models.AgentStatusOffline)
+
 		default:
 			// Other event types are not used for state reconstruction yet.
 		}
 	}
+
 	return state
 }
 
@@ -444,7 +492,14 @@ func (s *Supervisor) resurrect(agentID string) {
 			continue
 		}
 
-		state = s.replayEvents(resCtx, agentID)
+		// Try snapshot-based recovery first for full state restoration.
+		// If no snapshot exists, fall back to event-based state reconstruction.
+		s.mu.RLock()
+		store := s.snapshotStore
+		s.mu.RUnlock()
+		state = runtime.RecoverSnapshotOrEvents(resCtx, store, agentID, func() map[string]any {
+			return s.replayEvents(resCtx, agentID)
+		})
 		if state != nil {
 			if sa, ok := newAgent.(base.StatefulAgent); ok {
 				if restoreErr := sa.RestoreState(state); restoreErr != nil {
@@ -553,4 +608,57 @@ func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) bool {
 		s.onFailure(agentID)
 	}
 	return healthy
+}
+
+// snapshotLoop periodically captures snapshots of all watched stateful
+// agents and persists them to the snapshot store. Runs until the
+// supervisor context is cancelled.
+func (s *Supervisor) snapshotLoop() error {
+	ticker := time.NewTicker(s.config.SnapshotInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.gctx.Done():
+			return nil
+		case <-ticker.C:
+			s.takeSnapshots()
+		}
+	}
+}
+
+// takeSnapshots iterates all watched agents and persists a snapshot for
+// each that implements StatefulAgent. Non-stateful agents are skipped.
+func (s *Supervisor) takeSnapshots() {
+	s.mu.RLock()
+	agents := make(map[string]base.Agent, len(s.agents))
+	for id, w := range s.agents {
+		agents[id] = w.agent
+	}
+	store := s.snapshotStore
+	s.mu.RUnlock()
+
+	if store == nil {
+		return
+	}
+	for id, agent := range agents {
+		sa, ok := agent.(base.StatefulAgent)
+		if !ok {
+			continue
+		}
+		snap, err := sa.Snapshot()
+		if err != nil {
+			slog.Warn("resurrection: snapshot capture failed",
+				"agent_id", id, "error", err,
+			)
+			continue
+		}
+		if snap == nil {
+			continue
+		}
+		if err := store.Save(s.gctx, id, snap); err != nil {
+			slog.Warn("resurrection: snapshot save failed",
+				"agent_id", id, "error", err,
+			)
+		}
+	}
 }

@@ -4,9 +4,11 @@ package leader
 import (
 	"context"
 	"testing"
+	"time"
 
 	"goagentx/internal/agents/base"
 	"goagentx/internal/core/models"
+	"goagentx/internal/events"
 	"goagentx/internal/llm/output"
 	"goagentx/internal/protocol/ahp"
 )
@@ -564,3 +566,282 @@ func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// --- Snapshot / Restore / ReplayEvents tests ---
+
+func newTestLeaderAgent(t *testing.T) (*leaderAgent, base.StatefulAgent) {
+	t.Helper()
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+	return agent.(*leaderAgent), sa
+}
+
+// TestSnapshot_BasicFields verifies that Snapshot returns all expected fields.
+func TestSnapshot_BasicFields(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	snap, err := sa.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snap == nil {
+		t.Fatal("Snapshot() returned nil")
+	}
+
+	// Verify required fields exist.
+	requiredFields := []string{
+		"session_id", "agent_id", "status",
+		"last_task_id", "conversation_summary", "snapshot_version",
+	}
+	for _, field := range requiredFields {
+		if _, ok := snap[field]; !ok {
+			t.Errorf("Snapshot missing required field: %s", field)
+		}
+	}
+
+	// Verify agent_id matches.
+	if snap["agent_id"] != "test-snapshot-agent" {
+		t.Errorf("Snapshot agent_id = %q, want %q", snap["agent_id"], "test-snapshot-agent")
+	}
+
+	// Verify snapshot_version.
+	if snap["snapshot_version"] != 1 {
+		t.Errorf("Snapshot version = %d, want 1", snap["snapshot_version"])
+	}
+}
+
+// TestSnapshot_WithState verifies that Snapshot reflects current state.
+func TestSnapshot_WithState(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Set state via RestoreState first.
+	_ = sa.RestoreState(map[string]any{
+		"session_id":           "sess-123",
+		"last_task_id":         "task-456",
+		"conversation_summary": "test summary",
+	})
+
+	snap, _ := sa.Snapshot()
+
+	if snap["session_id"] != "sess-123" {
+		t.Errorf("Snapshot session_id = %q, want %q", snap["session_id"], "sess-123")
+	}
+	if snap["last_task_id"] != "task-456" {
+		t.Errorf("Snapshot last_task_id = %q, want %q", snap["last_task_id"], "task-456")
+	}
+	if snap["conversation_summary"] != "test summary" {
+		t.Errorf("Snapshot conversation_summary = %q, want %q", snap["conversation_summary"], "test summary")
+	}
+}
+
+// TestRestoreState_FullState verifies all restorable fields.
+func TestRestoreState_FullState(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	now := time.Now()
+	state := map[string]any{
+		"session_id":            "sess-full",
+		"last_task_id":          "task-full",
+		"agent_status":          "busy",
+		"conversation_summary":  "full restore test",
+		"last_interaction_time": now.Format(time.RFC3339),
+	}
+
+	err := sa.RestoreState(state)
+	if err != nil {
+		t.Fatalf("RestoreState error = %v", err)
+	}
+
+	// We can't easily verify internal state without accessing concrete type,
+	// but we can verify no error and that subsequent Snapshot reflects it.
+	snap, _ := sa.Snapshot()
+	if snap["session_id"] != "sess-full" {
+		t.Errorf("session_id after restore = %q, want %q", snap["session_id"], "sess-full")
+	}
+	if snap["last_task_id"] != "task-full" {
+		t.Errorf("last_task_id after restore = %q, want %q", snap["last_task_id"], "task-full")
+	}
+	if snap["status"] != "busy" {
+		t.Errorf("status after restore = %q, want %q", snap["status"], "busy")
+	}
+}
+
+// TestRestoreState_InvalidStatus verifies invalid status is silently skipped.
+func TestRestoreState_InvalidStatus(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	err := sa.RestoreState(map[string]any{
+		"session_id":   "sess-test",
+		"agent_status": "invalid_status",
+	})
+	if err != nil {
+		t.Fatalf("RestoreState error = %v", err)
+	}
+
+	// Status should remain offline (default), not changed to invalid.
+	snap, _ := sa.Snapshot()
+	if snap["status"] == "invalid_status" {
+		t.Error("invalid status should not be restored")
+	}
+}
+
+// TestReplayEvents_SessionCreated verifies session restoration from events.
+func TestReplayEvents_SessionCreated(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "replay-sess", "user_id": "user-1"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	if snap["session_id"] != "replay-sess" {
+		t.Errorf("session_id after replay = %q, want %q", snap["session_id"], "replay-sess")
+	}
+}
+
+// TestReplayEvents_TaskCreated verifies task ID restoration from events.
+func TestReplayEvents_TaskCreated(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "replay-sess"},
+		},
+		{
+			Type:    events.EventTaskCreated,
+			Payload: map[string]any{"task_id": "replay-task", "session_id": "replay-sess"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	if snap["last_task_id"] != "replay-task" {
+		t.Errorf("last_task_id after replay = %q, want %q", snap["last_task_id"], "replay-task")
+	}
+}
+
+// TestReplayEvents_MessageAdded verifies message count tracking from events.
+func TestReplayEvents_MessageAdded(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventMessageAdded,
+			Payload: map[string]any{"role": "user", "session_id": "sess-1"},
+		},
+		{
+			Type:    events.EventMessageAdded,
+			Payload: map[string]any{"role": "assistant", "session_id": "sess-1"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	summary, _ := snap["conversation_summary"].(string)
+	if summary == "" {
+		t.Error("conversation_summary should be set after MessageAdded replay")
+	}
+}
+
+// TestReplayEvents_AgentStartedStopped verifies status transitions from events.
+func TestReplayEvents_AgentStartedStopped(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{Type: events.EventAgentStarted, Payload: map[string]any{}},
+		{Type: events.EventAgentStopped, Payload: map[string]any{}},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	// Last event is Stopped, so status should be offline.
+	snap, _ := sa.Snapshot()
+	if snap["status"] != string(models.AgentStatusOffline) {
+		t.Errorf("status after stopped replay = %q, want %q", snap["status"], models.AgentStatusOffline)
+	}
+}
+
+// TestReplayEvents_NilAndEmpty verifies safe handling of edge cases.
+func TestReplayEvents_NilAndEmpty(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Nil events.
+	if err := sa.ReplayEvents(nil); err != nil {
+		t.Errorf("ReplayEvents(nil) error = %v", err)
+	}
+
+	// Empty events.
+	if err := sa.ReplayEvents([]*events.Event{}); err != nil {
+		t.Errorf("ReplayEvents(empty) error = %v", err)
+	}
+
+	// Events with nil entry.
+	if err := sa.ReplayEvents([]*events.Event{{Type: events.EventSessionCreated, Payload: nil}, nil}); err != nil {
+		t.Errorf("ReplayEvents(with nil) error = %v", err)
+	}
+}
+
+// TestSnapshotRestore_RoundTrip verifies full Snapshot → Restore cycle.
+func TestSnapshotRestore_RoundTrip(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Set initial state.
+	_ = sa.RestoreState(map[string]any{
+		"session_id":           "roundtrip-sess",
+		"last_task_id":         "roundtrip-task",
+		"conversation_summary": "roundtrip summary",
+	})
+
+	// Take snapshot.
+	snap, err := sa.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot error = %v", err)
+	}
+
+	// Create new agent and restore from snapshot.
+	_, sa2 := newTestLeaderAgent(t)
+	err = sa2.RestoreState(snap)
+	if err != nil {
+		t.Fatalf("RestoreState from snapshot error = %v", err)
+	}
+
+	// Verify state matches.
+	snap2, _ := sa2.Snapshot()
+	if snap2["session_id"] != snap["session_id"] {
+		t.Errorf("session_id mismatch: got %q, want %q", snap2["session_id"], snap["session_id"])
+	}
+	if snap2["last_task_id"] != snap["last_task_id"] {
+		t.Errorf("last_task_id mismatch: got %q, want %q", snap2["last_task_id"], snap["last_task_id"])
+	}
+	if snap2["conversation_summary"] != snap["conversation_summary"] {
+		t.Errorf("conversation_summary mismatch: got %q, want %q", snap2["conversation_summary"], snap["conversation_summary"])
+	}
+}

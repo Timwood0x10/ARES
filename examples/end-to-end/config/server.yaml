@@ -1,0 +1,131 @@
+# End-to-End Example Configuration
+# Full chain: config startup -> agent processing -> memory distillation -> workflow orchestration
+
+server:
+  host: "localhost"
+  port: 8080
+
+llm:
+  provider: "openrouter"
+  api_key: "sk-or-v1-xxx"  # Placeholder — MUST be overridden via env var LLM_API_KEY
+  base_url: "https://openrouter.ai/api/v1"
+  model: "meta-llama/llama-3.1-8b-instruct"
+  timeout: 60
+  max_tokens: 4096
+
+agents:
+  leader:
+    id: "leader-analysis"
+    max_steps: 10
+    max_parallel_tasks: 3
+    max_validation_retry: 3
+    enable_cache: true
+
+  sub:
+    - id: "agent-analyzer"
+      type: "analyzer"
+      category: "analysis"
+      triggers:
+        - "analysis"
+        - "review"
+      max_retries: 3
+      timeout: 30
+      model: ""
+      provider: ""
+
+    - id: "agent-recommender"
+      type: "recommender"
+      category: "recommendation"
+      triggers:
+        - "recommendation"
+        - "optimization"
+      max_retries: 3
+      timeout: 30
+      model: ""
+      provider: ""
+
+prompts:
+  profile_extraction: |
+    你是一位智能分析助手。请从用户的输入中提取分析需求。
+
+    用户输入: {{.input}}
+
+    请分析用户输入，返回JSON格式：
+    - task_type: 任务类型（"analysis", "recommendation", "optimization", "review"）
+    - domain: 领域（如"technology", "business", "education"）
+    - requirements: 用户的核心需求列表
+    - constraints: 任何限制条件
+
+    只返回JSON，不要其他内容。
+
+  recommendation: |
+    你是一位专业分析师。请根据以下信息提供 {{.Category}}：
+
+    任务类型: {{if index . "task_type"}}{{index . "task_type"}}{{else}}<no value>{{end}}
+    领域: {{if index . "domain"}}{{index . "domain"}}{{else}}<no value>{{end}}
+    需求: {{if index . "requirements"}}{{index . "requirements"}}{{else}}<no value>{{end}}
+    约束: {{if index . "constraints"}}{{index . "constraints"}}{{else}}<no value>{{end}}
+
+    请提供详细的分析结果，包含具体建议和理由。
+    返回JSON格式：
+    ```json
+    {
+      "items": [
+        {
+          "item_id": "唯一ID",
+          "name": "名称",
+          "description": "简要描述",
+          "category": "{{.Category}}",
+          "score": 评分(0-100),
+          "highlights": ["要点1", "要点2"]
+        }
+      ],
+      "reason": "分析理由"
+    }
+    ```
+
+output:
+  format: "table"
+  item_template: "{{.Name}} (Score: {{.Score}})"
+  summary_template: "共分析 {{.Count}} 个选项"
+
+validation:
+  enabled: true
+  schema_type: "custom"
+  retry_on_fail: false
+  max_retries: 3
+  strict_mode: false
+
+workflow:
+  definition_path: "./examples/end-to-end/config/workflow.yaml"
+  auto_reload: false
+  reload_interval: 60
+
+storage:
+  enabled: false
+  type: "postgres"
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "postgres"
+  database: "goagent_demo"
+  ssl_mode: "disable"
+  pgvector:
+    enabled: false
+    dimension: 1536
+    table_name: "embeddings"
+
+memory:
+  enabled: false
+  session:
+    enabled: true
+    max_history: 50
+  user_profile:
+    enabled: false
+    storage: "memory"
+    vector_db: false
+  task_distillation:
+    enabled: false
+    storage: "memory"
+    vector_store: false
+    prompt: "请总结以下任务的关键信息，包括：任务类型、领域、分析结果、关键发现。"

@@ -107,6 +107,12 @@ type leaderAgent struct {
 	eventStore    events.EventStore
 	callbacks     callbacks.Emitter // Optional: emits lifecycle callback events.
 
+	// Snapshot/restore state fields for resurrection support.
+	lastTaskID          string
+	lastCompletedTaskID string // ID of most recently completed task (differs from lastTaskID which is "created")
+	conversationSummary string
+	lastInteractionTime time.Time
+
 	// Lifecycle management
 	stopCh       chan struct{}   // Channel to signal shutdown
 	distillMu    sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
@@ -459,6 +465,10 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 			"impact", "task will not be tracked for distillation")
 	} else {
 		taskID = tID
+		// Safe to call updateSnapshotState here: a.mu is NOT held at this point.
+		// The RLock section above (line ~376) was already released, and the write lock
+		// for sessionID persistence was also released before reaching this code.
+		a.updateSnapshotState(taskID)
 
 		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
 			"task_id":    taskID,
@@ -482,6 +492,23 @@ func (a *leaderAgent) emitCallback(ctx *callbacks.Context) {
 		return
 	}
 	a.callbacks.Emit(ctx)
+}
+
+// updateSnapshotState updates the snapshot-tracking fields after state changes.
+// This ensures Snapshot() returns up-to-date data for resurrection.
+//
+// IMPORTANT: This method acquires a.mu.Lock internally. Callers MUST NOT hold
+// a.mu when invoking this method, or it will deadlock. All current call sites
+// have been verified to call this without holding a.mu.
+//
+// Args:
+//
+//	taskID - the task ID that was just created.
+func (a *leaderAgent) updateSnapshotState(taskID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastTaskID = taskID
+	a.lastInteractionTime = time.Now()
 }
 
 // finalizeMemory updates task output, records assistant message, and triggers
@@ -885,6 +912,22 @@ func (a *leaderAgent) IsAlive() bool {
 
 // RestoreState restores the leader agent's state from persisted data.
 // Implements base.StatefulAgent for resurrection support.
+//
+// Restorable fields:
+//   - session_id: active session identifier
+//   - last_task_id: most recently created task ID
+//   - last_completed_task_id: most recently completed task ID
+//   - agent_status: status string (ready/busy/offline)
+//   - conversation_summary: brief summary of recent conversation
+//   - last_interaction_time: RFC3339 timestamp of last user interaction
+//
+// Args:
+//
+//	state - map of persisted state fields. Nil or empty is a safe no-op.
+//
+// Returns:
+//
+//	err - always nil for RestoreState; invalid fields are silently skipped.
 func (a *leaderAgent) RestoreState(state map[string]any) error {
 	if state == nil {
 		return nil
@@ -894,22 +937,61 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 
 	if sid, ok := state["session_id"].(string); ok && sid != "" {
 		a.sessionID = sid
-		slog.Info("state restored from event replay",
-			"agent_id", a.id,
-			"session_id", sid,
-		)
 	}
+	if tid, ok := state["last_task_id"].(string); ok && tid != "" {
+		a.lastTaskID = tid
+	}
+	if ctid, ok := state["last_completed_task_id"].(string); ok && ctid != "" {
+		a.lastCompletedTaskID = ctid
+	}
+	if statusStr, ok := state["agent_status"].(string); ok {
+		if parsed, err := models.ParseAgentStatus(statusStr); err == nil {
+			a.status = parsed
+		}
+	}
+	if summary, ok := state["conversation_summary"].(string); ok {
+		a.conversationSummary = summary
+	}
+	if ts, ok := state["last_interaction_time"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			a.lastInteractionTime = t
+		}
+	}
+
+	slog.Info("state restored from snapshot",
+		"agent_id", a.id,
+		"session_id", a.sessionID,
+		"status", string(a.status),
+	)
 	return nil
 }
 
 // ReplayEvents replays a sequence of events to reconstruct state.
 // Implements base.StatefulAgent for resurrection support.
+//
+// Supported event types:
+//   - EventSessionCreated: restores session_id
+//   - EventMessageAdded: updates last_message_role and message count
+//   - EventTaskCreated: restores last_task_id
+//   - EventTaskCompleted: restores last_completed_task_id
+//   - EventAgentStarted/Stopped: updates agent status
+//
+// Args:
+//
+//	evts - ordered sequence of events to replay. Nil or empty is a safe no-op.
+//
+// Returns:
+//
+//	err - always nil for ReplayEvents; invalid events are silently skipped.
 func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 	if len(evts) == 0 {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	var msgCount int
+
 	for _, ev := range evts {
 		if ev == nil {
 			continue
@@ -919,21 +1001,76 @@ func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				a.sessionID = sid
 			}
+
+		case events.EventMessageAdded:
+			msgCount++
+			if role, ok := ev.Payload["role"].(string); ok {
+				a.conversationSummary = fmt.Sprintf("last_role:%s,msg_count:%d", role, msgCount)
+			}
+
+		case events.EventTaskCreated:
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				a.lastTaskID = tid
+			}
+
+		case events.EventTaskCompleted:
+			// Track the most recently completed task (separate from lastTaskID which tracks "created").
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				a.lastCompletedTaskID = tid
+			}
+
+		case events.EventAgentStarted:
+			a.status = models.AgentStatusReady
+
+		case events.EventAgentStopped:
+			a.status = models.AgentStatusOffline
 		}
 	}
+
+	slog.Info("events replayed for state reconstruction",
+		"agent_id", a.id,
+		"event_count", len(evts),
+		"session_id", a.sessionID,
+	)
 	return nil
 }
 
 // Snapshot returns a serializable snapshot of the leader agent's current state.
 // Implements base.StatefulAgent for resurrection support.
+//
+// The snapshot includes:
+//   - session_id: active session identifier
+//   - agent_id: unique agent identifier
+//   - status: current agent status string
+//   - last_task_id: most recently created task ID (if any)
+//   - last_completed_task_id: most recently completed task ID (if any)
+//   - conversation_summary: brief summary of recent conversation context
+//   - last_interaction_time: RFC3339 timestamp of last state change
+//   - snapshot_version: schema version for forward compatibility
+//
+// Returns:
+//
+//	snapshot - map of serializable state fields. Never nil.
+//	err - always nil for Snapshot; capture failures are non-fatal.
 func (a *leaderAgent) Snapshot() (map[string]any, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return map[string]any{
-		"session_id": a.sessionID,
-		"agent_id":   a.id,
-		"status":     string(a.status),
-	}, nil
+
+	snap := map[string]any{
+		"session_id":             a.sessionID,
+		"agent_id":               a.id,
+		"status":                 string(a.status),
+		"last_task_id":           a.lastTaskID,
+		"last_completed_task_id": a.lastCompletedTaskID,
+		"conversation_summary":   a.conversationSummary,
+		"snapshot_version":       1,
+	}
+
+	if !a.lastInteractionTime.IsZero() {
+		snap["last_interaction_time"] = a.lastInteractionTime.Format(time.RFC3339)
+	}
+
+	return snap, nil
 }
 
 // ProcessStream handles user input and returns a stream of events.

@@ -39,6 +39,7 @@ type Manager struct {
 	factories     map[string]AgentFactory
 	eventStore    events.EventStore
 	memManager    memory.MemoryManager
+	snapshotStore base.SnapshotStore
 	g             *errgroup.Group
 	gctx          context.Context
 	cancel        context.CancelFunc
@@ -77,6 +78,19 @@ func New(config *Config, eventStore events.EventStore, memManager memory.MemoryM
 		g:          g,
 		gctx:       gctx,
 	}
+}
+
+// WithSnapshotStore sets the snapshot store used for agent state recovery.
+// Must be called before Start(). Snapshots provide a richer state recovery
+// path than event replay alone and should be used when a resurrection plugin
+// periodically captures snapshots. When set, recoverAgentState will attempt
+// to load a snapshot first, then supplement with event replay for any state
+// the snapshot may lack.
+func (m *Manager) WithSnapshotStore(store base.SnapshotStore) *Manager {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshotStore = store
+	return m
 }
 
 // RegisterAgent registers an agent and its factory for lifecycle management.
@@ -360,13 +374,21 @@ func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory
 
 	evts := m.replayEvents(ctx, agentID)
 	if sa, ok := newAgent.(base.StatefulAgent); ok {
-		state := buildStateFromEvents(evts)
-		if m.memManager != nil {
-			cognitiveState := m.buildCognitiveState(ctx, agentID, state)
-			for k, v := range cognitiveState {
-				state[k] = v
+		m.mu.RLock()
+		store := m.snapshotStore
+		m.mu.RUnlock()
+
+		state := RecoverSnapshotOrEvents(ctx, store, agentID, func() map[string]any {
+			state := buildStateFromEvents(evts)
+			if m.memManager != nil {
+				cognitiveState := m.buildCognitiveState(ctx, agentID, state)
+				for k, v := range cognitiveState {
+					state[k] = v
+				}
 			}
-		}
+			return state
+		})
+
 		if len(state) > 0 {
 			if err := sa.RestoreState(state); err != nil {
 				slog.Warn("runtime: RestoreState failed",
@@ -580,7 +602,7 @@ func (m *Manager) Stop() error {
 	stopCtx, stopCancel := ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
 	defer stopCancel()
 
-	// Snapshot agents under write lock and mark all as stopped before launching goroutines.
+	// Capture final snapshots for stateful agents, then mark all as stopped.
 	type agentStopInfo struct {
 		id     string
 		agent  base.Agent
@@ -588,9 +610,27 @@ func (m *Manager) Stop() error {
 	}
 	var toStop []agentStopInfo
 	m.mu.Lock()
+	store := m.snapshotStore
 	for id, ma := range m.agents {
 		if ma.stopped {
 			continue
+		}
+		// Capture a final snapshot for stateful agents before shutdown.
+		if store != nil {
+			if sa, ok := ma.agent.(base.StatefulAgent); ok {
+				snap, err := sa.Snapshot()
+				if err != nil {
+					slog.Warn("runtime: final snapshot failed",
+						"agent_id", id, "error", err,
+					)
+				} else if snap != nil {
+					if err := store.Save(stopCtx, id, snap); err != nil {
+						slog.Warn("runtime: final snapshot save failed",
+							"agent_id", id, "error", err,
+						)
+					}
+				}
+			}
 		}
 		ma.stopped = true
 		toStop = append(toStop, agentStopInfo{id: id, agent: ma.agent, cancel: ma.cancel})
