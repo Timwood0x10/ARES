@@ -190,11 +190,15 @@ func TestFullEvolutionLifecycle(t *testing.T) {
 		}
 		mutator := &scoredMutator{scores: scores}
 
-		for gen := 0; gen < 50; gen++ {
-			reassignScores(pop, gen)
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
 
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+		for gen := 0; gen < 50; gen++ {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("evolution generation %d failed: %v", gen+1, err)
 			}
 		}
@@ -232,9 +236,15 @@ func TestFullEvolutionLifecycle(t *testing.T) {
 		eliteTempBefore, _ := pop.Best().Params["temperature"].(float64)
 		eliteTopKBefore, _ := pop.Best().Params["top_k"].(int)
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 10; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("generation %d failed: %v", gen, err)
 			}
 		}
@@ -283,9 +293,15 @@ func TestFullEvolutionLifecycle(t *testing.T) {
 
 		bestBefore := pop.Best().Score
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 5; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("generation %d failed: %v", gen, err)
 			}
 		}
@@ -309,9 +325,16 @@ func TestFullEvolutionLifecycle(t *testing.T) {
 			WithEliteCount(1), WithMutationRate(0.25))
 		crosser, _ := NewCrossover(WithSeed(99))
 		mutator := &scoredMutator{scores: scores}
+
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 15; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("diversity gen %d failed: %v", gen, err)
 			}
 		}
@@ -322,18 +345,6 @@ func TestFullEvolutionLifecycle(t *testing.T) {
 			t.Errorf("insufficient diversity: %d unique temps", countUniqueParams(pop, "temperature"))
 		}
 	})
-}
-
-// reassignScores re-scores agents based on generation to simulate evaluation.
-func reassignScores(pop *Population, gen int) {
-	for i, agent := range pop.Agents {
-		temp := 0.7
-		if v, ok := agent.Params["temperature"].(float64); ok {
-			temp = v
-		}
-		score := 100.0 - math.Abs(temp-0.7)*100 + float64(i%7)
-		agent.Score = score
-	}
 }
 
 func TestCrossoverSelectionIntegration(t *testing.T) {
@@ -522,10 +533,15 @@ func TestEvolutionUnderStress(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(55))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 10; gen++ {
-			reassignScores(pop, gen)
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("generation %d failed with uniform scores: %v", gen, err)
 			}
 		}
@@ -553,13 +569,15 @@ func TestEvolutionUnderStress(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(77))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 5; gen++ {
-			// Reassign scores to ensure all agents pass IsScoreEvaluated (Score >= 0).
-			// This overwrites the original extreme negative scores with valid ones
-			// based on temperature, which is necessary for the ensureEvaluatedBeforeSelection guard.
-			reassignScores(pop, gen)
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("extreme score evolution gen %d failed: %v", gen, err)
 			}
 		}
@@ -581,9 +599,16 @@ func TestEvolutionUnderStress(t *testing.T) {
 			WithEliteCount(2), WithSurvivalRate(0.5), WithMutationRate(0.1))
 		crosser, _ := NewCrossover(WithSeed(88))
 		mutator := &scoredMutator{scores: scores}
+
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 3; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("large pop gen %d failed: %v", gen, err)
 			}
 		}
@@ -607,10 +632,15 @@ func TestEvolutionUnderStress(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(33))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 10; gen++ {
-			reassignScores(pop, gen)
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("tiny pop gen %d failed: %v", gen, err)
 			}
 		}
@@ -677,10 +707,15 @@ func TestEvolutionUnderStress(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(11))
 		mutator := &mockMutator{}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 10; gen++ {
-			reassignScores(pop, gen)
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("zero-mutation gen %d failed: %v", gen, err)
 			}
 		}
@@ -706,10 +741,15 @@ func TestEvolutionUnderStress(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(22))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		for gen := 0; gen < 10; gen++ {
-			reassignScores(pop, gen)
-			err := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("full-mutation gen %d failed: %v", gen, err)
 			}
 		}
@@ -739,6 +779,13 @@ func TestGenealogyTracking(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(66))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		type genEdge struct{ parentID, childID string }
 		totalEdges := 0
 		genAgents := make(map[int]map[string]bool) // gen -> set of agent IDs
@@ -748,8 +795,7 @@ func TestGenealogyTracking(t *testing.T) {
 		}
 
 		for gen := 1; gen <= 10; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("genealogy gen %d failed: %v", gen, err)
 			}
 
@@ -803,13 +849,19 @@ func TestGenealogyTracking(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(44))
 		mutator := &scoredMutator{scores: scores}
 
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
 		lineageVersions := map[int]int{}
 		for _, a := range pop.Agents {
 			lineageVersions[hashID(a.ID)] = a.Version
 		}
 		for gen := 0; gen < 5; gen++ {
-			reassignScores(pop, gen)
-			if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("version tracking gen %d failed: %v", gen, err)
 			}
 			for _, a := range pop.Agents {
@@ -833,7 +885,14 @@ func TestGenealogyTracking(t *testing.T) {
 		crosser, _ := NewCrossover(WithSeed(33))
 		mutator := &scoredMutator{scores: scores}
 
-		if err := pop.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+		testScorer := func(agent *mutation.Strategy) float64 {
+			if temp, ok := agent.Params["temperature"].(float64); ok {
+				return 100.0 - math.Abs(temp-0.7)*100
+			}
+			return 50.0
+		}
+
+		if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 			t.Fatalf("root check evolve failed: %v", err)
 		}
 
@@ -1159,20 +1218,17 @@ func TestArenaRegressionScoring(t *testing.T) {
 
 		baselineStrategy := map[string]any{"temperature": 0.9, "top_k": 40}
 
+		baseScorer := func(agent *mutation.Strategy) float64 {
+			return 50.0
+		}
+
 		for gen := 0; gen < nGenerations; gen++ {
-			// Score all agents BEFORE evolution (required by ensureEvaluatedBeforeSelection).
-			for _, agent := range pop.Agents {
-				if agent.Score < 0 {
-					agent.Score = 50.0 + float64(gen*5)
-				}
+			// Atomic: pre-score → evolve → post-score with baseline.
+			if err := pop.EvolveAfterScoring(ctx, baseScorer, mutator, crosser); err != nil {
+				t.Fatalf("evolution generation %d failed: %v", gen+1, err)
 			}
 
-			evolveErr := pop.EvolveOnIdle(ctx, mutator, crosser)
-			if evolveErr != nil {
-				t.Fatalf("evolution generation %d failed: %v", gen+1, evolveErr)
-			}
-
-			// Re-score with arena regression tester for accuracy.
+			// Re-score with arena regression tester for higher precision.
 			for _, agent := range pop.Agents {
 				result, runErr := rt.Run(ctx, arena.RegressionConfig{
 					OldStrategy:  baselineStrategy,
@@ -1186,7 +1242,6 @@ func TestArenaRegressionScoring(t *testing.T) {
 				}
 				agent.Score = result.NewAvg
 			}
-
 			bestScores = append(bestScores, pop.Best().Score)
 		}
 

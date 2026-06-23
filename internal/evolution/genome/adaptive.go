@@ -25,6 +25,10 @@ type DiversityReport struct {
 	// DominantLineageShare is the fraction of population sharing the most common ParentID [0, 1].
 	// Values above configured threshold (default 0.6) indicate lineage collapse.
 	DominantLineageShare float64
+
+	// EffectiveWeights is the actual weight configuration used to compute Overall.
+	// Useful for observability and debugging custom weight configurations.
+	EffectiveWeights DiversityWeightConfig
 }
 
 // DiversityMetricVersion indicates the current diversity metric version.
@@ -98,8 +102,14 @@ func (p *Population) measureDiversityReportLocked() DiversityReport {
 	// Lineage diversity: parent ID concentration analysis.
 	report.Lineage, report.DominantLineageShare = p.measureLineageDiversityLocked()
 
-	// Weighted overall: numeric 40%, categorical 40%, lineage 20%.
-	report.Overall = report.Numeric*0.4 + report.Categorical*0.4 + report.Lineage*0.2
+	// Weighted overall using configured diversity weights (defaults: N=0.4, C=0.4, L=0.2).
+	weights := p.cfg.DiversityWeights.normalize()
+	report.Overall = report.Numeric*weights.Numeric +
+		report.Categorical*weights.Categorical +
+		report.Lineage*weights.Lineage
+
+	// Store effective weights for observability.
+	report.EffectiveWeights = weights
 
 	return report
 }

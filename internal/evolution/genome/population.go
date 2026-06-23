@@ -50,6 +50,64 @@ var ErrInvalidMaxStagnantGenerations = fmt.Errorf("max stagnant generations must
 // ErrInvalidDiversityThreshold is returned when diversity threshold is out of range [0, 1].
 var ErrInvalidDiversityThreshold = fmt.Errorf("diversity threshold must be between 0 and 1")
 
+// DiversityWeightConfig holds relative weights for diversity metric components.
+// Each weight represents the contribution of its component to Overall diversity.
+type DiversityWeightConfig struct {
+	// Numeric is the weight for numeric parameter distance [default 0.4].
+	Numeric float64 `json:"numeric"`
+
+	// Categorical is the weight for categorical attribute distance [default 0.4].
+	Categorical float64 `json:"categorical"`
+
+	// Lineage is the weight for parent ID concentration [default 0.2].
+	Lineage float64 `json:"lineage"`
+}
+
+// normalize ensures weights are valid and normalizes them to sum to 1.0.
+// Returns normalized copy; zero fields receive default values.
+func (w DiversityWeightConfig) normalize() DiversityWeightConfig {
+	result := w
+
+	// Apply defaults for zero values.
+	if result.Numeric == 0 && result.Categorical == 0 && result.Lineage == 0 {
+		// All zeros → use documented defaults.
+		result.Numeric = 0.4
+		result.Categorical = 0.4
+		result.Lineage = 0.2
+		return result
+	}
+
+	if result.Numeric == 0 {
+		result.Numeric = 0.4
+	}
+	if result.Categorical == 0 {
+		result.Categorical = 0.4
+	}
+	if result.Lineage == 0 {
+		result.Lineage = 0.2
+	}
+
+	// Normalize to sum = 1.0.
+	total := result.Numeric + result.Categorical + result.Lineage
+	if total > 0 && !approxEqual(total, 1.0) {
+		result.Numeric /= total
+		result.Categorical /= total
+		result.Lineage /= total
+	}
+
+	return result
+}
+
+// approxEqual checks if two floats are within a small epsilon.
+func approxEqual(a, b float64) bool {
+	const eps = 1e-9
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < eps
+}
+
 // FitnessSharingSigma is the sharing coefficient for fitness sharing.
 // It controls how strongly crowded niches are penalized.
 const FitnessSharingSigma = 0.3
@@ -57,6 +115,17 @@ const FitnessSharingSigma = 0.3
 // FitnessNicheRadius is the distance threshold below which two agents
 // are considered to occupy the same niche in parameter space.
 const FitnessNicheRadius = 0.15
+
+// FitnessSharingSampleLimit is the threshold above which fitness sharing
+// switches from exhaustive O(n²) pairwise comparison to randomized sampling
+// of neighbors per agent. Populations at or below this limit use exact distances;
+// larger populations sample FitnessSharingSampleSize random neighbors instead.
+const FitnessSharingSampleLimit = 50
+
+// FitnessSharingSampleSize is the number of random neighbors checked per agent
+// when the scored population exceeds FitnessSharingSampleLimit. This bounds the
+// inner loop to O(k) where k = SampleSize instead of O(n).
+const FitnessSharingSampleSize = 30
 
 // MutatorInterface wraps mutation.Strategy mutation for the genome package.
 // Implementations generate mutated child strategies from a parent strategy.
@@ -110,6 +179,25 @@ type PopulationConfig struct {
 	// UseTournamentSelection enables tournament-based parent selection during offspring generation.
 	// When false (default), parents are chosen randomly from the breeding pool.
 	UseTournamentSelection bool `json:"use_tournament_selection"`
+
+	// DiversityWeights controls the relative contribution of each diversity
+	// component to the overall diversity metric. All weights must be non-negative
+	// and sum to approximately 1.0 for meaningful results.
+	//
+	// Default values (if left zero): Numeric=0.4, Categorical=0.4, Lineage=0.2.
+	// These defaults were chosen based on initial experimentation but should be
+	// calibrated via ablation study for production use (see GA Hardening Plan v0.2.0).
+	DiversityWeights DiversityWeightConfig `json:"diversity_weights"`
+
+	// FitnessSharingSampleLimit is the population size threshold above which
+	// fitness sharing switches from exact O(m²) pairwise comparison to sampled
+	// O(m*k) mode where k=FitnessSharingSampleSize neighbors per agent.
+	// Default 50; set to 0 to disable sampling (always use exact mode).
+	FitnessSharingSampleLimit int `json:"fitness_sharing_sample_limit"`
+
+	// FitnessSharingSampleSize is the number of random neighbors checked per agent
+	// when in sampled fitness sharing mode. Default 30.
+	FitnessSharingSampleSize int `json:"fitness_sharing_size"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -119,17 +207,20 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:                   20,
-		SurvivalRate:           0.6,
-		MutationRate:           0.2,
-		EliteCount:             3,
-		BreedingPoolRatio:      0.6,
-		MinMutationRate:        0.05,
-		MaxMutationRate:        0.5,
-		MaxStagnantGenerations: 10,
-		DiversityThreshold:     0.15,
-		TournamentSize:         3,
-		UseTournamentSelection: false, // Opt-in for backward compatibility
+		Size:                      20,
+		SurvivalRate:              0.6,
+		MutationRate:              0.2,
+		EliteCount:                3,
+		BreedingPoolRatio:         0.6,
+		MinMutationRate:           0.05,
+		MaxMutationRate:           0.5,
+		MaxStagnantGenerations:    10,
+		DiversityThreshold:        0.15,
+		TournamentSize:            3,
+		UseTournamentSelection:    false,                   // Opt-in for backward compatibility
+		DiversityWeights:          DiversityWeightConfig{}, // Zero → defaults applied in normalize()
+		FitnessSharingSampleLimit: 50,
+		FitnessSharingSampleSize:  30,
 	}
 }
 
@@ -355,6 +446,50 @@ func WithTournamentSelection(size int) PopulationOption {
 		}
 		cfg.UseTournamentSelection = true
 		cfg.TournamentSize = size
+		return nil
+	}
+}
+
+// WithDiversityWeights sets custom diversity component weights.
+//
+// Args:
+//
+//	w - weight configuration; zero values use sensible defaults.
+//
+// Returns:
+//
+//	PopulationOption - functional option for NewPopulation.
+func WithDiversityWeights(w DiversityWeightConfig) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		cfg.DiversityWeights = w
+		return nil
+	}
+}
+
+// WithFitnessSharingSampling configures the fitness sharing sampling behavior.
+//
+// Args:
+//
+//	limit - population size threshold to switch to sampled mode (0 = never sample).
+//	size - neighbors to check per agent when sampling (must be < limit).
+//
+// Returns:
+//
+//	PopulationOption - functional option.
+//	error - ErrInvalidMutationRate if size >= limit or either is negative.
+func WithFitnessSharingSampling(limit, size int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if limit < 0 {
+			return fmt.Errorf("%w: limit must be >= 0", ErrInvalidMutationRate)
+		}
+		if size < 0 {
+			return fmt.Errorf("%w: size must be >= 0", ErrInvalidMutationRate)
+		}
+		if limit > 0 && size >= limit {
+			return fmt.Errorf("%w: size (%d) must be < limit (%d)", ErrInvalidMutationRate, size, limit)
+		}
+		cfg.FitnessSharingSampleLimit = limit
+		cfg.FitnessSharingSampleSize = size
 		return nil
 	}
 }
@@ -756,6 +891,10 @@ func (p *Population) Snapshot() ([]*mutation.Strategy, int) {
 // This is thread-safe: it acquires a write lock and updates each agent's Score
 // field directly, unlike Snapshot() which returns deep clones that discard writes.
 //
+// If the scorer panics for any agent, the panic is caught, logged as a warning,
+// and the agent's score is set to ScoreUnevaluated so subsequent guards catch it.
+// Other agents continue to be scored normally.
+//
 // Args:
 //
 //	scorer - function that takes an agent (read-only) and returns its fitness score.
@@ -764,7 +903,18 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	defer p.mu.Unlock()
 
 	for _, agent := range p.Agents {
-		agent.Score = scorer(agent)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("scorer panicked for agent",
+						"agent_id", agent.ID,
+						"panic", r,
+					)
+					agent.Score = ScoreUnevaluated // Mark as unevaluated so guard catches it
+				}
+			}()
+			agent.Score = scorer(agent)
+		}()
 	}
 
 	p.updateBestEverLocked()
@@ -974,4 +1124,80 @@ type evolveConfig struct {
 
 	// logLabel is the label used in slog output for this evolution run.
 	logLabel string
+}
+
+// ScorerFunc is a function that assigns a fitness score to a strategy.
+// It returns the strategy's evaluated score. If the scorer cannot evaluate
+// the strategy (e.g., no LLM available), it should return ScoreUnevaluated (-1)
+// and the evolution will handle it as a scoring failure.
+type ScorerFunc func(agent *mutation.Strategy) float64
+
+// NoopScorer is a ScorerFunc that preserves existing scores without modification.
+// Agents with ScoreUnevaluated remain unevaluated — use this ONLY when you have
+// already scored all agents externally and just need to satisfy the type signature.
+func NoopScorer(agent *mutation.Strategy) float64 {
+	return agent.Score
+}
+
+// ConstantScorer returns a ScorerFunc that always assigns the given score.
+// Useful in tests where real evaluation is unavailable.
+func ConstantScorer(score float64) ScorerFunc {
+	return func(agent *mutation.Strategy) float64 {
+		return score
+	}
+}
+
+// EvolveAfterScoring performs one atomic generation of evolution with automatic
+// pre-scoring and post-scoring. This is the recommended entry point for most
+// callers because it eliminates the risk of calling Evolve with unevaluated agents.
+//
+// The method guarantees:
+//   - All unevaluated agents are scored before selection (pre-scoring).
+//   - Evolution proceeds only if scoring succeeds for all agents.
+//   - Newly created offspring are scored after evolution (post-scoring).
+//
+// This implements the "score first, evolve later" temporal constraint as an atomic operation.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	scorer - function that assigns fitness scores; called for each agent.
+//	  Must NOT be nil. Use NoopScorer if scoring should be skipped.
+//	mutator - mutation engine (must not be nil).
+//	crosser - crossover engine (must not be nil).
+//
+// Returns:
+//
+//	error - non-nil if scoring fails for any agent or evolution encounters an error.
+func (p *Population) EvolveAfterScoring(ctx context.Context, scorer ScorerFunc, mutator MutatorInterface, crosser CrossoverInterface) error {
+	// NOTE: This method acquires/releases the population lock 3 times:
+	//
+	//   1. ScoreAgents (pre-scoring) — write lock, scores all agents
+	//   2. doEvolve via EvolveOnIdle — write lock, runs full evolution cycle
+	//   3. ScoreAgents (post-scoring) — write lock, scores offspring
+	//
+	// Between steps 2 and 3, other goroutines COULD modify the population
+	// (e.g., Stats(), BestStrategy(), external reads). This is safe because:
+	//   - Each phase independently acquires its own lock
+	//   - Post-scoring operates on whatever agents exist after evolve completes
+	//   - Callers are responsible for ensuring no concurrent Evolve() calls
+	//
+	// If atomicity across all three phases is needed in the future, refactor to
+	// hold a single lock for the entire method body.
+	if scorer == nil {
+		return fmt.Errorf("scorer must not be nil; use NoopScorer to skip scoring")
+	}
+
+	// Phase 1: Pre-score all agents (overwrites unevaluated scores).
+	p.ScoreAgents(scorer)
+
+	// Phase 2: Run evolution (ensureEvaluatedBeforeSelection guard passes inside).
+	if err := p.EvolveOnIdle(ctx, mutator, crosser); err != nil {
+		return fmt.Errorf("evolution: %w", err)
+	}
+
+	// Phase 3: Post-score newly created offspring (Score=-1 from mutator).
+	p.ScoreAgents(scorer)
+
+	return nil
 }

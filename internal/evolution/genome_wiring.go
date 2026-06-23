@@ -91,9 +91,9 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 	}
 }
 
-// Run executes one genome evolution cycle (EvolveOnIdle) when triggered by scheduler.
-// After evolution, if a scorer is configured, all unevaluated agents (IsScoreEvaluated() == false)
-// receive a fitness score — closing the scoring loop for the scheduler path.
+// Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
+// triggered by scheduler. The atomic API handles pre-scoring, evolution, and
+// post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
 //
 // Args:
 //
@@ -103,33 +103,11 @@ func WithAdapterScorer(scorer func(*mutation.Strategy) float64) GenomeAdapterOpt
 //
 //	error - non-nil if evolution fails.
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
-	// Score any unevaluated agents before evolution (required by ensureEvaluatedBeforeSelection).
-	// Without this, EvolveOnIdle rejects the cycle when offspring from a previous
-	// evolution or freshly created agents still carry Score=-1 defaults.
-	a.pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
-		if !genome.IsScoreEvaluated(agent.Score) {
-			if a.scorer != nil {
-				return a.scorer(agent)
-			}
-			// Fallback: assign a moderate deterministic score so selection has valid data.
-			return 50.0
-		}
-		return agent.Score
-	})
+	// Build scorer: prefer configured scorer, fall back to constant baseline.
+	scorer := buildScorer(a.scorer)
 
-	if err := a.pop.EvolveOnIdle(ctx, a.mutator, a.crosser); err != nil {
+	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
-	}
-
-	// Score newly generated offspring so next generation's selection
-	// operates on valid fitness values instead of Score=-1 defaults.
-	if a.scorer != nil {
-		a.pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
-			if !genome.IsScoreEvaluated(agent.Score) {
-				return a.scorer(agent)
-			}
-			return agent.Score
-		})
 	}
 
 	stats := a.pop.Stats()
@@ -139,8 +117,29 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		"best_score", stats.BestScore,
 		"avg_score", stats.AvgScore,
 	)
-
 	return nil
+}
+
+// scorerWarningOnce ensures the missing-scorer warning is logged at most once
+// per process lifetime, even when buildScorer is called repeatedly (e.g., once
+// per evolution cycle in the scheduler loop).
+var scorerWarningOnce sync.Once
+
+// buildScorer constructs a ScorerFunc from the optional adapter-level scorer.
+// When no scorer is available, returns a constant baseline scorer with a warning.
+func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
+	if scorer != nil {
+		return scorer
+	}
+	scorerWarningOnce.Do(func() {
+		slog.Warn("[GenomeAdapter] No scorer configured, using constant baseline (50.0). " +
+			"Configure a real scorer for production use.")
+	})
+	// FIXME(production): Replace ConstantScorer with a real evaluation pipeline.
+	// In production, always configure a scorer that calls LLM/arena evaluation.
+	// The constant baseline is acceptable only for demo/wired mode where real
+	// scoring happens asynchronously after evolution completes.
+	return genome.ConstantScorer(50.0)
 }
 
 // Population returns the underlying genome population for direct access.
@@ -656,25 +655,20 @@ func RunIdleEvolution(
 		if err := system.PopAdapter.Run(ctx); err != nil {
 			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
 		}
-
-		// Note: Post-evolution scoring is handled inside PopAdapter.Run() which
-		// pre-scores agents before each EvolveOnIdle call. No redundant scoring needed here.
+		// Note: Post-scoring is now handled atomically inside PopAdapter.Run()
+		// via EvolveAfterScoring. No redundant manual scoring needed here.
 
 		// Record lineage after each evolution cycle.
-		// Use Snapshot() for thread-safe read of population state.
 		_, gen := system.Population.Snapshot()
 		prevGen := gen - 1
 		if prevGen >= 0 {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, prevGen)
 			if err != nil {
-				slog.WarnContext(ctx, "[WiredSystem] Failed to record lineage",
-					"generation", i+1,
-					"error", err,
-				)
+				slog.WarnContext(ctx, "lineage recording failed",
+					"generation", prevGen, "error", err)
 			}
 		}
 	}
-
 	return nil
 }
 

@@ -452,7 +452,7 @@ func TestInjectFreshMutantsLocked(t *testing.T) {
 			{ID: "a", Params: map[string]any{"temp": 0.5}},
 			{ID: "b", Params: map[string]any{"temp": 0.5}},
 		}
-		pop := &Population{Agents: agents, Size: 2}
+		pop := &Population{Agents: agents, Size: 2, rng: rand.New(rand.NewSource(42))}
 		preIDs := make(map[string]bool)
 		for _, a := range pop.Agents {
 			preIDs[a.ID] = true

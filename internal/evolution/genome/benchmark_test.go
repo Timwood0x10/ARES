@@ -598,3 +598,113 @@ func BenchmarkRealWorldEvolution(b *testing.B) {
 		b.ReportMetric(float64(nGenerations), "generations")
 	}
 }
+
+// ==========================================================================
+// Group 6: Fitness Sharing Benchmarks
+// ==========================================================================
+
+// createBenchmarkPopulation creates a population of given size with random
+// strategies for fitness sharing benchmarking. All agents receive evaluated
+// scores so they participate in fitness sharing.
+func createBenchmarkPopulation(size int) *Population {
+	base := randStrategy(rand.New(rand.NewSource(42)), 5, 100)
+	base.Score = 50.0
+
+	mutator := &benchMutator{rng: rand.New(rand.NewSource(42))}
+
+	pop, err := NewPopulation(context.Background(), base, mutator,
+		WithPopulationSize(size),
+		WithSurvivalRate(0.6),
+		WithMutationRate(0.2),
+		WithEliteCount(1),
+	)
+	if err != nil {
+		panic(fmt.Sprintf("createBenchmarkPopulation: %v", err))
+	}
+
+	rng := rand.New(rand.NewSource(99))
+	for _, a := range pop.Agents {
+		a.Score = rng.Float64() * 100
+	}
+
+	return pop
+}
+
+// BenchmarkApplyFitnessSharing benchmarks the fitness sharing penalty computation
+// across different population sizes. Tests both exact mode (small populations,
+// distance matrix caching) and sampled mode (large populations, randomized
+// neighbor sampling at FitnessSharingSampleLimit threshold).
+//
+// Sub-benchmarks:
+//   - pop_10 to pop_50: exact O(n²) mode with distance matrix cache
+//   - pop_100 to pop_500: sampled O(n×k) mode with FitnessSharingSampleSize neighbors
+func BenchmarkApplyFitnessSharing(b *testing.B) {
+	b.ReportAllocs()
+
+	for _, size := range []int{10, 50, 100, 200, 500} {
+		b.Run(fmt.Sprintf("pop_%d", size), func(b *testing.B) {
+			pop := createBenchmarkPopulation(size)
+			eliteCount := size / 5
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				// Clone population before each iteration since applyFitnessSharing
+				// modifies agent scores in-place.
+				for _, a := range pop.Agents {
+					a.Score = rand.New(rand.NewSource(int64(i)+int64(size))).Float64() * 100
+				}
+				pop.applyFitnessSharing(eliteCount)
+			}
+		})
+	}
+}
+
+// BenchmarkApplyFitnessSharing_CustomSampling benchmarks fitness sharing with
+// non-default sampling configuration. Verifies that custom limit/size values
+// are correctly applied and perform as expected.
+func BenchmarkApplyFitnessSharing_CustomSampling(b *testing.B) {
+	b.ReportAllocs()
+
+	base := randStrategy(rand.New(rand.NewSource(42)), 5, 100)
+	base.Score = 50.0
+
+	mutator := &benchMutator{rng: rand.New(rand.NewSource(42))}
+
+	for _, cfg := range []struct {
+		name  string
+		limit int
+		size  int
+		pop   int
+	}{
+		{"limit20_size10", 20, 10, 100},
+		{"limit100_size20", 100, 20, 200},
+		{"limit0_exact", 0, 0, 50}, // limit=0 disables sampling entirely
+	} {
+		b.Run(cfg.name, func(b *testing.B) {
+			b.StopTimer()
+			pop, err := NewPopulation(context.Background(), base, mutator,
+				WithPopulationSize(cfg.pop),
+				WithSurvivalRate(0.6),
+				WithMutationRate(0.2),
+				WithEliteCount(1),
+				WithFitnessSharingSampling(cfg.limit, cfg.size),
+			)
+			if err != nil {
+				b.Fatal(err)
+			}
+			scoreRng := rand.New(rand.NewSource(99))
+			for _, a := range pop.Agents {
+				a.Score = scoreRng.Float64() * 100
+			}
+			b.StartTimer()
+
+			eliteCount := cfg.pop / 5
+			for i := 0; i < b.N; i++ {
+				for _, a := range pop.Agents {
+					a.Score = rand.New(rand.NewSource(int64(i))).Float64() * 100
+				}
+				pop.applyFitnessSharing(eliteCount)
+			}
+		})
+	}
+}
