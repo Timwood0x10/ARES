@@ -155,9 +155,29 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 		// Diversity / lineage concentration from population snapshot.
 		diversityReport := pop.DiversityStats()
 		if diversityReport.Overall > 0 {
+			lineageMap := makeLineageCounts(pop)
+			topID, topShare := "", 0.0
+			if len(lineageMap) > 0 {
+				maxCount := 0
+				for id, count := range lineageMap {
+					if count > maxCount {
+						maxCount = count
+						topID = id
+					}
+				}
+				total := 0
+				for _, count := range lineageMap {
+					total += count
+				}
+				if total > 0 {
+					topShare = float64(maxCount) / float64(total)
+				}
+			}
 			report.LineageConcentration = &LineageConcentration{
-				TopLineageShare: diversityReport.DominantLineageShare,
-				UniqueLineages:  countUniqueLineages(pop),
+				TopLineageShare: topShare,
+				TopLineageID:    topID,
+				LineageCounts:   lineageMap,
+				UniqueLineages:  len(lineageMap),
 			}
 		}
 	}
@@ -259,24 +279,17 @@ func historyEntryToGenerationStats(entry genome.GenerationHistoryEntry, pop *gen
 	return gs
 }
 
-// countUniqueLineages counts unique parent IDs in the population.
-//
-// Args:
-//
-//	pop - the genome population.
-//
-// Returns:
-//
-//	int - number of unique lineages.
-func countUniqueLineages(pop *genome.Population) int {
+// makeLineageCounts returns a map of ParentID -> count for the current population.
+// Agents with empty ParentID are excluded.
+func makeLineageCounts(pop *genome.Population) map[string]int {
 	agents, _ := pop.Snapshot()
-	lineageSet := make(map[string]struct{})
-	for _, agent := range agents {
-		if agent.ParentID != "" {
-			lineageSet[agent.ParentID] = struct{}{}
+	counts := make(map[string]int)
+	for _, a := range agents {
+		if a.ParentID != "" {
+			counts[a.ParentID]++
 		}
 	}
-	return len(lineageSet)
+	return counts
 }
 
 // ReportString returns a human-readable summary of the evolution report.

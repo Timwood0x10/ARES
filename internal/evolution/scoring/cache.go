@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,19 +73,10 @@ func (c *ScoreCache) Get(hash uint64) (CacheEntry, bool) {
 
 	entry, ok := c.entries[hash]
 	if ok {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		c.hits++
-		c.mu.Unlock()
-		c.mu.RLock()
+		atomic.AddInt64(&c.hits, 1)
 	} else {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		c.misses++
-		c.mu.Unlock()
-		c.mu.RLock()
+		atomic.AddInt64(&c.misses, 1)
 	}
-
 	return entry, ok
 }
 
@@ -138,8 +130,8 @@ func (c *ScoreCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = make(map[uint64]CacheEntry)
-	c.hits = 0
-	c.misses = 0
+	atomic.StoreInt64(&c.hits, 0)
+	atomic.StoreInt64(&c.misses, 0)
 	c.evictions = 0
 }
 

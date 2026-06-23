@@ -158,14 +158,15 @@ func TestE2E_WithGuardrails(t *testing.T) {
 		return fixedScore
 	}
 
-	system, err := NewWiredEvolutionSystem(base, cfg)
-	require.NoError(t, err)
-
-	// Create guardrails with a low baseline (30.0) so our fixed 80.0 score never regresses.
+	// Wire guardrails into the system so GenomPopulationAdapter.Run() calls them.
 	guardrails, err := NewEvolutionGuardrails(
 		WithBaselineScore(30.0),
 		WithMaxStagnantGenerations(3),
 	)
+	require.NoError(t, err)
+	cfg.Guardrails = guardrails
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -176,37 +177,14 @@ func TestE2E_WithGuardrails(t *testing.T) {
 	system.Population.ScoreAgents(cfg.Scorer)
 
 	for gen := 0; gen < totalGens; gen++ {
-		// --- Pre-evolve guardrail check ---
-		agents, _ := system.Population.Snapshot()
-		currentBest := 0.0
-		unevaluated := 0
-		for _, a := range agents {
-			if !genome.IsScoreEvaluated(a.Score) {
-				unevaluated++
-			}
-			if a.Score > currentBest {
-				currentBest = a.Score
-			}
-		}
-
-		preResult := guardrails.PreEvolveCheck(ctx, currentBest, system.Population.Generation, len(agents), unevaluated)
-		// With ConstantScorer, all agents are scored, so no unevaluated majority.
-		assert.False(t, preResult.ShouldStop,
-			"gen %d: pre-evolve check should NOT request stop", gen)
-		t.Logf("Gen %d pre-check: events=%d, shouldStop=%v", gen, len(preResult.Events), preResult.ShouldStop)
-
-		// Run one evolution cycle.
+		// Run one evolution cycle — guardrails are called inside Run() via cfg.Guardrails.
 		err := system.PopAdapter.Run(ctx)
 		require.NoError(t, err, "gen %d: PopAdapter.Run should succeed", gen)
 
-		// --- Post-evolve guardrail check ---
-		postStats := system.Population.Stats()
-		postResult := guardrails.PostEvolveCheck(ctx, postStats.BestScore, system.Population.Generation, nil)
-		// Score is 80.0 > baseline 30.0, so no regression critical.
-		assert.False(t, postResult.ShouldStop,
-			"gen %d: post-evolve check should NOT request stop (score %.2f > baseline 30.0)", gen, postStats.BestScore)
-		t.Logf("Gen %d post-check: best=%.2f, events=%d, stagnantCount=%d",
-			gen, postStats.BestScore, len(postResult.Events), guardrails.StagnantCount())
+		// Read guardrail events after each cycle.
+		events := guardrails.Events()
+		t.Logf("Gen %d: best=%.2f, events=%d, stagnantCount=%d",
+			gen, system.Population.Stats().BestScore, len(events), guardrails.StagnantCount())
 	}
 
 	// After all generations, verify guardrails tracked stagnation correctly.
@@ -232,14 +210,9 @@ func TestE2E_WithGuardrails(t *testing.T) {
 
 // TestE2E_ReportWithHistory verifies that GenerateReport produces correct
 // multi-generation data after running several evolution cycles. It checks:
-//   - GenerationTrajectory contains expected statistics
+//   - History is enabled and GenerationTrajectory contains per-generation entries
 //   - BestEverScore and FinalBestScore are consistent
 //   - ReportString produces parseable output
-//
-// Note: The current GenerateReport implementation captures only the current
-// generation's snapshot in GenerationTrajectory (not historical per-generation
-// snapshots). This test validates the actual behavior of the reporting pipeline
-// against the live population state after multi-generation evolution.
 func TestE2E_ReportWithHistory(t *testing.T) {
 	base := &mutation.Strategy{
 		ID:             "history-report-base",
@@ -312,8 +285,6 @@ func TestE2E_ReportWithHistory(t *testing.T) {
 			"trajectory[%d] AvgScore should match constant scorer", i)
 		assert.InDelta(t, reportScore, traj.WorstScore, 0.01,
 			"trajectory[%d] WorstScore should match constant scorer", i)
-		// Note: MutationTypes are not stored in history entries; they come from
-		// buildGenerationStats which is only used in the no-history fallback path.
 		t.Logf("  Trajectory gen=%d", traj.Generation)
 	}
 
