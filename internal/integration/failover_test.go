@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/agents/leader"
-	"goagentx/internal/memory"
-	"goagentx/internal/storage/postgres"
-	"goagentx/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/ares/internal/agents/leader"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // createTestLeaderCheckpoint creates a checkpoint for the given leader and session.

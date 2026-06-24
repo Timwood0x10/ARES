@@ -11,6 +11,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Default timeout for MCP client operations when no config timeout is specified.
+const defaultClientTimeout = 30 * time.Second
+
 // MCPClientConfig holds configuration for creating an MCPClient.
 type MCPClientConfig struct {
 	ServerName string
@@ -48,7 +51,7 @@ type MCPClient struct {
 func NewMCPClient(config MCPClientConfig) *MCPClient {
 	timeout := config.Timeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = defaultClientTimeout
 	}
 
 	return &MCPClient{
@@ -105,7 +108,7 @@ func (c *MCPClient) initialize() error {
 		ProtocolVersion: ProtocolVersion,
 		ClientInfo: Implementation{
 			Name:    ClientName,
-			Version: "1.0.0",
+			Version: ClientVersion,
 		},
 		Capabilities: ClientCapabilities{
 			Tools: &ToolClientCapabilities{

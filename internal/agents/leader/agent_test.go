@@ -4,12 +4,62 @@ package leader
 import (
 	"context"
 	"testing"
+	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
+
+// mockMemoryManager is a mock implementation of memory.MemoryManager for testing.
+type mockMemoryManager struct{}
+
+func (m *mockMemoryManager) CreateSession(ctx context.Context, userID string) (string, error) {
+	return "test-session", nil
+}
+func (m *mockMemoryManager) AddMessage(ctx context.Context, sessionID, role, content string) error {
+	return nil
+}
+func (m *mockMemoryManager) GetMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {
+	return nil
+}
+func (m *mockMemoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) DeleteSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (m *mockMemoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
+	return input, nil
+}
+func (m *mockMemoryManager) CreateTask(ctx context.Context, sessionID, userID, input string) (string, error) {
+	return "task-123", nil
+}
+func (m *mockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
+	return nil
+}
+func (m *mockMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
+	return nil
+}
+func (m *mockMemoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
+	return "", nil
+}
+func (m *mockMemoryManager) Start(ctx context.Context) error { return nil }
+func (m *mockMemoryManager) Stop(ctx context.Context) error  { return nil }
+func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+}
 
 func TestProfileParser_Parse(t *testing.T) {
 	parser := NewProfileParser(
@@ -188,7 +238,10 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 		models.AgentTypeTop:    "agent_top",
 		models.AgentTypeBottom: "agent_bottom",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
@@ -223,9 +276,12 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 
 func TestTaskDispatcher_DispatchEmpty(t *testing.T) {
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 
-	_, err := dispatcher.Dispatch(context.Background(), nil)
+	_, err = dispatcher.Dispatch(context.Background(), nil)
 	if err == nil {
 		t.Error("Dispatch() should return error for empty tasks")
 	}
@@ -243,10 +299,16 @@ func TestLeaderAgent_New(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	if agent.ID() != "leader1" {
 		t.Errorf("expected leader1, got %s", agent.ID())
@@ -277,13 +339,19 @@ func TestLeaderAgent_StartStop(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Start
-	err := agent.Start(context.Background())
+	err = agent.Start(context.Background())
 	if err != nil {
 		t.Errorf("Start() error = %v", err)
 	}
@@ -327,7 +395,10 @@ func TestLeaderAgent_Process(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
 		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
@@ -335,7 +406,10 @@ func TestLeaderAgent_Process(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Process without starting should auto-start
 	result, err := agent.Process(context.Background(), "I want casual style")
@@ -357,7 +431,10 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
 		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
@@ -365,7 +442,10 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Start then set to busy
 	if err := agent.Start(context.Background()); err != nil {
@@ -394,7 +474,10 @@ func TestLeaderAgent_SendReceiveMessage(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 	queue := ahp.NewMessageQueue("leader1", &ahp.QueueOptions{MaxSize: 10})
 
@@ -419,7 +502,7 @@ func TestLeaderAgent_SendReceiveMessage(t *testing.T) {
 		TaskID:      "task1",
 		SessionID:   "session1",
 	}
-	err := leader.SendMessage(context.Background(), msg)
+	err = leader.SendMessage(context.Background(), msg)
 	if err != nil {
 		t.Errorf("SendMessage() error = %v", err)
 	}
@@ -441,7 +524,10 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
@@ -457,7 +543,7 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 		heartbeatMon: hbMon,
 	}
 
-	err := leader.Heartbeat(context.Background())
+	err = leader.Heartbeat(context.Background())
 	if err != nil {
 		t.Errorf("Heartbeat() error = %v", err)
 	}
@@ -472,16 +558,22 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 func TestRestoreState_NilState(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(nil)
+	err = sa.RestoreState(nil)
 	if err != nil {
 		t.Errorf("RestoreState(nil) should return nil error, got %v", err)
 	}
@@ -490,16 +582,22 @@ func TestRestoreState_NilState(t *testing.T) {
 func TestRestoreState_EmptyState(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(map[string]any{})
+	err = sa.RestoreState(map[string]any{})
 	if err != nil {
 		t.Errorf("RestoreState(empty) should return nil error, got %v", err)
 	}
@@ -508,16 +606,22 @@ func TestRestoreState_EmptyState(t *testing.T) {
 func TestRestoreState_WithSessionID(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(map[string]any{
+	err = sa.RestoreState(map[string]any{
 		"session_id": "session-abc",
 	})
 	if err != nil {
@@ -537,17 +641,23 @@ func TestRestoreState_WithSessionID(t *testing.T) {
 func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
 	// Non-string session_id should be silently ignored.
-	err := sa.RestoreState(map[string]any{
+	err = sa.RestoreState(map[string]any{
 		"session_id": 12345,
 	})
 	if err != nil {
@@ -564,3 +674,288 @@ func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// --- Snapshot / Restore / ReplayEvents tests ---
+
+func newTestLeaderAgent(t *testing.T) (*leaderAgent, base.StatefulAgent) {
+	t.Helper()
+	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
+	planner := NewTaskPlanner(3)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
+	aggregator := NewResultAggregator(true, 10, SortByNone)
+
+	agent, err := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	sa, ok := agent.(base.StatefulAgent)
+	if !ok {
+		t.Fatal("agent does not implement StatefulAgent")
+	}
+	return agent.(*leaderAgent), sa
+}
+
+// TestSnapshot_BasicFields verifies that Snapshot returns all expected fields.
+func TestSnapshot_BasicFields(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	snap, err := sa.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snap == nil {
+		t.Fatal("Snapshot() returned nil")
+	}
+
+	// Verify required fields exist.
+	requiredFields := []string{
+		"session_id", "agent_id", "status",
+		"last_task_id", "conversation_summary", "snapshot_version",
+	}
+	for _, field := range requiredFields {
+		if _, ok := snap[field]; !ok {
+			t.Errorf("Snapshot missing required field: %s", field)
+		}
+	}
+
+	// Verify agent_id matches.
+	if snap["agent_id"] != "test-snapshot-agent" {
+		t.Errorf("Snapshot agent_id = %q, want %q", snap["agent_id"], "test-snapshot-agent")
+	}
+
+	// Verify snapshot_version.
+	if snap["snapshot_version"] != 1 {
+		t.Errorf("Snapshot version = %d, want 1", snap["snapshot_version"])
+	}
+}
+
+// TestSnapshot_WithState verifies that Snapshot reflects current state.
+func TestSnapshot_WithState(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Set state via RestoreState first.
+	_ = sa.RestoreState(map[string]any{
+		"session_id":           "sess-123",
+		"last_task_id":         "task-456",
+		"conversation_summary": "test summary",
+	})
+
+	snap, _ := sa.Snapshot()
+
+	if snap["session_id"] != "sess-123" {
+		t.Errorf("Snapshot session_id = %q, want %q", snap["session_id"], "sess-123")
+	}
+	if snap["last_task_id"] != "task-456" {
+		t.Errorf("Snapshot last_task_id = %q, want %q", snap["last_task_id"], "task-456")
+	}
+	if snap["conversation_summary"] != "test summary" {
+		t.Errorf("Snapshot conversation_summary = %q, want %q", snap["conversation_summary"], "test summary")
+	}
+}
+
+// TestRestoreState_FullState verifies all restorable fields.
+func TestRestoreState_FullState(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	now := time.Now()
+	state := map[string]any{
+		"session_id":            "sess-full",
+		"last_task_id":          "task-full",
+		"agent_status":          "busy",
+		"conversation_summary":  "full restore test",
+		"last_interaction_time": now.Format(time.RFC3339),
+	}
+
+	err := sa.RestoreState(state)
+	if err != nil {
+		t.Fatalf("RestoreState error = %v", err)
+	}
+
+	// We can't easily verify internal state without accessing concrete type,
+	// but we can verify no error and that subsequent Snapshot reflects it.
+	snap, _ := sa.Snapshot()
+	if snap["session_id"] != "sess-full" {
+		t.Errorf("session_id after restore = %q, want %q", snap["session_id"], "sess-full")
+	}
+	if snap["last_task_id"] != "task-full" {
+		t.Errorf("last_task_id after restore = %q, want %q", snap["last_task_id"], "task-full")
+	}
+	if snap["status"] != "busy" {
+		t.Errorf("status after restore = %q, want %q", snap["status"], "busy")
+	}
+}
+
+// TestRestoreState_InvalidStatus verifies invalid status is silently skipped.
+func TestRestoreState_InvalidStatus(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	err := sa.RestoreState(map[string]any{
+		"session_id":   "sess-test",
+		"agent_status": "invalid_status",
+	})
+	if err != nil {
+		t.Fatalf("RestoreState error = %v", err)
+	}
+
+	// Status should remain offline (default), not changed to invalid.
+	snap, _ := sa.Snapshot()
+	if snap["status"] == "invalid_status" {
+		t.Error("invalid status should not be restored")
+	}
+}
+
+// TestReplayEvents_SessionCreated verifies session restoration from events.
+func TestReplayEvents_SessionCreated(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "replay-sess", "user_id": "user-1"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	if snap["session_id"] != "replay-sess" {
+		t.Errorf("session_id after replay = %q, want %q", snap["session_id"], "replay-sess")
+	}
+}
+
+// TestReplayEvents_TaskCreated verifies task ID restoration from events.
+func TestReplayEvents_TaskCreated(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventSessionCreated,
+			Payload: map[string]any{"session_id": "replay-sess"},
+		},
+		{
+			Type:    events.EventTaskCreated,
+			Payload: map[string]any{"task_id": "replay-task", "session_id": "replay-sess"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	if snap["last_task_id"] != "replay-task" {
+		t.Errorf("last_task_id after replay = %q, want %q", snap["last_task_id"], "replay-task")
+	}
+}
+
+// TestReplayEvents_MessageAdded verifies message count tracking from events.
+func TestReplayEvents_MessageAdded(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{
+			Type:    events.EventMessageAdded,
+			Payload: map[string]any{"role": "user", "session_id": "sess-1"},
+		},
+		{
+			Type:    events.EventMessageAdded,
+			Payload: map[string]any{"role": "assistant", "session_id": "sess-1"},
+		},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	snap, _ := sa.Snapshot()
+	summary, _ := snap["conversation_summary"].(string)
+	if summary == "" {
+		t.Error("conversation_summary should be set after MessageAdded replay")
+	}
+}
+
+// TestReplayEvents_AgentStartedStopped verifies status transitions from events.
+func TestReplayEvents_AgentStartedStopped(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	evts := []*events.Event{
+		{Type: events.EventAgentStarted, Payload: map[string]any{}},
+		{Type: events.EventAgentStopped, Payload: map[string]any{}},
+	}
+
+	err := sa.ReplayEvents(evts)
+	if err != nil {
+		t.Fatalf("ReplayEvents error = %v", err)
+	}
+
+	// Last event is Stopped, so status should be offline.
+	snap, _ := sa.Snapshot()
+	if snap["status"] != string(models.AgentStatusOffline) {
+		t.Errorf("status after stopped replay = %q, want %q", snap["status"], models.AgentStatusOffline)
+	}
+}
+
+// TestReplayEvents_NilAndEmpty verifies safe handling of edge cases.
+func TestReplayEvents_NilAndEmpty(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Nil events.
+	if err := sa.ReplayEvents(nil); err != nil {
+		t.Errorf("ReplayEvents(nil) error = %v", err)
+	}
+
+	// Empty events.
+	if err := sa.ReplayEvents([]*events.Event{}); err != nil {
+		t.Errorf("ReplayEvents(empty) error = %v", err)
+	}
+
+	// Events with nil entry.
+	if err := sa.ReplayEvents([]*events.Event{{Type: events.EventSessionCreated, Payload: nil}, nil}); err != nil {
+		t.Errorf("ReplayEvents(with nil) error = %v", err)
+	}
+}
+
+// TestSnapshotRestore_RoundTrip verifies full Snapshot → Restore cycle.
+func TestSnapshotRestore_RoundTrip(t *testing.T) {
+	_, sa := newTestLeaderAgent(t)
+
+	// Set initial state.
+	_ = sa.RestoreState(map[string]any{
+		"session_id":           "roundtrip-sess",
+		"last_task_id":         "roundtrip-task",
+		"conversation_summary": "roundtrip summary",
+	})
+
+	// Take snapshot.
+	snap, err := sa.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot error = %v", err)
+	}
+
+	// Create new agent and restore from snapshot.
+	_, sa2 := newTestLeaderAgent(t)
+	err = sa2.RestoreState(snap)
+	if err != nil {
+		t.Fatalf("RestoreState from snapshot error = %v", err)
+	}
+
+	// Verify state matches.
+	snap2, _ := sa2.Snapshot()
+	if snap2["session_id"] != snap["session_id"] {
+		t.Errorf("session_id mismatch: got %q, want %q", snap2["session_id"], snap["session_id"])
+	}
+	if snap2["last_task_id"] != snap["last_task_id"] {
+		t.Errorf("last_task_id mismatch: got %q, want %q", snap2["last_task_id"], snap["last_task_id"])
+	}
+	if snap2["conversation_summary"] != snap["conversation_summary"] {
+		t.Errorf("conversation_summary mismatch: got %q, want %q", snap2["conversation_summary"], snap["conversation_summary"])
+	}
+}

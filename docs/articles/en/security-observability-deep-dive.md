@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
+# ares Architecture Deep Dive (VI): Security and Observability — Defense in Depth and Transparent Tracing
 
 > The more powerful an Agent gets, the more damage it can do. You give your Agent a code executor, file read/write, network requests — and then it gets tricked by a prompt injection...
 > I kept asking myself one question while designing the tool system: **How do I prevent sensitive information from leaking when the Agent outputs?**
@@ -12,7 +12,7 @@ Giving an Agent tools is like handing a teenager the car keys — they can go an
 
 I've seen too many AI projects crash and burn after going live: an Agent printing the user's API Key in a log, a prompt accidentally carrying a database password, an LLM response leaking a phone number... Once these problems happen, a simple "be more careful next time" won't cut it — compliance audits will be on your tail.
 
-So when I designed GoAgentX's infrastructure, I considered security and observability together. Not "build features first, then add security", but **design them into the system from day one**.
+So when I designed ares's infrastructure, I considered security and observability together. Not "build features first, then add security", but **design them into the system from day one**.
 
 This article covers four modules: **Security (Sanitization)**, **Observability (Tracing)**, **Rate Limiting**, and **Graceful Shutdown**. They don't directly face the user, but without them, putting your Agent into production is like running naked.
 
@@ -36,7 +36,7 @@ The core design philosophy of the security module is **"field type + regex detec
 
 ### 2.1 SensitiveFieldType — Using String Constants Instead of iota for Type Identification
 
-Unlike common iota enumerations, GoAgentX uses string constants to define sensitive field types:
+Unlike common iota enumerations, ares uses string constants to define sensitive field types:
 
 ```go
 const (
@@ -115,11 +115,21 @@ func SanitizeLog(logger func(string), message string) {
 
 `SanitizeLog()` is an "out-of-the-box" one-click sanitization function, suitable for scripts or simple scenarios where you don't need to construct a Sanitizer instance in advance.
 
+### 2.5 A Lesson That Made My Blood Run Cold
+
+The first version of the Sanitizer wasn't as complete as I'd like to admit.
+
+Initially, I only handled structured JSON input with field name matching — API keys were masked, passwords were masked. But if the LLM response's `content` field happened to contain a phone number or email, it went straight through untouched. I assumed, naively: "LLM-generated text shouldn't contain sensitive data, right?"
+
+Then the ops team came over and told me they'd found unredacted phone numbers in the logging system — not `138****5678`, but plain `13812345678` sitting there in the logs. When I traced it back, the root cause was clear: the first version's regex layer only matched against JSON keys, not against arbitrary text content. The phone number the user had mentioned in conversation passed through the LLM round-trip entirely in plaintext, and the logger dutifully wrote it down without a second thought.
+
+Luckily it was caught early — the logs had only been retained in the test environment for two days. But that experience fundamentally changed how I think about sanitization: **Sensitive information can appear in any field, not just the ones you anticipate.** That's exactly why the final Sanitizer has two detection layers — when field name matching can't catch everything, full-text regex scanning has your back.
+
 ---
 
 ## 3. Observability Module: Tracer Interface and Two Implementations
 
-GoAgentX's observability follows the classic **Observer Pattern**: defining an abstract `Tracer` interface with two implementations: `NoopTracer` and `LogTracer`.
+ares's observability follows the classic **Observer Pattern**: defining an abstract `Tracer` interface with two implementations: `NoopTracer` and `LogTracer`.
 
 ### 3.1 Tracer Interface Definition
 

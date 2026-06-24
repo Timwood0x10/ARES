@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"goagentx/api/service/graph"
-	"goagentx/internal/observability"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/api/service/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 func main() {
@@ -23,46 +23,64 @@ func main() {
 	}
 
 	// Build a graph with conditional branches
-	g := wfgraph.NewGraph("conditional-example").
-		Node("check_status", wfgraph.NewFuncNode("check_status", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("Checking status...")
-			// Simulate status check
-			status := "ok"
-			state.Set("status", status)
-			return nil
-		})).
-		Node("success_handler", wfgraph.NewFuncNode("success_handler", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("✓ Handling success case")
-			state.Set("result", "success")
-			return nil
-		})).
-		Node("error_handler", wfgraph.NewFuncNode("error_handler", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("✗ Handling error case")
-			state.Set("result", "error")
-			return nil
-		})).
-		Node("fallback_handler", wfgraph.NewFuncNode("fallback_handler", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("⚠ Using fallback handler")
-			state.Set("result", "fallback")
-			return nil
-		})).
-		// Conditional edges
-		Edge("check_status", "success_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
-			val, _ := s.Get("status")
-			status, ok := val.(string)
-			return ok && status == "ok"
-		})).
-		Edge("check_status", "error_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
-			val, _ := s.Get("status")
-			status, ok := val.(string)
-			return ok && status == "error"
-		})).
-		Edge("check_status", "fallback_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
-			val, _ := s.Get("status")
-			status, ok := val.(string)
-			return !ok || (status != "ok" && status != "error")
-		})).
-		Start("check_status")
+	g, err := wfgraph.NewGraph("conditional-example")
+	if err != nil {
+		log.Fatalf("failed to create graph: %v", err)
+	}
+
+	addNodeFn := func(id string, fn func(context.Context, *wfgraph.State) error) {
+		n, err := wfgraph.NewFuncNode(id, fn)
+		if err != nil {
+			log.Fatalf("failed to create node: %v", err)
+		}
+		if _, err = g.Node(id, n); err != nil {
+			log.Fatalf("failed to add node: %v", err)
+		}
+	}
+
+	addNodeFn("check_status", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("Checking status...")
+		state.Set("status", "ok")
+		return nil
+	})
+	addNodeFn("success_handler", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("✓ Handling success case")
+		state.Set("result", "success")
+		return nil
+	})
+	addNodeFn("error_handler", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("✗ Handling error case")
+		state.Set("result", "error")
+		return nil
+	})
+	addNodeFn("fallback_handler", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("⚠ Using fallback handler")
+		state.Set("result", "fallback")
+		return nil
+	})
+
+	mustOp := func(_ *wfgraph.Graph, err error) {
+		if err != nil {
+			log.Fatalf("graph operation failed: %v", err)
+		}
+	}
+	// Conditional edges
+	mustOp(g.Edge("check_status", "success_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
+		val, _ := s.Get("status")
+		status, ok := val.(string)
+		return ok && status == "ok"
+	})))
+	mustOp(g.Edge("check_status", "error_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
+		val, _ := s.Get("status")
+		status, ok := val.(string)
+		return ok && status == "error"
+	})))
+	mustOp(g.Edge("check_status", "fallback_handler", wfgraph.IfFunc(func(s *wfgraph.State) bool {
+		val, _ := s.Get("status")
+		status, ok := val.(string)
+		return !ok || (status != "ok" && status != "error")
+	})))
+	mustOp(g.Start("check_status"))
 
 	// Execute graph
 	request := &graph.ExecuteRequest{

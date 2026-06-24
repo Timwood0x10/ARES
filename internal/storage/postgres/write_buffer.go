@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // WriteBuffer provides write batching to reduce database and embedding load.

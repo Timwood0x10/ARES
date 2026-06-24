@@ -194,8 +194,8 @@ g := graph.NewGraph("priority-graph").
 ### API Layer Usage
 
 ```go
-import "goagentx/api/service/graph"
-import wfgraph "goagentx/internal/workflow/graph"
+import "ares/api/service/graph"
+import wfgraph "ares/internal/workflow/graph"
 
 // Create service
 service, _ := graph.NewService(&graph.Config{

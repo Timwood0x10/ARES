@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The Memory System module is a core component of the GoAgentX framework, responsible for managing various types of memory data in the system, including session memory, task memory, and distilled memories. It implements short-term session context management, task execution tracking, and long-term experience extraction and retrieval.
+The Memory System module is a core component of the ares framework, responsible for managing various types of memory data in the system, including session memory, task memory, and distilled memories. It implements short-term session context management, task execution tracking, and long-term experience extraction and retrieval.
 
 ### Core Features
 
@@ -550,8 +550,8 @@ func (r *ConflictResolver) ResolveConflict(newExp, oldExp *Experience) Resolutio
 
 ```go
 import (
-    "goagentx/internal/memory/distillation"
-    "goagentx/internal/storage/postgres/embedding"
+    "ares/internal/memory/distillation"
+    "ares/internal/storage/postgres/embedding"
 )
 
 // 1. Create Embedding service

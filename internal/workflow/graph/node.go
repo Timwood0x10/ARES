@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // Node represents an executable unit in the graph.
@@ -29,20 +29,14 @@ type AgentNode struct {
 
 // NewAgentNode creates a new agent node.
 //
-// NOTE: This function will panic if agent is nil. This is intentional as it
-// indicates a programming error in the calling code. These constructors are
-// used during workflow graph initialization (startup phase), and invalid
-// parameters represent fatal startup failures that should prevent application
-// launch. This follows the coding standard allowing panic for fatal startup errors.
-//
 // Args:
 // agent - agent instance, must not be nil.
-// Returns new agent node.
-func NewAgentNode(agent base.Agent) *AgentNode {
+// Returns new agent node or error.
+func NewAgentNode(agent base.Agent) (*AgentNode, error) {
 	if agent == nil {
-		panic("agent cannot be nil: nil agent is a programming error")
+		return nil, fmt.Errorf("agent cannot be nil")
 	}
-	return &AgentNode{agent: agent}
+	return &AgentNode{agent: agent}, nil
 }
 
 // Execute runs the agent node.
@@ -96,20 +90,14 @@ func (n *ToolNode) WithExecutionID(id string) *ToolNode {
 
 // NewToolNode creates a new tool node.
 //
-// NOTE: This function will panic if tool is nil. This is intentional as it
-// indicates a programming error in the calling code. These constructors are
-// used during workflow graph initialization (startup phase), and invalid
-// parameters represent fatal startup failures that should prevent application
-// launch. This follows the coding standard allowing panic for fatal startup errors.
-//
 // Args:
 // tool - tool instance, must not be nil.
-// Returns new tool node.
-func NewToolNode(tool core.Tool) *ToolNode {
+// Returns new tool node or error.
+func NewToolNode(tool core.Tool) (*ToolNode, error) {
 	if tool == nil {
-		panic("tool cannot be nil: nil tool is a programming error")
+		return nil, fmt.Errorf("tool cannot be nil")
 	}
-	return &ToolNode{tool: tool}
+	return &ToolNode{tool: tool}, nil
 }
 
 // WithEventSink attaches an event sink for lifecycle events.
@@ -222,24 +210,18 @@ type FuncNode struct {
 
 // NewFuncNode creates a new function node.
 //
-// NOTE: This function will panic if id is empty or fn is nil. This is intentional
-// as it indicates a programming error in the calling code. These constructors are
-// used during workflow graph initialization (startup phase), and invalid
-// parameters represent fatal startup failures that should prevent application
-// launch. This follows the coding standard allowing panic for fatal startup errors.
-//
 // Args:
 // id - unique node identifier, must not be empty.
 // fn - function to execute, must not be nil.
-// Returns new function node.
-func NewFuncNode(id string, fn func(context.Context, *State) error) *FuncNode {
+// Returns new function node or error.
+func NewFuncNode(id string, fn func(context.Context, *State) error) (*FuncNode, error) {
 	if id == "" {
-		panic("node id cannot be empty: empty id is a programming error")
+		return nil, fmt.Errorf("node id cannot be empty")
 	}
 	if fn == nil {
-		panic("function cannot be nil: nil function is a programming error")
+		return nil, fmt.Errorf("function cannot be nil")
 	}
-	return &FuncNode{id: id, fn: fn}
+	return &FuncNode{id: id, fn: fn}, nil
 }
 
 // Execute runs the function node.

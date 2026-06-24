@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/api/core"
-	"goagentx/internal/callbacks"
-	"goagentx/internal/errors"
-	"goagentx/internal/llm"
-	"goagentx/internal/observability"
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 // Service provides LLM operations.

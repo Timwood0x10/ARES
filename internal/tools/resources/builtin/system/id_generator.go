@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // IDGenerator generates unique identifiers.
@@ -108,6 +108,8 @@ func (t *IDGenerator) generateShortID(ctx context.Context, count int) (core.Resu
 
 	return core.NewResult(true, result), nil
 }
+
+func (t *IDGenerator) IsIdempotent() bool { return true }
 
 // getInt safely gets an int parameter.
 func getInt(params map[string]interface{}, key string, defaultVal int) int {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // =====================================================

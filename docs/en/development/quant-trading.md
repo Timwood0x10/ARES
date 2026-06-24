@@ -1,7 +1,7 @@
-# GoAgentX for Quant — 量化交易开发指南
+# ares for Quant — 量化交易开发指南
 
-> 本文档说明如何在 GoAgentX 框架上构建 TradingAgents 级别的量化多 Agent 系统。
-> 覆盖架构设计、目录结构、GoAgentX 接口使用、代码量预估。
+> 本文档说明如何在 ares 框架上构建 TradingAgents 级别的量化多 Agent 系统。
+> 覆盖架构设计、目录结构、ares 接口使用、代码量预估。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                   goagentx api.StartService()               │
+│                   ares api.StartService()               │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │              Portfolio Manager (Leader Agent)         │  │
 │  │  - 接收 ticker + date 输入                            │  │
@@ -49,7 +49,7 @@
 │  └──────────────────────────────────────────────────────┘   │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │           基础设施层 (GoAgentX 原生)                    │   │
+│  │           基础设施层 (ares 原生)                    │   │
 │  │  EventStore │ Arena │ Flight Recorder │ Memory        │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
@@ -97,7 +97,7 @@ internal/quant/                          ← 纯 Go 基础设施层 (~1,850行)
 ├── sentiment/                           ← 情绪聚合层 (~150行)
 │   └── polymarket.go                   150行  预测市场 → 情绪信号
 │
-└── memory/                              ← 决策记忆层 (可选, 也可走 GoAgentX 原生)
+└── memory/                              ← 决策记忆层 (可选, 也可走 ares 原生)
     └── history.go                      200行  跨股票决策记忆注入
                                         200行
 
@@ -138,7 +138,7 @@ examples/quant-trading/                  ← Demo 应用层 (~1,710行)
 
 ---
 
-## 三、GoAgentX 接口使用清单
+## 三、ares 接口使用清单
 
 ### 3.1 框架启动
 
@@ -223,31 +223,31 @@ for _, s := range summaries {
 
 ```bash
 # 场景：分析过程中杀掉 Sentiment Analyst
-goagentx arena run examples/quant-trading/chaos/analyst_crash.yaml
+ares arena run examples/quant-trading/chaos/analyst_crash.yaml
 
 # 场景：杀 PM，测试自动选举
-goagentx arena run examples/quant-trading/chaos/pm_failover.yaml
+ares arena run examples/quant-trading/chaos/pm_failover.yaml
 ```
 
 ### 接口汇总
 
-| GoAgentX 接口 | 包路径 | 用途 |
+| ares 接口 | 包路径 | 用途 |
 |--------------|--------|------|
-| `api.StartService()` | `goagentx/api` | 启动完整运行时 |
-| `api.LoadServiceConfig()` | `goagentx/api` | 加载 YAML 配置 |
-| `orch.CreateAgent()` | `goagentx/internal/dashboard` | 创建子 Agent |
-| `orch.ListAgents()` | `goagentx/internal/dashboard` | 获取 Agent 列表 |
-| `orch.CancelAgent()` | `goagentx/internal/dashboard` | 杀死 Agent |
-| `graph.NewGraph()` | `goagentx/internal/workflow/graph` | 构建 DAG |
-| `graph.AddNode()` | `goagentx/internal/workflow/graph` | 添加工作流节点 |
-| `graph.AddEdge()` | `goagentx/internal/workflow/graph` | 添加依赖边 |
-| `graph.Execute()` | `goagentx/internal/workflow/graph` | 执行工作流 |
-| `events.EventStore.Append()` | `goagentx/internal/events` | 写入事件 |
-| `events.EventStore.Read()` | `goagentx/internal/events` | 读取事件 |
-| `CompactableEventStore.GetSummariesForStream()` | `goagentx/internal/events` | 获取历史摘要 |
-| `arena.RunScenario()` | `goagentx/internal/arena` | 运行混沌场景 |
-| `tools/core.Registry.Register()` | `goagentx/internal/tools/resources/core` | 注册 MCP 工具 |
-| `dashboard.AgentRequest` | `goagentx/internal/dashboard` | Agent 参数结构体 |
+| `api.StartService()` | `ares/api` | 启动完整运行时 |
+| `api.LoadServiceConfig()` | `ares/api` | 加载 YAML 配置 |
+| `orch.CreateAgent()` | `ares/internal/dashboard` | 创建子 Agent |
+| `orch.ListAgents()` | `ares/internal/dashboard` | 获取 Agent 列表 |
+| `orch.CancelAgent()` | `ares/internal/dashboard` | 杀死 Agent |
+| `graph.NewGraph()` | `ares/internal/workflow/graph` | 构建 DAG |
+| `graph.AddNode()` | `ares/internal/workflow/graph` | 添加工作流节点 |
+| `graph.AddEdge()` | `ares/internal/workflow/graph` | 添加依赖边 |
+| `graph.Execute()` | `ares/internal/workflow/graph` | 执行工作流 |
+| `events.EventStore.Append()` | `ares/internal/events` | 写入事件 |
+| `events.EventStore.Read()` | `ares/internal/events` | 读取事件 |
+| `CompactableEventStore.GetSummariesForStream()` | `ares/internal/events` | 获取历史摘要 |
+| `arena.RunScenario()` | `ares/internal/arena` | 运行混沌场景 |
+| `tools/core.Registry.Register()` | `ares/internal/tools/resources/core` | 注册 MCP 工具 |
+| `dashboard.AgentRequest` | `ares/internal/dashboard` | Agent 参数结构体 |
 
 ---
 

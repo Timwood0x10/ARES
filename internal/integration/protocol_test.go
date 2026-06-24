@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // TestProtocolSendMessageReceiveMessage verifies the full round-trip:

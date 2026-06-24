@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"goagentx/internal/core/models"
-	gerr "goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	gerr "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Pre-compiled regular expressions for better performance.

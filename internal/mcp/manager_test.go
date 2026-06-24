@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 func TestMCPManagerStartStop(t *testing.T) {
@@ -20,7 +20,7 @@ func TestMCPManagerStartStop(t *testing.T) {
 		},
 	}
 
-	manager := NewMCPManager(config, registry)
+	manager := newTestManager(t, config, registry)
 	ctx := context.Background()
 
 	if err := manager.Start(ctx); err != nil {
@@ -39,7 +39,7 @@ func TestMCPManagerStartStop(t *testing.T) {
 
 func TestMCPManagerStartEmptyConfig(t *testing.T) {
 	registry := core.NewRegistry()
-	manager := NewMCPManager(nil, registry)
+	manager := newTestManager(t, nil, registry)
 
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -59,7 +59,7 @@ func TestMCPManagerConnectDisconnect(t *testing.T) {
 		},
 	}
 
-	manager := NewMCPManager(config, registry)
+	manager := newTestManager(t, config, registry)
 
 	// ConnectServer will fail because "echo" isn't a real MCP server,
 	// but we can test the config lookup.
@@ -71,7 +71,7 @@ func TestMCPManagerConnectDisconnect(t *testing.T) {
 
 func TestMCPManagerGetClient(t *testing.T) {
 	registry := core.NewRegistry()
-	manager := NewMCPManager(&MCPManagerConfig{}, registry)
+	manager := newTestManager(t, &MCPManagerConfig{}, registry)
 
 	_, ok := manager.GetClient("nonexistent")
 	if ok {
@@ -81,7 +81,7 @@ func TestMCPManagerGetClient(t *testing.T) {
 
 func TestMCPManagerListServers(t *testing.T) {
 	registry := core.NewRegistry()
-	manager := NewMCPManager(&MCPManagerConfig{}, registry)
+	manager := newTestManager(t, &MCPManagerConfig{}, registry)
 
 	servers := manager.ListServers()
 	if servers == nil {
@@ -94,7 +94,7 @@ func TestMCPManagerListServers(t *testing.T) {
 
 func TestMCPToolFactory(t *testing.T) {
 	registry := core.NewRegistry()
-	manager := NewMCPManager(&MCPManagerConfig{}, registry)
+	manager := newTestManager(t, &MCPManagerConfig{}, registry)
 	factory := NewMCPToolFactory(manager)
 
 	if factory.Name() != "mcp" {
@@ -108,7 +108,7 @@ func TestMCPToolFactory(t *testing.T) {
 
 func TestMCPToolFactoryValidateConfig(t *testing.T) {
 	registry := core.NewRegistry()
-	manager := NewMCPManager(&MCPManagerConfig{}, registry)
+	manager := newTestManager(t, &MCPManagerConfig{}, registry)
 	factory := NewMCPToolFactory(manager)
 
 	tests := []struct {
@@ -173,6 +173,15 @@ func TestMCPToolFactoryValidateConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newTestManager(t *testing.T, config *MCPManagerConfig, registry *core.Registry) *MCPManager {
+	t.Helper()
+	m, err := NewMCPManager(config, registry)
+	if err != nil {
+		t.Fatalf("NewMCPManager failed: %v", err)
+	}
+	return m
 }
 
 func TestToStringSlice(t *testing.T) {

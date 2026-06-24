@@ -286,12 +286,12 @@ func TestResultWithTiming(t *testing.T) {
 				t.Errorf("duration_ms = %d, want %d", durationMs, tt.duration.Milliseconds())
 			}
 
-			timestamp, ok := result.Metadata["timestamp"].(int64)
+			executedAt, ok := result.Metadata["executed_at"].(int64)
 			if !ok {
-				t.Error("timestamp should be an int64")
+				t.Error("executed_at should be an int64")
 			}
-			if timestamp < before.Unix() || timestamp > after.Unix() {
-				t.Errorf("timestamp %d is outside expected range [%d, %d]", timestamp, before.Unix(), after.Unix())
+			if executedAt < before.Unix() || executedAt > after.Unix() {
+				t.Errorf("executed_at %d is outside expected range [%d, %d]", executedAt, before.Unix(), after.Unix())
 			}
 		})
 	}

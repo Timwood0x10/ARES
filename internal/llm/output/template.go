@@ -8,7 +8,7 @@ import (
 	"sync"
 	"text/template"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"

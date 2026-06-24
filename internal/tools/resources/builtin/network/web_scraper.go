@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // WebScraper extracts and parses web page content.

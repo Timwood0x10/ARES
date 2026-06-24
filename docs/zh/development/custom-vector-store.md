@@ -37,7 +37,7 @@ package myqdrant
 
 import (
     "context"
-    "goagentx/internal/storage"
+    "ares/internal/storage"
 )
 
 type VectorStore struct {

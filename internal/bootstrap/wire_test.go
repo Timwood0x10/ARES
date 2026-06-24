@@ -5,15 +5,16 @@ import (
 	"strings"
 	"testing"
 
-	"goagentx/internal/callbacks"
-	"goagentx/internal/events"
-	"goagentx/internal/evolution"
-	"goagentx/internal/flight"
-	"goagentx/internal/llm"
-	"goagentx/internal/memory"
-	"goagentx/internal/memory/distillation"
-	"goagentx/internal/storage/postgres/models"
-	"goagentx/internal/storage/postgres/repositories"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // mockExpRepo implements repositories.ExperienceRepositoryInterface for testing.
@@ -116,7 +117,7 @@ func TestWireAllEvolutionComponents_AllDepsProvided(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestWireAllEvolutionComponents_MissingOptionalDeps(t *testing.T) {
 		ExpRepo: expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with minimal deps: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestWireAllEvolutionComponents_NilLLMClient(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with nil LLM client: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestWireAllEvolutionComponents_NilLLMClient(t *testing.T) {
 func TestWireAllEvolutionComponents_NilDeps(t *testing.T) {
 	ctx := context.Background()
 
-	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{})
+	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{}, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with nil deps: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestWireAllEvolutionComponents_NilDeps(t *testing.T) {
 func TestWireAllEvolutionComponents_CallbackRegImplementsEmitter(t *testing.T) {
 	ctx := context.Background()
 
-	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{})
+	wired, err := WireAllEvolutionComponents(ctx, &WireDependencies{}, nil)
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents error: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestWireAllEvolutionComponents_WithDreamDeps(t *testing.T) {
 		},
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps)
+	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		// Dream cycle creation may fail due to internal validation; assert error is meaningful.
 		errMsg := err.Error()

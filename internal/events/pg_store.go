@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	apperrors "goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // PostgresEventStore persists events in PostgreSQL with optimistic concurrency control.
@@ -22,15 +22,18 @@ type PostgresEventStore struct {
 	pool *postgres.Pool
 }
 
+// Default query limits for event reads.
+const defaultEventReadLimit = 100
+
 // Compile-time interface compliance check.
 var _ EventStore = (*PostgresEventStore)(nil)
 
 // NewPostgresEventStore creates a PostgresEventStore backed by the given pool.
-func NewPostgresEventStore(pool *postgres.Pool) *PostgresEventStore {
+func NewPostgresEventStore(pool *postgres.Pool) (*PostgresEventStore, error) {
 	if pool == nil {
-		return nil
+		return nil, apperrors.New("pool must not be nil")
 	}
-	return &PostgresEventStore{pool: pool}
+	return &PostgresEventStore{pool: pool}, nil
 }
 
 // Append persists events to the given stream with optimistic concurrency control.
@@ -450,7 +453,7 @@ func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
 		argIdx++ //nolint:ineffassign // Reserved for future query parameters.
 	}
 
-	query += " ORDER BY created_at ASC LIMIT 100"
+	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT %d", defaultEventReadLimit)
 
 	return query, args
 }

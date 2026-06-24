@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"goagentx/internal/callbacks"
-	coreerrors "goagentx/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // TestClientGenerateEmitsCallbacks verifies that Generate() emits
@@ -283,8 +283,8 @@ func TestClientMultipleCallsShareRegistry(t *testing.T) {
 	}, WithCallbacks(reg))
 
 	ctx := context.Background()
-	client1.Generate(ctx, "")
-	client2.Generate(ctx, "")
+	_, _ = client1.Generate(ctx, "")
+	_, _ = client2.Generate(ctx, "")
 
 	mu.Lock()
 	count := eventCount

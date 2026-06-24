@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

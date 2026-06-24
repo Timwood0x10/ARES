@@ -1,10 +1,10 @@
 package resources
 
 import (
-	"goagentx/internal/tools/resources/agent"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
-	"goagentx/internal/tools/resources/formatter"
+	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/formatter"
 )
 
 // Core types
@@ -56,7 +56,7 @@ const (
 	CategoryData      = core.CategoryData
 	CategoryKnowledge = core.CategoryKnowledge
 	CategoryMemory    = core.CategoryMemory
-	CategoryDomain    = core.CategoryDomain
+	CategoryExternal  = core.CategoryExternal
 )
 
 // Core functions
@@ -89,9 +89,8 @@ var (
 
 // Agent functions
 var (
-	DefaultAgentToolConfig       = agent.DefaultAgentToolConfig
-	NewAgentTools                = agent.NewAgentTools
-	RegisterBuiltinToolsForAgent = agent.RegisterBuiltinToolsForAgent
+	DefaultAgentToolConfig = agent.DefaultAgentToolConfig
+	NewAgentTools          = agent.NewAgentTools
 )
 
 // Agent tool config presets

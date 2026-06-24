@@ -2,7 +2,7 @@
 
 ## 1. 概述
 
-Memory System 模块是 GoAgentX 框架的核心组件，负责管理系统中的各类内存数据，包括会话内存、任务内存和蒸馏记忆，实现短期会话上下文管理、任务执行追踪以及长期经验提取与检索。
+Memory System 模块是 ares 框架的核心组件，负责管理系统中的各类内存数据，包括会话内存、任务内存和蒸馏记忆，实现短期会话上下文管理、任务执行追踪以及长期经验提取与检索。
 
 ### 核心功能
 
@@ -550,8 +550,8 @@ func (r *ConflictResolver) ResolveConflict(newExp, oldExp *Experience) Resolutio
 
 ```go
 import (
-    "goagentx/internal/memory/distillation"
-    "goagentx/internal/storage/postgres/embedding"
+    "ares/internal/memory/distillation"
+    "ares/internal/storage/postgres/embedding"
 )
 
 // 1. 创建 Embedding 服务

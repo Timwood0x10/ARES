@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // CodeRunner provides code execution capabilities with sandbox constraints.
@@ -66,12 +67,14 @@ func NewCodeRunner() *CodeRunner {
 			"import os", "import subprocess", "import shutil",
 			"import sys", "import socket", "import pickle",
 			"import marshal", "import ctypes", "import multiprocessing",
+			"import importlib", "import urllib", "import requests",
+			"import http", "import ftplib", "import telnetlib",
 			"eval(", "exec(", "open(", "system(", "popen", "fork(",
-			"__import__", "__builtins__",
+			"__import__", "__builtins__", "compile(",
 		},
 		obfuscationPatterns: []string{
 			"chr(", "ord(", "\\x", "base64.",
-			"getattr", "setattr", "compile(",
+			"getattr", "setattr",
 		},
 	}
 }
@@ -114,12 +117,14 @@ func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration
 			"import os", "import subprocess", "import shutil",
 			"import sys", "import socket", "import pickle",
 			"import marshal", "import ctypes", "import multiprocessing",
+			"import importlib", "import urllib", "import requests",
+			"import http", "import ftplib", "import telnetlib",
 			"eval(", "exec(", "open(", "system(", "popen", "fork(",
-			"__import__", "__builtins__",
+			"__import__", "__builtins__", "compile(",
 		},
 		obfuscationPatterns: []string{
 			"chr(", "ord(", "\\x", "base64.",
-			"getattr", "setattr", "compile(",
+			"getattr", "setattr",
 		},
 	}
 }
@@ -181,16 +186,68 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 	}
 }
 
+// importPattern matches import statements with word boundaries.
+var importPattern = regexp.MustCompile(`\bimport\s+\w+`)
+
+// stripPythonComments removes single-line comments from Python code.
+func stripPythonComments(code string) string {
+	lines := strings.Split(code, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		// Find the first unquoted '#' character
+		inSingleQuote := false
+		inDoubleQuote := false
+		commentStart := -1
+		for i, c := range line {
+			if c == '\'' && !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			} else if c == '"' && !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			} else if c == '#' && !inSingleQuote && !inDoubleQuote {
+				commentStart = i
+				break
+			}
+		}
+		if commentStart >= 0 {
+			line = line[:commentStart]
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
 // validateCode checks code for potential security issues.
 func (t *CodeRunner) validateCode(code string) error {
-	lowerCode := strings.ToLower(code)
+	// Strip comments to prevent bypass via comment-based splitting
+	stripped := stripPythonComments(code)
+	lowerCode := strings.ToLower(stripped)
 
+	// Check dangerous patterns (substring match)
 	for _, pattern := range t.dangerousPatterns {
 		if strings.Contains(lowerCode, pattern) {
 			return fmt.Errorf("potentially dangerous pattern detected: %s", pattern)
 		}
 	}
 
+	// Check import statements with word boundaries using regex
+	matches := importPattern.FindAllString(lowerCode, -1)
+	for _, match := range matches {
+		parts := strings.Fields(match)
+		if len(parts) >= 2 {
+			moduleName := parts[1]
+			// Check if the imported module is in the dangerous patterns list
+			for _, pattern := range t.dangerousPatterns {
+				if pattern == "import "+moduleName {
+					return fmt.Errorf("potentially dangerous import detected: %s", match)
+				}
+			}
+		}
+	}
+
+	// Check obfuscation patterns
 	for _, pattern := range t.obfuscationPatterns {
 		if strings.Contains(lowerCode, pattern) {
 			return fmt.Errorf("potential code obfuscation detected: %s", pattern)

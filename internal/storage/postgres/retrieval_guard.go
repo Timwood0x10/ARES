@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"goagentx/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/errors"
 
 	"golang.org/x/time/rate"
 )
@@ -96,4 +96,12 @@ func (g *RetrievalGuard) GetCircuitBreakerState() CircuitBreakerState {
 // This is primarily used for testing purposes.
 func (g *RetrievalGuard) ResetCircuitBreaker() {
 	g.circuitBreaker.Reset()
+}
+
+// Close stops the internal circuit breaker cleanup goroutine and releases resources.
+// It should be called when the RetrievalGuard is no longer needed to prevent goroutine leaks.
+func (g *RetrievalGuard) Close() {
+	if g.circuitBreaker != nil {
+		g.circuitBreaker.Close()
+	}
 }

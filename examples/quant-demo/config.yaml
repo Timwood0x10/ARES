@@ -1,4 +1,4 @@
-# GoAgentX Quantitative Multi-Agent Demo Configuration
+# ares Quantitative Multi-Agent Demo Configuration
 # Connects to Ollama for LLM analysis; uses built-in compute for factor data.
 # Uses mcp-null as a placeholder MCP server (satisfies startup requirement).
 

@@ -3,7 +3,7 @@ package base
 import (
 	"context"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // Compile-time check: BaseTool satisfies ToolLifecycle.
@@ -130,9 +130,4 @@ func WithMetadata(tool core.Tool, metadata core.ToolMetadata) core.Tool {
 type metadataTool struct {
 	core.Tool
 	Metadata core.ToolMetadata
-}
-
-// IsDeprecated returns true if tool is deprecated.
-func (m *metadataTool) IsDeprecated() bool {
-	return m.Metadata.Deprecated
 }

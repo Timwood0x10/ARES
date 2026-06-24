@@ -1,6 +1,6 @@
 # Local Knowledge Base Example
 
-This is a local knowledge base example based on the GoAgentX storage module. It demonstrates how to quickly build a fully functional document retrieval and Q&A system using the high-level APIs of the storage module.
+This is a local knowledge base example based on the ares storage module. It demonstrates how to quickly build a fully functional document retrieval and Q&A system using the high-level APIs of the storage module.
 
 ## Tech Stack and Components
 

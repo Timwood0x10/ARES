@@ -8,7 +8,7 @@
 #   4. What's the recovery time from "leader dead" to "fully operational"?
 #
 # How to run:
-#   goagentx arena run examples/arena/leader_assassination.yaml --addr localhost:8080
+#   ares arena run examples/arena/leader_assassination.yaml --addr localhost:8080
 #   Or: POST /arena/scenario/run with this YAML as JSON body
 #
 # Expected outcome on a healthy cluster:

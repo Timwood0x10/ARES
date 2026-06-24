@@ -7,15 +7,17 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/callbacks"
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/experience"
-	"goagentx/internal/memory"
-	"goagentx/internal/protocol/ahp"
+	stderrors "errors" // stdlib errors.Join for collecting multiple errors
+
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -107,14 +109,21 @@ type leaderAgent struct {
 	eventStore    events.EventStore
 	callbacks     callbacks.Emitter // Optional: emits lifecycle callback events.
 
+	// Snapshot/restore state fields for resurrection support.
+	lastTaskID          string
+	lastCompletedTaskID string // ID of most recently completed task (differs from lastTaskID which is "created")
+	conversationSummary string
+	lastInteractionTime time.Time
+
 	// Lifecycle management
-	stopCh       chan struct{}   // Channel to signal shutdown
-	distillMu    sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
-	distillWg    sync.WaitGroup  // WaitGroup for distillation goroutines
-	distillEg    *errgroup.Group // Errgroup for distillation goroutines
-	streamEg     *errgroup.Group // Errgroup for streaming pipeline goroutines
-	processingMu sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
-	cleanupOnce  sync.Once       // Ensure cleanup runs only once
+	stopCh          chan struct{}   // Channel to signal shutdown
+	distillMu       sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
+	distillWg       sync.WaitGroup  // WaitGroup for distillation goroutines
+	distillEg       *errgroup.Group // Errgroup for distillation goroutines
+	streamEg        *errgroup.Group // Errgroup for streaming pipeline goroutines
+	processingMu    sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
+	cleanupOnce     sync.Once       // Ensure cleanup runs only once
+	sessionInitOnce sync.Once       // Ensure session initialization runs only once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.
@@ -142,6 +151,24 @@ type LoopConfig struct {
 }
 
 // New creates a new LeaderAgent instance.
+//
+// Args:
+//
+//	id - unique agent identifier, must not be empty.
+//	parser - profile parser, must not be nil.
+//	planner - task planner, must not be nil.
+//	dispatcher - task dispatcher, must not be nil.
+//	aggregator - result aggregator, must not be nil.
+//	msgQueue - optional message queue for inter-agent communication.
+//	hbMon - optional heartbeat monitor.
+//	memMgr - memory manager, must not be nil.
+//	cfg - optional configuration; uses defaults when nil.
+//	opts - optional functional options.
+//
+// Returns:
+//
+//	agent - a new LeaderAgent instance.
+//	err - validation error if required dependencies are nil.
 func New(
 	id string,
 	parser ProfileParser,
@@ -153,7 +180,25 @@ func New(
 	memMgr memory.MemoryManager,
 	cfg *LeaderAgentConfig,
 	opts ...LeaderOption,
-) Agent {
+) (Agent, error) {
+	if id == "" {
+		return nil, errors.New("leader agent: id cannot be empty")
+	}
+	if parser == nil {
+		return nil, errors.New("leader agent: parser cannot be nil")
+	}
+	if planner == nil {
+		return nil, errors.New("leader agent: planner cannot be nil")
+	}
+	if dispatcher == nil {
+		return nil, errors.New("leader agent: dispatcher cannot be nil")
+	}
+	if aggregator == nil {
+		return nil, errors.New("leader agent: aggregator cannot be nil")
+	}
+	if memMgr == nil {
+		return nil, errors.New("leader agent: memory manager cannot be nil")
+	}
 	if cfg == nil {
 		cfg = DefaultLeaderAgentConfig()
 	}
@@ -178,7 +223,7 @@ func New(
 		opt(a)
 	}
 
-	return a
+	return a, nil
 }
 
 // DefaultLeaderAgentConfig returns default configuration.
@@ -189,11 +234,11 @@ func DefaultLeaderAgentConfig() *LeaderAgentConfig {
 		MaxSteps:         DefaultMaxSteps,
 		EnableCache:      true,
 		Loop: LoopConfig{
-			MaxIterations:    3,
-			QualityThreshold: 0.7,
+			MaxIterations:    DefaultMaxIterations,
+			QualityThreshold: DefaultQualityThreshold,
 			EnableReflection: false,
-			MaxTotalLLMCalls: 50,
-			MaxLoopDuration:  10 * time.Minute,
+			MaxTotalLLMCalls: DefaultMaxTotalLLMCalls,
+			MaxLoopDuration:  DefaultMaxLoopDuration,
 		},
 	}
 }
@@ -291,7 +336,15 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 }
 
 // Stop stops the leader agent and cleans up resources.
-func (a *leaderAgent) Stop(ctx context.Context) error {
+//
+// Args:
+//
+//	ctx - context for cancellation during shutdown.
+//
+// Returns:
+//
+//	err - joined errors from distillation/streaming goroutines, or status error.
+func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
@@ -306,19 +359,26 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 		close(a.stopCh)
 		a.distillMu.Unlock()
 
-		// Wait for background goroutines to complete.
+		// Wait for background goroutines to complete and collect their errors.
 		a.distillWg.Wait()
+
+		var errs []error
 		if a.distillEg != nil {
 			if err := a.distillEg.Wait(); err != nil {
 				slog.Warn("Errors from distillation goroutines during shutdown",
 					"error", err)
+				errs = append(errs, fmt.Errorf("distillation: %w", err))
 			}
 		}
 		if a.streamEg != nil {
 			if err := a.streamEg.Wait(); err != nil {
 				slog.Warn("Errors from streaming goroutines during shutdown",
 					"error", err)
+				errs = append(errs, fmt.Errorf("streaming: %w", err))
 			}
+		}
+		if len(errs) > 0 {
+			retErr = stderrors.Join(errs...)
 		}
 
 		// Cleanup heartbeat monitor if provided.
@@ -334,7 +394,7 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 	})
 
 	a.setStatus(models.AgentStatusOffline)
-	return nil
+	return retErr
 }
 
 // getUserID returns the configured user ID, defaulting to "default_user" if empty.
@@ -371,61 +431,55 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	a.mu.RLock()
 	sessionID = a.sessionID
 	checkpoint := a.checkpoint
-	eventStore := a.eventStore
 	leaderID := a.id
 	a.mu.RUnlock()
 
 	if sessionID == "" {
-		recovered := false
-		if checkpoint != nil {
-			cp, err := checkpoint.GetLatest(ctx, leaderID)
-			if err != nil {
-				slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
-			} else if cp != nil && cp.SessionID != "" {
-				sessionID = cp.SessionID
-				recovered = true
-				slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
-			}
-		}
-		if !recovered {
-			newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
-			if err != nil {
-				slog.Warn("Failed to create session", "error", err)
-			} else {
-				sessionID = newSessionID
-			}
-		}
-		// Take write lock only to persist the sessionID.
-		if sessionID != "" {
-			a.mu.Lock()
-			a.sessionID = sessionID
-			a.mu.Unlock()
-
+		// Use sync.Once to ensure session is initialized exactly once, preventing
+		// race conditions where concurrent RestoreState/ReplayEvents could overwrite
+		// the sessionID between the DB call and the write lock acquisition.
+		a.sessionInitOnce.Do(func() {
+			recovered := false
 			if checkpoint != nil {
-				if err := checkpoint.Save(ctx, &LeaderCheckpoint{
-					LeaderID:  leaderID,
-					SessionID: sessionID,
-					Status:    "active",
-				}); err != nil {
-					slog.Warn("Failed to save checkpoint", "error", err)
+				cp, err := checkpoint.GetLatest(ctx, leaderID)
+				if err != nil {
+					slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
+				} else if cp != nil && cp.SessionID != "" {
+					sessionID = cp.SessionID
+					recovered = true
+					slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
 				}
 			}
+			if !recovered {
+				newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
+				if err != nil {
+					slog.Warn("Failed to create session", "error", err)
+				} else {
+					sessionID = newSessionID
+				}
+			}
+			// Persist the sessionID under write lock.
+			if sessionID != "" {
+				a.mu.Lock()
+				a.sessionID = sessionID
+				a.mu.Unlock()
 
-			// Emit session created event for event sourcing.
-			if eventStore != nil {
-				if err := eventStore.Append(ctx, leaderID, []*events.Event{
-					{
-						Type: events.EventSessionCreated,
-						Payload: map[string]any{
-							"session_id": sessionID,
-							"user_id":    a.getUserID(),
-						},
-					},
-				}, 0); err != nil {
-					slog.Warn("Failed to emit session created event", "error", err)
+				if checkpoint != nil {
+					if err := checkpoint.Save(ctx, &LeaderCheckpoint{
+						LeaderID:  leaderID,
+						SessionID: sessionID,
+						Status:    "active",
+					}); err != nil {
+						slog.Warn("Failed to save checkpoint", "error", err)
+					}
 				}
-			}
-		}
+
+				a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+					"session_id": sessionID,
+					"user_id":    a.getUserID(),
+				})
+			} // end if sessionID != ""
+		}) // end sessionInitOnce.Do
 	}
 
 	// Record user message.
@@ -433,19 +487,11 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
-	// Emit message added event for event sourcing.
-	if eventStore != nil && sessionID != "" {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventMessageAdded,
-				Payload: map[string]any{
-					"session_id": sessionID,
-					"role":       "user",
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit message added event", "error", err)
-		}
+	if sessionID != "" {
+		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+			"session_id": sessionID,
+			"role":       "user",
+		})
 	}
 
 	// Build input with conversation context.
@@ -457,7 +503,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	}
 
 	// Search similar tasks for additional context.
-	similarTasks, err := a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, 3)
+	similarTasks, err := a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, DefaultSimilarTasksLimit)
 	if err != nil {
 		slog.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", err)
 	} else if len(similarTasks) > 0 {
@@ -478,40 +524,23 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 			"impact", "task will not be tracked for distillation")
 	} else {
 		taskID = tID
+		// Safe to call updateSnapshotState here: a.mu is NOT held at this point.
+		// The RLock section above (line ~376) was already released, and the write lock
+		// for sessionID persistence was also released before reaching this code.
+		a.updateSnapshotState(taskID)
 
-		// Emit task created event for event sourcing.
-		if eventStore != nil {
-			if err := eventStore.Append(ctx, leaderID, []*events.Event{
-				{
-					Type: events.EventTaskCreated,
-					Payload: map[string]any{
-						"task_id":    taskID,
-						"session_id": sessionID,
-					},
-				},
-			}, 0); err != nil {
-				slog.Warn("Failed to emit task created event", "error", err)
-			}
-		}
+		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			"task_id":    taskID,
+			"session_id": sessionID,
+		})
 	}
 
 	return enrichedInput, sessionID, taskID
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if a.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: a.id,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
 		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }
@@ -524,10 +553,27 @@ func (a *leaderAgent) emitCallback(ctx *callbacks.Context) {
 	a.callbacks.Emit(ctx)
 }
 
+// updateSnapshotState updates the snapshot-tracking fields after state changes.
+// This ensures Snapshot() returns up-to-date data for resurrection.
+//
+// IMPORTANT: This method acquires a.mu.Lock internally. Callers MUST NOT hold
+// a.mu when invoking this method, or it will deadlock. All current call sites
+// have been verified to call this without holding a.mu.
+//
+// Args:
+//
+//	taskID - the task ID that was just created.
+func (a *leaderAgent) updateSnapshotState(taskID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastTaskID = taskID
+	a.lastInteractionTime = time.Now()
+}
+
 // finalizeMemory updates task output, records assistant message, and triggers
 // background distillation. Must be called after aggregation succeeds.
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-	if a.memoryManager == nil || result == nil {
+	if a.memoryManager == nil || result == nil || sessionID == "" {
 		return
 	}
 
@@ -545,23 +591,11 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
-	// Emit assistant message added event for event sourcing.
-	a.mu.RLock()
-	eventStore := a.eventStore
-	leaderID := a.id
-	a.mu.RUnlock()
-	if eventStore != nil && sessionID != "" {
-		if err := eventStore.Append(ctx, leaderID, []*events.Event{
-			{
-				Type: events.EventMessageAdded,
-				Payload: map[string]any{
-					"session_id": sessionID,
-					"role":       "assistant",
-				},
-			},
-		}, 0); err != nil {
-			slog.Warn("Failed to emit message added event", "error", err)
-		}
+	if sessionID != "" {
+		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+			"session_id": sessionID,
+			"role":       "assistant",
+		})
 	}
 
 	// Emit task completed event for event sourcing.
@@ -598,7 +632,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 		// Detached context with own timeout — distillation continues
 		// even if the parent request is cancelled.
-		distillCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		distillCtx, cancel := context.WithTimeout(context.Background(), DefaultDistillTimeout)
 		defer cancel()
 
 		g, gCtx := errgroup.WithContext(distillCtx)
@@ -937,6 +971,22 @@ func (a *leaderAgent) IsAlive() bool {
 
 // RestoreState restores the leader agent's state from persisted data.
 // Implements base.StatefulAgent for resurrection support.
+//
+// Restorable fields:
+//   - session_id: active session identifier
+//   - last_task_id: most recently created task ID
+//   - last_completed_task_id: most recently completed task ID
+//   - agent_status: status string (ready/busy/offline)
+//   - conversation_summary: brief summary of recent conversation
+//   - last_interaction_time: RFC3339 timestamp of last user interaction
+//
+// Args:
+//
+//	state - map of persisted state fields. Nil or empty is a safe no-op.
+//
+// Returns:
+//
+//	err - always nil for RestoreState; invalid fields are silently skipped.
 func (a *leaderAgent) RestoreState(state map[string]any) error {
 	if state == nil {
 		return nil
@@ -946,22 +996,61 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 
 	if sid, ok := state["session_id"].(string); ok && sid != "" {
 		a.sessionID = sid
-		slog.Info("state restored from event replay",
-			"agent_id", a.id,
-			"session_id", sid,
-		)
 	}
+	if tid, ok := state["last_task_id"].(string); ok && tid != "" {
+		a.lastTaskID = tid
+	}
+	if ctid, ok := state["last_completed_task_id"].(string); ok && ctid != "" {
+		a.lastCompletedTaskID = ctid
+	}
+	if statusStr, ok := state["agent_status"].(string); ok {
+		if parsed, err := models.ParseAgentStatus(statusStr); err == nil {
+			a.status = parsed
+		}
+	}
+	if summary, ok := state["conversation_summary"].(string); ok {
+		a.conversationSummary = summary
+	}
+	if ts, ok := state["last_interaction_time"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			a.lastInteractionTime = t
+		}
+	}
+
+	slog.Info("state restored from snapshot",
+		"agent_id", a.id,
+		"session_id", a.sessionID,
+		"status", string(a.status),
+	)
 	return nil
 }
 
 // ReplayEvents replays a sequence of events to reconstruct state.
 // Implements base.StatefulAgent for resurrection support.
+//
+// Supported event types:
+//   - EventSessionCreated: restores session_id
+//   - EventMessageAdded: updates last_message_role and message count
+//   - EventTaskCreated: restores last_task_id
+//   - EventTaskCompleted: restores last_completed_task_id
+//   - EventAgentStarted/Stopped: updates agent status
+//
+// Args:
+//
+//	evts - ordered sequence of events to replay. Nil or empty is a safe no-op.
+//
+// Returns:
+//
+//	err - always nil for ReplayEvents; invalid events are silently skipped.
 func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 	if len(evts) == 0 {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	var msgCount int
+
 	for _, ev := range evts {
 		if ev == nil {
 			continue
@@ -971,21 +1060,76 @@ func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				a.sessionID = sid
 			}
+
+		case events.EventMessageAdded:
+			msgCount++
+			if role, ok := ev.Payload["role"].(string); ok {
+				a.conversationSummary = fmt.Sprintf("last_role:%s,msg_count:%d", role, msgCount)
+			}
+
+		case events.EventTaskCreated:
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				a.lastTaskID = tid
+			}
+
+		case events.EventTaskCompleted:
+			// Track the most recently completed task (separate from lastTaskID which tracks "created").
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				a.lastCompletedTaskID = tid
+			}
+
+		case events.EventAgentStarted:
+			a.status = models.AgentStatusReady
+
+		case events.EventAgentStopped:
+			a.status = models.AgentStatusOffline
 		}
 	}
+
+	slog.Info("events replayed for state reconstruction",
+		"agent_id", a.id,
+		"event_count", len(evts),
+		"session_id", a.sessionID,
+	)
 	return nil
 }
 
 // Snapshot returns a serializable snapshot of the leader agent's current state.
 // Implements base.StatefulAgent for resurrection support.
+//
+// The snapshot includes:
+//   - session_id: active session identifier
+//   - agent_id: unique agent identifier
+//   - status: current agent status string
+//   - last_task_id: most recently created task ID (if any)
+//   - last_completed_task_id: most recently completed task ID (if any)
+//   - conversation_summary: brief summary of recent conversation context
+//   - last_interaction_time: RFC3339 timestamp of last state change
+//   - snapshot_version: schema version for forward compatibility
+//
+// Returns:
+//
+//	snapshot - map of serializable state fields. Never nil.
+//	err - always nil for Snapshot; capture failures are non-fatal.
 func (a *leaderAgent) Snapshot() (map[string]any, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return map[string]any{
-		"session_id": a.sessionID,
-		"agent_id":   a.id,
-		"status":     string(a.status),
-	}, nil
+
+	snap := map[string]any{
+		"session_id":             a.sessionID,
+		"agent_id":               a.id,
+		"status":                 string(a.status),
+		"last_task_id":           a.lastTaskID,
+		"last_completed_task_id": a.lastCompletedTaskID,
+		"conversation_summary":   a.conversationSummary,
+		"snapshot_version":       1,
+	}
+
+	if !a.lastInteractionTime.IsZero() {
+		snap["last_interaction_time"] = a.lastInteractionTime.Format(time.RFC3339)
+	}
+
+	return snap, nil
 }
 
 // ProcessStream handles user input and returns a stream of events.
@@ -1027,7 +1171,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	// Initialize memory context (session, messages, similar tasks, task record).
 	strInput, sessionID, taskID := a.initMemoryContext(ctx, strInput)
 
-	ch := make(chan base.AgentEvent, 64)
+	ch := make(chan base.AgentEvent, DefaultEventChanSize)
 
 	a.streamEg.Go(func() error {
 		// Emit start event inside the goroutine so it's always paired with end.

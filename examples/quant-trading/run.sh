@@ -1,5 +1,5 @@
 #!/bin/bash
-# GoAgentX Quantitative Trading Demo — one-click runner.
+# ares Quantitative Trading Demo — one-click runner.
 set -e
 
 CONFIG="${1:-./examples/quant-trading/config.yaml}"
@@ -36,7 +36,7 @@ if [ "$1" = "--status" ]; then
     info "Not running"; exit 0
 fi
 
-echo -e "\n${CYAN}${BOLD}═══ GoAgentX Quant Trading Demo ═══${NC}\n"
+echo -e "\n${CYAN}${BOLD}═══ ares Quant Trading Demo ═══${NC}\n"
 
 # Install mcp-null helper.
 info "Building mcp-null..."

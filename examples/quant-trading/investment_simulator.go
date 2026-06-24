@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // TradeSignal represents a time-based trading instruction produced by the

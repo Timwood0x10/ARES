@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagentx/api/core"
-	"goagentx/internal/workflow/engine"
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // Service implements core.WorkflowService.

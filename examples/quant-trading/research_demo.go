@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/internal/quant/research"
-	researchagents "goagentx/internal/quant/research/agents"
+	"github.com/Timwood0x10/ares/internal/quant/research"
+	researchagents "github.com/Timwood0x10/ares/internal/quant/research/agents"
 )
 
 func main() {

@@ -1,5 +1,3 @@
-// package graph - tests for graph execution.
-
 package graph
 
 import (
@@ -9,7 +7,6 @@ import (
 	"time"
 )
 
-// mockNode is a simple mock node for testing.
 type mockNode struct {
 	id        string
 	executeFn func(context.Context, *State) error
@@ -24,7 +21,10 @@ func (m *mockNode) ID() string {
 }
 
 func TestNewGraph(t *testing.T) {
-	graph := NewGraph("test-graph")
+	graph, err := NewGraph("test-graph")
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
 	if graph.id != "test-graph" {
 		t.Errorf("expected test-graph, got %s", graph.id)
 	}
@@ -34,15 +34,30 @@ func TestNewGraph(t *testing.T) {
 }
 
 func TestGraphBuilder(t *testing.T) {
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			return nil
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
-			return nil
-		}}).
-		Edge("node1", "node2").
-		Start("node1")
+	graph, err := NewGraph("test")
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
+	_, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("Node failed: %v", err)
+	}
+	_, err = graph.Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("Node failed: %v", err)
+	}
+	_, err = graph.Edge("node1", "node2")
+	if err != nil {
+		t.Fatalf("Edge failed: %v", err)
+	}
+	_, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
 
 	if graph.start != "node1" {
 		t.Errorf("expected start node1, got %s", graph.start)
@@ -58,19 +73,20 @@ func TestGraphBuilder(t *testing.T) {
 func TestGraphExecution(t *testing.T) {
 	executionOrder := []string{}
 
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node1")
 			state.Set("node.node1", "result1")
 			return nil
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node2", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node2")
 			state.Set("node.node2", "result2")
 			return nil
-		}}).
-		Edge("node1", "node2").
-		Start("node1")
+		}),
+		edgeDef("node1", "node2"),
+		startDef("node1"),
+	)
 
 	state := NewState()
 	result, err := graph.Execute(context.Background(), state)
@@ -82,7 +98,6 @@ func TestGraphExecution(t *testing.T) {
 		t.Errorf("expected graph ID test, got %s", result.GraphID)
 	}
 
-	// Check execution order
 	if len(executionOrder) != 2 {
 		t.Errorf("expected 2 nodes executed, got %d", len(executionOrder))
 	}
@@ -93,7 +108,6 @@ func TestGraphExecution(t *testing.T) {
 		t.Errorf("expected node2 second, got %s", executionOrder[1])
 	}
 
-	// Check state
 	val, ok := state.Get("node.node1")
 	if !ok || val != "result1" {
 		t.Error("expected node.node1 in state")
@@ -107,31 +121,32 @@ func TestGraphExecution(t *testing.T) {
 func TestGraphExecutionWithCondition(t *testing.T) {
 	executionOrder := []string{}
 
-	graph := NewGraph("test").
-		Node("check", &mockNode{id: "check", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("check", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "check")
 			state.Set("status", "ok")
 			return nil
-		}}).
-		Node("success", &mockNode{id: "success", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("success", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "success")
 			return nil
-		}}).
-		Node("failure", &mockNode{id: "failure", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("failure", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "failure")
 			return nil
-		}}).
-		Edge("check", "success", IfFunc(func(s *State) bool {
+		}),
+		condEdgeDef("check", "success", IfFunc(func(s *State) bool {
 			val, _ := s.Get("status")
 			status, ok := val.(string)
 			return ok && status == "ok"
-		})).
-		Edge("check", "failure", IfFunc(func(s *State) bool {
+		})),
+		condEdgeDef("check", "failure", IfFunc(func(s *State) bool {
 			val, _ := s.Get("status")
 			status, ok := val.(string)
 			return !ok || status != "ok"
-		})).
-		Start("check")
+		})),
+		startDef("check"),
+	)
 
 	state := NewState()
 	_, err := graph.Execute(context.Background(), state)
@@ -139,7 +154,6 @@ func TestGraphExecutionWithCondition(t *testing.T) {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	// Check execution order - only check and success should execute
 	if len(executionOrder) != 2 {
 		t.Errorf("expected 2 nodes executed, got %d", len(executionOrder))
 	}
@@ -154,32 +168,30 @@ func TestGraphExecutionWithCondition(t *testing.T) {
 func TestGraphExecutionWithMultipleParents(t *testing.T) {
 	executionOrder := []string{}
 
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node1")
 			return nil
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node2", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node2")
 			return nil
-		}}).
-		Node("node3", &mockNode{id: "node3", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node3", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node3")
 			return nil
-		}}).
-		Edge("node1", "node3").
-		Edge("node2", "node3").
-		Start("node1")
+		}),
+		edgeDef("node1", "node3"),
+		edgeDef("node2", "node3"),
+		startDef("node1"),
+	)
 
-	// This test ensures node3 is only executed once even though it has two parents
-	// Note: Without proper dependency tracking, this test may fail
 	state := NewState()
 	_, err := graph.Execute(context.Background(), state)
 	if err != nil {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	// Count how many times node3 was executed
 	node3Count := 0
 	for _, node := range executionOrder {
 		if node == "node3" {
@@ -193,15 +205,16 @@ func TestGraphExecutionWithMultipleParents(t *testing.T) {
 }
 
 func TestGraphExecutionWithError(t *testing.T) {
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
 			return errors.New("node1 error")
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node2", func(ctx context.Context, state *State) error {
 			return nil
-		}}).
-		Edge("node1", "node2").
-		Start("node1")
+		}),
+		edgeDef("node1", "node2"),
+		startDef("node1"),
+	)
 
 	state := NewState()
 	_, err := graph.Execute(context.Background(), state)
@@ -213,37 +226,42 @@ func TestGraphExecutionWithError(t *testing.T) {
 func TestGraphWithPriorityScheduler(t *testing.T) {
 	executionOrder := []string{}
 
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node1")
 			return nil
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node2", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node2")
 			return nil
-		}}).
-		Node("node3", &mockNode{id: "node3", executeFn: func(ctx context.Context, state *State) error {
+		}),
+		nodeDef("node3", func(ctx context.Context, state *State) error {
 			executionOrder = append(executionOrder, "node3")
 			return nil
-		}}).
-		Edge("node1", "node3").
-		Edge("node2", "node3").
-		SetScheduler(NewPriorityScheduler(map[string]int{
-			"node1": 1,
-			"node2": 10,
-			"node3": 5,
-		})).
-		Start("node1")
+		}),
+		edgeDef("node1", "node3"),
+		edgeDef("node2", "node3"),
+	)
+
+	_, err := graph.SetScheduler(NewPriorityScheduler(map[string]int{
+		"node1": 1,
+		"node2": 10,
+		"node3": 5,
+	}))
+	if err != nil {
+		t.Fatalf("SetScheduler failed: %v", err)
+	}
+	_, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
 
 	state := NewState()
-	_, err := graph.Execute(context.Background(), state)
+	_, err = graph.Execute(context.Background(), state)
 	if err != nil {
 		t.Fatalf("execution failed: %v", err)
 	}
 
-	// With priority scheduler and in-degree tracking, both node1 and node2 have
-	// in-degree 0 so both are ready at start. The priority scheduler picks
-	// node2 (priority 10) before node1 (priority 1).
 	if executionOrder[0] != "node2" {
 		t.Errorf("expected node2 first (highest priority), got %s", executionOrder[0])
 	}
@@ -259,18 +277,28 @@ func TestGraphValidation(t *testing.T) {
 	})
 
 	t.Run("no start node", func(t *testing.T) {
-		graph := NewGraph("test")
+		graph, err := NewGraph("test")
+		if err != nil {
+			t.Fatalf("NewGraph failed: %v", err)
+		}
 		state := NewState()
-		_, err := graph.Execute(context.Background(), state)
+		_, err = graph.Execute(context.Background(), state)
 		if err == nil {
 			t.Error("expected error for missing start node")
 		}
 	})
 
 	t.Run("start node not found", func(t *testing.T) {
-		graph := NewGraph("test").Start("nonexistent")
+		graph, err := NewGraph("test")
+		if err != nil {
+			t.Fatalf("NewGraph failed: %v", err)
+		}
+		_, err = graph.Start("nonexistent")
+		if err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
 		state := NewState()
-		_, err := graph.Execute(context.Background(), state)
+		_, err = graph.Execute(context.Background(), state)
 		if err == nil {
 			t.Error("expected error for nonexistent start node")
 		}
@@ -278,16 +306,17 @@ func TestGraphValidation(t *testing.T) {
 }
 
 func TestGraphExecutionTimeout(t *testing.T) {
-	graph := NewGraph("test").
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+	graph := buildTestGraph(t, "test",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(100 * time.Millisecond):
 				return nil
 			}
-		}}).
-		Start("node1")
+		}),
+		startDef("node1"),
+	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
@@ -297,4 +326,63 @@ func TestGraphExecutionTimeout(t *testing.T) {
 	if err == nil {
 		t.Error("expected timeout error")
 	}
+}
+
+// Test helpers to replace method chaining with error handling.
+
+type nodeDefn struct {
+	id string
+	fn func(context.Context, *State) error
+}
+
+type edgeDefn struct {
+	from string
+	to   string
+	cond Condition
+}
+
+type startDefn struct {
+	id string
+}
+
+func nodeDef(id string, fn func(context.Context, *State) error) nodeDefn {
+	return nodeDefn{id: id, fn: fn}
+}
+
+func edgeDef(from, to string) edgeDefn {
+	return edgeDefn{from: from, to: to}
+}
+
+func condEdgeDef(from, to string, cond Condition) edgeDefn {
+	return edgeDefn{from: from, to: to, cond: cond}
+}
+
+func startDef(id string) startDefn {
+	return startDefn{id: id}
+}
+
+func buildTestGraph(t *testing.T, id string, defs ...interface{}) *Graph {
+	t.Helper()
+	g, err := NewGraph(id)
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
+	for _, d := range defs {
+		switch v := d.(type) {
+		case nodeDefn:
+			_, err = g.Node(v.id, &mockNode{id: v.id, executeFn: v.fn})
+		case edgeDefn:
+			if v.cond != nil {
+				_, err = g.Edge(v.from, v.to, v.cond)
+			} else {
+				_, err = g.Edge(v.from, v.to)
+			}
+		case startDefn:
+			_, err = g.Start(v.id)
+		}
+		if err != nil {
+			t.Fatalf("build failed at %T: %v", d, err)
+		}
+	}
+	return g
 }

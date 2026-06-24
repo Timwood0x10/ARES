@@ -3,7 +3,7 @@ package agents
 import (
 	"fmt"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // PromptBuilder provides pure functions for constructing agent prompts.

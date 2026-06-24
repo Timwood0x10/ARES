@@ -55,9 +55,10 @@ func (r *ChaosReport) ToJSON() ([]byte, error) {
 
 // ChaosExecutor runs chaos actions against a running market-making system.
 type ChaosExecutor struct {
-	actions   []ChaosAction
-	eventsLog []string
-	mu        sync.Mutex
+	actions      []ChaosAction
+	eventsLog    []string
+	mu           sync.Mutex
+	disconnected bool // Tracks simulated exchange connection state.
 }
 
 // NewChaosExecutor creates a new chaos executor with the given actions.
@@ -312,12 +313,39 @@ func (e *ChaosExecutor) executeInventoryBreach(inv *Inventory, action ChaosActio
 	return breached
 }
 
+// executeExchangeDisconnect simulates an exchange connection loss.
+// It blocks for the configured duration to mimic network unavailability
+// and sets the internal disconnected flag so that IsDisconnected() reports true.
 func (e *ChaosExecutor) executeExchangeDisconnect(action ChaosAction) {
 	duration := 1 * time.Millisecond
 	if v, ok := action.Config["duration_ms"].(float64); ok {
 		duration = time.Duration(v) * time.Millisecond
 	}
+
+	// Note: Execute already holds e.mu, so access e.disconnected directly.
+	e.disconnected = true
+
 	e.logEvent(fmt.Sprintf("exchange_disconnect: simulated disconnect for %v", duration))
+
+	// Block for the configured duration to simulate network unavailability.
+	// This allows callers to observe the disconnected state during the window.
+	time.Sleep(duration)
+
+	e.disconnected = false
+
+	e.logEvent("exchange_disconnect: connection restored")
+}
+
+// IsDisconnected returns whether the executor is currently simulating an
+// exchange disconnection. Thread-safe.
+//
+// Returns:
+//
+//	bool - true if the simulated exchange is disconnected, false otherwise.
+func (e *ChaosExecutor) IsDisconnected() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.disconnected
 }
 
 func (e *ChaosExecutor) logEvent(msg string) {

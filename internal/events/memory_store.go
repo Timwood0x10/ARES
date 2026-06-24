@@ -237,12 +237,13 @@ func (s *MemoryEventStore) StreamVersion(_ context.Context, streamID string) (in
 }
 
 // Close closes the store and all subscriber channels.
+// Returns ErrEventStoreClosed if already closed.
 func (s *MemoryEventStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return nil
+		return ErrEventStoreClosed
 	}
 
 	s.closed = true

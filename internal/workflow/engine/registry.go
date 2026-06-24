@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // AgentFactory creates agent instances.
@@ -175,4 +175,14 @@ func (s *OutputStore) Clear() {
 	defer s.mu.Unlock()
 
 	s.outputs = make(map[string]*StepOutput)
+}
+
+// Close releases resources held by the output store.
+// After Close, subsequent Get/Set calls will return zero values safely
+// due to the mutex protection, but no stored data will be accessible.
+func (s *OutputStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.outputs = nil
 }

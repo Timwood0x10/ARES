@@ -5,19 +5,22 @@ import (
 	"errors"
 	"sync"
 
-	gerr "goagentx/internal/errors"
+	gerr "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Registry manages tool registration and lookup.
 type Registry struct {
-	tools map[string]Tool
-	mu    sync.RWMutex
+	tools       map[string]Tool
+	mu          sync.RWMutex
+	schemaCache []ToolSchema
+	schemaDirty bool
 }
 
 // NewRegistry creates a new Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		tools: make(map[string]Tool),
+		tools:       make(map[string]Tool),
+		schemaDirty: true,
 	}
 }
 
@@ -36,6 +39,7 @@ func (r *Registry) Register(tool Tool) error {
 	}
 
 	r.tools[name] = tool
+	r.schemaDirty = true
 	return nil
 }
 
@@ -49,6 +53,7 @@ func (r *Registry) Unregister(name string) error {
 	}
 
 	delete(r.tools, name)
+	r.schemaDirty = true
 	return nil
 }
 
@@ -98,6 +103,8 @@ func (r *Registry) Clear() {
 	defer r.mu.Unlock()
 
 	r.tools = make(map[string]Tool)
+	r.schemaCache = nil
+	r.schemaDirty = true
 }
 
 // Filter returns tools that match the given filter criteria.
@@ -105,10 +112,14 @@ func (r *Registry) Filter(filter *ToolFilter) *Registry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// If filter is nil, return all tools
+	// If filter is nil, return all tools (deep copy to avoid data race)
 	if filter == nil {
+		toolsCopy := make(map[string]Tool, len(r.tools))
+		for k, v := range r.tools {
+			toolsCopy[k] = v
+		}
 		return &Registry{
-			tools: r.tools,
+			tools: toolsCopy,
 		}
 	}
 
@@ -147,19 +158,31 @@ func (r *Registry) FilterByCategory(category ToolCategory) *Registry {
 // GetSchemas returns schema information for all tools in the registry.
 func (r *Registry) GetSchemas() []ToolSchema {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	if !r.schemaDirty && r.schemaCache != nil {
+		defer r.mu.RUnlock()
+		return r.schemaCache
+	}
+	r.mu.RUnlock()
 
-	schemas := make([]ToolSchema, 0, len(r.tools))
-	for _, tool := range r.tools {
-		schemas = append(schemas, ToolSchema{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Category:    tool.Category(),
-			Parameters:  tool.Parameters(),
-		})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.schemaDirty || r.schemaCache == nil {
+		schemas := make([]ToolSchema, 0, len(r.tools))
+		for _, tool := range r.tools {
+			schemas = append(schemas, ToolSchema{
+				Name:        tool.Name(),
+				Description: tool.Description(),
+				Category:    tool.Category(),
+				Parameters:  tool.Parameters(),
+			})
+		}
+
+		r.schemaCache = schemas
+		r.schemaDirty = false
 	}
 
-	return schemas
+	return r.schemaCache
 }
 
 // ToolFilter defines filter criteria for tools.

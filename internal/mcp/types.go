@@ -6,7 +6,10 @@ import "encoding/json"
 const ProtocolVersion = "2024-11-05"
 
 // ClientName identifies this MCP client implementation.
-const ClientName = "GoAgentX"
+const ClientName = "ares"
+
+// ClientVersion is the version reported during MCP initialization.
+const ClientVersion = "1.0.0"
 
 // --- Initialize handshake types ---
 
@@ -110,11 +113,87 @@ const (
 
 // Method constants for MCP JSON-RPC methods.
 const (
-	MethodInitialize = "initialize"
-	MethodToolsList  = "tools/list"
-	MethodToolsCall  = "tools/call"
-	MethodPing       = "ping"
+	MethodInitialize    = "initialize"
+	MethodToolsList     = "tools/list"
+	MethodToolsCall     = "tools/call"
+	MethodPing          = "ping"
+	MethodResourcesList = "resources/list"
+	MethodResourcesRead = "resources/read"
+	MethodPromptsList   = "prompts/list"
+	MethodPromptsGet    = "prompts/get"
 )
 
 // PingResult is an empty response to a ping.
 type PingResult struct{}
+
+// --- Resource types ---
+
+// ResourceContent represents a piece of resource content.
+type ResourceContent struct {
+	URI      string `json:"uri"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+}
+
+// ReadResourceResult holds the result of resources/read.
+type ReadResourceResult struct {
+	Contents []ResourceContent `json:"contents"`
+}
+
+// ResourceItem describes a single resource.
+type ResourceItem struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// ListResourcesResult holds the result of resources/list.
+type ListResourcesResult struct {
+	Resources []ResourceItem `json:"resources"`
+}
+
+// ResourceTemplate describes a resource URI template.
+type ResourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// ListResourceTemplatesResult holds the result of resources/templates/list.
+type ListResourceTemplatesResult struct {
+	ResourceTemplates []ResourceTemplate `json:"resourceTemplates"`
+}
+
+// --- Prompt types ---
+
+// PromptArgument defines an argument for a prompt.
+type PromptArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required"`
+}
+
+// PromptMessage represents a message in a prompt result.
+type PromptMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// GetPromptResult holds the result of prompts/get.
+type GetPromptResult struct {
+	Description string          `json:"description,omitempty"`
+	Messages    []PromptMessage `json:"messages"`
+}
+
+// PromptItem describes a single prompt.
+type PromptItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// ListPromptsResult holds the result of prompts/list.
+type ListPromptsResult struct {
+	Prompts []PromptItem `json:"prompts"`
+}

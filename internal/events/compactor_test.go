@@ -874,12 +874,19 @@ func TestMemoryTrimStore_TrimBefore_AfterReadAllConsistency(t *testing.T) {
 // CompactableEventStore Tests
 // ============================================================================
 
+func newTestCompactableEventStore(t *testing.T, store EventStore, repo SummaryRepository, ts TrimAwareStore, cfg CompactionConfig) *CompactableEventStore {
+	t.Helper()
+	s, err := NewCompactableEventStore(store, repo, ts, cfg)
+	require.NoError(t, err)
+	return s
+}
+
 func TestCompactableEventStore_Append_TriggersCompaction(t *testing.T) {
 	store := NewMemoryEventStore()
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 10, KeepRecent: 3}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := "auto-compact-test"
@@ -898,7 +905,7 @@ func TestCompactableEventStore_Append_BelowThreshold_NoCompaction(t *testing.T) 
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 100, KeepRecent: 10}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := "below-auto-threshold"
@@ -915,7 +922,7 @@ func TestCompactableEventStore_ForceCompact(t *testing.T) {
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 9999, KeepRecent: 5} // very high threshold
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := "force-compact"
@@ -935,7 +942,7 @@ func TestCompactableEventStore_GetSummariesForStream(t *testing.T) {
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 3, KeepRecent: 0}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := "get-summary-test"
@@ -952,7 +959,7 @@ func TestCompactableEventStore_GetSummariesForAgent(t *testing.T) {
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 3, KeepRecent: 0}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	// Append events WITH agent_id metadata so the summary captures it.
@@ -977,7 +984,7 @@ func TestCompactableEventStore_WithCustomSummarizer(t *testing.T) {
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 3, KeepRecent: 0}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	wrapped.WithCustomSummarizer(func(events []*Event) string {
 		return "CUSTOM SUMMARY"
 	})
@@ -998,7 +1005,7 @@ func TestCompactableEventStore_CleanupSummaries(t *testing.T) {
 	cfg := DefaultCompactionConfig()
 	store := NewMemoryEventStore()
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	deleted, err := wrapped.CleanupSummaries(ctx)
@@ -1048,7 +1055,7 @@ func TestCompactableEventStore_ConcurrentAppendWithAutoCompact(t *testing.T) {
 	repo := newMockSummaryRepo()
 	cfg := CompactionConfig{Threshold: 20, KeepRecent: 5}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := "race-append-compact"

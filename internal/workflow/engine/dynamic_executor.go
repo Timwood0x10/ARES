@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // ApplyMode controls when graph mutations take effect during execution.
@@ -57,7 +57,7 @@ func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...Ex
 	executor := &Executor{
 		registry:    registry,
 		maxParallel: DefaultMaxParallel,
-		stepTimeout: 5 * time.Minute,
+		stepTimeout: DefaultExecutorStepTimeout,
 	}
 	for _, opt := range opts {
 		opt(executor)
@@ -370,7 +370,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 				// H3 fix: wait for any step goroutine to complete via stepDone channel,
 				// instead of stepEg.Wait() which blocks until ALL goroutines finish
 				// and races with concurrent stepEg.Go() calls.
-				deadlockTimer := time.NewTimer(5 * time.Second)
+				deadlockTimer := time.NewTimer(DefaultDeadlockTimeout)
 				select {
 				case <-stepDone:
 					deadlockTimer.Stop()
@@ -494,7 +494,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 			case <-recoveryCh:
 				e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
 				stepIndex = 0
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(DefaultRecoveryPollInterval):
 				// Give collection loop time to process pending results.
 				// Poll one more time in case recovery was signaled
 				// during the timeout.

@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // LogAnalyzer provides log parsing and analysis capabilities.
@@ -411,3 +412,5 @@ func (t *LogAnalyzer) extractMetrics(ctx context.Context, logContent string, cus
 		"statistics": statistics,
 	}), nil
 }
+
+func (t *LogAnalyzer) IsIdempotent() bool { return true }

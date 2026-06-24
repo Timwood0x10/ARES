@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/quant/market"
 )
 
 // ─── SnapshotBuilder Error Scenario Tests ───────────────────

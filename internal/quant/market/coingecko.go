@@ -3,6 +3,7 @@ package market
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -81,7 +82,11 @@ func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolut
 	if err != nil {
 		return TimeSeries{}, fmt.Errorf("coingecko fetch: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return TimeSeries{}, fmt.Errorf("%w: coingecko returned status %d for %s", ErrNoMarketData, resp.StatusCode, ticker)

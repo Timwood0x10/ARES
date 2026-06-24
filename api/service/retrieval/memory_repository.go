@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"goagentx/api/core"
+	"github.com/Timwood0x10/ares/api/core"
 )
 
 // MemoryRepository provides an in-memory implementation of RetrievalRepository.

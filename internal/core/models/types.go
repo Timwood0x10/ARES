@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Gender represents user gender.
 type Gender string
@@ -67,6 +70,38 @@ const (
 	AgentStatusStopping AgentStatus = "stopping"
 	AgentStatusOffline  AgentStatus = "offline"
 )
+
+// ParseAgentStatus parses a string into an AgentStatus.
+// Returns an error if the string does not match any known status.
+//
+// WARNING: On error, the returned AgentStatus is an empty string ("")
+// which does NOT match any valid AgentStatus constant. Callers MUST
+// check the returned error before using the status value.
+//
+// Args:
+//
+//	s - status string (e.g., "ready", "busy", "offline").
+//
+// Returns:
+//
+//	status - parsed AgentStatus (empty string on error).
+//	err - error if the string is not a valid AgentStatus.
+func ParseAgentStatus(s string) (AgentStatus, error) {
+	switch AgentStatus(s) {
+	case AgentStatusStarting:
+		return AgentStatusStarting, nil
+	case AgentStatusReady:
+		return AgentStatusReady, nil
+	case AgentStatusBusy:
+		return AgentStatusBusy, nil
+	case AgentStatusStopping:
+		return AgentStatusStopping, nil
+	case AgentStatusOffline:
+		return AgentStatusOffline, nil
+	default:
+		return "", fmt.Errorf("invalid agent status: %q", s)
+	}
+}
 
 // PriceRange represents budget range.
 type PriceRange struct {

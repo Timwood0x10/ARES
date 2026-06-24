@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	apperrors "goagentx/internal/errors"
-	"goagentx/internal/storage/postgres"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // TrimAwareStore wraps an EventStore with the ability to delete (trim) old events
@@ -43,7 +43,10 @@ func (s *PgTrimStore) TrimBefore(ctx context.Context, streamID string, endVersio
 	if err != nil {
 		return 0, apperrors.Wrap(err, "trim events from stream")
 	}
-	removed, _ := result.RowsAffected()
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, apperrors.Wrap(err, "get rows affected after trim")
+	}
 	if removed > 0 {
 		slog.Info("event store: trimmed old events",
 			"stream_id", streamID,

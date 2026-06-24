@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/config"
-	"goagentx/internal/llm"
-	"goagentx/internal/tools/resources"
-	"goagentx/internal/tools/resources/agent"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
+	"github.com/Timwood0x10/ares/internal/tools/resources/builtin"
 )
 
 type DialogAgent struct {
@@ -291,7 +291,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := resources.RegisterBuiltinToolsForAgent(); err != nil {
+	if err := builtin.RegisterGeneralTools(); err != nil {
 		slog.Error("Register tools failed", "error", err)
 		os.Exit(1)
 	}

@@ -1,6 +1,6 @@
 # Dynamic Graph
 
-GoAgentX supports runtime graph mutation -- add nodes, remove edges, hot-reload from YAML -- while the workflow is executing. The `DynamicExecutor` recomputes the topological order between steps and applies mutations without stopping.
+ares supports runtime graph mutation -- add nodes, remove edges, hot-reload from YAML -- while the workflow is executing. The `DynamicExecutor` recomputes the topological order between steps and applies mutations without stopping.
 
 ## Architecture
 

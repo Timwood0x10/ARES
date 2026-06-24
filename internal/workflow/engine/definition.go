@@ -6,11 +6,12 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Definition errors.
@@ -50,6 +51,10 @@ func (p *DefinitionParser) Parse(ctx context.Context, r io.Reader) (*AgentDefini
 
 // ParseBytes parses an agent definition from bytes.
 func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*AgentDefinition, error) {
+	if len(content) == 0 {
+		return nil, errors.New("definition content is empty")
+	}
+
 	text := string(content)
 
 	def := &AgentDefinition{
@@ -62,11 +67,19 @@ func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*Age
 	if err != nil {
 		return nil, errors.Wrap(err, "extract name")
 	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("name field is required but empty or whitespace-only")
+	}
 	def.Name = name
 
 	agentType, err := p.extractField(text, "type")
 	if err != nil {
 		return nil, errors.Wrap(err, "extract type")
+	}
+	agentType = strings.TrimSpace(agentType)
+	if agentType == "" {
+		return nil, errors.New("type field is required but empty or whitespace-only")
 	}
 	def.Type = agentType
 
@@ -90,7 +103,11 @@ func (p *DefinitionParser) ParseFile(ctx context.Context, path string) (*AgentDe
 	if err != nil {
 		return nil, errors.Wrapf(err, "open file %s", path)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		if err := file.Close(); err != nil {
+			slog.Warn("definition: close file failed", "error", err)
+		}
+	}()
 
 	return p.Parse(ctx, bufio.NewReader(file))
 }

@@ -1,4 +1,4 @@
-// Package main — GoAgentX Quantitative Multi-Agent Demo.
+// Package main — ares Quantitative Multi-Agent Demo.
 //
 // Demonstrates a self-healing multi-factor stock selection system:
 //  1. Momentum factor + Value factor computed in Go (pure computation, no LLM)
@@ -31,8 +31,8 @@ import (
 	"syscall"
 	"time"
 
-	"goagentx/api"
-	"goagentx/internal/dashboard"
+	"github.com/Timwood0x10/ares/api"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
 // ─── Data Types ────────────────────────────────────────────

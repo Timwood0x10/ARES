@@ -27,7 +27,7 @@ If the variable is not set, integration tests are automatically skipped.
 
 ```bash
 docker run -d \
-  --name goagentx-test-db \
+  --name ares-test-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent_test \
   -p 5432:5432 \

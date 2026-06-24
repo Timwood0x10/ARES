@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (III): Memory Distillation — When the Agent Learns to Forget and Refine
+# ares Architecture Deep Dive (III): Memory Distillation — When the Agent Learns to Forget and Refine
 
 > Ever used one of those chatbots? After 50 rounds it starts rambling because the context window is bursting at the seams.
 > What's more frustrating is: it just helped you solve one problem, and the next time you encounter something similar — it starts reasoning from scratch all over again.
@@ -402,7 +402,7 @@ Each `Memory` is converted into an `Experience` and persisted in the experience 
 
 ## 8. Two Distillation Paths
 
-GoAgentX has two parallel distillation paths. This is not a design compromise, but a layered strategy.
+ares has two parallel distillation paths. This is not a design compromise, but a layered strategy.
 
 **Path One: Legacy DistillTask (Lightweight Extraction)**
 
@@ -641,7 +641,7 @@ m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
 })
 ```
 
-The purpose of events is not just auditing. In GoAgentX, they form the foundation of Runtime Manager **cognitive recovery** (covered in the next section).
+The purpose of events is not just auditing. In ares, they form the foundation of Runtime Manager **cognitive recovery** (covered in the next section).
 
 ---
 
@@ -742,7 +742,7 @@ func (m *Manager) buildCognitiveState(
 }
 ```
 
-This mechanism means: when an Agent crashes and is restarted, it doesn't just rebuild the connection pool and timers — it also knows "what were we talking about." This is the cognitive layer of GoAgentX's self-healing capability. The 5-second timeout acts as a safety net, preventing a slow DB from blocking the recovery flow.
+This mechanism means: when an Agent crashes and is restarted, it doesn't just rebuild the connection pool and timers — it also knows "what were we talking about." This is the cognitive layer of ares's self-healing capability. The 5-second timeout acts as a safety net, preventing a slow DB from blocking the recovery flow.
 
 ---
 
@@ -986,7 +986,7 @@ LLM verification also revealed a systemic issue with `estimateTokens()`: the fun
 
 ## Conclusion
 
-GoAgentX's memory system isn't a simple matter of stuffing data into PostgreSQL. It's a complete data refinement pipeline:
+ares's memory system isn't a simple matter of stuffing data into PostgreSQL. It's a complete data refinement pipeline:
 
 ```
 Raw Messages → Sliding Window (Session) → Execution Records (Task) → Structured Experiences (Experience) → Vector Index (pgvector)

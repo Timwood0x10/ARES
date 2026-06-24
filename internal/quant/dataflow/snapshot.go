@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/indicators"
-	"goagentx/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/quant/indicators"
+	"github.com/Timwood0x10/ares/internal/quant/market"
 )
 
 // VerifiedMarketSnapshot provides a deterministic, validated view of market data

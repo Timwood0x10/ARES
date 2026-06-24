@@ -230,7 +230,9 @@ func (p *DLQProcessor) StartAutoRetry(ctx context.Context, interval time.Duratio
 
 	// Block until context is cancelled; ignore the error since the
 	// goroutine returns nil on context cancellation.
-	_ = g.Wait()
+	if err := g.Wait(); err != nil {
+		slog.Error("dlq: background task failed", "error", err)
+	}
 }
 
 // processEntry processes a single DLQ entry.

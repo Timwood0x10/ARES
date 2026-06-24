@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // MCPToolFactory implements core.ToolFactory for PluginRegistry integration.

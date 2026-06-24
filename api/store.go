@@ -1,10 +1,10 @@
-// Package api provides high-level abstractions for GoAgentX services.
+// Package api provides high-level abstractions for ares services.
 // This file exposes event storage with automatic compaction at the API boundary,
 // hiding internal/events implementation details from external consumers.
 package api
 
 import (
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // EventStore provides event storage with automatic compaction.
@@ -25,11 +25,16 @@ type EventStore struct {
 func NewEventStore() *EventStore {
 	mem := events.NewMemoryEventStore()
 	repo := events.NewMemorySummaryRepository()
+	ces, err := events.NewCompactableEventStore(
+		mem, repo, nil, events.DefaultCompactionConfig(),
+	)
+	if err != nil {
+		// This should never happen with valid in-memory components.
+		panic(err)
+	}
 	return &EventStore{
-		CompactableEventStore: events.NewCompactableEventStore(
-			mem, repo, nil, events.DefaultCompactionConfig(),
-		),
-		raw: mem,
+		CompactableEventStore: ces,
+		raw:                   mem,
 	}
 }
 

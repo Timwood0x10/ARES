@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/storage/memory"
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/memory"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // nanoSuffix returns the current Unix nanosecond timestamp as a string for unique naming.

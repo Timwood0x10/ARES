@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"goagentx/api/service/graph"
-	"goagentx/internal/observability"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/api/service/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 func main() {
@@ -23,25 +23,58 @@ func main() {
 	}
 
 	// Build a simple graph
-	g := wfgraph.NewGraph("basic-example").
-		Node("step1", wfgraph.NewFuncNode("step1", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("Executing step1")
-			state.Set("step1_result", "done")
-			return nil
-		})).
-		Node("step2", wfgraph.NewFuncNode("step2", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("Executing step2")
-			state.Set("step2_result", "done")
-			return nil
-		})).
-		Node("step3", wfgraph.NewFuncNode("step3", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("Executing step3")
-			state.Set("step3_result", "done")
-			return nil
-		})).
-		Edge("step1", "step2").
-		Edge("step2", "step3").
-		Start("step1")
+	g, err := wfgraph.NewGraph("basic-example")
+	if err != nil {
+		log.Fatalf("failed to create graph: %v", err)
+	}
+	n1, err := wfgraph.NewFuncNode("step1", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("Executing step1")
+		state.Set("step1_result", "done")
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("failed to create node: %v", err)
+	}
+	n2, err := wfgraph.NewFuncNode("step2", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("Executing step2")
+		state.Set("step2_result", "done")
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("failed to create node: %v", err)
+	}
+	n3, err := wfgraph.NewFuncNode("step3", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("Executing step3")
+		state.Set("step3_result", "done")
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("failed to create node: %v", err)
+	}
+	_, err = g.Node("step1", n1)
+	if err != nil {
+		log.Fatalf("failed to add node: %v", err)
+	}
+	_, err = g.Node("step2", n2)
+	if err != nil {
+		log.Fatalf("failed to add node: %v", err)
+	}
+	_, err = g.Node("step3", n3)
+	if err != nil {
+		log.Fatalf("failed to add node: %v", err)
+	}
+	_, err = g.Edge("step1", "step2")
+	if err != nil {
+		log.Fatalf("failed to add edge: %v", err)
+	}
+	_, err = g.Edge("step2", "step3")
+	if err != nil {
+		log.Fatalf("failed to add edge: %v", err)
+	}
+	_, err = g.Start("step1")
+	if err != nil {
+		log.Fatalf("failed to set start: %v", err)
+	}
 
 	// Execute graph
 	request := &graph.ExecuteRequest{

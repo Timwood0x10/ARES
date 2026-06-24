@@ -20,14 +20,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"goagentx/api/memory"
-	"goagentx/internal/llm"
-	internalMemory "goagentx/internal/memory"
-	"goagentx/internal/storage/postgres"
-	"goagentx/internal/storage/postgres/embedding"
-	storage_models "goagentx/internal/storage/postgres/models"
-	"goagentx/internal/storage/postgres/repositories"
-	"goagentx/internal/storage/postgres/services"
+	memory "github.com/Timwood0x10/ares/api/ares_memory"
+	internalMemory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/services"
 
 	"gopkg.in/yaml.v3"
 )

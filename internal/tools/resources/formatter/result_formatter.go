@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // ResultFormatter formats tool results in user-friendly way.
@@ -129,7 +129,10 @@ func (rf *ResultFormatter) formatByToolType(toolName string, params map[string]i
 func (rf *ResultFormatter) formatDateTime(params map[string]interface{}, data interface{}) string {
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		return "时间工具返回了意外的数据格式"
+		slog.Warn("Unexpected data type in formatDateTime",
+			"expected_type", "map[string]interface{}",
+			"actual_type", fmt.Sprintf("%T", data))
+		return fmt.Sprintf("datetime tool returned unexpected data format: %T", data)
 	}
 
 	if formatted, exists := dataMap["formatted"]; exists {
@@ -143,7 +146,10 @@ func (rf *ResultFormatter) formatDateTime(params map[string]interface{}, data in
 func (rf *ResultFormatter) formatCalculator(params map[string]interface{}, data interface{}) string {
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		return "计算工具返回了意外的数据格式"
+		slog.Warn("Unexpected data type in formatCalculator",
+			"expected_type", "map[string]interface{}",
+			"actual_type", fmt.Sprintf("%T", data))
+		return fmt.Sprintf("calculator tool returned unexpected data format: %T", data)
 	}
 
 	expression := getStringParam(params, "expression", "")

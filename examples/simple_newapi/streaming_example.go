@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 
-	"goagentx/api/client"
+	"github.com/Timwood0x10/ares/api/client"
 )
 
 func main() {

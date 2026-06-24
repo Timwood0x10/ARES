@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/observability"
-	"goagentx/internal/ratelimit"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ratelimit"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // Service provides graph orchestration operations.
@@ -118,10 +118,14 @@ func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *Execut
 
 	// Apply service-level tracer and limiter if not set on graph
 	if s.tracer != nil {
-		g.SetTracer(s.tracer)
+		if _, err := g.SetTracer(s.tracer); err != nil {
+			return nil, fmt.Errorf("set tracer: %w", err)
+		}
 	}
 	if s.limiter != nil {
-		g.SetLimiter(s.limiter)
+		if _, err := g.SetLimiter(s.limiter); err != nil {
+			return nil, fmt.Errorf("set limiter: %w", err)
+		}
 	}
 
 	// Create initial state
@@ -168,7 +172,7 @@ func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *Execut
 func (s *Service) ExecuteWithGraphBuilder(
 	ctx context.Context,
 	graphID string,
-	builder func(*wfgraph.Graph) *wfgraph.Graph,
+	builder func(*wfgraph.Graph) (*wfgraph.Graph, error),
 	request *ExecuteRequest,
 ) (*ExecuteResponse, error) {
 	if builder == nil {
@@ -176,8 +180,14 @@ func (s *Service) ExecuteWithGraphBuilder(
 	}
 
 	// Build graph
-	g := wfgraph.NewGraph(graphID)
-	g = builder(g)
+	g, err := wfgraph.NewGraph(graphID)
+	if err != nil {
+		return nil, err
+	}
+	g, err = builder(g)
+	if err != nil {
+		return nil, err
+	}
 
 	return s.Execute(ctx, g, request)
 }

@@ -4,14 +4,14 @@
 
 ### 问题
 
-GoAgentX agent 需要分析代码，但：
+ares agent 需要分析代码，但：
 - 内置工具（calculator、datetime、text）无法理解代码库
 - 硬编码工具集成意味着每个新数据源（GitHub、Jira、DB）都需要改代码
 - 没有办法实时看到 agent 在做什么
 
 ### 思路
 
-**MCP Client**：不重新造工具集成的轮子。MCP 是开放协议 — 任何实现它的服务器都能接入 GoAgentX。客户端自动发现工具，所以添加新数据源 = 运行新 MCP 服务器，零代码改动。
+**MCP Client**：不重新造工具集成的轮子。MCP 是开放协议 — 任何实现它的服务器都能接入 ares。客户端自动发现工具，所以添加新数据源 = 运行新 MCP 服务器，零代码改动。
 
 **Dashboard**：不构建复杂的监控系统。一个 HTTP 服务器 + 6 个端点 + WebSocket 覆盖了观测（agent 在做什么？）和交互（启动新 agent）。无数据库、无消息队列、无前端构建步骤。
 
@@ -74,7 +74,7 @@ curl -X POST /agents -d '{"mcp_tool":"codegraph_context","mcp_args":{"task":"...
 
 ### 2.3 Schema 转换
 
-MCP 用 JSON Schema 描述工具参数。GoAgentX 用 `ParameterSchema`。桥接：
+MCP 用 JSON Schema 描述工具参数。ares 用 `ParameterSchema`。桥接：
 
 ```
 JSON Schema                    ParameterSchema

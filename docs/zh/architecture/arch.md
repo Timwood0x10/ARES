@@ -443,7 +443,7 @@ graph TD
 ## 目录结构
 
 ```
-GoAgentX/
+ares/
 ├── internal/                # 核心实现
 │   ├── agents/              # Agent 系统
 │   │   ├── base/            # Agent 基础接口

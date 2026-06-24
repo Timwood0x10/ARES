@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-24
+
+### New Features
+
+- **Genetic Algorithm Evolution System (Beta)**: Full GA genome package with `Population`, `Crossover` (Inherit/HalfSplit/Uniform modes), `TournamentSelection`, and strategy mutation engine. Supports deterministic reproduction via seed control, elite preservation, adaptive survival rates, and diversity tracking with fitness sharing. [(GA Hardening Plan)](plan/GA/README.md)
+- **Autonomous Evolution (Dream Mode v1)**: Closed-loop evolution orchestration with Dream Cycle (trigger → mutate → evaluate → adopt → record lineage). Includes arena regression testing with Welch's t-test, bandit feedback loop for experience quality optimization, and full genealogy tracking.
+- **Agent Resurrection & Snapshot System**: Pluggable health checking for agent recovery, checkpoint-based resurrection with state restoration from EventStore and MemoryStore.
+- **Tiered Scoring System**: Multi-level scoring pipeline with FailoverScorer integration. Includes scoring cache optimization (atomic hit/miss counters), hybrid scoring with prompt crossover modes, and unevaluated score guardrails.
+- **JSONL Training Data Pipeline**: End-to-end pipeline for agent strategy evolution and experience distillation data export.
+- **Leader Agent Hardening**: Nil validation for all constructor parameters (memory manager, aggregator, parser, planner, dispatcher). Session initialization via `sync.Once`. Comprehensive error collection during `Stop()` with joined errors from distillation/streaming goroutines.
+- **Workflow Engine Hardening**: Thread-safe HITL handler/store access via `sync.RWMutex`. Workflow execution timeout (default 30s) to prevent indefinite blocking. Proper `OutputStore.Close()` cleanup.
+- **Event Store Hardening**: Errgroup-based compaction with timeout context (30s). Nil compactor/repo guards in all read paths. MemoryEventStore `Close()` returns `ErrEventStoreClosed` on double-close for idempotent shutdown.
+- **LLM Client Validation**: Config validation enforces required `Provider` and `BaseURL` fields. `Close()` idempotency via `sync.Once`. OpenAI adapter properly handles `io.ReadAll` errors instead of silently discarding them.
+- **MCP Client Hardening**: Nil client guard in tool registration. Godoc-style documentation for all public APIs. SSE transport fixes double-close of `resp.Body` (deferred close only in `receiveLoop`).
+- **Memory Manager Config Validation**: Validates `MaxTasks`, `MaxDistilledTasks`, `DistilledTaskTTL`, and `VectorDim` are positive. `Stop()` collects all errors and returns them joined.
+- **Crossover & Selection Validation**: `Crossover.Validate()` and `TournamentSelection.Validate()` methods for post-construction config invariance checking. Defensive nil checks and enum validation.
+
+### Improvements
+
+- Renamed project to **ARES** (Adaptive Resilient Evolution System)
+- Enhanced scoring cache with atomic counters replacing `sync.RWMutex`
+- Improved error visibility with structured error wrapping across all modules
+- Added debug logging to TaskDispatcher and planner fallback warnings
+- Default `DistilledTaskTTL` set to 30 days in `DefaultMemoryConfig()`
+- Guarded all `CompactableEventStore` read paths against nil compactor/repo
+
+### Bug Fixes
+
+- Fixed data race in `DynamicExecutor` recovery path with proper timeout handling
+- Fixed `MemoryEventStore.Close()` idempotency — second+ calls return `ErrEventStoreClosed`
+- Fixed SSE transport double `resp.Body.Close()` causing panic on shutdown
+- Fixed LLM client `Close()` race condition via `sync.Once`
+- Fixed OpenAI adapter silently swallowing `io.ReadAll` errors in error paths
+- Fixed `Population.ScoreAgents` panic recovery logging with agent context
+- Fixed `updateBestEverLocked` concurrency safety with deep copy via `a.Clone()`
+- Fixed `NewTaskPlanner`/`NewTaskPlannerWithConfig` silent fallback from invalid `maxTasks`
+- Added nil validation in `leader.New`, `NewTaskDispatcher`, and `NewMCPManager`
+
 ## [0.2.2] - 2026-06-19
 
 ### New Features

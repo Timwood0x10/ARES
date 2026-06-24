@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // PromptFunc is a function type for building prompts from research state.

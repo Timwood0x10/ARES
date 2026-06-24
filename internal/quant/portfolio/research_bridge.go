@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // ValidateTradeSignal checks that a TradeSignal has valid fields.

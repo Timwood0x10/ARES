@@ -12,15 +12,15 @@ import (
 	"text/template"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/agents/leader"
-	"goagentx/internal/agents/sub"
-	"goagentx/internal/config"
-	"goagentx/internal/core/models"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/memory"
-	"goagentx/internal/observability"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/agents/leader"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // This is an example demonstrating how to use the framework.
@@ -59,7 +59,11 @@ func main() {
 	}
 
 	// Create Leader Agent with user configuration
-	leaderAgent := createLeaderAgent(cfg, components)
+	leaderAgent, err := createLeaderAgent(cfg, components)
+	if err != nil {
+		slog.Error("Failed to create leader agent", "error", err)
+		os.Exit(1)
+	}
 
 	// Create Sub Agents based on user configuration
 	subAgents := createSubAgents(cfg, components)
@@ -188,7 +192,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 	return adapter
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
+func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
 	// Create ProfileParser with user-configured prompts
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
@@ -207,12 +211,15 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		agentRegistry[models.AgentType(subCfg.Type)] = subCfg.ID
 	}
 
-	taskDispatcher := leader.NewTaskDispatcher(
+	taskDispatcher, err := leader.NewTaskDispatcher(
 		agentRegistry,
 		cfg.Agents.Leader.MaxParallelTasks,
 		cfg.Agents.Leader.MaxSteps,
 		nil, // messageSender (not used in simple example)
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
 
 	// Register executor functions for each sub-agent type
 	for _, subCfg := range cfg.Agents.Sub {
@@ -248,7 +255,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 	// Create heartbeat monitor
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
-	return leader.New(
+	agent, err := leader.New(
 		cfg.Agents.Leader.ID,
 		profileParser,
 		taskPlanner,
@@ -259,6 +266,10 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		comps.memoryManager,
 		leaderCfg,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
+	return agent, nil
 }
 
 func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // TestMutableDAGAddNodeMidExecution verifies that adding a node to a MutableDAG

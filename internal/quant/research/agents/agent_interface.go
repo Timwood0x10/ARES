@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // ResearchAgent is the interface that every research pipeline agent must implement.

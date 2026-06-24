@@ -1,14 +1,15 @@
 package bootstrap
 
 import (
+	"context"
 	"sync"
 	"testing"
 
-	"goagentx/internal/agents/sub"
-	"goagentx/internal/callbacks"
-	"goagentx/internal/core/models"
-	"goagentx/internal/llm"
-	"goagentx/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // TestNewCallbackRegistry verifies that NewCallbackRegistry returns a non-nil
@@ -47,7 +48,7 @@ func TestNewLLMClientWithCallbacks(t *testing.T) {
 		t.Fatal("expected non-nil client")
 	}
 
-	client.Generate(nil, "test prompt")
+	_, _ = client.Generate(context.TODO(), "test prompt")
 	if !emitted {
 		t.Error("expected LLM start event to be emitted via callback registry")
 	}
@@ -87,7 +88,7 @@ func TestWireTaskExecutorCallbacks(t *testing.T) {
 		AgentType: models.AgentTypeDestination,
 	}
 
-	executor.Execute(nil, task)
+	_, _ = executor.Execute(context.TODO(), task)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -174,12 +175,12 @@ func TestCallbackInjectionChain(t *testing.T) {
 		callbackOpt,
 	)
 
-	taskExec.Execute(nil, &models.Task{
+	_, _ = taskExec.Execute(context.TODO(), &models.Task{
 		TaskID:    "chain-test",
 		AgentType: models.AgentTypeDestination,
 	})
 
-	llmClient.Generate(nil, "chain test")
+	_, _ = llmClient.Generate(context.TODO(), "chain test")
 
 	mu.Lock()
 	defer mu.Unlock()

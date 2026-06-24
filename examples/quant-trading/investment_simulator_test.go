@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/api/marketmaking"
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/api/marketmaking"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // testCSVData is inline fixture data for simulator tests.

@@ -1,4 +1,4 @@
-# GoAgentX Series: Building Your Own Agent Framework When You're Bored
+# ares Series: Building Your Own Agent Framework When You're Bored
 
 > I've always believed the best way to learn is to build your own wheel.
 > Not because the wheels out there aren't good enough — but because once you've built one, you'll never get stuck by one again.
@@ -30,7 +30,7 @@ That frustration carried over. I kept learning, building two interactive visuali
 
 Both were built from my personal study notes. Then I shipped a Rust project to crates.io — good reception, even the foreign devs loved it.
 
-And then came the main character of today's story: **GoAgentX**.
+And then came the main character of today's story: **ares**.
 
 ## Why Go?
 
@@ -59,7 +59,7 @@ I knew: **there has to be a better way.**
 
 Go's simplicity, raw performance, and built-in concurrency primitives caught my eye. So I decided: rewrite the entire agent system from scratch in Go.
 
-**Shedding old baggage, I designed my own agent framework** — that's the origin story of GoAgentX.
+**Shedding old baggage, I designed my own agent framework** — that's the origin story of ares.
 
 I started with the basics: LLM calls, simple RAG. But this time, everything felt different:
 
@@ -80,6 +80,8 @@ As the project matured, I added the features I always wanted:
 | **Pluggable Vector Stores** | PostgreSQL pgvector, Qdrant, etc. Core ops <1µs with zero-alloc hot paths |
 | **MCP Protocol** | Native Model Context Protocol support for dynamic tool discovery |
 | **Event System & Flight Recorder** | Every agent action becomes an immutable record — state recovery, audit trails |
+| **Chaos Engineering** | 14 chaos actions (kill_leader, network_partition, tool_timeout, etc.) randomly injected into production agents to validate anti-fragility; support for survival mode (30 min sustained random failures) and scenario orchestration (YAML-defined multi-step chaos experiments); 3D weighted scoring (Availability 40%, Recovery 30%, Consistency 30%) with Welch's t-test regression |
+| **Autonomous Evolution** | Agent strategies self-evolve via a dual-path design: the DreamCycle path evaluates mutated candidates through Arena regression testing (two-stage: Quick Reject 5 rounds → Full Eval 50 rounds) to select optimal strategies; the Genome GA path operates at zero token cost on pre-computed scores — selection (truncation/tournament/roulette), crossover (uniform/multi-point/half-split), and mutation (70% parameter / 15% prompt / 15% tool), with automatic score degradation triggering (15% threshold) |
 
 ## The Craziest Feature: Agent Assassination
 

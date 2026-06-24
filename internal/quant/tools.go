@@ -15,10 +15,10 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/quant/indicators"
-	"goagentx/internal/quant/market"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/quant/indicators"
+	"github.com/Timwood0x10/ares/internal/quant/market"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // RegisterTools registers all quant MCP tools into the given registry.

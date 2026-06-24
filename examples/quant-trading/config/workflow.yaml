@@ -1,5 +1,5 @@
 # Quant Trading Agent Configuration — YAML defines 8 agents and their DAG pipeline.
-# Follows the steps specification of GoAgentX Workflow Engine.
+# Follows the steps specification of ares Workflow Engine.
 id: "quant-trading-pipeline"
 name: "Quantitative Trading Pipeline"
 version: "1.0.0"

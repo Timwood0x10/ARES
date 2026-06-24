@@ -9,11 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // HTTPRequest performs HTTP requests to external APIs.
@@ -95,10 +94,10 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 
 	var bodyReader io.Reader
 	if body, ok := params["body"].(string); ok && body != "" {
-		if strings.Contains(body, "{") || strings.Contains(body, "[") {
-			var js interface{}
-			if err := json.Unmarshal([]byte(body), &js); err != nil {
-				return core.NewErrorResult(fmt.Sprintf("invalid JSON body: %v", err)), nil
+		// Only validate JSON when Content-Type is explicitly set to application/json
+		if contentType, exists := headers["Content-Type"]; exists && contentType == "application/json" {
+			if !json.Valid([]byte(body)) {
+				return core.NewErrorResult("invalid JSON body"), nil
 			}
 		}
 		bodyReader = bytes.NewBufferString(body)

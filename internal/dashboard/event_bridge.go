@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 
 	"golang.org/x/sync/errgroup"
 )

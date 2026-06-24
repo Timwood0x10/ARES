@@ -7,11 +7,11 @@ import (
 	"log"
 	"time"
 
-	"goagentx/api/service/graph"
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/observability"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/api/service/graph"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/observability"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // mockAgent simulates an agent for demonstration
@@ -81,19 +81,43 @@ func main() {
 	aggregatorAgent := &mockAgent{id: "aggregator", name: "Data Aggregator"}
 
 	// Build graph with agents
-	g := wfgraph.NewGraph("agent-pipeline").
-		Node("collect", wfgraph.NewFuncNode("collect", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("1. Collecting data from external sources...")
-			state.Set("data", "sample data from API")
-			return nil
-		})).
-		Node("agent_collector", wfgraph.NewAgentNode(collectorAgent)).
-		Node("agent_analyzer", wfgraph.NewAgentNode(analyzerAgent)).
-		Node("agent_aggregator", wfgraph.NewAgentNode(aggregatorAgent)).
-		Edge("collect", "agent_collector").
-		Edge("agent_collector", "agent_analyzer").
-		Edge("agent_analyzer", "agent_aggregator").
-		Start("collect")
+	g, err := wfgraph.NewGraph("agent-pipeline")
+	if err != nil {
+		log.Fatalf("failed to create graph: %v", err)
+	}
+	n1, err := wfgraph.NewFuncNode("collect", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("1. Collecting data from external sources...")
+		state.Set("data", "sample data from API")
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("failed to create node: %v", err)
+	}
+	n2, err := wfgraph.NewAgentNode(collectorAgent)
+	if err != nil {
+		log.Fatalf("failed to create agent node: %v", err)
+	}
+	n3, err := wfgraph.NewAgentNode(analyzerAgent)
+	if err != nil {
+		log.Fatalf("failed to create agent node: %v", err)
+	}
+	n4, err := wfgraph.NewAgentNode(aggregatorAgent)
+	if err != nil {
+		log.Fatalf("failed to create agent node: %v", err)
+	}
+	mustOp := func(_ *wfgraph.Graph, err error) {
+		if err != nil {
+			log.Fatalf("graph operation failed: %v", err)
+		}
+	}
+	mustOp(g.Node("collect", n1))
+	mustOp(g.Node("agent_collector", n2))
+	mustOp(g.Node("agent_analyzer", n3))
+	mustOp(g.Node("agent_aggregator", n4))
+	mustOp(g.Edge("collect", "agent_collector"))
+	mustOp(g.Edge("agent_collector", "agent_analyzer"))
+	mustOp(g.Edge("agent_analyzer", "agent_aggregator"))
+	mustOp(g.Start("collect"))
 
 	// Execute graph
 	request := &graph.ExecuteRequest{

@@ -3,7 +3,7 @@ package dashboard
 import (
 	"context"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // mockEventStore implements events.EventStore for testing.

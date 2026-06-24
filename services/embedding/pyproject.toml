@@ -53,9 +53,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Timwood0x10/GoAgentX"
-Documentation = "https://github.com/Timwood0x10/GoAgentX/docs"
-Repository = "https://github.com/Timwood0x10/GoAgentX"
+Homepage = "https://github.com/Timwood0x10/ares"
+Documentation = "https://github.com/Timwood0x10/ares/docs"
+Repository = "https://github.com/Timwood0x10/ares"
 
 [build-system]
 requires = ["hatchling"]

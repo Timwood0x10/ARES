@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/quant/research"
 )
 
 // ─── Prompt Builder Tests ─────────────────────────────────

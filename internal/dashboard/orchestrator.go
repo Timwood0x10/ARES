@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goagentx/internal/events"
-	"goagentx/internal/flight"
-	"goagentx/internal/llm/output"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // AgentTemplate defines a reusable agent configuration.
@@ -686,22 +686,14 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 }
 
-// emitEvent stores an event in the event store (if configured).
+// emitEvent stores an event using the canonical events.Emit.
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
 	store := o.getStore()
 	if store == nil {
 		return
 	}
-	ctx := context.Background()
-	evt := &events.Event{
-		ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
-		StreamID:  streamID,
-		Type:      events.EventType(eventType),
-		Payload:   payload,
-		Timestamp: time.Now(),
-	}
-	if err := store.Append(ctx, streamID, []*events.Event{evt}, 0); err != nil {
-		slog.Warn("orchestrator: failed to append event", "stream", streamID, "type", eventType, "error", err)
+	if !events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }
 

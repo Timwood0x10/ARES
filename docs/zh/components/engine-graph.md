@@ -193,8 +193,8 @@ g := graph.NewGraph("priority-graph").
 ### API 层使用
 
 ```go
-import "goagentx/api/service/graph"
-import wfgraph "goagentx/internal/workflow/graph"
+import "ares/api/service/graph"
+import wfgraph "ares/internal/workflow/graph"
 
 // 创建服务
 service, _ := graph.NewService(&graph.Config{

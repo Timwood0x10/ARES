@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // Sentinel errors for event recovery operations.

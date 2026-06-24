@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -244,13 +245,19 @@ func (c *WSClient) Wait() {
 func (c *WSClient) ReadPump() {
 	defer func() {
 		c.hub.Unregister(c)
-		_ = c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			slog.Warn("ws: close connection failed", "error", err)
+		}
 	}()
 
 	c.conn.SetReadLimit(4096)
-	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		slog.Warn("ws: set read deadline", "error", err)
+	}
 	c.conn.SetPongHandler(func(string) error {
-		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			slog.Warn("ws: set read deadline", "error", err)
+		}
 		return nil
 	})
 
@@ -295,15 +302,21 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 	ticker := time.NewTicker(pingInterval)
 	defer func() {
 		ticker.Stop()
-		_ = c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			slog.Warn("ws: close connection failed", "error", err)
+		}
 	}()
 
 	for {
 		select {
 		case message, ok := <-c.send:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				slog.Warn("ws: set write deadline", "error", err)
+			}
 			if !ok {
-				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+					slog.Warn("ws: write close message", "error", err)
+				}
 				return
 			}
 
@@ -312,7 +325,9 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 			}
 
 		case <-ticker.C:
-			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				slog.Warn("ws: set write deadline", "error", err)
+			}
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

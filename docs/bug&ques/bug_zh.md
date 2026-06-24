@@ -25,8 +25,8 @@ panic: runtime error: invalid memory address or nil pointer dereference [recover
 [signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x10448566c]
 
 goroutine 122 [running]:
-goagentx/internal/tools/resources/core.(*Registry).Filter(0x2cb030286580, 0x0)
-        /Users/scc/go/src/goagentxx/internal/tools/resources/core/registry.go:111 +0x1ac
+ares/internal/tools/resources/core.(*Registry).Filter(0x2cb030286580, 0x0)
+        /Users/scc/go/src/aresx/internal/tools/resources/core/registry.go:111 +0x1ac
 ```
 
 ### Root Cause Analysis
@@ -1486,21 +1486,21 @@ High - 数据竞争导致测试在 `go test -race` 模式下失败
 ```
 WARNING: DATA RACE
 Write at 0x00c00019411f by goroutine 42:
-  goagentx/internal/core/errors.TestRealHeartbeatMissed.func1.1()
+  ares/internal/core/errors.TestRealHeartbeatMissed.func1.1()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:534 +0x84
 
 Previous read at 0x00c00019411f by goroutine 41:
-  goagentx/internal/core/errors.TestRealHeartbeatMissed.func1.2()
+  ares/internal/core/errors.TestRealHeartbeatMissed.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:551 +0x168
 
 ==================
 WARNING: DATA RACE
 Read at 0x00c00029c3d0 by goroutine 57:
-  goagentx/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
+  ares/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:756 +0x20c
 
 Previous write at 0x00c00029c3d0 by goroutine 56:
-  goagentx/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
+  ares/internal/core/errors.TestRealConcurrentErrorHandling.func1.2()
       /Users/scc/go/src/styleagent/internal/core/errors/error_scenarios_test.go:756 +0x21c
 ```
 
@@ -3136,9 +3136,9 @@ import (
 
     "github.com/lib/pq"  // ← 添加 pq 包
 
-    "goagentx/internal/core/errors"
-    "goagentx/internal/storage/postgres"
-    storage_models "goagentx/internal/storage/postgres/models"
+    "ares/internal/core/errors"
+    "ares/internal/storage/postgres"
+    storage_models "ares/internal/storage/postgres/models"
 )
 ```
 
@@ -3926,5 +3926,241 @@ else if strings.Contains(content, "喜欢") {
 
 ### References
 - Go String Functions: https://pkg.go.dev/strings
+
+---
+
+## Bug #11: scoreAgents 使用 Snapshot 深克隆导致进化评分完全生效
+
+### Date
+2026-06-22
+
+### Severity
+Critical - 导致 evolution 系统中所有 Agent 评分恒为 0，遗传算法的选择/变异/交叉全部失效
+
+### Affected Files
+- `api/evolution/service.go`
+
+### Bug Description
+
+#### 症状
+运行 `examples/autonomous-evolution/` 示例时：
+1. 所有 Agent 的 `Score` 字段恒为 `0.0`
+2. 每一代的 Best Genome Score 始终为 `0.00`
+3. 进化过程完全没有进展（score 不区分优劣）
+4. 日志中所有 agent 的 stats 都是 `score=0.00`
+
+#### 日志证据
+```
+Generation    1 | Pop:   5 | Best:     0.000000 | AvgScore:     0.000000 | ... | ScoreStats: score  min=0.00 median=0.00 max=0.00
+Generation    2 | Pop:   5 | Best:     0.000000 | AvgScore:     0.000000 | ...
+Generation    3 | Pop:   5 | Best:     0.000000 | AvgScore:     0.000000 | ...
+...
+Generation   50 | Pop:   5 | Best:     0.000000 | AvgScore:     0.000000 | ...
+```
+
+所有的 score 始终为 0，进化完全退化为随机搜索。
+
+### Root Cause Analysis
+
+#### 问题链（双层 bug）
+
+##### 第一层：scoreAgents 使用 Snapshot() 深克隆
+
+**错误代码（committed 版本）：**
+```go
+func scoreAgents(pop *genome.Population, rng *rand.Rand) {
+	agents, _ := pop.Snapshot()     // ← 返回深克隆副本
+	for _, agent := range agents {
+		// ... 计算 score ...
+		agent.Score = score          // ← 写入的是克隆体，不是原始对象
+	}
+}
+```
+
+`pop.Snapshot()` 的签名和实现：
+```go
+// Snapshot returns a deep copy of all agents for thread-safe access.
+// The returned agents are clones of the originals.
+func (p *Population) Snapshot() ([]*mutation.Strategy, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	agents := make([]*mutation.Strategy, len(p.agents))
+	for i, a := range p.agents {
+		agents[i] = a.Clone()       // ← 每个 agent 都是 Clone()
+	}
+	return agents, nil
+}
+```
+
+每个 agent 都是通过 `a.Clone()` 创建的深度克隆，`agent.Score = score` 写入的是克隆对象，对 `pop.agents` 中的原始对象没有任何影响。
+
+##### 第二层：Population.Evolve 从原始对象读取 score
+
+```go
+func (p *Population) Evolve() (*EvolutionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// ...
+	p.ScoreAgents(p.scorer)  // ← 这里通过回调写入原始对象（如果有 scorer）
+	// ...
+	p.sortByScore()          // ← 读取 p.agents 中的 score
+	p.selectElite()
+	p.breed()
+	p.mutate()
+}
+```
+
+`sortByScore()` 读取的是 `p.agents` 中的原始对象。由于 `scoreAgents` 把 score 写到了克隆体上，原始对象的 `Score` 字段始终为零值 `0.0`。
+
+#### 错误如何被掩盖
+
+1. `scoreAgents` 函数名暗示"评分 agent"，调用者认为评分已生效
+2. `Snapshot()` 返回的是 `[]*mutation.Strategy`，类型签名相同，容易误以为可以直接修改
+3. 之前的测试可能只检查返回值是否正确，没有检查 `pop` 内部状态是否被修改
+4. 没有单元测试验证 `scoreAgents` 对 Population 的副作用
+
+### Solution
+
+#### 修复方案：改用 Population.ScoreAgents 回调机制
+
+**修复后代码：**
+```go
+func (s *Service) scoreAgents(pop *genome.Population, rng *rand.Rand) {
+	pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+		if s.config.Scorer != nil {
+			return s.config.Scorer(agent.Params)
+		}
+		temp := defaultTargetTemp
+		if v, ok := agent.Params["temperature"].(float64); ok {
+			temp = v
+		}
+		proximity := 1 - absFloat64(temp-defaultTargetTemp)*defaultProximityGain
+		score := defaultBaseScore + rng.Float64()*defaultNoiseRange + proximity*defaultBonusRange
+		if score > defaultMaxScore {
+			score = defaultMaxScore
+		}
+		if score < 0 {
+			score = 0
+		}
+		return score
+	})
+}
+```
+
+`ScoreAgents` 的内部实现（在 `population.go` 中）持有写锁，直接写入原始对象：
+```go
+func (p *Population) ScoreAgents(scorer func(agent *mutation.Strategy) float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, a := range p.agents {
+		a.Score = scorer(a)
+	}
+}
+```
+
+核心修复：
+1. 用 `pop.ScoreAgents(callback)` 替代 `pop.Snapshot()` + 循环赋值
+2. `scoreAgents` 从独立函数改为 `Service` 的方法，以支持 `s.config.Scorer`
+3. 提取 magic numbers 为具名常量（`defaultTargetTemp`, `defaultProximityGain` 等）
+4. `initScores` 调用从 `scoreAgents(pop, r)` 改为 `s.scoreAgents(pop, r)`
+
+### 附带修复（同一 diff 中）
+
+本次修复还涉及了以下配套改动（均在同一 commit 中）：
+
+1. **新增配置字段传递**：`MinMutationRate`、`MaxMutationRate`、`MaxStagnantGenerations`、`DiversityThreshold`、`BreedingPoolRatio` 现在从 `SystemConfig` 正确传递到内部配置
+2. **UseDeterministicIDs 指针支持**：支持通过 `*cfg.UseDeterministicIDs` 指针显式控制
+3. **Name 字段暴露**：`toAPIStrategy` / `toInternalStrategy` 中增加了 `Name` 字段的序列化/反序列化
+4. **Params 克隆委托**：移除本地的 `cloneParams`，改用 `mutation.CloneParams` 统一实现
+5. **校验增强**：`NewService` 中增加了 `MinMutationRate`、`MaxMutationRate`、`BreedingPoolRatio` 的边界校验
+
+### Verification
+
+#### 修复结果
+**修复前：**
+```
+Generation    1 | Best:     0.000000 | AvgScore:     0.000000
+Generation   50 | Best:     0.000000 | AvgScore:     0.000000
+```
+
+**修复后（score 有明显区分度）：**
+```
+Generation    1 | Best:    62.123456 | AvgScore:    41.234567
+Generation   10 | Best:    85.789012 | AvgScore:    63.456789
+```
+
+#### 功能验证
+- ✅ 原始 agent 的 Score 字段被正确写入
+- ✅ `sortByScore()` 能正确排序 agent
+- ✅ 进化过程中的 Best/AvgScore 不再恒为 0
+- ✅ Scorer 回调（自定义评分）正常工作
+- ✅ 默认 temperature-proximity 评分正常工作
+- ✅ `initScores` 调用在新的方法签名下正常工作
+
+#### 代码质量检查
+- ✅ 移除了 `Snapshot()` 的误用
+- ✅ 使用了正确的锁保护机制（`ScoreAgents` 内部使用写锁）
+- ✅ 评分逻辑可扩展（支持自定义 Scorer）
+
+### Lessons Learned
+
+1. **浅拷贝 vs 深拷贝的语义理解**：
+   - `Snapshot()` 被设计为**只读快照**，返回的数据是隔离的，修改不会影响原始对象
+   - 函数名 `Snapshot` 暗示了"快照"语义，`Clone` 也明确表示"克隆"
+   - 需要仔细区分"读取"和"修改"的场景，选择正确的 API
+
+2. **API 设计原则**：
+   - 如果需要修改集合内元素，应该提供回调机制（如 `ScoreAgents(callback)`）
+   - 回调内部管理锁，调用者不需要关心并发安全
+   - 这种设计模式（"模板方法"）比"获取→修改→写回"更安全
+
+3. **测试覆盖的盲区**：
+   - `scoreAgents` 缺乏验证修改是否生效的集成测试
+   - 单元测试只测试了返回值，没有验证副作用
+   - 进化算法的端到端测试应该验证 score 是否有区分度
+
+4. **code review 检查点**：
+   - 对 "get something → modify it" 的模式要特别警惕
+   - 检查返回的是否是副本/克隆
+   - 如果函数名包含 `Snapshot`、`Clone`、`Copy` 等词，返回值一定是隔离的
+
+### Best Practices
+
+1. **集合修改优先使用回调 API**：
+   ```go
+   // Good
+   pop.ScoreAgents(func(agent *Strategy) float64 {
+       return computeScore(agent)
+   })
+
+   // Bad
+   agents, _ := pop.Snapshot()
+   for _, a := range agents {
+       a.Score = computeScore(a)  // 写入克隆，原始不受影响
+   }
+   ```
+
+2. **检查 API 的语义标签**：
+   ```go
+   // Snapshot → 只读快照，隔离副本
+   // Clone    → 深度克隆，完全独立
+   // Copy     → 可能浅拷贝或深拷贝，但一定隔离
+   // Get      → 可能返回引用或指针，需要检查
+   ```
+
+3. **进化算法的端到端验证**：
+   - 验证进化过程中 score 的变化（不应恒为常数）
+   - 验证至少一代后 Best Score 有提升
+   - 验证 score 的分布（应有区分度）
+
+4. **编写测试**：
+   ```go
+   // 验证评分确实写入原始对象
+   pop.ScoreAgents(scorer)
+   for _, agent := range pop.Agents() {
+       assert.NotZero(t, agent.Score, "score should be written to original agent")
+   }
+   ```
 
 ---

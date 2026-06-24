@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"goagentx/internal/errors"
-	memembed "goagentx/internal/memory/embedding"
+	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // pipelineSpy implements memembed.EmbeddingPipeline for testing.

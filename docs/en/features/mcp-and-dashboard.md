@@ -4,14 +4,14 @@
 
 ### Problem
 
-GoAgentX agents need to analyze code, but:
+ares agents need to analyze code, but:
 - Built-in tools (calculator, datetime, text) can't understand codebases
 - Hardcoding tool integrations means every new source (GitHub, Jira, DB) requires code changes
 - No way to see what agents are doing in real-time
 
 ### Approach
 
-**MCP Client**: Don't reinvent tool integration. MCP is an open protocol — any server that implements it can plug into GoAgentX. The client auto-discovers tools, so adding a new data source = running a new MCP server, zero code changes.
+**MCP Client**: Don't reinvent tool integration. MCP is an open protocol — any server that implements it can plug into ares. The client auto-discovers tools, so adding a new data source = running a new MCP server, zero code changes.
 
 **Dashboard**: Don't build a complex monitoring system. A single HTTP server with 6 endpoints + WebSocket covers observation (what are agents doing?) and interaction (launch new agents). No database, no message queue, no frontend build step.
 
@@ -74,7 +74,7 @@ curl -X POST /agents -d '{"mcp_tool":"codegraph_context","mcp_args":{"task":"...
 
 ### 2.3 Schema Conversion
 
-MCP uses JSON Schema for tool parameters. GoAgentX uses `ParameterSchema`. The bridge:
+MCP uses JSON Schema for tool parameters. ares uses `ParameterSchema`. The bridge:
 
 ```
 JSON Schema                    ParameterSchema

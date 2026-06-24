@@ -6,10 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/llm/output"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,9 +30,9 @@ func TestTaskExecutor_Execute_NilTask_ReturnsError(t *testing.T) {
 	assert.False(t, result.Success, "Execute() should fail for nil task")
 }
 
-func TestTaskExecutor_Execute_NilLLMAdapter_ReturnsFallbackError(t *testing.T) {
+func TestTaskExecutor_Execute_NilLLMAdapter_ReturnsFallbackSuccess(t *testing.T) {
 	// When llmAdapter is nil, executeByType is called as fallback.
-	// executeByType always returns an error since there are no type-specific handlers.
+	// Without registered handlers, executeByType returns an empty result (graceful degradation).
 	executor := NewTaskExecutor(
 		nil,
 		nil,
@@ -46,11 +46,10 @@ func TestTaskExecutor_Execute_NilLLMAdapter_ReturnsFallbackError(t *testing.T) {
 
 	result, err := executor.Execute(context.Background(), task)
 	require.NoError(t, err)
-	assert.False(t, result.Success, "Execute() should fail when no fallback handler exists")
-	assert.Contains(t, result.Error, "no fallback handler")
+	assert.True(t, result.Success, "Execute() should succeed with empty fallback result")
 }
 
-func TestTaskExecutor_Execute_NilProfile_ReturnsFallbackError(t *testing.T) {
+func TestTaskExecutor_Execute_NilProfile_ReturnsFallbackSuccess(t *testing.T) {
 	// When task has no UserProfile and no LLM adapter, fallback is used.
 	executor := NewTaskExecutor(
 		nil,
@@ -65,11 +64,10 @@ func TestTaskExecutor_Execute_NilProfile_ReturnsFallbackError(t *testing.T) {
 
 	result, err := executor.Execute(context.Background(), task)
 	require.NoError(t, err)
-	assert.False(t, result.Success)
-	assert.Contains(t, result.Error, "no fallback handler")
+	assert.True(t, result.Success, "Execute() should return empty fallback, not error")
 }
 
-func TestExecuteByType_UnknownType_ReturnsError(t *testing.T) {
+func TestExecuteByType_RegisteredHandler_ReturnsHandlerResult(t *testing.T) {
 	executor := NewTaskExecutor(
 		nil,
 		nil,
@@ -79,14 +77,33 @@ func TestExecuteByType_UnknownType_ReturnsError(t *testing.T) {
 		3,
 	)
 
-	// Use an AgentType that has no handler
+	// Register a handler for this type
+	executor.RegisterFallback(models.AgentTypeTop, func(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error) {
+		return []*models.RecommendItem{{ItemID: "fallback-item"}}, "registered handler", nil
+	})
+
+	task := models.NewTask("task_1", models.AgentTypeTop, nil)
+	result, err := executor.Execute(context.Background(), task)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Equal(t, "registered handler", result.Reason)
+}
+
+func TestExecuteByType_UnknownType_ReturnsEmptySuccess(t *testing.T) {
+	executor := NewTaskExecutor(
+		nil,
+		nil,
+		output.NewTemplateEngine(),
+		"{{.category}}",
+		output.NewValidator(),
+		3,
+	)
+
 	task := models.NewTask("task_test", models.AgentType("unknown_agent_type"), nil)
 
 	result, err := executor.Execute(context.Background(), task)
 	require.NoError(t, err)
-	assert.False(t, result.Success, "Execute() should fail for unknown agent type")
-	assert.Contains(t, result.Error, "no fallback handler",
-		"error message should contain 'no fallback handler'")
+	assert.True(t, result.Success, "Execute() should return empty fallback for unknown types, not error")
 }
 
 func TestMessageHandler_Handle(t *testing.T) {
@@ -746,6 +763,8 @@ type failingExecutor struct {
 func (e *failingExecutor) Execute(_ context.Context, _ *models.Task) (*models.TaskResult, error) {
 	return nil, e.err
 }
+
+func (e *failingExecutor) RegisterFallback(_ models.AgentType, _ FallbackHandler) {}
 
 func TestSubAgent_Start_EmitsAgentStartedEvent(t *testing.T) {
 	store := events.NewMemoryEventStore()

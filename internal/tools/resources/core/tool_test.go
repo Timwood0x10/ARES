@@ -37,11 +37,6 @@ func TestToolCategory(t *testing.T) {
 			cat:  CategoryMemory,
 			want: "memory",
 		},
-		{
-			name: "domain category",
-			cat:  CategoryDomain,
-			want: "domain",
-		},
 	}
 
 	for _, tt := range tests {
@@ -61,10 +56,9 @@ func TestToolCategoryUniqueness(t *testing.T) {
 		CategoryData:      true,
 		CategoryKnowledge: true,
 		CategoryMemory:    true,
-		CategoryDomain:    true,
 	}
 
-	if len(categories) != 6 {
+	if len(categories) != 5 {
 		t.Errorf("expected 6 unique categories, got %d", len(categories))
 	}
 }

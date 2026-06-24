@@ -1,16 +1,16 @@
-# GoAgentX
+# ares
 
 ```shell
-   _____                               _  __   __
-  / ____|        /\                   | | \ \ / /
- | |  __  ___   /  \   __ _  ___ _ __ | |_ \ V / 
- | | |_ |/ _ \ / /\ \ / _` |/ _ \ '_ \| __| > <  
- | |__| | (_) / ____ \ (_| |  __/ | | | |_ / . \ 
-  \_____|\___/_/    \_\__, |\___|_| |_|\__/_/ \_\
-                       __/ |                     
-                      |___/                      
+           _____  ______  _____ 
+     /\   |  __ \|  ____|/ ____|
+    /  \  | |__) | |__  | (___  
+   / /\ \ |  _  /|  __|  \___ \ 
+  / ____ \| | \ \| |____ ____) |
+ /_/    \_\_|  \_\______|_____/ 
+
 ```
 
+ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime for Autonomous Agents
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
@@ -18,49 +18,79 @@ Go-based multi-agent framework with DAG workflow orchestration, memory distillat
 
 ```mermaid
 graph TB
-    User[User Request] --> RT
+    User["User Request"] --> RT
 
-    subgraph runtime [Runtime Layer]
-        RT[Runtime Manager]
+    subgraph runtime ["Runtime Layer"]
+        RT["Runtime Manager"]
         RT -->|"manages lifecycle"| Leader
-        RT -->|"replays"| ES[EventStore]
-        RT -->|"restores"| MM[MemoryStore]
+        RT -->|"replays"| ES["EventStore"]
+        RT -->|"restores"| MM["MemoryStore"]
     end
 
-    subgraph agents [Agent System]
-        Leader[Leader Agent]
-        Leader -->|AHP Protocol| SubA[Sub Agent A]
-        Leader -->|AHP Protocol| SubB[Sub Agent B]
-        Leader -->|AHP Protocol| SubC[Sub Agent C]
-        Leader -.->|Checkpoint Recovery| Supervisor[Supervisor]
+    subgraph agents ["Agent System"]
+        direction TB
+        Leader["Leader Agent"]
+        SubA["Sub Agent A"]
+        SubB["Sub Agent B"]
+        SubC["Sub Agent C"]
+        Leader -->|"AHP Protocol"| SubA
+        Leader -->|"AHP Protocol"| SubB
+        Leader -->|"AHP Protocol"| SubC
+        Supervisor["Supervisor"]
+        Leader -.->|"Checkpoint Recovery"| Supervisor
     end
 
-    subgraph workflow [Workflow Engine]
-        MutableDAG[MutableDAG]
-        DynamicExec[DynamicExecutor]
+    subgraph workflow ["Workflow Engine"]
+        MutableDAG["MutableDAG"]
+        DynamicExec["DynamicExecutor"]
         MutableDAG --> DynamicExec
-        DynamicExec --> TopoSort[Topological Sort]
-        DynamicExec --> CycleDetect[Cycle Detection]
+        DynamicExec --> TopoSort["Topological Sort"]
+        DynamicExec --> CycleDetect["Cycle Detection"]
     end
 
-    subgraph memory [Memory Manager]
-        Session[Session Memory]
-        Task[Task Memory]
-        Distilled[Distilled Memory]
-        Session --> Pipeline[Distillation Pipeline]
+    subgraph llm ["LLM Layer"]
+        Adapters["Output Adapters"]
+        Templates["Prompt Templates"]
+        Parser["Function Call Parser"]
+    end
+
+    subgraph mem ["Memory Manager"]
+        Session["Session Memory"]
+        Task["Task Memory"]
+        Distilled["Distilled Memory"]
+        Session --> Pipeline["Distillation Pipeline"]
         Task --> Pipeline
         Pipeline --> Distilled
     end
 
-    subgraph storage [Storage Layer]
-        VS[VectorStore Interface]
-        PG[(PostgreSQL + pgvector)]
-        MEM[(In-Memory)]
-        QD[(Qdrant)]
-        SQL[(SQLite + sqlite-vec)]
-        CUSTOM[(Your Backend)]
-        Cache[Cache]
-        CB[Circuit Breaker]
+    subgraph evo ["Evolution Engine"]
+        Pop["GA Population"]
+        Score["Scoring Pipeline"]
+        Cross["Crossover"]
+        Mut["Mutation"]
+        Pop --> Score
+        Score --> Cross
+        Cross --> Mut
+        Mut --> Pop
+    end
+
+    subgraph hitl ["Human-in-the-Loop"]
+        IH["Interrupt Handler"]
+        IS["Interrupt Store"]
+        AW["Approval Workflow"]
+        IH --> IS
+        IH --> AW
+    end
+
+    subgraph stor ["Storage Layer"]
+        VS["VectorStore Interface"]
+        PG[("PostgreSQL + pgvector")]
+        MEM[("In-Memory")]
+        QD[("Qdrant")]
+        SQL[("SQLite + sqlite-vec")]
+        CUSTOM[("Your Backend")]
+        Cache["Cache"]
+        CB["Circuit Breaker"]
         VS --> PG
         VS --> MEM
         VS --> QD
@@ -70,29 +100,95 @@ graph TB
         Cache --> CB
     end
 
-    subgraph tools [Tool System]
-        Registry[Tool Registry]
-        Matcher[Capability Matcher]
-        Validator[Parameter Validator]
+    subgraph tools ["Tool System"]
+        Registry["Tool Registry"]
+        MCP["MCP Manager"]
+        MCP_Ext["MCP Servers"]
+        Registry --> MCP
+        MCP -->|"stdio/SSE"| MCP_Ext
     end
+
+    subgraph obs ["Observability"]
+        Dashboard["Web Dashboard"]
+        Flight["Flight Recorder"]
+        Genealogy["Agent Genealogy"]
+    end
+
+    subgraph cb ["Callbacks"]
+        Handler["Handler Registry"]
+        Events["Lifecycle Events"]
+    end
+
+    subgraph arena ["Chaos Engineering"]
+        FI["Fault Injector"]
+        RS["Resilience Scoring"]
+        SM["Survival Mode"]
+        FI --> RS
+        RS --> SM
+    end
+
+    EmbedSvc["Embedding Service"]
+
+    evo -->|"stores results"| Distilled
+    evo -->|"uses"| Score
 
     Leader --> MutableDAG
     Leader --> Session
     Leader --> Registry
+    Leader --> Adapters
+    Leader --> cb
+    Leader --> IH
     Session --> VS
     Registry --> VS
+    VS -.->|"embeds via"| EmbedSvc
+
+    obs -.->|"monitor"| RT
+    obs -.->|"monitor"| Leader
+    obs -.->|"monitor"| MutableDAG
+    arena -.->|"stress test"| RT
+    arena -.->|"stress test"| Leader
 ```
 
-### Memory Distillation Pipeline
+### Data Flow
+
+#### Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant RT as Runtime
+    participant L as Leader Agent
+    participant SA as Sub Agents
+    participant T as Tools / MCP
+    participant LLM as LLM
+    participant M as Memory Store
+
+    U->>RT: 1. Request
+    RT->>L: 2. Dispatch
+    L->>L: 3. Plan (DAG)
+    L->>SA: 4. AHP Tasks
+    SA->>LLM: 5. LLM Call
+    SA->>T: 6. Tool/MCP Call
+    T-->>SA: 7. Tool Result
+    LLM-->>SA: 8. LLM Response
+    SA-->>L: 9. Aggregate
+    L-->>RT: 10. Response
+    RT-->>U: 11. Final Response
+    L->>M: 12. Store Experiences
+```
+
+Request routed through Runtime → Leader plan with DAG → Sub Agents execute (LLM + Tools) → results aggregated and returned.
+
+#### Memory Distillation Pipeline
 
 ```mermaid
 flowchart LR
-    A[Extract] --> B[Classify]
-    B --> C[Score]
-    C --> D[Denoise]
-    D --> E[Conflict Resolution]
-    E --> F[Capacity Cap]
-    F --> Distilled[(Distilled Memory)]
+    A["Extract"] --> B["Classify"]
+    B --> C["Score"]
+    C --> D["Denoise"]
+    D --> E["Conflict Resolution"]
+    E --> F["Capacity Cap"]
+    F --> Distilled[("Distilled Memory")]
 ```
 
 6-step pipeline: extract experiences from raw interactions, classify by type, score relevance, filter noise, resolve conflicts with existing memories, and enforce capacity limits.
@@ -191,6 +287,16 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Event auto-compaction with retention policies
 - Pluggable health checking for agent resurrection
 
+**Autonomous Evolution (Genetic Algorithm)**
+- Multi-generation population-based evolution with selection, crossover, and mutation
+- Strategy mutation engine with deterministic reproducibility (seed-controlled)
+- Arena regression testing with Welch's t-test statistical significance
+- Dream cycle orchestration: trigger → mutate → evaluate → adopt → record lineage
+- Bandit feedback loop for continuous experience quality optimization
+- Event-driven callback system for LLM/Tool/Agent lifecycle hooks
+- Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
+- Elite preservation and adaptive survival rate across generations
+
 ## Benchmark Highlights
 
 32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
@@ -200,25 +306,28 @@ Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 | Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
 |----------|-------|---------------|--------------------|--------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| Distillation | 9 | 3 | 4 | 2 |
-| Tools/Core | 8 | 4 | 3 | 1 |
-| Errors | 4 | 4 | 0 | 0 |
-| Event Sourcing | 6 | 1 | 3 | 2 |
-| **Total** | **32** | **14** | **12** | **6** |
+| Distillation | 9 | 0 | 8 | 1 |
+| Tools/Core | 8 | 3 | 5 | 0 |
+| Errors | 4 | 2 | 2 | 0 |
+| Event Sourcing | 6 | 0 | 5 | 1 |
+| **Total** | **32** | **7** | **22** | **3** |
 
 Selected hot-path results:
 
 | Operation | ns/op | allocs/op |
 |-----------|-------|-----------|
-| ExactMatchEvaluator | 2.90 | 0 |
-| ToolExecution | 14.48 | 0 |
-| ResultCreation | 0.25 | 0 |
-| ParameterValidation | 7.22 | 0 |
-| ConflictDetection | 988 | 0 |
-| Wrap (error) | 0.25 | 0 |
-| MemoryOperations/Create | 87.57 | 0 |
+| ExactMatchEvaluator | 180.3 | 0 |
+| ToolUsageEvaluator | 361.3 | 0 |
+| ToolExecution | 347.3 | 0 |
+| ConvertEvent | 97.00 | 0 |
+| ResultCreation (Success) | 125.0 | 0 |
+| ResultCreation (Error) | 55.33 | 0 |
+| ParameterValidation | 208.3 | 0 |
+| Wrap (error) | 69.67 | 0 |
+| WrapMultipleWraps | 69.33 | 0 |
+| ConflictDetection | 2125 | 0 |
 
-14 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and conflict detection.
+7 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, event conversion, error wrapping, and conflict detection.
 
 Full benchmark report: `benchmarks/benchmark_report.md`
 
@@ -245,7 +354,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 # Or manually:
 docker run -d \
-  --name goagentx-db \
+  --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
@@ -282,6 +391,9 @@ cd examples/devagent && go run main.go
 
 # Tool capability demo
 cd examples/capability-demo && go run main.go
+
+# Autonomous evolution (genetic algorithm) demo
+cd examples/autonomous-evolution && go run main.go
 ```
 
 See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
@@ -297,7 +409,7 @@ go test -bench=. ./...             # Benchmarks
 ## Project Structure
 
 ```
-GoAgentX/
+ares/
 ├── internal/
 │   ├── agents/          # Leader/Sub agent system
 │   ├── runtime/         # Runtime lifecycle management
@@ -395,6 +507,7 @@ See `examples/travel/config.yaml` for a complete example.
 - [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)
 - [Benchmark Report](benchmarks/benchmark_report.md)
+- [Autonomous Evolution Guide](docs/en/features/autonomous-evolution.md)
 
 ## LICENSE
 Apache 2.0

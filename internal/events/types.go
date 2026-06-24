@@ -2,7 +2,9 @@
 package events
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -81,4 +83,46 @@ var (
 	ErrStreamNotFound = errors.New("stream not found")
 	// ErrEventStoreClosed indicates the store has been closed and cannot accept operations.
 	ErrEventStoreClosed = errors.New("event store closed")
+	// ErrEventIntegrity indicates event stream has gaps or version anomalies.
+	ErrEventIntegrity = errors.New("event stream integrity violation")
 )
+
+// VerifyStreamIntegrity checks that a sequence of events has contiguous versions
+// with no gaps or duplicates. Returns nil for empty or single-event streams.
+// Legacy events with Version == 0 skip the check for backward compatibility.
+func VerifyStreamIntegrity(evts []*Event) error {
+	if len(evts) <= 1 {
+		return nil
+	}
+	// Skip check if first event is version 0 (legacy events).
+	if evts[0].Version == 0 {
+		return nil
+	}
+	expected := evts[0].Version
+	for i, ev := range evts {
+		if ev.Version == 0 {
+			return nil // mixed legacy/modern — skip further checks
+		}
+		if ev.Version != expected {
+			return fmt.Errorf("%w: at index %d: expected version %d, got %d",
+				ErrEventIntegrity, i, expected, ev.Version)
+		}
+		expected++
+	}
+	return nil
+}
+
+// StreamHash computes a deterministic hash for an event stream,
+// useful for detecting silent corruption or partial writes.
+func StreamHash(evts []*Event) string {
+	if len(evts) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, ev := range evts {
+		h.Write([]byte(ev.ID))
+		h.Write([]byte(ev.Type))
+		_, _ = fmt.Fprintf(h, "%d", ev.Version)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)[:8])
+}

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	apperrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
-	"goagentx/internal/events"
-	"goagentx/internal/llm/output"
+	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // profileParser parses user profile from natural language input.
@@ -47,19 +47,9 @@ func (p *profileParser) WithEventStore(store events.EventStore) {
 	p.eventStore = store
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (p *profileParser) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if p.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		Type:    eventType,
-		Payload: payload,
-	}
-	if err := p.eventStore.Append(ctx, "profile-parser", []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, p.eventStore, "profile-parser", eventType, payload) {
 		slog.Debug("event emitted", "type", eventType)
 	}
 }

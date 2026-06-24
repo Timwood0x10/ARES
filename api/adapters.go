@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/dashboard"
-	"goagentx/internal/events"
-	"goagentx/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/mcp"
 
 	"github.com/google/uuid"
 )

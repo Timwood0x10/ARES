@@ -5,8 +5,9 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 
 	"strings"
 )
@@ -260,6 +261,8 @@ func (t *DataTransform) flatten(data interface{}, prefix string, separator strin
 
 	return result
 }
+
+func (t *DataTransform) IsIdempotent() bool { return true }
 
 // getStringWithDefault safely gets a string parameter with default.
 func getStringWithDefault(params map[string]interface{}, key, defaultVal string) string {

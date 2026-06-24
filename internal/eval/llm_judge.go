@@ -74,9 +74,10 @@ type judgeResponse struct {
 // It sends the test case input, expected output, and actual agent response to an LLM,
 // which then returns a structured score and reasoning.
 type LLMJudgeEvaluator struct {
-	client     LLMClient          // LLM client interface for calling the judge model
-	promptTmpl *template.Template // compiled evaluation prompt template
-	scale      ScaleType          // scoring scale configuration
+	client                LLMClient          // LLM client interface for calling the judge model
+	promptTmpl            *template.Template // compiled evaluation prompt template
+	scale                 ScaleType          // scoring scale configuration
+	useDimensionAveraging bool               // when true, score = average of per-dimension scores (lower variance)
 }
 
 // LLMJudgeOption is a functional option for configuring LLMJudgeEvaluator.
@@ -114,6 +115,20 @@ func WithEnglishPrompt() LLMJudgeOption {
 	}
 }
 
+// WithDimensionAveraging enables per-dimension scoring and averaging.
+// Instead of asking the LLM for a single total score, it asks for scores on
+// four independent dimensions (correctness, completeness, efficiency, safety)
+// and returns the average. This reduces variance by averaging multiple
+// judgments per call.
+//
+// When enabled, the prompt template is replaced with the dimension-aware version
+// and the final score is the mean of all normalized dimension scores.
+func WithDimensionAveraging() LLMJudgeOption {
+	return func(e *LLMJudgeEvaluator) {
+		e.useDimensionAveraging = true
+	}
+}
+
 // NewLLMJudgeEvaluator creates a new LLM-based evaluator with the given client and options.
 // By default, it uses the Chinese prompt template and a 1-10 scoring scale.
 //
@@ -147,6 +162,10 @@ func NewLLMJudgeEvaluator(client LLMClient, opts ...LLMJudgeOption) (*LLMJudgeEv
 // It renders the prompt template with test case data, calls the LLM, and parses
 // the JSON response into an EvalScore normalized to [0, 1] based on the configured scale.
 //
+// When WithDimensionAveraging is enabled, the LLM scores four independent dimensions
+// (correctness, completeness, efficiency, safety) and the final score is their average.
+// This reduces variance by aggregating multiple judgments per call.
+//
 // Args:
 //   - ctx: context for cancellation and timeout control.
 //   - tc: the test case containing input and expected output.
@@ -156,6 +175,10 @@ func NewLLMJudgeEvaluator(client LLMClient, opts ...LLMJudgeOption) (*LLMJudgeEv
 //   - []EvalScore: slice containing the judge score metric.
 //   - error: context cancellation, LLM call failure, or JSON parse error.
 func (e *LLMJudgeEvaluator) Evaluate(ctx context.Context, tc TestCase, result TestResult) ([]EvalScore, error) {
+	if e.useDimensionAveraging {
+		return e.evaluateWithDimensions(ctx, tc, result)
+	}
+
 	// Render the prompt template with test case data.
 	prompt, err := e.renderPrompt(tc, result)
 	if err != nil {

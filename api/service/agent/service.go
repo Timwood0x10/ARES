@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/api/core"
-	"goagentx/internal/errors"
-	"goagentx/internal/memory"
+	"github.com/Timwood0x10/ares/api/core"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Service provides agent management operations.

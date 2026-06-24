@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/observability"
-	wfgraph "goagentx/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/observability"
+	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 func TestNewService(t *testing.T) {
@@ -50,12 +50,25 @@ func TestExecute(t *testing.T) {
 	}
 
 	// Create a simple graph
-	g := wfgraph.NewGraph("test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			state.Set("result", "success")
-			return nil
-		})).
-		Start("node1")
+	g, errBuild := wfgraph.NewGraph("test")
+	if errBuild != nil {
+		t.Fatalf("NewGraph failed: %v", errBuild)
+	}
+	n1, errBuild := wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
+		state.Set("result", "success")
+		return nil
+	})
+	if errBuild != nil {
+		t.Fatalf("NewFuncNode failed: %v", errBuild)
+	}
+	_, errBuild = g.Node("node1", n1)
+	if errBuild != nil {
+		t.Fatalf("Node failed: %v", errBuild)
+	}
+	_, errBuild = g.Start("node1")
+	if errBuild != nil {
+		t.Fatalf("Start failed: %v", errBuild)
+	}
 
 	request := &ExecuteRequest{
 		GraphID: "test",
@@ -96,16 +109,29 @@ func TestExecuteWithTimeout(t *testing.T) {
 	}
 
 	// Create a graph with long-running node
-	g := wfgraph.NewGraph("timeout-test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(10 * time.Second):
-				return nil
-			}
-		})).
-		Start("node1")
+	g, errBuild := wfgraph.NewGraph("timeout-test")
+	if errBuild != nil {
+		t.Fatalf("NewGraph failed: %v", errBuild)
+	}
+	n1, errBuild := wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+			return nil
+		}
+	})
+	if errBuild != nil {
+		t.Fatalf("NewFuncNode failed: %v", errBuild)
+	}
+	_, errBuild = g.Node("node1", n1)
+	if errBuild != nil {
+		t.Fatalf("Node failed: %v", errBuild)
+	}
+	_, errBuild = g.Start("node1")
+	if errBuild != nil {
+		t.Fatalf("Start failed: %v", errBuild)
+	}
 
 	request := &ExecuteRequest{
 		GraphID: "timeout-test",
@@ -140,12 +166,19 @@ func TestExecuteWithGraphBuilder(t *testing.T) {
 	response, err := service.ExecuteWithGraphBuilder(
 		context.Background(),
 		"builder-test",
-		func(g *wfgraph.Graph) *wfgraph.Graph {
-			return g.Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
+		func(g *wfgraph.Graph) (*wfgraph.Graph, error) {
+			n1, err := wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
 				state.Set("result", "builder-success")
 				return nil
-			})).
-				Start("node1")
+			})
+			if err != nil {
+				return nil, err
+			}
+			g, err = g.Node("node1", n1)
+			if err != nil {
+				return nil, err
+			}
+			return g.Start("node1")
 		},
 		request,
 	)
@@ -191,11 +224,9 @@ func TestExecuteWithNilRequest(t *testing.T) {
 		t.Fatalf("failed to create service: %v", err)
 	}
 
-	g := wfgraph.NewGraph("test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			return nil
-		})).
-		Start("node1")
+	g := newTestGraph(t, "test", func(ctx context.Context, state *wfgraph.State) error {
+		return nil
+	})
 
 	_, err = service.Execute(context.Background(), g, nil)
 	if err == nil {
@@ -214,11 +245,9 @@ func TestValidateGraph(t *testing.T) {
 	}
 
 	// Test valid graph
-	g := wfgraph.NewGraph("test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			return nil
-		})).
-		Start("node1")
+	g := newTestGraph(t, "test", func(ctx context.Context, state *wfgraph.State) error {
+		return nil
+	})
 
 	err = service.ValidateGraph(g)
 	if err != nil {
@@ -242,11 +271,9 @@ func TestGetGraphInfo(t *testing.T) {
 		t.Fatalf("failed to create service: %v", err)
 	}
 
-	g := wfgraph.NewGraph("test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			return nil
-		})).
-		Start("node1")
+	g := newTestGraph(t, "test", func(ctx context.Context, state *wfgraph.State) error {
+		return nil
+	})
 
 	info := service.GetGraphInfo(g)
 	if info == nil {
@@ -278,12 +305,10 @@ func TestExecuteWithObservability(t *testing.T) {
 		t.Fatalf("failed to create service: %v", err)
 	}
 
-	g := wfgraph.NewGraph("observability-test").
-		Node("node1", wfgraph.NewFuncNode("node1", func(ctx context.Context, state *wfgraph.State) error {
-			state.Set("result", "success")
-			return nil
-		})).
-		Start("node1")
+	g := newTestGraph(t, "observability-test", func(ctx context.Context, state *wfgraph.State) error {
+		state.Set("result", "success")
+		return nil
+	})
 
 	request := &ExecuteRequest{
 		GraphID: "observability-test",
@@ -297,4 +322,26 @@ func TestExecuteWithObservability(t *testing.T) {
 	if response.Error != "" {
 		t.Errorf("expected no error, got %s", response.Error)
 	}
+}
+
+// newTestGraph is a test helper that builds a single-node graph.
+func newTestGraph(t *testing.T, id string, fn func(context.Context, *wfgraph.State) error) *wfgraph.Graph {
+	t.Helper()
+	g, err := wfgraph.NewGraph(id)
+	if err != nil {
+		t.Fatalf("NewGraph failed: %v", err)
+	}
+	n, err := wfgraph.NewFuncNode("node1", fn)
+	if err != nil {
+		t.Fatalf("NewFuncNode failed: %v", err)
+	}
+	_, err = g.Node("node1", n)
+	if err != nil {
+		t.Fatalf("Node failed: %v", err)
+	}
+	_, err = g.Start("node1")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	return g
 }

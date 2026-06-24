@@ -1,7 +1,7 @@
-# GoAgentX 架构深度解析（九）：Arena / 故障注入 — 故意破坏，见证自愈
+# ares 架构深度解析（九）：Arena / 故障注入 — 故意破坏，见证自愈
 
 > 别的 Agent 框架给你展示的是 Agent 有多聪明：对话流利、推理能力强、工具用得溜。
-> GoAgentX 展示的是另一件事：**当你故意杀死它的 Agent 时，它能不能活下来。**
+> ares 展示的是另一件事：**当你故意杀死它的 Agent 时，它能不能活下来。**
 > 我管这个叫"秽土转生验证"——在 Dashboard 上点一个按钮，暗杀正在工作的 Agent，看它能不能自己爬起来。
 
 ---
@@ -28,7 +28,7 @@ graph TB
         M[Metrics Collector]
     end
 
-    subgraph "GoAgentX 运行时"
+    subgraph "ares 运行时"
         RT[Runtime]
         DAG[MutableDAG]
         ES[EventStore]
@@ -280,7 +280,7 @@ actions:
 生存模式在配置的持续时间内持续注入随机故障：
 
 ```bash
-goagentx arena survival --addr http://localhost:8080 --duration 30m --interval 10s
+ares arena survival --addr http://localhost:8080 --duration 30m --interval 10s
 ```
 
 实时输出：
@@ -340,7 +340,7 @@ graph TB
 ### 8.2 事后 inspect
 
 ```bash
-goagentx arena inspect --addr http://localhost:8080
+ares arena inspect --addr http://localhost:8080
 ```
 
 ```
@@ -362,12 +362,12 @@ goagentx arena inspect --addr http://localhost:8080
 
 | 命令 | 说明 |
 |------|------|
-| `goagentx arena run <scenario.yaml>` | 对远程服务器运行场景 |
-| `goagentx arena validate <scenario.yaml>` | 本地验证场景文件 |
-| `goagentx arena list [dir]` | 列出目录中的场景文件 |
-| `goagentx arena serve [--addr]` | 启动 Arena HTTP 服务器 |
-| `goagentx arena survival [--addr] [--duration]` | 启动生存模式（实时进度） |
-| `goagentx arena inspect [--addr]` | 事后分析报告 |
+| `ares arena run <scenario.yaml>` | 对远程服务器运行场景 |
+| `ares arena validate <scenario.yaml>` | 本地验证场景文件 |
+| `ares arena list [dir]` | 列出目录中的场景文件 |
+| `ares arena serve [--addr]` | 启动 Arena HTTP 服务器 |
+| `ares arena survival [--addr] [--duration]` | 启动生存模式（实时进度） |
+| `ares arena inspect [--addr]` | 事后分析报告 |
 
 ---
 
@@ -388,7 +388,7 @@ goagentx arena inspect --addr http://localhost:8080
 
 ```mermaid
 graph TB
-    subgraph "Arena 证明 GoAgentX 是自愈运行时"
+    subgraph "Arena 证明 ares 是自愈运行时"
         A[刺杀 Leader] --> LA[Leader 选举 ✓]
         A --> CK[检查点恢复 ✓]
         A --> ER[事件重放 ✓]
@@ -412,12 +412,12 @@ graph TB
 
 ## 十一、结语
 
-Arena 是我觉得 GoAgentX 最有意思的功能。不是因为技术多牛——是因为它展示了别的框架不太会展示的东西：**系统在被持续破坏的时候能不能活下来。**
+Arena 是我觉得 ares 最有意思的功能。不是因为技术多牛——是因为它展示了别的框架不太会展示的东西：**系统在被持续破坏的时候能不能活下来。**
 
-13 种故障类型、场景编排、生存模式、实时 Dashboard、Flight Recorder 集成、三维弹性评分……这些东西堆在一起，让 `goagentx arena run cascading_storm.yaml` 不再是一个测试命令——它是一个"看我系统有多抗造"的 Demo。
+13 种故障类型、场景编排、生存模式、实时 Dashboard、Flight Recorder 集成、三维弹性评分……这些东西堆在一起，让 `ares arena run cascading_storm.yaml` 不再是一个测试命令——它是一个"看我系统有多抗造"的 Demo。
 
 有一次我给朋友演示：打开 Dashboard，点击"刺杀 Leader"，Agent 挂了……然后 1.4 秒后自动复活。朋友说："卧槽，还带这样的？"
 
 我心想：**对，就是这样。这就是我花这么多时间做这套系统的原因。**
 
-> "故意破坏，见证自愈。"——这是 GoAgentX 最令人印象深刻的 Demo，也是我写这个框架最大的成就感来源。
+> "故意破坏，见证自愈。"——这是 ares 最令人印象深刻的 Demo，也是我写这个框架最大的成就感来源。

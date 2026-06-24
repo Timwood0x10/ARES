@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"goagentx/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 func TestDefaultEvaluator_Evaluate(t *testing.T) {
@@ -83,20 +83,20 @@ func TestDefaultEvaluator_Evaluate(t *testing.T) {
 func TestLoopConfig_Default(t *testing.T) {
 	config := DefaultLeaderAgentConfig()
 
-	if config.Loop.MaxIterations != 3 {
-		t.Errorf("expected MaxIterations 3, got %d", config.Loop.MaxIterations)
+	if config.Loop.MaxIterations != DefaultMaxIterations {
+		t.Errorf("expected MaxIterations %d, got %d", DefaultMaxIterations, config.Loop.MaxIterations)
 	}
 
-	if config.Loop.QualityThreshold != 0.7 {
-		t.Errorf("expected QualityThreshold 0.7, got %f", config.Loop.QualityThreshold)
+	if config.Loop.QualityThreshold != DefaultQualityThreshold {
+		t.Errorf("expected QualityThreshold %f, got %f", DefaultQualityThreshold, config.Loop.QualityThreshold)
 	}
 
 	if config.Loop.EnableReflection {
 		t.Error("expected EnableReflection to be false")
 	}
 
-	if config.Loop.MaxTotalLLMCalls != 50 {
-		t.Errorf("expected MaxTotalLLMCalls 50, got %d", config.Loop.MaxTotalLLMCalls)
+	if config.Loop.MaxTotalLLMCalls != DefaultMaxTotalLLMCalls {
+		t.Errorf("expected MaxTotalLLMCalls %d, got %d", DefaultMaxTotalLLMCalls, config.Loop.MaxTotalLLMCalls)
 	}
 }
 

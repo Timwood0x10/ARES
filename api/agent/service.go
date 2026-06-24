@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/memory"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 )
 
 // Service provides agent management operations.

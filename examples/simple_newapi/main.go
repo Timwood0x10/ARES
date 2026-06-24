@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"goagentx/api/client"
+	"github.com/Timwood0x10/ares/api/client"
 )
 
 func main() {

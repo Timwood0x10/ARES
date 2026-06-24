@@ -23,3 +23,15 @@ config.yml
 **/logs/
 
 examples/quant-trading/workflow/config.yml
+
+
+.reasonix/
+
+examples/autonomous-evolution/config/config.y*ml
+
+examples/finetune/config/server.y*ml
+
+# Runtime artifacts from the autonomous evolution example
+evolution_best.json
+examples/autonomous-evolution/autonomous-evolution
+

@@ -36,15 +36,15 @@ docker exec -it postgres-pgvector psql -U postgres -d goagent -c "SELECT version
 # 检查现有容器
 docker ps | grep postgres
 
-# 创建GoAgentX 数据库（如果不存在）
+# 创建ares 数据库（如果不存在）
 docker exec <容器名> psql -U postgres -c "CREATE DATABASE goagent;"
 
 # 安装pgvector扩展
 docker exec <容器名> psql -U postgres -d goagent -c "CREATE EXTENSION vector;"
 
 # 运行数据库迁移（创建所有表）
-cd /Users/scc/go/src/goagentx
-go run cmd/migrate_goagentx/main.go
+cd /Users/scc/go/src/ares
+go run cmd/migrate_ares/main.go
 ```
 
 ### 步骤2：启动Ollama服务
@@ -85,7 +85,7 @@ embedding_model: nomic-embed-text
 
 ```bash
 # 进入示例目录
-cd /Users/scc/go/src/goagentx/examples/knowledge-base
+cd /Users/scc/go/src/ares/examples/knowledge-base
 
 # 导入文档
 go run main.go --save example.md
@@ -134,7 +134,7 @@ curl http://localhost:11434/api/tags
 
 ```bash
 # 进入embedding服务目录
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 
 # 复制配置文件
 cp .env.example .env
@@ -184,7 +184,7 @@ embedding_model: e5-large-v2
 
 ```bash
 # 进入示例目录
-cd /Users/scc/go/src/goagentx/examples/knowledge-base
+cd /Users/scc/go/src/ares/examples/knowledge-base
 
 # 导入文档
 go run main.go --save example.md
@@ -249,11 +249,11 @@ curl http://localhost:11434/api/tags
 
 ```bash
 # 启动
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./start.sh
 
 # 停止
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./stop.sh
 
 # 查看健康状态
@@ -330,7 +330,7 @@ killall ollama
 ### 停止Embedding服务（如果使用了方式二）
 
 ```bash
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./stop.sh
 ```
 
@@ -344,7 +344,7 @@ docker stop pgvector
 killall ollama 2>/dev/null || true
 
 # 停止Embedding服务（如果需要）
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./stop.sh 2>/dev/null || true
 ```
 
@@ -381,7 +381,7 @@ ollama serve
 
 ```bash
 # 检查Python环境
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./start.sh
 
 # 查看详细日志
@@ -469,7 +469,7 @@ ollama serve
 ollama pull nomic-embed-text
 
 # Terminal 3: 运行示例
-cd /Users/scc/go/src/goagentx/examples/knowledge-base
+cd /Users/scc/go/src/ares/examples/knowledge-base
 go run main.go --save example.md
 go run main.go --chat
 ```
@@ -488,11 +488,11 @@ ollama serve
 ollama pull hf.co/ChristianAzinn/e5-large-v2-gguf:Q8_0
 
 # Terminal 3: Embedding服务
-cd /Users/scc/go/src/goagentx/services/embedding
+cd /Users/scc/go/src/ares/services/embedding
 ./start.sh
 
 # Terminal 4: 运行示例
-cd /Users/scc/go/src/goagentx/examples/knowledge-base
+cd /Users/scc/go/src/ares/examples/knowledge-base
 # 确保config.yaml中embedding_service_url为http://localhost:8000
 go run main.go --save example.md
 go run main.go --chat

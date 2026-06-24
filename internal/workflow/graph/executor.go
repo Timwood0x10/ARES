@@ -7,15 +7,25 @@ import (
 	"fmt"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/observability"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 // Execute runs the graph with the given state.
+//
+// Execute acquires a read lock on the graph for the duration of execution,
+// preventing concurrent mutations. Multiple Execute calls may run concurrently
+// with each other but not with mutation methods.
 func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
+	if state == nil {
+		return nil, fmt.Errorf("state cannot be nil")
+	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	if g.start == "" {
 		return nil, fmt.Errorf("graph start node is not set")
 	}

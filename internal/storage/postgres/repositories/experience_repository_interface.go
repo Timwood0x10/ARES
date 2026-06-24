@@ -4,7 +4,7 @@ package repositories
 import (
 	"context"
 
-	storage_models "goagentx/internal/storage/postgres/models"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // ExperienceRepositoryInterface defines the interface for experience data access.

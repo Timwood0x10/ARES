@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"sync"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/events"
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // Agent represents the Sub Agent interface.
@@ -22,6 +22,9 @@ type Agent interface {
 // TaskExecutor executes tasks.
 type TaskExecutor interface {
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
+	// RegisterFallback registers a type-specific handler used when the LLM
+	// is unavailable or execution fails.
+	RegisterFallback(agentType models.AgentType, handler FallbackHandler)
 }
 
 // MessageHandler handles incoming messages.
@@ -33,6 +36,9 @@ type MessageHandler interface {
 type ToolBinder interface {
 	BindTool(name string, toolFunc func(ctx context.Context, args map[string]any) (any, error))
 	CallTool(ctx context.Context, name string, args map[string]any) (any, error)
+	ListTools() []string
+	IsToolIdempotent(name string) bool
+	ListIdempotentTools() []string
 }
 
 // Compile-time check: subAgent must satisfy base.StatefulAgent.
@@ -420,20 +426,9 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 	}, nil
 }
 
-// emitEvent appends a single event to the event store.
-// No-op if eventStore is nil. Logs at Debug level on success, Warn on failure.
+// emitEvent appends a single event using the canonical events.Emit.
 func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if a.eventStore == nil {
-		return
-	}
-	event := &events.Event{
-		StreamID: a.id,
-		Type:     eventType,
-		Payload:  payload,
-	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event", "agent_id", a.id, "type", eventType, "error", err)
-	} else {
+	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
 		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }

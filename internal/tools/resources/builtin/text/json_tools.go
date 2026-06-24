@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
 	"strconv"
 	"strings"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // JSONTools provides JSON processing operations.
@@ -278,6 +279,8 @@ func getStringSlice(params map[string]interface{}, key string) []string {
 	}
 	return nil
 }
+
+func (t *JSONTools) IsIdempotent() bool { return true }
 
 func getInt(params map[string]interface{}, key string, defaultVal int) int {
 	switch v := params[key].(type) {

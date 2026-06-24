@@ -1,4 +1,4 @@
-# GoAgentX Architecture Deep Dive (II): Agent Harmony Protocol — The Communication Foundation for Multi-Agent Systems
+# ares Architecture Deep Dive (II): Agent Harmony Protocol — The Communication Foundation for Multi-Agent Systems
 
 > When it comes to multi-Agent systems, most people's first reaction is: "How do Agents talk to each other? Via HTTP or WebSocket? Through a message queue?"
 > My answer is rather blunt: **Running in the same process, and you still want to communicate over the network? Just use Go channels and be done with it.**
@@ -10,13 +10,15 @@ What's the most annoying thing about building a multi-Agent system? It's not tha
 
 The Leader assigns a task to a Sub. The Sub finishes and wants to report back, only to find that the Leader has already timed out. The Sub wants to report its progress, but there's nowhere to do so. The Leader wants to know if the Sub is still alive, but there's no heartbeat mechanism.
 
-When I first built this in Python, I used Redis queues. Later I switched to Go, spent two days reading RabbitMQ documentation — way too heavy. I thought: **Same process, two goroutines, sending a message still has to go through the network? That's just insane.**
+When I first built this in Python, I used Redis queues. Later I switched to Go and wanted a more formal solution, so I spent two full days wrestling with RabbitMQ — the first day installing Erlang, configuring vhosts, setting up exchanges, mapping out binding keys; the second day writing 200+ lines of glue code just to deliver a single message from Agent A to Agent B.
+
+When I finally ran the benchmark, the end-to-end latency had gone from <1μs (Go channel) to 2ms+ — that's a 2000x slowdown, and it wasn't even caused by network latency since both Agents were in the same process. Pure serialization and routing overhead. I thought: **Same process, two goroutines, sending a message still has to go through the network? That's just insane.**
 
 So I wrote a purely in-process communication protocol: no network, no serialization, no middleware dependency. Just channels + shared memory.
 
 ## I. Why reinvent the wheel?
 
-GoAgentX has two roles: Leader Agent (who assigns work) and Sub Agent (who does the work). The communication between them needs to handle a bunch of annoyances:
+ares has two roles: Leader Agent (who assigns work) and Sub Agent (who does the work). The communication between them needs to handle a bunch of annoyances:
 
 - **Async messaging**: The Leader can toss out a task and move on, without waiting for the Sub to finish
 - **Progress feedback**: The Sub needs to let the Leader know when it's 50% done
@@ -354,18 +356,20 @@ Currently AHP is purely in-process communication, so JSON is sufficient. But the
 
 ## XI. What's Missing? (Honest Section)
 
-To be honest, AHP isn't perfect. I've run into a few pain points myself:
+To be honest, AHP isn't perfect. I've run into a few pain points myself, some of them quite painful:
 
-1. **Purely in-process**: Can't span processes. If you need distributed deployment, you'll need to swap out the MessageQueue implementation
-2. **No broadcast**: Want to send a message to multiple Sub Agents? You'll have to send them one by one
-3. **Retry strategy is too naive**: The DLQ retry interval is fixed — no exponential backoff. This could cause a retry storm during sustained failures
-4. **Routing is too rigid**: No support for content-based dynamic routing or Topic subscriptions
+1. **Purely in-process**: Can't span processes. If you need distributed deployment, you'll need to swap out the MessageQueue implementation. And "swap out the implementation" isn't as simple as it sounds — channel's synchronous semantics are fundamentally different from async network message queues, and there are plenty of edge cases to handle in the transition
+2. **No broadcast**: Want to send a message to multiple Sub Agents? You'll have to send them one by one in a Leader-side for loop. At one point I needed to notify 6 Sub Agents simultaneously — by the time the Leader had sent to the 3rd one, the 1st had already finished execution. Serial sending became the bottleneck of the entire workflow
+3. **Retry strategy is too naive**: The DLQ retry interval is fixed — no exponential backoff. Once a downstream API went down for 10 minutes, and the DLQ hammered it with fixed-interval retries the entire time, making an already fragile situation worse. I added circuit-breaking logic afterward — should have done it from the start
+4. **Routing is too rigid**: No support for content-based dynamic routing or Topic subscriptions. Current routing is just "send to this AgentID" — if I want to route by message type, I have to write if-else chains at the business layer
 
-But honestly, these limitations are all **trade-offs by design** — at the monolithic stage, the channel-based approach eliminates 90% of distributed system complexity. If we ever go microservice, we just swap out the underlying implementation — the business code on top stays untouched. That's the beauty of the abstraction layer.
+There's also a less obvious cost: **the "just swap the implementation" assumption may be wrong in the short term.** Many of AHP's semantics (non-blocking Enqueue, backup buffer, shared-memory Heartbeat) depend on channel's synchronous characteristics. When you actually switch to gRPC or RabbitMQ, porting these behaviors is far harder than it looks on paper — you need to reimplement a whole set of asynchronous semantics that just *look like* channels. An abstraction layer can isolate interfaces, but it can't isolate semantic differences.
+
+All that said, these limitations are **acceptable trade-offs** at the monolithic stage — the channel approach eliminated 90% of distributed system complexity for me. If I'd gone with RabbitMQ from day one, inter-Agent communication might have been more robust, but the project would have taken one to two extra weeks to launch, not to mention the ongoing operational cost. For a startup-stage project, that math works out every time.
 
 ## Summary
 
-AHP is the communication wheel I built for GoAgentX. Channel-based messaging, DLQ as fallback, HeartbeatMonitor for liveness checks — three pieces combined, and the multi-Agent communication infrastructure is good to go.
+AHP is the communication wheel I built for ares. Channel-based messaging, DLQ as fallback, HeartbeatMonitor for liveness checks — three pieces combined, and the multi-Agent communication infrastructure is good to go.
 
 Those interfaces left in the code (Codec, DLQ handler, MessageSender) are essentially escape hatches I left for myself: if we ever need to switch to gRPC or RabbitMQ, just swap out one layer of implementation — the business code on top doesn't change. This kind of design is especially important in startup projects — you never know what the architecture will look like tomorrow.
 

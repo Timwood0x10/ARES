@@ -1,4 +1,4 @@
-// package config - provides configuration loading and validation for GoAgentX.
+// package config - provides configuration loading and validation for ares.
 package config
 
 import (
@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +40,7 @@ type Config struct {
 	Memory     MemoryConfig       `yaml:"memory"`
 	MCP        MCPConfig          `yaml:"mcp"`
 	Dashboard  DashboardAppConfig `yaml:"dashboard"`
+	Evolution  EvolutionConfig    `yaml:"evolution"`
 }
 
 // ServerConfig holds server configuration.
@@ -50,13 +51,16 @@ type ServerConfig struct {
 
 // LLMConfig holds LLM provider configuration.
 type LLMConfig struct {
-	Provider  string            `yaml:"provider"` // "openai", "ollama"
-	APIKey    string            `yaml:"api_key"`
-	BaseURL   string            `yaml:"base_url"`
-	Model     string            `yaml:"model"`
-	Timeout   int               `yaml:"timeout"`    // seconds
-	MaxTokens int               `yaml:"max_tokens"` // max tokens for response
-	Extra     map[string]string `yaml:"extra"`
+	Provider       string            `yaml:"provider"` // "openai", "ollama"
+	APIKey         string            `yaml:"api_key"`
+	BaseURL        string            `yaml:"base_url"`
+	Model          string            `yaml:"model"`
+	Timeout        int               `yaml:"timeout"`    // seconds
+	MaxTokens      int               `yaml:"max_tokens"` // max tokens for response
+	Extra          map[string]string `yaml:"extra"`
+	ScorerAPIRate  float64           `yaml:"scorer_api_rate,omitempty"`  // requests per second for LLM scorer
+	ScorerAPIBurst int               `yaml:"scorer_api_burst,omitempty"` // burst size for LLM scorer
+	Fallbacks      []LLMConfig       `yaml:"fallbacks,omitempty"`        // fallback LLM providers for scoring failover
 }
 
 // AgentsConfig holds agent configuration.
@@ -342,6 +346,12 @@ func (c *Config) setDefaults() {
 	if c.LLM.MaxTokens == 0 {
 		c.LLM.MaxTokens = 4096
 	}
+	if c.LLM.ScorerAPIRate == 0 {
+		c.LLM.ScorerAPIRate = 10
+	}
+	if c.LLM.ScorerAPIBurst == 0 {
+		c.LLM.ScorerAPIBurst = 20
+	}
 	if c.Agents.Leader.MaxSteps == 0 {
 		c.Agents.Leader.MaxSteps = 10
 	}
@@ -407,6 +417,34 @@ func (c *Config) setDefaults() {
 	if c.Dashboard.WSPingInterval == 0 {
 		c.Dashboard.WSPingInterval = 30
 	}
+	// Evolution defaults
+	if c.Evolution.PopulationSize == 0 {
+		c.Evolution.PopulationSize = 20
+	}
+	if c.Evolution.EliteCount == 0 {
+		c.Evolution.EliteCount = 2
+	}
+	if c.Evolution.SurvivalRate == 0 {
+		c.Evolution.SurvivalRate = 0.6
+	}
+	if c.Evolution.MutationRate == 0 {
+		c.Evolution.MutationRate = 0.2
+	}
+	if c.Evolution.MinMutationRate == 0 {
+		c.Evolution.MinMutationRate = 0.05
+	}
+	if c.Evolution.MaxMutationRate == 0 {
+		c.Evolution.MaxMutationRate = 0.5
+	}
+	if c.Evolution.Generations == 0 {
+		c.Evolution.Generations = 15
+	}
+	if c.Evolution.BreedingPoolRatio == 0 {
+		c.Evolution.BreedingPoolRatio = 0.5
+	}
+	if c.Evolution.MinInterval == "" {
+		c.Evolution.MinInterval = "5m"
+	}
 }
 
 // Validate validates the configuration values.
@@ -423,8 +461,8 @@ func (c *Config) Validate() error {
 	if c.LLM.MaxTokens < 1 {
 		return fmt.Errorf("invalid LLM max tokens: %d, must be positive", c.LLM.MaxTokens)
 	}
-	if c.LLM.Provider != "openai" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openrouter" {
-		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', or 'openrouter'", c.LLM.Provider)
+	if c.LLM.Provider != "openai" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openrouter" && c.LLM.Provider != "anthropic" {
+		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', 'openrouter', or 'anthropic'", c.LLM.Provider)
 	}
 
 	// Validate agents configuration
@@ -527,6 +565,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate evolution configuration only when enabled
+	if c.Evolution.Enabled {
+		if c.Evolution.PopulationSize < 2 {
+			return fmt.Errorf("evolution: population_size must be >= 2, got %d", c.Evolution.PopulationSize)
+		}
+		if c.Evolution.EliteCount < 0 || c.Evolution.EliteCount >= c.Evolution.PopulationSize {
+			return fmt.Errorf("evolution: elite_count must be in [0, population_size), got %d", c.Evolution.EliteCount)
+		}
+		if c.Evolution.SurvivalRate <= 0 || c.Evolution.SurvivalRate > 1 {
+			return fmt.Errorf("evolution: survival_rate must be in (0, 1], got %f", c.Evolution.SurvivalRate)
+		}
+		if c.Evolution.MutationRate < 0 || c.Evolution.MutationRate > 1 {
+			return fmt.Errorf("evolution: mutation_rate must be in [0, 1], got %f", c.Evolution.MutationRate)
+		}
+		if c.Evolution.Generations < 1 {
+			return fmt.Errorf("evolution: generations must be >= 1, got %d", c.Evolution.Generations)
+		}
+	}
+
 	return nil
 }
 
@@ -585,4 +642,45 @@ type DashboardAppConfig struct {
 	Addr           string `yaml:"addr"`
 	EnableAuth     bool   `yaml:"enable_auth"`
 	WSPingInterval int    `yaml:"ws_ping_interval"` // seconds
+}
+
+// EvolutionConfig holds genetic algorithm evolution system configuration.
+// When Enabled is false (default), the entire evolution pipeline is skipped
+// during bootstrap — no scheduler, no dream cycle, no GA overhead.
+// This makes the genome/mutation libraries available as pure utilities while
+// keeping the expensive evolution orchestration opt-in.
+type EvolutionConfig struct {
+	// Enabled activates the full evolution pipeline (scheduler + dream cycle + GA).
+	// Default: false — must be explicitly enabled in YAML.
+	Enabled bool `yaml:"enabled"`
+
+	// PopulationSize is the number of agents in each GA generation.
+	// Only used when Enabled is true.
+	PopulationSize int `yaml:"population_size"`
+
+	// EliteCount is the number of top agents preserved unchanged per generation.
+	EliteCount int `yaml:"elite_count"`
+
+	// SurvivalRate is the fraction of population that survives selection [0.0, 1.0].
+	SurvivalRate float64 `yaml:"survival_rate"`
+
+	// MutationRate is the base probability of gene mutation per agent.
+	MutationRate float64 `yaml:"mutation_rate"`
+
+	// MinMutationRate is the floor for adaptive mutation rate decay.
+	MinMutationRate float64 `yaml:"min_mutation_rate"`
+
+	// MaxMutationRate is the ceiling for adaptive mutation rate bursts.
+	MaxMutationRate float64 `yaml:"max_mutation_rate"`
+
+	// Generations is the maximum number of GA generations to run.
+	Generations int `yaml:"generations"`
+
+	// BreedingPoolRatio is the fraction of population used as crossover parents.
+	BreedingPoolRatio float64 `yaml:"breeding_pool_ratio"`
+
+	// MinInterval is the minimum time between evolution scheduler runs.
+	// Format: duration string (e.g., "5m", "10m").
+	// Default: "5m" if not specified.
+	MinInterval string `yaml:"min_interval"`
 }

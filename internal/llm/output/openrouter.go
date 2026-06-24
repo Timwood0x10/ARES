@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // OpenRouterAdapter implements LLMAdapter for OpenRouter.
@@ -65,7 +65,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
-	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/ares")
 	req.Header.Set("X-Title", "Agent Framework")
 
 	resp, err := a.client.Do(req)
@@ -123,7 +123,7 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
-	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/ares")
 	req.Header.Set("X-Title", "Agent Framework")
 
 	resp, err := a.client.Do(req)
@@ -182,7 +182,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
-	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/GoAgentX")
+	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/ares")
 	req.Header.Set("X-Title", "Agent Framework")
 
 	// Use a client without Timeout for streaming: http.Client.Timeout covers

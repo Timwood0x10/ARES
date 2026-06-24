@@ -1,15 +1,16 @@
-# GoAgentX
+# ares
 
 ```shell
-   _____                               _  __   __
-  / ____|        /\                   | | \ \ / /
- | |  __  ___   /  \   __ _  ___ _ __ | |_ \ V / 
- | | |_ |/ _ \ / /\ \ / _` |/ _ \ '_ \| __| > <  
- | |__| | (_) / ____ \ (_| |  __/ | | | |_ / . \ 
-  \_____|\___/_/    \_\__, |\___|_| |_|\__/_/ \_\
-                       __/ |                     
-                      |___/                                                                   
+           _____  ______  _____ 
+     /\   |  __ \|  ____|/ ____|
+    /  \  | |__) | |__  | (___  
+   / /\ \ |  _  /|  __|  \___ \ 
+  / ____ \| | \ \| |____ ____) |
+ /_/    \_\_|  \_\______|_____/ 
+                    
 ```
+
+ARES（自适应弹性进化系统）：一种用于自主agent的自愈进化运行时
 
 Go 语言多 Agent 框架，支持 DAG 工作流编排、记忆蒸馏、AHP 协议通信。
 
@@ -27,19 +28,30 @@ graph TB
     end
 
     subgraph agents ["Agent 系统"]
-        Leader[Leader Agent]
-        Leader -->|"AHP 协议"| SubA[Sub Agent A]
-        Leader -->|"AHP 协议"| SubB[Sub Agent B]
-        Leader -->|"AHP 协议"| SubC[Sub Agent C]
-        Leader -.->|"Checkpoint 恢复"| Supervisor[Supervisor]
+        direction TB
+        Leader["Leader Agent"]
+        SubA["Sub Agent A"]
+        SubB["Sub Agent B"]
+        SubC["Sub Agent C"]
+        Leader -->|"AHP 协议"| SubA
+        Leader -->|"AHP 协议"| SubB
+        Leader -->|"AHP 协议"| SubC
+        Supervisor["Supervisor"]
+        Leader -.->|"Checkpoint 恢复"| Supervisor
     end
 
     subgraph workflow ["工作流引擎"]
-        MutableDAG[MutableDAG]
-        DynamicExec[DynamicExecutor]
+        MutableDAG["MutableDAG"]
+        DynamicExec["DynamicExecutor"]
         MutableDAG --> DynamicExec
         DynamicExec --> TopoSort["拓扑排序"]
         DynamicExec --> CycleDetect["环检测"]
+    end
+
+    subgraph llm ["LLM 层"]
+        Adapters["输出适配器"]
+        Templates["Prompt 模板"]
+        Parser["函数调用解析"]
     end
 
     subgraph mem ["记忆管理"]
@@ -49,6 +61,25 @@ graph TB
         Session --> Pipeline["蒸馏管线"]
         Task --> Pipeline
         Pipeline --> Distilled
+    end
+
+    subgraph evo ["进化引擎"]
+        Pop["GA 种群"]
+        Score["评分管线"]
+        Cross["交叉"]
+        Mut["变异"]
+        Pop --> Score
+        Score --> Cross
+        Cross --> Mut
+        Mut --> Pop
+    end
+
+    subgraph hitl ["人工审批"]
+        IH["Interrupt 处理器"]
+        IS["Interrupt 存储"]
+        AW["审批工作流"]
+        IH --> IS
+        IH --> AW
     end
 
     subgraph stor ["存储层"]
@@ -71,18 +102,84 @@ graph TB
 
     subgraph tools ["工具系统"]
         Registry["工具注册"]
-        Matcher["能力匹配"]
-        Validator["参数校验"]
+        MCP["MCP 管理器"]
+        MCP_Ext["MCP 服务器"]
+        Registry --> MCP
+        MCP -->|"stdio/SSE"| MCP_Ext
     end
+
+    subgraph obs ["可观测性"]
+        Dashboard["Web 面板"]
+        Flight["Flight Recorder"]
+        Genealogy["Agent 谱系"]
+    end
+
+    subgraph cb ["回调系统"]
+        Handler["处理器注册"]
+        Events["生命周期事件"]
+    end
+
+    subgraph arena ["混沌工程"]
+        FI["故障注入器"]
+        RS["弹性评分"]
+        SM["存活模式"]
+        FI --> RS
+        RS --> SM
+    end
+
+    EmbedSvc["Embedding 服务"]
+
+    evo -->|"存储结果"| Distilled
+    evo -->|"使用"| Score
 
     Leader --> MutableDAG
     Leader --> Session
     Leader --> Registry
+    Leader --> Adapters
+    Leader --> cb
+    Leader --> IH
     Session --> VS
     Registry --> VS
+    VS -.->|"向量化"| EmbedSvc
+
+    obs -.->|"监控"| RT
+    obs -.->|"监控"| Leader
+    obs -.->|"监控"| MutableDAG
+    arena -.->|"压力测试"| RT
+    arena -.->|"压力测试"| Leader
 ```
 
-### 记忆蒸馏管线
+### 数据流
+
+#### 请求生命周期
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant RT as Runtime
+    participant L as Leader Agent
+    participant SA as Sub Agents
+    participant T as 工具 / MCP
+    participant LLM as LLM
+    participant M as 记忆存储
+
+    U->>RT: 1. 请求
+    RT->>L: 2. 分发
+    L->>L: 3. 规划（DAG）
+    L->>SA: 4. AHP 任务
+    SA->>LLM: 5. LLM 调用
+    SA->>T: 6. 工具/MCP 调用
+    T-->>SA: 7. 工具结果
+    LLM-->>SA: 8. LLM 响应
+    SA-->>L: 9. 聚合
+    L-->>RT: 10. 响应
+    RT-->>U: 11. 最终响应
+    L->>M: 12. 存储经验
+```
+
+请求经过 Runtime → Leader 用 DAG 规划 → Sub Agents 执行（LLM + 工具） → 结果聚合后返回。
+
+#### 记忆蒸馏管线
 
 ```mermaid
 flowchart LR
@@ -190,6 +287,16 @@ flowchart LR
 - 事件自动压缩，可配置保留策略
 - 可插拔健康检测（用于 Agent 复活）
 
+**自主进化（遗传算法）**
+- 多代种群进化：选择、交叉、变异
+- 策略变异引擎：支持确定性种子控制，结果可复现
+- Arena 回归测试：Welch's t-test 统计显著性检验
+- Dream Cycle 编排：触发 → 变异 → 评估 → 采用 → 记录谱系
+- Bandit 反馈循环：持续优化经验质量
+- 事件驱动回调系统：LLM/工具/Agent 生命周期钩子
+- 高层 API：`NewWiredEvolutionSystem` 一键组装全部组件
+- 精英保留策略 + 自适应存活率
+
 ## 性能数据
 
 32 个 benchmark，2573 测试通过（`-race`），覆盖 49 个包。
@@ -244,7 +351,7 @@ export OPENROUTER_API_KEY="your-api-key"
 
 # 或手动：
 docker run -d \
-  --name goagentx-db \
+  --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=goagent \
   -p 5433:5432 \
@@ -281,6 +388,9 @@ cd examples/devagent && go run main.go
 
 # 工具能力演示
 cd examples/capability-demo && go run main.go
+
+# 自主进化（遗传算法）演示
+cd examples/autonomous-evolution && go run main.go
 ```
 
 详见 [示例文档](docs/zh/development/examples.md)。
@@ -363,6 +473,7 @@ memory:
 - [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)
 - [性能报告](benchmarks/benchmark_report.md)
+- [自主进化指南](docs/zh/features/autonomous-evolution.md)
 
 ## LICENSE
 Apache 2.0

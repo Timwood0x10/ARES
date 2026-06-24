@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // TestNewBaseTool tests creating a new BaseTool.
@@ -113,10 +113,6 @@ func TestNewBaseToolWithCategory(t *testing.T) {
 		{
 			name:     "memory category",
 			category: core.CategoryMemory,
-		},
-		{
-			name:     "domain category",
-			category: core.CategoryDomain,
 		},
 	}
 

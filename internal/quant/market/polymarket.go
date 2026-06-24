@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -48,13 +49,17 @@ func (f *PolymarketFeed) Markets(query string) ([]Market, error) {
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "GoAgentX/1.0")
+	req.Header.Set("User-Agent", "github.com/Timwood0x10/ares/1.0")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: fetch markets: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("polymarket: returned status %d", resp.StatusCode)

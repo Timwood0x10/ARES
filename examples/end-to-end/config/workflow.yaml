@@ -1,0 +1,46 @@
+# End-to-End Workflow Definition
+# DAG-based pipeline: analyze -> (recommend + optimize) -> summarize
+
+id: "e2e-workflow"
+name: "End-to-End Analysis Pipeline"
+version: "1.0"
+description: "Multi-step workflow demonstrating DAG orchestration with parallel execution"
+
+steps:
+  - id: "analyze"
+    name: "Requirement Analysis"
+    agent_type: "analyzer"
+    input: "{{.input}}"
+    timeout: 30s
+
+  - id: "recommend"
+    name: "Solution Recommendation"
+    agent_type: "recommender"
+    depends_on: ["analyze"]
+    input: |
+      Based on analysis: {{.analyze}}
+      Please provide concrete recommendations.
+    timeout: 45s
+
+  - id: "optimize"
+    name: "Optimization Suggestions"
+    agent_type: "recommender"
+    depends_on: ["analyze"]
+    input: |
+      Based on analysis: {{.analyze}}
+      Please identify optimization opportunities.
+    timeout: 45s
+
+  - id: "summary"
+    name: "Final Summary"
+    agent_type: "analyzer"
+    depends_on: ["recommend", "optimize"]
+    input: |
+      Recommendations: {{.recommend}}
+      Optimizations: {{.optimize}}
+      Please generate a comprehensive summary.
+    timeout: 30s
+
+variables:
+  domain: "general"
+  output_format: "detailed"

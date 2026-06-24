@@ -1,5 +1,3 @@
-// package graph - tests for node implementations.
-
 package graph
 
 import (
@@ -8,12 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/agents/base"
-	"goagentx/internal/core/models"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// mockTool is a simple mock tool for testing.
 type mockTool struct {
 	name        string
 	description string
@@ -46,7 +43,6 @@ func (m *mockTool) Parameters() *core.ParameterSchema {
 	}
 }
 
-// mockAgent is a simple mock agent for testing.
 type mockAgent struct {
 	id        string
 	agentType models.AgentType
@@ -77,7 +73,6 @@ func (m *mockAgent) Process(ctx context.Context, input any) (any, error) {
 	return m.processFn(ctx, input)
 }
 
-// ProcessStream handles input and returns a stream of events.
 func (m *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	result, err := m.Process(ctx, input)
 	ch := make(chan base.AgentEvent, 1)
@@ -88,17 +83,20 @@ func (m *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.A
 
 func TestFuncNode(t *testing.T) {
 	called := false
-	node := NewFuncNode("test", func(ctx context.Context, state *State) error {
+	node, err := NewFuncNode("test", func(ctx context.Context, state *State) error {
 		called = true
 		return nil
 	})
+	if err != nil {
+		t.Fatalf("NewFuncNode failed: %v", err)
+	}
 
 	if node.ID() != "test" {
 		t.Errorf("expected ID test, got %s", node.ID())
 	}
 
 	state := NewState()
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -110,12 +108,15 @@ func TestFuncNode(t *testing.T) {
 
 func TestFuncNodeWithError(t *testing.T) {
 	expectedErr := errors.New("test error")
-	node := NewFuncNode("test", func(ctx context.Context, state *State) error {
+	node, err := NewFuncNode("test", func(ctx context.Context, state *State) error {
 		return expectedErr
 	})
+	if err != nil {
+		t.Fatalf("NewFuncNode failed: %v", err)
+	}
 
 	state := NewState()
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -125,7 +126,7 @@ func TestFuncNodeWithError(t *testing.T) {
 }
 
 func TestFuncNodeWithTimeout(t *testing.T) {
-	node := NewFuncNode("test", func(ctx context.Context, state *State) error {
+	node, err := NewFuncNode("test", func(ctx context.Context, state *State) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -133,12 +134,15 @@ func TestFuncNodeWithTimeout(t *testing.T) {
 			return nil
 		}
 	})
+	if err != nil {
+		t.Fatalf("NewFuncNode failed: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	state := NewState()
-	err := node.Execute(ctx, state)
+	err = node.Execute(ctx, state)
 	if err == nil {
 		t.Error("expected timeout error")
 	}
@@ -158,7 +162,10 @@ func TestToolNode(t *testing.T) {
 		},
 	}
 
-	node := NewToolNode(tool)
+	node, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
 
 	if node.ID() != "test-tool" {
 		t.Errorf("expected ID test-tool, got %s", node.ID())
@@ -166,7 +173,7 @@ func TestToolNode(t *testing.T) {
 
 	state := NewState()
 	state.Set("input", "test")
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -175,7 +182,6 @@ func TestToolNode(t *testing.T) {
 		t.Error("expected tool to be called")
 	}
 
-	// Check that result is stored with node prefix
 	val, ok := state.Get("node.test-tool")
 	if !ok {
 		t.Error("expected node.test-tool in state")
@@ -195,9 +201,12 @@ func TestToolNodeWithError(t *testing.T) {
 		},
 	}
 
-	node := NewToolNode(tool)
+	node, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
 	state := NewState()
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -220,12 +229,16 @@ func TestToolNodeWithTimeout(t *testing.T) {
 		},
 	}
 
-	node := NewToolNode(tool)
+	node, err := NewToolNode(tool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	state := NewState()
-	err := node.Execute(ctx, state)
+	err = node.Execute(ctx, state)
 	if err == nil {
 		t.Error("expected timeout error")
 	}
@@ -242,7 +255,10 @@ func TestAgentNode(t *testing.T) {
 		},
 	}
 
-	node := NewAgentNode(agent)
+	node, err := NewAgentNode(agent)
+	if err != nil {
+		t.Fatalf("NewAgentNode failed: %v", err)
+	}
 
 	if node.ID() != "test-agent" {
 		t.Errorf("expected ID test-agent, got %s", node.ID())
@@ -250,7 +266,7 @@ func TestAgentNode(t *testing.T) {
 
 	state := NewState()
 	state.Set("input", "test")
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -259,7 +275,6 @@ func TestAgentNode(t *testing.T) {
 		t.Error("expected agent to be called")
 	}
 
-	// Check that result is stored with node prefix
 	val, ok := state.Get("node.test-agent")
 	if !ok {
 		t.Error("expected node.test-agent in state")
@@ -279,10 +294,14 @@ func TestAgentNodeWithError(t *testing.T) {
 		},
 	}
 
-	node := NewAgentNode(agent)
+	node, err := NewAgentNode(agent)
+	if err != nil {
+		t.Fatalf("NewAgentNode failed: %v", err)
+	}
+
 	state := NewState()
 	state.Set("input", "test input")
-	err := node.Execute(context.Background(), state)
+	err = node.Execute(context.Background(), state)
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -305,35 +324,31 @@ func TestAgentNodeWithTimeout(t *testing.T) {
 		},
 	}
 
-	node := NewAgentNode(agent)
+	node, err := NewAgentNode(agent)
+	if err != nil {
+		t.Fatalf("NewAgentNode failed: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	state := NewState()
-	err := node.Execute(ctx, state)
+	err = node.Execute(ctx, state)
 	if err == nil {
 		t.Error("expected timeout error")
 	}
 }
 
 func TestNodeNilTool(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil tool")
-		}
-	}()
-
-	// This should panic because NewToolNode receives nil
-	NewToolNode(nil)
+	_, err := NewToolNode(nil)
+	if err == nil {
+		t.Error("expected error for nil tool")
+	}
 }
 
 func TestNodeNilAgent(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil agent")
-		}
-	}()
-
-	// This should panic because NewAgentNode receives nil
-	NewAgentNode(nil)
+	_, err := NewAgentNode(nil)
+	if err == nil {
+		t.Error("expected error for nil agent")
+	}
 }

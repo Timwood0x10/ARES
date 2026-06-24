@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"sync"
 
-	apperrors "goagentx/internal/core/errors"
-	"goagentx/internal/core/models"
-	"goagentx/internal/errors"
-	"goagentx/internal/protocol/ahp"
+	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -37,12 +37,27 @@ type taskDispatcher struct {
 }
 
 // NewTaskDispatcher creates a new TaskDispatcher.
-func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) TaskDispatcher {
+//
+// Args:
+//
+//	agentRegistry - mapping from agent type to address, must not be nil.
+//	maxParallel - maximum number of parallel task dispatches; uses default if <= 0.
+//	timeout - dispatch timeout in seconds; uses default if <= 0.
+//	sender - optional message sender for distributed deployment; may be nil for local-only mode.
+//
+// Returns:
+//
+//	dispatcher - a new TaskDispatcher instance.
+//	err - validation error if agentRegistry is nil.
+func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) (TaskDispatcher, error) {
+	if agentRegistry == nil {
+		return nil, errors.New("task dispatcher: agent registry cannot be nil")
+	}
 	if maxParallel <= 0 {
-		maxParallel = 10
+		maxParallel = DefaultMaxParallel
 	}
 	if timeout <= 0 {
-		timeout = 300
+		timeout = DefaultDispatcherTimeoutSeconds
 	}
 	d := &taskDispatcher{
 		agentRegistry: agentRegistry,
@@ -51,7 +66,10 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 		maxParallel:   maxParallel,
 		timeout:       timeout,
 	}
-	return d
+	slog.Debug("TaskDispatcher created",
+		"max_parallel", maxParallel, "timeout", timeout,
+		"has_sender", sender != nil)
+	return d, nil
 }
 
 // RegisterExecutor registers an executor function for a specific agent type.

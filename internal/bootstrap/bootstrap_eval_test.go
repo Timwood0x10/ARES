@@ -4,16 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"goagentx/internal/eval"
-	"goagentx/internal/llm"
+	"github.com/Timwood0x10/ares/internal/eval"
+	"github.com/Timwood0x10/ares/internal/llm"
 )
-
-// mockLLMClient is a minimal llm.Client-like struct that satisfies eval.LLMClient
-// for testing SetupEvalSystem without requiring a real LLM backend.
-// We use *llm.Client directly since SetupEvalSystem accepts concrete type.
-type mockLLMClient struct {
-	*llm.Client
-}
 
 // newTestLLMClient creates a minimal *llm.Client for testing.
 // It uses Ollama provider pointing to localhost; no real calls are made during

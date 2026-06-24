@@ -361,13 +361,13 @@ func TestMemoryEventStore_Close_MultipleTimes(t *testing.T) {
 	_, ok := <-ch
 	assert.False(t, ok, "channel should be closed after first Close")
 
-	// Second close is a no-op, returns nil.
+	// Second close returns ErrEventStoreClosed (idempotent, already closed).
 	err = store.Close()
-	assert.NoError(t, err, "second Close should be a no-op")
+	assert.ErrorIs(t, err, ErrEventStoreClosed, "second Close should return ErrEventStoreClosed")
 
-	// Third close is still a no-op.
+	// Third close still returns ErrEventStoreClosed.
 	err = store.Close()
-	assert.NoError(t, err, "third Close should be a no-op")
+	assert.ErrorIs(t, err, ErrEventStoreClosed, "third Close should return ErrEventStoreClosed")
 
 	// Operations still fail after repeated closes.
 	err = store.Append(ctx, "s1", []*Event{{Type: EventAgentStarted}}, 0)

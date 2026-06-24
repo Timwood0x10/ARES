@@ -1,6 +1,6 @@
 # Quant Multi-Agent Demo
 
-A self-healing quantitative multi-agent system built on GoAgentX. Demonstrates multi-factor stock selection with automatic fault recovery.
+A self-healing quantitative multi-agent system built on ares. Demonstrates multi-factor stock selection with automatic fault recovery.
 
 ## Architecture
 

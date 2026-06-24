@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 func TestNewEventBridge(t *testing.T) {

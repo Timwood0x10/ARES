@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -68,7 +69,11 @@ func (f *YahooFeed) fetchCSV(ticker string, start, end time.Time) ([]Candle, err
 	if err != nil {
 		return nil, fmt.Errorf("http: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)

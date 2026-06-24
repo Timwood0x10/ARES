@@ -6,10 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"goagentx/internal/errors"
-	"goagentx/internal/tools/resources/builtin"
-	"goagentx/internal/tools/resources/core"
-	"goagentx/internal/tools/resources/formatter"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/formatter"
 )
 
 // AgentToolConfig defines tool configuration for an agent.
@@ -233,17 +231,6 @@ type AgentCapabilityExport struct {
 // String returns a string representation of the capability export.
 func (ace *AgentCapabilityExport) String() string {
 	return fmt.Sprintf("Agent %s has %d tools: %v", ace.AgentName, ace.ToolCount, ace.Tools)
-}
-
-// RegisterBuiltinToolsForAgent registers all builtin tools for an agent.
-// This is a convenience function that should be called during agent initialization.
-func RegisterBuiltinToolsForAgent() error {
-	if err := builtin.RegisterGeneralTools(); err != nil {
-		return errors.Wrap(err, "failed to register general tools")
-	}
-
-	slog.Info("Builtin tools registered for agent")
-	return nil
 }
 
 // CreateAgentToolConfigs provides predefined tool configurations for common agent types.

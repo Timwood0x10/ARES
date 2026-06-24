@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // coreMigrationStatements contains the DDL for core application tables.

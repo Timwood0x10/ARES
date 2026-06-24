@@ -1,5 +1,5 @@
 # Quant Trading Agent Configuration.
-# Defines 8 quant agents, following the GoAgentX YAML configuration style.
+# Defines 8 quant agents, following the ares YAML configuration style.
 
 agents:
   # ── Analyst team (parallel execution) ──

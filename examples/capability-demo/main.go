@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/config"
-	"goagentx/internal/llm"
-	"goagentx/internal/tools/resources/agent"
-	"goagentx/internal/tools/resources/builtin"
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
+	"github.com/Timwood0x10/ares/internal/tools/resources/builtin"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // CapabilityDemoAgent demonstrates the Agent Capability Engine (ACE) workflow.

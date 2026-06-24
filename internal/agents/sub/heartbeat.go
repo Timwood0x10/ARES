@@ -2,10 +2,11 @@ package sub
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
-	"goagentx/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // heartbeatSender sends heartbeat to leader.
@@ -22,6 +23,9 @@ type heartbeatSender struct {
 func NewHeartbeatSender(agentID string, interval time.Duration, hbMon *ahp.HeartbeatMonitor) *heartbeatSender {
 	if interval <= 0 {
 		interval = 30 * time.Second
+	}
+	if hbMon == nil {
+		slog.Warn("NewHeartbeatSender: nil heartbeat monitor")
 	}
 	return &heartbeatSender{
 		agentID:      agentID,

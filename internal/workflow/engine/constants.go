@@ -33,4 +33,13 @@ const (
 
 	// DefaultMaxDependencies is the default maximum number of dependencies per step.
 	DefaultMaxDependencies = 10
+
+	// DefaultExecutorStepTimeout is the default step-level timeout used by the Executor.
+	DefaultExecutorStepTimeout = 5 * time.Minute
+
+	// DefaultDeadlockTimeout is the default time to wait before declaring a deadlock.
+	DefaultDeadlockTimeout = 5 * time.Second
+
+	// DefaultRecoveryPollInterval is the default interval to poll for recovery signals.
+	DefaultRecoveryPollInterval = 10 * time.Millisecond
 )

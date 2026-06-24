@@ -16,6 +16,16 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	sseEventPrefix       = "event:"
+	sseDataPrefix        = "data:"
+	sseEventTypeEndpoint = "endpoint"
+	sseEventTypeMessage  = "message"
+
+	defaultSSETimeout       = 30 * time.Second
+	defaultSSEMessageBuffer = 64
+)
+
 // SSEConfig holds configuration for an SSE-based MCP transport.
 type SSEConfig struct {
 	URL     string            `yaml:"url" json:"url"`
@@ -42,7 +52,7 @@ type SSETransport struct {
 func NewSSETransport(config SSEConfig) *SSETransport {
 	timeout := config.Timeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = defaultSSETimeout
 	}
 
 	return &SSETransport{
@@ -50,7 +60,7 @@ func NewSSETransport(config SSEConfig) *SSETransport {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		msgCh:   make(chan *JSONRPCMessage, 64),
+		msgCh:   make(chan *JSONRPCMessage, defaultSSEMessageBuffer),
 		postURL: config.URL, // Set default POST URL; may be overridden by "endpoint" SSE event.
 	}
 }
@@ -111,11 +121,14 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	t.respBody = resp.Body
 	t.mu.Unlock()
 
-	// Ensure body is released when receiveLoop returns for any reason.
-	defer func() { _ = resp.Body.Close() }()
-
-	// POST URL defaults to config.URL (set in constructor). If the SSE endpoint
-	// returns an "endpoint" event, handleSSEEvent updates it under t.mu.
+	// Ensure body is closed exactly once when receiveLoop returns.
+	// Close() now only cancels the context (no direct Body close),
+	// so this defer is the sole cleanup point for resp.Body.
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	reader := bufio.NewReader(resp.Body)
 	var eventType string
@@ -143,10 +156,10 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 			continue
 		}
 
-		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
-			dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if strings.HasPrefix(line, sseEventPrefix) {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, sseEventPrefix))
+		} else if strings.HasPrefix(line, sseDataPrefix) {
+			dataStr := strings.TrimSpace(strings.TrimPrefix(line, sseDataPrefix))
 			if dataBuilder.Len() > 0 {
 				dataBuilder.WriteByte('\n')
 			}
@@ -158,12 +171,12 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 // handleSSEEvent processes a single SSE event.
 func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data string) {
 	switch eventType {
-	case "endpoint":
+	case sseEventTypeEndpoint:
 		// Server provides the POST URL for sending messages.
 		t.mu.Lock()
 		t.postURL = strings.TrimSpace(data)
 		t.mu.Unlock()
-	case "message":
+	case sseEventTypeMessage:
 		var msg JSONRPCMessage
 		if err := json.Unmarshal([]byte(data), &msg); err != nil {
 			return
@@ -214,7 +227,11 @@ func (t *SSETransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if err != nil {
 		return fmt.Errorf("post message: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
@@ -249,16 +266,14 @@ func (t *SSETransport) Close() error {
 	if t.cancel != nil {
 		t.cancel()
 	}
-	// Close response body to interrupt blocking ReadString in receiveLoop.
-	if t.respBody != nil {
-		_ = t.respBody.Close()
-	}
 	t.mu.Unlock()
 
 	// Wait for the receive loop outside the lock to avoid deadlock:
 	// receiveLoop -> handleSSEEvent may need t.mu to update postURL.
 	// The channel is closed inside the errgroup goroutine after receiveLoop returns,
 	// so there is no race between handleSSEEvent sending and close.
+	// Context cancellation unblocks the blocking ReadString in receiveLoop,
+	// and the deferred resp.Body.Close() inside receiveLoop releases the resource.
 	if err := t.eg.Wait(); err != nil {
 		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
 	}

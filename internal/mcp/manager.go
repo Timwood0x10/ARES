@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"goagentx/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // MCPServerConfig holds configuration for a single MCP server.
@@ -52,12 +52,21 @@ type managedClient struct {
 }
 
 // NewMCPManager creates a new MCPManager.
-func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) *MCPManager {
+// Args:
+// config - manager configuration, may be nil for lazy initialization.
+// registry - tool registry for registering MCP server tools, must not be nil.
+// Returns:
+// manager - created MCPManager instance.
+// err - error if registry is nil.
+func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) (*MCPManager, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("mcp: registry is required")
+	}
 	return &MCPManager{
 		clients:  make(map[string]*managedClient),
 		registry: registry,
 		config:   config,
-	}
+	}, nil
 }
 
 // Start connects to all enabled auto_start servers.
@@ -96,7 +105,16 @@ func (m *MCPManager) Stop(_ context.Context) error {
 }
 
 // ConnectServer connects to a named MCP server.
+// Args:
+// ctx - context for cancellation and timeout.
+// name - server name as defined in configuration, must not be empty.
+// Returns:
+// error - connection, transport, or tool registration error.
 func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("server name cannot be empty")
+	}
+
 	m.mu.RLock()
 	sc := m.findServerConfig(name)
 	m.mu.RUnlock()
@@ -237,6 +255,10 @@ func (m *MCPManager) GetClient(serverName string) (*MCPClient, bool) {
 
 // registerTools creates MCPTool instances and registers them in the registry.
 func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
+	if mc.client == nil {
+		return nil, fmt.Errorf("mcp: client is nil for server %s", mc.config.Name)
+	}
+
 	tools := mc.client.ToolCount()
 	if tools == 0 {
 		return nil, nil

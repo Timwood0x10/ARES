@@ -11,8 +11,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "goagentx/internal/core/errors"
-	"goagentx/internal/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Pool represents a database connection pool with "get usage release" pattern.
@@ -76,7 +76,9 @@ func (p *Pool) Release(conn *sql.Conn) {
 		return
 	}
 
-	_ = conn.Close()
+	if err := conn.Close(); err != nil {
+		slog.Warn("pool: close connection failed", "error", err)
+	}
 }
 
 // WithConnection executes a function with a connection from the pool.

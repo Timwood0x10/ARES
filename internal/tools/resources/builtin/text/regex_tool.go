@@ -3,9 +3,10 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
 	"regexp"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // RegexTool provides regex operations for text processing.
@@ -196,3 +197,5 @@ func (t *RegexTool) replace(ctx context.Context, text string, re *regexp.Regexp,
 		"replacements": matchCount,
 	}), nil
 }
+
+func (t *RegexTool) IsIdempotent() bool { return true }

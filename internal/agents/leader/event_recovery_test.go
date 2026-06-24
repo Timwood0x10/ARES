@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"goagentx/internal/events"
+	"github.com/Timwood0x10/ares/internal/events"
 )
 
 func TestNewEventRecovery_NilStore(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"goagentx/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

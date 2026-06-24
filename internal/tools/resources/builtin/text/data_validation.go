@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goagentx/internal/tools/resources/base"
-	"goagentx/internal/tools/resources/core"
 	"regexp"
 	"strings"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // DataValidation provides data validation operations.
@@ -76,7 +77,10 @@ func (t *DataValidation) Execute(ctx context.Context, params map[string]interfac
 func (t *DataValidation) validateJSON(ctx context.Context, data string) (core.Result, error) {
 	var js interface{}
 	if err := json.Unmarshal([]byte(data), &js); err != nil {
-		return core.NewErrorResult(fmt.Sprintf("invalid JSON: %v", err)), nil
+		return core.NewResult(false, map[string]interface{}{
+			"valid":  false,
+			"reason": fmt.Sprintf("invalid JSON: %v", err),
+		}), nil
 	}
 
 	// Check if it's an object
@@ -116,7 +120,11 @@ func (t *DataValidation) validateEmail(ctx context.Context, data string) (core.R
 	// Additional checks
 	parts := strings.Split(data, "@")
 	if len(parts) != 2 {
-		return core.NewErrorResult("invalid email format"), nil
+		return core.NewResult(false, map[string]interface{}{
+			"valid":  false,
+			"reason": "invalid email format",
+			"email":  data,
+		}), nil
 	}
 
 	localPart := parts[0]
@@ -182,7 +190,11 @@ func (t *DataValidation) validateURL(ctx context.Context, data string) (core.Res
 	// Extract components
 	parts := strings.SplitN(data, "://", 2)
 	if len(parts) != 2 {
-		return core.NewErrorResult("invalid URL format"), nil
+		return core.NewResult(false, map[string]interface{}{
+			"valid":  false,
+			"reason": "invalid URL format",
+			"url":    data,
+		}), nil
 	}
 
 	scheme := parts[0]
@@ -292,6 +304,8 @@ func (t *DataValidation) validateSchema(ctx context.Context, data, schema string
 		"valid": true,
 	}), nil
 }
+
+func (t *DataValidation) IsIdempotent() bool { return true }
 
 // validateType checks if a value matches the expected type.
 func (t *DataValidation) validateType(value interface{}, expectedType string) bool {
