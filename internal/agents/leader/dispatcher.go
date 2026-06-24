@@ -37,6 +37,18 @@ type taskDispatcher struct {
 }
 
 // NewTaskDispatcher creates a new TaskDispatcher.
+//
+// Args:
+//
+//	agentRegistry - mapping from agent type to address, must not be nil.
+//	maxParallel - maximum number of parallel task dispatches; uses default if <= 0.
+//	timeout - dispatch timeout in seconds; uses default if <= 0.
+//	sender - optional message sender for distributed deployment; may be nil for local-only mode.
+//
+// Returns:
+//
+//	dispatcher - a new TaskDispatcher instance.
+//	err - validation error if agentRegistry is nil.
 func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) (TaskDispatcher, error) {
 	if agentRegistry == nil {
 		return nil, errors.New("task dispatcher: agent registry cannot be nil")
@@ -54,6 +66,9 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 		maxParallel:   maxParallel,
 		timeout:       timeout,
 	}
+	slog.Debug("TaskDispatcher created",
+		"max_parallel", maxParallel, "timeout", timeout,
+		"has_sender", sender != nil)
 	return d, nil
 }
 

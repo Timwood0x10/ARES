@@ -954,15 +954,19 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, agent := range p.Agents {
+	for i, agent := range p.Agents {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("scorer panicked for agent",
+					slog.Warn("scorer panicked for agent, marking as unevaluated",
+						"generation", p.Generation,
+						"agent_index", i,
 						"agent_id", agent.ID,
-						"panic", r,
+						"parent_id", agent.ParentID,
+						"mutation_type", agent.StrategyMutationType,
+						"panic_value", r,
 					)
-					agent.Score = ScoreUnevaluated // Mark as unevaluated so guard catches it
+					agent.Score = ScoreUnevaluated
 				}
 			}()
 			agent.Score = scorer(agent)
@@ -973,7 +977,19 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 }
 
 // updateBestEverLocked checks all evaluated agents against the current bestEver
-// and updates it if a higher score is found. Caller must hold p.mu write lock.
+// and updates it if a higher score is found.
+//
+// Concurrency safety contract:
+//   - Caller MUST hold p.mu write lock (not just RLock). This is enforced by
+//     all current call sites: ScoreAgents() line ~972, doEvolve() lines ~759/806.
+//     The write lock is required because this method mutates p.bestEver and
+//     p.bestEverGeneration.
+//   - The method stores a.Clone() (deep copy) into p.bestEver, ensuring the
+//     returned reference from BestStrategy() can never alias an agent in
+//     p.Agents. This prevents callers from corrupting population state.
+//
+// This method intentionally skips unevaluated agents (ScoreUnevaluated) so that
+// panic-recovered or yet-to-be-scored agents never become bestEver.
 func (p *Population) updateBestEverLocked() {
 	for _, a := range p.Agents {
 		if !IsScoreEvaluated(a.Score) {

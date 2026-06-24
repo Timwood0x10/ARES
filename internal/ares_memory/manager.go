@@ -294,11 +294,23 @@ func (c *MemoryConfig) validate() error {
 	if c.SessionTTL <= 0 {
 		return fmt.Errorf("SessionTTL must be positive, got %v", c.SessionTTL)
 	}
+	if c.MaxTasks <= 0 {
+		return fmt.Errorf("MaxTasks must be positive, got %d", c.MaxTasks)
+	}
 	if c.TaskTTL <= 0 {
 		return fmt.Errorf("TaskTTL must be positive, got %v", c.TaskTTL)
 	}
+	if c.MaxDistilledTasks <= 0 {
+		return fmt.Errorf("MaxDistilledTasks must be positive, got %d", c.MaxDistilledTasks)
+	}
+	if c.DistilledTaskTTL <= 0 {
+		return fmt.Errorf("DistilledTaskTTL must be positive, got %v", c.DistilledTaskTTL)
+	}
 	if c.MaxHistory <= 0 {
 		return fmt.Errorf("MaxHistory must be positive, got %d", c.MaxHistory)
+	}
+	if c.VectorDim <= 0 {
+		return fmt.Errorf("VectorDim must be positive, got %d", c.VectorDim)
 	}
 	return nil
 }
@@ -315,6 +327,7 @@ func DefaultMemoryConfig() *MemoryConfig {
 		MaxDistilledTasks:     5000,
 		SessionTTL:            24 * time.Hour,
 		TaskTTL:               7 * 24 * time.Hour,
+		DistilledTaskTTL:      30 * 24 * time.Hour,
 		VectorDim:             128,
 		EnablePostgres:        false,
 		UseStructuredCleaning: false,

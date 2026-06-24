@@ -4,6 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
@@ -67,6 +70,9 @@ func NewCompactableEventStore(
 	return c, nil
 }
 
+// compactionTimeout is the maximum duration allowed for a single compaction check.
+const compactionTimeout = 30 * time.Second
+
 // Append writes events to the store and then checks if compaction is needed.
 func (s *CompactableEventStore) Append(
 	ctx context.Context,
@@ -79,8 +85,20 @@ func (s *CompactableEventStore) Append(
 		return err
 	}
 
-	// Detach from caller's context to prevent premature cancellation of compaction.
-	go s.maybeCompact(context.WithoutCancel(ctx), streamID)
+	// Launch compaction check in background with a timeout context to prevent
+	// runaway goroutines. Uses errgroup per coding standard (no bare go).
+	compactCtx, cancel := context.WithTimeout(context.Background(), compactionTimeout)
+	g, gCtx := errgroup.WithContext(compactCtx)
+	g.Go(func() error {
+		s.maybeCompact(gCtx, streamID)
+		return nil
+	})
+
+	// Fire-and-forget: wait for group in background so caller is not blocked.
+	go func() {
+		_ = g.Wait()
+		cancel()
+	}()
 
 	return nil
 }
@@ -99,6 +117,9 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 	}
 
 	// Underlying store returned empty — check summaries as fallback.
+	if s.compactor == nil || s.compactor.repo == nil {
+		return events, nil
+	}
 	summaries, summaryErr := s.compactor.repo.FindByStreamID(ctx, streamID)
 	if summaryErr != nil || len(summaries) == 0 {
 		// No summaries either, return the original empty result.
@@ -133,6 +154,9 @@ const compactionCheckDivisor = 4
 // maybeCompact checks if a stream needs compaction and runs it if so.
 // Uses debouncing to avoid redundant checks on every Append.
 func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID string) {
+	if s.compactor == nil {
+		return
+	}
 	// Get version outside the lock to avoid holding mu during I/O.
 	version, err := s.StreamVersion(ctx, streamID)
 	if err != nil {
@@ -160,7 +184,7 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 		return
 	}
 
-	if didCompact && s.trimStore != nil && s.compactor.config.EnableTrimming {
+	if didCompact && s.trimStore != nil && s.compactor.config.EnableTrimming && s.compactor.repo != nil {
 		summaries, err := s.compactor.repo.FindByStreamID(ctx, streamID)
 		if err == nil && len(summaries) > 0 {
 			latest := summaries[len(summaries)-1]
@@ -190,11 +214,17 @@ func (s *CompactableEventStore) CleanupSummaries(ctx context.Context) (int64, er
 
 // GetSummariesForStream returns all summaries for a given stream.
 func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, streamID string) ([]*EventSummary, error) {
+	if s.compactor == nil || s.compactor.repo == nil {
+		return nil, nil
+	}
 	return s.compactor.repo.FindByStreamID(ctx, streamID)
 }
 
 // GetSummariesForAgent returns all summaries for an agent across all tasks.
 func (s *CompactableEventStore) GetSummariesForAgent(ctx context.Context, agentID string) ([]*EventSummary, error) {
+	if s.compactor == nil || s.compactor.repo == nil {
+		return nil, nil
+	}
 	return s.compactor.repo.FindByAgentID(ctx, agentID)
 }
 

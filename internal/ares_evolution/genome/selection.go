@@ -79,6 +79,10 @@ func NewTournamentSelection(opts ...TournamentOption) (*TournamentSelection, err
 		}
 	}
 
+	if err := ts.Validate(); err != nil {
+		return nil, fmt.Errorf("validate tournament selection: %w", err)
+	}
+
 	return ts, nil
 }
 
@@ -122,6 +126,30 @@ func WithTournamentSeed(seed int64) TournamentOption {
 		ts.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
 		return nil
 	}
+}
+
+// Validate checks the internal configuration state of TournamentSelection
+// and returns an error if any invariant is violated. This is a defensive
+// check that complements option-level validation in WithTournamentSize().
+//
+// Validated invariants:
+//   - tournamentSize must be >= 2 (tournament requires at least 2 competitors).
+//   - rng must not be nil (required for random competitor selection).
+//
+// Returns:
+//
+//	error - non-nil if configuration is invalid, nil if all invariants hold.
+func (ts *TournamentSelection) Validate() error {
+	if ts == nil {
+		return fmt.Errorf("tournament selection instance is nil")
+	}
+	if ts.tournamentSize < 2 {
+		return fmt.Errorf("%w: got %d", ErrInvalidTournamentSize, ts.tournamentSize)
+	}
+	if ts.rng == nil {
+		return fmt.Errorf("tournament selection: rng must not be nil, ensure WithTournamentSeed was called or construction succeeded")
+	}
+	return nil
 }
 
 // Select runs n tournaments and returns the winners.

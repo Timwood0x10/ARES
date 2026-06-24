@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	stderrors "errors" // stdlib errors.Join for collecting multiple errors
+
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
@@ -114,13 +116,14 @@ type leaderAgent struct {
 	lastInteractionTime time.Time
 
 	// Lifecycle management
-	stopCh       chan struct{}   // Channel to signal shutdown
-	distillMu    sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
-	distillWg    sync.WaitGroup  // WaitGroup for distillation goroutines
-	distillEg    *errgroup.Group // Errgroup for distillation goroutines
-	streamEg     *errgroup.Group // Errgroup for streaming pipeline goroutines
-	processingMu sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
-	cleanupOnce  sync.Once       // Ensure cleanup runs only once
+	stopCh          chan struct{}   // Channel to signal shutdown
+	distillMu       sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
+	distillWg       sync.WaitGroup  // WaitGroup for distillation goroutines
+	distillEg       *errgroup.Group // Errgroup for distillation goroutines
+	streamEg        *errgroup.Group // Errgroup for streaming pipeline goroutines
+	processingMu    sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
+	cleanupOnce     sync.Once       // Ensure cleanup runs only once
+	sessionInitOnce sync.Once       // Ensure session initialization runs only once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.
@@ -192,6 +195,9 @@ func New(
 	}
 	if aggregator == nil {
 		return nil, errors.New("leader agent: aggregator cannot be nil")
+	}
+	if memMgr == nil {
+		return nil, errors.New("leader agent: memory manager cannot be nil")
 	}
 	if cfg == nil {
 		cfg = DefaultLeaderAgentConfig()
@@ -330,7 +336,15 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 }
 
 // Stop stops the leader agent and cleans up resources.
-func (a *leaderAgent) Stop(ctx context.Context) error {
+//
+// Args:
+//
+//	ctx - context for cancellation during shutdown.
+//
+// Returns:
+//
+//	err - joined errors from distillation/streaming goroutines, or status error.
+func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
@@ -345,19 +359,26 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 		close(a.stopCh)
 		a.distillMu.Unlock()
 
-		// Wait for background goroutines to complete.
+		// Wait for background goroutines to complete and collect their errors.
 		a.distillWg.Wait()
+
+		var errs []error
 		if a.distillEg != nil {
 			if err := a.distillEg.Wait(); err != nil {
 				slog.Warn("Errors from distillation goroutines during shutdown",
 					"error", err)
+				errs = append(errs, fmt.Errorf("distillation: %w", err))
 			}
 		}
 		if a.streamEg != nil {
 			if err := a.streamEg.Wait(); err != nil {
 				slog.Warn("Errors from streaming goroutines during shutdown",
 					"error", err)
+				errs = append(errs, fmt.Errorf("streaming: %w", err))
 			}
+		}
+		if len(errs) > 0 {
+			retErr = stderrors.Join(errs...)
 		}
 
 		// Cleanup heartbeat monitor if provided.
@@ -373,7 +394,7 @@ func (a *leaderAgent) Stop(ctx context.Context) error {
 	})
 
 	a.setStatus(models.AgentStatusOffline)
-	return nil
+	return retErr
 }
 
 // getUserID returns the configured user ID, defaulting to "default_user" if empty.
@@ -414,46 +435,51 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	a.mu.RUnlock()
 
 	if sessionID == "" {
-		recovered := false
-		if checkpoint != nil {
-			cp, err := checkpoint.GetLatest(ctx, leaderID)
-			if err != nil {
-				slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
-			} else if cp != nil && cp.SessionID != "" {
-				sessionID = cp.SessionID
-				recovered = true
-				slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
-			}
-		}
-		if !recovered {
-			newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
-			if err != nil {
-				slog.Warn("Failed to create session", "error", err)
-			} else {
-				sessionID = newSessionID
-			}
-		}
-		// Take write lock only to persist the sessionID.
-		if sessionID != "" {
-			a.mu.Lock()
-			a.sessionID = sessionID
-			a.mu.Unlock()
-
+		// Use sync.Once to ensure session is initialized exactly once, preventing
+		// race conditions where concurrent RestoreState/ReplayEvents could overwrite
+		// the sessionID between the DB call and the write lock acquisition.
+		a.sessionInitOnce.Do(func() {
+			recovered := false
 			if checkpoint != nil {
-				if err := checkpoint.Save(ctx, &LeaderCheckpoint{
-					LeaderID:  leaderID,
-					SessionID: sessionID,
-					Status:    "active",
-				}); err != nil {
-					slog.Warn("Failed to save checkpoint", "error", err)
+				cp, err := checkpoint.GetLatest(ctx, leaderID)
+				if err != nil {
+					slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
+				} else if cp != nil && cp.SessionID != "" {
+					sessionID = cp.SessionID
+					recovered = true
+					slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
 				}
 			}
+			if !recovered {
+				newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
+				if err != nil {
+					slog.Warn("Failed to create session", "error", err)
+				} else {
+					sessionID = newSessionID
+				}
+			}
+			// Persist the sessionID under write lock.
+			if sessionID != "" {
+				a.mu.Lock()
+				a.sessionID = sessionID
+				a.mu.Unlock()
 
-			a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
-				"session_id": sessionID,
-				"user_id":    a.getUserID(),
-			})
-		}
+				if checkpoint != nil {
+					if err := checkpoint.Save(ctx, &LeaderCheckpoint{
+						LeaderID:  leaderID,
+						SessionID: sessionID,
+						Status:    "active",
+					}); err != nil {
+						slog.Warn("Failed to save checkpoint", "error", err)
+					}
+				}
+
+				a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+					"session_id": sessionID,
+					"user_id":    a.getUserID(),
+				})
+			} // end if sessionID != ""
+		}) // end sessionInitOnce.Do
 	}
 
 	// Record user message.
@@ -547,7 +573,7 @@ func (a *leaderAgent) updateSnapshotState(taskID string) {
 // finalizeMemory updates task output, records assistant message, and triggers
 // background distillation. Must be called after aggregation succeeds.
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-	if a.memoryManager == nil || result == nil {
+	if a.memoryManager == nil || result == nil || sessionID == "" {
 		return
 	}
 

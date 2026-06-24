@@ -121,15 +121,14 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	t.respBody = resp.Body
 	t.mu.Unlock()
 
-	// Ensure body is released when receiveLoop returns for any reason.
+	// Ensure body is closed exactly once when receiveLoop returns.
+	// Close() now only cancels the context (no direct Body close),
+	// so this defer is the sole cleanup point for resp.Body.
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			slog.Warn("http: close response body failed", "error", err)
 		}
 	}()
-
-	// POST URL defaults to config.URL (set in constructor). If the SSE endpoint
-	// returns an "endpoint" event, handleSSEEvent updates it under t.mu.
 
 	reader := bufio.NewReader(resp.Body)
 	var eventType string
@@ -267,16 +266,14 @@ func (t *SSETransport) Close() error {
 	if t.cancel != nil {
 		t.cancel()
 	}
-	// Close response body to interrupt blocking ReadString in receiveLoop.
-	if t.respBody != nil {
-		_ = t.respBody.Close()
-	}
 	t.mu.Unlock()
 
 	// Wait for the receive loop outside the lock to avoid deadlock:
 	// receiveLoop -> handleSSEEvent may need t.mu to update postURL.
 	// The channel is closed inside the errgroup goroutine after receiveLoop returns,
 	// so there is no race between handleSSEEvent sending and close.
+	// Context cancellation unblocks the blocking ReadString in receiveLoop,
+	// and the deferred resp.Body.Close() inside receiveLoop releases the resource.
 	if err := t.eg.Wait(); err != nil {
 		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
 	}

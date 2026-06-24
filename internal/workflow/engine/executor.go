@@ -20,6 +20,7 @@ import (
 // executor-scoped, ensuring thread-safety and preventing data races
 // when multiple workflows execute concurrently.
 type Executor struct {
+	mu          sync.RWMutex // protects hitlHandler and hitlStore during concurrent access
 	registry    *AgentRegistry
 	maxParallel int
 	stepTimeout time.Duration
@@ -38,12 +39,16 @@ func NewExecutor(registry *AgentRegistry) *Executor {
 
 // WithHitlHandler sets the interrupt handler for human-in-the-loop support.
 func (e *Executor) WithHitlHandler(handler InterruptHandler) *Executor {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.hitlHandler = handler
 	return e
 }
 
 // WithHitlStore sets the interrupt store for crash recovery.
 func (e *Executor) WithHitlStore(store InterruptStore) *Executor {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.hitlStore = store
 	return e
 }
@@ -76,6 +81,7 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 
 	// Create independent OutputStore for this execution to prevent concurrent data corruption
 	localOutputStore := NewOutputStore()
+	defer localOutputStore.Close()
 
 	resultChan := make(chan *StepResult, len(workflow.Steps))
 	errChan := make(chan error, 1)
@@ -88,6 +94,21 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 		e.runSteps(gctx, execution, workflow, executionOrder, initialInput, resultChan, errChan, localOutputStore)
 		return nil
 	})
+
+	// waitForDone waits for the runSteps goroutine to finish with a safety timeout
+	// to prevent indefinite blocking if runSteps gets stuck.
+	waitForDone := func() error {
+		timeout := time.NewTimer(DefaultWorkflowTimeout)
+		defer timeout.Stop()
+		select {
+		case <-done:
+			return nil
+		case <-timeout.C:
+			return fmt.Errorf("workflow execution timed out after %v", DefaultWorkflowTimeout)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	var stepResults []*StepResult
 	for i := 0; i < len(workflow.Steps); i++ {
@@ -108,8 +129,16 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 				execution.Status = WorkflowStatusFailed
 				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
-				// Wait for runSteps to finish before returning
-				<-done
+				if err := waitForDone(); err != nil {
+					return &WorkflowResult{
+						ExecutionID: execution.ID,
+						WorkflowID:  workflow.ID,
+						Status:      WorkflowStatusFailed,
+						Error:       result.Error,
+						Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+						Steps:       stepResults,
+					}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
+				}
 				return &WorkflowResult{
 					ExecutionID: execution.ID,
 					WorkflowID:  workflow.ID,
@@ -122,8 +151,15 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 		case err := <-errChan:
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
-			// Wait for runSteps to finish before returning
-			<-done
+			if waitErr := waitForDone(); waitErr != nil {
+				return &WorkflowResult{
+					ExecutionID: execution.ID,
+					WorkflowID:  workflow.ID,
+					Status:      WorkflowStatusFailed,
+					Error:       err.Error(),
+					Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+				}, err
+			}
 			return &WorkflowResult{
 				ExecutionID: execution.ID,
 				WorkflowID:  workflow.ID,
@@ -134,14 +170,24 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 		case <-ctx.Done():
 			execution.Status = WorkflowStatusCancelled
 			execution.FinishedAt = time.Now()
-			// Wait for runSteps to finish before returning
-			<-done
+			_ = waitForDone()
 			return nil, ctx.Err()
 		}
 	}
 
 	// Wait for runSteps to finish
-	<-done
+	if err := waitForDone(); err != nil {
+		execution.Status = WorkflowStatusFailed
+		execution.FinishedAt = time.Now()
+		return &WorkflowResult{
+			ExecutionID: execution.ID,
+			WorkflowID:  workflow.ID,
+			Status:      WorkflowStatusFailed,
+			Error:       err.Error(),
+			Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+			Steps:       stepResults,
+		}, err
+	}
 
 	execution.Status = WorkflowStatusCompleted
 	execution.FinishedAt = time.Now()
@@ -599,7 +645,12 @@ func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step
 	if step.Interrupt == nil {
 		return nil
 	}
-	if e.hitlHandler == nil {
+	e.mu.RLock()
+	handler := e.hitlHandler
+	store := e.hitlStore
+	e.mu.RUnlock()
+
+	if handler == nil {
 		return ErrInterruptHandlerNil
 	}
 
@@ -610,13 +661,13 @@ func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step
 	}
 
 	// Persist interrupt point for crash recovery if store is available.
-	if e.hitlStore != nil {
-		if err := e.hitlStore.Save(ctx, workflow.ID, point); err != nil {
+	if store != nil {
+		if err := store.Save(ctx, workflow.ID, point); err != nil {
 			return fmt.Errorf("save interrupt point: %w", err)
 		}
 	}
 
-	result, err := e.hitlHandler(ctx, point)
+	result, err := handler(ctx, point)
 	if err != nil {
 		return fmt.Errorf("interrupt handler: %w", err)
 	}
@@ -628,8 +679,8 @@ func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step
 	}
 
 	// Clean up the interrupt state after approval.
-	if e.hitlStore != nil {
-		if err := e.hitlStore.Delete(ctx, workflow.ID, step.ID); err != nil {
+	if store != nil {
+		if err := store.Delete(ctx, workflow.ID, step.ID); err != nil {
 			// Log but do not fail the step on cleanup error.
 			slog.Warn("failed to cleanup interrupt store", "error", err, "step_id", step.ID)
 		}

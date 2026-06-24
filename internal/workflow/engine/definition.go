@@ -51,6 +51,10 @@ func (p *DefinitionParser) Parse(ctx context.Context, r io.Reader) (*AgentDefini
 
 // ParseBytes parses an agent definition from bytes.
 func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*AgentDefinition, error) {
+	if len(content) == 0 {
+		return nil, errors.New("definition content is empty")
+	}
+
 	text := string(content)
 
 	def := &AgentDefinition{
@@ -63,8 +67,9 @@ func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*Age
 	if err != nil {
 		return nil, errors.Wrap(err, "extract name")
 	}
+	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("name field is required but empty")
+		return nil, errors.New("name field is required but empty or whitespace-only")
 	}
 	def.Name = name
 
@@ -72,8 +77,9 @@ func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*Age
 	if err != nil {
 		return nil, errors.Wrap(err, "extract type")
 	}
+	agentType = strings.TrimSpace(agentType)
 	if agentType == "" {
-		return nil, errors.New("type field is required but empty")
+		return nil, errors.New("type field is required but empty or whitespace-only")
 	}
 	def.Type = agentType
 

@@ -51,6 +51,35 @@ type Crossover struct {
 	promptMode       PromptCrossoverMode
 }
 
+// Validate checks the internal configuration state of the Crossover instance
+// and returns an error if any invariant is violated. This is a defensive check
+// intended for use after construction or deserialization, not as a replacement
+// for option-level validation in NewCrossover().
+//
+// Validated invariants:
+//   - rng must not be nil (required for reproducible parameter selection).
+//   - promptMode must be a recognized value (PromptInherit/PromptHalfSplit/PromptUniform).
+//
+// Returns:
+//
+//	error - non-nil if configuration is invalid, nil if all invariants hold.
+func (c *Crossover) Validate() error {
+	if c == nil {
+		return fmt.Errorf("%w: crossover instance is nil", ErrNilParent)
+	}
+	if c.rng == nil {
+		return fmt.Errorf("crossover: rng must not be nil, ensure WithSeed was called or NewCrossover succeeded")
+	}
+	switch c.promptMode {
+	case PromptInherit, PromptHalfSplit, PromptUniform:
+		// Valid modes.
+	default:
+		return fmt.Errorf("crossover: invalid prompt mode %d, must be one of PromptInherit(%d), PromptHalfSplit(%d), PromptUniform(%d)",
+			c.promptMode, PromptInherit, PromptHalfSplit, PromptUniform)
+	}
+	return nil
+}
+
 // NewCrossover creates a new crossover operator with default configuration.
 //
 // Default configuration:

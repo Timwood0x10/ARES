@@ -75,8 +75,19 @@ type taskPlanner struct {
 }
 
 // NewTaskPlanner creates a new TaskPlanner.
+//
+// Args:
+//
+//	maxTasks - maximum number of tasks to create; uses DefaultMaxTasks if <= 0.
+//	opts - optional planner configuration options.
+//
+// Returns:
+//
+//	planner - a new TaskPlanner instance.
 func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
+		slog.Warn("NewTaskPlanner: maxTasks <= 0, falling back to default",
+			"provided", maxTasks, "default", DefaultMaxTasks)
 		maxTasks = DefaultMaxTasks
 	}
 	p := &taskPlanner{
@@ -91,8 +102,20 @@ func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 }
 
 // NewTaskPlannerWithConfig creates a TaskPlanner with sub-agent configuration.
+//
+// Args:
+//
+//	maxTasks - maximum number of tasks to create; uses DefaultMaxTasks if <= 0.
+//	subAgents - list of sub-agent configurations for task dispatch.
+//	opts - optional planner configuration options.
+//
+// Returns:
+//
+//	planner - a new TaskPlanner instance.
 func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
+		slog.Warn("NewTaskPlannerWithConfig: maxTasks <= 0, falling back to default",
+			"provided", maxTasks, "default", DefaultMaxTasks)
 		maxTasks = DefaultMaxTasks
 	}
 	p := &taskPlanner{

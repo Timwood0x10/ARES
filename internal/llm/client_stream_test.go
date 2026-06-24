@@ -168,7 +168,7 @@ func TestClient_GenerateStream_EmptyPrompt(t *testing.T) {
 
 // TestClient_GenerateStream_UnsupportedProvider tests unsupported provider.
 func TestClient_GenerateStream_UnsupportedProvider(t *testing.T) {
-	client, err := NewClient(&Config{Provider: "unknown", Model: "llama3.2", Timeout: 5})
+	client, err := NewClient(&Config{Provider: "unknown", BaseURL: "http://localhost:9999", Model: "llama3.2", Timeout: 5})
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}

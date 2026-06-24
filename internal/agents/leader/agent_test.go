@@ -7,11 +7,59 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
+
+// mockMemoryManager is a mock implementation of memory.MemoryManager for testing.
+type mockMemoryManager struct{}
+
+func (m *mockMemoryManager) CreateSession(ctx context.Context, userID string) (string, error) {
+	return "test-session", nil
+}
+func (m *mockMemoryManager) AddMessage(ctx context.Context, sessionID, role, content string) error {
+	return nil
+}
+func (m *mockMemoryManager) GetMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {
+	return nil
+}
+func (m *mockMemoryManager) BuildPromptMessages(ctx context.Context, sessionID string) ([]memory.Message, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) DeleteSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (m *mockMemoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
+	return input, nil
+}
+func (m *mockMemoryManager) CreateTask(ctx context.Context, sessionID, userID, input string) (string, error) {
+	return "task-123", nil
+}
+func (m *mockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output string) error {
+	return nil
+}
+func (m *mockMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
+	return nil
+}
+func (m *mockMemoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {
+	return nil, nil
+}
+func (m *mockMemoryManager) GetLatestSessionForLeader(ctx context.Context, leaderID string) (string, error) {
+	return "", nil
+}
+func (m *mockMemoryManager) Start(ctx context.Context) error { return nil }
+func (m *mockMemoryManager) Stop(ctx context.Context) error  { return nil }
+func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+}
 
 func TestProfileParser_Parse(t *testing.T) {
 	parser := NewProfileParser(
@@ -257,7 +305,7 @@ func TestLeaderAgent_New(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -297,7 +345,7 @@ func TestLeaderAgent_StartStop(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -358,7 +406,7 @@ func TestLeaderAgent_Process(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -394,7 +442,7 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -516,7 +564,7 @@ func TestRestoreState_NilState(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -540,7 +588,7 @@ func TestRestoreState_EmptyState(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -564,7 +612,7 @@ func TestRestoreState_WithSessionID(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -599,7 +647,7 @@ func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -639,7 +687,7 @@ func newTestLeaderAgent(t *testing.T) (*leaderAgent, base.StatefulAgent) {
 	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent, err := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, &mockMemoryManager{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

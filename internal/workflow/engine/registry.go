@@ -176,3 +176,13 @@ func (s *OutputStore) Clear() {
 
 	s.outputs = make(map[string]*StepOutput)
 }
+
+// Close releases resources held by the output store.
+// After Close, subsequent Get/Set calls will return zero values safely
+// due to the mutex protection, but no stored data will be accessible.
+func (s *OutputStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.outputs = nil
+}

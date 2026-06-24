@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,6 +150,7 @@ func (m *memoryManager) Start(ctx context.Context) error {
 }
 
 // Stop stops the memory manager and cleans up resources.
+// It safely handles nil components and collects all errors encountered during shutdown.
 func (m *memoryManager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -157,13 +159,30 @@ func (m *memoryManager) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	m.taskMemory.Stop()
+	var errs []error
 
-	if err := m.sessionMemory.Close(ctx); err != nil {
-		slog.Warn("Failed to close session memory", "error", err)
+	if m.taskMemory != nil {
+		m.taskMemory.Stop()
+	}
+
+	if m.sessionMemory != nil {
+		if err := m.sessionMemory.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close session memory: %w", err))
+			slog.Warn("Failed to close session memory", "error", err)
+		}
 	}
 
 	m.stopped = true
+
+	if len(errs) > 0 {
+		var msg []string
+		for _, e := range errs {
+			msg = append(msg, e.Error())
+		}
+		slog.Error("Memory manager stopped with errors", "error_count", len(errs))
+		return fmt.Errorf("memory manager stop: %s", strings.Join(msg, "; "))
+	}
+
 	slog.Info("Memory manager stopped")
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/callbacks"
@@ -81,6 +82,7 @@ type Client struct {
 	tracer       observability.Tracer
 	callbacks    callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
 	limiter      ratelimit.Limiter // Optional: rate limiter for API calls.
+	closeOnce    sync.Once         // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
 // Option configures a Client instance during construction.
@@ -113,9 +115,12 @@ func WithRateLimiter(limiter ratelimit.Limiter) Option {
 }
 
 // Close releases idle HTTP connections held by the client.
+// It is safe to call Close multiple times; subsequent calls are no-ops.
 func (c *Client) Close() {
-	c.httpClient.CloseIdleConnections()
-	c.streamClient.CloseIdleConnections()
+	c.closeOnce.Do(func() {
+		c.httpClient.CloseIdleConnections()
+		c.streamClient.CloseIdleConnections()
+	})
 }
 
 // SetTracer sets an optional observability tracer on the client.
@@ -124,13 +129,29 @@ func (c *Client) SetTracer(t observability.Tracer) {
 	c.tracer = t
 }
 
-// NewClient creates a new LLM client.
+// NewClient creates a new LLM client with the given configuration.
+// Args:
+//   - config: LLM client configuration, must not be nil. Model, Provider, and
+//     BaseURL are required fields (except Ollama which provides defaults).
+//   - opts: optional client configuration functions.
+//
+// Returns:
+//   - *Client: the configured LLM client.
+//   - error: coreerrors.ErrInvalidArgument if config is nil or required fields
+//     are missing, or an error describing which field is invalid.
 func NewClient(config *Config, opts ...Option) (*Client, error) {
 	if config == nil {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, fmt.Errorf("%w: config must not be nil", coreerrors.ErrInvalidArgument)
 	}
 	if config.Model == "" {
-		return nil, fmt.Errorf("model is required")
+		return nil, fmt.Errorf("%w: model is required", coreerrors.ErrInvalidArgument)
+	}
+	if config.Provider == "" {
+		return nil, fmt.Errorf("%w: provider is required", coreerrors.ErrInvalidArgument)
+	}
+	// BaseURL is required for non-Ollama providers; Ollama has a default.
+	if config.BaseURL == "" && ProviderType(config.Provider) != ProviderOllama {
+		return nil, fmt.Errorf("%w: base_url is required for provider %s", coreerrors.ErrInvalidArgument, config.Provider)
 	}
 
 	if config.Timeout <= 0 {

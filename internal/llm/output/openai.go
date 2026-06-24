@@ -78,8 +78,11 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", errors.Newf("API request failed with status %d: %s", resp.StatusCode, respBody)
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("API request failed with status %d: %w", resp.StatusCode, readErr)
+		}
+		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result OpenAIChatResponse
@@ -201,8 +204,13 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		respBody, readErr := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("http: close response body failed", "error", closeErr)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("openai stream error (status %d): %w", resp.StatusCode, readErr)
+		}
 		return nil, fmt.Errorf("openai stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -372,8 +380,11 @@ func (a *OpenAIAdapter) sendToolRequest(ctx context.Context, messages []map[stri
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, errors.Newf("tool API request failed with status %d: %s", resp.StatusCode, respBody)
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("tool API request failed with status %d: %w", resp.StatusCode, readErr)
+		}
+		return nil, fmt.Errorf("tool API request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result OpenAIChatResponse
