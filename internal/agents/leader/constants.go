@@ -48,6 +48,33 @@ const (
 	DefaultMaxItems = 20
 )
 
+// Loop defaults for LeaderAgentConfig.
+const (
+	// DefaultMaxIterations is the default maximum number of loop iterations.
+	DefaultMaxIterations = 3
+
+	// DefaultQualityThreshold is the default minimum quality score to accept result.
+	DefaultQualityThreshold = 0.7
+
+	// DefaultMaxTotalLLMCalls is the default maximum total LLM calls across all iterations.
+	DefaultMaxTotalLLMCalls = 50
+
+	// DefaultMaxLoopDuration is the default maximum duration for the entire loop.
+	DefaultMaxLoopDuration = 10 * time.Minute
+)
+
+// Channel defaults.
+const (
+	// DefaultEventChanSize is the default buffer size for agent event channels.
+	DefaultEventChanSize = 64
+)
+
+// Distillation defaults.
+const (
+	// DefaultDistillTimeout is the default timeout for distillation operations.
+	DefaultDistillTimeout = 2 * time.Minute
+)
+
 // Timeout constants for LeaderAgent operations.
 const (
 	// DefaultTaskTimeout is the default timeout for task execution.

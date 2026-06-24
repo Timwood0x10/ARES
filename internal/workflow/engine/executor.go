@@ -32,7 +32,7 @@ func NewExecutor(registry *AgentRegistry) *Executor {
 	return &Executor{
 		registry:    registry,
 		maxParallel: DefaultMaxParallel,
-		stepTimeout: 5 * time.Minute,
+		stepTimeout: DefaultExecutorStepTimeout,
 	}
 }
 
@@ -218,7 +218,7 @@ func (e *Executor) runSteps(
 
 			// Wait for any step goroutine to complete via stepDone channel,
 			// instead of wg.Wait() which blocks until ALL goroutines finish.
-			deadlockTimer := time.NewTimer(5 * time.Second)
+			deadlockTimer := time.NewTimer(DefaultDeadlockTimeout)
 			select {
 			case <-stepDone:
 				deadlockTimer.Stop()

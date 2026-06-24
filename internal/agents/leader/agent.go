@@ -228,11 +228,11 @@ func DefaultLeaderAgentConfig() *LeaderAgentConfig {
 		MaxSteps:         DefaultMaxSteps,
 		EnableCache:      true,
 		Loop: LoopConfig{
-			MaxIterations:    3,
-			QualityThreshold: 0.7,
+			MaxIterations:    DefaultMaxIterations,
+			QualityThreshold: DefaultQualityThreshold,
 			EnableReflection: false,
-			MaxTotalLLMCalls: 50,
-			MaxLoopDuration:  10 * time.Minute,
+			MaxTotalLLMCalls: DefaultMaxTotalLLMCalls,
+			MaxLoopDuration:  DefaultMaxLoopDuration,
 		},
 	}
 }
@@ -477,7 +477,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	}
 
 	// Search similar tasks for additional context.
-	similarTasks, err := a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, 3)
+	similarTasks, err := a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, DefaultSimilarTasksLimit)
 	if err != nil {
 		slog.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", err)
 	} else if len(similarTasks) > 0 {
@@ -606,7 +606,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 		// Detached context with own timeout — distillation continues
 		// even if the parent request is cancelled.
-		distillCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		distillCtx, cancel := context.WithTimeout(context.Background(), DefaultDistillTimeout)
 		defer cancel()
 
 		g, gCtx := errgroup.WithContext(distillCtx)
@@ -1145,7 +1145,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	// Initialize memory context (session, messages, similar tasks, task record).
 	strInput, sessionID, taskID := a.initMemoryContext(ctx, strInput)
 
-	ch := make(chan base.AgentEvent, 64)
+	ch := make(chan base.AgentEvent, DefaultEventChanSize)
 
 	a.streamEg.Go(func() error {
 		// Emit start event inside the goroutine so it's always paired with end.

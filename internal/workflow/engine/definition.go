@@ -62,11 +62,17 @@ func (p *DefinitionParser) ParseBytes(ctx context.Context, content []byte) (*Age
 	if err != nil {
 		return nil, errors.Wrap(err, "extract name")
 	}
+	if name == "" {
+		return nil, errors.New("name field is required but empty")
+	}
 	def.Name = name
 
 	agentType, err := p.extractField(text, "type")
 	if err != nil {
 		return nil, errors.Wrap(err, "extract type")
+	}
+	if agentType == "" {
+		return nil, errors.New("type field is required but empty")
 	}
 	def.Type = agentType
 

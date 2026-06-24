@@ -4,6 +4,7 @@ package graph
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/observability"
@@ -26,7 +27,12 @@ func IfFunc(fn func(state *State) bool) Condition {
 }
 
 // Graph represents a DAG of nodes with conditional edges.
+//
+// Graph is safe for concurrent reads via Execute, but concurrent
+// mutation (Node, Edge, Start, RemoveEdge, RemoveNode, Clear, etc.)
+// from multiple goroutines requires external synchronization.
 type Graph struct {
+	mu        sync.RWMutex
 	id        string
 	nodes     map[string]Node
 	edges     map[string][]*Edge
@@ -132,6 +138,9 @@ func (g *Graph) Node(id string, node Node) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if id == "" {
 		panic("node ID cannot be empty: empty id is a programming error")
 	}
@@ -162,6 +171,9 @@ func (g *Graph) Edge(from, to string, cond ...Condition) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if from == "" {
 		panic("from node ID cannot be empty: empty id is a programming error")
 	}
@@ -199,10 +211,109 @@ func (g *Graph) Start(id string) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if id == "" {
 		panic("start node ID cannot be empty: empty id is a programming error")
 	}
 	g.start = id
+	return g
+}
+
+// RemoveEdge removes an edge from one node to another.
+//
+// NOTE: This method will panic if graph is nil or if from/to is empty.
+//
+// Args:
+// from - source node ID, must not be empty.
+// to - target node ID, must not be empty.
+// Returns graph for method chaining.
+func (g *Graph) RemoveEdge(from, to string) *Graph {
+	if g == nil {
+		panic("graph is nil: nil receiver is a programming error")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if from == "" {
+		panic("from node ID cannot be empty: empty id is a programming error")
+	}
+	if to == "" {
+		panic("to node ID cannot be empty: empty id is a programming error")
+	}
+
+	if edges, ok := g.edges[from]; ok {
+		newEdges := make([]*Edge, 0, len(edges))
+		for _, edge := range edges {
+			if edge.to != to {
+				newEdges = append(newEdges, edge)
+			}
+		}
+		g.edges[from] = newEdges
+	}
+
+	return g
+}
+
+// RemoveNode removes a node and all its associated edges from the graph.
+//
+// NOTE: This method will panic if graph is nil or id is empty.
+//
+// Args:
+// id - node identifier, must not be empty.
+// Returns graph for method chaining.
+func (g *Graph) RemoveNode(id string) *Graph {
+	if g == nil {
+		panic("graph is nil: nil receiver is a programming error")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if id == "" {
+		panic("node ID cannot be empty: empty id is a programming error")
+	}
+
+	delete(g.nodes, id)
+
+	// Remove all edges pointing to the removed node.
+	for from, edges := range g.edges {
+		newEdges := make([]*Edge, 0, len(edges))
+		for _, edge := range edges {
+			if edge.to != id {
+				newEdges = append(newEdges, edge)
+			}
+		}
+		g.edges[from] = newEdges
+	}
+
+	// Remove edges originating from the removed node.
+	delete(g.edges, id)
+
+	// Clear start if it points to the removed node.
+	if g.start == id {
+		g.start = ""
+	}
+
+	return g
+}
+
+// Clear removes all nodes and edges from the graph.
+//
+// NOTE: This method will panic if graph is nil.
+//
+// Returns graph for method chaining.
+func (g *Graph) Clear() *Graph {
+	if g == nil {
+		panic("graph is nil: nil receiver is a programming error")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.nodes = make(map[string]Node)
+	g.edges = make(map[string][]*Edge)
+	g.start = ""
+
 	return g
 }
 
@@ -221,6 +332,9 @@ func (g *Graph) SetScheduler(scheduler Scheduler) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if scheduler == nil {
 		panic("scheduler cannot be nil: nil scheduler is a programming error")
 	}
@@ -243,6 +357,9 @@ func (g *Graph) SetTracer(tracer observability.Tracer) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if tracer == nil {
 		panic("tracer cannot be nil: nil tracer is a programming error")
 	}
@@ -265,6 +382,9 @@ func (g *Graph) SetLimiter(limiter ratelimit.Limiter) *Graph {
 	if g == nil {
 		panic("graph is nil: nil receiver is a programming error")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	g.limiter = limiter
 	return g
 }
@@ -274,6 +394,9 @@ func (g *Graph) ID() string {
 	if g == nil {
 		return ""
 	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	return g.id
 }
 

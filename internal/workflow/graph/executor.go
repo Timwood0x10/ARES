@@ -12,10 +12,17 @@ import (
 )
 
 // Execute runs the graph with the given state.
+//
+// Execute acquires a read lock on the graph for the duration of execution,
+// preventing concurrent mutations. Multiple Execute calls may run concurrently
+// with each other but not with mutation methods.
 func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
+
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	if g.start == "" {
 		return nil, fmt.Errorf("graph start node is not set")
 	}
