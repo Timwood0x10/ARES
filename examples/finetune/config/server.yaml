@@ -8,8 +8,8 @@ llm:
   model: "sensenova-6.7-flash-lite"
   base_url: "https://token.sensenova.cn/v1"
   temperature: 0.3
-  max_tokens: 500
-  timeout: 30                  # seconds (yaml key must match struct tag: "timeout", not "timeout_seconds")
+  max_tokens: 100            # reduced from 500 (scoring only needs a number)
+  timeout: 60                  # seconds (increased from 30 for evolution workloads)
   scorer_api_rate: 10          # LLM scorer: requests per second
   scorer_api_burst: 20         # LLM scorer: burst size
   fallbacks:
@@ -19,8 +19,8 @@ llm:
       # https://api.stepfun.com/step_plan/v1/chat/completions
       base_url: "https://api.stepfun.com/step_plan/v1"
       temperature: 0.3
-      max_tokens: 500
-      timeout: 30
+      max_tokens: 100
+      timeout: 60
 
     # - provider:"Anthropic"
     #   api_key: "2oid20ODpluxOC5H4fd4HuDalxynxLUbb8ULfJ2yRFwzWERDToD6ttnUOAYMSnEOO"

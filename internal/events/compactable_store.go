@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // CompactableEventStore wraps an EventStore to automatically trigger compaction
@@ -41,7 +43,14 @@ func NewCompactableEventStore(
 	repo SummaryRepository,
 	trimStore TrimAwareStore,
 	config CompactionConfig,
-) *CompactableEventStore {
+) (*CompactableEventStore, error) {
+	if store == nil {
+		return nil, apperrors.New("store must not be nil")
+	}
+	if repo == nil {
+		return nil, apperrors.New("summary repository must not be nil")
+	}
+
 	c := &CompactableEventStore{
 		EventStore:  store,
 		trimStore:   trimStore,
@@ -55,7 +64,7 @@ func NewCompactableEventStore(
 		c.compactor = c.compactor.WithTrimStore(trimStore)
 	}
 
-	return c
+	return c, nil
 }
 
 // Append writes events to the store and then checks if compaction is needed.

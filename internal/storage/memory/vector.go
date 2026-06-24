@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage"
 )
 
@@ -38,6 +39,10 @@ func NewVectorStore() *VectorStore {
 
 // Search performs brute-force cosine similarity search.
 func (v *VectorStore) Search(_ context.Context, table string, embedding []float64, limit int) ([]*storage.SearchResult, error) {
+	if embedding == nil {
+		return nil, apperrors.New("embedding must not be nil")
+	}
+
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 

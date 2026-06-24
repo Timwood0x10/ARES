@@ -76,7 +76,9 @@ func (p *Pool) Release(conn *sql.Conn) {
 		return
 	}
 
-	_ = conn.Close()
+	if err := conn.Close(); err != nil {
+		slog.Warn("pool: close connection failed", "error", err)
+	}
 }
 
 // WithConnection executes a function with a connection from the pool.

@@ -692,7 +692,9 @@ func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]
 	if store == nil {
 		return
 	}
-	events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload)
+	if !events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
+	}
 }
 
 // getHub returns the current hub under a read lock. Safe for concurrent use.

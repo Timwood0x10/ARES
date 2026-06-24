@@ -84,7 +84,10 @@ func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registr
 		managerConfig.Servers = append(managerConfig.Servers, sc)
 	}
 
-	manager := mcp.NewMCPManager(managerConfig, registry)
+	manager, err := mcp.NewMCPManager(managerConfig, registry)
+	if err != nil {
+		return nil, fmt.Errorf("create mcp manager: %w", err)
+	}
 
 	if err := manager.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start mcp manager: %w", err)

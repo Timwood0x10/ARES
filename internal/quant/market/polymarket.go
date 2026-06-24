@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -54,7 +55,11 @@ func (f *PolymarketFeed) Markets(query string) ([]Market, error) {
 	if err != nil {
 		return nil, fmt.Errorf("polymarket: fetch markets: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("polymarket: returned status %d", resp.StatusCode)

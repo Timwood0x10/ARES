@@ -43,7 +43,10 @@ func (s *PgTrimStore) TrimBefore(ctx context.Context, streamID string, endVersio
 	if err != nil {
 		return 0, apperrors.Wrap(err, "trim events from stream")
 	}
-	removed, _ := result.RowsAffected()
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, apperrors.Wrap(err, "get rows affected after trim")
+	}
 	if removed > 0 {
 		slog.Info("event store: trimmed old events",
 			"stream_id", streamID,

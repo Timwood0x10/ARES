@@ -28,7 +28,7 @@ func (t *testEmbedder) GetModel() string { return "test-model" }
 func (t *testEmbedder) GetTimeout() time.Duration { return 0 }
 
 func TestEmbeddingPipeline_BuildAndEmbed(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec := BuildMemoryQuerySpec("find me a Go REST API example", "test-model", 1, 128)
 
@@ -43,7 +43,7 @@ func TestEmbeddingPipeline_BuildAndEmbed(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_EmptyText(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec := BuildMemoryQuerySpec("", "test-model", 1, 128)
 
@@ -54,7 +54,7 @@ func TestEmbeddingPipeline_EmptyText(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_EmptyPrefix(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec := BuildMemoryQuerySpec("query", "test-model", 1, 128)
 	spec.Prefix = ""
@@ -66,7 +66,7 @@ func TestEmbeddingPipeline_EmptyPrefix(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_ModelPropagation(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec := BuildMemoryExperienceSpec("knowledge", "problem", "solution", "test-model", 1, 128)
 
@@ -81,14 +81,14 @@ func TestEmbeddingPipeline_ModelPropagation(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_Model(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 	if got := p.Model(); got != "test-model" {
 		t.Errorf("expected test-model, got %s", got)
 	}
 }
 
 func TestEmbeddingPipeline_BuildSpec_MemoryQuery(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec, err := p.BuildSpec(KindMemoryQuery, "find me Go examples")
 	if err != nil {
@@ -113,7 +113,7 @@ func TestEmbeddingPipeline_BuildSpec_MemoryQuery(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_BuildSpec_MemoryExperience(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	payload := MemoryExperienceInput{
 		MemoryType: "knowledge",
@@ -145,7 +145,7 @@ func TestEmbeddingPipeline_BuildSpec_MemoryExperience(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_BuildSpec_InvalidKind(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	_, err := p.BuildSpec("invalid_kind", "data")
 	if err == nil {
@@ -154,7 +154,7 @@ func TestEmbeddingPipeline_BuildSpec_InvalidKind(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_BuildSpec_QueryWrongPayload(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	_, err := p.BuildSpec(KindMemoryQuery, 42)
 	if err == nil {
@@ -163,7 +163,7 @@ func TestEmbeddingPipeline_BuildSpec_QueryWrongPayload(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_BuildSpec_ExperienceWrongPayload(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	_, err := p.BuildSpec(KindMemoryExperience, "not a struct")
 	if err == nil {
@@ -172,16 +172,14 @@ func TestEmbeddingPipeline_BuildSpec_ExperienceWrongPayload(t *testing.T) {
 }
 
 func TestNewEmbeddingPipeline_NilGuard(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for nil service")
-		}
-	}()
-	NewEmbeddingPipeline(nil)
+	_, err := NewEmbeddingPipeline(nil)
+	if err == nil {
+		t.Error("expected error for nil service")
+	}
 }
 
 func TestEmbeddingPipeline_BuildSpec_ExperienceFromPipeline(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec, err := p.BuildSpec(KindMemoryExperience, MemoryExperienceInput{
 		MemoryType: "preference",
@@ -204,7 +202,7 @@ func TestEmbeddingPipeline_BuildSpec_ExperienceFromPipeline(t *testing.T) {
 }
 
 func TestEmbeddingPipeline_BuildSpec_QueryFromPipeline(t *testing.T) {
-	p := NewEmbeddingPipeline(&testEmbedder{})
+	p := newTestPipeline(t)
 
 	spec, err := p.BuildSpec(KindMemoryQuery, "query text")
 	if err != nil {
@@ -218,4 +216,13 @@ func TestEmbeddingPipeline_BuildSpec_QueryFromPipeline(t *testing.T) {
 	if spec.Version != 1 {
 		t.Errorf("expected version 1, got %d", spec.Version)
 	}
+}
+
+func newTestPipeline(t *testing.T) EmbeddingPipeline {
+	t.Helper()
+	p, err := NewEmbeddingPipeline(&testEmbedder{})
+	if err != nil {
+		t.Fatalf("NewEmbeddingPipeline failed: %v", err)
+	}
+	return p
 }

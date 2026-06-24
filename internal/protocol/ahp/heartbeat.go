@@ -154,6 +154,7 @@ func (m *HeartbeatMonitor) ListAgents() []string {
 //	fn - callback function, must be non-blocking.
 func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
 	if fn == nil {
+		slog.Warn("RegisterCallback: nil callback")
 		return
 	}
 	m.mu.Lock()
@@ -193,6 +194,9 @@ type HeartbeatSender struct {
 func NewHeartbeatSender(agentID string, interval time.Duration, queue *MessageQueue) *HeartbeatSender {
 	if interval <= 0 {
 		interval = 5 * time.Second
+	}
+	if queue == nil {
+		slog.Warn("NewHeartbeatSender: nil queue", "agent_id", agentID)
 	}
 	noOpCancel := func() {}
 	return &HeartbeatSender{

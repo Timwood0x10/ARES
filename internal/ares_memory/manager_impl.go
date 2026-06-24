@@ -113,7 +113,10 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.Embe
 	distillConfig := distillation.DefaultDistillationConfig()
 	distiller := distillation.NewDistiller(distillConfig, embedder, expRepo)
 
-	pipeline := memembed.NewEmbeddingPipeline(embedder)
+	pipeline, err := memembed.NewEmbeddingPipeline(embedder)
+	if err != nil {
+		return nil, fmt.Errorf("create embedding pipeline: %w", err)
+	}
 	distiller.SetEmbeddingPipeline(pipeline)
 
 	return &memoryManager{
@@ -174,7 +177,9 @@ func (m *memoryManager) SetEventStore(store events.EventStore, streamID string) 
 
 // emitEvent appends a single event using the canonical events.Emit.
 func (m *memoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	events.Emit(ctx, m.eventStore, m.streamID, eventType, payload)
+	if !events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
+	}
 }
 
 // CreateSession creates a new session and returns the session ID.
@@ -381,7 +386,11 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 		return nil, errors.Wrap(err, "distill task")
 	}
 
-	inputStr, _ := task.Payload["input"].(string)
+	inputStr, ok := task.Payload["input"].(string)
+	if !ok {
+		slog.Warn("distill: missing or invalid input", "task_id", taskID)
+		inputStr = ""
+	}
 
 	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
 		"task_id":     taskID,
@@ -408,14 +417,30 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 	slog.Info("[Memory Distillation] Storing distilled task", "task_id", taskID)
 
-	inputStr, _ := distilled.Payload["input"].(string)
-	outputStr, _ := distilled.Payload["output"].(string)
+	inputStr, ok := distilled.Payload["input"].(string)
+	if !ok {
+		slog.Warn("StoreDistilledTask: missing or invalid input", "task_id", taskID)
+		inputStr = ""
+	}
+	outputStr, ok := distilled.Payload["output"].(string)
+	if !ok {
+		slog.Warn("StoreDistilledTask: missing or invalid output", "task_id", taskID)
+		outputStr = ""
+	}
 
 	// Try to get cleaned session messages for richer distillation input.
 	distMessages := m.buildCleanedDistillationMessages(ctx, taskID, inputStr, outputStr)
 
-	userID, _ := distilled.Payload["user_id"].(string)
-	tenantID, _ := distilled.Payload["tenant_id"].(string)
+	userID, ok := distilled.Payload["user_id"].(string)
+	if !ok {
+		slog.Warn("StoreDistilledTask: missing or invalid user_id", "task_id", taskID)
+		userID = ""
+	}
+	tenantID, ok := distilled.Payload["tenant_id"].(string)
+	if !ok {
+		slog.Warn("StoreDistilledTask: missing or invalid tenant_id", "task_id", taskID)
+		tenantID = ""
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -430,10 +455,26 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 	for _, mem := range memories {
 		mem := mem
 		g.Go(func() error {
-			problem, _ := mem.Metadata["problem"].(string)
-			solution, _ := mem.Metadata["solution"].(string)
-			confidence, _ := mem.Metadata["confidence"].(float64)
-			extractionMethodStr, _ := mem.Metadata["extraction_method"].(string)
+			problem, ok := mem.Metadata["problem"].(string)
+			if !ok {
+				slog.Warn("StoreDistilledTask: missing or invalid problem in memory metadata", "task_id", taskID)
+				problem = ""
+			}
+			solution, ok := mem.Metadata["solution"].(string)
+			if !ok {
+				slog.Warn("StoreDistilledTask: missing or invalid solution in memory metadata", "task_id", taskID)
+				solution = ""
+			}
+			confidence, ok := mem.Metadata["confidence"].(float64)
+			if !ok {
+				slog.Warn("StoreDistilledTask: missing or invalid confidence in memory metadata", "task_id", taskID)
+				confidence = 0
+			}
+			extractionMethodStr, ok := mem.Metadata["extraction_method"].(string)
+			if !ok {
+				slog.Warn("StoreDistilledTask: missing or invalid extraction_method in memory metadata", "task_id", taskID)
+				extractionMethodStr = ""
+			}
 			if extractionMethodStr == "" {
 				extractionMethodStr = string(distillation.ExtractionDirect)
 			}
@@ -455,7 +496,9 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 			return nil
 		})
 	}
-	_ = g.Wait()
+	if err := g.Wait(); err != nil {
+		slog.Error("memory manager: background task failed", "error", err)
+	}
 
 	if len(memories) > 0 && atomic.LoadInt64(&storedCount) == 0 {
 		return errors.New("all experiences failed to store")

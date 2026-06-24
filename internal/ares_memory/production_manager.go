@@ -152,7 +152,10 @@ func NewProductionMemoryManager(
 	)
 
 	// Create embedding pipeline for unified embedding generation.
-	pipeline := memembed.NewEmbeddingPipeline(embeddingClient)
+	pipeline, err := memembed.NewEmbeddingPipeline(embeddingClient)
+	if err != nil {
+		return nil, fmt.Errorf("create embedding pipeline: %w", err)
+	}
 
 	// Inject pipeline into retrieval service for unified query embedding.
 	retrievalService.SetEmbeddingPipeline(pipeline)
@@ -199,7 +202,9 @@ func (m *ProductionMemoryManager) SetEventStore(store events.EventStore, streamI
 
 // emitEvent appends a single event using the canonical events.Emit.
 func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	events.Emit(ctx, m.eventStore, m.streamID, eventType, payload)
+	if !events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
+	}
 }
 
 // Start starts the memory manager and background workers.
@@ -827,8 +832,16 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	}
 
 	// Extract problem and solution from distilled payload.
-	inputStr, _ := distilled.Payload["input"].(string)
-	outputStr, _ := distilled.Payload["output"].(string)
+	inputStr, ok := distilled.Payload["input"].(string)
+	if !ok {
+		slog.Warn("StoreProductionMemory: missing or invalid input", "task_id", taskID)
+		inputStr = ""
+	}
+	outputStr, ok := distilled.Payload["output"].(string)
+	if !ok {
+		slog.Warn("StoreProductionMemory: missing or invalid output", "task_id", taskID)
+		outputStr = ""
+	}
 
 	// Build canonical memory experience spec for unified embedding.
 	spec := memembed.BuildMemoryExperienceSpec("knowledge", inputStr, outputStr, m.embeddingClient.GetModel(), 1, 0)

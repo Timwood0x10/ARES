@@ -262,7 +262,9 @@ func (s *Supervisor) Stop() error {
 	s.mu.Unlock()
 
 	if s.g != nil {
-		_ = s.g.Wait()
+		if err := s.g.Wait(); err != nil {
+			slog.Error("resurrection: background task failed", "error", err)
+		}
 	}
 
 	s.mu.RLock()

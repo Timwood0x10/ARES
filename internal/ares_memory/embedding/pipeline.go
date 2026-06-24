@@ -29,15 +29,15 @@ type embeddingPipeline struct {
 }
 
 // NewEmbeddingPipeline creates a pipeline wrapping the given service.
-func NewEmbeddingPipeline(svc pgembed.EmbeddingService) EmbeddingPipeline {
+func NewEmbeddingPipeline(svc pgembed.EmbeddingService) (EmbeddingPipeline, error) {
 	if svc == nil {
-		panic("embedding service is nil")
+		return nil, fmt.Errorf("embedding service is nil")
 	}
 	return &embeddingPipeline{
 		svc:   svc,
 		model: svc.GetModel(),
 		dim:   0,
-	}
+	}, nil
 }
 
 // BuildSpec dispatches to the canonical builder for the given kind.

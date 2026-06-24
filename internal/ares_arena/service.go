@@ -37,6 +37,12 @@ type Service struct {
 
 // NewService creates a Service with the given injector and optional event store.
 func NewService(injector *Injector, store EventStore) *Service {
+	if injector == nil {
+		slog.Warn("NewService: nil injector")
+	}
+	if store == nil {
+		slog.Warn("NewService: nil event store")
+	}
 	return &Service{
 		injector: injector,
 		store:    store,
@@ -221,7 +227,7 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		eventType = "arena.action.failed"
 	}
 
-	events.Emit(ctx, s.store, arenaStreamID, events.EventType(eventType), map[string]any{
+	if !events.Emit(ctx, s.store, arenaStreamID, events.EventType(eventType), map[string]any{
 		"action_id": action.ID,
 		"type":      string(action.Type),
 		"target_id": action.TargetID,
@@ -229,7 +235,9 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		"success":   result.Success,
 		"error":     result.Error,
 		"duration":  result.Duration.String(),
-	})
+	}) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", arenaStreamID)
+	}
 }
 
 // mergeMap combines two maps into a new map. The second map's values win on conflict.

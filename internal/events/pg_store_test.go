@@ -17,6 +17,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
+func newTestPostgresEventStore(t *testing.T, pool *postgres.Pool) *PostgresEventStore {
+	t.Helper()
+	s, err := NewPostgresEventStore(pool)
+	require.NoError(t, err)
+	return s
+}
+
 // getTestPool returns a postgres.Pool connected to the test database.
 // Returns nil if TEST_POSTGRES_DSN is not set, causing the caller to skip.
 func getTestPool(t *testing.T) *postgres.Pool {
@@ -109,7 +116,7 @@ func TestPostgresEventStore_AppendAndRead(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-append-read-%d", time.Now().UnixNano())
 
@@ -142,7 +149,7 @@ func TestPostgresEventStore_VersionConflict(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-version-conflict-%d", time.Now().UnixNano())
 
@@ -171,7 +178,7 @@ func TestPostgresEventStore_ReadWithFilters(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-read-filters-%d", time.Now().UnixNano())
 
@@ -234,7 +241,7 @@ func TestPostgresEventStore_ReadAll(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	ts := time.Now().UnixNano()
 
@@ -266,7 +273,7 @@ func TestPostgresEventStore_StreamVersion(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-stream-version-%d", time.Now().UnixNano())
 
@@ -292,7 +299,7 @@ func TestPostgresEventStore_Subscribe(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -332,7 +339,7 @@ func TestPostgresEventStore_ConcurrentAppend(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 
 	const numStreams = 10
@@ -381,7 +388,7 @@ func TestPostgresEventStore_AppendMultipleStreams(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	ts := time.Now().UnixNano()
 
@@ -427,7 +434,7 @@ func TestPostgresEventStore_ConcurrentAppend_SameStream(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-concurrent-same-%d", time.Now().UnixNano())
 
@@ -470,7 +477,7 @@ func TestPostgresEventStore_Read_NonexistentStream(t *testing.T) {
 	pool := getTestPool(t)
 	defer func() { _ = pool.Close() }()
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-nonexistent-%d", time.Now().UnixNano())
 
@@ -484,17 +491,17 @@ func TestPostgresEventStore_Read_NonexistentStream(t *testing.T) {
 	assert.Equal(t, int64(0), ver, "nonexistent stream version should be 0")
 }
 
-// TestPostgresEventStore_NilPoolSafety verifies that nil pool is handled gracefully.
+// TestPostgresEventStore_NilPoolSafety verifies that nil pool is rejected at construction.
 func TestPostgresEventStore_NilPoolSafety(t *testing.T) {
-	store := NewPostgresEventStore(nil)
-	// NewPostgresEventStore(nil) should return nil.
+	store, err := NewPostgresEventStore(nil)
+	assert.Error(t, err)
 	assert.Nil(t, store)
 
 	// Calling methods on a nil store should not panic.
 	ctx := context.Background()
 
 	var nilStore *PostgresEventStore
-	err := nilStore.Append(ctx, "s", []*Event{{Type: EventTaskCreated}}, 0)
+	err = nilStore.Append(ctx, "s", []*Event{{Type: EventTaskCreated}}, 0)
 	assert.ErrorIs(t, err, ErrEventStoreClosed)
 
 	_, err = nilStore.Read(ctx, "s", ReadOptions{})
@@ -515,7 +522,7 @@ func TestPostgresEventStore_EmptyInputs(t *testing.T) {
 	pool := getTestPool(t)
 	defer func() { _ = pool.Close() }()
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 
 	// Empty streamID should return error.
@@ -539,7 +546,7 @@ func TestPostgresEventStore_MetadataPreserved(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-metadata-%d", time.Now().UnixNano())
 
@@ -569,7 +576,7 @@ func TestPostgresEventStore_AppendNilEvent(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupEvents(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	ctx := context.Background()
 	streamID := fmt.Sprintf("test-nil-event-%d", time.Now().UnixNano())
 

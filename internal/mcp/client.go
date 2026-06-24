@@ -108,7 +108,7 @@ func (c *MCPClient) initialize() error {
 		ProtocolVersion: ProtocolVersion,
 		ClientInfo: Implementation{
 			Name:    ClientName,
-			Version: "1.0.0",
+			Version: ClientVersion,
 		},
 		Capabilities: ClientCapabilities{
 			Tools: &ToolClientCapabilities{

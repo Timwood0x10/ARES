@@ -122,7 +122,11 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	t.mu.Unlock()
 
 	// Ensure body is released when receiveLoop returns for any reason.
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	// POST URL defaults to config.URL (set in constructor). If the SSE endpoint
 	// returns an "endpoint" event, handleSSEEvent updates it under t.mu.
@@ -224,7 +228,11 @@ func (t *SSETransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if err != nil {
 		return fmt.Errorf("post message: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)

@@ -461,8 +461,8 @@ func (c *Config) Validate() error {
 	if c.LLM.MaxTokens < 1 {
 		return fmt.Errorf("invalid LLM max tokens: %d, must be positive", c.LLM.MaxTokens)
 	}
-	if c.LLM.Provider != "openai" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openrouter" {
-		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', or 'openrouter'", c.LLM.Provider)
+	if c.LLM.Provider != "openai" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openrouter" && c.LLM.Provider != "anthropic" {
+		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', 'openrouter', or 'anthropic'", c.LLM.Provider)
 	}
 
 	// Validate agents configuration

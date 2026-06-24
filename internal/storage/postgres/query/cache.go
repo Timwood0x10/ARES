@@ -135,7 +135,9 @@ func (c *QueryCache) Delete(ctx context.Context, req *SearchRequest) error {
 
 	// Try to delete from Redis
 	if c.redis != nil {
-		_ = c.redis.Del(ctx, cacheKey)
+		if err := c.redis.Del(ctx, cacheKey); err != nil {
+			slog.Warn("cache invalidation failed", "key", cacheKey, "error", err)
+		}
 	}
 
 	// Delete from memory cache
@@ -156,7 +158,9 @@ func (c *QueryCache) Clear(ctx context.Context) error {
 	if c.redis != nil {
 		keys, err := c.redis.Keys(ctx, "query_cache:*")
 		if err == nil && len(keys) > 0 {
-			_ = c.redis.Del(ctx, keys...)
+			if err := c.redis.Del(ctx, keys...); err != nil {
+				slog.Warn("cache invalidation failed", "key", keys, "error", err)
+			}
 		}
 	}
 

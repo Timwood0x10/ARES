@@ -52,15 +52,15 @@ type managedClient struct {
 }
 
 // NewMCPManager creates a new MCPManager.
-func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) *MCPManager {
+func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) (*MCPManager, error) {
 	if registry == nil {
-		panic("mcp: registry is required")
+		return nil, fmt.Errorf("mcp: registry is required")
 	}
 	return &MCPManager{
 		clients:  make(map[string]*managedClient),
 		registry: registry,
 		config:   config,
-	}
+	}, nil
 }
 
 // Start connects to all enabled auto_start servers.

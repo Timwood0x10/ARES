@@ -53,7 +53,9 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	events.Emit(context.Background(), b.store, b.agentID, eventType, payload)
+	if !events.Emit(context.Background(), b.store, b.agentID, eventType, payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
+	}
 }
 
 // mapEventType translates callback Event constants to events.EventType.

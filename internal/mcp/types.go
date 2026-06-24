@@ -8,6 +8,9 @@ const ProtocolVersion = "2024-11-05"
 // ClientName identifies this MCP client implementation.
 const ClientName = "ares"
 
+// ClientVersion is the version reported during MCP initialization.
+const ClientVersion = "1.0.0"
+
 // --- Initialize handshake types ---
 
 // Implementation identifies an MCP client or server.

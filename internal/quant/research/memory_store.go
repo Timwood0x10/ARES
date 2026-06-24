@@ -230,7 +230,10 @@ func (s *MemoryStore) UpdateOutcome(ctx context.Context, id string, outcome *Out
 	if err != nil {
 		return fmt.Errorf("memory store update outcome: %w", err)
 	}
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("memory store get rows affected: %w", err)
+	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("memory store update: entry %s not found or already resolved", id)
 	}
@@ -304,7 +307,10 @@ func (s *MemoryStore) UpdateReflection(ctx context.Context, id string, reflectio
 	if err != nil {
 		return fmt.Errorf("memory store update reflection: %w", err)
 	}
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("memory store get rows affected: %w", err)
+	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("memory store update reflection: entry %s not found", id)
 	}

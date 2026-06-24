@@ -25,11 +25,16 @@ type EventStore struct {
 func NewEventStore() *EventStore {
 	mem := events.NewMemoryEventStore()
 	repo := events.NewMemorySummaryRepository()
+	ces, err := events.NewCompactableEventStore(
+		mem, repo, nil, events.DefaultCompactionConfig(),
+	)
+	if err != nil {
+		// This should never happen with valid in-memory components.
+		panic(err)
+	}
 	return &EventStore{
-		CompactableEventStore: events.NewCompactableEventStore(
-			mem, repo, nil, events.DefaultCompactionConfig(),
-		),
-		raw: mem,
+		CompactableEventStore: ces,
+		raw:                   mem,
 	}
 }
 

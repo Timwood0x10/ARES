@@ -662,13 +662,15 @@ func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, te
 // query - search query string for substring matching.
 // tenantID - tenant identifier for isolation.
 // limit - maximum number of results to return.
+const maxSearchBySubstringLimit = 100
+
 // Returns list of knowledge chunks matching the substring or error if search fails.
 func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > maxSearchBySubstringLimit {
+		limit = maxSearchBySubstringLimit
 	}
 
 	escapedQuery := postgres.EscapeILIKEPattern(query)

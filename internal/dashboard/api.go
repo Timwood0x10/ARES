@@ -663,7 +663,9 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial connection event.
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339))
+	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339)); err != nil {
+		slog.Warn("sse write failed", "error", err)
+	}
 	flusher.Flush()
 
 	// Send arena history events then close.
@@ -674,12 +676,16 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			data, _ := json.Marshal(h)
-			_, _ = fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data); err != nil {
+				slog.Warn("sse write failed", "error", err)
+			}
 			flusher.Flush()
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+	if _, err := fmt.Fprintf(w, "event: done\ndata: {}\n\n"); err != nil {
+		slog.Warn("sse write failed", "error", err)
+	}
 	flusher.Flush()
 }
 

@@ -213,7 +213,9 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 // emitEvent appends a lifecycle event to the EventStore using the canonical
 // events.Emit helper. No-op if eventStore is nil.
 func (m *Manager) emitEvent(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any) {
-	events.Emit(ctx, m.eventStore, streamID, eventType, payload)
+	if !events.Emit(ctx, m.eventStore, streamID, eventType, payload) {
+		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
+	}
 }
 
 // GetAgent returns the current instance of a managed agent, or nil if not found.

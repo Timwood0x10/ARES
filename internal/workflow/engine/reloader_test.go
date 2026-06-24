@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func newTestFileWatcher(t *testing.T, loader WorkflowLoader, workflows map[string]*Workflow) *FileWatcher {
+	t.Helper()
+	w, err := NewFileWatcher(loader, workflows)
+	if err != nil {
+		t.Fatalf("NewFileWatcher failed: %v", err)
+	}
+	return w
+}
+
 // =====================================================
 // FileWatcher Coverage Tests
 // =====================================================
@@ -15,7 +24,7 @@ func TestFileWatcherCoverage(t *testing.T) {
 	t.Run("create file watcher", func(t *testing.T) {
 		loader := NewJSONFileLoader()
 		workflows := make(map[string]*Workflow)
-		watcher := NewFileWatcher(loader, workflows)
+		watcher := newTestFileWatcher(t, loader, workflows)
 
 		if watcher == nil {
 			t.Error("FileWatcher should not be nil")
@@ -30,7 +39,7 @@ func TestFileWatcherCoverage(t *testing.T) {
 	t.Run("register and unregister callback", func(t *testing.T) {
 		loader := NewJSONFileLoader()
 		workflows := make(map[string]*Workflow)
-		watcher := NewFileWatcher(loader, workflows)
+		watcher := newTestFileWatcher(t, loader, workflows)
 
 		callbackCalled := false
 		callbackID := watcher.RegisterCallback(func(workflows map[string]*Workflow) {
@@ -62,7 +71,7 @@ func TestFileWatcherCoverage(t *testing.T) {
 	t.Run("register multiple callbacks", func(t *testing.T) {
 		loader := NewJSONFileLoader()
 		workflows := make(map[string]*Workflow)
-		watcher := NewFileWatcher(loader, workflows)
+		watcher := newTestFileWatcher(t, loader, workflows)
 
 		callbackCount := 0
 
@@ -88,7 +97,7 @@ func TestFileWatcherCoverage(t *testing.T) {
 	t.Run("scan and load from non-existent directory", func(t *testing.T) {
 		loader := NewJSONFileLoader()
 		workflows := make(map[string]*Workflow)
-		watcher := NewFileWatcher(loader, workflows)
+		watcher := newTestFileWatcher(t, loader, workflows)
 
 		err := watcher.scanAndLoad(context.Background(), "/non/existent/directory")
 		if err == nil {
@@ -99,7 +108,7 @@ func TestFileWatcherCoverage(t *testing.T) {
 	t.Run("scan and load from empty directory", func(t *testing.T) {
 		loader := NewJSONFileLoader()
 		workflows := make(map[string]*Workflow)
-		watcher := NewFileWatcher(loader, workflows)
+		watcher := newTestFileWatcher(t, loader, workflows)
 
 		// Use /tmp which should exist but may not have workflow files
 		err := watcher.scanAndLoad(context.Background(), "/tmp")
@@ -255,7 +264,7 @@ func TestWorkflowReloaderCoverage(t *testing.T) {
 		reloader := NewWorkflowReloader(loader)
 
 		// Create a watcher manually
-		watcher := NewFileWatcher(loader, reloader.workflows)
+		watcher := newTestFileWatcher(t, loader, reloader.workflows)
 		reloader.watcher = watcher
 
 		// Stop watching should not panic

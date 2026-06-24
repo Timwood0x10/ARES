@@ -47,6 +47,7 @@ const (
 	ProviderOpenAI     ProviderType = "openai"
 	ProviderOpenRouter ProviderType = "openrouter"
 	ProviderOllama     ProviderType = "ollama"
+	ProviderAnthropic  ProviderType = "anthropic"
 
 	// DefaultOllamaBaseURL is the default base URL for Ollama provider.
 	DefaultOllamaBaseURL = "http://localhost:11434"
@@ -63,12 +64,13 @@ const (
 
 // Config holds LLM client configuration.
 type Config struct {
-	Provider string            `yaml:"provider"`
-	APIKey   string            `yaml:"api_key"`
-	BaseURL  string            `yaml:"base_url"`
-	Model    string            `yaml:"model"`
-	Timeout  int               `yaml:"timeout"`
-	Extra    map[string]string `yaml:"extra"`
+	Provider  string            `yaml:"provider"`
+	APIKey    string            `yaml:"api_key"`
+	BaseURL   string            `yaml:"base_url"`
+	Model     string            `yaml:"model"`
+	Timeout   int               `yaml:"timeout"`
+	MaxTokens int               `yaml:"max_tokens"` // Maximum tokens in response (0 = use defaultMaxTokens)
+	Extra     map[string]string `yaml:"extra"`
 }
 
 // Client represents an LLM client that supports multiple providers.
@@ -228,6 +230,8 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 		result, err = c.generateOpenRouter(ctx, prompt)
 	case ProviderOllama:
 		result, err = c.generateOllama(ctx, prompt)
+	case ProviderAnthropic:
+		result, err = c.generateAnthropic(ctx, prompt)
 	default:
 		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
@@ -291,6 +295,12 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 		return "", fmt.Errorf("API key is required for OpenRouter")
 	}
 
+	// Use configured MaxTokens, fallback to defaultMaxTokens if not set or invalid.
+	maxTokens := c.config.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+
 	requestBody := map[string]interface{}{
 		"model": c.config.Model,
 		"messages": []map[string]string{
@@ -300,7 +310,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 			},
 		},
 		"temperature": 0.7,
-		"max_tokens":  defaultMaxTokens,
+		"max_tokens":  maxTokens,
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -416,6 +426,86 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 	return response.Response, nil
 }
 
+// generateAnthropic generates text using Anthropic API.
+// Anthropic uses a different API format: /v1/messages endpoint with required max_tokens.
+func (c *Client) generateAnthropic(ctx context.Context, prompt string) (string, error) {
+	if c.config.APIKey == "" {
+		return "", fmt.Errorf("API key is required for Anthropic")
+	}
+
+	// Use configured MaxTokens, fallback to reasonable default for Anthropic (must be > 0).
+	anthropicMaxTokens := c.config.MaxTokens
+	if anthropicMaxTokens <= 0 {
+		anthropicMaxTokens = 1024 // Anthropic requires max_tokens, default to 1024
+	}
+
+	requestBody := map[string]interface{}{
+		"model": c.config.Model,
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"max_tokens": anthropicMaxTokens, // Anthropic requires this field
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", errors.Wrap(err, "marshal anthropic request")
+	}
+
+	// Anthropic uses /v1/messages endpoint (not /v1/chat/completions like OpenAI)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.config.BaseURL+"/messages", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return "", errors.Wrap(err, "create anthropic request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.config.APIKey)      // Anthropic uses x-api-key header
+	req.Header.Set("anthropic-version", "2023-06-01") // Required API version header
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", errors.Wrap(err, "send anthropic request")
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("failed to close anthropic response body: ", "error", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read anthropic error response body", "error", readErr)
+		}
+		return "", fmt.Errorf("anthropic error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Anthropic response format: {"content": [{"type": "text", "text": "..."}]}
+	var response struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", errors.Wrap(err, "decode anthropic response")
+	}
+
+	// Extract text from content blocks
+	var result strings.Builder
+	for _, block := range response.Content {
+		if block.Type == "text" {
+			result.WriteString(block.Text)
+		}
+	}
+
+	return result.String(), nil
+}
+
 // IsEnabled checks if the LLM client is properly configured.
 func (c *Client) IsEnabled() bool {
 	if c == nil || c.config == nil {
@@ -423,7 +513,7 @@ func (c *Client) IsEnabled() bool {
 	}
 
 	switch ProviderType(c.config.Provider) {
-	case ProviderOpenAI, ProviderOpenRouter:
+	case ProviderOpenAI, ProviderOpenRouter, ProviderAnthropic:
 		return c.config.APIKey != ""
 	case ProviderOllama:
 		return true // Ollama doesn't require API key
@@ -527,6 +617,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		rawCh, err = c.streamOpenRouter(ctx, prompt)
 	case ProviderOllama:
 		rawCh, err = c.streamOllama(ctx, prompt)
+	case ProviderAnthropic:
+		rawCh, err = c.streamAnthropic(ctx, prompt)
 	default:
 		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
@@ -633,7 +725,9 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 		if readErr != nil {
 			slog.Warn("llm: failed to read error response body", "error", readErr)
 		}
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
 		return nil, fmt.Errorf("ollama stream error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -678,10 +772,124 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	return ch, nil
 }
 
+// streamAnthropic streams text generation using Anthropic API.
+// Anthropic streaming uses Server-Sent Events (SSE) with event: content_block_delta.
+func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
+	if c.config.APIKey == "" {
+		return nil, fmt.Errorf("API key is required for Anthropic streaming")
+	}
+
+	// Use configured MaxTokens, fallback to reasonable default for Anthropic.
+	streamAnthropicMaxTokens := c.config.MaxTokens
+	if streamAnthropicMaxTokens <= 0 {
+		streamAnthropicMaxTokens = 1024
+	}
+
+	requestBody := map[string]interface{}{
+		"model": c.config.Model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens": streamAnthropicMaxTokens,
+		"stream":     true, // Enable streaming mode for Anthropic
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal anthropic stream request")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.config.BaseURL+"/messages", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, errors.Wrap(err, "create anthropic stream request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.config.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "send anthropic stream request")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			slog.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
+		}
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("anthropic stream error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	ch := make(chan StreamChunk, defaultStreamBuffer)
+
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				slog.Error("Failed to close anthropic stream response body", "error", err)
+			}
+		}()
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			// Anthropic SSE format: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
+			var event struct {
+				Type  string `json:"type"`
+				Delta struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta,omitempty"`
+			}
+
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				slog.Warn("Failed to unmarshal anthropic stream chunk", "error", err)
+				continue
+			}
+
+			// Only extract text from content_block_delta events
+			if event.Type == "content_block_delta" && event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+				select {
+				case ch <- StreamChunk{Content: event.Delta.Text}:
+				case <-ctx.Done():
+					return
+				}
+			}
+
+			// Check for message_stop event (end of stream)
+			if event.Type == "message_stop" {
+				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "read anthropic stream")}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // streamOpenRouter streams text generation using OpenRouter API.
 func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	if c.config.APIKey == "" {
 		return nil, fmt.Errorf("API key is required for OpenRouter streaming")
+	}
+
+	// Use configured MaxTokens, fallback to defaultMaxTokens if not set or invalid.
+	streamMaxTokens := c.config.MaxTokens
+	if streamMaxTokens <= 0 {
+		streamMaxTokens = defaultMaxTokens
 	}
 
 	requestBody := map[string]interface{}{
@@ -690,7 +898,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0.7,
-		"max_tokens":  defaultMaxTokens,
+		"max_tokens":  streamMaxTokens,
 		"stream":      true,
 	}
 
@@ -718,7 +926,9 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 		if readErr != nil {
 			slog.Warn("llm: failed to read error response body", "error", readErr)
 		}
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("http: close response body failed", "error", err)
+		}
 		return nil, fmt.Errorf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))
 	}
 

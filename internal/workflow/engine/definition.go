@@ -6,6 +6,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -96,7 +97,11 @@ func (p *DefinitionParser) ParseFile(ctx context.Context, path string) (*AgentDe
 	if err != nil {
 		return nil, errors.Wrapf(err, "open file %s", path)
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		if err := file.Close(); err != nil {
+			slog.Warn("definition: close file failed", "error", err)
+		}
+	}()
 
 	return p.Parse(ctx, bufio.NewReader(file))
 }

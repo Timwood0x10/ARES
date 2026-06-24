@@ -41,9 +41,9 @@ type FileWatcher struct {
 }
 
 // NewFileWatcher creates a new FileWatcher.
-func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) *FileWatcher {
+func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) (*FileWatcher, error) {
 	if loader == nil {
-		panic("loader cannot be nil")
+		return nil, fmt.Errorf("loader cannot be nil")
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -62,7 +62,7 @@ func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) *File
 		pollInterval: 5 * time.Second,
 		stopCtx:      stopCtx,
 		stopCancel:   stopCancel,
-	}
+	}, nil
 }
 
 // Watch starts watching workflow files for changes.
@@ -129,7 +129,9 @@ func (w *FileWatcher) fsnotifyLoop(dir string) {
 	defer w.wg.Done()
 	defer func() {
 		if w.watcher != nil {
-			_ = w.watcher.Close()
+			if err := w.watcher.Close(); err != nil {
+				slog.Warn("reloader: close watcher failed", "error", err)
+			}
 		}
 	}()
 
@@ -192,7 +194,9 @@ func (w *FileWatcher) Close() {
 		_ = w.g.Wait()
 	}
 	if w.watcher != nil {
-		_ = w.watcher.Close()
+		if err := w.watcher.Close(); err != nil {
+			slog.Warn("reloader: close watcher failed", "error", err)
+		}
 		w.watcher = nil
 	}
 }
@@ -368,7 +372,10 @@ func (r *WorkflowReloader) StartWatching(ctx context.Context, dir string) error 
 	r.workflows = workflows
 	r.mu.Unlock()
 
-	watcher := NewFileWatcher(r.loader, r.workflows)
+	watcher, err := NewFileWatcher(r.loader, r.workflows)
+	if err != nil {
+		return errors.Wrap(err, "create file watcher")
+	}
 	watcher.RegisterCallback(r.onReload)
 
 	// Use reloader's cancel context for watching

@@ -558,7 +558,7 @@ func TestPgTrimStore_TrimBefore_DeletesEvents(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	trimStore := NewPgTrimStore(store, pool)
 	ctx := context.Background()
 
@@ -590,7 +590,7 @@ func TestPgTrimStore_TrimBefore_PreservesOtherStreams(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	trimStore := NewPgTrimStore(store, pool)
 	ctx := context.Background()
 
@@ -617,7 +617,7 @@ func TestPgTrimStore_TrimBefore_NonexistentStream(t *testing.T) {
 	pool := getSummaryTestPool(t)
 	defer func() { _ = pool.Close() }()
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	trimStore := NewPgTrimStore(store, pool)
 	ctx := context.Background()
 
@@ -644,7 +644,7 @@ func TestE2E_CompactionWithPostgres_FullCycle(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	repo := NewPgSummaryRepository(pool)
 	cfg := CompactionConfig{Threshold: 20, KeepRecent: 5}
 	c := NewCompactor(store, repo, cfg)
@@ -697,7 +697,7 @@ func TestE2E_CompactionWithPostgres_WithTrimming(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	repo := NewPgSummaryRepository(pool)
 	trimStore := NewPgTrimStore(store, pool)
 
@@ -745,7 +745,7 @@ func TestE2E_CompactionWithPostgres_MultipleCycles(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	repo := NewPgSummaryRepository(pool)
 	cfg := CompactionConfig{Threshold: 15, KeepRecent: 3}
 	c := NewCompactor(store, repo, cfg)
@@ -793,11 +793,11 @@ func TestE2E_CompactableStore_AutoCompactWithPostgres(t *testing.T) {
 	defer func() { _ = pool.Close() }()
 	cleanupAll(t, pool)
 
-	store := NewPostgresEventStore(pool)
+	store := newTestPostgresEventStore(t, pool)
 	repo := NewPgSummaryRepository(pool)
 	cfg := CompactionConfig{Threshold: 15, KeepRecent: 3}
 
-	wrapped := NewCompactableEventStore(store, repo, nil, cfg)
+	wrapped := newTestCompactableEventStore(t, store, repo, nil, cfg)
 	ctx := context.Background()
 
 	streamID := fmt.Sprintf("e2e-auto-pg-%d", time.Now().UnixNano())
