@@ -59,7 +59,11 @@ func main() {
 	}
 
 	// Create agents
-	leaderAgent := createLeaderAgent(cfg, comps)
+	leaderAgent, err := createLeaderAgent(cfg, comps)
+	if err != nil {
+		slog.Error("Failed to create leader agent", "error", err)
+		os.Exit(1)
+	}
 	subAgents := createSubAgents(cfg, comps)
 
 	slog.Info("Initialized DevAgents", "count", len(subAgents))
@@ -184,7 +188,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 	return adapter
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
+func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
 		comps.template,
@@ -209,12 +213,15 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		agentRegistry[models.AgentType(subCfg.Type)] = subCfg.ID
 	}
 
-	taskDispatcher := leader.NewTaskDispatcher(
+	taskDispatcher, err := leader.NewTaskDispatcher(
 		agentRegistry,
 		cfg.Agents.Leader.MaxParallelTasks,
 		cfg.Agents.Leader.MaxSteps,
 		nil,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
 
 	for _, subCfg := range cfg.Agents.Sub {
 		agentType := models.AgentType(subCfg.Type)
@@ -245,7 +252,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		EnableCache:      cfg.Agents.Leader.EnableCache,
 	}
 
-	return leader.New(
+	agent, err := leader.New(
 		cfg.Agents.Leader.ID,
 		profileParser,
 		taskPlanner,
@@ -256,6 +263,10 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		comps.memoryManager,
 		leaderCfg,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
+	return agent, nil
 }
 
 func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {

@@ -32,12 +32,16 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-	"github.com/Timwood0x10/ares/internal/ares_experience"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
+	"github.com/Timwood0x10/ares/internal/llm"
+	"github.com/Timwood0x10/ares/internal/ratelimit"
 )
 
 // ──────────────────────────────────────────────
@@ -141,7 +145,7 @@ func ExportStrategiesToJSONL(strategies []*mutation.Strategy, path string, topK 
 	if err != nil {
 		return 0, fmt.Errorf("create file %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	enc := json.NewEncoder(f)
 	enc.SetEscapeHTML(false)
@@ -202,7 +206,7 @@ func ExportExperiencesToJSONL(experiences []*experience.Experience, path string,
 	if err != nil {
 		return 0, fmt.Errorf("create file %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	enc := json.NewEncoder(f)
 	enc.SetEscapeHTML(false)
@@ -230,6 +234,202 @@ func ExportExperiencesToJSONL(experiences []*experience.Experience, path string,
 // ──────────────────────────────────────────────
 // Real evolution: WiredEvolutionSystem
 // ──────────────────────────────────────────────
+
+// ──────────────────────────────────────────────
+// LLM-based strategy scorer (rate-limited)
+// ──────────────────────────────────────────────
+
+// LLMScoreClient wraps an LLM client with a fallback heuristic scorer.
+// It provides a ScorerFunc that calls the LLM to evaluate strategies,
+// subject to rate limiting via the token bucket.
+type LLMScoreClient struct {
+	client    *llm.Client
+	heuristic genome.ScorerFunc // fallback when LLM is unavailable or fails
+	timeout   time.Duration     // per-call timeout
+}
+
+// NewLLMScoreClient creates an LLM scorer from environment variables.
+//
+// It reads LLM_PROVIDER, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL from the
+// environment (same as NewClientFromEnv) and wraps the client with a
+// token bucket rate limiter. The rate and burst are configurable:
+//
+//   - LLM_RATE: requests per second (default 10.0 when env is unset)
+//   - LLM_BURST: burst size (default 20 when env is unset)
+//
+// Args:
+//
+//	heuristic - fallback scorer used when LLM is unavailable or the call fails.
+//	llmTimeout - per-call timeout for LLM scoring (e.g., 30s).
+//
+// Returns:
+//
+//	*LLMScoreClient - ready-to-use scorer.
+//	error - non-nil if LLM client creation fails.
+func NewLLMScoreClient(heuristic genome.ScorerFunc, llmTimeout time.Duration) (*LLMScoreClient, error) {
+	rateLimit := 10.0
+	burst := 20
+
+	if v := os.Getenv("LLM_RATE"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed > 0 {
+			rateLimit = parsed
+		}
+	}
+	if v := os.Getenv("LLM_BURST"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			burst = parsed
+		}
+	}
+
+	limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+		Rate:  rateLimit,
+		Burst: burst,
+	})
+
+	cfg := &llm.Config{
+		Provider: os.Getenv("LLM_PROVIDER"),
+		APIKey:   os.Getenv("LLM_API_KEY"),
+		BaseURL:  os.Getenv("LLM_BASE_URL"),
+		Model:    os.Getenv("LLM_MODEL"),
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "ollama"
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = "http://localhost:11434"
+	}
+
+	client, err := llm.NewClient(cfg, llm.WithRateLimiter(limiter))
+	if err != nil {
+		return nil, fmt.Errorf("new LLM client: %w", err)
+	}
+
+	return &LLMScoreClient{
+		client:    client,
+		heuristic: heuristic,
+		timeout:   llmTimeout,
+	}, nil
+}
+
+// ScorerFunc returns a genome.ScorerFunc that evaluates strategies using LLM.
+// It constructs a structured prompt describing the strategy parameters and
+// asks the LLM to rate the strategy on a 0-100 scale. On any failure
+// (timeout, parse error, empty response), it falls back to the heuristic scorer.
+//
+// Because genome.ScorerFunc does not accept a context parameter, this method
+// uses context.Background() internally with the configured timeout.
+func (ls *LLMScoreClient) ScorerFunc() genome.ScorerFunc {
+	return func(s *mutation.Strategy) float64 {
+		prompt := buildStrategyPrompt(s)
+
+		ctx, cancel := context.WithTimeout(context.Background(), ls.timeout)
+		defer cancel()
+
+		resp, err := ls.client.Generate(ctx, prompt)
+		if err != nil {
+			slog.Warn("LLM scorer failed, falling back to heuristic",
+				"strategy_id", s.ID,
+				"error", err,
+			)
+			return ls.heuristic(s)
+		}
+
+		score, err := parseScore(resp)
+		if err != nil {
+			slog.Warn("LLM scorer parse error, falling back to heuristic",
+				"strategy_id", s.ID,
+				"response", truncate(resp, 100),
+				"error", err,
+			)
+			return ls.heuristic(s)
+		}
+
+		slog.Debug("LLM scored strategy",
+			"strategy_id", s.ID,
+			"score", score,
+		)
+		return score
+	}
+}
+
+// buildStrategyPrompt constructs a scoring prompt from a strategy.
+func buildStrategyPrompt(s *mutation.Strategy) string {
+	var b strings.Builder
+	b.WriteString("You are an expert agent strategy evaluator. ")
+	b.WriteString("Rate the following agent configuration on a scale from 0 to 100, ")
+	b.WriteString("where 100 is the best possible configuration for executing complex tasks reliably.\n\n")
+	b.WriteString("Strategy Configuration:\n")
+
+	// Parameter section
+	b.WriteString("Parameters:\n")
+	for k, v := range s.Params {
+		switch k {
+		case "temperature":
+			fmt.Fprintf(&b, "  - temperature: %v (lower = more deterministic)\n", v)
+		case "top_k":
+			fmt.Fprintf(&b, "  - top_k: %v (moderate 20-40 is best)\n", v)
+		case "max_steps":
+			fmt.Fprintf(&b, "  - max_steps: %v (more steps = more thorough)\n", v)
+		case "memory_limit":
+			fmt.Fprintf(&b, "  - memory_limit: %v (higher = better recall)\n", v)
+		default:
+			fmt.Fprintf(&b, "  - %s: %v\n", k, v)
+		}
+	}
+
+	if s.PromptTemplate != "" {
+		fmt.Fprintf(&b, "Prompt Template: %s\n", truncate(s.PromptTemplate, 200))
+	}
+
+	fmt.Fprintf(&b, "Mutation Type: %s\n", s.StrategyMutationType.String())
+	if s.MutationDesc != "" {
+		fmt.Fprintf(&b, "Mutation Detail: %s\n", s.MutationDesc)
+	}
+
+	b.WriteString("\n")
+	b.WriteString("Respond with ONLY a single number between 0 and 100. ")
+	b.WriteString("Do not include any explanation, additional text, or formatting.")
+	return b.String()
+}
+
+// parseScore extracts a numeric score from the LLM's response.
+// It attempts to parse the entire response as a number, then falls back
+// to finding the first number in the response text.
+func parseScore(resp string) (float64, error) {
+	resp = strings.TrimSpace(resp)
+
+	// Try direct parse first.
+	if score, err := strconv.ParseFloat(resp, 64); err == nil {
+		return clampScore(score), nil
+	}
+
+	// Fallback: find the first number sequence.
+	fields := strings.Fields(resp)
+	for _, field := range fields {
+		cleaned := strings.TrimFunc(field, func(r rune) bool {
+			return (r < '0' || r > '9') && r != '.' && r != '-'
+		})
+		if cleaned == "" {
+			continue
+		}
+		if score, err := strconv.ParseFloat(cleaned, 64); err == nil {
+			return clampScore(score), nil
+		}
+	}
+
+	return 0, fmt.Errorf("no numeric score found in response: %q", truncate(resp, 80))
+}
+
+// clampScore clamps a score to the [0, 100] range.
+func clampScore(score float64) float64 {
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
 
 // RealScorer assigns scores to strategies based on param configuration quality.
 // This is a heuristic scorer that rewards strategies with lower temperature
@@ -283,7 +483,22 @@ func runRealEvolution(ctx context.Context, generations, popSize int) (*genome.Po
 	cfg.EnableDreamCycle = false
 	cfg.EnableScheduler = false
 	cfg.HistoryMaxSize = popSize * generations
-	cfg.Scorer = RealScorer
+	// Try LLM-based scorer for tiered scoring pipeline.
+	llmScorer, err := NewLLMScoreClient(RealScorer, 30*time.Second)
+	if err != nil {
+		slog.Warn("LLM scorer not available, falling back to heuristic only",
+			"error", err,
+		)
+		cfg.Scorer = RealScorer
+	} else {
+		cfg.Scorer = llmScorer.ScorerFunc()
+		cfg.HeuristicScorer = RealScorer
+		cfg.MaxLLMCallsPerGeneration = popSize * 2 // budget: up to 2x population per gen
+
+		slog.Info("Using tiered scoring pipeline",
+			"llm_budget_per_gen", cfg.MaxLLMCallsPerGeneration,
+		)
+	}
 
 	slog.Info("Creating real evolution system",
 		"population_size", popSize,

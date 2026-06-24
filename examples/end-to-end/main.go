@@ -94,7 +94,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	leaderAgent := createLeaderAgent(cfg, components)
+	leaderAgent, err := createLeaderAgent(cfg, components)
+	if err != nil {
+		slog.Error("Failed to create leader agent", "error", err)
+		os.Exit(1)
+	}
 	subAgents := createSubAgents(cfg, components)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -321,7 +325,7 @@ func createExecutorForSubAgent(comps *components, cfg *config.Config, subCfg con
 	)
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
+func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
 		comps.template,
@@ -345,13 +349,16 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		agentRegistry[models.AgentType(subCfg.Type)] = subCfg.ID
 	}
 
-	taskDispatcher := leader.NewTaskDispatcher(
+	taskDispatcher, err := leader.NewTaskDispatcher(
 		agentRegistry,
 		cfg.Agents.Leader.MaxParallelTasks,
 		30,  // timeout per step in seconds (not MaxSteps — that is task step count)
 		nil, // MessageSender is nil because we use RegisterExecutor mode:
 		//     tasks are dispatched locally via executor funcs, never sent remotely.
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
 
 	for _, subCfg := range cfg.Agents.Sub {
 		agentType := models.AgentType(subCfg.Type)
@@ -373,7 +380,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
-	return leader.New(
+	agent, err := leader.New(
 		cfg.Agents.Leader.ID,
 		profileParser,
 		taskPlanner,
@@ -384,6 +391,10 @@ func createLeaderAgent(cfg *config.Config, comps *components) leader.Agent {
 		comps.memoryManager,
 		leaderCfg,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create leader agent: %w", err)
+	}
+	return agent, nil
 }
 
 func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
@@ -1200,7 +1211,11 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 	// 5.4 Create new agent instance via factory.
 	slog.Info("5.4 Create new agent via factory")
 
-	newAgent := createLeaderAgent(cfg, comps)
+	newAgent, err := createLeaderAgent(cfg, comps)
+	if err != nil {
+		slog.Error("Failed to create new agent for failover test", "error", err)
+		return
+	}
 	slog.Info("New agent created via factory",
 		"new_agent_id", newAgent.ID(),
 		"type", newAgent.Type())

@@ -148,6 +148,24 @@ type LoopConfig struct {
 }
 
 // New creates a new LeaderAgent instance.
+//
+// Args:
+//
+//	id - unique agent identifier, must not be empty.
+//	parser - profile parser, must not be nil.
+//	planner - task planner, must not be nil.
+//	dispatcher - task dispatcher, must not be nil.
+//	aggregator - result aggregator, must not be nil.
+//	msgQueue - optional message queue for inter-agent communication.
+//	hbMon - optional heartbeat monitor.
+//	memMgr - memory manager, must not be nil.
+//	cfg - optional configuration; uses defaults when nil.
+//	opts - optional functional options.
+//
+// Returns:
+//
+//	agent - a new LeaderAgent instance.
+//	err - validation error if required dependencies are nil.
 func New(
 	id string,
 	parser ProfileParser,
@@ -159,7 +177,22 @@ func New(
 	memMgr memory.MemoryManager,
 	cfg *LeaderAgentConfig,
 	opts ...LeaderOption,
-) Agent {
+) (Agent, error) {
+	if id == "" {
+		return nil, errors.New("leader agent: id cannot be empty")
+	}
+	if parser == nil {
+		return nil, errors.New("leader agent: parser cannot be nil")
+	}
+	if planner == nil {
+		return nil, errors.New("leader agent: planner cannot be nil")
+	}
+	if dispatcher == nil {
+		return nil, errors.New("leader agent: dispatcher cannot be nil")
+	}
+	if aggregator == nil {
+		return nil, errors.New("leader agent: aggregator cannot be nil")
+	}
 	if cfg == nil {
 		cfg = DefaultLeaderAgentConfig()
 	}
@@ -184,7 +217,7 @@ func New(
 		opt(a)
 	}
 
-	return a
+	return a, nil
 }
 
 // DefaultLeaderAgentConfig returns default configuration.

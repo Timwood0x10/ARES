@@ -18,6 +18,7 @@ import (
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ratelimit"
 )
 
 // HTTPError represents an HTTP request error.
@@ -68,6 +69,7 @@ type Client struct {
 	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
 	tracer       observability.Tracer
 	callbacks    callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
+	limiter      ratelimit.Limiter // Optional: rate limiter for API calls.
 }
 
 // Option configures a Client instance during construction.
@@ -78,6 +80,24 @@ type Option func(*Client)
 func WithCallbacks(emitter callbacks.Emitter) Option {
 	return func(c *Client) {
 		c.callbacks = emitter
+	}
+}
+
+// WithRateLimiter sets an optional rate limiter on the LLM client.
+// When set, Generate and GenerateStream will call limiter.Wait(ctx)
+// before making each API request, preventing the caller from exceeding
+// the configured rate limit (e.g., token bucket or sliding window).
+//
+// Args:
+//
+//	limiter - the rate limiter to use (use ratelimit.NewTokenBucketLimiter, etc.).
+//
+// Returns:
+//
+//	Option - the configuration function.
+func WithRateLimiter(limiter ratelimit.Limiter) Option {
+	return func(c *Client) {
+		c.limiter = limiter
 	}
 }
 
@@ -186,6 +206,21 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 
 	var result string
 	var err error
+
+	// Apply rate limiter before making the API call.
+	if c.limiter != nil {
+		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
+			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
+			c.emitCallback(&callbacks.Context{
+				Event: callbacks.EventLLMError,
+				Model: model,
+				Input: prompt,
+				Error: waitErr,
+			})
+			return "", waitErr
+		}
+	}
+
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenRouter:
 		result, err = c.generateOpenRouter(ctx, prompt)
@@ -499,6 +534,21 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	var rawCh <-chan StreamChunk
 	var err error
+
+	// Apply rate limiter before making the API call.
+	if c.limiter != nil {
+		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
+			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
+			c.emitCallback(&callbacks.Context{
+				Event: callbacks.EventLLMError,
+				Model: model,
+				Input: prompt,
+				Error: waitErr,
+			})
+			return nil, waitErr
+		}
+	}
+
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenRouter:
 		rawCh, err = c.streamOpenRouter(ctx, prompt)

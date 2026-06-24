@@ -77,7 +77,7 @@ type taskPlanner struct {
 // NewTaskPlanner creates a new TaskPlanner.
 func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
-		maxTasks = 5
+		maxTasks = DefaultMaxTasks
 	}
 	p := &taskPlanner{
 		maxTasks:          maxTasks,
@@ -93,7 +93,7 @@ func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 // NewTaskPlannerWithConfig creates a TaskPlanner with sub-agent configuration.
 func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
-		maxTasks = 5
+		maxTasks = DefaultMaxTasks
 	}
 	p := &taskPlanner{
 		maxTasks:          maxTasks,

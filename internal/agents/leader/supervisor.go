@@ -64,6 +64,9 @@ type LeaderSupervisor struct {
 }
 
 // NewLeaderSupervisor creates a LeaderSupervisor.
+//
+// Deprecated: production code should use Runtime-level supervision.
+// Retained for test compatibility until all test consumers are migrated.
 func NewLeaderSupervisor(
 	heartbeatMon *ahp.HeartbeatMonitor,
 	strategy FailoverStrategy,
@@ -72,6 +75,7 @@ func NewLeaderSupervisor(
 	eventStore events.EventStore,
 	config *LeaderSupervisorConfig,
 ) (*LeaderSupervisor, error) {
+	slog.Warn("LeaderSupervisor is deprecated, use Runtime-level supervision instead")
 	if heartbeatMon == nil {
 		return nil, errors.New("leader supervisor: heartbeat monitor is required")
 	}

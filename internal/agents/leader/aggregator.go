@@ -37,7 +37,7 @@ type resultAggregator struct {
 // An unrecognised value is treated as SortByNone.
 func NewResultAggregator(enableDedupe bool, maxItems int, sortBy string) ResultAggregator {
 	if maxItems <= 0 {
-		maxItems = 20
+		maxItems = DefaultMaxItems
 	}
 	return &resultAggregator{
 		enableDedupe: enableDedupe,

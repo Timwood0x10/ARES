@@ -190,7 +190,10 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 		models.AgentTypeTop:    "agent_top",
 		models.AgentTypeBottom: "agent_bottom",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
@@ -225,9 +228,12 @@ func TestTaskDispatcher_Dispatch(t *testing.T) {
 
 func TestTaskDispatcher_DispatchEmpty(t *testing.T) {
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 
-	_, err := dispatcher.Dispatch(context.Background(), nil)
+	_, err = dispatcher.Dispatch(context.Background(), nil)
 	if err == nil {
 		t.Error("Dispatch() should return error for empty tasks")
 	}
@@ -245,10 +251,16 @@ func TestLeaderAgent_New(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	if agent.ID() != "leader1" {
 		t.Errorf("expected leader1, got %s", agent.ID())
@@ -279,13 +291,19 @@ func TestLeaderAgent_StartStop(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Start
-	err := agent.Start(context.Background())
+	err = agent.Start(context.Background())
 	if err != nil {
 		t.Errorf("Start() error = %v", err)
 	}
@@ -329,7 +347,10 @@ func TestLeaderAgent_Process(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
 		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
@@ -337,7 +358,10 @@ func TestLeaderAgent_Process(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Process without starting should auto-start
 	result, err := agent.Process(context.Background(), "I want casual style")
@@ -359,7 +383,10 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	registry := map[models.AgentType]string{
 		models.AgentTypeTop: "agent_top",
 	}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	dispatcher.RegisterExecutor(models.AgentTypeTop, func(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 		result := models.NewTaskResult(task.TaskID, task.AgentType)
 		result.SetSuccess([]*models.RecommendItem{{ItemID: "item1", Name: "test item"}}, "ok")
@@ -367,7 +394,10 @@ func TestLeaderAgent_ProcessNotReady(t *testing.T) {
 	})
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	// Start then set to busy
 	if err := agent.Start(context.Background()); err != nil {
@@ -396,7 +426,10 @@ func TestLeaderAgent_SendReceiveMessage(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 	queue := ahp.NewMessageQueue("leader1", &ahp.QueueOptions{MaxSize: 10})
 
@@ -421,7 +454,7 @@ func TestLeaderAgent_SendReceiveMessage(t *testing.T) {
 		TaskID:      "task1",
 		SessionID:   "session1",
 	}
-	err := leader.SendMessage(context.Background(), msg)
+	err = leader.SendMessage(context.Background(), msg)
 	if err != nil {
 		t.Errorf("SendMessage() error = %v", err)
 	}
@@ -443,7 +476,10 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 	)
 	planner := NewTaskPlanner(3)
 	registry := map[models.AgentType]string{}
-	dispatcher := NewTaskDispatcher(registry, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(registry, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
@@ -459,7 +495,7 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 		heartbeatMon: hbMon,
 	}
 
-	err := leader.Heartbeat(context.Background())
+	err = leader.Heartbeat(context.Background())
 	if err != nil {
 		t.Errorf("Heartbeat() error = %v", err)
 	}
@@ -474,16 +510,22 @@ func TestLeaderAgent_Heartbeat(t *testing.T) {
 func TestRestoreState_NilState(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(nil)
+	err = sa.RestoreState(nil)
 	if err != nil {
 		t.Errorf("RestoreState(nil) should return nil error, got %v", err)
 	}
@@ -492,16 +534,22 @@ func TestRestoreState_NilState(t *testing.T) {
 func TestRestoreState_EmptyState(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(map[string]any{})
+	err = sa.RestoreState(map[string]any{})
 	if err != nil {
 		t.Errorf("RestoreState(empty) should return nil error, got %v", err)
 	}
@@ -510,16 +558,22 @@ func TestRestoreState_EmptyState(t *testing.T) {
 func TestRestoreState_WithSessionID(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
-	err := sa.RestoreState(map[string]any{
+	err = sa.RestoreState(map[string]any{
 		"session_id": "session-abc",
 	})
 	if err != nil {
@@ -539,17 +593,23 @@ func TestRestoreState_WithSessionID(t *testing.T) {
 func TestRestoreState_InvalidSessionIDType(t *testing.T) {
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("leader1", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")
 	}
 
 	// Non-string session_id should be silently ignored.
-	err := sa.RestoreState(map[string]any{
+	err = sa.RestoreState(map[string]any{
 		"session_id": 12345,
 	})
 	if err != nil {
@@ -573,10 +633,16 @@ func newTestLeaderAgent(t *testing.T) (*leaderAgent, base.StatefulAgent) {
 	t.Helper()
 	parser := NewProfileParser(nil, output.NewTemplateEngine(), "{{.input}}", output.NewValidator(), 3)
 	planner := NewTaskPlanner(3)
-	dispatcher := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	dispatcher, err := NewTaskDispatcher(map[models.AgentType]string{}, 2, 30, nil)
+	if err != nil {
+		t.Fatalf("NewTaskDispatcher() error = %v", err)
+	}
 	aggregator := NewResultAggregator(true, 10, SortByNone)
 
-	agent := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	agent, err := New("test-snapshot-agent", parser, planner, dispatcher, aggregator, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	sa, ok := agent.(base.StatefulAgent)
 	if !ok {
 		t.Fatal("agent does not implement StatefulAgent")

@@ -37,12 +37,15 @@ type taskDispatcher struct {
 }
 
 // NewTaskDispatcher creates a new TaskDispatcher.
-func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) TaskDispatcher {
+func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel int, timeout int, sender MessageSender) (TaskDispatcher, error) {
+	if agentRegistry == nil {
+		return nil, errors.New("task dispatcher: agent registry cannot be nil")
+	}
 	if maxParallel <= 0 {
-		maxParallel = 10
+		maxParallel = DefaultMaxParallel
 	}
 	if timeout <= 0 {
-		timeout = 300
+		timeout = DefaultDispatcherTimeoutSeconds
 	}
 	d := &taskDispatcher{
 		agentRegistry: agentRegistry,
@@ -51,7 +54,7 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 		maxParallel:   maxParallel,
 		timeout:       timeout,
 	}
-	return d
+	return d, nil
 }
 
 // RegisterExecutor registers an executor function for a specific agent type.
