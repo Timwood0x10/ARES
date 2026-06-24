@@ -96,6 +96,7 @@ func TestOnAgentEnd_Disabled(t *testing.T) {
 
 // TestOnAgentEnd_NilAdapter tests that OnAgentEnd handles nil adapter gracefully.
 func TestOnAgentEnd_NilAdapter(t *testing.T) {
+	defer discardLogs()()
 	reg := callbacks.NewRegistry()
 
 	scheduler := NewEvolutionScheduler(reg, nil,
@@ -108,6 +109,7 @@ func TestOnAgentEnd_NilAdapter(t *testing.T) {
 
 // TestOnAgentEnd_Enabled tests that OnAgentEnd triggers adapter when enabled.
 func TestOnAgentEnd_Enabled(t *testing.T) {
+	defer discardLogs()()
 	reg := callbacks.NewRegistry()
 	adapter := newMockAdapterForScheduler()
 
@@ -141,6 +143,7 @@ func TestOnAgentEnd_Enabled(t *testing.T) {
 
 // TestOnAgentEnd_MinIntervalProtection tests that minimum interval is respected.
 func TestOnAgentEnd_MinIntervalProtection(t *testing.T) {
+	defer discardLogs()()
 	reg := callbacks.NewRegistry()
 	adapter := newMockAdapterForScheduler()
 
@@ -187,6 +190,7 @@ func TestRegister_RegistersHandler(t *testing.T) {
 
 // TestRegister_NilRegistry tests that Register handles nil registry gracefully.
 func TestRegister_NilRegistry(t *testing.T) {
+	defer discardLogs()()
 	adapter := newMockAdapterForScheduler()
 	scheduler := NewEvolutionScheduler(nil, adapter)
 
@@ -196,6 +200,7 @@ func TestRegister_NilRegistry(t *testing.T) {
 
 // TestShouldEvolve_Defaults tests shouldEvolve returns true when preconditions are met.
 func TestShouldEvolve_Defaults(t *testing.T) {
+	defer discardLogs()()
 	reg := newMockCallbackRegistrarForTest()
 	adapter := newMockAdapterForScheduler()
 
@@ -240,6 +245,7 @@ func TestSetEnabled_IsEnabled(t *testing.T) {
 
 // TestLastRunTime tests last run time tracking.
 func TestLastRunTime(t *testing.T) {
+	defer discardLogs()()
 	reg := callbacks.NewRegistry()
 	adapter := newMockAdapterForScheduler()
 	scheduler := NewEvolutionScheduler(reg, adapter,

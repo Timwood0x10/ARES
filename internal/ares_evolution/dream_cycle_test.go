@@ -141,6 +141,7 @@ func TestNewDreamCycle_NilTester(t *testing.T) {
 
 // TestRun_NilSchedulerGuard tests that Run returns early when scheduler is nil.
 func TestRun_NilSchedulerGuard(t *testing.T) {
+	defer discardLogs()()
 	mutator := &mockMutator{}
 	tester := &mockTester{}
 
@@ -161,6 +162,7 @@ func TestRun_NilSchedulerGuard(t *testing.T) {
 
 // TestRun_NilTesterGuard tests that Run returns early when tester is nil.
 func TestRun_NilTesterGuard(t *testing.T) {
+	defer discardLogs()()
 	scheduler := NewEvolutionScheduler(nil, nil)
 	mutator := &mockMutator{}
 
@@ -240,6 +242,7 @@ func TestRun_FewTasks(t *testing.T) {
 
 // TestRun_FullCycleHappyPath tests a complete dream cycle with winning candidate.
 func TestRun_FullCycleHappyPath(t *testing.T) {
+	defer discardLogs()()
 	scheduler := NewEvolutionScheduler(nil, nil,
 		WithEnabled(true),
 		WithTrigger(TriggerOnIdle),
@@ -306,6 +309,7 @@ func TestRun_FullCycleHappyPath(t *testing.T) {
 
 // TestRun_AllCandidatesFail tests that no lineage is recorded when all candidates fail arena test.
 func TestRun_AllCandidatesFail(t *testing.T) {
+	defer discardLogs()()
 	scheduler := NewEvolutionScheduler(nil, nil,
 		WithEnabled(true),
 		WithTrigger(TriggerOnIdle),
@@ -351,6 +355,7 @@ func TestRun_AllCandidatesFail(t *testing.T) {
 
 // TestRun_OneCandidateWin tests that one winning candidate records genealogy correctly.
 func TestRun_OneCandidateWins(t *testing.T) {
+	defer discardLogs()()
 	scheduler := NewEvolutionScheduler(nil, nil,
 		WithEnabled(true),
 		WithTrigger(TriggerOnIdle),
@@ -412,6 +417,7 @@ func TestRun_OneCandidateWins(t *testing.T) {
 
 // TestRun_MutatorError tests that mutation errors are propagated.
 func TestRun_MutatorError(t *testing.T) {
+	defer discardLogs()()
 	scheduler := NewEvolutionScheduler(nil, nil,
 		WithEnabled(true),
 		WithTrigger(TriggerOnIdle),

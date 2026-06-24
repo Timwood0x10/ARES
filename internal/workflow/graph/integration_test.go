@@ -26,17 +26,32 @@ func TestGraphWithObservability(t *testing.T) {
 
 	executionOrder := []string{}
 
-	graph := NewGraphWithTracer("observability-test", tracer).
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			executionOrder = append(executionOrder, "node1")
-			return nil
-		}}).
-		Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
-			executionOrder = append(executionOrder, "node2")
-			return nil
-		}}).
-		Edge("node1", "node2").
-		Start("node1")
+	graph, err := NewGraphWithTracer("observability-test", tracer)
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	graph, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		executionOrder = append(executionOrder, "node1")
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node1: %v", err)
+	}
+	graph, err = graph.Node("node2", &mockNode{id: "node2", executeFn: func(ctx context.Context, state *State) error {
+		executionOrder = append(executionOrder, "node2")
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node2: %v", err)
+	}
+	graph, err = graph.Edge("node1", "node2")
+	if err != nil {
+		t.Fatalf("failed to add edge: %v", err)
+	}
+	graph, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("failed to set start node: %v", err)
+	}
 
 	ctx := context.Background()
 	state := NewState()
@@ -82,12 +97,21 @@ func TestGraphWithRateLimit(t *testing.T) {
 
 	executionCount := 0
 
-	graph := NewGraphWithLimiter("rate-limit-test", limiter).
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			executionCount++
-			return nil
-		}}).
-		Start("node1")
+	graph, err := NewGraphWithLimiter("rate-limit-test", limiter)
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	graph, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		executionCount++
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node1: %v", err)
+	}
+	graph, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("failed to set start node: %v", err)
+	}
 
 	ctx := context.Background()
 	state := NewState()
@@ -121,11 +145,20 @@ func TestGraphWithRateLimitExceeded(t *testing.T) {
 		Timeout: 5 * time.Second,
 	})
 
-	graph := NewGraphWithLimiter("rate-limit-test", limiter).
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			return nil
-		}}).
-		Start("node1")
+	graph, err := NewGraphWithLimiter("rate-limit-test", limiter)
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	graph, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node1: %v", err)
+	}
+	graph, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("failed to set start node: %v", err)
+	}
 
 	ctx := context.Background()
 	state := NewState()
@@ -165,13 +198,28 @@ func TestGraphWithBothObservabilityAndRateLimit(t *testing.T) {
 		Timeout: 5 * time.Second,
 	})
 
-	graph := NewGraph("combined-test").
-		SetTracer(tracer).
-		SetLimiter(limiter).
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			return nil
-		}}).
-		Start("node1")
+	graph, err := NewGraph("combined-test")
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	graph, err = graph.SetTracer(tracer)
+	if err != nil {
+		t.Fatalf("failed to set tracer: %v", err)
+	}
+	graph, err = graph.SetLimiter(limiter)
+	if err != nil {
+		t.Fatalf("failed to set limiter: %v", err)
+	}
+	graph, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node1: %v", err)
+	}
+	graph, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("failed to set start node: %v", err)
+	}
 
 	ctx := context.Background()
 	state := NewState()
@@ -202,16 +250,28 @@ func TestGraphWithCustomTracer(t *testing.T) {
 	// Test that custom tracer is properly integrated
 	tracer := observability.NewNoopTracer()
 
-	graph := NewGraph("custom-tracer-test").
-		SetTracer(tracer).
-		Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
-			return nil
-		}}).
-		Start("node1")
+	graph, err := NewGraph("custom-tracer-test")
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	graph, err = graph.SetTracer(tracer)
+	if err != nil {
+		t.Fatalf("failed to set tracer: %v", err)
+	}
+	graph, err = graph.Node("node1", &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("failed to add node1: %v", err)
+	}
+	graph, err = graph.Start("node1")
+	if err != nil {
+		t.Fatalf("failed to set start node: %v", err)
+	}
 
 	ctx := context.Background()
 	state := NewState()
-	_, err := graph.Execute(ctx, state)
+	_, err = graph.Execute(ctx, state)
 	if err != nil {
 		t.Fatalf("execution failed: %v", err)
 	}

@@ -564,6 +564,7 @@ func waitForGeneration(t *testing.T, pop *genome.Population, genBefore int, time
 // GenomePopulationAdapter.Run() and increments the population generation.
 func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 	t.Helper()
+	defer discardLogs()()
 	base := &mutation.Strategy{
 		ID: "sched-trigger-root", Version: 1,
 		Params:         map[string]any{"temperature": 0.7, "top_k": 40},
@@ -640,6 +641,7 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 // Scheduler are enabled, the system correctly wires them together with cross-references.
 func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
 	t.Helper()
+	defer discardLogs()()
 	base := &mutation.Strategy{
 		ID: "dc-sched-root", Version: 1,
 		Params:         map[string]any{"temperature": 0.7},
@@ -725,6 +727,7 @@ func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
 // OnAgentEnd calls each trigger evolution cycles when minInterval is short enough.
 func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 	t.Helper()
+	defer discardLogs()()
 	base := &mutation.Strategy{
 		ID: "multi-evol-root", Version: 1,
 		Params:         map[string]any{"temperature": 0.7},
@@ -790,6 +793,7 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 // and confirms lineage records are produced.
 func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 	t.Helper()
+	defer discardLogs()()
 	base := &mutation.Strategy{
 		ID: "real-mut-root", Version: 1,
 		Params:         map[string]any{"temperature": 0.7, "top_k": 40, "max_steps": 5},

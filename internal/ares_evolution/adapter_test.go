@@ -147,6 +147,7 @@ func TestAdapterRun_SubscribeError(t *testing.T) {
 
 // TestAdapterRun_ProcessesEvents tests that events are processed correctly.
 func TestAdapterRun_ProcessesEvents(t *testing.T) {
+	defer discardLogs()()
 	flight := newMockFlightRecorder()
 
 	// Set up diagnostics for agent-1
@@ -370,6 +371,7 @@ func TestExtractTaskID(t *testing.T) {
 
 // TestAdapterRun_CreateError tests handling of create errors.
 func TestAdapterRun_CreateError(t *testing.T) {
+	defer discardLogs()()
 	flight := newMockFlightRecorder()
 	flight.diagnostics.SetReport("agent-1", &DiagnosticsReport{
 		AgentID:   "agent-1",
@@ -408,6 +410,7 @@ func TestAdapterRun_CreateError(t *testing.T) {
 
 // TestAdapterRun_NilEvent tests that nil events are skipped gracefully.
 func TestAdapterRun_NilEvent(t *testing.T) {
+	defer discardLogs()()
 	flight := newMockFlightRecorder()
 	flight.subscriber.events = []*events.Event{nil} // Include a nil event
 
@@ -428,6 +431,7 @@ func TestAdapterRun_NilEvent(t *testing.T) {
 
 // TestAdapterRun_EmptyStreamID tests that events without agent ID are skipped.
 func TestAdapterRun_EmptyStreamID(t *testing.T) {
+	defer discardLogs()()
 	flight := newMockFlightRecorder()
 	flight.subscriber.events = []*events.Event{
 		{
@@ -454,6 +458,7 @@ func TestAdapterRun_EmptyStreamID(t *testing.T) {
 
 // TestAdapterRun_NoDiagnostics tests handling when no diagnostics exist for agent.
 func TestAdapterRun_NoDiagnostics(t *testing.T) {
+	defer discardLogs()()
 	flight := newMockFlightRecorder()
 	// Don't set any diagnostics report
 	flight.subscriber.events = []*events.Event{

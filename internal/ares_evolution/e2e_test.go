@@ -18,6 +18,7 @@ import (
 //   - Assert population state, best strategy, and scoring correctness
 //   - Generate and validate an EvolutionReport
 func TestE2E_FullEvolutionCycle(t *testing.T) {
+	defer discardLogs()()
 	// Step 1: Create a real mutation.Strategy as the root/base for evolution.
 	base := &mutation.Strategy{
 		ID:             "e2e-base",

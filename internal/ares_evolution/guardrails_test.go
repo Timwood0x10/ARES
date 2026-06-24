@@ -91,6 +91,7 @@ func TestPreEvolveCheck_NormalCase(t *testing.T) {
 }
 
 func TestPreEvolveCheck_MajorityUnevaluated(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(5),
@@ -108,6 +109,7 @@ func TestPreEvolveCheck_MajorityUnevaluated(t *testing.T) {
 }
 
 func TestPreEvolveCheck_StagnationExceeded(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(3),
@@ -129,6 +131,7 @@ func TestPreEvolveCheck_StagnationExceeded(t *testing.T) {
 }
 
 func TestPostEvolveCheck_ImprovementResetsStagnation(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(70.0),
 		WithMaxStagnantGenerations(5),
@@ -153,6 +156,7 @@ func TestPostEvolveCheck_ImprovementResetsStagnation(t *testing.T) {
 }
 
 func TestPostEvolveCheck_NoImprovementIncrementsStagnation(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(70.0),
 		WithMaxStagnantGenerations(5),
@@ -173,6 +177,7 @@ func TestPostEvolveCheck_NoImprovementIncrementsStagnation(t *testing.T) {
 }
 
 func TestPostEvolveCheck_RegressionBelowBaseline(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(85.0),
 		WithMaxStagnantGenerations(5),
@@ -194,6 +199,7 @@ func TestPostEvolveCheck_RegressionBelowBaseline(t *testing.T) {
 }
 
 func TestPostEvolveCheck_LineageConcentrationWarning(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(70.0),
 		WithMaxStagnantGenerations(5),
@@ -219,6 +225,7 @@ func TestPostEvolveCheck_LineageConcentrationWarning(t *testing.T) {
 }
 
 func TestPostEvolveCheck_LineageWithinThreshold(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(70.0),
 		WithMaxStagnantGenerations(5),
@@ -241,6 +248,7 @@ func TestPostEvolveCheck_LineageWithinThreshold(t *testing.T) {
 }
 
 func TestEventsRecordedAndRetrievable(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(3),
@@ -282,6 +290,7 @@ func TestEventsRecordedAndRetrievable(t *testing.T) {
 }
 
 func TestReset_ClearsState(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(3),
@@ -307,6 +316,7 @@ func TestReset_ClearsState(t *testing.T) {
 }
 
 func TestConcurrentAccessSafety(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(5),
@@ -370,6 +380,7 @@ func TestPreEvolveCheck_ZeroPopulation(t *testing.T) {
 }
 
 func TestPostEvolveCheck_NilLineageShares(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(70.0),
 		WithMaxStagnantGenerations(5),
@@ -386,6 +397,7 @@ func TestPostEvolveCheck_NilLineageShares(t *testing.T) {
 }
 
 func TestPostEvolveCheck_ZeroBaseline(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(0), // Zero baseline means disabled
 		WithMaxStagnantGenerations(5),
@@ -401,6 +413,7 @@ func TestPostEvolveCheck_ZeroBaseline(t *testing.T) {
 }
 
 func TestEvents_MaxEventsLimit(t *testing.T) {
+	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(
 		WithBaselineScore(80.0),
 		WithMaxStagnantGenerations(3),
