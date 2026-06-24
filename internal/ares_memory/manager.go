@@ -285,6 +285,24 @@ func ToBuildContextFormat(messages []Message) string {
 	return b
 }
 
+// validate checks that config fields have sensible values.
+// Returns a descriptive error if any field is invalid.
+func (c *MemoryConfig) validate() error {
+	if c.MaxSessions <= 0 {
+		return fmt.Errorf("MaxSessions must be positive, got %d", c.MaxSessions)
+	}
+	if c.SessionTTL <= 0 {
+		return fmt.Errorf("SessionTTL must be positive, got %v", c.SessionTTL)
+	}
+	if c.TaskTTL <= 0 {
+		return fmt.Errorf("TaskTTL must be positive, got %v", c.TaskTTL)
+	}
+	if c.MaxHistory <= 0 {
+		return fmt.Errorf("MaxHistory must be positive, got %d", c.MaxHistory)
+	}
+	return nil
+}
+
 // DefaultMemoryConfig returns default configuration for MemoryManager.
 func DefaultMemoryConfig() *MemoryConfig {
 	opts := core.DefaultCleanOptions()

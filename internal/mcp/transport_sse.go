@@ -21,6 +21,9 @@ const (
 	sseDataPrefix        = "data:"
 	sseEventTypeEndpoint = "endpoint"
 	sseEventTypeMessage  = "message"
+
+	defaultSSETimeout       = 30 * time.Second
+	defaultSSEMessageBuffer = 64
 )
 
 // SSEConfig holds configuration for an SSE-based MCP transport.
@@ -49,7 +52,7 @@ type SSETransport struct {
 func NewSSETransport(config SSEConfig) *SSETransport {
 	timeout := config.Timeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = defaultSSETimeout
 	}
 
 	return &SSETransport{
@@ -57,7 +60,7 @@ func NewSSETransport(config SSEConfig) *SSETransport {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		msgCh:   make(chan *JSONRPCMessage, 64),
+		msgCh:   make(chan *JSONRPCMessage, defaultSSEMessageBuffer),
 		postURL: config.URL, // Set default POST URL; may be overridden by "endpoint" SSE event.
 	}
 }

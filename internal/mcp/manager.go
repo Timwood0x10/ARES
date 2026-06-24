@@ -53,6 +53,9 @@ type managedClient struct {
 
 // NewMCPManager creates a new MCPManager.
 func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) *MCPManager {
+	if registry == nil {
+		panic("mcp: registry is required")
+	}
 	return &MCPManager{
 		clients:  make(map[string]*managedClient),
 		registry: registry,
@@ -97,6 +100,10 @@ func (m *MCPManager) Stop(_ context.Context) error {
 
 // ConnectServer connects to a named MCP server.
 func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("server name cannot be empty")
+	}
+
 	m.mu.RLock()
 	sc := m.findServerConfig(name)
 	m.mu.RUnlock()

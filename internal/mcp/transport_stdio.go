@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 )
 
+// Default buffer size for reading subprocess stdout lines (1 MB).
+const stdoutBufferSize = 1024 * 1024
+
 // StdioConfig holds configuration for a stdio-based MCP transport.
 type StdioConfig struct {
 	Command string            `yaml:"command" json:"command"`
@@ -75,18 +78,24 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 	stdoutPipe, err := t.cmd.StdoutPipe()
 	if err != nil {
+		_ = t.stdin.Close()
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	t.stdoutPipe = stdoutPipe
 	t.stdout = bufio.NewScanner(stdoutPipe)
-	t.stdout.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	t.stdout.Buffer(make([]byte, 0, stdoutBufferSize), stdoutBufferSize)
 
 	t.stderr, err = t.cmd.StderrPipe()
 	if err != nil {
+		_ = t.stdin.Close()
+		_ = t.stdoutPipe.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := t.cmd.Start(); err != nil {
+		_ = t.stdin.Close()
+		_ = t.stdoutPipe.Close()
+		_ = t.stderr.Close()
 		return fmt.Errorf("start process: %w", err)
 	}
 

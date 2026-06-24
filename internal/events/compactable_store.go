@@ -70,8 +70,8 @@ func (s *CompactableEventStore) Append(
 		return err
 	}
 
-	// Async compaction check — don't block the Append caller.
-	go s.maybeCompact(ctx, streamID)
+	// Detach from caller's context to prevent premature cancellation of compaction.
+	go s.maybeCompact(context.WithoutCancel(ctx), streamID)
 
 	return nil
 }
@@ -117,9 +117,12 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 	return synthetic, nil
 }
 
+// Debounce divisor: skip compaction check until version advances by at least
+// threshold/4 since the last check, reducing redundant I/O on busy streams.
+const compactionCheckDivisor = 4
+
 // maybeCompact checks if a stream needs compaction and runs it if so.
 // Uses debouncing to avoid redundant checks on every Append.
-// The context is derived from the Append caller's context for cancellation.
 func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID string) {
 	// Get version outside the lock to avoid holding mu during I/O.
 	version, err := s.StreamVersion(ctx, streamID)
@@ -132,7 +135,7 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	lastCheck := s.lastChecked[streamID]
 	threshold := s.compactor.config.Threshold
 
-	if version <= int64(threshold) || version-lastCheck < int64(threshold)/4 {
+	if version <= int64(threshold) || version-lastCheck < int64(threshold)/compactionCheckDivisor {
 		s.mu.Unlock()
 		return
 	}

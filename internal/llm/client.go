@@ -36,6 +36,7 @@ func (e *HTTPError) Error() string {
 type ProviderType string
 
 const (
+	ProviderOpenAI     ProviderType = "openai"
 	ProviderOpenRouter ProviderType = "openrouter"
 	ProviderOllama     ProviderType = "ollama"
 
@@ -222,7 +223,7 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	}
 
 	switch ProviderType(c.config.Provider) {
-	case ProviderOpenRouter:
+	case ProviderOpenAI, ProviderOpenRouter:
 		result, err = c.generateOpenRouter(ctx, prompt)
 	case ProviderOllama:
 		result, err = c.generateOllama(ctx, prompt)
@@ -421,7 +422,7 @@ func (c *Client) IsEnabled() bool {
 	}
 
 	switch ProviderType(c.config.Provider) {
-	case ProviderOpenRouter:
+	case ProviderOpenAI, ProviderOpenRouter:
 		return c.config.APIKey != ""
 	case ProviderOllama:
 		return true // Ollama doesn't require API key
@@ -460,7 +461,7 @@ func NewClientFromEnv() (*Client, error) {
 		config.Provider = "ollama"
 	}
 	if config.BaseURL == "" {
-		if config.Provider == "openrouter" {
+		if config.Provider == "openrouter" || config.Provider == "openai" {
 			config.BaseURL = DefaultOpenRouterBaseURL
 		} else {
 			config.BaseURL = DefaultOllamaBaseURL
@@ -550,7 +551,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	}
 
 	switch ProviderType(c.config.Provider) {
-	case ProviderOpenRouter:
+	case ProviderOpenAI, ProviderOpenRouter:
 		rawCh, err = c.streamOpenRouter(ctx, prompt)
 	case ProviderOllama:
 		rawCh, err = c.streamOllama(ctx, prompt)

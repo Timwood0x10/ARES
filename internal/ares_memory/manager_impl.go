@@ -56,6 +56,9 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 	if config == nil {
 		config = DefaultMemoryConfig()
 	}
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
 
 	sessionMemory := memctx.NewSessionMemory(
 		config.MaxSessions,
@@ -91,6 +94,9 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.EmbeddingService, expRepo distillation.ExperienceRepository) (MemoryManager, error) {
 	if config == nil {
 		config = DefaultMemoryConfig()
+	}
+	if err := config.validate(); err != nil {
+		return nil, err
 	}
 
 	sessionMemory := memctx.NewSessionMemory(

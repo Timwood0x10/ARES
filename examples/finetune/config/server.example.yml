@@ -3,20 +3,20 @@
 # Uses "openrouter" provider for any OpenAI-compatible API (Sensenova, OpenAI, etc.)
 
 llm:
-  provider: "openai"
-  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
-  model: "sensenova-6.7-flash-lite"
-  base_url: "https://token.sensenova.cn/v1"
+  provider: "openrouter"
+  api_key: "KEY"
+  model: "MODEL"
+  base_url: "URL"
   temperature: 0.3
   max_tokens: 500
   timeout: 30                  # seconds (yaml key must match struct tag: "timeout", not "timeout_seconds")
   scorer_api_rate: 10          # LLM scorer: requests per second
   scorer_api_burst: 20         # LLM scorer: burst size
   fallbacks:
-    - provider: "openai"
-      api_key: "2oid20ODpluxOC5H4fd4HuDalxynxLUbb8ULfJ2yRFwzWERDToD6ttnUOAYMSnEOO"
-      model: "step-3.7-flash"
-      base_url: "https://api.stepfun.com/v1"
+    - provider: "openrouter"
+      api_key: "KEY"
+      model: "MODEL"
+      base_url: "URL"
       temperature: 0.3
       max_tokens: 500
       timeout: 30
