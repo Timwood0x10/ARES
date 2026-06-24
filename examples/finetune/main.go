@@ -442,6 +442,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *con
 			BaseURL:  appCfg.LLM.BaseURL,
 			Model:    appCfg.LLM.Model,
 			Timeout:  appCfg.LLM.Timeout,
+			Extra:    appCfg.LLM.Extra,
 		}
 		// Build config list: primary first, then fallbacks.
 		llmConfigs := []*llm.Config{llmCfg}
@@ -456,7 +457,15 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *con
 			})
 		}
 
-		scorer, scorerErr := llm.NewFailoverScorer(llmConfigs, 30*time.Second,
+		// Calculate FailoverScorer timeout with minimum threshold for evolution scenarios.
+		// Use configured LLM timeout, but ensure at least 60s for evolution workloads
+		// that require multiple serial LLM calls per generation.
+		scorerTimeout := time.Duration(appCfg.LLM.Timeout) * time.Second
+		if scorerTimeout < 60*time.Second {
+			scorerTimeout = 60 * time.Second
+		}
+
+		scorer, scorerErr := llm.NewFailoverScorer(llmConfigs, scorerTimeout,
 			appCfg.LLM.ScorerAPIRate, appCfg.LLM.ScorerAPIBurst)
 		if scorerErr != nil {
 			slog.Warn("LLM scorer not available, falling back to heuristic only",

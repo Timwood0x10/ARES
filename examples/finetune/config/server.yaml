@@ -16,7 +16,17 @@ llm:
     - provider: "openai"
       api_key: "2oid20ODpluxOC5H4fd4HuDalxynxLUbb8ULfJ2yRFwzWERDToD6ttnUOAYMSnEOO"
       model: "step-3.7-flash"
-      base_url: "https://api.stepfun.com/v1"
+      # https://api.stepfun.com/step_plan/v1/chat/completions
+      base_url: "https://api.stepfun.com/step_plan/v1"
       temperature: 0.3
       max_tokens: 500
       timeout: 30
+
+    # - provider:"Anthropic"
+    #   api_key: "2oid20ODpluxOC5H4fd4HuDalxynxLUbb8ULfJ2yRFwzWERDToD6ttnUOAYMSnEOO"
+    #   model: "step-router-v1"
+    #   #  https://api.stepfun.com/step_plan/v1/messages
+    #   base_url: "https://api.stepfun.com/step_plan/v1/"
+    #   temperature: 0.3
+    #   max_tokens: 500
+    #   timeout: 30

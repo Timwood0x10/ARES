@@ -21,6 +21,14 @@ import (
 	"github.com/Timwood0x10/ares/internal/ratelimit"
 )
 
+// Default configuration constants for LLM client.
+const (
+	defaultTimeoutSeconds = 60
+	maxPromptLength       = 8192
+	defaultStreamBuffer   = 64
+	defaultMaxTokens      = 4096
+)
+
 // HTTPError represents an HTTP request error.
 type HTTPError struct {
 	StatusCode int
@@ -119,9 +127,12 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 	if config == nil {
 		return nil, coreerrors.ErrInvalidArgument
 	}
+	if config.Model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
 
 	if config.Timeout <= 0 {
-		config.Timeout = 60
+		config.Timeout = defaultTimeoutSeconds
 	}
 
 	c := &Client{
@@ -144,6 +155,28 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// validatePrompt checks prompt constraints and records errors on failure.
+// Returns nil on success, or an error describing the first violated constraint.
+func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.Time) error {
+	if prompt == "" {
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return err
+	}
+	trimmed := bytes.TrimSpace([]byte(prompt))
+	if len(trimmed) == 0 {
+		err := coreerrors.ErrInvalidArgument
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return err
+	}
+	if len(prompt) > maxPromptLength {
+		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		return err
+	}
+	return nil
+}
+
 // Generate sends a text generation request to the LLM.
 // Args:
 // ctx - operation context.
@@ -163,39 +196,7 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 		Input: prompt,
 	})
 
-	// Validate prompt input
-	if prompt == "" {
-		err := coreerrors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
-			Model: model,
-			Input: prompt,
-			Error: err,
-		})
-		return "", err
-	}
-
-	// Check if prompt is too long (max 8192 characters)
-	const maxPromptLength = 8192
-	if len(prompt) > maxPromptLength {
-		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
-			Model: model,
-			Input: prompt,
-			Error: err,
-		})
-		return "", err
-	}
-
-	// Check if prompt contains only whitespace
-	trimmed := []byte(prompt)
-	trimmed = bytes.TrimSpace(trimmed)
-	if len(trimmed) == 0 {
-		err := coreerrors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+	if err := c.validatePrompt(ctx, prompt, start); err != nil {
 		c.emitCallback(&callbacks.Context{
 			Event: callbacks.EventLLMError,
 			Model: model,
@@ -299,7 +300,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 			},
 		},
 		"temperature": 0.7,
-		"max_tokens":  4096, // Increased for code generation
+		"max_tokens":  defaultMaxTokens,
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -362,7 +363,7 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 		"stream": false,
 		"options": map[string]interface{}{
 			"temperature": 0.7,
-			"num_predict": 4096, // Increased for code generation
+			"num_predict": defaultMaxTokens,
 		},
 	}
 
@@ -494,36 +495,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		model = c.config.Model
 	}
 
-	if prompt == "" {
-		err := coreerrors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
-			Model: model,
-			Input: prompt,
-			Error: err,
-		})
-		return nil, err
-	}
-
-	trimmed := []byte(prompt)
-	trimmed = bytes.TrimSpace(trimmed)
-	if len(trimmed) == 0 {
-		err := coreerrors.ErrInvalidArgument
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
-			Model: model,
-			Input: prompt,
-			Error: err,
-		})
-		return nil, err
-	}
-
-	const maxPromptLength = 8192
-	if len(prompt) > maxPromptLength {
-		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+	if err := c.validatePrompt(ctx, prompt, start); err != nil {
 		c.emitCallback(&callbacks.Context{
 			Event: callbacks.EventLLMError,
 			Model: model,
@@ -578,7 +550,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	})
 
 	// Wrap the channel to record the LLM call when streaming completes.
-	ch := make(chan StreamChunk, 64)
+	ch := make(chan StreamChunk, defaultStreamBuffer)
 	go func() {
 		defer close(ch)
 		var fullResponse string
@@ -630,7 +602,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 		"stream": true,
 		"options": map[string]interface{}{
 			"temperature": 0.7,
-			"num_predict": 4096,
+			"num_predict": defaultMaxTokens,
 		},
 	}
 
@@ -665,7 +637,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 		return nil, fmt.Errorf("ollama stream error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	ch := make(chan StreamChunk, 64)
+	ch := make(chan StreamChunk, defaultStreamBuffer)
 
 	go func() {
 		defer close(ch)
@@ -718,7 +690,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0.7,
-		"max_tokens":  4096,
+		"max_tokens":  defaultMaxTokens,
 		"stream":      true,
 	}
 
@@ -750,7 +722,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 		return nil, fmt.Errorf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	ch := make(chan StreamChunk, 64)
+	ch := make(chan StreamChunk, defaultStreamBuffer)
 
 	go func() {
 		defer close(ch)

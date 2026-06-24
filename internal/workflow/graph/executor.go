@@ -20,6 +20,9 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
+	if state == nil {
+		return nil, fmt.Errorf("state cannot be nil")
+	}
 
 	g.mu.RLock()
 	defer g.mu.RUnlock()

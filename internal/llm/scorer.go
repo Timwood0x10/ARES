@@ -92,10 +92,15 @@ func NewFailoverScorer(configs []*Config, timeout time.Duration, rate float64, b
 
 // Generate tries each LLM client in order and returns the first successful response.
 // If all clients fail, returns an error with details of the last failure.
+//
+// Timeout behavior: The per-call timeout (fs.timeout) is applied via context.
+// This timeout should be configured LARGER than each client's httpClient.Timeout
+// to account for rate limiter wait time. Recommended: fs.timeout >= max(client.Timeout) + 10s.
 func (fs *FailoverScorer) Generate(ctx context.Context, prompt string) (string, error) {
 	var lastErr error
 
 	for i, client := range fs.clients {
+		// Apply per-call timeout via context. This covers rate limiter wait + HTTP request.
 		cctx, cancel := context.WithTimeout(ctx, fs.timeout)
 		resp, err := client.Generate(cctx, prompt)
 		cancel()

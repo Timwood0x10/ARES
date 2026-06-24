@@ -214,39 +214,62 @@ func main() {
 	router := &TicketRouter{id: "router"}
 
 	// Build support ticket processing workflow
-	g := wfgraph.NewGraph("support-workflow").
-		// Validate ticket
-		Node("validate", wfgraph.NewFuncNode("validate", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("1. Validating ticket...")
-			ticketVal, _ := state.Get("ticket")
-			ticket := ticketVal.(*SupportTicket)
-			if ticket.Message == "" {
-				return fmt.Errorf("ticket message cannot be empty")
-			}
-			fmt.Printf("   ✓ Ticket %s validated\n", ticket.ID)
-			// Pass ticket to next node via "input"
-			state.Set("input", ticket)
-			return nil
-		})).
-		// Classify ticket
-		Node("classify", wfgraph.NewAgentNode(classifier)).
-		// Analyze priority
-		Node("prioritize", wfgraph.NewAgentNode(priorityAnalyzer)).
-		// Route to appropriate team
-		Node("route", wfgraph.NewAgentNode(router)).
-		// Log the result
-		Node("log", wfgraph.NewFuncNode("log", func(ctx context.Context, state *wfgraph.State) error {
-			fmt.Println("4. Logging ticket resolution...")
-			result, _ := state.Get("node.router")
-			fmt.Printf("   ✓ %s\n", result)
-			return nil
-		})).
-		// Define workflow edges
-		Edge("validate", "classify").
-		Edge("classify", "prioritize").
-		Edge("prioritize", "route").
-		Edge("route", "log").
-		Start("validate")
+	g, err2 := wfgraph.NewGraph("support-workflow")
+	if err2 != nil {
+		log.Fatalf("failed to create graph: %v", err2)
+	}
+	addNode := func(id string, n wfgraph.Node) {
+		if _, err := g.Node(id, n); err != nil {
+			log.Fatalf("failed to add node %s: %v", id, err)
+		}
+	}
+	addEdge := func(from, to string) {
+		if _, err := g.Edge(from, to); err != nil {
+			log.Fatalf("failed to add edge %s->%s: %v", from, to, err)
+		}
+	}
+	newFuncNode := func(id string, fn func(context.Context, *wfgraph.State) error) wfgraph.Node {
+		n, err := wfgraph.NewFuncNode(id, fn)
+		if err != nil {
+			log.Fatalf("failed to create func node: %v", err)
+		}
+		return n
+	}
+	mustAgentNode := func(id string, agent base.Agent) {
+		n, err := wfgraph.NewAgentNode(agent)
+		if err != nil {
+			log.Fatalf("failed to create agent node %s: %v", id, err)
+		}
+		addNode(id, n)
+	}
+
+	addNode("validate", newFuncNode("validate", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("1. Validating ticket...")
+		ticketVal, _ := state.Get("ticket")
+		ticket := ticketVal.(*SupportTicket)
+		if ticket.Message == "" {
+			return fmt.Errorf("ticket message cannot be empty")
+		}
+		fmt.Printf("   ✓ Ticket %s validated\n", ticket.ID)
+		state.Set("input", ticket)
+		return nil
+	}))
+	mustAgentNode("classify", classifier)
+	mustAgentNode("prioritize", priorityAnalyzer)
+	mustAgentNode("route", router)
+	addNode("log", newFuncNode("log", func(ctx context.Context, state *wfgraph.State) error {
+		fmt.Println("4. Logging ticket resolution...")
+		result, _ := state.Get("node.router")
+		fmt.Printf("   ✓ %s\n", result)
+		return nil
+	}))
+	addEdge("validate", "classify")
+	addEdge("classify", "prioritize")
+	addEdge("prioritize", "route")
+	addEdge("route", "log")
+	if _, err := g.Start("validate"); err != nil {
+		log.Fatalf("failed to set start: %v", err)
+	}
 
 	// Process sample tickets
 	tickets := []*SupportTicket{

@@ -39,14 +39,19 @@ func main() {
 
 func runWithDefaultScheduler(service *graph.Service) {
 	executionOrder := []string{}
-
-	g := wfgraph.NewGraph("fifo-example").
-		Node("node1", createTimingNode("node1", 50*time.Millisecond, &executionOrder)).
-		Node("node2", createTimingNode("node2", 30*time.Millisecond, &executionOrder)).
-		Node("node3", createTimingNode("node3", 20*time.Millisecond, &executionOrder)).
-		Edge("node1", "node2").
-		Edge("node2", "node3").
-		Start("node1")
+	g := newSchedulerGraph("fifo-example", &executionOrder,
+		[]timingNode{
+			{"node1", 50 * time.Millisecond},
+			{"node2", 30 * time.Millisecond},
+			{"node3", 20 * time.Millisecond},
+		},
+		[]stringEdge{
+			{"node1", "node2"},
+			{"node2", "node3"},
+		},
+		"node1",
+		nil, nil,
+	)
 
 	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
 		GraphID: "fifo-example",
@@ -61,19 +66,24 @@ func runWithDefaultScheduler(service *graph.Service) {
 
 func runWithPriorityScheduler(service *graph.Service) {
 	executionOrder := []string{}
-
-	g := wfgraph.NewGraph("priority-example").
-		Node("low_priority", createTimingNode("low_priority", 50*time.Millisecond, &executionOrder)).
-		Node("high_priority", createTimingNode("high_priority", 30*time.Millisecond, &executionOrder)).
-		Node("medium_priority", createTimingNode("medium_priority", 40*time.Millisecond, &executionOrder)).
-		Edge("low_priority", "medium_priority").
-		Edge("high_priority", "medium_priority").
-		SetScheduler(wfgraph.NewPriorityScheduler(map[string]int{
+	g := newSchedulerGraph("priority-example", &executionOrder,
+		[]timingNode{
+			{"low_priority", 50 * time.Millisecond},
+			{"high_priority", 30 * time.Millisecond},
+			{"medium_priority", 40 * time.Millisecond},
+		},
+		[]stringEdge{
+			{"low_priority", "medium_priority"},
+			{"high_priority", "medium_priority"},
+		},
+		"low_priority",
+		wfgraph.NewPriorityScheduler(map[string]int{
 			"low_priority":    1,
 			"medium_priority": 5,
 			"high_priority":   10,
-		})).
-		Start("low_priority")
+		}),
+		nil,
+	)
 
 	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
 		GraphID: "priority-example",
@@ -88,19 +98,24 @@ func runWithPriorityScheduler(service *graph.Service) {
 
 func runWithShortJobScheduler(service *graph.Service) {
 	executionOrder := []string{}
-
-	g := wfgraph.NewGraph("sjf-example").
-		Node("slow_job", createTimingNode("slow_job", 100*time.Millisecond, &executionOrder)).
-		Node("fast_job", createTimingNode("fast_job", 20*time.Millisecond, &executionOrder)).
-		Node("medium_job", createTimingNode("medium_job", 50*time.Millisecond, &executionOrder)).
-		Edge("slow_job", "medium_job").
-		Edge("fast_job", "medium_job").
-		SetScheduler(wfgraph.NewShortJobScheduler(map[string]int{
+	g := newSchedulerGraph("sjf-example", &executionOrder,
+		[]timingNode{
+			{"slow_job", 100 * time.Millisecond},
+			{"fast_job", 20 * time.Millisecond},
+			{"medium_job", 50 * time.Millisecond},
+		},
+		[]stringEdge{
+			{"slow_job", "medium_job"},
+			{"fast_job", "medium_job"},
+		},
+		"slow_job",
+		wfgraph.NewShortJobScheduler(map[string]int{
 			"slow_job":   100,
 			"fast_job":   20,
 			"medium_job": 50,
-		})).
-		Start("slow_job")
+		}),
+		nil,
+	)
 
 	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
 		GraphID: "sjf-example",
@@ -113,11 +128,47 @@ func runWithShortJobScheduler(service *graph.Service) {
 	fmt.Printf("Duration: %v\n", response.Duration)
 }
 
-func createTimingNode(id string, duration time.Duration, order *[]string) *wfgraph.FuncNode {
-	return wfgraph.NewFuncNode(id, func(ctx context.Context, state *wfgraph.State) error {
-		fmt.Printf("  - Executing %s (estimated %v)\n", id, duration)
-		time.Sleep(duration)
-		*order = append(*order, id)
-		return nil
-	})
+type timingNode struct {
+	id       string
+	duration time.Duration
+}
+
+type stringEdge struct {
+	from string
+	to   string
+}
+
+func newSchedulerGraph(id string, order *[]string, nodes []timingNode, edges []stringEdge, start string, scheduler wfgraph.Scheduler, limiter wfgraph.Scheduler) *wfgraph.Graph {
+	g, err := wfgraph.NewGraph(id)
+	if err != nil {
+		log.Fatalf("failed to create graph: %v", err)
+	}
+	for _, n := range nodes {
+		fn, err := wfgraph.NewFuncNode(n.id, func(ctx context.Context, state *wfgraph.State) error {
+			fmt.Printf("  - Executing %s (estimated %v)\n", n.id, n.duration)
+			time.Sleep(n.duration)
+			*order = append(*order, n.id)
+			return nil
+		})
+		if err != nil {
+			log.Fatalf("failed to create node: %v", err)
+		}
+		if _, err = g.Node(n.id, fn); err != nil {
+			log.Fatalf("failed to add node: %v", err)
+		}
+	}
+	for _, e := range edges {
+		if _, err = g.Edge(e.from, e.to); err != nil {
+			log.Fatalf("failed to add edge: %v", err)
+		}
+	}
+	if scheduler != nil {
+		if _, err = g.SetScheduler(scheduler); err != nil {
+			log.Fatalf("failed to set scheduler: %v", err)
+		}
+	}
+	if _, err = g.Start(start); err != nil {
+		log.Fatalf("failed to set start: %v", err)
+	}
+	return g
 }

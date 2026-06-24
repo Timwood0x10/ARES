@@ -155,7 +155,7 @@ func TestClient_GenerateStream_OpenRouter(t *testing.T) {
 
 // TestClient_GenerateStream_EmptyPrompt tests empty prompt rejection.
 func TestClient_GenerateStream_EmptyPrompt(t *testing.T) {
-	client, err := NewClient(&Config{Provider: "ollama", Timeout: 5})
+	client, err := NewClient(&Config{Provider: "ollama", Model: "llama3.2", Timeout: 5})
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestClient_GenerateStream_EmptyPrompt(t *testing.T) {
 
 // TestClient_GenerateStream_UnsupportedProvider tests unsupported provider.
 func TestClient_GenerateStream_UnsupportedProvider(t *testing.T) {
-	client, err := NewClient(&Config{Provider: "unknown", Timeout: 5})
+	client, err := NewClient(&Config{Provider: "unknown", Model: "llama3.2", Timeout: 5})
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestClient_GenerateStream_HTTPError(t *testing.T) {
 
 // TestClient_GenerateStream_WhitespaceOnlyPrompt tests whitespace-only prompt rejection.
 func TestClient_GenerateStream_WhitespaceOnlyPrompt(t *testing.T) {
-	client, err := NewClient(&Config{Provider: "ollama", Timeout: 5})
+	client, err := NewClient(&Config{Provider: "ollama", Model: "llama3.2", Timeout: 5})
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}

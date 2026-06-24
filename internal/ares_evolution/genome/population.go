@@ -986,13 +986,9 @@ func (p *Population) updateBestEverLocked() {
 	}
 }
 
-// Best returns the highest-scoring strategy in the current population.
-// If multiple strategies share the same highest score, the first one
-// encountered during iteration is returned.
-//
-// Returns:
-//
-//	*mutation.Strategy - the best strategy, or nil if the population is empty.
+// Best returns a deep clone of the highest-scoring strategy in the current population.
+// Returns nil if the population is empty. The clone ensures callers cannot accidentally
+// corrupt the population state, consistent with BestStrategy() and Snapshot().
 func (p *Population) Best() *mutation.Strategy {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -1008,7 +1004,7 @@ func (p *Population) Best() *mutation.Strategy {
 		}
 	}
 
-	return best
+	return best.Clone()
 }
 
 // EvolveOnIdle runs a simplified evolution cycle triggered during system idle time.

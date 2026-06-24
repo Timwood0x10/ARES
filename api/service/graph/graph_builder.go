@@ -58,7 +58,10 @@ func (b *GraphBuilder) Build(config *GraphConfig) (*wfgraph.Graph, error) {
 	gdef := &config.Graph
 
 	// Create new graph
-	g := wfgraph.NewGraph(gdef.ID)
+	g, err := wfgraph.NewGraph(gdef.ID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create graph")
+	}
 
 	// Build nodes
 	for _, nodeConfig := range gdef.Nodes {
@@ -66,7 +69,9 @@ func (b *GraphBuilder) Build(config *GraphConfig) (*wfgraph.Graph, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to build node '%s'", nodeConfig.ID)
 		}
-		g.Node(nodeConfig.ID, node)
+		if _, err = g.Node(nodeConfig.ID, node); err != nil {
+			return nil, errors.Wrapf(err, "failed to add node '%s'", nodeConfig.ID)
+		}
 	}
 
 	// Build edges
@@ -77,15 +82,21 @@ func (b *GraphBuilder) Build(config *GraphConfig) (*wfgraph.Graph, error) {
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to parse condition for edge %s -> %s", edgeConfig.From, edgeConfig.To)
 			}
-			g.Edge(edgeConfig.From, edgeConfig.To, cond)
+			if _, err = g.Edge(edgeConfig.From, edgeConfig.To, cond); err != nil {
+				return nil, errors.Wrapf(err, "failed to add edge %s -> %s", edgeConfig.From, edgeConfig.To)
+			}
 		} else {
 			// Unconditional edge
-			g.Edge(edgeConfig.From, edgeConfig.To)
+			if _, err = g.Edge(edgeConfig.From, edgeConfig.To); err != nil {
+				return nil, errors.Wrapf(err, "failed to add edge %s -> %s", edgeConfig.From, edgeConfig.To)
+			}
 		}
 	}
 
 	// Set start node
-	g.Start(gdef.StartNode)
+	if _, err = g.Start(gdef.StartNode); err != nil {
+		return nil, errors.Wrap(err, "failed to set start node")
+	}
 
 	return g, nil
 }
@@ -131,7 +142,7 @@ func (b *GraphBuilder) buildFuncNode(config Node) (wfgraph.Node, error) {
 		return nil
 	}
 
-	return wfgraph.NewFuncNode(config.ID, fn), nil
+	return wfgraph.NewFuncNode(config.ID, fn)
 }
 
 func compareFloats(op string) func(a, b any) bool {
@@ -248,7 +259,7 @@ func (b *GraphBuilder) buildAgentNode(config Node) (wfgraph.Node, error) {
 		return nil, fmt.Errorf("agent '%s' not registered", agentID)
 	}
 
-	return wfgraph.NewAgentNode(agent), nil
+	return wfgraph.NewAgentNode(agent)
 }
 
 // buildToolNode builds a tool node.
@@ -278,7 +289,7 @@ func (b *GraphBuilder) buildToolNode(config Node) (wfgraph.Node, error) {
 		return nil, fmt.Errorf("tool '%s' does not implement core.Tool interface", toolID)
 	}
 
-	return wfgraph.NewToolNode(toolImpl), nil
+	return wfgraph.NewToolNode(toolImpl)
 }
 
 // BuildWithService creates a complete graph service from configuration.
