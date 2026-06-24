@@ -18,70 +18,79 @@ Go-based multi-agent framework with DAG workflow orchestration, memory distillat
 
 ```mermaid
 graph TB
-    User[User Request] --> RT
+    User["User Request"] --> RT
 
-    subgraph runtime [Runtime Layer]
-        RT[Runtime Manager]
+    subgraph runtime ["Runtime Layer"]
+        RT["Runtime Manager"]
         RT -->|"manages lifecycle"| Leader
-        RT -->|"replays"| ES[EventStore]
-        RT -->|"restores"| MM[MemoryStore]
+        RT -->|"replays"| ES["EventStore"]
+        RT -->|"restores"| MM["MemoryStore"]
     end
 
-    subgraph agents [Agent System]
-        Leader[Leader Agent]
-        SubA[Sub Agent A]
-        SubB[Sub Agent B]
-        SubC[Sub Agent C]
-        Leader -->|AHP Protocol| SubA
-        Leader -->|AHP Protocol| SubB
-        Leader -->|AHP Protocol| SubC
-        Supervisor[Supervisor]
-        Leader -.->|Checkpoint Recovery| Supervisor
+    subgraph agents ["Agent System"]
+        direction TB
+        Leader["Leader Agent"]
+        SubA["Sub Agent A"]
+        SubB["Sub Agent B"]
+        SubC["Sub Agent C"]
+        Leader -->|"AHP Protocol"| SubA
+        Leader -->|"AHP Protocol"| SubB
+        Leader -->|"AHP Protocol"| SubC
+        Supervisor["Supervisor"]
+        Leader -.->|"Checkpoint Recovery"| Supervisor
     end
 
-    subgraph workflow [Workflow Engine]
-        MutableDAG[MutableDAG]
-        DynamicExec[DynamicExecutor]
+    subgraph workflow ["Workflow Engine"]
+        MutableDAG["MutableDAG"]
+        DynamicExec["DynamicExecutor"]
         MutableDAG --> DynamicExec
-        DynamicExec --> TopoSort[Topological Sort]
-        DynamicExec --> CycleDetect[Cycle Detection]
+        DynamicExec --> TopoSort["Topological Sort"]
+        DynamicExec --> CycleDetect["Cycle Detection"]
     end
 
-    subgraph llm [LLM Layer]
-        Adapters[Output Adapters]
-        Templates[Prompt Templates]
-        Parser[Function Call Parser]
+    subgraph llm ["LLM Layer"]
+        Adapters["Output Adapters"]
+        Templates["Prompt Templates"]
+        Parser["Function Call Parser"]
     end
 
-    subgraph mem [Memory Manager]
-        Session[Session Memory]
-        Task[Task Memory]
-        Distilled[Distilled Memory]
-        Session --> Pipeline[Distillation Pipeline]
+    subgraph mem ["Memory Manager"]
+        Session["Session Memory"]
+        Task["Task Memory"]
+        Distilled["Distilled Memory"]
+        Session --> Pipeline["Distillation Pipeline"]
         Task --> Pipeline
         Pipeline --> Distilled
     end
 
-    subgraph evo [Evolution Engine]
-        Pop[GA Population]
-        Score[Scoring Pipeline]
-        Cross[Crossover]
-        Mut[Mutation]
+    subgraph evo ["Evolution Engine"]
+        Pop["GA Population"]
+        Score["Scoring Pipeline"]
+        Cross["Crossover"]
+        Mut["Mutation"]
         Pop --> Score
         Score --> Cross
         Cross --> Mut
         Mut --> Pop
     end
 
-    subgraph stor [Storage Layer]
-        VS[VectorStore Interface]
-        PG[(PostgreSQL + pgvector)]
-        MEM[(In-Memory)]
-        QD[(Qdrant)]
-        SQL[(SQLite + sqlite-vec)]
-        CUSTOM[(Your Backend)]
-        Cache[Cache]
-        CB[Circuit Breaker]
+    subgraph hitl ["Human-in-the-Loop"]
+        IH["Interrupt Handler"]
+        IS["Interrupt Store"]
+        AW["Approval Workflow"]
+        IH --> IS
+        IH --> AW
+    end
+
+    subgraph stor ["Storage Layer"]
+        VS["VectorStore Interface"]
+        PG[("PostgreSQL + pgvector")]
+        MEM[("In-Memory")]
+        QD[("Qdrant")]
+        SQL[("SQLite + sqlite-vec")]
+        CUSTOM[("Your Backend")]
+        Cache["Cache"]
+        CB["Circuit Breaker"]
         VS --> PG
         VS --> MEM
         VS --> QD
@@ -91,24 +100,34 @@ graph TB
         Cache --> CB
     end
 
-    subgraph tools [Tool System]
-        Registry[Tool Registry]
-        MCP[MCP Manager]
-        MCP_Ext[MCP Servers]
+    subgraph tools ["Tool System"]
+        Registry["Tool Registry"]
+        MCP["MCP Manager"]
+        MCP_Ext["MCP Servers"]
         Registry --> MCP
-        MCP -->|stdio/SSE| MCP_Ext
+        MCP -->|"stdio/SSE"| MCP_Ext
     end
 
-    subgraph obs [Observability]
-        Dashboard[Web Dashboard]
-        Flight[Flight Recorder]
-        Genealogy[Agent Genealogy]
+    subgraph obs ["Observability"]
+        Dashboard["Web Dashboard"]
+        Flight["Flight Recorder"]
+        Genealogy["Agent Genealogy"]
     end
 
-    subgraph cb [Callbacks]
-        Handler[Handler Registry]
-        Events[Lifecycle Events]
+    subgraph cb ["Callbacks"]
+        Handler["Handler Registry"]
+        Events["Lifecycle Events"]
     end
+
+    subgraph arena ["Chaos Engineering"]
+        FI["Fault Injector"]
+        RS["Resilience Scoring"]
+        SM["Survival Mode"]
+        FI --> RS
+        RS --> SM
+    end
+
+    EmbedSvc["Embedding Service"]
 
     evo -->|"stores results"| Distilled
     evo -->|"uses"| Score
@@ -118,24 +137,58 @@ graph TB
     Leader --> Registry
     Leader --> Adapters
     Leader --> cb
+    Leader --> IH
     Session --> VS
     Registry --> VS
+    VS -.->|"embeds via"| EmbedSvc
 
-    obs -.->|monitor| RT
-    obs -.->|monitor| Leader
-    obs -.->|monitor| MutableDAG
+    obs -.->|"monitor"| RT
+    obs -.->|"monitor"| Leader
+    obs -.->|"monitor"| MutableDAG
+    arena -.->|"stress test"| RT
+    arena -.->|"stress test"| Leader
 ```
 
-### Memory Distillation Pipeline
+### Data Flow
+
+#### Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant RT as Runtime
+    participant L as Leader Agent
+    participant SA as Sub Agents
+    participant T as Tools / MCP
+    participant LLM as LLM
+    participant M as Memory Store
+
+    U->>RT: 1. Request
+    RT->>L: 2. Dispatch
+    L->>L: 3. Plan (DAG)
+    L->>SA: 4. AHP Tasks
+    SA->>LLM: 5. LLM Call
+    SA->>T: 6. Tool/MCP Call
+    T-->>SA: 7. Tool Result
+    LLM-->>SA: 8. LLM Response
+    SA-->>L: 9. Aggregate
+    L-->>RT: 10. Response
+    RT-->>U: 11. Final Response
+    L->>M: 12. Store Experiences
+```
+
+Request routed through Runtime → Leader plan with DAG → Sub Agents execute (LLM + Tools) → results aggregated and returned.
+
+#### Memory Distillation Pipeline
 
 ```mermaid
 flowchart LR
-    A[Extract] --> B[Classify]
-    B --> C[Score]
-    C --> D[Denoise]
-    D --> E[Conflict Resolution]
-    E --> F[Capacity Cap]
-    F --> Distilled[(Distilled Memory)]
+    A["Extract"] --> B["Classify"]
+    B --> C["Score"]
+    C --> D["Denoise"]
+    D --> E["Conflict Resolution"]
+    E --> F["Capacity Cap"]
+    F --> Distilled[("Distilled Memory")]
 ```
 
 6-step pipeline: extract experiences from raw interactions, classify by type, score relevance, filter noise, resolve conflicts with existing memories, and enforce capacity limits.

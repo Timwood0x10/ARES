@@ -28,19 +28,30 @@ graph TB
     end
 
     subgraph agents ["Agent 系统"]
-        Leader[Leader Agent]
-        Leader -->|"AHP 协议"| SubA[Sub Agent A]
-        Leader -->|"AHP 协议"| SubB[Sub Agent B]
-        Leader -->|"AHP 协议"| SubC[Sub Agent C]
-        Leader -.->|"Checkpoint 恢复"| Supervisor[Supervisor]
+        direction TB
+        Leader["Leader Agent"]
+        SubA["Sub Agent A"]
+        SubB["Sub Agent B"]
+        SubC["Sub Agent C"]
+        Leader -->|"AHP 协议"| SubA
+        Leader -->|"AHP 协议"| SubB
+        Leader -->|"AHP 协议"| SubC
+        Supervisor["Supervisor"]
+        Leader -.->|"Checkpoint 恢复"| Supervisor
     end
 
     subgraph workflow ["工作流引擎"]
-        MutableDAG[MutableDAG]
-        DynamicExec[DynamicExecutor]
+        MutableDAG["MutableDAG"]
+        DynamicExec["DynamicExecutor"]
         MutableDAG --> DynamicExec
         DynamicExec --> TopoSort["拓扑排序"]
         DynamicExec --> CycleDetect["环检测"]
+    end
+
+    subgraph llm ["LLM 层"]
+        Adapters["输出适配器"]
+        Templates["Prompt 模板"]
+        Parser["函数调用解析"]
     end
 
     subgraph mem ["记忆管理"]
@@ -50,6 +61,25 @@ graph TB
         Session --> Pipeline["蒸馏管线"]
         Task --> Pipeline
         Pipeline --> Distilled
+    end
+
+    subgraph evo ["进化引擎"]
+        Pop["GA 种群"]
+        Score["评分管线"]
+        Cross["交叉"]
+        Mut["变异"]
+        Pop --> Score
+        Score --> Cross
+        Cross --> Mut
+        Mut --> Pop
+    end
+
+    subgraph hitl ["人工审批"]
+        IH["Interrupt 处理器"]
+        IS["Interrupt 存储"]
+        AW["审批工作流"]
+        IH --> IS
+        IH --> AW
     end
 
     subgraph stor ["存储层"]
@@ -72,18 +102,84 @@ graph TB
 
     subgraph tools ["工具系统"]
         Registry["工具注册"]
-        Matcher["能力匹配"]
-        Validator["参数校验"]
+        MCP["MCP 管理器"]
+        MCP_Ext["MCP 服务器"]
+        Registry --> MCP
+        MCP -->|"stdio/SSE"| MCP_Ext
     end
+
+    subgraph obs ["可观测性"]
+        Dashboard["Web 面板"]
+        Flight["Flight Recorder"]
+        Genealogy["Agent 谱系"]
+    end
+
+    subgraph cb ["回调系统"]
+        Handler["处理器注册"]
+        Events["生命周期事件"]
+    end
+
+    subgraph arena ["混沌工程"]
+        FI["故障注入器"]
+        RS["弹性评分"]
+        SM["存活模式"]
+        FI --> RS
+        RS --> SM
+    end
+
+    EmbedSvc["Embedding 服务"]
+
+    evo -->|"存储结果"| Distilled
+    evo -->|"使用"| Score
 
     Leader --> MutableDAG
     Leader --> Session
     Leader --> Registry
+    Leader --> Adapters
+    Leader --> cb
+    Leader --> IH
     Session --> VS
     Registry --> VS
+    VS -.->|"向量化"| EmbedSvc
+
+    obs -.->|"监控"| RT
+    obs -.->|"监控"| Leader
+    obs -.->|"监控"| MutableDAG
+    arena -.->|"压力测试"| RT
+    arena -.->|"压力测试"| Leader
 ```
 
-### 记忆蒸馏管线
+### 数据流
+
+#### 请求生命周期
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant RT as Runtime
+    participant L as Leader Agent
+    participant SA as Sub Agents
+    participant T as 工具 / MCP
+    participant LLM as LLM
+    participant M as 记忆存储
+
+    U->>RT: 1. 请求
+    RT->>L: 2. 分发
+    L->>L: 3. 规划（DAG）
+    L->>SA: 4. AHP 任务
+    SA->>LLM: 5. LLM 调用
+    SA->>T: 6. 工具/MCP 调用
+    T-->>SA: 7. 工具结果
+    LLM-->>SA: 8. LLM 响应
+    SA-->>L: 9. 聚合
+    L-->>RT: 10. 响应
+    RT-->>U: 11. 最终响应
+    L->>M: 12. 存储经验
+```
+
+请求经过 Runtime → Leader 用 DAG 规划 → Sub Agents 执行（LLM + 工具） → 结果聚合后返回。
+
+#### 记忆蒸馏管线
 
 ```mermaid
 flowchart LR
