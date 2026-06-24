@@ -29,10 +29,14 @@ graph TB
 
     subgraph agents [Agent System]
         Leader[Leader Agent]
-        Leader -->|AHP Protocol| SubA[Sub Agent A]
-        Leader -->|AHP Protocol| SubB[Sub Agent B]
-        Leader -->|AHP Protocol| SubC[Sub Agent C]
-        Leader -.->|Checkpoint Recovery| Supervisor[Supervisor]
+        SubA[Sub Agent A]
+        SubB[Sub Agent B]
+        SubC[Sub Agent C]
+        Leader -->|AHP Protocol| SubA
+        Leader -->|AHP Protocol| SubB
+        Leader -->|AHP Protocol| SubC
+        Supervisor[Supervisor]
+        Leader -.->|Checkpoint Recovery| Supervisor
     end
 
     subgraph workflow [Workflow Engine]
@@ -43,7 +47,13 @@ graph TB
         DynamicExec --> CycleDetect[Cycle Detection]
     end
 
-    subgraph memory [Memory Manager]
+    subgraph llm [LLM Layer]
+        Adapters[Output Adapters]
+        Templates[Prompt Templates]
+        Parser[Function Call Parser]
+    end
+
+    subgraph mem [Memory Manager]
         Session[Session Memory]
         Task[Task Memory]
         Distilled[Distilled Memory]
@@ -52,7 +62,18 @@ graph TB
         Pipeline --> Distilled
     end
 
-    subgraph storage [Storage Layer]
+    subgraph evo [Evolution Engine]
+        Pop[GA Population]
+        Score[Scoring Pipeline]
+        Cross[Crossover]
+        Mut[Mutation]
+        Pop --> Score
+        Score --> Cross
+        Cross --> Mut
+        Mut --> Pop
+    end
+
+    subgraph stor [Storage Layer]
         VS[VectorStore Interface]
         PG[(PostgreSQL + pgvector)]
         MEM[(In-Memory)]
@@ -72,15 +93,37 @@ graph TB
 
     subgraph tools [Tool System]
         Registry[Tool Registry]
-        Matcher[Capability Matcher]
-        Validator[Parameter Validator]
+        MCP[MCP Manager]
+        MCP_Ext[MCP Servers]
+        Registry --> MCP
+        MCP -->|stdio/SSE| MCP_Ext
     end
+
+    subgraph obs [Observability]
+        Dashboard[Web Dashboard]
+        Flight[Flight Recorder]
+        Genealogy[Agent Genealogy]
+    end
+
+    subgraph cb [Callbacks]
+        Handler[Handler Registry]
+        Events[Lifecycle Events]
+    end
+
+    evo -->|"stores results"| Distilled
+    evo -->|"uses"| Score
 
     Leader --> MutableDAG
     Leader --> Session
     Leader --> Registry
+    Leader --> Adapters
+    Leader --> cb
     Session --> VS
     Registry --> VS
+
+    obs -.->|monitor| RT
+    obs -.->|monitor| Leader
+    obs -.->|monitor| MutableDAG
 ```
 
 ### Memory Distillation Pipeline
@@ -210,25 +253,28 @@ Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 | Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
 |----------|-------|---------------|--------------------|--------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| Distillation | 9 | 3 | 4 | 2 |
-| Tools/Core | 8 | 4 | 3 | 1 |
-| Errors | 4 | 4 | 0 | 0 |
-| Event Sourcing | 6 | 1 | 3 | 2 |
-| **Total** | **32** | **14** | **12** | **6** |
+| Distillation | 9 | 0 | 8 | 1 |
+| Tools/Core | 8 | 3 | 5 | 0 |
+| Errors | 4 | 2 | 2 | 0 |
+| Event Sourcing | 6 | 0 | 5 | 1 |
+| **Total** | **32** | **7** | **22** | **3** |
 
 Selected hot-path results:
 
 | Operation | ns/op | allocs/op |
 |-----------|-------|-----------|
-| ExactMatchEvaluator | 2.90 | 0 |
-| ToolExecution | 14.48 | 0 |
-| ResultCreation | 0.25 | 0 |
-| ParameterValidation | 7.22 | 0 |
-| ConflictDetection | 988 | 0 |
-| Wrap (error) | 0.25 | 0 |
-| MemoryOperations/Create | 87.57 | 0 |
+| ExactMatchEvaluator | 180.3 | 0 |
+| ToolUsageEvaluator | 361.3 | 0 |
+| ToolExecution | 347.3 | 0 |
+| ConvertEvent | 97.00 | 0 |
+| ResultCreation (Success) | 125.0 | 0 |
+| ResultCreation (Error) | 55.33 | 0 |
+| ParameterValidation | 208.3 | 0 |
+| Wrap (error) | 69.67 | 0 |
+| WrapMultipleWraps | 69.33 | 0 |
+| ConflictDetection | 2125 | 0 |
 
-14 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and conflict detection.
+7 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, event conversion, error wrapping, and conflict detection.
 
 Full benchmark report: `benchmarks/benchmark_report.md`
 
