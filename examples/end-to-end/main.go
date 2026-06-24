@@ -193,7 +193,7 @@ func main() {
 	slog.Info("Phase 4: Workflow orchestration")
 	slog.Info("----------------------------------------------------")
 
-	workflowResult := executeWorkflow(ctx)
+	workflowResult := executeWorkflow(ctx, components)
 	fmt.Println()
 
 	// ---------------------------------------------------------------
@@ -651,65 +651,78 @@ type stepResultInfo struct {
 	Quality  float64 // 0.0–1.0 quality score
 }
 
-// mockAnalyzerAgent is a simple mock agent for workflow demonstration.
-// It implements the base.Agent interface by embedding the base skeleton.
-type mockAnalyzerAgent struct {
-	id   string
-	role string
+// realWorkflowAgent is a workflow agent that calls the real LLM adapter.
+// It implements the base.Agent interface and is used by the workflow engine
+// to process steps with actual LLM inference instead of mocked responses.
+type realWorkflowAgent struct {
+	id        string
+	agentType models.AgentType
+	llm       output.LLMAdapter
 }
 
-func (a *mockAnalyzerAgent) ID() string                      { return a.id }
-func (a *mockAnalyzerAgent) Type() models.AgentType          { return models.AgentType(a.role) }
-func (a *mockAnalyzerAgent) Status() models.AgentStatus      { return models.AgentStatusReady }
-func (a *mockAnalyzerAgent) Start(ctx context.Context) error { return nil }
-func (a *mockAnalyzerAgent) Stop(ctx context.Context) error  { return nil }
-func (a *mockAnalyzerAgent) Events() <-chan base.AgentEvent  { return nil }
-func (a *mockAnalyzerAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+func (a *realWorkflowAgent) ID() string                      { return a.id }
+func (a *realWorkflowAgent) Type() models.AgentType          { return a.agentType }
+func (a *realWorkflowAgent) Status() models.AgentStatus      { return models.AgentStatusReady }
+func (a *realWorkflowAgent) Start(ctx context.Context) error { return nil }
+func (a *realWorkflowAgent) Stop(ctx context.Context) error  { return nil }
+func (a *realWorkflowAgent) Events() <-chan base.AgentEvent  { return nil }
+func (a *realWorkflowAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	ch := make(chan base.AgentEvent)
 	close(ch)
 	return ch, nil
 }
-func (a *mockAnalyzerAgent) Process(ctx context.Context, input any) (any, error) {
+func (a *realWorkflowAgent) Process(ctx context.Context, input any) (any, error) {
 	inputStr := fmt.Sprintf("%v", input)
-	slog.Info("Workflow agent processing", "agent", a.id, "input_len", len(inputStr))
+	slog.Info("Workflow agent processing with real LLM", "agent", a.id, "input_len", len(inputStr))
 
-	// NOTE: This mock returns *models.RecommendResult because
-	// workflow/engine/registry.go AgentExecutor.Execute() specifically
-	// type-asserts to *models.RecommendResult and extracts Items[0].Description.
-	// If the executor's output handling changes, this mock must be updated.
+	// Call the real LLM adapter with the rendered prompt.
+	output, err := a.llm.Generate(ctx, inputStr)
+	if err != nil {
+		return nil, fmt.Errorf("workflow agent %s: %w", a.id, err)
+	}
+
+	// Return in the format expected by workflow/engine/registry.go AgentExecutor.Execute(),
+	// which type-asserts to *models.RecommendResult and extracts Items[0].Description.
 	return &models.RecommendResult{
 		SessionID: a.id,
 		Items: []*models.RecommendItem{
 			{
 				ItemID:      fmt.Sprintf("result-%s", a.id),
 				Name:        fmt.Sprintf("Analysis from %s", a.id),
-				Description: fmt.Sprintf("Processed by %s: %s", a.id, truncate(inputStr, 100)),
-				Category:    a.role,
-				Price:       95.0,
+				Description: output,
+				Category:    string(a.agentType),
 			},
 		},
-		Reason:    fmt.Sprintf("Automated analysis by %s", a.id),
+		Reason:    fmt.Sprintf("LLM analysis by %s", a.id),
 		CreatedAt: time.Now(),
 	}, nil
 }
 
-func initWorkflowRegistry() *engine.AgentRegistry {
+func initWorkflowRegistry(comps *components) *engine.AgentRegistry {
 	registry := engine.NewAgentRegistry()
 
-	// Register the "analyzer" agent type
+	// Register the "analyzer" agent type with the real LLM adapter.
 	_ = registry.Register("analyzer", func(ctx context.Context, config interface{}) (base.Agent, error) {
-		return &mockAnalyzerAgent{id: "wf-analyzer", role: "analyzer"}, nil
+		return &realWorkflowAgent{
+			id:        "wf-analyzer",
+			agentType: models.AgentType("analyzer"),
+			llm:       comps.llmAdapter,
+		}, nil
 	})
 
-	// Register the "recommender" agent type
+	// Register the "recommender" agent type with the real LLM adapter.
 	_ = registry.Register("recommender", func(ctx context.Context, config interface{}) (base.Agent, error) {
-		return &mockAnalyzerAgent{id: "wf-recommender", role: "recommender"}, nil
+		return &realWorkflowAgent{
+			id:        "wf-recommender",
+			agentType: models.AgentType("recommender"),
+			llm:       comps.llmAdapter,
+		}, nil
 	})
 
 	return registry
 }
 
-func executeWorkflow(ctx context.Context) *workflowResult {
+func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 	// Load workflow definition from YAML file.
 	// This mirrors the real workflow.NewYAMLFileLoader usage in production.
 	loader := engine.NewYAMLFileLoader()
@@ -738,7 +751,7 @@ func executeWorkflow(ctx context.Context) *workflowResult {
 	slog.Info("Execution order", "order", order)
 
 	// Register agents and execute.
-	registry := initWorkflowRegistry()
+	registry := initWorkflowRegistry(comps)
 	executor := engine.NewExecutor(registry)
 
 	workflowCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
