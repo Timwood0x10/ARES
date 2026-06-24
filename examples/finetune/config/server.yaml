@@ -8,7 +8,7 @@ llm:
   model: "sensenova-6.7-flash-lite"
   base_url: "https://token.sensenova.cn/v1"
   temperature: 0.3
-  max_tokens: 100            # reduced from 500 (scoring only needs a number)
+  max_tokens: 500            # increased from 100 (100 was too small, causing truncation)
   timeout: 60                  # seconds (increased from 30 for evolution workloads)
   scorer_api_rate: 10          # LLM scorer: requests per second
   scorer_api_burst: 20         # LLM scorer: burst size

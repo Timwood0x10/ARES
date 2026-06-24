@@ -31,6 +31,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -373,8 +374,21 @@ func parseScore(resp string) (float64, error) {
 		return clampScore(score), nil
 	}
 
-	// Fallback: find the first number sequence.
+	// Use regex to find numbers in valid score range [0-100].
+	// This avoids matching list numbers (1., 2., 3.) from reasoning text.
+	re := regexp.MustCompile(`\b(\d{1,3}(?:\.\d+)?)\b`)
+	matches := re.FindAllStringSubmatch(resp, -1)
+	for _, match := range matches {
+		if score, err := strconv.ParseFloat(match[1], 64); err == nil {
+			if score >= 0 && score <= 100 {
+				return clampScore(score), nil
+			}
+		}
+	}
+
+	// Fallback: find the last number (might be the actual score after reasoning).
 	fields := strings.Fields(resp)
+	var lastValidScore float64
 	for _, field := range fields {
 		cleaned := strings.TrimFunc(field, func(r rune) bool {
 			return (r < '0' || r > '9') && r != '.' && r != '-'
@@ -383,8 +397,11 @@ func parseScore(resp string) (float64, error) {
 			continue
 		}
 		if score, err := strconv.ParseFloat(cleaned, 64); err == nil {
-			return clampScore(score), nil
+			lastValidScore = score
 		}
+	}
+	if lastValidScore > 0 {
+		return clampScore(lastValidScore), nil
 	}
 
 	return 0, fmt.Errorf("no numeric score found in response: %q", truncate(resp, 80))
@@ -477,7 +494,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *con
 		// Calculate FailoverScorer timeout with minimum threshold for evolution scenarios.
 		scorerTimeout := time.Duration(llmTimeout) * time.Second
 		if scorerTimeout < 60*time.Second {
-			scorerTimeout = 60*time.Second
+			scorerTimeout = 60 * time.Second
 		}
 
 		llmScorer, err := NewLLMScoreClient(llmCfg, RealScorer, scorerTimeout,

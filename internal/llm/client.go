@@ -349,7 +349,8 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 	var response struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"` // Some providers (e.g., Sensenova) use this field
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -362,7 +363,13 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 		return "", fmt.Errorf("no choices in response")
 	}
 
-	return response.Choices[0].Message.Content, nil
+	// Use content field, fallback to reasoning (for Sensenova and similar providers)
+	result := response.Choices[0].Message.Content
+	if result == "" {
+		result = response.Choices[0].Message.Reasoning
+	}
+
+	return result, nil
 }
 
 // generateOllama generates text using Ollama API.
