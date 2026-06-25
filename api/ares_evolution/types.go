@@ -8,6 +8,156 @@ import (
 	"time"
 )
 
+// ──────────────────────────────────────────────
+// Provider interfaces and supporting types
+// ──────────────────────────────────────────────
+
+// EvolutionHint represents a distilled guidance hint derived from past
+// experiences. It captures what worked, what failed, and what parameter
+// biases should be applied during strategy mutation.
+type EvolutionHint struct {
+	// ID is the unique identifier of this hint.
+	ID string
+
+	// TaskType is the type of task this hint applies to.
+	TaskType string
+
+	// Problem is the abstract problem statement.
+	Problem string
+
+	// Solution is the concise solution approach that worked.
+	Solution string
+
+	// Constraints are important constraints or context for the solution.
+	Constraints []string
+
+	// FailedPatterns are patterns that led to failure and should be avoided.
+	FailedPatterns []string
+
+	// PreferredTools are tool configurations that worked well.
+	PreferredTools []string
+
+	// PromptSnippets are prompt text snippets that contributed to success.
+	PromptSnippets []string
+
+	// ParamHints maps parameter names to suggested values.
+	ParamHints map[string]float64
+
+	// Confidence is the confidence score for this hint (0.0 to 1.0).
+	Confidence float64
+
+	// SourceExperienceIDs are the IDs of the experiences that produced this hint.
+	SourceExperienceIDs []string
+}
+
+// StrategyOutcome records the result of deploying a strategy mutation,
+// enabling the experience provider to learn from real execution outcomes.
+type StrategyOutcome struct {
+	// StrategyID is the ID of the strategy that was deployed.
+	StrategyID string
+
+	// TaskType is the type of task this strategy was used for.
+	TaskType string
+
+	// Success indicates whether the strategy deployment was successful.
+	Success bool
+
+	// Score is the fitness score achieved by this strategy.
+	Score float64
+
+	// Cost is the computational cost incurred.
+	Cost float64
+
+	// LatencyMs is the execution latency in milliseconds.
+	LatencyMs int64
+
+	// MutationType describes what kind of mutation produced this strategy.
+	MutationType string
+
+	// ExperienceIDs are the IDs of experiences that influenced this strategy.
+	ExperienceIDs []string
+
+	// Timestamp is when this outcome was recorded.
+	Timestamp time.Time
+}
+
+// GuidanceProvider provides evolution hints for guided mutation.
+// Implementations should return relevant hints for a given task type,
+// or an empty slice when no hints are available. This interface is
+// structurally identical to the internal GuidanceProvider so that
+// adapters in service.go can convert between them.
+type GuidanceProvider interface {
+	// HintsForTask returns evolution hints relevant to the given task type.
+	// Returns up to limit hints, ordered by relevance.
+	// An empty slice with nil error means no hints are available.
+	HintsForTask(ctx context.Context, taskType string, limit int) ([]EvolutionHint, error)
+
+	// RecordStrategyOutcome persists a strategy outcome for future learning.
+	RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error
+}
+
+// MemoryExperienceProvider provides access to past experiences for
+// memory-aware scoring. Implementations may query a vector database,
+// keyword index, or other experience store.
+type MemoryExperienceProvider interface {
+	// FindSimilar returns the count of similar experiences for the given
+	// task type along with a confidence factor (0-1) indicating how well
+	// the matched experiences align with the current context.
+	FindSimilar(ctx context.Context, taskType string, limit int) (int, float64, error)
+}
+
+// GuardrailConfig configures safety checks for the evolution system.
+// When enabled, guardrails run before and after each evolution cycle
+// to detect dangerous conditions (stagnation, regression, lineage
+// concentration, etc.).
+type GuardrailConfig struct {
+	// Enabled enables guardrail checks.
+	Enabled bool
+
+	// BaselineScore is the minimum acceptable strategy score.
+	BaselineScore float64
+
+	// MaxStagnantGenerations triggers a warning when best score plateaus
+	// for this many consecutive generations (default 10).
+	MaxStagnantGenerations int
+
+	// MaxLineageShare is the maximum fraction [0-1] of the population
+	// that can belong to a single lineage (default 0.8).
+	MaxLineageShare float64
+}
+
+// MemoryAwareScoringConfig configures memory-aware scoring that adjusts
+// fitness scores based on historical evidence from past experiences.
+type MemoryAwareScoringConfig struct {
+	// Enabled enables memory-aware scoring adjustments.
+	Enabled bool
+
+	// MemoryWeight controls the contribution of memory evidence bonus (default 0.2).
+	MemoryWeight float64
+
+	// CostWeight controls the penalty multiplier for strategy cost (default 0.1).
+	CostWeight float64
+
+	// LatencyWeight controls the penalty multiplier for latency in seconds (default 0.05).
+	LatencyWeight float64
+
+	// RegressionWeight controls the penalty for score regression vs baseline (default 0.1).
+	RegressionWeight float64
+
+	// MinEvidenceBonus is the minimum memory evidence bonus (default 0.0).
+	MinEvidenceBonus float64
+
+	// MaxEvidenceBonus is the maximum memory evidence bonus (default 20.0).
+	MaxEvidenceBonus float64
+
+	// ExperienceLookupLimit is the max similar experiences to retrieve per call (default 10).
+	ExperienceLookupLimit int
+}
+
+// ──────────────────────────────────────────────
+// Core types
+// ──────────────────────────────────────────────
+
 // Strategy represents an evolved agent decision strategy.
 type Strategy struct {
 	// ID is the unique identifier of this strategy.
@@ -123,6 +273,33 @@ type SystemConfig struct {
 
 	// Scorer evaluates agent fitness. When nil, a temperature-proximity scorer is used.
 	Scorer ScorerFunc
+
+	// Guardrails configures safety checks (pre/post evolution). When
+	// GuardrailConfig.Enabled is true, guardrails are constructed in
+	// createWiredSystem and wired into the internal system. Nil (default)
+	// means guardrails are disabled.
+	Guardrails *GuardrailConfig
+
+	// GuidanceProvider provides evolution hints for guided mutation. When
+	// non-nil AND EnableExperienceGuidedMutation is true, the mutator is
+	// wrapped with an ExperienceGuidedMutator that biases mutation decisions
+	// using past experience data.
+	GuidanceProvider GuidanceProvider
+
+	// EnableExperienceGuidedMutation enables experience-guided mutation when
+	// true AND GuidanceProvider is non-nil. When hints are available,
+	// the mutator biases its decisions toward patterns that worked in the past.
+	EnableExperienceGuidedMutation bool
+
+	// MemoryExperienceProvider provides access to past experiences for
+	// memory-aware scoring. When non-nil AND MemoryAwareScoringConfig.Enabled
+	// is true, the scorer adjusts fitness scores based on historical evidence.
+	MemoryExperienceProvider MemoryExperienceProvider
+
+	// MemoryAwareScoringConfig configures memory-aware scoring. When
+	// MemoryAwareScoringConfig.Enabled is true and MemoryExperienceProvider
+	// is non-nil, the tiered scorer wraps with memory adjustments.
+	MemoryAwareScoringConfig MemoryAwareScoringConfig
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.

@@ -16,6 +16,7 @@ import (
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 )
 
 const (
@@ -137,6 +138,50 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		apiScorer := cfg.Scorer
 		internalCfg.Scorer = func(agent *mutation.Strategy) float64 {
 			return apiScorer(toAPIStrategy(agent))
+		}
+	}
+
+	// Wire guardrails when enabled.
+	if cfg.Guardrails != nil && cfg.Guardrails.Enabled {
+		var guardrailOpts []evolution.GuardrailOption
+		if cfg.Guardrails.BaselineScore > 0 {
+			guardrailOpts = append(guardrailOpts, evolution.WithBaselineScore(cfg.Guardrails.BaselineScore))
+		}
+		if cfg.Guardrails.MaxStagnantGenerations > 0 {
+			guardrailOpts = append(guardrailOpts, evolution.WithMaxStagnantGenerations(cfg.Guardrails.MaxStagnantGenerations))
+		}
+		if cfg.Guardrails.MaxLineageShare > 0 {
+			guardrailOpts = append(guardrailOpts, evolution.WithMaxLineageShare(cfg.Guardrails.MaxLineageShare))
+		}
+		guardrails, err := evolution.NewEvolutionGuardrails(guardrailOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("new evolution guardrails: %w", err)
+		}
+		internalCfg.Guardrails = guardrails
+	}
+
+	// Wire guidance provider for experience-guided mutation.
+	if cfg.GuidanceProvider != nil {
+		internalCfg.GuidanceProvider = &apiGuidanceBridge{provider: cfg.GuidanceProvider}
+		internalCfg.EnableExperienceGuidedMutation = cfg.EnableExperienceGuidedMutation
+	}
+
+	// Wire memory experience provider for memory-aware scoring.
+	if cfg.MemoryExperienceProvider != nil {
+		internalCfg.MemoryExperienceProvider = &apiMemoryBridge{provider: cfg.MemoryExperienceProvider}
+	}
+
+	// Map memory-aware scoring config.
+	if cfg.MemoryAwareScoringConfig.Enabled {
+		internalCfg.MemoryAwareScoringConfig = scoring.MemoryAwareScoringConfig{
+			Enabled:               cfg.MemoryAwareScoringConfig.Enabled,
+			MemoryWeight:          cfg.MemoryAwareScoringConfig.MemoryWeight,
+			CostWeight:            cfg.MemoryAwareScoringConfig.CostWeight,
+			LatencyWeight:         cfg.MemoryAwareScoringConfig.LatencyWeight,
+			RegressionWeight:      cfg.MemoryAwareScoringConfig.RegressionWeight,
+			MinEvidenceBonus:      cfg.MemoryAwareScoringConfig.MinEvidenceBonus,
+			MaxEvidenceBonus:      cfg.MemoryAwareScoringConfig.MaxEvidenceBonus,
+			ExperienceLookupLimit: cfg.MemoryAwareScoringConfig.ExperienceLookupLimit,
 		}
 	}
 
@@ -436,7 +481,97 @@ func LoadBestStrategy(path string) (*Strategy, error) {
 	return &s, nil
 }
 
-// --- Internal helpers ---
+// ──────────────────────────────────────────────
+// Bridge adapters: convert API provider interfaces
+// into internal interfaces for wired system wiring.
+// ──────────────────────────────────────────────
+
+// apiGuidanceBridge adapts an API GuidanceProvider into an internal
+// evolution.GuidanceProvider so the wired system can use it for
+// experience-guided mutation.
+type apiGuidanceBridge struct {
+	provider GuidanceProvider
+}
+
+// HintsForTask delegates to the API provider and converts EvolutionHint types.
+func (b *apiGuidanceBridge) HintsForTask(ctx context.Context, taskType string, limit int) ([]evolution.EvolutionHint, error) {
+	hints, err := b.provider.HintsForTask(ctx, taskType, limit)
+	if err != nil {
+		return nil, err
+	}
+	if hints == nil {
+		return nil, nil
+	}
+	result := make([]evolution.EvolutionHint, len(hints))
+	for i, h := range hints {
+		var paramHints map[string]float64
+		if h.ParamHints != nil {
+			paramHints = make(map[string]float64, len(h.ParamHints))
+			for k, v := range h.ParamHints {
+				paramHints[k] = v
+			}
+		}
+		constraints := make([]string, len(h.Constraints))
+		copy(constraints, h.Constraints)
+		failedPatterns := make([]string, len(h.FailedPatterns))
+		copy(failedPatterns, h.FailedPatterns)
+		preferredTools := make([]string, len(h.PreferredTools))
+		copy(preferredTools, h.PreferredTools)
+		promptSnippets := make([]string, len(h.PromptSnippets))
+		copy(promptSnippets, h.PromptSnippets)
+		sourceIDs := make([]string, len(h.SourceExperienceIDs))
+		copy(sourceIDs, h.SourceExperienceIDs)
+
+		result[i] = evolution.EvolutionHint{
+			ID:                  h.ID,
+			TaskType:            h.TaskType,
+			Problem:             h.Problem,
+			Solution:            h.Solution,
+			Constraints:         constraints,
+			FailedPatterns:      failedPatterns,
+			PreferredTools:      preferredTools,
+			PromptSnippets:      promptSnippets,
+			ParamHints:          paramHints,
+			Confidence:          h.Confidence,
+			SourceExperienceIDs: sourceIDs,
+		}
+	}
+	return result, nil
+}
+
+// RecordStrategyOutcome delegates to the API provider and converts types.
+func (b *apiGuidanceBridge) RecordStrategyOutcome(ctx context.Context, outcome evolution.StrategyOutcome) error {
+	apiOutcome := StrategyOutcome{
+		StrategyID:   outcome.StrategyID,
+		TaskType:     outcome.TaskType,
+		Success:      outcome.Success,
+		Score:        outcome.Score,
+		Cost:         outcome.Cost,
+		LatencyMs:    outcome.LatencyMs,
+		MutationType: outcome.MutationType,
+		Timestamp:    outcome.Timestamp,
+	}
+	if len(outcome.ExperienceIDs) > 0 {
+		apiOutcome.ExperienceIDs = make([]string, len(outcome.ExperienceIDs))
+		copy(apiOutcome.ExperienceIDs, outcome.ExperienceIDs)
+	}
+	return b.provider.RecordStrategyOutcome(ctx, apiOutcome)
+}
+
+// apiMemoryBridge adapts an API MemoryExperienceProvider into an internal
+// scoring.ExperienceProvider for memory-aware scoring.
+type apiMemoryBridge struct {
+	provider MemoryExperienceProvider
+}
+
+// FindSimilar delegates directly to the API provider (same signature).
+func (b *apiMemoryBridge) FindSimilar(ctx context.Context, taskType string, limit int) (int, float64, error) {
+	return b.provider.FindSimilar(ctx, taskType, limit)
+}
+
+// ──────────────────────────────────────────────
+// Type conversion helpers
+// ──────────────────────────────────────────────
 
 // toAPIStrategy converts an internal mutation.Strategy to the public API Strategy type.
 func toAPIStrategy(s *mutation.Strategy) *Strategy {

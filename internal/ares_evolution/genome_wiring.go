@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -386,9 +387,18 @@ func (a *GenomePopulationAdapter) recordOutcomesLocked(
 
 		parentScore, ok := parentScores[child.ParentID]
 		if !ok {
+			if parts := strings.Split(child.ParentID, "\u00d7"); len(parts) == 2 {
+				if ps1, ok1 := parentScores[parts[0]]; ok1 {
+					if ps2, ok2 := parentScores[parts[1]]; ok2 {
+						parentScore = (ps1 + ps2) / 2
+						ok = true
+					}
+				}
+			}
+		}
+		if !ok {
 			continue
 		}
-
 		scoreDelta := child.Score - parentScore
 		won := scoreDelta > 0
 

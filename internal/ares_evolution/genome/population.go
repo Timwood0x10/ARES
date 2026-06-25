@@ -927,6 +927,9 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			}
 			// Mutate(n=1) returns exactly one variant; use it as the mutated child.
 			if len(mutated) > 0 {
+				// Preserve original crossover parent IDs so outcome recording
+				// can look up parent scores in the pre-evolution snapshot.
+				mutated[0].ParentID = child.ParentID
 				child = mutated[0]
 			}
 			// If len(mutated) == 0, the mutator returned no variants;
