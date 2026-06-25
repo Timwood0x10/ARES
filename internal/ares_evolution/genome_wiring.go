@@ -20,6 +20,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/observability"
 )
 
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
@@ -61,6 +62,9 @@ type GenomePopulationAdapter struct {
 	// system for experience reinforcement (optional). When set, Run()
 	// records outcome feedback after each evolution cycle.
 	feedbackRecorder *FeedbackRecorder
+
+	// Metrics records Prometheus counters for evolution events (optional).
+	metrics *observability.PrometheusMetrics
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -215,6 +219,21 @@ func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
 	}
 }
 
+// WithAdapterMetrics sets the metrics recorder for evolution event counters.
+//
+// Args:
+//
+//	metrics - the Prometheus metrics instance (may be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterMetrics(metrics *observability.PrometheusMetrics) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.metrics = metrics
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -296,6 +315,9 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
 			)
+			if a.metrics != nil {
+				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+			}
 		}
 
 		if preResult.ShouldStop {
@@ -335,6 +357,9 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
 			)
+			if a.metrics != nil {
+				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+			}
 		}
 
 		if postResult.ShouldStop {
@@ -637,6 +662,7 @@ func RecordPopulationLineage(
 	agents, generation := pop.Snapshot()
 
 	count := 0
+	seen := make(map[string]bool, len(agents))
 	for _, agent := range agents {
 		if agent.ParentID == "" {
 			continue
@@ -644,6 +670,12 @@ func RecordPopulationLineage(
 		if agent.Version <= 1 {
 			continue
 		}
+
+		key := agent.ParentID + "->" + agent.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 
 		lineage := StrategyLineage{
 			ParentID:     agent.ParentID,
@@ -694,6 +726,9 @@ type WiredEvolutionSystem struct {
 	// AdaptiveDist wraps the mutator with adaptive mutation type probability
 	// distribution (optional, may be nil when disabled).
 	AdaptiveDist *mutation.AdaptiveDistribution
+
+	// Metrics records Prometheus counters for evolution events (optional).
+	Metrics *observability.PrometheusMetrics
 }
 
 // SystemConfig holds configuration for creating a wired evolution system.
@@ -721,6 +756,9 @@ type SystemConfig struct {
 
 	// MinTasksBeforeEvolve is the minimum tasks before first evolution.
 	MinTasksBeforeEvolve int `json:"min_tasks_before_evolve"`
+
+	// MaxMutations is the max candidate strategies per dream cycle (default 3).
+	MaxMutations int `json:"max_mutations"`
 
 	// SchedulerTrigger is the trigger mode for the scheduler.
 	SchedulerTrigger EvolutionTrigger `json:"scheduler_trigger"`
@@ -843,6 +881,11 @@ type SystemConfig struct {
 	// When set, a FeedbackRecorder is created and wired to record strategy
 	// outcomes to the experience store after each evolution cycle.
 	FeedbackService *aresExperience.FeedbackService `json:"-"`
+
+	// Metrics records Prometheus counters for evolution events (optional).
+	// When set, the adapter records guardrail triggers, deploy events, and
+	// score updates as Prometheus metrics.
+	Metrics *observability.PrometheusMetrics `json:"-"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -1122,7 +1165,11 @@ func NewWiredEvolutionSystem(
 			policyOpts = append(policyOpts, WithMinRollbackSamples(cfg.RollbackPolicyConfig.MinSamples))
 		}
 		rollbackPolicy := NewRollbackPolicy(policyOpts...)
-		asm, err := NewActiveStrategyManager(cfg.StrategyStore, rollbackPolicy)
+		var asmOpts []ASMOption
+		if cfg.Guardrails != nil {
+			asmOpts = append(asmOpts, WithASMGuardrails(cfg.Guardrails))
+		}
+		asm, err := NewActiveStrategyManager(cfg.StrategyStore, rollbackPolicy, asmOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("create active strategy manager: %w", err)
 		}
@@ -1140,12 +1187,16 @@ func NewWiredEvolutionSystem(
 	if cfg.ShadowEvalConfig.Enabled {
 		shadowEval := NewShadowEvaluator(cfg.ShadowEvalConfig)
 		shadowEval.SetActiveStrategy(baseStrategy)
+		if cfg.Scorer != nil {
+			shadowEval.SetShadowScorer(cfg.Scorer)
+		}
 		system.ShadowEvaluator = shadowEval
 
 		slog.Info("[WiredSystem] Shadow evaluation enabled",
 			"min_samples", cfg.ShadowEvalConfig.MinSamples,
 			"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
 			"active_strategy", baseStrategy.ID,
+			"independent_scorer", cfg.Scorer != nil,
 		)
 	}
 
@@ -1156,18 +1207,50 @@ func NewWiredEvolutionSystem(
 			return nil, fmt.Errorf("create dream cycle mutator adapter: %w", err)
 		}
 
-		dreamCycle, err := NewDreamCycle(
-			nil, // Scheduler attached later if needed.
-			mutationAdapter,
-			nil, // Tester requires arena integration; use nil for now.
-			genealogy,
+		// Create regression tester if a scorer is available.
+		var dreamTester TesterInterface
+		if cfg.Scorer != nil {
+			tester, err := NewRegressionTester(cfg.Scorer)
+			if err != nil {
+				return nil, fmt.Errorf("create regression tester: %w", err)
+			}
+			dreamTester = tester
+			slog.Info("[WiredSystem] Regression tester created for dream cycle")
+		} else {
+			slog.Warn("[WiredSystem] No scorer available; dream cycle tester remains nil")
+		}
+
+		dreamOpts := []DreamCycleOption{
 			WithDreamCycleConfig(DreamCycleConfig{
 				Enabled:              true,
 				MinTasksBeforeEvolve: cfg.MinTasksBeforeEvolve,
-				MaxMutations:         3,
+				MaxMutations:         maxDreamMutations(cfg.MaxMutations),
 				MinWinRate:           0.55,
 				Cooldown:             5 * time.Minute,
 			}),
+		}
+		if cfg.Guardrails != nil {
+			dreamOpts = append(dreamOpts, WithDreamCycleGuardrails(cfg.Guardrails))
+		}
+		if system.ShadowEvaluator != nil {
+			dreamOpts = append(dreamOpts, WithDreamCycleShadowEvaluator(system.ShadowEvaluator))
+		}
+		if system.ActiveStrategyManager != nil {
+			dreamOpts = append(dreamOpts, WithDreamCycleStrategyManager(system.ActiveStrategyManager))
+		}
+		if cfg.StrategyStore != nil {
+			dreamOpts = append(dreamOpts, WithStrategyStore(cfg.StrategyStore))
+		}
+		if cfg.Metrics != nil {
+			dreamOpts = append(dreamOpts, WithDreamCycleMetrics(cfg.Metrics))
+		}
+
+		dreamCycle, err := NewDreamCycle(
+			nil,
+			mutationAdapter,
+			dreamTester,
+			genealogy,
+			dreamOpts...,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("create dream cycle: %w", err)
@@ -1177,11 +1260,17 @@ func NewWiredEvolutionSystem(
 
 	// Step 9: Optionally create scheduler with callback registration.
 	if cfg.EnableScheduler && cfg.Callbacks != nil {
+		schedulerOpts := []SchedulerOption{
+			WithTrigger(cfg.SchedulerTrigger),
+			WithEnabled(true),
+		}
+		if cfg.Guardrails != nil {
+			schedulerOpts = append(schedulerOpts, WithSchedulerGuardrails(cfg.Guardrails))
+		}
 		scheduler := NewEvolutionScheduler(
 			cfg.Callbacks,
 			popAdapter,
-			WithTrigger(cfg.SchedulerTrigger),
-			WithEnabled(true),
+			schedulerOpts...,
 		)
 
 		// Attach dream cycle if available.
@@ -1205,6 +1294,12 @@ func NewWiredEvolutionSystem(
 	}
 	if system.FeedbackRecorder != nil {
 		popAdapter.feedbackRecorder = system.FeedbackRecorder
+	}
+
+	// Step 12: Wire metrics for evolution event counters.
+	if cfg.Metrics != nil {
+		popAdapter.metrics = cfg.Metrics
+		system.Metrics = cfg.Metrics
 	}
 
 	slog.Info("[WiredSystem] Evolution system created and wired",
@@ -1247,7 +1342,9 @@ func RunIdleEvolution(
 		}
 
 		if err := system.PopAdapter.Run(ctx); err != nil {
-			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
+			slog.WarnContext(ctx, "[RunIdleEvolution] Generation produced guardrail warning, continuing",
+				"generation", i+1,
+				"error", err)
 		}
 
 		// Record lineage after each evolution cycle.
@@ -1437,4 +1534,12 @@ func (a *guidanceAdapter) RecordStrategyOutcome(
 	}
 
 	return a.provider.RecordStrategyOutcome(ctx, evoOutcome)
+}
+
+// maxDreamMutations returns cfg if > 0, else default 3.
+func maxDreamMutations(cfg int) int {
+	if cfg > 0 {
+		return cfg
+	}
+	return 3
 }

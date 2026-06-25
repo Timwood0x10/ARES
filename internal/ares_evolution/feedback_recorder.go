@@ -6,8 +6,10 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 )
@@ -30,11 +32,20 @@ type recordedOutcome struct {
 // FeedbackRecorder bridges strategy outcomes to the experience feedback system.
 // It records outcomes both locally and to the external feedback service,
 // enabling experience reinforcement through bandit feedback.
+//
+// Circuit breaker: when the feedback service returns N consecutive errors,
+// the recorder enters a cool-down period and skips further service calls
+// until the cooldown expires.
 type FeedbackRecorder struct {
 	feedbackService *aresExperience.FeedbackService
 	outcomes        []recordedOutcome
 	maxOutcomes     int
 	mu              sync.RWMutex
+
+	circuitBreakerConsecutiveErrors int
+	circuitBreakerMaxErrors         int
+	circuitBreakerCooldown          time.Duration
+	circuitBreakerOpenedAt          time.Time
 }
 
 // NewFeedbackRecorder creates a FeedbackRecorder that records strategy outcomes
@@ -49,9 +60,11 @@ type FeedbackRecorder struct {
 //	*FeedbackRecorder - the configured recorder instance.
 func NewFeedbackRecorder(feedbackService *aresExperience.FeedbackService) *FeedbackRecorder {
 	return &FeedbackRecorder{
-		feedbackService: feedbackService,
-		outcomes:        make([]recordedOutcome, 0),
-		maxOutcomes:     1000,
+		feedbackService:              feedbackService,
+		outcomes:                     make([]recordedOutcome, 0),
+		maxOutcomes:                  1000,
+		circuitBreakerMaxErrors:      3,
+		circuitBreakerCooldown:       30 * time.Second,
 	}
 }
 
@@ -94,7 +107,25 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		return nil
 	}
 
+	// Circuit breaker: skip if too many consecutive errors within cooldown.
+	r.mu.Lock()
+	if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
+		if time.Since(r.circuitBreakerOpenedAt) < r.circuitBreakerCooldown {
+			r.mu.Unlock()
+			slog.Warn("[FeedbackRecorder] Circuit breaker open, skipping feedback service",
+				"consecutive_errors", r.circuitBreakerConsecutiveErrors,
+				"cooldown_remaining", r.circuitBreakerCooldown-time.Since(r.circuitBreakerOpenedAt))
+			return nil
+		}
+		r.circuitBreakerConsecutiveErrors = 0
+	}
+	r.mu.Unlock()
+
 	// Record to feedback service for each experience ID.
+	var (
+		hasAnyFailure bool
+		lastErr       error
+	)
 	for _, expID := range outcome.ExperienceIDs {
 		if expID == "" {
 			continue
@@ -106,11 +137,27 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 			err = r.feedbackService.RecordFailure(ctx, expID)
 		}
 		if err != nil {
-			return fmt.Errorf("feedback recorder: %w", err)
+			hasAnyFailure = true
+			lastErr = err
+			r.mu.Lock()
+			r.circuitBreakerConsecutiveErrors++
+			if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
+				r.circuitBreakerOpenedAt = time.Now()
+				slog.Warn("[FeedbackRecorder] Circuit breaker opened",
+					"consecutive_errors", r.circuitBreakerConsecutiveErrors)
+			}
+			r.mu.Unlock()
 		}
 	}
 
-	return nil
+	// Reset circuit breaker only if ALL experience IDs succeeded.
+	if !hasAnyFailure {
+		r.mu.Lock()
+		r.circuitBreakerConsecutiveErrors = 0
+		r.mu.Unlock()
+	}
+
+	return lastErr
 }
 
 // String returns a human-readable summary of recent outcomes.

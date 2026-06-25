@@ -222,8 +222,9 @@ type StrategyStore interface {
 	GetActive(ctx context.Context) (*Strategy, error)
 
 	// SetActive persists a strategy as the active deployment.
-	SetActive(ctx context.Context, s Strategy) error
+	SetActive(ctx context.Context, strategy *Strategy) error
 
-	// List returns the last n strategies ordered by version descending.
-	List(ctx context.Context, n int) ([]Strategy, error)
+	// GetHistory returns the last n strategies for the given strategy ID,
+	// ordered by version descending.
+	GetHistory(ctx context.Context, id string, n int) ([]*Strategy, error)
 }

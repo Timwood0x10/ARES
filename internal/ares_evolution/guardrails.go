@@ -200,6 +200,8 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 				SuggestedAction: "evaluate all individuals before proceeding",
 			}
 			slog.Warn("guardrail: critical - majority population unevaluated",
+				"code", ErrCodeUnevaluatedPopulation,
+				"score", currentBest,
 				"generation", generation,
 				"ratio", unevaluatedRatio,
 				"total_pop", totalPop,
@@ -224,10 +226,12 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 			SuggestedAction: "consider increasing mutation rate or introducing diversity",
 		}
 		slog.Warn("guardrail: warning - stagnation detected",
-			"generation", generation,
-			"stagnant_count", g.stagnantCount,
-			"threshold", g.MaxStagnantGenerations,
-		)
+				"code", ErrCodeStagnation,
+				"score", currentBest,
+				"generation", generation,
+				"stagnant_count", g.stagnantCount,
+				"threshold", g.MaxStagnantGenerations,
+			)
 		result.Events = append(result.Events, event)
 		g.recordEventLocked(event)
 	}
@@ -272,9 +276,12 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 			SuggestedAction: "review recent changes and consider reverting to previous best strategy",
 		}
 		slog.Warn("guardrail: critical - baseline regression",
+			"code", ErrCodeBaselineRegression,
+			"score", newBest,
 			"generation", generation,
 			"new_best", newBest,
 			"baseline", g.BaselineScore,
+			"threshold", g.BaselineScore,
 		)
 		result.Events = append(result.Events, event)
 		result.ShouldStop = true
@@ -327,6 +334,8 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 					SuggestedAction: "increase selection pressure or introduce external diversity",
 				}
 				slog.Warn("guardrail: warning - lineage concentration",
+					"code", ErrCodeLineageConcentration,
+					"score", newBest,
 					"generation", generation,
 					"max_share", maxShare,
 					"threshold", g.MaxLineageShare,

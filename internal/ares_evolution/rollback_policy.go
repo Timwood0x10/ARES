@@ -261,15 +261,33 @@ func (p *RollbackPolicy) ScoreHistory() []ScoreSnapshot {
 	return result
 }
 
+// ASMOption configures an ActiveStrategyManager instance.
+type ASMOption func(*ActiveStrategyManager)
+
+// WithASMGuardrails attaches guardrails to the active strategy manager.
+// When set, Deploy checks PostEvolveCheck and auto-rollbacks on critical events.
+//
+// Args:
+//   - guardrails: the guardrail instance (may be nil, in which case this is a no-op).
+//
+// Returns:
+//   - ASMOption: the configuration function.
+func WithASMGuardrails(guardrails *EvolutionGuardrails) ASMOption {
+	return func(m *ActiveStrategyManager) {
+		m.guardrails = guardrails
+	}
+}
+
 // ActiveStrategyManager manages strategy deployment and rollback using
 // a StrategyStore for persistence. It tracks the current and previous
 // strategies, and uses a RollbackPolicy to detect degradation.
 type ActiveStrategyManager struct {
-	store    StrategyStore // persistent strategy storage
-	current  *mutation.Strategy
-	previous *mutation.Strategy
-	mu       sync.RWMutex
-	rollback *RollbackPolicy
+	store     StrategyStore // persistent strategy storage
+	current   *mutation.Strategy
+	previous  *mutation.Strategy
+	mu        sync.RWMutex
+	rollback  *RollbackPolicy
+	guardrails *EvolutionGuardrails
 }
 
 // NewActiveStrategyManager creates a new strategy manager with the given
@@ -278,21 +296,26 @@ type ActiveStrategyManager struct {
 // Args:
 //   - store: persistent strategy store (must not be nil).
 //   - rollbackPolicy: rollback policy for degradation detection (may be nil).
+//   - opts: optional configuration functions.
 //
 // Returns:
 //   - *ActiveStrategyManager: the configured manager.
 //   - error: non-nil if store is nil.
-func NewActiveStrategyManager(store StrategyStore, rollbackPolicy *RollbackPolicy) (*ActiveStrategyManager, error) {
+func NewActiveStrategyManager(store StrategyStore, rollbackPolicy *RollbackPolicy, opts ...ASMOption) (*ActiveStrategyManager, error) {
 	if store == nil {
 		return nil, fmt.Errorf("strategy store must not be nil")
 	}
 	if rollbackPolicy == nil {
 		rollbackPolicy = NewRollbackPolicy()
 	}
-	return &ActiveStrategyManager{
+	m := &ActiveStrategyManager{
 		store:    store,
 		rollback: rollbackPolicy,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m, nil
 }
 
 // Deploy stores the given strategy as the active strategy and saves the
@@ -319,7 +342,7 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 
 	// Persist to store using evolution.Strategy type.
 	evoStrategy := strategyToEvoStrategy(strategy)
-	if err := m.store.SetActive(ctx, *evoStrategy); err != nil {
+	if err := m.store.SetActive(ctx, evoStrategy); err != nil {
 		// Rollback in-memory state on store failure.
 		m.current = m.previous
 		m.previous = nil
@@ -330,7 +353,39 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 		"strategy_id", strategy.ID,
 		"version", strategy.Version,
 		"score", strategy.Score,
+		"previous_score", m.scoreOrZero(m.previous),
 	)
+
+	// Auto-rollback: if guardrails fire a critical event, immediately revert.
+	if m.guardrails != nil {
+		postResult := m.guardrails.PostEvolveCheck(ctx, strategy.Score, 0, nil)
+		if postResult.ShouldStop {
+			slog.Warn("[ActiveStrategyManager] Guardrail critical after deploy, auto-rolling back",
+				"strategy_id", strategy.ID,
+				"score", strategy.Score,
+				"reason", "guardrail critical after deploy",
+				"events", len(postResult.Events),
+			)
+			// Rollback: restore previous as active.
+			if m.previous != nil {
+				prevEvo := strategyToEvoStrategy(m.previous)
+				if err := m.store.SetActive(ctx, prevEvo); err != nil {
+					return fmt.Errorf("store set active (rollback): %w", err)
+				}
+				m.current = m.previous
+				m.previous = nil
+				slog.Info("[ActiveStrategyManager] Auto-rollback completed",
+					"strategy_id", m.current.ID,
+					"version", m.current.Version,
+					"score", m.current.Score,
+					"reason", "guardrail critical after deploy",
+					"previous_window_avg", m.rollbackWindowAvg(),
+				)
+			}
+			return fmt.Errorf("guardrail block deployment: critical event after deploy")
+		}
+	}
+
 	return nil
 }
 
@@ -355,7 +410,7 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 
 	// Persist rollback to store.
 	evoStrategy := strategyToEvoStrategy(previousClone)
-	if err := m.store.SetActive(ctx, *evoStrategy); err != nil {
+	if err := m.store.SetActive(ctx, evoStrategy); err != nil {
 		return nil, fmt.Errorf("store rollback set active: %w", err)
 	}
 
@@ -367,6 +422,8 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 		"strategy_id", previousClone.ID,
 		"version", previousClone.Version,
 		"score", previousClone.Score,
+		"reason", "manual rollback triggered",
+		"previous_window_avg", m.rollbackWindowAvg(),
 	)
 	return previousClone, nil
 }
@@ -414,6 +471,28 @@ func (m *ActiveStrategyManager) RollbackPolicy() *RollbackPolicy {
 //   - score: the observed score.
 func (m *ActiveStrategyManager) RecordScore(generation int, score float64) {
 	m.rollback.RecordScore(generation, score)
+}
+
+// scoreOrZero returns the score of a strategy, or 0 if nil.
+func (m *ActiveStrategyManager) scoreOrZero(s *mutation.Strategy) float64 {
+	if s == nil {
+		return 0
+	}
+	return s.Score
+}
+
+// rollbackWindowAvg computes the average score over the rollback score history.
+// Returns 0 if no scores are recorded.
+func (m *ActiveStrategyManager) rollbackWindowAvg() float64 {
+	history := m.rollback.ScoreHistory()
+	if len(history) == 0 {
+		return 0
+	}
+	var total float64
+	for _, s := range history {
+		total += s.Score
+	}
+	return total / float64(len(history))
 }
 
 // strategyToEvoStrategy converts a mutation.Strategy to an evolution.Strategy

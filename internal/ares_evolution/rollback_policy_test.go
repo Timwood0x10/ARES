@@ -194,9 +194,9 @@ func TestScoreTrendAnalysis_Improving(t *testing.T) {
 
 // mockStrategyStore implements StrategyStore for testing.
 type mockStrategyStore struct {
-	mu     sync.Mutex
-	active *Strategy
-	list   []Strategy
+	mu      sync.Mutex
+	active  *Strategy
+	history []*Strategy
 }
 
 func newMockStrategyStore() *mockStrategyStore {
@@ -213,22 +213,26 @@ func (m *mockStrategyStore) GetActive(_ context.Context) (*Strategy, error) {
 	return &clone, nil
 }
 
-func (m *mockStrategyStore) SetActive(_ context.Context, s Strategy) error {
+func (m *mockStrategyStore) SetActive(_ context.Context, s *Strategy) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.active = &s
-	m.list = append([]Strategy{s}, m.list...)
+	clone := *s
+	m.active = &clone
+	m.history = append([]*Strategy{&clone}, m.history...)
 	return nil
 }
 
-func (m *mockStrategyStore) List(_ context.Context, n int) ([]Strategy, error) {
+func (m *mockStrategyStore) GetHistory(_ context.Context, id string, n int) ([]*Strategy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if n > len(m.list) {
-		n = len(m.list)
+	if n > len(m.history) {
+		n = len(m.history)
 	}
-	result := make([]Strategy, n)
-	copy(result, m.list[:n])
+	result := make([]*Strategy, n)
+	for i := 0; i < n; i++ {
+		clone := *m.history[i]
+		result[i] = &clone
+	}
 	return result, nil
 }
 

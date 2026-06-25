@@ -1077,3 +1077,73 @@ func TestWiredSystem_PromptMutationWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestWiredSystem_WithRegressionTester verifies that when EnableDreamCycle is true
+// and Scorer is set, NewWiredEvolutionSystem creates a DreamCycle with a non-nil
+// RegressionTester. This exercises the end-to-end wiring path for Gap 3 closure.
+func TestWiredSystem_WithRegressionTester(t *testing.T) {
+	defer discardLogs()()
+	base := &mutation.Strategy{
+		ID: "tester-root", Version: 1,
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "test prompt.",
+		Score:          50.0,
+		CreatedAt:      time.Now(),
+	}
+
+	reg := callbacks.NewRegistry()
+	cfg := DefaultSystemConfig()
+	cfg.PopulationSize = 6
+	cfg.EnableScheduler = true
+	cfg.EnableDreamCycle = true
+	cfg.Callbacks = reg
+	cfg.Scorer = func(s *mutation.Strategy) float64 { return 75.0 }
+
+	system, err := NewWiredEvolutionSystem(base, cfg)
+	if err != nil {
+		t.Fatalf("NewWiredEvolutionSystem failed: %v", err)
+	}
+
+	if system.DreamCycle == nil {
+		t.Fatal("expected non-nil DreamCycle when EnableDreamCycle=true and Scorer set")
+	}
+
+	if system.DreamCycle.tester == nil {
+		t.Fatal("expected non-nil RegressionTester when Scorer is set")
+	}
+
+	// Score all agents.
+	for _, a := range system.Population.Agents {
+		a.Score = float64(int(a.Score) % 100)
+	}
+
+	// Populate score history so scheduler.shouldEvolve returns true.
+	for i := 0; i < 40; i++ {
+		system.Scheduler.RecordScore(100.0)
+	}
+	for i := 0; i < 10; i++ {
+		system.Scheduler.RecordScore(1.0)
+	}
+
+	system.Scheduler.minInterval = time.Nanosecond
+
+	// Run dream cycle with low thresholds to exercise the tester path.
+	dcConfig := DreamCycleConfig{
+		Enabled:              true,
+		MinTasksBeforeEvolve: 1,
+		MaxMutations:         2,
+		MinWinRate:           0.1,
+		Cooldown:             time.Nanosecond,
+	}
+	if err := WithDreamCycleConfig(dcConfig)(system.DreamCycle); err != nil {
+		t.Fatalf("WithDreamCycleConfig failed: %v", err)
+	}
+
+	ctx := context.Background()
+	err = system.DreamCycle.Run(ctx, CallbackData{AgentID: "agent-tester-1"})
+	if err != nil {
+		t.Logf("DreamCycle.Run returned error (may be expected in test env): %v", err)
+	}
+
+	Shutdown(system)
+}

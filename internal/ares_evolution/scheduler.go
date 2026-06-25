@@ -91,6 +91,21 @@ func WithTrigger(trigger EvolutionTrigger) SchedulerOption {
 	}
 }
 
+// WithSchedulerGuardrails attaches guardrails to the scheduler for pre-evolution checks.
+//
+// Args:
+//
+//	guardrails - the evolution guardrails instance (may be nil to disable).
+//
+// Returns:
+//
+//	SchedulerOption - the option function.
+func WithSchedulerGuardrails(guardrails *EvolutionGuardrails) SchedulerOption {
+	return func(s *EvolutionScheduler) {
+		s.guardrails = guardrails
+	}
+}
+
 // WithEnabled sets whether the scheduler is enabled.
 //
 // Args:
@@ -122,20 +137,21 @@ const periodicEvolutionScoreThreshold = 100
 
 // EvolutionScheduler triggers evolution cycles based on callback events.
 // It registers handlers with the callback registry and decides when to run
-// the FlightToExperienceAdapter based on configurable trigger conditions.
+// the adapter based on configurable trigger conditions.
 type EvolutionScheduler struct {
 	callbacks    callbacks.CallbackRegistrar
 	adapter      AdapterRunner
 	minInterval  time.Duration
-	mu           sync.Mutex // Protects lastRun from concurrent access.
+	mu           sync.Mutex
 	lastRun      time.Time
 	trigger      EvolutionTrigger
 	enabled      atomic.Bool
-	evolveMu     sync.Mutex         // Protects evolveCancel from concurrent access.
-	evolveCancel context.CancelFunc // Cancels the currently running evolution goroutine.
-	dreamCycle   *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
-	scores       []float64          // Sliding window of recent task scores for trend detection.
-	scoreMu      sync.Mutex         // Protects scores slice from concurrent access.
+	evolveMu     sync.Mutex
+	evolveCancel context.CancelFunc
+	dreamCycle   *DreamCycle
+	scores       []float64
+	scoreMu      sync.Mutex
+	guardrails   *EvolutionGuardrails
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -248,6 +264,10 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return
 	}
 
+	if !s.checkGuardrails(ctx) {
+		return
+	}
+
 	slog.InfoContext(ctx, "[Evolution] Starting evolution cycle",
 		"agent_id", data.AgentID,
 		"trigger", s.trigger.String())
@@ -352,16 +372,15 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		return false
 	}
 
-	// Step 2: Check trigger mode.
+	// Step 2: Snapshot score state under a single lock to avoid TOCTOU.
+	avg, recent, scoreCount := s.scoreSnapshot()
+
+	// Step 3: Check trigger mode.
 	switch s.trigger {
 	case TriggerOnDemand:
 		return false
 
 	case TriggerOnThreshold:
-		// Threshold mode: evolve when enough scores have accumulated
-		// and score degradation is detected.
-		avg := s.averageScore()
-		recent := s.recentAverage(10)
 		if avg <= 0 || recent <= 0 {
 			return false
 		}
@@ -376,16 +395,6 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		return false
 
 	case TriggerOnIdle:
-		// Idle mode: evolve when the system has enough score history
-		// and recent performance shows a meaningful drop, or periodically
-		// for exploration even without degradation.
-		avg := s.averageScore()
-		recent := s.recentAverage(10)
-
-		// Need at least 20 scores for a meaningful baseline.
-		s.scoreMu.Lock()
-		scoreCount := len(s.scores)
-		s.scoreMu.Unlock()
 		if scoreCount < minScoreCountForReliability {
 			return false
 		}
@@ -401,8 +410,6 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 			}
 		}
 
-		// Periodic exploration: even without degradation, evolve after enough
-		// tasks to explore the strategy space. This prevents stagnation.
 		if scoreCount >= periodicEvolutionScoreThreshold {
 			slog.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
 				"score_count", scoreCount)
@@ -413,6 +420,58 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	default:
 		return false
 	}
+}
+
+// scoreSnapshot reads avg, recent avg, and score count atomically under a single lock.
+func (s *EvolutionScheduler) scoreSnapshot() (avg, recent float64, count int) {
+	s.scoreMu.Lock()
+	defer s.scoreMu.Unlock()
+
+	if len(s.scores) == 0 {
+		return 0, 0, 0
+	}
+
+	var total float64
+	for _, v := range s.scores {
+		total += v
+	}
+	avg = total / float64(len(s.scores))
+
+	window := 10
+	if window > len(s.scores) {
+		window = len(s.scores)
+	}
+	var recentTotal float64
+	for _, v := range s.scores[len(s.scores)-window:] {
+		recentTotal += v
+	}
+	recent = recentTotal / float64(window)
+
+	count = len(s.scores)
+	return
+}
+
+// checkGuardrails runs a pre-evolution guardrail check.
+// Returns true if evolution should proceed, false if guardrails block it.
+//
+// Args:
+//
+//	ctx - operation context.
+//
+// Returns:
+//
+//	bool - true if evolution may proceed.
+func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
+	if s.guardrails == nil {
+		return true
+	}
+	result := s.guardrails.PreEvolveCheck(ctx, 0, 0, 0, 0)
+	if result.ShouldStop {
+		slog.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
+			"events", len(result.Events))
+		return false
+	}
+	return true
 }
 
 // SetEnabled enables or disables the scheduler at runtime.

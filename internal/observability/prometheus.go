@@ -10,17 +10,21 @@ import (
 // PrometheusMetrics holds all Prometheus metric definitions for GoAgent.
 type PrometheusMetrics struct {
 	// Counters
-	LLMCallsTotal    *prometheus.CounterVec
-	ToolCallsTotal   *prometheus.CounterVec
-	AgentErrorsTotal *prometheus.CounterVec
+	LLMCallsTotal           *prometheus.CounterVec
+	ToolCallsTotal          *prometheus.CounterVec
+	AgentErrorsTotal        *prometheus.CounterVec
+	EvolutionDeployTotal    *prometheus.CounterVec
+	EvolutionGuardrailTotal *prometheus.CounterVec
+	EvolutionShadowTotal    *prometheus.CounterVec
 
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
 
 	// Gauges
-	ActiveAgents   prometheus.Gauge
-	LLMTokensTotal *prometheus.GaugeVec
+	ActiveAgents           prometheus.Gauge
+	LLMTokensTotal         *prometheus.GaugeVec
+	EvolutionScoreGauge    *prometheus.GaugeVec
 
 	// Summary
 	CostUSDTotal *prometheus.SummaryVec
@@ -92,6 +96,34 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 			},
 			[]string{"model", "session"},
 		),
+		EvolutionDeployTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "goagent_evolution_deploy_total",
+				Help: "Total number of strategy deployments",
+			},
+			[]string{"status"},
+		),
+		EvolutionGuardrailTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "goagent_evolution_guardrail_total",
+				Help: "Total number of guardrail triggers",
+			},
+			[]string{"code"},
+		),
+		EvolutionShadowTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "goagent_evolution_shadow_total",
+				Help: "Total number of shadow evaluation results",
+			},
+			[]string{"result"},
+		),
+		EvolutionScoreGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "goagent_evolution_score",
+				Help: "Current evolution score by strategy ID",
+			},
+			[]string{"strategy_id"},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -104,6 +136,10 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.ActiveAgents,
 		m.LLMTokensTotal,
 		m.CostUSDTotal,
+		m.EvolutionDeployTotal,
+		m.EvolutionGuardrailTotal,
+		m.EvolutionShadowTotal,
+		m.EvolutionScoreGauge,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -205,6 +241,51 @@ func (m *PrometheusMetrics) RecordLLMTokens(model, direction string, count float
 		return
 	}
 	m.LLMTokensTotal.WithLabelValues(model, direction).Set(count)
+}
+
+// RecordEvolutionDeploy increments the evolution deploy counter.
+//
+// Args:
+//   - status: deployment status ("success", "rollback").
+func (m *PrometheusMetrics) RecordEvolutionDeploy(status string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionDeployTotal.WithLabelValues(status).Inc()
+}
+
+// RecordEvolutionGuardrail increments the evolution guardrail trigger counter.
+//
+// Args:
+//   - code: the guardrail error code.
+func (m *PrometheusMetrics) RecordEvolutionGuardrail(code string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionGuardrailTotal.WithLabelValues(code).Inc()
+}
+
+// RecordEvolutionShadow increments the shadow evaluation result counter.
+//
+// Args:
+//   - result: evaluation result ("promoted", "rejected").
+func (m *PrometheusMetrics) RecordEvolutionShadow(result string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionShadowTotal.WithLabelValues(result).Inc()
+}
+
+// SetEvolutionScore sets the current score for a strategy ID.
+//
+// Args:
+//   - strategyID: the strategy identifier.
+//   - score: the current score value.
+func (m *PrometheusMetrics) SetEvolutionScore(strategyID string, score float64) {
+	if m == nil {
+		return
+	}
+	m.EvolutionScoreGauge.WithLabelValues(strategyID).Set(score)
 }
 
 // RecordCost observes a cost value for a model and session.

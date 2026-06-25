@@ -17,6 +17,7 @@ import (
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/observability"
 
 	"github.com/gorilla/websocket"
 )
@@ -158,6 +159,9 @@ func (a *APIv2) Handler() http.Handler {
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
 	mux.HandleFunc("/", a.handleRoot)
+
+	// ── Prometheus metrics ─────────────────
+	observability.RegisterMetricsRouter(mux)
 
 	return withRecovery(withCORS(mux))
 }

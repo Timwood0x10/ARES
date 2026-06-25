@@ -4,6 +4,7 @@
 package evolution
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -85,6 +86,7 @@ type ShadowEvaluator struct {
 	shadowResults  []ShadowComparison
 	minSamples     int
 	minWinRate     float64
+	shadowScorer   func(*mutation.Strategy) float64 // optional independent scorer
 	mu             sync.RWMutex
 }
 
@@ -231,6 +233,46 @@ func (e *ShadowEvaluator) ShadowStrategy() *mutation.Strategy {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.shadowStrategy
+}
+
+// SetShadowScorer sets an independent scoring function for shadow evaluation.
+// When set, Evaluate() uses this scorer to compare active vs shadow strategies
+// independently of the caller-provided scores.
+//
+// Args:
+//   - scorer: scoring function (use nil to clear).
+func (e *ShadowEvaluator) SetShadowScorer(scorer func(*mutation.Strategy) float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shadowScorer = scorer
+}
+
+// Evaluate scores both active and shadow strategies using the independent
+// scorer (if set) and records the comparison result. Returns the active and
+// shadow scores. If no scorer is set, returns (-1, -1) without recording.
+//
+// Args:
+//   - ctx: operation context for cancellation.
+//
+// Returns:
+//   - activeScore: the score from the active strategy.
+//   - shadowScore: the score from the shadow strategy.
+func (e *ShadowEvaluator) Evaluate(ctx context.Context) (float64, float64) {
+	e.mu.RLock()
+	scorer := e.shadowScorer
+	active := e.activeStrategy
+	shadow := e.shadowStrategy
+	e.mu.RUnlock()
+
+	if scorer == nil || active == nil || shadow == nil {
+		return -1, -1
+	}
+
+	activeScore := scorer(active)
+	shadowScore := scorer(shadow)
+
+	e.RecordResult(activeScore, shadowScore)
+	return activeScore, shadowScore
 }
 
 // Results returns a copy of all recorded comparison results.
