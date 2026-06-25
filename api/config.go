@@ -9,11 +9,12 @@ import (
 // Config holds all configuration for the service.
 type ServiceConfig struct {
 	LLM struct {
-		Provider string `yaml:"provider"`
-		Model    string `yaml:"model"`
-		BaseURL  string `yaml:"base_url"`
-		APIKey   string `yaml:"api_key"`
-		Timeout  int    `yaml:"timeout"`
+		Provider        string `yaml:"provider"`
+		Model           string `yaml:"model"`
+		BaseURL         string `yaml:"base_url"`
+		APIKey          string `yaml:"api_key"`
+		Timeout         int    `yaml:"timeout"`
+		MaxPromptLength int    `yaml:"max_prompt_length"`
 	} `yaml:"llm"`
 	MCP struct {
 		Servers []struct {

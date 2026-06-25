@@ -42,6 +42,10 @@ func NewOpenAIAdapter(config *Config) *OpenAIAdapter {
 
 // Generate generates text from prompt.
 func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	if a.config.MaxPromptLength > 0 && len(prompt) > a.config.MaxPromptLength {
+		return "", fmt.Errorf("prompt exceeds maximum length of %d characters", a.config.MaxPromptLength)
+	}
+
 	messages := []map[string]string{
 		{"role": "user", "content": prompt},
 	}

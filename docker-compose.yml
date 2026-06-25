@@ -1,5 +1,3 @@
-version: "3.8"
-
 # GoAgent Demo Stack — Start with:
 #   docker compose up -d
 #
@@ -9,8 +7,40 @@ version: "3.8"
 #
 # Tear down:
 #   docker compose down -v
+#
+# For interview demo startup:
+#   ./scripts/start_interview_demo.sh
 
 services:
+  # ──────────────────────────────────────────────
+  # SearXNG — self-hosted meta search engine
+  # Used by the web_search tool for autonomous search
+  # API: GET /search?q=<query>&format=json
+  # ──────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: goagent-searxng
+    restart: unless-stopped
+    ports:
+      - "5605:8080"
+    volumes:
+      - searxng-data:/etc/searxng:rw
+      - ./scripts/docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:5605
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/search?q=healthcheck&format=json"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
   # ──────────────────────────────────────────────
   # PostgreSQL + pgvector — required for all tests
   # ──────────────────────────────────────────────
@@ -60,4 +90,6 @@ services:
 
 volumes:
   pgdata:
+    driver: local
+  searxng-data:
     driver: local

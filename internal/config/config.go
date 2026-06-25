@@ -51,16 +51,17 @@ type ServerConfig struct {
 
 // LLMConfig holds LLM provider configuration.
 type LLMConfig struct {
-	Provider       string            `yaml:"provider"` // "openai", "ollama"
-	APIKey         string            `yaml:"api_key"`
-	BaseURL        string            `yaml:"base_url"`
-	Model          string            `yaml:"model"`
-	Timeout        int               `yaml:"timeout"`    // seconds
-	MaxTokens      int               `yaml:"max_tokens"` // max tokens for response
-	Extra          map[string]string `yaml:"extra"`
-	ScorerAPIRate  float64           `yaml:"scorer_api_rate,omitempty"`  // requests per second for LLM scorer
-	ScorerAPIBurst int               `yaml:"scorer_api_burst,omitempty"` // burst size for LLM scorer
-	Fallbacks      []LLMConfig       `yaml:"fallbacks,omitempty"`        // fallback LLM providers for scoring failover
+	Provider        string            `yaml:"provider"` // "openai", "ollama"
+	APIKey          string            `yaml:"api_key"`
+	BaseURL         string            `yaml:"base_url"`
+	Model           string            `yaml:"model"`
+	Timeout         int               `yaml:"timeout"`           // seconds
+	MaxTokens       int               `yaml:"max_tokens"`        // max tokens for response
+	MaxPromptLength int               `yaml:"max_prompt_length"` // max prompt characters (0 = default 8192)
+	Extra           map[string]string `yaml:"extra"`
+	ScorerAPIRate   float64           `yaml:"scorer_api_rate,omitempty"`  // requests per second for LLM scorer
+	ScorerAPIBurst  int               `yaml:"scorer_api_burst,omitempty"` // burst size for LLM scorer
+	Fallbacks       []LLMConfig       `yaml:"fallbacks,omitempty"`        // fallback LLM providers for scoring failover
 }
 
 // AgentsConfig holds agent configuration.

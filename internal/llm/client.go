@@ -65,13 +65,14 @@ const (
 
 // Config holds LLM client configuration.
 type Config struct {
-	Provider  string            `yaml:"provider"`
-	APIKey    string            `yaml:"api_key"`
-	BaseURL   string            `yaml:"base_url"`
-	Model     string            `yaml:"model"`
-	Timeout   int               `yaml:"timeout"`
-	MaxTokens int               `yaml:"max_tokens"` // Maximum tokens in response (0 = use defaultMaxTokens)
-	Extra     map[string]string `yaml:"extra"`
+	Provider        string            `yaml:"provider"`
+	APIKey          string            `yaml:"api_key"`
+	BaseURL         string            `yaml:"base_url"`
+	Model           string            `yaml:"model"`
+	Timeout         int               `yaml:"timeout"`
+	MaxTokens       int               `yaml:"max_tokens"`        // Maximum tokens in response (0 = use defaultMaxTokens)
+	MaxPromptLength int               `yaml:"max_prompt_length"` // Maximum prompt characters (0 = use maxPromptLength default)
+	Extra           map[string]string `yaml:"extra"`
 }
 
 // Client represents an LLM client that supports multiple providers.
@@ -192,12 +193,20 @@ func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.T
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
-	if len(prompt) > maxPromptLength {
-		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+	if len(prompt) > c.promptMaxLength() {
+		err := fmt.Errorf("prompt exceeds maximum length of %d characters", c.promptMaxLength())
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
 	return nil
+}
+
+// promptMaxLength returns the configured max prompt length, or the default.
+func (c *Client) promptMaxLength() int {
+	if c.config != nil && c.config.MaxPromptLength > 0 {
+		return c.config.MaxPromptLength
+	}
+	return maxPromptLength
 }
 
 // Generate sends a text generation request to the LLM.

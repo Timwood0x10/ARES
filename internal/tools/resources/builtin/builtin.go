@@ -28,6 +28,7 @@ func RegisterGeneralTools() error {
 		// Network capability
 		builtin_network.NewHTTPRequest(),
 		builtin_network.NewWebScraper(builtin_network.NewWebFetcher(builtin_network.NewDefaultHTTPClient(30 * time.Second))),
+		builtin_network.NewWebSearch(),
 		// File capability
 		builtin_file.NewFileTools(),
 

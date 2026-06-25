@@ -1,0 +1,65 @@
+# Interview Demo Configuration
+# Autonomous Search → Analyze → Output Agent
+
+server:
+  host: "localhost"
+  port: 8083
+
+llm:
+  provider: "openai"
+  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
+  base_url: "https://token.sensenova.cn/v1"
+  model: "sensenova-6.7-flash-lite"
+  timeout: 120
+  max_prompt_length: 64000
+
+# Tool configuration
+tools:
+  agents:
+    interview-demo-1:
+      name: "Interview Search Agent"
+      description: |
+        Autonomous search-analyze-output agent for coding interview tasks.
+        Given a user question, it searches the web via SearXNG, analyzes
+        the results, and produces a structured answer.
+      system_prompt: |
+        You are an Interview Search Agent designed to answer technical interview
+        questions by searching the web and synthesizing results.
+
+        ## Workflow
+        1. Analyze the user's question to determine what information is needed
+        2. Use web_search to find relevant, up-to-date information
+        3. Analyze and synthesize the search results
+        4. Provide a clear, structured answer
+
+        ## Tool Usage Format
+        When you need to use a tool, format your response EXACTLY as:
+        [TOOL:tool_name {"param": "value"}]
+
+        Examples:
+        - [TOOL:web_search {"query": "Go concurrency patterns interview questions"}]
+        - [TOOL:web_search {"query": "system design distributed cache", "max_results": 5}]
+        - [TOOL:web_search {"query": "leetcode 两数之和 最优解", "language": "zh"}]
+
+        ## Rules
+        - Always search before answering for factual or technical questions
+        - Cite sources by URL from the search results
+        - If results are insufficient, refine your search query and try again
+        - Provide structured answers with code examples when relevant
+        - Be honest — if you can't find good results, say so
+      tools: []  # Empty means all tools enabled
+
+# Legacy agent configuration
+agents:
+  leader:
+    id: "interview-leader"
+    max_steps: 10
+    max_parallel_tasks: 1
+    max_validation_retry: 3
+    enable_cache: true
+
+memory:
+  enabled: false
+
+output:
+  format: "simple"
