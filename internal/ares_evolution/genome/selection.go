@@ -287,15 +287,18 @@ func findMinScore(population []*mutation.Strategy) float64 {
 // --- Deprecated APIs kept for backward compatibility with tests and benchmarks ---
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // TruncationSelection selects the top n individuals by score (elite selection).
 type TruncationSelection struct{}
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 func NewTruncationSelection() *TruncationSelection {
 	return &TruncationSelection{}
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 func (ts *TruncationSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
 	if err := validateSelectInputs(ctx, population, n); err != nil {
 		return nil, err
@@ -310,15 +313,18 @@ func (ts *TruncationSelection) Select(ctx context.Context, population []*mutatio
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // RouletteWheelSelection selects individuals with probability proportional to fitness.
 type RouletteWheelSelection struct {
 	rng *rand.Rand
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 type RouletteOption func(*RouletteWheelSelection) error
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 func WithRouletteSeed(seed int64) RouletteOption {
 	return func(rw *RouletteWheelSelection) error {
 		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
@@ -327,6 +333,7 @@ func WithRouletteSeed(seed int64) RouletteOption {
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
 	rw := &RouletteWheelSelection{
 		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
@@ -340,6 +347,7 @@ func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection,
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
 	if err := validateSelectInputs(ctx, population, n); err != nil {
 		return nil, err
@@ -393,6 +401,7 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // PickParent selects a single parent from the population using the given selector and RNG.
 func PickParent(ctx context.Context, population []*mutation.Strategy, sel Selection, rng *rand.Rand) (*mutation.Strategy, error) {
 	if sel == nil {
@@ -415,6 +424,7 @@ func PickParent(ctx context.Context, population []*mutation.Strategy, sel Select
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // sumFloat64 returns the sum of all float64 values in the slice.
 func sumFloat64(values []float64) float64 {
 	var total float64

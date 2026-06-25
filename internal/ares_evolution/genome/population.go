@@ -218,6 +218,10 @@ type PopulationConfig struct {
 	// HistoryMaxSize limits the number of historical generation entries (0 = unlimited).
 	// When > 0, each evolution cycle appends a GenerationHistoryEntry to the history.
 	HistoryMaxSize int `json:"history_max_size"`
+
+	// AdaptiveConfig controls adaptive mutation rate tuning behavior.
+	// When nil, default adaptive parameters are used.
+	AdaptiveConfig *AdaptiveConfig `json:"adaptive_config,omitempty"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -531,6 +535,21 @@ func WithHistoryEnabled(maxSize int) PopulationOption {
 			return fmt.Errorf("history max size must be >= 0, got %d", maxSize)
 		}
 		cfg.HistoryMaxSize = maxSize
+		return nil
+	}
+}
+
+// WithAdaptiveConfig sets custom adaptive mutation rate tuning parameters.
+// When nil or unset, DefaultAdaptiveConfig() is used.
+//
+// Args:
+//   - ac: the adaptive configuration (nil to use defaults).
+//
+// Returns:
+//   - PopulationOption: functional option for NewPopulation.
+func WithAdaptiveConfig(ac *AdaptiveConfig) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		cfg.AdaptiveConfig = ac
 		return nil
 	}
 }

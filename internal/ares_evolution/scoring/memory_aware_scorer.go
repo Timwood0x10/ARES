@@ -121,9 +121,9 @@ type MemoryAwareScorer struct {
 	exp    ExperienceProvider
 	cfg    MemoryAwareScoringConfig
 
-	mu          sync.Mutex
-	adjustments int64 // total number of adjustments applied
-	bonusTotal  float64
+	mu           sync.Mutex
+	adjustments  int64 // total number of adjustments applied
+	bonusTotal   float64
 	penaltyTotal float64
 }
 

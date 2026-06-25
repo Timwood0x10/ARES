@@ -576,11 +576,11 @@ func TestMergeHints(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		hints           []EvolutionHint
-		expectSnippets  int
-		expectTools     int
-		expectParams    int
+		name           string
+		hints          []EvolutionHint
+		expectSnippets int
+		expectTools    int
+		expectParams   int
 	}{
 		{
 			name: "single hint",
@@ -641,9 +641,9 @@ func TestExperienceGuidedMutator_WithGuidedConfidence(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		input      float64
-		expected   float64
+		name     string
+		input    float64
+		expected float64
 	}{
 		{name: "normal value", input: 0.7, expected: 0.7},
 		{name: "negative clamped to 0", input: -0.5, expected: 0},

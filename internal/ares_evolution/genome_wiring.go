@@ -549,6 +549,13 @@ type WiredEvolutionSystem struct {
 
 	// StrategyStore persists deployed strategies (optional, may be nil).
 	StrategyStore StrategyStore
+
+	// ActiveStrategyManager manages strategy deployment and rollback (optional).
+	ActiveStrategyManager *ActiveStrategyManager
+
+	// ShadowEvaluator evaluates candidate strategies against the active strategy
+	// before deployment (optional, may be nil when disabled).
+	ShadowEvaluator *ShadowEvaluator
 }
 
 // SystemConfig holds configuration for creating a wired evolution system.
@@ -673,6 +680,20 @@ type SystemConfig struct {
 	// scoring. When set and MemoryAwareScoringConfig.Enabled is true, the scorer
 	// adjusts fitness scores based on historical evidence.
 	MemoryExperienceProvider scoring.ExperienceProvider `json:"-"`
+
+	// RollbackPolicyConfig configures the rollback policy for strategy degradation
+	// detection and automatic rollback. When Enabled is true and a StrategyStore is
+	// configured, an ActiveStrategyManager is created for managing deployments.
+	RollbackPolicyConfig RollbackPolicyConfig `json:"rollback_policy,omitempty"`
+
+	// ActiveStrategyManager manages strategy deployment and rollback (optional).
+	// When set, strategies can be deployed and rolled back via the strategy store.
+	ActiveStrategyManager *ActiveStrategyManager `json:"-"`
+
+	// ShadowEvalConfig configures shadow evaluation for safe strategy deployment
+	// comparison. When enabled, the system evaluates candidate strategies against
+	// the active strategy before deciding whether to deploy.
+	ShadowEvalConfig ShadowEvaluationConfig `json:"shadow_eval_config,omitempty"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -903,6 +924,46 @@ func NewWiredEvolutionSystem(
 	// Step 7: Attach optional strategy store.
 	if cfg.StrategyStore != nil {
 		system.StrategyStore = cfg.StrategyStore
+	}
+
+	// Step 7a: Optionally create ActiveStrategyManager for deployment/rollback.
+	if cfg.StrategyStore != nil && cfg.RollbackPolicyConfig.Enabled {
+		var policyOpts []RollbackOption
+		if cfg.RollbackPolicyConfig.DegradationThreshold > 0 {
+			policyOpts = append(policyOpts, WithDegradationThreshold(cfg.RollbackPolicyConfig.DegradationThreshold))
+		}
+		if cfg.RollbackPolicyConfig.WindowSize > 0 {
+			policyOpts = append(policyOpts, WithRollbackWindowSize(cfg.RollbackPolicyConfig.WindowSize))
+		}
+		if cfg.RollbackPolicyConfig.MinSamples > 0 {
+			policyOpts = append(policyOpts, WithMinRollbackSamples(cfg.RollbackPolicyConfig.MinSamples))
+		}
+		rollbackPolicy := NewRollbackPolicy(policyOpts...)
+		asm, err := NewActiveStrategyManager(cfg.StrategyStore, rollbackPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("create active strategy manager: %w", err)
+		}
+		system.ActiveStrategyManager = asm
+		cfg.ActiveStrategyManager = asm
+
+		slog.Info("[WiredSystem] Active strategy manager created with rollback policy",
+			"degradation_threshold", cfg.RollbackPolicyConfig.DegradationThreshold,
+			"window_size", cfg.RollbackPolicyConfig.WindowSize,
+			"min_samples", cfg.RollbackPolicyConfig.MinSamples,
+		)
+	}
+
+	// Step 7b: Optionally create shadow evaluator for safe strategy deployment.
+	if cfg.ShadowEvalConfig.Enabled {
+		shadowEval := NewShadowEvaluator(cfg.ShadowEvalConfig)
+		shadowEval.SetActiveStrategy(baseStrategy)
+		system.ShadowEvaluator = shadowEval
+
+		slog.Info("[WiredSystem] Shadow evaluation enabled",
+			"min_samples", cfg.ShadowEvalConfig.MinSamples,
+			"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
+			"active_strategy", baseStrategy.ID,
+		)
 	}
 
 	// Step 8: Optionally create dream cycle with evolution-layer adapters.

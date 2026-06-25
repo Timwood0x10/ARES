@@ -74,16 +74,16 @@ type AdaptiveDistributionConfig struct {
 // mutation distribution configuration.
 func DefaultAdaptiveDistributionConfig() AdaptiveDistributionConfig {
 	return AdaptiveDistributionConfig{
-		Enabled:                false,
-		MinParamProb:           0.30,
-		MaxParamProb:           0.90,
-		MinPromptProb:          0.05,
-		MaxPromptProb:          0.50,
-		MinToolProb:            0.05,
-		MaxToolProb:            0.50,
-		ExplorationFloor:       0.03,
-		WinRateWindow:          20,
-		LearningRate:           0.10,
+		Enabled:                 false,
+		MinParamProb:            0.30,
+		MaxParamProb:            0.90,
+		MinPromptProb:           0.05,
+		MaxPromptProb:           0.50,
+		MinToolProb:             0.05,
+		MaxToolProb:             0.50,
+		ExplorationFloor:        0.03,
+		WinRateWindow:           20,
+		LearningRate:            0.10,
 		MinAttemptsBeforeAdjust: 5,
 	}
 }
