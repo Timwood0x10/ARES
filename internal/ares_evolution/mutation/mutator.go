@@ -110,11 +110,9 @@ func (m *Mutator) Mutate(ctx context.Context, parent *Strategy, n int) ([]*Strat
 	return children, nil
 }
 
-// mutateOne performs a single mutation on the parent strategy.
-// It randomly selects between parameter, prompt, and tool mutation based on
-// probability and pool availability, then applies the chosen mutation method.
-//
-// Probability distribution:
+// mutateOne performs a single mutation on the parent strategy using default
+// hard-coded probabilities.
+// It delegates to mutateOneWithProbs with the standard distribution:
 //   - All pools available: 70% parameter, 15% prompt, 15% tool
 //   - Only prompt available: 80% parameter, 20% prompt
 //   - Only tool available: 80% parameter, 20% tool
@@ -122,40 +120,83 @@ func (m *Mutator) Mutate(ctx context.Context, parent *Strategy, n int) ([]*Strat
 func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	hasPrompt := len(m.promptPool) > 0
 	hasTool := len(m.toolPool) > 0
-	r := m.rng.Float64()
+
+	var paramProb, promptProb, toolProb float64
+	if hasPrompt && hasTool {
+		paramProb, promptProb, toolProb = 0.70, 0.15, 0.15
+	} else if hasPrompt {
+		paramProb, promptProb, toolProb = 0.80, 0.20, 0.00
+	} else if hasTool {
+		paramProb, promptProb, toolProb = 0.80, 0.00, 0.20
+	} else {
+		paramProb, promptProb, toolProb = 1.00, 0.00, 0.00
+	}
+
+	return m.mutateOneWithProbs(parent, index, paramProb, promptProb, toolProb)
+}
+
+// mutateOneWithProbs performs a single mutation using the given explicit
+// probabilities for each mutation type. The probabilities are normalized
+// based on available pools: if a pool is empty, its probability is
+// redistributed proportionally among available types.
+//
+// Args:
+//
+//	parent - the parent strategy to mutate.
+//	index - child index for deterministic ID generation.
+//	paramProb - probability of parameter mutation.
+//	promptProb - probability of prompt mutation.
+//	toolProb - probability of tool mutation.
+//
+// Returns:
+//
+//	*Strategy - the mutated child strategy.
+//	error - non-nil if mutation fails.
+func (m *Mutator) mutateOneWithProbs(parent *Strategy, index int, paramProb, promptProb, toolProb float64) (*Strategy, error) {
+	hasPrompt := len(m.promptPool) > 0
+	hasTool := len(m.toolPool) > 0
+
+	// Zero out probabilities for unavailable pools.
+	if !hasPrompt {
+		promptProb = 0
+	}
+	if !hasTool {
+		toolProb = 0
+	}
 
 	var child *Strategy
 	var err error
 
-	if hasPrompt && hasTool {
-		if r < 0.70 {
-			child, err = m.mutateParameter(parent)
-		} else if r < 0.85 {
-			child, err = m.mutatePrompt(parent)
-		} else {
-			child, err = m.mutateTool(parent)
-		}
-	} else if hasPrompt {
-		if r < 0.80 {
-			child, err = m.mutateParameter(parent)
-		} else {
-			child, err = m.mutatePrompt(parent)
-		}
-	} else if hasTool {
-		if r < 0.80 {
-			child, err = m.mutateParameter(parent)
-		} else {
-			child, err = m.mutateTool(parent)
-		}
+	if paramProb+promptProb+toolProb <= 0 {
+		// Fallback: no valid mutation type available, return deep copy.
+		child = parent.Clone()
+		child.MutationDesc = "no valid mutation type available"
+		child.StrategyMutationType = MutationParameter
 	} else {
-		child, err = m.mutateParameter(parent)
-	}
+		r := m.rng.Float64() * (paramProb + promptProb + toolProb)
 
-	if err != nil {
-		return nil, err
+		if r < paramProb {
+			child, err = m.mutateParameter(parent)
+		} else if r < paramProb+promptProb {
+			child, err = m.mutatePrompt(parent)
+		} else {
+			child, err = m.mutateTool(parent)
+		}
+
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Fill in metadata for the new child strategy.
+	m.fillChildMetadata(child, parent, index)
+
+	return child, nil
+}
+
+// fillChildMetadata populates the metadata fields (ID, ParentID, Version,
+// Score, CreatedAt) on a newly mutated child strategy.
+func (m *Mutator) fillChildMetadata(child *Strategy, parent *Strategy, index int) {
 	now := parent.CreatedAt
 	if m.deterministicIDs {
 		counter := m.idCounter.Add(1)
@@ -171,8 +212,6 @@ func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	child.Version = parent.Version + 1
 	child.Score = -1
 	child.CreatedAt = now
-
-	return child, nil
 }
 
 // mutateParameter changes one random parameter to a different value from its range.

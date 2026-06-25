@@ -43,6 +43,12 @@ type GenomePopulationAdapter struct {
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
 	// and after each evolution cycle.
 	guardrails *EvolutionGuardrails
+
+	// Memory-aware scorer for evidence-based scoring adjustments (optional).
+	// When set via WithAdapterMemoryAwareScoring, Run() wraps the tiered
+	// scorer pipeline with memory-aware adjustments, preserving tiered
+	// scoring stats and context propagation.
+	memoryScorer *scoring.MemoryAwareScorer
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -142,6 +148,27 @@ func WithAdapterGuardrails(g *EvolutionGuardrails) GenomeAdapterOption {
 	}
 }
 
+// WithAdapterMemoryAwareScoring configures the adapter to wrap the tiered
+// scorer with memory-aware scoring adjustments. The MemoryAwareScorer adds
+// evidence-based bonuses and cost/latency penalties to the fitness score.
+//
+// This must be used together with WithAdapterTieredScoring. The memory-aware
+// scorer wraps the tiered pipeline, preserving all tiered scoring stats
+// (cache hits, LLM calls, fallbacks) and proper context propagation.
+//
+// Args:
+//
+//	ms - the configured memory-aware scorer (must not be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterMemoryAwareScoring(ms *scoring.MemoryAwareScorer) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.memoryScorer = ms
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -161,6 +188,17 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		// Reset per-generation budget at start of each cycle.
 		a.tieredScorer.ResetForGeneration()
 		scorer = func(s *mutation.Strategy) float64 {
+			// When memory-aware scorer is set, delegate through it to get
+			// evidence-based bonuses and cost/latency penalties.
+			if a.memoryScorer != nil {
+				score, _, err := a.memoryScorer.Score(ctx, s)
+				if err != nil {
+					slog.WarnContext(ctx, "[GenomeAdapter] memory-aware scorer failed, using heuristic",
+						"error", err, "strategy_id", s.ID)
+					return 50.0
+				}
+				return score
+			}
 			score, _, err := a.tieredScorer.Score(ctx, s)
 			if err != nil {
 				slog.WarnContext(ctx, "[GenomeAdapter] tiered scorer failed, using baseline",
@@ -312,30 +350,33 @@ func (a *GenomePopulationAdapter) Population() *genome.Population {
 	return a.pop
 }
 
-// GenomeMutatorAdapter wraps a *mutation.Mutator to implement genome.MutatorInterface.
-// This enables genome.Population to use the production mutator directly.
+// GenomeMutatorAdapter wraps a genome.MutatorInterface-compatible mutator
+// to implement genome.MutatorInterface. This enables genome.Population to
+// use both the production mutator and the experience-guided mutator.
 type GenomeMutatorAdapter struct {
-	mutator *mutation.Mutator
+	mutator genome.MutatorInterface
 }
 
 // NewGenomeMutatorAdapter creates a genome-compatible mutator adapter.
+// The provided mutator must implement the genome.MutatorInterface (both
+// *mutation.Mutator and *mutation.ExperienceGuidedMutator satisfy this).
 //
 // Args:
 //
-//	m - the production mutator to wrap (must not be nil).
+//	m - the mutator to wrap (must not be nil).
 //
 // Returns:
 //
 //	*GenomeMutatorAdapter - the adapter instance.
 //	error - non-nil if mutator is nil.
-func NewGenomeMutatorAdapter(m *mutation.Mutator) (*GenomeMutatorAdapter, error) {
+func NewGenomeMutatorAdapter(m genome.MutatorInterface) (*GenomeMutatorAdapter, error) {
 	if m == nil {
 		return nil, fmt.Errorf("mutator must not be nil")
 	}
 	return &GenomeMutatorAdapter{mutator: m}, nil
 }
 
-// Mutate delegates to the wrapped mutation.Mutator.
+// Mutate delegates to the wrapped mutator.
 // The signature matches genome.MutatorInterface (uses *mutation.Strategy).
 //
 // Args:
@@ -601,6 +642,17 @@ type SystemConfig struct {
 	// Empty (default) means prompt mutation is disabled.
 	PromptTemplates []string `json:"prompt_templates,omitempty"`
 
+	// EnableExperienceGuidedMutation enables experience-guided mutation when
+	// true AND a GuidanceProvider is configured. When hints are available,
+	// the mutator biases its decisions toward patterns that worked in the past.
+	EnableExperienceGuidedMutation bool `json:"enable_experience_guided_mutation,omitempty"`
+
+	// GuidanceProvider provides evolution hints for guided mutation.
+	// When EnableExperienceGuidedMutation is true and this is non-nil, the
+	// mutator is wrapped with an ExperienceGuidedMutator that biases mutation
+	// decisions using past experience data.
+	GuidanceProvider GuidanceProvider `json:"-"`
+
 	// Guardrails provides pre/post evolution safety checks (optional).
 	// When set, the adapter runs guardrail checks before and after each
 	// evolution cycle. Nil (default) means guardrails are disabled.
@@ -610,6 +662,17 @@ type SystemConfig struct {
 	// stored for trajectory reporting. When > 0, each evolution cycle
 	// appends a GenerationHistoryEntry to the population history (default 0 = disabled).
 	HistoryMaxSize int `json:"history_max_size"`
+
+	// MemoryAwareScoringConfig configures memory-aware scoring that extends the
+	// tiered scorer with evidence-based bonuses and cost/latency penalties.
+	// When MemoryAwareScoringConfig.Enabled is true and a MemoryExperienceProvider is
+	// set, the tiered scorer is wrapped in a MemoryAwareScorer.
+	MemoryAwareScoringConfig scoring.MemoryAwareScoringConfig `json:"memory_aware_scoring,omitempty"`
+
+	// MemoryExperienceProvider provides access to past experiences for memory-aware
+	// scoring. When set and MemoryAwareScoringConfig.Enabled is true, the scorer
+	// adjusts fitness scores based on historical evidence.
+	MemoryExperienceProvider scoring.ExperienceProvider `json:"-"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -682,13 +745,30 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create mutator: %w", err)
 	}
 
+	// Step 1b: Optionally wrap with experience-guided mutation.
+	// When enabled and a guidance provider is configured, the mutator
+	// biases its decisions toward patterns that worked in the past.
+	var mutatorForGenome genome.MutatorInterface = rawMutator
+	if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
+		guidedMutator, err := mutation.NewExperienceGuidedMutator(
+			rawMutator,
+			newGuidanceAdapter(cfg.GuidanceProvider),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create guided mutator: %w", err)
+		}
+		mutatorForGenome = guidedMutator
+
+		slog.Info("[WiredSystem] Experience-guided mutation enabled",
+			"hint_provider", fmt.Sprintf("%T", cfg.GuidanceProvider),
+		)
+	}
+
 	// Step 2: Wrap for genome compatibility.
-	genomeMutator, err := NewGenomeMutatorAdapter(rawMutator)
+	genomeMutator, err := NewGenomeMutatorAdapter(mutatorForGenome)
 	if err != nil {
 		return nil, fmt.Errorf("create genome mutator adapter: %w", err)
 	}
-
-	// Step 3: Create crossover engine with optional seed and deterministic IDs.
 	var crosserOpts []genome.CrossoverOption
 	if cfg.CrossoverSeed != 0 {
 		crosserOpts = append(crosserOpts, genome.WithSeed(cfg.CrossoverSeed))
@@ -775,7 +855,30 @@ func NewWiredEvolutionSystem(
 			return nil, fmt.Errorf("create tiered scorer: %w", err)
 		}
 
-		adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
+		// Optionally wrap tiered scorer with memory-aware scoring.
+		if cfg.MemoryAwareScoringConfig.Enabled && cfg.MemoryExperienceProvider != nil {
+			masCfg := cfg.MemoryAwareScoringConfig
+			memScorer, err := scoring.NewMemoryAwareScorer(tiered, cfg.MemoryExperienceProvider, masCfg)
+			if err != nil {
+				return nil, fmt.Errorf("create memory-aware scorer: %w", err)
+			}
+			adapterOpts = append(adapterOpts, WithAdapterMemoryAwareScoring(memScorer))
+
+			// Also set tiered scoring so the adapter's Run() method has access
+			// to the tiered scorer (budget, cache, LLM tracking, etc.).
+			// The memory-aware scorer wraps the tiered scorer, so both
+			// evidence-based adjustments and tiered scoring stats are preserved
+			// with proper context propagation from Run().
+			adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
+
+			slog.Info("[WiredSystem] memory-aware scoring enabled",
+				"memory_weight", masCfg.MemoryWeight,
+				"cost_weight", masCfg.CostWeight,
+				"latency_weight", masCfg.LatencyWeight,
+			)
+		} else {
+			adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
+		}
 	}
 
 	// Step 5c: Optionally attach guardrails for pre/post evolution safety checks.
@@ -959,4 +1062,123 @@ func Shutdown(system *WiredEvolutionSystem) {
 		system.Scheduler.Shutdown()
 	}
 	slog.Info("[WiredSystem] Evolution system shut down")
+}
+
+// guidanceAdapter bridges evolution.GuidanceProvider to mutation.HintProvider.
+// It converts between the evolution and mutation package's EvolutionHint and
+// StrategyOutcome types, which have identical field definitions.
+type guidanceAdapter struct {
+	provider GuidanceProvider
+}
+
+// newGuidanceAdapter creates a mutation-compatible hint provider from an
+// evolution-level GuidanceProvider.
+//
+// Args:
+//
+//	provider - the evolution-level guidance provider (must not be nil).
+//
+// Returns:
+//
+//	mutation.HintProvider - the adapted provider for the mutation package.
+func newGuidanceAdapter(provider GuidanceProvider) mutation.HintProvider {
+	return &guidanceAdapter{provider: provider}
+}
+
+// HintsForTask delegates to the wrapped provider and converts EvolutionHint types.
+//
+// Args:
+//
+//	ctx - operation context.
+//	taskType - the task type to get hints for.
+//	limit - maximum number of hints to return.
+//
+// Returns:
+//
+//	[]mutation.EvolutionHint - the converted hints.
+//	error - delegation error from the wrapped provider.
+func (a *guidanceAdapter) HintsForTask(
+	ctx context.Context,
+	taskType string,
+	limit int,
+) ([]mutation.EvolutionHint, error) {
+	hints, err := a.provider.HintsForTask(ctx, taskType, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]mutation.EvolutionHint, len(hints))
+	for i, h := range hints {
+		var paramHints map[string]float64
+		if h.ParamHints != nil {
+			paramHints = make(map[string]float64, len(h.ParamHints))
+			for k, v := range h.ParamHints {
+				paramHints[k] = v
+			}
+		}
+
+		sourceIDs := make([]string, len(h.SourceExperienceIDs))
+		copy(sourceIDs, h.SourceExperienceIDs)
+
+		constraints := make([]string, len(h.Constraints))
+		copy(constraints, h.Constraints)
+
+		failedPatterns := make([]string, len(h.FailedPatterns))
+		copy(failedPatterns, h.FailedPatterns)
+
+		preferredTools := make([]string, len(h.PreferredTools))
+		copy(preferredTools, h.PreferredTools)
+
+		promptSnippets := make([]string, len(h.PromptSnippets))
+		copy(promptSnippets, h.PromptSnippets)
+
+		result[i] = mutation.EvolutionHint{
+			ID:                  h.ID,
+			TaskType:            h.TaskType,
+			Problem:             h.Problem,
+			Solution:            h.Solution,
+			Constraints:         constraints,
+			FailedPatterns:      failedPatterns,
+			PreferredTools:      preferredTools,
+			PromptSnippets:      promptSnippets,
+			ParamHints:          paramHints,
+			Confidence:          h.Confidence,
+			SourceExperienceIDs: sourceIDs,
+		}
+	}
+
+	return result, nil
+}
+
+// RecordStrategyOutcome delegates to the wrapped provider and converts types.
+//
+// Args:
+//
+//	ctx - operation context.
+//	outcome - the mutation-level strategy outcome to record.
+//
+// Returns:
+//
+//	error - delegation error from the wrapped provider.
+func (a *guidanceAdapter) RecordStrategyOutcome(
+	ctx context.Context,
+	outcome mutation.StrategyOutcome,
+) error {
+	evoOutcome := StrategyOutcome{
+		StrategyID:   outcome.StrategyID,
+		TaskType:     outcome.TaskType,
+		Success:      outcome.Success,
+		Score:        outcome.Score,
+		Cost:         outcome.Cost,
+		LatencyMs:    outcome.LatencyMs,
+		MutationType: outcome.MutationType,
+		Timestamp:    outcome.Timestamp,
+	}
+
+	if len(outcome.ExperienceIDs) > 0 {
+		evoOutcome.ExperienceIDs = make([]string, len(outcome.ExperienceIDs))
+		copy(evoOutcome.ExperienceIDs, outcome.ExperienceIDs)
+	}
+
+	return a.provider.RecordStrategyOutcome(ctx, evoOutcome)
 }
