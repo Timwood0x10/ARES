@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
@@ -299,7 +298,7 @@ func TestMemoryAwareScorer_ScoreAsScorerFunc(t *testing.T) {
 	}
 
 	// Verify it's a genome.ScorerFunc compatible.
-	var sf genome.ScorerFunc = ms.ScoreAsScorerFunc()
+	sf := ms.ScoreAsScorerFunc()
 	if sf == nil {
 		t.Error("ScoreAsScorerFunc should satisfy genome.ScorerFunc")
 	}
@@ -528,7 +527,7 @@ func TestMemoryAwareScorer_ResetForGeneration(t *testing.T) {
 	// Score a few strategies.
 	strategy := newTestStrategy("reset-test")
 	for i := 0; i < 3; i++ {
-		ms.Score(context.Background(), strategy)
+		_, _, _ = ms.Score(context.Background(), strategy)
 	}
 
 	ms.ResetStats()

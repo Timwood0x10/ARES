@@ -84,7 +84,7 @@ func TestFeedbackRecorder_Register_Success(t *testing.T) {
 	r := NewFeedbackRecorder(svc)
 
 	outcome := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       true,
 		Score:         85.0,
 		ExperienceIDs: []string{"exp-1", "exp-2"},
@@ -110,7 +110,7 @@ func TestFeedbackRecorder_Register_Failure(t *testing.T) {
 	r := NewFeedbackRecorder(svc)
 
 	outcome := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       false,
 		Score:         30.0,
 		ExperienceIDs: []string{"exp-1"},
@@ -137,7 +137,7 @@ func TestFeedbackRecorder_Register_EmptyExperienceIDs(t *testing.T) {
 
 	// Empty ExperienceIDs slice.
 	outcome1 := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       true,
 		ExperienceIDs: []string{},
 		Timestamp:     time.Now(),
@@ -152,7 +152,7 @@ func TestFeedbackRecorder_Register_EmptyExperienceIDs(t *testing.T) {
 
 	// Nil ExperienceIDs.
 	outcome2 := StrategyOutcome{
-		StrategyID:    "strat-2",
+		StrategyID:    "strategy-2",
 		Success:       false,
 		ExperienceIDs: nil,
 		Timestamp:     time.Now(),
@@ -167,7 +167,7 @@ func TestFeedbackRecorder_Register_EmptyExperienceIDs(t *testing.T) {
 
 	// ExperienceIDs with empty string entries.
 	outcome3 := StrategyOutcome{
-		StrategyID:    "strat-3",
+		StrategyID:    "strategy-3",
 		Success:       true,
 		ExperienceIDs: []string{""},
 		Timestamp:     time.Now(),
@@ -188,7 +188,7 @@ func TestFeedbackRecorder_Register_NilFeedbackService(t *testing.T) {
 	}
 
 	outcome := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       true,
 		ExperienceIDs: []string{"exp-1"},
 		Timestamp:     time.Now(),
@@ -207,7 +207,7 @@ func TestFeedbackRecorder_Register_RepoError(t *testing.T) {
 	r := NewFeedbackRecorder(svc)
 
 	outcome := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       true,
 		ExperienceIDs: []string{"exp-1"},
 		Timestamp:     time.Now(),
@@ -230,7 +230,7 @@ func TestFeedbackRecorder_MultipleOutcomes(t *testing.T) {
 	// Record multiple outcomes.
 	for i := 0; i < 5; i++ {
 		outcome := StrategyOutcome{
-			StrategyID:    "strat-%d",
+			StrategyID:    "strategy-%d",
 			Success:       i%2 == 0, // Alternate success/failure.
 			Score:         float64(i * 20),
 			ExperienceIDs: []string{"exp-%d"},
@@ -271,7 +271,7 @@ func TestFeedbackRecorder_String_RecentFive(t *testing.T) {
 	// Record 10 outcomes; only last 5 should appear in recent.
 	for i := 0; i < 10; i++ {
 		outcome := StrategyOutcome{
-			StrategyID:    "strat-%d",
+			StrategyID:    "strategy-%d",
 			Success:       true,
 			Score:         float64(i),
 			ExperienceIDs: []string{"exp-%d"},
@@ -299,7 +299,7 @@ func TestFeedbackRecorder_ExperienceIDsCopied(t *testing.T) {
 
 	originalIDs := []string{"exp-1", "exp-2"}
 	outcome := StrategyOutcome{
-		StrategyID:    "strat-1",
+		StrategyID:    "strategy-1",
 		Success:       true,
 		ExperienceIDs: originalIDs,
 		Timestamp:     time.Now(),
@@ -315,7 +315,7 @@ func TestFeedbackRecorder_ExperienceIDsCopied(t *testing.T) {
 
 	// Register another outcome to verify immutability.
 	outcome2 := StrategyOutcome{
-		StrategyID:    "strat-2",
+		StrategyID:    "strategy-2",
 		Success:       false,
 		ExperienceIDs: []string{"exp-3"},
 		Timestamp:     time.Now(),

@@ -469,14 +469,15 @@ func (m *ExperienceGuidedMutator) chooseGuidedMutationType(
 	}
 
 	// Sample based on adjusted probabilities.
-	r := m.base.rng.Float64()
+	total := paramProb + promptProb + toolProb
+	r := m.base.rng.Float64() * total
 	if r < paramProb {
 		return MutationParameter
 	}
 	if hasPrompt && r < paramProb+promptProb {
 		return MutationPrompt
 	}
-	if hasTool {
+	if hasTool && r < paramProb+promptProb+toolProb {
 		return MutationTool
 	}
 	return MutationParameter

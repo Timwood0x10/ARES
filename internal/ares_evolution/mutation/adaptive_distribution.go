@@ -290,7 +290,7 @@ func (ad *AdaptiveDistribution) Report() string {
 	defer ad.mu.RUnlock()
 
 	p, pr, pt := ad.paramProb, ad.promptProb, ad.toolProb
-	report := fmt.Sprintf("=== Adaptive Mutation Distribution ===\n")
+	report := "=== Adaptive Mutation Distribution ===\n"
 	report += fmt.Sprintf("Probabilities: parameter=%.1f%%, prompt=%.1f%%, tool=%.1f%%\n",
 		p*100, pr*100, pt*100)
 	report += fmt.Sprintf("Bounds: param=[%.0f%%, %.0f%%], prompt=[%.0f%%, %.0f%%], tool=[%.0f%%, %.0f%%]\n",

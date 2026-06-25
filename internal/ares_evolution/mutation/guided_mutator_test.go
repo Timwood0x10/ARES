@@ -48,13 +48,6 @@ func (m *mockHintProvider) RecordStrategyOutcome(
 	return nil // No-op for testing.
 }
 
-// setHints updates the hints returned by the mock provider (thread-safe).
-func (m *mockHintProvider) setHints(hints []EvolutionHint) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.hints = hints
-}
-
 // setError sets an error to return from HintsForTask.
 func (m *mockHintProvider) setError(err error) {
 	m.mu.Lock()

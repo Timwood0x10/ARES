@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
+	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/callbacks"
 )
 
@@ -49,6 +50,16 @@ type GenomePopulationAdapter struct {
 	// scorer pipeline with memory-aware adjustments, preserving tiered
 	// scoring stats and context propagation.
 	memoryScorer *scoring.MemoryAwareScorer
+
+	// AdaptiveDist adjusts mutation type probabilities based on observed
+	// outcomes from previous evolution cycles (optional). When set, Run()
+	// records outcome feedback after each evolution cycle.
+	adaptiveDist *mutation.AdaptiveDistribution
+
+	// FeedbackRecorder records strategy outcomes to the experience feedback
+	// system for experience reinforcement (optional). When set, Run()
+	// records outcome feedback after each evolution cycle.
+	feedbackRecorder *FeedbackRecorder
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -169,6 +180,40 @@ func WithAdapterMemoryAwareScoring(ms *scoring.MemoryAwareScorer) GenomeAdapterO
 	}
 }
 
+// WithAdapterAdaptiveDistribution sets the adaptive mutation distribution
+// for outcome-driven probability adjustment. When set, Run() records
+// outcome feedback after each evolution cycle.
+//
+// Args:
+//
+//	ad - the adaptive distribution instance (may be nil to disable).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterAdaptiveDistribution(ad *mutation.AdaptiveDistribution) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.adaptiveDist = ad
+	}
+}
+
+// WithAdapterFeedbackRecorder sets the feedback recorder for experience
+// reinforcement. When set, Run() records strategy outcomes to the feedback
+// service after each evolution cycle.
+//
+// Args:
+//
+//	fr - the feedback recorder instance (may be nil to disable).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.feedbackRecorder = fr
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -221,6 +266,14 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		scorer = buildScorer(a.scorer)
 	}
 
+	// Capture pre-evolution snapshot for outcome recording when feedback
+	// components are wired. This lets us compare offspring scores with
+	// their parent scores after evolution.
+	var agentsBefore []*mutation.Strategy
+	if a.adaptiveDist != nil || a.feedbackRecorder != nil {
+		agentsBefore, _ = a.pop.Snapshot()
+	}
+
 	// --- Pre-evolution guardrails checkpoint ---
 	if a.guardrails != nil {
 		preStats := a.pop.Stats()
@@ -252,6 +305,13 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
+	}
+
+	// Record outcomes for adaptive distribution and feedback service.
+	// This closes the feedback loop: evolution results flow back to
+	// update probability distributions and experience rankings.
+	if agentsBefore != nil {
+		a.recordOutcomesLocked(ctx, agentsBefore)
 	}
 
 	// --- Post-evolution guardrails checkpoint ---
@@ -295,6 +355,66 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		"avg_score", stats.AvgScore,
 	)
 	return nil
+}
+
+// recordOutcomesLocked records strategy outcomes to the adaptive distribution
+// and feedback recorder after an evolution cycle. It compares offspring scores
+// with their parent scores to determine wins and score deltas.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	agentsBefore - pre-evolution population snapshot for parent score lookup.
+func (a *GenomePopulationAdapter) recordOutcomesLocked(
+	ctx context.Context,
+	agentsBefore []*mutation.Strategy,
+) {
+	parentScores := make(map[string]float64, len(agentsBefore))
+	for _, parent := range agentsBefore {
+		parentScores[parent.ID] = parent.Score
+	}
+
+	agentsAfter, _ := a.pop.Snapshot()
+
+	for _, child := range agentsAfter {
+		if child.ParentID == "" {
+			continue
+		}
+		if child.Score < 0 {
+			continue
+		}
+
+		parentScore, ok := parentScores[child.ParentID]
+		if !ok {
+			continue
+		}
+
+		scoreDelta := child.Score - parentScore
+		won := scoreDelta > 0
+
+		if a.adaptiveDist != nil {
+			a.adaptiveDist.RecordOutcome(
+				child.StrategyMutationType,
+				scoreDelta,
+				0,
+				won,
+			)
+		}
+
+		if a.feedbackRecorder != nil {
+			outcome := StrategyOutcome{
+				StrategyID: child.ID,
+				Success:    won,
+				Score:      child.Score,
+			}
+			if err := a.feedbackRecorder.Register(ctx, outcome); err != nil {
+				slog.WarnContext(ctx, "[GenomeAdapter] feedback recording failed",
+					"strategy_id", child.ID,
+					"error", err,
+				)
+			}
+		}
+	}
 }
 
 // scorerWarningOnce ensures the missing-scorer warning is logged at most once
@@ -556,6 +676,14 @@ type WiredEvolutionSystem struct {
 	// ShadowEvaluator evaluates candidate strategies against the active strategy
 	// before deployment (optional, may be nil when disabled).
 	ShadowEvaluator *ShadowEvaluator
+
+	// FeedbackRecorder records strategy outcomes to the experience feedback
+	// system (optional, may be nil when disabled).
+	FeedbackRecorder *FeedbackRecorder
+
+	// AdaptiveDist wraps the mutator with adaptive mutation type probability
+	// distribution (optional, may be nil when disabled).
+	AdaptiveDist *mutation.AdaptiveDistribution
 }
 
 // SystemConfig holds configuration for creating a wired evolution system.
@@ -694,6 +822,17 @@ type SystemConfig struct {
 	// comparison. When enabled, the system evaluates candidate strategies against
 	// the active strategy before deciding whether to deploy.
 	ShadowEvalConfig ShadowEvaluationConfig `json:"shadow_eval_config,omitempty"`
+
+	// AdaptiveDistConfig configures adaptive mutation probability distribution.
+	// When AdaptiveDistConfig.Enabled is true, the mutator is wrapped in an
+	// AdaptiveDistribution that adjusts mutation type probabilities based on
+	// observed outcomes.
+	AdaptiveDistConfig mutation.AdaptiveDistributionConfig `json:"adaptive_distribution,omitempty"`
+
+	// FeedbackService provides feedback recording for experience reinforcement.
+	// When set, a FeedbackRecorder is created and wired to record strategy
+	// outcomes to the experience store after each evolution cycle.
+	FeedbackService *aresExperience.FeedbackService `json:"-"`
 }
 
 // DefaultSystemConfig returns sensible defaults for a wired evolution system.
@@ -766,11 +905,38 @@ func NewWiredEvolutionSystem(
 		return nil, fmt.Errorf("create mutator: %w", err)
 	}
 
-	// Step 1b: Optionally wrap with experience-guided mutation.
+	// Step 1b: Optionally wrap with adaptive mutation distribution.
+	// When enabled, the mutator adjusts mutation type probabilities based
+	// on observed outcomes from previous evolution cycles.
+	var adaptiveDist *mutation.AdaptiveDistribution
+	if cfg.AdaptiveDistConfig.Enabled {
+		ad, err := mutation.NewAdaptiveDistribution(rawMutator, cfg.AdaptiveDistConfig)
+		if err != nil {
+			return nil, fmt.Errorf("create adaptive distribution: %w", err)
+		}
+		adaptiveDist = ad
+		slog.Info("[WiredSystem] Adaptive mutation distribution enabled",
+			"learning_rate", cfg.AdaptiveDistConfig.LearningRate,
+			"exploration_floor", cfg.AdaptiveDistConfig.ExplorationFloor,
+		)
+	}
+
+	// Step 1c: Optionally wrap with experience-guided mutation.
 	// When enabled and a guidance provider is configured, the mutator
 	// biases its decisions toward patterns that worked in the past.
-	var mutatorForGenome genome.MutatorInterface = rawMutator
-	if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
+	var mutatorForGenome genome.MutatorInterface
+	if cfg.AdaptiveDistConfig.Enabled && adaptiveDist != nil {
+		// Use adaptive distribution as the genome mutator.
+		// If EGM is also requested, log a warning that they are mutually
+		// exclusive and AD takes priority for probability control.
+		mutatorForGenome = adaptiveDist
+		if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
+			slog.Warn("[WiredSystem] Both adaptive distribution and experience-guided " +
+				"mutation enabled; adaptive distribution takes priority for mutation " +
+				"type probability control. Experience hints can still be consumed " +
+				"through the GuidanceProvider for outcome recording.")
+		}
+	} else if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
 		guidedMutator, err := mutation.NewExperienceGuidedMutator(
 			rawMutator,
 			newGuidanceAdapter(cfg.GuidanceProvider),
@@ -783,6 +949,8 @@ func NewWiredEvolutionSystem(
 		slog.Info("[WiredSystem] Experience-guided mutation enabled",
 			"hint_provider", fmt.Sprintf("%T", cfg.GuidanceProvider),
 		)
+	} else {
+		mutatorForGenome = rawMutator
 	}
 
 	// Step 2: Wrap for genome compatibility.
@@ -907,6 +1075,11 @@ func NewWiredEvolutionSystem(
 		adapterOpts = append(adapterOpts, WithAdapterGuardrails(cfg.Guardrails))
 	}
 
+	// Step 5d: Optionally wire adaptive distribution for outcome recording.
+	if adaptiveDist != nil {
+		adapterOpts = append(adapterOpts, WithAdapterAdaptiveDistribution(adaptiveDist))
+	}
+
 	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser, adapterOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create population adapter: %w", err)
@@ -1010,6 +1183,20 @@ func NewWiredEvolutionSystem(
 		system.Scheduler = scheduler
 	}
 
+	// Step 10: Store adaptive distribution on the system for outcome recording.
+	if adaptiveDist != nil {
+		system.AdaptiveDist = adaptiveDist
+	}
+
+	// Step 11: Optionally create feedback recorder for experience reinforcement.
+	if cfg.FeedbackService != nil {
+		system.FeedbackRecorder = NewFeedbackRecorder(cfg.FeedbackService)
+		slog.Info("[WiredSystem] Feedback recorder enabled for experience reinforcement")
+	}
+	if system.FeedbackRecorder != nil {
+		popAdapter.feedbackRecorder = system.FeedbackRecorder
+	}
+
 	slog.Info("[WiredSystem] Evolution system created and wired",
 		"population_size", cfg.PopulationSize,
 		"elite_count", cfg.EliteCount,
@@ -1052,8 +1239,6 @@ func RunIdleEvolution(
 		if err := system.PopAdapter.Run(ctx); err != nil {
 			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
 		}
-		// Note: Post-scoring is now handled atomically inside PopAdapter.Run()
-		// via EvolveAfterScoring. No redundant manual scoring needed here.
 
 		// Record lineage after each evolution cycle.
 		_, gen := system.Population.Snapshot()
