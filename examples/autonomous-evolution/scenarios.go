@@ -509,26 +509,21 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 
 	parent := defaultParent(cfg.BaseID)
 
-	// Build LLM scorer for the evolution loop.
-	llmScorer := buildLLMScorer(ctx)
-	if llmScorer == nil {
-		slog.WarnContext(ctx, "LLM unavailable, falling back to deterministic scoring")
-		llmScorer = func(s *apievol.Strategy) float64 {
-			return apievol.DeterministicScore(s)
-		}
-	}
-
-	svc, err := apievol.NewService(fullGAConfig(parent, cfg, true, llmScorer))
+	// LLM as post-evolution validation only (not in the loop).
+	// Reason: stepfun takes ~12s/request, sensenova is rate-limited.
+	// LLM-in-loop would take ~80 minutes for 15 generations.
+	// Instead: evolve with deterministic scoring (ms), then validate with LLM.
+	svc, err := apievol.NewService(fullGAConfig(parent, cfg, true, nil))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
 		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "LLM-guided evolution",
+	slog.InfoContext(ctx, "Wired evolution + LLM validation",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
-		"scorer", "llm+deterministic-fallback",
+		"scorer", "deterministic (LLM validates best strategy after)",
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
@@ -540,6 +535,29 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 	lineages, _ := svc.Lineages()
 	printResult(result)
 	printEvolutionInsightReport(cfg.Title, result, lineages, parent)
+
+	// Post-evolution: validate best strategy with LLM.
+	if best := result.BestStrategy; best != nil {
+		llmCfg, err := loadLLMConfig()
+		if err == nil && llmCfg != nil {
+			client := newFailoverLLMClient(llmCfg.Primary, llmCfg.Fallbacks)
+			scorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
+				Client:   client,
+				Model:    llmCfg.Primary.Model,
+				Fallback: func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) },
+			})
+			if err == nil {
+				start := time.Now()
+				llmScore := scorer.Score(best)
+				slog.InfoContext(ctx, "LLM validation of best strategy",
+					"strategy_id", best.ID,
+					"deterministic_score", best.Score,
+					"llm_score", llmScore,
+					"duration", time.Since(start).Round(time.Millisecond),
+				)
+			}
+		}
+	}
 	return result
 }
 
@@ -548,8 +566,7 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 // ────────────────────────────────────────────────────────────────────────────
 
 // fullGAConfig returns a SystemConfig with ALL GA capabilities enabled.
-// wired=true uses WiredEvolutionSystem (scheduler, guardrails, genealogy).
-// scorer=nil means deterministic-only.
+// scorer is optional — when nil, deterministic scoring is used.
 func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievol.ScorerFunc) *apievol.SystemConfig {
 	if scorer == nil {
 		scorer = func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) }
@@ -557,52 +574,21 @@ func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievo
 	return &apievol.SystemConfig{
 		BaseStrategy:           parent,
 		PopulationSize:         cfg.PopSize,
-		EliteCount:             3,                // preserve top 3 unchanged
-		SurvivalRate:           cfg.SurvRate,      // top 60% survive
-		MutationRate:           0.3,               // base mutation rate
-		MinMutationRate:        0.05,              // adaptive floor
-		MaxMutationRate:        0.5,               // adaptive ceiling
-		MaxStagnantGenerations: 5,                 // reset bottom 1/3 after 5 stale gens
-		DiversityThreshold:     0.2,               // boost mutation when diversity drops
-		BreedingPoolRatio:      0.5,               // breed from top 50% of survivors
-		PromptCrossoverMode:    1,                 // half-sentence split for prompts
+		EliteCount:             3,            // preserve top 3 unchanged
+		SurvivalRate:           cfg.SurvRate, // top 60% survive
+		MutationRate:           0.3,          // base mutation rate
+		MinMutationRate:        0.05,         // adaptive floor
+		MaxMutationRate:        0.5,          // adaptive ceiling
+		MaxStagnantGenerations: 5,            // reset bottom 1/3 after 5 stale gens
+		DiversityThreshold:     0.2,          // boost mutation when diversity drops
+		BreedingPoolRatio:      0.5,          // breed from top 50% of survivors
+		PromptCrossoverMode:    1,            // half-sentence split for prompts
 		Generations:            cfg.NGen,
-		Seed:                   42,                // deterministic for reproducibility
+		Seed:                   42,           // deterministic for reproducibility
 		PromptPool:             []string{"careful", "creative", "precise"},
 		EnableWiredMode:        wired,
 		Scorer:                 scorer,
 	}
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// LLM Scorer Builder
-// ────────────────────────────────────────────────────────────────────────────
-
-// buildLLMScorer creates an LLM scorer for the evolution loop.
-// Returns nil if LLM config is unavailable.
-func buildLLMScorer(ctx context.Context) apievol.ScorerFunc {
-	llmCfg, err := loadLLMConfig()
-	if err != nil || llmCfg == nil {
-		return nil
-	}
-
-	client := newFailoverLLMClient(llmCfg.Primary, llmCfg.Fallbacks)
-	scorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
-		Client:     client,
-		Model:      llmCfg.Primary.Model,
-		NumSamples: 1,
-		Fallback:   func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) },
-	})
-	if err != nil {
-		slog.WarnContext(ctx, "LLM scorer creation failed", "error", err)
-		return nil
-	}
-
-	slog.InfoContext(ctx, "LLM scorer ready for evolution loop",
-		"model", llmCfg.Primary.Model,
-		"fallback", "deterministic",
-	)
-	return scorer.AsScorerFunc()
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@ type llmResponse struct {
 	Choices []struct {
 		Message struct {
 			Content          string `json:"content"`
-			Reasoning        string `json:"reasoning"`          // Sensenova, Stepfun
+			Reasoning        string `json:"reasoning"`         // Sensenova, Stepfun
 			ReasoningContent string `json:"reasoning_content"` // Stepfun alias
 		} `json:"message"`
 	} `json:"choices"`
@@ -82,7 +82,9 @@ type providerClient struct {
 }
 
 func newProviderClient(cfg LLMProviderConfig) *providerClient {
-	timeout := 30 * time.Second
+	// HTTP client timeout is set high; actual timeout is controlled by
+	// context.WithTimeout in failoverLLMClient.Generate.
+	timeout := 60 * time.Second
 	if cfg.TimeoutSeconds > 0 {
 		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
 	}
@@ -199,11 +201,13 @@ func (e *rateLimitError) Error() string {
 //   - Success → clear cooldown immediately
 type failoverLLMClient struct {
 	providers []*providerClient
+	timeout   time.Duration // per-provider timeout; 0 = 5s
 	mu        sync.RWMutex
 	cooldowns map[string]time.Time // provider name → expiry
 }
 
 // newFailoverLLMClient creates a failover client from primary + fallback configs.
+// Per-provider timeout defaults to 5s if not specified.
 func newFailoverLLMClient(primary LLMProviderConfig, fallbacks []LLMProviderConfig) *failoverLLMClient {
 	providers := []*providerClient{newProviderClient(primary)}
 	for _, fb := range fallbacks {
@@ -212,9 +216,11 @@ func newFailoverLLMClient(primary LLMProviderConfig, fallbacks []LLMProviderConf
 	slog.Info("failover LLM client created",
 		"providers", len(providers),
 		"primary", providers[0].name,
+		"timeout", 20*time.Second,
 	)
 	return &failoverLLMClient{
 		providers: providers,
+		timeout:   20 * time.Second, // stepfun needs ~12s per request
 		cooldowns: make(map[string]time.Time),
 	}
 }
@@ -247,45 +253,47 @@ func (fc *failoverLLMClient) clearCooldown(name string) {
 	delete(fc.cooldowns, name)
 }
 
-// Generate tries each provider in order. On failure:
-//   - Primary 429 → cooldown 5s, try fallback
-//   - Primary other error → no cooldown, try fallback
-//   - Fallback any error → cooldown (429=30s, other=10s)
+// Generate tries each provider in order. Failed providers are cooled down
+// for 30s so subsequent calls skip them instead of waiting for the same
+// timeout/429 again.
 func (fc *failoverLLMClient) Generate(ctx context.Context, prompt string) (string, error) {
+	timeout := fc.timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+
 	var lastErr error
-	for i, p := range fc.providers {
+	for _, p := range fc.providers {
 		if fc.isCooledDown(p.name) {
 			slog.Debug("failover: skipping cooled-down provider", "provider", p.name)
 			continue
 		}
-		result, err := p.generate(ctx, prompt)
+		// Apply per-provider timeout so we don't wait 30s for a dead provider.
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		result, err := p.generate(callCtx, prompt)
+		cancel()
 		if err == nil {
 			fc.clearCooldown(p.name)
 			return result, nil
 		}
 		lastErr = err
 
+		// All errors trigger cooldown so the next call skips this provider
+		// instead of waiting for the same timeout/429 again.
+		cd := 30 * time.Second
 		if _, ok := err.(*rateLimitError); ok {
-			// 429 → cool down 30s for all providers.
-			fc.markCooldown(p.name, 30*time.Second)
-			slog.Warn("failover: rate limited, cooling down 30s",
+			slog.Warn("failover: rate limited, cooling down",
 				"provider", p.name,
-			)
-		} else if i > 0 {
-			// Fallback non-429 error → cooldown 10s.
-			fc.markCooldown(p.name, 10*time.Second)
-			slog.Warn("failover: fallback failed, cooling down",
-				"provider", p.name,
-				"cooldown", 10*time.Second,
-				"error", err,
+				"cooldown", cd,
 			)
 		} else {
-			// Primary non-429 error → no cooldown, just try next.
-			slog.Warn("failover: primary failed, trying fallback",
+			slog.Warn("failover: provider failed, cooling down",
 				"provider", p.name,
+				"cooldown", cd,
 				"error", err,
 			)
 		}
+		fc.markCooldown(p.name, cd)
 	}
 	return "", fmt.Errorf("failover: all %d providers failed; last error: %w",
 		len(fc.providers), lastErr)
