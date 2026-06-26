@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
@@ -37,19 +36,6 @@ func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB) *KnowledgeReposito
 	return &KnowledgeRepository{db: db, dbPool: dbPool}
 }
 
-// float64ToVectorString converts []float64 to pgvector format string.
-// Uses %.6f format to limit decimal places to 6 for compact representation.
-func float64ToVectorString(vec []float64) string {
-	if len(vec) == 0 {
-		return "[]"
-	}
-
-	strs := make([]string, len(vec))
-	for i, v := range vec {
-		strs[i] = fmt.Sprintf("%.6f", v)
-	}
-	return "[" + strings.Join(strs, ",") + "]"
-}
 
 // Create inserts a new knowledge chunk into the database.
 // Args:
@@ -70,7 +56,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 		embeddingStr = nil
 	} else {
 		// Convert embedding vector to pgvector format
-		embeddingStr = float64ToVectorString(chunk.Embedding)
+		embeddingStr = postgres.FormatVector(chunk.Embedding)
 	}
 
 	// Handle optional document_id
@@ -221,7 +207,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 		if len(chunk.Embedding) == 0 {
 			embeddingStr = nil
 		} else {
-			embeddingStr = float64ToVectorString(chunk.Embedding)
+			embeddingStr = postgres.FormatVector(chunk.Embedding)
 		}
 
 		// Handle optional document_id
@@ -364,7 +350,7 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 	}
 
 	// Convert embedding vector to pgvector format
-	embeddingStr := float64ToVectorString(chunk.Embedding)
+	embeddingStr := postgres.FormatVector(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}

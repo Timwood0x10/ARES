@@ -54,7 +54,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(result.Embedding)
+	embeddingStr := postgres.FormatVector(result.Embedding)
 
 	// Build query based on whether ID is provided
 	var query string
@@ -228,7 +228,7 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(result.Embedding)
+	embeddingStr := postgres.FormatVector(result.Embedding)
 
 	query := `
 		UPDATE task_results_1024
@@ -282,7 +282,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
@@ -566,7 +566,7 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 // Returns error if update operation fails.
 func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE task_results_1024

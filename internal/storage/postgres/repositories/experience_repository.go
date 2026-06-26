@@ -41,7 +41,7 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(exp.Embedding)
+	embeddingStr := postgres.FormatVector(exp.Embedding)
 
 	// Build query with optional decay_at and created_at
 	var query string
@@ -187,7 +187,7 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(exp.Embedding)
+	embeddingStr := postgres.FormatVector(exp.Embedding)
 
 	query := `
 		UPDATE experiences_1024
@@ -236,7 +236,7 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id string) error {
 // Returns list of similar experiences ordered by similarity.
 func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
@@ -536,7 +536,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 // Returns error if update operation fails.
 func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE experiences_1024

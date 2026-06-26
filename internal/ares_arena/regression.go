@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 )
+
+// maxParallelRuns limits concurrent Scorer.Score calls in runStrategy.
+const maxParallelRuns = 5
 
 // Common errors for regression testing.
 var (
@@ -307,6 +311,8 @@ func (rt *RegressionTester) runAdaptive(ctx context.Context, cfg RegressionConfi
 // Each execution is scored via the configured Scorer interface.
 // When testCases is provided, the Scorer receives TestCaseInput wrapping both
 // the strategy and the specific test case for that iteration.
+// Scoring runs in parallel with bounded concurrency (maxParallelRuns) to
+// accelerate LLM-based scorers.
 func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int, testCases []any) ([]float64, error) {
 	if strategy == nil {
 		return nil, ErrNilStrategy
@@ -315,30 +321,67 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 		return nil, ErrInvalidRuns
 	}
 
-	scores := make([]float64, 0, n)
+	scores := make([]float64, n)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxParallelRuns)
+	errOnce := sync.Once{}
+	var runErr error
+
+	// Derive a cancellable child context so goroutines can check cancellation.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
 	for i := 0; i < n; i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+		if err := runCtx.Err(); err != nil {
+			return nil, err
 		}
 
-		var input = strategy
-		if len(testCases) > 0 {
-			input = TestCaseInput{
-				Strategy: strategy,
-				TestCase: testCases[i%len(testCases)],
-				Index:    i,
+		sem <- struct{}{}
+		wg.Add(1)
+
+		i := i
+		go func() {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			if err := runCtx.Err(); err != nil {
+				return
 			}
-		}
 
-		score, err := rt.scorer.Score(input)
-		if err != nil {
-			return nil, fmt.Errorf("arena: score run %d: %w", i, err)
-		}
-		scores = append(scores, score)
+			var input = strategy
+			if len(testCases) > 0 {
+				input = TestCaseInput{
+					Strategy: strategy,
+					TestCase: testCases[i%len(testCases)],
+					Index:    i,
+				}
+			}
+
+			score, err := rt.scorer.Score(input)
+			if err != nil {
+				errOnce.Do(func() {
+					runErr = fmt.Errorf("arena: score run %d: %w", i, err)
+					runCancel() // cancel remaining goroutines on first error
+				})
+				return
+			}
+			mu.Lock()
+			scores[i] = score
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 
+	// If context was cancelled during parallel scoring, prefer that error.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
 	if len(scores) == 0 {
 		return nil, ErrEmptyScores
 	}

@@ -376,7 +376,7 @@ func NewOpenAIAdapter(config *Config) *OpenAIAdapter {
 
 8. **Rename `generateOpenRouter`** to `generateOpenAICompatible` since it handles both OpenAI and OpenRouter.
 
-9. **Remove hardcoded `HTTP-Referer`** in `openrouter.go:68` or make it configurable.
+9. **[✓] Remove hardcoded `HTTP-Referer`** -- replaced with `X-Title: GoAgent` in OpenAI adapter.
 
 10. **Unify `GenerateStructured` behavior** -- decide whether to use prompt-based schema instruction or `response_format`, not both.
 

@@ -165,11 +165,11 @@ for attempt := 1; attempt <= maxAttempts; attempt++ {
 
 1. **[✓] [P0 - Correctness/Performance]** Refactor `NotifyAgentDead` to release the write lock before launching the resurrection goroutine. Decision (send on `resurrectCh`) is made under lock; goroutine launch happens outside.
 
-2. **[P0 - Performance]** Fix the agent launch loop in `Start()` to release the read lock before calling `launchAgentGoroutine`. Holding RLock during goroutine creation blocks concurrent agent registration.
+2. **[✓] [P0 - Performance]** Fix the agent launch loop in `Start()` to release the read lock before calling `launchAgentGoroutine`. Collects launch info under RLock, launches outside.
 
 3. **[P1 - Performance]** Stream event replay instead of loading all events into memory. For agents with 10K+ events, the current approach causes significant memory spikes during resurrection.
 
-4. **[P1 - Code Quality]** Split `NotifyAgentDead` into smaller, focused methods (`prepareResurrection`, `scheduleResurrection`, `emitDeathEvent`) for testability and clarity.
+4. **[✓] [P1 - Code Quality]** Split `NotifyAgentDead` into smaller methods. `scheduleResurrection` extracted; logic split into decision (under lock) and goroutine launch (outside lock).
 
 5. **[✓] [P2 - Performance]** Fix timer leak in resurrection backoff loop by using `time.NewTimer` with `Reset()` instead of `time.After`.
 

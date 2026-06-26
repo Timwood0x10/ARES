@@ -566,21 +566,27 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.memManager.SetEventStore(m.eventStore, "memory-manager")
 	}
 
-	// Launch all registered agents in managed goroutines.
+	// Collect agent launch info under read lock, then launch outside lock
+	// to avoid blocking concurrent agent registration during goroutine creation.
+	type agentLaunch struct {
+		id    string
+		agent base.Agent
+		ctx   context.Context
+	}
 	m.mu.RLock()
-	agentIDs := make([]string, 0, len(m.agents))
+	launches := make([]agentLaunch, 0, len(m.agents))
 	for id, ma := range m.agents {
 		if ma.agent != nil {
 			agentCtx, agentCancel := context.WithCancel(m.gctx)
 			ma.cancel = agentCancel
-			agentIDs = append(agentIDs, id)
-
-			currentAgent := ma.agent
-			currentID := id
-			m.launchAgentGoroutine(agentCtx, currentID, currentAgent)
+			launches = append(launches, agentLaunch{id: id, agent: ma.agent, ctx: agentCtx})
 		}
 	}
 	m.mu.RUnlock()
+
+	for _, l := range launches {
+		m.launchAgentGoroutine(l.ctx, l.id, l.agent)
+	}
 
 	// Background health check loop.
 	m.g.Go(func() error {
@@ -596,7 +602,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	})
 
-	slog.Info("runtime: started", "agents", len(agentIDs))
+	slog.Info("runtime: started", "agents", len(launches))
 	return nil
 }
 

@@ -176,7 +176,7 @@ professions := []string{"developer", "engineer", "programmer", "student", "teach
 
 ## 5. Priority Action Items
 
-1. **[P0 - Performance]** Replace `BuildContext` string concatenation with `strings.Builder` in `manager_impl.go:340-375`. The current O(n^2) behavior causes unnecessary allocations proportional to the square of conversation length.
+1. **[✓] [P0 - Performance]** Replace `BuildContext` string concatenation with `strings.Builder` in `manager_impl.go:340-375` and `ToBuildContextFormat` in `manager.go:263-286`. Eliminates O(n^2) allocation.
 
 2. **[P0 - Performance]** Batch conflict detection in `distiller.go:466-530`. The current N sequential vector search calls are the dominant cost in the distillation pipeline. A single batch search would reduce latency by N-fold.
 

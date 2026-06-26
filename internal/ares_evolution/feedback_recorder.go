@@ -107,7 +107,8 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		return nil
 	}
 
-	// Circuit breaker: skip if too many consecutive errors within cooldown.
+	// Single critical section: check circuit breaker state atomically,
+	// then record errors or reset inside the same lock scope.
 	r.mu.Lock()
 	if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
 		if time.Since(r.circuitBreakerOpenedAt) < r.circuitBreakerCooldown {
@@ -119,9 +120,7 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		}
 		r.circuitBreakerConsecutiveErrors = 0
 	}
-	r.mu.Unlock()
 
-	// Record to feedback service for each experience ID.
 	var (
 		hasAnyFailure bool
 		lastErr       error
@@ -132,30 +131,30 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		}
 		var err error
 		if outcome.Success {
+			r.mu.Unlock()
 			err = r.feedbackService.RecordSuccess(ctx, expID)
+			r.mu.Lock()
 		} else {
+			r.mu.Unlock()
 			err = r.feedbackService.RecordFailure(ctx, expID)
+			r.mu.Lock()
 		}
 		if err != nil {
 			hasAnyFailure = true
 			lastErr = err
-			r.mu.Lock()
 			r.circuitBreakerConsecutiveErrors++
 			if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
 				r.circuitBreakerOpenedAt = time.Now()
 				slog.Warn("[FeedbackRecorder] Circuit breaker opened",
 					"consecutive_errors", r.circuitBreakerConsecutiveErrors)
 			}
-			r.mu.Unlock()
 		}
 	}
 
-	// Reset circuit breaker only if ALL experience IDs succeeded.
 	if !hasAnyFailure {
-		r.mu.Lock()
 		r.circuitBreakerConsecutiveErrors = 0
-		r.mu.Unlock()
 	}
+	r.mu.Unlock()
 
 	return lastErr
 }

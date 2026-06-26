@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -502,33 +503,47 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 		enrichedInput = inputWithContext
 	}
 
-	// Search similar tasks for additional context.
-	similarTasks, err := a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, DefaultSimilarTasksLimit)
-	if err != nil {
-		slog.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", err)
+	// Search similar tasks in parallel with task creation:
+	// both depend on enrichedInput but are independent of each other.
+	var (
+		similarTasks []*models.Task
+		createTID    string
+		searchErr    error
+		createErr    error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		similarTasks, searchErr = a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, DefaultSimilarTasksLimit)
+	}()
+	go func() {
+		defer wg.Done()
+		createTID, createErr = a.memoryManager.CreateTask(ctx, sessionID, a.getUserID(), enrichedInput)
+	}()
+	wg.Wait()
+
+	if searchErr != nil {
+		slog.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", searchErr)
 	} else if len(similarTasks) > 0 {
 		slog.Debug("Found similar tasks", "count", len(similarTasks))
-		contextStr := "\n\nSimilar previous tasks:\n"
+		var sb strings.Builder
+		sb.WriteString("\n\nSimilar previous tasks:\n")
 		for _, task := range similarTasks {
 			if taskInput, ok := task.Payload["input"].(string); ok {
-				contextStr += fmt.Sprintf("- %s\n", taskInput)
+				fmt.Fprintf(&sb, "- %s\n", taskInput)
 			}
 		}
-		enrichedInput += contextStr
+		enrichedInput += sb.String()
 	}
 
-	// Create task record for tracking and distillation.
-	if tID, err := a.memoryManager.CreateTask(ctx, sessionID, a.getUserID(), enrichedInput); err != nil {
+	if createErr != nil {
 		slog.Warn("Failed to create task - proceeding without task tracking",
-			"error", err, "session_id", sessionID,
+			"error", createErr, "session_id", sessionID,
 			"impact", "task will not be tracked for distillation")
 	} else {
-		taskID = tID
-		// Safe to call updateSnapshotState here: a.mu is NOT held at this point.
-		// The RLock section above (line ~376) was already released, and the write lock
-		// for sessionID persistence was also released before reaching this code.
+		taskID = createTID
 		a.updateSnapshotState(taskID)
-
 		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
 			"task_id":    taskID,
 			"session_id": sessionID,

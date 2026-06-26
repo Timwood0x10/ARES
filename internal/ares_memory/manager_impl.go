@@ -337,28 +337,29 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	cleaned := m.ctxCleaner.Clean(messages)
 
 	// Build context string.
-	var contextBuilder string
+	var contextBuilder strings.Builder
+	contextBuilder.Grow(len(cleaned) * 256)
 	if len(cleaned) > 0 {
-		contextBuilder = "Previous conversation history:\n\n"
+		contextBuilder.WriteString("Previous conversation history:\n\n")
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:
-				contextBuilder += fmt.Sprintf("User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleAssistant:
-				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolCall:
-				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolResult:
-				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleSystem:
-				contextBuilder += fmt.Sprintf("System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			default:
-				contextBuilder += fmt.Sprintf("Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			}
 		}
-		contextBuilder += "\nCurrent request:\n"
+		contextBuilder.WriteString("\nCurrent request:\n")
 	}
-	contextBuilder += input
+	contextBuilder.WriteString(input)
 
 	// Emit cleaner stats periodically for observability.
 	stats := m.ctxCleaner.Stats()
@@ -371,7 +372,7 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	}
 
 	slog.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
-	return contextBuilder, nil
+	return contextBuilder.String(), nil
 }
 
 // CreateTask creates a new task and returns the task ID.

@@ -41,7 +41,7 @@ func (r *ToolRepository) Create(ctx context.Context, tool *storage_models.Tool) 
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(tool.Embedding)
+	embeddingStr := postgres.FormatVector(tool.Embedding)
 
 	// Build query based on whether ID is provided
 	var query string
@@ -266,7 +266,7 @@ func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) 
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(tool.Embedding)
+	embeddingStr := postgres.FormatVector(tool.Embedding)
 
 	query := `
 		UPDATE tools
@@ -313,7 +313,7 @@ func (r *ToolRepository) Delete(ctx context.Context, id string) error {
 // limit - maximum number of results to return.
 // Returns list of similar tools ordered by similarity.
 func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Tool, error) {
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 	query := `
 		SELECT id, tenant_id, name, description, embedding::text, embedding_model, embedding_version,
 			   agent_type, tags, usage_count, success_rate, last_used_at, metadata::text, created_at,
@@ -605,7 +605,7 @@ func (r *ToolRepository) UpdateUsage(ctx context.Context, id string, success boo
 // version - embedding model version.
 // Returns error if update operation fails.
 func (r *ToolRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 	query := `
 		UPDATE tools
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4

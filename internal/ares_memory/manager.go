@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -264,8 +265,9 @@ func ToBuildContextFormat(messages []Message) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	var b string
-	b = "Previous conversation history:\n\n"
+	var sb strings.Builder
+	sb.Grow(len(messages) * 256)
+	sb.WriteString("Previous conversation history:\n\n")
 	for _, msg := range messages {
 		label := msg.Role
 		switch label {
@@ -280,9 +282,9 @@ func ToBuildContextFormat(messages []Message) string {
 		case memctx.RoleSystem:
 			label = "System"
 		}
-		b += fmt.Sprintf("%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
+		fmt.Fprintf(&sb, "%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
 	}
-	return b
+	return sb.String()
 }
 
 // validate checks that config fields have sensible values.

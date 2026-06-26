@@ -372,10 +372,8 @@ func (r *FeedbackRecorder) recordCircuitBreakerFailure() {
    - Impact: Unbounded memory growth in long-running processes
    - Fix: Use `copy()` to compact slice instead of retaining reference to `scores[1:]`
 
-2. **Race condition in `FeedbackRecorder`** (`feedback_recorder.go:111-148`)
-   - Impact: Circuit breaker may not open when expected
-   - Effort: 30 minutes
-   - Fix: Consolidate to single critical section
+2. **[✓] Race condition in `FeedbackRecorder`** (`feedback_recorder.go:111-148`)
+   - Fix: Consolidated circuit breaker check, error increment, and reset into a single critical section. Lock released only during external service calls.
 
 ### P1 - High (Fix This Sprint)
 

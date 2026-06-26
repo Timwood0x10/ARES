@@ -208,7 +208,7 @@ func computeStats(scores []float64) (mean, variance float64) {
 
 ## 5. Priority Action Items
 
-1. **[P0 - Performance]** Parallelize `runStrategy` scoring calls in `regression.go:310-346`. For LLM-based scorers, the current sequential execution makes regression tests N times slower than necessary.
+1. **[✓] [P0 - Performance]** Parallelize `runStrategy` scoring calls in `regression.go:310-346`. Uses goroutines + semaphore (`maxParallelRuns=5`) for concurrent scoring.
 
 2. **[✓] [P0 - Correctness]** Fix the tautological validation condition in `regression.go:523-524`. Changed `x <= 0 && x != 0` to `x < 0`.
 

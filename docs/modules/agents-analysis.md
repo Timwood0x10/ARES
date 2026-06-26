@@ -317,7 +317,7 @@ query := `SELECT leader_id, session_id, status, metadata, updated_at
 
 1. **[✓] Fix TOCTOU race in `subAgent.Process`** (`sub/agent.go:205-210`). Read status once under `a.mu.RLock()` instead of 3 separate `a.Status()` calls.
 
-2. **Parallelize `initMemoryContext` DB calls** (`leader/agent.go:424-539`). Use `errgroup` for the independent subset (AddMessage, BuildContext, SearchSimilarTasks). This can cut per-request latency by 200-400ms.
+2. **[✓] Parallelize `initMemoryContext` DB calls** (`leader/agent.go:424-539`). `SearchSimilarTasks` and `CreateTask` run concurrently via `sync.WaitGroup` after `AddMessage`+`BuildContext` complete sequentially.
 
 3. **[✓] Fix double auto-start race in `leader.Process`** (`leader/agent.go:718-737`). The existing `processingMu` serialization already prevents concurrent Process calls; `Start()` has its own `ErrAgentAlreadyStarted` guard.
 

@@ -563,7 +563,7 @@ if elapsed > time.Second {
 |---|--------|-------|-----------------|
 | 1 | Remove `embedding::text` from all list/search SELECT queries | `experience_repository.go`, `knowledge_repository.go`, `tool_repository.go` | 2 hours |
 | 2 | **[✓]** Replace `fmt.Sscanf` with `strconv.ParseFloat` in `ParseVectorString` | `vector_utils.go` | 30 minutes |
-| 3 | Delete `float64ToVectorString`, use `postgres.FormatVector` | `knowledge_repository.go`, `experience_repository.go`, `tool_repository.go` | 1 hour |
+| 3 | **[✓]** Delete `float64ToVectorString`, use `postgres.FormatVector` | `knowledge_repository.go`, `experience_repository.go`, `tool_repository.go` | 1 hour |
 
 ### P1 -- High Priority (affects latency under load)
 
