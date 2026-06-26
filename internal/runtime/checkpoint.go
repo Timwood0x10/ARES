@@ -1,0 +1,271 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+)
+
+const currentSchemaVersion = 1
+
+// CheckpointStore persists execution checkpoint data for crash recovery.
+type CheckpointStore interface {
+	// Save stores data under the given key.
+	Save(ctx context.Context, key string, data []byte) error
+	// Load retrieves data for the given key. Returns nil, nil if not found.
+	Load(ctx context.Context, key string) ([]byte, error)
+}
+
+// ExperienceCheckpoint captures a workflow execution at a point in time,
+// including both recovery data and signals for memory/evolution consumption.
+type ExperienceCheckpoint struct {
+	SchemaVersion   int                    `json:"schema_version"`
+	ExecutionID     string                 `json:"execution_id"`
+	WorkflowID      string                 `json:"workflow_id"`
+	WorkflowVersion string                 `json:"workflow_version,omitempty"`
+	StateVersion    int64                  `json:"state_version"`
+	Status          string                 `json:"status"`
+	Error           string                 `json:"error,omitempty"`
+	StepStates      []StepStateSnapshot    `json:"step_states"`
+	Variables       map[string]interface{} `json:"variables,omitempty"`
+	OutputStore     map[string]string      `json:"output_store,omitempty"`
+	RouteHistory    []RouteEntry           `json:"route_history,omitempty"`
+	ToolHistory     []ToolEntry            `json:"tool_history,omitempty"`
+	MemoryHits      []MemoryEntry          `json:"memory_hits,omitempty"`
+	InterruptHistory []InterruptEntry      `json:"interrupt_history,omitempty"`
+	LoopHistory     []LoopEntry            `json:"loop_history,omitempty"`
+	ErrorHistory    []ErrorEntry           `json:"error_history,omitempty"`
+	ScoringSignals  []ScoringSignal        `json:"scoring_signals,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+}
+
+// StepStateSnapshot captures the state of a single step.
+type StepStateSnapshot struct {
+	StepID    string     `json:"step_id"`
+	Status    StepStatus `json:"status"`
+	Output    string     `json:"output,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	StartedAt time.Time  `json:"started_at,omitempty"`
+}
+
+// RouteEntry records a routing decision.
+type RouteEntry struct {
+	FromStepID string `json:"from_step_id"`
+	ToStepID   string `json:"to_step_id"`
+	Reason     string `json:"reason"`
+}
+
+// ToolEntry records a tool invocation.
+type ToolEntry struct {
+	StepID   string `json:"step_id"`
+	ToolName string `json:"tool_name"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}
+
+// MemoryEntry records a memory retrieval hit.
+type MemoryEntry struct {
+	StepID      string  `json:"step_id"`
+	Similarity  float64 `json:"similarity"`
+	TaskID      string  `json:"task_id,omitempty"`
+}
+
+// InterruptEntry records a HITL interrupt.
+type InterruptEntry struct {
+	StepID   string `json:"step_id"`
+	Approved bool   `json:"approved"`
+	Feedback string `json:"feedback,omitempty"`
+}
+
+// LoopEntry records a loop iteration.
+type LoopEntry struct {
+	Iteration int    `json:"iteration"`
+	ExitReason string `json:"exit_reason,omitempty"`
+}
+
+// ErrorEntry records an execution error.
+type ErrorEntry struct {
+	StepID  string `json:"step_id,omitempty"`
+	Message string `json:"message"`
+}
+
+// ScoringSignal records a quality or fitness signal.
+type ScoringSignal struct {
+	Source string  `json:"source"`
+	Score  float64 `json:"score"`
+	Label  string  `json:"label,omitempty"`
+}
+
+// CheckpointKey returns the storage key for a given execution ID.
+func CheckpointKey(executionID string) string {
+	return fmt.Sprintf("checkpoint/%s", executionID)
+}
+
+func checkpointKey(executionID string) string {
+	return CheckpointKey(executionID)
+}
+
+// CheckpointPlugin saves experience checkpoints at key lifecycle points
+// (BeforeStep, AfterStep) and manages accumulated execution state.
+// It implements RuntimePlugin and WorkflowHook.
+type CheckpointPlugin struct {
+	name  string
+	store CheckpointStore
+	mu    sync.Mutex
+	// accumulated state across hook calls
+	snapshots map[string]*ExperienceCheckpoint // executionID → checkpoint
+}
+
+// NewCheckpointPlugin creates a CheckpointPlugin with the given store.
+func NewCheckpointPlugin(name string, store CheckpointStore) *CheckpointPlugin {
+	if name == "" {
+		name = "checkpoint"
+	}
+	return &CheckpointPlugin{
+		name:      name,
+		store:     store,
+		snapshots: make(map[string]*ExperienceCheckpoint),
+	}
+}
+
+// Name returns the plugin name.
+func (p *CheckpointPlugin) Name() string {
+	return p.name
+}
+
+// Capabilities returns the capabilities this plugin provides.
+func (p *CheckpointPlugin) Capabilities() []Capability {
+	return []Capability{CapCheckpoint}
+}
+
+// Start initializes the checkpoint plugin.
+func (p *CheckpointPlugin) Start(_ context.Context, _ EventBus) error {
+	return nil
+}
+
+// Stop shuts down the checkpoint plugin.
+func (p *CheckpointPlugin) Stop(_ context.Context) error {
+	return nil
+}
+
+// BeforeStep creates or updates a checkpoint marking the step as running.
+func (p *CheckpointPlugin) BeforeStep(ctx context.Context, executionID string, step *Step) error {
+	if p.store == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ckpt := p.snapshots[executionID]
+	if ckpt == nil {
+		ckpt = &ExperienceCheckpoint{
+			SchemaVersion: currentSchemaVersion,
+			ExecutionID:   executionID,
+			Status:        "running",
+			CreatedAt:     time.Now(),
+		}
+	}
+
+	ckpt.StateVersion++
+	ckpt.Status = "running"
+
+	// Add or update the step state.
+	found := false
+	for i, ss := range ckpt.StepStates {
+		if ss.StepID == step.ID {
+			ckpt.StepStates[i].Status = StepStatusRunning
+			ckpt.StepStates[i].StartedAt = step.StartedAt
+			found = true
+			break
+		}
+	}
+	if !found {
+		ckpt.StepStates = append(ckpt.StepStates, StepStateSnapshot{
+			StepID:    step.ID,
+			Status:    StepStatusRunning,
+			StartedAt: step.StartedAt,
+		})
+	}
+
+	p.snapshots[executionID] = ckpt
+	return p.saveLocked(ctx, executionID, ckpt)
+}
+
+// AfterStep updates the checkpoint with the completed step result.
+func (p *CheckpointPlugin) AfterStep(ctx context.Context, executionID string, result *StepResult) error {
+	if p.store == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ckpt := p.snapshots[executionID]
+	if ckpt == nil {
+		ckpt = &ExperienceCheckpoint{
+			SchemaVersion: currentSchemaVersion,
+			ExecutionID:   executionID,
+			CreatedAt:     time.Now(),
+		}
+		p.snapshots[executionID] = ckpt
+	}
+
+	ckpt.StateVersion++
+
+	// Update or append step state.
+	found := false
+	for i, ss := range ckpt.StepStates {
+		if ss.StepID == result.StepID {
+			ckpt.StepStates[i].Status = result.Status
+			ckpt.StepStates[i].Output = result.Output
+			ckpt.StepStates[i].Error = result.Error
+			found = true
+			break
+		}
+	}
+	if !found {
+		ckpt.StepStates = append(ckpt.StepStates, StepStateSnapshot{
+			StepID: result.StepID,
+			Status: result.Status,
+			Output: result.Output,
+			Error:  result.Error,
+		})
+	}
+
+	if result.Status == StepStatusFailed {
+		ckpt.ErrorHistory = append(ckpt.ErrorHistory, ErrorEntry{
+			StepID:  result.StepID,
+			Message: result.Error,
+		})
+	}
+
+	return p.saveLocked(ctx, executionID, ckpt)
+}
+
+// Snapshot returns a copy of the current checkpoint for an execution, or nil.
+func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ckpt, ok := p.snapshots[executionID]
+	if !ok {
+		return nil
+	}
+	cp := *ckpt
+	return &cp
+}
+
+func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {
+	ckpt.CreatedAt = time.Now()
+	data, err := json.Marshal(ckpt)
+	if err != nil {
+		return fmt.Errorf("checkpoint: marshal: %w", err)
+	}
+	if err := p.store.Save(ctx, checkpointKey(executionID), data); err != nil {
+		return fmt.Errorf("checkpoint: save: %w", err)
+	}
+	return nil
+}

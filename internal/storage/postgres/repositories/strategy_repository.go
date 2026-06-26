@@ -64,10 +64,10 @@ func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error
 
 	var (
 		id, name, parentID, promptTmpl, mutationType, mutationDesc string
-		version                                                     int
-		score                                                       float64
-		createdAt                                                   time.Time
-		paramsJSON                                                  []byte
+		version                                                    int
+		score                                                      float64
+		createdAt                                                  time.Time
+		paramsJSON                                                 []byte
 	)
 
 	err := row.Scan(&id, &name, &version, &paramsJSON, &parentID,
@@ -224,10 +224,10 @@ func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, er
 	for rows.Next() {
 		var (
 			id, name, parentID, promptTmpl, mutationType, mutationDesc string
-			version                                                     int
-			score                                                       float64
-			createdAt                                                   time.Time
-			paramsJSON                                                  []byte
+			version                                                    int
+			score                                                      float64
+			createdAt                                                  time.Time
+			paramsJSON                                                 []byte
 		)
 
 		if err := rows.Scan(&id, &name, &version, &paramsJSON, &parentID,

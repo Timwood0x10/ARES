@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // ApplyMode controls when graph mutations take effect during execution.
@@ -50,6 +52,8 @@ type DynamicExecutor struct {
 	hitlStore         InterruptStore
 	recoveryHandler   StepRecoveryHandler
 	recoveryEventSink func(ctx context.Context, eventType events.EventType, payload map[string]any)
+	pluginBus         *runtime.PluginBus
+	checkpointStore   runtime.CheckpointStore
 }
 
 // NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
@@ -92,7 +96,19 @@ func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, e
 	return e
 }
 
-// dynamicExecIDCounter is an atomic counter for dynamic execution IDs.
+// WithPluginBus sets the plugin bus for BeforeStep/AfterStep hook invocation
+// and workflow lifecycle event emission.
+func (e *DynamicExecutor) WithPluginBus(bus *runtime.PluginBus) *DynamicExecutor {
+	e.pluginBus = bus
+	return e
+}
+
+// WithCheckpointStore sets the checkpoint store for execution resume.
+func (e *DynamicExecutor) WithCheckpointStore(store runtime.CheckpointStore) *DynamicExecutor {
+	e.checkpointStore = store
+	return e
+}
+
 var dynamicExecIDCounter uint64
 
 func generateDynamicExecutionID() string {
@@ -101,6 +117,7 @@ func generateDynamicExecutionID() string {
 }
 
 // ExecuteDynamic executes a workflow on a MutableDAG, applying mutations between steps.
+// This is a fresh execution with a generated execution ID.
 func (e *DynamicExecutor) ExecuteDynamic(
 	ctx context.Context,
 	workflow *Workflow,
@@ -112,11 +129,6 @@ func (e *DynamicExecutor) ExecuteDynamic(
 	}
 	if mutableDAG == nil {
 		return nil, errors.New("mutableDAG must not be nil")
-	}
-
-	executionOrder, err := mutableDAG.GetExecutionOrder()
-	if err != nil {
-		return nil, fmt.Errorf("get execution order: %w", err)
 	}
 
 	execution := &WorkflowExecution{
@@ -133,30 +145,139 @@ func (e *DynamicExecutor) ExecuteDynamic(
 		execution.Variables[k] = v
 	}
 
+	if e.pluginBus != nil {
+		e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowStarted, map[string]any{
+			runtime.PayloadKeyExecutionID: execution.ID,
+			runtime.PayloadKeyWorkflowID:  workflow.ID,
+		})
+	}
+
+	return e.execLoop(ctx, workflow, initialInput, mutableDAG, execution, nil, nil, nil)
+}
+
+// ExecuteDynamicFromCheckpoint resumes a previously checkpointed workflow
+// execution. Completed steps are skipped and execution continues from the
+// last incomplete step. The execution ID is taken from the checkpoint.
+//
+// Returns an error if no checkpoint is found for the given execution ID.
+func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
+	ctx context.Context,
+	workflow *Workflow,
+	initialInput string,
+	mutableDAG *MutableDAG,
+	executionID string,
+) (*WorkflowResult, error) {
+	if workflow == nil {
+		return nil, errors.New("workflow must not be nil")
+	}
+	if mutableDAG == nil {
+		return nil, errors.New("mutableDAG must not be nil")
+	}
+	if e.checkpointStore == nil {
+		return nil, errors.New("checkpoint store not configured")
+	}
+
+	data, err := e.checkpointStore.Load(ctx, runtime.CheckpointKey(executionID))
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoint: %w", err)
+	}
+	if data == nil {
+		return nil, fmt.Errorf("checkpoint not found: %s", executionID)
+	}
+
+	var ckpt runtime.ExperienceCheckpoint
+	if err := json.Unmarshal(data, &ckpt); err != nil {
+		return nil, fmt.Errorf("unmarshal checkpoint: %w", err)
+	}
+
+	// Pre-populate completed and processed maps from checkpoint,
+	// and build initial step results for already-completed steps.
+	completed := make(map[string]bool)
+	processed := make(map[string]bool)
+	var initialStepResults []*StepResult
+	for _, ss := range ckpt.StepStates {
+		processed[ss.StepID] = true
+		if ss.Status == runtime.StepStatusCompleted {
+			completed[ss.StepID] = true
+		}
+		initialStepResults = append(initialStepResults, &StepResult{
+			StepID: ss.StepID,
+			Status: StepStatus(ss.Status),
+			Output: ss.Output,
+			Error:  ss.Error,
+		})
+	}
+
+	execution := &WorkflowExecution{
+		ID:         ckpt.ExecutionID,
+		WorkflowID: workflow.ID,
+		Status:     WorkflowStatusRunning,
+		StepStates: make(map[string]*StepState),
+		Variables:  make(map[string]interface{}),
+		Context:    &models.TaskContext{},
+		StartedAt:  time.Now(),
+	}
+
+	for k, v := range workflow.Variables {
+		execution.Variables[k] = v
+	}
+
+	if e.pluginBus != nil {
+		e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowStarted, map[string]any{
+			runtime.PayloadKeyExecutionID: execution.ID,
+			runtime.PayloadKeyWorkflowID:  workflow.ID,
+			"resumed":                     true,
+		})
+	}
+
+	return e.execLoop(ctx, workflow, initialInput, mutableDAG, execution, completed, processed, initialStepResults)
+}
+
+// execLoop is the shared execution core used by both ExecuteDynamic and
+// ExecuteDynamicFromCheckpoint. When completed/processed are non-nil they
+// are used directly; otherwise fresh maps are created.
+func (e *DynamicExecutor) execLoop(
+	ctx context.Context,
+	workflow *Workflow,
+	initialInput string,
+	mutableDAG *MutableDAG,
+	execution *WorkflowExecution,
+	completed map[string]bool,
+	processed map[string]bool,
+	initialStepResults []*StepResult,
+) (*WorkflowResult, error) {
+	executionOrder, err := mutableDAG.GetExecutionOrder()
+	if err != nil {
+		return nil, fmt.Errorf("get execution order: %w", err)
+	}
+
 	localOutputStore := NewOutputStore()
 	resultChan := make(chan *StepResult, len(executionOrder))
 	errChan := make(chan error, 1)
 
-	completed := make(map[string]bool)
-	processed := make(map[string]bool)
+	if completed == nil {
+		completed = make(map[string]bool)
+	}
+	if processed == nil {
+		processed = make(map[string]bool)
+	}
 	var mu sync.Mutex
 	stepEg, _ := errgroup.WithContext(ctx)
 
 	sem := make(chan struct{}, e.maxParallel)
 
-	// Track the DAG version for mutation detection.
 	lastVersion := mutableDAG.Version()
 
-	// Build a mutable order slice shared between runner and recompute calls.
-	// Use a pointer wrapper so recomputeOrder can append new steps.
 	orderSlice := make([]string, len(executionOrder))
 	copy(orderSlice, executionOrder)
 	currentOrder := &orderSlice
 
-	// recoveryCh signals the scheduler that recovery has added new steps.
 	recoveryCh := make(chan struct{}, 1)
 
-	var stepResults []*StepResult
+	stepResults := initialStepResults
+	if stepResults == nil {
+		stepResults = make([]*StepResult, 0)
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	done := make(chan struct{})
@@ -185,17 +306,21 @@ func (e *DynamicExecutor) ExecuteDynamic(
 	})
 
 	// Collect results from resultChan until the scheduler closes it (all steps done).
-	// No expectedResults tracking: the scheduler sends exactly one result per step,
-	// including replacement steps from recovery, and closes the channel when all
-	// goroutines finish.
 	for {
 		select {
 		case result, ok := <-resultChan:
 			if !ok {
-				// Channel closed — scheduler is done.
 				<-done
 				execution.Status = WorkflowStatusCompleted
 				execution.FinishedAt = time.Now()
+
+				if e.pluginBus != nil {
+					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
+						runtime.PayloadKeyExecutionID: execution.ID,
+						runtime.PayloadKeyWorkflowID:  workflow.ID,
+						runtime.PayloadKeyStatus:      execution.Status,
+					})
+				}
 
 				output := make(map[string]interface{})
 				for _, r := range stepResults {
@@ -225,12 +350,21 @@ func (e *DynamicExecutor) ExecuteDynamic(
 
 			if result.Status == StepStatusFailed {
 				if e.handleStepFailure(ctx, result, workflow, execution, mutableDAG, &lastVersion, currentOrder, completed, processed, &mu, recoveryCh) {
-					// Recovery replaced the failed step; continue waiting for the replacement.
 					continue
 				}
 				execution.Status = WorkflowStatusFailed
 				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
+
+				if e.pluginBus != nil {
+					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
+						runtime.PayloadKeyExecutionID: execution.ID,
+						runtime.PayloadKeyWorkflowID:  workflow.ID,
+						runtime.PayloadKeyStatus:      execution.Status,
+						runtime.PayloadKeyError:       result.Error,
+					})
+				}
+
 				<-done
 				return &WorkflowResult{
 					ExecutionID: execution.ID,
@@ -245,6 +379,16 @@ func (e *DynamicExecutor) ExecuteDynamic(
 		case err := <-errChan:
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
+
+			if e.pluginBus != nil {
+				e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
+					runtime.PayloadKeyExecutionID: execution.ID,
+					runtime.PayloadKeyWorkflowID:  workflow.ID,
+					runtime.PayloadKeyStatus:      execution.Status,
+					runtime.PayloadKeyError:       err.Error(),
+				})
+			}
+
 			<-done
 			return &WorkflowResult{
 				ExecutionID: execution.ID,
@@ -450,6 +594,16 @@ func (e *DynamicExecutor) runDynamicSteps(
 				}()
 
 				startTime := time.Now()
+
+				if e.pluginBus != nil {
+					// Hooks are optional; errors are logged by the bus.
+					_ = e.pluginBus.BeforeStep(ctx, execution.ID, toRuntimeStep(step))
+					e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepStarted, map[string]any{
+						runtime.PayloadKeyExecutionID: execution.ID,
+						runtime.PayloadKeyStepID:      sid,
+					})
+				}
+
 				result := e.executeStepCore(ctx, step, sid, initialInput, completed, outputStore, mu, startTime)
 
 				mu.Lock()
@@ -458,6 +612,26 @@ func (e *DynamicExecutor) runDynamicSteps(
 					completed[sid] = true
 				}
 				mu.Unlock()
+
+				if e.pluginBus != nil {
+					if result.Status == StepStatusFailed {
+						e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepFailed, map[string]any{
+							runtime.PayloadKeyExecutionID: execution.ID,
+							runtime.PayloadKeyStepID:      sid,
+							runtime.PayloadKeyStatus:      result.Status,
+							runtime.PayloadKeyError:       result.Error,
+							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
+						})
+					} else {
+						e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepCompleted, map[string]any{
+							runtime.PayloadKeyExecutionID: execution.ID,
+							runtime.PayloadKeyStepID:      sid,
+							runtime.PayloadKeyStatus:      result.Status,
+							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
+						})
+					}
+					_ = e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result))
+				}
 
 				// Check for mutations after each step completes, regardless of mode.
 				// This ensures steps added dynamically (e.g., by the step's own agent)
@@ -795,5 +969,32 @@ func (e *DynamicExecutor) handleStepFailure(
 
 	default:
 		return false
+	}
+}
+
+// toRuntimeStep converts an engine Step to the runtime Step mirror type
+// for WorkflowHook invocation.
+func toRuntimeStep(s *Step) *runtime.Step {
+	return &runtime.Step{
+		ID:        s.ID,
+		Name:      s.Name,
+		AgentType: s.AgentType,
+		Status:    runtime.StepStatus(s.Status),
+		Output:    s.Output,
+		Error:     s.Error,
+		StartedAt: s.StartedAt,
+	}
+}
+
+// toRuntimeStepResult converts an engine StepResult to the runtime mirror
+// type for WorkflowHook invocation.
+func toRuntimeStepResult(r *StepResult) *runtime.StepResult {
+	return &runtime.StepResult{
+		StepID:   r.StepID,
+		Name:     r.Name,
+		Status:   runtime.StepStatus(r.Status),
+		Output:   r.Output,
+		Error:    r.Error,
+		Duration: r.Duration,
 	}
 }

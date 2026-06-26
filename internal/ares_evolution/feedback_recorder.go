@@ -60,11 +60,11 @@ type FeedbackRecorder struct {
 //	*FeedbackRecorder - the configured recorder instance.
 func NewFeedbackRecorder(feedbackService *aresExperience.FeedbackService) *FeedbackRecorder {
 	return &FeedbackRecorder{
-		feedbackService:              feedbackService,
-		outcomes:                     make([]recordedOutcome, 0),
-		maxOutcomes:                  1000,
-		circuitBreakerMaxErrors:      3,
-		circuitBreakerCooldown:       30 * time.Second,
+		feedbackService:         feedbackService,
+		outcomes:                make([]recordedOutcome, 0),
+		maxOutcomes:             1000,
+		circuitBreakerMaxErrors: 3,
+		circuitBreakerCooldown:  30 * time.Second,
 	}
 }
 

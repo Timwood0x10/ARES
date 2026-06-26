@@ -22,9 +22,9 @@ type PrometheusMetrics struct {
 	AgentStepDuration *prometheus.HistogramVec
 
 	// Gauges
-	ActiveAgents           prometheus.Gauge
-	LLMTokensTotal         *prometheus.GaugeVec
-	EvolutionScoreGauge    *prometheus.GaugeVec
+	ActiveAgents        prometheus.Gauge
+	LLMTokensTotal      *prometheus.GaugeVec
+	EvolutionScoreGauge *prometheus.GaugeVec
 
 	// Summary
 	CostUSDTotal *prometheus.SummaryVec

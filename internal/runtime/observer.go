@@ -1,0 +1,97 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/Timwood0x10/ares/internal/events"
+)
+
+// ObserverPlugin subscribes to workflow lifecycle events and writes them
+// to an EventStore for persistence and observability.
+type ObserverPlugin struct {
+	name   string
+	store  events.EventStore
+	cancel context.CancelFunc
+}
+
+// NewObserverPlugin creates an ObserverPlugin that writes events to the
+// given EventStore.
+func NewObserverPlugin(name string, store events.EventStore) *ObserverPlugin {
+	if name == "" {
+		name = "observer"
+	}
+	return &ObserverPlugin{
+		name:  name,
+		store: store,
+	}
+}
+
+// Name returns the plugin name.
+func (p *ObserverPlugin) Name() string {
+	return p.name
+}
+
+// Capabilities returns the capabilities this plugin provides.
+func (p *ObserverPlugin) Capabilities() []Capability {
+	return []Capability{CapObserver}
+}
+
+// Start subscribes to workflow events and begins writing them to the store.
+// The plugin manages its own lifecycle context so it is not affected by
+// the Start context timeout.
+func (p *ObserverPlugin) Start(ctx context.Context, bus EventBus) error {
+	// Derive an independent context so the background loop survives the
+	// Start call's context timeout.
+	loopCtx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+
+	ch, err := bus.Subscribe(loopCtx, events.EventFilter{
+		Types: []events.EventType{
+			EventWorkflowStarted,
+			EventWorkflowCompleted,
+			EventWorkflowFailed,
+			EventStepStarted,
+			EventStepCompleted,
+			EventStepFailed,
+			EventCheckpointSaved,
+		},
+	})
+	if err != nil {
+		cancel()
+		return fmt.Errorf("observer: subscribe: %w", err)
+	}
+
+	go p.loop(loopCtx, ch)
+	return nil
+}
+
+// Stop cancels the internal loop context, causing the subscription to be
+// cleaned up and the background goroutine to exit.
+func (p *ObserverPlugin) Stop(_ context.Context) error {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	return nil
+}
+
+func (p *ObserverPlugin) loop(ctx context.Context, ch <-chan *events.Event) {
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := p.store.Append(ctx, evt.StreamID, []*events.Event{evt}, 0); err != nil {
+				slog.Warn("observer: append event failed",
+					"stream_id", evt.StreamID,
+					"type", evt.Type,
+					"error", err,
+				)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}

@@ -282,11 +282,11 @@ func WithASMGuardrails(guardrails *EvolutionGuardrails) ASMOption {
 // a StrategyStore for persistence. It tracks the current and previous
 // strategies, and uses a RollbackPolicy to detect degradation.
 type ActiveStrategyManager struct {
-	store     StrategyStore // persistent strategy storage
-	current   *mutation.Strategy
-	previous  *mutation.Strategy
-	mu        sync.RWMutex
-	rollback  *RollbackPolicy
+	store      StrategyStore // persistent strategy storage
+	current    *mutation.Strategy
+	previous   *mutation.Strategy
+	mu         sync.RWMutex
+	rollback   *RollbackPolicy
 	guardrails *EvolutionGuardrails
 }
 

@@ -226,12 +226,12 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 			SuggestedAction: "consider increasing mutation rate or introducing diversity",
 		}
 		slog.Warn("guardrail: warning - stagnation detected",
-				"code", ErrCodeStagnation,
-				"score", currentBest,
-				"generation", generation,
-				"stagnant_count", g.stagnantCount,
-				"threshold", g.MaxStagnantGenerations,
-			)
+			"code", ErrCodeStagnation,
+			"score", currentBest,
+			"generation", generation,
+			"stagnant_count", g.stagnantCount,
+			"threshold", g.MaxStagnantGenerations,
+		)
 		result.Events = append(result.Events, event)
 		g.recordEventLocked(event)
 	}

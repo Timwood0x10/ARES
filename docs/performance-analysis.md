@@ -1,490 +1,295 @@
 # GoAgent 性能优化全景分析报告
 
 > 生成日期: 2026-06-25
-> 分析范围: internal/ares_evolution, api/ares_evolution, internal/storage, internal/dashboard
-> 方法: 代码静态分析 + codebase-memory-mcp 图查询 + 多 agent 并行扫描
+> 分析方法: 代码静态分析 + codebase-memory-mcp 图查询 + 3 个并行 agent 深度扫描
+> 分析范围: 全模块（10 个子系统）
 
 ---
 
-## 一、LLM Scorer 慢因根因分析
+## 一、为什么 Deterministic Scorer 快而 LLM Scorer 慢？
 
-### 1.1 调用链路全景
+### 1.1 分支入口
 
-```
-EvolutionScheduler.OnAgentEnd()                     [scheduler.go:253]
-  → GenomePopulationAdapter.Run()                   [genome_wiring.go:248]
-    → Population.EvolveAfterScoring()               [population.go:1354]
-      → Population.ScoreAgents(scorer)              [population.go:975]  ← 第一次：串行打分
-      → Population.EvolveOnIdle()                   [population.go:1071] ← 选择/交叉/变异
-      → Population.ScoreAgents(scorer)              [population.go:975]  ← 第二次：串行打分
-        └─ for each agent:                          ← 纯串行 for 循环，持写锁
-            └─ MemoryAwareScorer.Score()            [memory_aware_scorer.go:196]
-                ├─ TieredScorer.Score()             [tiered_scorer.go:126]
-                │   ├─ Cache lookup                  ← O(1) hash 查找
-                │   └─ tryLLMScore()                [tiered_scorer.go:178]
-                │       └─ client.Generate(ctx, prompt)  ← 同步阻塞 HTTP 调用
-                └─ ExperienceProvider.FindSimilar() ← 额外 DB I/O
-```
-
-### 1.2 Dream Cycle 调用链路
-
-```
-DreamCycle.Run()                                    [dream_cycle.go:500]
-  → DreamCycle.findWinner()                         [dream_cycle.go:513]
-    → [Stage 1: Quick Reject] errgroup 并行 across candidates
-      → RegressionTester.Run(N=5)                   [regression_tester.go:48]
-        └─ for i < 5:                               ← 串行采样循环
-            ├─ scorer(&candidate)                   ← LLM 调用 #1
-            └─ scorer(&baseline)                    ← LLM 调用 #2
-    → [Stage 2: Full Eval] errgroup 并行 across survivors
-      → RegressionTester.Run(N=50)                  [regression_tester.go:48]
-        └─ for i < 50:                              ← 串行采样循环
-            ├─ scorer(&candidate)                   ← LLM 调用 #1
-            └─ scorer(&baseline)                    ← LLM 调用 #2
-```
-
-### 1.3 慢因详解
-
-#### 慢因 #1 — CRITICAL: ScoreAgents 持写锁纯串行
-
-**文件**: `internal/ares_evolution/genome/population.go:975-999`
+两条路径的分叉点在 `api/ares_evolution/service.go:685`：
 
 ```go
-func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
-    p.mu.Lock()
-    defer p.mu.Unlock()
-
-    for i, agent := range p.Agents {   // ← 串行 for 循环
-        func() {
-            defer func() {
-                if r := recover(); r != nil {
-                    // panic recovery
-                    agent.Score = ScoreUnevaluated
-                }
-            }()
-            agent.Score = scorer(agent)  // ← 每个 agent 阻塞等 LLM 返回
-        }()
-    }
-    p.updateBestEverLocked()
+if s.config.Scorer == nil {
+    // 快路径：Deterministic
+    pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+        return DeterministicScore(toAPIStrategy(agent))
+    })
+} else {
+    // 慢路径：LLM Scorer
+    snap, _ := pop.Snapshot()  // 深拷贝整个 population
+    // ... goroutine pool + HTTP calls
 }
 ```
 
-**问题**:
-- 持有整个 population 的写锁，阻塞所有并发读者（Stats, BestStrategy, Snapshot）
-- 逐个串行调用 scorer，无 goroutine 并发
-- 每个 LLM 调用阻塞下一个
+### 1.2 Deterministic 快路径执行链
 
-**影响**: 20 agent × 2 次调用/周期 = 40 次串行 LLM 调用
-
----
-
-#### 慢因 #2 — CRITICAL: numSamples 顺序循环
-
-**文件**: `api/ares_evolution/llm_scorer.go:221-238`
-
-```go
-func (s *LLMScorer) ScoreWithContext(ctx context.Context, strategy *Strategy) float64 {
-    if s.numSamples <= 1 {
-        return s.sampleOnce(ctx, strategy)
-    }
-    best := 0.0
-    for range s.numSamples {       // ← 顺序循环
-        sc := s.sampleOnce(ctx, strategy)  // ← 同步阻塞 HTTP 调用
-        if sc > best {
-            best = sc
-        }
-    }
-    return best
-}
+```
+scoreAgents(scorer=nil)
+  → pop.ScoreAgents(closure)              [population.go:975]
+    → p.mu.Lock()                          ← 1 次加锁
+    → for each agent:
+        → DeterministicScore(agent)        [llm_scorer.go:53]
+          → 3 次 type assertion（零分配）
+          → 算术运算：(1-temp)*25, dist²/10
+          → switch 字符串比较
+          → clamp [5, 100]
+          → return float64
+    → updateBestEverLocked()
+    → p.mu.Unlock()
 ```
 
-**问题**: `NumSamples=3` 时耗时直接 ×3，每个 sample 是独立的 LLM HTTP 调用
+**每 agent 成本：~100ns，纯 CPU，零网络 I/O，零堆分配**
 
-**影响**: 3 倍延迟放大
+### 1.3 LLM 慢路径执行链
 
----
-
-#### 慢因 #3 — HIGH: 并发上限硬编码为 5
-
-**文件**: `api/ares_evolution/service.go:23-24`
-
-```go
-// concurrentScoreLimit is the maximum number of concurrent LLM scoring calls.
-concurrentScoreLimit = 5
+```
+scoreAgents(scorer!=nil)
+  → pop.Snapshot()                         ← 深拷贝 N 个 agent（第 1 次 clone）
+  → make([]float64, N)                     ← 分配 score 数组
+  → make(chan, 5)                          ← 信号量
+  → for each agent:
+      → goroutine:
+          → sem <- struct{}{}              ← 阻塞等待并发槽
+          → toAPIStrategy(agent)           ← 第 2 次 clone（CloneParams）
+          → scorer(strategy):
+              → buildPrompt(strategy)
+                  → json.MarshalIndent     ← 堆分配 JSON buffer
+                  → strings.ReplaceAll     ← 字符串拼接
+              → client.Generate(ctx, prompt)  ← ⚡ HTTP 调用（200ms-10s）
+              → parseScore(resp)           ← JSON 解析
+          → <-sem                          ← 释放槽
+  → build scoreMap                         ← map 构建
+  → pop.ScoreAgents(mapLookup)             ← 第 2 次加锁
 ```
 
-**问题**:
-- Service 层用 goroutine 池做并发评分，但限制最多 5 个并发
-- 20 个 agent 需要 4 轮（20/5），每轮等待最慢的那个返回
-- 现代 LLM API（OpenAI/Anthropic）的 rate limit 通常远高于 5 并发
+**每 agent 成本：~500ms-2s（受 LLM API 延迟主导）**
 
-**影响**: 将本来可以全并发的任务限制为 4 轮串行
+### 1.4 成本对比表
 
----
+| 维度 | Deterministic | LLM |
+|------|--------------|-----|
+| 锁获取 | 1 次 | 3+ 次 |
+| 深拷贝 | 0 次 | 2N 次（Snapshot + toAPIStrategy） |
+| 堆分配 | ~0 | ~40 maps + N JSON buffers + N goroutine stacks |
+| Goroutines | 0 | N |
+| HTTP 调用 | 0 | N × numSamples |
+| 网络延迟 | 0 | 主导因素（2-8s） |
+| 20 agent 耗时 | **~5μs** | **~2-8s** |
+| 10 代总耗时 | **~50μs** | **~22-88s** |
 
-#### 慢因 #4 — MEDIUM: EvolveAfterScoring 调用 ScoreAgents 两次
+### 1.5 为什么 Deterministic 路径快？
 
-**文件**: `internal/ares_evolution/genome/population.go:1354-1390`
+1. **零 I/O**：纯算术运算，无网络、无磁盘
+2. **零分配**：type assertion 和算术都在栈上完成
+3. **单锁**：一次 write lock 覆盖整个 population
+4. **零序列化**：不需要 JSON marshal/unmarshal
+5. **零 goroutine**：顺序执行无调度开销
+6. **initScores 调用 G+1 次无所谓**：每次 ~5μs，G+1 次也才 ~50μs
 
-```go
-func (p *Population) EvolveAfterScoring(...) {
-    p.ScoreAgents(scorer)        // ← 第一次：给当前 population 打分
-    p.EvolveOnIdle(...)          // ← 选择/交叉/变异
-    p.ScoreAgents(scorer)        // ← 第二次：给新 offspring 打分
-}
+### 1.6 Tiered Scorer 的中间路径
+
+Wired 系统使用 `TieredScorer`（`tiered_scorer.go:126`），在 LLM 和 Deterministic 之间取得平衡：
+
+```
+Score(strategy)
+  → StrategyHash(strategy)                 ← FNV hash
+  → Cache.Get(hash)                        ← 命中则直接返回（~1μs）
+  → if miss && budget.CanCallLLM():
+      → tryLLMScore → HTTP call            ← 受 budget 限制
+  → else:
+      → heuristic scorer                   ← 回退到 Deterministic
 ```
 
-**影响**: 每个进化周期 = 2 次完整串行评分
+**关键**：Budget 限制了每代 LLM 调用次数（`MaxLLMCallsPerGeneration`），超出的都走 heuristic。Cache 避免了重复评分。
 
 ---
 
-#### 慢因 #5 — MEDIUM: Dream Cycle RegressionTester 串行采样
+## 二、全模块逐个优化分析
 
-**文件**: `internal/ares_evolution/regression_tester.go:63-82`
+### 2.1 `internal/ares_evolution/` — 进化引擎
 
-```go
-for i := 0; i < sampleSize; i++ {
-    candScore := t.scorer(&candidateMS)   // LLM 调用 #1
-    baseScore := t.scorer(&baselineMS)    // LLM 调用 #2
-    // ... compare and record
-}
-```
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B1 | HIGH | `population.go:975` | ScoreAgents 持写锁纯串行 | 改 worker pool 并发 |
+| B2 | MEDIUM | `population.go:953` | Snapshot 深拷贝所有 agent | 缓存 snapshot 到下次进化 |
+| B3 | MEDIUM | `population.go:828` | Fitness sharing O(n²) | 确保 sampled mode 启用 |
+| B4 | LOW | `crossover.go:241` | 重复 sort param keys | 移除冗余 sort |
+| B5 | LOW | `selection.go:217` | pickUniqueIndices 分配全量数组 | 改 partial Fisher-Yates |
+| B6 | MEDIUM | `scoring/cache.go:96` | Cache 逐出 O(n) 全扫描 | 改 linked list/min-heap |
+| B7 | LOW | `population.go:1354` | EvolveAfterScoring 三次加锁 | 合并为单次锁 |
+| B8 | LOW | `selection.go:287` | 废弃代码未清理 | 删除 deprecated 类型 |
 
-**影响**: 50 samples × 2 调用 = 100 次串行 LLM 调用/candidate
+### 2.2 `internal/ares_memory/` — 记忆系统
 
----
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B9 | MEDIUM | `distiller.go:402` | embedPhase 并发限制 5 | 改为可配置 |
+| B10 | HIGH | `distiller.go:672` | enforceSolutionCap 查全量（无 LIMIT） | 加 LIMIT 或计数器 |
+| B11 | MEDIUM | `context/cache.go:111` | TTL cache 逐出 O(n) | 改 min-heap |
+| B12 | MEDIUM | `manager_impl.go:340` | BuildContext 字符串 += O(n²) | 改 strings.Builder |
+| C1 | LOW | `manager_impl.go:472` | sync/atomic 和 Mutex 混用 | 简化为 plain int + errgroup |
+| C2 | LOW | `manager_impl.go:508` | 部分失败静默吞掉 | 记录 partial failure |
 
-#### 慢因 #6 — MEDIUM: MemoryAwareScorer 额外 I/O
+### 2.3 `internal/ares_arena/` — 竞技场
 
-**文件**: `internal/ares_evolution/scoring/memory_aware_scorer.go:219`
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B13 | MEDIUM | `regression.go:310` | runStrategy 串行评分 | 并行化 scorer 调用 |
+| B14 | LOW | `service.go:131` | actions 历史无上限 | 加 circular buffer |
+| C3 | LOW | `regression.go:523` | 死代码条件永远 false | 修复或删除 |
 
-```go
-expCount, confidence, err := ms.exp.FindSimilar(ctx, taskTypeFromStrategy(s), ms.cfg.ExperienceLookupLimit)
-```
+### 2.4 `internal/ares_runtime/` — 运行时
 
-**问题**: 启用 memory-aware scoring 后，每次评分额外查询 experience provider（DB/向量搜索）
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B15 | MEDIUM | `manager.go:499` | time.After 泄露 timer | 改 time.NewTimer + Stop |
+| C4 | LOW | `manager.go:475` | mu 持锁期间启动 goroutine | 重构为先复制再启动 |
 
----
+### 2.5 `internal/storage/postgres/` — 数据库层
 
-#### 慢因 #7 — LOW: Budget TOCTOU 竞态
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B16 | HIGH | `knowledge_repository.go:42` | float64ToVectorString 用 fmt.Sprintf | 改 strconv.FormatFloat |
+| B17 | HIGH | `vector_utils.go:67` | ParseVectorString 用 fmt.Sscanf | 改 strconv.ParseFloat |
+| B18 | HIGH | `experience_repository.go:350` | keyword 查询 SELECT embedding 列 | 移除 embedding::text |
+| B19 | MEDIUM | `knowledge_repository.go:190` | CreateBatch 单条 INSERT | 改 multi-row INSERT |
+| B20 | MEDIUM | `secret_repository.go:287` | 每次 encrypt 重建 AES cipher | 缓存 cipher.AEAD |
+| B21 | MEDIUM | `pool.go:54` | Pool.Get 用 db.Conn() 独占连接 | 改直接 QueryContext |
+| B22 | MEDIUM | `pool.go:202` | ManagedRow 依赖 finalizer 清理 | 显式 Close 保证 |
+| B23 | LOW | `write_buffer.go:256` | time.After 泄露 | 改 NewTimer + Stop |
+| B24 | LOW | `write_buffer.go:298` | SHA256 每次写入 | 改 xxhash（非安全场景） |
+| B25 | LOW | `base_repository.go:19` | fmt.Sprintf 拼 SQL 表名 | 加白名单校验 |
+| B26 | LOW | `query/cache.go:310` | 手写 toLower/trimSpace | 改标准库 |
 
-**文件**: `internal/ares_evolution/scoring/budget.go:52-63`
+### 2.6 `internal/dashboard/` — API 层
 
-```go
-func (b *Budget) CanCallLLM() bool {  // 步骤1: 检查
-    b.mu.Lock(); defer b.mu.Unlock()
-    return b.UsedLLMCalls < b.MaxLLMCalls
-}
-func (b *Budget) RecordLLMCall() {    // 步骤2: 记录 — 两步不原子!
-    b.mu.Lock(); defer b.mu.Unlock()
-    b.UsedLLMCalls++
-}
-```
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B27 | MEDIUM | `ws_hub.go:172` | broadcast 持 RLock 做 JSON marshal | 预 marshal 再遍历 |
+| B28 | LOW | `api.go:688` | SSE 用 time.Sleep 节流 | 移除 sleep |
+| B29 | LOW | `api.go:913` | CheckOrigin 总是 true | 生产环境限制 origin |
+| B30 | LOW | `api.go:216` | 无请求 body 大小限制 | 加 MaxBytesReader |
 
-**问题**: `CanCallLLM()` 和 `RecordLLMCall()` 是两个独立 mutex 操作。改并发后多个 goroutine 可同时通过检查，超过 budget 上限。
+### 2.7 `internal/llm/` — LLM 客户端
 
----
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B31 | MEDIUM | `client.go:684` | streaming fullResponse += O(n²) | 改 strings.Builder |
+| B32 | LOW | `client.go:372` | 错误路径 io.ReadAll 无限制 | 改 LimitReader(4096) |
+| B33 | LOW | `client.go:170` | streaming client 用 DefaultTransport | 配置连接池 |
+| C5 | LOW | `client.go:376` | 错误消息可能泄露 API key | 清理 error body |
 
-#### 慢因 #8 — LOW: StrategyHash 每次重新计算
+### 2.8 `internal/eval/` — 评估系统
 
-**文件**: `internal/ares_evolution/scoring/hash.go:39-62`
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| C6 | MEDIUM | `concurrent_runner.go:114` | 测试失败 errgroup 仍返回 nil | 改返回聚合错误 |
+| B34 | LOW | `concurrent_runner.go` | RunSuite 不支持结果流式 | 加 channel 流式输出 |
 
-**问题**: `StrategyHash()` 排序所有 param key 并通过 `fmt.Fprintf` 写入 FNV hasher，每次评分调用都重新计算
+### 2.9 `internal/workflow/` — 工作流引擎
 
----
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B35 | MEDIUM | `executor.go:415` | findStep O(n) 线性扫描 | 改 map[string]*Step |
+| B36 | MEDIUM | `executor.go:482` | completed map 每步拷贝 | 改 sync.Map 或原子快照 |
+| B37 | LOW | `executor.go:267` | 死锁检测固定超时 | 改为可配置 |
+| C7 | LOW | `executor.go:140` | resultChan 多处 close | 改 defer close 单出口 |
+| C8 | LOW | `executor.go:606` | time.After 泄露 | 改 NewTimer + Stop |
 
-### 1.4 耗时估算
+### 2.10 `internal/agents/` — Agent 系统
 
-假设: 20 个 agent, LLM 调用 300ms/次, numSamples=2
+| # | 严重度 | 位置 | 问题 | 修复 |
+|---|--------|------|------|------|
+| B38 | MEDIUM | `agent.go:424` | initMemoryContext 6 次串行 DB 调用 | 并行化独立步骤 |
+| B39 | LOW | `agent.go:498` | BuildContext 字符串 += O(n²) | 改 strings.Builder |
+| B40 | LOW | `agent.go:506` | SearchSimilarTasks 每次请求都调 | 加 session 级缓存 |
 
-| 场景 | 计算 | 耗时 |
-|------|------|------|
-| 当前（串行，ScoreAgents ×2） | 20 × 2 × 300ms × 2 轮 | **~24s** |
-| P0 优化后（并发 + sample 并行） | 300ms（全部并发） | **~0.6s** |
+### 跨模块通用问题
 
-**理论提速: ~40×**
-
----
-
-### 1.5 优化方案
-
-#### P0 — 并发化 ScoreAgents
-
-```go
-// internal/ares_evolution/genome/population.go
-func (p *Population) ScoreAgentsConcurrent(
-    scorer func(*mutation.Strategy) float64,
-    concurrency int,
-) {
-    sem := make(chan struct{}, concurrency)
-    var wg sync.WaitGroup
-
-    for i, agent := range p.Agents {
-        wg.Add(1)
-        sem <- struct{}{}
-        go func(idx int, a *mutation.Strategy) {
-            defer wg.Done()
-            defer func() { <-sem }()
-            defer func() {
-                if r := recover(); r != nil {
-                    slog.Warn("scorer panicked for agent",
-                        "agent_index", idx, "panic_value", r)
-                    a.Score = ScoreUnevaluated
-                }
-            }()
-            a.Score = scorer(a)
-        }(i, agent)
-    }
-    wg.Wait()
-
-    p.mu.Lock()
-    defer p.mu.Unlock()
-    p.updateBestEverLocked()
-}
-```
-
-#### P0 — numSamples 并发化
-
-```go
-// api/ares_evolution/llm_scorer.go
-func (s *LLMScorer) ScoreWithContext(ctx context.Context, strategy *Strategy) float64 {
-    if s.numSamples <= 1 {
-        return s.sampleOnce(ctx, strategy)
-    }
-
-    scores := make([]float64, s.numSamples)
-    var wg sync.WaitGroup
-    for i := range s.numSamples {
-        wg.Add(1)
-        go func(idx int) {
-            defer wg.Done()
-            scores[idx] = s.sampleOnce(ctx, strategy)
-        }(i)
-    }
-    wg.Wait()
-
-    best := 0.0
-    for _, sc := range scores {
-        if sc > best {
-            best = sc
-        }
-    }
-    return best
-}
-```
-
-#### P1 — 提升并发上限
-
-```go
-// api/ares_evolution/service.go
-concurrentScoreLimit = 15  // 从 5 提升到 15
-```
-
-#### P1 — Budget 原子化
-
-```go
-// internal/ares_evolution/scoring/budget.go
-func (b *Budget) TryRecordLLMCall() bool {
-    b.mu.Lock()
-    defer b.mu.Unlock()
-    if b.UsedLLMCalls >= b.MaxLLMCalls {
-        return false
-    }
-    b.UsedLLMCalls++
-    return true
-}
-```
-
-#### P2 — Batch Scoring 接口
-
-```go
-// 定义批量评分接口，减少 HTTP round-trip
-type BatchScorer interface {
-    BatchScore(strategies []*mutation.Strategy) []float64
-}
-```
+| # | 严重度 | 问题 | 修复 |
+|---|--------|------|------|
+| X1 | MEDIUM | 热路径 slog.Debug 参数构造开销 | 用 slog.LogAttr 或 guard 检查 |
+| X2 | LOW | error wrapping 不一致（errors vs fmt.Errorf） | 统一用 %w |
+| X3 | MEDIUM | 多处 time.After 泄露 timer | 全部改 NewTimer + Stop |
+| X4 | LOW | 缺少 OpenTelemetry span | 关键路径加 tracing |
 
 ---
 
-## 二、数据库层优化
+## 三、vNext 开发计划可行性评估
 
-### 2.1 Vector 序列化性能
+### 3.1 计划概览
 
-#### 问题 A: float64ToVectorString 使用 fmt.Sprintf
+`plan/workflow-runtime-vnext-plan.md` 提出 6 Phase 的 "Adaptive Plugin Runtime" 架构：
 
-**文件**: `internal/storage/postgres/repositories/knowledge_repository.go:42-52`
+- P0: Plugin Runtime Contract + Experience Checkpoint + Memory-Routed Workflow
+- P1: HITL Feedback Plugin + Controlled Evolutionary Loop
+- P2: Evolution Plugin + Arena Robustness Suite
 
-```go
-// 当前实现 — 1024 次 fmt.Sprintf，极慢
-func float64ToVectorString(vector []float64) string {
-    parts := make([]string, len(vector))
-    for i, v := range vector {
-        parts[i] = fmt.Sprintf("%.6f", v)  // ← 反射 + interface boxing
-    }
-    return "[" + strings.Join(parts, ",") + "]"
-}
-```
+### 3.2 逐 Phase 可行性
 
-**修复**: 改用 `strconv.FormatFloat`
+| Phase | 可行性 | 预估工期 | 关键风险 |
+|-------|--------|----------|----------|
+| P0: Plugin Contract | **HIGH** | 2-3 周 | Executor 构造函数 breaking change |
+| P0: Experience Checkpoint | **MEDIUM** | 3-4 周 | 最大跨切面改动，需大量数据埋点 |
+| P0: Memory-Routed Workflow | **HIGH** | 2-3 周 | engine 和 graph 两个执行路径需对齐 |
+| P1: HITL Feedback | **HIGH** | 1-2 周 | 低风险，增量改动 |
+| P1: Evolutionary Loop | **MEDIUM** | 4-5 周 | 最复杂特性，State 对象缺服务访问 |
+| P1/P2: Evolution Plugin | **HIGH** | 2-3 周 | 从 agent 级扩展到 workflow 级信号 |
+| P2: Arena Robustness | **HIGH** | 2-3 周 | Arena 已成熟，需加 workflow action 类型 |
 
-```go
-func float64ToVectorString(vector []float64) string {
-    var b strings.Builder
-    b.Grow(len(vector) * 12)
-    b.WriteByte('[')
-    for i, v := range vector {
-        if i > 0 {
-            b.WriteByte(',')
-        }
-        b.WriteString(strconv.FormatFloat(v, 'f', 6, 64))
-    }
-    b.WriteByte(']')
-    return b.String()
-}
-```
+### 3.3 已具备的基础
 
-**预期提升**: embedding 写入/搜索 CPU 降低 ~90%
+| 组件 | 现状 | vNext 需求 |
+|------|------|-----------|
+| EventStore | ✅ Append/Read/Subscribe + OCC | 直接复用 |
+| Workflow HITL | ✅ InterruptHandler/Store/Result | 包装为 Plugin |
+| MutableDAG | ✅ 动态修改 DAG | 加条件边支持 |
+| Memory Manager | ✅ SearchSimilarTasks | 加路由建议接口 |
+| Evolution | ✅ genome/mutation/scoring/dream_cycle | 消费 workflow 事件 |
+| Arena | ✅ 场景/注入/报告 | 加 plugin 故障注入 |
+| GraphEventHub | ✅ 轻量级 in-process pub/sub | 可作为 EventBus 基础 |
 
----
+### 3.4 风险点
 
-#### 问题 B: ParseVectorString 使用 fmt.Sscanf
+**Breaking Changes（高风险）**：
+- `Executor`/`DynamicExecutor` 的构造模式（`WithHitlHandler`, `WithHitlStore`）需改为插件注册
+- `DynamicExecutor.recoveryEventSink` 功能回调模式与 EventBus 冲突
 
-**文件**: `internal/storage/postgres/vector_utils.go:67-90`
+**设计冲突（中风险）**：
+- EventBus 定位不清：替代 GraphEventHub？包装 EventStore？还是第三套机制？
+- LoopPlugin 需要子工作流引擎能力，`State` 对象当前无法访问系统服务
+- `engine` 和 `graph` 两套执行路径的 RouterPlugin 需要统一
 
-```go
-// 当前实现 — 每个 float 一次 Sscanf
-fmt.Sscanf(strings.TrimSpace(part), "%f", &result[i])
-```
+**性能影响（中风险）**：
+- `BeforeStep`/`AfterStep` hooks 增加每步延迟
+- ExperienceCheckpoint 每步持久化增加 I/O
+- MemoryRouter 每次路由查 memory 可能拖慢执行
 
-**修复**: 改用 `strconv.ParseFloat`
+### 3.5 建议
 
-```go
-result[i], err = strconv.ParseFloat(strings.TrimSpace(part), 64)
-```
-
-**预期提升**: embedding 读取 ~10× 更快
-
----
-
-### 2.2 查询优化
-
-#### 问题: Keyword 查询 SELECT 了 embedding 列
-
-**文件**: `internal/storage/postgres/repositories/experience_repository.go:350`
-
-**问题**: `SearchByKeyword`, `ListByType`, `ListByAgent` 等方法的 SELECT 包含 `embedding::text`，每行解析 1024 维向量（~8KB），但调用方从不使用 embedding。
-
-**修复**: 从 SELECT 子句中移除 `embedding::text`，或添加轻量查询方法。
+1. **Phase 2 和 3 可以并行**：Memory-Routed Workflow 不严格依赖 Experience Checkpoint
+2. **先统一 engine 和 graph**：在加 RouterPlugin 前，明确哪条路径是主路径
+3. **EventBus 应该是轻量级 in-process**：复用 GraphEventHub 模式，不要混用 EventStore
+4. **LoopPlugin 先做简单版**：支持 max_iterations + until 条件，不做每轮 checkpoint
+5. **插件调用必须有严格 timeout**：避免 memory/evolution 查询拖慢 workflow
 
 ---
 
-#### 问题: CreateBatch 用单条 INSERT
+## 四、优先行动清单
 
-**文件**: `internal/storage/postgres/repositories/knowledge_repository.go:190-295`
+### P0 — 立即实施（最大收益，1-2 天）
 
-**问题**: `CreateBatch` 在事务中逐条执行 `INSERT ... RETURNING id`，N 条记录 = N 次 round-trip。
-
-**修复**: 使用 multi-row INSERT 或 COPY 协议。
-
----
-
-### 2.3 其他数据库问题
-
-| 文件 | 问题 | 修复 |
-|------|------|------|
-| `secret_repository.go:287` | 每次 encrypt/decrypt 重建 AES cipher | 缓存 cipher.AEAD |
-| `*_repository.go` CleanupExpired | 无 LIMIT 的 DELETE 可能锁表 | 改批量 DELETE + LIMIT 1000 |
-| `conversation_repository.go:431` | GROUP BY 无覆盖索引 | 添加 `(tenant_id, session_id, created_at DESC)` 索引 |
-
----
-
-## 三、内存与热路径优化
-
-### 3.1 字符串操作
-
-| 文件 | 行号 | 问题 | 修复 |
-|------|------|------|------|
-| `retrieval_service.go` | 1096 | `tokenize()` 用 `+=` 拼接字符串 | 改 `strings.Builder` |
-| `retrieval_service.go` | 2060 | `replaceAllIgnoreCase` O(n²) 拼接 | 改 `strings.Builder` + `Grow` |
-
-### 3.2 缓存实现
-
-| 文件 | 行号 | 问题 | 修复 |
-|------|------|------|------|
-| `retrieval_service.go` | 617 | Embedding cache LRU 实际是 FIFO（hit 时不移动） | 改用 `container/list` |
-| `cache.go` (scoring) | 91 | `ScoreCache.Put` 逐出是 O(n) 全扫描 | 改 min-heap 或 linked list |
-| `retrieval_service.go` | 688 | Query cache 逐出两轮 O(n) 扫描 | 改有序结构 |
-
----
-
-## 四、并发与架构
-
-### 4.1 Scheduler 锁优化
-
-**文件**: `internal/ares_evolution/scheduler.go:208-244`
-
-**问题**: `shouldEvolve` 调用 `averageScore()` 和 `recentAverage(10)` 各自独立获取 `scoreMu`，再第三次加锁读 `scoreCount`。三次加锁之间 slice 可能变化，比较不安全。
-
-**修复**: 合并为单次加锁方法：
-
-```go
-func (s *EvolutionScheduler) scoreStats() (avg, recent10 float64, count int) {
-    s.scoreMu.Lock()
-    defer s.scoreMu.Unlock()
-    count = len(s.scores)
-    if count == 0 {
-        return 0, 0, 0
-    }
-    for _, v := range s.scores { avg += v }
-    avg /= float64(count)
-    window := 10
-    if window > count { window = count }
-    recent := s.scores[count-window:]
-    for _, v := range recent { recent10 += v }
-    recent10 /= float64(window)
-    return avg, recent10, count
-}
-```
-
-### 4.2 Retrieval 查询并行化
-
-**文件**: `internal/storage/postgres/services/retrieval_service.go:306-309`
-
-**问题**: `Search` 串行执行多个 weighted query（最多 3 个）
-
-**修复**: 用 errgroup 并行执行所有 weighted query，然后合并结果。
-
-### 4.3 其他并发问题
-
-| 文件 | 问题 | 修复 |
-|------|------|------|
-| `scheduler.go:313` | fire-and-forget goroutine | 加 WaitGroup，Shutdown 时 Wait |
-| `adaptive.go:140` | 多样性 O(n²) 计算重复 3 次/周期 | 缓存结果，周期开始时算一次 |
-
----
-
-## 五、API/HTTP 优化
-
-| 文件 | 问题 | 修复 |
-|------|------|------|
-| `api.go:309` | WebSocket upgrader 每次连接重建 | 改为包级变量或 struct 字段 |
-| `api.go:688` | SSE 用 `time.Sleep(100ms)` 节流 | 移除 sleep，依赖 flusher |
-| `api.go:216` | 无请求 body 大小限制 | 加 `http.MaxBytesReader(w, r.Body, 1<<20)` |
-| `coingecko.go:58` 等 | Market clients 各自创建 http.Client | 共享 Transport，配置连接池 |
-
----
-
-## 六、优先行动清单
-
-### P0 — 立即实施（最大收益）
-
-- [ ] `ScoreAgents` 收为 worker pool 并发（~20× 提速）
+- [ ] `ScoreAgents` 改 worker pool 并发（~20× 提速）
 - [ ] `numSamples` 并发化（~3× 提速）
-- [ ] `concurrentScoreLimit` 从 5 提升到 15（~3× 提速）
-- [ ] `float64ToVectorString` 改用 `strconv`（DB CPU ↓90%）
-- [ ] `ParseVectorString` 改用 `strconv.ParseFloat`（读取 ~10× 更快）
+- [ ] `concurrentScoreLimit` 从 5 提升到 15
+- [ ] `float64ToVectorString` 改用 `strconv.FormatFloat`
+- [ ] `ParseVectorString` 改用 `strconv.ParseFloat`
 
-### P1 — 短期实施
+### P1 — 短期实施（1-2 周）
 
 - [ ] Budget 改原子操作 `TryRecordLLMCall()`
 - [ ] keyword/list 查询移除 embedding 列
@@ -492,30 +297,38 @@ func (s *EvolutionScheduler) scoreStats() (avg, recent10 float64, count int) {
 - [ ] AES cipher 缓存
 - [ ] `shouldEvolve` 合并锁
 - [ ] weighted query 并行化
+- [ ] BuildContext/replaceAllIgnoreCase 改 strings.Builder
+- [ ] time.After 全部改 NewTimer + Stop
 
-### P2 — 中期改进
+### P2 — 中期改进（2-4 周）
 
-- [ ] 定义 `BatchScorer` 接口
 - [ ] ScoreCache 改 LRU（container/list）
 - [ ] StrategyHash 缓存到 Strategy 对象
+- [ ] enforceSolutionCap 加 LIMIT
 - [ ] CleanupExpired 改批量 DELETE
-- [ ] 字符串操作改 strings.Builder
+- [ ] findStep 改 map 查找
+- [ ] initMemoryContext 并行化
+- [ ] WebSocket hub 预 marshal
 
-### P3 — 长期架构
+### P3 — 长期架构（vNext 计划）
 
-- [ ] LLM Client 支持 batch 请求（multi-prompt）
-- [ ] ScoreCache 增加相似度匹配（近似命中）
-- [ ] 多样性计算结果缓存
-- [ ] WebSocket upgrader 复用
-- [ ] Market clients 共享 HTTP Transport
+- [ ] Plugin Runtime Contract
+- [ ] Experience Checkpoint
+- [ ] Memory-Routed Workflow
+- [ ] HITL Feedback Plugin
+- [ ] Controlled Evolutionary Loop
+- [ ] Evolution Plugin
+- [ ] Arena Robustness Suite
 
 ---
 
-## 七、预期收益总结
+## 五、预期收益总结
 
-| 优化项 | 当前耗时 | 优化后 | 提速 |
-|--------|----------|--------|------|
-| ScoreAgents 串行 → 并发 | 24s | 0.6s | **~40×** |
+| 优化项 | 当前 | 优化后 | 提速 |
+|--------|------|--------|------|
+| ScoreAgents 串行 → 并发 | 24s/cycle | 0.6s/cycle | **~40×** |
 | Vector 序列化 fmt → strconv | ~10ms/行 | ~1ms/行 | **~10×** |
 | Keyword 查询去掉 embedding | 8KB/行浪费 | 0 | IO/CPU ↓ |
 | Weighted query 串行 → 并行 | 3x 延迟 | 1x 延迟 | **~3×** |
+| time.After 泄露修复 | timer 泄露 | 无泄露 | 稳定性 ↑ |
+| 字符串操作 O(n²) → O(n) | n² 分配 | n 分配 | **内存 ↓** |

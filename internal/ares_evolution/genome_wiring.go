@@ -9,6 +9,7 @@ package evolution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -1462,41 +1463,12 @@ func (a *guidanceAdapter) HintsForTask(
 
 	result := make([]mutation.EvolutionHint, len(hints))
 	for i, h := range hints {
-		var paramHints map[string]float64
-		if h.ParamHints != nil {
-			paramHints = make(map[string]float64, len(h.ParamHints))
-			for k, v := range h.ParamHints {
-				paramHints[k] = v
-			}
+		data, err := json.Marshal(h)
+		if err != nil {
+			return nil, fmt.Errorf("marshal evolution hint: %w", err)
 		}
-
-		sourceIDs := make([]string, len(h.SourceExperienceIDs))
-		copy(sourceIDs, h.SourceExperienceIDs)
-
-		constraints := make([]string, len(h.Constraints))
-		copy(constraints, h.Constraints)
-
-		failedPatterns := make([]string, len(h.FailedPatterns))
-		copy(failedPatterns, h.FailedPatterns)
-
-		preferredTools := make([]string, len(h.PreferredTools))
-		copy(preferredTools, h.PreferredTools)
-
-		promptSnippets := make([]string, len(h.PromptSnippets))
-		copy(promptSnippets, h.PromptSnippets)
-
-		result[i] = mutation.EvolutionHint{
-			ID:                  h.ID,
-			TaskType:            h.TaskType,
-			Problem:             h.Problem,
-			Solution:            h.Solution,
-			Constraints:         constraints,
-			FailedPatterns:      failedPatterns,
-			PreferredTools:      preferredTools,
-			PromptSnippets:      promptSnippets,
-			ParamHints:          paramHints,
-			Confidence:          h.Confidence,
-			SourceExperienceIDs: sourceIDs,
+		if err := json.Unmarshal(data, &result[i]); err != nil {
+			return nil, fmt.Errorf("unmarshal evolution hint: %w", err)
 		}
 	}
 
