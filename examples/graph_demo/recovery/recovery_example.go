@@ -158,7 +158,7 @@ func main() {
 	if err := stack.bus.Start(ctx); err != nil {
 		log.Fatalf("start plugin bus: %v", err)
 	}
-	defer stack.bus.Stop(ctx)
+	defer func() { _ = stack.bus.Stop(ctx) }()
 
 	// Build workflow: s1 uses a failing agent with a recovery policy.
 	dag, err := engine.NewMutableDAG([]*engine.Step{

@@ -122,6 +122,8 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 }
 
 // NewFailoverScorer is a backward-compatible alias for NewFailoverClient.
+//
+// Deprecated: Use NewFailoverClient instead.
 func NewFailoverScorer(configs []*Config, timeout time.Duration, rate float64, burst int) (*FailoverClient, error) {
 	return NewFailoverClient(configs, timeout, rate, burst)
 }
@@ -217,6 +219,12 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 
 // GenerateStream tries each LLM client in order and returns the first
 // successful stream. Rate-limited providers are cooled down just like Generate.
+//
+// NOTE: Failover only covers stream creation (HTTP handshake). Once a stream
+// is established and chunks are being delivered, mid-stream errors (e.g.,
+// connection drops) are reported to the caller via StreamChunk.Err and are
+// NOT handled by the failover layer. Callers must handle StreamChunk.Err
+// themselves.
 func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	var lastErr error
 
@@ -326,6 +334,8 @@ func (fc *FailoverClient) ActiveProviders() []string {
 }
 
 // FailoverScorer is a backward-compatible alias for FailoverClient.
+//
+// Deprecated: Use FailoverClient instead.
 type FailoverScorer = FailoverClient
 
 // Ensure FailoverClient satisfies the common Generate interface.

@@ -1,4 +1,3 @@
-# ares
 
 ```shell
            _____  ______  _____ 
@@ -262,12 +261,14 @@ flowchart LR
 ## 核心特性
 
 **DAG 工作流引擎**
+
 - MutableDAG：运行时图修改（增删节点/边）均在 1μs 以内
 - DynamicExecutor：拓扑排序执行 DAG
 - 增量环检测（边插入时 BFS）
 - 热重载 + 运行时修改，无需停止执行
 
 **记忆系统**
+
 - 会话记忆：短期对话上下文
 - 任务记忆：单任务工作记忆
 - 蒸馏记忆：6 步管线压缩长期知识（基于 errgroup 的并发嵌入加速）
@@ -276,6 +277,7 @@ flowchart LR
 - 向量语义搜索（可插拔后端）
 
 **存储层**
+
 - 可插拔 VectorStore 接口 — 可替换为 Qdrant、Milvus、SQLite 或自定义后端
 - 内置实现：PostgreSQL + pgvector（生产）、纯内存（开发测试）
 - Repository 模式抽象
@@ -284,6 +286,7 @@ flowchart LR
 - 详见 [自定义向量存储指南](docs/zh/development/custom-vector-store.md)
 
 **Agent 系统**
+
 - Leader/Sub Agent 架构
 - AHP 协议通信（心跳、DLQ、进度）
 - Leader 故障转移 + Checkpoint 恢复
@@ -291,6 +294,7 @@ flowchart LR
 - 可插拔健康检测的 Agent 复活插件
 
 **Runtime 层**
+
 - Agent 生命周期管理：注册、启动、停止、重启、恢复
 - 通过 AgentFactory 实现自动崩溃检测和复活
 - 两个恢复维度：EventStore（运维恢复）+ MemoryStore（认知恢复）
@@ -298,6 +302,7 @@ flowchart LR
 - 通过 errgroup 实现结构化并发和优雅关闭
 
 **Event Sourcing（事件溯源）**
+
 - EventStore 接口，支持乐观并发控制
 - MemoryEventStore 用于开发测试，PostgresEventStore 用于生产
 - 17 种事件类型，覆盖 Agent 生命周期、任务、会话、工作流、故障转移
@@ -305,35 +310,41 @@ flowchart LR
 - DLQ 自动重试，可配置重试预算
 
 **Human-in-the-Loop（人机协作）**
+
 - 工作流步骤暂停等待人工审批
 - 任意步骤配置 InterruptConfig，InterruptHandler 阻塞审批
 - InterruptStore 支持崩溃恢复
 - 审批工作流和审查门禁
 
 **工具系统**
+
 - 动态工具注册与发现
 - Agent 与工具的能力匹配
 - Schema 参数校验
 - 工具执行前后生命周期钩子
 
 **MCP 集成**
+
 - Model Context Protocol 客户端，支持 JSON-RPC 2.0 消息
 - Stdio 和 SSE 传输支持
 - 工具 schema 管理和连接生命周期管理
 
 **可观测性**
+
 - Web Dashboard：WebSocket 实时监控面板
 - Flight Recorder：时间线追踪、决策记录、诊断引擎
 - Agent 基因谱系：血缘关系追踪，支持 DOT/JSON 导出
 - Event Bridge：系统状态实时流式推送至 Dashboard
 
 **混沌工程**
+
 - Arena 故障注入测试框架
-- 支持故障类型：process_kill、network_partition、latency_spike、kill_orchestrator
+- 支持故障类型：process\_kill、network\_partition、latency\_spike、kill\_orchestrator
 - 可配置指标的弹性评分
 - Survival 模式持续混沌测试
 
 **LLM Tool Calling**
+
 - 多 Provider 输出适配器（OpenAI、Ollama、OpenRouter）
 - Prompt 模板引擎，支持 Go template 语法
 - Function Calling 提取与验证
@@ -341,11 +352,13 @@ flowchart LR
 - 流式输出解析器
 
 **扩展性**
+
 - 事件驱动回调系统，支持类型化上下文
 - 事件自动压缩，可配置保留策略
 - 可插拔健康检测（用于 Agent 复活）
 
 **自主进化（遗传算法）**
+
 - 多代种群进化：选择、交叉、变异
 - 策略变异引擎：支持确定性种子控制，结果可复现
 - Arena 回归测试：Welch's t-test 统计显著性检验
@@ -356,6 +369,7 @@ flowchart LR
 - 精英保留策略 + 自适应存活率
 
 **插件系统**
+
 - PluginBus：中心化插件注册表与生命周期管理器。线程安全的 Start/Stop，支持反向顺序关闭、重复检测和启动状态守卫。
 - EventBus：类型化事件发布/订阅接口。`Emit` 非阻塞——订阅者缓冲区满时丢弃事件。`Subscribe` 支持按流 ID、事件类型、时间范围过滤。
 - WorkflowHook：同步拦截器接口（`BeforeStep` / `AfterStep`），由 DynamicExecutor 在每个 Step 边界调用。每次分派可配置超时，支持自动 panic 恢复并包装为结构化 `PluginError`。
@@ -363,25 +377,27 @@ flowchart LR
 
 **内置插件**
 
-| 插件 | 能力 | 作用 |
-|------|------|------|
-| ObserverPlugin | observer | 订阅工作流生命周期事件（workflow.started/completed/failed、step.started/completed/failed、checkpoint.saved）持久化到 EventStore |
-| CheckpointPlugin | checkpoint | 在 Step 边界保存深拷贝执行快照。可配置 flush 间隔。22 字段 schema 覆盖 Step 状态、变量、路由/工具/记忆/中断/错误/循环历史及评分信号 |
-| ToolPlugin | tool | 通过 ExecutionCollector 验证和记录工具调用 |
-| ExpressionRouter | router | 规则路由：FromStepID → ToStepID + 条件谓词。首匹配语义 |
-| MemoryRouter | router | 优先查询 `MemoryPlugin.AdviseRoute`，回退到表达式规则 |
-| EvolutionRouter | router | 优先查询 `EvolutionPlugin.Recommend`，回退到表达式规则 |
-| LoopPlugin | loop | 受控执行循环：MaxIterations、UntilCondition、SubStepIDs |
-| BasicRecoveryPlugin | recovery | 基于白名单的 Step 故障恢复决策 |
-| InterruptPlugin | — | 通过采集器记录 HITL 中断生命周期事件 |
-| ArenaPlugin | — | 故障注入测试（plugin_panic、plugin_timeout、plugin_error、bus_stop） |
+| 插件                  | 能力         | 作用                                                                                                            |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
+| ObserverPlugin      | observer   | 订阅工作流生命周期事件（workflow\.started/completed/failed、step.started/completed/failed、checkpoint.saved）持久化到 EventStore |
+| CheckpointPlugin    | checkpoint | 在 Step 边界保存深拷贝执行快照。可配置 flush 间隔。22 字段 schema 覆盖 Step 状态、变量、路由/工具/记忆/中断/错误/循环历史及评分信号                           |
+| ToolPlugin          | tool       | 通过 ExecutionCollector 验证和记录工具调用                                                                               |
+| ExpressionRouter    | router     | 规则路由：FromStepID → ToStepID + 条件谓词。首匹配语义                                                                       |
+| MemoryRouter        | router     | 优先查询 `MemoryPlugin.AdviseRoute`，回退到表达式规则                                                                      |
+| EvolutionRouter     | router     | 优先查询 `EvolutionPlugin.Recommend`，回退到表达式规则                                                                     |
+| LoopPlugin          | loop       | 受控执行循环：MaxIterations、UntilCondition、SubStepIDs                                                                |
+| BasicRecoveryPlugin | recovery   | 基于白名单的 Step 故障恢复决策                                                                                            |
+| InterruptPlugin     | —          | 通过采集器记录 HITL 中断生命周期事件                                                                                         |
+| ArenaPlugin         | —          | 故障注入测试（plugin\_panic、plugin\_timeout、plugin\_error、bus\_stop）                                                 |
 
 **ExecutionCollector**
+
 - 线程安全的数据聚合器，在工作流执行期间采集路由决策、工具调用、记忆命中、中断和错误
 - `Export()` 输出可序列化 map；`MergeInto()` 合并到 `ExperienceCheckpoint`
 - 被 CheckpointPlugin、记忆蒸馏管道和进化引擎评分所消费
 
 **ExperienceCheckpoint** — 完整执行快照：
+
 ```json
 {
   "schema_version": 1,
@@ -403,6 +419,7 @@ flowchart LR
   "created_at": "..."
 }
 ```
+
 支持 Leader 故障转移和 Step 级恢复的完整执行状态还原。
 
 ## 性能数据
@@ -411,26 +428,26 @@ flowchart LR
 
 平台：darwin/arm64, Apple M3 Max, Go 1.26.4
 
-| 类别 | 数量 | 热路径 (< 1μs) | 正常 (1-100μs) | 冷路径 (> 100μs) |
-|------|------|----------------|----------------|------------------|
-| Eval | 5 | 2 | 2 | 1 |
-| 蒸馏 | 9 | 3 | 4 | 2 |
-| 工具 | 8 | 4 | 3 | 1 |
-| 错误处理 | 4 | 4 | 0 | 0 |
-| 事件溯源 | 6 | 1 | 3 | 2 |
-| **合计** | **32** | **14** | **12** | **6** |
+| 类别     | 数量     | 热路径 (< 1μs) | 正常 (1-100μs) | 冷路径 (> 100μs) |
+| ------ | ------ | ----------- | ------------ | ------------- |
+| Eval   | 5      | 2           | 2            | 1             |
+| 蒸馏     | 9      | 3           | 4            | 2             |
+| 工具     | 8      | 4           | 3            | 1             |
+| 错误处理   | 4      | 4           | 0            | 0             |
+| 事件溯源   | 6      | 1           | 3            | 2             |
+| **合计** | **32** | **14**      | **12**       | **6**         |
 
 热路径实测：
 
-| 操作 | ns/op | allocs/op |
-|------|-------|-----------|
-| ExactMatchEvaluator | 2.90 | 0 |
-| ToolExecution | 14.48 | 0 |
-| ResultCreation | 0.25 | 0 |
-| ParameterValidation | 7.22 | 0 |
-| ConflictDetection | 988 | 0 |
-| Wrap (error) | 0.25 | 0 |
-| MemoryOperations/Create | 87.57 | 0 |
+| 操作                      | ns/op | allocs/op |
+| ----------------------- | ----- | --------- |
+| ExactMatchEvaluator     | 2.90  | 0         |
+| ToolExecution           | 14.48 | 0         |
+| ResultCreation          | 0.25  | 0         |
+| ParameterValidation     | 7.22  | 0         |
+| ConflictDetection       | 988   | 0         |
+| Wrap (error)            | 0.25  | 0         |
+| MemoryOperations/Create | 87.57 | 0         |
 
 32 个 benchmark 中 14 个在 1μs 以内。评估、工具执行、结果创建、错误包装、冲突检测均为零分配路径。
 
@@ -511,7 +528,6 @@ go test -race ./...                # 带竞态检测
 go test -bench=. ./...             # Benchmark
 ```
 
-
 ## 配置
 
 YAML 配置格式：
@@ -553,14 +569,14 @@ memory:
 
 ## 技术栈
 
-| 组件 | 技术 |
-|------|------|
-| 语言 | Go 1.26+ |
-| 数据库 | PostgreSQL 15+ + pgvector（可插拔：Qdrant、Milvus、SQLite、自定义） |
-| 协议 | 自定义 AHP（Agent Hosting Protocol） |
-| Embedding | FastAPI + Ollama/SentenceTransformers |
-| 缓存 | Redis |
-| 并发 | errgroup, sync |
+| 组件        | 技术                                                      |
+| --------- | ------------------------------------------------------- |
+| 语言        | Go 1.26+                                                |
+| 数据库       | PostgreSQL 15+ + pgvector（可插拔：Qdrant、Milvus、SQLite、自定义） |
+| 协议        | 自定义 AHP（Agent Hosting Protocol）                         |
+| Embedding | FastAPI + Ollama/SentenceTransformers                   |
+| 缓存        | Redis                                                   |
+| 并发        | errgroup, sync                                          |
 
 ## 项目结构
 
@@ -629,4 +645,5 @@ ares/
 - [自主进化指南](docs/zh/features/autonomous-evolution.md)
 
 ## LICENSE
+
 Apache 2.0

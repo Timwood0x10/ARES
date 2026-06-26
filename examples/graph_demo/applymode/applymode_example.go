@@ -138,7 +138,7 @@ func runDemo(mode engine.ApplyMode) {
 	if err := bus.Start(ctx); err != nil {
 		log.Fatalf("start plugin bus: %v", err)
 	}
-	defer bus.Stop(ctx)
+	defer func() { _ = bus.Stop(ctx) }()
 
 	executor := engine.NewDynamicExecutor(registry, mode, engine.WithMaxParallel(1)).
 		WithPluginBus(bus)

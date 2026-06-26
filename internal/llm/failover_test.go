@@ -18,7 +18,7 @@ func mockLLMServer(status int, body string) (*httptest.Server, *int32) {
 		atomic.AddInt32(&count, 1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	return server, &count
 }
@@ -110,10 +110,10 @@ func TestFailoverClient_CooldownExpiry(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if count == 1 {
 			w.WriteHeader(429)
-			fmt.Fprint(w, `{"error":"rate limited"}`)
+			_, _ = fmt.Fprint(w, `{"error":"rate limited"}`)
 		} else {
 			w.WriteHeader(200)
-			fmt.Fprint(w, successBody("primary-ok"))
+			_, _ = fmt.Fprint(w, successBody("primary-ok"))
 		}
 	}))
 	defer primary.Close()

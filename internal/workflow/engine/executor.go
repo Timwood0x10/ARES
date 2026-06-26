@@ -423,12 +423,6 @@ func buildStepIndex(steps []*Step) map[string]*Step {
 	return m
 }
 
-// findStep finds a step by ID using a pre-built index map.
-func (e *Executor) findStep(steps []*Step, stepID string) *Step {
-	m := buildStepIndex(steps)
-	return m[stepID]
-}
-
 // executeStep executes a single step with HITL interrupt handling.
 func (e *Executor) executeStep(
 	ctx context.Context,

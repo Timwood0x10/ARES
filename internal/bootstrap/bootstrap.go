@@ -260,10 +260,8 @@ func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *
 		return nil, err
 	}
 	if reg != nil {
-		// Wire callbacks to the primary client (index 0).
-		clients := fc.Clients()
-		if len(clients) > 0 {
-			llm.WithCallbacks(reg)(clients[0])
+		for _, c := range fc.Clients() {
+			llm.WithCallbacks(reg)(c)
 		}
 	}
 	return fc, nil
@@ -446,7 +444,7 @@ func SetupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *e
 // Returns:
 //
 //	error - nil on success, or error if evaluator creation/registration fails.
-func SetupEvaluators(llmClient *llm.Client, registry *eval.EvaluatorRegistry) error {
+func SetupEvaluators(llmClient eval.LLMClient, registry *eval.EvaluatorRegistry) error {
 	if llmClient == nil || registry == nil {
 		slog.Info("bootstrap: evaluators skipped (missing dependencies)")
 		return nil
@@ -483,7 +481,7 @@ func SetupEvaluators(llmClient *llm.Client, registry *eval.EvaluatorRegistry) er
 //
 //	*eval.EvaluatorRegistry - the populated registry, or empty registry if llmClient is nil.
 //	error - any error during evaluator creation or registration.
-func SetupEvalSystem(llmClient *llm.Client) (*eval.EvaluatorRegistry, error) {
+func SetupEvalSystem(llmClient eval.LLMClient) (*eval.EvaluatorRegistry, error) {
 	registry := eval.NewEvaluatorRegistry()
 
 	if llmClient != nil {
@@ -618,7 +616,8 @@ type WiredComponents struct {
 // Fields marked as optional may be nil; the wiring function degrades gracefully.
 type WireDependencies struct {
 	// LLMClient is the LLM client used by the judge evaluator (required for evaluators).
-	LLMClient *llm.Client
+	// Satisfied by both *llm.Client and *llm.FailoverClient.
+	LLMClient eval.LLMClient
 
 	// FlightRecorder is the diagnostics recorder (required for evolution system).
 	FlightRecorder *flight.FlightRecorder

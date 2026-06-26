@@ -177,7 +177,13 @@ func buildWorkflow() (*engine.MutableDAG, error) {
 func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 	registry := engine.NewAgentRegistry()
 
-	registry.Register("validator", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	mustRegister := func(name string, fn func(context.Context, interface{}) (base.Agent, error)) {
+		if err := registry.Register(name, fn); err != nil {
+			log.Fatalf("register agent %s: %v", name, err)
+		}
+	}
+
+	mustRegister("validator", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &simpleAgent{id: "validator", agentType: "validator",
 			fn: func(_ context.Context, _ any) (any, error) {
 				if ticket.Message == "" {
@@ -188,7 +194,7 @@ func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 			}}, nil
 	})
 
-	registry.Register("classifier", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	mustRegister("classifier", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &simpleAgent{id: "classifier", agentType: "classifier",
 			fn: func(_ context.Context, _ any) (any, error) {
 				ticket.Category = "general"
@@ -204,7 +210,7 @@ func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 			}}, nil
 	})
 
-	registry.Register("prioritizer", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	mustRegister("prioritizer", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &simpleAgent{id: "prioritizer", agentType: "prioritizer",
 			fn: func(_ context.Context, _ any) (any, error) {
 				ticket.Priority = "low"
@@ -218,7 +224,7 @@ func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 			}}, nil
 	})
 
-	registry.Register("router", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	mustRegister("router", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &simpleAgent{id: "router", agentType: "router",
 			fn: func(_ context.Context, _ any) (any, error) {
 				handler := "general_team"
@@ -236,7 +242,7 @@ func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 			}}, nil
 	})
 
-	registry.Register("logger", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	mustRegister("logger", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &simpleAgent{id: "logger", agentType: "logger",
 			fn: func(_ context.Context, _ any) (any, error) {
 				fmt.Printf("   ✓ Logged resolution for %s\n", ticket.ID)
@@ -294,7 +300,7 @@ func processTicket(ticket *SupportTicket, index int) error {
 	if err := stack.Start(ctx); err != nil {
 		return fmt.Errorf("start plugins: %w", err)
 	}
-	defer stack.Stop(ctx)
+	defer func() { _ = stack.Stop(ctx) }()
 
 	// Create executor with plugins attached.
 	executor := engine.NewDynamicExecutor(registry, engine.ApplyAtCheckpoint).

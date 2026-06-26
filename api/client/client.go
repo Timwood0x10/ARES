@@ -113,11 +113,17 @@ func NewClient(config *Config) (*Client, error) {
 		// config.Workflow.PluginBus before NewClient.
 		if config.Workflow.PluginBus == nil {
 			bus := runtime.NewPluginBus()
-			bus.Register(runtime.NewExpressionRouter("default", nil))
-			bus.Register(runtime.NewToolPlugin("default-tools"))
-			bus.Register(runtime.NewCheckpointPlugin("default-cp", nil)) // no store = no-op
-			bus.Register(runtime.NewInterruptPlugin("default-hitl"))
-			bus.Register(runtime.NewBasicRecoveryPlugin("default-recovery")) // empty allowlist = no-op
+			for _, p := range []runtime.RuntimePlugin{
+				runtime.NewExpressionRouter("default", nil),
+				runtime.NewToolPlugin("default-tools"),
+				runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
+				runtime.NewInterruptPlugin("default-hitl"),
+				runtime.NewBasicRecoveryPlugin("default-recovery"), // empty allowlist = no-op
+			} {
+				if err := bus.Register(p); err != nil {
+					return nil, errors.Wrap(err, "register plugin "+p.Name())
+				}
+			}
 			if err := bus.Start(context.Background()); err != nil {
 				return nil, errors.Wrap(err, "start plugin bus")
 			}
