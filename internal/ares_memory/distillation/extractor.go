@@ -458,7 +458,7 @@ func (e *ExperienceExtractor) parseUserProfile(text string) string {
 				if c == ' ' && i > 2 {
 					// Check if next word is a profession
 					rest := strings.ToLower(namePart[i:])
-				professions := []string{"developer", "engineer", "programmer", "student", "teacher"}
+					professions := []string{"developer", "engineer", "programmer", "student", "teacher"}
 					for _, prof := range professions {
 						if strings.HasPrefix(rest, " "+prof) || strings.HasPrefix(rest, " a "+prof) {
 							namePart = namePart[:i]

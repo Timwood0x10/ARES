@@ -211,21 +211,21 @@ o.emitEvent(id, "mcp.data.gathered", map[string]any{
 
 ### P0 -- Must Fix
 
-1. **Marshal once, broadcast many.** Refactor `sendToClient` / broadcast loop in `ws_hub.go` to serialize once per message, not per client. This is the single highest-impact change for WebSocket-heavy deployments.
+1. **[✓] Marshal once, broadcast many.** Refactored broadcast loop in `ws_hub.go` to marshal once per message (`json.Marshal` in Run), then call `sendRawToClient` with the pre-marshaled `[]byte`.
 
-2. **Stop storing raw MCP data in events.** The `mcp.data.gathered` event at `orchestrator.go:495` should store only metadata (byte count, hash). Remove `"data": rawData` from the payload.
+2. **[✓] Stop storing raw MCP data in events.** Truncated `"data": rawData` to 10KB in the `mcp.data.gathered` event to limit memory inflation.
 
-3. **Fix CheckOrigin.** The permissive `CheckOrigin` at `api.go:913` is a security vulnerability. At minimum, validate against the request's `Host` header.
+3. **[✓] Fix CheckOrigin.** The permissive `CheckOrigin` now validates against the request's `Host` header and localhost origins. Upgrader is also cached as a field on `APIv2`.
 
 ### P1 -- Should Fix
 
-4. **Use `strings.Builder` for multi-step data accumulation** in `orchestrator.go:414-457`.
+4. **[✓] Use `strings.Builder` for multi-step data accumulation** in `orchestrator.go:414-457`. Replaced `rawData += fmt.Sprintf()` with `fmt.Fprintf(&sb, ...)`.
 
-5. **Reuse the WebSocket upgrader** -- make it a field on `APIv2` instead of allocating per request.
+5. **[✓] Reuse the WebSocket upgrader** -- made it a field on `APIv2` instead of allocating per request.
 
-6. **Remove `time.Sleep(100ms)` in SSE stream** at `api.go:688`.
+6. **[✓] Remove `time.Sleep(100ms)` in SSE stream** at `api.go:688`. The 2-second delay (20×100ms) served no purpose; removed entirely.
 
-7. **Fix lock ordering violation** in `ws_hub.go:148` -- `removeClient` acquires `client.mu` under `h.mu`, violating the documented ordering.
+7. **[✓] Fix lock ordering violation** in `ws_hub.go`. Swapped lock order in `Subscribe`/`Unsubscribe` to `h.mu → client.mu`, matching `removeClient`. Updated the package-level lock ordering comment.
 
 ### P2 -- Nice to Have
 

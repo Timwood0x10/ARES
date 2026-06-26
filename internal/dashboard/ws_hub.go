@@ -9,9 +9,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Lock ordering: always acquire c.mu (WSClient) before h.mu (WSHub).
-// This invariant is upheld by Subscribe/Unsubscribe and must not be violated
-// by future changes to avoid deadlocks.
+// Lock ordering: always acquire h.mu (WSHub) before c.mu (WSClient).
+// This invariant is upheld by Subscribe/Unsubscribe and removeClient.
 
 // WSHub manages WebSocket client connections and channel-based message routing.
 type WSHub struct {
@@ -62,18 +61,22 @@ func (h *WSHub) Run() {
 			h.mu.Unlock()
 
 		case msg := <-h.broadcast:
+			data, err := json.Marshal(msg)
+			if err != nil {
+				continue
+			}
 			h.mu.RLock()
 			if msg.Channel != "" {
 				// Send to channel subscribers.
 				if subs, ok := h.channels[msg.Channel]; ok {
 					for client := range subs {
-						h.sendToClient(client, msg)
+						h.sendRawToClient(client, data)
 					}
 				}
 			} else {
 				// Broadcast to all clients.
 				for client := range h.clients {
-					h.sendToClient(client, msg)
+					h.sendRawToClient(client, data)
 				}
 			}
 			h.mu.RUnlock()
@@ -165,16 +168,11 @@ func (h *WSHub) removeClient(client *WSClient) {
 	close(client.send)
 }
 
-// sendToClient queues a message for a client. Caller must hold h.mu (read or write lock).
+// sendRawToClient queues pre-marshaled data for a client. Caller must hold h.mu.
 // No need to lock client.mu: client.send is a buffered channel and is only closed
 // under h.mu.Lock() (in removeClient). Holding h.mu (even RLock) prevents removeClient
 // from acquiring the write lock, so client.send cannot be closed concurrently.
-func (h *WSHub) sendToClient(client *WSClient, msg *WSMessage) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
-
+func (h *WSHub) sendRawToClient(client *WSClient, data []byte) {
 	select {
 	case client.send <- data:
 	default:

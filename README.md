@@ -149,6 +149,71 @@ graph TB
     arena -.->|"stress test"| Leader
 ```
 
+### Plugin System Architecture
+
+```mermaid
+graph TB
+    subgraph executor ["Workflow Engine"]
+        DEX["DynamicExecutor"]
+        DAG["MutableDAG"]
+    end
+
+    subgraph plugins ["PluginBus & Plugins"]
+        PB["PluginBus"]
+        EB["EventBus"]
+        WH["WorkflowHook"]
+        REG["Plugin Registry"]
+        CAP["Capability Index"]
+
+        subgraph builtins ["Built-in Plugins"]
+            OBS["ObserverPlugin"]
+            CP["CheckpointPlugin"]
+            TP["ToolPlugin"]
+            RP["RouterPlugin<br/>(ExpressionRouter / MemoryRouter / EvolutionRouter)"]
+            LP["LoopPlugin"]
+            REC["RecoveryPlugin"]
+            IP["InterruptPlugin"]
+        end
+    end
+
+    subgraph storage ["Plugin Storage"]
+        ES[("EventStore")]
+        CKPT[("CheckpointStore")]
+        COL["ExecutionCollector"]
+    end
+
+    subgraph discovery ["Discovery & Routing"]
+        ADV["MemoryPlugin.AdviseRoute"]
+        EVO["EvolutionPlugin.Recommend"]
+    end
+
+    DEX -->|"BeforeStep / AfterStep"| WH
+    DEX -->|"flush checkpoints"| CP
+    DEX -->|"PluginsByCap"| CAP
+    REG --> builtins
+    PB --> REG
+    PB --> EB
+    PB --> WH
+    EB -->|"subscribe"| OBS
+    OBS -->|"persist"| ES
+    CP -->|"save to"| CKPT
+    CP -->|"collect data"| COL
+    RP -->|"Route(ctx, state)"| DEX
+    LP -->|"ShouldContinue"| DEX
+    REC -->|"ShouldRecover"| DEX
+    RP -.->|"optional"| ADV
+    RP -.->|"optional"| EVO
+
+    style DEX fill:#4a6fa5,color:#fff
+    style PB fill:#2e7d32,color:#fff
+    style EB fill:#2e7d32,color:#fff
+    style WH fill:#2e7d32,color:#fff
+    style ES fill:#6a1b9a,color:#fff
+    style CKPT fill:#6a1b9a,color:#fff
+```
+
+The PluginBus sits between the DynamicExecutor and all plugins. The executor calls **BeforeStep/AfterStep** hooks on every step boundary; hooks dispatch with configurable timeout and automatic panic recovery. **EventBus** enables pub/sub decoupling — plugins emit events without knowing who consumes them. **Capability Index** allows loose‑coupling lookup (`PluginsByCap`) so the executor never depends on concrete plugin types.
+
 ### Data Flow
 
 #### Request Lifecycle
@@ -297,6 +362,56 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
 - Elite preservation and adaptive survival rate across generations
 
+**Plugin System**
+- PluginBus: centralized plugin registry and lifecycle manager. Thread-safe Start/Stop with reverse-order shutdown, duplicate detection, and started-state guards.
+- EventBus: typed event pub/sub interface. `Emit` is non-blocking — drops events on full subscriber buffers. `Subscribe` supports filtering by stream ID, event type, and time range.
+- WorkflowHook: synchronous interceptor interface (`BeforeStep` / `AfterStep`) invoked by DynamicExecutor at every step boundary. Each dispatch has configurable timeout and automatic panic recovery with structured `PluginError` wrapping.
+- Capability-based discovery: `PluginsByCap(CapCheckpoint)` returns a copy of all plugins advertising that capability. Enables loose coupling between the workflow engine and plugins — the executor never depends on concrete plugin types.
+
+**Built-in Plugins**
+
+| Plugin | Capability | Role |
+|--------|------------|------|
+| ObserverPlugin | observer | Subscribes to workflow lifecycle events (workflow.started/completed/failed, step.started/completed/failed, checkpoint.saved) and persists them to EventStore |
+| CheckpointPlugin | checkpoint | Saves deep-copy execution snapshots at step boundaries. Configurable flush interval. 22-field schema covering step states, variables, route/tool/memory/interrupt/error/loop history, and scoring signals |
+| ToolPlugin | tool | Validates and records tool invocations via ExecutionCollector |
+| ExpressionRouter | router | Rule-based router: FromStepID → ToStepID with predicate condition. First-match semantics |
+| MemoryRouter | router | Queries `MemoryPlugin.AdviseRoute` first, falls back to expression rules |
+| EvolutionRouter | router | Queries `EvolutionPlugin.Recommend` first, falls back to expression rules |
+| LoopPlugin | loop | Controlled execution loops with MaxIterations, UntilCondition, and SubStepIDs |
+| BasicRecoveryPlugin | recovery | Allowlist-based step failure recovery decisions |
+| InterruptPlugin | — | Records HITL interrupt lifecycle events via collector |
+| ArenaPlugin | — | Fault injection for robustness testing (plugin_panic, plugin_timeout, plugin_error, bus_stop) |
+
+**ExecutionCollector**
+- Thread-safe data aggregator collecting route decisions, tool calls, memory hits, interrupts, and errors during workflow execution
+- `Export()` produces serializable maps; `MergeInto()` copies into `ExperienceCheckpoint`
+- Consumed by CheckpointPlugin, memory distillation pipeline, and evolution engine scoring
+
+**ExperienceCheckpoint** — full execution snapshot:
+```json
+{
+  "schema_version": 1,
+  "execution_id": "...",
+  "workflow_id": "...",
+  "workflow_version": "...",
+  "state_version": 1,
+  "status": "running",
+  "step_states": [...],
+  "variables": {...},
+  "output_store": {...},
+  "route_history": [...],
+  "tool_history": [...],
+  "memory_hits": [...],
+  "interrupt_history": [...],
+  "loop_history": [...],
+  "error_history": [...],
+  "scoring_signals": [...],
+  "created_at": "..."
+}
+```
+Enables complete execution state restore for leader failover and step-level recovery.
+
 ## Benchmark Highlights
 
 32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
@@ -412,11 +527,28 @@ go test -bench=. ./...             # Benchmarks
 ares/
 ├── internal/
 │   ├── agents/          # Leader/Sub agent system
-│   ├── runtime/         # Runtime lifecycle management
+│   ├── runtime/         # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
+│   │   ├── plugin.go    # RuntimePlugin, WorkflowHook, EventBus interfaces
+│   │   ├── bus.go       # PluginBus — registry, lifecycle, dispatch, capabilities
+│   │   ├── events.go    # Workflow lifecycle event constants + payload keys
+│   │   ├── types.go     # Step, StepResult, StepStatus types
+│   │   ├── collector.go # ExecutionCollector — thread-safe runtime data aggregation
+│   │   ├── observer.go  # ObserverPlugin — event persistence to EventStore
+│   │   ├── checkpoint.go# CheckpointPlugin — step-boundary snapshots
+│   │   ├── tool.go      # ToolPlugin — tool invocation recording
+│   │   ├── router.go    # ExpressionRouter — rule-based routing
+│   │   ├── router_memory.go   # MemoryRouter — memory-aware routing
+│   │   ├── router_evolution.go# EvolutionRouter — evolution-aware routing
+│   │   ├── loop.go      # LoopPlugin — controlled execution loops
+│   │   ├── recovery.go  # BasicRecoveryPlugin — step failure recovery
+│   │   ├── interrupt.go # InterruptPlugin — HITL interrupt recording
+│   │   ├── arena.go     # ArenaPlugin — fault injection testing
+│   │   ├── errors.go    # PluginError type + sentinel errors
+│   │   └── options.go   # PluginBusOption (WithPluginTimeout, WithLogger)
 │   ├── protocol/ahp/    # AHP inter-agent protocol
 │   ├── memory/          # Memory system + distillation
-│   ├── events/          # EventStore interface + implementations
-│   ├── workflow/engine/  # DAG workflow engine
+│   ├── events/          # EventStore interface, MemoryEventStore, event types
+│   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus integration)
 │   ├── storage/          # VectorStore interface + implementations
 │   │   ├── postgres/     # PostgreSQL + pgvector (production)
 │   │   └── memory/       # In-memory (dev/test)
@@ -431,10 +563,6 @@ ares/
 ├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...
 ├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
-│   └── tools/           # Tool registry and invocation
-├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
-├── examples/            # Travel, knowledge-base, simple demos
-├── api/                 # Service interfaces and client
 └── benchmarks/          # Benchmark reports and logs
 ```
 

@@ -356,21 +356,21 @@ func NewOpenAIAdapter(config *Config) *OpenAIAdapter {
 
 ### P0 -- Must Fix
 
-1. **Fix per-call `http.Client` in streaming.** All three adapters (`openai.go:204`, `ollama.go:145`, `openrouter.go:191`) create a new client per `GenerateStream` call. Move the streaming client to the adapter struct. This eliminates N connection pools for N concurrent streams.
+1. **[✓] Fix per-call `http.Client` in streaming.** Added `streamClient *http.Client` to all three adapter structs, initialized once in the constructor with a tuned `Transport`.
 
-2. **Fix `fullResponse += chunk.Content` in `client.go:685`.** Replace with `strings.Builder`. This is O(n^2) in total bytes streamed.
+2. **[✓] Fix `fullResponse += chunk.Content` in `client.go:685`.** Replaced with `strings.Builder`.
 
-3. **Limit error body reads.** All `io.ReadAll(resp.Body)` calls on error paths (`client.go:372`, `openai.go:85`, `ollama.go:78`, `openrouter.go:77`) should use `io.LimitReader` to prevent OOM from malicious servers.
+3. **[✓] Limit error body reads.** All `io.ReadAll(resp.Body)` calls on error paths now use `io.LimitReader(resp.Body, 64*1024)`.
 
 ### P1 -- Should Fix
 
-4. **Fix the `Done` chunk forwarding bug** in `client.go:695-699`. The final content-bearing chunk is silently dropped.
+4. **[✓] Fix the `Done` chunk forwarding bug** in `client.go:695-699`. Restructured to forward content-bearing chunks before checking `chunk.Done`.
 
-5. **Apply default timeout** when `config.Timeout <= 0` in all three adapter constructors.
+5. **[✓] Apply default timeout** when `config.Timeout <= 0` in all three adapter constructors (defaults to 60s).
 
 6. **Improve FailoverScorer latency** by racing primary + fallback after a delay, instead of sequential fallback.
 
-7. **Fix Anthropic SSE parsing** to skip non-JSON control lines instead of logging warnings.
+7. **[✓] Fix Anthropic SSE parsing** to skip control lines (`!strings.HasPrefix(line, "{")`) and downgrade unmarshal errors to `slog.Debug`.
 
 ### P2 -- Nice to Have
 
@@ -380,6 +380,6 @@ func NewOpenAIAdapter(config *Config) *OpenAIAdapter {
 
 10. **Unify `GenerateStructured` behavior** -- decide whether to use prompt-based schema instruction or `response_format`, not both.
 
-11. **Create dedicated `http.Transport`** per LLM client instead of sharing `http.DefaultTransport`.
+11. **[✓] Create dedicated `http.Transport`** per LLM client instead of sharing `http.DefaultTransport`. Done as part of the stream client fix.
 
 12. **Expose `SkippedClients()`** on `FailoverScorer` for operational visibility.

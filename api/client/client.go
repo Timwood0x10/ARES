@@ -115,7 +115,7 @@ func NewClient(config *Config) (*Client, error) {
 			bus := runtime.NewPluginBus()
 			bus.Register(runtime.NewExpressionRouter("default", nil))
 			bus.Register(runtime.NewToolPlugin("default-tools"))
-			bus.Register(runtime.NewCheckpointPlugin("default-cp", nil))   // no store = no-op
+			bus.Register(runtime.NewCheckpointPlugin("default-cp", nil)) // no store = no-op
 			bus.Register(runtime.NewInterruptPlugin("default-hitl"))
 			bus.Register(runtime.NewBasicRecoveryPlugin("default-recovery")) // empty allowlist = no-op
 			if err := bus.Start(context.Background()); err != nil {

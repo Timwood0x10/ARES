@@ -87,7 +87,7 @@ func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
 			return "", gerr.Wrap(err, "read response body")
 		}
@@ -158,7 +158,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
 		return nil, gerr.Newf("ollama stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}

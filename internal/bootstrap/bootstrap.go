@@ -238,6 +238,37 @@ func NewLLMClientWithCallbacks(config *llm.Config, reg *callbacks.Registry) (*ll
 	return client, nil
 }
 
+// NewLLMClientWithFailover creates an LLM client with automatic provider failover.
+// When fallbacks are provided, a FailoverClient is returned that tries each
+// provider in order and cools down rate-limited providers for 60 seconds.
+// When fallbacks is empty, a single Client is returned (same as NewLLMClientWithCallbacks).
+//
+// Args:
+//
+//	config   - primary LLM client configuration.
+//	fallbacks - fallback LLM configs; may be nil/empty for no failover.
+//	reg      - callback registry to receive lifecycle events. May be nil.
+//
+// Returns:
+//
+//	*llm.FailoverClient - failover-capable LLM client.
+//	error - configuration or client creation error.
+func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *callbacks.Registry) (*llm.FailoverClient, error) {
+	configs := append([]*llm.Config{config}, fallbacks...)
+	fc, err := llm.NewFailoverClient(configs, 0, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if reg != nil {
+		// Wire callbacks to the primary client (index 0).
+		clients := fc.Clients()
+		if len(clients) > 0 {
+			llm.WithCallbacks(reg)(clients[0])
+		}
+	}
+	return fc, nil
+}
+
 // WireTaskExecutorCallbacks returns a TaskExecutorOption that injects a callback emitter.
 // Pass this option to sub.NewTaskExecutorWithValidation() to enable lifecycle event
 // emission (tool.start, tool.end, tool.error) during task execution.

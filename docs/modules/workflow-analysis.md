@@ -159,9 +159,9 @@ for _, edges := range g.edges {
 
 ## 5. Priority Action Items
 
-1. **[P0 - Correctness]** Fix `resultChan` sizing in `executor.go:86` to account for recovery-generated steps that exceed `len(workflow.Steps)`. This can cause a deadlock in production when recovery adds replacement nodes.
+1. **[✓] [P0 - Correctness]** Fix `resultChan` sizing — doubled buffer to `len(workflow.Steps)*2` to prevent deadlock when recovery adds replacement nodes.
 
-2. **[P0 - Performance]** Replace `findStep` linear scan with a pre-built map index. This is called O(n) times per workflow execution, making the total complexity O(n^2) for step resolution alone.
+2. **[✓] [P0 - Performance]** Replace `findStep` linear scan with pre-built `stepsByID` map index. `runSteps` builds the map once and passes `*Step` directly to `executeStep`, eliminating O(n^2) step resolution.
 
 3. **[P1 - Performance]** Refactor the scheduler loop in `runSteps` to use a dependency-ready set instead of linear scanning `executionOrder`. The current approach is O(n^2) in the worst case for workflows with many parallel branches.
 

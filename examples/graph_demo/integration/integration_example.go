@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,13 +57,10 @@ func makeResult(desc string) *models.RecommendResult {
 }
 
 func contains(text string, keywords []string) bool {
+	lower := strings.ToLower(text)
 	for _, kw := range keywords {
-		if len(text) >= len(kw) {
-			for i := 0; i <= len(text)-len(kw); i++ {
-				if text[i:i+len(kw)] == kw {
-					return true
-				}
-			}
+		if strings.Contains(lower, kw) {
+			return true
 		}
 	}
 	return false

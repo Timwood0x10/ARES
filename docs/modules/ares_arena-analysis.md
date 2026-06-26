@@ -210,7 +210,7 @@ func computeStats(scores []float64) (mean, variance float64) {
 
 1. **[P0 - Performance]** Parallelize `runStrategy` scoring calls in `regression.go:310-346`. For LLM-based scorers, the current sequential execution makes regression tests N times slower than necessary.
 
-2. **[P0 - Correctness]** Fix the tautological validation condition in `regression.go:523-524`. The condition `x <= 0 && x != 0` can never be true, meaning negative `BaselineRuns` values pass validation silently.
+2. **[✓] [P0 - Correctness]** Fix the tautological validation condition in `regression.go:523-524`. Changed `x <= 0 && x != 0` to `x < 0`.
 
 3. **[P1 - Performance]** Cache `AvailableAgentIDs()` result in `randomChaosAction` (`survival.go:223-296`) to avoid up to 4 redundant runtime queries per action generation.
 

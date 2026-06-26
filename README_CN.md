@@ -149,6 +149,64 @@ graph TB
     arena -.->|"压力测试"| Leader
 ```
 
+### 插件系统架构
+
+```mermaid
+graph TB
+    subgraph executor ["工作流引擎"]
+        DEX["DynamicExecutor"]
+        DAG["MutableDAG"]
+    end
+
+    subgraph plugins ["PluginBus 与插件"]
+        PB["PluginBus"]
+        EB["EventBus"]
+        WH["WorkflowHook"]
+        REG["插件注册表"]
+        CAP["能力索引"]
+
+        subgraph builtins ["内置插件"]
+            OBS["ObserverPlugin"]
+            CP["CheckpointPlugin"]
+            TP["ToolPlugin"]
+            RP["RouterPlugin"]
+            LP["LoopPlugin"]
+            REC["RecoveryPlugin"]
+            IP["InterruptPlugin"]
+        end
+    end
+
+    subgraph storage ["存储"]
+        ES[("EventStore")]
+        CKPT[("CheckpointStore")]
+        COL["ExecutionCollector"]
+    end
+
+    subgraph discovery ["发现与路由"]
+        ADV["MemoryPlugin.AdviseRoute"]
+        EVO["EvolutionPlugin.Recommend"]
+    end
+
+    DEX -->|"BeforeStep/AfterStep"| WH
+    DEX -->|"flush"| CP
+    DEX -->|"PluginsByCap"| CAP
+    REG --> builtins
+    PB --> REG
+    PB --> EB
+    PB --> WH
+    EB -->|"subscribe"| OBS
+    OBS -->|"持久化"| ES
+    CP -->|"保存"| CKPT
+    CP -->|"采集"| COL
+    RP -->|"Route(ctx, state)"| DEX
+    LP -->|"ShouldContinue"| DEX
+    REC -->|"ShouldRecover"| DEX
+    RP -.->|"可选"| ADV
+    RP -.->|"可选"| EVO
+```
+
+DynamicExecutor 在每个 Step 边界调用 PluginBus 的 BeforeStep/AfterStep 钩子，PluginBus 分发到所有注册的 WorkflowHook 实现。插件通过 EventBus 发布/订阅事件，通过 Capability Index 实现能力发现。ObserverPlugin 将工作流事件持久化到 EventStore，CheckpointPlugin 将执行快照写入 CheckpointStore。
+
 ### 数据流
 
 #### 请求生命周期
@@ -296,6 +354,56 @@ flowchart LR
 - 事件驱动回调系统：LLM/工具/Agent 生命周期钩子
 - 高层 API：`NewWiredEvolutionSystem` 一键组装全部组件
 - 精英保留策略 + 自适应存活率
+
+**插件系统**
+- PluginBus：中心化插件注册表与生命周期管理器。线程安全的 Start/Stop，支持反向顺序关闭、重复检测和启动状态守卫。
+- EventBus：类型化事件发布/订阅接口。`Emit` 非阻塞——订阅者缓冲区满时丢弃事件。`Subscribe` 支持按流 ID、事件类型、时间范围过滤。
+- WorkflowHook：同步拦截器接口（`BeforeStep` / `AfterStep`），由 DynamicExecutor 在每个 Step 边界调用。每次分派可配置超时，支持自动 panic 恢复并包装为结构化 `PluginError`。
+- 基于能力（Capability）的发现：`PluginsByCap(CapCheckpoint)` 返回所有声明该能力的插件副本。工作流引擎不依赖具体插件类型，实现松散耦合。
+
+**内置插件**
+
+| 插件 | 能力 | 作用 |
+|------|------|------|
+| ObserverPlugin | observer | 订阅工作流生命周期事件（workflow.started/completed/failed、step.started/completed/failed、checkpoint.saved）持久化到 EventStore |
+| CheckpointPlugin | checkpoint | 在 Step 边界保存深拷贝执行快照。可配置 flush 间隔。22 字段 schema 覆盖 Step 状态、变量、路由/工具/记忆/中断/错误/循环历史及评分信号 |
+| ToolPlugin | tool | 通过 ExecutionCollector 验证和记录工具调用 |
+| ExpressionRouter | router | 规则路由：FromStepID → ToStepID + 条件谓词。首匹配语义 |
+| MemoryRouter | router | 优先查询 `MemoryPlugin.AdviseRoute`，回退到表达式规则 |
+| EvolutionRouter | router | 优先查询 `EvolutionPlugin.Recommend`，回退到表达式规则 |
+| LoopPlugin | loop | 受控执行循环：MaxIterations、UntilCondition、SubStepIDs |
+| BasicRecoveryPlugin | recovery | 基于白名单的 Step 故障恢复决策 |
+| InterruptPlugin | — | 通过采集器记录 HITL 中断生命周期事件 |
+| ArenaPlugin | — | 故障注入测试（plugin_panic、plugin_timeout、plugin_error、bus_stop） |
+
+**ExecutionCollector**
+- 线程安全的数据聚合器，在工作流执行期间采集路由决策、工具调用、记忆命中、中断和错误
+- `Export()` 输出可序列化 map；`MergeInto()` 合并到 `ExperienceCheckpoint`
+- 被 CheckpointPlugin、记忆蒸馏管道和进化引擎评分所消费
+
+**ExperienceCheckpoint** — 完整执行快照：
+```json
+{
+  "schema_version": 1,
+  "execution_id": "...",
+  "workflow_id": "...",
+  "workflow_version": "...",
+  "state_version": 1,
+  "status": "running",
+  "step_states": [...],
+  "variables": {...},
+  "output_store": {...},
+  "route_history": [...],
+  "tool_history": [...],
+  "memory_hits": [...],
+  "interrupt_history": [...],
+  "loop_history": [...],
+  "error_history": [...],
+  "scoring_signals": [...],
+  "created_at": "..."
+}
+```
+支持 Leader 故障转移和 Step 级恢复的完整执行状态还原。
 
 ## 性能数据
 
@@ -453,6 +561,51 @@ memory:
 | Embedding | FastAPI + Ollama/SentenceTransformers |
 | 缓存 | Redis |
 | 并发 | errgroup, sync |
+
+## 项目结构
+
+```
+ares/
+├── internal/
+│   ├── agents/          # Leader/Sub Agent 系统
+│   ├── runtime/         # 运行时生命周期 + PluginBus（含 10 个内置插件）
+│   │   ├── plugin.go    # RuntimePlugin、WorkflowHook、EventBus 接口定义
+│   │   ├── bus.go       # PluginBus — 注册、生命周期、分发、能力发现
+│   │   ├── events.go    # 工作流生命周期事件常量 + Payload Key
+│   │   ├── types.go     # Step、StepResult、StepStatus 类型
+│   │   ├── collector.go # ExecutionCollector — 线程安全运行时数据聚合
+│   │   ├── observer.go  # ObserverPlugin — 事件持久化到 EventStore
+│   │   ├── checkpoint.go# CheckpointPlugin — Step 边界快照
+│   │   ├── tool.go      # ToolPlugin — 工具调用记录
+│   │   ├── router.go    # ExpressionRouter — 基于规则的表达式路由
+│   │   ├── router_memory.go   # MemoryRouter — 记忆感知路由
+│   │   ├── router_evolution.go# EvolutionRouter — 进化感知路由
+│   │   ├── loop.go      # LoopPlugin — 受控执行循环
+│   │   ├── recovery.go  # BasicRecoveryPlugin — Step 故障恢复
+│   │   ├── interrupt.go # InterruptPlugin — HITL 中断记录
+│   │   ├── arena.go     # ArenaPlugin — 故障注入测试
+│   │   ├── errors.go    # PluginError 类型 + Sentinel 错误
+│   │   └── options.go   # PluginBusOption（WithPluginTimeout、WithLogger）
+│   ├── protocol/ahp/    # AHP Agent 间通信协议
+│   ├── memory/          # 记忆系统 + 蒸馏
+│   ├── events/          # EventStore 接口、MemoryEventStore、事件类型
+│   ├── workflow/engine/ # DAG 工作流引擎（DynamicExecutor + PluginBus 集成）
+│   ├── storage/          # VectorStore 接口及实现
+│   │   ├── postgres/     # PostgreSQL + pgvector（生产环境）
+│   │   └── memory/       # 内存模式（开发/测试）
+│   ├── mcp/             # MCP 客户端（stdio/SSE 传输）
+│   ├── dashboard/        # Web 控制面板（WebSocket + REST API）
+│   ├── flight/           # Flight Recorder（时间线/谱系/诊断）
+│   ├── arena/            # 混沌工程测试平台
+│   ├── callbacks/        # 事件驱动回调系统
+│   ├── llm/output/       # LLM 输出解析器 + Prompt 模板
+│   └── tools/           # 工具注册与调用
+├── services/embedding/  # Embedding 网关（FastAPI + Ollama）
+├── examples/            # 示例项目：travel、knowledge-base、dashboard、quant、devagent……
+├── api/                 # 服务接口与客户端
+├── cmd/                 # CLI 工具（arena、flight、migration……）
+└── benchmarks/          # 性能报告与日志
+```
 
 ## 文档
 

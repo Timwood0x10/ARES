@@ -186,7 +186,7 @@ professions := []string{"developer", "engineer", "programmer", "student", "teach
 
 5. **[P2 - Performance]** Consider sharding the `LRUCache` to reduce lock contention for read-heavy workloads in `cache.go:196-207`.
 
-6. **[P2 - Code Quality]** Fix duplicate professions list in `extractor.go:457-462`.
+6. **[✓] [P2 - Code Quality]** Fix duplicate professions list in `extractor.go:457-462`. Removed duplicate entries.
 
 7. **[P2 - Code Quality]** Extract magic numbers in `calculateConfidence` into named constants with documentation.
 

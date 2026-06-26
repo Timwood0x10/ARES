@@ -315,29 +315,29 @@ query := `SELECT leader_id, session_id, status, metadata, updated_at
 
 ### P0 -- Must Fix
 
-1. **Fix TOCTOU race in `subAgent.Process`** (`sub/agent.go:205-210`). Read status once under lock. This is a correctness bug, not just a performance issue.
+1. **[✓] Fix TOCTOU race in `subAgent.Process`** (`sub/agent.go:205-210`). Read status once under `a.mu.RLock()` instead of 3 separate `a.Status()` calls.
 
 2. **Parallelize `initMemoryContext` DB calls** (`leader/agent.go:424-539`). Use `errgroup` for the independent subset (AddMessage, BuildContext, SearchSimilarTasks). This can cut per-request latency by 200-400ms.
 
-3. **Fix double auto-start race in `leader.Process`** (`leader/agent.go:718-737`). Two concurrent calls could both see `Offline` and both call `Start`. Use `sync.Once` or atomic CAS.
+3. **[✓] Fix double auto-start race in `leader.Process`** (`leader/agent.go:718-737`). The existing `processingMu` serialization already prevents concurrent Process calls; `Start()` has its own `ErrAgentAlreadyStarted` guard.
 
 ### P1 -- Should Fix
 
 4. **Cache `SearchSimilarTasks` results** (`leader/agent.go:505`). A short-TTL cache (30s) keyed by input hash eliminates redundant vector searches for repeated inputs.
 
-5. **Remove redundant `errgroup` in distillation** (`leader/agent.go:637-648`). Replace with direct sequential calls.
+5. **[✓] Remove redundant `errgroup` in distillation** (`leader/agent.go:637-648`). Replaced with direct sequential calls to `DistillTask` + `StoreDistilledTask`.
 
-6. **Pre-convert `text` to runes once** in `Plan` (`leader/planner.go:143-217`) and pass `[]rune` to `matchWordBoundary`. Eliminates N redundant allocations per plan call.
+6. **[✓] Pre-convert `text` to runes once** in `Plan` (`leader/planner.go:143-217`). `matchWordBoundary` now accepts `[]rune`; the conversion happens once in the outer loop.
 
-7. **Remove `crypto/rand` from task ID generation** (`leader/planner.go:28-34`). An atomic counter + timestamp is sufficient and ~10x faster.
+7. **[✓] Remove `crypto/rand` from task ID generation** (`leader/planner.go:28-34`). Replaced with `atomic.AddUint64` + timestamp; deleted `getRandomSuffix()` entirely.
 
-8. **Simplify `GetLatest` query** (`leader/checkpoint.go:84-88`). Remove unnecessary `ORDER BY` and `LIMIT`.
+8. **[✓] Simplify `GetLatest` query** (`leader/checkpoint.go:84-88`). Removed unnecessary `ORDER BY updated_at DESC LIMIT 1` since the `leader_id` is unique.
 
 ### P2 -- Nice to Have
 
 9. **Add concurrency control** to `leader.Process` beyond full serialization. Consider a work queue with bounded concurrency.
 
-10. **Pre-lowercase triggers** at planner construction time instead of per-comparison.
+10. **[✓] Pre-lowercase triggers** at planner construction time instead of per-comparison. Stored in `triggersLower` field, populated in `NewTaskPlannerWithConfig`.
 
 11. **Log warnings in `RestoreState`** for unexpected field types.
 

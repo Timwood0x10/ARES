@@ -145,9 +145,9 @@ for _, expected := range testCase.ExpectedTools {
 
 ## 5. Priority Action Items
 
-1. **[P0 - Correctness]** Fix `WithPrompt` silent error swallowing in `llm_judge.go:88-95`. A malformed custom prompt silently falls back to the default, producing incorrect evaluation scores without any indication.
+1. **[✓] [P0 - Correctness]** Fix `WithPrompt` silent error swallowing — errors are now logged via `slog.Warn` in `llm_judge.go:88-95`.
 
-2. **[P0 - Correctness]** Replace `template.Must` in `WithChinesePrompt`/`WithEnglishPrompt` (`llm_judge.go:107-115`) with error-returning variants. A panic in these options crashes the entire application.
+2. **[✓] [P0 - Correctness]** Replace `template.Must` with `template.Parse` + error-returning in `WithChinesePrompt`/`WithEnglishPrompt` (`llm_judge.go:107-115`). Panic no longer possible.
 
 3. **[P1 - Performance]** Add a sequential fast path to `ConcurrentRunner.RunSuite` when `maxParallel == 1` to avoid errgroup overhead (goroutine creation, channel operations) for the common sequential case.
 

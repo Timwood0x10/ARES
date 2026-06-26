@@ -87,7 +87,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return "", errors.Newf("API request failed with status %d: %s", resp.StatusCode, respBody)
 	}
 
@@ -145,7 +145,7 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return nil, errors.Newf("openrouter error: %s", respBody)
 	}
 
@@ -204,7 +204,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
 		return nil, errors.Newf("openrouter stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}

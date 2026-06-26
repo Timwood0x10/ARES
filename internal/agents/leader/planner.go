@@ -2,11 +2,9 @@ package leader
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,21 +21,10 @@ var (
 // taskIDCounter is used to generate unique task IDs.
 var taskIDCounter uint64
 
-// getRandomSuffix returns a random suffix for extra uniqueness.
-func getRandomSuffix() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(100000000))
-	if err != nil {
-		slog.Warn("Failed to generate random suffix, using timestamp fallback", "error", err)
-		return fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
-	}
-	return fmt.Sprintf("%08d", n.Int64())
-}
-
-// generateTaskID generates a unique task ID.
+// generateTaskID generates a unique task ID using an atomic counter and timestamp.
 func generateTaskID() string {
 	id := atomic.AddUint64(&taskIDCounter, 1)
-	randSuffix := getRandomSuffix()
-	return fmt.Sprintf("task_%s_%d_%s", time.Now().Format("20060102150405"), id, randSuffix)
+	return fmt.Sprintf("task_%s_%d", time.Now().Format("20060102150405"), id)
 }
 
 // SubAgentConfig represents sub agent configuration (mirrors config.SubAgentConfig).
@@ -72,6 +59,7 @@ type taskPlanner struct {
 	subAgents         []SubAgentConfig
 	fallbackOnNoMatch bool // When true, include all subAgents if no triggers match. Default: true.
 	expLocator        ExperienceLocator
+	triggersLower     [][]string // Pre-lowercased triggers, one entry per subAgent.
 }
 
 // NewTaskPlanner creates a new TaskPlanner.
@@ -118,10 +106,19 @@ func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig, opts ...
 			"provided", maxTasks, "default", DefaultMaxTasks)
 		maxTasks = DefaultMaxTasks
 	}
+	triggersLower := make([][]string, len(subAgents))
+	for i, sa := range subAgents {
+		lowered := make([]string, len(sa.Triggers))
+		for j, t := range sa.Triggers {
+			lowered[j] = strings.ToLower(t)
+		}
+		triggersLower[i] = lowered
+	}
 	p := &taskPlanner{
 		maxTasks:          maxTasks,
 		subAgents:         subAgents,
 		fallbackOnNoMatch: true,
+		triggersLower:     triggersLower,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -158,9 +155,10 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 			}
 		} else {
 			// Filter subAgents by triggers.
+			textRunes := []rune(lowerInput)
 			matched := make([]SubAgentConfig, 0, len(p.subAgents))
 			allHaveTriggers := true
-			for _, sa := range p.subAgents {
+			for idx, sa := range p.subAgents {
 				if len(sa.Triggers) == 0 {
 					// No triggers means always selected.
 					matched = append(matched, sa)
@@ -169,8 +167,8 @@ func (p *taskPlanner) Plan(ctx context.Context, profile *models.UserProfile, inp
 				}
 				// Check if any trigger keyword matches the input using word boundaries.
 				triggered := false
-				for _, trigger := range sa.Triggers {
-					if matchWordBoundary(lowerInput, strings.ToLower(trigger)) {
+				for _, lowerTrigger := range p.triggersLower[idx] {
+					if matchWordBoundary(textRunes, lowerTrigger) {
 						triggered = true
 						break
 					}
@@ -247,18 +245,18 @@ func (p *taskPlanner) createTask(sa SubAgentConfig, profile *models.UserProfile,
 
 // matchWordBoundary checks if keyword appears in text as a whole word
 // (preceded and followed by a non-alphanumeric character or string boundary).
-func matchWordBoundary(text, keyword string) bool {
+// textRunes must be pre-converted []rune of the lowercased input text.
+func matchWordBoundary(textRunes []rune, keyword string) bool {
 	if keyword == "" {
 		return false
 	}
-	runes := []rune(text)
 	kwRunes := []rune(keyword)
 	kwLen := len(kwRunes)
-	for i := 0; i <= len(runes)-kwLen; i++ {
+	for i := 0; i <= len(textRunes)-kwLen; i++ {
 		// Compare rune slices.
 		match := true
 		for j := 0; j < kwLen; j++ {
-			if runes[i+j] != kwRunes[j] {
+			if textRunes[i+j] != kwRunes[j] {
 				match = false
 				break
 			}
@@ -266,8 +264,8 @@ func matchWordBoundary(text, keyword string) bool {
 		if !match {
 			continue
 		}
-		before := i == 0 || !isAlphaNum(runes[i-1])
-		after := i+kwLen >= len(runes) || !isAlphaNum(runes[i+kwLen])
+		before := i == 0 || !isAlphaNum(textRunes[i-1])
+		after := i+kwLen >= len(textRunes) || !isAlphaNum(textRunes[i+kwLen])
 		if before && after {
 			return true
 		}

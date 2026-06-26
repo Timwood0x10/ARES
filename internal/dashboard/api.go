@@ -696,7 +696,6 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("sse write failed", "error", err)
 			}
 			flusher.Flush()
-			time.Sleep(100 * time.Millisecond)
 		}
 	}
 	if _, err := fmt.Fprintf(w, "event: done\ndata: {}\n\n"); err != nil {
@@ -917,5 +916,3 @@ func withRecovery(next http.Handler) http.Handler {
 func errResp(msg string) map[string]string {
 	return map[string]string{"error": msg}
 }
-
-

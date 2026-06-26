@@ -163,7 +163,7 @@ for attempt := 1; attempt <= maxAttempts; attempt++ {
 
 ## 5. Priority Action Items
 
-1. **[P0 - Correctness/Performance]** Refactor `NotifyAgentDead` to release the write lock before launching the resurrection goroutine. The current design blocks all agent operations during resurrection setup and risks deadlock when called from within `m.g.Go()`.
+1. **[✓] [P0 - Correctness/Performance]** Refactor `NotifyAgentDead` to release the write lock before launching the resurrection goroutine. Decision (send on `resurrectCh`) is made under lock; goroutine launch happens outside.
 
 2. **[P0 - Performance]** Fix the agent launch loop in `Start()` to release the read lock before calling `launchAgentGoroutine`. Holding RLock during goroutine creation blocks concurrent agent registration.
 
@@ -171,7 +171,7 @@ for attempt := 1; attempt <= maxAttempts; attempt++ {
 
 4. **[P1 - Code Quality]** Split `NotifyAgentDead` into smaller, focused methods (`prepareResurrection`, `scheduleResurrection`, `emitDeathEvent`) for testability and clarity.
 
-5. **[P2 - Performance]** Fix timer leak in resurrection backoff loop by using `time.NewTimer` with `Reset()`.
+5. **[✓] [P2 - Performance]** Fix timer leak in resurrection backoff loop by using `time.NewTimer` with `Reset()` instead of `time.After`.
 
 6. **[P2 - Performance]** Maintain an atomic active-agent counter to avoid iterating all agents in `Stats()`.
 

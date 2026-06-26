@@ -635,18 +635,13 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		distillCtx, cancel := context.WithTimeout(context.Background(), DefaultDistillTimeout)
 		defer cancel()
 
-		g, gCtx := errgroup.WithContext(distillCtx)
-		g.Go(func() error {
-			distilled, err := a.memoryManager.DistillTask(gCtx, taskID)
-			if err != nil {
-				slog.Warn("Failed to distill task", "error", err, "task_id", taskID)
-				return err
-			}
-			return a.memoryManager.StoreDistilledTask(gCtx, taskID, distilled)
-		})
-
-		if err := g.Wait(); err != nil {
-			slog.Error("Error in async distillation", "error", err, "task_id", taskID)
+		distilled, err := a.memoryManager.DistillTask(distillCtx, taskID)
+		if err != nil {
+			slog.Warn("Failed to distill task", "error", err, "task_id", taskID)
+			return nil
+		}
+		if err := a.memoryManager.StoreDistilledTask(distillCtx, taskID, distilled); err != nil {
+			slog.Error("Failed to store distilled task", "error", err, "task_id", taskID)
 			return nil
 		}
 

@@ -46,15 +46,10 @@ func (e *DynamicExecutor) recomputeOrder(
 	*currentOrder = newOrder
 }
 
-// findStepInDAG finds a step by ID in the MutableDAG.
+// findStepInDAG finds a step by ID in the MutableDAG using the index map.
 func (e *DynamicExecutor) findStepInDAG(mutableDAG *MutableDAG, stepID string) *Step {
-	steps := mutableDAG.Steps()
-	for _, step := range steps {
-		if step.ID == stepID {
-			return step
-		}
-	}
-	return nil
+	idx := mutableDAG.StepIndex()
+	return idx[stepID]
 }
 
 // toRuntimeStep converts an engine Step to the runtime Step mirror type

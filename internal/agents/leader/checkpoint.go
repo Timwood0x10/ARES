@@ -83,9 +83,7 @@ func (r *CheckpointRepository) GetLatest(ctx context.Context, leaderID string) (
 
 	query := `SELECT leader_id, session_id, status, metadata, updated_at
 		FROM leader_checkpoints
-		WHERE leader_id = $1
-		ORDER BY updated_at DESC
-		LIMIT 1`
+		WHERE leader_id = $1`
 
 	cp := &LeaderCheckpoint{}
 	var metadataStr string

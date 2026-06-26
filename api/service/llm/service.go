@@ -14,9 +14,19 @@ import (
 	"github.com/Timwood0x10/ares/internal/observability"
 )
 
+// LLMClient is the interface satisfied by both *llm.Client and *llm.FailoverClient.
+type LLMClient interface {
+	Generate(ctx context.Context, prompt string) (string, error)
+	GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
+	IsEnabled() bool
+	GetProvider() string
+	GetModel() string
+	Close()
+}
+
 // Service provides LLM operations.
 type Service struct {
-	client          *llm.Client
+	client          LLMClient
 	repo            core.LLMRepository
 	config          *core.BaseConfig
 	llmConfig       *core.LLMConfig
@@ -29,6 +39,9 @@ type Config struct {
 	BaseConfig *core.BaseConfig
 	// LLMConfig is the LLM configuration.
 	LLMConfig *core.LLMConfig
+	// Fallbacks is a list of fallback LLM configs for failover.
+	// When non-empty, a FailoverClient is created instead of a single Client.
+	Fallbacks []*llm.Config
 	// Repo is the LLM repository (optional, for logging/audit).
 	Repo core.LLMRepository
 	// EmbeddingClient is the embedding service client (optional).
@@ -61,7 +74,7 @@ func NewService(config *Config) (*Service, error) {
 		}
 	}
 
-	// Create internal LLM client
+	// Create internal LLM client (with optional failover)
 	internalConfig := &llm.Config{
 		Provider: string(config.LLMConfig.Provider),
 		APIKey:   config.LLMConfig.APIKey,
@@ -70,17 +83,29 @@ func NewService(config *Config) (*Service, error) {
 		Timeout:  config.LLMConfig.Timeout,
 	}
 
-	client, err := llm.NewClient(internalConfig)
-	if err != nil {
-		return nil, errors.Wrap(err, "create LLM client")
-	}
-
-	if config.Tracer != nil {
-		client.SetTracer(config.Tracer)
-	}
-
-	if config.CallbackRegistry != nil {
-		llm.WithCallbacks(config.CallbackRegistry)(client)
+	var client LLMClient
+	if len(config.Fallbacks) > 0 {
+		configs := append([]*llm.Config{internalConfig}, config.Fallbacks...)
+		fc, err := llm.NewFailoverClient(configs, 0, 0, 0)
+		if err != nil {
+			return nil, errors.Wrap(err, "create failover LLM client")
+		}
+		if config.Tracer != nil {
+			fc.SetTracer(config.Tracer)
+		}
+		client = fc
+	} else {
+		c, err := llm.NewClient(internalConfig)
+		if err != nil {
+			return nil, errors.Wrap(err, "create LLM client")
+		}
+		if config.Tracer != nil {
+			c.SetTracer(config.Tracer)
+		}
+		if config.CallbackRegistry != nil {
+			llm.WithCallbacks(config.CallbackRegistry)(c)
+		}
+		client = c
 	}
 
 	return &Service{

@@ -94,7 +94,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
 			return "", fmt.Errorf("API request failed with status %d: %w", resp.StatusCode, readErr)
 		}
@@ -157,7 +157,7 @@ func (a *OpenAIAdapter) GenerateStructured(ctx context.Context, prompt string, s
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
 			return nil, errors.Wrap(err, "read response body")
 		}
@@ -217,7 +217,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			slog.Warn("http: close response body failed", "error", closeErr)
 		}

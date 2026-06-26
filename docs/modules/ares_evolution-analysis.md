@@ -368,10 +368,9 @@ func (r *FeedbackRecorder) recordCircuitBreakerFailure() {
 
 ### P0 - Critical (Fix Immediately)
 
-1. **Memory leak in `RecordScore`** (`scheduler.go:200`)
+1. **[✓] Memory leak in `RecordScore`** (`scheduler.go:200`)
    - Impact: Unbounded memory growth in long-running processes
-   - Effort: 15 minutes
-   - Fix: Use `copy()` to compact slice
+   - Fix: Use `copy()` to compact slice instead of retaining reference to `scores[1:]`
 
 2. **Race condition in `FeedbackRecorder`** (`feedback_recorder.go:111-148`)
    - Impact: Circuit breaker may not open when expected

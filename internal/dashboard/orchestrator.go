@@ -414,6 +414,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	if rawData == "" && len(req.Steps) > 0 {
 		// Multi-step: call each tool in sequence, accumulate results.
 		// Skip steps that were already completed by the previous agent.
+		var sb strings.Builder
+		sb.Grow(len(req.Steps) * 4096)
 		for i, step := range req.Steps {
 			if i < startStep {
 				// Already completed by the previous agent; skip.
@@ -452,9 +454,10 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 			})
 
 			for _, b := range res.Content {
-				rawData += fmt.Sprintf("\n--- Step %d: %s ---\n%s\n", i+1, toolName, b.Text)
+				fmt.Fprintf(&sb, "\n--- Step %d: %s ---\n%s\n", i+1, toolName, b.Text)
 			}
 		}
+		rawData = sb.String()
 	} else if rawData == "" && req.MCPTool == "" {
 		// List tools.
 		mcpStart := time.Now()
@@ -492,7 +495,12 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	}
 
 	o.updateRawDataLen(id, len(rawData))
-	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": rawData})
+	const maxStoredData = 10 * 1024
+	storedData := rawData
+	if len(storedData) > maxStoredData {
+		storedData = storedData[:maxStoredData]
+	}
+	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": storedData})
 	o.updateStatus(id, "analyzing with LLM...", 50, "")
 	slog.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
 
