@@ -2060,6 +2060,21 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenan
 	return experiences, nil
 }
 
+// CountByMemoryType implements ExperienceRepository interface
+func (a *experienceRepositoryAdapter) CountByMemoryType(ctx context.Context, tenantID string, memoryType memory.MemoryType) (int, error) {
+	return a.repo.CountByMemoryType(ctx, tenantID, string(memoryType))
+}
+
+// DeleteBatch implements ExperienceRepository interface
+func (a *experienceRepositoryAdapter) DeleteBatch(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if err := a.repo.Delete(ctx, "default", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Update implements ExperienceRepository interface
 func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *memory.Experience) error {
 	if experience == nil {

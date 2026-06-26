@@ -12,13 +12,19 @@ import (
 // Lock ordering: always acquire h.mu (WSHub) before c.mu (WSClient).
 // This invariant is upheld by Subscribe/Unsubscribe and removeClient.
 
+// broadcastMsg carries a pre-marshaled WebSocket message and its target channel.
+type broadcastMsg struct {
+	channel string
+	data    []byte
+}
+
 // WSHub manages WebSocket client connections and channel-based message routing.
 type WSHub struct {
 	clients    map[*WSClient]struct{}
 	channels   map[string]map[*WSClient]struct{}
 	register   chan *WSClient
 	unregister chan *WSClient
-	broadcast  chan *WSMessage
+	broadcast  chan broadcastMsg
 	mu         sync.RWMutex
 	done       chan struct{}
 	stopOnce   sync.Once
@@ -41,7 +47,7 @@ func NewWSHub() *WSHub {
 		channels:   make(map[string]map[*WSClient]struct{}),
 		register:   make(chan *WSClient),
 		unregister: make(chan *WSClient),
-		broadcast:  make(chan *WSMessage, 256),
+		broadcast:  make(chan broadcastMsg, 256),
 		done:       make(chan struct{}),
 	}
 }
@@ -61,22 +67,18 @@ func (h *WSHub) Run() {
 			h.mu.Unlock()
 
 		case msg := <-h.broadcast:
-			data, err := json.Marshal(msg)
-			if err != nil {
-				continue
-			}
 			h.mu.RLock()
-			if msg.Channel != "" {
+			if msg.channel != "" {
 				// Send to channel subscribers.
-				if subs, ok := h.channels[msg.Channel]; ok {
+				if subs, ok := h.channels[msg.channel]; ok {
 					for client := range subs {
-						h.sendRawToClient(client, data)
+						h.sendRawToClient(client, msg.data)
 					}
 				}
 			} else {
 				// Broadcast to all clients.
 				for client := range h.clients {
-					h.sendRawToClient(client, data)
+					h.sendRawToClient(client, msg.data)
 				}
 			}
 			h.mu.RUnlock()
@@ -98,8 +100,12 @@ func (h *WSHub) Stop() {
 func (h *WSHub) BroadcastToChannel(channel string, msg *WSMessage) {
 	msg.Channel = channel
 	msg.TS = time.Now()
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	select {
-	case h.broadcast <- msg:
+	case h.broadcast <- broadcastMsg{channel: channel, data: data}:
 	default:
 		// Drop message if buffer is full.
 	}
@@ -108,8 +114,12 @@ func (h *WSHub) BroadcastToChannel(channel string, msg *WSMessage) {
 // BroadcastAll sends a message to all connected clients.
 func (h *WSHub) BroadcastAll(msg *WSMessage) {
 	msg.TS = time.Now()
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	select {
-	case h.broadcast <- msg:
+	case h.broadcast <- broadcastMsg{data: data}:
 	default:
 	}
 }

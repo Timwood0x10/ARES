@@ -52,11 +52,17 @@ func (r *testExpRepo) GetByMemoryType(ctx context.Context, tenantID string, memo
 	return r.experiences, nil
 }
 
+func (r *testExpRepo) CountByMemoryType(ctx context.Context, tenantID string, memoryType distillation.MemoryType) (int, error) {
+	return len(r.experiences), nil
+}
+
 func (r *testExpRepo) Update(ctx context.Context, experience *distillation.Experience) error {
 	return nil
 }
 
 func (r *testExpRepo) Delete(ctx context.Context, id string) error { return nil }
+
+func (r *testExpRepo) DeleteBatch(ctx context.Context, ids []string) error { return nil }
 
 func (r *testExpRepo) Create(ctx context.Context, experience *distillation.Experience) error {
 	r.experiences = append(r.experiences, *experience)

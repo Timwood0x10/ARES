@@ -375,6 +375,37 @@ func (r *DistilledMemoryRepository) GetByMemoryType(ctx context.Context, tenantI
 	return memories, nil
 }
 
+// CountByMemoryType returns the count of memories for a tenant and type.
+func (r *DistilledMemoryRepository) CountByMemoryType(ctx context.Context, tenantID, memoryType string) (int, error) {
+	var count int
+	err := r.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
+		query := `SELECT COUNT(*) FROM distilled_memories WHERE memory_type = $1 AND expires_at > NOW()`
+		return tx.QueryRowContext(ctx, query, memoryType).Scan(&count)
+	})
+	return count, err
+}
+
+// DeleteBatch removes multiple memories by their IDs.
+func (r *DistilledMemoryRepository) DeleteBatch(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Build parameterized query: id IN ($1, $2, ..., $n)
+	query := `DELETE FROM distilled_memories WHERE id IN (`
+	params := make([]any, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			query += ", "
+		}
+		query += fmt.Sprintf("$%d", i+1)
+		params[i] = id
+	}
+	query += `)`
+
+	_, err := r.db.ExecContext(ctx, query, params...)
+	return errors.Wrap(err, "batch delete distilled memories")
+}
+
 // DeleteExpired removes expired memories.
 func (r *DistilledMemoryRepository) DeleteExpired(ctx context.Context) (int64, error) {
 	query := `DELETE FROM distilled_memories WHERE expires_at <= NOW()`

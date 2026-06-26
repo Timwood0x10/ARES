@@ -41,6 +41,10 @@ func StrategyHash(s *mutation.Strategy) (uint64, error) {
 		return 0, ErrNilStrategy
 	}
 
+	if s.HashCached() {
+		return s.HashValue(), nil
+	}
+
 	h := fnv.New64a()
 
 	// Hash sorted params for order-independence.
@@ -58,5 +62,7 @@ func StrategyHash(s *mutation.Strategy) (uint64, error) {
 	// Hash prompt template.
 	_, _ = fmt.Fprintf(h, "prompt=%s|", s.PromptTemplate)
 
-	return h.Sum64(), nil
+	hash := h.Sum64()
+	s.SetHash(hash)
+	return hash, nil
 }

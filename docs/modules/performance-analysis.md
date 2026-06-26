@@ -302,13 +302,13 @@ Score(strategy)
 
 ### P2 — 中期改进（2-4 周）
 
-- [ ] ScoreCache 改 LRU（container/list）
-- [ ] StrategyHash 缓存到 Strategy 对象
-- [ ] enforceSolutionCap 加 LIMIT
+- [✓] ScoreCache 改 LRU（container/list）
+- [✓] StrategyHash 缓存到 Strategy 对象
+- [✓] enforceSolutionCap 加 CountByMemoryType + DeleteBatch
 - [✓] CleanupExpired 改批量 DELETE (已是最优)
 - [✓] findStep 改 map 查找
 - [✓] initMemoryContext 并行化
-- [ ] WebSocket hub 预 marshal
+- [✓] WebSocket hub 预 marshal
 
 ### P3 — 长期架构（vNext 计划）
 

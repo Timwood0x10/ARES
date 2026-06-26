@@ -131,6 +131,11 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenan
 	return internalExperiences, nil
 }
 
+// CountByMemoryType implements internal ExperienceRepository interface
+func (a *experienceRepositoryAdapter) CountByMemoryType(ctx context.Context, tenantID string, memoryType distillation.MemoryType) (int, error) {
+	return a.apiRepo.CountByMemoryType(ctx, tenantID, MemoryType(memoryType))
+}
+
 // Update implements internal ExperienceRepository interface
 func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *distillation.Experience) error {
 	apiExperience := &Experience{
@@ -146,6 +151,11 @@ func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *di
 // Delete implements internal ExperienceRepository interface
 func (a *experienceRepositoryAdapter) Delete(ctx context.Context, id string) error {
 	return a.apiRepo.Delete(ctx, id)
+}
+
+// DeleteBatch implements internal ExperienceRepository interface
+func (a *experienceRepositoryAdapter) DeleteBatch(ctx context.Context, ids []string) error {
+	return a.apiRepo.DeleteBatch(ctx, ids)
 }
 
 // Create implements internal ExperienceRepository interface

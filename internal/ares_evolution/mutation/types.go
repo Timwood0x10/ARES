@@ -107,6 +107,10 @@ type Strategy struct {
 
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
+
+	// hashCache caches the StrategyHash result. Set hashValid=false on mutation.
+	hashCache  uint64
+	hashCached bool
 }
 
 // Clone returns a deep copy of the strategy.
@@ -127,7 +131,24 @@ func (s *Strategy) Clone() *Strategy {
 		MutationDesc:         s.MutationDesc,
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
+		hashCache:            s.hashCache,
+		hashCached:           s.hashCached,
 	}
+}
+
+// HashCached returns true if the StrategyHash has been cached on this object.
+func (s *Strategy) HashCached() bool { return s != nil && s.hashCached }
+
+// HashValue returns the cached hash value. Only valid if HashCached() == true.
+func (s *Strategy) HashValue() uint64 { return s.hashCache }
+
+// SetHash caches the given hash value on this strategy object.
+func (s *Strategy) SetHash(h uint64) {
+	if s == nil {
+		return
+	}
+	s.hashCache = h
+	s.hashCached = true
 }
 
 // ParamRange defines the allowed range for a mutable parameter.

@@ -209,6 +209,9 @@ type ExperienceRepository interface {
 	// Returns experiences or error.
 	GetByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) ([]*Experience, error)
 
+	// CountByMemoryType returns the experience count for a tenant and memory type.
+	CountByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) (int, error)
+
 	// Update updates an existing experience.
 	// Args:
 	// ctx - operation context.
@@ -222,6 +225,9 @@ type ExperienceRepository interface {
 	// id - the experience ID.
 	// Returns error if deletion fails.
 	Delete(ctx context.Context, id string) error
+
+	// DeleteBatch deletes multiple experiences by their IDs.
+	DeleteBatch(ctx context.Context, ids []string) error
 
 	// Create creates a new experience.
 	// Args:

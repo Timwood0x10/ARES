@@ -674,31 +674,52 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 		return nil
 	}
 
-	solutions, err := d.repo.GetByMemoryType(ctx, tenantID, MemoryKnowledge)
+	// Count first to avoid loading all solutions when under cap.
+	count, err := d.repo.CountByMemoryType(ctx, tenantID, MemoryKnowledge)
 	if err != nil {
 		return errors.Wrap(err, "failed to get solution count")
 	}
 
-	if len(solutions) <= d.config.MaxSolutionsPerTenant {
+	if count <= d.config.MaxSolutionsPerTenant {
 		return nil
 	}
 
-	slog.WarnContext(ctx, "solution count exceeds cap, pruning lowest importance memories",
-		"tenant_id", tenantID,
-		"current_count", len(solutions),
-		"max_count", d.config.MaxSolutionsPerTenant,
-	)
+	// Over cap: load only the excess lowest-confidence solutions.
+	solutions, err := d.repo.GetByMemoryType(ctx, tenantID, MemoryKnowledge)
+	if err != nil {
+		return errors.Wrap(err, "failed to get solutions for pruning")
+	}
 
+	// Sort by confidence ascending and delete the lowest ones.
 	sort.Slice(solutions, func(i, j int) bool {
 		return solutions[i].Confidence < solutions[j].Confidence
 	})
 
-	deleteCount := len(solutions) - d.config.MaxSolutionsPerTenant
+	deleteCount := count - d.config.MaxSolutionsPerTenant
+	if deleteCount > len(solutions) {
+		deleteCount = len(solutions)
+	}
+
+	ids := make([]string, deleteCount)
 	for i := 0; i < deleteCount; i++ {
-		if err := d.repo.Delete(ctx, solutions[i].Problem); err != nil {
-			slog.WarnContext(ctx, "failed to delete solution during pruning",
-				"problem", solutions[i].Problem,
-				"error", err)
+		ids[i] = solutions[i].Problem
+	}
+
+	slog.WarnContext(ctx, "solution count exceeds cap, pruning lowest importance memories",
+		"tenant_id", tenantID,
+		"current_count", count,
+		"max_count", d.config.MaxSolutionsPerTenant,
+		"delete_count", deleteCount,
+	)
+
+	if err := d.repo.DeleteBatch(ctx, ids); err != nil {
+		// Fall back to individual deletes on batch failure.
+		for i, id := range ids {
+			if err := d.repo.Delete(ctx, id); err != nil {
+				slog.WarnContext(ctx, "failed to delete solution during pruning",
+					"problem", solutions[i].Problem,
+					"error", err)
+			}
 		}
 	}
 

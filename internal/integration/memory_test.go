@@ -50,8 +50,13 @@ func (r *testExpRepo) GetByMemoryType(_ context.Context, _ string, _ distillatio
 	return r.experiences, nil
 }
 
+func (r *testExpRepo) CountByMemoryType(_ context.Context, _ string, _ distillation.MemoryType) (int, error) {
+	return len(r.experiences), nil
+}
+
 func (r *testExpRepo) Update(_ context.Context, _ *distillation.Experience) error { return nil }
 func (r *testExpRepo) Delete(_ context.Context, _ string) error                   { return nil }
+func (r *testExpRepo) DeleteBatch(_ context.Context, _ []string) error            { return nil }
 
 func (r *testExpRepo) Create(_ context.Context, experience *distillation.Experience) error {
 	r.experiences = append(r.experiences, *experience)
