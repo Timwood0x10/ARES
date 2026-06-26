@@ -315,10 +315,10 @@ Score(strategy)
 - [ ] Plugin Runtime Contract
 - [ ] Experience Checkpoint
 - [ ] Memory-Routed Workflow
-- [ ] HITL Feedback Plugin
+- [✓] HITL Feedback Plugin
 - [ ] Controlled Evolutionary Loop
 - [ ] Evolution Plugin
-- [ ] Arena Robustness Suite
+- [✓] Arena Robustness Suite
 
 ---
 

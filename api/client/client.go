@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // Client provides a unified client interface for all GoAgent modules.
@@ -117,8 +118,8 @@ func NewClient(config *Config) (*Client, error) {
 				runtime.NewExpressionRouter("default", nil),
 				runtime.NewToolPlugin("default-tools"),
 				runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
-				runtime.NewInterruptPlugin("default-hitl"),
-				runtime.NewBasicRecoveryPlugin("default-recovery"), // empty allowlist = no-op
+			engine.NewHITLFeedbackPlugin("default-hitl", nil, nil),
+			runtime.NewBasicRecoveryPlugin("default-recovery"), // empty allowlist = no-op
 			} {
 				if err := bus.Register(p); err != nil {
 					return nil, errors.Wrap(err, "register plugin "+p.Name())
