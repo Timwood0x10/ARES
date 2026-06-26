@@ -183,7 +183,7 @@ func TestPluginBus_RegisterAfterStart(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	err := b.Register(newTestPlugin("late", nil))
-	require.ErrorIs(t, err, ErrBusNotStarted)
+	require.ErrorIs(t, err, ErrBusAlreadyStarted)
 }
 
 func TestPluginBus_Stop(t *testing.T) {
@@ -961,7 +961,8 @@ func TestPluginBus_MultiplePlugins(t *testing.T) {
 
 	evts, err := eventStore.Read(ctx, "exec-1", events.ReadOptions{})
 	require.NoError(t, err)
-	assert.Len(t, evts, 2)
+	// workflow.started + workflow.completed + 2× checkpoint.saved (from BeforeStep/AfterStep)
+	assert.Len(t, evts, 4)
 
 	data, err := ckptStore.Load(ctx, "checkpoint/exec-1")
 	require.NoError(t, err)

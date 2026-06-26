@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -20,12 +21,18 @@ type subscriber struct {
 	filter events.EventFilter
 }
 
+// namedHook pairs a WorkflowHook with its plugin name for diagnostics.
+type namedHook struct {
+	pluginName string
+	hook       WorkflowHook
+}
+
 // PluginBus manages plugin registration, lifecycle, and hook invocation.
 // It provides the EventBus interface to plugins and coordinates BeforeStep/
 // AfterStep hook calls with timeout and panic recovery.
 type PluginBus struct {
 	plugins       []RuntimePlugin
-	hooks         []WorkflowHook
+	hooks         []namedHook
 	caps          map[Capability][]RuntimePlugin
 	subscribers   []*subscriber
 	mu            sync.RWMutex
@@ -48,7 +55,7 @@ func NewPluginBus(opts ...PluginBusOption) *PluginBus {
 }
 
 // Register adds a plugin to the bus. Returns ErrDuplicatePlugin if a plugin
-// with the same name is already registered. Returns ErrBusNotStarted if
+// with the same name is already registered. Returns ErrBusAlreadyStarted if
 // called after Start.
 // If the plugin also implements WorkflowHook, it is automatically registered
 // as a hook.
@@ -73,7 +80,7 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 	}
 	// Auto-register as WorkflowHook if the plugin implements it.
 	if hook, ok := plugin.(WorkflowHook); ok {
-		b.hooks = append(b.hooks, hook)
+		b.hooks = append(b.hooks, namedHook{pluginName: plugin.Name(), hook: hook})
 	}
 	return nil
 }
@@ -103,8 +110,9 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 
 	var errs []error
 	for i := len(b.plugins) - 1; i >= 0; i-- {
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, func(sctx context.Context) error {
-			return b.plugins[i].Stop(sctx)
+		p := b.plugins[i]
+		if err := invokeWithTimeout(ctx, b.pluginTimeout, p.Name(), func(sctx context.Context) error {
+			return p.Stop(sctx)
 		}); err != nil {
 			b.logger.Error("runtime: plugin stop failed",
 				"plugin", b.plugins[i].Name(),
@@ -120,19 +128,19 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 func (b *PluginBus) RegisterHook(hook WorkflowHook) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.hooks = append(b.hooks, hook)
+	b.hooks = append(b.hooks, namedHook{pluginName: "hook", hook: hook})
 }
 
 // BeforeStep calls all registered hooks before a step executes.
 func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *Step) error {
 	b.mu.RLock()
-	hooks := make([]WorkflowHook, len(b.hooks))
+	hooks := make([]namedHook, len(b.hooks))
 	copy(hooks, b.hooks)
 	b.mu.RUnlock()
 
-	for _, h := range hooks {
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, "hook:beforeStep", func(sctx context.Context) error {
-			return h.BeforeStep(sctx, executionID, step)
+	for _, nh := range hooks {
+		if err := invokeWithTimeout(ctx, b.pluginTimeout, nh.pluginName+":beforeStep", func(sctx context.Context) error {
+			return nh.hook.BeforeStep(sctx, executionID, step)
 		}); err != nil {
 			return fmt.Errorf("runtime: before step hook: %w", err)
 		}
@@ -143,13 +151,13 @@ func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *St
 // AfterStep calls all registered hooks after a step completes.
 func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *StepResult) error {
 	b.mu.RLock()
-	hooks := make([]WorkflowHook, len(b.hooks))
+	hooks := make([]namedHook, len(b.hooks))
 	copy(hooks, b.hooks)
 	b.mu.RUnlock()
 
-	for _, h := range hooks {
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, "hook:afterStep", func(sctx context.Context) error {
-			return h.AfterStep(sctx, executionID, result)
+	for _, nh := range hooks {
+		if err := invokeWithTimeout(ctx, b.pluginTimeout, nh.pluginName+":afterStep", func(sctx context.Context) error {
+			return nh.hook.AfterStep(sctx, executionID, result)
 		}); err != nil {
 			return fmt.Errorf("runtime: after step hook: %w", err)
 		}

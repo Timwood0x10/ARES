@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // RouterPlugin determines the next step to execute based on current state.
@@ -36,6 +37,7 @@ type RouteDecision struct {
 // ExpressionRouter evaluates a set of route rules to decide the next step.
 // It is the default, simple-rule-based router implementation.
 type ExpressionRouter struct {
+	mu    sync.RWMutex
 	name  string
 	rules []RouteRule
 }
@@ -75,6 +77,8 @@ func (r *ExpressionRouter) Stop(_ context.Context) error { return nil }
 
 // Route evaluates rules in order and returns the first match.
 func (r *ExpressionRouter) Route(_ context.Context, state RouteState) (*RouteDecision, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, rule := range r.rules {
 		if rule.FromStepID != "" && rule.FromStepID != state.CurrentStepID {
 			continue
@@ -93,11 +97,15 @@ func (r *ExpressionRouter) Route(_ context.Context, state RouteState) (*RouteDec
 
 // AddRule adds a rule to the router.
 func (r *ExpressionRouter) AddRule(rule RouteRule) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.rules = append(r.rules, rule)
 }
 
 // Rules returns a copy of the current rules.
 func (r *ExpressionRouter) Rules() []RouteRule {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	rules := make([]RouteRule, len(r.rules))
 	copy(rules, r.rules)
 	return rules

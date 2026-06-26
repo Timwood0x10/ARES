@@ -28,12 +28,14 @@ type RouteRecord struct {
 }
 
 // ToolRecord captures a tool invocation.
+// Duration is stored as time.Duration (nanoseconds). For JSON serialization
+// in milliseconds, use DurationMS() instead of the Duration field directly.
 type ToolRecord struct {
 	StepID   string        `json:"step_id"`
 	ToolName string        `json:"tool_name"`
 	Input    string        `json:"input"`
 	Output   string        `json:"output"`
-	Duration time.Duration `json:"duration_ms"`
+	Duration time.Duration `json:"duration_ns"`
 	Success  bool          `json:"success"`
 }
 
@@ -184,17 +186,27 @@ func (c *ExecutionCollector) ErrorLog() []ErrorRecord {
 	return r
 }
 
-// Export returns all collected data as a serializable map.
+// Export returns a deep copy of all collected data as a serializable map.
 func (c *ExecutionCollector) Export() map[string]any {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	route := make([]RouteRecord, len(c.routeHistory))
+	copy(route, c.routeHistory)
+	tool := make([]ToolRecord, len(c.toolHistory))
+	copy(tool, c.toolHistory)
+	mem := make([]MemoryHitRecord, len(c.memoryHits))
+	copy(mem, c.memoryHits)
+	interrupt := make([]InterruptRecord, len(c.interruptLog))
+	copy(interrupt, c.interruptLog)
+	errs := make([]ErrorRecord, len(c.errorLog))
+	copy(errs, c.errorLog)
 	return map[string]any{
 		"execution_id":  c.executionID,
-		"route_history": c.routeHistory,
-		"tool_history":  c.toolHistory,
-		"memory_hits":   c.memoryHits,
-		"interrupt_log": c.interruptLog,
-		"error_log":     c.errorLog,
+		"route_history": route,
+		"tool_history":  tool,
+		"memory_hits":   mem,
+		"interrupt_log": interrupt,
+		"error_log":     errs,
 	}
 }
 

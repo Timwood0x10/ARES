@@ -54,24 +54,24 @@ func (p *InterruptPlugin) BeforeStep(_ context.Context, _ string, _ *Step) error
 // AfterStep inspects the step result for interrupt-related metadata and
 // records the outcome via collector and EventBus.
 func (p *InterruptPlugin) AfterStep(_ context.Context, executionID string, result *StepResult) error {
-	// Check if this step was interrupted (skipped with reject reason).
-	if result.Status == StepStatusSkipped && result.Error == "rejected by human" {
-		p.emitInterruptEvent(executionID, result.StepID, "reject", result.Error)
-		if p.collector != nil {
-			p.collector.RecordInterrupt(result.StepID, "reject", result.Error)
-		}
-		return nil
-	}
-
 	// Check for interrupt metadata from the step result (set by the executor
 	// when an interrupt was handled before step execution).
 	if result.Metadata != nil {
-		if action, ok := result.Metadata["interrupt_action"]; ok {
-			feedback := result.Metadata["interrupt_feedback"]
+		if action, ok := result.Metadata[PayloadKeyInterruptAction]; ok {
+			feedback := result.Metadata[PayloadKeyInterruptFeedback]
 			p.emitInterruptEvent(executionID, result.StepID, action, feedback)
 			if p.collector != nil {
 				p.collector.RecordInterrupt(result.StepID, action, feedback)
 			}
+			return nil
+		}
+	}
+
+	// Fallback: detect rejected interrupts by status and error pattern.
+	if result.Status == StepStatusSkipped && result.Error != "" {
+		p.emitInterruptEvent(executionID, result.StepID, "reject", result.Error)
+		if p.collector != nil {
+			p.collector.RecordInterrupt(result.StepID, "reject", result.Error)
 		}
 	}
 

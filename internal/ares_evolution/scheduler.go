@@ -203,46 +203,6 @@ func (s *EvolutionScheduler) RecordScore(score float64) {
 	s.scores = append(s.scores, score)
 }
 
-// averageScore returns the mean of all recorded scores.
-// Returns 0 if no scores have been recorded.
-func (s *EvolutionScheduler) averageScore() float64 {
-	s.scoreMu.Lock()
-	defer s.scoreMu.Unlock()
-
-	if len(s.scores) == 0 {
-		return 0
-	}
-
-	var total float64
-	for _, v := range s.scores {
-		total += v
-	}
-	return total / float64(len(s.scores))
-}
-
-// recentAverage returns the mean of the last n scores.
-// If fewer than n scores are available, returns the average of all scores.
-func (s *EvolutionScheduler) recentAverage(n int) float64 {
-	s.scoreMu.Lock()
-	defer s.scoreMu.Unlock()
-
-	if len(s.scores) == 0 {
-		return 0
-	}
-
-	window := n
-	if window > len(s.scores) {
-		window = len(s.scores)
-	}
-
-	recent := s.scores[len(s.scores)-window:]
-	var total float64
-	for _, v := range recent {
-		total += v
-	}
-	return total / float64(len(recent))
-}
-
 // OnAgentEnd handles agent completion events as a callback handler.
 // It checks if an evolution cycle should be triggered and runs the adapter if so.
 //

@@ -17,6 +17,16 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
+// containsString reports whether v is in s.
+func containsString(s []string, v string) bool {
+	for _, e := range s {
+		if e == v {
+			return true
+		}
+	}
+	return false
+}
+
 // ApplyMode controls when graph mutations take effect during execution.
 type ApplyMode int
 
@@ -218,7 +228,11 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 		StartedAt:  time.Now(),
 	}
 
+	// Restore variables: checkpoint values take precedence over workflow defaults.
 	for k, v := range workflow.Variables {
+		execution.Variables[k] = v
+	}
+	for k, v := range ckpt.Variables {
 		execution.Variables[k] = v
 	}
 
@@ -392,6 +406,51 @@ func (e *DynamicExecutor) execLoop(
 						"reason", decision.Reason,
 						"source", decision.Source,
 					)
+					// Apply the routing decision: promote the target step
+					// to execute next, before other unprocessed steps.
+					mu.Lock()
+					order := *currentOrder
+					newOrder := make([]string, 0, len(order))
+					targetAdded := false
+					for _, sid := range order {
+						if processed[sid] || completed[sid] {
+							newOrder = append(newOrder, sid)
+						} else if sid == decision.NextStepID && !targetAdded {
+							newOrder = append(newOrder, sid)
+							targetAdded = true
+						}
+					}
+					for _, sid := range order {
+						if !processed[sid] && !completed[sid] && sid != decision.NextStepID {
+							newOrder = append(newOrder, sid)
+						}
+					}
+					*currentOrder = newOrder
+					mu.Unlock()
+				}
+			}
+
+			// Check LoopPlugin after each completed step.
+			if e.pluginBus != nil && result.Status == StepStatusCompleted {
+				loopPlugins := e.pluginBus.PluginsByCap(runtime.CapLoop)
+				for _, lp := range loopPlugins {
+					if loop, ok := lp.(*runtime.LoopPlugin); ok {
+						if !loop.ShouldContinue(execution.Variables) {
+							slog.Debug("loop exit condition met, skipping remaining steps",
+								"execution_id", execution.ID,
+							)
+							mu.Lock()
+							subSteps := loop.Config().SubStepIDs
+							for _, sid := range *currentOrder {
+								if !processed[sid] && !completed[sid] {
+									if len(subSteps) == 0 || containsString(subSteps, sid) {
+										processed[sid] = true
+									}
+								}
+							}
+							mu.Unlock()
+						}
+					}
 				}
 			}
 
@@ -664,6 +723,15 @@ func (e *DynamicExecutor) runDynamicSteps(
 				mu.Unlock()
 
 				if e.pluginBus != nil {
+					// Call AfterStep before emitting events so plugins can
+					// record/modify state before observers see the result.
+					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
+						slog.Warn("after step hook failed (continuing)",
+							"step_id", sid,
+							"execution_id", execution.ID,
+							"error", err,
+						)
+					}
 					if result.Status == StepStatusFailed {
 						e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepFailed, map[string]any{
 							runtime.PayloadKeyExecutionID: execution.ID,
@@ -679,13 +747,6 @@ func (e *DynamicExecutor) runDynamicSteps(
 							runtime.PayloadKeyStatus:      result.Status,
 							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 						})
-					}
-					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
-						slog.Warn("after step hook failed (continuing)",
-							"step_id", sid,
-							"execution_id", execution.ID,
-							"error", err,
-						)
 					}
 				}
 

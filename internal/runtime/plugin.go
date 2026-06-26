@@ -45,8 +45,7 @@ type RuntimePlugin interface {
 // before and after each step executes.
 type WorkflowHook interface {
 	// BeforeStep is called before a step executes. Returning an error
-	// aborts the step for required hooks; for optional hooks the error
-	// is logged and execution continues.
+	// causes the bus to log the error and continue execution.
 	BeforeStep(ctx context.Context, executionID string, step *Step) error
 
 	// AfterStep is called after a step completes, regardless of success or

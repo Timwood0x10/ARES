@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -103,10 +104,6 @@ func CheckpointKey(executionID string) string {
 	return fmt.Sprintf("checkpoint/%s", executionID)
 }
 
-func checkpointKey(executionID string) string {
-	return CheckpointKey(executionID)
-}
-
 // CheckpointPlugin saves experience checkpoints at key lifecycle points
 // (BeforeStep, AfterStep) and manages accumulated execution state.
 // It implements RuntimePlugin and WorkflowHook.
@@ -115,6 +112,7 @@ type CheckpointPlugin struct {
 	store     CheckpointStore
 	mu        sync.Mutex
 	collector *ExecutionCollector // optional; if set, merged before save
+	bus       EventBus            // optional; if set, emits EventCheckpointSaved
 	// accumulated state across hook calls
 	snapshots map[string]*ExperienceCheckpoint // executionID → checkpoint
 }
@@ -142,14 +140,17 @@ func (p *CheckpointPlugin) Capabilities() []Capability {
 }
 
 // WithCollector sets an execution collector whose data is merged into
-// checkpoints before saving.
+// checkpoints before saving. Thread-safe.
 func (p *CheckpointPlugin) WithCollector(c *ExecutionCollector) *CheckpointPlugin {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.collector = c
 	return p
 }
 
 // Start initializes the checkpoint plugin.
-func (p *CheckpointPlugin) Start(_ context.Context, _ EventBus) error {
+func (p *CheckpointPlugin) Start(_ context.Context, bus EventBus) error {
+	p.bus = bus
 	return nil
 }
 
@@ -253,7 +254,7 @@ func (p *CheckpointPlugin) AfterStep(ctx context.Context, executionID string, re
 	return p.saveLocked(ctx, executionID, ckpt)
 }
 
-// Snapshot returns a copy of the current checkpoint for an execution, or nil.
+// Snapshot returns a deep copy of the current checkpoint for an execution, or nil.
 func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -263,11 +264,35 @@ func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 		return nil
 	}
 	cp := *ckpt
+	// Deep copy slice and map fields to prevent callers from mutating internal state.
+	cp.StepStates = make([]StepStateSnapshot, len(ckpt.StepStates))
+	copy(cp.StepStates, ckpt.StepStates)
+	if ckpt.Variables != nil {
+		cp.Variables = make(map[string]interface{}, len(ckpt.Variables))
+		for k, v := range ckpt.Variables {
+			cp.Variables[k] = v
+		}
+	}
+	if ckpt.OutputStore != nil {
+		cp.OutputStore = make(map[string]string, len(ckpt.OutputStore))
+		for k, v := range ckpt.OutputStore {
+			cp.OutputStore[k] = v
+		}
+	}
+	cp.RouteHistory = append([]RouteEntry(nil), ckpt.RouteHistory...)
+	cp.ToolHistory = append([]ToolEntry(nil), ckpt.ToolHistory...)
+	cp.MemoryHits = append([]MemoryEntry(nil), ckpt.MemoryHits...)
+	cp.InterruptHistory = append([]InterruptEntry(nil), ckpt.InterruptHistory...)
+	cp.LoopHistory = append([]LoopEntry(nil), ckpt.LoopHistory...)
+	cp.ErrorHistory = append([]ErrorEntry(nil), ckpt.ErrorHistory...)
+	cp.ScoringSignals = append([]ScoringSignal(nil), ckpt.ScoringSignals...)
 	return &cp
 }
 
 func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {
-	ckpt.CreatedAt = time.Now()
+	// CreatedAt is set only once (in BeforeStep/AfterStep when the checkpoint
+	// is first created); subsequent saves update the state version but not the
+	// creation timestamp.
 	if p.collector != nil {
 		// Drain the collector so each record is merged exactly once.
 		// Without this, repeated saves append duplicate route/tool/etc.
@@ -279,8 +304,18 @@ func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, c
 	if err != nil {
 		return fmt.Errorf("checkpoint: marshal: %w", err)
 	}
-	if err := p.store.Save(ctx, checkpointKey(executionID), data); err != nil {
+	if err := p.store.Save(ctx, CheckpointKey(executionID), data); err != nil {
 		return fmt.Errorf("checkpoint: save: %w", err)
+	}
+	if p.bus != nil {
+		p.bus.Emit(context.Background(), executionID, EventCheckpointSaved, map[string]any{
+			"execution_id":  executionID,
+			"state_version": ckpt.StateVersion,
+		})
+		slog.Debug("checkpoint saved",
+			"execution_id", executionID,
+			"state_version", ckpt.StateVersion,
+		)
 	}
 	return nil
 }

@@ -142,9 +142,7 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db *sql.DB, s Stra
 		return errors.Wrap(err, "deactivate strategies")
 	}
 	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		// No previously active strategy — this is normal for first deployment.
-	}
+	_ = affected
 
 	insertQ := `INSERT INTO evolution_strategies
 		(id, is_active, name, version, params, parent_id, prompt_template,
