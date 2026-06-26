@@ -1,6 +1,7 @@
 //go:build ignore
 
-// Example usage of Phase 3 (Plugin Tool System) and Phase 4 (Evaluation Framework)
+// Example usage of the ARES Runtime Plugin System (PluginBus, EventBus, WorkflowHook)
+// and the Evaluation Framework.
 package main
 
 import (
@@ -10,68 +11,136 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/eval"
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 func main() {
 	ctx := context.Background()
 
-	fmt.Println("=== Phase 3: Plugin Tool System Example ===")
-	examplePluginSystem()
+	fmt.Println("=== Runtime Plugin System Example ===")
+	examplePluginSystem(ctx)
 
-	fmt.Println("\n=== Phase 4: Evaluation Framework Example ===")
+	fmt.Println("\n=== Evaluation Framework Example ===")
 	exampleEvaluationFramework(ctx)
 }
 
-// examplePluginSystem demonstrates how to use the plugin tool system.
-func examplePluginSystem() {
-	// 1. Create a plugin registry
-	registry := core.NewPluginRegistry()
-	fmt.Println("✓ Created plugin registry")
+// examplePluginSystem demonstrates PluginBus with ObserverPlugin and ToolPlugin,
+// event observation via MemoryEventStore, and direct EventBus subscription.
+func examplePluginSystem(ctx context.Context) {
+	// 1. Create an agent registry with a simple worker agent.
+	registry := engine.NewAgentRegistry()
+	_ = registry.Register("worker", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return &simpleAgent{
+			id: "w", agentType: "worker",
+			fn: func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{Items: []*models.RecommendItem{
+					{Description: "processed: " + fmt.Sprint(input)},
+				}}, nil
+			},
+		}, nil
+	})
 
-	// 2. Register a custom tool factory
-	calculatorFactory := &CalculatorToolFactory{}
-	if err := registry.RegisterFactory(calculatorFactory); err != nil {
-		log.Fatal(err)
+	// 2. Create the runtime plugin bus and register plugins.
+	//
+	// ObserverPlugin: subscribes to all lifecycle events (workflow start/complete,
+	// step start/complete, etc.) and writes them to a MemoryEventStore.
+	eventStore := events.NewMemoryEventStore()
+	observer := runtime.NewObserverPlugin("integration-observer", eventStore)
+
+	// ToolPlugin: records tool invocations during step execution.
+	toolPlugin := runtime.NewToolPlugin("integration-tools")
+
+	bus := runtime.NewPluginBus()
+	if err := bus.Register(observer); err != nil {
+		log.Fatalf("register observer: %v", err)
 	}
-	fmt.Printf("✓ Registered factory: %s\n", calculatorFactory.Name())
-
-	// 3. Load plugins from configuration
-	configs := []core.PluginConfig{
-		{
-			Name:    "my-calculator",
-			Factory: "calculator",
-			Enabled: true,
-			Config:  map[string]interface{}{"precision": 2},
-		},
-		{
-			Name:    "disabled-tool",
-			Factory: "calculator",
-			Enabled: false, // This one won't be loaded
-			Config:  map[string]interface{}{},
-		},
+	if err := bus.Register(toolPlugin); err != nil {
+		log.Fatalf("register tool plugin: %v", err)
 	}
 
-	if err := registry.LoadPlugins(configs); err != nil {
-		log.Fatal(err)
+	if err := bus.Start(ctx); err != nil {
+		log.Fatalf("start plugin bus: %v", err)
 	}
-	fmt.Println("✓ Loaded plugins from config")
+	defer bus.Stop(ctx)
 
-	// 4. Get and use a tool
-	tool, exists := registry.GetTool("my-calculator")
-	if !exists {
-		log.Fatal("tool not found")
+	fmt.Println("✓ Created PluginBus with ObserverPlugin and ToolPlugin")
+
+	// 3. Subscribe to events directly via the EventBus.
+	sub, err := bus.Subscribe(ctx, events.EventFilter{Types: []events.EventType{
+		runtime.EventWorkflowStarted,
+		runtime.EventWorkflowCompleted,
+	}})
+	if err != nil {
+		log.Fatalf("subscribe: %v", err)
 	}
-	fmt.Printf("✓ Got tool: %s - %s\n", tool.Name(), tool.Description())
 
-	// 5. List all loaded plugins
-	plugins := registry.ListPlugins()
-	fmt.Printf("✓ Loaded plugins: %v\n", plugins)
+	// 4. Wire the PluginBus into a DynamicExecutor.
+	executor := engine.NewDynamicExecutor(registry, engine.ApplyAtCheckpoint,
+		engine.WithMaxParallel(1)).WithPluginBus(bus)
 
-	// 6. List all registered factories
-	factories := registry.ListFactories()
-	fmt.Printf("✓ Registered factories: %v\n", factories)
+	// 5. Build a simple 2-step workflow.
+	dag, err := engine.NewMutableDAG([]*engine.Step{
+		{ID: "s1", Name: "Step One", AgentType: "worker", Input: "hello"},
+		{ID: "s2", Name: "Step Two", AgentType: "worker", Input: "world", DependsOn: []string{"s1"}},
+	})
+	if err != nil {
+		log.Fatalf("NewMutableDAG: %v", err)
+	}
+
+	wf := &engine.Workflow{
+		ID:    "integration-demo",
+		Name:  "Integration Demo",
+		Steps: dag.Steps(),
+	}
+
+	// 6. Execute the workflow.
+	result, err := executor.ExecuteDynamic(ctx, wf, "start", dag)
+	if err != nil {
+		log.Fatalf("ExecuteDynamic: %v", err)
+	}
+
+	fmt.Printf("✓ Workflow executed: %s (status=%s, steps=%d)\n",
+		result.ExecutionID, result.Status, len(result.Steps))
+
+	// 7. Read events from the direct EventBus subscription.
+	fmt.Println("\n--- Direct EventBus Subscription ---")
+	select {
+	case evt := <-sub:
+		fmt.Printf("  Event: [%s] %s\n", evt.StreamID, evt.Type)
+	case <-time.After(100 * time.Millisecond):
+		fmt.Println("  No event received (already drained)")
+	}
+
+	// 8. Read all events from the MemoryEventStore (ObserverPlugin).
+	fmt.Println("\n--- Observed Events (MemoryEventStore) ---")
+	evts, err := eventStore.ReadAll(ctx, events.ReadOptions{Direction: events.ReadAscending})
+	if err != nil {
+		log.Printf("read events: %v", err)
+	} else {
+		fmt.Printf("  Total events: %d\n", len(evts))
+		for _, e := range evts {
+			execID, _ := e.Payload[runtime.PayloadKeyExecutionID].(string)
+			fmt.Printf("  [%s] %s (execution=%s)\n", e.StreamID, e.Type, execID)
+		}
+	}
+
+	// 9. Show the PluginBus capabilities.
+	fmt.Println("\n--- PluginBus Capabilities ---")
+	toolPlugins := bus.PluginsByCap(runtime.CapTool)
+	fmt.Printf("  Plugins with CapTool: %d\n", len(toolPlugins))
+	for _, p := range toolPlugins {
+		fmt.Printf("    - %s\n", p.Name())
+	}
+	observerPlugins := bus.PluginsByCap(runtime.CapObserver)
+	fmt.Printf("  Plugins with CapObserver: %d\n", len(observerPlugins))
+	for _, p := range observerPlugins {
+		fmt.Printf("    - %s\n", p.Name())
+	}
 }
 
 // exampleEvaluationFramework demonstrates how to use the evaluation framework.
@@ -155,52 +224,27 @@ func exampleEvaluationFramework(ctx context.Context) {
 	fmt.Printf("JSON report size: %d bytes\n", len(jsonReport))
 }
 
-// CalculatorToolFactory is an example tool factory.
-type CalculatorToolFactory struct{}
-
-func (f *CalculatorToolFactory) Name() string {
-	return "calculator"
+// simpleAgent implements the base.Agent interface.
+type simpleAgent struct {
+	id        string
+	agentType string
+	fn        func(ctx context.Context, input any) (any, error)
 }
 
-func (f *CalculatorToolFactory) Description() string {
-	return "A simple calculator tool for arithmetic operations"
-}
-
-func (f *CalculatorToolFactory) Create(config map[string]interface{}) (core.Tool, error) {
-	return &CalculatorTool{precision: 2}, nil
-}
-
-func (f *CalculatorToolFactory) ValidateConfig(config map[string]interface{}) error {
-	return nil // Accept any config
-}
-
-// CalculatorTool is an example tool.
-type CalculatorTool struct {
-	precision int
-}
-
-func (t *CalculatorTool) Name() string                    { return "calculator" }
-func (t *CalculatorTool) Description() string             { return "Performs arithmetic calculations" }
-func (t *CalculatorTool) Category() core.ToolCategory     { return core.CategoryCore }
-func (t *CalculatorTool) Capabilities() []core.Capability { return nil }
-func (t *CalculatorTool) Parameters() *core.ParameterSchema {
-	return &core.ParameterSchema{
-		Type: "object",
-		Properties: map[string]*core.Parameter{
-			"expression": {Type: "string", Description: "Mathematical expression to evaluate"},
-		},
-		Required: []string{"expression"},
-	}
-}
-func (t *CalculatorTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	return core.NewResult(true, "42"), nil
+func (a *simpleAgent) ID() string                                          { return a.id }
+func (a *simpleAgent) Type() models.AgentType                              { return models.AgentType(a.agentType) }
+func (a *simpleAgent) Status() models.AgentStatus                          { return models.AgentStatusReady }
+func (a *simpleAgent) Start(ctx context.Context) error                     { return nil }
+func (a *simpleAgent) Stop(ctx context.Context) error                      { return nil }
+func (a *simpleAgent) Process(ctx context.Context, input any) (any, error) { return a.fn(ctx, input) }
+func (a *simpleAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	return nil, nil
 }
 
 // MockAgentExecutor is a mock agent executor for demo.
 type MockAgentExecutor struct{}
 
 func (e *MockAgentExecutor) Execute(ctx context.Context, input string) (output string, toolsUsed []string, tokensUsed int, err error) {
-	// Simulate agent execution
 	time.Sleep(100 * time.Millisecond)
 	return "This is a mock response about AI and technology analysis.", []string{"web_search", "analyzer"}, 150, nil
 }

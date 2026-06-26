@@ -1,4 +1,5 @@
-// Package main compares ApplyAtCheckpoint vs ApplyImmediate in DynamicExecutor.
+// Package main compares ApplyAtCheckpoint vs ApplyImmediate in DynamicExecutor,
+// demonstrating the runtime plugin system via PluginBus with ObserverPlugin.
 package main
 
 import (
@@ -10,6 +11,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -122,7 +125,23 @@ func runDemo(mode engine.ApplyMode) {
 		}, nil
 	})
 
-	executor := engine.NewDynamicExecutor(registry, mode, engine.WithMaxParallel(1))
+	// — Runtime Plugin System —
+	// Create an in-memory event store and observer plugin to capture workflow
+	// lifecycle events (workflow.started, step.completed, workflow.completed, etc.).
+	eventStore := events.NewMemoryEventStore()
+	observer := runtime.NewObserverPlugin("demo-observer", eventStore)
+
+	bus := runtime.NewPluginBus()
+	if err := bus.Register(observer); err != nil {
+		log.Fatalf("register observer: %v", err)
+	}
+	if err := bus.Start(ctx); err != nil {
+		log.Fatalf("start plugin bus: %v", err)
+	}
+	defer bus.Stop(ctx)
+
+	executor := engine.NewDynamicExecutor(registry, mode, engine.WithMaxParallel(1)).
+		WithPluginBus(bus)
 
 	result, err := executor.ExecuteDynamic(ctx, wf, "start", dag)
 	if err != nil {
@@ -132,6 +151,17 @@ func runDemo(mode engine.ApplyMode) {
 		fmt.Printf("  Status: %s, steps: %d\n", result.Status, len(result.Steps))
 		for _, s := range result.Steps {
 			fmt.Printf("    %q: status=%s output=%q\n", s.StepID, s.Status, s.Output)
+		}
+	}
+
+	// Print observed plugin events.
+	evts, err := eventStore.ReadAll(ctx, events.ReadOptions{Direction: events.ReadAscending})
+	if err != nil {
+		log.Printf("read events: %v", err)
+	} else {
+		fmt.Printf("  PluginBus events observed: %d\n", len(evts))
+		for _, e := range evts {
+			fmt.Printf("    [%s] %s\n", e.StreamID, e.Type)
 		}
 	}
 }

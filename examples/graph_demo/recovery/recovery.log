@@ -1,3 +1,4 @@
+2026/06/26 09:48:46 INFO runtime: plugin started plugin=demo-checkpoint
 Recovery triggered for step "s1" (error: step failed)
 Workflow status: completed
 Steps executed: 3
@@ -5,4 +6,10 @@ Steps executed: 3
   Step "s1_recovery": status=completed output="success: retry_s1"
   Step "s2": status=completed output="success: process"
 Recovery events: [step.failed step.recovery.started step.recovery.completed]
+Checkpoint saved: 551 bytes
+Checkpoint state version: 6
+Checkpoint step states: 3
+  Step "s1": status=failed output=""
+  Step "s1_recovery": status=completed output="success: retry_s1"
+  Step "s2": status=completed output="success: process"
 Recovery example completed successfully!
