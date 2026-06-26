@@ -15,10 +15,21 @@ evolution:
 # LLM scoring configuration for real-time strategy evaluation.
 # When configured, the evolution system uses an actual LLM API to score
 # candidate strategies instead of the deterministic fallback scorer.
+#
+# Supports failover: when the primary provider returns HTTP 429 (rate limited),
+# it is cooled down for 60 seconds and the next fallback is tried.
 llm:
-  api_key: "YOUR_KEY"
-  model: "YOUR_MODEL"
-  base_url: "YOUR_BASE_URL"
-  temperature: 0.3
-  max_tokens: 500
-  timeout_seconds: 30
+  primary:
+    api_key: "YOUR_KEY"
+    model: "YOUR_MODEL"
+    base_url: "YOUR_BASE_URL"
+    temperature: 0.3
+    max_tokens: 500
+    timeout_seconds: 30
+  fallbacks:
+    - api_key: "YOUR_FALLBACK_KEY"
+      model: "YOUR_FALLBACK_MODEL"
+      base_url: "YOUR_FALLBACK_BASE_URL"
+      temperature: 0.3
+      max_tokens: 500
+      timeout_seconds: 30

@@ -49,21 +49,33 @@ This document provides a thorough, honest technical comparison of four mainstrea
 
 #### LangGraph — Directed Graph with Cycles
 
-```
-START → NodeA → NodeB → Condition
-                     ↘    ↓
-                      NodeC (can loop back to NodeA)
+#### LangGraph — Directed Cyclic Graph
+
+```mermaid
+flowchart LR
+    START --> NodeA
+    NodeA --> NodeB
+    NodeB --> Condition{条件判断}
+    Condition -->|通过| NodeC
+    NodeC -.->|可循环回 NodeA| NodeA
+    Condition -->|不通过| END
 ```
 
 LangGraph's core is a **directed graph**. Nodes are processing steps, edges are control flow, supporting **conditional branches** and **cycles**. The checkpointing mechanism allows pausing and resuming at any node.
 
 #### CrewAI — Team Collaboration Pipeline
 
-```
-Crew → Process → [Sequential] Task1 → Task2 → Task3
-               → [Hierarchical] Manager → Agent1
-                                        → Agent2
-                                        → Agent3
+```mermaid
+flowchart TD
+    UserInput --> Crew
+    Crew --> Process{Process Type}
+    Process -->|Sequential| T1[Task1] --> T2[Task2] --> T3[Task3]
+    Process -->|Hierarchical| Manager
+    Manager --> Agent1
+    Manager --> Agent2
+    Manager --> Agent3
+    Process -->|Flow| Start["@start"]
+    Start --> Listen["@listen"]
 ```
 
 CrewAI organizes around "teams". A Crew defines Agent sets and Process types:
@@ -73,39 +85,63 @@ CrewAI organizes around "teams". A Crew defines Agent sets and Process types:
 
 #### AgentScope — Distributed Message Passing
 
-```
-User → Agent A → Service Hub → Agent B
-            ↓                    ↓
-       Pipeline/Parallel    Distributed Resources
+```mermaid
+flowchart LR
+    User --> AgentA[Agent A]
+    AgentA --> ServiceHub[Service Hub]
+    ServiceHub --> AgentB[Agent B]
+    AgentA --> Pipeline[Pipeline/Parallel]
+    AgentB --> Distributed[Distributed Resources]
 ```
 
 AgentScope uses Service Hub for message routing and decoupling between agents. Supports single-node multi-process and distributed multi-node deployments. Built-in Pipeline pattern for DAG execution.
 
 #### GoAgent — Leader-Sub with AHP
 
-```
-                      ┌──────────────────────────┐
-                      │     GA/Autonomous         │
-                      │   Evolution (ares_evol.)  │
-                      └──────────────────────────┘
-                                  │ (optimized config pushed at checkpoint)
-                                  ↓
-User Input → Leader Agent → Parser → Planner → Dispatcher
-                                                    ↓
-            ┌───────────────────────────────────────┤
-            ↓                    ↓                     ↓
-       Sub-Agent A          Sub-Agent B           Sub-Agent C
-            ↓                    ↓                     ↓
-       AHP RESULT → Aggregator → Merged Result → User
-            ┌───────────────────────┐
-        Heartbeat Monitor    Dead Letter Queue
+```mermaid
+flowchart TB
+    subgraph GA[GA / Autonomous Evolution]
+        Evolution[ares_evolution<br/>GA Pipeline]
+    end
 
-    ┌──────────────────┐   ┌──────────────────────┐
-    │  Mutable DAG     │   │  Chaos Engineering    │
-    │  (live mutation) │   │  (ares_arena fault    │
-    │  5 ops + BFS     │   │   injection: 13 types)│
-    │  cycle detection │   │  Survival/Scenario    │
-    └──────────────────┘   └──────────────────────┘
+    Evolution -->|optimized config at checkpoint| Leader
+
+    subgraph Core[Leader-Sub Core]
+        direction TB
+        UserInput[User Input] --> Leader[Leader Agent]
+        Leader --> Parser[Parser]
+        Parser --> Planner[Planner]
+        Planner --> Dispatcher[Dispatcher]
+
+        Dispatcher --> SubA[Sub-Agent A]
+        Dispatcher --> SubB[Sub-Agent B]
+        Dispatcher --> SubC[Sub-Agent C]
+
+        SubA --> Agg[Aggregator]
+        SubB --> Agg
+        SubC --> Agg
+        Agg --> Merged[Merged Result] --> UserOutput[User]
+    end
+
+    subgraph Reliability[Reliability Layer]
+        Heartbeat[Heartbeat Monitor]
+        DLQ[Dead Letter Queue]
+    end
+
+    subgraph DAG[Mutable DAG Engine]
+        MutOps[AddNode / RemoveNode<br/>AddEdge / RemoveEdge / ReplaceNode]
+        BFS[BFS Cycle Detection]
+    end
+
+    subgraph Chaos[Chaos Engineering]
+        Faults[13 Fault Types<br/>ares_arena]
+        Survival[Survival / Scenario Tests]
+    end
+
+    Leader --- Heartbeat
+    Leader --- DLQ
+    Core --- DAG
+    Core --- Chaos
 ```
 
 GoAgent uses a Leader-Sub architecture communicating via the AHP (Agent Heartbeat Protocol). The Leader handles planning, dispatching, and aggregation; Sub-Agents execute tasks in parallel.
@@ -326,11 +362,15 @@ GoAgent's AHP protocol is the **only protocol-level communication guarantee** am
 
 GoAgent's automated distillation pipeline is a unique differentiator:
 
-```
-Conversation → Step 1: ExtractExperiences → Step 2: Classify + Score
-    → Step 3: Top-N Filter → Step 4: Embed + Conflict Detection
-    → Step 5: Top-N Filter → Step 6: Enforce Cap 5000/tenant
-    → PostgreSQL + pgvector
+```mermaid
+flowchart LR
+    Conv[Conversation] --> S1[Step 1: ExtractExperiences]
+    S1 --> S2[Step 2: Classify + Score]
+    S2 --> S3[Step 3: Top-N Filter]
+    S3 --> S4[Step 4: Embed + Conflict Detection]
+    S4 --> S5[Step 5: Top-N Filter]
+    S5 --> S6[Step 6: Enforce Cap 5000/tenant]
+    S6 --> DB[(PostgreSQL + pgvector)]
 ```
 
 **Step 2 Details**: SecurityFilter → NoiseFilter → Classifier (Profile/Interaction/Preference/Knowledge) → Scorer (base 0.4 + keywords + type + length)
@@ -356,10 +396,12 @@ GoAgent is the **only framework** with a built-in Genetic Algorithm (GA) pipelin
 
 #### Selection: TournamentSelection
 
-```
-Population → Random k=3 Sample → Fisher-Yates Partial Shuffle
-                                  → Select fittest as ParentA
-                                  → Select second fittest as ParentB
+```mermaid
+flowchart LR
+    Pop[Population] --> Sample[Random k=3 Sample]
+    Sample --> Shuffle[Fisher-Yates Partial Shuffle]
+    Shuffle --> PA[Select fittest as ParentA]
+    Shuffle --> PB[Select second fittest as ParentB]
 ```
 
 K=3 tournament with Fisher-Yates partial shuffle (stops after `k*selectCount` iterations for O(k) efficiency).
@@ -391,12 +433,19 @@ ExplorationFloor = 0.03 (minimum probability for each mutation type)
 
 #### Scoring: TieredScorer (3-Level)
 
-```
-Level 1: Cache → XXH3 64-bit hash lookup (O(1), zero LLM cost)
-  ↓ miss
-Level 2: Heuristic → Quality + Diversity + Consistency rules (sub-ms)
-  ↓ if score < threshold
-Level 3: LLM → LLM-based deep evaluation (costly, gated by BudgetManager)
+```mermaid
+flowchart TD
+    L1[Level 1: Cache] -->|XXH3 64-bit hash| Hit1{Hit?}
+    Hit1 -->|Yes| Return1[Return cached score]
+    Hit1 -->|Miss| L2[Level 2: Heuristic]
+
+    L2 --> Heuristic[Quality + Diversity + Consistency]
+    Heuristic --> Check{score < threshold?}
+    Check -->|No| Return2[Return heuristic score]
+    Check -->|Yes| L3[Level 3: LLM]
+
+    L3 --> LLM[LLM-based deep evaluation]
+    LLM --> Budget{BudgetManager gated}
 ```
 
 **MemoryAwareScorer** formula:
@@ -406,11 +455,19 @@ totalScore = 0.6 × quality + 0.2 × memoryBonus - 0.1 × costPenalty - 0.05 × 
 
 #### DreamCycle (Two-Phase Evaluation)
 
-```
-Phase 1 (Quick Reject): Run up to 5 trials, if winRate < 0.3 → reject early
-Phase 2 (Full Evaluation): Run up to 50 trials
-                           → If winRate >= MinWinRate(0.55) → accept
-                           → If score improvement > 5% → promote to new elite
+```mermaid
+flowchart LR
+    P1[Phase 1: Quick Reject] --> Trials1[Up to 5 trials]
+    Trials1 --> Win1{winRate < 0.3?}
+    Win1 -->|Yes| Reject[Reject early]
+    Win1 -->|No| P2[Phase 2: Full Evaluation]
+
+    P2 --> Trials2[Up to 50 trials]
+    Trials2 --> Win2{winRate >= 0.55?}
+    Win2 -->|Yes| Accept[Accept]
+    Win2 -->|No| CheckImprove{score improvement > 5%?}
+    CheckImprove -->|Yes| Promote[Promote to new elite]
+    CheckImprove -->|No| Reject2[Reject]
 ```
 
 #### EvolutionGuardrails
@@ -438,10 +495,10 @@ Phase 2 (Full Evaluation): Run up to 50 trials
 | **Retry** | None built-in | `max_retry_limit=2` | Basic retry | 3x exponential backoff |
 | **Timeout** | None built-in | `max_execution_time` | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) |
 | **Output Validation** | None built-in | `output_pydantic` + Guardrails | None built-in | Schema Validator |
-| **Fallback** | Fallbacks param | None built-in | None built-in | FallbackClient (Cache/Keyword/Error) |
+| **Fallback** | Fallbacks param | None built-in | None built-in | FailoverClient (multi-provider + rate-limit cooldown) |
 | **Circuit Breaker** | Not supported | Not supported | Not supported | 3-state FSM (Closed/Open/HalfOpen) |
 | **Dead Letter Queue** | Not supported | Not supported | Not supported | DLQ + DLQProcessor |
-| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | Not supported (TODO) |
+| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore (crash-resilient) |
 | **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes |
 
 ### 7.2 GoAgent Circuit Breaker
@@ -468,7 +525,7 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 ```go
 func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
     for attempt := 0; attempt < e.maxRetries; attempt++ {
-        result, err := e.llmClient.Call(ctx, task.Prompt)
+        result, err := e.llmClient.Generate(ctx, task.Prompt)
         if err != nil { continue }
 
         if err := e.validator.Validate(result); err != nil {
@@ -556,31 +613,37 @@ scenario:
 
 ### 8.2 GoAgent Protection Stack
 
-```
-┌──────────────────────────────────────────────┐
-│         Chaos Engineering                     │
-│  13 Fault Types | Survival Mode | Scenario   │
-│  Kill/Pause/Slow/Partition/Timeout/Corrupt   │
-│  → ResilienceScore | MetricsCollector        │
-├──────────────────────────────────────────────┤
-│            Resource Controls                  │
-│  MaxSteps=10 | MaxIterations=3              │
-│  MaxLLMCalls=50 | MaxLoopDuration=10min     │
-├──────────────────────────────────────────────┤
-│            Timeout Controls                   │
-│  TaskTimeout=5min | DispatchTimeout=2min    │
-│  AggregationTimeout=1min                    │
-│  LLMRequest=120s | DBQuery=30s              │
-│  VectorSearch=10s                           │
-├──────────────────────────────────────────────┤
-│            Reliability Layer                  │
-│  CircuitBreaker 3-state | RateLimiter       │
-│  DeadLetterQueue 10000 | Heartbeat 5s/30s  │
-├──────────────────────────────────────────────┤
-│            Security Layer                     │
-│  PII Redaction | SQL Injection Prevention   │
-│  Multi-tenant Isolation SET LOCAL           │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Chaos[Chaos Engineering]
+        ChaosHeader["13 Fault Types | Survival Mode | Scenario"]
+        ChaosTypes["Kill / Pause / Slow / Partition<br/>Timeout / Corrupt"]
+        ChaosResult["→ ResilienceScore | MetricsCollector"]
+    end
+
+    subgraph Resource[Resource Controls]
+        MaxSteps["MaxSteps=10 | MaxIterations=3"]
+        MaxCalls["MaxLLMCalls=50 | MaxLoopDuration=10min"]
+    end
+
+    subgraph Timeout[Timeout Controls]
+        TaskTimeout["TaskTimeout=5min | DispatchTimeout=2min"]
+        AggTimeout["AggregationTimeout=1min"]
+        LLMTimeout["LLMRequest=120s | DBQuery=30s"]
+        VecTimeout["VectorSearch=10s"]
+    end
+
+    subgraph Reliability[Reliability Layer]
+        CB["CircuitBreaker 3-state | RateLimiter"]
+        DLQ["DeadLetterQueue 10000 | Heartbeat 5s/30s"]
+    end
+
+    subgraph Security[Security Layer]
+        PII["PII Redaction | SQL Injection Prevention"]
+        MT["Multi-tenant Isolation SET LOCAL"]
+    end
+
+    Chaos --> Resource --> Timeout --> Reliability --> Security
 ```
 
 ### 8.3 Observability
@@ -687,32 +750,36 @@ scenario:
 
 ### Decision Tree
 
-```
-What do you need?
-│
-├─ Complex state machine / cycles / checkpoint recovery?
-│   └─ LangGraph
-│
-├─ Quick prototype of team collaboration scenarios?
-│   └─ CrewAI
-│
-├─ Alibaba ecosystem / distributed deployment?
-│   └─ AgentScope
-│
-├─ High concurrency / multi-tenancy / production reliability?
-│   └─ GoAgent
-│
-├─ Chaos Engineering / fault injection testing?
-│   └─ GoAgent (only framework with built-in Chaos Engineering)
-│
-├─ Self-improving / autonomous evolution of agents?
-│   └─ GoAgent (only framework with GA pipeline)
-│
-├─ Runtime DAG mutation / live graph editing?
-│   └─ GoAgent (only framework with MutableDAG engine)
-│
-└─ Maximum ecosystem and flexibility?
-    └─ LangChain/LangGraph
+```mermaid
+flowchart TD
+    Start[What do you need?] --> Q1{Complex state machine / cycles / checkpoint?}
+    Q1 -->|Yes| LangGraph[LangGraph]
+
+    Start --> Q2{Quick prototype of / team collaboration?}
+    Q2 -->|Yes| CrewAI[CrewAI]
+
+    Start --> Q3{Alibaba ecosystem / distributed deployment?}
+    Q3 -->|Yes| AgentScope[AgentScope]
+
+    Start --> Q4{High concurrency / multi-tenancy production?}
+    Q4 -->|Yes| GoAgent1[GoAgent]
+
+    Start --> Q5{Chaos Engineering / fault injection?}
+    Q5 -->|Yes| GoAgent2[GoAgent - only framework]
+
+    Start --> Q6{Self-improving / autonomous evolution?}
+    Q6 -->|Yes| GoAgent3[GoAgent - only GA pipeline]
+
+    Start --> Q7{Runtime DAG mutation / live graph editing?}
+    Q7 -->|Yes| GoAgent4[GoAgent - only MutableDAG]
+
+    Start --> Q8{Maximum ecosystem / and flexibility?}
+    Q8 -->|Yes| LangChain[LangChain/LangGraph]
+
+    style GoAgent1 fill:#e1f5fe
+    style GoAgent2 fill:#e1f5fe
+    style GoAgent3 fill:#e1f5fe
+    style GoAgent4 fill:#e1f5fe
 ```
 
 ### One-Line Positioning

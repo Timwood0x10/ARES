@@ -429,7 +429,26 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 //
 // Post-evolution, it prints an Evolution Insight Report showing trajectory,
 // mutation analysis, genealogy tree, and key learnings.
-func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
+// ────────────────────────────────────────────────────────────────────────────
+// Scenario 6: Pure Autonomous Evolution (Control Group A)
+//
+// Uses ALL GA capabilities but with deterministic scoring only.
+// No LLM interference — the GA finds optimal strategies on its own.
+//
+// GA features used:
+//   - Tournament selection (size=3)
+//   - Elite preservation (top 3)
+//   - Adaptive mutation rate (0.05–0.5)
+//   - Stagnation detection (5 gen reset)
+//   - Diversity threshold (0.2)
+//   - Fitness sharing
+//   - Breeding pool ratio (0.5)
+//   - Multi-point crossover with half-split prompt mode
+//   - Param ranges for constrained mutation
+//   - History tracking
+// ────────────────────────────────────────────────────────────────────────────
+
+func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.EvolutionResult {
 	start := time.Now()
 	defer func() {
 		slog.InfoContext(ctx, "Scenario completed",
@@ -440,88 +459,174 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 
 	sep(cfg.Title)
 
-	parent := &apievol.Strategy{
-		ID:             cfg.BaseID,
-		Version:        1,
-		Params:         map[string]any{"temperature": 0.7, "top_k": 40.0},
-		PromptTemplate: "helpful",
-	}
-
-	// Build deterministic fallback scorer (used for first 12 generations).
-	// Fully deterministic (no random components). Evaluates strategy params on:
-	//   - temperature: lower is better (0.0→+25, 1.0→+0)
-	//   - top_k: optimal near 30 (penalty dist²/10)
-	//   - prompt template: "precise" > "careful" > "creative"
-	deterministicScorer := func(agent *apievol.Strategy) float64 {
-		return apievol.DeterministicScore(agent)
-	}
-
-	// Build LLM scorer (used for last 3 generations).
-	// When LLM config is unavailable, falls back to deterministic scorer for all gens.
-	var llmScorerFn apievol.ScorerFunc
-	if llmCfg, err := loadLLMConfig(); err == nil && llmCfg != nil {
-		client := newHTTPLLMClient(*llmCfg)
-		llmScorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
-			Client:     client,
-			Model:      llmCfg.Model,
-			Seed:       llmCfg.Seed,
-			NumSamples: 3,
-			Fallback:   deterministicScorer,
-		})
-		if err == nil {
-			llmScorerFn = llmScorer.AsScorerFunc()
-			slog.InfoContext(ctx, "LLM scorer ready for final validation",
-				"model", llmCfg.Model,
-				"switch_gen", cfg.NGen-3,
-			)
-		}
-	}
-
-	// Hybrid scorer: deterministic for first (N-3) gens, LLM for last 3.
-	// If LLM scorer isn't available, uses deterministic for all generations.
-	hybridGen := cfg.NGen - 3
-	if hybridGen < 0 {
-		hybridGen = 0
-	}
-	phaseScorer := newPhaseScorer(deterministicScorer, llmScorerFn, hybridGen, cfg.PopSize)
-	scorerFn := phaseScorer.AsScorerFunc()
-
-	svc, err := apievol.NewService(&apievol.SystemConfig{
-		BaseStrategy:    parent,
-		PopulationSize:  cfg.PopSize,
-		EliteCount:      cfg.EliteCount,
-		SurvivalRate:    cfg.SurvRate,
-		MutationRate:    cfg.MutRate,
-		MinMutationRate: cfg.MinMutRate,
-		MaxMutationRate: cfg.MaxMutRate,
-		Generations:     cfg.NGen,
-		Seed:            42,
-		PromptPool:      []string{"careful", "creative", "precise"},
-		EnableWiredMode: cfg.Wired,
-		Scorer:          scorerFn,
-	})
+	parent := defaultParent(cfg.BaseID)
+	svc, err := apievol.NewService(fullGAConfig(parent, cfg, false, nil))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
-		return
+		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "GA configuration",
+	slog.InfoContext(ctx, "Pure autonomous evolution — no LLM",
 		"pop_size", cfg.PopSize,
-		"elite_count", cfg.EliteCount,
-		"survival_rate", cfg.SurvRate,
-		"mutation_rate", cfg.MutRate,
 		"generations", cfg.NGen,
-		"wired_mode", cfg.Wired,
-		"scorer", "parameter-aware(temp+top_k+prompt)",
+		"scorer", "deterministic",
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
 	if err != nil {
 		slog.ErrorContext(ctx, "Evolution failed", "error", err)
-		return
+		return nil
 	}
 
+	printResult(result)
+	printEvolutionInsightReport(cfg.Title, result, nil, parent)
+	return result
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Scenario 7: LLM-Guided Evolution (Control Group B)
+//
+// Same GA capabilities as Scenario 6, but with LLM scoring injected
+// INTO the evolution loop (not just post-validation). The LLM acts as
+// an oracle that evaluates strategy quality, guiding the GA toward
+// solutions that are not only parameter-optimal but also semantically good.
+//
+// The LLM scorer has a deterministic fallback — if the LLM API is down,
+// evolution continues with deterministic scoring automatically.
+// ────────────────────────────────────────────────────────────────────────────
+
+func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.EvolutionResult {
+	start := time.Now()
+	defer func() {
+		slog.InfoContext(ctx, "Scenario completed",
+			"scenario", cfg.Title,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}()
+
+	sep(cfg.Title)
+
+	parent := defaultParent(cfg.BaseID)
+
+	// Build LLM scorer for the evolution loop.
+	llmScorer := buildLLMScorer(ctx)
+	if llmScorer == nil {
+		slog.WarnContext(ctx, "LLM unavailable, falling back to deterministic scoring")
+		llmScorer = func(s *apievol.Strategy) float64 {
+			return apievol.DeterministicScore(s)
+		}
+	}
+
+	svc, err := apievol.NewService(fullGAConfig(parent, cfg, true, llmScorer))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
+		return nil
+	}
+	defer svc.Shutdown()
+
+	slog.InfoContext(ctx, "LLM-guided evolution",
+		"pop_size", cfg.PopSize,
+		"generations", cfg.NGen,
+		"scorer", "llm+deterministic-fallback",
+	)
+
+	result, err := svc.Evolve(ctx, cfg.NGen)
+	if err != nil {
+		slog.ErrorContext(ctx, "LLM evolution failed", "error", err)
+		return nil
+	}
+
+	lineages, _ := svc.Lineages()
+	printResult(result)
+	printEvolutionInsightReport(cfg.Title, result, lineages, parent)
+	return result
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// GA Configuration — ALL features enabled
+// ────────────────────────────────────────────────────────────────────────────
+
+// fullGAConfig returns a SystemConfig with ALL GA capabilities enabled.
+// wired=true uses WiredEvolutionSystem (scheduler, guardrails, genealogy).
+// scorer=nil means deterministic-only.
+func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievol.ScorerFunc) *apievol.SystemConfig {
+	if scorer == nil {
+		scorer = func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) }
+	}
+	return &apievol.SystemConfig{
+		BaseStrategy:           parent,
+		PopulationSize:         cfg.PopSize,
+		EliteCount:             3,                // preserve top 3 unchanged
+		SurvivalRate:           cfg.SurvRate,      // top 60% survive
+		MutationRate:           0.3,               // base mutation rate
+		MinMutationRate:        0.05,              // adaptive floor
+		MaxMutationRate:        0.5,               // adaptive ceiling
+		MaxStagnantGenerations: 5,                 // reset bottom 1/3 after 5 stale gens
+		DiversityThreshold:     0.2,               // boost mutation when diversity drops
+		BreedingPoolRatio:      0.5,               // breed from top 50% of survivors
+		PromptCrossoverMode:    1,                 // half-sentence split for prompts
+		Generations:            cfg.NGen,
+		Seed:                   42,                // deterministic for reproducibility
+		PromptPool:             []string{"careful", "creative", "precise"},
+		EnableWiredMode:        wired,
+		Scorer:                 scorer,
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// LLM Scorer Builder
+// ────────────────────────────────────────────────────────────────────────────
+
+// buildLLMScorer creates an LLM scorer for the evolution loop.
+// Returns nil if LLM config is unavailable.
+func buildLLMScorer(ctx context.Context) apievol.ScorerFunc {
+	llmCfg, err := loadLLMConfig()
+	if err != nil || llmCfg == nil {
+		return nil
+	}
+
+	client := newFailoverLLMClient(llmCfg.Primary, llmCfg.Fallbacks)
+	scorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
+		Client:     client,
+		Model:      llmCfg.Primary.Model,
+		NumSamples: 1,
+		Fallback:   func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) },
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "LLM scorer creation failed", "error", err)
+		return nil
+	}
+
+	slog.InfoContext(ctx, "LLM scorer ready for evolution loop",
+		"model", llmCfg.Primary.Model,
+		"fallback", "deterministic",
+	)
+	return scorer.AsScorerFunc()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+// defaultParent returns a shared initial strategy for both scenarios.
+func defaultParent(id string) *apievol.Strategy {
+	return &apievol.Strategy{
+		ID:      id,
+		Version: 1,
+		Params: map[string]any{
+			"temperature":       0.7,
+			"top_k":             40.0,
+			"max_tokens":        2048.0,
+			"frequency_penalty": 0.0,
+			"presence_penalty":  0.0,
+		},
+		PromptTemplate: "helpful",
+	}
+}
+
+// printResult prints the evolution stats table.
+func printResult(result *apievol.EvolutionResult) {
 	var rows [][]string
 	for i, st := range result.Stats {
 		rows = append(rows, []string{
@@ -534,60 +639,61 @@ func runMultiGenGA(ctx context.Context, _ *DemoKit, cfg GACfg) {
 	tbl([]string{"Gen", "Best", "Avg", "Worst"}, rows)
 
 	if bst := result.BestStrategy; bst != nil {
-		slog.InfoContext(ctx, "Best strategy found",
+		slog.Info("Best strategy found",
 			"id", bst.ID,
 			"version", bst.Version,
 			"score", bst.Score,
 		)
-		for k, v := range bst.Params {
-			mark := ""
-			if fmt.Sprintf("%v", v) != fmt.Sprintf("%v", parent.Params[k]) {
-				mark = "<-M"
-			}
-			slog.DebugContext(ctx, "Best strategy param",
-				"key", k,
-				"value", v,
-				"mutated", mark,
-			)
-		}
+	}
+}
+
+// compareResults prints a side-by-side comparison of two evolution results.
+func compareResults(resultA, resultB *apievol.EvolutionResult, labelA, labelB string) {
+	fmt.Println()
+	fmt.Println("  📊 Control Group Comparison")
+	fmt.Println("  ═══════════════════════════════════════════════════")
+
+	bestA := resultA.BestStrategy
+	bestB := resultB.BestStrategy
+	if bestA == nil || bestB == nil {
+		fmt.Println("  (comparison unavailable — missing results)")
+		return
 	}
 
-	lineages, _ := svc.Lineages()
-	slog.InfoContext(ctx, "Genealogy records", "count", len(lineages))
-	for i := 0; i < len(lineages) && i < 5; i++ {
-		e := lineages[i]
-		cid := e.ChildID
-		if len(cid) > 12 {
-			cid = cid[:12]
+	fmt.Printf("  %-25s %25s\n", labelA, labelB)
+	fmt.Printf("  %-25s %25s\n", "─────────────────────────", "─────────────────────────")
+	fmt.Printf("  Best Score:    %8.2f         Best Score:    %8.2f\n", bestA.Score, bestB.Score)
+	fmt.Printf("  Generations:   %8d         Generations:   %8d\n", resultA.TotalGens, resultB.TotalGens)
+
+	// Parameter comparison.
+	for _, key := range []string{"temperature", "top_k", "max_tokens"} {
+		va := fmt.Sprintf("%v", bestA.Params[key])
+		vb := fmt.Sprintf("%v", bestB.Params[key])
+		mark := ""
+		if va != vb {
+			mark = " ← DIFF"
 		}
-		slog.DebugContext(ctx, "Genealogy entry",
-			"index", i,
-			"parent_id", safeTruncate(e.ParentID, 12),
-			"child_id", cid,
-			"mutation_type", e.MutationType,
-		)
+		fmt.Printf("  %-14s %10s         %-14s %10s%s\n", key+":", va, key+":", vb, mark)
 	}
 
-	slog.InfoContext(ctx, "GA evolution summary",
-		"note", "Elite + crossover + mutation = adaptive strategies",
-	)
-
-	// ── Evolution Insight Report ──────────────────────────────
-	printEvolutionInsightReport(cfg.Title, result, lineages, parent)
-
-	// Persist best strategy for cross-run memory.
-	if bst := result.BestStrategy; bst != nil {
-		bstPath := "evolution_best.json"
-		if err := svc.SaveBestStrategy(bstPath); err != nil {
-			slog.WarnContext(ctx, "failed to save best strategy", "error", err)
-		} else {
-			if loaded, err := apievol.LoadBestStrategy(bstPath); err == nil {
-				slog.InfoContext(ctx, "best strategy persisted",
-					"path", bstPath,
-					"id", loaded.ID,
-					"score", loaded.Score,
-				)
-			}
-		}
+	pa := bestA.PromptTemplate
+	pb := bestB.PromptTemplate
+	mark := ""
+	if pa != pb {
+		mark = " ← DIFF"
 	}
+	fmt.Printf("  %-14s %10s         %-14s %10s%s\n", "prompt:", pa, "prompt:", pb, mark)
+
+	// Winner announcement.
+	fmt.Println()
+	if bestA.Score > bestB.Score {
+		fmt.Printf("  🏆 Winner: %s (+%.2f points)\n", labelA, bestA.Score-bestB.Score)
+	} else if bestB.Score > bestA.Score {
+		fmt.Printf("  🏆 Winner: %s (+%.2f points)\n", labelB, bestB.Score-bestA.Score)
+	} else {
+		fmt.Println("  🤝 Tie — both approaches found equivalent strategies")
+	}
+
+	fmt.Println("  ═══════════════════════════════════════════════════")
+	fmt.Println()
 }

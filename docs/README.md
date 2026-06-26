@@ -1,6 +1,6 @@
-# GoAgent Documentation Center
+# ARES Documentation Center
 
-Welcome to the GoAgent framework documentation center.
+Welcome to the ARES framework documentation center.
 
 ## Release Notes / 发布说明
 

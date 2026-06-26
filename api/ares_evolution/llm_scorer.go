@@ -283,11 +283,13 @@ func (s *LLMScorer) buildPrompt(strategy *Strategy) string {
 }
 
 // parseScore extracts a numeric score from the LLM response.
-// Expects a JSON response with a "score" field.
-// Falls back to rule-based estimation if parsing fails.
+// Expects a JSON response with a "score" field. Falls back to:
+//  1. Regex extraction of "score": N from mixed text/reasoning output
+//  2. Keyword heuristic for free-text responses
 func (s *LLMScorer) parseScore(resp string) float64 {
 	resp = strings.TrimSpace(resp)
 
+	// Try direct JSON parse.
 	var parsed struct {
 		Score float64 `json:"score"`
 	}
@@ -298,8 +300,42 @@ func (s *LLMScorer) parseScore(resp string) float64 {
 		return parsed.Score
 	}
 
-	// Fallback: extract score via keyword heuristic.
+	// Try extracting "score": N from mixed text (reasoning models may embed
+	// JSON within their thinking output).
+	if sc := extractScoreFromText(resp); sc > 0 {
+		return sc
+	}
+
+	// Fallback: keyword heuristic.
 	return s.fallbackScore(resp)
+}
+
+// extractScoreFromText tries to find a "score": N pattern in free text.
+func extractScoreFromText(text string) float64 {
+	// Look for patterns like "score": 75 or "score":75.0
+	for i := 0; i < len(text)-8; i++ {
+		if text[i] == '"' && i+7 < len(text) && text[i+1:i+7] == "score\"" {
+			// Find the colon and number after it.
+			rest := text[i+7:]
+			colonIdx := strings.Index(rest, ":")
+			if colonIdx < 0 {
+				continue
+			}
+			numStr := strings.TrimSpace(rest[colonIdx+1:])
+			// Extract digits.
+			end := 0
+			for end < len(numStr) && (numStr[end] >= '0' && numStr[end] <= '9' || numStr[end] == '.') {
+				end++
+			}
+			if end > 0 {
+				var sc float64
+				if _, err := fmt.Sscanf(numStr[:end], "%f", &sc); err == nil && sc > 0 && sc <= 100 {
+					return sc
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // fallbackScore estimates quality from the LLM's free-text response.

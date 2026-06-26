@@ -166,17 +166,33 @@ func (fc *FailoverClient) clearCooldown(key string) {
 	delete(fc.cooldowns, key)
 }
 
+// cooldownForError returns the cooldown duration based on error type.
+// Rate-limited providers get the full configured cooldown; other errors get
+// a shorter cooldown (1/3 of configured, minimum 10s) so they are retried
+// sooner but not on every call.
+func (fc *FailoverClient) cooldownForError(err error) time.Duration {
+	if isRateLimitError(err) {
+		return fc.cooldownDuration
+	}
+	short := fc.cooldownDuration / 3
+	if short < 10*time.Second {
+		short = 10 * time.Second
+	}
+	return short
+}
+
 // Generate tries each LLM client in order and returns the first successful
-// response. Rate-limited providers (HTTP 429) are cooled down and skipped
-// for the configured cooldown duration. Non-rate-limit errors cause immediate
-// failover without cooldown.
+// response. On failure:
+//   - Primary 429 → cooldown 5s, try fallback
+//   - Primary other error → no cooldown, try fallback
+//   - Fallback 429 → full cooldown, try next
+//   - Fallback other error → short cooldown (1/3 configured, min 10s)
 func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, error) {
 	var lastErr error
 
 	for i, client := range fc.clients {
 		key := fc.clientKey(client)
 
-		// Skip cooled-down providers.
 		if fc.isCooledDown(key) {
 			slog.Debug("FailoverClient: skipping cooled-down provider",
 				"provider", client.GetProvider(),
@@ -197,17 +213,30 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		lastErr = err
 
 		if isRateLimitError(err) {
+			// 429 → cool down: primary 5s (quick retry), fallback full cooldown.
+			cd := fc.cooldownDuration
+			if i == 0 {
+				cd = 5 * time.Second
+			}
 			fc.markCooldown(key)
-			slog.Warn("FailoverClient: rate limited, cooling down provider",
+			slog.Warn("FailoverClient: rate limited, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
-				"cooldown", fc.cooldownDuration,
+				"cooldown", cd,
 			)
-		} else if i < len(fc.clients)-1 {
-			slog.Warn("FailoverClient: LLM client failed, trying next",
-				"client_index", i,
-				"model", client.GetModel(),
+		} else if i > 0 {
+			cd := fc.cooldownForError(err)
+			fc.markCooldown(key)
+			slog.Warn("FailoverClient: fallback failed, cooling down",
 				"provider", client.GetProvider(),
+				"model", client.GetModel(),
+				"cooldown", cd,
+				"error", err,
+			)
+		} else {
+			slog.Warn("FailoverClient: primary failed, trying fallback",
+				"provider", client.GetProvider(),
+				"model", client.GetModel(),
 				"error", err,
 			)
 		}
@@ -218,7 +247,8 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 }
 
 // GenerateStream tries each LLM client in order and returns the first
-// successful stream. Rate-limited providers are cooled down just like Generate.
+// successful stream. Failed providers are cooled down with the same policy
+// as Generate (rate-limit = full cooldown, other errors = shorter cooldown).
 //
 // NOTE: Failover only covers stream creation (HTTP handshake). Once a stream
 // is established and chunks are being delivered, mid-stream errors (e.g.,
@@ -248,17 +278,29 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		lastErr = err
 
 		if isRateLimitError(err) {
+			cd := fc.cooldownDuration
+			if i == 0 {
+				cd = 5 * time.Second
+			}
 			fc.markCooldown(key)
-			slog.Warn("FailoverClient: rate limited on stream, cooling down provider",
+			slog.Warn("FailoverClient: rate limited on stream, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
-				"cooldown", fc.cooldownDuration,
+				"cooldown", cd,
 			)
-		} else if i < len(fc.clients)-1 {
-			slog.Warn("FailoverClient: stream client failed, trying next",
-				"client_index", i,
-				"model", client.GetModel(),
+		} else if i > 0 {
+			cd := fc.cooldownForError(err)
+			fc.markCooldown(key)
+			slog.Warn("FailoverClient: fallback failed on stream, cooling down",
 				"provider", client.GetProvider(),
+				"model", client.GetModel(),
+				"cooldown", cd,
+				"error", err,
+			)
+		} else {
+			slog.Warn("FailoverClient: primary failed on stream, trying fallback",
+				"provider", client.GetProvider(),
+				"model", client.GetModel(),
 				"error", err,
 			)
 		}

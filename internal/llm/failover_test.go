@@ -58,8 +58,9 @@ func TestFailoverClient_BasicFailover(t *testing.T) {
 	}
 }
 
-func TestFailoverClient_RateLimitCooldown(t *testing.T) {
+func TestFailoverClient_Primary429Cooldown(t *testing.T) {
 	// Primary returns 429, fallback returns 200.
+	// Primary gets 5s cooldown on 429.
 	primary, primaryCount := mockLLMServer(429, `{"error":"rate_limit_exceeded"}`)
 	defer primary.Close()
 	fallback, fallbackCount := mockLLMServer(200, successBody("fallback-ok"))
@@ -68,12 +69,12 @@ func TestFailoverClient_RateLimitCooldown(t *testing.T) {
 	fc, err := NewFailoverClient([]*Config{
 		{Provider: "openrouter", APIKey: "key1", BaseURL: primary.URL, Model: "primary"},
 		{Provider: "openrouter", APIKey: "key2", BaseURL: fallback.URL, Model: "fallback"},
-	}, 10*time.Second, 0, 0, WithCooldownDuration(5*time.Second))
+	}, 10*time.Second, 0, 0, WithCooldownDuration(60*time.Second))
 	if err != nil {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// First call: primary 429 → fallback succeeds.
+	// First call: primary 429 → cooldown 5s → fallback succeeds.
 	resp, err := fc.Generate(context.Background(), "hello")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -82,7 +83,7 @@ func TestFailoverClient_RateLimitCooldown(t *testing.T) {
 		t.Fatalf("expected fallback-ok, got %s", resp)
 	}
 
-	// Second call: primary should be skipped (cooled down), fallback called directly.
+	// Second call immediately: primary cooled (5s), fallback used directly.
 	resp, err = fc.Generate(context.Background(), "hello2")
 	if err != nil {
 		t.Fatalf("Generate (2nd): %v", err)
@@ -91,33 +92,33 @@ func TestFailoverClient_RateLimitCooldown(t *testing.T) {
 		t.Fatalf("expected fallback-ok, got %s", resp)
 	}
 
-	// Primary should have been called only once (skipped on 2nd call).
+	// Primary called once (cooled down on 2nd call).
 	if atomic.LoadInt32(primaryCount) != 1 {
-		t.Fatalf("expected primary called once (cooled down), got %d", atomic.LoadInt32(primaryCount))
+		t.Fatalf("expected primary called once (5s cooldown), got %d", atomic.LoadInt32(primaryCount))
 	}
-	// Fallback should have been called twice.
+	// Fallback called twice.
 	if atomic.LoadInt32(fallbackCount) != 2 {
 		t.Fatalf("expected fallback called twice, got %d", atomic.LoadInt32(fallbackCount))
 	}
 }
 
-func TestFailoverClient_CooldownExpiry(t *testing.T) {
-	// Primary returns 429 first, then 200.
-	var primaryCountVal int32
-	primaryCount := &primaryCountVal
-	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(primaryCount, 1)
+func TestFailoverClient_FallbackCooldownExpiry(t *testing.T) {
+	// Primary always fails. Fallback fails first, then succeeds after cooldown.
+	primary, _ := mockLLMServer(500, `{"error":"internal"}`)
+	defer primary.Close()
+	var fallbackCountVal int32
+	fallbackCount := &fallbackCountVal
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(fallbackCount, 1)
 		w.Header().Set("Content-Type", "application/json")
 		if count == 1 {
-			w.WriteHeader(429)
-			_, _ = fmt.Fprint(w, `{"error":"rate limited"}`)
+			w.WriteHeader(500)
+			_, _ = fmt.Fprint(w, `{"error":"internal"}`)
 		} else {
 			w.WriteHeader(200)
-			_, _ = fmt.Fprint(w, successBody("primary-ok"))
+			_, _ = fmt.Fprint(w, successBody("fallback-ok"))
 		}
 	}))
-	defer primary.Close()
-	fallback, fallbackCount := mockLLMServer(200, successBody("fallback-ok"))
 	defer fallback.Close()
 
 	fc, err := NewFailoverClient([]*Config{
@@ -128,62 +129,71 @@ func TestFailoverClient_CooldownExpiry(t *testing.T) {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// First call: primary 429 → fallback.
+	// First call: primary 500, fallback 500 → all fail.
 	_, err = fc.Generate(context.Background(), "hello")
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
+	if err == nil {
+		t.Fatal("expected error when all fail")
 	}
 
-	// Wait for cooldown to expire.
+	// Wait for fallback cooldown to expire.
 	time.Sleep(300 * time.Millisecond)
 
-	// Third call: primary should be tried again (cooldown expired) and succeed.
+	// Second call: primary fails again, fallback cooldown expired → retried → succeeds.
 	resp, err := fc.Generate(context.Background(), "hello2")
 	if err != nil {
 		t.Fatalf("Generate (after cooldown): %v", err)
 	}
-	if resp != "primary-ok" {
-		t.Fatalf("expected primary-ok, got %s", resp)
+	if resp != "fallback-ok" {
+		t.Fatalf("expected fallback-ok, got %s", resp)
 	}
 
-	if atomic.LoadInt32(primaryCount) != 2 {
-		t.Fatalf("expected primary called twice, got %d", atomic.LoadInt32(primaryCount))
-	}
-
-	if atomic.LoadInt32(fallbackCount) != 1 {
-		t.Fatalf("expected fallback called once, got %d", atomic.LoadInt32(fallbackCount))
+	// Primary always tried (never cooled), fallback retried after cooldown.
+	if atomic.LoadInt32(fallbackCount) != 2 {
+		t.Fatalf("expected fallback called twice, got %d", atomic.LoadInt32(fallbackCount))
 	}
 }
 
-func TestFailoverClient_NonRateLimitNoCooldown(t *testing.T) {
-	// Primary returns 500 (not 429), fallback returns 200.
-	// Primary should NOT be cooled down.
+func TestFailoverClient_FallbackShortCooldown(t *testing.T) {
+	// Primary returns 500, fallback returns 500 → 200.
+	// Fallback gets a short cooldown on 500.
 	primary, primaryCount := mockLLMServer(500, `{"error":"internal"}`)
 	defer primary.Close()
-	fallback, fallbackCount := mockLLMServer(200, successBody("fallback-ok"))
+	var fallbackCountVal int32
+	fallbackCount := &fallbackCountVal
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(fallbackCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if count == 1 {
+			w.WriteHeader(500)
+			_, _ = fmt.Fprint(w, `{"error":"internal"}`)
+		} else {
+			w.WriteHeader(200)
+			_, _ = fmt.Fprint(w, successBody("fallback-ok"))
+		}
+	}))
 	defer fallback.Close()
 
 	fc, err := NewFailoverClient([]*Config{
 		{Provider: "openrouter", APIKey: "key1", BaseURL: primary.URL, Model: "primary"},
 		{Provider: "openrouter", APIKey: "key2", BaseURL: fallback.URL, Model: "fallback"},
-	}, 10*time.Second, 0, 0)
+	}, 10*time.Second, 0, 0, WithCooldownDuration(200*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// First call: primary 500 → fallback.
+	// First call: primary 500, fallback 500 → all fail. Fallback gets cooldown.
 	_, _ = fc.Generate(context.Background(), "hello")
 
-	// Second call: primary should be tried again (no cooldown for 500).
+	// Second call immediately: fallback cooled down, primary fails again → all fail.
 	_, _ = fc.Generate(context.Background(), "hello2")
 
-	// Primary should be called twice (no cooldown).
+	// Primary always tried (never cooled).
 	if atomic.LoadInt32(primaryCount) != 2 {
-		t.Fatalf("expected primary called twice (no cooldown), got %d", atomic.LoadInt32(primaryCount))
+		t.Fatalf("expected primary called twice (always tried), got %d", atomic.LoadInt32(primaryCount))
 	}
-	// Fallback should be called twice.
-	if atomic.LoadInt32(fallbackCount) != 2 {
-		t.Fatalf("expected fallback called twice, got %d", atomic.LoadInt32(fallbackCount))
+	// Fallback called once (cooled down on 2nd call).
+	if atomic.LoadInt32(fallbackCount) != 1 {
+		t.Fatalf("expected fallback called once (cooled), got %d", atomic.LoadInt32(fallbackCount))
 	}
 }
 
@@ -237,9 +247,10 @@ func TestFailoverClient_PrimarySuccess(t *testing.T) {
 }
 
 func TestFailoverClient_ActiveProviders(t *testing.T) {
-	primary, _ := mockLLMServer(429, `{"error":"rate limited"}`)
+	// Primary 500 (no cooldown), fallback 429 (cooldown).
+	primary, _ := mockLLMServer(500, `{"error":"internal"}`)
 	defer primary.Close()
-	fallback, _ := mockLLMServer(200, successBody("ok"))
+	fallback, _ := mockLLMServer(429, `{"error":"rate limited"}`)
 	defer fallback.Close()
 
 	fc, err := NewFailoverClient([]*Config{
@@ -250,10 +261,11 @@ func TestFailoverClient_ActiveProviders(t *testing.T) {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// Trigger cooldown on primary.
+	// Primary 500 (no cooldown), fallback 429 (cooldown).
 	_, _ = fc.Generate(context.Background(), "hello")
 
 	active := fc.ActiveProviders()
+	// Primary active (500 doesn't cooldown primary), fallback cooled.
 	if len(active) != 1 {
 		t.Fatalf("expected 1 active provider, got %d: %v", len(active), active)
 	}
