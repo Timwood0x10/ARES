@@ -21,24 +21,24 @@ type CheckpointStore interface {
 // ExperienceCheckpoint captures a workflow execution at a point in time,
 // including both recovery data and signals for memory/evolution consumption.
 type ExperienceCheckpoint struct {
-	SchemaVersion   int                    `json:"schema_version"`
-	ExecutionID     string                 `json:"execution_id"`
-	WorkflowID      string                 `json:"workflow_id"`
-	WorkflowVersion string                 `json:"workflow_version,omitempty"`
-	StateVersion    int64                  `json:"state_version"`
-	Status          string                 `json:"status"`
-	Error           string                 `json:"error,omitempty"`
-	StepStates      []StepStateSnapshot    `json:"step_states"`
-	Variables       map[string]interface{} `json:"variables,omitempty"`
-	OutputStore     map[string]string      `json:"output_store,omitempty"`
-	RouteHistory    []RouteEntry           `json:"route_history,omitempty"`
-	ToolHistory     []ToolEntry            `json:"tool_history,omitempty"`
-	MemoryHits      []MemoryEntry          `json:"memory_hits,omitempty"`
-	InterruptHistory []InterruptEntry      `json:"interrupt_history,omitempty"`
-	LoopHistory     []LoopEntry            `json:"loop_history,omitempty"`
-	ErrorHistory    []ErrorEntry           `json:"error_history,omitempty"`
-	ScoringSignals  []ScoringSignal        `json:"scoring_signals,omitempty"`
-	CreatedAt       time.Time              `json:"created_at"`
+	SchemaVersion    int                    `json:"schema_version"`
+	ExecutionID      string                 `json:"execution_id"`
+	WorkflowID       string                 `json:"workflow_id"`
+	WorkflowVersion  string                 `json:"workflow_version,omitempty"`
+	StateVersion     int64                  `json:"state_version"`
+	Status           string                 `json:"status"`
+	Error            string                 `json:"error,omitempty"`
+	StepStates       []StepStateSnapshot    `json:"step_states"`
+	Variables        map[string]interface{} `json:"variables,omitempty"`
+	OutputStore      map[string]string      `json:"output_store,omitempty"`
+	RouteHistory     []RouteEntry           `json:"route_history,omitempty"`
+	ToolHistory      []ToolEntry            `json:"tool_history,omitempty"`
+	MemoryHits       []MemoryEntry          `json:"memory_hits,omitempty"`
+	InterruptHistory []InterruptEntry       `json:"interrupt_history,omitempty"`
+	LoopHistory      []LoopEntry            `json:"loop_history,omitempty"`
+	ErrorHistory     []ErrorEntry           `json:"error_history,omitempty"`
+	ScoringSignals   []ScoringSignal        `json:"scoring_signals,omitempty"`
+	CreatedAt        time.Time              `json:"created_at"`
 }
 
 // StepStateSnapshot captures the state of a single step.
@@ -67,9 +67,9 @@ type ToolEntry struct {
 
 // MemoryEntry records a memory retrieval hit.
 type MemoryEntry struct {
-	StepID      string  `json:"step_id"`
-	Similarity  float64 `json:"similarity"`
-	TaskID      string  `json:"task_id,omitempty"`
+	StepID     string  `json:"step_id"`
+	Similarity float64 `json:"similarity"`
+	TaskID     string  `json:"task_id,omitempty"`
 }
 
 // InterruptEntry records a HITL interrupt.
@@ -81,7 +81,7 @@ type InterruptEntry struct {
 
 // LoopEntry records a loop iteration.
 type LoopEntry struct {
-	Iteration int    `json:"iteration"`
+	Iteration  int    `json:"iteration"`
 	ExitReason string `json:"exit_reason,omitempty"`
 }
 
@@ -269,7 +269,11 @@ func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {
 	ckpt.CreatedAt = time.Now()
 	if p.collector != nil {
+		// Drain the collector so each record is merged exactly once.
+		// Without this, repeated saves append duplicate route/tool/etc.
+		// history entries to the checkpoint.
 		p.collector.MergeInto(ckpt)
+		p.collector.Reset()
 	}
 	data, err := json.Marshal(ckpt)
 	if err != nil {

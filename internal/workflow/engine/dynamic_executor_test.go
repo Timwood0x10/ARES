@@ -1033,7 +1033,7 @@ func TestDynamicExecutor_StepCondition_MixedChain(t *testing.T) {
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 	require.Len(t, result.Steps, 3)
 	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status) // s1 executed
-	assert.Equal(t, StepStatusSkipped, result.Steps[1].Status)  // s2 skipped
+	assert.Equal(t, StepStatusSkipped, result.Steps[1].Status)   // s2 skipped
 	assert.Equal(t, StepStatusCompleted, result.Steps[2].Status) // s3 executed
 }
 

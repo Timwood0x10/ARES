@@ -16,14 +16,14 @@ import (
 
 // testPlugin is a simple RuntimePlugin for testing.
 type testPlugin struct {
-	name         string
-	caps         []Capability
-	startCalled  bool
-	stopCalled   bool
-	startErr     error
-	stopErr      error
-	startBlock   time.Duration
-	mu           sync.Mutex
+	name        string
+	caps        []Capability
+	startCalled bool
+	stopCalled  bool
+	startErr    error
+	stopErr     error
+	startBlock  time.Duration
+	mu          sync.Mutex
 }
 
 func newTestPlugin(name string, caps []Capability) *testPlugin {
@@ -59,9 +59,9 @@ func (p *testPlugin) Stop(_ context.Context) error {
 
 // testHook records BeforeStep/AfterStep invocations for testing.
 type testHook struct {
-	mu       sync.Mutex
-	before   []string // step IDs
-	after    []string // step IDs
+	mu        sync.Mutex
+	before    []string // step IDs
+	after     []string // step IDs
 	beforeErr error
 	afterErr  error
 }
@@ -100,7 +100,7 @@ func (h *panickingHook) AfterStep(_ context.Context, _ string, _ *StepResult) er
 // panickingPlugin panics in Start for recovery testing.
 type panickingPlugin struct{}
 
-func (p *panickingPlugin) Name() string             { return "panicking" }
+func (p *panickingPlugin) Name() string               { return "panicking" }
 func (p *panickingPlugin) Capabilities() []Capability { return nil }
 func (p *panickingPlugin) Start(_ context.Context, _ EventBus) error {
 	panic("start panic")

@@ -84,39 +84,39 @@ type EvolutionPlugin interface {
 // ExecutionState contains the inputs an EvolutionPlugin needs to make a
 // recommendation.
 type ExecutionState struct {
-	ExecutionID     string
-	WorkflowID      string
-	CurrentStepID   string
-	StepHistory     []StepResult
-	RouteHistory    []RouteRecord
-	ToolHistory     []ToolRecord
-	MemoryHits      []MemoryHitRecord
-	ScoringSignals  []ScoringSignal
+	ExecutionID    string
+	WorkflowID     string
+	CurrentStepID  string
+	StepHistory    []StepResult
+	RouteHistory   []RouteRecord
+	ToolHistory    []ToolRecord
+	MemoryHits     []MemoryHitRecord
+	ScoringSignals []ScoringSignal
 }
 
 // RuntimeRecommendation is the output of an EvolutionPlugin.Recommend call.
 type RuntimeRecommendation struct {
-	PreferredAgent  string  `json:"preferred_agent,omitempty"`
-	RouterWeight    float64 `json:"router_weight,omitempty"`
-	MutationHint    string  `json:"mutation_hint,omitempty"`
-	Confidence      float64 `json:"confidence"`
+	PreferredAgent string  `json:"preferred_agent,omitempty"`
+	RouterWeight   float64 `json:"router_weight,omitempty"`
+	MutationHint   string  `json:"mutation_hint,omitempty"`
+	Confidence     float64 `json:"confidence"`
 }
 
 // ExecutionOutcome represents the final state of a completed execution for
 // evolution consumption.
 type ExecutionOutcome struct {
-	ExecutionID     string
-	WorkflowID      string
-	Status          string
-	Duration        int64 // milliseconds
-	TotalSteps      int
-	FailedSteps     int
-	SkippedSteps    int
-	RouteCount      int
-	ToolCount       int
-	MemoryHitCount  int
-	InterruptCount  int
-	ErrorCount      int
+	ExecutionID    string
+	WorkflowID     string
+	Status         string
+	Duration       int64 // milliseconds
+	TotalSteps     int
+	FailedSteps    int
+	SkippedSteps   int
+	RouteCount     int
+	ToolCount      int
+	MemoryHitCount int
+	InterruptCount int
+	ErrorCount     int
 }
 
 // EventBus is the event system exposed to plugins. It allows emitting

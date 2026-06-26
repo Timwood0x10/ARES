@@ -7,9 +7,9 @@ import (
 
 // LoopConfig defines the parameters for a controlled execution loop.
 type LoopConfig struct {
-	MaxIterations int                     // maximum loop iterations (0 = no limit)
+	MaxIterations  int                            // maximum loop iterations (0 = no limit)
 	UntilCondition func(vars map[string]any) bool // exit condition; nil means run to max
-	SubStepIDs    []string                // step IDs executed each iteration
+	SubStepIDs     []string                       // step IDs executed each iteration
 }
 
 // LoopPlugin manages controlled execution loops with per-round checkpointing
@@ -22,7 +22,7 @@ type LoopPlugin struct {
 	name      string
 	config    LoopConfig
 	collector *ExecutionCollector // optional
-	iteration int                  // current iteration (1-based)
+	iteration int                 // current iteration (1-based)
 }
 
 // NewLoopPlugin creates a LoopPlugin with the given configuration.

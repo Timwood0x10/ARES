@@ -252,7 +252,12 @@ func (e *DynamicExecutor) execLoop(
 	}
 
 	localOutputStore := NewOutputStore()
-	resultChan := make(chan *StepResult, len(executionOrder))
+	// Buffer for the original order plus room for recovery-added steps.
+	bufSize := len(executionOrder) * 2
+	if bufSize < 16 {
+		bufSize = 16
+	}
+	resultChan := make(chan *StepResult, bufSize)
 	errChan := make(chan error, 1)
 
 	if completed == nil {
@@ -636,8 +641,13 @@ func (e *DynamicExecutor) runDynamicSteps(
 				startTime := time.Now()
 
 				if e.pluginBus != nil {
-					// Hooks are optional; errors are logged by the bus.
-					_ = e.pluginBus.BeforeStep(ctx, execution.ID, toRuntimeStep(step))
+					if err := e.pluginBus.BeforeStep(ctx, execution.ID, toRuntimeStep(step)); err != nil {
+						slog.Warn("before step hook failed (continuing)",
+							"step_id", sid,
+							"execution_id", execution.ID,
+							"error", err,
+						)
+					}
 					e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepStarted, map[string]any{
 						runtime.PayloadKeyExecutionID: execution.ID,
 						runtime.PayloadKeyStepID:      sid,
@@ -670,7 +680,13 @@ func (e *DynamicExecutor) runDynamicSteps(
 							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 						})
 					}
-					_ = e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result))
+					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
+						slog.Warn("after step hook failed (continuing)",
+							"step_id", sid,
+							"execution_id", execution.ID,
+							"error", err,
+						)
+					}
 				}
 
 				// Check for mutations after each step completes, regardless of mode.
@@ -843,5 +859,3 @@ func (e *DynamicExecutor) handleDynamicInterrupt(
 	// Return false to let the step proceed to execution.
 	return false
 }
-
-

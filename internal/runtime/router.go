@@ -16,14 +16,14 @@ type RouterPlugin interface {
 
 // RouteState contains the inputs available for routing decisions.
 type RouteState struct {
-	ExecutionID        string
-	WorkflowID         string
-	CurrentStepID      string
-	CurrentStepOutput  string
-	Variables          map[string]any
-	CollectedRoutes    []RouteRecord
-	CollectedTools     []ToolRecord
-	CollectedMemory    []MemoryHitRecord
+	ExecutionID       string
+	WorkflowID        string
+	CurrentStepID     string
+	CurrentStepOutput string
+	Variables         map[string]any
+	CollectedRoutes   []RouteRecord
+	CollectedTools    []ToolRecord
+	CollectedMemory   []MemoryHitRecord
 }
 
 // RouteDecision is the outcome of a routing decision.
@@ -36,8 +36,8 @@ type RouteDecision struct {
 // ExpressionRouter evaluates a set of route rules to decide the next step.
 // It is the default, simple-rule-based router implementation.
 type ExpressionRouter struct {
-	name   string
-	rules  []RouteRule
+	name  string
+	rules []RouteRule
 }
 
 // RouteRule defines a single routing condition and target.

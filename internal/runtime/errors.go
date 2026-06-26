@@ -7,11 +7,12 @@ import (
 
 // Sentinel errors for the runtime package.
 var (
-	ErrPluginPanic  = errors.New("plugin panic")
-	ErrPluginTimeout = errors.New("plugin timeout")
-	ErrPluginNotFound = errors.New("plugin not found")
-	ErrDuplicatePlugin = errors.New("plugin name already registered")
-	ErrBusNotStarted   = errors.New("plugin bus not started")
+	ErrPluginPanic      = errors.New("plugin panic")
+	ErrPluginTimeout    = errors.New("plugin timeout")
+	ErrPluginNotFound   = errors.New("plugin not found")
+	ErrDuplicatePlugin  = errors.New("plugin name already registered")
+	ErrBusNotStarted    = errors.New("plugin bus not started")
+	ErrBusAlreadyStarted = errors.New("plugin bus already started")
 )
 
 // PluginError wraps an error with the plugin name and optional recovered panic value.

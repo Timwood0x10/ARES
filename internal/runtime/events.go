@@ -32,12 +32,12 @@ const EventInterruptResolved events.EventType = "interrupt.resolved"
 
 // Payload keys used in workflow events.
 const (
-	PayloadKeyExecutionID  = "execution_id"
-	PayloadKeyWorkflowID   = "workflow_id"
-	PayloadKeyStepID       = "step_id"
-	PayloadKeyStatus       = "status"
-	PayloadKeyDuration     = "duration_ms"
-	PayloadKeyError        = "error"
-	PayloadKeyRouteReason  = "route_reason"
-	PayloadKeyToolName     = "tool_name"
+	PayloadKeyExecutionID = "execution_id"
+	PayloadKeyWorkflowID  = "workflow_id"
+	PayloadKeyStepID      = "step_id"
+	PayloadKeyStatus      = "status"
+	PayloadKeyDuration    = "duration_ms"
+	PayloadKeyError       = "error"
+	PayloadKeyRouteReason = "route_reason"
+	PayloadKeyToolName    = "tool_name"
 )

@@ -60,7 +60,7 @@ func (b *PluginBus) Register(plugin RuntimePlugin) error {
 	defer b.mu.Unlock()
 
 	if b.started {
-		return ErrBusNotStarted
+		return ErrBusAlreadyStarted
 	}
 	for _, p := range b.plugins {
 		if p.Name() == plugin.Name() {
@@ -86,13 +86,13 @@ func (b *PluginBus) Start(ctx context.Context) error {
 	b.started = true
 	b.mu.Unlock()
 
-	var lastErr error
+	var errs []error
 	for _, p := range b.plugins {
 		if err := b.invokeStart(ctx, p); err != nil {
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // Stop shuts down all plugins in reverse registration order.
@@ -101,7 +101,7 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 	b.started = false
 	b.mu.Unlock()
 
-	var lastErr error
+	var errs []error
 	for i := len(b.plugins) - 1; i >= 0; i-- {
 		if err := invokeWithTimeout(ctx, b.pluginTimeout, func(sctx context.Context) error {
 			return b.plugins[i].Stop(sctx)
@@ -110,10 +110,10 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 				"plugin", b.plugins[i].Name(),
 				"error", err,
 			)
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // RegisterHook adds a WorkflowHook to be called before and after each step.
@@ -131,7 +131,7 @@ func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *St
 	b.mu.RUnlock()
 
 	for _, h := range hooks {
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, func(sctx context.Context) error {
+		if err := invokeWithTimeout(ctx, b.pluginTimeout, "hook:beforeStep", func(sctx context.Context) error {
 			return h.BeforeStep(sctx, executionID, step)
 		}); err != nil {
 			return fmt.Errorf("runtime: before step hook: %w", err)
@@ -148,7 +148,7 @@ func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *S
 	b.mu.RUnlock()
 
 	for _, h := range hooks {
-		if err := invokeWithTimeout(ctx, b.pluginTimeout, func(sctx context.Context) error {
+		if err := invokeWithTimeout(ctx, b.pluginTimeout, "hook:afterStep", func(sctx context.Context) error {
 			return h.AfterStep(sctx, executionID, result)
 		}); err != nil {
 			return fmt.Errorf("runtime: after step hook: %w", err)
@@ -178,13 +178,19 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType events.
 		if !matchFilter(evt, s.filter) {
 			continue
 		}
-		select {
-		case s.ch <- evt:
-		case <-ctx.Done():
-			return
-		default:
-			// Drop event if buffer full.
-		}
+		// Guard against send-on-closed-channel when a subscriber's
+		// cleanup goroutine closes the channel between our copy
+		// of the subscriber list and this send.
+		func() {
+			defer func() { _ = recover() }()
+			select {
+			case s.ch <- evt:
+			case <-ctx.Done():
+				return
+			default:
+				// Drop event if buffer full.
+			}
+		}()
 	}
 }
 
@@ -219,15 +225,21 @@ func (b *PluginBus) Subscribe(ctx context.Context, filter events.EventFilter) (<
 	return ch, nil
 }
 
-// PluginsByCap returns all registered plugins with the given capability.
+// PluginsByCap returns a copy of the registered plugins with the given capability.
 func (b *PluginBus) PluginsByCap(cap Capability) []RuntimePlugin {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.caps[cap]
+	plugins := b.caps[cap]
+	if len(plugins) == 0 {
+		return nil
+	}
+	result := make([]RuntimePlugin, len(plugins))
+	copy(result, plugins)
+	return result
 }
 
 func (b *PluginBus) invokeStart(ctx context.Context, p RuntimePlugin) error {
-	err := invokeWithTimeout(ctx, b.pluginTimeout, func(sctx context.Context) error {
+	err := invokeWithTimeout(ctx, b.pluginTimeout, p.Name(), func(sctx context.Context) error {
 		return p.Start(sctx, b)
 	})
 	if err != nil {
@@ -241,7 +253,9 @@ func (b *PluginBus) invokeStart(ctx context.Context, p RuntimePlugin) error {
 	return nil
 }
 
-func invokeWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) error) (err error) {
+// invokeWithTimeout runs fn with a timeout derived from the parent context.
+// pluginName is attached to any panic error for diagnostics.
+func invokeWithTimeout(ctx context.Context, timeout time.Duration, pluginName string, fn func(context.Context) error) (err error) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -250,7 +264,7 @@ func invokeWithTimeout(ctx context.Context, timeout time.Duration, fn func(conte
 		defer func() {
 			if r := recover(); r != nil {
 				done <- &PluginError{
-					PluginName: "",
+					PluginName: pluginName,
 					Err:        ErrPluginPanic,
 					Recovered:  r,
 				}

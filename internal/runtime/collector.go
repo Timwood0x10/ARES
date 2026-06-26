@@ -9,13 +9,13 @@ import (
 // consumption by CheckpointPlugin, memory distill, and evolution scoring.
 // All methods are thread-safe.
 type ExecutionCollector struct {
-	mu            sync.Mutex
-	executionID   string
-	routeHistory  []RouteRecord
-	toolHistory   []ToolRecord
-	memoryHits    []MemoryHitRecord
-	interruptLog  []InterruptRecord
-	errorLog      []ErrorRecord
+	mu           sync.Mutex
+	executionID  string
+	routeHistory []RouteRecord
+	toolHistory  []ToolRecord
+	memoryHits   []MemoryHitRecord
+	interruptLog []InterruptRecord
+	errorLog     []ErrorRecord
 }
 
 // RouteRecord captures a routing decision.
@@ -29,28 +29,28 @@ type RouteRecord struct {
 
 // ToolRecord captures a tool invocation.
 type ToolRecord struct {
-	StepID    string        `json:"step_id"`
-	ToolName  string        `json:"tool_name"`
-	Input     string        `json:"input"`
-	Output    string        `json:"output"`
-	Duration  time.Duration `json:"duration_ms"`
-	Success   bool          `json:"success"`
+	StepID   string        `json:"step_id"`
+	ToolName string        `json:"tool_name"`
+	Input    string        `json:"input"`
+	Output   string        `json:"output"`
+	Duration time.Duration `json:"duration_ms"`
+	Success  bool          `json:"success"`
 }
 
 // MemoryHitRecord captures a memory retrieval hit.
 type MemoryHitRecord struct {
-	StepID    string    `json:"step_id"`
-	Query     string    `json:"query"`
-	HitCount  int       `json:"hit_count"`
-	BestScore float64   `json:"best_score"`
-	UsedIDs   []string  `json:"used_ids,omitempty"`
+	StepID    string   `json:"step_id"`
+	Query     string   `json:"query"`
+	HitCount  int      `json:"hit_count"`
+	BestScore float64  `json:"best_score"`
+	UsedIDs   []string `json:"used_ids,omitempty"`
 }
 
 // InterruptRecord captures a HITL interrupt action.
 type InterruptRecord struct {
-	StepID   string    `json:"step_id"`
-	Action   string    `json:"action"`
-	Feedback string    `json:"feedback,omitempty"`
+	StepID   string `json:"step_id"`
+	Action   string `json:"action"`
+	Feedback string `json:"feedback,omitempty"`
 }
 
 // ErrorRecord captures an execution error.
@@ -189,12 +189,12 @@ func (c *ExecutionCollector) Export() map[string]any {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return map[string]any{
-		"execution_id":    c.executionID,
-		"route_history":   c.routeHistory,
-		"tool_history":    c.toolHistory,
-		"memory_hits":     c.memoryHits,
-		"interrupt_log":   c.interruptLog,
-		"error_log":       c.errorLog,
+		"execution_id":  c.executionID,
+		"route_history": c.routeHistory,
+		"tool_history":  c.toolHistory,
+		"memory_hits":   c.memoryHits,
+		"interrupt_log": c.interruptLog,
+		"error_log":     c.errorLog,
 	}
 }
 
