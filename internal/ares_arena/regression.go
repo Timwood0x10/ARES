@@ -520,10 +520,10 @@ func validateRegressionConfig(cfg RegressionConfig) error {
 	if cfg.NewStrategy == nil {
 		return ErrNilStrategy
 	}
-	if cfg.BaselineRuns <= 0 && cfg.BaselineRuns != 0 { // 0 means "use default"
+	if cfg.BaselineRuns < 0 { // 0 means "use default"
 		return ErrInvalidRuns
 	}
-	if cfg.CompareRuns <= 0 && cfg.CompareRuns != 0 {
+	if cfg.CompareRuns < 0 {
 		return ErrInvalidRuns
 	}
 	if cfg.Confidence < 0 || cfg.Confidence > 1 {

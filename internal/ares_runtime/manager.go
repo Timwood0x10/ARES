@@ -438,82 +438,41 @@ func (m *Manager) launchAgentGoroutine(ctx context.Context, agentID string, agen
 // NotifyAgentDead is called when an agent dies. It triggers asynchronous restoration
 // via errgroup if a factory is registered for the agent.
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
-	m.mu.Lock()
-	factory, hasFactory := m.factories[agentID]
-	ma, hasAgent := m.agents[agentID]
-	isStopped := m.isStopped
-	intentionallyStopped := hasAgent && ma.stopped
-	alreadyResurrecting := hasAgent && ma.resurrecting
+	factory, shouldRestore := func() (AgentFactory, bool) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	if isStopped || intentionallyStopped || alreadyResurrecting {
-		m.mu.Unlock()
-		return
-	}
-	if !hasFactory {
-		m.mu.Unlock()
-		slog.Warn("runtime: agent dead but no factory registered, skipping restore",
-			"agent_id", agentID, "reason", reason,
-		)
-		return
-	}
+		factory, hasFactory := m.factories[agentID]
+		ma, hasAgent := m.agents[agentID]
 
-	if hasAgent && m.config.MaxRestartsPerAgent > 0 && ma.restarts >= m.config.MaxRestartsPerAgent {
-		m.mu.Unlock()
-		slog.Error("runtime: max restarts exceeded, not restoring",
-			"agent_id", agentID, "restarts", ma.restarts,
-			"max", m.config.MaxRestartsPerAgent, "reason", reason,
-		)
-		return
-	}
-
-	if hasAgent {
-		ma.restarts++
-		ma.resurrecting = true
-	}
-	m.totalRestarts++
-
-	m.g.Go(func() error {
-		defer func() {
-			m.mu.Lock()
-			if entry, exists := m.agents[agentID]; exists {
-				entry.resurrecting = false
-			}
-			m.mu.Unlock()
-		}()
-
-		// Exponential backoff: 1s, 2s, 4s, capped at 30s.
-		backoff := time.Second
-		const maxBackoff = 30 * time.Second
-		const maxAttempts = 5
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
-			err := m.RestoreAgent(restoreCtx, agentID, factory)
-			restoreCancel()
-			if err == nil {
-				return nil
-			}
-			slog.Error("runtime: restore failed",
-				"agent_id", agentID, "attempt", attempt, "error", err,
-			)
-			if attempt < maxAttempts {
-				select {
-				case <-m.gctx.Done():
-					return nil
-				case <-time.After(backoff):
-				}
-				backoff *= 2
-				if backoff > maxBackoff {
-					backoff = maxBackoff
-				}
-			}
+		if m.isStopped || (hasAgent && (ma.stopped || ma.resurrecting)) {
+			return nil, false
 		}
-		slog.Error("runtime: restore exhausted all retries",
-			"agent_id", agentID, "max_attempts", maxAttempts,
-		)
-		return nil
-	})
+		if !hasFactory {
+			slog.Warn("runtime: agent dead but no factory registered, skipping restore",
+				"agent_id", agentID, "reason", reason,
+			)
+			return nil, false
+		}
+		if hasAgent && m.config.MaxRestartsPerAgent > 0 && ma.restarts >= m.config.MaxRestartsPerAgent {
+			slog.Error("runtime: max restarts exceeded, not restoring",
+				"agent_id", agentID, "restarts", ma.restarts,
+				"max", m.config.MaxRestartsPerAgent, "reason", reason,
+			)
+			return nil, false
+		}
+		if hasAgent {
+			ma.restarts++
+			ma.resurrecting = true
+		}
+		m.totalRestarts++
+		return factory, true
+	}()
+	if !shouldRestore {
+		return
+	}
 
-	m.mu.Unlock()
+	m.scheduleResurrection(agentID, factory)
 
 	slog.Warn("runtime: agent dead, scheduling restore",
 		"agent_id", agentID, "reason", reason,
@@ -523,6 +482,59 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id":     agentID,
 		"reason":       reason,
 		"auto_restore": true,
+	})
+}
+
+func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {
+	m.g.Go(func() error {
+		// Exponential backoff: 1s, 2s, 4s, capped at 30s.
+		backoff := time.Second
+		const maxBackoff = 30 * time.Second
+		const maxAttempts = 5
+		timer := time.NewTimer(backoff)
+		defer timer.Stop()
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
+			err := m.RestoreAgent(restoreCtx, agentID, factory)
+			restoreCancel()
+			if err == nil {
+				m.mu.Lock()
+				if entry, exists := m.agents[agentID]; exists {
+					entry.resurrecting = false
+				}
+				m.mu.Unlock()
+				return nil
+			}
+			slog.Error("runtime: restore failed",
+				"agent_id", agentID, "attempt", attempt, "error", err,
+			)
+			if attempt < maxAttempts {
+				timer.Reset(backoff)
+				select {
+				case <-m.gctx.Done():
+					m.mu.Lock()
+					if entry, exists := m.agents[agentID]; exists {
+						entry.resurrecting = false
+					}
+					m.mu.Unlock()
+					return nil
+				case <-timer.C:
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
+		m.mu.Lock()
+		if entry, exists := m.agents[agentID]; exists {
+			entry.resurrecting = false
+		}
+		m.mu.Unlock()
+		slog.Error("runtime: restore exhausted all retries",
+			"agent_id", agentID, "max_attempts", maxAttempts,
+		)
+		return nil
 	})
 }
 

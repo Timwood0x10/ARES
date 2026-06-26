@@ -198,7 +198,9 @@ func (s *EvolutionScheduler) RecordScore(score float64) {
 	defer s.scoreMu.Unlock()
 
 	if len(s.scores) >= scoreWindowSize {
-		s.scores = s.scores[1:]
+		n := make([]float64, scoreWindowSize-1)
+		copy(n, s.scores[1:])
+		s.scores = n
 	}
 	s.scores = append(s.scores, score)
 }

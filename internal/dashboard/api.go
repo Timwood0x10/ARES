@@ -85,6 +85,7 @@ type APIv2 struct {
 	start    time.Time
 	arena    ArenaProvider
 	survival SurvivalProvider
+	upgrader *websocket.Upgrader
 }
 
 // NewAPIv2 creates a new unified API.
@@ -94,6 +95,18 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 		mcp:   mcp,
 		hub:   hub,
 		start: time.Now(),
+		upgrader: &websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true
+				}
+				host := r.Host
+				return strings.Contains(origin, host) || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "https://localhost")
+			},
+		},
 	}
 }
 
@@ -312,8 +325,7 @@ func (a *APIv2) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upgrader := newUpgrader()
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -906,10 +918,4 @@ func errResp(msg string) map[string]string {
 	return map[string]string{"error": msg}
 }
 
-func newUpgrader() *websocket.Upgrader {
-	return &websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
-	}
-}
+

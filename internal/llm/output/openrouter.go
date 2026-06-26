@@ -18,8 +18,9 @@ import (
 // OpenRouterAdapter implements LLMAdapter for OpenRouter.
 // OpenRouter is compatible with OpenAI API, so it reuses most of OpenAIAdapter logic.
 type OpenRouterAdapter struct {
-	config *Config
-	client *http.Client
+	config       *Config
+	client       *http.Client
+	streamClient *http.Client
 }
 
 // NewOpenRouterAdapter creates a new OpenRouterAdapter.
@@ -30,11 +31,22 @@ func NewOpenRouterAdapter(config *Config) *OpenRouterAdapter {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://openrouter.ai/api/v1"
 	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
 
 	return &OpenRouterAdapter{
 		config: config,
 		client: &http.Client{
-			Timeout: time.Duration(config.Timeout) * time.Second,
+			Timeout: time.Duration(timeout) * time.Second,
+		},
+		streamClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -185,11 +197,8 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	req.Header.Set("HTTP-Referer", "https://github.com/Timwood0x10/ares")
 	req.Header.Set("X-Title", "Agent Framework")
 
-	// Use a client without Timeout for streaming: http.Client.Timeout covers
-	// the entire response body read, which would kill long-running streams.
-	// Instead, timeout is controlled via the request context.
-	streamClient := &http.Client{Transport: http.DefaultTransport}
-	resp, err := streamClient.Do(req)
+	// Timeout is controlled via the request context, not the client.
+	resp, err := a.streamClient.Do(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}

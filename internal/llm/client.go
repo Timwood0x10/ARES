@@ -682,22 +682,27 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	ch := make(chan StreamChunk, defaultStreamBuffer)
 	go func() {
 		defer close(ch)
-		var fullResponse string
+		var builder strings.Builder
 		var streamErr error
 		for chunk := range rawCh {
-			fullResponse += chunk.Content
+			if chunk.Content != "" {
+				builder.WriteString(chunk.Content)
+			}
 			if chunk.Err != nil {
 				streamErr = chunk.Err
+			}
+			if chunk.Content != "" || chunk.Done {
+				select {
+				case ch <- chunk:
+				case <-ctx.Done():
+					return
+				}
 			}
 			if chunk.Done {
 				break
 			}
-			select {
-			case ch <- chunk:
-			case <-ctx.Done():
-				return
-			}
 		}
+		fullResponse := builder.String()
 		duration := time.Since(start)
 		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
 

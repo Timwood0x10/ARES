@@ -107,13 +107,15 @@ Execution order: [s1 s2_v2 s3]
 ...
 ```
 
-### 7. Node-Level Recovery (`recovery/`)
+### 7. Node-Level Recovery with Runtime Plugins (`recovery/`)
 
-Shows automated recovery from step failure using `StepRecoveryHandler`:
-- A failing step with a `RecoveryPolicy` (strategy: `replace_node`)
+Shows automated recovery from step failure combined with the full runtime plugin stack:
+- `CheckpointPlugin` persists execution state at each step boundary (crash recovery)
+- `ObserverPlugin` captures lifecycle events to an in-memory store
+- `ToolPlugin` records tool invocations via `ExecutionCollector`
+- `BasicRecoveryPlugin` with allowlist-based recovery policy
 - Custom `StepRecoveryHandler` that returns a replacement step
-- Recovery events (`EventStepFailed`, `EventStepRecoveryStarted`, `EventStepRecoveryCompleted`)
-- Workflow continues seamlessly after replacement
+- All plugins communicate through `PluginBus` — no direct coupling
 
 **Run it:**
 ```bash
@@ -129,6 +131,8 @@ Steps executed: 2
   Step "s1_recovery": status=completed output="success: retry_s1"
   Step "s2": status=completed output="success: process"
 Recovery events: [step.failed step.recovery.started step.recovery.completed]
+Checkpoint state version: 4
+Collector: routes=0 tools=0 errors=1
 ```
 
 ### 8. GraphEventHub Subscription (`subscribe/`)
@@ -164,13 +168,14 @@ Compares `ApplyAtCheckpoint` vs `ApplyImmediate` modes in `DynamicExecutor`:
 cd applymode && go run applymode_example.go
 ```
 
-### 10. Real-World Integration (`integration/`)
+### 10. Real-World Integration with Full Plugin Stack (`integration/`)
 
-A complete customer support ticket processing system:
-- Ticket validation
-- Agent-based classification (billing, account, technical)
-- Priority analysis
-- Dynamic routing to appropriate teams
+A complete customer support ticket processing system powered by `DynamicExecutor`:
+- Ticket validation → classification → priority analysis → team routing → logging
+- `runtimeStack` abstraction: one function wires CheckpointPlugin, ObserverPlugin, ToolPlugin, and BasicRecoveryPlugin
+- `ExecutionCollector` aggregates routes, tools, memory hits, and errors across the execution
+- `CheckpointPlugin` with `WithFlushInterval` for batched persistence
+- All plugins communicate through `PluginBus` — clean separation of concerns
 
 **Run it:**
 ```bash
@@ -178,12 +183,47 @@ cd integration && go run integration_example.go
 ```
 
 **Features:**
-- Multi-agent workflow
-- Complex business logic
-- State transformation across nodes
+- Multi-agent workflow with `DynamicExecutor`
+- Full runtime plugin stack (checkpoint, observer, tool, recovery)
+- Collector-based execution telemetry
 - Real-world use case demonstration
 
 ## Core Concepts
+
+### Runtime Plugin System
+
+The `PluginBus` provides a decoupled way to extend workflow execution with cross-cutting concerns. Plugins register capabilities and communicate through an `EventBus` — no direct plugin-to-plugin dependencies.
+
+```go
+// Create plugins
+collector := runtime.NewExecutionCollector(executionID)
+checkpoint := runtime.NewCheckpointPlugin("checkpoint", store).WithCollector(collector)
+observer := runtime.NewObserverPlugin("observer", eventStore)
+tool := runtime.NewToolPlugin("tool").WithCollector(collector)
+recovery := runtime.NewBasicRecoveryPlugin("recovery")
+
+// Wire into a single bus
+bus := runtime.NewPluginBus()
+for _, p := range []runtime.RuntimePlugin{checkpoint, observer, tool, recovery} {
+    bus.Register(p)
+}
+bus.Start(ctx)
+defer bus.Stop(ctx)
+
+// Attach to executor
+executor := engine.NewDynamicExecutor(registry, mode).WithPluginBus(bus)
+```
+
+Available plugins:
+- **CheckpointPlugin** — persists `ExperienceCheckpoint` at step boundaries; supports `WithFlushInterval` for batched writes
+- **ObserverPlugin** — subscribes to lifecycle events and writes them to an `EventStore`
+- **ToolPlugin** — records tool invocations via `ExecutionCollector`
+- **InterruptPlugin** — records HITL interrupt outcomes for observability
+- **LoopPlugin** — tracks loop iterations with `ShouldContinue` exit conditions
+- **BasicRecoveryPlugin** — allowlist-based recovery policy via `RecoveryPlugin` interface
+- **ExpressionRouter** — rule-based routing via `RouterPlugin` interface
+- **MemoryRouter** — memory-aware routing (consults `MemoryPlugin` first, falls back to expression rules)
+- **EvolutionRouter** — evolution-aware routing (consults `EvolutionPlugin` for agent/route recommendations)
 
 ### Nodes
 
@@ -282,6 +322,9 @@ go test ./internal/workflow/graph/... ./api/service/graph/... -v
 - ✅ **Timeout Support**: Configurable timeouts for graph execution
 - ✅ **State Management**: Share data across nodes
 - ✅ **Agent Integration**: Seamless agent workflow integration
+- ✅ **Runtime Plugins**: Decoupled checkpoint, observer, tool, recovery, routing via PluginBus
+- ✅ **Execution Telemetry**: Collector-based aggregation of routes, tools, memory hits, errors
+- ✅ **Crash Recovery**: Checkpoint persistence with batched flush intervals
 
 ## Performance
 

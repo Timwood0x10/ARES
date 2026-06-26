@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"text/template"
 )
@@ -90,6 +91,8 @@ func WithPrompt(tmpl string) LLMJudgeOption {
 		parsed, err := template.New("judge").Parse(tmpl)
 		if err == nil {
 			e.promptTmpl = parsed
+		} else {
+			slog.Warn("invalid judge prompt template, using default", "error", err)
 		}
 	}
 }
@@ -104,14 +107,24 @@ func WithScale(scale ScaleType) LLMJudgeOption {
 // WithChinesePrompt configures the evaluator to use the Chinese default prompt.
 func WithChinesePrompt() LLMJudgeOption {
 	return func(e *LLMJudgeEvaluator) {
-		e.promptTmpl = template.Must(template.New("judge_cn").Parse(DefaultJudgePromptCN))
+		parsed, err := template.New("judge_cn").Parse(DefaultJudgePromptCN)
+		if err != nil {
+			slog.Error("invalid Chinese judge prompt template", "error", err)
+			return
+		}
+		e.promptTmpl = parsed
 	}
 }
 
 // WithEnglishPrompt configures the evaluator to use the English default prompt.
 func WithEnglishPrompt() LLMJudgeOption {
 	return func(e *LLMJudgeEvaluator) {
-		e.promptTmpl = template.Must(template.New("judge_en").Parse(DefaultJudgePromptEN))
+		parsed, err := template.New("judge_en").Parse(DefaultJudgePromptEN)
+		if err != nil {
+			slog.Error("invalid English judge prompt template", "error", err)
+			return
+		}
+		e.promptTmpl = parsed
 	}
 }
 

@@ -83,7 +83,7 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 	localOutputStore := NewOutputStore()
 	defer localOutputStore.Close()
 
-	resultChan := make(chan *StepResult, len(workflow.Steps))
+	resultChan := make(chan *StepResult, len(workflow.Steps)*2)
 	errChan := make(chan error, 1)
 
 	// Use errgroup to manage the runSteps goroutine

@@ -193,12 +193,13 @@ func NewWSClient(hub *WSHub, conn *websocket.Conn) *WSClient {
 }
 
 // Subscribe adds the client to a channel.
+// Lock ordering: c.hub.mu before c.mu (matching removeClient).
 func (c *WSClient) Subscribe(channel string) {
+	c.hub.mu.Lock()
 	c.mu.Lock()
 	c.channels[channel] = struct{}{}
 	c.mu.Unlock()
 
-	c.hub.mu.Lock()
 	if _, ok := c.hub.channels[channel]; !ok {
 		c.hub.channels[channel] = make(map[*WSClient]struct{})
 	}
@@ -208,11 +209,11 @@ func (c *WSClient) Subscribe(channel string) {
 
 // Unsubscribe removes the client from a channel.
 func (c *WSClient) Unsubscribe(channel string) {
+	c.hub.mu.Lock()
 	c.mu.Lock()
 	delete(c.channels, channel)
 	c.mu.Unlock()
 
-	c.hub.mu.Lock()
 	if subs, ok := c.hub.channels[channel]; ok {
 		delete(subs, c)
 		if len(subs) == 0 {

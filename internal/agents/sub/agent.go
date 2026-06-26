@@ -203,11 +203,15 @@ func (a *subAgent) Stop(ctx context.Context) error {
 
 // Process handles input and returns result.
 func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
-	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
+	a.mu.RLock()
+	status := a.status
+	a.mu.RUnlock()
+
+	if status != models.AgentStatusReady && status != models.AgentStatusOffline {
 		return nil, errors.ErrAgentNotReady
 	}
 
-	if a.Status() == models.AgentStatusOffline {
+	if status == models.AgentStatusOffline {
 		if err := a.Start(ctx); err != nil {
 			return nil, err
 		}
