@@ -111,9 +111,10 @@ func checkpointKey(executionID string) string {
 // (BeforeStep, AfterStep) and manages accumulated execution state.
 // It implements RuntimePlugin and WorkflowHook.
 type CheckpointPlugin struct {
-	name  string
-	store CheckpointStore
-	mu    sync.Mutex
+	name      string
+	store     CheckpointStore
+	mu        sync.Mutex
+	collector *ExecutionCollector // optional; if set, merged before save
 	// accumulated state across hook calls
 	snapshots map[string]*ExperienceCheckpoint // executionID → checkpoint
 }
@@ -138,6 +139,13 @@ func (p *CheckpointPlugin) Name() string {
 // Capabilities returns the capabilities this plugin provides.
 func (p *CheckpointPlugin) Capabilities() []Capability {
 	return []Capability{CapCheckpoint}
+}
+
+// WithCollector sets an execution collector whose data is merged into
+// checkpoints before saving.
+func (p *CheckpointPlugin) WithCollector(c *ExecutionCollector) *CheckpointPlugin {
+	p.collector = c
+	return p
 }
 
 // Start initializes the checkpoint plugin.
@@ -260,6 +268,9 @@ func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 
 func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {
 	ckpt.CreatedAt = time.Now()
+	if p.collector != nil {
+		p.collector.MergeInto(ckpt)
+	}
 	data, err := json.Marshal(ckpt)
 	if err != nil {
 		return fmt.Errorf("checkpoint: marshal: %w", err)

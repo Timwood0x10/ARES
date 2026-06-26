@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // TestNewDynamicExecutor verifies that NewDynamicExecutor returns a valid
@@ -918,4 +919,198 @@ func TestDynamicExecutor_HITLBuilderMethods(t *testing.T) {
 	assert.Same(t, executor, result, "builder methods should return the same executor")
 	assert.NotNil(t, executor.hitlHandler)
 	assert.NotNil(t, executor.hitlStore)
+}
+
+// ---------------------------------------------------------------------------
+// Step condition tests
+// ---------------------------------------------------------------------------
+
+func TestDynamicExecutor_StepCondition_SkipsWhenFalse(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	conditionExecuted := false
+	shouldSkip := true
+	dag, _ := NewMutableDAG([]*Step{
+		{
+			ID: "s1", Name: "Step 1", AgentType: "test-agent", Input: "in",
+			Condition: func(vars map[string]any) bool {
+				conditionExecuted = true
+				return !shouldSkip
+			},
+		},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusSkipped, result.Steps[0].Status)
+	assert.True(t, conditionExecuted)
+}
+
+func TestDynamicExecutor_StepCondition_ExecutesWhenTrue(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{
+			ID: "s1", Name: "Step 1", AgentType: "test-agent", Input: "in",
+			Condition: func(vars map[string]any) bool { return true },
+		},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status)
+}
+
+func TestDynamicExecutor_StepCondition_NilCondition(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status)
+}
+
+func TestDynamicExecutor_StepCondition_MixedChain(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+		{
+			ID: "s2", AgentType: "test-agent", DependsOn: []string{"s1"},
+			Condition: func(vars map[string]any) bool { return false },
+		},
+		{ID: "s3", AgentType: "test-agent", DependsOn: []string{"s1"}},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-chain", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 3)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status) // s1 executed
+	assert.Equal(t, StepStatusSkipped, result.Steps[1].Status)  // s2 skipped
+	assert.Equal(t, StepStatusCompleted, result.Steps[2].Status) // s3 executed
+}
+
+// ---------------------------------------------------------------------------
+// Router integration tests
+// ---------------------------------------------------------------------------
+
+func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	bus := runtime.NewPluginBus()
+	router := runtime.NewExpressionRouter("test-router", []runtime.RouteRule{
+		{
+			FromStepID: "s1",
+			ToStepID:   "s2",
+			Condition:  func(output string, vars map[string]any) bool { return true },
+			Reason:     "always route to s2",
+		},
+	})
+	require.NoError(t, bus.Register(router))
+	require.NoError(t, bus.Start(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, err := bus.Subscribe(ctx, events.EventFilter{
+		Types: []events.EventType{runtime.EventRouteDecided},
+	})
+	require.NoError(t, err)
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+		{ID: "s2", AgentType: "test-agent", DependsOn: []string{"s1"}},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	executor.WithPluginBus(bus)
+
+	wf := &Workflow{ID: "wf-router", Steps: dag.Steps()}
+	_, err = executor.ExecuteDynamic(ctx, wf, "init", dag)
+	require.NoError(t, err)
+
+	select {
+	case evt := <-eventCh:
+		assert.Equal(t, runtime.EventRouteDecided, evt.Type)
+		assert.Equal(t, "s2", evt.Payload["next_step_id"])
+		assert.Equal(t, "always route to s2", evt.Payload["route_reason"])
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for route event")
+	}
+}
+
+func TestDynamicExecutor_RouterNoRouterRegistered(t *testing.T) {
+	// Executor without a plugin bus should work normally with no routing.
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-norouter", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 }

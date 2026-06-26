@@ -37,6 +37,11 @@ const (
 	WorkflowStatusCancelled WorkflowStatus = "cancelled"
 )
 
+// ConditionFunc is evaluated before a step executes. If it returns false,
+// the step is skipped. The function receives workflow variables and can
+// access step outputs via closure. A nil condition means unconditional.
+type ConditionFunc func(variables map[string]any) bool
+
 // StepStatus represents the execution status of a workflow step.
 type StepStatus string
 
@@ -59,6 +64,7 @@ type Step struct {
 	RetryPolicy    *RetryPolicy      `json:"retry_policy,omitempty"`
 	RecoveryPolicy *RecoveryPolicy   `json:"recovery_policy,omitempty"`
 	Interrupt      *InterruptConfig  `json:"interrupt,omitempty"`
+	Condition      ConditionFunc     `json:"-"` // evaluated at runtime; nil means unconditional
 	Status         StepStatus        `json:"status"`
 	Output         string            `json:"output,omitempty"`
 	Error          string            `json:"error,omitempty"`

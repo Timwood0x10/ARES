@@ -33,4 +33,5 @@ type StepResult struct {
 	Output   string
 	Error    string
 	Duration time.Duration
+	Metadata map[string]string
 }

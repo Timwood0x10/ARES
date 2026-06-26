@@ -376,6 +376,20 @@ func (e *DynamicExecutor) execLoop(
 				}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
 			}
 
+			// After a completed step, check for routing decisions.
+			if result.Status == StepStatusCompleted && e.pluginBus != nil {
+				decision := e.handleStepRouting(ctx, execution, result, mutableDAG, currentOrder)
+				if decision != nil {
+					slog.Debug("route decision",
+						"execution_id", execution.ID,
+						"from_step", result.StepID,
+						"to_step", decision.NextStepID,
+						"reason", decision.Reason,
+						"source", decision.Source,
+					)
+				}
+			}
+
 		case err := <-errChan:
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
@@ -550,6 +564,32 @@ func (e *DynamicExecutor) runDynamicSteps(
 			stepIndex++
 
 			sid := stepID
+
+			// Evaluate step condition before dispatching.
+			if step.Condition != nil {
+				mu.Lock()
+				varsCopy := make(map[string]any, len(execution.Variables))
+				for k, v := range execution.Variables {
+					varsCopy[k] = v
+				}
+				mu.Unlock()
+				if !step.Condition(varsCopy) {
+					<-sem // release semaphore acquired above
+					stepResult := &StepResult{
+						StepID: sid,
+						Status: StepStatusSkipped,
+						Error:  "skipped: condition not met",
+					}
+					select {
+					case resultChan <- stepResult:
+					case <-ctx.Done():
+					}
+					mu.Lock()
+					processed[sid] = true
+					mu.Unlock()
+					continue
+				}
+			}
 
 			// Check for HITL interrupt before dispatching the step goroutine.
 			if step.Interrupt != nil && e.hitlHandler == nil {
@@ -804,197 +844,4 @@ func (e *DynamicExecutor) handleDynamicInterrupt(
 	return false
 }
 
-// recomputeOrder checks if the DAG version changed and updates the execution
-// order to match the new topological sort. Replacing the entire order (rather
-// than appending) ensures that replacement nodes appear before their downstream
-// steps, preventing deadlock when a failed node is replaced.
-func (e *DynamicExecutor) recomputeOrder(
-	mutableDAG *MutableDAG,
-	lastVersion *uint64,
-	currentOrder *[]string,
-	completed map[string]bool,
-	processed map[string]bool,
-	mu *sync.Mutex,
-) {
-	// M9 fix: hold mu across the entire version-check-and-update operation
-	// to prevent concurrent recomputeOrder calls from both detecting the
-	// same version change and appending duplicate steps.
-	mu.Lock()
-	defer mu.Unlock()
 
-	currentVersion := mutableDAG.Version()
-	if *lastVersion == currentVersion {
-		return
-	}
-
-	newOrder, err := mutableDAG.GetExecutionOrder()
-	if err != nil {
-		slog.Warn("recomputeOrder failed, keeping existing order",
-			"error", err,
-			"version", currentVersion,
-		)
-		// Update lastVersion to prevent repeated detection of the same cycle.
-		*lastVersion = currentVersion
-		return
-	}
-
-	*lastVersion = currentVersion
-
-	// Replace the order entirely so that the topological sort is preserved.
-	// This is critical when a replacement node (e.g. step1_recovery) needs
-	// to appear before downstream steps (e.g. step2) in the order.
-	*currentOrder = newOrder
-}
-
-// findStepInDAG finds a step by ID in the MutableDAG.
-func (e *DynamicExecutor) findStepInDAG(mutableDAG *MutableDAG, stepID string) *Step {
-	steps := mutableDAG.Steps()
-	for _, step := range steps {
-		if step.ID == stepID {
-			return step
-		}
-	}
-	return nil
-}
-
-// handleStepFailure attempts to recover a failed step. Returns true if the
-// failure was handled and the workflow should continue. Returns false if the
-// workflow should fail. The caller is responsible for not recording the failure
-// result as terminal when true is returned.
-//
-// Requires lastVersion/currentOrder/mu to match those used by the active
-// runDynamicSteps goroutine so that recomputeOrder works correctly.
-//
-// recoveryCh is used to wake the scheduler when recovery adds new steps.
-func (e *DynamicExecutor) handleStepFailure(
-	ctx context.Context,
-	result *StepResult,
-	workflow *Workflow,
-	execution *WorkflowExecution,
-	mutableDAG *MutableDAG,
-	lastVersion *uint64,
-	currentOrder *[]string,
-	completed map[string]bool,
-	processed map[string]bool,
-	mu *sync.Mutex,
-	recoveryCh chan struct{},
-) bool {
-	step := e.findStepInDAG(mutableDAG, result.StepID)
-	if step == nil || step.RecoveryPolicy == nil || e.recoveryHandler == nil {
-		return false
-	}
-
-	if e.recoveryEventSink != nil {
-		e.recoveryEventSink(ctx, events.EventStepFailed, map[string]any{
-			"execution_id": execution.ID,
-			"workflow_id":  workflow.ID,
-			"step_id":      result.StepID,
-			"error":        result.Error,
-		})
-	}
-
-	failure := StepFailure{
-		ExecutionID: execution.ID,
-		WorkflowID:  workflow.ID,
-		StepID:      result.StepID,
-		Error:       result.Error,
-		Input:       "",
-	}
-
-	decision, err := e.recoveryHandler.RecoverStep(ctx, failure, mutableDAG)
-	if err != nil {
-		slog.Warn("recovery handler returned error, failing workflow",
-			"step_id", result.StepID,
-			"error", err,
-		)
-		return false
-	}
-	if decision == nil {
-		return false
-	}
-
-	switch decision.Strategy {
-	case RecoveryReplaceNode:
-		if decision.NewStep == nil {
-			slog.Warn("replace_node decision missing NewStep, failing workflow",
-				"step_id", result.StepID,
-			)
-			return false
-		}
-
-		if e.recoveryEventSink != nil {
-			e.recoveryEventSink(ctx, events.EventStepRecoveryStarted, map[string]any{
-				"execution_id":   execution.ID,
-				"workflow_id":    workflow.ID,
-				"failed_step_id": result.StepID,
-				"strategy":       decision.Strategy,
-			})
-		}
-
-		if err := mutableDAG.ReplaceNode(ctx, result.StepID, decision.NewStep); err != nil {
-			slog.Warn("ReplaceNode failed during recovery, failing workflow",
-				"step_id", result.StepID,
-				"error", err,
-			)
-			if e.recoveryEventSink != nil {
-				e.recoveryEventSink(ctx, events.EventStepRecoveryFailed, map[string]any{
-					"execution_id":   execution.ID,
-					"workflow_id":    workflow.ID,
-					"failed_step_id": result.StepID,
-					"error":          err.Error(),
-				})
-			}
-			return false
-		}
-
-		e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
-
-		// Wake the scheduler so it picks up the replacement step.
-		select {
-		case recoveryCh <- struct{}{}:
-		default:
-		}
-
-		if e.recoveryEventSink != nil {
-			e.recoveryEventSink(ctx, events.EventStepRecoveryCompleted, map[string]any{
-				"execution_id":        execution.ID,
-				"workflow_id":         workflow.ID,
-				"failed_step_id":      result.StepID,
-				"replacement_step_id": decision.NewStep.ID,
-				"strategy":            decision.Strategy,
-			})
-		}
-
-		return true
-
-	default:
-		return false
-	}
-}
-
-// toRuntimeStep converts an engine Step to the runtime Step mirror type
-// for WorkflowHook invocation.
-func toRuntimeStep(s *Step) *runtime.Step {
-	return &runtime.Step{
-		ID:        s.ID,
-		Name:      s.Name,
-		AgentType: s.AgentType,
-		Status:    runtime.StepStatus(s.Status),
-		Output:    s.Output,
-		Error:     s.Error,
-		StartedAt: s.StartedAt,
-	}
-}
-
-// toRuntimeStepResult converts an engine StepResult to the runtime mirror
-// type for WorkflowHook invocation.
-func toRuntimeStepResult(r *StepResult) *runtime.StepResult {
-	return &runtime.StepResult{
-		StepID:   r.StepID,
-		Name:     r.Name,
-		Status:   runtime.StepStatus(r.Status),
-		Output:   r.Output,
-		Error:    r.Error,
-		Duration: r.Duration,
-	}
-}

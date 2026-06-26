@@ -54,6 +54,71 @@ type WorkflowHook interface {
 	AfterStep(ctx context.Context, executionID string, result *StepResult) error
 }
 
+// MemoryPlugin provides memory-aware routing advice and task context
+// for workflow execution. Implementations query the memory system for
+// similar past executions and return routing suggestions.
+type MemoryPlugin interface {
+	RuntimePlugin
+	// AdviseRoute returns routing suggestions based on similar past executions.
+	AdviseRoute(ctx context.Context, state RouteState) ([]RouteAdvice, error)
+}
+
+// RouteAdvice is a single routing suggestion from a MemoryPlugin.
+type RouteAdvice struct {
+	NextStepID string  `json:"next_step_id"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason"`
+}
+
+// EvolutionPlugin provides runtime recommendations based on evolutionary
+// computation (genome, scoring, mutation). It consumes execution outcomes
+// and produces suggestions for agent selection, routing, and recovery.
+type EvolutionPlugin interface {
+	RuntimePlugin
+	// Recommend returns a runtime recommendation based on execution state.
+	Recommend(ctx context.Context, state ExecutionState) (*RuntimeRecommendation, error)
+	// RecordOutcome ingests a completed execution outcome for offline learning.
+	RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error
+}
+
+// ExecutionState contains the inputs an EvolutionPlugin needs to make a
+// recommendation.
+type ExecutionState struct {
+	ExecutionID     string
+	WorkflowID      string
+	CurrentStepID   string
+	StepHistory     []StepResult
+	RouteHistory    []RouteRecord
+	ToolHistory     []ToolRecord
+	MemoryHits      []MemoryHitRecord
+	ScoringSignals  []ScoringSignal
+}
+
+// RuntimeRecommendation is the output of an EvolutionPlugin.Recommend call.
+type RuntimeRecommendation struct {
+	PreferredAgent  string  `json:"preferred_agent,omitempty"`
+	RouterWeight    float64 `json:"router_weight,omitempty"`
+	MutationHint    string  `json:"mutation_hint,omitempty"`
+	Confidence      float64 `json:"confidence"`
+}
+
+// ExecutionOutcome represents the final state of a completed execution for
+// evolution consumption.
+type ExecutionOutcome struct {
+	ExecutionID     string
+	WorkflowID      string
+	Status          string
+	Duration        int64 // milliseconds
+	TotalSteps      int
+	FailedSteps     int
+	SkippedSteps    int
+	RouteCount      int
+	ToolCount       int
+	MemoryHitCount  int
+	InterruptCount  int
+	ErrorCount      int
+}
+
 // EventBus is the event system exposed to plugins. It allows emitting
 // structured events that are fanned out to all subscribers.
 type EventBus interface {

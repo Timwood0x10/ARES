@@ -664,6 +664,276 @@ func TestCheckpointPlugin_SchemaVersion(t *testing.T) {
 	assert.Equal(t, 1, ckpt.SchemaVersion, "schema version must be 1")
 }
 
+func TestCheckpointPlugin_WithCollector_MergesData(t *testing.T) {
+	ckptStore := newMemoryCheckpointStore()
+	bus := NewPluginBus()
+
+	collector := NewExecutionCollector("exec-1")
+	cp := NewCheckpointPlugin("test-cp", ckptStore).WithCollector(collector)
+	require.NoError(t, bus.Register(cp))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// Record data through collector.
+	collector.RecordRoute("s1", "s2", "test route", "expression")
+	collector.RecordTool("s1", "calc", "1+1", "2", time.Second, true)
+	collector.RecordError("s1", "test error")
+
+	// Trigger a checkpoint save via AfterStep.
+	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusCompleted, Output: "done",
+	})
+	require.NoError(t, err)
+
+	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-1")
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	var ckpt ExperienceCheckpoint
+	err = json.Unmarshal(data, &ckpt)
+	require.NoError(t, err)
+
+	require.Len(t, ckpt.RouteHistory, 1)
+	assert.Equal(t, "s2", ckpt.RouteHistory[0].ToStepID)
+	require.Len(t, ckpt.ToolHistory, 1)
+	assert.Equal(t, "calc", ckpt.ToolHistory[0].ToolName)
+	require.Len(t, ckpt.ErrorHistory, 1)
+	assert.Equal(t, "test error", ckpt.ErrorHistory[0].Message)
+}
+
+func TestCheckpointPlugin_WithCollector_EmptyCollector(t *testing.T) {
+	ckptStore := newMemoryCheckpointStore()
+	collector := NewExecutionCollector("exec-1")
+	cp := NewCheckpointPlugin("test-cp", ckptStore).WithCollector(collector)
+
+	_ = cp.AfterStep(context.Background(), "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusCompleted,
+	})
+
+	data, _ := ckptStore.Load(context.Background(), "checkpoint/exec-1")
+	var ckpt ExperienceCheckpoint
+	_ = json.Unmarshal(data, &ckpt)
+	assert.Empty(t, ckpt.RouteHistory)
+	assert.Empty(t, ckpt.ToolHistory)
+}
+
+func TestExpressionRouter_RegisteredAsPlugin(t *testing.T) {
+	bus := NewPluginBus()
+	router := NewExpressionRouter("test-router", []RouteRule{
+		{
+			FromStepID: "s1",
+			ToStepID:   "s2",
+			Condition:  func(output string, vars map[string]any) bool { return true },
+			Reason:     "always",
+		},
+	})
+
+	require.NoError(t, bus.Register(router))
+	require.NoError(t, bus.Start(context.Background()))
+
+	plugins := bus.PluginsByCap(CapRouter)
+	if assert.Len(t, plugins, 1) {
+		r, ok := plugins[0].(RouterPlugin)
+		require.True(t, ok)
+		decision, err := r.Route(context.Background(), RouteState{
+			CurrentStepID: "s1",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, decision)
+		assert.Equal(t, "s2", decision.NextStepID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InterruptPlugin tests
+// ---------------------------------------------------------------------------
+
+func TestInterruptPlugin_New(t *testing.T) {
+	p := NewInterruptPlugin("")
+	assert.Equal(t, "interrupt", p.Name())
+	p2 := NewInterruptPlugin("custom-hitl")
+	assert.Equal(t, "custom-hitl", p2.Name())
+}
+
+func TestInterruptPlugin_RecordsInterruptOnSkippedRejected(t *testing.T) {
+	bus := NewPluginBus()
+	collector := NewExecutionCollector("exec-1")
+
+	p := NewInterruptPlugin("test-hitl").WithCollector(collector)
+	require.NoError(t, bus.Register(p))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// AfterStep with a "rejected by human" skipped step.
+	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusSkipped, Error: "rejected by human",
+	})
+	require.NoError(t, err)
+
+	interrupts := collector.InterruptLog()
+	require.Len(t, interrupts, 1)
+	assert.Equal(t, "s1", interrupts[0].StepID)
+	assert.Equal(t, "reject", interrupts[0].Action)
+}
+
+func TestInterruptPlugin_RecordsInterruptWithMetadata(t *testing.T) {
+	bus := NewPluginBus()
+	collector := NewExecutionCollector("exec-1")
+
+	p := NewInterruptPlugin("test-hitl").WithCollector(collector)
+	require.NoError(t, bus.Register(p))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// AfterStep with interrupt metadata.
+	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusCompleted,
+		Metadata: map[string]string{
+			"interrupt_action":   "approve",
+			"interrupt_feedback": "looks good",
+		},
+	})
+	require.NoError(t, err)
+
+	interrupts := collector.InterruptLog()
+	require.Len(t, interrupts, 1)
+	assert.Equal(t, "approve", interrupts[0].Action)
+	assert.Equal(t, "looks good", interrupts[0].Feedback)
+}
+
+func TestInterruptPlugin_EmitsEvent(t *testing.T) {
+	bus := NewPluginBus()
+	p := NewInterruptPlugin("test-hitl")
+	require.NoError(t, bus.Register(p))
+	require.NoError(t, bus.Start(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	ch, err := bus.Subscribe(ctx, events.EventFilter{
+		Types: []events.EventType{EventInterruptCreated},
+	})
+	require.NoError(t, err)
+
+	err = bus.AfterStep(ctx, "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusSkipped, Error: "rejected by human",
+	})
+	require.NoError(t, err)
+
+	select {
+	case evt := <-ch:
+		assert.Equal(t, EventInterruptCreated, evt.Type)
+		assert.Equal(t, "exec-1", evt.StreamID)
+		assert.Equal(t, "reject", evt.Payload["action"])
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for interrupt event")
+	}
+}
+
+func TestInterruptPlugin_DoesNotRecordNonInterruptSteps(t *testing.T) {
+	bus := NewPluginBus()
+	collector := NewExecutionCollector("exec-1")
+
+	p := NewInterruptPlugin("test-hitl").WithCollector(collector)
+	require.NoError(t, bus.Register(p))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// Normal completed step without interrupt metadata.
+	err := bus.AfterStep(context.Background(), "exec-1", &StepResult{
+		StepID: "s1", Status: StepStatusCompleted,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, collector.InterruptLog())
+}
+
+// ---------------------------------------------------------------------------
+// LoopPlugin tests
+// ---------------------------------------------------------------------------
+
+func TestLoopPlugin_New(t *testing.T) {
+	p := NewLoopPlugin("", LoopConfig{MaxIterations: 5})
+	assert.Equal(t, "loop", p.Name())
+	assert.Equal(t, 5, p.Config().MaxIterations)
+}
+
+func TestLoopPlugin_Capabilities(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{})
+	assert.Contains(t, p.Capabilities(), CapLoop)
+}
+
+func TestLoopPlugin_ShouldContinue_MaxIterations(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{MaxIterations: 3})
+	assert.True(t, p.ShouldContinue(nil))
+
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.True(t, p.ShouldContinue(nil))
+
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.True(t, p.ShouldContinue(nil))
+
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.False(t, p.ShouldContinue(nil))
+}
+
+func TestLoopPlugin_ShouldContinue_UntilCondition(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{
+		UntilCondition: func(vars map[string]any) bool {
+			count, _ := vars["count"].(int)
+			return count >= 2
+		},
+	})
+	assert.True(t, p.ShouldContinue(map[string]any{"count": 0}))
+	assert.True(t, p.ShouldContinue(map[string]any{"count": 1}))
+	assert.False(t, p.ShouldContinue(map[string]any{"count": 2}))
+}
+
+func TestLoopPlugin_ShouldContinue_NoLimit(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{})
+	for i := 0; i < 100; i++ {
+		assert.True(t, p.ShouldContinue(nil))
+	}
+}
+
+func TestLoopPlugin_Iteration(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{})
+	assert.Equal(t, 0, p.Iteration())
+
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.Equal(t, 1, p.Iteration())
+
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.Equal(t, 2, p.Iteration())
+}
+
+func TestLoopPlugin_StopResets(t *testing.T) {
+	p := NewLoopPlugin("test", LoopConfig{})
+	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	assert.Equal(t, 1, p.Iteration())
+
+	_ = p.Stop(context.Background())
+	assert.Equal(t, 0, p.Iteration())
+}
+
+func TestLoopPlugin_RegisteredAsPlugin(t *testing.T) {
+	bus := NewPluginBus()
+	p := NewLoopPlugin("test-loop", LoopConfig{MaxIterations: 5})
+	require.NoError(t, bus.Register(p))
+	require.NoError(t, bus.Start(context.Background()))
+
+	plugins := bus.PluginsByCap(CapLoop)
+	require.Len(t, plugins, 1)
+	assert.Equal(t, "test-loop", plugins[0].Name())
+}
+
+func TestLoopPlugin_EmptyNameDefaults(t *testing.T) {
+	p := NewLoopPlugin("", LoopConfig{})
+	assert.Equal(t, "loop", p.Name())
+}
+
+func TestLoopPlugin_WithCollector(t *testing.T) {
+	collector := NewExecutionCollector("exec-1")
+	p := NewLoopPlugin("test", LoopConfig{MaxIterations: 3}).WithCollector(collector)
+	assert.NotNil(t, p.collector)
+}
+
 // ---------------------------------------------------------------------------
 // Integration: ObserverPlugin + CheckpointPlugin together
 // ---------------------------------------------------------------------------
