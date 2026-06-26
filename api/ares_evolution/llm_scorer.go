@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 const (
@@ -227,13 +228,35 @@ func (s *LLMScorer) ScoreWithContext(ctx context.Context, strategy *Strategy) fl
 		return s.sampleOnce(ctx, strategy)
 	}
 
-	best := 0.0
+	var (
+		best float64
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		sem  = make(chan struct{}, 3)
+	)
 	for range s.numSamples {
-		sc := s.sampleOnce(ctx, strategy)
-		if sc > best {
-			best = sc
+		select {
+		case <-ctx.Done():
+			goto wait
+		case sem <- struct{}{}:
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
+			sc := s.sampleOnce(ctx, strategy)
+			mu.Lock()
+			if sc > best {
+				best = sc
+			}
+			mu.Unlock()
+		}()
 	}
+wait:
+	wg.Wait()
 	return best
 }
 

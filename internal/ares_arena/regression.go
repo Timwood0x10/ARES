@@ -12,7 +12,7 @@ import (
 )
 
 // maxParallelRuns limits concurrent Scorer.Score calls in runStrategy.
-const maxParallelRuns = 5
+const maxParallelRuns = 15
 
 // Common errors for regression testing.
 var (

@@ -21,7 +21,7 @@ import (
 
 const (
 	// concurrentScoreLimit is the maximum number of concurrent LLM scoring calls.
-	concurrentScoreLimit = 5
+	concurrentScoreLimit = 15
 
 	// maxLineages caps the total recorded lineage entries to prevent
 	// unbounded memory growth during long-running evolution sessions.

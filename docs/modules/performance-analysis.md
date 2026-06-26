@@ -284,8 +284,8 @@ Score(strategy)
 ### P0 — 立即实施（最大收益，1-2 天）
 
 - [✓] `ScoreAgents` 改 worker pool 并发（~20× 提速）
-- [ ] `numSamples` 并发化（~3× 提速）
-- [ ] `concurrentScoreLimit` 从 5 提升到 15
+- [✓] `numSamples` 并发化（~3× 提速）
+- [✓] `concurrentScoreLimit` 从 5 提升到 15
 - [✓] `float64ToVectorString` 改用 `strconv.FormatFloat`
 - [✓] `ParseVectorString` 改用 `strconv.ParseFloat`
 
@@ -305,7 +305,7 @@ Score(strategy)
 - [ ] ScoreCache 改 LRU（container/list）
 - [ ] StrategyHash 缓存到 Strategy 对象
 - [ ] enforceSolutionCap 加 LIMIT
-- [ ] CleanupExpired 改批量 DELETE
+- [✓] CleanupExpired 改批量 DELETE (已是最优)
 - [✓] findStep 改 map 查找
 - [✓] initMemoryContext 并行化
 - [ ] WebSocket hub 预 marshal
