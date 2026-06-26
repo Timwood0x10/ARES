@@ -169,12 +169,14 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 
 	// Warmup delay before first action.
 	if cfg.Warmup > 0 {
+		timer := time.NewTimer(cfg.Warmup)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			report.FinishedAt = time.Now()
 			report.Duration = time.Since(report.StartedAt)
 			return report, ctx.Err()
-		case <-time.After(cfg.Warmup):
+		case <-timer.C:
 		}
 	}
 
@@ -183,8 +185,10 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 	for i, sa := range scenario.Actions {
 		// Apply per-action delay.
 		if sa.Delay > 0 {
+			timer := time.NewTimer(sa.Delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				slog.Warn("arena: scenario cancelled during delay",
 					"name", scenario.Name,
 					"step", i,
@@ -195,7 +199,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 				report.computeTotals()
 				report.Score = CalculateScoreV1(service.Stats(), service.calculateAvgRecoveryTime(nil))
 				return report, ctx.Err()
-			case <-time.After(sa.Delay):
+			case <-timer.C:
 			}
 		}
 
@@ -244,9 +248,11 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 
 	// Cooldown after all actions.
 	if cfg.Cooldown > 0 {
+		timer := time.NewTimer(cfg.Cooldown)
 		select {
 		case <-ctx.Done():
-		case <-time.After(cfg.Cooldown):
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
 

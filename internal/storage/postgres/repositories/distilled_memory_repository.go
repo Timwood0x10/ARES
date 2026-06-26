@@ -237,7 +237,7 @@ func (r *DistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, u
 
 	err := r.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
 		selectQuery := `
-            SELECT id, tenant_id, user_id, session_id, content, embedding::text,
+            SELECT id, tenant_id, user_id, session_id, content,
                    embedding_model, embedding_version, memory_type, importance,
                    metadata, access_count, last_accessed_at, expires_at, created_at
             FROM distilled_memories
@@ -255,23 +255,16 @@ func (r *DistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, u
 
 		for rows.Next() {
 			memory := &DistilledMemory{}
-			var embeddingStr string
 			var metadataStr string
 
 			if err := rows.Scan(
 				&memory.ID, &memory.TenantID, &memory.UserID, &memory.SessionID,
-				&memory.Content, &embeddingStr, &memory.EmbeddingModel,
+				&memory.Content, &memory.EmbeddingModel,
 				&memory.EmbeddingVersion, &memory.MemoryType, &memory.Importance,
 				&metadataStr, &memory.AccessCount, &memory.LastAccessedAt,
 				&memory.ExpiresAt, &memory.CreatedAt,
 			); err != nil {
 				slog.WarnContext(ctx, "Failed to scan memory row", "error", err)
-				continue
-			}
-
-			memory.Embedding, err = postgres.ParseVectorString(embeddingStr)
-			if err != nil {
-				slog.WarnContext(ctx, "Failed to parse embedding", "memory_id", memory.ID, "error", err)
 				continue
 			}
 
@@ -330,7 +323,7 @@ func (r *DistilledMemoryRepository) GetByMemoryType(ctx context.Context, tenantI
 
 	err := r.withTenantTx(ctx, tenantID, func(tx *sql.Tx) error {
 		query := `
-            SELECT id, tenant_id, user_id, session_id, content, embedding::text,
+            SELECT id, tenant_id, user_id, session_id, content,
                    embedding_model, embedding_version, memory_type, importance,
                    metadata, access_count, last_accessed_at, expires_at, created_at
             FROM distilled_memories
@@ -348,22 +341,16 @@ func (r *DistilledMemoryRepository) GetByMemoryType(ctx context.Context, tenantI
 
 		for rows.Next() {
 			memory := &DistilledMemory{}
-			var embeddingStr string
 			var metadataStr string
 
 			if err := rows.Scan(
 				&memory.ID, &memory.TenantID, &memory.UserID, &memory.SessionID,
-				&memory.Content, &embeddingStr, &memory.EmbeddingModel,
+				&memory.Content, &memory.EmbeddingModel,
 				&memory.EmbeddingVersion, &memory.MemoryType, &memory.Importance,
 				&metadataStr, &memory.AccessCount, &memory.LastAccessedAt,
 				&memory.ExpiresAt, &memory.CreatedAt,
 			); err != nil {
 				return errors.Wrap(err, "scan memory")
-			}
-
-			memory.Embedding, err = postgres.ParseVectorString(embeddingStr)
-			if err != nil {
-				return errors.Wrap(err, "parse embedding")
 			}
 
 			if metadataStr != "" {

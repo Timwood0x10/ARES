@@ -142,7 +142,7 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 	}
 
 	// Tier 2: Try LLM scorer if available and within budget.
-	if ts.llm != nil && ts.budget.CanCallLLM() {
+	if ts.llm != nil && ts.budget.TryRecordLLMCall() {
 		score, scored := ts.tryLLMScore(ctx, s, hash)
 		if scored {
 			return score, TierLLM, nil
@@ -176,8 +176,6 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 //	float64 - the fitness score (0.0 on failure).
 //	bool - true if scoring succeeded.
 func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, hash uint64) (float64, bool) {
-	ts.budget.RecordLLMCall()
-
 	var score float64
 	var success bool
 

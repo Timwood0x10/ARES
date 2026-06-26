@@ -384,6 +384,7 @@ func (s *LLMScorer) parseBatchScores(resp string, expected int) []float64 {
 	}
 	return nil
 }
+
 // When a seed is configured, it embeds a determinism instruction to reduce
 // output variance across repeated evaluations of the same parameters.
 func (s *LLMScorer) buildPrompt(strategy *Strategy) string {

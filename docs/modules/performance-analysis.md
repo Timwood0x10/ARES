@@ -283,22 +283,22 @@ Score(strategy)
 
 ### P0 — 立即实施（最大收益，1-2 天）
 
-- [ ] `ScoreAgents` 改 worker pool 并发（~20× 提速）
+- [✓] `ScoreAgents` 改 worker pool 并发（~20× 提速）
 - [ ] `numSamples` 并发化（~3× 提速）
 - [ ] `concurrentScoreLimit` 从 5 提升到 15
-- [ ] `float64ToVectorString` 改用 `strconv.FormatFloat`
-- [ ] `ParseVectorString` 改用 `strconv.ParseFloat`
+- [✓] `float64ToVectorString` 改用 `strconv.FormatFloat`
+- [✓] `ParseVectorString` 改用 `strconv.ParseFloat`
 
 ### P1 — 短期实施（1-2 周）
 
-- [ ] Budget 改原子操作 `TryRecordLLMCall()`
-- [ ] keyword/list 查询移除 embedding 列
-- [ ] `CreateBatch` 改 multi-row INSERT
-- [ ] AES cipher 缓存
-- [ ] `shouldEvolve` 合并锁
-- [ ] weighted query 并行化
-- [ ] BuildContext/replaceAllIgnoreCase 改 strings.Builder
-- [ ] time.After 全部改 NewTimer + Stop
+- [✓] Budget 改原子操作 `TryRecordLLMCall()`
+- [✓] keyword/list 查询移除 embedding 列
+- [✓] `CreateBatch` 改 multi-row INSERT
+- [✓] AES cipher 缓存
+- [✓] `shouldEvolve` 合并锁
+- [✓] weighted query 并行化
+- [✓] BuildContext/replaceAllIgnoreCase 改 strings.Builder
+- [✓] time.After 全部改 NewTimer + Stop
 
 ### P2 — 中期改进（2-4 周）
 
@@ -306,8 +306,8 @@ Score(strategy)
 - [ ] StrategyHash 缓存到 Strategy 对象
 - [ ] enforceSolutionCap 加 LIMIT
 - [ ] CleanupExpired 改批量 DELETE
-- [ ] findStep 改 map 查找
-- [ ] initMemoryContext 并行化
+- [✓] findStep 改 map 查找
+- [✓] initMemoryContext 并行化
 - [ ] WebSocket hub 预 marshal
 
 ### P3 — 长期架构（vNext 计划）
@@ -328,7 +328,7 @@ Score(strategy)
 |--------|------|--------|------|
 | ScoreAgents 串行 → 并发 | 24s/cycle | 0.6s/cycle | **~40×** |
 | Vector 序列化 fmt → strconv | ~10ms/行 | ~1ms/行 | **~10×** |
-| Keyword 查询去掉 embedding | 8KB/行浪费 | 0 | IO/CPU ↓ |
+| Keyword 查询去掉 embedding | 8KB/行浪费 | 0 | IO/CPU ↓ **已实施** |
 | Weighted query 串行 → 并行 | 3x 延迟 | 1x 延迟 | **~3×** |
 | time.After 泄露修复 | timer 泄露 | 无泄露 | 稳定性 ↑ |
 | 字符串操作 O(n²) → O(n) | n² 分配 | n 分配 | **内存 ↓** |

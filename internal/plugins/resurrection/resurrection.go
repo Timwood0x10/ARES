@@ -373,10 +373,12 @@ func (s *Supervisor) backoffWait(attempt int, backoff *time.Duration) {
 	if attempt >= s.config.MaxAttempts {
 		return
 	}
+	timer := time.NewTimer(*backoff)
 	select {
 	case <-s.gctx.Done():
+		timer.Stop()
 		return
-	case <-time.After(*backoff):
+	case <-timer.C:
 	}
 	*backoff *= 2
 	if *backoff > s.config.MaxBackoff {

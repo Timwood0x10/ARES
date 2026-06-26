@@ -223,9 +223,11 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 		if handler.onTimeout != nil {
 			handler.onTimeout()
 		}
+		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+			timer.Stop()
+		case <-timer.C:
 			slog.Warn("Timeout waiting for callbacks to complete during shutdown",
 				"phase", phase)
 		}

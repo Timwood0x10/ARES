@@ -102,11 +102,13 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 				} else {
 					backoff = time.Duration(1<<uint(attempt)) * time.Second
 				}
+				timer := time.NewTimer(backoff)
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					e.setState(PhaseStateFailed)
 					return ctx.Err()
-				case <-time.After(backoff):
+				case <-timer.C:
 				}
 				continue
 			}

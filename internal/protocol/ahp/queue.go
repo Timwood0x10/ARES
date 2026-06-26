@@ -109,13 +109,16 @@ func (q *MessageQueue) DequeueWithTimeout(timeout time.Duration) (*AHPMessage, e
 	}
 	q.backupMu.Unlock()
 
+	qTimer := time.NewTimer(timeout)
 	select {
 	case msg, ok := <-q.messages:
 		if !ok {
+			qTimer.Stop()
 			return nil, errors.ErrQueueClosed
 		}
+		qTimer.Stop()
 		return msg, nil
-	case <-time.After(timeout):
+	case <-qTimer.C:
 		return nil, errors.ErrQueueEmpty
 	}
 }

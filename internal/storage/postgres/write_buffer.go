@@ -183,10 +183,12 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 		if attempt > 0 {
 			// Exponential backoff: 100ms, 200ms, 400ms, ...
 			backoff := time.Duration(100<<uint(attempt-1)) * time.Millisecond
+			wbTimer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				wbTimer.Stop()
 				return ctx.Err()
-			case <-time.After(backoff):
+			case <-wbTimer.C:
 			}
 			slog.Warn("Retrying batch flush", "attempt", attempt, "backoff", backoff)
 		}
@@ -254,11 +256,14 @@ func (b *WriteBuffer) safeSend(item *WriteItem, ctx context.Context) (sent bool)
 		return false
 	default:
 		// Buffer is full, retry once with brief wait.
+		flushTimer := time.NewTimer(100 * time.Millisecond)
 		select {
-		case <-time.After(100 * time.Millisecond):
+		case <-flushTimer.C:
 		case b.buffer <- item:
+			flushTimer.Stop()
 			return true
 		case <-ctx.Done():
+			flushTimer.Stop()
 			return false
 		}
 		return false

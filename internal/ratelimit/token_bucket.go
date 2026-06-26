@@ -71,10 +71,12 @@ func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 
 		waitTime := time.Duration(float64(time.Second) / rate)
 
+		tbTimer := time.NewTimer(waitTime)
 		select {
 		case <-ctx.Done():
+			tbTimer.Stop()
 			return ctx.Err()
-		case <-time.After(waitTime):
+		case <-tbTimer.C:
 		}
 	}
 }

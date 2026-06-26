@@ -24,6 +24,7 @@ import (
 type SecretRepository struct {
 	db            *sql.DB
 	encryptionKey []byte
+	gcm           cipher.AEAD
 }
 
 // NewSecretRepository creates a new SecretRepository instance.
@@ -35,9 +36,18 @@ func NewSecretRepository(db *sql.DB, encryptionKey []byte) (*SecretRepository, e
 	if len(encryptionKey) != 32 {
 		return nil, fmt.Errorf("encryption key must be 32 bytes for AES-256-GCM, got %d bytes", len(encryptionKey))
 	}
+	block, err := aes.NewCipher(encryptionKey)
+	if err != nil {
+		return nil, errors.Wrap(err, "create cipher")
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, errors.Wrap(err, "create GCM")
+	}
 	return &SecretRepository{
 		db:            db,
 		encryptionKey: encryptionKey,
+		gcm:           gcm,
 	}, nil
 }
 
@@ -285,22 +295,11 @@ func (r *SecretRepository) CleanupExpired(ctx context.Context) (int64, error) {
 // plaintext - data to encrypt.
 // Returns encrypted data or error if encryption fails.
 func (r *SecretRepository) encrypt(plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(r.encryptionKey)
-	if err != nil {
-		return nil, errors.Wrap(err, "create cipher")
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, errors.Wrap(err, "create GCM")
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+	nonce := make([]byte, r.gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, errors.Wrap(err, "generate nonce")
 	}
-
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := r.gcm.Seal(nonce, nonce, plaintext, nil)
 	return ciphertext, nil
 }
 
@@ -309,23 +308,13 @@ func (r *SecretRepository) encrypt(plaintext []byte) ([]byte, error) {
 // ciphertext - data to decrypt.
 // Returns decrypted data or error if decryption fails.
 func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(r.encryptionKey)
-	if err != nil {
-		return nil, errors.Wrap(err, "create cipher")
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, errors.Wrap(err, "create GCM")
-	}
-
-	nonceSize := gcm.NonceSize()
+	nonceSize := r.gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := r.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "decrypt")
 	}

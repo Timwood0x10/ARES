@@ -301,12 +301,23 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 	queries := s.buildQueries(ctx, req.Query, req.Plan)
 	s.logger.Debug("Built weighted queries", "count", len(queries), "queries", queries)
 
-	// 2. Execute search for each weighted query
-	var allResults []*SearchResult
+	// 2. Execute search for each weighted query in parallel
+	var (
+		allResults []*SearchResult
+		resultsMu  sync.Mutex
+	)
+	eg, egCtx := errgroup.WithContext(ctx)
 	for _, q := range queries {
-		results := s.searchSingleQuery(ctx, q, req)
-		allResults = append(allResults, results...)
+		q := q
+		eg.Go(func() error {
+			results := s.searchSingleQuery(egCtx, q, req)
+			resultsMu.Lock()
+			allResults = append(allResults, results...)
+			resultsMu.Unlock()
+			return nil
+		})
 	}
+	_ = eg.Wait()
 
 	s.logger.Debug("Collected results from all queries", "total", len(allResults))
 

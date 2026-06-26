@@ -584,7 +584,7 @@ func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievo
 		BreedingPoolRatio:      0.5,          // breed from top 50% of survivors
 		PromptCrossoverMode:    1,            // half-sentence split for prompts
 		Generations:            cfg.NGen,
-		Seed:                   42,           // deterministic for reproducibility
+		Seed:                   42, // deterministic for reproducibility
 		PromptPool:             []string{"careful", "creative", "precise"},
 		EnableWiredMode:        wired,
 		Scorer:                 scorer,

@@ -280,10 +280,12 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 			"error", failoverErr,
 		)
 		if attempt < s.config.MaxFailoverAttempts {
+			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 			backoff *= 2
 			if backoff > s.config.MaxBackoff {

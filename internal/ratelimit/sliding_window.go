@@ -65,20 +65,24 @@ func (l *SlidingWindowLimiter) Wait(ctx context.Context) error {
 			l.mu.Unlock()
 
 			if waitTime > 0 {
+				swTimer := time.NewTimer(waitTime)
 				select {
 				case <-ctx.Done():
+					swTimer.Stop()
 					return ctx.Err()
-				case <-time.After(waitTime):
+				case <-swTimer.C:
 				}
 			}
 		} else {
 			l.mu.Unlock()
 			// Window is empty but rate limit hit - wait a short time before retry
 			// This prevents busy-waiting when the window is empty
+			swTimer := time.NewTimer(l.windowSize / 10)
 			select {
 			case <-ctx.Done():
+				swTimer.Stop()
 				return ctx.Err()
-			case <-time.After(l.windowSize / 10):
+			case <-swTimer.C:
 			}
 		}
 	}

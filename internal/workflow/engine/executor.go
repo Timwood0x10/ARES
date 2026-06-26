@@ -600,10 +600,12 @@ func (e *Executor) executeWithRetry(ctx context.Context, step *Step, input strin
 		lastErr = err
 
 		if attempt < maxAttempts {
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return "", ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
 			}
 
 			if step.RetryPolicy != nil {

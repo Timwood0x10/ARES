@@ -230,9 +230,13 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return
 	}
 
+	s.mu.Lock()
+	triggerStr := s.trigger.String()
+	s.mu.Unlock()
+
 	slog.InfoContext(ctx, "[Evolution] Starting evolution cycle",
 		"agent_id", data.AgentID,
-		"trigger", s.trigger.String())
+		"trigger", triggerStr)
 
 	// Cancel any previously running evolution before starting a new one
 	// to prevent concurrent evolution cycles and goroutine leaks.
@@ -325,12 +329,14 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	// Step 1: Check minimum interval protection.
 	s.mu.Lock()
 	lastRun := s.lastRun
+	minInterval := s.minInterval
+	trigger := s.trigger
 	s.mu.Unlock()
 
-	if !lastRun.IsZero() && time.Since(lastRun) < s.minInterval {
+	if !lastRun.IsZero() && time.Since(lastRun) < minInterval {
 		slog.DebugContext(ctx, "[Evolution] Skipping: minimum interval not elapsed",
 			"last_run", lastRun.Format(time.RFC3339),
-			"min_interval", s.minInterval)
+			"min_interval", minInterval)
 		return false
 	}
 
@@ -338,7 +344,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	avg, recent, scoreCount := s.scoreSnapshot()
 
 	// Step 3: Check trigger mode.
-	switch s.trigger {
+	switch trigger {
 	case TriggerOnDemand:
 		return false
 

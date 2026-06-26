@@ -805,11 +805,13 @@ func (e *DynamicExecutor) runDynamicSteps(
 			e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
 			stepIndex = 0
 		} else {
+			pollTimer := time.NewTimer(DefaultRecoveryPollInterval)
 			select {
 			case <-recoveryCh:
+				pollTimer.Stop()
 				e.recomputeOrder(mutableDAG, lastVersion, currentOrder, completed, processed, mu)
 				stepIndex = 0
-			case <-time.After(DefaultRecoveryPollInterval):
+			case <-pollTimer.C:
 				// Give collection loop time to process pending results.
 				// Poll one more time in case recovery was signaled
 				// during the timeout.
