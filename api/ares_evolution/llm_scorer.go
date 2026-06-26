@@ -263,6 +263,127 @@ func (s *LLMScorer) AsScorerFunc() ScorerFunc {
 }
 
 // buildPrompt constructs the evaluation prompt from a strategy.
+
+// BatchScore evaluates all strategies in a single LLM call.
+// This reduces API calls from N to 1 per generation, significantly reducing
+// rate-limit pressure and improving throughput.
+//
+// When the batch exceeds maxBatchSize (10), it is split into sub-batches
+// to keep the prompt manageable and reduce timeout risk.
+//
+// Implements the BatchScorer interface. If the batch call fails, falls back
+// to per-agent scoring with the deterministic fallback.
+func (s *LLMScorer) BatchScore(strategies []*Strategy) []float64 {
+	const maxBatchSize = 10
+
+	scores := make([]float64, len(strategies))
+	if len(strategies) == 0 {
+		return scores
+	}
+
+	// If small enough, do a single call.
+	if len(strategies) <= maxBatchSize {
+		return s.batchScoreChunk(strategies, scores, 0)
+	}
+
+	// Split into sub-batches.
+	for start := 0; start < len(strategies); start += maxBatchSize {
+		end := start + maxBatchSize
+		if end > len(strategies) {
+			end = len(strategies)
+		}
+		s.batchScoreChunk(strategies[start:end], scores, start)
+	}
+	return scores
+}
+
+// batchScoreChunk scores a chunk of strategies via a single LLM call.
+func (s *LLMScorer) batchScoreChunk(chunk []*Strategy, scores []float64, offset int) []float64 {
+	ctx := context.Background()
+	prompt := s.buildBatchPrompt(chunk)
+	resp, err := s.client.Generate(ctx, prompt)
+	if err != nil {
+		// Fallback: use deterministic scorer for all.
+		for i, item := range chunk {
+			if s.fallback != nil {
+				scores[offset+i] = s.fallback(item)
+			}
+		}
+		return scores
+	}
+
+	// Parse batch response: expect {"scores": [70, 85, 60, ...]}
+	parsed := s.parseBatchScores(resp, len(chunk))
+	for i := range chunk {
+		if i < len(parsed) && parsed[i] > 0 {
+			scores[offset+i] = parsed[i]
+		} else if s.fallback != nil {
+			scores[offset+i] = s.fallback(chunk[i])
+		}
+	}
+	return scores
+}
+
+// DefaultBatchEvalPrompt is the batch evaluation prompt template.
+// {strategies_json} is replaced with the JSON array of all strategies.
+const DefaultBatchEvalPrompt = `You are evaluating AI agent strategies. Each strategy defines how an agent:
+- Generates responses (temperature controls creativity vs determinism)
+- Selects knowledge (top_k controls focus breadth)
+- Structures its prompts (prompt_template sets behavior style)
+
+Score EACH strategy on a scale of 0 to 100. Consider:
+- Reasoning quality: Does the temperature allow coherent reasoning?
+- Focus accuracy: Does top_k balance breadth vs precision?
+- Instruction following: Does the prompt template guide appropriate behavior?
+- General capability: Would this strategy perform well on diverse tasks?
+
+Strategies to evaluate:
+{strategies_json}
+
+Respond with ONLY a JSON object containing an array of scores in the SAME ORDER as the strategies:
+{"scores": [<score_0>, <score_1>, <score_2>, ...]}`
+
+// buildBatchPrompt constructs a single prompt for evaluating all strategies.
+func (s *LLMScorer) buildBatchPrompt(strategies []*Strategy) string {
+	items := make([]map[string]any, len(strategies))
+	for i, item := range strategies {
+		params := make(map[string]any)
+		for k, v := range item.Params {
+			params[k] = v
+		}
+		params["prompt_template"] = item.PromptTemplate
+		params["id"] = item.ID
+		items[i] = params
+	}
+
+	data, _ := json.MarshalIndent(items, "  ", "  ")
+	prompt := strings.ReplaceAll(DefaultBatchEvalPrompt, "{strategies_json}", string(data))
+
+	if s.seed != 0 {
+		prompt += fmt.Sprintf("\n\n(Scoring seed: %d. Use temperature 0 for fully deterministic evaluation.)", s.seed)
+	}
+	return prompt
+}
+
+// parseBatchScores extracts scores from a batch LLM response.
+func (s *LLMScorer) parseBatchScores(resp string, expected int) []float64 {
+	resp = strings.TrimSpace(resp)
+
+	var parsed struct {
+		Scores []float64 `json:"scores"`
+	}
+	if err := json.Unmarshal([]byte(resp), &parsed); err == nil && len(parsed.Scores) > 0 {
+		for i, sc := range parsed.Scores {
+			if sc > 100 {
+				parsed.Scores[i] = 100
+			} else if sc < 0 {
+				parsed.Scores[i] = 0
+			}
+		}
+		return parsed.Scores
+	}
+	return nil
+}
 // When a seed is configured, it embeds a determinism instruction to reduce
 // output variance across repeated evaluations of the same parameters.
 func (s *LLMScorer) buildPrompt(strategy *Strategy) string {

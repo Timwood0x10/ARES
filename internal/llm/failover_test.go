@@ -153,9 +153,9 @@ func TestFailoverClient_FallbackCooldownExpiry(t *testing.T) {
 	}
 }
 
-func TestFailoverClient_FallbackShortCooldown(t *testing.T) {
+func TestFailoverClient_AllErrorsCooldown(t *testing.T) {
 	// Primary returns 500, fallback returns 500 → 200.
-	// Fallback gets a short cooldown on 500.
+	// Both primary and fallback get cooldown on 500.
 	primary, primaryCount := mockLLMServer(500, `{"error":"internal"}`)
 	defer primary.Close()
 	var fallbackCountVal int32
@@ -181,19 +181,31 @@ func TestFailoverClient_FallbackShortCooldown(t *testing.T) {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// First call: primary 500, fallback 500 → all fail. Fallback gets cooldown.
+	// First call: primary 500 → cooldown, fallback 500 → cooldown. All fail.
 	_, _ = fc.Generate(context.Background(), "hello")
 
-	// Second call immediately: fallback cooled down, primary fails again → all fail.
+	// Second call immediately: both cooled down → all fail (no retry).
 	_, _ = fc.Generate(context.Background(), "hello2")
 
-	// Primary always tried (never cooled).
-	if atomic.LoadInt32(primaryCount) != 2 {
-		t.Fatalf("expected primary called twice (always tried), got %d", atomic.LoadInt32(primaryCount))
+	// Primary called once (cooled down on 2nd call).
+	if atomic.LoadInt32(primaryCount) != 1 {
+		t.Fatalf("expected primary called once (cooled), got %d", atomic.LoadInt32(primaryCount))
 	}
 	// Fallback called once (cooled down on 2nd call).
 	if atomic.LoadInt32(fallbackCount) != 1 {
 		t.Fatalf("expected fallback called once (cooled), got %d", atomic.LoadInt32(fallbackCount))
+	}
+
+	// Wait for cooldowns to expire.
+	time.Sleep(300 * time.Millisecond)
+
+	// Third call: both cooldowns expired, primary fails, fallback succeeds.
+	resp, err := fc.Generate(context.Background(), "hello3")
+	if err != nil {
+		t.Fatalf("Generate (after cooldown): %v", err)
+	}
+	if resp != "fallback-ok" {
+		t.Fatalf("expected fallback-ok, got %s", resp)
 	}
 }
 
@@ -247,10 +259,10 @@ func TestFailoverClient_PrimarySuccess(t *testing.T) {
 }
 
 func TestFailoverClient_ActiveProviders(t *testing.T) {
-	// Primary 500 (no cooldown), fallback 429 (cooldown).
+	// Both fail → both cooled down → no active providers.
 	primary, _ := mockLLMServer(500, `{"error":"internal"}`)
 	defer primary.Close()
-	fallback, _ := mockLLMServer(429, `{"error":"rate limited"}`)
+	fallback, _ := mockLLMServer(500, `{"error":"internal"}`)
 	defer fallback.Close()
 
 	fc, err := NewFailoverClient([]*Config{
@@ -261,13 +273,13 @@ func TestFailoverClient_ActiveProviders(t *testing.T) {
 		t.Fatalf("NewFailoverClient: %v", err)
 	}
 
-	// Primary 500 (no cooldown), fallback 429 (cooldown).
+	// Both fail → both cooled down.
 	_, _ = fc.Generate(context.Background(), "hello")
 
 	active := fc.ActiveProviders()
-	// Primary active (500 doesn't cooldown primary), fallback cooled.
-	if len(active) != 1 {
-		t.Fatalf("expected 1 active provider, got %d: %v", len(active), active)
+	// Both cooled down → no active providers.
+	if len(active) != 0 {
+		t.Fatalf("expected 0 active providers (both cooled), got %d: %v", len(active), active)
 	}
 }
 

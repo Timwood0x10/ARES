@@ -213,6 +213,16 @@ type StrategyLineage struct {
 // Higher scores are better. The score range is [0, 100].
 type ScorerFunc func(agent *Strategy) float64
 
+// BatchScorer is an optional interface that ScorerFunc implementations can
+// satisfy to score multiple strategies in a single API call. When the scorer
+// implements this interface, scoreAgents uses batch scoring instead of
+// per-agent calls — reducing API calls from N to 1 per generation.
+type BatchScorer interface {
+	// BatchScore evaluates all strategies at once and returns scores in the
+	// same order as the input slice.
+	BatchScore(strategies []*Strategy) []float64
+}
+
 // LLMClient defines the interface for LLM-based scoring.
 // Implementations can wrap internal/llm.Client or provide mock implementations.
 type LLMClient interface {
@@ -273,6 +283,12 @@ type SystemConfig struct {
 
 	// Scorer evaluates agent fitness. When nil, a temperature-proximity scorer is used.
 	Scorer ScorerFunc
+
+	// BatchScorer is an optional interface for scoring all agents in a single
+	// API call. When set, scoreAgents uses batch scoring instead of per-agent
+	// calls — reducing API calls from N to 1 per generation. Takes priority
+	// over Scorer when both are set.
+	BatchScorer BatchScorer
 
 	// Guardrails configures safety checks (pre/post evolution). When
 	// GuardrailConfig.Enabled is true, guardrails are constructed in

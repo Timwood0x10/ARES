@@ -689,10 +689,32 @@ func (s *Service) scoreAgents(pop *genome.Population) {
 		return
 	}
 
-	// Slow path: custom scorer (e.g. LLM) — snapshot + concurrent eval + apply.
 	snap, _ := pop.Snapshot()
-	scores := make([]float64, len(snap))
 
+	// Batch path: if BatchScorer is set, score all agents in one call.
+	if bs := s.config.BatchScorer; bs != nil {
+		apiStrategies := make([]*Strategy, len(snap))
+		for i, a := range snap {
+			apiStrategies[i] = toAPIStrategy(a)
+		}
+		scores := bs.BatchScore(apiStrategies)
+		scoreMap := make(map[string]float64, len(snap))
+		for i, a := range snap {
+			if i < len(scores) {
+				scoreMap[a.ID] = scores[i]
+			}
+		}
+		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+			if sc, ok := scoreMap[agent.ID]; ok {
+				return sc
+			}
+			return 0
+		})
+		return
+	}
+
+	// Slow path: per-agent scoring with concurrency limit.
+	scores := make([]float64, len(snap))
 	sem := make(chan struct{}, concurrentScoreLimit)
 	var wg sync.WaitGroup
 

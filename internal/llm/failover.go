@@ -182,15 +182,12 @@ func (fc *FailoverClient) cooldownForError(err error) time.Duration {
 }
 
 // Generate tries each LLM client in order and returns the first successful
-// response. On failure:
-//   - Primary 429 → cooldown 5s, try fallback
-//   - Primary other error → no cooldown, try fallback
-//   - Fallback 429 → full cooldown, try next
-//   - Fallback other error → short cooldown (1/3 configured, min 10s)
+// response. All errors trigger cooldown so the next call skips the provider
+// instead of waiting for the same timeout/429 again.
 func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, error) {
 	var lastErr error
 
-	for i, client := range fc.clients {
+	for _, client := range fc.clients {
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -211,32 +208,20 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		}
 
 		lastErr = err
+		cd := fc.cooldownForError(err)
+		fc.markCooldown(key)
 
 		if isRateLimitError(err) {
-			// 429 → cool down: primary 5s (quick retry), fallback full cooldown.
-			cd := fc.cooldownDuration
-			if i == 0 {
-				cd = 5 * time.Second
-			}
-			fc.markCooldown(key)
 			slog.Warn("FailoverClient: rate limited, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
 			)
-		} else if i > 0 {
-			cd := fc.cooldownForError(err)
-			fc.markCooldown(key)
-			slog.Warn("FailoverClient: fallback failed, cooling down",
+		} else {
+			slog.Warn("FailoverClient: provider failed, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
-				"error", err,
-			)
-		} else {
-			slog.Warn("FailoverClient: primary failed, trying fallback",
-				"provider", client.GetProvider(),
-				"model", client.GetModel(),
 				"error", err,
 			)
 		}
@@ -258,7 +243,7 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	var lastErr error
 
-	for i, client := range fc.clients {
+	for _, client := range fc.clients {
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -276,31 +261,20 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		}
 
 		lastErr = err
+		cd := fc.cooldownForError(err)
+		fc.markCooldown(key)
 
 		if isRateLimitError(err) {
-			cd := fc.cooldownDuration
-			if i == 0 {
-				cd = 5 * time.Second
-			}
-			fc.markCooldown(key)
 			slog.Warn("FailoverClient: rate limited on stream, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
 			)
-		} else if i > 0 {
-			cd := fc.cooldownForError(err)
-			fc.markCooldown(key)
-			slog.Warn("FailoverClient: fallback failed on stream, cooling down",
+		} else {
+			slog.Warn("FailoverClient: provider failed on stream, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
-				"error", err,
-			)
-		} else {
-			slog.Warn("FailoverClient: primary failed on stream, trying fallback",
-				"provider", client.GetProvider(),
-				"model", client.GetModel(),
 				"error", err,
 			)
 		}
