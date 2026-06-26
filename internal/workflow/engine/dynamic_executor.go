@@ -27,6 +27,23 @@ func containsString(s []string, v string) bool {
 	return false
 }
 
+// flushCheckpoint calls Flush on all registered checkpoint plugins.
+func (e *DynamicExecutor) flushCheckpoint(ctx context.Context, executionID string) {
+	if e.pluginBus == nil {
+		return
+	}
+	for _, p := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
+		if f, ok := p.(runtime.Flusher); ok {
+			if err := f.Flush(ctx, executionID); err != nil {
+				slog.Warn("checkpoint flush failed",
+					"execution_id", executionID,
+					"error", err,
+				)
+			}
+		}
+	}
+}
+
 // ApplyMode controls when graph mutations take effect during execution.
 type ApplyMode int
 
@@ -333,6 +350,8 @@ func (e *DynamicExecutor) execLoop(
 				execution.Status = WorkflowStatusCompleted
 				execution.FinishedAt = time.Now()
 
+				e.flushCheckpoint(ctx, execution.ID)
+
 				if e.pluginBus != nil {
 					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
 						runtime.PayloadKeyExecutionID: execution.ID,
@@ -374,6 +393,8 @@ func (e *DynamicExecutor) execLoop(
 				execution.Status = WorkflowStatusFailed
 				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
+
+				e.flushCheckpoint(ctx, execution.ID)
 
 				if e.pluginBus != nil {
 					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
@@ -458,6 +479,8 @@ func (e *DynamicExecutor) execLoop(
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
 
+			e.flushCheckpoint(ctx, execution.ID)
+
 			if e.pluginBus != nil {
 				e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
 					runtime.PayloadKeyExecutionID: execution.ID,
@@ -480,6 +503,7 @@ func (e *DynamicExecutor) execLoop(
 		case <-ctx.Done():
 			execution.Status = WorkflowStatusCancelled
 			execution.FinishedAt = time.Now()
+			e.flushCheckpoint(ctx, execution.ID)
 			<-done
 			return nil, ctx.Err()
 		}

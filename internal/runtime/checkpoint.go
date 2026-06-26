@@ -99,6 +99,12 @@ type ScoringSignal struct {
 	Label  string  `json:"label,omitempty"`
 }
 
+// Flusher is implemented by plugins that can flush buffered state to durable
+// storage. The engine calls Flush when an execution completes or fails.
+type Flusher interface {
+	Flush(ctx context.Context, executionID string) error
+}
+
 // CheckpointKey returns the storage key for a given execution ID.
 func CheckpointKey(executionID string) string {
 	return fmt.Sprintf("checkpoint/%s", executionID)
@@ -107,12 +113,18 @@ func CheckpointKey(executionID string) string {
 // CheckpointPlugin saves experience checkpoints at key lifecycle points
 // (BeforeStep, AfterStep) and manages accumulated execution state.
 // It implements RuntimePlugin and WorkflowHook.
+//
+// By default the plugin saves on every hook call. Set flushInterval > 0
+// with WithFlushInterval to batch writes (e.g., every 5 steps) and call
+// Flush explicitly when the execution completes.
 type CheckpointPlugin struct {
-	name      string
-	store     CheckpointStore
-	mu        sync.Mutex
-	collector *ExecutionCollector // optional; if set, merged before save
-	bus       EventBus            // optional; if set, emits EventCheckpointSaved
+	name          string
+	store         CheckpointStore
+	mu            sync.Mutex
+	collector     *ExecutionCollector // optional; if set, merged before save
+	bus           EventBus            // optional; if set, emits EventCheckpointSaved
+	flushInterval int                 // 0 = save on every hook (default)
+	stepCount     map[string]int      // executionID → hook call count
 	// accumulated state across hook calls
 	snapshots map[string]*ExperienceCheckpoint // executionID → checkpoint
 }
@@ -126,7 +138,19 @@ func NewCheckpointPlugin(name string, store CheckpointStore) *CheckpointPlugin {
 		name:      name,
 		store:     store,
 		snapshots: make(map[string]*ExperienceCheckpoint),
+		stepCount: make(map[string]int),
 	}
+}
+
+// WithFlushInterval sets the number of hook calls between checkpoint saves.
+// A value of 0 or 1 saves on every call (default). Use higher values (e.g., 5)
+// to batch writes and reduce I/O; call Flush when the execution completes.
+func (p *CheckpointPlugin) WithFlushInterval(n int) *CheckpointPlugin {
+	if n < 0 {
+		n = 0
+	}
+	p.flushInterval = n
+	return p
 }
 
 // Name returns the plugin name.
@@ -166,7 +190,6 @@ func (p *CheckpointPlugin) BeforeStep(ctx context.Context, executionID string, s
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	ckpt := p.snapshots[executionID]
 	if ckpt == nil {
@@ -200,7 +223,17 @@ func (p *CheckpointPlugin) BeforeStep(ctx context.Context, executionID string, s
 	}
 
 	p.snapshots[executionID] = ckpt
-	return p.saveLocked(ctx, executionID, ckpt)
+	p.stepCount[executionID]++
+	shouldFlush := p.flushInterval <= 1 || p.stepCount[executionID]%p.flushInterval == 0
+	p.mu.Unlock()
+
+	if shouldFlush {
+		p.mu.Lock()
+		err := p.saveLocked(ctx, executionID, ckpt)
+		p.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // AfterStep updates the checkpoint with the completed step result.
@@ -210,7 +243,6 @@ func (p *CheckpointPlugin) AfterStep(ctx context.Context, executionID string, re
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	ckpt := p.snapshots[executionID]
 	if ckpt == nil {
@@ -251,7 +283,17 @@ func (p *CheckpointPlugin) AfterStep(ctx context.Context, executionID string, re
 		})
 	}
 
-	return p.saveLocked(ctx, executionID, ckpt)
+	p.stepCount[executionID]++
+	shouldFlush := p.flushInterval <= 1 || p.stepCount[executionID]%p.flushInterval == 0
+	p.mu.Unlock()
+
+	if shouldFlush {
+		p.mu.Lock()
+		err := p.saveLocked(ctx, executionID, ckpt)
+		p.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Snapshot returns a deep copy of the current checkpoint for an execution, or nil.
@@ -287,6 +329,22 @@ func (p *CheckpointPlugin) Snapshot(executionID string) *ExperienceCheckpoint {
 	cp.ErrorHistory = append([]ErrorEntry(nil), ckpt.ErrorHistory...)
 	cp.ScoringSignals = append([]ScoringSignal(nil), ckpt.ScoringSignals...)
 	return &cp
+}
+
+// Flush forces an immediate save for the given execution, ignoring the
+// flush interval. This should be called when an execution completes or
+// fails to ensure the final checkpoint is persisted.
+func (p *CheckpointPlugin) Flush(ctx context.Context, executionID string) error {
+	if p.store == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ckpt := p.snapshots[executionID]
+	if ckpt == nil {
+		return nil
+	}
+	return p.saveLocked(ctx, executionID, ckpt)
 }
 
 func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {

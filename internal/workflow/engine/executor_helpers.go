@@ -159,7 +159,34 @@ func (e *DynamicExecutor) handleStepFailure(
 	recoveryCh chan struct{},
 ) bool {
 	step := e.findStepInDAG(mutableDAG, result.StepID)
-	if step == nil || step.RecoveryPolicy == nil || e.recoveryHandler == nil {
+	if step == nil {
+		return false
+	}
+
+	// Check if recovery is enabled: either a RecoveryPlugin says yes, or the
+	// step has a RecoveryPolicy with a recoveryHandler configured.
+	recoveryEnabled := e.recoveryHandler != nil && step.RecoveryPolicy != nil
+	if e.pluginBus != nil && !recoveryEnabled {
+		for _, p := range e.pluginBus.PluginsByCap(runtime.CapRecovery) {
+			if rp, ok := p.(runtime.RecoveryPlugin); ok {
+				rpState := runtime.ExecutionState{
+					ExecutionID:   execution.ID,
+					WorkflowID:    workflow.ID,
+					CurrentStepID: result.StepID,
+				}
+				if rp.ShouldRecover(ctx, runtime.StepFailure{
+					ExecutionID: execution.ID,
+					WorkflowID:  workflow.ID,
+					StepID:      result.StepID,
+					Error:       result.Error,
+				}, rpState) {
+					recoveryEnabled = true
+					break
+				}
+			}
+		}
+	}
+	if !recoveryEnabled {
 		return false
 	}
 

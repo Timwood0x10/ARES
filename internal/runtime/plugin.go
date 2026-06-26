@@ -118,6 +118,22 @@ type ExecutionOutcome struct {
 	ErrorCount     int
 }
 
+// RecoveryPlugin provides step recovery decisions when a step fails.
+type RecoveryPlugin interface {
+	RuntimePlugin
+	// ShouldRecover returns true if the step should be recovered. Plugins
+	// may use the failure details and execution state to decide.
+	ShouldRecover(ctx context.Context, failure StepFailure, state ExecutionState) bool
+}
+
+// StepFailure captures the context of a failed step for recovery decisions.
+type StepFailure struct {
+	ExecutionID string
+	WorkflowID  string
+	StepID      string
+	Error       string
+}
+
 // EventBus is the event system exposed to plugins. It allows emitting
 // structured events that are fanned out to all subscribers.
 type EventBus interface {

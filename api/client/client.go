@@ -17,6 +17,7 @@ import (
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // Client provides a unified client interface for all GoAgent modules.
@@ -107,6 +108,16 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	if config.Workflow != nil {
+		// If no PluginBus provided, create a default one with basic plugins.
+		if config.Workflow.PluginBus == nil {
+			bus := runtime.NewPluginBus()
+			bus.Register(runtime.NewExpressionRouter("default", nil))
+			bus.Register(runtime.NewToolPlugin("default-tools"))
+			if err := bus.Start(context.Background()); err != nil {
+				return nil, errors.Wrap(err, "start plugin bus")
+			}
+			config.Workflow.PluginBus = bus
+		}
 		workflowService, err := workflowSvc.NewService(config.Workflow)
 		if err != nil {
 			return nil, errors.Wrap(err, "create workflow service")
