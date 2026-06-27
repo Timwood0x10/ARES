@@ -19,6 +19,29 @@ import (
 // preventing concurrent mutations. Multiple Execute calls may run concurrently
 // with each other but not with mutation methods.
 func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
+	return g.execute(ctx, state, nil)
+}
+
+// ExecuteFromCheckpoint resumes graph execution from a previous checkpoint.
+// The executed slice contains node IDs that were completed in a prior run and
+// should not be re-executed. Their successors' in-degrees are automatically
+// adjusted so the graph continues from the first unexecuted node.
+//
+// The caller is responsible for restoring state from the checkpoint before
+// calling this method. State must contain the same values as when the
+// checkpoint was created.
+func (g *Graph) ExecuteFromCheckpoint(ctx context.Context, state *State, executed []string) (*Result, error) {
+	initial := make(map[string]bool, len(executed))
+	for _, id := range executed {
+		initial[id] = true
+	}
+	return g.execute(ctx, state, initial)
+}
+
+// execute is the shared execution core used by Execute and ExecuteFromCheckpoint.
+// initialExecuted contains node IDs that were completed in a prior execution
+// and should not be re-run (nil for fresh executions).
+func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[string]bool) (*Result, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
@@ -56,13 +79,22 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		}
 
 		if g.pluginBus != nil {
-			g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowStarted, map[string]any{
+			payload := map[string]any{
 				runtime.PayloadKeyExecutionID: g.id,
 				runtime.PayloadKeyWorkflowID:  g.id,
-			})
+			}
+			if iteration == 1 && len(initialExecuted) > 0 {
+				payload["resumed"] = true
+			}
+			g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowStarted, payload)
 		}
 
 		executed := make(map[string]bool)
+		if iteration == 1 {
+			for k, v := range initialExecuted {
+				executed[k] = v
+			}
+		}
 
 		// Build in-degree map so nodes with multiple predecessors
 		// are only added to the ready queue when ALL predecessors have completed.
@@ -75,248 +107,258 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 				inDegree[edge.to]++
 			}
 		}
-		// Seed the ready queue with ALL nodes that have no predecessors.
+		// For nodes that were pre-executed, decrement their successors'
+		// in-degree so the graph can continue from the right place.
+		if iteration == 1 {
+			for id := range initialExecuted {
+				for _, edge := range g.edges[id] {
+					inDegree[edge.to]--
+				}
+			}
+		}
+		// Seed the ready queue with nodes that have no predecessors
+		// and are not pre-executed.
 		readyQueue := make([]string, 0)
 		readySet := make(map[string]bool)
 		for id, deg := range inDegree {
-			if deg == 0 {
+			if deg == 0 && !executed[id] {
 				readyQueue = append(readyQueue, id)
 				readySet[id] = true
 			}
 		}
 		// Execute graph using BFS with scheduler
 		for len(readyQueue) > 0 {
-		// Select next node using scheduler
-		nodeID := g.scheduler.Select(readyQueue)
-		if nodeID == "" {
-			break // no more nodes to execute
-		}
-
-		// Remove node from ready queue and set
-		for i, id := range readyQueue {
-			if id == nodeID {
-				readyQueue = append(readyQueue[:i], readyQueue[i+1:]...)
-				break
+			// Select next node using scheduler
+			nodeID := g.scheduler.Select(readyQueue)
+			if nodeID == "" {
+				break // no more nodes to execute
 			}
-		}
-		delete(readySet, nodeID)
 
-		// Skip if already executed
-		if executed[nodeID] {
-			continue
-		}
+			// Remove node from ready queue and set
+			for i, id := range readyQueue {
+				if id == nodeID {
+					readyQueue = append(readyQueue[:i], readyQueue[i+1:]...)
+					break
+				}
+			}
+			delete(readySet, nodeID)
 
-		// Get and validate node
-		node, ok := g.nodes[nodeID]
-		if !ok {
-			return nil, fmt.Errorf("node %s not found", nodeID)
-		}
+			// Skip if already executed
+			if executed[nodeID] {
+				continue
+			}
 
-		// Check if context is cancelled
-		select {
-		case <-ctx.Done():
+			// Get and validate node
+			node, ok := g.nodes[nodeID]
+			if !ok {
+				return nil, fmt.Errorf("node %s not found", nodeID)
+			}
+
+			// Check if context is cancelled
+			select {
+			case <-ctx.Done():
+				if g.pluginBus != nil {
+					g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
+						runtime.PayloadKeyExecutionID: g.id,
+						runtime.PayloadKeyWorkflowID:  g.id,
+						runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
+						runtime.PayloadKeyError:       ctx.Err().Error(),
+						runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+					})
+				}
+				return nil, errors.Wrap(ctx.Err(), "execution cancelled")
+			default:
+			}
+
+			// Convert node to runtime.Step for plugin hooks.
+			step := &runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
 			if g.pluginBus != nil {
-				g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
+				if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
+					slog.Warn("graph: before step hook failed (continuing)",
+						"graph_id", g.id, "node", nodeID, "error", err,
+					)
+				}
+				g.pluginBus.Emit(ctx, g.id, runtime.EventStepStarted, map[string]any{
 					runtime.PayloadKeyExecutionID: g.id,
-					runtime.PayloadKeyWorkflowID:  g.id,
-					runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
-					runtime.PayloadKeyError:       ctx.Err().Error(),
-					runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+					runtime.PayloadKeyStepID:      nodeID,
 				})
 			}
-			return nil, errors.Wrap(ctx.Err(), "execution cancelled")
-		default:
-		}
 
-		// Convert node to runtime.Step for plugin hooks.
-		step := &runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
-		if g.pluginBus != nil {
-			if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
-				slog.Warn("graph: before step hook failed (continuing)",
-					"graph_id", g.id, "node", nodeID, "error", err,
-				)
-			}
-			g.pluginBus.Emit(ctx, g.id, runtime.EventStepStarted, map[string]any{
-				runtime.PayloadKeyExecutionID: g.id,
-				runtime.PayloadKeyStepID:      nodeID,
-			})
-		}
-
-		// Record agent step start
-		if g.tracer != nil {
-			g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
-				TraceID:  g.tracer.GetTraceID(ctx),
-				AgentID:  nodeID,
-				StepName: "execute",
-			})
-		}
-
-		// Execute node
-		nodeStart := time.Now()
-		execErr := node.Execute(ctx, state)
-		nodeDuration := time.Since(nodeStart)
-
-		stepResult := &runtime.StepResult{
-			StepID:   nodeID,
-			Status:   runtime.StepStatusCompleted,
-			Duration: nodeDuration,
-		}
-		if execErr != nil {
-			stepResult.Status = runtime.StepStatusFailed
-			stepResult.Error = execErr.Error()
+			// Record agent step start
 			if g.tracer != nil {
-				g.tracer.RecordError(ctx, &observability.AgentError{
-					TraceID:   g.tracer.GetTraceID(ctx),
-					AgentID:   nodeID,
-					ErrorType: "execution_error",
-					Message:   execErr.Error(),
+				g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+					TraceID:  g.tracer.GetTraceID(ctx),
+					AgentID:  nodeID,
+					StepName: "execute",
 				})
 			}
-		}
 
-		if g.pluginBus != nil {
-			if err := g.pluginBus.AfterStep(ctx, g.id, stepResult); err != nil {
-				slog.Warn("graph: after step hook failed (continuing)",
-					"graph_id", g.id, "node", nodeID, "error", err,
-				)
+			// Execute node
+			nodeStart := time.Now()
+			execErr := node.Execute(ctx, state)
+			nodeDuration := time.Since(nodeStart)
+
+			stepResult := &runtime.StepResult{
+				StepID:   nodeID,
+				Status:   runtime.StepStatusCompleted,
+				Duration: nodeDuration,
 			}
 			if execErr != nil {
-				g.pluginBus.Emit(ctx, g.id, runtime.EventStepFailed, map[string]any{
-					runtime.PayloadKeyExecutionID: g.id,
-					runtime.PayloadKeyStepID:      nodeID,
-					runtime.PayloadKeyStatus:      stepResult.Status,
-					runtime.PayloadKeyError:       execErr.Error(),
-					runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
-				})
-			} else {
-				g.pluginBus.Emit(ctx, g.id, runtime.EventStepCompleted, map[string]any{
-					runtime.PayloadKeyExecutionID: g.id,
-					runtime.PayloadKeyStepID:      nodeID,
-					runtime.PayloadKeyStatus:      stepResult.Status,
-					runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
-				})
+				stepResult.Status = runtime.StepStatusFailed
+				stepResult.Error = execErr.Error()
+				if g.tracer != nil {
+					g.tracer.RecordError(ctx, &observability.AgentError{
+						TraceID:   g.tracer.GetTraceID(ctx),
+						AgentID:   nodeID,
+						ErrorType: "execution_error",
+						Message:   execErr.Error(),
+					})
+				}
 			}
-		}
 
-		if execErr != nil {
 			if g.pluginBus != nil {
-				g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
-					runtime.PayloadKeyExecutionID: g.id,
-					runtime.PayloadKeyWorkflowID:  g.id,
-					runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
-					runtime.PayloadKeyError:       execErr.Error(),
-					runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+				if err := g.pluginBus.AfterStep(ctx, g.id, stepResult); err != nil {
+					slog.Warn("graph: after step hook failed (continuing)",
+						"graph_id", g.id, "node", nodeID, "error", err,
+					)
+				}
+				if execErr != nil {
+					g.pluginBus.Emit(ctx, g.id, runtime.EventStepFailed, map[string]any{
+						runtime.PayloadKeyExecutionID: g.id,
+						runtime.PayloadKeyStepID:      nodeID,
+						runtime.PayloadKeyStatus:      stepResult.Status,
+						runtime.PayloadKeyError:       execErr.Error(),
+						runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+					})
+				} else {
+					g.pluginBus.Emit(ctx, g.id, runtime.EventStepCompleted, map[string]any{
+						runtime.PayloadKeyExecutionID: g.id,
+						runtime.PayloadKeyStepID:      nodeID,
+						runtime.PayloadKeyStatus:      stepResult.Status,
+						runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+					})
+				}
+			}
+
+			if execErr != nil {
+				if g.pluginBus != nil {
+					g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
+						runtime.PayloadKeyExecutionID: g.id,
+						runtime.PayloadKeyWorkflowID:  g.id,
+						runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
+						runtime.PayloadKeyError:       execErr.Error(),
+						runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+					})
+				}
+				return nil, errors.Wrapf(execErr, "node %s execution failed", nodeID)
+			}
+
+			// Record agent step completion
+			if g.tracer != nil {
+				g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+					TraceID:  g.tracer.GetTraceID(ctx),
+					AgentID:  nodeID,
+					StepName: "execute",
+					Duration: nodeDuration,
 				})
 			}
-			return nil, errors.Wrapf(execErr, "node %s execution failed", nodeID)
-		}
 
-		// Record agent step completion
-		if g.tracer != nil {
-			g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
-				TraceID:  g.tracer.GetTraceID(ctx),
-				AgentID:  nodeID,
-				StepName: "execute",
-				Duration: nodeDuration,
-			})
-		}
+			// Mark as executed
+			executed[nodeID] = true
 
-		// Mark as executed
-		executed[nodeID] = true
-
-		// Dynamic routing: after successful completion, check if router
-		// wants to override the next node (overrides static edge traversal).
-		// Priority: explicit NodeRouter > RouterPlugin from PluginBus.
-		var routedID string
-		if execErr == nil {
-			if g.router != nil {
-				routedID = g.router(ctx, nodeID, state)
-			} else if g.pluginBus != nil {
-				routedID = routeFromPluginBus(ctx, g.pluginBus, nodeID, state)
+			// Dynamic routing: after successful completion, check if router
+			// wants to override the next node (overrides static edge traversal).
+			// Priority: explicit NodeRouter > RouterPlugin from PluginBus.
+			var routedID string
+			if execErr == nil {
+				if g.router != nil {
+					routedID = g.router(ctx, nodeID, state)
+				} else if g.pluginBus != nil {
+					routedID = routeFromPluginBus(ctx, g.pluginBus, nodeID, state)
+				}
 			}
-		}
-		if routedID != "" {
-			if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
-				readyQueue = append(readyQueue, routedID)
-				readySet[routedID] = true
+			if routedID != "" {
+				if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
+					readyQueue = append(readyQueue, routedID)
+					readySet[routedID] = true
+				}
 			}
-		}
 
-		// C7 fix: decrement in-degree for successor nodes.
-		// Decrement unconditionally (structural dependency satisfied),
-		// but only enqueue when inDegree reaches 0 AND at least one
-		// incoming edge has a satisfied condition. This prevents:
-		//   - Silent node loss: a node with multiple predecessors where
-		//     some conditional edges are false still gets enqueued as
-		//     long as ONE edge condition is satisfied.
-		//   - Ghost execution: a node whose ALL conditional edges are
-		//     false is correctly skipped.
-		for _, edge := range g.edges[nodeID] {
-			inDegree[edge.to]--
-			if inDegree[edge.to] == 0 && !executed[edge.to] && !readySet[edge.to] {
-				if hasAnySatisfiedEdge(g, edge.to, state) {
-					readyQueue = append(readyQueue, edge.to)
-					readySet[edge.to] = true
+			// C7 fix: decrement in-degree for successor nodes.
+			// Decrement unconditionally (structural dependency satisfied),
+			// but only enqueue when inDegree reaches 0 AND at least one
+			// incoming edge has a satisfied condition. This prevents:
+			//   - Silent node loss: a node with multiple predecessors where
+			//     some conditional edges are false still gets enqueued as
+			//     long as ONE edge condition is satisfied.
+			//   - Ghost execution: a node whose ALL conditional edges are
+			//     false is correctly skipped.
+			for _, edge := range g.edges[nodeID] {
+				inDegree[edge.to]--
+				if inDegree[edge.to] == 0 && !executed[edge.to] && !readySet[edge.to] {
+					if hasAnySatisfiedEdge(g, edge.to, state) {
+						readyQueue = append(readyQueue, edge.to)
+						readySet[edge.to] = true
+					}
 				}
 			}
 		}
+
+		// Check LoopPlugin: after a full graph execution, check if the loop
+		// should continue. Uses the loop config directly rather than the
+		// LoopPlugin's internal per-step counter (which doesn't map to
+		// graph-level iterations). If no LoopPlugin is configured, break.
+		if g.pluginBus != nil {
+			loopPlugins := g.pluginBus.PluginsByCap(runtime.CapLoop)
+			if len(loopPlugins) > 0 {
+				if loop, ok := loopPlugins[0].(*runtime.LoopPlugin); ok {
+					cfg := loop.Config()
+					if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
+						slog.Debug("graph: loop max iterations reached",
+							"graph_id", g.id, "iteration", iteration, "max", cfg.MaxIterations,
+						)
+					} else if cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()) {
+						slog.Debug("graph: loop until condition met",
+							"graph_id", g.id, "iteration", iteration,
+						)
+					} else {
+						slog.Debug("graph: loop iteration completed, continuing",
+							"graph_id", g.id, "iteration", iteration,
+						)
+						continue
+					}
+				}
+			}
+		}
+
+		break
 	}
 
-	// Check LoopPlugin: after a full graph execution, check if the loop
-	// should continue. Uses the loop config directly rather than the
-	// LoopPlugin's internal per-step counter (which doesn't map to
-	// graph-level iterations). If no LoopPlugin is configured, break.
 	if g.pluginBus != nil {
-		loopPlugins := g.pluginBus.PluginsByCap(runtime.CapLoop)
-		if len(loopPlugins) > 0 {
-			if loop, ok := loopPlugins[0].(*runtime.LoopPlugin); ok {
-				cfg := loop.Config()
-				if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
-					slog.Debug("graph: loop max iterations reached",
-						"graph_id", g.id, "iteration", iteration, "max", cfg.MaxIterations,
-					)
-				} else if cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()) {
-					slog.Debug("graph: loop until condition met",
-						"graph_id", g.id, "iteration", iteration,
-					)
-				} else {
-					slog.Debug("graph: loop iteration completed, continuing",
-						"graph_id", g.id, "iteration", iteration,
-					)
-					continue
-				}
-			}
-		}
+		g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowCompleted, map[string]any{
+			runtime.PayloadKeyExecutionID: g.id,
+			runtime.PayloadKeyWorkflowID:  g.id,
+			runtime.PayloadKeyStatus:      runtime.StepStatusCompleted,
+			runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+		})
 	}
 
-	break
-}
+	// Record execution trace
+	if g.tracer != nil {
+		g.tracer.RecordToolCall(ctx, &observability.ToolCall{
+			TraceID:  g.tracer.GetTraceID(ctx),
+			ToolName: g.id,
+			Input:    state.ToParams(),
+			Output:   state.ToParams(),
+			Duration: time.Since(startTime),
+			Error:    nil,
+		})
+	}
 
-if g.pluginBus != nil {
-	g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowCompleted, map[string]any{
-		runtime.PayloadKeyExecutionID: g.id,
-		runtime.PayloadKeyWorkflowID:  g.id,
-		runtime.PayloadKeyStatus:      runtime.StepStatusCompleted,
-		runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
-	})
-}
-
-// Record execution trace
-if g.tracer != nil {
-	g.tracer.RecordToolCall(ctx, &observability.ToolCall{
-		TraceID:  g.tracer.GetTraceID(ctx),
-		ToolName: g.id,
-		Input:    state.ToParams(),
-		Output:   state.ToParams(),
+	return &Result{GraphID: g.id,
+		State:    state,
 		Duration: time.Since(startTime),
-		Error:    nil,
-	})
-}
-
-return &Result{GraphID: g.id,
-	State:    state,
-	Duration: time.Since(startTime),
-}, nil
+	}, nil
 }
 
 // routeFromPluginBus looks up RouterPlugin from the plugin bus and calls
