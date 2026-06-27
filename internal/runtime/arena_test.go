@@ -186,8 +186,7 @@ func TestPluginBus_PluginPanicInAfterStep(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	// Register a hook that panics in AfterStep.
-	h := &panickingAfterStepHook{}
-	b.RegisterHook(h)
+	b.RegisterHook("panic-after", &panickingAfterStepHook{})
 
 	err := b.AfterStep(context.Background(), "exec-1", &StepResult{StepID: "s1"})
 	require.Error(t, err)
@@ -216,18 +215,17 @@ func TestPluginBus_MultipleHooksOneFails(t *testing.T) {
 	h2.beforeErr = errors.New("hook 2 before error")
 	h3 := newTestHook()
 
-	b.RegisterHook(h1)
-	b.RegisterHook(h2)
-	b.RegisterHook(h3)
+	b.RegisterHook("h1", h1)
+	b.RegisterHook("h2", h2)
+	b.RegisterHook("h3", h3)
 
-	// BeforeStep returns the error from h2; h1 runs, h3 does not run
-	// because the bus stops on the first hook error.
+	// BeforeStep runs all hooks; h2 fails but h3 still executes.
 	err := b.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
 	require.Error(t, err)
 
 	assert.Equal(t, []string{"s1"}, h1.before)
 	assert.Equal(t, []string{"s1"}, h2.before) // h2 was called, returned error
-	assert.Empty(t, h3.before)                 // h3 not called due to error stop
+	assert.Equal(t, []string{"s1"}, h3.before) // h3 still called despite h2 error
 
 	// AfterStep should work normally since only h2's beforeErr is set.
 	err = b.AfterStep(context.Background(), "exec-1", &StepResult{StepID: "s1"})

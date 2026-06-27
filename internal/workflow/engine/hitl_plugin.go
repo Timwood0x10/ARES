@@ -31,10 +31,15 @@ func NewHITLFeedbackPlugin(name string, handler InterruptHandler, store Interrup
 	}
 }
 
-func (p *HITLFeedbackPlugin) Name() string                          { return p.name }
-func (p *HITLFeedbackPlugin) Capabilities() []runtime.Capability     { return []runtime.Capability{runtime.CapObserver} }
-func (p *HITLFeedbackPlugin) Start(_ context.Context, bus runtime.EventBus) error { p.bus = bus; return nil }
-func (p *HITLFeedbackPlugin) Stop(_ context.Context) error          { return nil }
+func (p *HITLFeedbackPlugin) Name() string { return p.name }
+func (p *HITLFeedbackPlugin) Capabilities() []runtime.Capability {
+	return []runtime.Capability{runtime.CapObserver}
+}
+func (p *HITLFeedbackPlugin) Start(_ context.Context, bus runtime.EventBus) error {
+	p.bus = bus
+	return nil
+}
+func (p *HITLFeedbackPlugin) Stop(_ context.Context) error { return nil }
 
 // InterruptHandler returns the wrapped handler, or nil if not set.
 func (p *HITLFeedbackPlugin) InterruptHandler() InterruptHandler { return p.handler }

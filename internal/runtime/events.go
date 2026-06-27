@@ -30,16 +30,25 @@ const EventInterruptCreated events.EventType = "interrupt.created"
 // EventInterruptResolved is emitted when a HITL interrupt is resolved.
 const EventInterruptResolved events.EventType = "interrupt.resolved"
 
+// Plugin lifecycle event types emitted by the PluginBus.
+const (
+	EventPluginStarted events.EventType = "plugin.started"
+	EventPluginStopped events.EventType = "plugin.stopped"
+	EventPluginFailed  events.EventType = "plugin.failed"
+)
+
 // Payload keys used in workflow events.
 const (
-	PayloadKeyExecutionID       = "execution_id"
-	PayloadKeyWorkflowID        = "workflow_id"
-	PayloadKeyStepID            = "step_id"
-	PayloadKeyStatus            = "status"
-	PayloadKeyDuration          = "duration_ms"
-	PayloadKeyError             = "error"
-	PayloadKeyRouteReason       = "route_reason"
-	PayloadKeyToolName          = "tool_name"
-	PayloadKeyInterruptAction   = "interrupt_action"
-	PayloadKeyInterruptFeedback = "interrupt_feedback"
+	PayloadKeyExecutionID        = "execution_id"
+	PayloadKeyWorkflowID         = "workflow_id"
+	PayloadKeyStepID             = "step_id"
+	PayloadKeyStatus             = "status"
+	PayloadKeyDuration           = "duration_ms"
+	PayloadKeyError              = "error"
+	PayloadKeyRouteReason        = "route_reason"
+	PayloadKeyToolName           = "tool_name"
+	PayloadKeyInterruptAction    = "interrupt_action"
+	PayloadKeyInterruptFeedback  = "interrupt_feedback"
+	PayloadKeyPluginName         = "plugin_name"
+	PayloadKeyPluginCapabilities = "plugin_capabilities"
 )

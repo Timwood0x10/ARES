@@ -282,12 +282,16 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 		for rows.Next() {
 			var id, contentHash string
 			if err := rows.Scan(&id, &contentHash); err != nil {
-				rows.Close()
+				if err := rows.Close(); err != nil {
+					return errors.Wrap(err, "close rows")
+				}
 				return errors.Wrap(err, "scan returned id")
 			}
 			idByHash[contentHash] = id
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			return errors.Wrap(err, "close rows")
+		}
 
 		for j := batchStart; j < batchEnd; j++ {
 			if id, ok := idByHash[chunks[j].ContentHash]; ok {

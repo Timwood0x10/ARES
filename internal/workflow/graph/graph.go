@@ -3,12 +3,14 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/observability"
 	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // Edge represents a connection between two nodes with optional condition.
@@ -26,6 +28,13 @@ func IfFunc(fn func(state *State) bool) Condition {
 	return fn
 }
 
+// NodeRouter is a callback for dynamic routing decisions during graph execution.
+// After a node completes, the router is called with the just-executed node ID
+// and current state. If it returns a non-empty node ID, that node is enqueued
+// for execution next (bypassing the DAG's static edge traversal).
+// Return "" to let the DAG decide the next node via in-degree BFS as usual.
+type NodeRouter func(ctx context.Context, currentNodeID string, state *State) string
+
 // Graph represents a DAG of nodes with conditional edges.
 //
 // Graph is safe for concurrent reads via Execute, but concurrent
@@ -40,6 +49,8 @@ type Graph struct {
 	scheduler Scheduler
 	tracer    observability.Tracer // observability tracer for execution tracking
 	limiter   ratelimit.Limiter    // rate limiter for execution throttling
+	pluginBus *runtime.PluginBus   // optional plugin bus for BeforeStep/AfterStep hooks
+	router    NodeRouter           // optional dynamic routing callback
 }
 
 // NewGraph creates a new graph with the given ID.
@@ -307,6 +318,34 @@ func (g *Graph) SetTracer(tracer observability.Tracer) (*Graph, error) {
 		return nil, fmt.Errorf("tracer cannot be nil")
 	}
 	g.tracer = tracer
+	return g, nil
+}
+
+// SetPluginBus attaches a PluginBus for BeforeStep/AfterStep hooks and
+// event emission. This aligns the graph execution path with the workflow
+// engine's plugin system, enabling observability and memory routing.
+func (g *Graph) SetPluginBus(pb *runtime.PluginBus) (*Graph, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pluginBus = pb
+	return g, nil
+}
+
+// SetRouter sets a dynamic routing callback that is invoked after each
+// successfully completed node. The callback receives the just-executed node ID
+// and the current state, and returns the ID of the node to route to next.
+// Return "" to let the graph continue with normal BFS in-degree traversal.
+// The target node must already exist in the graph.
+func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.router = router
 	return g, nil
 }
 

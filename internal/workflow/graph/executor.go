@@ -5,10 +5,12 @@ package graph
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // Execute runs the graph with the given state.
@@ -99,6 +101,16 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		default:
 		}
 
+		// Convert node to runtime.Step for plugin hooks.
+		step := &runtime.Step{ID: nodeID, Name: nodeID}
+		if g.pluginBus != nil {
+			if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
+				slog.Warn("graph: before step hook failed (continuing)",
+					"graph_id", g.id, "node", nodeID, "error", err,
+				)
+			}
+		}
+
 		// Record agent step start
 		if g.tracer != nil {
 			g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
@@ -110,17 +122,37 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 
 		// Execute node
 		nodeStart := time.Now()
-		err := node.Execute(ctx, state)
-		if err != nil {
+		execErr := node.Execute(ctx, state)
+		nodeDuration := time.Since(nodeStart)
+
+		stepResult := &runtime.StepResult{
+			StepID:   nodeID,
+			Status:   runtime.StepStatusCompleted,
+			Duration: nodeDuration,
+		}
+		if execErr != nil {
+			stepResult.Status = runtime.StepStatusFailed
+			stepResult.Error = execErr.Error()
 			if g.tracer != nil {
 				g.tracer.RecordError(ctx, &observability.AgentError{
 					TraceID:   g.tracer.GetTraceID(ctx),
 					AgentID:   nodeID,
 					ErrorType: "execution_error",
-					Message:   err.Error(),
+					Message:   execErr.Error(),
 				})
 			}
-			return nil, errors.Wrapf(err, "node %s execution failed", nodeID)
+		}
+
+		if g.pluginBus != nil {
+			if err := g.pluginBus.AfterStep(ctx, g.id, stepResult); err != nil {
+				slog.Warn("graph: after step hook failed (continuing)",
+					"graph_id", g.id, "node", nodeID, "error", err,
+				)
+			}
+		}
+
+		if execErr != nil {
+			return nil, errors.Wrapf(execErr, "node %s execution failed", nodeID)
 		}
 
 		// Record agent step completion
@@ -129,12 +161,23 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 				TraceID:  g.tracer.GetTraceID(ctx),
 				AgentID:  nodeID,
 				StepName: "execute",
-				Duration: time.Since(nodeStart),
+				Duration: nodeDuration,
 			})
 		}
 
 		// Mark as executed
 		executed[nodeID] = true
+
+		// Dynamic routing: after successful completion, check if router
+		// wants to override the next node (overrides static edge traversal).
+		if g.router != nil && execErr == nil {
+			if routedID := g.router(ctx, nodeID, state); routedID != "" {
+				if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
+					readyQueue = append(readyQueue, routedID)
+					readySet[routedID] = true
+				}
+			}
+		}
 
 		// C7 fix: decrement in-degree for successor nodes.
 		// Decrement unconditionally (structural dependency satisfied),

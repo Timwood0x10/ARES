@@ -267,7 +267,7 @@ func TestPluginBus_HookPanicRecovery(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	h := &panickingHook{}
-	b.RegisterHook(h)
+	b.RegisterHook("panic", h)
 
 	// Should not panic when hook panics; invokeWithTimeout recovers.
 	err := b.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
@@ -280,7 +280,7 @@ func TestPluginBus_HookTimeout(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	slowHook := &testHook{}
-	b.RegisterHook(slowHook)
+	b.RegisterHook("slow", slowHook)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -299,7 +299,7 @@ func TestPluginBus_BeforeStepAfterStep_Order(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	h := newTestHook()
-	b.RegisterHook(h)
+	b.RegisterHook("order", h)
 
 	step := &Step{ID: "s1", Name: "Step One"}
 	result := &StepResult{StepID: "s1", Name: "Step One", Status: StepStatusCompleted}
@@ -317,8 +317,8 @@ func TestPluginBus_MultipleHooks(t *testing.T) {
 
 	h1 := newTestHook()
 	h2 := newTestHook()
-	b.RegisterHook(h1)
-	b.RegisterHook(h2)
+	b.RegisterHook("h1", h1)
+	b.RegisterHook("h2", h2)
 
 	step := &Step{ID: "s1"}
 	result := &StepResult{StepID: "s1"}

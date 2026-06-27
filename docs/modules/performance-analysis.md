@@ -312,9 +312,9 @@ Score(strategy)
 
 ### P3 — 长期架构（vNext 计划）
 
-- [ ] Plugin Runtime Contract
+- [✓] Plugin Runtime Contract (partial: bus 修复 + 生命周期事件)
 - [ ] Experience Checkpoint
-- [ ] Memory-Routed Workflow
+- [✓] Memory-Routed Workflow (partial: Graph 路径接入 PluginBus)
 - [✓] HITL Feedback Plugin
 - [ ] Controlled Evolutionary Loop
 - [ ] Evolution Plugin

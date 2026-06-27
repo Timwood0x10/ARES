@@ -96,7 +96,16 @@ func (b *PluginBus) Start(ctx context.Context) error {
 	var errs []error
 	for _, p := range b.plugins {
 		if err := b.invokeStart(ctx, p); err != nil {
+			b.Emit(ctx, p.Name(), EventPluginFailed, map[string]any{
+				PayloadKeyPluginName: p.Name(),
+				PayloadKeyError:      err.Error(),
+			})
 			errs = append(errs, err)
+		} else {
+			b.Emit(ctx, p.Name(), EventPluginStarted, map[string]any{
+				PayloadKeyPluginName:         p.Name(),
+				PayloadKeyPluginCapabilities: fmt.Sprintf("%v", p.Capabilities()),
+			})
 		}
 	}
 	return errors.Join(errs...)
@@ -115,54 +124,78 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 			return p.Stop(sctx)
 		}); err != nil {
 			b.logger.Error("runtime: plugin stop failed",
-				"plugin", b.plugins[i].Name(),
+				"plugin", p.Name(),
 				"error", err,
 			)
+			b.Emit(ctx, p.Name(), EventPluginFailed, map[string]any{
+				PayloadKeyPluginName: p.Name(),
+				PayloadKeyError:      err.Error(),
+			})
 			errs = append(errs, err)
+		} else {
+			b.Emit(ctx, p.Name(), EventPluginStopped, map[string]any{
+				PayloadKeyPluginName: p.Name(),
+			})
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// RegisterHook adds a WorkflowHook to be called before and after each step.
-func (b *PluginBus) RegisterHook(hook WorkflowHook) {
+// RegisterHook adds a named WorkflowHook to be called before and after each step.
+// The name is used in logs and error messages to identify the hook.
+func (b *PluginBus) RegisterHook(name string, hook WorkflowHook) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.hooks = append(b.hooks, namedHook{pluginName: "hook", hook: hook})
+	b.hooks = append(b.hooks, namedHook{pluginName: name, hook: hook})
 }
 
 // BeforeStep calls all registered hooks before a step executes.
+// Each hook is invoked sequentially. If a hook fails (error, panic, or
+// timeout), the error is logged and the remaining hooks still execute.
+// This matches the DynamicExecutor's contract (log-and-continue).
 func (b *PluginBus) BeforeStep(ctx context.Context, executionID string, step *Step) error {
 	b.mu.RLock()
 	hooks := make([]namedHook, len(b.hooks))
 	copy(hooks, b.hooks)
 	b.mu.RUnlock()
 
+	var errs []error
 	for _, nh := range hooks {
 		if err := invokeWithTimeout(ctx, b.pluginTimeout, nh.pluginName+":beforeStep", func(sctx context.Context) error {
 			return nh.hook.BeforeStep(sctx, executionID, step)
 		}); err != nil {
-			return fmt.Errorf("runtime: before step hook: %w", err)
+			b.logger.Warn("runtime: before step hook failed (continuing)",
+				"plugin", nh.pluginName,
+				"error", err,
+			)
+			errs = append(errs, fmt.Errorf("runtime: before step hook %s: %w", nh.pluginName, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // AfterStep calls all registered hooks after a step completes.
+// Each hook is invoked sequentially. If a hook fails, the error is logged
+// and the remaining hooks still execute.
 func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *StepResult) error {
 	b.mu.RLock()
 	hooks := make([]namedHook, len(b.hooks))
 	copy(hooks, b.hooks)
 	b.mu.RUnlock()
 
+	var errs []error
 	for _, nh := range hooks {
 		if err := invokeWithTimeout(ctx, b.pluginTimeout, nh.pluginName+":afterStep", func(sctx context.Context) error {
 			return nh.hook.AfterStep(sctx, executionID, result)
 		}); err != nil {
-			return fmt.Errorf("runtime: after step hook: %w", err)
+			b.logger.Warn("runtime: after step hook failed (continuing)",
+				"plugin", nh.pluginName,
+				"error", err,
+			)
+			errs = append(errs, fmt.Errorf("runtime: after step hook %s: %w", nh.pluginName, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Emit publishes an event with the given stream ID to all matching
