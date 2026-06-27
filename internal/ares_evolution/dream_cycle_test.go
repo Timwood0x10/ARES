@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 )
 
 // --- Mock implementations for DreamCycle tests ---
@@ -676,19 +676,19 @@ func TestTaskCount(t *testing.T) {
 // --- Helper: mock CallbackRegistrar for scheduler tests ---
 
 type mockCallbackRegistrarForTest struct {
-	handlers map[callbacks.Event][]callbacks.Handler
+	handlers map[ares_callbacks.Event][]ares_callbacks.Handler
 }
 
 func newMockCallbackRegistrarForTest() *mockCallbackRegistrarForTest {
 	return &mockCallbackRegistrarForTest{
-		handlers: make(map[callbacks.Event][]callbacks.Handler),
+		handlers: make(map[ares_callbacks.Event][]ares_callbacks.Handler),
 	}
 }
 
-func (r *mockCallbackRegistrarForTest) On(event callbacks.Event, handler callbacks.Handler) {
+func (r *mockCallbackRegistrarForTest) On(event ares_callbacks.Event, handler ares_callbacks.Handler) {
 	r.handlers[event] = append(r.handlers[event], handler)
 }
 
-func (r *mockCallbackRegistrarForTest) Count(event callbacks.Event) int {
+func (r *mockCallbackRegistrarForTest) Count(event ares_callbacks.Event) int {
 	return len(r.handlers[event])
 }

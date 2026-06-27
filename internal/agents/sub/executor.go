@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -29,9 +29,9 @@ type taskExecutor struct {
 	retryOnFail      bool // Retry LLM call when validation fails
 	strictMode       bool // Return error on validation failure
 	logger           *slog.Logger
-	eventStore       events.EventStore // Optional: emits events for tool/LLM calls
-	agentID          string            // Agent ID for event emission
-	callbacks        callbacks.Emitter // Optional: emits lifecycle callback events.
+	eventStore       events.EventStore      // Optional: emits events for tool/LLM calls
+	agentID          string                 // Agent ID for event emission
+	ares_callbacks   ares_callbacks.Emitter // Optional: emits lifecycle callback events.
 	fallbackHandlers map[models.AgentType]FallbackHandler
 }
 
@@ -41,9 +41,9 @@ type TaskExecutorOption func(*taskExecutor)
 // WithTaskExecutorCallbacks returns a TaskExecutorOption that sets the callback emitter.
 // The emitter will receive lifecycle events (tool.start, tool.end, tool.error)
 // during task execution.
-func WithTaskExecutorCallbacks(emitter callbacks.Emitter) TaskExecutorOption {
+func WithTaskExecutorCallbacks(emitter ares_callbacks.Emitter) TaskExecutorOption {
 	return func(e *taskExecutor) {
-		e.callbacks = emitter
+		e.ares_callbacks = emitter
 	}
 }
 
@@ -111,16 +111,16 @@ func (e *taskExecutor) SetEventStore(store events.EventStore, agentID string) {
 }
 
 // SetCallbacks configures the callback emitter for lifecycle event emission.
-func (e *taskExecutor) SetCallbacks(emitter callbacks.Emitter) {
-	e.callbacks = emitter
+func (e *taskExecutor) SetCallbacks(emitter ares_callbacks.Emitter) {
+	e.ares_callbacks = emitter
 }
 
 // emitCallback emits a lifecycle callback event if the emitter is set.
-func (e *taskExecutor) emitCallback(ctx *callbacks.Context) {
-	if e.callbacks == nil {
+func (e *taskExecutor) emitCallback(ctx *ares_callbacks.Context) {
+	if e.ares_callbacks == nil {
 		return
 	}
-	e.callbacks.Emit(ctx)
+	e.ares_callbacks.Emit(ctx)
 }
 
 // emitEvent appends a single event using the canonical events.Emit helper.
@@ -143,8 +143,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 	startTime := time.Now()
 
 	// Emit tool start event.
-	e.emitCallback(&callbacks.Context{
-		Event:   callbacks.EventToolStart,
+	e.emitCallback(&ares_callbacks.Context{
+		Event:   ares_callbacks.EventToolStart,
 		AgentID: e.agentID,
 		Input:   task.TaskID,
 	})
@@ -154,8 +154,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		items, reason, err := e.executeByType(ctx, task)
 		if err != nil {
 			result.SetError(err.Error())
-			e.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventToolError,
+			e.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventToolError,
 				AgentID:  e.agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
@@ -164,8 +164,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		}
 		result.SetSuccess(items, reason)
 		result.Duration = time.Since(startTime)
-		e.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventToolEnd,
+		e.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventToolEnd,
 			AgentID:  e.agentID,
 			Duration: time.Since(startTime),
 		})
@@ -187,8 +187,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		items, reason, err := e.executeByType(ctx, task)
 		if err != nil {
 			result.SetError(err.Error())
-			e.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventToolError,
+			e.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventToolError,
 				AgentID:  e.agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
@@ -197,8 +197,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		}
 		result.SetSuccess(items, reason)
 		result.Duration = time.Since(startTime)
-		e.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventToolEnd,
+		e.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventToolEnd,
 			AgentID:  e.agentID,
 			Duration: time.Since(startTime),
 		})
@@ -214,8 +214,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		if fallbackErr != nil {
 			slog.Debug("Fallback also failed", "error", fallbackErr)
 			result.SetError(err.Error())
-			e.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventToolError,
+			e.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventToolError,
 				AgentID:  e.agentID,
 				Error:    err,
 				Duration: time.Since(startTime),
@@ -225,8 +225,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 		slog.Debug("Using fallback", "item_count", len(fallbackItems))
 		result.SetSuccess(fallbackItems, reason)
 		result.Duration = time.Since(startTime)
-		e.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventToolEnd,
+		e.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventToolEnd,
 			AgentID:  e.agentID,
 			Duration: time.Since(startTime),
 		})
@@ -235,8 +235,8 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 
 	result.SetSuccess(items, "LLM recommendation completed")
 	result.Duration = time.Since(startTime)
-	e.emitCallback(&callbacks.Context{
-		Event:    callbacks.EventToolEnd,
+	e.emitCallback(&ares_callbacks.Context{
+		Event:    ares_callbacks.EventToolEnd,
 		AgentID:  e.agentID,
 		Duration: time.Since(startTime),
 	})

@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/observability"
@@ -95,13 +95,13 @@ type Config struct {
 
 // Client represents an LLM client that supports multiple providers.
 type Client struct {
-	config       *Config
-	httpClient   *http.Client
-	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
-	tracer       observability.Tracer
-	callbacks    callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
-	limiter      ratelimit.Limiter // Optional: rate limiter for API calls.
-	closeOnce    sync.Once         // Ensures Close() is idempotent and safe for concurrent calls.
+	config         *Config
+	httpClient     *http.Client
+	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
+	tracer         observability.Tracer
+	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
+	limiter        ratelimit.Limiter      // Optional: rate limiter for API calls.
+	closeOnce      sync.Once              // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
 // Option configures a Client instance during construction.
@@ -109,9 +109,9 @@ type Option func(*Client)
 
 // WithCallbacks sets the callback emitter on the LLM client.
 // When set, Generate and GenerateStream will emit lifecycle events.
-func WithCallbacks(emitter callbacks.Emitter) Option {
+func WithCallbacks(emitter ares_callbacks.Emitter) Option {
 	return func(c *Client) {
-		c.callbacks = emitter
+		c.ares_callbacks = emitter
 	}
 }
 
@@ -240,15 +240,15 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	}
 
 	// Emit LLM start event.
-	c.emitCallback(&callbacks.Context{
-		Event: callbacks.EventLLMStart,
+	c.emitCallback(&ares_callbacks.Context{
+		Event: ares_callbacks.EventLLMStart,
 		Model: model,
 		Input: prompt,
 	})
 
 	if err := c.validatePrompt(ctx, prompt, start); err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -263,8 +263,8 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
-			c.emitCallback(&callbacks.Context{
-				Event: callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event: ares_callbacks.EventLLMError,
 				Model: model,
 				Input: prompt,
 				Error: waitErr,
@@ -289,16 +289,16 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 
 	// Emit LLM end or error event.
 	if err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventLLMError,
 			Model:    model,
 			Input:    prompt,
 			Error:    err,
 			Duration: duration,
 		})
 	} else {
-		c.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventLLMEnd,
+		c.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventLLMEnd,
 			Model:    model,
 			Input:    prompt,
 			Output:   result,
@@ -330,11 +330,11 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 }
 
 // emitCallback emits a lifecycle event via the callback emitter if set.
-func (c *Client) emitCallback(ctx *callbacks.Context) {
-	if c.callbacks == nil {
+func (c *Client) emitCallback(ctx *ares_callbacks.Context) {
+	if c.ares_callbacks == nil {
 		return
 	}
-	c.callbacks.Emit(ctx)
+	c.ares_callbacks.Emit(ctx)
 }
 
 // generateOpenRouter generates text using OpenRouter API.
@@ -641,8 +641,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	}
 
 	if err := c.validatePrompt(ctx, prompt, start); err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -657,8 +657,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
-			c.emitCallback(&callbacks.Context{
-				Event: callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event: ares_callbacks.EventLLMError,
 				Model: model,
 				Input: prompt,
 				Error: waitErr,
@@ -680,8 +680,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	if err != nil {
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -690,8 +690,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	}
 
 	// Emit LLM start event here: all validation passed, streaming will actually begin.
-	c.emitCallback(&callbacks.Context{
-		Event: callbacks.EventLLMStart,
+	c.emitCallback(&ares_callbacks.Context{
+		Event: ares_callbacks.EventLLMStart,
 		Model: model,
 		Input: prompt,
 	})
@@ -726,16 +726,16 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 		// Emit LLM end or error event for streaming.
 		if streamErr != nil {
-			c.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventLLMError,
 				Model:    model,
 				Input:    prompt,
 				Error:    streamErr,
 				Duration: duration,
 			})
 		} else {
-			c.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventLLMEnd,
+			c.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventLLMEnd,
 				Model:    model,
 				Input:    prompt,
 				Output:   fullResponse,

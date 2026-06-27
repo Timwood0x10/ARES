@@ -11,13 +11,13 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	"github.com/Timwood0x10/ares/internal/config"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/eval"
@@ -209,9 +209,9 @@ func StopDashboard(ctx context.Context, md *MCPDashboard) error {
 //
 // Returns:
 //
-//	*callbacks.Registry - a new registry instance ready for handler registration.
-func NewCallbackRegistry() *callbacks.Registry {
-	return callbacks.NewRegistry()
+//	*ares_callbacks.Registry - a new registry instance ready for handler registration.
+func NewCallbackRegistry() *ares_callbacks.Registry {
+	return ares_callbacks.NewRegistry()
 }
 
 // NewLLMClientWithCallbacks creates an LLM client with callback emission enabled.
@@ -225,9 +225,9 @@ func NewCallbackRegistry() *callbacks.Registry {
 //
 // Returns:
 //
-//	*llm.Client - configured LLM client with callbacks wired.
+//	*llm.Client - configured LLM client with ares_callbacks wired.
 //	error - configuration or client creation error.
-func NewLLMClientWithCallbacks(config *llm.Config, reg *callbacks.Registry) (*llm.Client, error) {
+func NewLLMClientWithCallbacks(config *llm.Config, reg *ares_callbacks.Registry) (*llm.Client, error) {
 	client, err := llm.NewClient(config)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func NewLLMClientWithCallbacks(config *llm.Config, reg *callbacks.Registry) (*ll
 //
 //	*llm.FailoverClient - failover-capable LLM client.
 //	error - configuration or client creation error.
-func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *callbacks.Registry) (*llm.FailoverClient, error) {
+func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *ares_callbacks.Registry) (*llm.FailoverClient, error) {
 	configs := append([]*llm.Config{config}, fallbacks...)
 	fc, err := llm.NewFailoverClient(configs, 0, 0, 0)
 	if err != nil {
@@ -271,7 +271,7 @@ func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *
 // Pass this option to sub.NewTaskExecutorWithValidation() to enable lifecycle event
 // emission (tool.start, tool.end, tool.error) during task execution.
 //
-// This is the type-safe alternative to runtime interface assertion — callbacks
+// This is the type-safe alternative to runtime interface assertion — ares_callbacks
 // are wired at construction time rather than injected post-hoc via SetCallbacks.
 //
 // Args:
@@ -281,7 +281,7 @@ func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *
 // Returns:
 //
 //	sub.TaskExecutorOption - option function for sub.NewTaskExecutorWithValidation().
-func WireTaskExecutorCallbacks(reg *callbacks.Registry) sub.TaskExecutorOption {
+func WireTaskExecutorCallbacks(reg *ares_callbacks.Registry) sub.TaskExecutorOption {
 	if reg == nil {
 		return nil
 	}
@@ -299,7 +299,7 @@ func WireTaskExecutorCallbacks(reg *callbacks.Registry) sub.TaskExecutorOption {
 // Returns:
 //
 //	leader.LeaderOption - option function for leader.New().
-func WireLeaderAgentCallbacks(reg *callbacks.Registry) leader.LeaderOption {
+func WireLeaderAgentCallbacks(reg *ares_callbacks.Registry) leader.LeaderOption {
 	if reg == nil {
 		return nil
 	}
@@ -343,7 +343,7 @@ func SetupEvolution(
 	ctx context.Context,
 	flightRecorder *flight.FlightRecorder,
 	expRepo evolution.ExperienceRepository,
-	callbackReg *callbacks.Registry,
+	callbackReg *ares_callbacks.Registry,
 	dreamDeps *DreamCycleDeps,
 	cfg *config.EvolutionConfig, // <-- 新增：GA 参数来源
 	opts ...evolution.SchedulerOption,
@@ -585,11 +585,11 @@ func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter even
 
 // WiredComponents holds all evolution-related components produced by
 // WireAllEvolutionComponents. Callers use these fields to inject
-// callbacks, feedback service, and evaluators into agents at construction time.
+// ares_callbacks, feedback service, and evaluators into agents at construction time.
 type WiredComponents struct {
 	// CallbackReg is the shared callback registry for lifecycle events.
 	// Pass to llm.WithCallbacks(reg) and leader.WithCallbacks(reg).
-	CallbackReg *callbacks.Registry
+	CallbackReg *ares_callbacks.Registry
 
 	// FeedbackSvc is the bandit feedback service for experience reinforcement.
 	// Pass to leader.WithFeedbackService(svc).

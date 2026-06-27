@@ -1,4 +1,4 @@
-package callbacks
+package ares_callbacks
 
 import (
 	"sync"

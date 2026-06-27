@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
@@ -20,8 +20,8 @@ func TestNewCallbackRegistry(t *testing.T) {
 		t.Fatal("expected non-nil registry")
 	}
 
-	var _ callbacks.Emitter = reg
-	var _ callbacks.CallbackRegistrar = reg
+	var _ ares_callbacks.Emitter = reg
+	var _ ares_callbacks.CallbackRegistrar = reg
 }
 
 // TestNewLLMClientWithCallbacks verifies that the factory method creates an LLM
@@ -30,7 +30,7 @@ func TestNewLLMClientWithCallbacks(t *testing.T) {
 	reg := NewCallbackRegistry()
 
 	var emitted bool
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		emitted = true
 	})
 
@@ -55,14 +55,14 @@ func TestNewLLMClientWithCallbacks(t *testing.T) {
 }
 
 // TestWireTaskExecutorCallbacks verifies that WireTaskExecutorCallbacks returns
-// a valid TaskExecutorOption that correctly wires callbacks at construction time.
+// a valid TaskExecutorOption that correctly wires ares_callbacks at construction time.
 func TestWireTaskExecutorCallbacks(t *testing.T) {
 	reg := NewCallbackRegistry()
 
 	var mu sync.Mutex
 	var emittedEvents []string
 
-	reg.On(callbacks.EventToolStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventToolStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		emittedEvents = append(emittedEvents, string(ctx.Event))
 		mu.Unlock()
@@ -95,13 +95,13 @@ func TestWireTaskExecutorCallbacks(t *testing.T) {
 
 	found := false
 	for _, ev := range emittedEvents {
-		if ev == string(callbacks.EventToolStart) {
+		if ev == string(ares_callbacks.EventToolStart) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected ToolStart event to be emitted after wiring callbacks via option")
+		t.Error("expected ToolStart event to be emitted after wiring ares_callbacks via option")
 	}
 }
 
@@ -133,17 +133,17 @@ func TestCallbackInjectionChain(t *testing.T) {
 	var mu sync.Mutex
 	eventSources := make(map[string]string)
 
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		eventSources["llm"] = "llm.start"
 		mu.Unlock()
 	})
-	reg.On(callbacks.EventToolStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventToolStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		eventSources["tool"] = "tool.start"
 		mu.Unlock()
 	})
-	reg.On(callbacks.EventAgentStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventAgentStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		eventSources["agent"] = "agent.start"
 		mu.Unlock()
@@ -157,7 +157,7 @@ func TestCallbackInjectionChain(t *testing.T) {
 
 	llmClient, err := NewLLMClientWithCallbacks(llmCfg, reg)
 	if err != nil {
-		t.Fatalf("failed to create LLM client with callbacks: %v", err)
+		t.Fatalf("failed to create LLM client with ares_callbacks: %v", err)
 	}
 
 	callbackOpt := WireTaskExecutorCallbacks(reg)

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -139,20 +139,20 @@ const periodicEvolutionScoreThreshold = 100
 // It registers handlers with the callback registry and decides when to run
 // the adapter based on configurable trigger conditions.
 type EvolutionScheduler struct {
-	callbacks    callbacks.CallbackRegistrar
-	adapter      AdapterRunner
-	minInterval  time.Duration
-	mu           sync.Mutex
-	lastRun      time.Time
-	trigger      EvolutionTrigger
-	enabled      atomic.Bool
-	evolveMu     sync.Mutex
-	evolveCancel context.CancelFunc
-	evolveEg     *errgroup.Group // stored for Shutdown to wait on
-	dreamCycle   *DreamCycle
-	scores       []float64
-	scoreMu      sync.Mutex
-	guardrails   *EvolutionGuardrails
+	ares_callbacks ares_callbacks.CallbackRegistrar
+	adapter        AdapterRunner
+	minInterval    time.Duration
+	mu             sync.Mutex
+	lastRun        time.Time
+	trigger        EvolutionTrigger
+	enabled        atomic.Bool
+	evolveMu       sync.Mutex
+	evolveCancel   context.CancelFunc
+	evolveEg       *errgroup.Group // stored for Shutdown to wait on
+	dreamCycle     *DreamCycle
+	scores         []float64
+	scoreMu        sync.Mutex
+	guardrails     *EvolutionGuardrails
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -164,20 +164,20 @@ type EvolutionScheduler struct {
 //
 // Args:
 //
-//	callbacks - the callback registrar for registering event handlers (implements CallbackRegistrar).
+//	ares_callbacks - the callback registrar for registering event handlers (implements CallbackRegistrar).
 //	adapter - the adapter runner to execute on evolution cycles (implements AdapterRunner).
 //	opts - optional configuration functions.
 //
 // Returns:
 //
 //	*EvolutionScheduler - the configured scheduler instance.
-func NewEvolutionScheduler(callbacks callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
+func NewEvolutionScheduler(ares_callbacks ares_callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
 	s := &EvolutionScheduler{
-		callbacks:   callbacks,
-		adapter:     adapter,
-		minInterval: 5 * time.Minute,
-		lastRun:     time.Time{},
-		trigger:     TriggerOnIdle,
+		ares_callbacks: ares_callbacks,
+		adapter:        adapter,
+		minInterval:    5 * time.Minute,
+		lastRun:        time.Time{},
+		trigger:        TriggerOnIdle,
 	}
 	// enabled defaults to false (atomic.Bool zero value).
 
@@ -288,12 +288,12 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 // Register registers the scheduler's handlers to the callback registry.
 // It subscribes to EventAgentEnd events for triggering evolution cycles.
 func (s *EvolutionScheduler) Register() {
-	if s.callbacks == nil {
+	if s.ares_callbacks == nil {
 		slog.Warn("[Evolution] Callback registry is nil, cannot register")
 		return
 	}
 
-	s.callbacks.On(callbacks.EventAgentEnd, func(ctx *callbacks.Context) {
+	s.ares_callbacks.On(ares_callbacks.EventAgentEnd, func(ctx *ares_callbacks.Context) {
 		data := CallbackData{
 			AgentID: ctx.AgentID,
 		}

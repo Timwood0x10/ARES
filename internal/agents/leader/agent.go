@@ -11,9 +11,9 @@ import (
 	stderrors "errors" // stdlib errors.Join for collecting multiple errors
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -77,9 +77,9 @@ func WithEventStore(store events.EventStore) LeaderOption {
 }
 
 // WithCallbacks sets the callback emitter for lifecycle event emission.
-func WithCallbacks(emitter callbacks.Emitter) LeaderOption {
+func WithCallbacks(emitter ares_callbacks.Emitter) LeaderOption {
 	return func(a *leaderAgent) {
-		a.callbacks = emitter
+		a.ares_callbacks = emitter
 	}
 }
 
@@ -92,23 +92,23 @@ func WithFeedbackService(svc *experience.FeedbackService) LeaderOption {
 
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
-	mu            sync.RWMutex
-	id            string
-	agentType     models.AgentType
-	status        models.AgentStatus
-	config        *LeaderAgentConfig
-	parser        ProfileParser
-	planner       TaskPlanner
-	dispatcher    TaskDispatcher
-	aggregator    ResultAggregator
-	messageQueue  *ahp.MessageQueue
-	heartbeatMon  *ahp.HeartbeatMonitor
-	memoryManager memory.MemoryManager
-	feedbackSvc   *experience.FeedbackService
-	sessionID     string
-	checkpoint    *CheckpointRepository
-	eventStore    events.EventStore
-	callbacks     callbacks.Emitter // Optional: emits lifecycle callback events.
+	mu             sync.RWMutex
+	id             string
+	agentType      models.AgentType
+	status         models.AgentStatus
+	config         *LeaderAgentConfig
+	parser         ProfileParser
+	planner        TaskPlanner
+	dispatcher     TaskDispatcher
+	aggregator     ResultAggregator
+	messageQueue   *ahp.MessageQueue
+	heartbeatMon   *ahp.HeartbeatMonitor
+	memoryManager  memory.MemoryManager
+	feedbackSvc    *experience.FeedbackService
+	sessionID      string
+	checkpoint     *CheckpointRepository
+	eventStore     events.EventStore
+	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle callback events.
 
 	// Snapshot/restore state fields for resurrection support.
 	lastTaskID          string
@@ -561,11 +561,11 @@ func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType,
 }
 
 // emitCallback emits a lifecycle callback event if the emitter is set.
-func (a *leaderAgent) emitCallback(ctx *callbacks.Context) {
-	if a.callbacks == nil {
+func (a *leaderAgent) emitCallback(ctx *ares_callbacks.Context) {
+	if a.ares_callbacks == nil {
 		return
 	}
-	a.callbacks.Emit(ctx)
+	a.ares_callbacks.Emit(ctx)
 }
 
 // updateSnapshotState updates the snapshot-tracking fields after state changes.
@@ -749,8 +749,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	startTime := time.Now()
 
 	// Emit agent start event.
-	a.emitCallback(&callbacks.Context{
-		Event:   callbacks.EventAgentStart,
+	a.emitCallback(&ares_callbacks.Context{
+		Event:   ares_callbacks.EventAgentStart,
 		AgentID: a.id,
 	})
 
@@ -764,8 +764,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		a.setStatus(models.AgentStatusReady)
 		duration := time.Since(startTime)
 		// Emit agent end event on exit (success or error will be handled below).
-		a.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventAgentEnd,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventAgentEnd,
 			AgentID:  a.id,
 			Duration: duration,
 		})
@@ -773,8 +773,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	strInput, err := parseInput(input)
 	if err != nil {
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -788,8 +788,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -799,8 +799,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	select {
 	case <-a.stopCh:
 		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -814,8 +814,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	profile, err := a.parser.Parse(ctx, strInput)
 	if err != nil {
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -826,8 +826,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -837,8 +837,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	select {
 	case <-a.stopCh:
 		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -852,8 +852,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -865,8 +865,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -876,8 +876,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	select {
 	case <-a.stopCh:
 		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -892,8 +892,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	slog.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
 	if err != nil {
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -908,8 +908,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	stepCount++
 	if stepCount > maxSteps {
 		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -919,8 +919,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	select {
 	case <-a.stopCh:
 		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -930,8 +930,8 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	result, err := a.aggregator.Aggregate(ctx, results, tasks)
 	if err != nil {
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -1170,8 +1170,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	strInput, err := parseInput(input)
 	if err != nil {
 		a.setStatus(models.AgentStatusReady)
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentError,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentError,
 			AgentID: a.id,
 			Error:   err,
 		})
@@ -1185,8 +1185,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 	a.streamEg.Go(func() error {
 		// Emit start event inside the goroutine so it's always paired with end.
-		a.emitCallback(&callbacks.Context{
-			Event:   callbacks.EventAgentStart,
+		a.emitCallback(&ares_callbacks.Context{
+			Event:   ares_callbacks.EventAgentStart,
 			AgentID: a.id,
 		})
 
@@ -1194,8 +1194,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		defer func() {
 			a.setStatus(models.AgentStatusReady)
 			duration := time.Since(startTime)
-			a.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventAgentEnd,
+			a.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventAgentEnd,
 				AgentID:  a.id,
 				Duration: duration,
 			})
@@ -1217,8 +1217,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		profile, err := a.parser.Parse(ctx, strInput)
 		if err != nil {
-			a.emitCallback(&callbacks.Context{
-				Event:   callbacks.EventAgentError,
+			a.emitCallback(&ares_callbacks.Context{
+				Event:   ares_callbacks.EventAgentError,
 				AgentID: a.id,
 				Error:   err,
 			})
@@ -1237,8 +1237,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		tasks, err := a.planner.Plan(ctx, profile, strInput)
 		if err != nil {
-			a.emitCallback(&callbacks.Context{
-				Event:   callbacks.EventAgentError,
+			a.emitCallback(&ares_callbacks.Context{
+				Event:   ares_callbacks.EventAgentError,
 				AgentID: a.id,
 				Error:   err,
 			})
@@ -1267,8 +1267,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		results, err := a.dispatcher.Dispatch(ctx, tasks)
 		if err != nil {
-			a.emitCallback(&callbacks.Context{
-				Event:   callbacks.EventAgentError,
+			a.emitCallback(&ares_callbacks.Context{
+				Event:   ares_callbacks.EventAgentError,
 				AgentID: a.id,
 				Error:   err,
 			})
@@ -1307,8 +1307,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		result, err := a.aggregator.Aggregate(ctx, allResults, tasks)
 		if err != nil {
-			a.emitCallback(&callbacks.Context{
-				Event:   callbacks.EventAgentError,
+			a.emitCallback(&ares_callbacks.Context{
+				Event:   ares_callbacks.EventAgentError,
 				AgentID: a.id,
 				Error:   err,
 			})

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/observability"
@@ -50,7 +50,7 @@ type Config struct {
 	Tracer observability.Tracer
 	// CallbackRegistry is an optional callback registry for lifecycle event emission.
 	// When set, Generate and GenerateStream calls will emit events to this registry.
-	CallbackRegistry *callbacks.Registry
+	CallbackRegistry *ares_callbacks.Registry
 }
 
 // NewService creates a new LLM service instance.

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -307,7 +307,7 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 8
 	cfg.EliteCount = 1
@@ -334,8 +334,8 @@ func TestWiredSystem_WithSchedulerEventTrigger(t *testing.T) {
 	}
 
 	// Verify handler was registered.
-	if reg.Count(callbacks.EventAgentEnd) != 1 {
-		t.Errorf("expected 1 handler registered for EventAgentEnd, got %d", reg.Count(callbacks.EventAgentEnd))
+	if reg.Count(ares_callbacks.EventAgentEnd) != 1 {
+		t.Errorf("expected 1 handler registered for EventAgentEnd, got %d", reg.Count(ares_callbacks.EventAgentEnd))
 	}
 
 	genBefore := system.Population.Generation
@@ -384,7 +384,7 @@ func TestWiredSystem_WithDreamCycleAndScheduler(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	// Create system with scheduler but NOT dream cycle via config (since
 	// NewWiredEvolutionSystem passes nil tester which fails DreamCycle creation).
@@ -470,7 +470,7 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 6
 	cfg.EliteCount = 1
@@ -536,7 +536,7 @@ func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 8
 	cfg.EliteCount = 1
@@ -825,7 +825,7 @@ func TestWiredSystem_WithRegressionTester(t *testing.T) {
 		CreatedAt:      time.Now(),
 	}
 
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 	cfg := DefaultSystemConfig()
 	cfg.PopulationSize = 6
 	cfg.EnableScheduler = true

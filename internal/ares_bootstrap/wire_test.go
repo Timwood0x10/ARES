@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	"github.com/Timwood0x10/ares/internal/config"
 	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/llm"
@@ -287,7 +287,7 @@ func TestWireAllEvolutionComponents_NilDeps(t *testing.T) {
 }
 
 // TestWireAllEvolutionComponents_CallbackRegImplementsEmitter verifies that
-// the returned CallbackReg satisfies callbacks.Emitter for injection into
+// the returned CallbackReg satisfies ares_callbacks.Emitter for injection into
 // llm.WithCallbacks and leader.WithCallbacks.
 func TestWireAllEvolutionComponents_CallbackRegImplementsEmitter(t *testing.T) {
 	ctx := context.Background()
@@ -302,10 +302,10 @@ func TestWireAllEvolutionComponents_CallbackRegImplementsEmitter(t *testing.T) {
 
 	// Registering handlers should work.
 	callCount := 0
-	wired.CallbackReg.On(callbacks.EventAgentStart, func(_ *callbacks.Context) {
+	wired.CallbackReg.On(ares_callbacks.EventAgentStart, func(_ *ares_callbacks.Context) {
 		callCount++
 	})
-	wired.CallbackReg.Emit(&callbacks.Context{Event: callbacks.EventAgentStart})
+	wired.CallbackReg.Emit(&ares_callbacks.Context{Event: ares_callbacks.EventAgentStart})
 
 	if callCount != 1 {
 		t.Errorf("expected 1 callback invocation, got %d", callCount)

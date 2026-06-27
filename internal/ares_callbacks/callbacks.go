@@ -1,5 +1,5 @@
 // Package callbacks provides lifecycle event hooks for LLM calls and agent execution.
-package callbacks
+package ares_callbacks
 
 import (
 	"log/slog"

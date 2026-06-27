@@ -6,29 +6,29 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // TestClientGenerateEmitsCallbacks verifies that Generate() emits
 // EventLLMStart followed by EventLLMError for invalid input.
 func TestClientGenerateEmitsCallbacks(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var receivedEvents []*callbacks.Context
+	var receivedEvents []*ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
 	})
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
 	})
-	reg.On(callbacks.EventLLMEnd, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMEnd, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
@@ -65,11 +65,11 @@ func TestClientGenerateEmitsCallbacks(t *testing.T) {
 	errorEvent := receivedEvents[1]
 	mu.Unlock()
 
-	if startEvent.Event != callbacks.EventLLMStart {
-		t.Errorf("first event = %s, want %s", startEvent.Event, callbacks.EventLLMStart)
+	if startEvent.Event != ares_callbacks.EventLLMStart {
+		t.Errorf("first event = %s, want %s", startEvent.Event, ares_callbacks.EventLLMStart)
 	}
-	if errorEvent.Event != callbacks.EventLLMError {
-		t.Errorf("second event = %s, want %s", errorEvent.Event, callbacks.EventLLMError)
+	if errorEvent.Event != ares_callbacks.EventLLMError {
+		t.Errorf("second event = %s, want %s", errorEvent.Event, ares_callbacks.EventLLMError)
 	}
 	if errorEvent.Error == nil {
 		t.Error("LLMError event should have non-nil Error")
@@ -84,12 +84,12 @@ func TestClientGenerateEmitsCallbacks(t *testing.T) {
 
 // TestClientGenerateWhitespacePromptCallback verifies whitespace-only prompt emits events.
 func TestClientGenerateWhitespacePromptCallback(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var receivedEvents []*callbacks.Context
+	var receivedEvents []*ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
@@ -122,12 +122,12 @@ func TestClientGenerateWhitespacePromptCallback(t *testing.T) {
 
 // TestClientLongPromptCallback verifies oversized prompt emits LLMError with duration.
 func TestClientLongPromptCallback(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var errorEvent *callbacks.Context
+	var errorEvent *ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		errorEvent = ctx
@@ -172,7 +172,7 @@ func TestClientLongPromptCallback(t *testing.T) {
 	}
 }
 
-// TestClientNilCallbacksNoPanic verifies that client works without callbacks set.
+// TestClientNilCallbacksNoPanic verifies that client works without ares_callbacks set.
 func TestClientNilCallbacksNoPanic(t *testing.T) {
 	client, err := NewClient(&Config{
 		Provider: "ollama",
@@ -194,18 +194,18 @@ func TestClientNilCallbacksNoPanic(t *testing.T) {
 
 // TestClientUnsupportedProviderCallback verifies unsupported provider emits proper events.
 func TestClientUnsupportedProviderCallback(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var startEvent *callbacks.Context
-	var errorEvent *callbacks.Context
+	var startEvent *ares_callbacks.Context
+	var errorEvent *ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		startEvent = ctx
 	})
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		errorEvent = ctx
@@ -254,17 +254,17 @@ func TestClientUnsupportedProviderCallback(t *testing.T) {
 
 // TestClientMultipleCallsShareRegistry verifies multiple clients sharing one registry.
 func TestClientMultipleCallsShareRegistry(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
 	eventCount := 0
 
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		eventCount++
 	})
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		eventCount++
@@ -298,12 +298,12 @@ func TestClientMultipleCallsShareRegistry(t *testing.T) {
 
 // TestClientCallbackErrorType verifies that ErrInvalidArgument is properly propagated.
 func TestClientCallbackErrorType(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
 	var callbackErr error
 
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		callbackErr = ctx.Error
@@ -339,7 +339,7 @@ func TestClientCallbackErrorType(t *testing.T) {
 
 // TestWithCallbacksOption verifies the WithCallbacks option sets the emitter correctly.
 func TestWithCallbacksOption(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	client, err := NewClient(&Config{
 		Provider: "ollama",
@@ -350,7 +350,7 @@ func TestWithCallbacksOption(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	// Verify the client was created successfully with callbacks.
+	// Verify the client was created successfully with ares_callbacks.
 	if client == nil {
 		t.Fatal("client should not be nil")
 	}
@@ -359,17 +359,17 @@ func TestWithCallbacksOption(t *testing.T) {
 // TestGenerateStreamCallbackOnEmptyPrompt verifies that streaming with an empty prompt
 // emits only an error event (no start event, since the stream never begins).
 func TestGenerateStreamCallbackOnEmptyPrompt(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var receivedEvents []*callbacks.Context
+	var receivedEvents []*ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMStart, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMStart, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
 	})
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedEvents = append(receivedEvents, ctx)
@@ -405,19 +405,19 @@ func TestGenerateStreamCallbackOnEmptyPrompt(t *testing.T) {
 	errorEvent := receivedEvents[0]
 	mu.Unlock()
 
-	if errorEvent.Event != callbacks.EventLLMError {
-		t.Errorf("first event = %s, want %s", errorEvent.Event, callbacks.EventLLMError)
+	if errorEvent.Event != ares_callbacks.EventLLMError {
+		t.Errorf("first event = %s, want %s", errorEvent.Event, ares_callbacks.EventLLMError)
 	}
 }
 
 // TestGenerateStreamLongPromptCallback verifies streaming with long prompt emits error event.
 func TestGenerateStreamLongPromptCallback(t *testing.T) {
-	reg := callbacks.NewRegistry()
+	reg := ares_callbacks.NewRegistry()
 
 	var mu sync.Mutex
-	var errorEvent *callbacks.Context
+	var errorEvent *ares_callbacks.Context
 
-	reg.On(callbacks.EventLLMError, func(ctx *callbacks.Context) {
+	reg.On(ares_callbacks.EventLLMError, func(ctx *ares_callbacks.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		errorEvent = ctx

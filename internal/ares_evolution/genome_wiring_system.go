@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	"github.com/Timwood0x10/ares/internal/observability"
 )
 
@@ -70,12 +70,12 @@ type GenomeConfig struct {
 
 // SchedulerConfig groups scheduler and dream cycle settings.
 type SchedulerConfig struct {
-	EnableScheduler      bool                        `json:"enable_scheduler"`
-	EnableDreamCycle     bool                        `json:"enable_dream_cycle"`
-	SchedulerTrigger     EvolutionTrigger            `json:"scheduler_trigger"`
-	MinTasksBeforeEvolve int                         `json:"min_tasks_before_evolve"`
-	MaxMutations         int                         `json:"max_mutations"`
-	Callbacks            callbacks.CallbackRegistrar `json:"-"`
+	EnableScheduler      bool                             `json:"enable_scheduler"`
+	EnableDreamCycle     bool                             `json:"enable_dream_cycle"`
+	SchedulerTrigger     EvolutionTrigger                 `json:"scheduler_trigger"`
+	MinTasksBeforeEvolve int                              `json:"min_tasks_before_evolve"`
+	MaxMutations         int                              `json:"max_mutations"`
+	Callbacks            ares_callbacks.CallbackRegistrar `json:"-"`
 }
 
 // DependencyConfig groups externally injected dependencies.

@@ -10,10 +10,10 @@ import (
 
 	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
-	"github.com/Timwood0x10/ares/internal/callbacks"
 	storageModels "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
@@ -89,13 +89,13 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 		)
 	}()
 
-	reg := callbacks.NewRegistry()
-	counts := map[callbacks.Event]int{}
+	reg := ares_callbacks.NewRegistry()
+	counts := map[ares_callbacks.Event]int{}
 	var mu sync.Mutex
 	var captured int
 
-	handler := func(evt callbacks.Event) callbacks.Handler {
-		return func(*callbacks.Context) {
+	handler := func(evt ares_callbacks.Event) ares_callbacks.Handler {
+		return func(*ares_callbacks.Context) {
 			mu.Lock()
 			counts[evt]++
 			captured++
@@ -103,20 +103,20 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 		}
 	}
 
-	for _, evt := range []callbacks.Event{
-		callbacks.EventLLMStart, callbacks.EventLLMEnd, callbacks.EventLLMError,
-		callbacks.EventToolStart, callbacks.EventAgentStart,
+	for _, evt := range []ares_callbacks.Event{
+		ares_callbacks.EventLLMStart, ares_callbacks.EventLLMEnd, ares_callbacks.EventLLMError,
+		ares_callbacks.EventToolStart, ares_callbacks.EventAgentStart,
 	} {
 		reg.On(evt, handler(evt))
 	}
 
-	evts := []*callbacks.Context{
-		{Event: callbacks.EventLLMStart, Model: "gpt-4o"},
-		{Event: callbacks.EventLLMEnd, Model: "gpt-4o", Duration: 250 * time.Millisecond},
-		{Event: callbacks.EventToolStart, ToolName: "calc"},
-		{Event: callbacks.EventAgentStart},
-		{Event: callbacks.EventLLMError, Error: fmt.Errorf("simulated error")},
-		{Event: callbacks.EventLLMStart, Model: "c3"},
+	evts := []*ares_callbacks.Context{
+		{Event: ares_callbacks.EventLLMStart, Model: "gpt-4o"},
+		{Event: ares_callbacks.EventLLMEnd, Model: "gpt-4o", Duration: 250 * time.Millisecond},
+		{Event: ares_callbacks.EventToolStart, ToolName: "calc"},
+		{Event: ares_callbacks.EventAgentStart},
+		{Event: ares_callbacks.EventLLMError, Error: fmt.Errorf("simulated error")},
+		{Event: ares_callbacks.EventLLMStart, Model: "c3"},
 	}
 	for i, evt := range evts {
 		slog.InfoContext(ctx, "Event emitted",
@@ -127,7 +127,7 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 	}
 
 	var rows [][]string
-	for _, evt := range []callbacks.Event{callbacks.EventLLMStart, callbacks.EventLLMEnd, callbacks.EventToolStart, callbacks.EventAgentStart} {
+	for _, evt := range []ares_callbacks.Event{ares_callbacks.EventLLMStart, ares_callbacks.EventLLMEnd, ares_callbacks.EventToolStart, ares_callbacks.EventAgentStart} {
 		rows = append(rows, []string{fmt.Sprintf("%v", evt), fmt.Sprintf("%d", counts[evt])})
 	}
 	rows = append(rows, []string{"Total", fmt.Sprintf("%d", captured)})
