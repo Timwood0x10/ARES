@@ -512,7 +512,7 @@ func TestReplaySessionOutOfRange(t *testing.T) {
 
 type mockEventStoreForFlight struct {
 	ares_events map[string][]*ares_events.Event
-	mu     sync.RWMutex
+	mu          sync.RWMutex
 }
 
 func newMockEventStore() *mockEventStoreForFlight {

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/llm/output"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
 // mockMemoryManager is a mock implementation of memory.MemoryManager for testing.

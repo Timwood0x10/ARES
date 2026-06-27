@@ -10,10 +10,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 // managedAgent holds an agent and its lifecycle metadata.

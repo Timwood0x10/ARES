@@ -54,7 +54,7 @@ func (m *mockDiagnosticsAccessor) Get(agentID string) *DiagnosticsReport {
 // mockEventStoreSubscriber implements EventStoreSubscriber for testing.
 type mockEventStoreSubscriber struct {
 	ares_events []*ares_events.Event
-	err    error
+	err         error
 }
 
 func (m *mockEventStoreSubscriber) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {

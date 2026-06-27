@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
-	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // resMockAgent is a test double for base.Agent used in resurrection tests.

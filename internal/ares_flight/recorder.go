@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"sync"
 
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 )
 
 // FlightRecorder is the unified entry point for all flight data.

@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -111,7 +111,7 @@ type Orchestrator struct {
 	agents      map[string]*AgentResult
 	cancels     map[string]context.CancelFunc // per-agent cancel functions
 	hub         *WSHub                        // optional, for real-time WS updates
-	store       *ares_events.MemoryEventStore      // optional, for event persistence
+	store       *ares_events.MemoryEventStore // optional, for event persistence
 	flight      *flight.FlightRecorder        // optional, for flight recording
 	mu          sync.RWMutex
 	nextID      atomic.Int64

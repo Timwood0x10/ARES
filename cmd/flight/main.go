@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
 func main() {

@@ -31,12 +31,12 @@ import (
 	"github.com/Timwood0x10/ares/api"
 	"github.com/Timwood0x10/ares/api/marketmaking"
 	"github.com/Timwood0x10/ares/examples/quant-trading/agents"
-	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/ares_quant"
 	"github.com/Timwood0x10/ares/internal/ares_quant/dataflow"
 	"github.com/Timwood0x10/ares/internal/ares_quant/market"
 	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 	researchagents "github.com/Timwood0x10/ares/internal/ares_quant/research/agents"
+	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 
 	"gopkg.in/yaml.v3"

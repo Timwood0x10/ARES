@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -29,7 +29,7 @@ type taskExecutor struct {
 	retryOnFail      bool // Retry LLM call when validation fails
 	strictMode       bool // Return error on validation failure
 	logger           *slog.Logger
-	eventStore       ares_events.EventStore      // Optional: emits ares_events for tool/LLM calls
+	eventStore       ares_events.EventStore // Optional: emits ares_events for tool/LLM calls
 	agentID          string                 // Agent ID for event emission
 	ares_callbacks   ares_callbacks.Emitter // Optional: emits lifecycle callback ares_events.
 	fallbackHandlers map[models.AgentType]FallbackHandler

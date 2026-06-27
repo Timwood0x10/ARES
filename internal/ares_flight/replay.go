@@ -30,9 +30,9 @@ type ReplaySummary struct {
 
 // ReplaySession allows step-by-step replay of a task's ares_events.
 type ReplaySession struct {
-	taskID     string
-	ares_events     []*ares_events.Event
-	currentIdx int
+	taskID      string
+	ares_events []*ares_events.Event
+	currentIdx  int
 }
 
 // NewReplaySession creates a replay session by loading all ares_events for a task.
@@ -54,9 +54,9 @@ func NewReplaySession(ctx context.Context, eventStore ares_events.EventStore, ta
 	}
 
 	return &ReplaySession{
-		taskID:     taskID,
-		ares_events:     evts,
-		currentIdx: -1,
+		taskID:      taskID,
+		ares_events: evts,
+		currentIdx:  -1,
 	}, nil
 }
 

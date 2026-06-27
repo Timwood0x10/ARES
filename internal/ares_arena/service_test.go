@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // mockEventStore implements EventStore for testing.

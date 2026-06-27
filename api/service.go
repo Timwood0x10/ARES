@@ -23,9 +23,9 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/ares_mcp"
 )
 
 // Service is the top-level application entry point. One call to StartService

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Sentinel errors for event recovery operations.

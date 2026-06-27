@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
-	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Default configuration constants for LLM client.
@@ -100,7 +100,7 @@ type Client struct {
 	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
 	tracer         ares_observability.Tracer
 	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
-	limiter        ares_ratelimit.Limiter      // Optional: rate limiter for API calls.
+	limiter        ares_ratelimit.Limiter // Optional: rate limiter for API calls.
 	closeOnce      sync.Once              // Ensures Close() is idempotent and safe for concurrent calls.
 }
 

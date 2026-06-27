@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 

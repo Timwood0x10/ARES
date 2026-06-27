@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 

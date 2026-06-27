@@ -80,12 +80,12 @@ type SchedulerConfig struct {
 
 // DependencyConfig groups externally injected dependencies.
 type DependencyConfig struct {
-	StrategyStore        StrategyStore                    `json:"-"`
-	Guardrails           *EvolutionGuardrails             `json:"-"`
+	StrategyStore        StrategyStore                         `json:"-"`
+	Guardrails           *EvolutionGuardrails                  `json:"-"`
 	Metrics              *ares_observability.PrometheusMetrics `json:"-"`
-	FeedbackService      *aresExperience.FeedbackService  `json:"-"`
-	RollbackPolicyConfig RollbackPolicyConfig             `json:"rollback_policy,omitempty"`
-	ShadowEvalConfig     ShadowEvaluationConfig           `json:"shadow_eval_config,omitempty"`
+	FeedbackService      *aresExperience.FeedbackService       `json:"-"`
+	RollbackPolicyConfig RollbackPolicyConfig                  `json:"rollback_policy,omitempty"`
+	ShadowEvalConfig     ShadowEvaluationConfig                `json:"shadow_eval_config,omitempty"`
 }
 
 // SystemConfig holds configuration for creating a wired evolution system.

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 
 	"github.com/google/uuid"
 )

@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
+	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
 )
 
 // Config holds configuration for the runtime service.

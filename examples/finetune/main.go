@@ -37,13 +37,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
+	"github.com/Timwood0x10/ares/internal/llm"
 )
 
 // ──────────────────────────────────────────────

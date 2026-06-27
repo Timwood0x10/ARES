@@ -47,8 +47,8 @@ type Graph struct {
 	edges     map[string][]*Edge
 	start     string
 	scheduler Scheduler
-	tracer    ares_observability.Tracer        // ares_observability tracer for execution tracking
-	limiter   ares_ratelimit.Limiter           // rate limiter for execution throttling
+	tracer    ares_observability.Tracer   // ares_observability tracer for execution tracking
+	limiter   ares_ratelimit.Limiter      // rate limiter for execution throttling
 	pluginBus *runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
 	router    NodeRouter                  // optional dynamic routing callback
 	collector *runtime.ExecutionCollector // optional collector for route recording
@@ -69,7 +69,7 @@ func NewGraph(id string) (*Graph, error) {
 		edges:     make(map[string][]*Edge),
 		scheduler: NewDefaultScheduler(),
 		tracer:    ares_observability.NewNoopTracer(), // default to no-op tracer
-		limiter:   nil,                           // default to no rate limiting
+		limiter:   nil,                                // default to no rate limiting
 	}, nil
 }
 

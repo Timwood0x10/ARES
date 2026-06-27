@@ -9,8 +9,8 @@ import (
 
 	"github.com/Timwood0x10/ares/api/service/graph"
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/core/models"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 

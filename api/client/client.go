@@ -15,8 +15,8 @@ import (
 	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
-	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
