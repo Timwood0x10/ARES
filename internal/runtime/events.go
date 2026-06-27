@@ -1,43 +1,43 @@
 package runtime
 
-import "github.com/Timwood0x10/ares/internal/events"
+import "github.com/Timwood0x10/ares/internal/ares_events"
 
 // Workflow event types emitted by the PluginBus.
 const (
-	EventWorkflowStarted   events.EventType = "workflow.started"
-	EventWorkflowCompleted events.EventType = "workflow.completed"
-	EventWorkflowFailed    events.EventType = "workflow.failed"
-	EventStepStarted       events.EventType = "step.started"
-	EventStepCompleted     events.EventType = "step.completed"
-	EventStepFailed        events.EventType = "step.failed"
+	EventWorkflowStarted   ares_events.EventType = "workflow.started"
+	EventWorkflowCompleted ares_events.EventType = "workflow.completed"
+	EventWorkflowFailed    ares_events.EventType = "workflow.failed"
+	EventStepStarted       ares_events.EventType = "step.started"
+	EventStepCompleted     ares_events.EventType = "step.completed"
+	EventStepFailed        ares_events.EventType = "step.failed"
 )
 
 // EventCheckpointSaved is emitted after a checkpoint is persisted.
-const EventCheckpointSaved events.EventType = "checkpoint.saved"
+const EventCheckpointSaved ares_events.EventType = "checkpoint.saved"
 
 // EventRouteDecided is emitted when a routing decision is made.
-const EventRouteDecided events.EventType = "route.decided"
+const EventRouteDecided ares_events.EventType = "route.decided"
 
 // EventToolCalled is emitted when a tool is invoked.
-const EventToolCalled events.EventType = "tool.called"
+const EventToolCalled ares_events.EventType = "tool.called"
 
 // EventMemoryHit is emitted when memory is retrieved.
-const EventMemoryHit events.EventType = "memory.hit"
+const EventMemoryHit ares_events.EventType = "memory.hit"
 
 // EventInterruptCreated is emitted when a HITL interrupt is created.
-const EventInterruptCreated events.EventType = "interrupt.created"
+const EventInterruptCreated ares_events.EventType = "interrupt.created"
 
 // EventInterruptResolved is emitted when a HITL interrupt is resolved.
-const EventInterruptResolved events.EventType = "interrupt.resolved"
+const EventInterruptResolved ares_events.EventType = "interrupt.resolved"
 
 // Plugin lifecycle event types emitted by the PluginBus.
 const (
-	EventPluginStarted events.EventType = "plugin.started"
-	EventPluginStopped events.EventType = "plugin.stopped"
-	EventPluginFailed  events.EventType = "plugin.failed"
+	EventPluginStarted ares_events.EventType = "plugin.started"
+	EventPluginStopped ares_events.EventType = "plugin.stopped"
+	EventPluginFailed  ares_events.EventType = "plugin.failed"
 )
 
-// Payload keys used in workflow events.
+// Payload keys used in workflow ares_events.
 const (
 	PayloadKeyExecutionID        = "execution_id"
 	PayloadKeyWorkflowID         = "workflow_id"

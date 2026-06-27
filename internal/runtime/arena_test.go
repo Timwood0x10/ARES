@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // ---------------------------------------------------------------------------
@@ -243,19 +243,19 @@ func TestPluginBus_MultipleHooksOneFails(t *testing.T) {
 // failingEventStore rejects all Append calls.
 type failingEventStore struct{}
 
-func (s *failingEventStore) Append(_ context.Context, _ string, _ []*events.Event, _ int64) error {
+func (s *failingEventStore) Append(_ context.Context, _ string, _ []*ares_events.Event, _ int64) error {
 	return errors.New("store unavailable")
 }
 
-func (s *failingEventStore) Read(_ context.Context, _ string, _ events.ReadOptions) ([]*events.Event, error) {
+func (s *failingEventStore) Read(_ context.Context, _ string, _ ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	return nil, errors.New("store unavailable")
 }
 
-func (s *failingEventStore) ReadAll(_ context.Context, _ events.ReadOptions) ([]*events.Event, error) {
+func (s *failingEventStore) ReadAll(_ context.Context, _ ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	return nil, errors.New("store unavailable")
 }
 
-func (s *failingEventStore) Subscribe(_ context.Context, _ events.EventFilter) (<-chan *events.Event, error) {
+func (s *failingEventStore) Subscribe(_ context.Context, _ ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	return nil, errors.New("store unavailable")
 }
 

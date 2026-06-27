@@ -41,9 +41,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 )
 
 // ──────────────────────────────────────────────
@@ -265,7 +265,7 @@ type LLMScoreClient struct {
 //	*LLMScoreClient - ready-to-use scorer.
 //	error - non-nil if LLM client creation fails.
 func NewLLMScoreClient(llmCfg *llm.Config, heuristic genome.ScorerFunc, llmTimeout time.Duration, scorerRate float64, scorerBurst int) (*LLMScoreClient, error) {
-	limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+	limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
 		Rate:  scorerRate,
 		Burst: scorerBurst,
 	})
@@ -447,7 +447,7 @@ func RealScorer(s *mutation.Strategy) float64 {
 
 // runRealEvolution creates a real WiredEvolutionSystem, runs N generations,
 // and returns the population snapshot.
-func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *config.Config) (*genome.Population, []*mutation.Strategy, error) {
+func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *ares_config.Config) (*genome.Population, []*mutation.Strategy, error) {
 	base := &mutation.Strategy{
 		ID:             "finetune-base",
 		Version:        1,
@@ -514,7 +514,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *con
 			)
 		}
 	} else {
-		slog.Info("No LLM config provided, using heuristic scorer only")
+		slog.Info("No LLM ares_config provided, using heuristic scorer only")
 		cfg.Scorer = RealScorer
 	}
 
@@ -737,17 +737,17 @@ func main() {
 	// ── Load configuration ──
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
-		cfgPath = "./examples/finetune/config/server.yaml"
+		cfgPath = "./examples/finetune/ares_config/server.yaml"
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := ares_config.Load(cfgPath)
 	if err != nil {
-		slog.Warn("Failed to load config, using defaults",
+		slog.Warn("Failed to load ares_config, using defaults",
 			"path", cfgPath,
 			"error", err,
 		)
-		cfg = &config.Config{}
+		cfg = &ares_config.Config{}
 	}
-	_ = config.LoadFromEnv(cfg) // env vars can override YAML
+	_ = ares_config.LoadFromEnv(cfg) // env vars can override YAML
 
 	fmt.Println("╔═══════════════════════════════════════════════╗")
 	fmt.Println("║  ARES → JSONL Training Data Pipeline (Real)  ║")

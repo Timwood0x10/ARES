@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
@@ -293,7 +293,7 @@ func TestGetGraphInfo(t *testing.T) {
 }
 
 func TestExecuteWithObservability(t *testing.T) {
-	tracer := observability.NewLogTracer(&observability.LogTracerConfig{})
+	tracer := ares_observability.NewLogTracer(&ares_observability.LogTracerConfig{})
 
 	config := &Config{
 		RequestTimeout: 5 * time.Second,
@@ -305,13 +305,13 @@ func TestExecuteWithObservability(t *testing.T) {
 		t.Fatalf("failed to create service: %v", err)
 	}
 
-	g := newTestGraph(t, "observability-test", func(ctx context.Context, state *wfgraph.State) error {
+	g := newTestGraph(t, "ares_observability-test", func(ctx context.Context, state *wfgraph.State) error {
 		state.Set("result", "success")
 		return nil
 	})
 
 	request := &ExecuteRequest{
-		GraphID: "observability-test",
+		GraphID: "ares_observability-test",
 	}
 
 	response, err := service.Execute(context.Background(), g, request)

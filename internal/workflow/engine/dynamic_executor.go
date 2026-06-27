@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
@@ -149,7 +149,7 @@ type DynamicExecutor struct {
 	hitlHandler        InterruptHandler
 	hitlStore          InterruptStore
 	recoveryHandler    StepRecoveryHandler
-	recoveryEventSink  func(ctx context.Context, eventType events.EventType, payload map[string]any)
+	recoveryEventSink  func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)
 	pluginBus          *runtime.PluginBus
 	checkpointStore    runtime.CheckpointStore
 	executionCollector *runtime.ExecutionCollector
@@ -189,8 +189,8 @@ func (e *DynamicExecutor) WithRecoveryHandler(handler StepRecoveryHandler) *Dyna
 	return e
 }
 
-// WithRecoveryEventSink sets a sink for step recovery events.
-func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, eventType events.EventType, payload map[string]any)) *DynamicExecutor {
+// WithRecoveryEventSink sets a sink for step recovery ares_events.
+func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)) *DynamicExecutor {
 	e.recoveryEventSink = sink
 	return e
 }
@@ -890,7 +890,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 				mu.Unlock()
 
 				if e.pluginBus != nil {
-					// Call AfterStep before emitting events so plugins can
+					// Call AfterStep before emitting ares_events so plugins can
 					// record/modify state before observers see the result.
 					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
 						slog.Warn("after step hook failed (continuing)",

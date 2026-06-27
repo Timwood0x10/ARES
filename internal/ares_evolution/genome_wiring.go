@@ -17,7 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 )
 
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
@@ -61,7 +61,7 @@ type GenomePopulationAdapter struct {
 	feedbackRecorder *FeedbackRecorder
 
 	// Metrics records Prometheus counters for evolution events (optional).
-	metrics *observability.PrometheusMetrics
+	metrics *ares_observability.PrometheusMetrics
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -225,7 +225,7 @@ func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
 // Returns:
 //
 //	GenomeAdapterOption - the configuration function.
-func WithAdapterMetrics(metrics *observability.PrometheusMetrics) GenomeAdapterOption {
+func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.metrics = metrics
 	}

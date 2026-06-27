@@ -6,7 +6,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // Capability represents a functional area a plugin provides.
@@ -32,7 +32,7 @@ type RuntimePlugin interface {
 	Capabilities() []Capability
 
 	// Start initializes the plugin. The plugin receives the EventBus for
-	// emitting and subscribing to workflow events.
+	// emitting and subscribing to workflow ares_events.
 	// Start MUST be non-blocking; long-running work should use a goroutine.
 	Start(ctx context.Context, bus EventBus) error
 
@@ -41,7 +41,7 @@ type RuntimePlugin interface {
 }
 
 // WorkflowHook is an optional interface a plugin may implement to intercept
-// step-level lifecycle events. Hooks are called synchronously by the bus
+// step-level lifecycle ares_events. Hooks are called synchronously by the bus
 // before and after each step executes.
 type WorkflowHook interface {
 	// BeforeStep is called before a step executes. Returning an error
@@ -135,14 +135,14 @@ type StepFailure struct {
 }
 
 // EventBus is the event system exposed to plugins. It allows emitting
-// structured events that are fanned out to all subscribers.
+// structured ares_events that are fanned out to all subscribers.
 type EventBus interface {
 	// Emit publishes an event with the given stream ID to all subscribers.
-	// Implementations MUST NOT block on slow subscribers (drop events if
+	// Implementations MUST NOT block on slow subscribers (drop ares_events if
 	// buffers are full).
-	Emit(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any)
+	Emit(ctx context.Context, streamID string, eventType ares_events.EventType, payload map[string]any)
 
-	// Subscribe returns a channel that receives events matching the filter.
+	// Subscribe returns a channel that receives ares_events matching the filter.
 	// The channel is closed when the context is cancelled.
-	Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error)
+	Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error)
 }

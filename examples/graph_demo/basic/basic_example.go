@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/service/graph"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
@@ -16,7 +16,7 @@ func main() {
 	// Create graph service
 	service, err := graph.NewService(&graph.Config{
 		RequestTimeout: 30 * time.Second,
-		Tracer:         observability.NewLogTracer(nil),
+		Tracer:         ares_observability.NewLogTracer(nil),
 	})
 	if err != nil {
 		log.Fatalf("failed to create service: %v", err)

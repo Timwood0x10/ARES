@@ -11,7 +11,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
@@ -316,7 +316,7 @@ func BuildWithService(configYAML []byte, builder *GraphBuilder) (*Service, *wfgr
 	// Create service.
 	serviceConfig := &Config{
 		RequestTimeout: 30 * time.Second,
-		Tracer:         observability.NewLogTracer(nil),
+		Tracer:         ares_observability.NewLogTracer(nil),
 	}
 
 	service, err := NewService(serviceConfig)

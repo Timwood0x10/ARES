@@ -16,7 +16,7 @@ import (
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -218,7 +218,7 @@ func (c *Client) Workflow() (*workflowSvc.Service, error) {
 //
 //	service - the runtime service.
 //	err - if creation fails.
-func (c *Client) Runtime(config *runtimeSvc.Config, eventStore events.EventStore) (*runtimeSvc.Service, error) {
+func (c *Client) Runtime(config *runtimeSvc.Config, eventStore ares_events.EventStore) (*runtimeSvc.Service, error) {
 	if config == nil {
 		defaultCfg := runtimeSvc.DefaultConfig()
 		config = &defaultCfg

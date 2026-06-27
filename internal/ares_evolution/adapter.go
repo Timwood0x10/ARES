@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // FlightToExperienceAdapter converts Flight Recorder diagnostic data into Experience entries.
-// It subscribes to task completion/failure events and generates experiences from diagnostics,
+// It subscribes to task completion/failure ares_events and generates experiences from diagnostics,
 // but only for tasks that have diagnostic issues (normal executions are not learned from).
 type FlightToExperienceAdapter struct {
 	flight  FlightRecorder
@@ -34,7 +34,7 @@ func NewFlightToExperienceAdapter(flight FlightRecorder, expRepo ExperienceRepos
 }
 
 // Run starts the adapter's event consumption loop.
-// It subscribes to task failure events and generates experiences from diagnostics.
+// It subscribes to task failure ares_events and generates experiences from diagnostics.
 // The loop runs until ctx is cancelled.
 //
 // Args:
@@ -54,18 +54,18 @@ func (a *FlightToExperienceAdapter) Run(ctx context.Context) error {
 		return fmt.Errorf("event store subscriber is not available")
 	}
 
-	ch, err := subscriber.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{
-			events.EventTaskFailed,
-			events.EventStepFailed,
-			events.EventStepRecoveryFailed,
+	ch, err := subscriber.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			ares_events.EventTaskFailed,
+			ares_events.EventStepFailed,
+			ares_events.EventStepRecoveryFailed,
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("subscribe to events: %w", err)
+		return fmt.Errorf("subscribe to ares_events: %w", err)
 	}
 
-	slog.InfoContext(ctx, "[Evolution] Adapter started, listening for failure events")
+	slog.InfoContext(ctx, "[Evolution] Adapter started, listening for failure ares_events")
 
 	for evt := range ch {
 		if evt == nil {
@@ -84,7 +84,7 @@ func (a *FlightToExperienceAdapter) Run(ctx context.Context) error {
 //
 //	ctx - operation context.
 //	event - the event to process.
-func (a *FlightToExperienceAdapter) processEvent(ctx context.Context, event *events.Event) {
+func (a *FlightToExperienceAdapter) processEvent(ctx context.Context, event *ares_events.Event) {
 	agentID := event.StreamID
 	if agentID == "" {
 		slog.DebugContext(ctx, "[Evolution] Skipping event without agent ID")
@@ -184,7 +184,7 @@ func (a *FlightToExperienceAdapter) buildExperience(record DiagnosticRecord, age
 // Returns:
 //
 //	string - the task ID, or empty string if not found.
-func extractTaskID(event *events.Event) string {
+func extractTaskID(event *ares_events.Event) string {
 	if event == nil || event.Payload == nil {
 		return ""
 	}

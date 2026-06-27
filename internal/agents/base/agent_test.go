@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // mockAgent implements the Agent interface for testing.

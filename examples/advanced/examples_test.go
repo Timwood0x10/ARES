@@ -9,9 +9,9 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -95,12 +95,12 @@ func TestDynamicExecutor_Example_Imports(t *testing.T) {
 }
 
 // TestLeaderFailover_Example_Imports verifies that the leader_failover example
-// uses correct types from the runtime and events packages.
+// uses correct types from the runtime and ares_events packages.
 func TestLeaderFailover_Example_Imports(t *testing.T) {
 	t.Parallel()
 
 	// Verify Runtime constructor accepts EventStore.
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	rt := runtime.New(&runtime.Config{
 		HealthCheckInterval: 100_000_000_000, // 100s (not started)
 		MaxRestartsPerAgent: 3,
@@ -111,7 +111,7 @@ func TestLeaderFailover_Example_Imports(t *testing.T) {
 	}
 
 	// Verify EventStore interface.
-	var _ events.EventStore = eventStore
+	var _ ares_events.EventStore = eventStore
 }
 
 // TestAgentResurrection_Example_Imports verifies that the agent_resurrection example
@@ -149,7 +149,7 @@ func TestAgentResurrection_Example_Imports(t *testing.T) {
 }
 
 // TestRuntimeResurrection_Example_Imports verifies that the runtime_resurrection example
-// uses correct types from the runtime and events packages.
+// uses correct types from the runtime and ares_events packages.
 func TestRuntimeResurrection_Example_Imports(t *testing.T) {
 	t.Parallel()
 
@@ -160,7 +160,7 @@ func TestRuntimeResurrection_Example_Imports(t *testing.T) {
 	}
 
 	// Verify Runtime with all three dependencies.
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	memMgr, err := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
@@ -189,11 +189,11 @@ func TestFullLifecycle_Example_Imports(t *testing.T) {
 	_ = models.AgentStatusOffline
 
 	// Verify event types used in examples.
-	_ = events.EventAgentStarted
-	_ = events.EventSessionCreated
-	_ = events.EventTaskCreated
-	_ = events.EventTaskCompleted
-	_ = events.EventTaskCompleted
+	_ = ares_events.EventAgentStarted
+	_ = ares_events.EventSessionCreated
+	_ = ares_events.EventTaskCreated
+	_ = ares_events.EventTaskCompleted
+	_ = ares_events.EventTaskCompleted
 
 	// Verify MemoryManager interface.
 	var _ memory.MemoryManager //nolint:gosimple // interface check

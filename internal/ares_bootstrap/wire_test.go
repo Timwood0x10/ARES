@@ -10,8 +10,8 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
-	"github.com/Timwood0x10/ares/internal/config"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -83,7 +83,7 @@ func newWireTestLLMClient(t *testing.T) *llm.Client {
 // newTestFlightRecorder creates a flight recorder with in-memory backing stores.
 func newTestFlightRecorder(t *testing.T) *flight.FlightRecorder {
 	t.Helper()
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	memMgr, err := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 	if err != nil {
 		t.Fatalf("newTestFlightRecorder: memory manager: %v", err)
@@ -117,7 +117,7 @@ func TestWireAllEvolutionComponents_AllDepsProvided(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
+	wired, err := WireAllEvolutionComponents(ctx, deps, &ares_config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestWireAllEvolutionComponents_NilLLMClient(t *testing.T) {
 		ExpRepo:        expRepo,
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
+	wired, err := WireAllEvolutionComponents(ctx, deps, &ares_config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("WireAllEvolutionComponents returned error with nil LLM client: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestWireAllEvolutionComponents_WithDreamDeps(t *testing.T) {
 		},
 	}
 
-	wired, err := WireAllEvolutionComponents(ctx, deps, &config.EvolutionConfig{Enabled: true})
+	wired, err := WireAllEvolutionComponents(ctx, deps, &ares_config.EvolutionConfig{Enabled: true})
 	if err != nil {
 		// Dream cycle creation may fail due to internal validation; assert error is meaningful.
 		errMsg := err.Error()

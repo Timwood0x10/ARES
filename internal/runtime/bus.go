@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 const (
@@ -17,8 +17,8 @@ const (
 
 // subscriber holds a channel and filter for event distribution.
 type subscriber struct {
-	ch     chan *events.Event
-	filter events.EventFilter
+	ch     chan *ares_events.Event
+	filter ares_events.EventFilter
 }
 
 // namedHook pairs a WorkflowHook with its plugin name for diagnostics.
@@ -199,11 +199,11 @@ func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *S
 }
 
 // Emit publishes an event with the given stream ID to all matching
-// subscribers. Non-blocking; events are dropped for subscribers whose
+// subscribers. Non-blocking; ares_events are dropped for subscribers whose
 // channel buffer is full.
-func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any) {
-	evt := &events.Event{
-		ID:        events.NewEventID(),
+func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_events.EventType, payload map[string]any) {
+	evt := &ares_events.Event{
+		ID:        ares_events.NewEventID(),
 		StreamID:  streamID,
 		Type:      eventType,
 		Payload:   payload,
@@ -235,11 +235,11 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType events.
 	}
 }
 
-// Subscribe returns a channel that receives events matching the given filter.
+// Subscribe returns a channel that receives ares_events matching the given filter.
 // The channel must be drained to prevent backpressure; when ctx is cancelled
 // the subscription is automatically removed and the channel is closed.
-func (b *PluginBus) Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error) {
-	ch := make(chan *events.Event, eventChanBufferSize)
+func (b *PluginBus) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	ch := make(chan *ares_events.Event, eventChanBufferSize)
 
 	sub := &subscriber{
 		ch:     ch,
@@ -322,7 +322,7 @@ func invokeWithTimeout(ctx context.Context, timeout time.Duration, pluginName st
 	}
 }
 
-func matchFilter(evt *events.Event, filter events.EventFilter) bool {
+func matchFilter(evt *ares_events.Event, filter ares_events.EventFilter) bool {
 	if len(filter.Types) > 0 {
 		matched := false
 		for _, t := range filter.Types {

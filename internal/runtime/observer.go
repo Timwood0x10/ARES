@@ -5,20 +5,20 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
-// ObserverPlugin subscribes to workflow lifecycle events and writes them
+// ObserverPlugin subscribes to workflow lifecycle ares_events and writes them
 // to an EventStore for persistence and observability.
 type ObserverPlugin struct {
 	name   string
-	store  events.EventStore
+	store  ares_events.EventStore
 	cancel context.CancelFunc
 }
 
-// NewObserverPlugin creates an ObserverPlugin that writes events to the
+// NewObserverPlugin creates an ObserverPlugin that writes ares_events to the
 // given EventStore.
-func NewObserverPlugin(name string, store events.EventStore) *ObserverPlugin {
+func NewObserverPlugin(name string, store ares_events.EventStore) *ObserverPlugin {
 	if name == "" {
 		name = "observer"
 	}
@@ -38,7 +38,7 @@ func (p *ObserverPlugin) Capabilities() []Capability {
 	return []Capability{CapObserver}
 }
 
-// Start subscribes to workflow events and begins writing them to the store.
+// Start subscribes to workflow ares_events and begins writing them to the store.
 // The plugin manages its own lifecycle context so it is not affected by
 // the Start context timeout.
 func (p *ObserverPlugin) Start(ctx context.Context, bus EventBus) error {
@@ -47,8 +47,8 @@ func (p *ObserverPlugin) Start(ctx context.Context, bus EventBus) error {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 
-	ch, err := bus.Subscribe(loopCtx, events.EventFilter{
-		Types: []events.EventType{
+	ch, err := bus.Subscribe(loopCtx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
 			EventWorkflowStarted,
 			EventWorkflowCompleted,
 			EventWorkflowFailed,
@@ -76,14 +76,14 @@ func (p *ObserverPlugin) Stop(_ context.Context) error {
 	return nil
 }
 
-func (p *ObserverPlugin) loop(ctx context.Context, ch <-chan *events.Event) {
+func (p *ObserverPlugin) loop(ctx context.Context, ch <-chan *ares_events.Event) {
 	for {
 		select {
 		case evt, ok := <-ch:
 			if !ok {
 				return
 			}
-			if err := p.store.Append(ctx, evt.StreamID, []*events.Event{evt}, 0); err != nil {
+			if err := p.store.Append(ctx, evt.StreamID, []*ares_events.Event{evt}, 0); err != nil {
 				slog.Warn("observer: append event failed",
 					"stream_id", evt.StreamID,
 					"type", evt.Type,

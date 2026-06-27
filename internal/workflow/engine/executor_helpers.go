@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
@@ -85,7 +85,7 @@ func toRuntimeStepResult(r *StepResult) *runtime.StepResult {
 }
 
 // handleStepRouting calls the RouterPlugin after a step completes and emits
-// route events. It returns the route decision if one was made, or nil.
+// route ares_events. It returns the route decision if one was made, or nil.
 func (e *DynamicExecutor) handleStepRouting(
 	ctx context.Context,
 	execution *WorkflowExecution,
@@ -196,7 +196,7 @@ func (e *DynamicExecutor) handleStepFailure(
 	}
 
 	if e.recoveryEventSink != nil {
-		e.recoveryEventSink(ctx, events.EventStepFailed, map[string]any{
+		e.recoveryEventSink(ctx, ares_events.EventStepFailed, map[string]any{
 			"execution_id": execution.ID,
 			"workflow_id":  workflow.ID,
 			"step_id":      result.StepID,
@@ -234,7 +234,7 @@ func (e *DynamicExecutor) handleStepFailure(
 		}
 
 		if e.recoveryEventSink != nil {
-			e.recoveryEventSink(ctx, events.EventStepRecoveryStarted, map[string]any{
+			e.recoveryEventSink(ctx, ares_events.EventStepRecoveryStarted, map[string]any{
 				"execution_id":   execution.ID,
 				"workflow_id":    workflow.ID,
 				"failed_step_id": result.StepID,
@@ -248,7 +248,7 @@ func (e *DynamicExecutor) handleStepFailure(
 				"error", err,
 			)
 			if e.recoveryEventSink != nil {
-				e.recoveryEventSink(ctx, events.EventStepRecoveryFailed, map[string]any{
+				e.recoveryEventSink(ctx, ares_events.EventStepRecoveryFailed, map[string]any{
 					"execution_id":   execution.ID,
 					"workflow_id":    workflow.ID,
 					"failed_step_id": result.StepID,
@@ -266,7 +266,7 @@ func (e *DynamicExecutor) handleStepFailure(
 		}
 
 		if e.recoveryEventSink != nil {
-			e.recoveryEventSink(ctx, events.EventStepRecoveryCompleted, map[string]any{
+			e.recoveryEventSink(ctx, ares_events.EventStepRecoveryCompleted, map[string]any{
 				"execution_id":        execution.ID,
 				"workflow_id":         workflow.ID,
 				"failed_step_id":      result.StepID,

@@ -10,21 +10,21 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Timwood0x10/ares/internal/eval"
+	"github.com/Timwood0x10/ares/internal/ares_eval"
 )
 
 // Service orchestrates evaluation runs: loading suites, running tests via
-// internal/eval runners, and persisting results through the repository.
+// internal/ares_eval runners, and persisting results through the repository.
 type Service struct {
 	repo   EvalResultRepository
-	loader *eval.Loader
+	loader *ares_eval.Loader
 }
 
-// NewService creates a new eval service instance.
+// NewService creates a new ares_eval service instance.
 //
 // Args:
 //
-//	repo - eval result repository for persistence (must not be nil).
+//	repo - ares_eval result repository for persistence (must not be nil).
 //
 // Returns:
 //
@@ -36,7 +36,7 @@ func NewService(repo EvalResultRepository) (*Service, error) {
 	}
 	return &Service{
 		repo:   repo,
-		loader: eval.NewLoader(),
+		loader: ares_eval.NewLoader(),
 	}, nil
 }
 
@@ -121,7 +121,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	if len(allResults) > 0 {
 		if storeErr := s.repo.StoreBatch(ctx, allResults); storeErr != nil {
-			slog.Error("failed to store eval results",
+			slog.Error("failed to store ares_eval results",
 				"run_id", runID,
 				"error", storeErr,
 			)
@@ -225,12 +225,12 @@ func (s *Service) GetComparison(ctx context.Context, runIDs []string) (*Comparis
 func (s *Service) runSingleConfig(
 	ctx context.Context,
 	runID string,
-	suite *eval.TestSuite,
+	suite *ares_eval.TestSuite,
 	cfgRef AgentConfigRef,
 	runStart time.Time,
 ) []*EvalResult {
 	// Convert API AgentConfigRef to internal AgentConfig.
-	internalCfg := eval.AgentConfig{
+	internalCfg := ares_eval.AgentConfig{
 		Name:         cfgRef.Name,
 		Model:        cfgRef.Model,
 		Parameters:   cfgRef.Parameters,
@@ -302,7 +302,7 @@ func (s *Service) runSingleConfig(
 	return evalResults
 }
 
-// placeholderRunner implements eval.TestRunner for API-layer evaluation.
+// placeholderRunner implements ares_eval.TestRunner for API-layer evaluation.
 // In production, this would be replaced by a real runner backed by an AgentExecutor.
 type placeholderRunner struct {
 	configName string
@@ -310,8 +310,8 @@ type placeholderRunner struct {
 
 // RunSuite runs all test cases sequentially, producing placeholder results.
 // Each test case gets a default pass result with zero metrics.
-func (r *placeholderRunner) RunSuite(ctx context.Context, suite eval.TestSuite) ([]eval.TestResult, error) {
-	results := make([]eval.TestResult, 0, len(suite.TestCases))
+func (r *placeholderRunner) RunSuite(ctx context.Context, suite ares_eval.TestSuite) ([]ares_eval.TestResult, error) {
+	results := make([]ares_eval.TestResult, 0, len(suite.TestCases))
 	for _, tc := range suite.TestCases {
 		select {
 		case <-ctx.Done():
@@ -319,7 +319,7 @@ func (r *placeholderRunner) RunSuite(ctx context.Context, suite eval.TestSuite) 
 		default:
 		}
 
-		results = append(results, eval.TestResult{
+		results = append(results, ares_eval.TestResult{
 			TestCaseID: tc.ID,
 			Timestamp:  time.Now(),
 			Metrics:    make(map[string]float64),
@@ -330,8 +330,8 @@ func (r *placeholderRunner) RunSuite(ctx context.Context, suite eval.TestSuite) 
 }
 
 // RunSingle runs a single test case with a placeholder result.
-func (r *placeholderRunner) RunSingle(ctx context.Context, testCase eval.TestCase) (eval.TestResult, error) {
-	return eval.TestResult{
+func (r *placeholderRunner) RunSingle(ctx context.Context, testCase ares_eval.TestCase) (ares_eval.TestResult, error) {
+	return ares_eval.TestResult{
 		TestCaseID: testCase.ID,
 		Timestamp:  time.Now(),
 		Metrics:    make(map[string]float64),
@@ -340,7 +340,7 @@ func (r *placeholderRunner) RunSingle(ctx context.Context, testCase eval.TestCas
 }
 
 // Ensure compile-time interface check.
-var _ eval.TestRunner = (*placeholderRunner)(nil)
+var _ ares_eval.TestRunner = (*placeholderRunner)(nil)
 
 // --- Helper functions ---
 
@@ -348,7 +348,7 @@ var _ eval.TestRunner = (*placeholderRunner)(nil)
 func strPtr(s string) *string { return &s }
 
 // lookupTestCaseName finds the name of a test case by ID within a suite.
-func lookupTestCaseName(suite *eval.TestSuite, testCaseID string) string {
+func lookupTestCaseName(suite *ares_eval.TestSuite, testCaseID string) string {
 	for _, tc := range suite.TestCases {
 		if tc.ID == testCaseID {
 			return tc.Name

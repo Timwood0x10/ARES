@@ -1,15 +1,15 @@
 // Package main demonstrates Runtime-managed agent resurrection with full state recovery.
 //
 // This example shows two dimensions of agent recovery:
-//   - Operational recovery: EventStore replays events to reconstruct task state.
+//   - Operational recovery: EventStore replays ares_events to reconstruct task state.
 //   - Cognitive recovery: Simulated MemoryManager provides conversation context.
 //
 // Scenario:
 //  1. Runtime starts 3 agents (leader, worker, planner), each with a session.
-//  2. Each agent emits events to EventStore as it processes tasks.
+//  2. Each agent emits ares_events to EventStore as it processes tasks.
 //  3. Worker agent crashes (simulated panic).
 //  4. Runtime detects the crash, creates new worker from factory.
-//  5. Runtime replays events -> new worker restores operational state (task count, session).
+//  5. Runtime replays ares_events -> new worker restores operational state (task count, session).
 //  6. Runtime enriches state with cognitive context (simulated conversation history).
 //  7. New worker verifies restored state and continues from where it left off.
 //
@@ -30,7 +30,7 @@ import (
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // phaseSeparator prints a visual phase separator for readable output.
@@ -83,7 +83,7 @@ func (c *CognitiveMemory) GetMessages(sessionID string) []string {
 }
 
 // ============================================================
-// WorkerAgent -- a StatefulAgent that processes tasks and emits events.
+// WorkerAgent -- a StatefulAgent that processes tasks and emits ares_events.
 // Implements RestoreState, ReplayEvents, and Snapshot for resurrection.
 // ============================================================
 
@@ -92,7 +92,7 @@ type workerAgent struct {
 	mu           sync.Mutex
 	id           string
 	status       models.AgentStatus
-	eventStore   events.EventStore
+	eventStore   ares_events.EventStore
 	cogMemory    *CognitiveMemory
 	taskCount    atomic.Int64
 	sessionID    string
@@ -101,7 +101,7 @@ type workerAgent struct {
 }
 
 // newWorker creates a new workerAgent.
-func newWorker(id string, store events.EventStore, cog *CognitiveMemory) *workerAgent {
+func newWorker(id string, store ares_events.EventStore, cog *CognitiveMemory) *workerAgent {
 	return &workerAgent{
 		id:         id,
 		status:     models.AgentStatusOffline,
@@ -154,7 +154,7 @@ func (w *workerAgent) Start(ctx context.Context) error {
 	}
 
 	// Emit "agent started" event with session context.
-	w.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+	w.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id":   w.id,
 		"agent_type": string(w.Type()),
 		"session_id": w.getSessionID(),
@@ -175,7 +175,7 @@ func (w *workerAgent) Start(ctx context.Context) error {
 	}
 
 	// Emit session event for future restoration.
-	w.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+	w.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 		"session_id": w.getSessionID(),
 		"agent_id":   w.id,
 	})
@@ -209,7 +209,7 @@ func (w *workerAgent) Process(_ context.Context, input any) (any, error) {
 	return fmt.Sprintf("processed by %s (session=%s)", w.id, w.getSessionID()), nil
 }
 
-// ProcessStream returns a stream of agent events.
+// ProcessStream returns a stream of agent ares_events.
 func (w *workerAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
 	ch := make(chan base.AgentEvent, 1)
 	close(ch)
@@ -236,13 +236,13 @@ func (w *workerAgent) RestoreState(state map[string]any) error {
 			"task_count", count,
 		)
 	}
-	w.restoredFrom = "snapshot+events"
+	w.restoredFrom = "snapshot+ares_events"
 	return nil
 }
 
-// ReplayEvents replays a sequence of events to reconstruct incremental state.
-// Called after RestoreState to apply events that occurred after the snapshot.
-func (w *workerAgent) ReplayEvents(evts []*events.Event) error {
+// ReplayEvents replays a sequence of ares_events to reconstruct incremental state.
+// Called after RestoreState to apply ares_events that occurred after the snapshot.
+func (w *workerAgent) ReplayEvents(evts []*ares_events.Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -252,7 +252,7 @@ func (w *workerAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			if taskID, ok := ev.Payload["task_id"].(string); ok {
 				replayed++
 				slog.Debug("replayed task event",
@@ -260,17 +260,17 @@ func (w *workerAgent) ReplayEvents(evts []*events.Event) error {
 					"task_id", taskID,
 				)
 			}
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				w.sessionID = sid
 			}
 		}
 	}
 
-	// Restore task count from replayed events.
+	// Restore task count from replayed ares_events.
 	w.taskCount.Store(int64(replayed))
 
-	slog.Info("events replayed",
+	slog.Info("ares_events replayed",
 		"agent_id", w.id,
 		"total_events", len(evts),
 		"replayed_tasks", replayed,
@@ -310,7 +310,7 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 			taskID := fmt.Sprintf("task-%d", w.taskCount.Load())
 
 			// Emit task created event.
-			w.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			w.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   w.id,
 				"session_id": w.getSessionID(),
@@ -326,7 +326,7 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 			}
 
 			// Emit task completed event.
-			w.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			w.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   w.id,
 				"session_id": w.getSessionID(),
@@ -344,16 +344,16 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 }
 
 // emitEvent appends an event to the EventStore.
-func (w *workerAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+func (w *workerAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	if w.eventStore == nil {
 		return
 	}
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: w.id,
 		Type:     eventType,
 		Payload:  payload,
 	}
-	if err := w.eventStore.Append(ctx, w.id, []*events.Event{event}, 0); err != nil {
+	if err := w.eventStore.Append(ctx, w.id, []*ares_events.Event{event}, 0); err != nil {
 		slog.Warn("failed to emit event",
 			"agent_id", w.id,
 			"type", eventType,
@@ -464,16 +464,16 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 4: Resurrection Verification")
 
-	// The Runtime creates a new worker via factory and replays events.
+	// The Runtime creates a new worker via factory and replays ares_events.
 	// We need to get a reference to the resurrected agent.
 	// Note: The Runtime holds the new instance internally.
 	printStats(svc, eventStore, ctx)
 
-	// Verify that events were replayed (operational recovery).
-	replayedEvents, _ := eventStore.Read(ctx, "worker-1", events.ReadOptions{
-		Direction: events.ReadAscending,
+	// Verify that ares_events were replayed (operational recovery).
+	replayedEvents, _ := eventStore.Read(ctx, "worker-1", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
-	fmt.Printf("  Total events for worker-1: %d\n", len(replayedEvents))
+	fmt.Printf("  Total ares_events for worker-1: %d\n", len(replayedEvents))
 
 	// Verify restored agent state.
 	if restored := svc.GetAgent("worker-1"); restored != nil {
@@ -516,20 +516,20 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 7: Full Event History")
 
-	allEvents, _ := eventStore.ReadAll(ctx, events.ReadOptions{})
-	fmt.Printf("  Total events in store: %d\n\n", len(allEvents))
+	allEvents, _ := eventStore.ReadAll(ctx, ares_events.ReadOptions{})
+	fmt.Printf("  Total ares_events in store: %d\n\n", len(allEvents))
 
-	// Group events by stream.
+	// Group ares_events by stream.
 	streamCounts := make(map[string]int)
 	for _, ev := range allEvents {
 		streamCounts[ev.StreamID]++
 	}
 	fmt.Println("  Events per agent:")
 	for stream, count := range streamCounts {
-		fmt.Printf("    %s: %d events\n", stream, count)
+		fmt.Printf("    %s: %d ares_events\n", stream, count)
 	}
 
-	fmt.Println("\n  Recent events (last 10):")
+	fmt.Println("\n  Recent ares_events (last 10):")
 	start := 0
 	if len(allEvents) > 10 {
 		start = len(allEvents) - 10
@@ -556,19 +556,19 @@ func main() {
 
 	fmt.Println("\nRuntime Resurrection example completed!")
 	fmt.Println("Key takeaways:")
-	fmt.Println("  - Operational recovery: EventStore replays task events after crash.")
+	fmt.Println("  - Operational recovery: EventStore replays task ares_events after crash.")
 	fmt.Println("  - Cognitive recovery: Session memory provides conversation context.")
 	fmt.Println("  - StatefulAgent interface: RestoreState + ReplayEvents + Snapshot.")
 	fmt.Println("  - Session continuity: New agent inherits the old session ID.")
 }
 
 // printStats displays current runtime statistics.
-func printStats(svc *runtimeSvc.Service, store events.EventStore, ctx context.Context) {
+func printStats(svc *runtimeSvc.Service, store ares_events.EventStore, ctx context.Context) {
 	stats := svc.Stats()
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 	fmt.Printf("  Uptime: %s\n", stats.Uptime.Round(time.Second))
 
-	allEvents, _ := store.ReadAll(ctx, events.ReadOptions{})
-	fmt.Printf("  Total events: %d\n", len(allEvents))
+	allEvents, _ := store.ReadAll(ctx, ares_events.ReadOptions{})
+	fmt.Printf("  Total ares_events: %d\n", len(allEvents))
 }

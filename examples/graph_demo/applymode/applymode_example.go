@@ -11,7 +11,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -127,8 +127,8 @@ func runDemo(mode engine.ApplyMode) {
 
 	// — Runtime Plugin System —
 	// Create an in-memory event store and observer plugin to capture workflow
-	// lifecycle events (workflow.started, step.completed, workflow.completed, etc.).
-	eventStore := events.NewMemoryEventStore()
+	// lifecycle ares_events (workflow.started, step.completed, workflow.completed, etc.).
+	eventStore := ares_events.NewMemoryEventStore()
 	observer := runtime.NewObserverPlugin("demo-observer", eventStore)
 
 	bus := runtime.NewPluginBus()
@@ -154,12 +154,12 @@ func runDemo(mode engine.ApplyMode) {
 		}
 	}
 
-	// Print observed plugin events.
-	evts, err := eventStore.ReadAll(ctx, events.ReadOptions{Direction: events.ReadAscending})
+	// Print observed plugin ares_events.
+	evts, err := eventStore.ReadAll(ctx, ares_events.ReadOptions{Direction: ares_events.ReadAscending})
 	if err != nil {
-		log.Printf("read events: %v", err)
+		log.Printf("read ares_events: %v", err)
 	} else {
-		fmt.Printf("  PluginBus events observed: %d\n", len(evts))
+		fmt.Printf("  PluginBus ares_events observed: %d\n", len(evts))
 		for _, e := range evts {
 			fmt.Printf("    [%s] %s\n", e.StreamID, e.Type)
 		}

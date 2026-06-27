@@ -1,32 +1,32 @@
 // Package api provides high-level abstractions for ares services.
 // This file exposes event storage with automatic compaction at the API boundary,
-// hiding internal/events implementation details from external consumers.
+// hiding internal/ares_events implementation details from external consumers.
 package api
 
 import (
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // EventStore provides event storage with automatic compaction.
-// When a stream exceeds the threshold, old events are summarized into
-// compact snapshots and older raw events may be trimmed.
+// When a stream exceeds the threshold, old ares_events are summarized into
+// compact snapshots and older raw ares_events may be trimmed.
 //
-// Create via NewEventStore(), then use wherever events.EventStore is accepted.
-// The underlying events.CompactableEventStore methods (ForceCompact, Summaries, etc.)
+// Create via NewEventStore(), then use wherever ares_events.EventStore is accepted.
+// The underlying ares_events.CompactableEventStore methods (ForceCompact, Summaries, etc.)
 // are promoted and available directly.
 type EventStore struct {
-	*events.CompactableEventStore
-	raw *events.MemoryEventStore
+	*ares_events.CompactableEventStore
+	raw *ares_events.MemoryEventStore
 }
 
 // NewEventStore creates an event store with auto-compaction.
 // Events are stored in-memory with default compaction thresholds
-// (500 events per stream, keep recent 100).
+// (500 ares_events per stream, keep recent 100).
 func NewEventStore() *EventStore {
-	mem := events.NewMemoryEventStore()
-	repo := events.NewMemorySummaryRepository()
-	ces, err := events.NewCompactableEventStore(
-		mem, repo, nil, events.DefaultCompactionConfig(),
+	mem := ares_events.NewMemoryEventStore()
+	repo := ares_events.NewMemorySummaryRepository()
+	ces, err := ares_events.NewCompactableEventStore(
+		mem, repo, nil, ares_events.DefaultCompactionConfig(),
 	)
 	if err != nil {
 		// This should never happen with valid in-memory components.
@@ -40,6 +40,6 @@ func NewEventStore() *EventStore {
 
 // RawStore exposes the underlying MemoryEventStore for components
 // that require the concrete type (e.g., dashboard.Orchestrator.SetEventStore).
-func (s *EventStore) RawStore() *events.MemoryEventStore {
+func (s *EventStore) RawStore() *ares_events.MemoryEventStore {
 	return s.raw
 }

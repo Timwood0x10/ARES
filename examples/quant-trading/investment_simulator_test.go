@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/marketmaking"
-	"github.com/Timwood0x10/ares/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 )
 
 // testCSVData is inline fixture data for simulator tests.

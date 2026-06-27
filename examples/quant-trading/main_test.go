@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 )
 
 // TestCreateResearchConfig verifies that createResearchConfig returns

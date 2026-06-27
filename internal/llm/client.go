@@ -19,8 +19,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 )
 
 // Default configuration constants for LLM client.
@@ -98,9 +98,9 @@ type Client struct {
 	config         *Config
 	httpClient     *http.Client
 	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
-	tracer         observability.Tracer
+	tracer         ares_observability.Tracer
 	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
-	limiter        ratelimit.Limiter      // Optional: rate limiter for API calls.
+	limiter        ares_ratelimit.Limiter      // Optional: rate limiter for API calls.
 	closeOnce      sync.Once              // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
@@ -122,12 +122,12 @@ func WithCallbacks(emitter ares_callbacks.Emitter) Option {
 //
 // Args:
 //
-//	limiter - the rate limiter to use (use ratelimit.NewTokenBucketLimiter, etc.).
+//	limiter - the rate limiter to use (use ares_ratelimit.NewTokenBucketLimiter, etc.).
 //
 // Returns:
 //
 //	Option - the configuration function.
-func WithRateLimiter(limiter ratelimit.Limiter) Option {
+func WithRateLimiter(limiter ares_ratelimit.Limiter) Option {
 	return func(c *Client) {
 		c.limiter = limiter
 	}
@@ -142,9 +142,9 @@ func (c *Client) Close() {
 	})
 }
 
-// SetTracer sets an optional observability tracer on the client.
+// SetTracer sets an optional ares_observability tracer on the client.
 // When set, Generate and GenerateStream will record LLM call spans.
-func (c *Client) SetTracer(t observability.Tracer) {
+func (c *Client) SetTracer(t ares_observability.Tracer) {
 	c.tracer = t
 }
 
@@ -318,7 +318,7 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 	if c.config != nil {
 		model = c.config.Model
 	}
-	c.tracer.RecordLLMCall(ctx, &observability.LLMCall{
+	c.tracer.RecordLLMCall(ctx, &ares_observability.LLMCall{
 		TraceID:    c.tracer.GetTraceID(ctx),
 		Model:      model,
 		Prompt:     prompt,

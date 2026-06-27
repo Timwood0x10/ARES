@@ -9,14 +9,14 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/dashboard"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 
 	"github.com/google/uuid"
 )
 
-// MCPAdapter bridges mcp.MCPClient to dashboard.MCPExecutor.
-type MCPAdapter struct{ Client *mcp.MCPClient }
+// MCPAdapter bridges ares_mcp.MCPClient to dashboard.MCPExecutor.
+type MCPAdapter struct{ Client *ares_mcp.MCPClient }
 
 func (a *MCPAdapter) CallTool(ctx context.Context, name string, args map[string]any) (*dashboard.MCPToolResult, error) {
 	r, err := a.Client.CallTool(ctx, name, args)
@@ -44,21 +44,21 @@ func (a *MCPAdapter) ListTools(ctx context.Context) ([]dashboard.MCPToolInfo, er
 
 // clientTools associates an MCP client with its server name and tools.
 type clientTools struct {
-	client *mcp.MCPClient
+	client *ares_mcp.MCPClient
 	name   string
-	tools  []mcp.MCPToolDef
+	tools  []ares_mcp.MCPToolDef
 }
 
 // MultiMCPAdapter aggregates multiple MCP servers and routes tool calls to the
 // correct client based on the tool name.
 type MultiMCPAdapter struct {
 	entries []clientTools
-	toolMap map[string]*mcp.MCPClient // tool name → owning client
+	toolMap map[string]*ares_mcp.MCPClient // tool name → owning client
 }
 
 // NewMultiMCPAdapter creates an adapter from multiple MCP clients and their tools.
 func NewMultiMCPAdapter(entries []clientTools) *MultiMCPAdapter {
-	toolMap := make(map[string]*mcp.MCPClient)
+	toolMap := make(map[string]*ares_mcp.MCPClient)
 	for _, e := range entries {
 		for _, t := range e.tools {
 			toolMap[t.Name] = e.client
@@ -111,14 +111,14 @@ func (w *LLMAdapter) Generate(ctx context.Context, prompt string) (string, error
 
 // MCPStatusBridge provides MCP server status to the dashboard.
 type MCPStatusBridge struct {
-	Tools   []mcp.MCPToolDef
+	Tools   []ares_mcp.MCPToolDef
 	Servers []MCPStatusServer
 }
 
 // MCPStatusServer describes a connected MCP server for the dashboard.
 type MCPStatusServer struct {
 	Name  string
-	Tools []mcp.MCPToolDef
+	Tools []ares_mcp.MCPToolDef
 }
 
 func (b *MCPStatusBridge) ListServers() []dashboard.MCPServerStatusView {
@@ -141,17 +141,17 @@ func (b *MCPStatusBridge) ListServers() []dashboard.MCPServerStatusView {
 	// Fallback for callers that only populate Tools.
 	views := make([]dashboard.MCPToolView, len(b.Tools))
 	for i, t := range b.Tools {
-		views[i] = dashboard.MCPToolView{Name: t.Name, Description: t.Description, ServerName: "mcp"}
+		views[i] = dashboard.MCPToolView{Name: t.Name, Description: t.Description, ServerName: "ares_mcp"}
 	}
 	return []dashboard.MCPServerStatusView{{
-		Name: "mcp", Connected: true, ToolCount: len(b.Tools), Version: "connected", Tools: views,
+		Name: "ares_mcp", Connected: true, ToolCount: len(b.Tools), Version: "connected", Tools: views,
 	}}
 }
 
 // ArenaAdapter implements dashboard.ArenaProvider.
 type ArenaAdapter struct {
 	Orch       *dashboard.Orchestrator
-	Store      events.EventStore
+	Store      ares_events.EventStore
 	llmAdapter *LLMAdapter
 	mcpAdapter *MCPAdapter
 	mu         sync.Mutex
@@ -294,12 +294,12 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		}
 	}
 	if a.Store != nil {
-		evt := &events.Event{
+		evt := &ares_events.Event{
 			ID: uuid.New().String(), StreamID: "arena",
 			Type: "arena.action", Payload: map[string]any{"action": string(action.Type)},
 			Timestamp: time.Now(),
 		}
-		if err := a.Store.Append(context.Background(), "arena", []*events.Event{evt}, 0); err != nil {
+		if err := a.Store.Append(context.Background(), "arena", []*ares_events.Event{evt}, 0); err != nil {
 			slog.Warn("arena: failed to record action event", "error", err)
 		}
 	}

@@ -4,12 +4,12 @@ import (
 	"context"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // Collector subscribes to the EventStore and populates flight recorder data structures.
 type Collector struct {
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 	timeline   *Timeline
 	graph      *Graph
 	decisions  *DecisionLog
@@ -22,7 +22,7 @@ type Collector struct {
 
 // CollectorConfig holds dependencies for the collector.
 type CollectorConfig struct {
-	EventStore events.EventStore
+	EventStore ares_events.EventStore
 }
 
 // NewCollector creates a new flight data collector.
@@ -37,7 +37,7 @@ func NewCollector(cfg CollectorConfig) *Collector {
 	}
 }
 
-// Start begins collecting events from the event store.
+// Start begins collecting ares_events from the event store.
 func (c *Collector) Start(ctx context.Context) error {
 	if c.eventStore == nil {
 		return nil
@@ -45,7 +45,7 @@ func (c *Collector) Start(ctx context.Context) error {
 
 	ctx, c.cancel = context.WithCancel(ctx)
 
-	ch, err := c.eventStore.Subscribe(ctx, events.EventFilter{})
+	ch, err := c.eventStore.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
 		return err
 	}
@@ -95,8 +95,8 @@ func (c *Collector) Pipeline(sessionID string) *MemoryPipeline {
 	return p
 }
 
-// collectLoop reads events and routes them to the appropriate data structure.
-func (c *Collector) collectLoop(ctx context.Context, ch <-chan *events.Event) {
+// collectLoop reads ares_events and routes them to the appropriate data structure.
+func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Event) {
 	defer c.wg.Done()
 
 	for {
@@ -113,40 +113,40 @@ func (c *Collector) collectLoop(ctx context.Context, ch <-chan *events.Event) {
 }
 
 // processEvent routes a single event to the right handler.
-func (c *Collector) processEvent(evt *events.Event) {
+func (c *Collector) processEvent(evt *ares_events.Event) {
 	if evt == nil {
 		return
 	}
 
 	switch evt.Type {
-	case events.EventAgentStarted:
+	case ares_events.EventAgentStarted:
 		c.handleAgentStart(evt)
-	case events.EventAgentStopped:
+	case ares_events.EventAgentStopped:
 		c.handleAgentEnd(evt)
-	case events.EventTaskCreated, events.EventTaskDispatched:
+	case ares_events.EventTaskCreated, ares_events.EventTaskDispatched:
 		c.handleTaskStart(evt)
-	case events.EventTaskCompleted, events.EventTaskFailed:
+	case ares_events.EventTaskCompleted, ares_events.EventTaskFailed:
 		c.handleTaskEnd(evt)
-	case events.EventFailoverTriggered, events.EventFailoverCompleted:
+	case ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
 		c.handleFailover(evt)
-	case events.EventMemoryDistilled:
+	case ares_events.EventMemoryDistilled:
 		c.handleMemoryDistilled(evt)
-	case events.EventLLMCall:
+	case ares_events.EventLLMCall:
 		c.handleLLMCall(evt)
 	}
 
-	// Check for tool-related events (custom types).
+	// Check for tool-related ares_events (custom types).
 	if isToolEvent(evt) {
 		c.handleToolEvent(evt)
 	}
 
-	// Check for decision events.
+	// Check for decision ares_events.
 	if isDecisionEvent(evt) {
 		c.handleDecisionEvent(evt)
 	}
 }
 
-func (c *Collector) handleAgentStart(evt *events.Event) {
+func (c *Collector) handleAgentStart(evt *ares_events.Event) {
 	agentID := evt.StreamID
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
@@ -167,7 +167,7 @@ func (c *Collector) handleAgentStart(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleAgentEnd(evt *events.Event) {
+func (c *Collector) handleAgentEnd(evt *ares_events.Event) {
 	agentID := evt.StreamID
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
@@ -186,7 +186,7 @@ func (c *Collector) handleAgentEnd(evt *events.Event) {
 	}
 }
 
-func (c *Collector) handleTaskStart(evt *events.Event) {
+func (c *Collector) handleTaskStart(evt *ares_events.Event) {
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
 		AgentID:  evt.StreamID,
@@ -197,9 +197,9 @@ func (c *Collector) handleTaskStart(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleTaskEnd(evt *events.Event) {
+func (c *Collector) handleTaskEnd(evt *ares_events.Event) {
 	evtType := EventAgentEnd
-	if evt.Type == events.EventTaskFailed {
+	if evt.Type == ares_events.EventTaskFailed {
 		evtType = EventError
 
 		// Auto-diagnose failures.
@@ -232,7 +232,7 @@ func (c *Collector) handleTaskEnd(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleFailover(evt *events.Event) {
+func (c *Collector) handleFailover(evt *ares_events.Event) {
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
 		AgentID:  evt.StreamID,
@@ -243,7 +243,7 @@ func (c *Collector) handleFailover(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleMemoryDistilled(evt *events.Event) {
+func (c *Collector) handleMemoryDistilled(evt *ares_events.Event) {
 	sessionID := evt.StreamID
 	inputCount := 0
 	outputCount := 0
@@ -279,7 +279,7 @@ func (c *Collector) handleMemoryDistilled(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleLLMCall(evt *events.Event) {
+func (c *Collector) handleLLMCall(evt *ares_events.Event) {
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
 		AgentID:  evt.StreamID,
@@ -300,7 +300,7 @@ func (c *Collector) handleLLMCall(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleToolEvent(evt *events.Event) {
+func (c *Collector) handleToolEvent(evt *ares_events.Event) {
 	c.timeline.Add(TimelineEvent{
 		ID:       evt.ID,
 		AgentID:  evt.StreamID,
@@ -321,7 +321,7 @@ func (c *Collector) handleToolEvent(evt *events.Event) {
 	})
 }
 
-func (c *Collector) handleDecisionEvent(evt *events.Event) {
+func (c *Collector) handleDecisionEvent(evt *ares_events.Event) {
 	d := Decision{
 		ID:        evt.ID,
 		AgentID:   evt.StreamID,
@@ -343,12 +343,12 @@ func (c *Collector) handleDecisionEvent(evt *events.Event) {
 	c.decisions.Add(d)
 }
 
-func isToolEvent(evt *events.Event) bool {
+func isToolEvent(evt *ares_events.Event) bool {
 	s := string(evt.Type)
 	return len(s) > 5 && s[:5] == "tool."
 }
 
-func isDecisionEvent(evt *events.Event) bool {
+func isDecisionEvent(evt *ares_events.Event) bool {
 	s := string(evt.Type)
 	return len(s) > 9 && s[:9] == "decision."
 }

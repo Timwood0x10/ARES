@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
@@ -47,8 +47,8 @@ type Graph struct {
 	edges     map[string][]*Edge
 	start     string
 	scheduler Scheduler
-	tracer    observability.Tracer        // observability tracer for execution tracking
-	limiter   ratelimit.Limiter           // rate limiter for execution throttling
+	tracer    ares_observability.Tracer        // ares_observability tracer for execution tracking
+	limiter   ares_ratelimit.Limiter           // rate limiter for execution throttling
 	pluginBus *runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
 	router    NodeRouter                  // optional dynamic routing callback
 	collector *runtime.ExecutionCollector // optional collector for route recording
@@ -68,7 +68,7 @@ func NewGraph(id string) (*Graph, error) {
 		nodes:     make(map[string]Node),
 		edges:     make(map[string][]*Edge),
 		scheduler: NewDefaultScheduler(),
-		tracer:    observability.NewNoopTracer(), // default to no-op tracer
+		tracer:    ares_observability.NewNoopTracer(), // default to no-op tracer
 		limiter:   nil,                           // default to no rate limiting
 	}, nil
 }
@@ -77,9 +77,9 @@ func NewGraph(id string) (*Graph, error) {
 //
 // Args:
 // id - unique graph identifier, must not be empty.
-// tracer - observability tracer, must not be nil.
+// tracer - ares_observability tracer, must not be nil.
 // Returns new graph instance or error.
-func NewGraphWithTracer(id string, tracer observability.Tracer) (*Graph, error) {
+func NewGraphWithTracer(id string, tracer ares_observability.Tracer) (*Graph, error) {
 	if id == "" {
 		return nil, fmt.Errorf("graph ID cannot be empty")
 	}
@@ -102,7 +102,7 @@ func NewGraphWithTracer(id string, tracer observability.Tracer) (*Graph, error) 
 // id - unique graph identifier, must not be empty.
 // limiter - rate limiter for execution throttling.
 // Returns new graph instance or error.
-func NewGraphWithLimiter(id string, limiter ratelimit.Limiter) (*Graph, error) {
+func NewGraphWithLimiter(id string, limiter ares_ratelimit.Limiter) (*Graph, error) {
 	if id == "" {
 		return nil, fmt.Errorf("graph ID cannot be empty")
 	}
@@ -111,7 +111,7 @@ func NewGraphWithLimiter(id string, limiter ratelimit.Limiter) (*Graph, error) {
 		nodes:     make(map[string]Node),
 		edges:     make(map[string][]*Edge),
 		scheduler: NewDefaultScheduler(),
-		tracer:    observability.NewNoopTracer(),
+		tracer:    ares_observability.NewNoopTracer(),
 		limiter:   limiter,
 	}, nil
 }
@@ -308,7 +308,7 @@ func (g *Graph) SetScheduler(scheduler Scheduler) (*Graph, error) {
 // Args:
 // tracer - custom tracer instance, must not be nil.
 // Returns graph for chaining or error.
-func (g *Graph) SetTracer(tracer observability.Tracer) (*Graph, error) {
+func (g *Graph) SetTracer(tracer ares_observability.Tracer) (*Graph, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
@@ -324,7 +324,7 @@ func (g *Graph) SetTracer(tracer observability.Tracer) (*Graph, error) {
 
 // SetPluginBus attaches a PluginBus for BeforeStep/AfterStep hooks and
 // event emission. This aligns the graph execution path with the workflow
-// engine's plugin system, enabling observability and memory routing.
+// engine's plugin system, enabling ares_observability and memory routing.
 func (g *Graph) SetPluginBus(pb *runtime.PluginBus) (*Graph, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
@@ -370,7 +370,7 @@ func (g *Graph) SetRouter(router NodeRouter) (*Graph, error) {
 // Args:
 // limiter - custom rate limiter instance (can be nil for no limiting).
 // Returns graph for chaining or error.
-func (g *Graph) SetLimiter(limiter ratelimit.Limiter) (*Graph, error) {
+func (g *Graph) SetLimiter(limiter ares_ratelimit.Limiter) (*Graph, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}

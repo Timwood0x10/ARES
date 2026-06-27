@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
 	"github.com/Timwood0x10/ares/internal/tools/resources/builtin"
@@ -293,21 +293,21 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println()
 
-	// Load config
+	// Load ares_config
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
-		cfgPath = "./config/server.yaml"
+		cfgPath = "./ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := ares_config.Load(cfgPath)
 	if err != nil {
-		slog.Error("Load config failed", "error", err)
+		slog.Error("Load ares_config failed", "error", err)
 		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Load env config failed", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Load env ares_config failed", "error", err)
 		os.Exit(1)
 	}
 

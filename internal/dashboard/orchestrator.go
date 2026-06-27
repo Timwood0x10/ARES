@@ -12,7 +12,7 @@ import (
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -111,7 +111,7 @@ type Orchestrator struct {
 	agents      map[string]*AgentResult
 	cancels     map[string]context.CancelFunc // per-agent cancel functions
 	hub         *WSHub                        // optional, for real-time WS updates
-	store       *events.MemoryEventStore      // optional, for event persistence
+	store       *ares_events.MemoryEventStore      // optional, for event persistence
 	flight      *flight.FlightRecorder        // optional, for flight recording
 	mu          sync.RWMutex
 	nextID      atomic.Int64
@@ -141,7 +141,7 @@ func (o *Orchestrator) SetHub(hub *WSHub) {
 }
 
 // SetEventStore attaches an event store for event persistence.
-func (o *Orchestrator) SetEventStore(store *events.MemoryEventStore) {
+func (o *Orchestrator) SetEventStore(store *ares_events.MemoryEventStore) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.store = store
@@ -162,7 +162,7 @@ func (o *Orchestrator) Stop() {
 }
 
 // EventStore returns the current event store. May be nil if not configured.
-func (o *Orchestrator) EventStore() *events.MemoryEventStore {
+func (o *Orchestrator) EventStore() *ares_events.MemoryEventStore {
 	return o.getStore()
 }
 
@@ -378,7 +378,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	// Phase 1: MCP data gathering (single or multi-step).
 	o.updateStatus(id, "gathering data...", 20, "")
 
-	// Resume support: if ResumeFrom is set, read previous agent's events to
+	// Resume support: if ResumeFrom is set, read previous agent's ares_events to
 	// determine which steps were already completed and skip them.
 	startStep := 0
 	var resumeSummary string
@@ -694,13 +694,13 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 }
 
-// emitEvent stores an event using the canonical events.Emit.
+// emitEvent stores an event using the canonical ares_events.Emit.
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
 	store := o.getStore()
 	if store == nil {
 		return
 	}
-	if !events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload) {
+	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }
@@ -713,7 +713,7 @@ func (o *Orchestrator) getHub() *WSHub {
 }
 
 // getStore returns the current event store under a read lock. Safe for concurrent use.
-func (o *Orchestrator) getStore() *events.MemoryEventStore {
+func (o *Orchestrator) getStore() *ares_events.MemoryEventStore {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.store
@@ -780,26 +780,26 @@ func (o *Orchestrator) emitFlightDecision(agentID, selected, reason string) {
 	})
 }
 
-// loadResumeProgress reads events from a previous agent to determine how many
+// loadResumeProgress reads ares_events from a previous agent to determine how many
 // multi-step calls were already completed and builds a human-readable summary.
 // Returns the number of completed steps and a summary string.
-// Nil-safe: returns (0, "") if the event store is not configured or no events are found.
+// Nil-safe: returns (0, "") if the event store is not configured or no ares_events are found.
 func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID string, steps []AgentStep) (int, string) {
 	store := o.getStore()
 	if store == nil {
 		return 0, ""
 	}
 
-	prevEvents, err := store.Read(ctx, previousAgentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	prevEvents, err := store.Read(ctx, previousAgentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     10000,
 	})
 	if err != nil {
-		slog.Warn("orchestrator: failed to read resume events", "agent", previousAgentID, "error", err)
+		slog.Warn("orchestrator: failed to read resume ares_events", "agent", previousAgentID, "error", err)
 		return 0, ""
 	}
 
-	// Count mcp.step.completed events to determine how far the previous agent got.
+	// Count mcp.step.completed ares_events to determine how far the previous agent got.
 	completedSteps := 0
 	var completedDetails []string
 	for _, evt := range prevEvents {
@@ -833,7 +833,7 @@ func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID s
 	return completedSteps, summary
 }
 
-// loadPreviousData loads the raw MCP data from a previous agent's events.
+// loadPreviousData loads the raw MCP data from a previous agent's ares_events.
 // Used when resuming: all MCP steps completed, need the data for LLM.
 func (o *Orchestrator) loadPreviousData(ctx context.Context, previousAgentID string) string {
 	store := o.getStore()
@@ -841,8 +841,8 @@ func (o *Orchestrator) loadPreviousData(ctx context.Context, previousAgentID str
 		return ""
 	}
 
-	evts, err := store.Read(ctx, previousAgentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, err := store.Read(ctx, previousAgentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     10000,
 	})
 	if err != nil {

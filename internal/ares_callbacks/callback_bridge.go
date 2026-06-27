@@ -4,25 +4,25 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // BridgeEventStore implements the Emitter interface, converting callback
-// events into persisted EventStore events. This unifies the callback and
+// ares_events into persisted EventStore ares_events. This unifies the callback and
 // event sourcing systems so that instrumentation consumers only need to
 // watch one stream.
 type BridgeEventStore struct {
-	store   events.EventStore
+	store   ares_events.EventStore
 	agentID string
 }
 
-// NewBridge creates a BridgeEventStore that writes callback events
+// NewBridge creates a BridgeEventStore that writes callback ares_events
 // to the given EventStore. The agentID is used as the event stream ID.
-func NewBridge(store events.EventStore, agentID string) *BridgeEventStore {
+func NewBridge(store ares_events.EventStore, agentID string) *BridgeEventStore {
 	return &BridgeEventStore{store: store, agentID: agentID}
 }
 
-// Emit converts a callback Context to an events.Event and appends it.
+// Emit converts a callback Context to an ares_events.Event and appends it.
 func (b *BridgeEventStore) Emit(ctx *Context) {
 	if ctx == nil || b.store == nil {
 		return
@@ -53,32 +53,32 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	if !events.Emit(context.Background(), b.store, b.agentID, eventType, payload) {
+	if !ares_events.Emit(context.Background(), b.store, b.agentID, eventType, payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
 	}
 }
 
-// mapEventType translates callback Event constants to events.EventType.
-func (b *BridgeEventStore) mapEventType(ce Event) events.EventType {
+// mapEventType translates callback Event constants to ares_events.EventType.
+func (b *BridgeEventStore) mapEventType(ce Event) ares_events.EventType {
 	switch ce {
 	case EventLLMStart:
-		return events.EventLLMCall
+		return ares_events.EventLLMCall
 	case EventLLMEnd:
-		return events.EventLLMCall
+		return ares_events.EventLLMCall
 	case EventLLMError:
-		return events.EventLLMCall
+		return ares_events.EventLLMCall
 	case EventToolStart:
-		return events.EventToolCallStarted
+		return ares_events.EventToolCallStarted
 	case EventToolEnd:
-		return events.EventToolCallCompleted
+		return ares_events.EventToolCallCompleted
 	case EventToolError:
-		return events.EventToolCallCompleted
+		return ares_events.EventToolCallCompleted
 	case EventAgentStart:
-		return events.EventAgentStarted
+		return ares_events.EventAgentStarted
 	case EventAgentEnd:
-		return events.EventAgentStopped
+		return ares_events.EventAgentStopped
 	case EventAgentError:
-		return events.EventAgentStopped
+		return ares_events.EventAgentStopped
 	default:
 		slog.Debug("callback bridge: unmapped event", "event", ce)
 		return ""

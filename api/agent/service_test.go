@@ -11,7 +11,7 @@ import (
 
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // mockMemoryManager is a mock implementation of memory.MemoryManager for testing.
@@ -97,7 +97,7 @@ func (m *mockMemoryManager) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {}
+func (m *mockMemoryManager) SetEventStore(store ares_events.EventStore, streamID string) {}
 
 func (m *mockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {
 	return nil

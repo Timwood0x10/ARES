@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/eval"
+	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/llm"
 )
 
@@ -84,12 +84,12 @@ func TestSetupEvalSystem_LLMJudgeRegistered(t *testing.T) {
 	// Verify the evaluator implements the Evaluator interface by calling Evaluate.
 	// Use a trivial test case; the mock client will not actually be called
 	// during this check — we only confirm the evaluator is structurally valid.
-	tc := eval.TestCase{
+	tc := ares_eval.TestCase{
 		ID:             "test-001",
 		Input:          "Hello",
 		ExpectedOutput: "World",
 	}
-	result := eval.TestResult{
+	result := ares_eval.TestResult{
 		TestCaseID:   "test-001",
 		ActualOutput: "World",
 		TokensUsed:   10,
@@ -140,7 +140,7 @@ func TestSetupEvalSystem_SatisfiesAgentTestRunner(t *testing.T) {
 	}
 
 	executor := &mockExecutor{}
-	runner, err := eval.NewAgentTestRunner(executor)
+	runner, err := ares_eval.NewAgentTestRunner(executor)
 	if err != nil {
 		t.Fatalf("NewAgentTestRunner error: %v", err)
 	}
@@ -151,8 +151,8 @@ func TestSetupEvalSystem_SatisfiesAgentTestRunner(t *testing.T) {
 	// Verify the runner's internal registry is set by checking RunAndEvaluate
 	// does NOT return ErrNilRegistry when a valid evaluator name is used.
 	ctx := context.Background()
-	suite := eval.TestSuite{
-		TestCases: []eval.TestCase{
+	suite := ares_eval.TestSuite{
+		TestCases: []ares_eval.TestCase{
 			{ID: "tc-1", Input: "test"},
 		},
 	}
@@ -160,12 +160,12 @@ func TestSetupEvalSystem_SatisfiesAgentTestRunner(t *testing.T) {
 	if runErr == nil {
 		t.Error("expected error for nonexistent evaluator")
 	}
-	if runErr != eval.ErrNilRegistry && runErr != eval.ErrEvaluatorNotFound {
+	if runErr != ares_eval.ErrNilRegistry && runErr != ares_eval.ErrEvaluatorNotFound {
 		t.Logf("unexpected error type: %v", runErr)
 	}
 }
 
-// mockExecutor implements eval.AgentExecutor for testing.
+// mockExecutor implements ares_eval.AgentExecutor for testing.
 type mockExecutor struct{}
 
 func (m *mockExecutor) Execute(ctx context.Context, input string) (string, []string, int, error) {

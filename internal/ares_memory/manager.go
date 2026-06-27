@@ -12,7 +12,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // MemoryManager provides unified memory management.
@@ -68,9 +68,9 @@ type MemoryManager interface {
 	// Stop stops the memory manager and cleans up resources.
 	Stop(ctx context.Context) error
 
-	// SetEventStore configures an optional EventStore for emitting lifecycle events.
+	// SetEventStore configures an optional EventStore for emitting lifecycle ares_events.
 	// If store is nil, event emission is a no-op.
-	SetEventStore(store events.EventStore, streamID string)
+	SetEventStore(store ares_events.EventStore, streamID string)
 }
 
 // MemoryConfig holds configuration for MemoryManager.

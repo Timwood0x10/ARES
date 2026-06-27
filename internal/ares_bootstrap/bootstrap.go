@@ -18,12 +18,12 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/dashboard"
-	"github.com/Timwood0x10/ares/internal/eval"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_eval"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -33,30 +33,30 @@ import (
 
 // MCPDashboard holds the initialized MCP and Dashboard components.
 type MCPDashboard struct {
-	MCPManager *mcp.MCPManager
+	MCPManager *ares_mcp.MCPManager
 	HTTPServer *http.Server
 	hub        *dashboard.WSHub
 	hubEG      *errgroup.Group // manages hub.Run() lifecycle; must call Wait() on shutdown.
 	bridge     *dashboard.EventBridge
 }
 
-// SetupMCP initializes the MCP manager from config and connects to servers.
-func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registry) (*mcp.MCPManager, error) {
+// SetupMCP initializes the MCP manager from ares_config and connects to servers.
+func SetupMCP(ctx context.Context, cfg *ares_config.MCPConfig, registry *core.Registry) (*ares_mcp.MCPManager, error) {
 	if cfg == nil || len(cfg.Servers) == 0 {
 		return nil, nil
 	}
 
-	managerConfig := &mcp.MCPManagerConfig{
-		Servers: make([]mcp.MCPServerConfig, 0, len(cfg.Servers)),
+	managerConfig := &ares_mcp.MCPManagerConfig{
+		Servers: make([]ares_mcp.MCPServerConfig, 0, len(cfg.Servers)),
 	}
 
 	for _, s := range cfg.Servers {
-		sc := mcp.MCPServerConfig{
+		sc := ares_mcp.MCPServerConfig{
 			Name:      s.Name,
 			Enabled:   s.Enabled,
 			AutoStart: s.AutoStart,
 			Timeout:   time.Duration(s.Timeout) * time.Second,
-			Transport: mcp.TransportConfig{
+			Transport: ares_mcp.TransportConfig{
 				Type: s.Transport.Type,
 			},
 		}
@@ -64,7 +64,7 @@ func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registr
 		switch s.Transport.Type {
 		case "stdio":
 			if s.Transport.Stdio != nil {
-				sc.Transport.Stdio = &mcp.StdioConfig{
+				sc.Transport.Stdio = &ares_mcp.StdioConfig{
 					Command: s.Transport.Stdio.Command,
 					Args:    s.Transport.Stdio.Args,
 					Env:     s.Transport.Stdio.Env,
@@ -73,7 +73,7 @@ func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registr
 			}
 		case "sse":
 			if s.Transport.SSE != nil {
-				sc.Transport.SSE = &mcp.SSEConfig{
+				sc.Transport.SSE = &ares_mcp.SSEConfig{
 					URL:     s.Transport.SSE.URL,
 					Headers: s.Transport.SSE.Headers,
 					Timeout: time.Duration(s.Transport.SSE.Timeout) * time.Second,
@@ -84,26 +84,26 @@ func SetupMCP(ctx context.Context, cfg *config.MCPConfig, registry *core.Registr
 		managerConfig.Servers = append(managerConfig.Servers, sc)
 	}
 
-	manager, err := mcp.NewMCPManager(managerConfig, registry)
+	manager, err := ares_mcp.NewMCPManager(managerConfig, registry)
 	if err != nil {
-		return nil, fmt.Errorf("create mcp manager: %w", err)
+		return nil, fmt.Errorf("create ares_mcp manager: %w", err)
 	}
 
 	if err := manager.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start mcp manager: %w", err)
+		return nil, fmt.Errorf("start ares_mcp manager: %w", err)
 	}
 
-	slog.Info("bootstrap: mcp manager started", "servers", len(cfg.Servers))
+	slog.Info("bootstrap: ares_mcp manager started", "servers", len(cfg.Servers))
 	return manager, nil
 }
 
 // SetupDashboard initializes the dashboard service, WebSocket hub, and HTTP server.
 func SetupDashboard(
 	ctx context.Context,
-	cfg *config.DashboardAppConfig,
+	cfg *ares_config.DashboardAppConfig,
 	rt runtime.Runtime,
 	agents dashboard.AgentProvider,
-	eventStore events.EventStore,
+	eventStore ares_events.EventStore,
 	memMgr memory.MemoryManager,
 	mcpMgr dashboard.MCPStatusProvider,
 ) (*MCPDashboard, error) {
@@ -215,20 +215,20 @@ func NewCallbackRegistry() *ares_callbacks.Registry {
 }
 
 // NewLLMClientWithCallbacks creates an LLM client with callback emission enabled.
-// The returned client will emit lifecycle events (llm.start, llm.end, llm.error)
+// The returned client will emit lifecycle ares_events (llm.start, llm.end, llm.error)
 // to the provided registry during Generate and GenerateStream calls.
 //
 // Args:
 //
-//	config - LLM client configuration (provider, API key, model, etc.).
-//	reg - callback registry to receive lifecycle events. May be nil to skip wiring.
+//	ares_config - LLM client configuration (provider, API key, model, etc.).
+//	reg - callback registry to receive lifecycle ares_events. May be nil to skip wiring.
 //
 // Returns:
 //
 //	*llm.Client - configured LLM client with ares_callbacks wired.
 //	error - configuration or client creation error.
-func NewLLMClientWithCallbacks(config *llm.Config, reg *ares_callbacks.Registry) (*llm.Client, error) {
-	client, err := llm.NewClient(config)
+func NewLLMClientWithCallbacks(ares_config *llm.Config, reg *ares_callbacks.Registry) (*llm.Client, error) {
+	client, err := llm.NewClient(ares_config)
 	if err != nil {
 		return nil, err
 	}
@@ -245,16 +245,16 @@ func NewLLMClientWithCallbacks(config *llm.Config, reg *ares_callbacks.Registry)
 //
 // Args:
 //
-//	config   - primary LLM client configuration.
+//	ares_config   - primary LLM client configuration.
 //	fallbacks - fallback LLM configs; may be nil/empty for no failover.
-//	reg      - callback registry to receive lifecycle events. May be nil.
+//	reg      - callback registry to receive lifecycle ares_events. May be nil.
 //
 // Returns:
 //
 //	*llm.FailoverClient - failover-capable LLM client.
 //	error - configuration or client creation error.
-func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *ares_callbacks.Registry) (*llm.FailoverClient, error) {
-	configs := append([]*llm.Config{config}, fallbacks...)
+func NewLLMClientWithFailover(ares_config *llm.Config, fallbacks []*llm.Config, reg *ares_callbacks.Registry) (*llm.FailoverClient, error) {
+	configs := append([]*llm.Config{ares_config}, fallbacks...)
 	fc, err := llm.NewFailoverClient(configs, 0, 0, 0)
 	if err != nil {
 		return nil, err
@@ -276,7 +276,7 @@ func NewLLMClientWithFailover(config *llm.Config, fallbacks []*llm.Config, reg *
 //
 // Args:
 //
-//	reg - callback registry to receive lifecycle events. May be nil to return no-op option.
+//	reg - callback registry to receive lifecycle ares_events. May be nil to return no-op option.
 //
 // Returns:
 //
@@ -294,7 +294,7 @@ func WireTaskExecutorCallbacks(reg *ares_callbacks.Registry) sub.TaskExecutorOpt
 //
 // Args:
 //
-//	reg - callback registry to receive lifecycle events. May be nil to return no-op option.
+//	reg - callback registry to receive lifecycle ares_events. May be nil to return no-op option.
 //
 // Returns:
 //
@@ -345,7 +345,7 @@ func SetupEvolution(
 	expRepo evolution.ExperienceRepository,
 	callbackReg *ares_callbacks.Registry,
 	dreamDeps *DreamCycleDeps,
-	cfg *config.EvolutionConfig, // <-- 新增：GA 参数来源
+	cfg *ares_config.EvolutionConfig, // <-- 新增：GA 参数来源
 	opts ...evolution.SchedulerOption,
 ) (*EvolutionComponents, error) {
 	if flightRecorder == nil || expRepo == nil || callbackReg == nil {
@@ -357,7 +357,7 @@ func SetupEvolution(
 	flightWrapper := &flightRecorderWrapper{recorder: flightRecorder}
 	adapter := evolution.NewFlightToExperienceAdapter(flightWrapper, expRepo)
 
-	// Build scheduler options from config or use defaults.
+	// Build scheduler options from ares_config or use defaults.
 	schedulerOpts := []evolution.SchedulerOption{
 		evolution.WithEnabled(true),
 	}
@@ -433,7 +433,7 @@ func SetupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *e
 
 // SetupEvaluators creates and registers built-in evaluators for agent testing.
 // It initializes the LLM-as-Judge evaluator and registers it with the provided registry.
-// The llm.Client directly satisfies eval.LLMClient (same Generate signature),
+// The llm.Client directly satisfies ares_eval.LLMClient (same Generate signature),
 // so no adapter wrapper is needed.
 //
 // Args:
@@ -444,16 +444,16 @@ func SetupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *e
 // Returns:
 //
 //	error - nil on success, or error if evaluator creation/registration fails.
-func SetupEvaluators(llmClient eval.LLMClient, registry *eval.EvaluatorRegistry) error {
+func SetupEvaluators(llmClient ares_eval.LLMClient, registry *ares_eval.EvaluatorRegistry) error {
 	if llmClient == nil || registry == nil {
 		slog.Info("bootstrap: evaluators skipped (missing dependencies)")
 		return nil
 	}
 
 	// Create LLM Judge evaluator with Chinese prompt and 1-10 scale.
-	judge, err := eval.NewLLMJudgeEvaluator(llmClient,
-		eval.WithChinesePrompt(),
-		eval.WithScale(eval.ScaleOneToTen),
+	judge, err := ares_eval.NewLLMJudgeEvaluator(llmClient,
+		ares_eval.WithChinesePrompt(),
+		ares_eval.WithScale(ares_eval.ScaleOneToTen),
 	)
 	if err != nil {
 		return fmt.Errorf("create llm judge: %w", err)
@@ -479,10 +479,10 @@ func SetupEvaluators(llmClient eval.LLMClient, registry *eval.EvaluatorRegistry)
 //
 // Returns:
 //
-//	*eval.EvaluatorRegistry - the populated registry, or empty registry if llmClient is nil.
+//	*ares_eval.EvaluatorRegistry - the populated registry, or empty registry if llmClient is nil.
 //	error - any error during evaluator creation or registration.
-func SetupEvalSystem(llmClient eval.LLMClient) (*eval.EvaluatorRegistry, error) {
-	registry := eval.NewEvaluatorRegistry()
+func SetupEvalSystem(llmClient ares_eval.LLMClient) (*ares_eval.EvaluatorRegistry, error) {
+	registry := ares_eval.NewEvaluatorRegistry()
 
 	if llmClient != nil {
 		if err := SetupEvaluators(llmClient, registry); err != nil {
@@ -566,13 +566,13 @@ func categorizeSeverity(cat flight.DiagnosticCategory) int {
 	}
 }
 
-// eventStoreSubscriberWrapper wraps events.EventStore to implement evolution.EventStoreSubscriber.
+// eventStoreSubscriberWrapper wraps ares_events.EventStore to implement evolution.EventStoreSubscriber.
 type eventStoreSubscriberWrapper struct {
-	store events.EventStore
+	store ares_events.EventStore
 }
 
-// Subscribe subscribes to events from the underlying event store.
-func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error) {
+// Subscribe subscribes to ares_events from the underlying event store.
+func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	if w.store == nil {
 		return nil, fmt.Errorf("event store is nil")
 	}
@@ -587,7 +587,7 @@ func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter even
 // WireAllEvolutionComponents. Callers use these fields to inject
 // ares_callbacks, feedback service, and evaluators into agents at construction time.
 type WiredComponents struct {
-	// CallbackReg is the shared callback registry for lifecycle events.
+	// CallbackReg is the shared callback registry for lifecycle ares_events.
 	// Pass to llm.WithCallbacks(reg) and leader.WithCallbacks(reg).
 	CallbackReg *ares_callbacks.Registry
 
@@ -596,8 +596,8 @@ type WiredComponents struct {
 	FeedbackSvc *experience.FeedbackService
 
 	// EvalRegistry is the evaluator registry with LLM Judge registered.
-	// Pass to eval.NewAgentTestRunner(executor).SetRegistry(reg).
-	EvalRegistry *eval.EvaluatorRegistry
+	// Pass to ares_eval.NewAgentTestRunner(executor).SetRegistry(reg).
+	EvalRegistry *ares_eval.EvaluatorRegistry
 
 	// ExperienceLocator is the planner option for UsedExperienceID tracking.
 	// Pass to leader.NewTaskPlannerWithConfig(..., planner.WithExperienceLocator(wired.ExperienceLocator)).
@@ -617,7 +617,7 @@ type WiredComponents struct {
 type WireDependencies struct {
 	// LLMClient is the LLM client used by the judge evaluator (required for evaluators).
 	// Satisfied by both *llm.Client and *llm.FailoverClient.
-	LLMClient eval.LLMClient
+	LLMClient ares_eval.LLMClient
 
 	// FlightRecorder is the diagnostics recorder (required for evolution system).
 	FlightRecorder *flight.FlightRecorder
@@ -923,7 +923,7 @@ func NewExperienceLocator(
 func WireAllEvolutionComponents(
 	ctx context.Context,
 	deps *WireDependencies,
-	cfg *config.EvolutionConfig, // <-- 新增：可以是 nil（向后兼容）
+	cfg *ares_config.EvolutionConfig, // <-- 新增：可以是 nil（向后兼容）
 ) (*WiredComponents, error) {
 	result := &WiredComponents{}
 
@@ -934,7 +934,7 @@ func WireAllEvolutionComponents(
 	result.FeedbackSvc = SetupFeedbackService(deps.ExpRepo)
 
 	// Step 3: Create evaluator registry and register built-in evaluators.
-	result.EvalRegistry = eval.NewEvaluatorRegistry()
+	result.EvalRegistry = ares_eval.NewEvaluatorRegistry()
 	if deps.LLMClient != nil {
 		if err := SetupEvaluators(deps.LLMClient, result.EvalRegistry); err != nil {
 			return nil, fmt.Errorf("setup evaluators: %w", err)
@@ -986,14 +986,14 @@ func WireAllEvolutionComponents(
 			return nil, fmt.Errorf("setup evolution: %w", err)
 		}
 		result.Evolution = evolutionComps
-		slog.InfoContext(ctx, "bootstrap: evolution system initialized (config-enabled)",
+		slog.InfoContext(ctx, "bootstrap: evolution system initialized (ares_config-enabled)",
 			"population_size", cfg.PopulationSize,
 			"generations", cfg.Generations,
 		)
 	} else {
 		reason := "disabled"
 		if cfg == nil {
-			reason = "no config provided"
+			reason = "no ares_config provided"
 		}
 		slog.InfoContext(ctx, "bootstrap: wire evolution skipped",
 			"reason", reason,

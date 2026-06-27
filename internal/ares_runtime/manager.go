@@ -12,8 +12,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/ctxutil"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // managedAgent holds an agent and its lifecycle metadata.
@@ -37,7 +37,7 @@ type Manager struct {
 	mu            sync.RWMutex
 	agents        map[string]*managedAgent
 	factories     map[string]AgentFactory
-	eventStore    events.EventStore
+	eventStore    ares_events.EventStore
 	memManager    memory.MemoryManager
 	snapshotStore base.SnapshotStore
 	g             *errgroup.Group
@@ -61,14 +61,14 @@ type Manager struct {
 // Returns:
 //
 //	manager - the runtime manager.
-func New(config *Config, eventStore events.EventStore, memManager memory.MemoryManager) *Manager {
+func New(config *Config, eventStore ares_events.EventStore, memManager memory.MemoryManager) *Manager {
 	if config == nil {
 		config = DefaultConfig()
 	}
 	// Initialize errgroup with a labeled detached context so that m.g.Go() never
 	// panics even if called before Start(). Start() will re-initialize with
 	// the caller's context.
-	g, gctx := errgroup.WithContext(ctxutil.WithDetachedLabel("runtime:pre-start"))
+	g, gctx := errgroup.WithContext(ares_ctxutil.WithDetachedLabel("runtime:pre-start"))
 	return &Manager{
 		agents:     make(map[string]*managedAgent),
 		factories:  make(map[string]AgentFactory),
@@ -162,7 +162,7 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 
 	m.launchAgentGoroutine(agentCtx, id, agent)
 
-	m.emitEvent(ctx, id, events.EventAgentStarted, map[string]any{
+	m.emitEvent(ctx, id, ares_events.EventAgentStarted, map[string]any{
 		"agent_id": id,
 		"type":     string(agent.Type()),
 	})
@@ -201,7 +201,7 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 		}
 	}
 
-	m.emitEvent(ctx, agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctx, agentID, ares_events.EventAgentStopped, map[string]any{
 		"agent_id": agentID,
 		"reason":   "explicit_stop",
 	})
@@ -211,9 +211,9 @@ func (m *Manager) StopAgent(ctx context.Context, agentID string) error {
 }
 
 // emitEvent appends a lifecycle event to the EventStore using the canonical
-// events.Emit helper. No-op if eventStore is nil.
-func (m *Manager) emitEvent(ctx context.Context, streamID string, eventType events.EventType, payload map[string]any) {
-	if !events.Emit(ctx, m.eventStore, streamID, eventType, payload) {
+// ares_events.Emit helper. No-op if eventStore is nil.
+func (m *Manager) emitEvent(ctx context.Context, streamID string, eventType ares_events.EventType, payload map[string]any) {
+	if !ares_events.Emit(ctx, m.eventStore, streamID, eventType, payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }
@@ -248,7 +248,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	prevRestarts := ma.restarts
 	m.mu.Unlock()
 
-	m.emitEvent(ctx, agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ctx, agentID, ares_events.EventAgentStopped, map[string]any{
 		"agent_id": agentID,
 		"reason":   "restart",
 	})
@@ -285,7 +285,7 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 
 	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
 
-	m.emitEvent(ctx, agentID, events.EventAgentStarted, map[string]any{
+	m.emitEvent(ctx, agentID, ares_events.EventAgentStarted, map[string]any{
 		"agent_id": agentID,
 		"type":     "restart",
 	})
@@ -294,13 +294,13 @@ func (m *Manager) RestartAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
-// RestoreAgent creates a new agent from factory, replays events, restores memory, and starts it.
+// RestoreAgent creates a new agent from factory, replays ares_events, restores memory, and starts it.
 func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory AgentFactory) error {
 	if factory == nil {
 		return ErrNilFactory
 	}
 
-	m.emitEvent(ctx, agentID, events.EventFailoverTriggered, map[string]any{
+	m.emitEvent(ctx, agentID, ares_events.EventFailoverTriggered, map[string]any{
 		"agent_id": agentID,
 	})
 
@@ -330,7 +330,7 @@ func (m *Manager) RestoreAgent(ctx context.Context, agentID string, factory Agen
 
 	m.launchAgentGoroutine(agentCtx, agentID, newAgent)
 
-	m.emitEvent(ctx, agentID, events.EventFailoverCompleted, map[string]any{
+	m.emitEvent(ctx, agentID, ares_events.EventFailoverCompleted, map[string]any{
 		"agent_id": agentID,
 		"type":     newAgent.Type(),
 	})
@@ -366,7 +366,7 @@ func (m *Manager) stopOldRestoredAgent(ctx context.Context, agentID string) (*ma
 	return oldMA, oldExists
 }
 
-// recoverAgentState creates a new agent from factory, replays events for operational
+// recoverAgentState creates a new agent from factory, replays ares_events for operational
 // recovery, and enriches state with memory context for cognitive recovery.
 func (m *Manager) recoverAgentState(ctx context.Context, agentID string, factory AgentFactory) (base.Agent, error) {
 	newAgent := factory()
@@ -478,7 +478,7 @@ func (m *Manager) NotifyAgentDead(agentID string, reason string) {
 		"agent_id", agentID, "reason", reason,
 	)
 
-	m.emitEvent(ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), agentID, events.EventAgentStopped, map[string]any{
+	m.emitEvent(ares_ctxutil.WithDetachedLabel("runtime:notify-agent-dead"), agentID, ares_events.EventAgentStopped, map[string]any{
 		"agent_id":     agentID,
 		"reason":       reason,
 		"auto_restore": true,
@@ -619,7 +619,7 @@ func (m *Manager) Stop() error {
 
 	// Stop all agents concurrently with an overall timeout.
 	// Use a detached context because m.gctx is already cancelled by m.cancel() above.
-	stopCtx, stopCancel := ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
+	stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("runtime:stop", m.config.OverallStopTimeout)
 	defer stopCancel()
 
 	// Capture final snapshots for stateful agents, then mark all as stopped.
@@ -710,43 +710,43 @@ func (m *Manager) Stats() RuntimeStats {
 		ActiveAgents:    active,
 		TotalRestarts:   m.totalRestarts,
 		Uptime:          uptime,
-		BackgroundTasks: ctxutil.BackgroundStats(),
+		BackgroundTasks: ares_ctxutil.BackgroundStats(),
 	}
 }
 
-// replayEvents reads events for the given agent stream from EventStore.
-// Limits the number of events to prevent unbounded memory usage.
+// replayEvents reads ares_events for the given agent stream from EventStore.
+// Limits the number of ares_events to prevent unbounded memory usage.
 // Returns nil if eventStore is nil or an error occurs.
 // Verifies event stream integrity; logs warnings on gaps or corruption.
-func (m *Manager) replayEvents(ctx context.Context, agentID string) []*events.Event {
+func (m *Manager) replayEvents(ctx context.Context, agentID string) []*ares_events.Event {
 	if m.eventStore == nil {
 		return nil
 	}
-	// Use agentID directly as stream ID — matches how agents emit events
+	// Use agentID directly as stream ID — matches how agents emit ares_events
 	// via emitEvent(ctx, eventType, payload) which uses a.id as stream ID.
 	streamID := agentID
 	limit := m.config.MaxReplayEvents
 	if limit <= 0 {
 		limit = 10000
 	}
-	evts, err := m.eventStore.Read(ctx, streamID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, err := m.eventStore.Read(ctx, streamID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     limit,
 	})
 	if err != nil {
-		slog.Warn("runtime: failed to read events for replay",
+		slog.Warn("runtime: failed to read ares_events for replay",
 			"agent_id", agentID, "error", err,
 		)
 		return nil
 	}
 
 	if len(evts) > 1 {
-		if err := events.VerifyStreamIntegrity(evts); err != nil {
+		if err := ares_events.VerifyStreamIntegrity(evts); err != nil {
 			slog.Error("runtime: event stream integrity check failed",
 				"agent_id", agentID,
 				"event_count", len(evts),
 				"error", err,
-				"hash", events.StreamHash(evts),
+				"hash", ares_events.StreamHash(evts),
 			)
 		}
 
@@ -760,10 +760,10 @@ func (m *Manager) replayEvents(ctx context.Context, agentID string) []*events.Ev
 					"last_replayed", lastVersion,
 					"stream_version", streamVersion,
 					"missing_events", streamVersion-lastVersion,
-					"hash", events.StreamHash(evts),
+					"hash", ares_events.StreamHash(evts),
 				)
 			}
-		} else if svErr != events.ErrStreamNotFound {
+		} else if svErr != ares_events.ErrStreamNotFound {
 			slog.Warn("runtime: failed to check stream version",
 				"agent_id", agentID, "error", svErr,
 			)
@@ -773,16 +773,16 @@ func (m *Manager) replayEvents(ctx context.Context, agentID string) []*events.Ev
 	return evts
 }
 
-// buildStateFromEvents constructs a state map from events for RestoreState.
-// Currently extracts session_id from EventSessionCreated events.
-func buildStateFromEvents(evts []*events.Event) map[string]any {
+// buildStateFromEvents constructs a state map from ares_events for RestoreState.
+// Currently extracts session_id from EventSessionCreated ares_events.
+func buildStateFromEvents(evts []*ares_events.Event) map[string]any {
 	state := make(map[string]any)
 	for _, ev := range evts {
 		if ev == nil {
 			continue
 		}
 		switch ev.Type {
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				state["session_id"] = sid
 			}
@@ -805,7 +805,7 @@ func buildStateFromEvents(evts []*events.Event) map[string]any {
 //
 //	ctx - context for memory operations.
 //	agentID - the agent being restored.
-//	operationalState - state built from events; used to find session_id if present.
+//	operationalState - state built from ares_events; used to find session_id if present.
 //
 //	Returns:
 //
@@ -816,7 +816,7 @@ func (m *Manager) buildCognitiveState(ctx context.Context, agentID string, opera
 	// Try to find session_id from operational state first, then from memory manager.
 	sessionID, _ := operationalState["session_id"].(string)
 	if sessionID == "" {
-		// No session from events; try the memory manager checkpoint.
+		// No session from ares_events; try the memory manager checkpoint.
 		// Use a bounded timeout to prevent hanging on slow DB.
 		sessionCtx, sessionCancel := context.WithTimeout(ctx, 5*time.Second)
 		sid, err := m.memManager.GetLatestSessionForLeader(sessionCtx, agentID)

@@ -6,31 +6,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func writeTestEvents(t *testing.T, path string) {
 	t.Helper()
 
 	now := time.Now()
-	evts := []events.Event{
-		{ID: "e1", StreamID: "task-1", Type: events.EventAgentStarted, Timestamp: now, Payload: map[string]any{"type": "leader"}},
+	evts := []ares_events.Event{
+		{ID: "e1", StreamID: "task-1", Type: ares_events.EventAgentStarted, Timestamp: now, Payload: map[string]any{"type": "leader"}},
 		{ID: "e2", StreamID: "task-1", Type: "tool.call", Timestamp: now.Add(time.Second), Payload: map[string]any{"tool": "search"}},
 		{ID: "e3", StreamID: "task-1", Type: "tool.result", Timestamp: now.Add(2 * time.Second), Payload: map[string]any{"result": "ok"}},
-		{ID: "e4", StreamID: "task-1", Type: events.EventAgentStopped, Timestamp: now.Add(3 * time.Second)},
+		{ID: "e4", StreamID: "task-1", Type: ares_events.EventAgentStopped, Timestamp: now.Add(3 * time.Second)},
 	}
 
 	data, err := json.Marshal(evts)
 	if err != nil {
-		t.Fatalf("marshal events: %v", err)
+		t.Fatalf("marshal ares_events: %v", err)
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatalf("write events: %v", err)
+		t.Fatalf("write ares_events: %v", err)
 	}
 }
 
 func TestRunInspectText(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runInspect([]string{"task-1", "--input", path, "--format", "text"})
@@ -40,7 +40,7 @@ func TestRunInspectText(t *testing.T) {
 }
 
 func TestRunInspectMermaid(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runInspect([]string{"task-1", "--input", path, "--format", "mermaid"})
@@ -50,7 +50,7 @@ func TestRunInspectMermaid(t *testing.T) {
 }
 
 func TestRunInspectJSON(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runInspect([]string{"task-1", "--input", path, "--format", "json"})
@@ -60,7 +60,7 @@ func TestRunInspectJSON(t *testing.T) {
 }
 
 func TestRunInspectDOT(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runInspect([]string{"task-1", "--input", path, "--format", "dot"})
@@ -84,7 +84,7 @@ func TestRunInspectNoTaskID(t *testing.T) {
 }
 
 func TestRunReplayAll(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runReplay([]string{"task-1", "--input", path})
@@ -94,7 +94,7 @@ func TestRunReplayAll(t *testing.T) {
 }
 
 func TestRunReplayStep(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runReplay([]string{"task-1", "--input", path, "--step", "2"})
@@ -104,7 +104,7 @@ func TestRunReplayStep(t *testing.T) {
 }
 
 func TestRunReplayStepOutOfRange(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	err := runReplay([]string{"task-1", "--input", path, "--step", "999"})
@@ -119,12 +119,12 @@ func TestRunReplayNoEvents(t *testing.T) {
 
 	err := runReplay([]string{"task-1", "--input", path})
 	if err == nil {
-		t.Error("expected error for no events")
+		t.Error("expected error for no ares_events")
 	}
 }
 
 func TestLoadEvents(t *testing.T) {
-	path := t.TempDir() + "/events.json"
+	path := t.TempDir() + "/ares_events.json"
 	writeTestEvents(t, path)
 
 	evts, err := loadEvents(path)
@@ -132,7 +132,7 @@ func TestLoadEvents(t *testing.T) {
 		t.Fatalf("loadEvents error: %v", err)
 	}
 	if len(evts) != 4 {
-		t.Errorf("expected 4 events, got %d", len(evts))
+		t.Errorf("expected 4 ares_events, got %d", len(evts))
 	}
 }
 
@@ -217,7 +217,7 @@ func TestMapEventType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := mapEventType(events.EventType(tt.input))
+			got := mapEventType(ares_events.EventType(tt.input))
 			if string(got) != tt.want {
 				t.Errorf("mapEventType(%s) = %s, want %s", tt.input, got, tt.want)
 			}

@@ -10,7 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 )
 
 // WiredEvolutionSystem holds a fully wired autonomous evolution system.
@@ -28,7 +28,7 @@ type WiredEvolutionSystem struct {
 	TieredScorer          *scoring.TieredScorer
 	Budget                *scoring.Budget
 	ScoreCache            *scoring.ScoreCache
-	Metrics               *observability.PrometheusMetrics
+	Metrics               *ares_observability.PrometheusMetrics
 }
 
 // ScoringConfig groups scorer pipeline settings.
@@ -82,7 +82,7 @@ type SchedulerConfig struct {
 type DependencyConfig struct {
 	StrategyStore        StrategyStore                    `json:"-"`
 	Guardrails           *EvolutionGuardrails             `json:"-"`
-	Metrics              *observability.PrometheusMetrics `json:"-"`
+	Metrics              *ares_observability.PrometheusMetrics `json:"-"`
 	FeedbackService      *aresExperience.FeedbackService  `json:"-"`
 	RollbackPolicyConfig RollbackPolicyConfig             `json:"rollback_policy,omitempty"`
 	ShadowEvalConfig     ShadowEvaluationConfig           `json:"shadow_eval_config,omitempty"`

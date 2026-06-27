@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // ReplayStep represents a single step in a task replay.
@@ -28,46 +28,46 @@ type ReplaySummary struct {
 	LastEvent  time.Time     `json:"last_event"`
 }
 
-// ReplaySession allows step-by-step replay of a task's events.
+// ReplaySession allows step-by-step replay of a task's ares_events.
 type ReplaySession struct {
 	taskID     string
-	events     []*events.Event
+	ares_events     []*ares_events.Event
 	currentIdx int
 }
 
-// NewReplaySession creates a replay session by loading all events for a task.
-func NewReplaySession(ctx context.Context, eventStore events.EventStore, taskID string) (*ReplaySession, error) {
+// NewReplaySession creates a replay session by loading all ares_events for a task.
+func NewReplaySession(ctx context.Context, eventStore ares_events.EventStore, taskID string) (*ReplaySession, error) {
 	if eventStore == nil {
 		return nil, fmt.Errorf("event store is nil")
 	}
 
-	evts, err := eventStore.Read(ctx, taskID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, err := eventStore.Read(ctx, taskID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     10000,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read events for task %s: %w", taskID, err)
+		return nil, fmt.Errorf("read ares_events for task %s: %w", taskID, err)
 	}
 
 	if len(evts) == 0 {
-		return nil, fmt.Errorf("no events found for task %s", taskID)
+		return nil, fmt.Errorf("no ares_events found for task %s", taskID)
 	}
 
 	return &ReplaySession{
 		taskID:     taskID,
-		events:     evts,
+		ares_events:     evts,
 		currentIdx: -1,
 	}, nil
 }
 
-// TotalSteps returns the total number of events.
+// TotalSteps returns the total number of ares_events.
 func (s *ReplaySession) TotalSteps() int {
-	return len(s.events)
+	return len(s.ares_events)
 }
 
 // Step advances to the next event and returns it.
 func (s *ReplaySession) Step() (*ReplayStep, error) {
-	if s.currentIdx >= len(s.events)-1 {
+	if s.currentIdx >= len(s.ares_events)-1 {
 		return nil, fmt.Errorf("no more steps")
 	}
 	s.currentIdx++
@@ -76,8 +76,8 @@ func (s *ReplaySession) Step() (*ReplayStep, error) {
 
 // StepTo jumps to a specific step number (0-indexed).
 func (s *ReplaySession) StepTo(n int) (*ReplayStep, error) {
-	if n < 0 || n >= len(s.events) {
-		return nil, fmt.Errorf("step %d out of range [0, %d)", n, len(s.events))
+	if n < 0 || n >= len(s.ares_events) {
+		return nil, fmt.Errorf("step %d out of range [0, %d)", n, len(s.ares_events))
 	}
 	s.currentIdx = n
 	return s.currentStep(), nil
@@ -85,7 +85,7 @@ func (s *ReplaySession) StepTo(n int) (*ReplayStep, error) {
 
 // Current returns the current step without advancing.
 func (s *ReplaySession) Current() *ReplayStep {
-	if s.currentIdx < 0 || s.currentIdx >= len(s.events) {
+	if s.currentIdx < 0 || s.currentIdx >= len(s.ares_events) {
 		return nil
 	}
 	return s.currentStep()
@@ -96,7 +96,7 @@ func (s *ReplaySession) Summary() ReplaySummary {
 	agentSet := make(map[string]struct{})
 	typeSet := make(map[string]struct{})
 
-	for _, e := range s.events {
+	for _, e := range s.ares_events {
 		agentSet[e.StreamID] = struct{}{}
 		typeSet[string(e.Type)] = struct{}{}
 	}
@@ -112,24 +112,24 @@ func (s *ReplaySession) Summary() ReplaySummary {
 	}
 
 	var duration time.Duration
-	if len(s.events) > 1 {
-		duration = s.events[len(s.events)-1].Timestamp.Sub(s.events[0].Timestamp)
+	if len(s.ares_events) > 1 {
+		duration = s.ares_events[len(s.ares_events)-1].Timestamp.Sub(s.ares_events[0].Timestamp)
 	}
 
 	return ReplaySummary{
 		TaskID:     s.taskID,
-		TotalSteps: len(s.events),
+		TotalSteps: len(s.ares_events),
 		Duration:   duration,
 		Agents:     agents,
 		EventTypes: types,
-		FirstEvent: s.events[0].Timestamp,
-		LastEvent:  s.events[len(s.events)-1].Timestamp,
+		FirstEvent: s.ares_events[0].Timestamp,
+		LastEvent:  s.ares_events[len(s.ares_events)-1].Timestamp,
 	}
 }
 
 // IsFinished returns true if all steps have been replayed.
 func (s *ReplaySession) IsFinished() bool {
-	return s.currentIdx >= len(s.events)-1
+	return s.currentIdx >= len(s.ares_events)-1
 }
 
 // Reset moves back to the beginning.
@@ -138,7 +138,7 @@ func (s *ReplaySession) Reset() {
 }
 
 func (s *ReplaySession) currentStep() *ReplayStep {
-	evt := s.events[s.currentIdx]
+	evt := s.ares_events[s.currentIdx]
 	return &ReplayStep{
 		StepNum:   s.currentIdx,
 		EventType: string(evt.Type),

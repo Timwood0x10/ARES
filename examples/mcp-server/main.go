@@ -1,7 +1,7 @@
-// Command mcp-server provides an example MCP server demonstrating
+// Command ares_mcp-server provides an example MCP server demonstrating
 // tool, resource, and prompt registration with ares MCP SDK.
 //
-// Usage: mcp-server serve
+// Usage: ares_mcp-server serve
 package main
 
 import (
@@ -13,21 +13,21 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 
 	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintf(os.Stderr, "Usage: mcp-server serve\n")
+		fmt.Fprintf(os.Stderr, "Usage: ares_mcp-server serve\n")
 		os.Exit(1)
 	}
 
 	// Create MCPServer with stdio transport.
-	server := mcp.NewMCPServer(
-		mcp.Implementation{Name: "example-server", Version: "1.0.0"},
-		mcp.NewStdioServerTransport(),
+	server := ares_mcp.NewMCPServer(
+		ares_mcp.Implementation{Name: "example-server", Version: "1.0.0"},
+		ares_mcp.NewStdioServerTransport(),
 	)
 
 	// Register calculator tool.
@@ -42,7 +42,7 @@ func main() {
 	}`)
 
 	err := server.RegisterTool("calculator", "Performs basic arithmetic operations", calculatorSchema,
-		func(ctx context.Context, args map[string]any) (*mcp.ToolCallResult, error) {
+		func(ctx context.Context, args map[string]any) (*ares_mcp.ToolCallResult, error) {
 			a, _ := args["a"].(float64)
 			b, _ := args["b"].(float64)
 			op, _ := args["op"].(string)
@@ -57,8 +57,8 @@ func main() {
 				result = a * b
 			case "div":
 				if b == 0 {
-					return &mcp.ToolCallResult{
-						Content: []mcp.ContentBlock{
+					return &ares_mcp.ToolCallResult{
+						Content: []ares_mcp.ContentBlock{
 							{Type: "text", Text: "division by zero"},
 						},
 						IsError: true,
@@ -66,16 +66,16 @@ func main() {
 				}
 				result = a / b
 			default:
-				return &mcp.ToolCallResult{
-					Content: []mcp.ContentBlock{
+				return &ares_mcp.ToolCallResult{
+					Content: []ares_mcp.ContentBlock{
 						{Type: "text", Text: fmt.Sprintf("unknown operation: %s", op)},
 					},
 					IsError: true,
 				}, nil
 			}
 
-			return &mcp.ToolCallResult{
-				Content: []mcp.ContentBlock{
+			return &ares_mcp.ToolCallResult{
+				Content: []ares_mcp.ContentBlock{
 					{Type: "text", Text: fmt.Sprintf("result: %v", result)},
 				},
 			}, nil
@@ -95,10 +95,10 @@ func main() {
 	}`)
 
 	err = server.RegisterTool("echo", "Echoes back the input message", echoSchema,
-		func(ctx context.Context, args map[string]any) (*mcp.ToolCallResult, error) {
+		func(ctx context.Context, args map[string]any) (*ares_mcp.ToolCallResult, error) {
 			msg, _ := args["message"].(string)
-			return &mcp.ToolCallResult{
-				Content: []mcp.ContentBlock{
+			return &ares_mcp.ToolCallResult{
+				Content: []ares_mcp.ContentBlock{
 					{Type: "text", Text: msg},
 				},
 			}, nil
@@ -118,11 +118,11 @@ func main() {
 	}`)
 
 	err = server.RegisterTool("get_weather", "Gets mock weather data for a city", weatherSchema,
-		func(ctx context.Context, args map[string]any) (*mcp.ToolCallResult, error) {
+		func(ctx context.Context, args map[string]any) (*ares_mcp.ToolCallResult, error) {
 			city, _ := args["city"].(string)
 			weatherData := fmt.Sprintf(`{"city": "%s", "temperature": 22, "condition": "sunny", "humidity": 45}`, city)
-			return &mcp.ToolCallResult{
-				Content: []mcp.ContentBlock{
+			return &ares_mcp.ToolCallResult{
+				Content: []ares_mcp.ContentBlock{
 					{Type: "text", Text: weatherData},
 				},
 			}, nil
@@ -134,9 +134,9 @@ func main() {
 
 	// Register resource.
 	err = server.RegisterResource("weather://current", "Current weather data", "application/json",
-		func(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
-			return &mcp.ReadResourceResult{
-				Contents: []mcp.ResourceContent{
+		func(ctx context.Context, uri string) (*ares_mcp.ReadResourceResult, error) {
+			return &ares_mcp.ReadResourceResult{
+				Contents: []ares_mcp.ResourceContent{
 					{
 						URI:      uri,
 						MimeType: "application/json",
@@ -152,17 +152,17 @@ func main() {
 
 	// Register prompt.
 	err = server.RegisterPrompt("summarize", "Summarizes a topic",
-		[]mcp.PromptArgument{
+		[]ares_mcp.PromptArgument{
 			{Name: "topic", Description: "The topic to summarize", Required: true},
 		},
-		func(ctx context.Context, args map[string]string) (*mcp.GetPromptResult, error) {
+		func(ctx context.Context, args map[string]string) (*ares_mcp.GetPromptResult, error) {
 			topic, ok := args["topic"]
 			if !ok {
 				topic = "unknown topic"
 			}
-			return &mcp.GetPromptResult{
+			return &ares_mcp.GetPromptResult{
 				Description: fmt.Sprintf("Summary of %s", topic),
-				Messages: []mcp.PromptMessage{
+				Messages: []ares_mcp.PromptMessage{
 					{Role: "user", Content: fmt.Sprintf("Please summarize: %s", topic)},
 				},
 			}, nil
@@ -183,7 +183,7 @@ func main() {
 	sigEg.Go(func() error {
 		select {
 		case <-sigCh:
-			slog.Info("mcp-server: shutting down...")
+			slog.Info("ares_mcp-server: shutting down...")
 			cancel()
 			return nil
 		case <-sigCtx.Done():
@@ -193,7 +193,7 @@ func main() {
 
 	// Start serving.
 	if err := server.Serve(ctx); err != nil {
-		slog.Error("mcp-server: serve error", "error", err)
+		slog.Error("ares_mcp-server: serve error", "error", err)
 		os.Exit(1)
 	}
 	_ = sigEg.Wait() // Clean up signal goroutine

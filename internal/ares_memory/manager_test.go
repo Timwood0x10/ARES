@@ -12,7 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
@@ -713,19 +713,19 @@ func TestMemoryManager_SetEventStore(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	mgr.SetEventStore(store, "test-stream")
 
-	// Verify the event store is set by checking that events are emitted.
+	// Verify the event store is set by checking that ares_events are emitted.
 	ctx := context.Background()
 	sessionID, err := mgr.CreateSession(ctx, "user1")
 	require.NoError(t, err)
 	require.NotEmpty(t, sessionID)
 
-	evts, err := store.Read(ctx, "test-stream", events.ReadOptions{})
+	evts, err := store.Read(ctx, "test-stream", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	require.Len(t, evts, 1)
-	require.Equal(t, events.EventSessionCreated, evts[0].Type)
+	require.Equal(t, ares_events.EventSessionCreated, evts[0].Type)
 	require.Equal(t, sessionID, evts[0].Payload["session_id"])
 	require.Equal(t, "user1", evts[0].Payload["user_id"])
 }
@@ -737,17 +737,17 @@ func TestMemoryManager_EmitEvent_CreateSession(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	mgr.SetEventStore(store, "test-stream")
 
 	ctx := context.Background()
 	sessionID, err := mgr.CreateSession(ctx, "user1")
 	require.NoError(t, err)
 
-	evts, err := store.Read(ctx, "test-stream", events.ReadOptions{})
+	evts, err := store.Read(ctx, "test-stream", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	require.Len(t, evts, 1)
-	require.Equal(t, events.EventSessionCreated, evts[0].Type)
+	require.Equal(t, ares_events.EventSessionCreated, evts[0].Type)
 	require.Equal(t, sessionID, evts[0].Payload["session_id"])
 	require.Equal(t, "user1", evts[0].Payload["user_id"])
 }
@@ -759,7 +759,7 @@ func TestMemoryManager_EmitEvent_AddMessage(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	mgr.SetEventStore(store, "test-stream")
 
 	ctx := context.Background()
@@ -769,11 +769,11 @@ func TestMemoryManager_EmitEvent_AddMessage(t *testing.T) {
 	err = mgr.AddMessage(ctx, sessionID, "user", "Hello")
 	require.NoError(t, err)
 
-	evts, err := store.Read(ctx, "test-stream", events.ReadOptions{})
+	evts, err := store.Read(ctx, "test-stream", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	require.Len(t, evts, 2) // session.created + message.added
-	require.Equal(t, events.EventSessionCreated, evts[0].Type)
-	require.Equal(t, events.EventMessageAdded, evts[1].Type)
+	require.Equal(t, ares_events.EventSessionCreated, evts[0].Type)
+	require.Equal(t, ares_events.EventMessageAdded, evts[1].Type)
 	require.Equal(t, sessionID, evts[1].Payload["session_id"])
 	require.Equal(t, "user", evts[1].Payload["role"])
 }
@@ -785,7 +785,7 @@ func TestMemoryManager_EmitEvent_DistillTask(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	mgr.SetEventStore(store, "test-stream")
 
 	ctx := context.Background()
@@ -801,13 +801,13 @@ func TestMemoryManager_EmitEvent_DistillTask(t *testing.T) {
 	_, err = mgr.DistillTask(ctx, taskID)
 	require.NoError(t, err)
 
-	evts, err := store.Read(ctx, "test-stream", events.ReadOptions{})
+	evts, err := store.Read(ctx, "test-stream", ares_events.ReadOptions{})
 	require.NoError(t, err)
 
 	// Find the memory.distilled event.
-	var distilledEvt *events.Event
+	var distilledEvt *ares_events.Event
 	for _, e := range evts {
-		if e.Type == events.EventMemoryDistilled {
+		if e.Type == ares_events.EventMemoryDistilled {
 			distilledEvt = e
 			break
 		}
@@ -824,7 +824,7 @@ func TestMemoryManager_EmitEvent_StoreDistilledTask(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = mgr.Stop(context.Background()) }()
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	mgr.SetEventStore(store, "test-stream")
 
 	ctx := context.Background()
@@ -846,13 +846,13 @@ func TestMemoryManager_EmitEvent_StoreDistilledTask(t *testing.T) {
 	err = mgr.StoreDistilledTask(ctx, taskID, distilled)
 	require.NoError(t, err)
 
-	evts, err := store.Read(ctx, "test-stream", events.ReadOptions{})
+	evts, err := store.Read(ctx, "test-stream", ares_events.ReadOptions{})
 	require.NoError(t, err)
 
 	// Find the memory.distilled event from store.
-	var storeEvt *events.Event
+	var storeEvt *ares_events.Event
 	for _, e := range evts {
-		if e.Type == events.EventMemoryDistilled {
+		if e.Type == ares_events.EventMemoryDistilled {
 			storeEvt = e
 			break
 		}

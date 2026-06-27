@@ -32,11 +32,11 @@ import (
 	"github.com/Timwood0x10/ares/api/marketmaking"
 	"github.com/Timwood0x10/ares/examples/quant-trading/agents"
 	"github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/quant"
-	"github.com/Timwood0x10/ares/internal/quant/dataflow"
-	"github.com/Timwood0x10/ares/internal/quant/market"
-	"github.com/Timwood0x10/ares/internal/quant/research"
-	researchagents "github.com/Timwood0x10/ares/internal/quant/research/agents"
+	"github.com/Timwood0x10/ares/internal/ares_quant"
+	"github.com/Timwood0x10/ares/internal/ares_quant/dataflow"
+	"github.com/Timwood0x10/ares/internal/ares_quant/market"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
+	researchagents "github.com/Timwood0x10/ares/internal/ares_quant/research/agents"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 
 	"gopkg.in/yaml.v3"
@@ -164,7 +164,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	defer svc.Wait()
 
 	reg := core.NewRegistry()
-	if err := quant.RegisterTools(reg); err != nil {
+	if err := ares_quant.RegisterTools(reg); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 

@@ -14,7 +14,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -117,7 +117,7 @@ func newRuntimeStack(executionID string) *runtimeStack {
 		WithCollector(collector).
 		WithFlushInterval(1)
 
-	observer := runtime.NewObserverPlugin("observer", events.NewMemoryEventStore())
+	observer := runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
 
 	tool := runtime.NewToolPlugin("tool").
 		WithCollector(collector)

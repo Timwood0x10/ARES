@@ -17,7 +17,7 @@ import (
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
@@ -757,24 +757,24 @@ func (d *Distiller) ResetMetrics() {
 }
 
 // SubscribeAndDistill subscribes to an EventStore and automatically
-// distills memories from incoming events.
+// distills memories from incoming ares_events.
 //
 // Args:
 //
 //	ctx - operation context. Cancelling it closes the subscription.
 //	store - the event store to subscribe to. If nil, this method is a no-op.
-func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventStore) {
+func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.EventStore) {
 	if store == nil {
 		return
 	}
-	ch, err := store.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{
-			events.EventMessageAdded,
-			events.EventTaskCompleted,
+	ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			ares_events.EventMessageAdded,
+			ares_events.EventTaskCompleted,
 		},
 	})
 	if err != nil {
-		slog.Error("failed to subscribe to events for distillation", "error", err)
+		slog.Error("failed to subscribe to ares_events for distillation", "error", err)
 		return
 	}
 
@@ -806,17 +806,17 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventS
 //
 //	ctx - operation context.
 //	event - the event to process. If nil, this method is a no-op.
-func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
+func (d *Distiller) processEvent(ctx context.Context, event *ares_events.Event) {
 	if event == nil {
 		return
 	}
 	switch event.Type {
-	case events.EventMessageAdded:
+	case ares_events.EventMessageAdded:
 		slog.Debug("distiller received message event",
 			"stream_id", event.StreamID,
 			"role", event.Payload["role"],
 		)
-	case events.EventTaskCompleted:
+	case ares_events.EventTaskCompleted:
 		taskID, _ := event.Payload["task_id"].(string)
 		slog.Debug("distiller received task completion",
 			"stream_id", event.StreamID,

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -561,8 +561,8 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 	var gotEvents []string
 	subCtx, subCancel := context.WithCancel(context.Background())
 	defer subCancel()
-	sub, err := bus.Subscribe(subCtx, events.EventFilter{
-		Types: []events.EventType{
+	sub, err := bus.Subscribe(subCtx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
 			runtime.EventWorkflowStarted,
 			runtime.EventWorkflowCompleted,
 			runtime.EventStepStarted,

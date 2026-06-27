@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // EventStore is the subset of event store capabilities needed by the arena.
 type EventStore interface {
-	Append(ctx context.Context, streamID string, events []*events.Event, expectedVersion int64) error
+	Append(ctx context.Context, streamID string, ares_events []*ares_events.Event, expectedVersion int64) error
 	StreamVersion(ctx context.Context, streamID string) (int64, error)
-	Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error)
+	Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error)
 }
 
 const (
@@ -22,7 +22,7 @@ const (
 	arenaStreamID = "arena"
 )
 
-// Service orchestrates chaos actions, records results, and emits events.
+// Service orchestrates chaos actions, records results, and emits ares_events.
 type Service struct {
 	injector *Injector
 	store    EventStore
@@ -201,13 +201,13 @@ func (s *Service) Reset() {
 	s.metrics.Reset()
 }
 
-// Subscribe returns a channel of arena events from the event store.
+// Subscribe returns a channel of arena ares_events from the event store.
 // Returns nil channel if no event store is configured.
-func (s *Service) Subscribe(ctx context.Context) (<-chan *events.Event, error) {
+func (s *Service) Subscribe(ctx context.Context) (<-chan *ares_events.Event, error) {
 	if s.store == nil {
 		return nil, nil
 	}
-	ch, err := s.store.Subscribe(ctx, events.EventFilter{
+	ch, err := s.store.Subscribe(ctx, ares_events.EventFilter{
 		StreamIDs: []string{arenaStreamID},
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func (s *Service) Subscribe(ctx context.Context) (<-chan *events.Event, error) {
 	return ch, nil
 }
 
-// emitEvent publishes an arena event using the canonical events.Emit.
+// emitEvent publishes an arena event using the canonical ares_events.Emit.
 func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 	if s.store == nil {
 		return
@@ -227,7 +227,7 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		eventType = "arena.action.failed"
 	}
 
-	if !events.Emit(ctx, s.store, arenaStreamID, events.EventType(eventType), map[string]any{
+	if !ares_events.Emit(ctx, s.store, arenaStreamID, ares_events.EventType(eventType), map[string]any{
 		"action_id": action.ID,
 		"type":      string(action.Type),
 		"target_id": action.TargetID,

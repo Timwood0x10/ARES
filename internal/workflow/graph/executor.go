@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
@@ -186,7 +186,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 			// Record agent step start
 			if g.tracer != nil {
-				g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+				g.tracer.RecordAgentStep(ctx, &ares_observability.AgentStep{
 					TraceID:  g.tracer.GetTraceID(ctx),
 					AgentID:  nodeID,
 					StepName: "execute",
@@ -207,7 +207,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 				stepResult.Status = runtime.StepStatusFailed
 				stepResult.Error = execErr.Error()
 				if g.tracer != nil {
-					g.tracer.RecordError(ctx, &observability.AgentError{
+					g.tracer.RecordError(ctx, &ares_observability.AgentError{
 						TraceID:   g.tracer.GetTraceID(ctx),
 						AgentID:   nodeID,
 						ErrorType: "execution_error",
@@ -255,7 +255,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 			// Record agent step completion
 			if g.tracer != nil {
-				g.tracer.RecordAgentStep(ctx, &observability.AgentStep{
+				g.tracer.RecordAgentStep(ctx, &ares_observability.AgentStep{
 					TraceID:  g.tracer.GetTraceID(ctx),
 					AgentID:  nodeID,
 					StepName: "execute",
@@ -353,7 +353,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 	// Record execution trace
 	if g.tracer != nil {
-		g.tracer.RecordToolCall(ctx, &observability.ToolCall{
+		g.tracer.RecordToolCall(ctx, &ares_observability.ToolCall{
 			TraceID:  g.tracer.GetTraceID(ctx),
 			ToolName: g.id,
 			Input:    state.ToParams(),

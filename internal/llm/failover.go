@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 )
 
 // Default cooldown duration for rate-limited providers.
@@ -69,7 +69,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 
 		// Rate limiting only on the primary client.
 		if i == 0 && rate > 0 {
-			limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+			limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
 				Rate:  rate,
 				Burst: burst,
 			})
@@ -309,7 +309,7 @@ func (fc *FailoverClient) GetModel() string {
 }
 
 // SetTracer sets the tracer on all underlying clients.
-func (fc *FailoverClient) SetTracer(t observability.Tracer) {
+func (fc *FailoverClient) SetTracer(t ares_observability.Tracer) {
 	for _, c := range fc.clients {
 		c.SetTracer(t)
 	}

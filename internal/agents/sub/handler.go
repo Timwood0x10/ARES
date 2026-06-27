@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/Timwood0x10/ares/internal/core/errors"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // messageHandler handles incoming AHP messages.
@@ -39,7 +39,7 @@ func (h *messageHandler) Handle(ctx context.Context, msg *ahp.AHPMessage) error 
 
 func (h *messageHandler) handleTaskMessage(ctx context.Context, msg *ahp.AHPMessage) error {
 	// Task handling is done by executor
-	// This is for protocol-level message acknowledgment
+	// This is for ares_protocol-level message acknowledgment
 	return nil
 }
 

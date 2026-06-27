@@ -14,7 +14,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
@@ -826,7 +826,7 @@ func TestDynamicExecutor_ReplaceNodeChain(t *testing.T) {
 	assert.Equal(t, StepStatusCompleted, stepResults["step2"].Status, "downstream step should be completed")
 }
 
-// TestDynamicExecutor_RecoveryEvents verifies that recovery events are emitted
+// TestDynamicExecutor_RecoveryEvents verifies that recovery ares_events are emitted
 // in the correct order.
 func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	registry := NewAgentRegistry()
@@ -859,7 +859,7 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 				}, nil
 			},
 		}).
-		WithRecoveryEventSink(func(ctx context.Context, eventType events.EventType, payload map[string]any) {
+		WithRecoveryEventSink(func(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 			eventsMu.Lock()
 			emittedEvents = append(emittedEvents, string(eventType))
 			eventsMu.Unlock()
@@ -879,8 +879,8 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	dag, _ := NewMutableDAG([]*Step{step1})
 
 	workflow := &Workflow{
-		ID:    "wf-recovery-events",
-		Name:  "recovery events workflow",
+		ID:    "wf-recovery-ares_events",
+		Name:  "recovery ares_events workflow",
 		Steps: dag.Steps(),
 	}
 
@@ -891,9 +891,9 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	defer eventsMu.Unlock()
 
 	require.Len(t, emittedEvents, 3, "should emit step.failed, step.recovery.started, step.recovery.completed")
-	assert.Equal(t, string(events.EventStepFailed), emittedEvents[0])
-	assert.Equal(t, string(events.EventStepRecoveryStarted), emittedEvents[1])
-	assert.Equal(t, string(events.EventStepRecoveryCompleted), emittedEvents[2])
+	assert.Equal(t, string(ares_events.EventStepFailed), emittedEvents[0])
+	assert.Equal(t, string(ares_events.EventStepRecoveryStarted), emittedEvents[1])
+	assert.Equal(t, string(ares_events.EventStepRecoveryCompleted), emittedEvents[2])
 }
 
 // mockRecoveryHandler implements StepRecoveryHandler for testing.
@@ -1067,8 +1067,8 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, err := bus.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{runtime.EventRouteDecided},
+	eventCh, err := bus.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{runtime.EventRouteDecided},
 	})
 	require.NoError(t, err)
 

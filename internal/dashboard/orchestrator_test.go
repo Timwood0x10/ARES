@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // mockMCPExecutor implements MCPExecutor for testing.
@@ -374,7 +374,7 @@ func TestOrchestratorEventStoreGetter(t *testing.T) {
 		t.Error("expected nil event store before SetEventStore")
 	}
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
@@ -413,7 +413,7 @@ func TestOrchestratorResumeSkipsCompletedSteps(t *testing.T) {
 	llm := &mockLLMExecutor{response: "analysis"}
 	orch := NewOrchestrator(mcp, llm)
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
@@ -427,14 +427,14 @@ func TestOrchestratorResumeSkipsCompletedSteps(t *testing.T) {
 	prevID := "agent-prev"
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
-		evt := &events.Event{
+		evt := &ares_events.Event{
 			ID:        fmt.Sprintf("evt-step-%d", i+1),
 			StreamID:  prevID,
 			Type:      "mcp.step.completed",
 			Payload:   map[string]any{"step": i + 1, "tool": steps[i].Tool, "total": 3},
 			Timestamp: time.Now(),
 		}
-		if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+		if err := store.Append(ctx, prevID, []*ares_events.Event{evt}, 0); err != nil {
 			t.Fatalf("append event: %v", err)
 		}
 	}
@@ -477,7 +477,7 @@ func TestOrchestratorResumeSkipsNoStepsWhenNoneCompleted(t *testing.T) {
 	llm := &mockLLMExecutor{response: "analysis"}
 	orch := NewOrchestrator(mcp, llm)
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
@@ -486,17 +486,17 @@ func TestOrchestratorResumeSkipsNoStepsWhenNoneCompleted(t *testing.T) {
 		{Tool: "tool_b"},
 	}
 
-	// Previous agent has events but none are mcp.step.completed.
+	// Previous agent has ares_events but none are mcp.step.completed.
 	prevID := "agent-prev-empty"
 	ctx := context.Background()
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "evt-start",
 		StreamID:  prevID,
-		Type:      events.EventType("agent.started"),
+		Type:      ares_events.EventType("agent.started"),
 		Payload:   map[string]any{"name": "prev"},
 		Timestamp: time.Now(),
 	}
-	if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+	if err := store.Append(ctx, prevID, []*ares_events.Event{evt}, 0); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
 
@@ -574,7 +574,7 @@ func TestOrchestratorEmitsStepCompletedEvents(t *testing.T) {
 	llm := &mockLLMExecutor{response: "analysis"}
 	orch := NewOrchestrator(mcp, llm)
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
@@ -595,15 +595,15 @@ func TestOrchestratorEmitsStepCompletedEvents(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Read back events for this agent.
+	// Read back ares_events for this agent.
 	ctx := context.Background()
-	events, err := store.Read(ctx, id, events.ReadOptions{Direction: events.ReadAscending})
+	ares_events, err := store.Read(ctx, id, ares_events.ReadOptions{Direction: ares_events.ReadAscending})
 	if err != nil {
-		t.Fatalf("read events: %v", err)
+		t.Fatalf("read ares_events: %v", err)
 	}
 
 	stepEvents := 0
-	for _, evt := range events {
+	for _, evt := range ares_events {
 		if evt.Type == "mcp.step.completed" {
 			stepEvents++
 			tool, _ := evt.Payload["tool"].(string)
@@ -618,7 +618,7 @@ func TestOrchestratorEmitsStepCompletedEvents(t *testing.T) {
 	}
 
 	if stepEvents != 3 {
-		t.Errorf("expected 3 mcp.step.completed events, got %d", stepEvents)
+		t.Errorf("expected 3 mcp.step.completed ares_events, got %d", stepEvents)
 	}
 }
 
@@ -632,7 +632,7 @@ func TestOrchestratorResumePromptIncludesPreviousProgress(t *testing.T) {
 	llm := &capturePromptLLM{response: "analysis", prompt: &capturedPrompt}
 	orch := NewOrchestrator(mcp, llm)
 
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	t.Cleanup(func() { _ = store.Close })
 	orch.SetEventStore(store)
 
@@ -645,14 +645,14 @@ func TestOrchestratorResumePromptIncludesPreviousProgress(t *testing.T) {
 	// Simulate a previous agent that completed step 1.
 	prevID := "agent-prev-prompt"
 	ctx := context.Background()
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "evt-s1",
 		StreamID:  prevID,
 		Type:      "mcp.step.completed",
 		Payload:   map[string]any{"step": 1, "tool": "tool_a", "total": 3},
 		Timestamp: time.Now(),
 	}
-	if err := store.Append(ctx, prevID, []*events.Event{evt}, 0); err != nil {
+	if err := store.Append(ctx, prevID, []*ares_events.Event{evt}, 0); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
 

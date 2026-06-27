@@ -14,8 +14,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // mockAgent is a test double for base.Agent.
@@ -1130,7 +1130,7 @@ func TestReplayEvents_NilStore(t *testing.T) {
 }
 
 func TestReplayEvents_NoEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	health := newMockHealthChecker()
@@ -1138,17 +1138,17 @@ func TestReplayEvents_NoEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	state := sup.replayEvents(context.Background(), "agent-1")
-	assert.Nil(t, state, "replayEvents with no events should return nil")
+	assert.Nil(t, state, "replayEvents with no ares_events should return nil")
 }
 
 func TestReplayEvents_WithSessionCreatedEvent(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
-	err := store.Append(context.Background(), agentID, []*events.Event{
+	err := store.Append(context.Background(), agentID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-abc",
 				"user_id":    "user-1",
@@ -1167,19 +1167,19 @@ func TestReplayEvents_WithSessionCreatedEvent(t *testing.T) {
 }
 
 func TestReplayEvents_WithMultipleSessionEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
-	err := store.Append(context.Background(), agentID, []*events.Event{
+	err := store.Append(context.Background(), agentID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-old",
 			},
 		},
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-new",
 			},
@@ -1198,19 +1198,19 @@ func TestReplayEvents_WithMultipleSessionEvents(t *testing.T) {
 }
 
 func TestReplayEvents_WithNonSessionEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
-	err := store.Append(context.Background(), agentID, []*events.Event{
+	err := store.Append(context.Background(), agentID, []*ares_events.Event{
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id": "task-1",
 			},
 		},
 		{
-			Type: events.EventMessageAdded,
+			Type: ares_events.EventMessageAdded,
 			Payload: map[string]any{
 				"role": "user",
 			},
@@ -1223,41 +1223,41 @@ func TestReplayEvents_WithNonSessionEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	state := sup.replayEvents(context.Background(), agentID)
-	// Non-session events produce a state map without session_id.
+	// Non-session ares_events produce a state map without session_id.
 	require.NotNil(t, state)
 	_, hasSessionID := state["session_id"]
-	assert.False(t, hasSessionID, "non-session events should not set session_id")
+	assert.False(t, hasSessionID, "non-session ares_events should not set session_id")
 }
 
 func TestReplayEvents_FullScenario(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	agentID := "agent-1"
-	err := store.Append(context.Background(), agentID, []*events.Event{
+	err := store.Append(context.Background(), agentID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-1",
 				"user_id":    "user-1",
 			},
 		},
 		{
-			Type: events.EventMessageAdded,
+			Type: ares_events.EventMessageAdded,
 			Payload: map[string]any{
 				"session_id": "session-1",
 				"role":       "user",
 			},
 		},
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id":    "task-1",
 				"session_id": "session-1",
 			},
 		},
 		{
-			Type: events.EventTaskCompleted,
+			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
 				"task_id": "task-1",
 			},

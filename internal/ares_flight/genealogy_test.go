@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // ── Genealogy Tests ────────────────────────────
@@ -380,10 +380,10 @@ func TestGenealogyCollectorStartStop(t *testing.T) {
 func TestGenealogyCollectorProcessAgentStarted(t *testing.T) {
 	c := NewGenealogyCollector(nil)
 
-	c.processEvent(&events.Event{
+	c.processEvent(&ares_events.Event{
 		ID:        "e1",
 		StreamID:  "agent-1",
-		Type:      events.EventAgentStarted,
+		Type:      ares_events.EventAgentStarted,
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"type": "leader"},
 	})
@@ -405,14 +405,14 @@ func TestGenealogyCollectorProcessSpawn(t *testing.T) {
 	c := NewGenealogyCollector(nil)
 
 	// Parent starts.
-	c.processEvent(&events.Event{
-		StreamID: "parent", Type: events.EventAgentStarted,
+	c.processEvent(&ares_events.Event{
+		StreamID: "parent", Type: ares_events.EventAgentStarted,
 		Timestamp: time.Now(), Payload: map[string]any{"type": "leader"},
 	})
 
 	// Child starts with parent_id.
-	c.processEvent(&events.Event{
-		StreamID: "child", Type: events.EventAgentStarted,
+	c.processEvent(&ares_events.Event{
+		StreamID: "child", Type: ares_events.EventAgentStarted,
 		Timestamp: time.Now(), Payload: map[string]any{"type": "sub", "parent_id": "parent"},
 	})
 
@@ -429,12 +429,12 @@ func TestGenealogyCollectorProcessSpawn(t *testing.T) {
 func TestGenealogyCollectorProcessAgentStopped(t *testing.T) {
 	c := NewGenealogyCollector(nil)
 
-	c.processEvent(&events.Event{
-		StreamID: "a1", Type: events.EventAgentStarted,
+	c.processEvent(&ares_events.Event{
+		StreamID: "a1", Type: ares_events.EventAgentStarted,
 		Timestamp: time.Now(), Payload: map[string]any{"type": "sub"},
 	})
-	c.processEvent(&events.Event{
-		StreamID: "a1", Type: events.EventAgentStopped,
+	c.processEvent(&ares_events.Event{
+		StreamID: "a1", Type: ares_events.EventAgentStopped,
 		Timestamp: time.Now(),
 	})
 
@@ -447,20 +447,20 @@ func TestGenealogyCollectorProcessFailover(t *testing.T) {
 	c := NewGenealogyCollector(nil)
 
 	// Old agent starts.
-	c.processEvent(&events.Event{
-		StreamID: "old-agent", Type: events.EventAgentStarted,
+	c.processEvent(&ares_events.Event{
+		StreamID: "old-agent", Type: ares_events.EventAgentStarted,
 		Timestamp: time.Now(), Payload: map[string]any{"type": "leader"},
 	})
 
 	// Failover triggered.
-	c.processEvent(&events.Event{
-		StreamID: "old-agent", Type: events.EventFailoverTriggered,
+	c.processEvent(&ares_events.Event{
+		StreamID: "old-agent", Type: ares_events.EventFailoverTriggered,
 		Timestamp: time.Now(), Payload: map[string]any{"agent_id": "old-agent"},
 	})
 
 	// Failover completed with resurrection.
-	c.processEvent(&events.Event{
-		StreamID: "new-agent", Type: events.EventFailoverCompleted,
+	c.processEvent(&ares_events.Event{
+		StreamID: "new-agent", Type: ares_events.EventFailoverCompleted,
 		Timestamp: time.Now(), Payload: map[string]any{
 			"old_agent_id": "old-agent",
 			"new_agent_id": "new-agent",

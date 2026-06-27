@@ -17,7 +17,7 @@ import (
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func main() {
@@ -76,7 +76,7 @@ func separateArgs(args []string) (flags []string, positional []string) {
 func runInspect(args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	format := fs.String("format", "text", "Output format: text, mermaid, dot, json")
-	input := fs.String("input", "", "Path to JSON events file (default: stdin)")
+	input := fs.String("input", "", "Path to JSON ares_events file (default: stdin)")
 
 	flags, positional := separateArgs(args)
 	if err := fs.Parse(flags); err != nil {
@@ -90,22 +90,22 @@ func runInspect(args []string) error {
 
 	evts, err := loadEvents(*input)
 	if err != nil {
-		return fmt.Errorf("load events: %w", err)
+		return fmt.Errorf("load ares_events: %w", err)
 	}
 
 	if len(evts) == 0 {
-		return fmt.Errorf("no events found")
+		return fmt.Errorf("no ares_events found")
 	}
 
-	// Filter events by taskID (streamID).
-	var taskEvts []*events.Event
+	// Filter ares_events by taskID (streamID).
+	var taskEvts []*ares_events.Event
 	for _, e := range evts {
 		if e.StreamID == taskID {
 			taskEvts = append(taskEvts, e)
 		}
 	}
 	if len(taskEvts) == 0 {
-		return fmt.Errorf("no events found for task %s", taskID)
+		return fmt.Errorf("no ares_events found for task %s", taskID)
 	}
 
 	switch *format {
@@ -126,7 +126,7 @@ func runInspect(args []string) error {
 func runReplay(args []string) error {
 	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
 	step := fs.Int("step", -1, "Jump to a specific step (0-indexed)")
-	input := fs.String("input", "", "Path to JSON events file (default: stdin)")
+	input := fs.String("input", "", "Path to JSON ares_events file (default: stdin)")
 
 	flags, positional := separateArgs(args)
 	if err := fs.Parse(flags); err != nil {
@@ -140,23 +140,23 @@ func runReplay(args []string) error {
 
 	evts, err := loadEvents(*input)
 	if err != nil {
-		return fmt.Errorf("load events: %w", err)
+		return fmt.Errorf("load ares_events: %w", err)
 	}
 
-	// Load events into a memory store for the replay session.
-	store := events.NewMemoryEventStore()
+	// Load ares_events into a memory store for the replay session.
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
-	// Group events by streamID and append to the store.
-	streamEvents := make(map[string][]*events.Event)
+	// Group ares_events by streamID and append to the store.
+	streamEvents := make(map[string][]*ares_events.Event)
 	for _, e := range evts {
 		streamEvents[e.StreamID] = append(streamEvents[e.StreamID], e)
 	}
 	for streamID, sevts := range streamEvents {
 		if err := store.Append(ctx, streamID, sevts, 0); err != nil {
-			return fmt.Errorf("append events for stream %s: %w", streamID, err)
+			return fmt.Errorf("append ares_events for stream %s: %w", streamID, err)
 		}
 	}
 
@@ -180,7 +180,7 @@ func runReplay(args []string) error {
 		}
 		printReplayStep(rs)
 	} else {
-		// Step through all events.
+		// Step through all ares_events.
 		for {
 			rs, err := session.Step()
 			if err != nil {
@@ -193,8 +193,8 @@ func runReplay(args []string) error {
 	return nil
 }
 
-// loadEvents reads events from a file or stdin.
-func loadEvents(path string) ([]*events.Event, error) {
+// loadEvents reads ares_events from a file or stdin.
+func loadEvents(path string) ([]*ares_events.Event, error) {
 	var reader io.Reader
 
 	if path == "" {
@@ -217,16 +217,16 @@ func loadEvents(path string) ([]*events.Event, error) {
 		return nil, fmt.Errorf("input is empty")
 	}
 
-	var evts []*events.Event
+	var evts []*ares_events.Event
 	if err := json.Unmarshal(data, &evts); err != nil {
-		return nil, fmt.Errorf("parse JSON events: %w", err)
+		return nil, fmt.Errorf("parse JSON ares_events: %w", err)
 	}
 
 	return evts, nil
 }
 
 // inspectText prints a human-readable summary of the flight data.
-func inspectText(taskID string, evts []*events.Event) error {
+func inspectText(taskID string, evts []*ares_events.Event) error {
 	tl := flight.NewTimeline()
 	dl := flight.NewDecisionLog()
 	de := flight.NewDiagnosticsEngine()
@@ -242,7 +242,7 @@ func inspectText(taskID string, evts []*events.Event) error {
 		}
 		tl.Add(te)
 
-		// Collect decisions from decision events.
+		// Collect decisions from decision ares_events.
 		if e.Type == "decision" {
 			d := flight.Decision{
 				ID:        e.ID,
@@ -256,7 +256,7 @@ func inspectText(taskID string, evts []*events.Event) error {
 			dl.Add(d)
 		}
 
-		// Collect diagnostics from error events.
+		// Collect diagnostics from error ares_events.
 		if e.Type == "error" {
 			errMsg := stringOr(e.Payload, "error", "unknown error")
 			cat := flight.ClassifyError(errMsg)
@@ -322,21 +322,21 @@ func inspectText(taskID string, evts []*events.Event) error {
 }
 
 // inspectMermaid outputs the call graph as Mermaid.
-func inspectMermaid(evts []*events.Event) error {
+func inspectMermaid(evts []*ares_events.Event) error {
 	g := buildGraph(evts)
 	fmt.Println(g.ExportMermaid())
 	return nil
 }
 
 // inspectDOT outputs the call graph as DOT.
-func inspectDOT(evts []*events.Event) error {
+func inspectDOT(evts []*ares_events.Event) error {
 	g := buildGraph(evts)
 	fmt.Println(g.ExportDOT())
 	return nil
 }
 
 // inspectJSON outputs the full event data as JSON.
-func inspectJSON(evts []*events.Event) error {
+func inspectJSON(evts []*ares_events.Event) error {
 	data, err := json.MarshalIndent(evts, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
@@ -345,8 +345,8 @@ func inspectJSON(evts []*events.Event) error {
 	return nil
 }
 
-// buildGraph constructs a flight.Graph from events.
-func buildGraph(evts []*events.Event) *flight.Graph {
+// buildGraph constructs a flight.Graph from ares_events.
+func buildGraph(evts []*ares_events.Event) *flight.Graph {
 	g := flight.NewGraph()
 	hasRoot := false
 
@@ -375,7 +375,7 @@ func buildGraph(evts []*events.Event) *flight.Graph {
 		if parentID == "" && !hasRoot {
 			hasRoot = true
 		} else if parentID == "" {
-			// Subsequent parentless events attach to the root.
+			// Subsequent parentless ares_events attach to the root.
 			parentID = evts[0].ID
 		}
 
@@ -395,8 +395,8 @@ func buildGraph(evts []*events.Event) *flight.Graph {
 	return g
 }
 
-// mapEventType maps events.EventType to flight.EventType.
-func mapEventType(t events.EventType) flight.EventType {
+// mapEventType maps ares_events.EventType to flight.EventType.
+func mapEventType(t ares_events.EventType) flight.EventType {
 	switch t {
 	case "agent.started":
 		return flight.EventAgentStart
@@ -424,7 +424,7 @@ func mapEventType(t events.EventType) flight.EventType {
 }
 
 // eventName extracts a human-readable name from an event.
-func eventName(e *events.Event) string {
+func eventName(e *ares_events.Event) string {
 	if name, ok := e.Payload["name"].(string); ok && name != "" {
 		return name
 	}

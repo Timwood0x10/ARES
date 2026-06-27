@@ -10,7 +10,7 @@ import (
 
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -78,7 +78,7 @@ func (m *MockMemoryManager) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (m *MockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+func (m *MockMemoryManager) SetEventStore(store ares_events.EventStore, streamID string) {
 }
 
 func (m *MockMemoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg memory.Message) error {

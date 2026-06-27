@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // mockFlightRecorder implements FlightRecorder for testing.
@@ -53,16 +53,16 @@ func (m *mockDiagnosticsAccessor) Get(agentID string) *DiagnosticsReport {
 
 // mockEventStoreSubscriber implements EventStoreSubscriber for testing.
 type mockEventStoreSubscriber struct {
-	events []*events.Event
+	ares_events []*ares_events.Event
 	err    error
 }
 
-func (m *mockEventStoreSubscriber) Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error) {
+func (m *mockEventStoreSubscriber) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	ch := make(chan *events.Event, len(m.events))
-	for _, evt := range m.events {
+	ch := make(chan *ares_events.Event, len(m.ares_events))
+	for _, evt := range m.ares_events {
 		ch <- evt
 	}
 	close(ch)
@@ -145,7 +145,7 @@ func TestAdapterRun_SubscribeError(t *testing.T) {
 	}
 }
 
-// TestAdapterRun_ProcessesEvents tests that events are processed correctly.
+// TestAdapterRun_ProcessesEvents tests that ares_events are processed correctly.
 func TestAdapterRun_ProcessesEvents(t *testing.T) {
 	defer discardLogs()()
 	flight := newMockFlightRecorder()
@@ -168,11 +168,11 @@ func TestAdapterRun_ProcessesEvents(t *testing.T) {
 	})
 
 	// Set up event
-	flight.subscriber.events = []*events.Event{
+	flight.subscriber.ares_events = []*ares_events.Event{
 		{
 			ID:       "evt-1",
 			StreamID: "agent-1",
-			Type:     events.EventTaskFailed,
+			Type:     ares_events.EventTaskFailed,
 			Payload:  map[string]any{"task_id": "task-123"},
 		},
 	}
@@ -328,12 +328,12 @@ func TestSeverityToScore(t *testing.T) {
 func TestExtractTaskID(t *testing.T) {
 	tests := []struct {
 		name     string
-		event    *events.Event
+		event    *ares_events.Event
 		expected string
 	}{
 		{
 			name: "valid task ID",
-			event: &events.Event{
+			event: &ares_events.Event{
 				Payload: map[string]any{"task_id": "task-123"},
 			},
 			expected: "task-123",
@@ -345,14 +345,14 @@ func TestExtractTaskID(t *testing.T) {
 		},
 		{
 			name: "nil payload",
-			event: &events.Event{
+			event: &ares_events.Event{
 				Payload: nil,
 			},
 			expected: "",
 		},
 		{
 			name: "missing key",
-			event: &events.Event{
+			event: &ares_events.Event{
 				Payload: map[string]any{"other_key": "value"},
 			},
 			expected: "",
@@ -389,11 +389,11 @@ func TestAdapterRun_CreateError(t *testing.T) {
 		},
 	})
 
-	flight.subscriber.events = []*events.Event{
+	flight.subscriber.ares_events = []*ares_events.Event{
 		{
 			ID:       "evt-err",
 			StreamID: "agent-1",
-			Type:     events.EventTaskFailed,
+			Type:     ares_events.EventTaskFailed,
 			Payload:  map[string]any{"task_id": "task-err"},
 		},
 	}
@@ -408,11 +408,11 @@ func TestAdapterRun_CreateError(t *testing.T) {
 	}
 }
 
-// TestAdapterRun_NilEvent tests that nil events are skipped gracefully.
+// TestAdapterRun_NilEvent tests that nil ares_events are skipped gracefully.
 func TestAdapterRun_NilEvent(t *testing.T) {
 	defer discardLogs()()
 	flight := newMockFlightRecorder()
-	flight.subscriber.events = []*events.Event{nil} // Include a nil event
+	flight.subscriber.ares_events = []*ares_events.Event{nil} // Include a nil event
 
 	repo := &mockExperienceRepository{}
 	adapter := NewFlightToExperienceAdapter(flight, repo)
@@ -422,22 +422,22 @@ func TestAdapterRun_NilEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// No experiences should be created from nil events
+	// No experiences should be created from nil ares_events
 	exps := repo.GetExperiences()
 	if len(exps) != 0 {
 		t.Errorf("expected 0 experiences for nil event, got %d", len(exps))
 	}
 }
 
-// TestAdapterRun_EmptyStreamID tests that events without agent ID are skipped.
+// TestAdapterRun_EmptyStreamID tests that ares_events without agent ID are skipped.
 func TestAdapterRun_EmptyStreamID(t *testing.T) {
 	defer discardLogs()()
 	flight := newMockFlightRecorder()
-	flight.subscriber.events = []*events.Event{
+	flight.subscriber.ares_events = []*ares_events.Event{
 		{
 			ID:       "evt-no-agent",
 			StreamID: "", // Empty agent ID
-			Type:     events.EventTaskFailed,
+			Type:     ares_events.EventTaskFailed,
 			Payload:  map[string]any{"task_id": "task-123"},
 		},
 	}
@@ -461,11 +461,11 @@ func TestAdapterRun_NoDiagnostics(t *testing.T) {
 	defer discardLogs()()
 	flight := newMockFlightRecorder()
 	// Don't set any diagnostics report
-	flight.subscriber.events = []*events.Event{
+	flight.subscriber.ares_events = []*ares_events.Event{
 		{
 			ID:       "evt-no-diag",
 			StreamID: "agent-unknown",
-			Type:     events.EventTaskFailed,
+			Type:     ares_events.EventTaskFailed,
 			Payload:  map[string]any{"task_id": "task-789"},
 		},
 	}

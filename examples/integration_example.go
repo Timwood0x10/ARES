@@ -13,8 +13,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/eval"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_eval"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -47,9 +47,9 @@ func examplePluginSystem(ctx context.Context) {
 
 	// 2. Create the runtime plugin bus and register plugins.
 	//
-	// ObserverPlugin: subscribes to all lifecycle events (workflow start/complete,
+	// ObserverPlugin: subscribes to all lifecycle ares_events (workflow start/complete,
 	// step start/complete, etc.) and writes them to a MemoryEventStore.
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	observer := runtime.NewObserverPlugin("integration-observer", eventStore)
 
 	// ToolPlugin: records tool invocations during step execution.
@@ -70,8 +70,8 @@ func examplePluginSystem(ctx context.Context) {
 
 	fmt.Println("✓ Created PluginBus with ObserverPlugin and ToolPlugin")
 
-	// 3. Subscribe to events directly via the EventBus.
-	sub, err := bus.Subscribe(ctx, events.EventFilter{Types: []events.EventType{
+	// 3. Subscribe to ares_events directly via the EventBus.
+	sub, err := bus.Subscribe(ctx, ares_events.EventFilter{Types: []ares_events.EventType{
 		runtime.EventWorkflowStarted,
 		runtime.EventWorkflowCompleted,
 	}})
@@ -107,7 +107,7 @@ func examplePluginSystem(ctx context.Context) {
 	fmt.Printf("✓ Workflow executed: %s (status=%s, steps=%d)\n",
 		result.ExecutionID, result.Status, len(result.Steps))
 
-	// 7. Read events from the direct EventBus subscription.
+	// 7. Read ares_events from the direct EventBus subscription.
 	fmt.Println("\n--- Direct EventBus Subscription ---")
 	select {
 	case evt := <-sub:
@@ -116,13 +116,13 @@ func examplePluginSystem(ctx context.Context) {
 		fmt.Println("  No event received (already drained)")
 	}
 
-	// 8. Read all events from the MemoryEventStore (ObserverPlugin).
+	// 8. Read all ares_events from the MemoryEventStore (ObserverPlugin).
 	fmt.Println("\n--- Observed Events (MemoryEventStore) ---")
-	evts, err := eventStore.ReadAll(ctx, events.ReadOptions{Direction: events.ReadAscending})
+	evts, err := eventStore.ReadAll(ctx, ares_events.ReadOptions{Direction: ares_events.ReadAscending})
 	if err != nil {
-		log.Printf("read events: %v", err)
+		log.Printf("read ares_events: %v", err)
 	} else {
-		fmt.Printf("  Total events: %d\n", len(evts))
+		fmt.Printf("  Total ares_events: %d\n", len(evts))
 		for _, e := range evts {
 			execID, _ := e.Payload[runtime.PayloadKeyExecutionID].(string)
 			fmt.Printf("  [%s] %s (execution=%s)\n", e.StreamID, e.Type, execID)
@@ -146,11 +146,11 @@ func examplePluginSystem(ctx context.Context) {
 // exampleEvaluationFramework demonstrates how to use the evaluation framework.
 func exampleEvaluationFramework(ctx context.Context) {
 	// 1. Create a test suite loader
-	loader := eval.NewLoader()
+	loader := ares_eval.NewLoader()
 	fmt.Println("✓ Created test suite loader")
 
 	// 2. Load test suite from YAML
-	suite, err := loader.Load("test/eval/basic.yaml")
+	suite, err := loader.Load("test/ares_eval/basic.yaml")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func exampleEvaluationFramework(ctx context.Context) {
 	fmt.Println("✓ Created agent executor")
 
 	// 4. Create a test runner
-	runner, err := eval.NewAgentTestRunner(executor)
+	runner, err := ares_eval.NewAgentTestRunner(executor)
 	if err != nil {
 		fmt.Printf("✗ Failed to create test runner: %v\n", err)
 		return
@@ -176,13 +176,13 @@ func exampleEvaluationFramework(ctx context.Context) {
 	fmt.Printf("✓ Ran %d test cases\n", len(results))
 
 	// 6. Create evaluators
-	exactMatchEval := eval.NewExactMatchEvaluator()
-	toolUsageEval := eval.NewToolUsageEvaluator()
-	keywordEval := eval.NewKeywordPresenceEvaluator([]string{"AI", "technology", "analysis"})
+	exactMatchEval := ares_eval.NewExactMatchEvaluator()
+	toolUsageEval := ares_eval.NewToolUsageEvaluator()
+	keywordEval := ares_eval.NewKeywordPresenceEvaluator([]string{"AI", "technology", "analysis"})
 	fmt.Println("✓ Created evaluators")
 
 	// 7. Evaluate results
-	allScores := make([][]eval.EvalScore, len(results))
+	allScores := make([][]ares_eval.EvalScore, len(results))
 	for i, result := range results {
 		scores, err := exactMatchEval.Evaluate(ctx, suite.TestCases[i], result)
 		if err != nil {
@@ -200,7 +200,7 @@ func exampleEvaluationFramework(ctx context.Context) {
 	fmt.Println("✓ Evaluated all results")
 
 	// 8. Generate report
-	reportGen := eval.NewReportGenerator()
+	reportGen := ares_eval.NewReportGenerator()
 	markdown, err := reportGen.GenerateMarkdown(*suite, results, allScores)
 	if err != nil {
 		log.Fatal(err)

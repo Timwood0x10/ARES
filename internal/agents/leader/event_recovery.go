@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // Sentinel errors for event recovery operations.
@@ -15,7 +15,7 @@ var (
 
 // RecoveryState holds the state reconstructed from event replay.
 type RecoveryState struct {
-	// SessionID is the active session recovered from events.
+	// SessionID is the active session recovered from ares_events.
 	SessionID string
 	// PendingTasks lists task IDs that were created but not completed.
 	PendingTasks []string
@@ -25,21 +25,21 @@ type RecoveryState struct {
 	LastFailover time.Time
 }
 
-// EventRecovery reconstructs leader state by replaying events from the event store.
+// EventRecovery reconstructs leader state by replaying ares_events from the event store.
 type EventRecovery struct {
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 }
 
 // NewEventRecovery creates an EventRecovery.
 // Returns nil if eventStore is nil.
-func NewEventRecovery(eventStore events.EventStore) *EventRecovery {
+func NewEventRecovery(eventStore ares_events.EventStore) *EventRecovery {
 	if eventStore == nil {
 		return nil
 	}
 	return &EventRecovery{eventStore: eventStore}
 }
 
-// RecoverFromEvents reads all events for the given leader stream and replays
+// RecoverFromEvents reads all ares_events for the given leader stream and replays
 // them to reconstruct the recovery state.
 //
 // Args:
@@ -59,7 +59,7 @@ func (r *EventRecovery) RecoverFromEvents(ctx context.Context, leaderID string) 
 		return nil, ErrEmptyLeaderID
 	}
 
-	evts, err := r.eventStore.Read(ctx, leaderID, events.ReadOptions{})
+	evts, err := r.eventStore.Read(ctx, leaderID, ares_events.ReadOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -77,24 +77,24 @@ func (r *EventRecovery) RecoverFromEvents(ctx context.Context, leaderID string) 
 		}
 
 		switch evt.Type {
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if id, ok := evt.Payload["session_id"].(string); ok && id != "" {
 				state.SessionID = id
 			}
 
-		case events.EventTaskCreated:
+		case ares_events.EventTaskCreated:
 			if id, ok := evt.Payload["task_id"].(string); ok && id != "" {
 				if !completedTasks[id] {
 					state.PendingTasks = append(state.PendingTasks, id)
 				}
 			}
 
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			if id, ok := evt.Payload["task_id"].(string); ok && id != "" {
 				completedTasks[id] = true
 			}
 
-		case events.EventFailoverTriggered:
+		case ares_events.EventFailoverTriggered:
 			if evt.Timestamp.After(state.LastFailover) {
 				state.LastFailover = evt.Timestamp
 			}

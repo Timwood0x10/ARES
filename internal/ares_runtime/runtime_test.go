@@ -11,7 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,10 +86,10 @@ func (a *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.A
 type mockStatefulAgent struct {
 	*mockAgent
 	restoreStateFn func(state map[string]any) error
-	replayEventsFn func(evts []*events.Event) error
+	replayEventsFn func(evts []*ares_events.Event) error
 	snapshotFn     func() (map[string]any, error)
 	restoredState  map[string]any
-	replayedEvts   []*events.Event
+	replayedEvts   []*ares_events.Event
 }
 
 func newMockStatefulAgent(id string) *mockStatefulAgent {
@@ -106,7 +106,7 @@ func (a *mockStatefulAgent) RestoreState(state map[string]any) error {
 	return nil
 }
 
-func (a *mockStatefulAgent) ReplayEvents(evts []*events.Event) error {
+func (a *mockStatefulAgent) ReplayEvents(evts []*ares_events.Event) error {
 	a.replayedEvts = evts
 	if a.replayEventsFn != nil {
 		return a.replayEventsFn(evts)
@@ -213,7 +213,7 @@ func (m *mockMemoryManager) GetLatestSessionForLeader(_ context.Context, _ strin
 
 func (m *mockMemoryManager) Start(_ context.Context) error { return nil }
 func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
-func (m *mockMemoryManager) SetEventStore(_ events.EventStore, _ string) {
+func (m *mockMemoryManager) SetEventStore(_ ares_events.EventStore, _ string) {
 }
 
 func (m *mockMemoryManager) AddStructuredMessage(_ context.Context, _ string, _ memory.Message) error {
@@ -229,20 +229,20 @@ type errEventStore struct {
 	readErr error
 }
 
-func (s *errEventStore) Append(_ context.Context, _ string, _ []*events.Event, _ int64) error {
+func (s *errEventStore) Append(_ context.Context, _ string, _ []*ares_events.Event, _ int64) error {
 	return nil
 }
 
-func (s *errEventStore) Read(_ context.Context, _ string, _ events.ReadOptions) ([]*events.Event, error) {
+func (s *errEventStore) Read(_ context.Context, _ string, _ ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	return nil, s.readErr
 }
 
-func (s *errEventStore) ReadAll(_ context.Context, _ events.ReadOptions) ([]*events.Event, error) {
+func (s *errEventStore) ReadAll(_ context.Context, _ ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	return nil, s.readErr
 }
 
-func (s *errEventStore) Subscribe(_ context.Context, _ events.EventFilter) (<-chan *events.Event, error) {
-	ch := make(chan *events.Event)
+func (s *errEventStore) Subscribe(_ context.Context, _ ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	ch := make(chan *ares_events.Event)
 	close(ch)
 	return ch, nil
 }
@@ -303,7 +303,7 @@ func (m *errMemoryManager) GetLatestSessionForLeader(_ context.Context, _ string
 
 func (m *errMemoryManager) Start(_ context.Context) error { return nil }
 func (m *errMemoryManager) Stop(_ context.Context) error  { return nil }
-func (m *errMemoryManager) SetEventStore(_ events.EventStore, _ string) {
+func (m *errMemoryManager) SetEventStore(_ ares_events.EventStore, _ string) {
 }
 
 func (m *errMemoryManager) AddStructuredMessage(_ context.Context, _ string, _ memory.Message) error {
@@ -574,23 +574,23 @@ func TestManager_RestoreAgent_CreatesNewInstance(t *testing.T) {
 }
 
 func TestManager_RestoreAgent_ReplaysEvents(t *testing.T) {
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	m := New(nil, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	require.NoError(t, m.Start(ctx))
 
-	// Pre-populate events in the store using the agent:streamID convention.
-	err := eventStore.Append(ctx, "a1", []*events.Event{
+	// Pre-populate ares_events in the store using the agent:streamID convention.
+	err := eventStore.Append(ctx, "a1", []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "sess-123",
 			},
 		},
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id": "task-1",
 			},
@@ -603,15 +603,15 @@ func TestManager_RestoreAgent_ReplaysEvents(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify events were replayed.
+	// Verify ares_events were replayed.
 	newAgent := factory.lastAgent()
 	require.NotNil(t, newAgent)
-	assert.NotNil(t, newAgent.replayedEvts, "events should have been replayed")
+	assert.NotNil(t, newAgent.replayedEvts, "ares_events should have been replayed")
 	assert.Len(t, newAgent.replayedEvts, 3) // 2 pre-populated + 1 failover.triggered emitted by RestoreAgent
 }
 
 func TestManager_RestoreAgent_RestoresState(t *testing.T) {
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	m := New(nil, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -619,9 +619,9 @@ func TestManager_RestoreAgent_RestoresState(t *testing.T) {
 	require.NoError(t, m.Start(ctx))
 
 	// Pre-populate with session event using the agent:streamID convention.
-	err := eventStore.Append(ctx, "a1", []*events.Event{
+	err := eventStore.Append(ctx, "a1", []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "sess-456",
 			},
@@ -816,7 +816,7 @@ func TestManager_RestoreAgent_WithoutEventStore(t *testing.T) {
 
 	newAgent := factory.lastAgent()
 	require.NotNil(t, newAgent)
-	// No events to replay, so replayedEvts should be nil.
+	// No ares_events to replay, so replayedEvts should be nil.
 	assert.Nil(t, newAgent.replayedEvts)
 }
 
@@ -986,24 +986,24 @@ func TestManager_NotifyAgentDead_BeforeStart(t *testing.T) {
 	})
 }
 
-// TestManager_RestoreAgent_WithEventStore verifies that RestoreAgent replays events
+// TestManager_RestoreAgent_WithEventStore verifies that RestoreAgent replays ares_events
 // from the EventStore and passes them to a StatefulAgent.
 func TestManager_RestoreAgent_WithEventStore(t *testing.T) {
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	m := New(nil, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	require.NoError(t, m.Start(ctx))
 
-	// Pre-populate the event store with two events for stream "a1".
-	err := eventStore.Append(ctx, "a1", []*events.Event{
+	// Pre-populate the event store with two ares_events for stream "a1".
+	err := eventStore.Append(ctx, "a1", []*ares_events.Event{
 		{
-			Type:    events.EventSessionCreated,
+			Type:    ares_events.EventSessionCreated,
 			Payload: map[string]any{"session_id": "sess-abc"},
 		},
 		{
-			Type:    events.EventTaskCreated,
+			Type:    ares_events.EventTaskCreated,
 			Payload: map[string]any{"task_id": "task-1"},
 		},
 	}, 0)
@@ -1020,7 +1020,7 @@ func TestManager_RestoreAgent_WithEventStore(t *testing.T) {
 	require.NotNil(t, restoredAgent, "factory should have created an agent")
 
 	// Events must have been replayed to the StatefulAgent.
-	require.NotNil(t, restoredAgent.replayedEvts, "events should have been replayed")
+	require.NotNil(t, restoredAgent.replayedEvts, "ares_events should have been replayed")
 	assert.Len(t, restoredAgent.replayedEvts, 3) // 2 pre-populated + 1 failover.triggered
 
 	// State should contain session_id extracted from EventSessionCreated.
@@ -1034,7 +1034,7 @@ func TestManager_RestoreAgent_WithEventStore(t *testing.T) {
 // TestManager_RestoreAgent_WithMemoryManager verifies that RestoreAgent loads
 // cognitive state (conversation history) via MemoryManager during restoration.
 func TestManager_RestoreAgent_WithMemoryManager(t *testing.T) {
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	memManager := newMockMemoryManager()
 	m := New(nil, eventStore, memManager)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1043,9 +1043,9 @@ func TestManager_RestoreAgent_WithMemoryManager(t *testing.T) {
 	require.NoError(t, m.Start(ctx))
 
 	// Pre-populate the event store with a session event.
-	err := eventStore.Append(ctx, "a1", []*events.Event{
+	err := eventStore.Append(ctx, "a1", []*ares_events.Event{
 		{
-			Type:    events.EventSessionCreated,
+			Type:    ares_events.EventSessionCreated,
 			Payload: map[string]any{"session_id": "sess-mem"},
 		},
 	}, 0)
@@ -1119,9 +1119,9 @@ func TestManager_RestoreAgent_EventStoreError(t *testing.T) {
 	restoredAgent := factory.lastAgent()
 	require.NotNil(t, restoredAgent)
 
-	// No events were available, so RestoreState and ReplayEvents should not have been called.
+	// No ares_events were available, so RestoreState and ReplayEvents should not have been called.
 	assert.Nil(t, restoredAgent.restoredState, "no state should be restored on event store error")
-	assert.Nil(t, restoredAgent.replayedEvts, "no events should be replayed on event store error")
+	assert.Nil(t, restoredAgent.replayedEvts, "no ares_events should be replayed on event store error")
 
 	// Agent should still be running.
 	assert.Equal(t, models.AgentStatusReady, restoredAgent.Status())
@@ -1130,7 +1130,7 @@ func TestManager_RestoreAgent_EventStoreError(t *testing.T) {
 // TestManager_RestoreAgent_MemoryManagerError verifies that when the MemoryManager
 // returns an error during cognitive recovery, the agent is still restored and started.
 func TestManager_RestoreAgent_MemoryManagerError(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	memMgr := &errMemoryManager{
 		sessionErr:  fmt.Errorf("checkpoint table corrupted"),
 		messagesErr: fmt.Errorf("messages query timeout"),
@@ -1143,9 +1143,9 @@ func TestManager_RestoreAgent_MemoryManagerError(t *testing.T) {
 	require.NoError(t, m.Start(ctx))
 
 	// Append a session event so buildCognitiveState tries to load messages.
-	err := store.Append(ctx, "a1", []*events.Event{
+	err := store.Append(ctx, "a1", []*ares_events.Event{
 		{
-			Type:    events.EventSessionCreated,
+			Type:    ares_events.EventSessionCreated,
 			Payload: map[string]any{"session_id": "sess-err"},
 		},
 	}, 0)
@@ -1158,7 +1158,7 @@ func TestManager_RestoreAgent_MemoryManagerError(t *testing.T) {
 	restoredAgent := factory.lastAgent()
 	require.NotNil(t, restoredAgent)
 
-	// The operational state (session_id) should still be restored from events.
+	// The operational state (session_id) should still be restored from ares_events.
 	require.NotNil(t, restoredAgent.restoredState)
 	assert.Equal(t, "sess-err", restoredAgent.restoredState["session_id"])
 

@@ -12,7 +12,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -85,8 +85,8 @@ func newPluginStack() *pluginStack {
 		WithCollector(collector).
 		WithFlushInterval(1)
 
-	// ObserverPlugin: captures lifecycle events to an in-memory store.
-	observer := runtime.NewObserverPlugin("observer", events.NewMemoryEventStore())
+	// ObserverPlugin: captures lifecycle ares_events to an in-memory store.
+	observer := runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
 
 	// ToolPlugin: records tool invocations via the collector.
 	tool := runtime.NewToolPlugin("tool").
@@ -146,9 +146,9 @@ func main() {
 			}}, nil
 	})
 
-	// Event sink records recovery lifecycle events.
+	// Event sink records recovery lifecycle ares_events.
 	var emittedEvents []string
-	eventSink := func(_ context.Context, evType events.EventType, _ map[string]any) {
+	eventSink := func(_ context.Context, evType ares_events.EventType, _ map[string]any) {
 		emittedEvents = append(emittedEvents, string(evType))
 	}
 
@@ -200,7 +200,7 @@ func main() {
 	for _, s := range result.Steps {
 		fmt.Printf("  Step %q: status=%s output=%q\n", s.StepID, s.Status, s.Output)
 	}
-	fmt.Printf("Recovery events: %v\n", emittedEvents)
+	fmt.Printf("Recovery ares_events: %v\n", emittedEvents)
 
 	// Show checkpoint data saved by CheckpointPlugin.
 	if snap := stack.checkpoint.Snapshot(result.ExecutionID); snap != nil {

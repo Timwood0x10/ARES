@@ -19,7 +19,7 @@ import (
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -62,9 +62,9 @@ type ProductionMemoryManager struct {
 	// Context cleaner: intelligently strips tool noise and compresses verbose content.
 	ctxCleaner *memctx.ContextCleaner
 
-	// Event sourcing: optional EventStore for emitting lifecycle events.
-	eventStore events.EventStore
-	streamID   string // Stream ID used when appending events.
+	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
+	eventStore ares_events.EventStore
+	streamID   string // Stream ID used when appending ares_events.
 }
 
 // SessionData holds session information with optional caching.
@@ -193,16 +193,16 @@ func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 	return nil
 }
 
-// SetEventStore configures an optional EventStore for emitting lifecycle events.
+// SetEventStore configures an optional EventStore for emitting lifecycle ares_events.
 // If store is nil, event emission is a no-op.
-func (m *ProductionMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+func (m *ProductionMemoryManager) SetEventStore(store ares_events.EventStore, streamID string) {
 	m.eventStore = store
 	m.streamID = streamID
 }
 
-// emitEvent appends a single event using the canonical events.Emit.
-func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if !events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
+// emitEvent appends a single event using the canonical ares_events.Emit.
+func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if !ares_events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
 	}
 }
@@ -319,7 +319,7 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 	}
 
 	// Emit session created event.
-	m.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+	m.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 		"session_id": sessionID,
 		"user_id":    userID,
 	})
@@ -396,7 +396,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 	m.mu.Unlock()
 
 	// Emit message added event.
-	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 		"session_id": sessionID,
 		"role":       role,
 	})
@@ -519,7 +519,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 	}
 	m.mu.Unlock()
 
-	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 		"session_id": sessionID,
 		"role":       msg.Role,
 	})
@@ -800,7 +800,7 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 	if content, ok := taskResult.Input["content"].(string); ok {
 		inputCount = len(content)
 	}
-	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		"task_id":     taskID,
 		"input_count": inputCount,
 	})
@@ -867,7 +867,7 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	}
 
 	// Emit memory distilled event.
-	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		"task_id":      taskID,
 		"output_count": 1,
 	})

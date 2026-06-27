@@ -8,16 +8,16 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // Service provides graph orchestration operations.
 type Service struct {
 	config  *Config
-	tracer  observability.Tracer
-	limiter ratelimit.Limiter
+	tracer  ares_observability.Tracer
+	limiter ares_ratelimit.Limiter
 }
 
 // Config represents service configuration.
@@ -28,10 +28,10 @@ type Config struct {
 	MaxRetries int
 	// RetryDelay is the delay between retries.
 	RetryDelay time.Duration
-	// Tracer is the observability tracer.
-	Tracer observability.Tracer
+	// Tracer is the ares_observability tracer.
+	Tracer ares_observability.Tracer
 	// Limiter is the rate limiter.
-	Limiter ratelimit.Limiter
+	Limiter ares_ratelimit.Limiter
 }
 
 // NewService creates a new graph service instance.
@@ -57,7 +57,7 @@ func NewService(config *Config) (*Service, error) {
 	// Default to no-op tracer if not provided
 	tracer := config.Tracer
 	if tracer == nil {
-		tracer = observability.NewNoopTracer()
+		tracer = ares_observability.NewNoopTracer()
 	}
 
 	return &Service{

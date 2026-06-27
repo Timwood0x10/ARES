@@ -1,6 +1,6 @@
 // Package main — signal generation bridge between research layer and simulation.
 // This file converts research PortfolioDecision into trade signal objects.
-// It does NOT depend on internal/quant/portfolio for simulation — that is
+// It does NOT depend on internal/ares_quant/portfolio for simulation — that is
 // handled by main.go via the public marketmaking API.
 package main
 
@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/quant/research"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 )
 
 // TradeSignal represents a time-based trading instruction produced by the
 // research layer. It mirrors the shape of marketmaking.TradeSignal but lives
 // here to avoid importing api/marketmaking (which would create a cycle through
-// internal/quant/marketmaking).
+// internal/ares_quant/marketmaking).
 type TradeSignal struct {
 	Date       time.Time `json:"date"`
 	Action     string    `json:"action"` // "BUY", "SELL", or "HOLD"

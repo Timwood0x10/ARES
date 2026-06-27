@@ -4,19 +4,19 @@ import (
 	"context"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // GenealogyCollector subscribes to EventStore and populates a Genealogy tree.
 type GenealogyCollector struct {
 	genealogy  *Genealogy
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 }
 
 // NewGenealogyCollector creates a new genealogy collector.
-func NewGenealogyCollector(eventStore events.EventStore) *GenealogyCollector {
+func NewGenealogyCollector(eventStore ares_events.EventStore) *GenealogyCollector {
 	return &GenealogyCollector{
 		genealogy:  NewGenealogy(),
 		eventStore: eventStore,
@@ -31,7 +31,7 @@ func (c *GenealogyCollector) Start(ctx context.Context) error {
 
 	ctx, c.cancel = context.WithCancel(ctx)
 
-	ch, err := c.eventStore.Subscribe(ctx, events.EventFilter{})
+	ch, err := c.eventStore.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
 		return err
 	}
@@ -55,8 +55,8 @@ func (c *GenealogyCollector) Genealogy() *Genealogy {
 	return c.genealogy
 }
 
-// collectLoop reads events and updates the genealogy.
-func (c *GenealogyCollector) collectLoop(ctx context.Context, ch <-chan *events.Event) {
+// collectLoop reads ares_events and updates the genealogy.
+func (c *GenealogyCollector) collectLoop(ctx context.Context, ch <-chan *ares_events.Event) {
 	defer c.wg.Done()
 
 	for {
@@ -73,24 +73,24 @@ func (c *GenealogyCollector) collectLoop(ctx context.Context, ch <-chan *events.
 }
 
 // processEvent routes an event to the appropriate handler.
-func (c *GenealogyCollector) processEvent(evt *events.Event) {
+func (c *GenealogyCollector) processEvent(evt *ares_events.Event) {
 	if evt == nil {
 		return
 	}
 
 	switch evt.Type {
-	case events.EventAgentStarted:
+	case ares_events.EventAgentStarted:
 		c.handleAgentStarted(evt)
-	case events.EventAgentStopped:
+	case ares_events.EventAgentStopped:
 		c.handleAgentStopped(evt)
-	case events.EventFailoverTriggered:
+	case ares_events.EventFailoverTriggered:
 		c.handleFailoverTriggered(evt)
-	case events.EventFailoverCompleted:
+	case ares_events.EventFailoverCompleted:
 		c.handleFailoverCompleted(evt)
 	}
 }
 
-func (c *GenealogyCollector) handleAgentStarted(evt *events.Event) {
+func (c *GenealogyCollector) handleAgentStarted(evt *ares_events.Event) {
 	agentID := evt.StreamID
 	agentType := ""
 	parentID := ""
@@ -110,11 +110,11 @@ func (c *GenealogyCollector) handleAgentStarted(evt *events.Event) {
 	}
 }
 
-func (c *GenealogyCollector) handleAgentStopped(evt *events.Event) {
+func (c *GenealogyCollector) handleAgentStopped(evt *ares_events.Event) {
 	c.genealogy.RecordDeath(evt.StreamID)
 }
 
-func (c *GenealogyCollector) handleFailoverTriggered(evt *events.Event) {
+func (c *GenealogyCollector) handleFailoverTriggered(evt *ares_events.Event) {
 	// The failing agent is marked dead.
 	if agentID, ok := evt.Payload["agent_id"].(string); ok {
 		c.genealogy.RecordDeath(agentID)
@@ -123,7 +123,7 @@ func (c *GenealogyCollector) handleFailoverTriggered(evt *events.Event) {
 	}
 }
 
-func (c *GenealogyCollector) handleFailoverCompleted(evt *events.Event) {
+func (c *GenealogyCollector) handleFailoverCompleted(evt *ares_events.Event) {
 	// Check if this is a resurrection (old → new) or a promotion.
 	oldID, _ := evt.Payload["old_agent_id"].(string)
 	newID, _ := evt.Payload["new_agent_id"].(string)

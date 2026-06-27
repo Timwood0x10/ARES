@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
 	"github.com/Timwood0x10/ares/internal/tools/resources/builtin"
@@ -161,7 +161,7 @@ func (a *CapabilityDemoAgent) generateToolPrompt(userMsg string) string {
 	sb.WriteString("- [TOOL:datetime {\"operation\": \"now\"}]\n")
 	sb.WriteString("- [TOOL:http_request {\"url\": \"https://api.example.com/data\"}]\n")
 	sb.WriteString("- [TOOL:file_tools {\"operation\": \"list\", \"directory_path\": \".\"}]\n")
-	sb.WriteString("- [TOOL:file_tools {\"operation\": \"read\", \"file_path\": \"./config/server.yaml\"}]\n")
+	sb.WriteString("- [TOOL:file_tools {\"operation\": \"read\", \"file_path\": \"./ares_config/server.yaml\"}]\n")
 	return sb.String()
 }
 
@@ -283,20 +283,20 @@ func getToolNames(tools []core.Tool) []string {
 func main() {
 	slog.Info("Starting Capability Demo Agent")
 
-	// Load config
+	// Load ares_config
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
-		cfgPath = "./config/server.yaml"
+		cfgPath = "./ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := ares_config.Load(cfgPath)
 	if err != nil {
-		slog.Error("Load config failed", "error", err)
+		slog.Error("Load ares_config failed", "error", err)
 		os.Exit(1)
 	}
 
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Load env config failed", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Load env ares_config failed", "error", err)
 		os.Exit(1)
 	}
 

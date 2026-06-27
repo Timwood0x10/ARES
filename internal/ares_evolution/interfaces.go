@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // FlightRecorder defines the interface for accessing flight recorder diagnostics.
@@ -15,7 +15,7 @@ type FlightRecorder interface {
 	// Diagnostics returns access to diagnostic reports for agents.
 	Diagnostics() DiagnosticsAccessor
 
-	// EventStore returns the event store for subscribing to events.
+	// EventStore returns the event store for subscribing to ares_events.
 	EventStore() EventStoreSubscriber
 }
 
@@ -28,9 +28,9 @@ type DiagnosticsAccessor interface {
 
 // EventStoreSubscriber defines the subscription interface for event stores.
 type EventStoreSubscriber interface {
-	// Subscribe returns a channel that receives events matching the filter.
+	// Subscribe returns a channel that receives ares_events matching the filter.
 	// The channel is closed when ctx is cancelled.
-	Subscribe(ctx context.Context, filter events.EventFilter) (<-chan *events.Event, error)
+	Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error)
 }
 
 // ExperienceRepository defines the persistence interface for experiences.

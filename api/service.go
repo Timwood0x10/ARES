@@ -25,7 +25,7 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 )
 
 // Service is the top-level application entry point. One call to StartService
@@ -95,28 +95,28 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	// --- MCP (support multiple servers) ---
 	if len(cfg.MCP.Servers) == 0 {
 		cancel()
-		return nil, fmt.Errorf("no mcp servers configured")
+		return nil, fmt.Errorf("no ares_mcp servers configured")
 	}
 
-	var allTools []mcp.MCPToolDef
+	var allTools []ares_mcp.MCPToolDef
 	var clientEntries []clientTools
 	seenTools := make(map[string]bool)
 	for i, srv := range cfg.MCP.Servers {
-		mcpClient := mcp.NewMCPClient(mcp.MCPClientConfig{
+		mcpClient := ares_mcp.NewMCPClient(ares_mcp.MCPClientConfig{
 			ServerName: srv.Name,
 			Timeout:    60 * time.Second,
 		})
-		mcpTransport := mcp.NewStdioTransport(mcp.StdioConfig{
+		mcpTransport := ares_mcp.NewStdioTransport(ares_mcp.StdioConfig{
 			Command: srv.Transport.Stdio.Command,
 			Args:    srv.Transport.Stdio.Args,
 		})
 		if err := mcpClient.Connect(ctx, mcpTransport); err != nil {
 			cancel()
-			return nil, fmt.Errorf("mcp connect server[%d] %q: %w", i, srv.Name, err)
+			return nil, fmt.Errorf("ares_mcp connect server[%d] %q: %w", i, srv.Name, err)
 		}
 		tools, listErr := mcpClient.ListTools(ctx)
 		if listErr != nil {
-			slog.Warn("mcp list tools failed", "server", srv.Name, "error", listErr)
+			slog.Warn("ares_mcp list tools failed", "server", srv.Name, "error", listErr)
 		}
 		for _, t := range tools {
 			if !seenTools[t.Name] {
@@ -129,9 +129,9 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 			name:   srv.Name,
 			tools:  tools,
 		})
-		slog.Info("mcp server connected", "server", srv.Name, "tools", len(tools))
+		slog.Info("ares_mcp server connected", "server", srv.Name, "tools", len(tools))
 	}
-	slog.Info("mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
+	slog.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
 
 	// FIX: replace bare go with errgroup for structured concurrency (code rule 4.5).
 	// All goroutines must be managed via errgroup to ensure error propagation
@@ -163,7 +163,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	// --- Orchestrator ---
 	if len(clientEntries) == 0 {
 		cancel()
-		return nil, fmt.Errorf("no mcp client available for orchestrator")
+		return nil, fmt.Errorf("no ares_mcp client available for orchestrator")
 	}
 	var mcpExecutor dashboard.MCPExecutor
 	if len(clientEntries) == 1 {

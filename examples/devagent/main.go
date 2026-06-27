@@ -15,10 +15,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 /*
@@ -47,7 +47,7 @@ func main() {
 	// Load configuration
 	cfg, err := loadConfig()
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
+		slog.Error("Failed to load ares_config", "error", err)
 		os.Exit(1)
 	}
 
@@ -100,25 +100,25 @@ type components struct {
 	memoryManager memory.MemoryManager
 }
 
-func loadConfig() (*config.Config, error) {
+func loadConfig() (*ares_config.Config, error) {
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = "./config/server.yaml"
+		configPath = "./ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
+		return nil, fmt.Errorf("load ares_config: %w", err)
 	}
 
-	if err := config.LoadFromEnv(cfg); err != nil {
-		return nil, fmt.Errorf("load env config: %w", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		return nil, fmt.Errorf("load env ares_config: %w", err)
 	}
 
 	return cfg, nil
 }
 
-func initializeComponents(ctx context.Context, cfg *config.Config) (*components, error) {
+func initializeComponents(ctx context.Context, cfg *ares_config.Config) (*components, error) {
 	llmFactory := output.NewFactory()
 	llmCfg := &output.Config{
 		Provider:  cfg.LLM.Provider,
@@ -188,7 +188,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 	return adapter
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
+func createLeaderAgent(cfg *ares_config.Config, comps *components) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
 		comps.template,
@@ -269,7 +269,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	return agent, nil
 }
 
-func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
+func createSubAgents(cfg *ares_config.Config, comps *components) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {

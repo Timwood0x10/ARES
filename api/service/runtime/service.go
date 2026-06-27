@@ -1,5 +1,5 @@
 // Package runtime provides a high-level API for agent lifecycle management.
-// It wraps internal/runtime, internal/events, and internal/plugins/resurrection
+// It wraps internal/runtime, internal/ares_events, and internal/plugins/resurrection
 // into a single entry point for external users.
 //
 // Usage:
@@ -19,9 +19,9 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // Config holds configuration for the runtime service.
@@ -63,7 +63,7 @@ type Service struct {
 	config     Config
 	rt         *runtime.Manager
 	supervisor *resurrection.Supervisor
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 	hbMon      *ahp.HeartbeatMonitor
 }
 
@@ -79,7 +79,7 @@ type Service struct {
 //
 //	service - the runtime service.
 //	err - if configuration is invalid.
-func NewService(config Config, eventStore events.EventStore) (*Service, error) {
+func NewService(config Config, eventStore ares_events.EventStore) (*Service, error) {
 	// Apply defaults for zero values.
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 5 * time.Second
@@ -100,7 +100,7 @@ func NewService(config Config, eventStore events.EventStore) (*Service, error) {
 	// Create event store if not provided.
 	if eventStore == nil {
 		if config.UseMemoryStore {
-			eventStore = events.NewMemoryEventStore()
+			eventStore = ares_events.NewMemoryEventStore()
 		} else {
 			return nil, fmt.Errorf("runtime: event store required when UseMemoryStore is false")
 		}
@@ -201,6 +201,6 @@ func (s *Service) Stats() runtime.RuntimeStats {
 }
 
 // EventStore returns the underlying event store for external use.
-func (s *Service) EventStore() events.EventStore {
+func (s *Service) EventStore() ares_events.EventStore {
 	return s.eventStore
 }

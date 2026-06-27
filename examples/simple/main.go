@@ -16,11 +16,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // This is an example demonstrating how to use the framework.
@@ -36,18 +36,18 @@ func main() {
 	// Load configuration from file
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = "./examples/simple/config/server.yaml"
+		configPath = "./examples/simple/ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
+		slog.Error("Failed to load ares_config", "error", err)
 		os.Exit(1)
 	}
 
 	// Load environment variables
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Failed to load env config", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Failed to load env ares_config", "error", err)
 		os.Exit(1)
 	}
 
@@ -107,14 +107,14 @@ type components struct {
 	llmAdapter    output.LLMAdapter
 	llmFactory    *output.Factory
 	llmConfig     *output.Config
-	tracer        observability.Tracer
+	tracer        ares_observability.Tracer
 	messageQueue  *ahp.MessageQueue
 	validator     *output.Validator
 	template      *output.TemplateEngine
 	memoryManager memory.MemoryManager
 }
 
-func initializeComponents(cfg *config.Config) (*components, error) {
+func initializeComponents(cfg *ares_config.Config) (*components, error) {
 	// Create LLM adapter based on user configuration
 	llmFactory := output.NewFactory()
 	llmCfg := &output.Config{
@@ -130,7 +130,7 @@ func initializeComponents(cfg *config.Config) (*components, error) {
 	}
 
 	// Create tracer (NoopTracer for production, LogTracer for development)
-	tracer := observability.NewNoopTracer()
+	tracer := ares_observability.NewNoopTracer()
 
 	// Create message queue
 	messageQueue := ahp.NewMessageQueue("main", &ahp.QueueOptions{MaxSize: 1000})
@@ -160,7 +160,7 @@ func initializeComponents(cfg *config.Config) (*components, error) {
 	}, nil
 }
 
-// getLLMAdapter returns the appropriate LLM adapter for the given agent config.
+// getLLMAdapter returns the appropriate LLM adapter for the given agent ares_config.
 // If the agent specifies a model or provider, it creates a new adapter with those values.
 // Otherwise, returns the default global adapter.
 func getLLMAdapter(comps *components, agentModel string, agentProvider string) output.LLMAdapter {
@@ -175,7 +175,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 		model = comps.llmConfig.Model
 	}
 
-	// If nothing changed from global config, return default adapter
+	// If nothing changed from global ares_config, return default adapter
 	if provider == comps.llmConfig.Provider && model == comps.llmConfig.Model {
 		return comps.llmAdapter
 	}
@@ -192,7 +192,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 	return adapter
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
+func createLeaderAgent(cfg *ares_config.Config, comps *components) (leader.Agent, error) {
 	// Create ProfileParser with user-configured prompts
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
@@ -241,7 +241,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	// Create ResultAggregator
 	resultAggregator := leader.NewResultAggregator(true, 10, leader.SortByNone)
 
-	// Create LeaderAgent config from user configuration
+	// Create LeaderAgent ares_config from user configuration
 	leaderCfg := &leader.LeaderAgentConfig{
 		Config: base.Config{
 			ID:   cfg.Agents.Leader.ID,
@@ -272,7 +272,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	return agent, nil
 }
 
-func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
+func createSubAgents(cfg *ares_config.Config, comps *components) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {
@@ -295,7 +295,7 @@ func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
 		// Create heartbeat monitor
 		hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
-		// Create SubAgent config
+		// Create SubAgent ares_config
 		subCfgModel := &sub.SubAgentConfig{
 			Config: base.Config{
 				ID:   subCfg.ID,
@@ -323,7 +323,7 @@ func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
 	return agents
 }
 
-func processSampleRequest(agent leader.Agent, cfg *config.Config) {
+func processSampleRequest(agent leader.Agent, cfg *ares_config.Config) {
 	ctx := context.Background()
 
 	// Sample user input
@@ -345,7 +345,7 @@ func processSampleRequest(agent leader.Agent, cfg *config.Config) {
 }
 
 // formatOutput formats recommendations according to user configuration.
-func formatOutput(outputCfg config.OutputConfig, items []*models.RecommendItem) {
+func formatOutput(outputCfg ares_config.OutputConfig, items []*models.RecommendItem) {
 	switch outputCfg.Format {
 	case "json":
 		// JSON format

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // testPlugin is a simple RuntimePlugin for testing.
@@ -343,8 +343,8 @@ func TestPluginBus_EmitAndSubscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	ch, err := b.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{EventWorkflowStarted},
+	ch, err := b.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{EventWorkflowStarted},
 	})
 	require.NoError(t, err)
 
@@ -367,8 +367,8 @@ func TestPluginBus_EmitFiltered_NoMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	ch, err := b.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{EventWorkflowCompleted},
+	ch, err := b.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{EventWorkflowCompleted},
 	})
 	require.NoError(t, err)
 
@@ -391,11 +391,11 @@ func TestPluginBus_Emit_NonBlocking(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	// By default the buffer is 64, so fill it with 64 events to force drops.
-	ch, err := b.Subscribe(ctx, events.EventFilter{})
+	// By default the buffer is 64, so fill it with 64 ares_events to force drops.
+	ch, err := b.Subscribe(ctx, ares_events.EventFilter{})
 	require.NoError(t, err)
 
-	// Send 128 events. The channel buffer is 64, so ~64 should be dropped
+	// Send 128 ares_events. The channel buffer is 64, so ~64 should be dropped
 	// without blocking.
 	for i := 0; i < 128; i++ {
 		b.Emit(ctx, "s", EventWorkflowStarted, nil)
@@ -415,7 +415,7 @@ loop:
 		}
 	}
 	// Should have received at most the buffer size, but at least 0.
-	assert.Greater(t, received, 0, "should receive at least some events")
+	assert.Greater(t, received, 0, "should receive at least some ares_events")
 	assert.LessOrEqual(t, received, 64, "should not exceed channel buffer")
 }
 
@@ -424,7 +424,7 @@ func TestPluginBus_SubscriptionCleanup(t *testing.T) {
 	require.NoError(t, b.Start(context.Background()))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ch, err := b.Subscribe(ctx, events.EventFilter{})
+	ch, err := b.Subscribe(ctx, ares_events.EventFilter{})
 	require.NoError(t, err)
 
 	cancel()
@@ -465,7 +465,7 @@ func TestPluginBus_PluginsByCap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestObserverPlugin_RecordsEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	bus := NewPluginBus()
 
 	obs := NewObserverPlugin("test-observer", store)
@@ -479,8 +479,8 @@ func TestObserverPlugin_RecordsEvents(t *testing.T) {
 	// Give the observer goroutine time to process.
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify events were written to the store.
-	evts, err := store.Read(ctx, "exec-1", events.ReadOptions{})
+	// Verify ares_events were written to the store.
+	evts, err := store.Read(ctx, "exec-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	require.Len(t, evts, 2)
 
@@ -490,7 +490,7 @@ func TestObserverPlugin_RecordsEvents(t *testing.T) {
 }
 
 func TestObserverPlugin_OnlySubscribesToWorkflowEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	bus := NewPluginBus()
 
 	obs := NewObserverPlugin("test-observer", store)
@@ -501,18 +501,18 @@ func TestObserverPlugin_OnlySubscribesToWorkflowEvents(t *testing.T) {
 	// Emit a workflow event (should be recorded).
 	bus.Emit(ctx, "exec-1", EventWorkflowStarted, nil)
 	// Emit a non-workflow event (should be filtered out).
-	bus.Emit(ctx, "exec-1", events.EventAgentStarted, nil)
+	bus.Emit(ctx, "exec-1", ares_events.EventAgentStarted, nil)
 
 	time.Sleep(50 * time.Millisecond)
 
-	evts, err := store.Read(ctx, "exec-1", events.ReadOptions{})
+	evts, err := store.Read(ctx, "exec-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	assert.Len(t, evts, 1)
 	assert.Equal(t, EventWorkflowStarted, evts[0].Type)
 }
 
 func TestObserverPlugin_EmptyNameDefaults(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	obs := NewObserverPlugin("", store)
 	assert.Equal(t, "observer", obs.Name())
 }
@@ -807,8 +807,8 @@ func TestInterruptPlugin_EmitsEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	ch, err := bus.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{EventInterruptCreated},
+	ch, err := bus.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{EventInterruptCreated},
 	})
 	require.NoError(t, err)
 
@@ -929,7 +929,7 @@ func TestLoopPlugin_EmptyNameDefaults(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPluginBus_MultiplePlugins(t *testing.T) {
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	ckptStore := newMemoryCheckpointStore()
 
 	bus := NewPluginBus()
@@ -949,7 +949,7 @@ func TestPluginBus_MultiplePlugins(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	evts, err := eventStore.Read(ctx, "exec-1", events.ReadOptions{})
+	evts, err := eventStore.Read(ctx, "exec-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	// workflow.started + workflow.completed + 2× checkpoint.saved (from BeforeStep/AfterStep)
 	assert.Len(t, evts, 4)

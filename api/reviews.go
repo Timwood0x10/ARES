@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/dashboard"
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 )
 
 // ReviewTask defines a data-driven review agent configuration.
@@ -90,7 +90,7 @@ func BuildTemplates() []dashboard.AgentTemplate {
 }
 
 // BuildToolAliases creates short-name mappings from MCP tool list.
-func BuildToolAliases(tools []mcp.MCPToolDef) map[string]string {
+func BuildToolAliases(tools []ares_mcp.MCPToolDef) map[string]string {
 	infos := make([]dashboard.MCPToolInfo, len(tools))
 	for i, t := range tools {
 		infos[i] = dashboard.MCPToolInfo{Name: t.Name, Description: t.Description}

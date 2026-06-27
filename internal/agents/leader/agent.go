@@ -17,8 +17,8 @@ import (
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -66,7 +66,7 @@ func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
 }
 
 // WithEventStore sets the event store for event sourcing.
-func WithEventStore(store events.EventStore) LeaderOption {
+func WithEventStore(store ares_events.EventStore) LeaderOption {
 	return func(a *leaderAgent) {
 		a.eventStore = store
 		// Wire event store to profile parser for LLM call tracking.
@@ -107,8 +107,8 @@ type leaderAgent struct {
 	feedbackSvc    *experience.FeedbackService
 	sessionID      string
 	checkpoint     *CheckpointRepository
-	eventStore     events.EventStore
-	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle callback events.
+	eventStore     ares_events.EventStore
+	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle callback ares_events.
 
 	// Snapshot/restore state fields for resurrection support.
 	lastTaskID          string
@@ -326,7 +326,7 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	}
 
 	// Emit agent started event.
-	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id": a.id,
 		"type":     string(a.agentType),
 	})
@@ -390,7 +390,7 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 		slog.Info("Leader agent stopped successfully", "agent_id", a.id)
 	})
 
-	a.emitEvent(ctx, events.EventAgentStopped, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
 		"agent_id": a.id,
 	})
 
@@ -475,7 +475,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 					}
 				}
 
-				a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+				a.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 					"session_id": sessionID,
 					"user_id":    a.getUserID(),
 				})
@@ -489,7 +489,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	}
 
 	if sessionID != "" {
-		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		a.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 			"session_id": sessionID,
 			"role":       "user",
 		})
@@ -544,7 +544,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	} else {
 		taskID = createTID
 		a.updateSnapshotState(taskID)
-		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 			"task_id":    taskID,
 			"session_id": sessionID,
 		})
@@ -553,9 +553,9 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	return enrichedInput, sessionID, taskID
 }
 
-// emitEvent appends a single event using the canonical events.Emit.
-func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
+// emitEvent appends a single event using the canonical ares_events.Emit.
+func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
 		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }
@@ -607,7 +607,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	}
 
 	if sessionID != "" {
-		a.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+		a.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 			"session_id": sessionID,
 			"role":       "assistant",
 		})
@@ -615,7 +615,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 	// Emit task completed event for event sourcing.
 	if taskID != "" {
-		a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 			"task_id": taskID,
 			"status":  "completed",
 		})
@@ -666,9 +666,9 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 		lid := a.id
 		a.mu.RUnlock()
 		if es != nil {
-			if emitErr := es.Append(distillCtx, lid, []*events.Event{
+			if emitErr := es.Append(distillCtx, lid, []*ares_events.Event{
 				{
-					Type: events.EventMemoryDistilled,
+					Type: ares_events.EventMemoryDistilled,
 					Payload: map[string]any{
 						"task_id":    taskID,
 						"session_id": sessionID,
@@ -808,7 +808,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	default:
 	}
 
-	a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 		"step": "parse",
 	})
 
@@ -846,7 +846,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	default:
 	}
 
-	a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
 		"step": "plan",
 	})
 
@@ -885,7 +885,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	default:
 	}
 
-	a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
 		"step": "dispatch",
 	})
 
@@ -1035,7 +1035,7 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 	return nil
 }
 
-// ReplayEvents replays a sequence of events to reconstruct state.
+// ReplayEvents replays a sequence of ares_events to reconstruct state.
 // Implements base.StatefulAgent for resurrection support.
 //
 // Supported event types:
@@ -1047,12 +1047,12 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 //
 // Args:
 //
-//	evts - ordered sequence of events to replay. Nil or empty is a safe no-op.
+//	evts - ordered sequence of ares_events to replay. Nil or empty is a safe no-op.
 //
 // Returns:
 //
-//	err - always nil for ReplayEvents; invalid events are silently skipped.
-func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
+//	err - always nil for ReplayEvents; invalid ares_events are silently skipped.
+func (a *leaderAgent) ReplayEvents(evts []*ares_events.Event) error {
 	if len(evts) == 0 {
 		return nil
 	}
@@ -1066,37 +1066,37 @@ func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				a.sessionID = sid
 			}
 
-		case events.EventMessageAdded:
+		case ares_events.EventMessageAdded:
 			msgCount++
 			if role, ok := ev.Payload["role"].(string); ok {
 				a.conversationSummary = fmt.Sprintf("last_role:%s,msg_count:%d", role, msgCount)
 			}
 
-		case events.EventTaskCreated:
+		case ares_events.EventTaskCreated:
 			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
 				a.lastTaskID = tid
 			}
 
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			// Track the most recently completed task (separate from lastTaskID which tracks "created").
 			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
 				a.lastCompletedTaskID = tid
 			}
 
-		case events.EventAgentStarted:
+		case ares_events.EventAgentStarted:
 			a.status = models.AgentStatusReady
 
-		case events.EventAgentStopped:
+		case ares_events.EventAgentStopped:
 			a.status = models.AgentStatusOffline
 		}
 	}
 
-	slog.Info("events replayed for state reconstruction",
+	slog.Info("ares_events replayed for state reconstruction",
 		"agent_id", a.id,
 		"event_count", len(evts),
 		"session_id", a.sessionID,
@@ -1142,8 +1142,8 @@ func (a *leaderAgent) Snapshot() (map[string]any, error) {
 	return snap, nil
 }
 
-// ProcessStream handles user input and returns a stream of events.
-// It follows the same workflow as Process but emits events at each phase.
+// ProcessStream handles user input and returns a stream of ares_events.
+// It follows the same workflow as Process but emits ares_events at each phase.
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	a.processingMu.Lock()
@@ -1211,7 +1211,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		}
 
 		// Parse profile.
-		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 			"step": "parse",
 		})
 
@@ -1231,7 +1231,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		}
 
 		// Plan tasks.
-		a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
 			"step": "plan",
 		})
 
@@ -1261,7 +1261,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			}
 		}
 
-		a.emitEvent(ctx, events.EventTaskDispatched, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
 			"step": "dispatch",
 		})
 

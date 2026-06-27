@@ -9,9 +9,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 )
 
 // mockMemoryManager is a mock implementation of memory.MemoryManager for testing.
@@ -58,7 +58,7 @@ func (m *mockMemoryManager) GetLatestSessionForLeader(ctx context.Context, leade
 }
 func (m *mockMemoryManager) Start(ctx context.Context) error { return nil }
 func (m *mockMemoryManager) Stop(ctx context.Context) error  { return nil }
-func (m *mockMemoryManager) SetEventStore(store events.EventStore, streamID string) {
+func (m *mockMemoryManager) SetEventStore(store ares_events.EventStore, streamID string) {
 }
 
 func TestProfileParser_Parse(t *testing.T) {
@@ -807,13 +807,13 @@ func TestRestoreState_InvalidStatus(t *testing.T) {
 	}
 }
 
-// TestReplayEvents_SessionCreated verifies session restoration from events.
+// TestReplayEvents_SessionCreated verifies session restoration from ares_events.
 func TestReplayEvents_SessionCreated(t *testing.T) {
 	_, sa := newTestLeaderAgent(t)
 
-	evts := []*events.Event{
+	evts := []*ares_events.Event{
 		{
-			Type:    events.EventSessionCreated,
+			Type:    ares_events.EventSessionCreated,
 			Payload: map[string]any{"session_id": "replay-sess", "user_id": "user-1"},
 		},
 	}
@@ -829,17 +829,17 @@ func TestReplayEvents_SessionCreated(t *testing.T) {
 	}
 }
 
-// TestReplayEvents_TaskCreated verifies task ID restoration from events.
+// TestReplayEvents_TaskCreated verifies task ID restoration from ares_events.
 func TestReplayEvents_TaskCreated(t *testing.T) {
 	_, sa := newTestLeaderAgent(t)
 
-	evts := []*events.Event{
+	evts := []*ares_events.Event{
 		{
-			Type:    events.EventSessionCreated,
+			Type:    ares_events.EventSessionCreated,
 			Payload: map[string]any{"session_id": "replay-sess"},
 		},
 		{
-			Type:    events.EventTaskCreated,
+			Type:    ares_events.EventTaskCreated,
 			Payload: map[string]any{"task_id": "replay-task", "session_id": "replay-sess"},
 		},
 	}
@@ -855,17 +855,17 @@ func TestReplayEvents_TaskCreated(t *testing.T) {
 	}
 }
 
-// TestReplayEvents_MessageAdded verifies message count tracking from events.
+// TestReplayEvents_MessageAdded verifies message count tracking from ares_events.
 func TestReplayEvents_MessageAdded(t *testing.T) {
 	_, sa := newTestLeaderAgent(t)
 
-	evts := []*events.Event{
+	evts := []*ares_events.Event{
 		{
-			Type:    events.EventMessageAdded,
+			Type:    ares_events.EventMessageAdded,
 			Payload: map[string]any{"role": "user", "session_id": "sess-1"},
 		},
 		{
-			Type:    events.EventMessageAdded,
+			Type:    ares_events.EventMessageAdded,
 			Payload: map[string]any{"role": "assistant", "session_id": "sess-1"},
 		},
 	}
@@ -882,13 +882,13 @@ func TestReplayEvents_MessageAdded(t *testing.T) {
 	}
 }
 
-// TestReplayEvents_AgentStartedStopped verifies status transitions from events.
+// TestReplayEvents_AgentStartedStopped verifies status transitions from ares_events.
 func TestReplayEvents_AgentStartedStopped(t *testing.T) {
 	_, sa := newTestLeaderAgent(t)
 
-	evts := []*events.Event{
-		{Type: events.EventAgentStarted, Payload: map[string]any{}},
-		{Type: events.EventAgentStopped, Payload: map[string]any{}},
+	evts := []*ares_events.Event{
+		{Type: ares_events.EventAgentStarted, Payload: map[string]any{}},
+		{Type: ares_events.EventAgentStopped, Payload: map[string]any{}},
 	}
 
 	err := sa.ReplayEvents(evts)
@@ -907,18 +907,18 @@ func TestReplayEvents_AgentStartedStopped(t *testing.T) {
 func TestReplayEvents_NilAndEmpty(t *testing.T) {
 	_, sa := newTestLeaderAgent(t)
 
-	// Nil events.
+	// Nil ares_events.
 	if err := sa.ReplayEvents(nil); err != nil {
 		t.Errorf("ReplayEvents(nil) error = %v", err)
 	}
 
-	// Empty events.
-	if err := sa.ReplayEvents([]*events.Event{}); err != nil {
+	// Empty ares_events.
+	if err := sa.ReplayEvents([]*ares_events.Event{}); err != nil {
 		t.Errorf("ReplayEvents(empty) error = %v", err)
 	}
 
 	// Events with nil entry.
-	if err := sa.ReplayEvents([]*events.Event{{Type: events.EventSessionCreated, Payload: nil}, nil}); err != nil {
+	if err := sa.ReplayEvents([]*ares_events.Event{{Type: ares_events.EventSessionCreated, Payload: nil}, nil}); err != nil {
 		t.Errorf("ReplayEvents(with nil) error = %v", err)
 	}
 }

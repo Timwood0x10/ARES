@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/tools/resources/agent"
 	"github.com/Timwood0x10/ares/internal/tools/resources/builtin"
@@ -238,9 +238,9 @@ func (cs *ConversationSession) ShowMemory() string {
 	return strings.Join(cs.memory, "\n")
 }
 
-func createAgents(cfg *config.Config, llmClient *llm.Client) ([]*DialogAgent, error) {
+func createAgents(cfg *ares_config.Config, llmClient *llm.Client) ([]*DialogAgent, error) {
 	if len(cfg.Tools.Agents) == 0 {
-		return nil, fmt.Errorf("no agent config")
+		return nil, fmt.Errorf("no agent ares_config")
 	}
 
 	var agents []*DialogAgent
@@ -265,17 +265,17 @@ func main() {
 
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
-		cfgPath = "./config/server.yaml"
+		cfgPath = "./ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := ares_config.Load(cfgPath)
 	if err != nil {
-		slog.Error("Load config failed", "error", err)
+		slog.Error("Load ares_config failed", "error", err)
 		os.Exit(1)
 	}
 
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Load env config failed", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Load env ares_config failed", "error", err)
 		os.Exit(1)
 	}
 

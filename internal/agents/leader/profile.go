@@ -8,7 +8,7 @@ import (
 	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -19,7 +19,7 @@ type profileParser struct {
 	promptTpl  string
 	validator  *output.Validator
 	maxRetries int
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 }
 
 // NewProfileParser creates a new ProfileParser with LLM support.
@@ -43,13 +43,13 @@ func NewProfileParser(
 }
 
 // WithEventStore sets the event store for LLM call tracking.
-func (p *profileParser) WithEventStore(store events.EventStore) {
+func (p *profileParser) WithEventStore(store ares_events.EventStore) {
 	p.eventStore = store
 }
 
-// emitEvent appends a single event using the canonical events.Emit.
-func (p *profileParser) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if events.Emit(ctx, p.eventStore, "profile-parser", eventType, payload) {
+// emitEvent appends a single event using the canonical ares_events.Emit.
+func (p *profileParser) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if ares_events.Emit(ctx, p.eventStore, "profile-parser", eventType, payload) {
 		slog.Debug("event emitted", "type", eventType)
 	}
 }
@@ -102,7 +102,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 	// Call LLM
 	response, err := p.llmAdapter.Generate(ctx, prompt)
 	if err != nil {
-		p.emitEvent(ctx, events.EventLLMCall, map[string]any{
+		p.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 			"purpose": "profile_parsing",
 			"model":   p.llmAdapter.GetModel(),
 			"error":   err.Error(),
@@ -111,7 +111,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 		return nil, errors.WrapError(apperrors.ErrLLMGenerateFailed, err)
 	}
 
-	p.emitEvent(ctx, events.EventLLMCall, map[string]any{
+	p.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 		"purpose":    "profile_parsing",
 		"model":      p.llmAdapter.GetModel(),
 		"input_len":  len(prompt),
