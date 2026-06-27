@@ -82,7 +82,7 @@ func (p *InterruptPlugin) emitInterruptEvent(executionID, stepID, action, feedba
 	if p.bus == nil {
 		return
 	}
-	p.bus.Emit(context.Background(), executionID, EventInterruptCreated, map[string]any{
+	p.bus.Emit(context.Background(), executionID, EventInterruptCreated, "runtime", map[string]any{
 		PayloadKeyExecutionID: executionID,
 		PayloadKeyStepID:      stepID,
 		"action":              action,

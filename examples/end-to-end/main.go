@@ -1166,7 +1166,7 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	}
 
 	// Emit crash event to EventStore for audit trail.
-	ares_events.Emit(ctx, eventStore, agentID, ares_events.EventAgentStopped, map[string]any{
+	ares_events.Emit(ctx, eventStore, agentID, ares_events.EventAgentStopped, "example", map[string]any{
 		"reason": "crash_simulation",
 	})
 	slog.Info("Agent stopped (crash simulated)",
@@ -1329,7 +1329,7 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	}
 
 	// Emit post-restoration event to EventStore (demonstrates continued event sourcing).
-	ares_events.Emit(ctx, eventStore, newAgent.ID(), ares_events.EventTaskCompleted, map[string]any{
+	ares_events.Emit(ctx, eventStore, newAgent.ID(), ares_events.EventTaskCompleted, "example", map[string]any{
 		"task":            followUpTask,
 		"restore_session": originalSessionID,
 		"result":          restoreResultStr,
@@ -1404,33 +1404,33 @@ func emitLifecycleEvents(ctx context.Context, store ares_events.EventStore, agen
 	sessionID := fmt.Sprintf("session-%s-%d", agentID, time.Now().UnixNano())
 
 	// Event 1: Agent started.
-	ares_events.Emit(ctx, store, agentID, ares_events.EventAgentStarted, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventAgentStarted, "example", map[string]any{
 		"agent_type": "leader",
 		"session_id": sessionID,
 	})
 
 	// Event 2: Session created.
-	ares_events.Emit(ctx, store, agentID, ares_events.EventSessionCreated, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventSessionCreated, "example", map[string]any{
 		"session_id": sessionID,
 		"user_id":    "demo-user",
 	})
 
 	// Event 3: Task created (the sample input from Phase 2).
-	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCreated, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCreated, "example", map[string]any{
 		"task_id":    "task-e2e-demo-001",
 		"session_id": sessionID,
 		"input":      "请分析Python项目中的代码质量，重点关注性能瓶颈和安全隐患",
 	})
 
 	// Event 4: Message added (user request).
-	ares_events.Emit(ctx, store, agentID, ares_events.EventMessageAdded, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventMessageAdded, "example", map[string]any{
 		"session_id": sessionID,
 		"role":       "user",
 		"content":    "请分析Python项目中的代码质量",
 	})
 
 	// Event 5: Task completed (result from Phase 2).
-	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCompleted, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCompleted, "example", map[string]any{
 		"task_id":    "task-e2e-demo-001",
 		"session_id": sessionID,
 		"result":     "analysis completed successfully",

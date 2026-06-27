@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,14 +33,14 @@ func (e *DynamicExecutor) applyRoundMutations(ctx context.Context, round int, ex
 				CurrentStepID: "",
 			})
 			if err != nil {
-				slog.Warn("round mutation: memory advise failed",
+				log.Warn("round mutation: memory advise failed",
 					"round", round, "execution_id", execution.ID, "error", err,
 				)
 				continue
 			}
 			for _, a := range advice {
 				if a.NextStepID != "" && a.Confidence >= 0.5 {
-					slog.Debug("round mutation: memory suggests path",
+					log.Debug("round mutation: memory suggests path",
 						"round", round, "next_step", a.NextStepID,
 						"confidence", a.Confidence,
 					)
@@ -68,13 +67,13 @@ func (e *DynamicExecutor) applyRoundMutations(ctx context.Context, round int, ex
 				CurrentStepID: "",
 			})
 			if err != nil {
-				slog.Warn("round mutation: evolution recommend failed",
+				log.Warn("round mutation: evolution recommend failed",
 					"round", round, "execution_id", execution.ID, "error", err,
 				)
 				continue
 			}
 			if rec != nil && rec.PreferredAgent != "" {
-				slog.Debug("round mutation: evolution suggests agent",
+				log.Debug("round mutation: evolution suggests agent",
 					"round", round, "preferred_agent", rec.PreferredAgent,
 				)
 				// PreferredAgent influences next round's agent selection.
@@ -106,7 +105,7 @@ func (e *DynamicExecutor) flushCheckpoint(ctx context.Context, executionID strin
 	for _, p := range e.pluginBus.PluginsByCap(ares_runtime.CapCheckpoint) {
 		if f, ok := p.(ares_runtime.Flusher); ok {
 			if err := f.Flush(ctx, executionID); err != nil {
-				slog.Warn("checkpoint flush failed",
+				log.Warn("checkpoint flush failed",
 					"execution_id", executionID,
 					"error", err,
 				)
@@ -252,7 +251,7 @@ func (e *DynamicExecutor) ExecuteDynamic(
 	}
 
 	if e.pluginBus != nil {
-		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, map[string]any{
+		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, "workflow", map[string]any{
 			ares_runtime.PayloadKeyExecutionID: execution.ID,
 			ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 		})
@@ -333,7 +332,7 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 	}
 
 	if e.pluginBus != nil {
-		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, map[string]any{
+		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, "workflow", map[string]any{
 			ares_runtime.PayloadKeyExecutionID: execution.ID,
 			ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 			"resumed":                          true,
@@ -419,7 +418,7 @@ func (e *DynamicExecutor) execLoop(
 				execution.FinishedAt = time.Now()
 				e.flushCheckpoint(ctx, execution.ID)
 				if e.pluginBus != nil {
-					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, map[string]any{
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: execution.ID,
 						ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 						ares_runtime.PayloadKeyStatus:      execution.Status,
@@ -507,7 +506,7 @@ func (e *DynamicExecutor) execLoop(
 					// Round completed successfully.
 					// Check if another round is needed.
 					if loopPlugin != nil && loopPlugin.ShouldExecuteRound(round+1, execution.Variables) {
-						slog.Debug("evolutionary loop: round completed, starting next",
+						log.Debug("evolutionary loop: round completed, starting next",
 							"round", round,
 							"execution_id", execution.ID,
 						)
@@ -523,7 +522,7 @@ func (e *DynamicExecutor) execLoop(
 					execution.FinishedAt = time.Now()
 					e.flushCheckpoint(ctx, execution.ID)
 					if e.pluginBus != nil {
-						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, map[string]any{
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, "workflow", map[string]any{
 							ares_runtime.PayloadKeyExecutionID: execution.ID,
 							ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 							ares_runtime.PayloadKeyStatus:      execution.Status,
@@ -563,7 +562,7 @@ func (e *DynamicExecutor) execLoop(
 					execution.FinishedAt = time.Now()
 					e.flushCheckpoint(ctx, execution.ID)
 					if e.pluginBus != nil {
-						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, map[string]any{
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, "workflow", map[string]any{
 							ares_runtime.PayloadKeyExecutionID: execution.ID,
 							ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 							ares_runtime.PayloadKeyStatus:      execution.Status,
@@ -587,7 +586,7 @@ func (e *DynamicExecutor) execLoop(
 				if result.Status == StepStatusCompleted && e.pluginBus != nil {
 					decision := e.handleStepRouting(ctx, execution, result, mutableDAG, currentOrder)
 					if decision != nil {
-						slog.Debug("route decision",
+						log.Debug("route decision",
 							"execution_id", execution.ID,
 							"from_step", result.StepID,
 							"to_step", decision.NextStepID,
@@ -621,7 +620,7 @@ func (e *DynamicExecutor) execLoop(
 				execution.FinishedAt = time.Now()
 				e.flushCheckpoint(ctx, execution.ID)
 				if e.pluginBus != nil {
-					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, map[string]any{
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: execution.ID,
 						ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 						ares_runtime.PayloadKeyStatus:      execution.Status,
@@ -824,7 +823,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 
 			// Check for HITL interrupt before dispatching the step goroutine.
 			if step.Interrupt != nil && e.hitlHandler == nil {
-				slog.Warn("step has interrupt config but no HITL handler, skipping interrupt check",
+				log.Warn("step has interrupt config but no HITL handler, skipping interrupt check",
 					"step_id", step.ID)
 			}
 			if step.Interrupt != nil && e.hitlHandler != nil {
@@ -868,13 +867,13 @@ func (e *DynamicExecutor) runDynamicSteps(
 
 				if e.pluginBus != nil {
 					if err := e.pluginBus.BeforeStep(ctx, execution.ID, toRuntimeStep(step)); err != nil {
-						slog.Warn("before step hook failed (continuing)",
+						log.Warn("before step hook failed (continuing)",
 							"step_id", sid,
 							"execution_id", execution.ID,
 							"error", err,
 						)
 					}
-					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepStarted, map[string]any{
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepStarted, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: execution.ID,
 						ares_runtime.PayloadKeyStepID:      sid,
 					})
@@ -893,14 +892,14 @@ func (e *DynamicExecutor) runDynamicSteps(
 					// Call AfterStep before emitting ares_events so plugins can
 					// record/modify state before observers see the result.
 					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
-						slog.Warn("after step hook failed (continuing)",
+						log.Warn("after step hook failed (continuing)",
 							"step_id", sid,
 							"execution_id", execution.ID,
 							"error", err,
 						)
 					}
 					if result.Status == StepStatusFailed {
-						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepFailed, map[string]any{
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepFailed, "workflow", map[string]any{
 							ares_runtime.PayloadKeyExecutionID: execution.ID,
 							ares_runtime.PayloadKeyStepID:      sid,
 							ares_runtime.PayloadKeyStatus:      result.Status,
@@ -908,7 +907,7 @@ func (e *DynamicExecutor) runDynamicSteps(
 							ares_runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 						})
 					} else {
-						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepCompleted, map[string]any{
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepCompleted, "workflow", map[string]any{
 							ares_runtime.PayloadKeyExecutionID: execution.ID,
 							ares_runtime.PayloadKeyStepID:      sid,
 							ares_runtime.PayloadKeyStatus:      result.Status,
@@ -1036,7 +1035,7 @@ func (e *DynamicExecutor) handleDynamicInterrupt(
 	// Save to store for crash recovery.
 	if e.hitlStore != nil {
 		if err := e.hitlStore.Save(ctx, executionID, point); err != nil {
-			slog.Warn("failed to save interrupt point", "error", err, "step_id", step.ID)
+			log.Warn("failed to save interrupt point", "error", err, "step_id", step.ID)
 		}
 	}
 

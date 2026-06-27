@@ -2,7 +2,6 @@ package sub
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -410,7 +409,7 @@ func (a *subAgent) ReplayEvents(evts []*ares_events.Event) error {
 		}
 		switch ev.Type {
 		case ares_events.EventTaskCompleted:
-			slog.Debug("sub-agent replayed task completion",
+			log.Debug("sub-agent replayed task completion",
 				"agent_id", a.id,
 				"task_id", ev.Payload["task_id"],
 			)
@@ -432,7 +431,7 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (a *subAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
-		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
+	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "sub", payload) {
+		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }

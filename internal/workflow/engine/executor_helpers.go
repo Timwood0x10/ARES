@@ -132,7 +132,7 @@ func (e *DynamicExecutor) handleStepRouting(
 		return nil
 	}
 
-	e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventRouteDecided, map[string]any{
+	e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventRouteDecided, "workflow", map[string]any{
 		ares_runtime.PayloadKeyExecutionID: execution.ID,
 		ares_runtime.PayloadKeyStepID:      result.StepID,
 		ares_runtime.PayloadKeyRouteReason: decision.Reason,

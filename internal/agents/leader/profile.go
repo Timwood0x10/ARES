@@ -49,7 +49,7 @@ func (p *profileParser) WithEventStore(store ares_events.EventStore) {
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (p *profileParser) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if ares_events.Emit(ctx, p.eventStore, "profile-parser", eventType, payload) {
+	if ares_events.Emit(ctx, p.eventStore, "profile-parser", eventType, "leader", payload) {
 		slog.Debug("event emitted", "type", eventType)
 	}
 }

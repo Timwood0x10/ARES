@@ -348,7 +348,7 @@ func TestPluginBus_EmitAndSubscribe(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	b.Emit(ctx, "stream-1", EventWorkflowStarted, map[string]any{"key": "val"})
+	b.Emit(ctx, "stream-1", EventWorkflowStarted, "test", map[string]any{"key": "val"})
 
 	select {
 	case evt := <-ch:
@@ -372,7 +372,7 @@ func TestPluginBus_EmitFiltered_NoMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	b.Emit(ctx, "stream-1", EventWorkflowStarted, nil)
+	b.Emit(ctx, "stream-1", EventWorkflowStarted, "test", nil)
 
 	// Should NOT receive EventWorkflowStarted.
 	select {
@@ -398,7 +398,7 @@ func TestPluginBus_Emit_NonBlocking(t *testing.T) {
 	// Send 128 ares_events. The channel buffer is 64, so ~64 should be dropped
 	// without blocking.
 	for i := 0; i < 128; i++ {
-		b.Emit(ctx, "s", EventWorkflowStarted, nil)
+		b.Emit(ctx, "s", EventWorkflowStarted, "test", nil)
 	}
 
 	// Drain whatever we got.
@@ -473,8 +473,8 @@ func TestObserverPlugin_RecordsEvents(t *testing.T) {
 	require.NoError(t, bus.Start(context.Background()))
 
 	ctx := context.Background()
-	bus.Emit(ctx, "exec-1", EventWorkflowStarted, map[string]any{"key": "val"})
-	bus.Emit(ctx, "exec-1", EventWorkflowCompleted, map[string]any{"key2": "val2"})
+	bus.Emit(ctx, "exec-1", EventWorkflowStarted, "test", map[string]any{"key": "val"})
+	bus.Emit(ctx, "exec-1", EventWorkflowCompleted, "test", map[string]any{"key2": "val2"})
 
 	// Give the observer goroutine time to process.
 	time.Sleep(50 * time.Millisecond)
@@ -499,9 +499,9 @@ func TestObserverPlugin_OnlySubscribesToWorkflowEvents(t *testing.T) {
 
 	ctx := context.Background()
 	// Emit a workflow event (should be recorded).
-	bus.Emit(ctx, "exec-1", EventWorkflowStarted, nil)
+	bus.Emit(ctx, "exec-1", EventWorkflowStarted, "test", nil)
 	// Emit a non-workflow event (should be filtered out).
-	bus.Emit(ctx, "exec-1", ares_events.EventAgentStarted, nil)
+	bus.Emit(ctx, "exec-1", ares_events.EventAgentStarted, "test", nil)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -942,10 +942,10 @@ func TestPluginBus_MultiplePlugins(t *testing.T) {
 
 	ctx := context.Background()
 
-	bus.Emit(ctx, "exec-1", EventWorkflowStarted, nil)
+	bus.Emit(ctx, "exec-1", EventWorkflowStarted, "test", nil)
 	_ = bus.BeforeStep(ctx, "exec-1", &Step{ID: "s1"})
 	_ = bus.AfterStep(ctx, "exec-1", &StepResult{StepID: "s1", Status: StepStatusCompleted})
-	bus.Emit(ctx, "exec-1", EventWorkflowCompleted, nil)
+	bus.Emit(ctx, "exec-1", EventWorkflowCompleted, "test", nil)
 
 	time.Sleep(100 * time.Millisecond)
 

@@ -126,8 +126,8 @@ func (e *taskExecutor) emitCallback(ctx *ares_callbacks.Context) {
 // emitEvent appends a single event using the canonical ares_events.Emit helper.
 // No-op if eventStore is nil.
 func (e *taskExecutor) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if !ares_events.Emit(ctx, e.eventStore, e.agentID, eventType, payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", e.agentID)
+	if !ares_events.Emit(ctx, e.eventStore, e.agentID, eventType, "sub", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", e.agentID)
 	}
 }
 
@@ -208,11 +208,11 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 	// Execute LLM-based recommendation
 	items, err := e.executeWithLLM(ctx, task, profile)
 	if err != nil {
-		slog.Debug("LLM execution failed, using fallback", "error", err)
+		log.Debug("LLM execution failed, using fallback", "error", err)
 		// Fallback to type-specific execution
 		fallbackItems, reason, fallbackErr := e.executeByType(ctx, task)
 		if fallbackErr != nil {
-			slog.Debug("Fallback also failed", "error", fallbackErr)
+			log.Debug("Fallback also failed", "error", fallbackErr)
 			result.SetError(err.Error())
 			e.emitCallback(&ares_callbacks.Context{
 				Event:    ares_callbacks.EventToolError,
@@ -222,7 +222,7 @@ func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.
 			})
 			return result, nil
 		}
-		slog.Debug("Using fallback", "item_count", len(fallbackItems))
+		log.Debug("Using fallback", "item_count", len(fallbackItems))
 		result.SetSuccess(fallbackItems, reason)
 		result.Duration = time.Since(startTime)
 		e.emitCallback(&ares_callbacks.Context{
@@ -248,7 +248,7 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, pr
 	for attempt := 0; attempt < e.maxRetries; attempt++ {
 		if attempt > 0 {
 			if nonIdempotent := e.listNonIdempotentTools(); len(nonIdempotent) > 0 {
-				slog.Error("LLM retry blocked: non-idempotent tools may have been called",
+				log.Error("LLM retry blocked: non-idempotent tools may have been called",
 					"attempt", attempt+1,
 					"max_retries", e.maxRetries,
 					"tools", nonIdempotent,
@@ -260,17 +260,17 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, pr
 		items, err := e.executeWithLLMSingle(ctx, task, profile)
 		if err != nil {
 			lastErr = err
-			slog.Error("LLM call failed", "attempt", attempt+1, "error", err)
+			log.Error("LLM call failed", "attempt", attempt+1, "error", err)
 			continue
 		}
 
 		// Validate results using validator
 		if e.validator != nil {
 			if err := e.validator.ValidateRecommendResult(&models.RecommendResult{Items: items}); err != nil {
-				slog.Debug("Validation failed", "error", err)
+				log.Debug("Validation failed", "error", err)
 				// Retry if enabled and not already at max retries
 				if e.retryOnFail && attempt < e.maxRetries-1 {
-					slog.Debug("Will retry LLM call", "next_attempt", attempt+2, "max_retries", e.maxRetries)
+					log.Debug("Will retry LLM call", "next_attempt", attempt+2, "max_retries", e.maxRetries)
 					continue
 				}
 				// Strict mode: return error
@@ -278,13 +278,13 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task, pr
 					return nil, errors.Wrap(err, "validation failed")
 				}
 				// Non-strict mode: log and continue with whatever we got
-				slog.Debug("Continuing with unvalidated result", "strict_mode", false)
+				log.Debug("Continuing with unvalidated result", "strict_mode", false)
 			} else {
-				slog.Debug("Validation passed")
+				log.Debug("Validation passed")
 			}
 		}
 
-		slog.Info("Got items from LLM", "count", len(items))
+		log.Info("Got items from LLM", "count", len(items))
 		return items, nil
 	}
 
@@ -318,7 +318,7 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	if err != nil {
 		return nil, errors.Wrap(err, "render prompt")
 	}
-	slog.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
+	log.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
 
 	// Call LLM
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
@@ -334,7 +334,7 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		})
 		return nil, errors.Wrap(err, "LLM call failed")
 	}
-	slog.Debug("LLM response", "preview", response[:min(500, len(response))])
+	log.Debug("LLM response", "preview", response[:min(500, len(response))])
 
 	// Parse response
 	parser := output.NewParser()
@@ -347,7 +347,7 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		return nil, errors.New("empty result from LLM")
 	}
 
-	slog.Info("Parsed result items", "count", len(result.Items))
+	log.Info("Parsed result items", "count", len(result.Items))
 	return result.Items, nil
 }
 
@@ -378,10 +378,10 @@ func (e *taskExecutor) listNonIdempotentTools() []string {
 // with a warning (graceful degradation instead of hard error).
 func (e *taskExecutor) executeByType(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error) {
 	if handler, ok := e.fallbackHandlers[task.AgentType]; ok {
-		slog.Debug("executeByType: using registered fallback", "agent_type", task.AgentType)
+		log.Debug("executeByType: using registered fallback", "agent_type", task.AgentType)
 		return handler(ctx, task)
 	}
-	slog.Warn("executeByType: no fallback handler registered",
+	log.Warn("executeByType: no fallback handler registered",
 		"agent_type", task.AgentType,
 		"task_id", task.TaskID,
 	)

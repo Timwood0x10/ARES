@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -62,7 +61,7 @@ func (p *BasicRecoveryPlugin) ShouldRecover(_ context.Context, failure StepFailu
 	defer p.mu.Unlock()
 	ok := p.allowlist[failure.StepID]
 	if ok {
-		slog.Debug("recovery plugin: allowing recovery",
+		log.Debug("recovery plugin: allowing recovery",
 			"step_id", failure.StepID,
 			"execution_id", failure.ExecutionID,
 		)

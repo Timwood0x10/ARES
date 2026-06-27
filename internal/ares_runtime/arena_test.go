@@ -103,7 +103,7 @@ func TestObserverPlugin_FailureDoesNotBlockBus(t *testing.T) {
 	require.NoError(t, bus.Start(context.Background()))
 
 	// Emit an event — the observer should log a warning but not block.
-	bus.Emit(context.Background(), "exec-1", EventWorkflowStarted, nil)
+	bus.Emit(context.Background(), "exec-1", EventWorkflowStarted, "test", nil)
 	time.Sleep(50 * time.Millisecond)
 
 	// Bus should still work for other operations.

@@ -700,7 +700,7 @@ func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]
 	if store == nil {
 		return
 	}
-	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), payload) {
+	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), "dashboard", payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }

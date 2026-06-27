@@ -138,9 +138,10 @@ type StepFailure struct {
 // structured ares_events that are fanned out to all subscribers.
 type EventBus interface {
 	// Emit publishes an event with the given stream ID to all subscribers.
+	// moduleName identifies the emitting module for traceability.
 	// Implementations MUST NOT block on slow subscribers (drop ares_events if
 	// buffers are full).
-	Emit(ctx context.Context, streamID string, eventType ares_events.EventType, payload map[string]any)
+	Emit(ctx context.Context, streamID string, eventType ares_events.EventType, moduleName string, payload map[string]any)
 
 	// Subscribe returns a channel that receives ares_events matching the filter.
 	// The channel is closed when the context is cancelled.

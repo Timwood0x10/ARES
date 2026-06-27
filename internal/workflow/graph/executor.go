@@ -5,7 +5,6 @@ package graph
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_observability"
@@ -86,7 +85,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			if iteration == 1 && len(initialExecuted) > 0 {
 				payload["resumed"] = true
 			}
-			g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowStarted, payload)
+			g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowStarted, "workflow", payload)
 		}
 
 		executed := make(map[string]bool)
@@ -158,7 +157,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			select {
 			case <-ctx.Done():
 				if g.pluginBus != nil {
-					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, map[string]any{
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: g.id,
 						ares_runtime.PayloadKeyWorkflowID:  g.id,
 						ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusFailed,
@@ -174,11 +173,11 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			step := &ares_runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
 			if g.pluginBus != nil {
 				if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
-					slog.Warn("graph: before step hook failed (continuing)",
+					log.Warn("graph: before step hook failed (continuing)",
 						"graph_id", g.id, "node", nodeID, "error", err,
 					)
 				}
-				g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepStarted, map[string]any{
+				g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepStarted, "workflow", map[string]any{
 					ares_runtime.PayloadKeyExecutionID: g.id,
 					ares_runtime.PayloadKeyStepID:      nodeID,
 				})
@@ -218,12 +217,12 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 			if g.pluginBus != nil {
 				if err := g.pluginBus.AfterStep(ctx, g.id, stepResult); err != nil {
-					slog.Warn("graph: after step hook failed (continuing)",
+					log.Warn("graph: after step hook failed (continuing)",
 						"graph_id", g.id, "node", nodeID, "error", err,
 					)
 				}
 				if execErr != nil {
-					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepFailed, map[string]any{
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepFailed, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: g.id,
 						ares_runtime.PayloadKeyStepID:      nodeID,
 						ares_runtime.PayloadKeyStatus:      stepResult.Status,
@@ -231,7 +230,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 						ares_runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
 					})
 				} else {
-					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepCompleted, map[string]any{
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepCompleted, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: g.id,
 						ares_runtime.PayloadKeyStepID:      nodeID,
 						ares_runtime.PayloadKeyStatus:      stepResult.Status,
@@ -242,7 +241,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 			if execErr != nil {
 				if g.pluginBus != nil {
-					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, map[string]any{
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, "workflow", map[string]any{
 						ares_runtime.PayloadKeyExecutionID: g.id,
 						ares_runtime.PayloadKeyWorkflowID:  g.id,
 						ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusFailed,
@@ -322,15 +321,15 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 				if loop, ok := loopPlugins[0].(*ares_runtime.LoopPlugin); ok {
 					cfg := loop.Config()
 					if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
-						slog.Debug("graph: loop max iterations reached",
+						log.Debug("graph: loop max iterations reached",
 							"graph_id", g.id, "iteration", iteration, "max", cfg.MaxIterations,
 						)
 					} else if cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()) {
-						slog.Debug("graph: loop until condition met",
+						log.Debug("graph: loop until condition met",
 							"graph_id", g.id, "iteration", iteration,
 						)
 					} else {
-						slog.Debug("graph: loop iteration completed, continuing",
+						log.Debug("graph: loop iteration completed, continuing",
 							"graph_id", g.id, "iteration", iteration,
 						)
 						continue
@@ -343,7 +342,7 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 	}
 
 	if g.pluginBus != nil {
-		g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowCompleted, map[string]any{
+		g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowCompleted, "workflow", map[string]any{
 			ares_runtime.PayloadKeyExecutionID: g.id,
 			ares_runtime.PayloadKeyWorkflowID:  g.id,
 			ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusCompleted,

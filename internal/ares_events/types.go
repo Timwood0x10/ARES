@@ -10,13 +10,14 @@ import (
 
 // Event represents something that happened in the system.
 type Event struct {
-	ID        string         `json:"id"`
-	StreamID  string         `json:"stream_id"`
-	Type      EventType      `json:"type"`
-	Payload   map[string]any `json:"payload"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Version   int64          `json:"version"`
-	Timestamp time.Time      `json:"timestamp"`
+	ID         string         `json:"id"`
+	StreamID   string         `json:"stream_id"`
+	Type       EventType      `json:"type"`
+	ModuleName string         `json:"module_name,omitempty"`
+	Payload    map[string]any `json:"payload"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Version    int64          `json:"version"`
+	Timestamp  time.Time      `json:"timestamp"`
 }
 
 // EventType classifies events.

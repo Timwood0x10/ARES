@@ -53,7 +53,7 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	if !ares_events.Emit(context.Background(), b.store, b.agentID, eventType, payload) {
+	if !ares_events.Emit(context.Background(), b.store, b.agentID, eventType, "callbacks", payload) {
 		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
 	}
 }

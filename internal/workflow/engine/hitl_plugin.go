@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
@@ -71,13 +70,13 @@ func (p *HITLFeedbackPlugin) emitEvent(executionID, stepID, action, feedback str
 	if p.bus == nil {
 		return
 	}
-	p.bus.Emit(context.Background(), executionID, ares_runtime.EventInterruptCreated, map[string]any{
+	p.bus.Emit(context.Background(), executionID, ares_runtime.EventInterruptCreated, "workflow", map[string]any{
 		ares_runtime.PayloadKeyExecutionID: executionID,
 		ares_runtime.PayloadKeyStepID:      stepID,
 		"action":                           action,
 		"feedback":                         feedback,
 	})
-	slog.Debug("hitl feedback plugin: recorded interrupt",
+	log.Debug("hitl feedback plugin: recorded interrupt",
 		"execution_id", executionID,
 		"step_id", stepID,
 		"action", action,

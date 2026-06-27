@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,7 +188,7 @@ func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 	m.currentTenantID = tenantID
 	m.mu.Unlock()
 
-	slog.Debug("Tenant ID set", "tenant_id", tenantID)
+	log.Debug("Tenant ID set", "tenant_id", tenantID)
 	return nil
 }
 
@@ -202,8 +201,8 @@ func (m *ProductionMemoryManager) SetEventStore(store ares_events.EventStore, st
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (m *ProductionMemoryManager) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if !ares_events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
+	if !ares_events.Emit(ctx, m.eventStore, m.streamID, eventType, "memory", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
 	}
 }
 
@@ -239,7 +238,7 @@ func (m *ProductionMemoryManager) Start(ctx context.Context) error {
 	}
 
 	m.started = true
-	slog.Info("Production memory manager started")
+	log.Info("Production memory manager started")
 	return nil
 }
 
@@ -269,7 +268,7 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 	stopCtx, stopCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer stopCancel()
 	if err := m.writeBuffer.Stop(stopCtx); err != nil {
-		slog.Warn("Failed to stop write buffer", "error", err)
+		log.Warn("Failed to stop write buffer", "error", err)
 	}
 
 	// Clear cache
@@ -278,7 +277,7 @@ func (m *ProductionMemoryManager) Stop(ctx context.Context) error {
 	// Reset lifecycle flags to allow restart
 	m.stopped = true
 	m.started = false
-	slog.Info("Production memory manager stopped")
+	log.Info("Production memory manager stopped")
 	return nil
 }
 
@@ -324,7 +323,7 @@ func (m *ProductionMemoryManager) CreateSession(ctx context.Context, userID stri
 		"user_id":    userID,
 	})
 
-	slog.Debug("Session created", "session_id", sessionID, "user_id", userID)
+	log.Debug("Session created", "session_id", sessionID, "user_id", userID)
 	return sessionID, nil
 }
 
@@ -368,7 +367,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 	// If user ID not found in cache, use a default value
 	// In production, you might want to extract this from context or other sources
 	if userID == "" {
-		slog.Warn("session not found in cache, message assigned to anonymous user",
+		log.Warn("session not found in cache, message assigned to anonymous user",
 			"session_id", sessionID)
 		userID = "anonymous"
 	}
@@ -401,7 +400,7 @@ func (m *ProductionMemoryManager) AddMessage(ctx context.Context, sessionID, rol
 		"role":       role,
 	})
 
-	slog.Debug("Message added", "session_id", sessionID, "role", role)
+	log.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
 }
 
@@ -524,7 +523,7 @@ func (m *ProductionMemoryManager) AddStructuredMessage(ctx context.Context, sess
 		"role":       msg.Role,
 	})
 
-	slog.Debug("Structured message added", "session_id", sessionID, "role", msg.Role)
+	log.Debug("Structured message added", "session_id", sessionID, "role", msg.Role)
 	return nil
 }
 
@@ -590,7 +589,7 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 
 	stats := m.ctxCleaner.Stats()
 	if stats.BytesSaved > 0 || stats.DroppedToolMessages > 0 {
-		slog.Debug("Prompt messages cleaned", "session_id", sessionID,
+		log.Debug("Prompt messages cleaned", "session_id", sessionID,
 			"history_in", stats.HistoryIn,
 			"history_out", stats.HistoryOut,
 			"bytes_saved", stats.BytesSaved,
@@ -628,7 +627,7 @@ func (m *ProductionMemoryManager) DeleteSession(ctx context.Context, sessionID s
 	delete(m.sessionCache, sessionID)
 	m.mu.Unlock()
 
-	slog.Debug("Session deleted", "session_id", sessionID, "tenant_id", tenantID, "deleted_messages", deletedCount)
+	log.Debug("Session deleted", "session_id", sessionID, "tenant_id", tenantID, "deleted_messages", deletedCount)
 	return nil
 }
 
@@ -641,7 +640,7 @@ func (m *ProductionMemoryManager) DeleteSession(ctx context.Context, sessionID s
 func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
 	messages, err := m.GetMessages(ctx, sessionID)
 	if err != nil {
-		slog.Warn("Failed to get messages, using raw input", "error", err)
+		log.Warn("Failed to get messages, using raw input", "error", err)
 		return input, nil
 	}
 
@@ -678,14 +677,14 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 
 	stats := m.ctxCleaner.Stats()
 	if stats.BytesSaved > 0 {
-		slog.Debug("Context cleaned", "session_id", sessionID,
+		log.Debug("Context cleaned", "session_id", sessionID,
 			"history_in", stats.HistoryIn,
 			"history_out", stats.HistoryOut,
 			"bytes_saved", stats.BytesSaved,
 			"tool_calls", stats.ToolCalls)
 	}
 
-	slog.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
+	log.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
 	return contextBuilder, nil
 }
 
@@ -727,7 +726,7 @@ func (m *ProductionMemoryManager) CreateTask(ctx context.Context, sessionID, use
 		return "", errors.Wrap(err, "create task result")
 	}
 
-	slog.Debug("Task created", "task_id", taskID, "session_id", sessionID)
+	log.Debug("Task created", "task_id", taskID, "session_id", sessionID)
 	return taskID, nil
 }
 
@@ -763,7 +762,7 @@ func (m *ProductionMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, 
 		return errors.Wrap(err, "update task result")
 	}
 
-	slog.Debug("Task output updated", "task_id", taskID)
+	log.Debug("Task output updated", "task_id", taskID)
 	return nil
 }
 
@@ -805,7 +804,7 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 		"input_count": inputCount,
 	})
 
-	slog.Debug("Task distilled", "task_id", taskID)
+	log.Debug("Task distilled", "task_id", taskID)
 	return task, nil
 }
 
@@ -834,12 +833,12 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	// Extract problem and solution from distilled payload.
 	inputStr, ok := distilled.Payload["input"].(string)
 	if !ok {
-		slog.Warn("StoreProductionMemory: missing or invalid input", "task_id", taskID)
+		log.Warn("StoreProductionMemory: missing or invalid input", "task_id", taskID)
 		inputStr = ""
 	}
 	outputStr, ok := distilled.Payload["output"].(string)
 	if !ok {
-		slog.Warn("StoreProductionMemory: missing or invalid output", "task_id", taskID)
+		log.Warn("StoreProductionMemory: missing or invalid output", "task_id", taskID)
 		outputStr = ""
 	}
 
@@ -872,7 +871,7 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 		"output_count": 1,
 	})
 
-	slog.Debug("Distilled task queued for async embedding", "task_id", taskID)
+	log.Debug("Distilled task queued for async embedding", "task_id", taskID)
 	return nil
 }
 
@@ -934,7 +933,7 @@ func (m *ProductionMemoryManager) SearchSimilarTasks(ctx context.Context, query 
 		}
 	}
 
-	slog.Debug("Similar experiences found", "query", query, "count", len(tasks))
+	log.Debug("Similar experiences found", "query", query, "count", len(tasks))
 	return tasks, nil
 }
 

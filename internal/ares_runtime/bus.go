@@ -96,13 +96,13 @@ func (b *PluginBus) Start(ctx context.Context) error {
 	var errs []error
 	for _, p := range b.plugins {
 		if err := b.invokeStart(ctx, p); err != nil {
-			b.Emit(ctx, p.Name(), EventPluginFailed, map[string]any{
+			b.Emit(ctx, p.Name(), EventPluginFailed, "runtime", map[string]any{
 				PayloadKeyPluginName: p.Name(),
 				PayloadKeyError:      err.Error(),
 			})
 			errs = append(errs, err)
 		} else {
-			b.Emit(ctx, p.Name(), EventPluginStarted, map[string]any{
+			b.Emit(ctx, p.Name(), EventPluginStarted, "runtime", map[string]any{
 				PayloadKeyPluginName:         p.Name(),
 				PayloadKeyPluginCapabilities: fmt.Sprintf("%v", p.Capabilities()),
 			})
@@ -127,13 +127,13 @@ func (b *PluginBus) Stop(ctx context.Context) error {
 				"plugin", p.Name(),
 				"error", err,
 			)
-			b.Emit(ctx, p.Name(), EventPluginFailed, map[string]any{
+			b.Emit(ctx, p.Name(), EventPluginFailed, "runtime", map[string]any{
 				PayloadKeyPluginName: p.Name(),
 				PayloadKeyError:      err.Error(),
 			})
 			errs = append(errs, err)
 		} else {
-			b.Emit(ctx, p.Name(), EventPluginStopped, map[string]any{
+			b.Emit(ctx, p.Name(), EventPluginStopped, "runtime", map[string]any{
 				PayloadKeyPluginName: p.Name(),
 			})
 		}
@@ -201,13 +201,14 @@ func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *S
 // Emit publishes an event with the given stream ID to all matching
 // subscribers. Non-blocking; ares_events are dropped for subscribers whose
 // channel buffer is full.
-func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_events.EventType, payload map[string]any) {
+func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_events.EventType, moduleName string, payload map[string]any) {
 	evt := &ares_events.Event{
-		ID:        ares_events.NewEventID(),
-		StreamID:  streamID,
-		Type:      eventType,
-		Payload:   payload,
-		Timestamp: time.Now(),
+		ID:         ares_events.NewEventID(),
+		StreamID:   streamID,
+		Type:       eventType,
+		ModuleName: moduleName,
+		Payload:    payload,
+		Timestamp:  time.Now(),
 	}
 
 	b.mu.RLock()

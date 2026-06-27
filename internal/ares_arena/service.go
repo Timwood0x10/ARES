@@ -227,7 +227,7 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		eventType = "arena.action.failed"
 	}
 
-	if !ares_events.Emit(ctx, s.store, arenaStreamID, ares_events.EventType(eventType), map[string]any{
+	if !ares_events.Emit(ctx, s.store, arenaStreamID, ares_events.EventType(eventType), "arena", map[string]any{
 		"action_id": action.ID,
 		"type":      string(action.Type),
 		"target_id": action.TargetID,

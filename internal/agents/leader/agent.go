@@ -3,7 +3,6 @@ package leader
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -311,7 +310,7 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 
 		// In a production environment, you would start a background goroutine
 		// to periodically send heartbeats and monitor agent health
-		slog.Info("Heartbeat monitor initialized", "agent_id", a.id)
+		log.Info("Heartbeat monitor initialized", "agent_id", a.id)
 	}
 
 	// Initialize message queue if provided
@@ -322,7 +321,7 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 		// - Receive messages from sub-agents
 		// - Coordinate distributed task execution
 
-		slog.Info("Message queue initialized", "agent_id", a.id)
+		log.Info("Message queue initialized", "agent_id", a.id)
 	}
 
 	// Emit agent started event.
@@ -331,7 +330,7 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 		"type":     string(a.agentType),
 	})
 
-	slog.Info("Leader agent started successfully", "agent_id", a.id)
+	log.Info("Leader agent started successfully", "agent_id", a.id)
 	a.setStatus(models.AgentStatusReady)
 	return nil
 }
@@ -366,14 +365,14 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 		var errs []error
 		if a.distillEg != nil {
 			if err := a.distillEg.Wait(); err != nil {
-				slog.Warn("Errors from distillation goroutines during shutdown",
+				log.Warn("Errors from distillation goroutines during shutdown",
 					"error", err)
 				errs = append(errs, fmt.Errorf("distillation: %w", err))
 			}
 		}
 		if a.streamEg != nil {
 			if err := a.streamEg.Wait(); err != nil {
-				slog.Warn("Errors from streaming goroutines during shutdown",
+				log.Warn("Errors from streaming goroutines during shutdown",
 					"error", err)
 				errs = append(errs, fmt.Errorf("streaming: %w", err))
 			}
@@ -387,7 +386,7 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 			a.heartbeatMon.RemoveAgent(a.id)
 		}
 
-		slog.Info("Leader agent stopped successfully", "agent_id", a.id)
+		log.Info("Leader agent stopped successfully", "agent_id", a.id)
 	})
 
 	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
@@ -444,17 +443,17 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 			if checkpoint != nil {
 				cp, err := checkpoint.GetLatest(ctx, leaderID)
 				if err != nil {
-					slog.Warn("Checkpoint recovery failed, creating new session", "error", err)
+					log.Warn("Checkpoint recovery failed, creating new session", "error", err)
 				} else if cp != nil && cp.SessionID != "" {
 					sessionID = cp.SessionID
 					recovered = true
-					slog.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
+					log.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
 				}
 			}
 			if !recovered {
 				newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
 				if err != nil {
-					slog.Warn("Failed to create session", "error", err)
+					log.Warn("Failed to create session", "error", err)
 				} else {
 					sessionID = newSessionID
 				}
@@ -471,7 +470,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 						SessionID: sessionID,
 						Status:    "active",
 					}); err != nil {
-						slog.Warn("Failed to save checkpoint", "error", err)
+						log.Warn("Failed to save checkpoint", "error", err)
 					}
 				}
 
@@ -485,7 +484,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 
 	// Record user message.
 	if err := a.memoryManager.AddMessage(ctx, sessionID, "user", strInput); err != nil {
-		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
+		log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
 	if sessionID != "" {
@@ -498,7 +497,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	// Build input with conversation context.
 	enrichedInput = strInput
 	if inputWithContext, err := a.memoryManager.BuildContext(ctx, strInput, sessionID); err != nil {
-		slog.Warn("memory operation failed, proceeding without", "operation", "BuildContext", "error", err)
+		log.Warn("memory operation failed, proceeding without", "operation", "BuildContext", "error", err)
 	} else {
 		enrichedInput = inputWithContext
 	}
@@ -524,9 +523,9 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	wg.Wait()
 
 	if searchErr != nil {
-		slog.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", searchErr)
+		log.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", searchErr)
 	} else if len(similarTasks) > 0 {
-		slog.Debug("Found similar tasks", "count", len(similarTasks))
+		log.Debug("Found similar tasks", "count", len(similarTasks))
 		var sb strings.Builder
 		sb.WriteString("\n\nSimilar previous tasks:\n")
 		for _, task := range similarTasks {
@@ -538,7 +537,7 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	}
 
 	if createErr != nil {
-		slog.Warn("Failed to create task - proceeding without task tracking",
+		log.Warn("Failed to create task - proceeding without task tracking",
 			"error", createErr, "session_id", sessionID,
 			"impact", "task will not be tracked for distillation")
 	} else {
@@ -555,8 +554,8 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
-		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
+	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "leader", payload) {
+		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }
 
@@ -597,13 +596,13 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	// Update task output.
 	if taskID != "" {
 		if err := a.memoryManager.UpdateTaskOutput(ctx, taskID, resultStr); err != nil {
-			slog.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
+			log.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
 		}
 	}
 
 	// Record assistant response.
 	if err := a.memoryManager.AddMessage(ctx, sessionID, "assistant", resultStr); err != nil {
-		slog.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
+		log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
 	}
 
 	if sessionID != "" {
@@ -636,7 +635,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	select {
 	case <-a.stopCh:
 		a.distillMu.Unlock()
-		slog.Debug("Distillation skipped: agent stopping", "task_id", taskID)
+		log.Debug("Distillation skipped: agent stopping", "task_id", taskID)
 		return
 	default:
 	}
@@ -652,11 +651,11 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 
 		distilled, err := a.memoryManager.DistillTask(distillCtx, taskID)
 		if err != nil {
-			slog.Warn("Failed to distill task", "error", err, "task_id", taskID)
+			log.Warn("Failed to distill task", "error", err, "task_id", taskID)
 			return nil
 		}
 		if err := a.memoryManager.StoreDistilledTask(distillCtx, taskID, distilled); err != nil {
-			slog.Error("Failed to store distilled task", "error", err, "task_id", taskID)
+			log.Error("Failed to store distilled task", "error", err, "task_id", taskID)
 			return nil
 		}
 
@@ -675,7 +674,7 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 					},
 				},
 			}, 0); emitErr != nil {
-				slog.Warn("Failed to emit memory distilled event", "error", emitErr)
+				log.Warn("Failed to emit memory distilled event", "error", emitErr)
 			}
 		}
 		return nil
@@ -714,7 +713,7 @@ func (a *leaderAgent) recordExperienceFeedback(ctx context.Context, tasks []*mod
 		}
 
 		if err := a.feedbackSvc.RecordFeedback(ctx, task.UsedExperienceID, success); err != nil {
-			slog.Warn("Failed to record experience feedback",
+			log.Warn("Failed to record experience feedback",
 				"task_id", task.TaskID,
 				"experience_id", task.UsedExperienceID,
 				"success", success,
@@ -859,7 +858,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		})
 		return nil, err
 	}
-	slog.Info("Leader tasks created", "module", "leader", "count", len(tasks))
+	log.Info("Leader tasks created", "module", "leader", "count", len(tasks))
 
 	// Step 3: Dispatch tasks
 	stepCount++
@@ -889,7 +888,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		"step": "dispatch",
 	})
 
-	slog.Info("Leader dispatching tasks", "module", "leader")
+	log.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
 	if err != nil {
 		a.emitCallback(&ares_callbacks.Context{
@@ -899,9 +898,9 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 		})
 		return nil, err
 	}
-	slog.Info("Leader dispatch completed", "module", "leader", "result_count", len(results))
+	log.Info("Leader dispatch completed", "module", "leader", "result_count", len(results))
 	for i, r := range results {
-		slog.Info("Leader task result", "module", "leader", "index", i, "success", r.Success, "items", len(r.Items), "error", r.Error)
+		log.Info("Leader task result", "module", "leader", "index", i, "success", r.Success, "items", len(r.Items), "error", r.Error)
 	}
 
 	// Step 4: Aggregate results
@@ -1027,7 +1026,7 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 		}
 	}
 
-	slog.Info("state restored from snapshot",
+	log.Info("state restored from snapshot",
 		"agent_id", a.id,
 		"session_id", a.sessionID,
 		"status", string(a.status),
@@ -1096,7 +1095,7 @@ func (a *leaderAgent) ReplayEvents(evts []*ares_events.Event) error {
 		}
 	}
 
-	slog.Info("ares_events replayed for state reconstruction",
+	log.Info("ares_events replayed for state reconstruction",
 		"agent_id", a.id,
 		"event_count", len(evts),
 		"session_id", a.sessionID,
@@ -1249,7 +1248,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			}
 			return nil
 		}
-		slog.Info("Leader tasks created", "module", "leader", "count", len(tasks))
+		log.Info("Leader tasks created", "module", "leader", "count", len(tasks))
 
 		for _, task := range tasks {
 			select {
