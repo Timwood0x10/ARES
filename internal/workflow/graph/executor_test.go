@@ -579,8 +579,8 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 	_, err = g.Execute(context.Background(), NewState())
 	require.NoError(t, err)
 
-	subCancel()     // close subscriber channel
-	<-done          // wait for goroutine to finish
+	subCancel() // close subscriber channel
+	<-done      // wait for goroutine to finish
 
 	mu.Lock()
 	defer mu.Unlock()
