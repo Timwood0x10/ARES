@@ -555,7 +555,9 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotEvents []string
-	sub, err := bus.Subscribe(context.Background(), events.EventFilter{
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	sub, err := bus.Subscribe(subCtx, events.EventFilter{
 		Types: []events.EventType{
 			runtime.EventWorkflowStarted,
 			runtime.EventWorkflowCompleted,
@@ -564,7 +566,9 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for evt := range sub {
 			mu.Lock()
 			gotEvents = append(gotEvents, string(evt.Type))
@@ -575,8 +579,8 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 	_, err = g.Execute(context.Background(), NewState())
 	require.NoError(t, err)
 
-	// Give subscriber goroutine time to collect events.
-	time.Sleep(50 * time.Millisecond)
+	subCancel()     // close subscriber channel
+	<-done          // wait for goroutine to finish
 
 	mu.Lock()
 	defer mu.Unlock()
