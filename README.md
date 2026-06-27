@@ -520,43 +520,96 @@ go test -race ./...                # With race detector
 go test -bench=. ./...             # Benchmarks
 ```
 
+### 5. Use the API
+
+ARES provides abstract interfaces in `api/core/` and a bootstrap factory in `api/bootstrap/`:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/Timwood0x10/ares/api/bootstrap"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create ARES instance with all modules wired.
+    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ares.Stop()
+
+    // Start runtime (manages agent lifecycles).
+    if err := ares.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Run genetic algorithm evolution.
+    result, err := ares.RunEvolution(ctx, 10)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Best score: %.2f\n", result.BestStrategy.Score)
+
+    // Execute chaos engineering action.
+    res := ares.ExecuteArenaAction(ctx, arena.Action{
+        Type:     arena.ActionKillAgent,
+        TargetID: "worker-1",
+    })
+    fmt.Printf("Chaos result: %v\n", res.Success)
+}
+```
+
+Available interfaces in `api/core/`:
+- `AgentService` — Agent CRUD + task execution
+- `Runtime` — Agent lifecycle management
+- `WorkflowService` — DAG workflow orchestration
+- `MemoryService` — Memory management + distillation
+- `LLMService` — LLM provider abstraction
+- `RetrievalService` — Vector retrieval
+- `Evolution` — Genetic algorithm evolution
+- `DreamCycle` — Autonomous self-evolution
+- `Arena` — Chaos engineering (fault injection + resilience scoring)
+- `ContextCleaner` — Context window management
+
 ## Project Structure
 
 ```
 ares/
+├── api/                  # Public API layer (interfaces only, no implementations)
+│   ├── core/             # Abstract interfaces: AgentService, Runtime, Evolution, Arena, etc.
+│   ├── errors/           # Unified error types
+│   ├── client/           # Go client SDK
+│   ├── handler/          # HTTP handlers (thin delegation)
+│   ├── router/           # Route registration
+│   └── bootstrap/        # Factory — wires all modules into ARES container
 ├── internal/
-│   ├── agents/          # Leader/Sub agent system
-│   ├── runtime/         # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
-│   │   ├── plugin.go    # RuntimePlugin, WorkflowHook, EventBus interfaces
-│   │   ├── bus.go       # PluginBus — registry, lifecycle, dispatch, capabilities
-│   │   ├── events.go    # Workflow lifecycle event constants + payload keys
-│   │   ├── types.go     # Step, StepResult, StepStatus types
-│   │   ├── collector.go # ExecutionCollector — thread-safe runtime data aggregation
-│   │   ├── observer.go  # ObserverPlugin — event persistence to EventStore
-│   │   ├── checkpoint.go# CheckpointPlugin — step-boundary snapshots
-│   │   ├── tool.go      # ToolPlugin — tool invocation recording
-│   │   ├── router.go    # ExpressionRouter — rule-based routing
-│   │   ├── router_memory.go   # MemoryRouter — memory-aware routing
-│   │   ├── router_evolution.go# EvolutionRouter — evolution-aware routing
-│   │   ├── loop.go      # LoopPlugin — controlled execution loops
-│   │   ├── recovery.go  # BasicRecoveryPlugin — step failure recovery
-│   │   ├── interrupt.go # InterruptPlugin — HITL interrupt recording
-│   │   ├── arena.go     # ArenaPlugin — fault injection testing
-│   │   ├── errors.go    # PluginError type + sentinel errors
-│   │   └── options.go   # PluginBusOption (WithPluginTimeout, WithLogger)
-│   ├── protocol/ahp/    # AHP inter-agent protocol
-│   ├── memory/          # Memory system + distillation
-│   ├── events/          # EventStore interface, MemoryEventStore, event types
-│   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus integration)
+│   ├── agents/           # Leader/Sub agent system
+│   ├── ares_runtime/     # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
+│   ├── ares_events/      # EventStore interface, MemoryEventStore, event types
+│   ├── ares_memory/      # Memory system + distillation
+│   ├── ares_evolution/   # Genetic algorithm evolution system
+│   ├── ares_arena/       # Chaos engineering arena
+│   ├── ares_flight/      # Flight recorder (timeline/genealogy/diagnostics)
+│   ├── ares_mcp/         # MCP client (stdio/SSE transport)
+│   ├── ares_callbacks/   # Event-driven callback system
+│   ├── ares_observability/ # OpenTelemetry + Prometheus metrics
+│   ├── ares_eval/        # Evaluation framework
+│   ├── ares_quant/       # Quantitative trading tools
+│   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus)
+│   ├── workflow/graph/   # Graph executor + checkpoint resume
+│   ├── protocol/ahp/     # AHP inter-agent protocol
 │   ├── storage/          # VectorStore interface + implementations
-│   │   ├── postgres/     # PostgreSQL + pgvector (production)
-│   │   └── memory/       # In-memory (dev/test)
-│   ├── mcp/             # MCP client (stdio/SSE transport)
+│   ├── llm/              # LLM client + output parsers
 │   ├── dashboard/        # Web dashboard (WebSocket + REST API)
-│   ├── flight/           # Flight recorder (timeline/genealogy/diagnostics)
-│   ├── arena/            # Chaos engineering arena
-│   ├── callbacks/        # Event-driven callback system
-│   ├── llm/output/       # LLM output parsers + prompt templates
+│   ├── logger/           # Module-scoped structured logging
+│   └── config/           # Configuration loading + validation
 │   └── tools/           # Tool registry and invocation
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
 ├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...

@@ -528,6 +528,57 @@ go test -race ./...                # 带竞态检测
 go test -bench=. ./...             # Benchmark
 ```
 
+### 5. 使用 API
+
+ARES 在 `api/core/` 提供抽象接口，在 `api/bootstrap/` 提供工厂：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/Timwood0x10/ares/api/bootstrap"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // 创建 ARES 实例，所有模块自动接线
+    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ares.Stop()
+
+    // 启动运行时（管理 Agent 生命周期）
+    if err := ares.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // 运行遗传算法进化
+    result, err := ares.RunEvolution(ctx, 10)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("最佳得分: %.2f\n", result.BestStrategy.Score)
+}
+```
+
+`api/core/` 中可用的接口：
+- `AgentService` — Agent CRUD + 任务执行
+- `Runtime` — Agent 生命周期管理
+- `WorkflowService` — DAG 工作流编排
+- `MemoryService` — 记忆管理 + 蒸馏
+- `LLMService` — LLM 提供者抽象
+- `RetrievalService` — 向量检索
+- `Evolution` — 遗传算法进化
+- `DreamCycle` — 自主进化循环
+- `Arena` — 混沌工程（故障注入 + 韧性评分）
+- `ContextCleaner` — 上下文窗口管理
+
 ## 配置
 
 YAML 配置格式：
@@ -582,40 +633,34 @@ memory:
 
 ```
 ares/
+├── api/                  # 公共 API 层（仅接口定义，无实现）
+│   ├── core/             # 抽象接口：AgentService、Runtime、Evolution、Arena 等
+│   ├── errors/           # 统一错误类型
+│   ├── client/           # Go 客户端 SDK
+│   ├── handler/          # HTTP Handler（薄委托）
+│   ├── router/           # 路由注册
+│   └── bootstrap/        # 工厂 — 将所有模块接线为 ARES 容器
 ├── internal/
-│   ├── agents/          # Leader/Sub Agent 系统
-│   ├── runtime/         # 运行时生命周期 + PluginBus（含 10 个内置插件）
-│   │   ├── plugin.go    # RuntimePlugin、WorkflowHook、EventBus 接口定义
-│   │   ├── bus.go       # PluginBus — 注册、生命周期、分发、能力发现
-│   │   ├── events.go    # 工作流生命周期事件常量 + Payload Key
-│   │   ├── types.go     # Step、StepResult、StepStatus 类型
-│   │   ├── collector.go # ExecutionCollector — 线程安全运行时数据聚合
-│   │   ├── observer.go  # ObserverPlugin — 事件持久化到 EventStore
-│   │   ├── checkpoint.go# CheckpointPlugin — Step 边界快照
-│   │   ├── tool.go      # ToolPlugin — 工具调用记录
-│   │   ├── router.go    # ExpressionRouter — 基于规则的表达式路由
-│   │   ├── router_memory.go   # MemoryRouter — 记忆感知路由
-│   │   ├── router_evolution.go# EvolutionRouter — 进化感知路由
-│   │   ├── loop.go      # LoopPlugin — 受控执行循环
-│   │   ├── recovery.go  # BasicRecoveryPlugin — Step 故障恢复
-│   │   ├── interrupt.go # InterruptPlugin — HITL 中断记录
-│   │   ├── arena.go     # ArenaPlugin — 故障注入测试
-│   │   ├── errors.go    # PluginError 类型 + Sentinel 错误
-│   │   └── options.go   # PluginBusOption（WithPluginTimeout、WithLogger）
-│   ├── protocol/ahp/    # AHP Agent 间通信协议
-│   ├── memory/          # 记忆系统 + 蒸馏
-│   ├── events/          # EventStore 接口、MemoryEventStore、事件类型
-│   ├── workflow/engine/ # DAG 工作流引擎（DynamicExecutor + PluginBus 集成）
+│   ├── agents/           # Leader/Sub Agent 系统
+│   ├── ares_runtime/     # 运行时生命周期 + PluginBus（含 10 个内置插件）
+│   ├── ares_events/      # EventStore 接口、MemoryEventStore、事件类型
+│   ├── ares_memory/      # 记忆系统 + 蒸馏
+│   ├── ares_evolution/   # 遗传算法进化系统
+│   ├── ares_arena/       # 混沌工程测试平台
+│   ├── ares_flight/      # Flight Recorder（时间线/谱系/诊断）
+│   ├── ares_mcp/         # MCP 客户端（stdio/SSE 传输）
+│   ├── ares_callbacks/   # 事件驱动回调系统
+│   ├── ares_observability/ # OpenTelemetry + Prometheus 指标
+│   ├── ares_eval/        # 评估框架
+│   ├── ares_quant/       # 量化交易工具
+│   ├── workflow/engine/  # DAG 工作流引擎（DynamicExecutor + PluginBus）
+│   ├── workflow/graph/   # 图执行器 + 检查点恢复
+│   ├── protocol/ahp/     # AHP Agent 间通信协议
 │   ├── storage/          # VectorStore 接口及实现
-│   │   ├── postgres/     # PostgreSQL + pgvector（生产环境）
-│   │   └── memory/       # 内存模式（开发/测试）
-│   ├── mcp/             # MCP 客户端（stdio/SSE 传输）
+│   ├── llm/              # LLM 客户端 + 输出解析器
 │   ├── dashboard/        # Web 控制面板（WebSocket + REST API）
-│   ├── flight/           # Flight Recorder（时间线/谱系/诊断）
-│   ├── arena/            # 混沌工程测试平台
-│   ├── callbacks/        # 事件驱动回调系统
-│   ├── llm/output/       # LLM 输出解析器 + Prompt 模板
-│   └── tools/           # 工具注册与调用
+│   ├── logger/           # 模块级结构化日志
+│   └── config/           # 配置加载 + 校验
 ├── services/embedding/  # Embedding 网关（FastAPI + Ollama）
 ├── examples/            # 示例项目：travel、knowledge-base、dashboard、quant、devagent……
 ├── api/                 # 服务接口与客户端

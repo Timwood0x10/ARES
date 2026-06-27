@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-06-27
+
+### New Features
+
+- **Plugin System Architecture**: Full plugin system with `PluginBus`, `RuntimePlugin` interface, `WorkflowHook` interface, and capability-based plugin discovery. 10 built-in plugins: ObserverPlugin, CheckpointPlugin, ToolPlugin, ExpressionRouter, MemoryRouter, EvolutionRouter, LoopPlugin, RecoveryPlugin, InterruptPlugin, ArenaPlugin.
+- **Genetic Algorithm Evolution System (Beta)**: Complete GA package with `Population`, `Crossover` (Inherit/HalfSplit/Uniform), `TournamentSelection`, strategy mutation engine, diversity tracking with fitness sharing, adaptive survival rates, and deterministic reproduction via seed control.
+- **Autonomous Evolution (Dream Mode v1)**: Closed-loop evolution orchestration with Dream Cycle (trigger → mutate → evaluate → adopt → record lineage). Arena regression testing with Welch's t-test, bandit feedback loop for experience quality optimization, and full genealogy tracking.
+- **Batch LLM Scorer**: Concurrent LLM scoring with failover resilience for evolution pipeline.
+- **ExecuteFromCheckpoint**: Lightweight workflow resume from checkpoint via `Graph.ExecuteFromCheckpoint()`. Checkpoint integration via PluginBus hooks.
+- **LoopPlugin**: Controlled execution loops with configurable iteration limits.
+- **RouterPlugin Auto-Wiring**: Automatic plugin registration based on declared capabilities.
+- **Execution Collector**: Thread-safe runtime data aggregation for route recording and tool invocation tracking.
+- **Module-Scoped Structured Logging**: Each core module emits logs with `module` field for traceability. Added `logger.Module()` helper in `internal/logger/`. 12 core packages converted.
+- **Event ModuleName Field**: Added `ModuleName` field to `Event` struct. `Emit()` and `PluginBus.Emit()` now accept `moduleName` parameter for full traceability of which module emitted each event.
+- **Abstract API Layer**: Added interfaces in `api/core/` for all major modules: `AgentService`, `Runtime`, `WorkflowService`, `MemoryService`, `LLMService`, `RetrievalService`, `Evolution`, `DreamCycle`, `Arena`, `ContextCleaner`.
+- **Bootstrap Factory**: Added `api/bootstrap/` package that wires all ARES modules (Runtime, Memory, Evolution, Arena, EventStore) into a single `ARES` container with `New()`, `Start()`, `Stop()`, `RunEvolution()`, and `ExecuteArenaAction()`.
+- **Interview Demo**: Complete interview demo stack with web search tool and prompt length validation.
+- **JSONL Training Data Pipeline**: End-to-end pipeline for agent strategy evolution and experience distillation data export.
+
+### Refactors
+
+- **Unified Package Naming**: Renamed 15 internal packages to `ares_` prefix: `bootstrap`, `callbacks`, `ctxutil`, `shutdown`, `ratelimit`, `security`, `config`, `eval`, `observability`, `integration`, `events`, `mcp`, `protocol`, `quant`, `runtime`.
+- **API Layer Thinning**: Moved all independent service implementations from `api/` to `internal/`. The `api/` layer now only contains interface definitions, error types, HTTP handlers, router, and client SDK. Moved packages:
+  - `api/service/agent` → `internal/agents/`
+  - `api/service/graph` → `internal/workflow/graphservice/`
+  - `api/service/llm` → `internal/llmservice/`
+  - `api/service/memory` → `internal/memoryservice/`
+  - `api/service/retrieval` → `internal/retrievalservice/`
+  - `api/ares_evolution` → `internal/ares_evolution/service/`
+  - `api/ares_memory` → `internal/ares_memory/service/`
+  - `api/ares_retrieval` → `internal/ares_memory/retrieval_api/`
+  - `api/ares_experience` → `internal/ares_experience/service/`
+  - `api/eval` → `internal/ares_eval/service/`
+  - `api/marketmaking` → `internal/ares_quant/marketmaking_api/`
+- **Evolution Genome Wiring**: Split genome_wiring into separate module, fix guardrails, wire dream cycle.
+- **HITL Feedback Plugin**: Moved from standalone to workflow engine integration.
+- **Graph Builder APIs**: Migrated all graph builder APIs to return errors instead of panicking.
+- **Scoring Cache**: Replaced `sync.RWMutex` with atomic counters for hit/miss tracking.
+- **Evolution Mutation**: Restructured mutation logic with experience-guided evolution system.
+- **Performance**: Increased concurrent LLM scoring limits and optimized sampling. Completed P0/P1/P2 performance improvements.
+
+### Bug Fixes
+
+- Replaced `time.Sleep` with channel-based event test pattern in graph executor tests.
+- Fixed indentation in executor_test.go.
+- Fixed data race in `DynamicExecutor` recovery path with proper timeout handling.
+- Fixed `MemoryEventStore.Close()` idempotency — second+ calls return `ErrEventStoreClosed`.
+- Fixed SSE transport double `resp.Body.Close()` causing panic on shutdown.
+- Fixed LLM client `Close()` race condition via `sync.Once`.
+- Fixed OpenAI adapter silently swallowing `io.ReadAll` errors in error paths.
+- Fixed `Population.ScoreAgents` panic recovery logging with agent context.
+- Fixed `updateBestEverLocked` concurrency safety with deep copy via `a.Clone()`.
+- Fixed `NewTaskPlanner`/`NewTaskPlannerWithConfig` silent fallback from invalid `maxTasks`.
+- Added nil validation in `leader.New`, `NewTaskDispatcher`, and `NewMCPManager`.
+
 ## [0.2.3] - 2026-06-24
 
 ### New Features
