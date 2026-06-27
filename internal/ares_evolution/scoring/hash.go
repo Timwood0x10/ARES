@@ -48,6 +48,9 @@ func StrategyHash(s *mutation.Strategy) (uint64, error) {
 	h := fnv.New64a()
 
 	// Hash sorted params for order-independence.
+	// Allocation is bounded by the HashCached() fast path above — only cache
+	// misses reach this point, so the sorted key slice is allocated at most once
+	// per unique strategy.
 	keys := make([]string, 0, len(s.Params))
 	for k := range s.Params {
 		keys = append(keys, k)

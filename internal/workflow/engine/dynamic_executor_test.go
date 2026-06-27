@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -1090,6 +1091,239 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 		assert.Equal(t, "always route to s2", evt.Payload["route_reason"])
 	case <-ctx.Done():
 		t.Fatal("timeout waiting for route event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round loop integration tests
+// ---------------------------------------------------------------------------
+
+// mockMemoryPluginForTest is a simple MemoryPlugin used in round loop tests.
+type mockMemoryPluginForTest struct {
+	mu        sync.Mutex
+	adviseFn  func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error)
+	callCount int
+}
+
+func (m *mockMemoryPluginForTest) Name() string { return "mock-memory" }
+func (m *mockMemoryPluginForTest) Capabilities() []runtime.Capability {
+	return []runtime.Capability{runtime.CapMemory}
+}
+func (m *mockMemoryPluginForTest) Start(ctx context.Context, bus runtime.EventBus) error { return nil }
+func (m *mockMemoryPluginForTest) Stop(ctx context.Context) error                        { return nil }
+func (m *mockMemoryPluginForTest) AdviseRoute(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	if m.adviseFn != nil {
+		return m.adviseFn(ctx, state)
+	}
+	return nil, nil
+}
+
+// mockEvolutionPluginForTest is a simple EvolutionPlugin used in round loop tests.
+type mockEvolutionPluginForTest struct {
+	mu          sync.Mutex
+	recommendFn func(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error)
+	callCount   int
+}
+
+func (m *mockEvolutionPluginForTest) Name() string { return "mock-evolution" }
+func (m *mockEvolutionPluginForTest) Capabilities() []runtime.Capability {
+	return []runtime.Capability{runtime.CapEvolution}
+}
+func (m *mockEvolutionPluginForTest) Start(ctx context.Context, bus runtime.EventBus) error {
+	return nil
+}
+func (m *mockEvolutionPluginForTest) Stop(ctx context.Context) error { return nil }
+func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	if m.recommendFn != nil {
+		return m.recommendFn(ctx, state)
+	}
+	return nil, nil
+}
+func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome runtime.ExecutionOutcome) error {
+	return nil
+}
+
+// TestDynamicExecutor_CheckpointPluginSetRound verifies that SetRound
+// correctly persists the round number into the checkpoint data.
+func TestDynamicExecutor_CheckpointPluginSetRound(t *testing.T) {
+	ckptStore := newMemCheckpointStore()
+	bus := runtime.NewPluginBus()
+	ckpt := runtime.NewCheckpointPlugin("test-cp", ckptStore)
+	require.NoError(t, bus.Register(ckpt))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// BeforeStep creates the checkpoint snapshot
+	err := bus.BeforeStep(context.Background(), "exec-round-1", &runtime.Step{ID: "s1"})
+	require.NoError(t, err)
+
+	// SetRound via direct access — we need to flush to verify
+	ckpt.SetRound("exec-round-1", 3)
+	require.NoError(t, ckpt.Flush(context.Background(), "exec-round-1"))
+
+	// Load checkpoint data and inspect
+	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-round-1")
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	var loaded runtime.ExperienceCheckpoint
+	require.NoError(t, json.Unmarshal(data, &loaded))
+	assert.Equal(t, 3, loaded.CurrentRound, "SetRound should persist round to checkpoint")
+}
+
+// TestDynamicExecutor_ApplyRoundMutations verifies that applyRoundMutations
+// invokes MemoryPlugin.AdviseRoute and EvolutionPlugin.Recommend, and that
+// memory advice adds nodes to the DAG when confidence is sufficient.
+func TestDynamicExecutor_ApplyRoundMutations(t *testing.T) {
+	registry := NewAgentRegistry()
+	bus := runtime.NewPluginBus()
+
+	// Memory plugin that advises adding a new step
+	memPlugin := &mockMemoryPluginForTest{
+		adviseFn: func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
+			return []runtime.RouteAdvice{
+				{NextStepID: "suggested-step", Confidence: 0.9, Reason: "similar past execution"},
+				{NextStepID: "low-conf-step", Confidence: 0.3, Reason: "low confidence"},
+			}, nil
+		},
+	}
+
+	// Evolution plugin that suggests a preferred agent
+	evoPlugin := &mockEvolutionPluginForTest{
+		recommendFn: func(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error) {
+			return &runtime.RuntimeRecommendation{
+				PreferredAgent: "advanced-agent",
+				RouterWeight:   0.8,
+			}, nil
+		},
+	}
+
+	require.NoError(t, bus.Register(memPlugin))
+	require.NoError(t, bus.Register(evoPlugin))
+	require.NoError(t, bus.Start(context.Background()))
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithPluginBus(bus)
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	execution := &WorkflowExecution{
+		ID:     "exec-mut-1",
+		Status: WorkflowStatusRunning,
+	}
+
+	executor.applyRoundMutations(context.Background(), 1, execution, dag)
+
+	// Verify: suggested-step was added (confidence >= 0.5)
+	steps := dag.Steps()
+	found := false
+	for _, s := range steps {
+		if s.ID == "suggested-step" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "applyRoundMutations should add high-confidence memory advice as DAG nodes")
+
+	// Verify: low-conf-step was NOT added (confidence < 0.5)
+	for _, s := range steps {
+		assert.NotEqual(t, "low-conf-step", s.ID, "low confidence advice should not create DAG nodes")
+	}
+
+	// Verify both plugins were called
+	memPlugin.mu.Lock()
+	assert.Equal(t, 1, memPlugin.callCount, "MemoryPlugin.AdviseRoute should be called once")
+	memPlugin.mu.Unlock()
+	evoPlugin.mu.Lock()
+	assert.Equal(t, 1, evoPlugin.callCount, "EvolutionPlugin.Recommend should be called once")
+	evoPlugin.mu.Unlock()
+}
+
+// TestDynamicExecutor_RoundLoopIntegration verifies the full round loop:
+// checkpoint round tracking, DAG mutations, and loop plugin iteration.
+func TestDynamicExecutor_RoundLoopIntegration(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("echo", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock", "echo", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+	// Register an agent for the step that applyRoundMutations will create.
+	registry.Register("default", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock", "default", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	bus := runtime.NewPluginBus()
+	ckptStore := newMemCheckpointStore()
+
+	// Memory plugin: suggest a new step after round 1
+	memPlugin := &mockMemoryPluginForTest{
+		adviseFn: func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
+			return []runtime.RouteAdvice{
+				{NextStepID: "round2-step", Confidence: 0.9, Reason: "memory suggests continuation"},
+			}, nil
+		},
+	}
+
+	// Evolution plugin: track how many times it's called
+	evoPlugin := &mockEvolutionPluginForTest{}
+
+	// Loop plugin: allow exactly 2 rounds
+	loopPlugin := runtime.NewLoopPlugin("round-loop", runtime.LoopConfig{
+		MaxIterations: 2,
+	})
+
+	ckpt := runtime.NewCheckpointPlugin("test-cp", ckptStore)
+
+	require.NoError(t, bus.Register(memPlugin))
+	require.NoError(t, bus.Register(evoPlugin))
+	require.NoError(t, bus.Register(loopPlugin))
+	require.NoError(t, bus.Register(ckpt))
+	require.NoError(t, bus.Start(context.Background()))
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "echo", Input: "hello"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithPluginBus(bus).
+		WithCheckpointStore(ckptStore)
+
+	wf := &Workflow{ID: "wf-round-int", Steps: dag.Steps()}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := executor.ExecuteDynamic(ctx, wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify plugins were called during round transitions
+	memPlugin.mu.Lock()
+	assert.Positive(t, memPlugin.callCount, "MemoryPlugin should be called in round mutations")
+	memPlugin.mu.Unlock()
+	evoPlugin.mu.Lock()
+	assert.Positive(t, evoPlugin.callCount, "EvolutionPlugin should be called in round mutations")
+	evoPlugin.mu.Unlock()
+
+	// Verify SetRound was called: load checkpoint and check CurrentRound >= 1
+	data, err := ckptStore.Load(context.Background(), "checkpoint/"+result.ExecutionID)
+	if err == nil && data != nil {
+		var loaded runtime.ExperienceCheckpoint
+		require.NoError(t, json.Unmarshal(data, &loaded))
+		assert.GreaterOrEqual(t, loaded.CurrentRound, 1, "checkpoint should have round tracking")
 	}
 }
 

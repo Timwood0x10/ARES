@@ -789,7 +789,7 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 }
 
 // TestWiredSystem_FullIntegrationWithRealMutator verifies the complete flow:
-// Scheduler -> GenomePopulationAdapter -> Population.EvolveOnIdle -> real Mutator,
+// Scheduler -> GenomePopulationAdapter -> Population.EvolveAfterScoring -> real Mutator,
 // and confirms lineage records are produced.
 func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 	t.Helper()

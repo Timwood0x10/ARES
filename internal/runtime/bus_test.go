@@ -859,36 +859,32 @@ func TestLoopPlugin_Capabilities(t *testing.T) {
 	assert.Contains(t, p.Capabilities(), CapLoop)
 }
 
-func TestLoopPlugin_ShouldContinue_MaxIterations(t *testing.T) {
+func TestLoopPlugin_ShouldExecuteRound_MaxIterations(t *testing.T) {
 	p := NewLoopPlugin("test", LoopConfig{MaxIterations: 3})
-	assert.True(t, p.ShouldContinue(nil))
-
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	assert.True(t, p.ShouldContinue(nil))
-
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	assert.True(t, p.ShouldContinue(nil))
-
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	assert.False(t, p.ShouldContinue(nil))
+	assert.True(t, p.ShouldExecuteRound(1, nil))
+	assert.True(t, p.ShouldExecuteRound(2, nil))
+	assert.True(t, p.ShouldExecuteRound(3, nil))
+	assert.False(t, p.ShouldExecuteRound(4, nil))
+	assert.False(t, p.ShouldExecuteRound(5, nil))
 }
 
-func TestLoopPlugin_ShouldContinue_UntilCondition(t *testing.T) {
+func TestLoopPlugin_ShouldExecuteRound_UntilCondition(t *testing.T) {
 	p := NewLoopPlugin("test", LoopConfig{
 		UntilCondition: func(vars map[string]any) bool {
 			count, _ := vars["count"].(int)
 			return count >= 2
 		},
 	})
-	assert.True(t, p.ShouldContinue(map[string]any{"count": 0}))
-	assert.True(t, p.ShouldContinue(map[string]any{"count": 1}))
-	assert.False(t, p.ShouldContinue(map[string]any{"count": 2}))
+	assert.True(t, p.ShouldExecuteRound(1, map[string]any{"count": 0}))
+	assert.True(t, p.ShouldExecuteRound(2, map[string]any{"count": 1}))
+	assert.False(t, p.ShouldExecuteRound(3, map[string]any{"count": 2}))
+	assert.False(t, p.ShouldExecuteRound(4, map[string]any{"count": 3}))
 }
 
-func TestLoopPlugin_ShouldContinue_NoLimit(t *testing.T) {
+func TestLoopPlugin_ShouldExecuteRound_NoLimit(t *testing.T) {
 	p := NewLoopPlugin("test", LoopConfig{})
-	for i := 0; i < 100; i++ {
-		assert.True(t, p.ShouldContinue(nil))
+	for i := 1; i <= 100; i++ {
+		assert.True(t, p.ShouldExecuteRound(i, nil))
 	}
 }
 
@@ -896,17 +892,17 @@ func TestLoopPlugin_Iteration(t *testing.T) {
 	p := NewLoopPlugin("test", LoopConfig{})
 	assert.Equal(t, 0, p.Iteration())
 
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
+	p.OnRoundEnd(context.Background(), 1, "exec-1")
 	assert.Equal(t, 1, p.Iteration())
 
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	assert.Equal(t, 2, p.Iteration())
+	p.OnRoundEnd(context.Background(), 5, "exec-1")
+	assert.Equal(t, 5, p.Iteration())
 }
 
 func TestLoopPlugin_StopResets(t *testing.T) {
 	p := NewLoopPlugin("test", LoopConfig{})
-	_ = p.BeforeStep(context.Background(), "exec-1", &Step{ID: "s1"})
-	assert.Equal(t, 1, p.Iteration())
+	p.OnRoundEnd(context.Background(), 3, "exec-1")
+	assert.Equal(t, 3, p.Iteration())
 
 	_ = p.Stop(context.Background())
 	assert.Equal(t, 0, p.Iteration())
@@ -926,12 +922,6 @@ func TestLoopPlugin_RegisteredAsPlugin(t *testing.T) {
 func TestLoopPlugin_EmptyNameDefaults(t *testing.T) {
 	p := NewLoopPlugin("", LoopConfig{})
 	assert.Equal(t, "loop", p.Name())
-}
-
-func TestLoopPlugin_WithCollector(t *testing.T) {
-	collector := NewExecutionCollector("exec-1")
-	p := NewLoopPlugin("test", LoopConfig{MaxIterations: 3}).WithCollector(collector)
-	assert.NotNil(t, p.collector)
 }
 
 // ---------------------------------------------------------------------------

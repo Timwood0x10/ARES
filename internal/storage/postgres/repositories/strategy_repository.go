@@ -100,6 +100,12 @@ func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error
 	}, nil
 }
 
+// beginTxer abstracts transaction creation for *sql.DB.
+// *sql.Tx and other DBTX implementations fall back to no-tx path.
+type beginTxer interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
 // SetActive persists a strategy and marks it as active.
 // Any previously active strategy is deactivated.
 //
@@ -117,14 +123,14 @@ func (r *StrategyRepository) SetActive(ctx context.Context, s StrategyRow) error
 		return errors.Wrap(err, "marshal params")
 	}
 
-	if db, ok := r.db.(*sql.DB); ok {
-		return r.setActiveTx(ctx, db, s, paramsJSON)
+	if btx, ok := r.db.(beginTxer); ok {
+		return r.setActiveTx(ctx, btx, s, paramsJSON)
 	}
 
 	return r.setActiveNoTx(ctx, s, paramsJSON)
 }
 
-func (r *StrategyRepository) setActiveTx(ctx context.Context, db *sql.DB, s StrategyRow, paramsJSON []byte) error {
+func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s StrategyRow, paramsJSON []byte) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return errors.Wrap(err, "begin tx")
@@ -147,7 +153,7 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db *sql.DB, s Stra
 	insertQ := `INSERT INTO evolution_strategies
 		(id, is_active, name, version, params, parent_id, prompt_template,
 		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
-		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`
+		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`
 
 	now := time.Now()
 	createdAt := s.CreatedAt
@@ -177,7 +183,7 @@ func (r *StrategyRepository) setActiveNoTx(ctx context.Context, s StrategyRow, p
 	insertQ := `INSERT INTO evolution_strategies
 		(id, is_active, name, version, params, parent_id, prompt_template,
 		 strategy_mutation_type, mutation_desc, score, created_at, updated_at)
-		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`
+		VALUES ($1, true, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`
 
 	now := time.Now()
 	createdAt := s.CreatedAt

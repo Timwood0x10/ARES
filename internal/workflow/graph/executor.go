@@ -270,14 +270,22 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			// wants to override the next node (overrides static edge traversal).
 			// Priority: explicit NodeRouter > RouterPlugin from PluginBus.
 			var routedID string
+			var routeReason, routeSource string
 			if execErr == nil {
 				if g.router != nil {
 					routedID = g.router(ctx, nodeID, state)
+					if routedID != "" {
+						routeReason = "dynamic routing"
+						routeSource = "node-router"
+					}
 				} else if g.pluginBus != nil {
-					routedID = routeFromPluginBus(ctx, g.pluginBus, nodeID, state)
+					routedID, routeReason, routeSource = routeFromPluginBusExt(ctx, g.pluginBus, g.collector, nodeID, state)
 				}
 			}
 			if routedID != "" {
+				if g.collector != nil {
+					g.collector.RecordRoute(nodeID, routedID, routeReason, routeSource)
+				}
 				if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
 					readyQueue = append(readyQueue, routedID)
 					readySet[routedID] = true
@@ -365,21 +373,36 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 // Route to get the next node ID. Returns "" if no router is available or
 // the router returns nil.
 func routeFromPluginBus(ctx context.Context, bus *runtime.PluginBus, nodeID string, state *State) string {
+	routedID, _, _ := routeFromPluginBusExt(ctx, bus, nil, nodeID, state)
+	return routedID
+}
+
+// routeFromPluginBusExt is the extended version that returns reason and source
+// in addition to the route ID. If collector is non-nil, it populates the
+// RouteState with collected data and sets the collector for router recording.
+func routeFromPluginBusExt(ctx context.Context, bus *runtime.PluginBus, collector *runtime.ExecutionCollector, nodeID string, state *State) (string, string, string) {
 	routers := bus.PluginsByCap(runtime.CapRouter)
 	if len(routers) == 0 {
-		return ""
+		return "", "", ""
 	}
 	router, ok := routers[0].(runtime.RouterPlugin)
 	if !ok || router == nil {
-		return ""
+		return "", "", ""
 	}
-	decision, err := router.Route(ctx, runtime.RouteState{
+	routeState := runtime.RouteState{
 		CurrentStepID: nodeID,
-	})
-	if err != nil || decision == nil {
-		return ""
 	}
-	return decision.NextStepID
+	if collector != nil {
+		routeState.Collector = collector
+		routeState.CollectedRoutes = collector.RouteHistory()
+		routeState.CollectedTools = collector.ToolHistory()
+		routeState.CollectedMemory = collector.MemoryHits()
+	}
+	decision, err := router.Route(ctx, routeState)
+	if err != nil || decision == nil {
+		return "", "", ""
+	}
+	return decision.NextStepID, decision.Reason, decision.Source
 }
 
 // hasAnySatisfiedEdge checks if node targetID has at least one incoming edge

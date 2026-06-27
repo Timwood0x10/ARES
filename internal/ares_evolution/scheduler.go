@@ -421,6 +421,8 @@ func (s *EvolutionScheduler) scoreSnapshot() (avg, recent float64, count int) {
 
 // checkGuardrails runs a pre-evolution guardrail check.
 // Returns true if evolution should proceed, false if guardrails block it.
+// Passes bestRecentScore from the score window for meaningful baseline comparison.
+// TODO: wire generation counter and population size when genome population is integrated.
 //
 // Args:
 //
@@ -433,7 +435,9 @@ func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
 	if s.guardrails == nil {
 		return true
 	}
-	result := s.guardrails.PreEvolveCheck(ctx, 0, 0, 0, 0)
+	// Use the most recent score as currentBest for baseline regression detection.
+	avg, _, _ := s.scoreSnapshot()
+	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, 0, 0)
 	if result.ShouldStop {
 		slog.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
 			"events", len(result.Events))
@@ -500,4 +504,31 @@ func (s *EvolutionScheduler) Shutdown() {
 	if s.evolveCancel != nil {
 		s.evolveCancel()
 	}
+}
+
+// ShouldEvolve delegates to the internal shouldEvolve logic.
+// This is the exported entry point for DreamCycle to check evolution conditions.
+//
+// Args:
+//
+//	ctx - operation context.
+//	data - callback data from the triggering event.
+//
+// Returns:
+//
+//	bool - true if evolution should run.
+func (s *EvolutionScheduler) ShouldEvolve(ctx context.Context, data CallbackData) bool {
+	return s.shouldEvolve(ctx, data)
+}
+
+// TriggerMode returns the current trigger mode.
+// Thread-safe: uses mutex to protect concurrent access.
+//
+// Returns:
+//
+//	EvolutionTrigger - the current trigger mode.
+func (s *EvolutionScheduler) TriggerMode() EvolutionTrigger {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trigger
 }

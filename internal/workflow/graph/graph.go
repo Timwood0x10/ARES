@@ -47,10 +47,11 @@ type Graph struct {
 	edges     map[string][]*Edge
 	start     string
 	scheduler Scheduler
-	tracer    observability.Tracer // observability tracer for execution tracking
-	limiter   ratelimit.Limiter    // rate limiter for execution throttling
-	pluginBus *runtime.PluginBus   // optional plugin bus for BeforeStep/AfterStep hooks
-	router    NodeRouter           // optional dynamic routing callback
+	tracer    observability.Tracer        // observability tracer for execution tracking
+	limiter   ratelimit.Limiter           // rate limiter for execution throttling
+	pluginBus *runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
+	router    NodeRouter                  // optional dynamic routing callback
+	collector *runtime.ExecutionCollector // optional collector for route recording
 }
 
 // NewGraph creates a new graph with the given ID.
@@ -331,6 +332,21 @@ func (g *Graph) SetPluginBus(pb *runtime.PluginBus) (*Graph, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pluginBus = pb
+	return g, nil
+}
+
+// SetExecutionCollector attaches an ExecutionCollector for route recording
+// and history tracking during graph execution.
+func (g *Graph) SetExecutionCollector(c *runtime.ExecutionCollector) (*Graph, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	if c == nil {
+		return nil, fmt.Errorf("execution collector cannot be nil")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.collector = c
 	return g, nil
 }
 

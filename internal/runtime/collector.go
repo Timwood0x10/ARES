@@ -238,8 +238,10 @@ func (c *ExecutionCollector) MergeInto(ckpt *ExperienceCheckpoint) {
 		ckpt.ToolHistory = append(ckpt.ToolHistory, ToolEntry{
 			StepID:   t.StepID,
 			ToolName: t.ToolName,
+			Input:    t.Input,
+			Output:   t.Output,
+			Duration: t.Duration,
 			Success:  t.Success,
-			Error:    "",
 		})
 	}
 	for _, m := range c.memoryHits {

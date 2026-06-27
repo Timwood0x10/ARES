@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -13,6 +14,7 @@ import (
 // strategies using a provided scorer function.
 type RegressionTester struct {
 	scorer func(*mutation.Strategy) float64
+	rng    *rand.Rand
 }
 
 // NewRegressionTester creates a regression tester for arena strategy comparison.
@@ -29,7 +31,10 @@ func NewRegressionTester(scorer func(*mutation.Strategy) float64) (*RegressionTe
 	if scorer == nil {
 		return nil, fmt.Errorf("scorer must not be nil")
 	}
-	return &RegressionTester{scorer: scorer}, nil
+	return &RegressionTester{
+		scorer: scorer,
+		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+	}, nil
 }
 
 // Run executes a regression test comparing a candidate strategy against a baseline.
@@ -70,8 +75,8 @@ func (t *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Regr
 
 		// Add slight noise for stochastic comparison when sampleSize > 1.
 		if sampleSize > 1 {
-			candScore += (rand.Float64() - 0.5) * 0.02
-			baseScore += (rand.Float64() - 0.5) * 0.02
+			candScore += (t.rng.Float64() - 0.5) * 0.02
+			baseScore += (t.rng.Float64() - 0.5) * 0.02
 		}
 
 		candidateTotal += candScore

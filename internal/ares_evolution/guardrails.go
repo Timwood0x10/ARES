@@ -87,6 +87,10 @@ type GuardrailResult struct {
 	Events []GuardrailEvent
 }
 
+// GuardrailEventHandler is called when a guardrail event fires.
+// Implementations can record metrics, send alerts, or trigger other actions.
+type GuardrailEventHandler func(event GuardrailEvent)
+
 // EvolutionGuardrails runs safety checks before and after each evolution cycle.
 type EvolutionGuardrails struct {
 	mu sync.RWMutex
@@ -114,6 +118,9 @@ type EvolutionGuardrails struct {
 
 	// MaxEvents limits stored events (0=unlimited).
 	MaxEvents int
+
+	// eventHandler is called on each guardrail event (optional).
+	eventHandler GuardrailEventHandler
 }
 
 // GuardrailOption configures EvolutionGuardrails.
@@ -137,6 +144,14 @@ func WithMaxStagnantGenerations(n int) GuardrailOption {
 func WithMaxLineageShare(share float64) GuardrailOption {
 	return func(g *EvolutionGuardrails) {
 		g.MaxLineageShare = share
+	}
+}
+
+// WithGuardrailEventHandler sets a callback for guardrail events.
+// The handler is invoked synchronously after each event is recorded.
+func WithGuardrailEventHandler(handler GuardrailEventHandler) GuardrailOption {
+	return func(g *EvolutionGuardrails) {
+		g.eventHandler = handler
 	}
 }
 
@@ -359,12 +374,17 @@ func (g *EvolutionGuardrails) RecordEvent(event GuardrailEvent) {
 	g.recordEventLocked(event)
 }
 
-// recordEventLocked stores an event (caller must hold lock).
+// recordEventLocked stores an event and invokes the handler if set.
+// Caller must hold lock.
 func (g *EvolutionGuardrails) recordEventLocked(event GuardrailEvent) {
 	g.events = append(g.events, event)
-	// Enforce MaxEvents limit
+	// Enforce MaxEvents limit.
 	if g.MaxEvents > 0 && len(g.events) > g.MaxEvents {
 		g.events = g.events[len(g.events)-g.MaxEvents:]
+	}
+	// Invoke post-action handler if configured.
+	if g.eventHandler != nil {
+		g.eventHandler(event)
 	}
 }
 

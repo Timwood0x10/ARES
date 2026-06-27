@@ -17,14 +17,85 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
-// containsString reports whether v is in s.
-func containsString(s []string, v string) bool {
-	for _, e := range s {
-		if e == v {
-			return true
+// applyRoundMutations applies between-round DAG mutations suggested by
+// MemoryPlugin (new nodes/edges) and EvolutionPlugin (strategy adjustments).
+// This is the core mechanism of the Controlled Evolutionary Loop: the DAG
+// evolves between rounds based on execution outcomes.
+func (e *DynamicExecutor) applyRoundMutations(ctx context.Context, round int, execution *WorkflowExecution, mutableDAG *MutableDAG) {
+	if e.pluginBus == nil {
+		return
+	}
+
+	// 1. MemoryPlugin: suggest routing paths for next round
+	for _, mp := range e.pluginBus.PluginsByCap(runtime.CapMemory) {
+		if mem, ok := mp.(runtime.MemoryPlugin); ok {
+			advice, err := mem.AdviseRoute(ctx, runtime.RouteState{
+				ExecutionID:   execution.ID,
+				CurrentStepID: "",
+			})
+			if err != nil {
+				slog.Warn("round mutation: memory advise failed",
+					"round", round, "execution_id", execution.ID, "error", err,
+				)
+				continue
+			}
+			for _, a := range advice {
+				if a.NextStepID != "" && a.Confidence >= 0.5 {
+					slog.Debug("round mutation: memory suggests path",
+						"round", round, "next_step", a.NextStepID,
+						"confidence", a.Confidence,
+					)
+					// Check if target step exists; add if not.
+					// Use a default agent type so the step is executable;
+					// the application can override it after creation.
+					if _, exists := mutableDAG.StepIndex()[a.NextStepID]; !exists {
+						_ = mutableDAG.AddNode(ctx, &Step{
+							ID:        a.NextStepID,
+							Name:      a.NextStepID,
+							AgentType: "default",
+						})
+					}
+				}
+			}
 		}
 	}
-	return false
+
+	// 2. EvolutionPlugin: strategy recommendations for next round
+	for _, ep := range e.pluginBus.PluginsByCap(runtime.CapEvolution) {
+		if evo, ok := ep.(runtime.EvolutionPlugin); ok {
+			rec, err := evo.Recommend(ctx, runtime.ExecutionState{
+				ExecutionID:   execution.ID,
+				CurrentStepID: "",
+			})
+			if err != nil {
+				slog.Warn("round mutation: evolution recommend failed",
+					"round", round, "execution_id", execution.ID, "error", err,
+				)
+				continue
+			}
+			if rec != nil && rec.PreferredAgent != "" {
+				slog.Debug("round mutation: evolution suggests agent",
+					"round", round, "preferred_agent", rec.PreferredAgent,
+				)
+				// PreferredAgent influences next round's agent selection.
+				// Concrete mutation (mapping agent to step) is done by
+				// the application layer via AgentStepResolver.
+			}
+		}
+	}
+}
+
+// cleanupCheckpoint calls Cleanup on all registered checkpoint plugins
+// to free in-memory snapshots after execution terminates.
+func (e *DynamicExecutor) cleanupCheckpoint(executionID string) {
+	if e.pluginBus == nil {
+		return
+	}
+	for _, p := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
+		if ckp, ok := p.(*runtime.CheckpointPlugin); ok {
+			ckp.Cleanup(executionID)
+		}
+	}
 }
 
 // flushCheckpoint calls Flush on all registered checkpoint plugins.
@@ -74,13 +145,14 @@ func WithStepTimeout(d time.Duration) ExecutorOption {
 // DynamicExecutor extends Executor to support mid-execution graph mutations.
 type DynamicExecutor struct {
 	*Executor
-	applyMode         ApplyMode
-	hitlHandler       InterruptHandler
-	hitlStore         InterruptStore
-	recoveryHandler   StepRecoveryHandler
-	recoveryEventSink func(ctx context.Context, eventType events.EventType, payload map[string]any)
-	pluginBus         *runtime.PluginBus
-	checkpointStore   runtime.CheckpointStore
+	applyMode          ApplyMode
+	hitlHandler        InterruptHandler
+	hitlStore          InterruptStore
+	recoveryHandler    StepRecoveryHandler
+	recoveryEventSink  func(ctx context.Context, eventType events.EventType, payload map[string]any)
+	pluginBus          *runtime.PluginBus
+	checkpointStore    runtime.CheckpointStore
+	executionCollector *runtime.ExecutionCollector
 }
 
 // NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
@@ -133,6 +205,13 @@ func (e *DynamicExecutor) WithPluginBus(bus *runtime.PluginBus) *DynamicExecutor
 // WithCheckpointStore sets the checkpoint store for execution resume.
 func (e *DynamicExecutor) WithCheckpointStore(store runtime.CheckpointStore) *DynamicExecutor {
 	e.checkpointStore = store
+	return e
+}
+
+// WithExecutionCollector sets the execution collector for route recording
+// and execution history tracking.
+func (e *DynamicExecutor) WithExecutionCollector(c *runtime.ExecutionCollector) *DynamicExecutor {
+	e.executionCollector = c
 	return e
 }
 
@@ -264,9 +343,27 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 	return e.execLoop(ctx, workflow, initialInput, mutableDAG, execution, completed, processed, initialStepResults)
 }
 
+// findLoopPlugin returns the first LoopPlugin from the plugin bus, or nil.
+func (e *DynamicExecutor) findLoopPlugin() *runtime.LoopPlugin {
+	if e.pluginBus == nil {
+		return nil
+	}
+	loopPlugins := e.pluginBus.PluginsByCap(runtime.CapLoop)
+	for _, lp := range loopPlugins {
+		if loop, ok := lp.(*runtime.LoopPlugin); ok {
+			return loop
+		}
+	}
+	return nil
+}
+
 // execLoop is the shared execution core used by both ExecuteDynamic and
 // ExecuteDynamicFromCheckpoint. When completed/processed are non-nil they
 // are used directly; otherwise fresh maps are created.
+//
+// execLoop now wraps execution in an outer round loop for Controlled
+// Evolutionary Loop support. After the entire DAG executes once, the
+// loop plugin decides whether to start another round with a mutated DAG.
 func (e *DynamicExecutor) execLoop(
 	ctx context.Context,
 	workflow *Workflow,
@@ -277,19 +374,18 @@ func (e *DynamicExecutor) execLoop(
 	processed map[string]bool,
 	initialStepResults []*StepResult,
 ) (*WorkflowResult, error) {
+	defer e.cleanupCheckpoint(execution.ID)
+
 	executionOrder, err := mutableDAG.GetExecutionOrder()
 	if err != nil {
 		return nil, fmt.Errorf("get execution order: %w", err)
 	}
 
 	localOutputStore := NewOutputStore()
-	// Buffer for the original order plus room for recovery-added steps.
 	bufSize := len(executionOrder) * 2
 	if bufSize < 16 {
 		bufSize = 16
 	}
-	resultChan := make(chan *StepResult, bufSize)
-	errChan := make(chan error, 1)
 
 	if completed == nil {
 		completed = make(map[string]bool)
@@ -297,61 +393,31 @@ func (e *DynamicExecutor) execLoop(
 	if processed == nil {
 		processed = make(map[string]bool)
 	}
-	var mu sync.Mutex
-	stepEg, _ := errgroup.WithContext(ctx)
-
-	sem := make(chan struct{}, e.maxParallel)
-
-	lastVersion := mutableDAG.Version()
-
-	orderSlice := make([]string, len(executionOrder))
-	copy(orderSlice, executionOrder)
-	currentOrder := &orderSlice
-
-	recoveryCh := make(chan struct{}, 1)
 
 	stepResults := initialStepResults
 	if stepResults == nil {
 		stepResults = make([]*StepResult, 0)
 	}
 
-	g, gctx := errgroup.WithContext(ctx)
-	done := make(chan struct{})
+	orderSlice := make([]string, len(executionOrder))
+	copy(orderSlice, executionOrder)
 
-	g.Go(func() error {
-		defer close(done)
-		e.runDynamicSteps(
-			gctx,
-			execution,
-			workflow,
-			mutableDAG,
-			initialInput,
-			currentOrder,
-			&lastVersion,
-			completed,
-			processed,
-			&mu,
-			stepEg,
-			sem,
-			resultChan,
-			errChan,
-			localOutputStore,
-			recoveryCh,
-		)
-		return nil
-	})
+	recoveryCh := make(chan struct{}, 1)
+	var mu sync.Mutex
+	lastVersion := mutableDAG.Version()
 
-	// Collect results from resultChan until the scheduler closes it (all steps done).
+	round := 1
 	for {
-		select {
-		case result, ok := <-resultChan:
-			if !ok {
-				<-done
+		loopPlugin := e.findLoopPlugin()
+
+		// Before round 2+, check if we should continue.
+		if round > 1 {
+			if loopPlugin == nil || !loopPlugin.ShouldExecuteRound(round, execution.Variables) {
+				// No more rounds. The DAG completed normally; emit
+				// workflow completed event and return the accumulated result.
 				execution.Status = WorkflowStatusCompleted
 				execution.FinishedAt = time.Now()
-
 				e.flushCheckpoint(ctx, execution.ID)
-
 				if e.pluginBus != nil {
 					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
 						runtime.PayloadKeyExecutionID: execution.ID,
@@ -359,12 +425,10 @@ func (e *DynamicExecutor) execLoop(
 						runtime.PayloadKeyStatus:      execution.Status,
 					})
 				}
-
 				output := make(map[string]interface{})
 				for _, r := range stepResults {
 					output[r.StepID] = r.Output
 				}
-
 				return &WorkflowResult{
 					ExecutionID: execution.ID,
 					WorkflowID:  workflow.ID,
@@ -374,138 +438,217 @@ func (e *DynamicExecutor) execLoop(
 					Steps:       stepResults,
 				}, nil
 			}
-			if result == nil {
-				continue
+			// Between-round: apply DAG mutations suggested by memory
+			// and evolution plugins, then flush checkpoint with round info.
+			e.applyRoundMutations(ctx, round, execution, mutableDAG)
+			for _, cp := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
+				if ckp, ok := cp.(*runtime.CheckpointPlugin); ok {
+					ckp.SetRound(execution.ID, round)
+				}
 			}
-			stepResults = append(stepResults, result)
-			execution.StepStates[result.StepID] = &StepState{
-				StepID:     result.StepID,
-				Status:     result.Status,
-				Output:     result.Output,
-				Error:      result.Error,
-				FinishedAt: time.Now(),
-			}
+			e.flushCheckpoint(ctx, execution.ID)
 
-			if result.Status == StepStatusFailed {
-				if e.handleStepFailure(ctx, result, workflow, execution, mutableDAG, &lastVersion, currentOrder, completed, processed, &mu, recoveryCh) {
+			// Reset for next round: keep the same execution, but clear
+			// per-round tracking state. The DAG has been mutated between
+			// rounds so a fresh topological order is needed.
+			completed = make(map[string]bool)
+			processed = make(map[string]bool)
+			executionOrder, err = mutableDAG.GetExecutionOrder()
+			if err != nil {
+				return nil, fmt.Errorf("round %d: get execution order: %w", round, err)
+			}
+			orderSlice = make([]string, len(executionOrder))
+			copy(orderSlice, executionOrder)
+			lastVersion = mutableDAG.Version()
+		}
+
+		currentOrder := &orderSlice
+		sem := make(chan struct{}, e.maxParallel)
+		resultChan := make(chan *StepResult, bufSize)
+		errChan := make(chan error, 1)
+		done := make(chan struct{})
+
+		stepEg, _ := errgroup.WithContext(ctx)
+
+		dispatchG, dispatchCtx := errgroup.WithContext(ctx)
+		dispatchG.Go(func() error {
+			defer close(done)
+			e.runDynamicSteps(
+				dispatchCtx,
+				execution,
+				workflow,
+				mutableDAG,
+				initialInput,
+				currentOrder,
+				&lastVersion,
+				completed,
+				processed,
+				&mu,
+				stepEg,
+				sem,
+				resultChan,
+				errChan,
+				localOutputStore,
+				recoveryCh,
+			)
+			return nil
+		})
+
+		// Collect results until the dispatcher closes resultChan.
+	roundLoop:
+		for {
+			select {
+			case result, ok := <-resultChan:
+				if !ok {
+					<-done
+					_ = stepEg.Wait()
+					_ = dispatchG.Wait()
+
+					// Round completed successfully.
+					// Check if another round is needed.
+					if loopPlugin != nil && loopPlugin.ShouldExecuteRound(round+1, execution.Variables) {
+						slog.Debug("evolutionary loop: round completed, starting next",
+							"round", round,
+							"execution_id", execution.ID,
+						)
+						loopPlugin.OnRoundEnd(ctx, round, execution.ID)
+						execution.Status = WorkflowStatusRunning
+						e.flushCheckpoint(ctx, execution.ID)
+						round++
+						break roundLoop
+					}
+
+					// No more rounds: finalize successfully.
+					execution.Status = WorkflowStatusCompleted
+					execution.FinishedAt = time.Now()
+					e.flushCheckpoint(ctx, execution.ID)
+					if e.pluginBus != nil {
+						e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
+							runtime.PayloadKeyExecutionID: execution.ID,
+							runtime.PayloadKeyWorkflowID:  workflow.ID,
+							runtime.PayloadKeyStatus:      execution.Status,
+						})
+					}
+					output := make(map[string]interface{})
+					for _, r := range stepResults {
+						output[r.StepID] = r.Output
+					}
+					return &WorkflowResult{
+						ExecutionID: execution.ID,
+						WorkflowID:  workflow.ID,
+						Status:      execution.Status,
+						Output:      output,
+						Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+						Steps:       stepResults,
+					}, nil
+				}
+				if result == nil {
 					continue
 				}
+				stepResults = append(stepResults, result)
+				execution.StepStates[result.StepID] = &StepState{
+					StepID:     result.StepID,
+					Status:     result.Status,
+					Output:     result.Output,
+					Error:      result.Error,
+					FinishedAt: time.Now(),
+				}
+
+				if result.Status == StepStatusFailed {
+					if e.handleStepFailure(ctx, result, workflow, execution, mutableDAG, &lastVersion, currentOrder, completed, processed, &mu, recoveryCh) {
+						continue
+					}
+					execution.Status = WorkflowStatusFailed
+					execution.Error = result.Error
+					execution.FinishedAt = time.Now()
+					e.flushCheckpoint(ctx, execution.ID)
+					if e.pluginBus != nil {
+						e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
+							runtime.PayloadKeyExecutionID: execution.ID,
+							runtime.PayloadKeyWorkflowID:  workflow.ID,
+							runtime.PayloadKeyStatus:      execution.Status,
+							runtime.PayloadKeyError:       result.Error,
+						})
+					}
+					<-done
+					_ = stepEg.Wait()
+					_ = dispatchG.Wait()
+					return &WorkflowResult{
+						ExecutionID: execution.ID,
+						WorkflowID:  workflow.ID,
+						Status:      WorkflowStatusFailed,
+						Error:       result.Error,
+						Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+						Steps:       stepResults,
+					}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
+				}
+
+				// After a completed step, check for routing decisions.
+				if result.Status == StepStatusCompleted && e.pluginBus != nil {
+					decision := e.handleStepRouting(ctx, execution, result, mutableDAG, currentOrder)
+					if decision != nil {
+						slog.Debug("route decision",
+							"execution_id", execution.ID,
+							"from_step", result.StepID,
+							"to_step", decision.NextStepID,
+							"reason", decision.Reason,
+							"source", decision.Source,
+						)
+						mu.Lock()
+						order := *currentOrder
+						newOrder := make([]string, 0, len(order))
+						targetAdded := false
+						for _, sid := range order {
+							if processed[sid] || completed[sid] {
+								newOrder = append(newOrder, sid)
+							} else if sid == decision.NextStepID && !targetAdded {
+								newOrder = append(newOrder, sid)
+								targetAdded = true
+							}
+						}
+						for _, sid := range order {
+							if !processed[sid] && !completed[sid] && sid != decision.NextStepID {
+								newOrder = append(newOrder, sid)
+							}
+						}
+						*currentOrder = newOrder
+						mu.Unlock()
+					}
+				}
+
+			case err := <-errChan:
 				execution.Status = WorkflowStatusFailed
-				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
-
 				e.flushCheckpoint(ctx, execution.ID)
-
 				if e.pluginBus != nil {
 					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
 						runtime.PayloadKeyExecutionID: execution.ID,
 						runtime.PayloadKeyWorkflowID:  workflow.ID,
 						runtime.PayloadKeyStatus:      execution.Status,
-						runtime.PayloadKeyError:       result.Error,
+						runtime.PayloadKeyError:       err.Error(),
 					})
 				}
-
 				<-done
+				_ = stepEg.Wait()
+				_ = dispatchG.Wait()
 				return &WorkflowResult{
 					ExecutionID: execution.ID,
 					WorkflowID:  workflow.ID,
 					Status:      WorkflowStatusFailed,
-					Error:       result.Error,
+					Error:       err.Error(),
 					Duration:    execution.FinishedAt.Sub(execution.StartedAt),
 					Steps:       stepResults,
-				}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
+				}, err
+
+			case <-ctx.Done():
+				execution.Status = WorkflowStatusCancelled
+				execution.FinishedAt = time.Now()
+				e.flushCheckpoint(ctx, execution.ID)
+				<-done
+				_ = stepEg.Wait()
+				_ = dispatchG.Wait()
+				return nil, ctx.Err()
 			}
-
-			// After a completed step, check for routing decisions.
-			if result.Status == StepStatusCompleted && e.pluginBus != nil {
-				decision := e.handleStepRouting(ctx, execution, result, mutableDAG, currentOrder)
-				if decision != nil {
-					slog.Debug("route decision",
-						"execution_id", execution.ID,
-						"from_step", result.StepID,
-						"to_step", decision.NextStepID,
-						"reason", decision.Reason,
-						"source", decision.Source,
-					)
-					// Apply the routing decision: promote the target step
-					// to execute next, before other unprocessed steps.
-					mu.Lock()
-					order := *currentOrder
-					newOrder := make([]string, 0, len(order))
-					targetAdded := false
-					for _, sid := range order {
-						if processed[sid] || completed[sid] {
-							newOrder = append(newOrder, sid)
-						} else if sid == decision.NextStepID && !targetAdded {
-							newOrder = append(newOrder, sid)
-							targetAdded = true
-						}
-					}
-					for _, sid := range order {
-						if !processed[sid] && !completed[sid] && sid != decision.NextStepID {
-							newOrder = append(newOrder, sid)
-						}
-					}
-					*currentOrder = newOrder
-					mu.Unlock()
-				}
-			}
-
-			// Check LoopPlugin after each completed step.
-			if e.pluginBus != nil && result.Status == StepStatusCompleted {
-				loopPlugins := e.pluginBus.PluginsByCap(runtime.CapLoop)
-				for _, lp := range loopPlugins {
-					if loop, ok := lp.(*runtime.LoopPlugin); ok {
-						if !loop.ShouldContinue(execution.Variables) {
-							slog.Debug("loop exit condition met, skipping remaining steps",
-								"execution_id", execution.ID,
-							)
-							mu.Lock()
-							subSteps := loop.Config().SubStepIDs
-							for _, sid := range *currentOrder {
-								if !processed[sid] && !completed[sid] {
-									if len(subSteps) == 0 || containsString(subSteps, sid) {
-										processed[sid] = true
-									}
-								}
-							}
-							mu.Unlock()
-						}
-					}
-				}
-			}
-
-		case err := <-errChan:
-			execution.Status = WorkflowStatusFailed
-			execution.FinishedAt = time.Now()
-
-			e.flushCheckpoint(ctx, execution.ID)
-
-			if e.pluginBus != nil {
-				e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
-					runtime.PayloadKeyExecutionID: execution.ID,
-					runtime.PayloadKeyWorkflowID:  workflow.ID,
-					runtime.PayloadKeyStatus:      execution.Status,
-					runtime.PayloadKeyError:       err.Error(),
-				})
-			}
-
-			<-done
-			return &WorkflowResult{
-				ExecutionID: execution.ID,
-				WorkflowID:  workflow.ID,
-				Status:      WorkflowStatusFailed,
-				Error:       err.Error(),
-				Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-				Steps:       stepResults,
-			}, err
-
-		case <-ctx.Done():
-			execution.Status = WorkflowStatusCancelled
-			execution.FinishedAt = time.Now()
-			e.flushCheckpoint(ctx, execution.ID)
-			<-done
-			return nil, ctx.Err()
 		}
 	}
 }

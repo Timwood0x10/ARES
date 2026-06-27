@@ -247,6 +247,18 @@ func (e *ShadowEvaluator) SetShadowScorer(scorer func(*mutation.Strategy) float6
 	e.shadowScorer = scorer
 }
 
+// HasIndependentScorer returns true if an independent scorer is configured.
+// When true, Evaluate() can be used instead of manual RecordResult() calls.
+//
+// Returns:
+//
+//	bool - true if an independent scorer is set.
+func (e *ShadowEvaluator) HasIndependentScorer() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.shadowScorer != nil
+}
+
 // Evaluate scores both active and shadow strategies using the independent
 // scorer (if set) and records the comparison result. Returns the active and
 // shadow scores. If no scorer is set, returns (-1, -1) without recording.

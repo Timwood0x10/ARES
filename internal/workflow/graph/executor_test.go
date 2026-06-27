@@ -10,6 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -716,6 +717,92 @@ func TestExecuteFromCheckpoint_AllNodesCompleted(t *testing.T) {
 	state := NewState()
 	_, err := g.ExecuteFromCheckpoint(context.Background(), state, []string{"n1"})
 	require.NoError(t, err)
+}
+
+func TestGraphSetExecutionCollector_Nil(t *testing.T) {
+	g, err := NewGraph("test-collector-nil")
+	require.NoError(t, err)
+	_, err = g.SetExecutionCollector(nil)
+	require.Error(t, err)
+}
+
+func TestGraphSetExecutionCollector_NilGraph(t *testing.T) {
+	_, err := (*Graph)(nil).SetExecutionCollector(runtime.NewExecutionCollector("exec-1"))
+	require.Error(t, err)
+}
+
+func TestGraphRouterRecordsToCollector(t *testing.T) {
+	// Verifies that when a NodeRouter is set and an ExecutionCollector is
+	// attached, route decisions are recorded in the collector.
+	g := buildTestGraph(t, "route-record",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	collector := runtime.NewExecutionCollector("exec-route-record")
+	_, err := g.SetExecutionCollector(collector)
+	require.NoError(t, err)
+
+	_, err = g.SetRouter(func(ctx context.Context, currentNodeID string, state *State) string {
+		if currentNodeID == "n1" {
+			return "n2"
+		}
+		return ""
+	})
+	require.NoError(t, err)
+
+	state := NewState()
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	routes := collector.RouteHistory()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "n1", routes[0].StepID)
+	assert.Equal(t, "n2", routes[0].Decision)
+	assert.Equal(t, "node-router", routes[0].Source)
+}
+
+func TestGraphPluginBusRouterRecordsToCollector(t *testing.T) {
+	// Verifies that when a PluginBus-based RouterPlugin routes and an
+	// ExecutionCollector is attached, route decisions are recorded.
+	g := buildTestGraph(t, "route-pb-record",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	_, err := g.SetExecutionCollector(runtime.NewExecutionCollector("exec-pb-record"))
+	require.NoError(t, err)
+
+	bus := runtime.NewPluginBus()
+	require.NoError(t, bus.Register(runtime.NewExpressionRouter("test-router", []runtime.RouteRule{
+		{FromStepID: "n1", ToStepID: "n2", Reason: "test route"},
+	})))
+	require.NoError(t, bus.Start(context.Background()))
+	_, err = g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	state := NewState()
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	routes := g.collector.RouteHistory()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "n1", routes[0].StepID)
+	assert.Equal(t, "n2", routes[0].Decision)
+	assert.Equal(t, "test route", routes[0].Reason)
+	assert.Equal(t, "expression", routes[0].Source)
 }
 
 func TestExecuteFromCheckpoint_EmptyExecuted(t *testing.T) {

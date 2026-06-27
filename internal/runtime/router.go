@@ -25,6 +25,10 @@ type RouteState struct {
 	CollectedRoutes   []RouteRecord
 	CollectedTools    []ToolRecord
 	CollectedMemory   []MemoryHitRecord
+	// Collector allows the router to record route decisions directly into
+	// the execution collector for checkpoint persistence and evolution
+	// consumption. May be nil; routers should check before using.
+	Collector *ExecutionCollector
 }
 
 // RouteDecision is the outcome of a routing decision.

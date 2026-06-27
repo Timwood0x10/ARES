@@ -208,21 +208,29 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		return nil
 	}
 
-	// Delegate evolution decision to scheduler's shouldEvolve logic.
-	if !dc.scheduler.shouldEvolve(ctx, data) {
+	// Delegate evolution decision to scheduler's exported ShouldEvolve method.
+	if !dc.scheduler.ShouldEvolve(ctx, data) {
 		return nil
 	}
 
 	slog.InfoContext(ctx, "[DreamCycle] Starting evolution cycle",
 		"agent_id", data.AgentID,
 		"task_count", taskCount,
-		"trigger", dc.scheduler.trigger.String(),
+		"trigger", dc.scheduler.TriggerMode().String(),
 		"generation", 0,
 		"population_size", 0)
 
 	// Pre-evolution guardrail check.
+	// Pass taskCount as totalPop so the unevaluated ratio check is meaningful.
+	// Generation is not tracked yet; currentBest is sourced from active strategy.
+	var currentBest float64
+	if dc.stateManager != nil {
+		if cur := dc.stateManager.Current(); cur != nil {
+			currentBest = cur.Score
+		}
+	}
 	if dc.guardrails != nil {
-		preResult := dc.guardrails.PreEvolveCheck(ctx, 0, 0, 0, 0)
+		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, 0, int(taskCount), 0)
 		if preResult.ShouldStop {
 			slog.WarnContext(ctx, "[DreamCycle] Pre-evolution guardrails prevent cycle",
 				"events", len(preResult.Events))
@@ -300,8 +308,18 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			slog.ErrorContext(ctx, "[DreamCycle] winnerToMutationStrategy returned nil, skipping shadow")
 			return nil
 		}
+		// Set active strategy for comparison and start shadow evaluation.
+		parentMutation := evolutionToMutationStrategy(parent)
+		dc.shadowEvaluator.SetActiveStrategy(&parentMutation)
 		dc.shadowEvaluator.StartShadow(mtnWinner)
-		dc.shadowEvaluator.RecordResult(parent.Score, winner.scoreImprovement+parent.Score)
+
+		// Use independent scorer if available, otherwise fall back to manual scores.
+		if dc.shadowEvaluator.HasIndependentScorer() {
+			dc.shadowEvaluator.Evaluate(ctx)
+		} else {
+			dc.shadowEvaluator.RecordResult(parent.Score, winner.scoreImprovement+parent.Score)
+		}
+
 		shouldDeploy, report := dc.shadowEvaluator.ShouldDeploy()
 		if !shouldDeploy {
 			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation rejects deployment",
@@ -361,7 +379,7 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		"winner_id", winner.strategy.ID,
 		"win_rate", winner.winRate,
 		"score_improvement", winner.scoreImprovement,
-		"trigger", dc.scheduler.trigger.String(),
+		"trigger", dc.scheduler.TriggerMode().String(),
 		"generation", 0,
 		"population_size", 0)
 

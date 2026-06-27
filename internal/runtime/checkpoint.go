@@ -19,6 +19,12 @@ type CheckpointStore interface {
 	Load(ctx context.Context, key string) ([]byte, error)
 }
 
+// DAGEdge captures a single edge in the DAG topology for round checkpoint.
+type DAGEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // ExperienceCheckpoint captures a workflow execution at a point in time,
 // including both recovery data and signals for memory/evolution consumption.
 type ExperienceCheckpoint struct {
@@ -28,10 +34,13 @@ type ExperienceCheckpoint struct {
 	WorkflowVersion  string                 `json:"workflow_version,omitempty"`
 	StateVersion     int64                  `json:"state_version"`
 	Status           string                 `json:"status"`
+	CurrentRound     int                    `json:"current_round"` // evolutionary loop round
 	Error            string                 `json:"error,omitempty"`
 	StepStates       []StepStateSnapshot    `json:"step_states"`
 	Variables        map[string]interface{} `json:"variables,omitempty"`
 	OutputStore      map[string]string      `json:"output_store,omitempty"`
+	DAGNodes         []string               `json:"dag_nodes,omitempty"` // node IDs for DAG recovery
+	DAGEdges         []DAGEdge              `json:"dag_edges,omitempty"` // edge topology for DAG recovery
 	RouteHistory     []RouteEntry           `json:"route_history,omitempty"`
 	ToolHistory      []ToolEntry            `json:"tool_history,omitempty"`
 	MemoryHits       []MemoryEntry          `json:"memory_hits,omitempty"`
@@ -60,10 +69,13 @@ type RouteEntry struct {
 
 // ToolEntry records a tool invocation.
 type ToolEntry struct {
-	StepID   string `json:"step_id"`
-	ToolName string `json:"tool_name"`
-	Success  bool   `json:"success"`
-	Error    string `json:"error,omitempty"`
+	StepID   string        `json:"step_id"`
+	ToolName string        `json:"tool_name"`
+	Input    string        `json:"input,omitempty"`
+	Output   string        `json:"output,omitempty"`
+	Duration time.Duration `json:"duration_ns"`
+	Success  bool          `json:"success"`
+	Error    string        `json:"error,omitempty"`
 }
 
 // MemoryEntry records a memory retrieval hit.
@@ -139,6 +151,16 @@ func NewCheckpointPlugin(name string, store CheckpointStore) *CheckpointPlugin {
 		store:     store,
 		snapshots: make(map[string]*ExperienceCheckpoint),
 		stepCount: make(map[string]int),
+	}
+}
+
+// SetRound sets the current round number on the checkpoint for the given
+// execution. Thread-safe.
+func (p *CheckpointPlugin) SetRound(executionID string, round int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ckpt, ok := p.snapshots[executionID]; ok {
+		ckpt.CurrentRound = round
 	}
 }
 
@@ -345,6 +367,16 @@ func (p *CheckpointPlugin) Flush(ctx context.Context, executionID string) error 
 		return nil
 	}
 	return p.saveLocked(ctx, executionID, ckpt)
+}
+
+// Cleanup removes the in-memory snapshot for the given execution to
+// prevent unbounded map growth. Call this when the execution is fully
+// terminated and no further Flush or hook calls will reference it.
+func (p *CheckpointPlugin) Cleanup(executionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.snapshots, executionID)
+	delete(p.stepCount, executionID)
 }
 
 func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, ckpt *ExperienceCheckpoint) error {

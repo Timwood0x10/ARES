@@ -40,6 +40,11 @@ func TestEvolutionRouter_Route(t *testing.T) {
 		require.NoError(t, bus.Register(evo))
 		require.NoError(t, bus.Register(NewEvolutionRouter("er", []RouteRule{
 			{ToStepID: "step-2", Reason: "expert step"},
+		}).WithAgentResolver(func(agent string) (string, bool) {
+			if agent == "expert" {
+				return "step-2", true
+			}
+			return "", false
 		})))
 		require.NoError(t, bus.Start(context.Background()))
 
@@ -80,5 +85,61 @@ func TestEvolutionRouter_Route(t *testing.T) {
 		dec, err := router.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
 		require.NoError(t, err)
 		assert.Nil(t, dec)
+	})
+
+	t.Run("falls through when PreferredAgent has no matching resolver", func(t *testing.T) {
+		bus := NewPluginBus()
+		evo := &mockEvolutionPlugin{
+			name: "test-evo-2",
+			recommendFn: func(_ context.Context, _ ExecutionState) (*RuntimeRecommendation, error) {
+				return &RuntimeRecommendation{
+					PreferredAgent: "nonexistent-agent",
+					Confidence:     0.9,
+				}, nil
+			},
+		}
+		require.NoError(t, bus.Register(evo))
+		require.NoError(t, bus.Register(NewEvolutionRouter("er", []RouteRule{
+			{FromStepID: "step-1", ToStepID: "step-5", Reason: "fallback when agent unknown"},
+		}).WithAgentResolver(func(agent string) (string, bool) {
+			return "", false // resolver doesn't know this agent
+		})))
+		require.NoError(t, bus.Start(context.Background()))
+
+		router, ok := bus.PluginsByCap(CapRouter)[0].(RouterPlugin)
+		require.True(t, ok)
+
+		dec, err := router.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
+		require.NoError(t, err)
+		require.NotNil(t, dec)
+		assert.Equal(t, "step-5", dec.NextStepID)
+		assert.Equal(t, "expression", dec.Source)
+	})
+
+	t.Run("falls through to expression rules when only RouterWeight is set", func(t *testing.T) {
+		bus := NewPluginBus()
+		evo := &mockEvolutionPlugin{
+			name: "test-evo-3",
+			recommendFn: func(_ context.Context, _ ExecutionState) (*RuntimeRecommendation, error) {
+				return &RuntimeRecommendation{
+					RouterWeight: 0.75,
+					Confidence:   0.9,
+				}, nil
+			},
+		}
+		require.NoError(t, bus.Register(evo))
+		require.NoError(t, bus.Register(NewEvolutionRouter("er", []RouteRule{
+			{FromStepID: "step-1", ToStepID: "step-6", Reason: "weighted route"},
+		})))
+		require.NoError(t, bus.Start(context.Background()))
+
+		router, ok := bus.PluginsByCap(CapRouter)[0].(RouterPlugin)
+		require.True(t, ok)
+
+		dec, err := router.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
+		require.NoError(t, err)
+		require.NotNil(t, dec)
+		assert.Equal(t, "step-6", dec.NextStepID)
+		assert.Equal(t, "expression", dec.Source)
 	})
 }

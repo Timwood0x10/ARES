@@ -119,7 +119,7 @@ func NewClient(config *Config) (*Client, error) {
 				runtime.NewToolPlugin("default-tools"),
 				runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
 				engine.NewHITLFeedbackPlugin("default-hitl", nil, nil),
-				runtime.NewBasicRecoveryPlugin("default-recovery"), // empty allowlist = no-op
+				runtime.NewBasicRecoveryPlugin("default-recovery"),  // empty allowlist = no-op
 				runtime.NewEvolutionPlugin("default-evo", nil, nil), // no provider = no-op
 			} {
 				if err := bus.Register(p); err != nil {

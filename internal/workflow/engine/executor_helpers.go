@@ -113,6 +113,12 @@ func (e *DynamicExecutor) handleStepRouting(
 		CurrentStepOutput: result.Output,
 		Variables:         execution.Variables,
 	}
+	if e.executionCollector != nil {
+		state.Collector = e.executionCollector
+		state.CollectedRoutes = e.executionCollector.RouteHistory()
+		state.CollectedTools = e.executionCollector.ToolHistory()
+		state.CollectedMemory = e.executionCollector.MemoryHits()
+	}
 
 	decision, err := router.Route(ctx, state)
 	if err != nil {
@@ -133,6 +139,10 @@ func (e *DynamicExecutor) handleStepRouting(
 		"next_step_id":                decision.NextStepID,
 		"source":                      decision.Source,
 	})
+
+	if e.executionCollector != nil {
+		e.executionCollector.RecordRoute(result.StepID, decision.NextStepID, decision.Reason, decision.Source)
+	}
 
 	return decision
 }

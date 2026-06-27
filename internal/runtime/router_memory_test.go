@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -104,5 +106,84 @@ func TestMemoryRouter_Route(t *testing.T) {
 		dec, err := router.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
 		require.NoError(t, err)
 		assert.Nil(t, dec)
+	})
+
+	t.Run("uses pre-fetched advice from BeforeStep", func(t *testing.T) {
+		bus := NewPluginBus()
+		var callCount atomic.Int32
+		mem := &mockMemoryPlugin{
+			adviceFn: func(_ context.Context, _ RouteState) ([]RouteAdvice, error) {
+				callCount.Add(1)
+				return []RouteAdvice{
+					{NextStepID: "step-2", Confidence: 0.9, Reason: "pre-fetched"},
+				}, nil
+			},
+		}
+		mr := NewMemoryRouter("mr", nil, 0.5)
+		require.NoError(t, bus.Register(mem))
+		require.NoError(t, bus.Register(mr))
+		require.NoError(t, bus.Start(context.Background()))
+
+		// BeforeStep starts a goroutine to pre-fetch advice for step-1
+		require.NoError(t, mr.BeforeStep(context.Background(), "exec-1", &Step{ID: "step-1"}))
+
+		// Wait for the async goroutine to complete
+		require.Eventually(t, func() bool {
+			return callCount.Load() == 1
+		}, time.Second, 10*time.Millisecond, "pre-fetch goroutine should complete")
+
+		// Route should use pre-fetched advice without calling AdviseRoute again
+		dec, err := mr.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
+		require.NoError(t, err)
+		require.NotNil(t, dec)
+		assert.Equal(t, "step-2", dec.NextStepID)
+		assert.Equal(t, "memory", dec.Source)
+		assert.Equal(t, int32(1), callCount.Load(), "AdviseRoute should NOT be called again during Route")
+	})
+
+	t.Run("falls through to sync query when no pre-fetched advice", func(t *testing.T) {
+		bus := NewPluginBus()
+		mem := &mockMemoryPlugin{
+			adviceFn: func(_ context.Context, _ RouteState) ([]RouteAdvice, error) {
+				return []RouteAdvice{
+					{NextStepID: "step-3", Confidence: 0.9, Reason: "sync query"},
+				}, nil
+			},
+		}
+		mr := NewMemoryRouter("mr", nil, 0.5)
+		require.NoError(t, bus.Register(mem))
+		require.NoError(t, bus.Register(mr))
+		require.NoError(t, bus.Start(context.Background()))
+
+		// No BeforeStep called — should fall through to synchronous query
+		dec, err := mr.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
+		require.NoError(t, err)
+		require.NotNil(t, dec)
+		assert.Equal(t, "step-3", dec.NextStepID)
+		assert.Equal(t, "memory", dec.Source)
+	})
+
+	t.Run("pre-fetched advice for wrong step is ignored", func(t *testing.T) {
+		bus := NewPluginBus()
+		mem := &mockMemoryPlugin{
+			adviceFn: func(_ context.Context, _ RouteState) ([]RouteAdvice, error) {
+				return []RouteAdvice{
+					{NextStepID: "step-4", Confidence: 0.9, Reason: "sync"},
+				}, nil
+			},
+		}
+		mr := NewMemoryRouter("mr", nil, 0.5)
+		require.NoError(t, bus.Register(mem))
+		require.NoError(t, bus.Register(mr))
+		require.NoError(t, bus.Start(context.Background()))
+
+		// Pre-fetch for step-1
+		require.NoError(t, mr.BeforeStep(context.Background(), "exec-1", &Step{ID: "step-1"}))
+
+		// Route called for step-2 — pre-fetched step-1 advice should be ignored
+		dec, err := mr.Route(context.Background(), RouteState{CurrentStepID: "step-2"})
+		require.NoError(t, err)
+		require.NotNil(t, dec)
+		assert.Equal(t, "step-4", dec.NextStepID)
 	})
 }

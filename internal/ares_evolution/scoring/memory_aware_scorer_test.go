@@ -51,6 +51,14 @@ func TestNewMemoryAwareScorer_InvalidConfig(t *testing.T) {
 			name: "max bonus < min bonus",
 			cfg:  modifyMASConfig(func(c *MemoryAwareScoringConfig) { c.MaxEvidenceBonus = 5.0; c.MinEvidenceBonus = 10.0 }),
 		},
+		{
+			name: "negative latency weight",
+			cfg:  modifyMASConfig(func(c *MemoryAwareScoringConfig) { c.LatencyWeight = -0.05 }),
+		},
+		{
+			name: "negative regression weight",
+			cfg:  modifyMASConfig(func(c *MemoryAwareScoringConfig) { c.RegressionWeight = -0.1 }),
+		},
 	}
 
 	for _, tt := range tests {
@@ -568,5 +576,189 @@ func TestComputeMemoryBonus(t *testing.T) {
 				t.Errorf("expected %f, got %f", tt.expected, got)
 			}
 		})
+	}
+}
+
+// --- Additional coverage tests ---
+
+// TestMemoryAwareScorer_NegativeLatencyWeight verifies that a negative
+// latency weight is rejected by the constructor.
+func TestMemoryAwareScorer_NegativeLatencyWeight(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.LatencyWeight = -0.01
+
+	_, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err == nil {
+		t.Fatal("expected error for negative latency weight")
+	}
+}
+
+// TestMemoryAwareScorer_NegativeRegressionWeight verifies that a negative
+// regression weight is rejected by the constructor.
+func TestMemoryAwareScorer_NegativeRegressionWeight(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.RegressionWeight = -0.05
+
+	_, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err == nil {
+		t.Fatal("expected error for negative regression weight")
+	}
+}
+
+// TestMemoryAwareScorer_MinEvidenceBonusFloor verifies that the memory bonus
+// is floored at MinEvidenceBonus when the raw bonus would be below it.
+func TestMemoryAwareScorer_MinEvidenceBonusFloor(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.MinEvidenceBonus = 5.0
+	cfg.MaxEvidenceBonus = 20.0
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	// With count=0 and confidence=0.8, raw bonus = 0*0.8*5.0 = 0.0
+	// Should be floored at MinEvidenceBonus = 5.0.
+	got := ms.computeMemoryBonus(0, 0.8)
+	if got != 5.0 {
+		t.Errorf("expected MinEvidenceBonus floor=5.0, got %f", got)
+	}
+}
+
+// TestMemoryAwareScorer_ScoreWithZeroExperiences verifies that scoring with
+// an experience provider returning zero experiences produces a bonus of 0
+// (or MinEvidenceBonus if set > 0).
+func TestMemoryAwareScorer_ScoreWithZeroExperiences(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.MinEvidenceBonus = 0.0
+
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 0, confidence: 0.8}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	strategy := newTestStrategy("zero-exp-test")
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("expected non-nil detail")
+	}
+
+	// With 0 experiences, bonus = 0*0.8*5.0 = 0.
+	if detail.MemoryEvidenceBonus != 0.0 {
+		t.Errorf("expected zero bonus with 0 experiences, got %f", detail.MemoryEvidenceBonus)
+	}
+	if detail.ExperienceCount != 0 {
+		t.Errorf("expected ExperienceCount=0, got %d", detail.ExperienceCount)
+	}
+	// Score should equal quality (50.0) with no bonus or penalties.
+	if score != 50.0 {
+		t.Errorf("expected score=50.0 with zero experiences, got %f", score)
+	}
+}
+
+// TestMemoryAwareScorer_StatsPenaltyTracking verifies that Stats() tracks
+// penalty totals and averages correctly.
+func TestMemoryAwareScorer_StatsPenaltyTracking(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.CostWeight = 0.1
+	cfg.LatencyWeight = 0.05
+
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 1, confidence: 0.5}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	// Score a strategy with known cost and latency.
+	strategy := &mutation.Strategy{
+		ID:     "penalty-stats-test",
+		Name:   "penalty-stats-test",
+		Params: map[string]any{"temperature": 0.7, "cost": 10.0, "latency": 4.0},
+	}
+	_, _, err = ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	stats := ms.Stats()
+	if stats["adjustments"] != 1 {
+		t.Errorf("expected 1 adjustment, got %f", stats["adjustments"])
+	}
+	// penalty_total = cost_penalty + latency_penalty + regression_penalty
+	// cost_penalty = 10.0 * 0.1 = 1.0, latency_penalty = 4.0 * 0.05 = 0.2
+	// regression_penalty = 0 (no regression param)
+	// total = 1.2
+	expectedPenalty := 1.0 + 0.2 + 0.0
+	if stats["penalty_total"] != expectedPenalty {
+		t.Errorf("expected penalty_total=%f, got %f", expectedPenalty, stats["penalty_total"])
+	}
+	if stats["avg_penalty"] != expectedPenalty {
+		t.Errorf("expected avg_penalty=%f, got %f", expectedPenalty, stats["avg_penalty"])
+	}
+}
+
+// TestMemoryAwareScorer_StatsBeforeAnyScoring verifies that Stats() returns
+// zero values before any scoring has occurred.
+func TestMemoryAwareScorer_StatsBeforeAnyScoring(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 1, confidence: 0.5}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	stats := ms.Stats()
+	if stats["adjustments"] != 0 {
+		t.Errorf("expected 0 adjustments before scoring, got %f", stats["adjustments"])
+	}
+	if stats["bonus_total"] != 0 {
+		t.Errorf("expected 0 bonus_total before scoring, got %f", stats["bonus_total"])
+	}
+	if stats["penalty_total"] != 0 {
+		t.Errorf("expected 0 penalty_total before scoring, got %f", stats["penalty_total"])
+	}
+	// avg_bonus and avg_penalty should not be present when adjustments=0.
+	if _, ok := stats["avg_bonus"]; ok {
+		t.Error("avg_bonus should not be present when adjustments=0")
+	}
+	if _, ok := stats["avg_penalty"]; ok {
+		t.Error("avg_penalty should not be present when adjustments=0")
+	}
+}
+
+// TestMemoryAwareScorer_ScoreAsScorerFuncDisabled verifies that
+// ScoreAsScorerFunc returns the tiered scorer's score when the scorer is
+// disabled (no experience adjustments applied).
+func TestMemoryAwareScorer_ScoreAsScorerFuncDisabled(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := MemoryAwareScoringConfig{Enabled: false}
+
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 5, confidence: 0.9}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	scorerFn := ms.ScoreAsScorerFunc()
+	strategy := newTestStrategy("scorer-func-disabled-test")
+	score := scorerFn(strategy)
+
+	// Should return the tiered scorer's raw score (50.0) with no adjustments.
+	if score != 50.0 {
+		t.Errorf("expected 50.0 when disabled, got %f", score)
 	}
 }
