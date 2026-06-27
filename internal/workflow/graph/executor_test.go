@@ -2,8 +2,12 @@ package graph
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExecuteWithNilGraph(t *testing.T) {
@@ -442,5 +446,88 @@ func TestExecuteAllConditionalEdgesFalse(t *testing.T) {
 
 	if len(executionOrder) != 3 {
 		t.Errorf("expected 3 nodes, got %d: %v", len(executionOrder), executionOrder)
+	}
+}
+
+func TestExecuteWithLoopPluginMaxIterations(t *testing.T) {
+	g := buildTestGraph(t, "loop-max",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		startDef("node1"),
+	)
+
+	var callCount atomic.Int32
+	origNode := g.nodes["node1"]
+	g.nodes["node1"] = &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		callCount.Add(1)
+		return origNode.Execute(ctx, state)
+	}}
+
+	bus := runtime.NewPluginBus()
+	loop := runtime.NewLoopPlugin("loop", runtime.LoopConfig{MaxIterations: 3})
+	require.NoError(t, bus.Register(loop))
+	require.NoError(t, bus.Start(context.Background()))
+	g.SetPluginBus(bus)
+
+	state := NewState()
+	state.Set("__loop_iteration", 0)
+	_, err := g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("expected node1 to execute 3 times, got %d", n)
+	}
+}
+
+func TestExecuteWithLoopPluginUntilCondition(t *testing.T) {
+	g := buildTestGraph(t, "loop-until",
+		nodeDef("counter", func(ctx context.Context, state *State) error {
+			v, _ := state.Get("count")
+			state.Set("count", v.(int)+1)
+			return nil
+		}),
+		startDef("counter"),
+	)
+
+	bus := runtime.NewPluginBus()
+	loop := runtime.NewLoopPlugin("loop", runtime.LoopConfig{
+		UntilCondition: func(vars map[string]any) bool {
+			c, ok := vars["count"].(int)
+			return ok && c >= 5
+		},
+	})
+	require.NoError(t, bus.Register(loop))
+	require.NoError(t, bus.Start(context.Background()))
+	g.SetPluginBus(bus)
+
+	state := NewState()
+	state.Set("count", 0)
+	_, err := g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	v, _ := state.Get("count")
+	if n := v.(int); n != 5 {
+		t.Errorf("expected count to reach 5, got %d", n)
+	}
+}
+
+func TestExecuteWithLoopPluginNoPlugin(t *testing.T) {
+	// Without a LoopPlugin, graph should execute once as usual.
+	var callCount atomic.Int32
+	g := buildTestGraph(t, "loop-none",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
+			callCount.Add(1)
+			return nil
+		}),
+		startDef("node1"),
+	)
+
+	state := NewState()
+	_, err := g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected node1 to execute once, got %d", n)
 	}
 }

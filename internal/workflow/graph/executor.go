@@ -44,30 +44,42 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 
 	// Initialize execution
 	startTime := time.Now()
-	executed := make(map[string]bool) // nodes that have been executed
+	iteration := 0
+	loopIterKey := "__loop_iteration"
 
-	// Build in-degree map so nodes with multiple predecessors
-	// are only added to the ready queue when ALL predecessors have completed.
-	inDegree := make(map[string]int, len(g.nodes))
-	for id := range g.nodes {
-		inDegree[id] = 0
-	}
-	for _, edges := range g.edges {
-		for _, edge := range edges {
-			inDegree[edge.to]++
+	// Outer loop supports LoopPlugin: after each full graph execution,
+	// check if the loop should continue and re-execute from the start.
+	for {
+		iteration++
+		if iteration > 1 {
+			// Re-initialize per-iteration state.
+			state.Set(loopIterKey, iteration)
 		}
-	}
-	// Seed the ready queue with ALL nodes that have no predecessors.
-	readyQueue := make([]string, 0)
-	readySet := make(map[string]bool)
-	for id, deg := range inDegree {
-		if deg == 0 {
-			readyQueue = append(readyQueue, id)
-			readySet[id] = true
+
+		executed := make(map[string]bool)
+
+		// Build in-degree map so nodes with multiple predecessors
+		// are only added to the ready queue when ALL predecessors have completed.
+		inDegree := make(map[string]int, len(g.nodes))
+		for id := range g.nodes {
+			inDegree[id] = 0
 		}
-	}
-	// Execute graph using BFS with scheduler
-	for len(readyQueue) > 0 {
+		for _, edges := range g.edges {
+			for _, edge := range edges {
+				inDegree[edge.to]++
+			}
+		}
+		// Seed the ready queue with ALL nodes that have no predecessors.
+		readyQueue := make([]string, 0)
+		readySet := make(map[string]bool)
+		for id, deg := range inDegree {
+			if deg == 0 {
+				readyQueue = append(readyQueue, id)
+				readySet[id] = true
+			}
+		}
+		// Execute graph using BFS with scheduler
+		for len(readyQueue) > 0 {
 		// Select next node using scheduler
 		nodeID := g.scheduler.Select(readyQueue)
 		if nodeID == "" {
@@ -170,12 +182,19 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 
 		// Dynamic routing: after successful completion, check if router
 		// wants to override the next node (overrides static edge traversal).
-		if g.router != nil && execErr == nil {
-			if routedID := g.router(ctx, nodeID, state); routedID != "" {
-				if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
-					readyQueue = append(readyQueue, routedID)
-					readySet[routedID] = true
-				}
+		// Priority: explicit NodeRouter > RouterPlugin from PluginBus.
+		var routedID string
+		if execErr == nil {
+			if g.router != nil {
+				routedID = g.router(ctx, nodeID, state)
+			} else if g.pluginBus != nil {
+				routedID = routeFromPluginBus(ctx, g.pluginBus, nodeID, state)
+			}
+		}
+		if routedID != "" {
+			if _, ok := g.nodes[routedID]; ok && !executed[routedID] && !readySet[routedID] {
+				readyQueue = append(readyQueue, routedID)
+				readySet[routedID] = true
 			}
 		}
 
@@ -199,22 +218,73 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		}
 	}
 
-	// Record execution trace
-	if g.tracer != nil {
-		g.tracer.RecordToolCall(ctx, &observability.ToolCall{
-			TraceID:  g.tracer.GetTraceID(ctx),
-			ToolName: g.id,
-			Input:    state.ToParams(),
-			Output:   state.ToParams(),
-			Duration: time.Since(startTime),
-			Error:    nil,
-		})
+	// Check LoopPlugin: after a full graph execution, check if the loop
+	// should continue. Uses the loop config directly rather than the
+	// LoopPlugin's internal per-step counter (which doesn't map to
+	// graph-level iterations). If no LoopPlugin is configured, break.
+	if g.pluginBus != nil {
+		loopPlugins := g.pluginBus.PluginsByCap(runtime.CapLoop)
+		if len(loopPlugins) > 0 {
+			if loop, ok := loopPlugins[0].(*runtime.LoopPlugin); ok {
+				cfg := loop.Config()
+				if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
+					slog.Debug("graph: loop max iterations reached",
+						"graph_id", g.id, "iteration", iteration, "max", cfg.MaxIterations,
+					)
+				} else if cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()) {
+					slog.Debug("graph: loop until condition met",
+						"graph_id", g.id, "iteration", iteration,
+					)
+				} else {
+					slog.Debug("graph: loop iteration completed, continuing",
+						"graph_id", g.id, "iteration", iteration,
+					)
+					continue
+				}
+			}
+		}
 	}
 
-	return &Result{GraphID: g.id,
-		State:    state,
+	break
+}
+
+// Record execution trace
+if g.tracer != nil {
+	g.tracer.RecordToolCall(ctx, &observability.ToolCall{
+		TraceID:  g.tracer.GetTraceID(ctx),
+		ToolName: g.id,
+		Input:    state.ToParams(),
+		Output:   state.ToParams(),
 		Duration: time.Since(startTime),
-	}, nil
+		Error:    nil,
+	})
+}
+
+return &Result{GraphID: g.id,
+	State:    state,
+	Duration: time.Since(startTime),
+}, nil
+}
+
+// routeFromPluginBus looks up RouterPlugin from the plugin bus and calls
+// Route to get the next node ID. Returns "" if no router is available or
+// the router returns nil.
+func routeFromPluginBus(ctx context.Context, bus *runtime.PluginBus, nodeID string, state *State) string {
+	routers := bus.PluginsByCap(runtime.CapRouter)
+	if len(routers) == 0 {
+		return ""
+	}
+	router, ok := routers[0].(runtime.RouterPlugin)
+	if !ok || router == nil {
+		return ""
+	}
+	decision, err := router.Route(ctx, runtime.RouteState{
+		CurrentStepID: nodeID,
+	})
+	if err != nil || decision == nil {
+		return ""
+	}
+	return decision.NextStepID
 }
 
 // hasAnySatisfiedEdge checks if node targetID has at least one incoming edge
