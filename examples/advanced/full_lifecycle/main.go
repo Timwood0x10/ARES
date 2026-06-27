@@ -28,7 +28,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -390,12 +390,12 @@ func main() {
 		return
 	}
 
-	rtConfig := &runtime.Config{
+	rtConfig := &ares_runtime.Config{
 		HealthCheckInterval: 1 * time.Second,
 		MaxRestartsPerAgent: 5,
 		MaxReplayEvents:     1000,
 	}
-	rt := runtime.New(rtConfig, eventStore, memManager)
+	rt := ares_runtime.New(rtConfig, eventStore, memManager)
 
 	fmt.Println("  Infrastructure created:")
 	fmt.Println("    - MemoryEventStore (in-memory)")
@@ -441,7 +441,7 @@ func main() {
 	phaseSeparator("Step 3: Start All Agents")
 
 	if err := rt.Start(ctx); err != nil {
-		slog.Error("failed to start runtime", "error", err)
+		slog.Error("failed to start ares_runtime", "error", err)
 		return
 	}
 
@@ -614,9 +614,9 @@ func main() {
 		slog.Warn("memory manager stop failed", "error", err)
 	}
 
-	// Stop runtime (stops all agents).
+	// Stop ares_runtime (stops all agents).
 	if err := rt.Stop(); err != nil {
-		slog.Error("runtime stop failed", "error", err)
+		slog.Error("ares_runtime stop failed", "error", err)
 	}
 
 	stats = rt.Stats()
@@ -671,7 +671,7 @@ func main() {
 	fmt.Println("Key takeaways:")
 	fmt.Println("  - Runtime + EventStore + MemoryManager form the recovery infrastructure.")
 	fmt.Println("  - StatefulAgent interface enables full state restoration after crash.")
-	fmt.Println("  - MutableDAG allows runtime workflow modification by planner agents.")
+	fmt.Println("  - MutableDAG allows ares_runtime workflow modification by planner agents.")
 	fmt.Println("  - Event history provides complete audit trail of agent activities.")
 	fmt.Println("  - Multiple agents can crash and recover independently.")
 }

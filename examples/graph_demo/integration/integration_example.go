@@ -1,5 +1,5 @@
 // Package main demonstrates a real-world integration example using the graph
-// system with the full runtime plugin stack. It shows a customer support
+// system with the full ares_runtime plugin stack. It shows a customer support
 // ticket processing workflow with checkpoint persistence, event observation,
 // tool recording, and recovery — all wired through PluginBus.
 package main
@@ -14,8 +14,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -96,14 +96,14 @@ func (s *memoryStore) Load(_ context.Context, key string) ([]byte, error) {
 // Plugin stack — one abstraction to wire everything
 // ────────────────────────────────────────────────────────────────────────────
 
-// runtimeStack bundles all runtime plugins behind a single Start/Stop surface.
+// runtimeStack bundles all ares_runtime plugins behind a single Start/Stop surface.
 type runtimeStack struct {
-	bus        *runtime.PluginBus
-	collector  *runtime.ExecutionCollector
-	checkpoint *runtime.CheckpointPlugin
-	observer   *runtime.ObserverPlugin
-	tool       *runtime.ToolPlugin
-	recovery   *runtime.BasicRecoveryPlugin
+	bus        *ares_runtime.PluginBus
+	collector  *ares_runtime.ExecutionCollector
+	checkpoint *ares_runtime.CheckpointPlugin
+	observer   *ares_runtime.ObserverPlugin
+	tool       *ares_runtime.ToolPlugin
+	recovery   *ares_runtime.BasicRecoveryPlugin
 	store      *memoryStore
 }
 
@@ -111,18 +111,18 @@ type runtimeStack struct {
 // Plugins communicate through the EventBus; no plugin references another directly.
 func newRuntimeStack(executionID string) *runtimeStack {
 	store := newMemoryStore()
-	collector := runtime.NewExecutionCollector(executionID)
+	collector := ares_runtime.NewExecutionCollector(executionID)
 
-	checkpoint := runtime.NewCheckpointPlugin("checkpoint", store).
+	checkpoint := ares_runtime.NewCheckpointPlugin("checkpoint", store).
 		WithCollector(collector).
 		WithFlushInterval(1)
 
-	observer := runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
+	observer := ares_runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
 
-	tool := runtime.NewToolPlugin("tool").
+	tool := ares_runtime.NewToolPlugin("tool").
 		WithCollector(collector)
 
-	recovery := runtime.NewBasicRecoveryPlugin("recovery")
+	recovery := ares_runtime.NewBasicRecoveryPlugin("recovery")
 
 	return &runtimeStack{
 		collector:  collector,
@@ -136,10 +136,10 @@ func newRuntimeStack(executionID string) *runtimeStack {
 
 // Start creates the bus, registers all plugins, and starts them.
 func (s *runtimeStack) Start(ctx context.Context) error {
-	s.bus = runtime.NewPluginBus(
-		runtime.WithPluginTimeout(10 * time.Second),
+	s.bus = ares_runtime.NewPluginBus(
+		ares_runtime.WithPluginTimeout(10 * time.Second),
 	)
-	for _, p := range []runtime.RuntimePlugin{s.checkpoint, s.observer, s.tool, s.recovery} {
+	for _, p := range []ares_runtime.RuntimePlugin{s.checkpoint, s.observer, s.tool, s.recovery} {
 		if err := s.bus.Register(p); err != nil {
 			return fmt.Errorf("register %s: %w", p.Name(), err)
 		}
@@ -153,10 +153,10 @@ func (s *runtimeStack) Stop(ctx context.Context) error {
 }
 
 // Bus returns the PluginBus for engine integration.
-func (s *runtimeStack) Bus() *runtime.PluginBus { return s.bus }
+func (s *runtimeStack) Bus() *ares_runtime.PluginBus { return s.bus }
 
 // Collector returns the execution collector for manual recording.
-func (s *runtimeStack) Collector() *runtime.ExecutionCollector { return s.collector }
+func (s *runtimeStack) Collector() *ares_runtime.ExecutionCollector { return s.collector }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Workflow definition
@@ -295,7 +295,7 @@ func processTicket(ticket *SupportTicket, index int) error {
 	}
 	registry := buildRegistry(ticket)
 
-	// Wire the runtime plugin stack.
+	// Wire the ares_runtime plugin stack.
 	stack := newRuntimeStack(fmt.Sprintf("exec-%d", index))
 	if err := stack.Start(ctx); err != nil {
 		return fmt.Errorf("start plugins: %w", err)

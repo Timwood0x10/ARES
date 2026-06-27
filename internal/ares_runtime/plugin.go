@@ -1,7 +1,7 @@
 // Package runtime defines the plugin contract for extending workflow execution.
 // Plugins are registered on a PluginBus which manages their lifecycle and
 // invokes them at defined extension points (BeforeStep, AfterStep).
-package runtime
+package ares_runtime
 
 import (
 	"context"

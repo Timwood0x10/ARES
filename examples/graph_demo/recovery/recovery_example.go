@@ -1,5 +1,5 @@
 // Package main demonstrates node-level recovery via StepRecoveryHandler
-// combined with the full runtime plugin stack: CheckpointPlugin for crash
+// combined with the full ares_runtime plugin stack: CheckpointPlugin for crash
 // recovery, ObserverPlugin for event logging, and ToolPlugin for tool-call
 // recording — all wired through a single PluginBus.
 package main
@@ -12,8 +12,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -68,32 +68,32 @@ func makeResult(desc string) *models.RecommendResult {
 // Plugin wiring — one function to compose the full stack
 // ────────────────────────────────────────────────────────────────────────────
 
-// pluginStack bundles the runtime plugins used in this example.
+// pluginStack bundles the ares_runtime plugins used in this example.
 type pluginStack struct {
-	bus        *runtime.PluginBus
-	checkpoint *runtime.CheckpointPlugin
-	collector  *runtime.ExecutionCollector
+	bus        *ares_runtime.PluginBus
+	checkpoint *ares_runtime.CheckpointPlugin
+	collector  *ares_runtime.ExecutionCollector
 }
 
 // newPluginStack creates and wires all plugins into a single PluginBus.
 func newPluginStack() *pluginStack {
 	store := newMemoryStore()
-	collector := runtime.NewExecutionCollector("recovery-demo")
+	collector := ares_runtime.NewExecutionCollector("recovery-demo")
 
 	// CheckpointPlugin: persists execution state at each step boundary.
-	checkpoint := runtime.NewCheckpointPlugin("checkpoint", store).
+	checkpoint := ares_runtime.NewCheckpointPlugin("checkpoint", store).
 		WithCollector(collector).
 		WithFlushInterval(1)
 
 	// ObserverPlugin: captures lifecycle ares_events to an in-memory store.
-	observer := runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
+	observer := ares_runtime.NewObserverPlugin("observer", ares_events.NewMemoryEventStore())
 
 	// ToolPlugin: records tool invocations via the collector.
-	tool := runtime.NewToolPlugin("tool").
+	tool := ares_runtime.NewToolPlugin("tool").
 		WithCollector(collector)
 
-	bus := runtime.NewPluginBus()
-	for _, p := range []runtime.RuntimePlugin{checkpoint, observer, tool} {
+	bus := ares_runtime.NewPluginBus()
+	for _, p := range []ares_runtime.RuntimePlugin{checkpoint, observer, tool} {
 		if err := bus.Register(p); err != nil {
 			log.Fatalf("register %s: %v", p.Name(), err)
 		}

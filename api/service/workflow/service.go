@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
-	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -35,7 +35,7 @@ type Config struct {
 	// PluginBus is the optional plugin bus for workflow lifecycle hooks,
 	// routing, checkpointing, and event emission. If nil, the executor
 	// runs without plugins (backward compatible).
-	PluginBus *runtime.PluginBus
+	PluginBus *ares_runtime.PluginBus
 }
 
 // NewService creates a new workflow service instance.

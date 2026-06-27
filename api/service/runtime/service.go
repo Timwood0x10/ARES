@@ -1,14 +1,14 @@
-// Package runtime provides a high-level API for agent lifecycle management.
-// It wraps internal/runtime, internal/ares_events, and internal/plugins/resurrection
+// Package ares_runtime provides a high-level API for agent lifecycle management.
+// It wraps internal/ares_runtime, internal/ares_events, and internal/plugins/resurrection
 // into a single entry point for external users.
 //
 // Usage:
 //
-//	svc, _ := runtime.NewService(runtime.Config{...})
+//	svc, _ := ares_runtime.NewService(ares_runtime.Config{...})
 //	svc.RegisterAgent("worker-1", func() base.Agent { return NewWorker() })
 //	svc.Start(ctx)
 //	// Agent crashes → automatically resurrected with event replay
-package runtime
+package ares_runtime
 
 import (
 	"context"
@@ -20,11 +20,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
 )
 
-// Config holds configuration for the runtime service.
+// Config holds configuration for the ares_runtime service.
 type Config struct {
 	// HeartbeatInterval is how often agents send heartbeats.
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
@@ -61,13 +61,13 @@ func DefaultConfig() Config {
 // Service is the unified entry point for agent lifecycle management.
 type Service struct {
 	config     Config
-	rt         *runtime.Manager
+	rt         *ares_runtime.Manager
 	supervisor *resurrection.Supervisor
 	eventStore ares_events.EventStore
 	hbMon      *ahp.HeartbeatMonitor
 }
 
-// NewService creates a new runtime service with all components wired together.
+// NewService creates a new ares_runtime service with all components wired together.
 //
 // Args:
 //
@@ -77,7 +77,7 @@ type Service struct {
 //
 // Returns:
 //
-//	service - the runtime service.
+//	service - the ares_runtime service.
 //	err - if configuration is invalid.
 func NewService(config Config, eventStore ares_events.EventStore) (*Service, error) {
 	// Apply defaults for zero values.
@@ -102,7 +102,7 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 		if config.UseMemoryStore {
 			eventStore = ares_events.NewMemoryEventStore()
 		} else {
-			return nil, fmt.Errorf("runtime: event store required when UseMemoryStore is false")
+			return nil, fmt.Errorf("ares_runtime: event store required when UseMemoryStore is false")
 		}
 	}
 
@@ -122,11 +122,11 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 		HeartbeatInterval: config.HeartbeatInterval,
 	}, eventStore)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: create resurrection supervisor: %w", err)
+		return nil, fmt.Errorf("ares_runtime: create resurrection supervisor: %w", err)
 	}
 
-	// Create runtime manager.
-	rtConfig := &runtime.Config{
+	// Create ares_runtime manager.
+	rtConfig := &ares_runtime.Config{
 		HealthCheckInterval: config.HeartbeatInterval,
 		MaxRestartsPerAgent: config.MaxRestartsPerAgent,
 		MaxReplayEvents:     10000,
@@ -134,7 +134,7 @@ func NewService(config Config, eventStore ares_events.EventStore) (*Service, err
 		OverallStopTimeout:  30 * time.Second,
 		RestoreTimeout:      config.ResurrectTimeout,
 	}
-	rt := runtime.New(rtConfig, eventStore, nil)
+	rt := ares_runtime.New(rtConfig, eventStore, nil)
 
 	return &Service{
 		config:     config,
@@ -158,35 +158,35 @@ func (s *Service) RegisterAgent(agent base.Agent, factory func() base.Agent) {
 	}
 	s.rt.RegisterAgent(agent, factory)
 	s.supervisor.Watch(agent, factory)
-	slog.Info("runtime: agent registered", "agent_id", agent.ID(), "type", agent.Type())
+	slog.Info("ares_runtime: agent registered", "agent_id", agent.ID(), "type", agent.Type())
 }
 
 // Start begins monitoring all registered agents.
 func (s *Service) Start(ctx context.Context) error {
 	if err := s.rt.Start(ctx); err != nil {
-		return fmt.Errorf("runtime: start manager: %w", err)
+		return fmt.Errorf("ares_runtime: start manager: %w", err)
 	}
 	if err := s.supervisor.Start(ctx); err != nil {
-		return fmt.Errorf("runtime: start supervisor: %w", err)
+		return fmt.Errorf("ares_runtime: start supervisor: %w", err)
 	}
-	slog.Info("runtime: service started")
+	slog.Info("ares_runtime: service started")
 	return nil
 }
 
 // Stop gracefully shuts down all agents and monitoring.
 func (s *Service) Stop() error {
 	if err := s.supervisor.Stop(); err != nil {
-		slog.Warn("runtime: supervisor stop error", "error", err)
+		slog.Warn("ares_runtime: supervisor stop error", "error", err)
 	}
 	if err := s.rt.Stop(); err != nil {
-		return fmt.Errorf("runtime: stop manager: %w", err)
+		return fmt.Errorf("ares_runtime: stop manager: %w", err)
 	}
 	if c, ok := s.eventStore.(io.Closer); ok {
 		if err := c.Close(); err != nil {
-			slog.Warn("runtime: event store close error", "error", err)
+			slog.Warn("ares_runtime: event store close error", "error", err)
 		}
 	}
-	slog.Info("runtime: service stopped")
+	slog.Info("ares_runtime: service stopped")
 	return nil
 }
 
@@ -196,7 +196,7 @@ func (s *Service) GetAgent(agentID string) base.Agent {
 }
 
 // Stats returns service statistics.
-func (s *Service) Stats() runtime.RuntimeStats {
+func (s *Service) Stats() ares_runtime.RuntimeStats {
 	return s.rt.Stats()
 }
 

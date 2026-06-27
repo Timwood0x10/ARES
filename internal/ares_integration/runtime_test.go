@@ -1,4 +1,4 @@
-// package integration provides end-to-end integration tests for the runtime layer.
+// package integration provides end-to-end integration tests for the ares_runtime layer.
 package ares_integration
 
 import (
@@ -10,7 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 
 	"github.com/stretchr/testify/assert"
@@ -107,11 +107,11 @@ func (a *integrationStatefulAgent) Snapshot() (map[string]any, error) {
 // TestRuntime_FullFailoverCycle tests the full lifecycle: register -> start -> kill -> restore -> verify.
 func TestRuntime_FullFailoverCycle(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 5,
 	}
-	m := runtime.New(config, eventStore, nil)
+	m := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -142,7 +142,7 @@ func TestRuntime_FullFailoverCycle(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Step 3: Start the runtime.
+	// Step 3: Start the ares_runtime.
 	require.NoError(t, m.Start(ctx))
 	time.Sleep(100 * time.Millisecond)
 
@@ -173,11 +173,11 @@ func TestRuntime_FullFailoverCycle(t *testing.T) {
 // can be registered, started, and restored independently.
 func TestRuntime_MultipleAgentTypes(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 0, // Unlimited.
 	}
-	m := runtime.New(config, eventStore, nil)
+	m := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -216,7 +216,7 @@ func TestRuntime_MultipleAgentTypes(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Start runtime.
+	// Start ares_runtime.
 	require.NoError(t, m.Start(ctx))
 	time.Sleep(100 * time.Millisecond)
 

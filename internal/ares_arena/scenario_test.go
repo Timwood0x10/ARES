@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,8 +19,8 @@ import (
 
 func TestRunScenario_Success(t *testing.T) {
 	rt := &mockRuntime{
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
 		},
 	}
 	inj := NewInjector(rt, nil)
@@ -414,8 +414,8 @@ func TestValidateScenario_ActionValidationPropagates(t *testing.T) {
 
 func TestRunScenarioReport_BasicExecution(t *testing.T) {
 	rt := &mockRuntime{
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
 		},
 	}
 	svc := newTestService(rt, nil, nil)
@@ -447,8 +447,8 @@ func TestRunScenarioReport_BasicExecution(t *testing.T) {
 
 func TestRunScenarioReport_WithWarmupCooldown(t *testing.T) {
 	rt := &mockRuntime{
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
 		},
 	}
 	svc := newTestService(rt, nil, nil)

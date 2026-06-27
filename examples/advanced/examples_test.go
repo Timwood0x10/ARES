@@ -9,7 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
@@ -95,19 +95,19 @@ func TestDynamicExecutor_Example_Imports(t *testing.T) {
 }
 
 // TestLeaderFailover_Example_Imports verifies that the leader_failover example
-// uses correct types from the runtime and ares_events packages.
+// uses correct types from the ares_runtime and ares_events packages.
 func TestLeaderFailover_Example_Imports(t *testing.T) {
 	t.Parallel()
 
 	// Verify Runtime constructor accepts EventStore.
 	eventStore := ares_events.NewMemoryEventStore()
-	rt := runtime.New(&runtime.Config{
+	rt := ares_runtime.New(&ares_runtime.Config{
 		HealthCheckInterval: 100_000_000_000, // 100s (not started)
 		MaxRestartsPerAgent: 3,
 		MaxReplayEvents:     1000,
 	}, eventStore, nil)
 	if rt == nil {
-		t.Fatal("runtime.New returned nil")
+		t.Fatal("ares_runtime.New returned nil")
 	}
 
 	// Verify EventStore interface.
@@ -149,12 +149,12 @@ func TestAgentResurrection_Example_Imports(t *testing.T) {
 }
 
 // TestRuntimeResurrection_Example_Imports verifies that the runtime_resurrection example
-// uses correct types from the runtime and ares_events packages.
+// uses correct types from the ares_runtime and ares_events packages.
 func TestRuntimeResurrection_Example_Imports(t *testing.T) {
 	t.Parallel()
 
 	// Verify DefaultConfig exists.
-	cfg := runtime.DefaultConfig()
+	cfg := ares_runtime.DefaultConfig()
 	if cfg.HealthCheckInterval == 0 {
 		t.Error("DefaultConfig HealthCheckInterval should not be zero")
 	}
@@ -165,9 +165,9 @@ func TestRuntimeResurrection_Example_Imports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMemoryManager failed: %v", err)
 	}
-	rt := runtime.New(cfg, eventStore, memMgr)
+	rt := ares_runtime.New(cfg, eventStore, memMgr)
 	if rt == nil {
-		t.Fatal("runtime.New returned nil")
+		t.Fatal("ares_runtime.New returned nil")
 	}
 
 	// Verify StatefulAgent interface exists.

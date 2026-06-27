@@ -10,7 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
-	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // Edge represents a connection between two nodes with optional condition.
@@ -47,11 +47,11 @@ type Graph struct {
 	edges     map[string][]*Edge
 	start     string
 	scheduler Scheduler
-	tracer    ares_observability.Tracer   // ares_observability tracer for execution tracking
-	limiter   ares_ratelimit.Limiter      // rate limiter for execution throttling
-	pluginBus *runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
-	router    NodeRouter                  // optional dynamic routing callback
-	collector *runtime.ExecutionCollector // optional collector for route recording
+	tracer    ares_observability.Tracer        // ares_observability tracer for execution tracking
+	limiter   ares_ratelimit.Limiter           // rate limiter for execution throttling
+	pluginBus *ares_runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
+	router    NodeRouter                       // optional dynamic routing callback
+	collector *ares_runtime.ExecutionCollector // optional collector for route recording
 }
 
 // NewGraph creates a new graph with the given ID.
@@ -325,7 +325,7 @@ func (g *Graph) SetTracer(tracer ares_observability.Tracer) (*Graph, error) {
 // SetPluginBus attaches a PluginBus for BeforeStep/AfterStep hooks and
 // event emission. This aligns the graph execution path with the workflow
 // engine's plugin system, enabling ares_observability and memory routing.
-func (g *Graph) SetPluginBus(pb *runtime.PluginBus) (*Graph, error) {
+func (g *Graph) SetPluginBus(pb *ares_runtime.PluginBus) (*Graph, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
@@ -337,7 +337,7 @@ func (g *Graph) SetPluginBus(pb *runtime.PluginBus) (*Graph, error) {
 
 // SetExecutionCollector attaches an ExecutionCollector for route recording
 // and history tracking during graph execution.
-func (g *Graph) SetExecutionCollector(c *runtime.ExecutionCollector) (*Graph, error) {
+func (g *Graph) SetExecutionCollector(c *ares_runtime.ExecutionCollector) (*Graph, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}

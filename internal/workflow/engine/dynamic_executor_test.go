@@ -14,8 +14,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // TestNewDynamicExecutor verifies that NewDynamicExecutor returns a valid
@@ -1052,8 +1052,8 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 		}), nil
 	})
 
-	bus := runtime.NewPluginBus()
-	router := runtime.NewExpressionRouter("test-router", []runtime.RouteRule{
+	bus := ares_runtime.NewPluginBus()
+	router := ares_runtime.NewExpressionRouter("test-router", []ares_runtime.RouteRule{
 		{
 			FromStepID: "s1",
 			ToStepID:   "s2",
@@ -1068,7 +1068,7 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 	defer cancel()
 
 	eventCh, err := bus.Subscribe(ctx, ares_events.EventFilter{
-		Types: []ares_events.EventType{runtime.EventRouteDecided},
+		Types: []ares_events.EventType{ares_runtime.EventRouteDecided},
 	})
 	require.NoError(t, err)
 
@@ -1086,7 +1086,7 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 
 	select {
 	case evt := <-eventCh:
-		assert.Equal(t, runtime.EventRouteDecided, evt.Type)
+		assert.Equal(t, ares_runtime.EventRouteDecided, evt.Type)
 		assert.Equal(t, "s2", evt.Payload["next_step_id"])
 		assert.Equal(t, "always route to s2", evt.Payload["route_reason"])
 	case <-ctx.Done():
@@ -1101,17 +1101,19 @@ func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
 // mockMemoryPluginForTest is a simple MemoryPlugin used in round loop tests.
 type mockMemoryPluginForTest struct {
 	mu        sync.Mutex
-	adviseFn  func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error)
+	adviseFn  func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error)
 	callCount int
 }
 
 func (m *mockMemoryPluginForTest) Name() string { return "mock-memory" }
-func (m *mockMemoryPluginForTest) Capabilities() []runtime.Capability {
-	return []runtime.Capability{runtime.CapMemory}
+func (m *mockMemoryPluginForTest) Capabilities() []ares_runtime.Capability {
+	return []ares_runtime.Capability{ares_runtime.CapMemory}
 }
-func (m *mockMemoryPluginForTest) Start(ctx context.Context, bus runtime.EventBus) error { return nil }
-func (m *mockMemoryPluginForTest) Stop(ctx context.Context) error                        { return nil }
-func (m *mockMemoryPluginForTest) AdviseRoute(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
+func (m *mockMemoryPluginForTest) Start(ctx context.Context, bus ares_runtime.EventBus) error {
+	return nil
+}
+func (m *mockMemoryPluginForTest) Stop(ctx context.Context) error { return nil }
+func (m *mockMemoryPluginForTest) AdviseRoute(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
 	m.mu.Lock()
 	m.callCount++
 	m.mu.Unlock()
@@ -1124,19 +1126,19 @@ func (m *mockMemoryPluginForTest) AdviseRoute(ctx context.Context, state runtime
 // mockEvolutionPluginForTest is a simple EvolutionPlugin used in round loop tests.
 type mockEvolutionPluginForTest struct {
 	mu          sync.Mutex
-	recommendFn func(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error)
+	recommendFn func(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error)
 	callCount   int
 }
 
 func (m *mockEvolutionPluginForTest) Name() string { return "mock-evolution" }
-func (m *mockEvolutionPluginForTest) Capabilities() []runtime.Capability {
-	return []runtime.Capability{runtime.CapEvolution}
+func (m *mockEvolutionPluginForTest) Capabilities() []ares_runtime.Capability {
+	return []ares_runtime.Capability{ares_runtime.CapEvolution}
 }
-func (m *mockEvolutionPluginForTest) Start(ctx context.Context, bus runtime.EventBus) error {
+func (m *mockEvolutionPluginForTest) Start(ctx context.Context, bus ares_runtime.EventBus) error {
 	return nil
 }
 func (m *mockEvolutionPluginForTest) Stop(ctx context.Context) error { return nil }
-func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error) {
+func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error) {
 	m.mu.Lock()
 	m.callCount++
 	m.mu.Unlock()
@@ -1145,7 +1147,7 @@ func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state runtim
 	}
 	return nil, nil
 }
-func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome runtime.ExecutionOutcome) error {
+func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome ares_runtime.ExecutionOutcome) error {
 	return nil
 }
 
@@ -1153,13 +1155,13 @@ func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome 
 // correctly persists the round number into the checkpoint data.
 func TestDynamicExecutor_CheckpointPluginSetRound(t *testing.T) {
 	ckptStore := newMemCheckpointStore()
-	bus := runtime.NewPluginBus()
-	ckpt := runtime.NewCheckpointPlugin("test-cp", ckptStore)
+	bus := ares_runtime.NewPluginBus()
+	ckpt := ares_runtime.NewCheckpointPlugin("test-cp", ckptStore)
 	require.NoError(t, bus.Register(ckpt))
 	require.NoError(t, bus.Start(context.Background()))
 
 	// BeforeStep creates the checkpoint snapshot
-	err := bus.BeforeStep(context.Background(), "exec-round-1", &runtime.Step{ID: "s1"})
+	err := bus.BeforeStep(context.Background(), "exec-round-1", &ares_runtime.Step{ID: "s1"})
 	require.NoError(t, err)
 
 	// SetRound via direct access — we need to flush to verify
@@ -1171,7 +1173,7 @@ func TestDynamicExecutor_CheckpointPluginSetRound(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, data)
 
-	var loaded runtime.ExperienceCheckpoint
+	var loaded ares_runtime.ExperienceCheckpoint
 	require.NoError(t, json.Unmarshal(data, &loaded))
 	assert.Equal(t, 3, loaded.CurrentRound, "SetRound should persist round to checkpoint")
 }
@@ -1181,12 +1183,12 @@ func TestDynamicExecutor_CheckpointPluginSetRound(t *testing.T) {
 // memory advice adds nodes to the DAG when confidence is sufficient.
 func TestDynamicExecutor_ApplyRoundMutations(t *testing.T) {
 	registry := NewAgentRegistry()
-	bus := runtime.NewPluginBus()
+	bus := ares_runtime.NewPluginBus()
 
 	// Memory plugin that advises adding a new step
 	memPlugin := &mockMemoryPluginForTest{
-		adviseFn: func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
-			return []runtime.RouteAdvice{
+		adviseFn: func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
+			return []ares_runtime.RouteAdvice{
 				{NextStepID: "suggested-step", Confidence: 0.9, Reason: "similar past execution"},
 				{NextStepID: "low-conf-step", Confidence: 0.3, Reason: "low confidence"},
 			}, nil
@@ -1195,8 +1197,8 @@ func TestDynamicExecutor_ApplyRoundMutations(t *testing.T) {
 
 	// Evolution plugin that suggests a preferred agent
 	evoPlugin := &mockEvolutionPluginForTest{
-		recommendFn: func(ctx context.Context, state runtime.ExecutionState) (*runtime.RuntimeRecommendation, error) {
-			return &runtime.RuntimeRecommendation{
+		recommendFn: func(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error) {
+			return &ares_runtime.RuntimeRecommendation{
 				PreferredAgent: "advanced-agent",
 				RouterWeight:   0.8,
 			}, nil
@@ -1266,13 +1268,13 @@ func TestDynamicExecutor_RoundLoopIntegration(t *testing.T) {
 		}), nil
 	})
 
-	bus := runtime.NewPluginBus()
+	bus := ares_runtime.NewPluginBus()
 	ckptStore := newMemCheckpointStore()
 
 	// Memory plugin: suggest a new step after round 1
 	memPlugin := &mockMemoryPluginForTest{
-		adviseFn: func(ctx context.Context, state runtime.RouteState) ([]runtime.RouteAdvice, error) {
-			return []runtime.RouteAdvice{
+		adviseFn: func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
+			return []ares_runtime.RouteAdvice{
 				{NextStepID: "round2-step", Confidence: 0.9, Reason: "memory suggests continuation"},
 			}, nil
 		},
@@ -1282,11 +1284,11 @@ func TestDynamicExecutor_RoundLoopIntegration(t *testing.T) {
 	evoPlugin := &mockEvolutionPluginForTest{}
 
 	// Loop plugin: allow exactly 2 rounds
-	loopPlugin := runtime.NewLoopPlugin("round-loop", runtime.LoopConfig{
+	loopPlugin := ares_runtime.NewLoopPlugin("round-loop", ares_runtime.LoopConfig{
 		MaxIterations: 2,
 	})
 
-	ckpt := runtime.NewCheckpointPlugin("test-cp", ckptStore)
+	ckpt := ares_runtime.NewCheckpointPlugin("test-cp", ckptStore)
 
 	require.NoError(t, bus.Register(memPlugin))
 	require.NoError(t, bus.Register(evoPlugin))
@@ -1321,7 +1323,7 @@ func TestDynamicExecutor_RoundLoopIntegration(t *testing.T) {
 	// Verify SetRound was called: load checkpoint and check CurrentRound >= 1
 	data, err := ckptStore.Load(context.Background(), "checkpoint/"+result.ExecutionID)
 	if err == nil && data != nil {
-		var loaded runtime.ExperienceCheckpoint
+		var loaded ares_runtime.ExperienceCheckpoint
 		require.NoError(t, json.Unmarshal(data, &loaded))
 		assert.GreaterOrEqual(t, loaded.CurrentRound, 1, "checkpoint should have round tracking")
 	}

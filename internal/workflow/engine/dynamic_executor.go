@@ -13,8 +13,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // applyRoundMutations applies between-round DAG mutations suggested by
@@ -27,9 +27,9 @@ func (e *DynamicExecutor) applyRoundMutations(ctx context.Context, round int, ex
 	}
 
 	// 1. MemoryPlugin: suggest routing paths for next round
-	for _, mp := range e.pluginBus.PluginsByCap(runtime.CapMemory) {
-		if mem, ok := mp.(runtime.MemoryPlugin); ok {
-			advice, err := mem.AdviseRoute(ctx, runtime.RouteState{
+	for _, mp := range e.pluginBus.PluginsByCap(ares_runtime.CapMemory) {
+		if mem, ok := mp.(ares_runtime.MemoryPlugin); ok {
+			advice, err := mem.AdviseRoute(ctx, ares_runtime.RouteState{
 				ExecutionID:   execution.ID,
 				CurrentStepID: "",
 			})
@@ -61,9 +61,9 @@ func (e *DynamicExecutor) applyRoundMutations(ctx context.Context, round int, ex
 	}
 
 	// 2. EvolutionPlugin: strategy recommendations for next round
-	for _, ep := range e.pluginBus.PluginsByCap(runtime.CapEvolution) {
-		if evo, ok := ep.(runtime.EvolutionPlugin); ok {
-			rec, err := evo.Recommend(ctx, runtime.ExecutionState{
+	for _, ep := range e.pluginBus.PluginsByCap(ares_runtime.CapEvolution) {
+		if evo, ok := ep.(ares_runtime.EvolutionPlugin); ok {
+			rec, err := evo.Recommend(ctx, ares_runtime.ExecutionState{
 				ExecutionID:   execution.ID,
 				CurrentStepID: "",
 			})
@@ -91,8 +91,8 @@ func (e *DynamicExecutor) cleanupCheckpoint(executionID string) {
 	if e.pluginBus == nil {
 		return
 	}
-	for _, p := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
-		if ckp, ok := p.(*runtime.CheckpointPlugin); ok {
+	for _, p := range e.pluginBus.PluginsByCap(ares_runtime.CapCheckpoint) {
+		if ckp, ok := p.(*ares_runtime.CheckpointPlugin); ok {
 			ckp.Cleanup(executionID)
 		}
 	}
@@ -103,8 +103,8 @@ func (e *DynamicExecutor) flushCheckpoint(ctx context.Context, executionID strin
 	if e.pluginBus == nil {
 		return
 	}
-	for _, p := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
-		if f, ok := p.(runtime.Flusher); ok {
+	for _, p := range e.pluginBus.PluginsByCap(ares_runtime.CapCheckpoint) {
+		if f, ok := p.(ares_runtime.Flusher); ok {
 			if err := f.Flush(ctx, executionID); err != nil {
 				slog.Warn("checkpoint flush failed",
 					"execution_id", executionID,
@@ -150,9 +150,9 @@ type DynamicExecutor struct {
 	hitlStore          InterruptStore
 	recoveryHandler    StepRecoveryHandler
 	recoveryEventSink  func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)
-	pluginBus          *runtime.PluginBus
-	checkpointStore    runtime.CheckpointStore
-	executionCollector *runtime.ExecutionCollector
+	pluginBus          *ares_runtime.PluginBus
+	checkpointStore    ares_runtime.CheckpointStore
+	executionCollector *ares_runtime.ExecutionCollector
 }
 
 // NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
@@ -197,20 +197,20 @@ func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, e
 
 // WithPluginBus sets the plugin bus for BeforeStep/AfterStep hook invocation
 // and workflow lifecycle event emission.
-func (e *DynamicExecutor) WithPluginBus(bus *runtime.PluginBus) *DynamicExecutor {
+func (e *DynamicExecutor) WithPluginBus(bus *ares_runtime.PluginBus) *DynamicExecutor {
 	e.pluginBus = bus
 	return e
 }
 
 // WithCheckpointStore sets the checkpoint store for execution resume.
-func (e *DynamicExecutor) WithCheckpointStore(store runtime.CheckpointStore) *DynamicExecutor {
+func (e *DynamicExecutor) WithCheckpointStore(store ares_runtime.CheckpointStore) *DynamicExecutor {
 	e.checkpointStore = store
 	return e
 }
 
 // WithExecutionCollector sets the execution collector for route recording
 // and execution history tracking.
-func (e *DynamicExecutor) WithExecutionCollector(c *runtime.ExecutionCollector) *DynamicExecutor {
+func (e *DynamicExecutor) WithExecutionCollector(c *ares_runtime.ExecutionCollector) *DynamicExecutor {
 	e.executionCollector = c
 	return e
 }
@@ -252,9 +252,9 @@ func (e *DynamicExecutor) ExecuteDynamic(
 	}
 
 	if e.pluginBus != nil {
-		e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowStarted, map[string]any{
-			runtime.PayloadKeyExecutionID: execution.ID,
-			runtime.PayloadKeyWorkflowID:  workflow.ID,
+		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, map[string]any{
+			ares_runtime.PayloadKeyExecutionID: execution.ID,
+			ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
 		})
 	}
 
@@ -283,7 +283,7 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 		return nil, errors.New("checkpoint store not configured")
 	}
 
-	data, err := e.checkpointStore.Load(ctx, runtime.CheckpointKey(executionID))
+	data, err := e.checkpointStore.Load(ctx, ares_runtime.CheckpointKey(executionID))
 	if err != nil {
 		return nil, fmt.Errorf("load checkpoint: %w", err)
 	}
@@ -291,7 +291,7 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 		return nil, fmt.Errorf("checkpoint not found: %s", executionID)
 	}
 
-	var ckpt runtime.ExperienceCheckpoint
+	var ckpt ares_runtime.ExperienceCheckpoint
 	if err := json.Unmarshal(data, &ckpt); err != nil {
 		return nil, fmt.Errorf("unmarshal checkpoint: %w", err)
 	}
@@ -303,7 +303,7 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 	var initialStepResults []*StepResult
 	for _, ss := range ckpt.StepStates {
 		processed[ss.StepID] = true
-		if ss.Status == runtime.StepStatusCompleted {
+		if ss.Status == ares_runtime.StepStatusCompleted {
 			completed[ss.StepID] = true
 		}
 		initialStepResults = append(initialStepResults, &StepResult{
@@ -333,10 +333,10 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 	}
 
 	if e.pluginBus != nil {
-		e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowStarted, map[string]any{
-			runtime.PayloadKeyExecutionID: execution.ID,
-			runtime.PayloadKeyWorkflowID:  workflow.ID,
-			"resumed":                     true,
+		e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowStarted, map[string]any{
+			ares_runtime.PayloadKeyExecutionID: execution.ID,
+			ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
+			"resumed":                          true,
 		})
 	}
 
@@ -344,13 +344,13 @@ func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(
 }
 
 // findLoopPlugin returns the first LoopPlugin from the plugin bus, or nil.
-func (e *DynamicExecutor) findLoopPlugin() *runtime.LoopPlugin {
+func (e *DynamicExecutor) findLoopPlugin() *ares_runtime.LoopPlugin {
 	if e.pluginBus == nil {
 		return nil
 	}
-	loopPlugins := e.pluginBus.PluginsByCap(runtime.CapLoop)
+	loopPlugins := e.pluginBus.PluginsByCap(ares_runtime.CapLoop)
 	for _, lp := range loopPlugins {
-		if loop, ok := lp.(*runtime.LoopPlugin); ok {
+		if loop, ok := lp.(*ares_runtime.LoopPlugin); ok {
 			return loop
 		}
 	}
@@ -419,10 +419,10 @@ func (e *DynamicExecutor) execLoop(
 				execution.FinishedAt = time.Now()
 				e.flushCheckpoint(ctx, execution.ID)
 				if e.pluginBus != nil {
-					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
-						runtime.PayloadKeyExecutionID: execution.ID,
-						runtime.PayloadKeyWorkflowID:  workflow.ID,
-						runtime.PayloadKeyStatus:      execution.Status,
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: execution.ID,
+						ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
+						ares_runtime.PayloadKeyStatus:      execution.Status,
 					})
 				}
 				output := make(map[string]interface{})
@@ -441,8 +441,8 @@ func (e *DynamicExecutor) execLoop(
 			// Between-round: apply DAG mutations suggested by memory
 			// and evolution plugins, then flush checkpoint with round info.
 			e.applyRoundMutations(ctx, round, execution, mutableDAG)
-			for _, cp := range e.pluginBus.PluginsByCap(runtime.CapCheckpoint) {
-				if ckp, ok := cp.(*runtime.CheckpointPlugin); ok {
+			for _, cp := range e.pluginBus.PluginsByCap(ares_runtime.CapCheckpoint) {
+				if ckp, ok := cp.(*ares_runtime.CheckpointPlugin); ok {
 					ckp.SetRound(execution.ID, round)
 				}
 			}
@@ -523,10 +523,10 @@ func (e *DynamicExecutor) execLoop(
 					execution.FinishedAt = time.Now()
 					e.flushCheckpoint(ctx, execution.ID)
 					if e.pluginBus != nil {
-						e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowCompleted, map[string]any{
-							runtime.PayloadKeyExecutionID: execution.ID,
-							runtime.PayloadKeyWorkflowID:  workflow.ID,
-							runtime.PayloadKeyStatus:      execution.Status,
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowCompleted, map[string]any{
+							ares_runtime.PayloadKeyExecutionID: execution.ID,
+							ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
+							ares_runtime.PayloadKeyStatus:      execution.Status,
 						})
 					}
 					output := make(map[string]interface{})
@@ -563,11 +563,11 @@ func (e *DynamicExecutor) execLoop(
 					execution.FinishedAt = time.Now()
 					e.flushCheckpoint(ctx, execution.ID)
 					if e.pluginBus != nil {
-						e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
-							runtime.PayloadKeyExecutionID: execution.ID,
-							runtime.PayloadKeyWorkflowID:  workflow.ID,
-							runtime.PayloadKeyStatus:      execution.Status,
-							runtime.PayloadKeyError:       result.Error,
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, map[string]any{
+							ares_runtime.PayloadKeyExecutionID: execution.ID,
+							ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
+							ares_runtime.PayloadKeyStatus:      execution.Status,
+							ares_runtime.PayloadKeyError:       result.Error,
 						})
 					}
 					<-done
@@ -621,11 +621,11 @@ func (e *DynamicExecutor) execLoop(
 				execution.FinishedAt = time.Now()
 				e.flushCheckpoint(ctx, execution.ID)
 				if e.pluginBus != nil {
-					e.pluginBus.Emit(ctx, execution.ID, runtime.EventWorkflowFailed, map[string]any{
-						runtime.PayloadKeyExecutionID: execution.ID,
-						runtime.PayloadKeyWorkflowID:  workflow.ID,
-						runtime.PayloadKeyStatus:      execution.Status,
-						runtime.PayloadKeyError:       err.Error(),
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventWorkflowFailed, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: execution.ID,
+						ares_runtime.PayloadKeyWorkflowID:  workflow.ID,
+						ares_runtime.PayloadKeyStatus:      execution.Status,
+						ares_runtime.PayloadKeyError:       err.Error(),
 					})
 				}
 				<-done
@@ -874,9 +874,9 @@ func (e *DynamicExecutor) runDynamicSteps(
 							"error", err,
 						)
 					}
-					e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepStarted, map[string]any{
-						runtime.PayloadKeyExecutionID: execution.ID,
-						runtime.PayloadKeyStepID:      sid,
+					e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepStarted, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: execution.ID,
+						ares_runtime.PayloadKeyStepID:      sid,
 					})
 				}
 
@@ -900,19 +900,19 @@ func (e *DynamicExecutor) runDynamicSteps(
 						)
 					}
 					if result.Status == StepStatusFailed {
-						e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepFailed, map[string]any{
-							runtime.PayloadKeyExecutionID: execution.ID,
-							runtime.PayloadKeyStepID:      sid,
-							runtime.PayloadKeyStatus:      result.Status,
-							runtime.PayloadKeyError:       result.Error,
-							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepFailed, map[string]any{
+							ares_runtime.PayloadKeyExecutionID: execution.ID,
+							ares_runtime.PayloadKeyStepID:      sid,
+							ares_runtime.PayloadKeyStatus:      result.Status,
+							ares_runtime.PayloadKeyError:       result.Error,
+							ares_runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 						})
 					} else {
-						e.pluginBus.Emit(ctx, execution.ID, runtime.EventStepCompleted, map[string]any{
-							runtime.PayloadKeyExecutionID: execution.ID,
-							runtime.PayloadKeyStepID:      sid,
-							runtime.PayloadKeyStatus:      result.Status,
-							runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
+						e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventStepCompleted, map[string]any{
+							ares_runtime.PayloadKeyExecutionID: execution.ID,
+							ares_runtime.PayloadKeyStepID:      sid,
+							ares_runtime.PayloadKeyStatus:      result.Status,
+							ares_runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 						})
 					}
 				}

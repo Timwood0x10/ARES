@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // recomputeOrder checks if the DAG version changed and updates the execution
@@ -52,31 +52,31 @@ func (e *DynamicExecutor) findStepInDAG(mutableDAG *MutableDAG, stepID string) *
 	return idx[stepID]
 }
 
-// toRuntimeStep converts an engine Step to the runtime Step mirror type
+// toRuntimeStep converts an engine Step to the ares_runtime Step mirror type
 // for WorkflowHook invocation.
-func toRuntimeStep(s *Step) *runtime.Step {
-	return &runtime.Step{
+func toRuntimeStep(s *Step) *ares_runtime.Step {
+	return &ares_runtime.Step{
 		ID:        s.ID,
 		Name:      s.Name,
 		AgentType: s.AgentType,
-		Status:    runtime.StepStatus(s.Status),
+		Status:    ares_runtime.StepStatus(s.Status),
 		Output:    s.Output,
 		Error:     s.Error,
 		StartedAt: s.StartedAt,
 	}
 }
 
-// toRuntimeStepResult converts an engine StepResult to the runtime mirror
+// toRuntimeStepResult converts an engine StepResult to the ares_runtime mirror
 // type for WorkflowHook invocation.
-func toRuntimeStepResult(r *StepResult) *runtime.StepResult {
+func toRuntimeStepResult(r *StepResult) *ares_runtime.StepResult {
 	meta := make(map[string]string, len(r.Metadata))
 	for k, v := range r.Metadata {
 		meta[k] = v
 	}
-	return &runtime.StepResult{
+	return &ares_runtime.StepResult{
 		StepID:   r.StepID,
 		Name:     r.Name,
-		Status:   runtime.StepStatus(r.Status),
+		Status:   ares_runtime.StepStatus(r.Status),
 		Output:   r.Output,
 		Error:    r.Error,
 		Duration: r.Duration,
@@ -92,21 +92,21 @@ func (e *DynamicExecutor) handleStepRouting(
 	result *StepResult,
 	mutableDAG *MutableDAG,
 	currentOrder *[]string,
-) *runtime.RouteDecision {
+) *ares_runtime.RouteDecision {
 	if e.pluginBus == nil {
 		return nil
 	}
 
-	routers := e.pluginBus.PluginsByCap(runtime.CapRouter)
+	routers := e.pluginBus.PluginsByCap(ares_runtime.CapRouter)
 	if len(routers) == 0 {
 		return nil
 	}
-	router, ok := routers[0].(runtime.RouterPlugin)
+	router, ok := routers[0].(ares_runtime.RouterPlugin)
 	if !ok || router == nil {
 		return nil
 	}
 
-	state := runtime.RouteState{
+	state := ares_runtime.RouteState{
 		ExecutionID:       execution.ID,
 		WorkflowID:        execution.WorkflowID,
 		CurrentStepID:     result.StepID,
@@ -132,12 +132,12 @@ func (e *DynamicExecutor) handleStepRouting(
 		return nil
 	}
 
-	e.pluginBus.Emit(ctx, execution.ID, runtime.EventRouteDecided, map[string]any{
-		runtime.PayloadKeyExecutionID: execution.ID,
-		runtime.PayloadKeyStepID:      result.StepID,
-		runtime.PayloadKeyRouteReason: decision.Reason,
-		"next_step_id":                decision.NextStepID,
-		"source":                      decision.Source,
+	e.pluginBus.Emit(ctx, execution.ID, ares_runtime.EventRouteDecided, map[string]any{
+		ares_runtime.PayloadKeyExecutionID: execution.ID,
+		ares_runtime.PayloadKeyStepID:      result.StepID,
+		ares_runtime.PayloadKeyRouteReason: decision.Reason,
+		"next_step_id":                     decision.NextStepID,
+		"source":                           decision.Source,
 	})
 
 	if e.executionCollector != nil {
@@ -172,14 +172,14 @@ func (e *DynamicExecutor) handleStepFailure(
 	// step has a RecoveryPolicy with a recoveryHandler configured.
 	recoveryEnabled := e.recoveryHandler != nil && step.RecoveryPolicy != nil
 	if e.pluginBus != nil && !recoveryEnabled {
-		for _, p := range e.pluginBus.PluginsByCap(runtime.CapRecovery) {
-			if rp, ok := p.(runtime.RecoveryPlugin); ok {
-				rpState := runtime.ExecutionState{
+		for _, p := range e.pluginBus.PluginsByCap(ares_runtime.CapRecovery) {
+			if rp, ok := p.(ares_runtime.RecoveryPlugin); ok {
+				rpState := ares_runtime.ExecutionState{
 					ExecutionID:   execution.ID,
 					WorkflowID:    workflow.ID,
 					CurrentStepID: result.StepID,
 				}
-				if rp.ShouldRecover(ctx, runtime.StepFailure{
+				if rp.ShouldRecover(ctx, ares_runtime.StepFailure{
 					ExecutionID: execution.ID,
 					WorkflowID:  workflow.ID,
 					StepID:      result.StepID,

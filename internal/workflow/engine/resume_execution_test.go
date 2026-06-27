@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // memoryCheckpointStore is a minimal in-memory CheckpointStore for resume tests.
@@ -62,13 +62,13 @@ func TestDynamicExecutor_ExecuteDynamicFromCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	ckptStore := newMemCheckpointStore()
-	ckpt := runtime.ExperienceCheckpoint{
+	ckpt := ares_runtime.ExperienceCheckpoint{
 		SchemaVersion: 1,
 		ExecutionID:   "resume-exec-1",
 		WorkflowID:    "resume-test",
 		Status:        "running",
-		StepStates: []runtime.StepStateSnapshot{
-			{StepID: "s1", Status: runtime.StepStatusCompleted, Output: "hello"},
+		StepStates: []ares_runtime.StepStateSnapshot{
+			{StepID: "s1", Status: ares_runtime.StepStatusCompleted, Output: "hello"},
 		},
 		StateVersion: 1,
 	}

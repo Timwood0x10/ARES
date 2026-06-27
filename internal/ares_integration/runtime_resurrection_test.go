@@ -14,11 +14,11 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
-// --- Test helpers for runtime resurrection tests ---
+// --- Test helpers for ares_runtime resurrection tests ---
 
 // resurrectionAgent is a controllable mock agent that supports StatefulAgent
 // for testing the full resurrection flow with state recovery.
@@ -107,12 +107,12 @@ func (a *resurrectionAgent) getRestoredState() map[string]any {
 // register agent -> start -> emit ares_events -> kill -> verify resurrection -> verify state recovery.
 func TestRuntimeResurrection_FullCycle(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 5,
 		MaxReplayEvents:     100,
 	}
-	mgr := runtime.New(config, eventStore, nil)
+	mgr := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -140,7 +140,7 @@ func TestRuntimeResurrection_FullCycle(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Start the runtime.
+	// Start the ares_runtime.
 	require.NoError(t, mgr.Start(ctx))
 
 	// Wait for the agent to start.
@@ -195,11 +195,11 @@ func TestRuntimeResurrection_FullCycle(t *testing.T) {
 // verifies both resurrect independently while the third remains untouched.
 func TestRuntimeResurrection_MultipleAgents(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 5,
 	}
-	mgr := runtime.New(config, eventStore, nil)
+	mgr := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -272,12 +272,12 @@ func TestRuntimeResurrection_MultipleAgents(t *testing.T) {
 // another is being resurrected, verifying no race conditions or panics.
 func TestRuntimeResurrection_ConcurrentKillAndResurrect(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 5,
 		RestoreTimeout:      5 * time.Second,
 	}
-	mgr := runtime.New(config, eventStore, nil)
+	mgr := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -339,11 +339,11 @@ func TestRuntimeResurrection_ConcurrentKillAndResurrect(t *testing.T) {
 // is nil, resurrection still works but without state recovery.
 func TestRuntimeResurrection_EventStoreUnavailable(t *testing.T) {
 	// Pass nil EventStore.
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: 5,
 	}
-	mgr := runtime.New(config, nil, nil)
+	mgr := ares_runtime.New(config, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -396,12 +396,12 @@ func TestRuntimeResurrection_EventStoreUnavailable(t *testing.T) {
 func TestRuntimeResurrection_MaxRestartsExceeded(t *testing.T) {
 	eventStore := ares_events.NewMemoryEventStore()
 	const maxRestarts = 3
-	config := &runtime.Config{
+	config := &ares_runtime.Config{
 		HealthCheckInterval: 50 * time.Millisecond,
 		MaxRestartsPerAgent: maxRestarts,
 		RestoreTimeout:      2 * time.Second,
 	}
-	mgr := runtime.New(config, eventStore, nil)
+	mgr := ares_runtime.New(config, eventStore, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -436,7 +436,7 @@ func TestRuntimeResurrection_MaxRestartsExceeded(t *testing.T) {
 	assert.LessOrEqual(t, factoryCalls.Load(), int32(maxRestarts),
 		"factory calls should not exceed MaxRestartsPerAgent")
 
-	// Verify runtime stats reflect the cap.
+	// Verify ares_runtime stats reflect the cap.
 	stats := mgr.Stats()
 	assert.LessOrEqual(t, stats.TotalRestarts, maxRestarts,
 		"total restarts should not exceed max")

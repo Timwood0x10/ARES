@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -468,8 +468,8 @@ func TestExecuteWithLoopPluginMaxIterations(t *testing.T) {
 		return origNode.Execute(ctx, state)
 	}}
 
-	bus := runtime.NewPluginBus()
-	loop := runtime.NewLoopPlugin("loop", runtime.LoopConfig{MaxIterations: 3})
+	bus := ares_runtime.NewPluginBus()
+	loop := ares_runtime.NewLoopPlugin("loop", ares_runtime.LoopConfig{MaxIterations: 3})
 	require.NoError(t, bus.Register(loop))
 	require.NoError(t, bus.Start(context.Background()))
 	_, err := g.SetPluginBus(bus)
@@ -495,8 +495,8 @@ func TestExecuteWithLoopPluginUntilCondition(t *testing.T) {
 		startDef("counter"),
 	)
 
-	bus := runtime.NewPluginBus()
-	loop := runtime.NewLoopPlugin("loop", runtime.LoopConfig{
+	bus := ares_runtime.NewPluginBus()
+	loop := ares_runtime.NewLoopPlugin("loop", ares_runtime.LoopConfig{
 		UntilCondition: func(vars map[string]any) bool {
 			c, ok := vars["count"].(int)
 			return ok && c >= 5
@@ -552,7 +552,7 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 		startDef("step1"),
 	)
 
-	bus := runtime.NewPluginBus()
+	bus := ares_runtime.NewPluginBus()
 	require.NoError(t, bus.Start(context.Background()))
 	_, err := g.SetPluginBus(bus)
 	require.NoError(t, err)
@@ -563,10 +563,10 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 	defer subCancel()
 	sub, err := bus.Subscribe(subCtx, ares_events.EventFilter{
 		Types: []ares_events.EventType{
-			runtime.EventWorkflowStarted,
-			runtime.EventWorkflowCompleted,
-			runtime.EventStepStarted,
-			runtime.EventStepCompleted,
+			ares_runtime.EventWorkflowStarted,
+			ares_runtime.EventWorkflowCompleted,
+			ares_runtime.EventStepStarted,
+			ares_runtime.EventStepCompleted,
 		},
 	})
 	require.NoError(t, err)
@@ -643,8 +643,8 @@ func TestGraphCheckpointPlugin(t *testing.T) {
 	)
 
 	store := &memCheckpointStore{}
-	bus := runtime.NewPluginBus()
-	cp := runtime.NewCheckpointPlugin("ckpt", store)
+	bus := ares_runtime.NewPluginBus()
+	cp := ares_runtime.NewCheckpointPlugin("ckpt", store)
 	require.NoError(t, bus.Register(cp))
 	require.NoError(t, bus.Start(context.Background()))
 	_, err := g.SetPluginBus(bus)
@@ -658,13 +658,13 @@ func TestGraphCheckpointPlugin(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, data)
 
-	var ckpt runtime.ExperienceCheckpoint
+	var ckpt ares_runtime.ExperienceCheckpoint
 	require.NoError(t, json.Unmarshal(data, &ckpt))
 	require.Equal(t, "ckpt-graph", ckpt.ExecutionID)
 	require.Len(t, ckpt.StepStates, 2)
 	// Both steps should be completed.
 	for _, ss := range ckpt.StepStates {
-		require.Equal(t, runtime.StepStatusCompleted, ss.Status)
+		require.Equal(t, ares_runtime.StepStatusCompleted, ss.Status)
 	}
 }
 
@@ -731,7 +731,7 @@ func TestGraphSetExecutionCollector_Nil(t *testing.T) {
 }
 
 func TestGraphSetExecutionCollector_NilGraph(t *testing.T) {
-	_, err := (*Graph)(nil).SetExecutionCollector(runtime.NewExecutionCollector("exec-1"))
+	_, err := (*Graph)(nil).SetExecutionCollector(ares_runtime.NewExecutionCollector("exec-1"))
 	require.Error(t, err)
 }
 
@@ -749,7 +749,7 @@ func TestGraphRouterRecordsToCollector(t *testing.T) {
 		startDef("n1"),
 	)
 
-	collector := runtime.NewExecutionCollector("exec-route-record")
+	collector := ares_runtime.NewExecutionCollector("exec-route-record")
 	_, err := g.SetExecutionCollector(collector)
 	require.NoError(t, err)
 
@@ -786,11 +786,11 @@ func TestGraphPluginBusRouterRecordsToCollector(t *testing.T) {
 		startDef("n1"),
 	)
 
-	_, err := g.SetExecutionCollector(runtime.NewExecutionCollector("exec-pb-record"))
+	_, err := g.SetExecutionCollector(ares_runtime.NewExecutionCollector("exec-pb-record"))
 	require.NoError(t, err)
 
-	bus := runtime.NewPluginBus()
-	require.NoError(t, bus.Register(runtime.NewExpressionRouter("test-router", []runtime.RouteRule{
+	bus := ares_runtime.NewPluginBus()
+	require.NoError(t, bus.Register(ares_runtime.NewExpressionRouter("test-router", []ares_runtime.RouteRule{
 		{FromStepID: "n1", ToStepID: "n2", Reason: "test route"},
 	})))
 	require.NoError(t, bus.Start(context.Background()))

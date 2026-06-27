@@ -14,8 +14,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -45,17 +45,17 @@ func examplePluginSystem(ctx context.Context) {
 		}, nil
 	})
 
-	// 2. Create the runtime plugin bus and register plugins.
+	// 2. Create the ares_runtime plugin bus and register plugins.
 	//
 	// ObserverPlugin: subscribes to all lifecycle ares_events (workflow start/complete,
 	// step start/complete, etc.) and writes them to a MemoryEventStore.
 	eventStore := ares_events.NewMemoryEventStore()
-	observer := runtime.NewObserverPlugin("integration-observer", eventStore)
+	observer := ares_runtime.NewObserverPlugin("integration-observer", eventStore)
 
 	// ToolPlugin: records tool invocations during step execution.
-	toolPlugin := runtime.NewToolPlugin("integration-tools")
+	toolPlugin := ares_runtime.NewToolPlugin("integration-tools")
 
-	bus := runtime.NewPluginBus()
+	bus := ares_runtime.NewPluginBus()
 	if err := bus.Register(observer); err != nil {
 		log.Fatalf("register observer: %v", err)
 	}
@@ -72,8 +72,8 @@ func examplePluginSystem(ctx context.Context) {
 
 	// 3. Subscribe to ares_events directly via the EventBus.
 	sub, err := bus.Subscribe(ctx, ares_events.EventFilter{Types: []ares_events.EventType{
-		runtime.EventWorkflowStarted,
-		runtime.EventWorkflowCompleted,
+		ares_runtime.EventWorkflowStarted,
+		ares_runtime.EventWorkflowCompleted,
 	}})
 	if err != nil {
 		log.Fatalf("subscribe: %v", err)
@@ -124,19 +124,19 @@ func examplePluginSystem(ctx context.Context) {
 	} else {
 		fmt.Printf("  Total ares_events: %d\n", len(evts))
 		for _, e := range evts {
-			execID, _ := e.Payload[runtime.PayloadKeyExecutionID].(string)
+			execID, _ := e.Payload[ares_runtime.PayloadKeyExecutionID].(string)
 			fmt.Printf("  [%s] %s (execution=%s)\n", e.StreamID, e.Type, execID)
 		}
 	}
 
 	// 9. Show the PluginBus capabilities.
 	fmt.Println("\n--- PluginBus Capabilities ---")
-	toolPlugins := bus.PluginsByCap(runtime.CapTool)
+	toolPlugins := bus.PluginsByCap(ares_runtime.CapTool)
 	fmt.Printf("  Plugins with CapTool: %d\n", len(toolPlugins))
 	for _, p := range toolPlugins {
 		fmt.Printf("    - %s\n", p.Name())
 	}
-	observerPlugins := bus.PluginsByCap(runtime.CapObserver)
+	observerPlugins := bus.PluginsByCap(ares_runtime.CapObserver)
 	fmt.Printf("  Plugins with CapObserver: %d\n", len(observerPlugins))
 	for _, p := range observerPlugins {
 		fmt.Printf("    - %s\n", p.Name())

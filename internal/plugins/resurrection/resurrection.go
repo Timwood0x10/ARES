@@ -19,7 +19,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 
@@ -501,7 +501,7 @@ func (s *Supervisor) resurrect(agentID string) {
 		s.mu.RLock()
 		store := s.snapshotStore
 		s.mu.RUnlock()
-		state = runtime.RecoverSnapshotOrEvents(resCtx, store, agentID, func() map[string]any {
+		state = ares_runtime.RecoverSnapshotOrEvents(resCtx, store, agentID, func() map[string]any {
 			return s.replayEvents(resCtx, agentID)
 		})
 		if state != nil {

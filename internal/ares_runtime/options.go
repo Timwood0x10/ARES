@@ -1,4 +1,4 @@
-package runtime
+package ares_runtime
 
 import (
 	"log/slog"

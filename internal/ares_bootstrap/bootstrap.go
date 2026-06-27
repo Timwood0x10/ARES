@@ -21,7 +21,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -101,7 +101,7 @@ func SetupMCP(ctx context.Context, cfg *ares_config.MCPConfig, registry *core.Re
 func SetupDashboard(
 	ctx context.Context,
 	cfg *ares_config.DashboardAppConfig,
-	rt runtime.Runtime,
+	rt ares_runtime.Runtime,
 	agents dashboard.AgentProvider,
 	eventStore ares_events.EventStore,
 	memMgr memory.MemoryManager,
@@ -271,7 +271,7 @@ func NewLLMClientWithFailover(ares_config *llm.Config, fallbacks []*llm.Config, 
 // Pass this option to sub.NewTaskExecutorWithValidation() to enable lifecycle event
 // emission (tool.start, tool.end, tool.error) during task execution.
 //
-// This is the type-safe alternative to runtime interface assertion — ares_callbacks
+// This is the type-safe alternative to ares_runtime interface assertion — ares_callbacks
 // are wired at construction time rather than injected post-hoc via SetCallbacks.
 //
 // Args:

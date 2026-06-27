@@ -1,5 +1,5 @@
 // Package main compares ApplyAtCheckpoint vs ApplyImmediate in DynamicExecutor,
-// demonstrating the runtime plugin system via PluginBus with ObserverPlugin.
+// demonstrating the ares_runtime plugin system via PluginBus with ObserverPlugin.
 package main
 
 import (
@@ -11,8 +11,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -129,9 +129,9 @@ func runDemo(mode engine.ApplyMode) {
 	// Create an in-memory event store and observer plugin to capture workflow
 	// lifecycle ares_events (workflow.started, step.completed, workflow.completed, etc.).
 	eventStore := ares_events.NewMemoryEventStore()
-	observer := runtime.NewObserverPlugin("demo-observer", eventStore)
+	observer := ares_runtime.NewObserverPlugin("demo-observer", eventStore)
 
-	bus := runtime.NewPluginBus()
+	bus := ares_runtime.NewPluginBus()
 	if err := bus.Register(observer); err != nil {
 		log.Fatalf("register observer: %v", err)
 	}

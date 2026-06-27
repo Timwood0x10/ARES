@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 // Execute runs the graph with the given state.
@@ -80,13 +80,13 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 
 		if g.pluginBus != nil {
 			payload := map[string]any{
-				runtime.PayloadKeyExecutionID: g.id,
-				runtime.PayloadKeyWorkflowID:  g.id,
+				ares_runtime.PayloadKeyExecutionID: g.id,
+				ares_runtime.PayloadKeyWorkflowID:  g.id,
 			}
 			if iteration == 1 && len(initialExecuted) > 0 {
 				payload["resumed"] = true
 			}
-			g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowStarted, payload)
+			g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowStarted, payload)
 		}
 
 		executed := make(map[string]bool)
@@ -158,29 +158,29 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			select {
 			case <-ctx.Done():
 				if g.pluginBus != nil {
-					g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
-						runtime.PayloadKeyExecutionID: g.id,
-						runtime.PayloadKeyWorkflowID:  g.id,
-						runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
-						runtime.PayloadKeyError:       ctx.Err().Error(),
-						runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: g.id,
+						ares_runtime.PayloadKeyWorkflowID:  g.id,
+						ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusFailed,
+						ares_runtime.PayloadKeyError:       ctx.Err().Error(),
+						ares_runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
 					})
 				}
 				return nil, errors.Wrap(ctx.Err(), "execution cancelled")
 			default:
 			}
 
-			// Convert node to runtime.Step for plugin hooks.
-			step := &runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
+			// Convert node to ares_runtime.Step for plugin hooks.
+			step := &ares_runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
 			if g.pluginBus != nil {
 				if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
 					slog.Warn("graph: before step hook failed (continuing)",
 						"graph_id", g.id, "node", nodeID, "error", err,
 					)
 				}
-				g.pluginBus.Emit(ctx, g.id, runtime.EventStepStarted, map[string]any{
-					runtime.PayloadKeyExecutionID: g.id,
-					runtime.PayloadKeyStepID:      nodeID,
+				g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepStarted, map[string]any{
+					ares_runtime.PayloadKeyExecutionID: g.id,
+					ares_runtime.PayloadKeyStepID:      nodeID,
 				})
 			}
 
@@ -198,13 +198,13 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			execErr := node.Execute(ctx, state)
 			nodeDuration := time.Since(nodeStart)
 
-			stepResult := &runtime.StepResult{
+			stepResult := &ares_runtime.StepResult{
 				StepID:   nodeID,
-				Status:   runtime.StepStatusCompleted,
+				Status:   ares_runtime.StepStatusCompleted,
 				Duration: nodeDuration,
 			}
 			if execErr != nil {
-				stepResult.Status = runtime.StepStatusFailed
+				stepResult.Status = ares_runtime.StepStatusFailed
 				stepResult.Error = execErr.Error()
 				if g.tracer != nil {
 					g.tracer.RecordError(ctx, &ares_observability.AgentError{
@@ -223,31 +223,31 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 					)
 				}
 				if execErr != nil {
-					g.pluginBus.Emit(ctx, g.id, runtime.EventStepFailed, map[string]any{
-						runtime.PayloadKeyExecutionID: g.id,
-						runtime.PayloadKeyStepID:      nodeID,
-						runtime.PayloadKeyStatus:      stepResult.Status,
-						runtime.PayloadKeyError:       execErr.Error(),
-						runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepFailed, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: g.id,
+						ares_runtime.PayloadKeyStepID:      nodeID,
+						ares_runtime.PayloadKeyStatus:      stepResult.Status,
+						ares_runtime.PayloadKeyError:       execErr.Error(),
+						ares_runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
 					})
 				} else {
-					g.pluginBus.Emit(ctx, g.id, runtime.EventStepCompleted, map[string]any{
-						runtime.PayloadKeyExecutionID: g.id,
-						runtime.PayloadKeyStepID:      nodeID,
-						runtime.PayloadKeyStatus:      stepResult.Status,
-						runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventStepCompleted, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: g.id,
+						ares_runtime.PayloadKeyStepID:      nodeID,
+						ares_runtime.PayloadKeyStatus:      stepResult.Status,
+						ares_runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
 					})
 				}
 			}
 
 			if execErr != nil {
 				if g.pluginBus != nil {
-					g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
-						runtime.PayloadKeyExecutionID: g.id,
-						runtime.PayloadKeyWorkflowID:  g.id,
-						runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
-						runtime.PayloadKeyError:       execErr.Error(),
-						runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+					g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowFailed, map[string]any{
+						ares_runtime.PayloadKeyExecutionID: g.id,
+						ares_runtime.PayloadKeyWorkflowID:  g.id,
+						ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusFailed,
+						ares_runtime.PayloadKeyError:       execErr.Error(),
+						ares_runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
 					})
 				}
 				return nil, errors.Wrapf(execErr, "node %s execution failed", nodeID)
@@ -317,9 +317,9 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 		// LoopPlugin's internal per-step counter (which doesn't map to
 		// graph-level iterations). If no LoopPlugin is configured, break.
 		if g.pluginBus != nil {
-			loopPlugins := g.pluginBus.PluginsByCap(runtime.CapLoop)
+			loopPlugins := g.pluginBus.PluginsByCap(ares_runtime.CapLoop)
 			if len(loopPlugins) > 0 {
-				if loop, ok := loopPlugins[0].(*runtime.LoopPlugin); ok {
+				if loop, ok := loopPlugins[0].(*ares_runtime.LoopPlugin); ok {
 					cfg := loop.Config()
 					if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
 						slog.Debug("graph: loop max iterations reached",
@@ -343,11 +343,11 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 	}
 
 	if g.pluginBus != nil {
-		g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowCompleted, map[string]any{
-			runtime.PayloadKeyExecutionID: g.id,
-			runtime.PayloadKeyWorkflowID:  g.id,
-			runtime.PayloadKeyStatus:      runtime.StepStatusCompleted,
-			runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+		g.pluginBus.Emit(ctx, g.id, ares_runtime.EventWorkflowCompleted, map[string]any{
+			ares_runtime.PayloadKeyExecutionID: g.id,
+			ares_runtime.PayloadKeyWorkflowID:  g.id,
+			ares_runtime.PayloadKeyStatus:      ares_runtime.StepStatusCompleted,
+			ares_runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
 		})
 	}
 
@@ -373,16 +373,16 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 // the plugin bus router. Returns ("", "", "") if no router is available.
 // in addition to the route ID. If collector is non-nil, it populates the
 // RouteState with collected data and sets the collector for router recording.
-func routeFromPluginBusExt(ctx context.Context, bus *runtime.PluginBus, collector *runtime.ExecutionCollector, nodeID string, state *State) (string, string, string) {
-	routers := bus.PluginsByCap(runtime.CapRouter)
+func routeFromPluginBusExt(ctx context.Context, bus *ares_runtime.PluginBus, collector *ares_runtime.ExecutionCollector, nodeID string, state *State) (string, string, string) {
+	routers := bus.PluginsByCap(ares_runtime.CapRouter)
 	if len(routers) == 0 {
 		return "", "", ""
 	}
-	router, ok := routers[0].(runtime.RouterPlugin)
+	router, ok := routers[0].(ares_runtime.RouterPlugin)
 	if !ok || router == nil {
 		return "", "", ""
 	}
-	routeState := runtime.RouteState{
+	routeState := ares_runtime.RouteState{
 		CurrentStepID: nodeID,
 	}
 	if collector != nil {

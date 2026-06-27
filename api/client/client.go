@@ -16,8 +16,8 @@ import (
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -113,14 +113,14 @@ func NewClient(config *Config) (*Client, error) {
 		// zero-dependency plugins. Callers can override by setting
 		// config.Workflow.PluginBus before NewClient.
 		if config.Workflow.PluginBus == nil {
-			bus := runtime.NewPluginBus()
-			for _, p := range []runtime.RuntimePlugin{
-				runtime.NewExpressionRouter("default", nil),
-				runtime.NewToolPlugin("default-tools"),
-				runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
+			bus := ares_runtime.NewPluginBus()
+			for _, p := range []ares_runtime.RuntimePlugin{
+				ares_runtime.NewExpressionRouter("default", nil),
+				ares_runtime.NewToolPlugin("default-tools"),
+				ares_runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
 				engine.NewHITLFeedbackPlugin("default-hitl", nil, nil),
-				runtime.NewBasicRecoveryPlugin("default-recovery"),  // empty allowlist = no-op
-				runtime.NewEvolutionPlugin("default-evo", nil, nil), // no provider = no-op
+				ares_runtime.NewBasicRecoveryPlugin("default-recovery"),  // empty allowlist = no-op
+				ares_runtime.NewEvolutionPlugin("default-evo", nil, nil), // no provider = no-op
 			} {
 				if err := bus.Register(p); err != nil {
 					return nil, errors.Wrap(err, "register plugin "+p.Name())
@@ -206,17 +206,17 @@ func (c *Client) Workflow() (*workflowSvc.Service, error) {
 	return c.workflowService, nil
 }
 
-// Runtime creates a new runtime service for agent lifecycle management.
+// Runtime creates a new ares_runtime service for agent lifecycle management.
 // This is a convenience method that wires up EventStore + HeartbeatMonitor + Resurrection.
 //
 // Args:
 //
-//	config - runtime configuration. Uses defaults if nil.
+//	config - ares_runtime configuration. Uses defaults if nil.
 //	eventStore - optional event store. If nil, uses in-memory store.
 //
 // Returns:
 //
-//	service - the runtime service.
+//	service - the ares_runtime service.
 //	err - if creation fails.
 func (c *Client) Runtime(config *runtimeSvc.Config, eventStore ares_events.EventStore) (*runtimeSvc.Service, error) {
 	if config == nil {

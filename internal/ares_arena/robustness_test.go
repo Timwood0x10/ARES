@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,8 +43,8 @@ func TestRobustness_ConcurrentFaults(t *testing.T) {
 			mu.Unlock()
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
 		},
 	}
 	svc := newTestService(rt, &mockDAG{}, nil)
@@ -84,8 +84,8 @@ func TestRobustness_FaultCascade(t *testing.T) {
 			killCount.Add(1)
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{
 				{ID: "leader-1", Type: "leader"},
 				{ID: "worker-1", Type: "worker"},
 				{ID: "worker-2", Type: "worker"},
@@ -128,8 +128,8 @@ func TestRobustness_WorkflowRecovery(t *testing.T) {
 			mu.Unlock()
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
 		},
 	}
 	svc := newTestService(rt, &mockDAG{}, nil)
@@ -156,22 +156,22 @@ func TestRobustness_InjectorErrors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "runtime returns error on kill",
+			name:    "ares_runtime returns error on kill",
 			action:  Action{ID: "e1", Type: ActionKillAgent, TargetID: "agent-1"},
 			wantErr: "mock fail",
 		},
 		{
-			name:    "runtime returns error on pause",
+			name:    "ares_runtime returns error on pause",
 			action:  Action{ID: "e2", Type: ActionPauseAgent, TargetID: "agent-1"},
 			wantErr: "mock fail",
 		},
 		{
-			name:    "runtime returns error on memory corrupt",
+			name:    "ares_runtime returns error on memory corrupt",
 			action:  Action{ID: "e3", Type: ActionMemoryCorrupt, TargetID: "agent-1"},
 			wantErr: "mock fail",
 		},
 		{
-			name:    "runtime returns error on LLM failure",
+			name:    "ares_runtime returns error on LLM failure",
 			action:  Action{ID: "e4", Type: ActionLLMFailure, TargetID: "agent-1"},
 			wantErr: "mock fail",
 		},
@@ -181,9 +181,9 @@ func TestRobustness_InjectorErrors(t *testing.T) {
 			wantErr: "invalid duration",
 		},
 		{
-			name:    "nil runtime for injector",
+			name:    "nil ares_runtime for injector",
 			action:  Action{ID: "e6", Type: ActionKillAgent, TargetID: "agent-1"},
-			wantErr: "runtime is nil",
+			wantErr: "ares_runtime is nil",
 		},
 	}
 	for _, tt := range tests {
@@ -194,11 +194,11 @@ func TestRobustness_InjectorErrors(t *testing.T) {
 				corruptMemFn:    func(_ context.Context, _ string) error { return fmt.Errorf("mock fail") },
 				injectLLMFailFn: func(_ context.Context, _ string, _ string) error { return fmt.Errorf("mock fail") },
 			}
-			if tt.name == "nil runtime for injector" {
+			if tt.name == "nil ares_runtime for injector" {
 				svc := newTestService(nil, &mockDAG{}, nil)
 				result := svc.Execute(context.Background(), tt.action)
 				assert.False(t, result.Success)
-				assert.Contains(t, result.Error, "runtime is nil")
+				assert.Contains(t, result.Error, "ares_runtime is nil")
 			} else {
 				svc := newTestService(rt, &mockDAG{}, nil)
 				result := svc.Execute(context.Background(), tt.action)
@@ -221,8 +221,8 @@ func TestRobustness_LLMFailureRecovery(t *testing.T) {
 			mu.Unlock()
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
 		},
 	}
 	svc := newTestService(rt, &mockDAG{}, nil)
@@ -252,8 +252,8 @@ func TestRobustness_MCPDisconnectAndReconnect(t *testing.T) {
 			atomic.AddInt32(&disconnects, 1)
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
 		},
 	}
 	// Use a second mock to simulate reconnection (just call Execute again).
@@ -283,8 +283,8 @@ func TestRobustness_ContextCancellation(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "worker"}}
 		},
 	}
 	svc := newTestService(rt, &mockDAG{}, nil)
@@ -304,7 +304,7 @@ func TestRobustness_ConcurrentMetricsConsistency(t *testing.T) {
 
 	// Verify that MetricsCollector remains consistent under concurrent
 	// fault injection and metric snapshotting.
-	rt := &mockRuntime{listAgentsFn: func() []runtime.AgentInfo { return nil }}
+	rt := &mockRuntime{listAgentsFn: func() []ares_runtime.AgentInfo { return nil }}
 	svc := newTestService(rt, &mockDAG{}, nil)
 
 	var wg sync.WaitGroup
@@ -350,8 +350,8 @@ func TestRobustness_LongScenarioPartialFailure(t *testing.T) {
 			}
 			return nil
 		},
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{
 				{ID: "agent-1", Type: "worker"},
 				{ID: "agent-2", Type: "worker"},
 				{ID: "agent-3", Type: "worker"},
