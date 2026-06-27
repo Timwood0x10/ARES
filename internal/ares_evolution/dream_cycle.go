@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
@@ -88,6 +89,7 @@ type DreamCycle struct {
 	shadowEvaluator *ShadowEvaluator
 	stateManager    *ActiveStrategyManager
 	metrics         MetricsRecorder
+	population      *genome.Population
 	config          DreamCycleConfig
 	mu              sync.Mutex
 	taskCount       int64
@@ -213,12 +215,18 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		return nil
 	}
 
+	popGen := 0
+	popSize := 0
+	if dc.population != nil {
+		popGen = dc.population.CurrentGeneration()
+		popSize = len(dc.population.Agents)
+	}
 	slog.InfoContext(ctx, "[DreamCycle] Starting evolution cycle",
 		"agent_id", data.AgentID,
 		"task_count", taskCount,
 		"trigger", dc.scheduler.TriggerMode().String(),
-		"generation", 0,
-		"population_size", 0)
+		"generation", popGen,
+		"population_size", popSize)
 
 	// Pre-evolution guardrail check.
 	// Pass taskCount as totalPop so the unevaluated ratio check is meaningful.
@@ -230,7 +238,18 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		}
 	}
 	if dc.guardrails != nil {
-		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, 0, int(taskCount), 0)
+		gen := 0
+		unevaluatedCount := 0
+		if dc.population != nil {
+			gen = dc.population.CurrentGeneration()
+			agents, _ := dc.population.Snapshot()
+			for _, a := range agents {
+				if !genome.IsScoreEvaluated(a.Score) {
+					unevaluatedCount++
+				}
+			}
+		}
+		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, gen, int(taskCount), unevaluatedCount)
 		if preResult.ShouldStop {
 			slog.WarnContext(ctx, "[DreamCycle] Pre-evolution guardrails prevent cycle",
 				"events", len(preResult.Events))
@@ -289,14 +308,22 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 
 	// Step 5: Post-evolution guardrail check.
 	if dc.guardrails != nil {
-		postResult := dc.guardrails.PostEvolveCheck(ctx, winner.winRate, 0, nil)
+		gen := 0
+		var lineageShares map[string]int
+		if dc.population != nil {
+			gen = dc.population.CurrentGeneration()
+			if agents, _ := dc.population.Snapshot(); len(agents) > 0 {
+				lineageShares = computeLineageShares(agents)
+			}
+		}
+		postResult := dc.guardrails.PostEvolveCheck(ctx, winner.winRate, gen, lineageShares)
 		if postResult.ShouldStop {
 			slog.WarnContext(ctx, "[DreamCycle] Post-evolution guardrails block deploy",
 				"winner_id", winner.strategy.ID,
 				"win_rate", winner.winRate,
 				"score", winner.winRate,
 				"events", len(postResult.Events),
-				"generation", 0)
+				"generation", gen)
 			return nil
 		}
 	}

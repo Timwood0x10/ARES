@@ -148,6 +148,7 @@ type EvolutionScheduler struct {
 	enabled      atomic.Bool
 	evolveMu     sync.Mutex
 	evolveCancel context.CancelFunc
+	evolveEg     *errgroup.Group // stored for Shutdown to wait on
 	dreamCycle   *DreamCycle
 	scores       []float64
 	scoreMu      sync.Mutex
@@ -256,6 +257,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 
 	s.evolveMu.Lock()
 	s.evolveCancel = egCancel
+	s.evolveEg = eg
 	s.evolveMu.Unlock()
 
 	eg.Go(func() error {
@@ -272,10 +274,9 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return nil
 	})
 
-	// Start error group in background; errors are logged above.
-	// NOTE: bare goroutine is used intentionally here because OnAgentEnd must return
-	// immediately (it's a callback handler). The errgroup itself manages the lifecycle
-	// of the inner work, and evolveCancel provides external cancellation via Shutdown().
+	// OnAgentEnd must return immediately (it's a callback handler), so the
+	// errgroup's Wait runs in a background goroutine. The errgroup is stored
+	// in s.evolveEg so Shutdown() can wait for it.
 	go func() {
 		if err := eg.Wait(); err != nil {
 			slog.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
@@ -419,10 +420,15 @@ func (s *EvolutionScheduler) scoreSnapshot() (avg, recent float64, count int) {
 	return
 }
 
+// populationSizer is an optional interface that adapters can implement to
+// report the current population size for guardrail checks.
+type populationSizer interface {
+	PopulationSize() int
+}
+
 // checkGuardrails runs a pre-evolution guardrail check.
 // Returns true if evolution should proceed, false if guardrails block it.
 // Passes bestRecentScore from the score window for meaningful baseline comparison.
-// TODO: wire generation counter and population size when genome population is integrated.
 //
 // Args:
 //
@@ -437,7 +443,12 @@ func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
 	}
 	// Use the most recent score as currentBest for baseline regression detection.
 	avg, _, _ := s.scoreSnapshot()
-	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, 0, 0)
+	// Try to get population size if the adapter supports it.
+	totalPop := 0
+	if sizer, ok := s.adapter.(populationSizer); ok {
+		totalPop = sizer.PopulationSize()
+	}
+	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, totalPop, 0)
 	if result.ShouldStop {
 		slog.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
 			"events", len(result.Events))
@@ -500,9 +511,14 @@ func (s *EvolutionScheduler) DreamCycle() *DreamCycle {
 // It should be called when the scheduler is no longer needed to prevent goroutine leaks.
 func (s *EvolutionScheduler) Shutdown() {
 	s.evolveMu.Lock()
-	defer s.evolveMu.Unlock()
-	if s.evolveCancel != nil {
-		s.evolveCancel()
+	cancel := s.evolveCancel
+	eg := s.evolveEg
+	s.evolveMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if eg != nil {
+		_ = eg.Wait()
 	}
 }
 

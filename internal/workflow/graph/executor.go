@@ -369,15 +369,8 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 	}, nil
 }
 
-// routeFromPluginBus looks up RouterPlugin from the plugin bus and calls
-// Route to get the next node ID. Returns "" if no router is available or
-// the router returns nil.
-func routeFromPluginBus(ctx context.Context, bus *runtime.PluginBus, nodeID string, state *State) string {
-	routedID, _, _ := routeFromPluginBusExt(ctx, bus, nil, nodeID, state)
-	return routedID
-}
-
-// routeFromPluginBusExt is the extended version that returns reason and source
+// routeFromPluginBusExt returns the routed node ID, reason, and source from
+// the plugin bus router. Returns ("", "", "") if no router is available.
 // in addition to the route ID. If collector is non-nil, it populates the
 // RouteState with collected data and sets the collector for router recording.
 func routeFromPluginBusExt(ctx context.Context, bus *runtime.PluginBus, collector *runtime.ExecutionCollector, nodeID string, state *State) (string, string, string) {

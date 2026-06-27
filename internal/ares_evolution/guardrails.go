@@ -305,13 +305,14 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 
 	// Check 2: Improvement tracking and stagnation counter update
 	if newBest > g.bestKnownScore {
+		previousBest := g.bestKnownScore
 		g.stagnantCount = 0
 		g.bestKnownScore = newBest
 		g.lastImprovementGen = generation
 		slog.Info("guardrail: improvement detected",
 			"generation", generation,
 			"new_best", newBest,
-			"previous_best", g.bestKnownScore,
+			"previous_best", previousBest,
 		)
 	} else {
 		g.stagnantCount++

@@ -472,11 +472,12 @@ func TestExecuteWithLoopPluginMaxIterations(t *testing.T) {
 	loop := runtime.NewLoopPlugin("loop", runtime.LoopConfig{MaxIterations: 3})
 	require.NoError(t, bus.Register(loop))
 	require.NoError(t, bus.Start(context.Background()))
-	g.SetPluginBus(bus)
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
 
 	state := NewState()
 	state.Set("__loop_iteration", 0)
-	_, err := g.Execute(context.Background(), state)
+	_, err = g.Execute(context.Background(), state)
 	require.NoError(t, err)
 
 	if n := callCount.Load(); n != 3 {
@@ -503,11 +504,12 @@ func TestExecuteWithLoopPluginUntilCondition(t *testing.T) {
 	})
 	require.NoError(t, bus.Register(loop))
 	require.NoError(t, bus.Start(context.Background()))
-	g.SetPluginBus(bus)
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
 
 	state := NewState()
 	state.Set("count", 0)
-	_, err := g.Execute(context.Background(), state)
+	_, err = g.Execute(context.Background(), state)
 	require.NoError(t, err)
 
 	v, _ := state.Get("count")
@@ -552,7 +554,8 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 
 	bus := runtime.NewPluginBus()
 	require.NoError(t, bus.Start(context.Background()))
-	g.SetPluginBus(bus)
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
 
 	var mu sync.Mutex
 	var gotEvents []string
@@ -644,9 +647,10 @@ func TestGraphCheckpointPlugin(t *testing.T) {
 	cp := runtime.NewCheckpointPlugin("ckpt", store)
 	require.NoError(t, bus.Register(cp))
 	require.NoError(t, bus.Start(context.Background()))
-	g.SetPluginBus(bus)
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
 
-	_, err := g.Execute(context.Background(), NewState())
+	_, err = g.Execute(context.Background(), NewState())
 	require.NoError(t, err)
 
 	// Verify checkpoint was saved for the graph execution.

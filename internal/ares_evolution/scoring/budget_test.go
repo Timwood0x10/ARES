@@ -230,7 +230,7 @@ func TestBudgetConcurrency(t *testing.T) {
 	expectedHits := goroutines * opsPerGoroutine
 	expectedFallbacks := goroutines * opsPerGoroutine
 
-	if used != int(max) {
+	if used != max {
 		t.Errorf("UsedLLMCalls = %d, want %d (budget should be exactly exhausted)", used, max)
 	}
 	if max != 100 {
