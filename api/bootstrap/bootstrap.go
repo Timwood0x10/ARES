@@ -77,9 +77,12 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		return nil, fmt.Errorf("bootstrap: create memory manager: %w", err)
 	}
 
-	evoSvc, err := evolution.NewService(cfg.Evolution)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap: create evolution service: %w", err)
+	var evoSvc *evolution.Service
+	if cfg.Evolution != nil {
+		evoSvc, err = evolution.NewService(cfg.Evolution)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create evolution service: %w", err)
+		}
 	}
 
 	arenaSvc := arena.NewService(cfg.ArenaInjector, eventStore)

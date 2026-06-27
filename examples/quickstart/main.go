@@ -19,7 +19,11 @@ func main() {
 	defer cancel()
 
 	// Create ARES with default configuration.
-	ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+	cfg := bootstrap.DefaultConfig()
+	// Disable evolution for quickstart (requires base strategy).
+	cfg.Evolution = nil
+
+	ares, err := bootstrap.New(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -31,19 +35,11 @@ func main() {
 	}
 	fmt.Println("✅ ARES started")
 
-	// Run genetic algorithm evolution for 5 generations.
-	result, err := ares.RunEvolution(ctx, 5)
-	if err != nil {
-		log.Printf("Evolution error: %v", err)
-	} else {
-		fmt.Printf("🧬 Evolution complete: best score=%.2f, generations=%d\n",
-			result.BestStrategy.Score, result.TotalGens)
-	}
-
 	// List runtime stats.
 	stats := ares.Runtime.Stats()
 	fmt.Printf("📊 Runtime: active=%d, restarts=%d\n",
 		stats.ActiveAgents, stats.TotalRestarts)
 
 	fmt.Println("✅ Quick start complete")
+	_ = ares // Use ares for further operations
 }
