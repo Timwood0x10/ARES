@@ -9,8 +9,11 @@ import (
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/ares_flight"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
 // ARES is the top-level container for all ARES modules.
@@ -23,6 +26,12 @@ type ARES struct {
 	Evolution *evolution.Service
 	// Arena provides chaos engineering.
 	Arena *arena.Service
+	// MCP provides MCP client management.
+	MCP *mcp.MCPManager
+	// Dashboard provides web dashboard.
+	Dashboard *dashboard.Orchestrator
+	// Flight provides flight recording.
+	Flight *flight.FlightRecorder
 	// EventStore provides event sourcing.
 	EventStore ares_events.EventStore
 }
@@ -33,6 +42,15 @@ type Config struct {
 	Evolution     *evolution.SystemConfig
 	Memory        *memory.MemoryConfig
 	ArenaInjector *arena.Injector
+	MCP           *mcp.MCPManagerConfig
+	Dashboard     *DashboardConfig
+	Flight        *flight.FlightRecorderConfig
+}
+
+// DashboardConfig holds dashboard configuration.
+type DashboardConfig struct {
+	// Enabled enables the dashboard.
+	Enabled bool
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -41,6 +59,7 @@ func DefaultConfig() *Config {
 		Runtime:   ares_runtime.DefaultConfig(),
 		Evolution: &evolution.SystemConfig{PopulationSize: 20, EliteCount: 3, MutationRate: 0.3},
 		Memory:    memory.DefaultMemoryConfig(),
+		Dashboard: &DashboardConfig{Enabled: false},
 	}
 }
 
@@ -65,11 +84,35 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	arenaSvc := arena.NewService(cfg.ArenaInjector, eventStore)
 
+	// MCP manager (optional).
+	var mcpMgr *mcp.MCPManager
+	if cfg.MCP != nil {
+		mcpMgr, err = mcp.NewMCPManager(cfg.MCP, nil)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create MCP manager: %w", err)
+		}
+	}
+
+	// Dashboard orchestrator (optional).
+	var dashOrch *dashboard.Orchestrator
+	if cfg.Dashboard != nil && cfg.Dashboard.Enabled {
+		dashOrch = dashboard.NewOrchestrator(nil, nil)
+	}
+
+	// Flight recorder (optional).
+	var flightRec *flight.FlightRecorder
+	if cfg.Flight != nil {
+		flightRec = flight.NewFlightRecorder(*cfg.Flight)
+	}
+
 	return &ARES{
 		Runtime:    rt,
 		Memory:     memMgr,
 		Evolution:  evoSvc,
 		Arena:      arenaSvc,
+		MCP:        mcpMgr,
+		Dashboard:  dashOrch,
+		Flight:     flightRec,
 		EventStore: eventStore,
 	}, nil
 }
@@ -93,6 +136,12 @@ func (a *ARES) Stop() error {
 	}
 	if a.Evolution != nil {
 		a.Evolution.Shutdown()
+	}
+	if a.MCP != nil {
+		a.MCP.Stop(context.Background())
+	}
+	if a.Flight != nil {
+		a.Flight.Stop()
 	}
 	return nil
 }
