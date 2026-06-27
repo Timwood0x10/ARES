@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -255,17 +254,17 @@ func (c *WSClient) ReadPump() {
 	defer func() {
 		c.hub.Unregister(c)
 		if err := c.conn.Close(); err != nil {
-			slog.Warn("ws: close connection failed", "error", err)
+			log.Warn("ws: close connection failed", "error", err)
 		}
 	}()
 
 	c.conn.SetReadLimit(4096)
 	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		slog.Warn("ws: set read deadline", "error", err)
+		log.Warn("ws: set read deadline", "error", err)
 	}
 	c.conn.SetPongHandler(func(string) error {
 		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			slog.Warn("ws: set read deadline", "error", err)
+			log.Warn("ws: set read deadline", "error", err)
 		}
 		return nil
 	})
@@ -312,7 +311,7 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 	defer func() {
 		ticker.Stop()
 		if err := c.conn.Close(); err != nil {
-			slog.Warn("ws: close connection failed", "error", err)
+			log.Warn("ws: close connection failed", "error", err)
 		}
 	}()
 
@@ -320,11 +319,11 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 		select {
 		case message, ok := <-c.send:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				slog.Warn("ws: set write deadline", "error", err)
+				log.Warn("ws: set write deadline", "error", err)
 			}
 			if !ok {
 				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-					slog.Warn("ws: write close message", "error", err)
+					log.Warn("ws: write close message", "error", err)
 				}
 				return
 			}
@@ -335,7 +334,7 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				slog.Warn("ws: set write deadline", "error", err)
+				log.Warn("ws: set write deadline", "error", err)
 			}
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return

@@ -3,7 +3,6 @@ package arena
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -38,10 +37,10 @@ type Service struct {
 // NewService creates a Service with the given injector and optional event store.
 func NewService(injector *Injector, store EventStore) *Service {
 	if injector == nil {
-		slog.Warn("NewService: nil injector")
+		log.Warn("NewService: nil injector")
 	}
 	if store == nil {
-		slog.Warn("NewService: nil event store")
+		log.Warn("NewService: nil event store")
 	}
 	return &Service{
 		injector: injector,
@@ -145,14 +144,14 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 	s.emitEvent(ctx, action, result)
 
 	if result.Success {
-		slog.Info("arena: action executed",
+		log.Info("arena: action executed",
 			"action_id", action.ID,
 			"type", action.Type,
 			"target", action.TargetID,
 			"duration", duration,
 		)
 	} else {
-		slog.Error("arena: action failed",
+		log.Error("arena: action failed",
 			"action_id", action.ID,
 			"type", action.Type,
 			"target", action.TargetID,
@@ -236,7 +235,7 @@ func (s *Service) emitEvent(ctx context.Context, action Action, result Result) {
 		"error":     result.Error,
 		"duration":  result.Duration.String(),
 	}) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", arenaStreamID)
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", arenaStreamID)
 	}
 }
 

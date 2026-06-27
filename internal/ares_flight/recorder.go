@@ -2,7 +2,6 @@ package flight
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -55,7 +54,7 @@ func (fr *FlightRecorder) Start(ctx context.Context) error {
 	}
 
 	fr.started = true
-	slog.Info("flight recorder started")
+	log.Info("flight recorder started")
 	return nil
 }
 
@@ -70,7 +69,7 @@ func (fr *FlightRecorder) Stop() {
 
 	fr.collector.Stop()
 	fr.started = false
-	slog.Info("flight recorder stopped")
+	log.Info("flight recorder stopped")
 }
 
 // Timeline returns the execution timeline.

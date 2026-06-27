@@ -3,7 +3,6 @@ package arena
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
 
@@ -135,7 +134,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 		defer cancel()
 	}
 
-	slog.Info("arena: running scenario report",
+	log.Info("arena: running scenario report",
 		"name", scenario.Name,
 		"actions", len(scenario.Actions),
 		"warmup", cfg.Warmup,
@@ -144,12 +143,12 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 
 	// Warn about configured fields that are not yet implemented.
 	if cfg.ParallelActions {
-		slog.Warn("arena: parallel_actions is configured but not yet supported; actions will run sequentially",
+		log.Warn("arena: parallel_actions is configured but not yet supported; actions will run sequentially",
 			"name", scenario.Name,
 		)
 	}
 	if cfg.MaxConcurrent > 0 {
-		slog.Warn("arena: max_concurrent is configured but not yet supported; actions will run sequentially",
+		log.Warn("arena: max_concurrent is configured but not yet supported; actions will run sequentially",
 			"name", scenario.Name,
 			"max_concurrent", cfg.MaxConcurrent,
 		)
@@ -162,7 +161,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 		}
 	}
 	if hasDependsOn {
-		slog.Warn("arena: depends_on is configured on one or more actions but not yet enforced; execution order follows action list order",
+		log.Warn("arena: depends_on is configured on one or more actions but not yet enforced; execution order follows action list order",
 			"name", scenario.Name,
 		)
 	}
@@ -189,7 +188,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				slog.Warn("arena: scenario cancelled during delay",
+				log.Warn("arena: scenario cancelled during delay",
 					"name", scenario.Name,
 					"step", i,
 				)
@@ -212,7 +211,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 				Duration: 0,
 			}
 			results = append(results, result)
-			slog.Error("arena: scenario action validation failed",
+			log.Error("arena: scenario action validation failed",
 				"name", scenario.Name,
 				"step", i,
 				"label", sa.Label,
@@ -228,7 +227,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 		result := service.Execute(ctx, sa.Action)
 		results = append(results, result)
 
-		slog.Info("arena: scenario step completed",
+		log.Info("arena: scenario step completed",
 			"name", scenario.Name,
 			"step", i,
 			"label", sa.Label,
@@ -238,7 +237,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 
 		// Stop on error if configured.
 		if cfg.StopOnError && !result.Success {
-			slog.Warn("arena: stopping scenario due to stop_on_error",
+			log.Warn("arena: stopping scenario due to stop_on_error",
 				"name", scenario.Name,
 				"step", i,
 			)
@@ -263,7 +262,7 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 	report.Score = CalculateScoreV1(service.Stats(), service.calculateAvgRecoveryTime(nil))
 	report.checkVerified(scenario)
 
-	slog.Info("arena: scenario report completed",
+	log.Info("arena: scenario report completed",
 		"name", scenario.Name,
 		"passed", report.Passed,
 		"failed", report.Failed,
@@ -312,7 +311,7 @@ func (r *ScenarioReport) checkVerified(scenario Scenario) {
 // Deprecated: Use RunScenarioReport for structured results.
 // Kept for backward compatibility.
 func RunScenario(ctx context.Context, service *Service, scenario Scenario) ([]Result, error) {
-	slog.Warn("RunScenario is deprecated, use RunScenarioReport instead")
+	log.Warn("RunScenario is deprecated, use RunScenarioReport instead")
 
 	report, err := RunScenarioReport(ctx, service, scenario)
 	if err != nil {

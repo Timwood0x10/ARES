@@ -11,7 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -358,7 +357,7 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(data); err != nil {
-		slog.Debug("dashboard: failed to write index.html", "error", err)
+		log.Debug("dashboard: failed to write index.html", "error", err)
 	}
 }
 
@@ -680,7 +679,7 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial connection event.
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339)); err != nil {
-		slog.Warn("sse write failed", "error", err)
+		log.Warn("sse write failed", "error", err)
 	}
 	flusher.Flush()
 
@@ -693,13 +692,13 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 			}
 			data, _ := json.Marshal(h)
 			if _, err := fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data); err != nil {
-				slog.Warn("sse write failed", "error", err)
+				log.Warn("sse write failed", "error", err)
 			}
 			flusher.Flush()
 		}
 	}
 	if _, err := fmt.Fprintf(w, "event: done\ndata: {}\n\n"); err != nil {
-		slog.Warn("sse write failed", "error", err)
+		log.Warn("sse write failed", "error", err)
 	}
 	flusher.Flush()
 }
@@ -903,7 +902,7 @@ func withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("api: panic recovered", "path", r.URL.Path, "recover", rec)
+				log.Error("api: panic recovered", "path", r.URL.Path, "recover", rec)
 				writeJSON(w, http.StatusInternalServerError, errResp("internal server error"))
 			}
 		}()

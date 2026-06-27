@@ -3,7 +3,6 @@ package ares_mcp
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,7 +83,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 	// Perform initialize handshake.
 	if err := c.initialize(); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
-			slog.Warn("mcp: close after init failure", "error", closeErr)
+			log.Warn("mcp: close after init failure", "error", closeErr)
 		}
 		return fmt.Errorf("initialize: %w", err)
 	}
@@ -94,7 +93,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 	// Discover initial tools.
 	if _, err := c.ListTools(ctx); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
-			slog.Warn("mcp: close after list tools failure", "error", closeErr)
+			log.Warn("mcp: close after list tools failure", "error", closeErr)
 		}
 		return fmt.Errorf("list tools: %w", err)
 	}
@@ -212,12 +211,12 @@ func (c *MCPClient) Close() error {
 
 	if c.transport != nil {
 		if err := c.transport.Close(); err != nil {
-			slog.Warn("mcp: transport close error", "server", c.serverName, "error", err)
+			log.Warn("mcp: transport close error", "server", c.serverName, "error", err)
 		}
 	}
 
 	if err := c.eg.Wait(); err != nil && c.ctx.Err() == nil {
-		slog.Error("mcp: receive loop error", "server", c.serverName, "error", err)
+		log.Error("mcp: receive loop error", "server", c.serverName, "error", err)
 	}
 
 	// Close all pending channels.

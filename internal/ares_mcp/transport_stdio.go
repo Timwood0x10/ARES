@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"sync"
@@ -107,10 +106,10 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		defer t.stderrWg.Done()
 		scanner := bufio.NewScanner(t.stderr)
 		for scanner.Scan() {
-			slog.Debug("mcp: subprocess stderr", "command", t.config.Command, "line", scanner.Text())
+			log.Debug("mcp: subprocess stderr", "command", t.config.Command, "line", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
-			slog.Warn("mcp: error reading subprocess stderr", "command", t.config.Command, "error", err)
+			log.Warn("mcp: error reading subprocess stderr", "command", t.config.Command, "error", err)
 		}
 	}()
 

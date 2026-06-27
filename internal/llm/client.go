@@ -9,7 +9,6 @@ import (
 	goerrors "errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -382,14 +381,14 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close response body: ", "error", err)
+			log.Error("failed to close response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter error (status %d): %s", resp.StatusCode, string(body))}
 	}
@@ -455,14 +454,14 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close response body: ", "error", err)
+			log.Error("failed to close response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		return "", &HTTPError{
 			StatusCode: resp.StatusCode,
@@ -526,14 +525,14 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string) (string, 
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close anthropic response body: ", "error", err)
+			log.Error("failed to close anthropic response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read anthropic error response body", "error", readErr)
+			log.Warn("llm: failed to read anthropic error response body", "error", readErr)
 		}
 		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic error (status %d): %s", resp.StatusCode, string(body))}
 	}
@@ -783,10 +782,10 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("ollama stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
@@ -797,7 +796,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -876,7 +875,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
+			log.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
 		}
 		_ = resp.Body.Close()
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic stream error (status %d): %s", resp.StatusCode, string(body))}
@@ -888,7 +887,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close anthropic stream response body", "error", err)
+				log.Error("Failed to close anthropic stream response body", "error", err)
 			}
 		}()
 
@@ -910,7 +909,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 			}
 
 			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				slog.Debug("skipping non-JSON SSE line in anthropic stream", "line", line)
+				log.Debug("skipping non-JSON SSE line in anthropic stream", "line", line)
 				continue
 			}
 
@@ -984,10 +983,10 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
@@ -998,7 +997,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -1025,7 +1024,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal([]byte(data), &result); err != nil {
-				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				log.Warn("Failed to unmarshal stream chunk", "error", err)
 				continue
 			}
 

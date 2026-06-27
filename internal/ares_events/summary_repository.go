@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 	"time"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
@@ -111,7 +110,7 @@ func (r *PgSummaryRepository) FindByStreamID(ctx context.Context, streamID strin
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("close event summaries rows failed", "err", err)
+			log.Error("close event summaries rows failed", "err", err)
 		}
 	}()
 
@@ -150,7 +149,7 @@ func (r *PgSummaryRepository) FindByAgentAndTask(ctx context.Context, agentID, t
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("close event summaries rows failed", "err", err)
+			log.Error("close event summaries rows failed", "err", err)
 		}
 	}()
 
@@ -189,7 +188,7 @@ func (r *PgSummaryRepository) FindByAgentID(ctx context.Context, agentID string)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("close event summaries rows failed", "err", err)
+			log.Error("close event summaries rows failed", "err", err)
 		}
 	}()
 

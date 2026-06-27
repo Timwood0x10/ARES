@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -126,7 +125,7 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 	// so this defer is the sole cleanup point for resp.Body.
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
 	}()
 
@@ -229,7 +228,7 @@ func (t *SSETransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
 	}()
 
@@ -275,7 +274,7 @@ func (t *SSETransport) Close() error {
 	// Context cancellation unblocks the blocking ReadString in receiveLoop,
 	// and the deferred resp.Body.Close() inside receiveLoop releases the resource.
 	if err := t.eg.Wait(); err != nil {
-		slog.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
+		log.Error("mcp: sse receive loop error", "url", t.config.URL, "error", err)
 	}
 
 	return nil

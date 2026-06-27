@@ -22,19 +22,19 @@ type ArenaConfig struct {
 type FaultType string
 
 const (
-	FaultKillLeader        FaultType = "kill_leader"
-	FaultKillAgent         FaultType = "kill_agent"
-	FaultRemoveNode        FaultType = "remove_node"
-	FaultRemoveEdge        FaultType = "remove_edge"
-	FaultPauseAgent        FaultType = "pause_agent"
-	FaultResumeAgent       FaultType = "resume_agent"
-	FaultSlowAgent         FaultType = "slow_agent"
-	FaultKillOrchestrator  FaultType = "kill_orchestrator"
-	FaultNetworkPartition  FaultType = "network_partition"
-	FaultToolTimeout       FaultType = "tool_timeout"
-	FaultMemoryCorrupt     FaultType = "memory_corrupt"
-	FaultMCPDisconnect     FaultType = "mcp_disconnect"
-	FaultLLMFailure        FaultType = "llm_failure"
+	FaultKillLeader       FaultType = "kill_leader"
+	FaultKillAgent        FaultType = "kill_agent"
+	FaultRemoveNode       FaultType = "remove_node"
+	FaultRemoveEdge       FaultType = "remove_edge"
+	FaultPauseAgent       FaultType = "pause_agent"
+	FaultResumeAgent      FaultType = "resume_agent"
+	FaultSlowAgent        FaultType = "slow_agent"
+	FaultKillOrchestrator FaultType = "kill_orchestrator"
+	FaultNetworkPartition FaultType = "network_partition"
+	FaultToolTimeout      FaultType = "tool_timeout"
+	FaultMemoryCorrupt    FaultType = "memory_corrupt"
+	FaultMCPDisconnect    FaultType = "mcp_disconnect"
+	FaultLLMFailure       FaultType = "llm_failure"
 )
 
 // ResilienceScore holds the resilience evaluation result.

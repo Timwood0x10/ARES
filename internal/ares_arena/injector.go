@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -64,7 +63,7 @@ func (in *Injector) KillAgent(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: killing agent", "agent_id", id)
+	log.Warn("arena: killing agent", "agent_id", id)
 	if err := in.ares_runtime.StopAgent(ctx, id); err != nil {
 		return fmt.Errorf("arena: kill agent %s: %w", id, err)
 	}
@@ -86,7 +85,7 @@ func (in *Injector) KillOrchestrator(ctx context.Context) (string, error) {
 	if orchID == "" {
 		return "", ErrOrchestratorNotFound
 	}
-	slog.Warn("arena: assassinating orchestrator", "agent_id", orchID)
+	log.Warn("arena: assassinating orchestrator", "agent_id", orchID)
 	if err := in.ares_runtime.StopAgent(ctx, orchID); err != nil {
 		return "", fmt.Errorf("arena: kill orchestrator %s: %w", orchID, err)
 	}
@@ -98,7 +97,7 @@ func (in *Injector) NetworkPartition(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: partitioning network for agent", "agent_id", id)
+	log.Warn("arena: partitioning network for agent", "agent_id", id)
 	if err := in.ares_runtime.PartitionNetwork(ctx, id); err != nil {
 		return fmt.Errorf("arena: network partition %s: %w", id, err)
 	}
@@ -120,7 +119,7 @@ func (in *Injector) KillLeader(ctx context.Context) (string, error) {
 	if leaderID == "" {
 		return "", ErrLeaderNotFound
 	}
-	slog.Warn("arena: assassinating leader", "agent_id", leaderID)
+	log.Warn("arena: assassinating leader", "agent_id", leaderID)
 	if err := in.ares_runtime.StopAgent(ctx, leaderID); err != nil {
 		return "", fmt.Errorf("arena: kill leader %s: %w", leaderID, err)
 	}
@@ -132,7 +131,7 @@ func (in *Injector) RemoveNode(ctx context.Context, id string) error {
 	if in.dag == nil {
 		return ErrDAGNil
 	}
-	slog.Warn("arena: removing node from DAG", "node_id", id)
+	log.Warn("arena: removing node from DAG", "node_id", id)
 	if err := in.dag.RemoveNode(ctx, id); err != nil {
 		return fmt.Errorf("arena: remove node %s: %w", id, err)
 	}
@@ -144,7 +143,7 @@ func (in *Injector) RemoveEdge(ctx context.Context, from, to string) error {
 	if in.dag == nil {
 		return ErrDAGNil
 	}
-	slog.Warn("arena: removing edge from DAG", "from", from, "to", to)
+	log.Warn("arena: removing edge from DAG", "from", from, "to", to)
 	if err := in.dag.RemoveEdge(ctx, from, to); err != nil {
 		return fmt.Errorf("arena: remove edge %s->%s: %w", from, to, err)
 	}
@@ -156,7 +155,7 @@ func (in *Injector) PauseAgent(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: pausing agent", "agent_id", id)
+	log.Warn("arena: pausing agent", "agent_id", id)
 	if err := in.ares_runtime.PauseAgent(ctx, id); err != nil {
 		return fmt.Errorf("arena: pause agent %s: %w", id, err)
 	}
@@ -168,7 +167,7 @@ func (in *Injector) ResumeAgent(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: resuming agent", "agent_id", id)
+	log.Warn("arena: resuming agent", "agent_id", id)
 	if err := in.ares_runtime.ResumeAgent(ctx, id); err != nil {
 		return fmt.Errorf("arena: resume agent %s: %w", id, err)
 	}
@@ -180,7 +179,7 @@ func (in *Injector) SlowAgent(ctx context.Context, id string, delay time.Duratio
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: slowing agent", "agent_id", id, "delay", delay)
+	log.Warn("arena: slowing agent", "agent_id", id, "delay", delay)
 	if err := in.ares_runtime.SlowAgent(ctx, id, delay); err != nil {
 		return fmt.Errorf("arena: slow agent %s: %w", id, err)
 	}
@@ -192,7 +191,7 @@ func (in *Injector) ToolTimeout(ctx context.Context, id string, timeout time.Dur
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: injecting tool timeout", "agent_id", id, "timeout", timeout)
+	log.Warn("arena: injecting tool timeout", "agent_id", id, "timeout", timeout)
 	if err := in.ares_runtime.ToolTimeout(ctx, id, timeout); err != nil {
 		return fmt.Errorf("arena: tool timeout %s: %w", id, err)
 	}
@@ -204,7 +203,7 @@ func (in *Injector) CorruptMemory(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: corrupting memory", "agent_id", id)
+	log.Warn("arena: corrupting memory", "agent_id", id)
 	if err := in.ares_runtime.CorruptMemory(ctx, id); err != nil {
 		return fmt.Errorf("arena: corrupt memory %s: %w", id, err)
 	}
@@ -216,7 +215,7 @@ func (in *Injector) DisconnectMCP(ctx context.Context, id string) error {
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: disconnecting MCP", "agent_id", id)
+	log.Warn("arena: disconnecting MCP", "agent_id", id)
 	if err := in.ares_runtime.DisconnectMCP(ctx, id); err != nil {
 		return fmt.Errorf("arena: disconnect MCP %s: %w", id, err)
 	}
@@ -228,7 +227,7 @@ func (in *Injector) InjectLLMFailure(ctx context.Context, id string, errType str
 	if in.ares_runtime == nil {
 		return ErrRuntimeNil
 	}
-	slog.Warn("arena: injecting LLM failure", "agent_id", id, "error_type", errType)
+	log.Warn("arena: injecting LLM failure", "agent_id", id, "error_type", errType)
 	if err := in.ares_runtime.InjectLLMFailure(ctx, id, errType); err != nil {
 		return fmt.Errorf("arena: inject LLM failure %s: %w", id, err)
 	}

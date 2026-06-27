@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -101,7 +100,7 @@ func (t *StdioServerTransport) Start(ctx context.Context) error {
 		}
 	})
 
-	slog.Debug("mcp-server: stdio transport started")
+	log.Debug("mcp-server: stdio transport started")
 	return nil
 }
 
@@ -167,7 +166,7 @@ func (t *StdioServerTransport) Close() error {
 		// Note: cannot interrupt a blocking scanner.Scan() via context.
 		// The read goroutine will exit on next Scan() return (stdin EOF/data).
 		// Do not block on eg.Wait() here; the goroutine is self-cleaning.
-		slog.Debug("mcp-server: stdio transport closed")
+		log.Debug("mcp-server: stdio transport closed")
 	}
 
 	return nil
@@ -238,14 +237,14 @@ func (t *SSEServerTransport) Start(ctx context.Context) error {
 
 	t.eg.Go(func() error {
 		if err := t.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("mcp-server: sse server error", "error", err)
+			log.Error("mcp-server: sse server error", "error", err)
 			return err
 		}
 		return nil
 	})
 
 	t.started = true
-	slog.Info("mcp-server: sse transport started", "addr", t.addr)
+	log.Info("mcp-server: sse transport started", "addr", t.addr)
 	return nil
 }
 
@@ -306,7 +305,7 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 			}
 			data, err := json.Marshal(msg)
 			if err != nil {
-				slog.Warn("mcp-server: sse marshal error", "error", err)
+				log.Warn("mcp-server: sse marshal error", "error", err)
 				continue
 			}
 			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(data))
@@ -422,7 +421,7 @@ func (t *SSEServerTransport) Close() error {
 		ctx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if err := t.server.Shutdown(ctx); err != nil {
-			slog.Warn("mcp-server: sse shutdown error", "error", err)
+			log.Warn("mcp-server: sse shutdown error", "error", err)
 		}
 	}
 
@@ -439,7 +438,7 @@ func (t *SSEServerTransport) Close() error {
 
 	close(t.sseClients)
 
-	slog.Debug("mcp-server: sse transport closed")
+	log.Debug("mcp-server: sse transport closed")
 	return nil
 }
 

@@ -2,7 +2,6 @@ package ares_events
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,7 +62,7 @@ func Emit(ctx context.Context, store EventAppender, streamID string, eventType E
 		Timestamp:  time.Now(),
 	}
 	if err := store.Append(ctx, streamID, []*Event{event}, 0); err != nil {
-		slog.Warn("events: emit failed",
+		log.Warn("events: emit failed",
 			"module", moduleName,
 			"stream_id", streamID,
 			"type", eventType,

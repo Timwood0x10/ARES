@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 
@@ -48,7 +47,7 @@ func (b *EventBridge) Stop() {
 		b.cancel()
 	}
 	if err := b.eg.Wait(); err != nil {
-		slog.Error("dashboard: event bridge forward loop error", "error", err)
+		log.Error("dashboard: event bridge forward loop error", "error", err)
 	}
 }
 

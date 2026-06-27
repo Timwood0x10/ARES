@@ -2,7 +2,6 @@ package ares_events
 
 import (
 	"context"
-	"log/slog"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
@@ -48,7 +47,7 @@ func (s *PgTrimStore) TrimBefore(ctx context.Context, streamID string, endVersio
 		return 0, apperrors.Wrap(err, "get rows affected after trim")
 	}
 	if removed > 0 {
-		slog.Info("event store: trimmed old events",
+		log.Info("event store: trimmed old events",
 			"stream_id", streamID,
 			"up_to_version", endVersion,
 			"removed", removed,
@@ -102,7 +101,7 @@ func (s *MemoryTrimStore) TrimBefore(_ context.Context, streamID string, endVers
 		}
 		s.events = kept
 
-		slog.Info("memory event store: trimmed old events",
+		log.Info("memory event store: trimmed old events",
 			"stream_id", streamID,
 			"up_to_version", endVersion,
 			"removed", removed,

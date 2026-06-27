@@ -3,7 +3,6 @@ package ares_events
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -90,7 +89,7 @@ func (c *Compactor) CompactAll(ctx context.Context, knownStreamIDs []string) (in
 	for _, streamID := range knownStreamIDs {
 		didCompact, err := c.CheckAndCompact(ctx, streamID)
 		if err != nil {
-			slog.Error("compaction: failed for stream", "stream_id", streamID, "error", err)
+			log.Error("compaction: failed for stream", "stream_id", streamID, "error", err)
 			continue
 		}
 		if didCompact {
@@ -131,7 +130,7 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 		return false, fmt.Errorf("save event summary: %w", err)
 	}
 
-	slog.Info("compaction: summary created",
+	log.Info("compaction: summary created",
 		"stream_id", streamID,
 		"summary_id", summary.ID,
 		"events_compacted", summary.EventCount,
@@ -141,9 +140,9 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 	// Optionally trim compacted events from the live store.
 	if c.config.EnableTrimming && c.trimStore != nil {
 		if removed, err := c.trimStore.TrimBefore(ctx, streamID, summary.EndVersion); err != nil {
-			slog.Warn("compaction: failed to trim old events", "error", err)
+			log.Warn("compaction: failed to trim old events", "error", err)
 		} else if removed > 0 {
-			slog.Info("compaction: trimmed events from live store",
+			log.Info("compaction: trimmed events from live store",
 				"stream_id", streamID,
 				"removed", removed,
 			)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"sync"
 	"time"
@@ -313,7 +312,7 @@ func (s *MCPServer) Serve(ctx context.Context) error {
 		return fmt.Errorf("start transport: %w", err)
 	}
 
-	slog.Info("mcp-server: serving",
+	log.Info("mcp-server: serving",
 		"name", s.info.Name,
 		"version", s.info.Version,
 	)
@@ -326,7 +325,7 @@ func (s *MCPServer) Serve(ctx context.Context) error {
 
 	if err := eg.Wait(); err != nil {
 		if ctx.Err() != nil {
-			slog.Info("mcp-server: shutdown complete")
+			log.Info("mcp-server: shutdown complete")
 			return nil
 		}
 		return err
@@ -349,7 +348,7 @@ func (s *MCPServer) serveLoop(ctx context.Context) error {
 		resp := s.dispatch(msg)
 		if resp != nil {
 			if sendErr := s.transport.Send(ctx, resp); sendErr != nil {
-				slog.Warn("mcp-server: failed to send response",
+				log.Warn("mcp-server: failed to send response",
 					"method", msg.Method,
 					"error", sendErr,
 				)
@@ -405,9 +404,9 @@ func (s *MCPServer) handleRequest(msg *JSONRPCMessage) *JSONRPCMessage {
 func (s *MCPServer) handleNotification(msg *JSONRPCMessage) {
 	switch msg.Method {
 	case NotificationInitialized:
-		slog.Debug("mcp-server: received initialized notification")
+		log.Debug("mcp-server: received initialized notification")
 	default:
-		slog.Debug("mcp-server: unknown notification", "method", msg.Method)
+		log.Debug("mcp-server: unknown notification", "method", msg.Method)
 	}
 }
 

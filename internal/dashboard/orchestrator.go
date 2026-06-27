@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -289,7 +288,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 
 		if agentCtx.Err() != nil && status != "completed" && o.baseCtx.Err() == nil {
 			if resurrectionCnt >= maxResurrections {
-				slog.Warn(
+				log.Warn(
 					"orchestrator: agent exceeded max resurrections",
 					"id", id,
 					"name", req.Name,
@@ -302,7 +301,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 				return
 			}
 
-			slog.Info(
+			log.Info(
 				"orchestrator: agent killed, resurrecting",
 				"id", id,
 				"name", req.Name,
@@ -316,7 +315,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 			// Increment resurrection counter for the next attempt.
 			req.ResumeFrom = id
 			if _, err := o.CreateAgent(req); err != nil {
-				slog.Error(
+				log.Error(
 					"orchestrator: resurrection failed",
 					"id", id,
 					"error", err,
@@ -373,7 +372,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 
 	o.updateStatus(id, "running", 10, "")
 	o.emitEvent(id, "agent.started", map[string]any{"name": req.Name, "tool": req.MCPTool})
-	slog.Info("orchestrator: agent started", "id", id, "name", req.Name, "tool", req.MCPTool)
+	log.Info("orchestrator: agent started", "id", id, "name", req.Name, "tool", req.MCPTool)
 
 	// Phase 1: MCP data gathering (single or multi-step).
 	o.updateStatus(id, "gathering data...", 20, "")
@@ -387,7 +386,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		startStep = completedSteps
 		resumeSummary = summary
 		if startStep > 0 {
-			slog.Info("orchestrator: resuming agent from step",
+			log.Info("orchestrator: resuming agent from step",
 				"id", id, "resume_from", req.ResumeFrom, "start_step", startStep+1, "total_steps", len(req.Steps))
 			o.updateStatus(id, fmt.Sprintf("resuming from step %d/%d", startStep+1, len(req.Steps)), 20, "")
 			o.emitEvent(id, "agent.resumed", map[string]any{
@@ -406,7 +405,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		prevData := o.loadPreviousData(ctx, req.ResumeFrom)
 		if prevData != "" {
 			rawData = prevData
-			slog.Info("orchestrator: resuming with previous MCP data", "id", id, "data_len", len(rawData))
+			log.Info("orchestrator: resuming with previous MCP data", "id", id, "data_len", len(rawData))
 		}
 	}
 
@@ -502,7 +501,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	}
 	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": storedData})
 	o.updateStatus(id, "analyzing with LLM...", 50, "")
-	slog.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
+	log.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
 
 	// Phase 2: LLM analysis.
 	// Prepend resume context to the prompt so the LLM knows what was already done.
@@ -559,7 +558,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		"duration": result.Duration,
 	})
 
-	slog.Info("orchestrator: agent completed", "id", id, "duration", result.Duration)
+	log.Info("orchestrator: agent completed", "id", id, "duration", result.Duration)
 	o.emitEvent(id, "agent.completed", map[string]any{"duration": result.Duration, "analysis_len": len(analysis)})
 
 	// Broadcast completion.
@@ -585,7 +584,7 @@ func (o *Orchestrator) llmGenerateStreaming(ctx context.Context, agentID, prompt
 			return o.consumeStream(ctx, agentID, ch)
 		}
 		// Streaming init failed — fall through to blocking call.
-		slog.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
+		log.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
 	}
 	return o.llm.Generate(ctx, prompt)
 }
@@ -682,7 +681,7 @@ func (o *Orchestrator) failAgent(id string, err error) {
 		fr.Diagnostics().Record(flight.AutoDiagnose(id, "", err, duration))
 	}
 
-	slog.Error("orchestrator: agent failed", "id", id, "error", err)
+	log.Error("orchestrator: agent failed", "id", id, "error", err)
 	o.emitEvent(id, "agent.failed", map[string]any{"error": err.Error()})
 
 	hub := o.getHub()
@@ -701,7 +700,7 @@ func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]
 		return
 	}
 	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), "dashboard", payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }
 
@@ -795,7 +794,7 @@ func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID s
 		Limit:     10000,
 	})
 	if err != nil {
-		slog.Warn("orchestrator: failed to read resume ares_events", "agent", previousAgentID, "error", err)
+		log.Warn("orchestrator: failed to read resume ares_events", "agent", previousAgentID, "error", err)
 		return 0, ""
 	}
 

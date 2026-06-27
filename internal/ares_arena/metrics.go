@@ -1,7 +1,6 @@
 package arena
 
 import (
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -78,7 +77,7 @@ func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bo
 // RecordRecovery records a recovery duration sample.
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
-	slog.Warn("MetricsCollector.RecordRecovery is deprecated, use RecordActionResult instead")
+	log.Warn("MetricsCollector.RecordRecovery is deprecated, use RecordActionResult instead")
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.recoveries = append(mc.recoveries, d)
@@ -87,7 +86,7 @@ func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
 // RecordFailover records a failover event.
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordFailover() {
-	slog.Warn("MetricsCollector.RecordFailover is deprecated, use RecordActionResult instead")
+	log.Warn("MetricsCollector.RecordFailover is deprecated, use RecordActionResult instead")
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.failoverCount++
@@ -96,7 +95,7 @@ func (mc *MetricsCollector) RecordFailover() {
 // RecordConsistency records a data consistency rate sample (0-100).
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordConsistency(rate float64) {
-	slog.Warn("MetricsCollector.RecordConsistency is deprecated, use RecordActionResult instead")
+	log.Warn("MetricsCollector.RecordConsistency is deprecated, use RecordActionResult instead")
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.consistencySamples = append(mc.consistencySamples, rate)

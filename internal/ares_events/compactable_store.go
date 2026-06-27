@@ -2,7 +2,6 @@ package ares_events
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -160,7 +159,7 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	// Get version outside the lock to avoid holding mu during I/O.
 	version, err := s.StreamVersion(ctx, streamID)
 	if err != nil {
-		slog.Debug("compaction: failed to get version", "stream_id", streamID, "error", err)
+		log.Debug("compaction: failed to get version", "stream_id", streamID, "error", err)
 		return
 	}
 
@@ -177,7 +176,7 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 
 	didCompact, err := s.compactor.CheckAndCompact(ctx, streamID)
 	if err != nil {
-		slog.Error("compaction: automatic compaction failed",
+		log.Error("compaction: automatic compaction failed",
 			"stream_id", streamID,
 			"error", err,
 		)
@@ -189,13 +188,13 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 		if err == nil && len(summaries) > 0 {
 			latest := summaries[len(summaries)-1]
 			if _, trimErr := s.trimStore.TrimBefore(ctx, streamID, latest.EndVersion); trimErr != nil {
-				slog.Warn("compaction: post-compaction trim failed", "error", trimErr)
+				log.Warn("compaction: post-compaction trim failed", "error", trimErr)
 			}
 		}
 	}
 
 	if didCompact {
-		slog.Info("compaction: automatic compaction completed",
+		log.Info("compaction: automatic compaction completed",
 			"stream_id", streamID,
 			"current_version", version,
 		)

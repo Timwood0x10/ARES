@@ -3,7 +3,6 @@ package ares_mcp
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -81,7 +80,7 @@ func (m *MCPManager) Start(ctx context.Context) error {
 		}
 
 		if err := m.ConnectServer(ctx, sc.Name); err != nil {
-			slog.Error("mcp: failed to connect to server", "server", sc.Name, "error", err)
+			log.Error("mcp: failed to connect to server", "server", sc.Name, "error", err)
 		}
 	}
 
@@ -96,7 +95,7 @@ func (m *MCPManager) Stop(_ context.Context) error {
 	for name, mc := range m.clients {
 		m.unregisterTools(mc)
 		if err := mc.client.Close(); err != nil {
-			slog.Warn("mcp: failed to close client", "server", name, "error", err)
+			log.Warn("mcp: failed to close client", "server", name, "error", err)
 		}
 		delete(m.clients, name)
 	}
@@ -130,7 +129,7 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 
 	onChange := func() {
 		if err := m.RefreshTools(ctx, name); err != nil {
-			slog.Warn("mcp: failed to refresh tools", "server", name, "error", err)
+			log.Warn("mcp: failed to refresh tools", "server", name, "error", err)
 		}
 	}
 
@@ -178,7 +177,7 @@ func (m *MCPManager) DisconnectServer(_ context.Context, name string) error {
 
 	m.unregisterTools(mc)
 	if err := mc.client.Close(); err != nil {
-		slog.Warn("mcp: failed to close client", "server", name, "error", err)
+		log.Warn("mcp: failed to close client", "server", name, "error", err)
 	}
 	delete(m.clients, name)
 
@@ -293,7 +292,7 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 func (m *MCPManager) unregisterTools(mc *managedClient) {
 	for _, name := range mc.tools {
 		if err := m.registry.Unregister(name); err != nil {
-			slog.Warn("mcp: failed to unregister tool", "tool", name, "error", err)
+			log.Warn("mcp: failed to unregister tool", "tool", name, "error", err)
 		}
 	}
 	mc.tools = nil

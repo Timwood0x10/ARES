@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -68,7 +67,7 @@ func (s *PostgresEventStore) Append(
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
-				slog.Warn("failed to rollback event append transaction", "error", rbErr)
+				log.Warn("failed to rollback event append transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -242,7 +241,7 @@ func (s *PostgresEventStore) queryEvents(
 	}
 	defer func() {
 		if closeErr := mr.Close(); closeErr != nil {
-			slog.Warn("failed to close event query rows", "error", closeErr)
+			log.Warn("failed to close event query rows", "error", closeErr)
 		}
 	}()
 
@@ -390,7 +389,7 @@ func (s *PostgresEventStore) pollEvents(
 		case <-ticker.C:
 			newCursor, err := s.pollOnce(ctx, filter, cursor, ch)
 			if err != nil {
-				slog.Error("event subscription poll failed", "error", err)
+				log.Error("event subscription poll failed", "error", err)
 				continue
 			}
 			if !newCursor.IsZero() {

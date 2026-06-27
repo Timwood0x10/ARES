@@ -1,7 +1,6 @@
 package arena
 
 import (
-	"log/slog"
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
@@ -17,7 +16,7 @@ type FlightBridge struct {
 // NewFlightBridge creates a new bridge between arena and flight recorder.
 func NewFlightBridge(recorder *flight.FlightRecorder) *FlightBridge {
 	if recorder == nil {
-		slog.Warn("NewFlightBridge: nil recorder, flight recording disabled")
+		log.Warn("NewFlightBridge: nil recorder, flight recording disabled")
 	}
 	return &FlightBridge{recorder: recorder}
 }

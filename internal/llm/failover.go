@@ -4,7 +4,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -81,7 +80,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 			if i == 0 {
 				return nil, fmt.Errorf("create primary LLM client: %w", err)
 			}
-			slog.Warn("FailoverClient: failed to create fallback client, skipping",
+			log.Warn("FailoverClient: failed to create fallback client, skipping",
 				"index", i,
 				"model", cfg.Model,
 				"provider", cfg.Provider,
@@ -110,7 +109,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 		opt(fc)
 	}
 
-	slog.Info("FailoverClient created",
+	log.Info("FailoverClient created",
 		"total_clients", len(clients),
 		"fallback_count", len(clients)-1,
 		"primary_model", clients[0].GetModel(),
@@ -191,7 +190,7 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
-			slog.Debug("FailoverClient: skipping cooled-down provider",
+			log.Debug("FailoverClient: skipping cooled-down provider",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 			)
@@ -212,13 +211,13 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		fc.markCooldown(key)
 
 		if isRateLimitError(err) {
-			slog.Warn("FailoverClient: rate limited, cooling down",
+			log.Warn("FailoverClient: rate limited, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
 			)
 		} else {
-			slog.Warn("FailoverClient: provider failed, cooling down",
+			log.Warn("FailoverClient: provider failed, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
@@ -247,7 +246,7 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
-			slog.Debug("FailoverClient: skipping cooled-down provider (stream)",
+			log.Debug("FailoverClient: skipping cooled-down provider (stream)",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 			)
@@ -265,13 +264,13 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		fc.markCooldown(key)
 
 		if isRateLimitError(err) {
-			slog.Warn("FailoverClient: rate limited on stream, cooling down",
+			log.Warn("FailoverClient: rate limited on stream, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
 			)
 		} else {
-			slog.Warn("FailoverClient: provider failed on stream, cooling down",
+			log.Warn("FailoverClient: provider failed on stream, cooling down",
 				"provider", client.GetProvider(),
 				"model", client.GetModel(),
 				"cooldown", cd,
