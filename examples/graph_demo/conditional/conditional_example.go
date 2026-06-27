@@ -7,14 +7,14 @@ import (
 	"log"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service/graph"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/workflow/graphservice"
 )
 
 func main() {
 	// Create graph service
-	service, err := graph.NewService(&graph.Config{
+	service, err := graphservice.NewService(&graphservice.Config{
 		RequestTimeout: 30 * time.Second,
 		Tracer:         ares_observability.NewLogTracer(nil),
 	})
@@ -83,7 +83,7 @@ func main() {
 	mustOp(g.Start("check_status"))
 
 	// Execute graph
-	request := &graph.ExecuteRequest{
+	request := &graphservice.ExecuteRequest{
 		GraphID: "conditional-example",
 	}
 

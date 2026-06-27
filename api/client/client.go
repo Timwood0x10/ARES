@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/api/service/agent"
-	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
-	memorySvc "github.com/Timwood0x10/ares/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
+	agentSvc "github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
+	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
+	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -25,9 +25,9 @@ import (
 // It is created via NewClient and owns the lifecycle of all child services.
 type Client struct {
 	agentService     *agentSvc.Service
-	memoryService    *memorySvc.Service
-	retrievalService *retrievalSvc.Service
-	llmService       *llmSvc.Service
+	memoryService    *memoryservice.Service
+	retrievalService *retrievalservice.Service
+	llmService       *llmservice.Service
 	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
@@ -38,12 +38,12 @@ type Client struct {
 // Config holds configuration for the GoAgent client.
 // Each field corresponds to a module that can be independently enabled.
 type Config struct {
-	BaseConfig *core.BaseConfig     // Base configuration (timeout, retries)
-	Agent      *agentSvc.Config     // Agent service configuration
-	Memory     *memorySvc.Config    // Memory service configuration
-	Retrieval  *retrievalSvc.Config // Retrieval service configuration
-	LLM        *llmSvc.Config       // LLM service configuration
-	Workflow   *workflowSvc.Config  // Workflow service configuration
+	BaseConfig *core.BaseConfig         // Base configuration (timeout, retries)
+	Agent      *agentSvc.Config         // Agent service configuration
+	Memory     *memoryservice.Config    // Memory service configuration
+	Retrieval  *retrievalservice.Config // Retrieval service configuration
+	LLM        *llmservice.Config       // LLM service configuration
+	Workflow   *workflowSvc.Config      // Workflow service configuration
 }
 
 // NewClient creates a new GoAgent client instance with the given configuration.
@@ -85,7 +85,7 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	if config.Memory != nil {
-		memoryService, err := memorySvc.NewService(config.Memory)
+		memoryService, err := memoryservice.NewService(config.Memory)
 		if err != nil {
 			return nil, errors.Wrap(err, "create memory service")
 		}
@@ -93,7 +93,7 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	if config.Retrieval != nil {
-		retrievalService, err := retrievalSvc.NewService(config.Retrieval)
+		retrievalService, err := retrievalservice.NewService(config.Retrieval)
 		if err != nil {
 			return nil, errors.Wrap(err, "create retrieval service")
 		}
@@ -101,7 +101,7 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	if config.LLM != nil {
-		llmService, err := llmSvc.NewService(config.LLM)
+		llmService, err := llmservice.NewService(config.LLM)
 		if err != nil {
 			return nil, errors.Wrap(err, "create LLM service")
 		}
@@ -160,7 +160,7 @@ func (c *Client) Agent() (*agentSvc.Service, error) {
 //
 //	service - the memory service instance.
 //	err - ErrMemoryNotConfigured if memory was not configured at client creation.
-func (c *Client) Memory() (*memorySvc.Service, error) {
+func (c *Client) Memory() (*memoryservice.Service, error) {
 	if c.memoryService == nil {
 		return nil, ErrMemoryNotConfigured
 	}
@@ -173,7 +173,7 @@ func (c *Client) Memory() (*memorySvc.Service, error) {
 //
 //	service - the retrieval service instance.
 //	err - ErrRetrievalNotConfigured if retrieval was not configured at client creation.
-func (c *Client) Retrieval() (*retrievalSvc.Service, error) {
+func (c *Client) Retrieval() (*retrievalservice.Service, error) {
 	if c.retrievalService == nil {
 		return nil, ErrRetrievalNotConfigured
 	}
@@ -186,7 +186,7 @@ func (c *Client) Retrieval() (*retrievalSvc.Service, error) {
 //
 //	service - the LLM service instance.
 //	err - ErrLLMNotConfigured if LLM was not configured at client creation.
-func (c *Client) LLM() (*llmSvc.Service, error) {
+func (c *Client) LLM() (*llmservice.Service, error) {
 	if c.llmService == nil {
 		return nil, ErrLLMNotConfigured
 	}

@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/ares/api"
+	apiimpl "github.com/Timwood0x10/ares/internal/api_impl"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
@@ -51,12 +51,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	cfg, err := api.LoadServiceConfig(cfgPath)
+	cfg, err := apiimpl.LoadServiceConfig(cfgPath)
 	if err != nil {
 		slog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
-	svc, err := api.StartService(ctx, cfg)
+	svc, err := apiimpl.StartService(ctx, cfg)
 	if err != nil {
 		slog.Error("service start failed", "err", err)
 		os.Exit(1)
@@ -75,7 +75,7 @@ func main() {
 // chaosDemo runs a continuous kill→resurrect loop to demonstrate
 // self-healing. Kills agents in waves as soon as they start running,
 // proving that killed agents resurrect with memory preserved.
-func chaosDemo(ctx context.Context, svc *api.Service, log func(string, ...any)) {
+func chaosDemo(ctx context.Context, svc *apiimpl.Service, log func(string, ...any)) {
 	orch := svc.Orchestrator()
 
 	log("\n[CHAOS] Starting RunReview() — 5 review agents launching...")

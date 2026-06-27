@@ -20,7 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	experience "github.com/Timwood0x10/ares/api/ares_experience"
+	experienceservice "github.com/Timwood0x10/ares/internal/ares_experience/service"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -229,7 +229,7 @@ func initServices(
 	ctx context.Context,
 	pool *postgres.Pool,
 	config *Config,
-) (*experience.DistillationService, *repositories.ExperienceRepository, error) {
+) (*experienceservice.DistillationService, *repositories.ExperienceRepository, error) {
 	// Create embedding client
 	embeddingClient := embedding.NewEmbeddingClient(
 		config.EmbeddingService.URL,
@@ -263,16 +263,16 @@ func initServices(
 		}
 	}
 
-	distillationService := experience.NewDistillationService(llmClient, embeddingClient, experienceRepo)
+	distillationService := experienceservice.NewDistillationService(llmClient, embeddingClient, experienceRepo)
 	return distillationService, experienceRepo, nil
 }
 
 // parseDialogueFile reads dialogue from txt file and parses into tasks.
-func parseDialogueFile(filePath string) []*experience.TaskResult {
+func parseDialogueFile(filePath string) []*experienceservice.TaskResult {
 	file, err := os.Open(filePath)
 	if err != nil {
 		slog.Error("Failed to open dialogue file", "path", filePath, "error", err)
-		return []*experience.TaskResult{}
+		return []*experienceservice.TaskResult{}
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -280,7 +280,7 @@ func parseDialogueFile(filePath string) []*experience.TaskResult {
 		}
 	}()
 
-	var tasks []*experience.TaskResult
+	var tasks []*experienceservice.TaskResult
 	var currentUserQuery string
 	var currentContext string
 	var currentAssistantResponses []string
@@ -295,7 +295,7 @@ func parseDialogueFile(filePath string) []*experience.TaskResult {
 
 		if line == "---" {
 			if currentUserQuery != "" && len(currentAssistantResponses) > 0 {
-				task := &experience.TaskResult{
+				task := &experienceservice.TaskResult{
 					Task:     currentUserQuery,
 					Context:  currentContext,
 					Result:   strings.Join(currentAssistantResponses, " "),
@@ -327,7 +327,7 @@ func parseDialogueFile(filePath string) []*experience.TaskResult {
 	}
 
 	if currentUserQuery != "" && len(currentAssistantResponses) > 0 {
-		task := &experience.TaskResult{
+		task := &experienceservice.TaskResult{
 			Task:     currentUserQuery,
 			Context:  currentContext,
 			Result:   strings.Join(currentAssistantResponses, " "),
@@ -342,7 +342,7 @@ func parseDialogueFile(filePath string) []*experience.TaskResult {
 }
 
 // processDistillation processes tasks through distillation service.
-func processDistillation(ctx context.Context, distillationService *experience.DistillationService, tasks []*experience.TaskResult, language string) []*DistillationResult {
+func processDistillation(ctx context.Context, distillationService *experienceservice.DistillationService, tasks []*experienceservice.TaskResult, language string) []*DistillationResult {
 	var results []*DistillationResult
 
 	for i, task := range tasks {
@@ -375,7 +375,7 @@ type DistillationResult struct {
 	Result              string
 	Success             bool
 	ShouldDistill       bool
-	ExtractedExperience *experience.Experience
+	ExtractedExperience *experienceservice.Experience
 }
 
 // outputDistillationResults writes distillation results to txt file.
@@ -430,7 +430,7 @@ func outputDistillationResults(filePath string, results []*DistillationResult) {
 // processDialogue processes dialogue file through distillation and storage.
 func processDialogue(
 	ctx context.Context,
-	distillationService *experience.DistillationService,
+	distillationService *experienceservice.DistillationService,
 	repo *repositories.ExperienceRepository,
 	config *Config,
 	dialoguePath, preDBPath, postDBPath, lang string,
@@ -478,7 +478,7 @@ func processDialogue(
 func storeExperience(
 	ctx context.Context,
 	repo *repositories.ExperienceRepository,
-	task *experience.TaskResult,
+	task *experienceservice.TaskResult,
 	config *Config,
 	lang string,
 ) (*storageModels.Experience, error) {

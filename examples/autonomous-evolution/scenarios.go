@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	evolutionservice "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	storageModels "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
@@ -448,7 +448,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 //   - History tracking
 // ────────────────────────────────────────────────────────────────────────────
 
-func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.EvolutionResult {
+func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
 	start := time.Now()
 	defer func() {
 		slog.InfoContext(ctx, "Scenario completed",
@@ -460,7 +460,7 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 	sep(cfg.Title)
 
 	parent := defaultParent(cfg.BaseID)
-	svc, err := apievol.NewService(fullGAConfig(parent, cfg, false, nil))
+	svc, err := evolutionservice.NewService(fullGAConfig(parent, cfg, false, nil))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
 		return nil
@@ -496,7 +496,7 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 // evolution continues with deterministic scoring automatically.
 // ────────────────────────────────────────────────────────────────────────────
 
-func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.EvolutionResult {
+func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
 	start := time.Now()
 	defer func() {
 		slog.InfoContext(ctx, "Scenario completed",
@@ -513,7 +513,7 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 	// Reason: stepfun takes ~12s/request, sensenova is rate-limited.
 	// LLM-in-loop would take ~80 minutes for 15 generations.
 	// Instead: evolve with deterministic scoring (ms), then validate with LLM.
-	svc, err := apievol.NewService(fullGAConfig(parent, cfg, true, nil))
+	svc, err := evolutionservice.NewService(fullGAConfig(parent, cfg, true, nil))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
 		return nil
@@ -541,10 +541,10 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 		llmCfg, err := loadLLMConfig()
 		if err == nil && llmCfg != nil {
 			client := newFailoverLLMClient(llmCfg.Primary, llmCfg.Fallbacks)
-			scorer, err := apievol.NewLLMScorer(apievol.LLMScorerConfig{
+			scorer, err := evolutionservice.NewLLMScorer(evolutionservice.LLMScorerConfig{
 				Client:   client,
 				Model:    llmCfg.Primary.Model,
-				Fallback: func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) },
+				Fallback: func(s *evolutionservice.Strategy) float64 { return evolutionservice.DeterministicScore(s) },
 			})
 			if err == nil {
 				start := time.Now()
@@ -567,11 +567,11 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *apievol.Evolution
 
 // fullGAConfig returns a SystemConfig with ALL GA capabilities enabled.
 // scorer is optional — when nil, deterministic scoring is used.
-func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievol.ScorerFunc) *apievol.SystemConfig {
+func fullGAConfig(parent *evolutionservice.Strategy, cfg GACfg, wired bool, scorer evolutionservice.ScorerFunc) *evolutionservice.SystemConfig {
 	if scorer == nil {
-		scorer = func(s *apievol.Strategy) float64 { return apievol.DeterministicScore(s) }
+		scorer = func(s *evolutionservice.Strategy) float64 { return evolutionservice.DeterministicScore(s) }
 	}
-	return &apievol.SystemConfig{
+	return &evolutionservice.SystemConfig{
 		BaseStrategy:           parent,
 		PopulationSize:         cfg.PopSize,
 		EliteCount:             3,            // preserve top 3 unchanged
@@ -596,8 +596,8 @@ func fullGAConfig(parent *apievol.Strategy, cfg GACfg, wired bool, scorer apievo
 // ────────────────────────────────────────────────────────────────────────────
 
 // defaultParent returns a shared initial strategy for both scenarios.
-func defaultParent(id string) *apievol.Strategy {
-	return &apievol.Strategy{
+func defaultParent(id string) *evolutionservice.Strategy {
+	return &evolutionservice.Strategy{
 		ID:      id,
 		Version: 1,
 		Params: map[string]any{
@@ -612,7 +612,7 @@ func defaultParent(id string) *apievol.Strategy {
 }
 
 // printResult prints the evolution stats table.
-func printResult(result *apievol.EvolutionResult) {
+func printResult(result *evolutionservice.EvolutionResult) {
 	var rows [][]string
 	for i, st := range result.Stats {
 		rows = append(rows, []string{
@@ -634,7 +634,7 @@ func printResult(result *apievol.EvolutionResult) {
 }
 
 // compareResults prints a side-by-side comparison of two evolution results.
-func compareResults(resultA, resultB *apievol.EvolutionResult, labelA, labelB string) {
+func compareResults(resultA, resultB *evolutionservice.EvolutionResult, labelA, labelB string) {
 	fmt.Println()
 	fmt.Println("  📊 Control Group Comparison")
 	fmt.Println("  ═══════════════════════════════════════════════════")

@@ -1,4 +1,4 @@
-// Package main demonstrates agent integration with graph.
+// Package main demonstrates agent integration with graphservice.
 package main
 
 import (
@@ -7,11 +7,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service/graph"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/workflow/graphservice"
 )
 
 // mockAgent simulates an agent for demonstration
@@ -65,7 +65,7 @@ func (m *mockAgent) Stop(ctx context.Context) error {
 
 func main() {
 	// Create graph service
-	service, err := graph.NewService(&graph.Config{
+	service, err := graphservice.NewService(&graphservice.Config{
 		RequestTimeout: 30 * time.Second,
 		Tracer:         ares_observability.NewLogTracer(nil),
 	})
@@ -120,7 +120,7 @@ func main() {
 	mustOp(g.Start("collect"))
 
 	// Execute graph
-	request := &graph.ExecuteRequest{
+	request := &graphservice.ExecuteRequest{
 		GraphID: "agent-pipeline",
 		State: map[string]any{
 			"input": "collect user activity logs",

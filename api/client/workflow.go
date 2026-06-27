@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	gerr "github.com/Timwood0x10/ares/internal/errors"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -118,7 +118,7 @@ type WorkflowAgentExecutor struct {
 
 	agentType string
 
-	llmService *llmSvc.Service
+	llmService *llmservice.Service
 
 	prompts *PromptsConfig
 

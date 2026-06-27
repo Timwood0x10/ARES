@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/api/service/agent"
-	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
-	memorySvc "github.com/Timwood0x10/ares/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
+	agentSvc "github.com/Timwood0x10/ares/internal/agents"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
+	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
+	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 )
 
 // TestHealthReport_Structure verifies HealthReport fields are zero-valued correctly.
@@ -101,11 +101,11 @@ func TestClientHealth_WithServices(t *testing.T) {
 	}
 	client, err := NewClient(&Config{
 		BaseConfig: baseCfg,
-		Memory: &memorySvc.Config{
+		Memory: &memoryservice.Config{
 			BaseConfig: baseCfg,
-			Repo:       memorySvc.NewMemoryRepository(),
+			Repo:       memoryservice.NewMemoryRepository(),
 		},
-		LLM: &llmSvc.Config{
+		LLM: &llmservice.Config{
 			BaseConfig: baseCfg,
 			LLMConfig: &core.LLMConfig{
 				Provider: core.LLMProviderOllama,
@@ -183,13 +183,13 @@ func TestClientClose_WithServices(t *testing.T) {
 			BaseConfig: baseCfg,
 			Repo:       agentSvc.NewMemoryRepository(),
 		},
-		Memory: &memorySvc.Config{
+		Memory: &memoryservice.Config{
 			BaseConfig: baseCfg,
-			Repo:       memorySvc.NewMemoryRepository(),
+			Repo:       memoryservice.NewMemoryRepository(),
 		},
-		Retrieval: &retrievalSvc.Config{
+		Retrieval: &retrievalservice.Config{
 			BaseConfig: baseCfg,
-			Repo:       retrievalSvc.NewMemoryRepository(),
+			Repo:       retrievalservice.NewMemoryRepository(),
 		},
 	})
 	require.NoError(t, err)

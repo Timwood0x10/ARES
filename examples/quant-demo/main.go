@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/ares/api"
+	apiimpl "github.com/Timwood0x10/ares/internal/api_impl"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
@@ -116,12 +116,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	cfg, err := api.LoadServiceConfig(cfgPath)
+	cfg, err := apiimpl.LoadServiceConfig(cfgPath)
 	if err != nil {
 		slog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
-	svc, err := api.StartService(ctx, cfg)
+	svc, err := apiimpl.StartService(ctx, cfg)
 	if err != nil {
 		slog.Error("service start failed", "err", err)
 		os.Exit(1)
@@ -200,7 +200,7 @@ func createQuantAgents(orch *dashboard.Orchestrator, log func(string, ...any)) m
 // ─── Demo Pipeline ─────────────────────────────────────────
 
 // quantDemo runs the full quant pipeline: compute factors, allocate, risk check.
-func quantDemo(ctx context.Context, svc *api.Service, universe []Stock, log func(string, ...any)) {
+func quantDemo(ctx context.Context, svc *apiimpl.Service, universe []Stock, log func(string, ...any)) {
 	start := time.Now()
 	orch := svc.Orchestrator()
 
