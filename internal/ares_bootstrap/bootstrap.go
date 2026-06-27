@@ -1,5 +1,5 @@
 // package bootstrap provides startup wiring for MCP and Dashboard components.
-package bootstrap
+package ares_bootstrap
 
 import (
 	"context"
