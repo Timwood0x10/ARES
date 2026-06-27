@@ -2,10 +2,12 @@ package graph
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/stretchr/testify/require"
 )
@@ -529,5 +531,65 @@ func TestExecuteWithLoopPluginNoPlugin(t *testing.T) {
 
 	if n := callCount.Load(); n != 1 {
 		t.Errorf("expected node1 to execute once, got %d", n)
+	}
+}
+
+func TestExecuteLifecycleEvents(t *testing.T) {
+	g := buildTestGraph(t, "lifecycle",
+		nodeDef("step1", func(ctx context.Context, state *State) error {
+			state.Set("seen", "step1")
+			return nil
+		}),
+		nodeDef("step2", func(ctx context.Context, state *State) error {
+			state.Set("seen", "step2")
+			return nil
+		}),
+		edgeDef("step1", "step2"),
+		startDef("step1"),
+	)
+
+	bus := runtime.NewPluginBus()
+	require.NoError(t, bus.Start(context.Background()))
+	g.SetPluginBus(bus)
+
+	var mu sync.Mutex
+	var gotEvents []string
+	sub, err := bus.Subscribe(context.Background(), events.EventFilter{
+		Types: []events.EventType{
+			runtime.EventWorkflowStarted,
+			runtime.EventWorkflowCompleted,
+			runtime.EventStepStarted,
+			runtime.EventStepCompleted,
+		},
+	})
+	require.NoError(t, err)
+	go func() {
+		for evt := range sub {
+			mu.Lock()
+			gotEvents = append(gotEvents, string(evt.Type))
+			mu.Unlock()
+		}
+	}()
+
+	_, err = g.Execute(context.Background(), NewState())
+	require.NoError(t, err)
+
+	// Give subscriber goroutine time to collect events.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	expected := []string{
+		"workflow.started",
+		"step.started", "step.completed", // step1
+		"step.started", "step.completed", // step2
+		"workflow.completed",
+	}
+	require.Equal(t, len(expected), len(gotEvents), "got: %v", gotEvents)
+	for i, typ := range expected {
+		if gotEvents[i] != typ {
+			t.Errorf("event[%d]: expected %s, got %s", i, typ, gotEvents[i])
+		}
 	}
 }

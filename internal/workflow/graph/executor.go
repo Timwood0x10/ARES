@@ -52,8 +52,14 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	for {
 		iteration++
 		if iteration > 1 {
-			// Re-initialize per-iteration state.
 			state.Set(loopIterKey, iteration)
+		}
+
+		if g.pluginBus != nil {
+			g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowStarted, map[string]any{
+				runtime.PayloadKeyExecutionID: g.id,
+				runtime.PayloadKeyWorkflowID:  g.id,
+			})
 		}
 
 		executed := make(map[string]bool)
@@ -109,6 +115,15 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		// Check if context is cancelled
 		select {
 		case <-ctx.Done():
+			if g.pluginBus != nil {
+				g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
+					runtime.PayloadKeyExecutionID: g.id,
+					runtime.PayloadKeyWorkflowID:  g.id,
+					runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
+					runtime.PayloadKeyError:       ctx.Err().Error(),
+					runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+				})
+			}
 			return nil, errors.Wrap(ctx.Err(), "execution cancelled")
 		default:
 		}
@@ -121,6 +136,10 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 					"graph_id", g.id, "node", nodeID, "error", err,
 				)
 			}
+			g.pluginBus.Emit(ctx, g.id, runtime.EventStepStarted, map[string]any{
+				runtime.PayloadKeyExecutionID: g.id,
+				runtime.PayloadKeyStepID:      nodeID,
+			})
 		}
 
 		// Record agent step start
@@ -161,9 +180,34 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 					"graph_id", g.id, "node", nodeID, "error", err,
 				)
 			}
+			if execErr != nil {
+				g.pluginBus.Emit(ctx, g.id, runtime.EventStepFailed, map[string]any{
+					runtime.PayloadKeyExecutionID: g.id,
+					runtime.PayloadKeyStepID:      nodeID,
+					runtime.PayloadKeyStatus:      stepResult.Status,
+					runtime.PayloadKeyError:       execErr.Error(),
+					runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+				})
+			} else {
+				g.pluginBus.Emit(ctx, g.id, runtime.EventStepCompleted, map[string]any{
+					runtime.PayloadKeyExecutionID: g.id,
+					runtime.PayloadKeyStepID:      nodeID,
+					runtime.PayloadKeyStatus:      stepResult.Status,
+					runtime.PayloadKeyDuration:    nodeDuration.Milliseconds(),
+				})
+			}
 		}
 
 		if execErr != nil {
+			if g.pluginBus != nil {
+				g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowFailed, map[string]any{
+					runtime.PayloadKeyExecutionID: g.id,
+					runtime.PayloadKeyWorkflowID:  g.id,
+					runtime.PayloadKeyStatus:      runtime.StepStatusFailed,
+					runtime.PayloadKeyError:       execErr.Error(),
+					runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+				})
+			}
 			return nil, errors.Wrapf(execErr, "node %s execution failed", nodeID)
 		}
 
@@ -246,6 +290,15 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 	}
 
 	break
+}
+
+if g.pluginBus != nil {
+	g.pluginBus.Emit(ctx, g.id, runtime.EventWorkflowCompleted, map[string]any{
+		runtime.PayloadKeyExecutionID: g.id,
+		runtime.PayloadKeyWorkflowID:  g.id,
+		runtime.PayloadKeyStatus:      runtime.StepStatusCompleted,
+		runtime.PayloadKeyDuration:    time.Since(startTime).Milliseconds(),
+	})
 }
 
 // Record execution trace
