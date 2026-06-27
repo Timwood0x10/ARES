@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -591,5 +592,69 @@ func TestExecuteLifecycleEvents(t *testing.T) {
 		if gotEvents[i] != typ {
 			t.Errorf("event[%d]: expected %s, got %s", i, typ, gotEvents[i])
 		}
+	}
+}
+
+type memCheckpointStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func (s *memCheckpointStore) Save(_ context.Context, key string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data == nil {
+		s.data = make(map[string][]byte)
+	}
+	s.data[key] = data
+	return nil
+}
+
+func (s *memCheckpointStore) Load(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.data[key]
+	if !ok {
+		return nil, nil
+	}
+	return data, nil
+}
+
+func TestGraphCheckpointPlugin(t *testing.T) {
+	g := buildTestGraph(t, "ckpt-graph",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			state.Set("visited", "n1")
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			state.Set("visited", "n2")
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	store := &memCheckpointStore{}
+	bus := runtime.NewPluginBus()
+	cp := runtime.NewCheckpointPlugin("ckpt", store)
+	require.NoError(t, bus.Register(cp))
+	require.NoError(t, bus.Start(context.Background()))
+	g.SetPluginBus(bus)
+
+	_, err := g.Execute(context.Background(), NewState())
+	require.NoError(t, err)
+
+	// Verify checkpoint was saved for the graph execution.
+	data, err := store.Load(context.Background(), "checkpoint/ckpt-graph")
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	var ckpt runtime.ExperienceCheckpoint
+	require.NoError(t, json.Unmarshal(data, &ckpt))
+	require.Equal(t, "ckpt-graph", ckpt.ExecutionID)
+	require.Len(t, ckpt.StepStates, 2)
+	// Both steps should be completed.
+	for _, ss := range ckpt.StepStates {
+		require.Equal(t, runtime.StepStatusCompleted, ss.Status)
 	}
 }

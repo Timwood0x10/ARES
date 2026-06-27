@@ -129,7 +129,7 @@ func (g *Graph) Execute(ctx context.Context, state *State) (*Result, error) {
 		}
 
 		// Convert node to runtime.Step for plugin hooks.
-		step := &runtime.Step{ID: nodeID, Name: nodeID}
+		step := &runtime.Step{ID: nodeID, Name: nodeID, StartedAt: time.Now()}
 		if g.pluginBus != nil {
 			if err := g.pluginBus.BeforeStep(ctx, g.id, step); err != nil {
 				slog.Warn("graph: before step hook failed (continuing)",
