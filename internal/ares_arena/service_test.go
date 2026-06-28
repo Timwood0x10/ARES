@@ -11,18 +11,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // mockEventStore implements EventStore for testing.
 type mockEventStore struct {
 	mu       sync.Mutex
-	appended []*events.Event
+	appended []*ares_events.Event
 	version  int64
 }
 
-func (m *mockEventStore) Append(_ context.Context, _ string, evts []*events.Event, _ int64) error {
+func (m *mockEventStore) Append(_ context.Context, _ string, evts []*ares_events.Event, _ int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.appended = append(m.appended, evts...)
@@ -34,13 +34,13 @@ func (m *mockEventStore) StreamVersion(_ context.Context, _ string) (int64, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.version == 0 {
-		return 0, events.ErrStreamNotFound
+		return 0, ares_events.ErrStreamNotFound
 	}
 	return m.version, nil
 }
 
-func (m *mockEventStore) Subscribe(_ context.Context, _ events.EventFilter) (<-chan *events.Event, error) {
-	ch := make(chan *events.Event, 10)
+func (m *mockEventStore) Subscribe(_ context.Context, _ ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	ch := make(chan *ares_events.Event, 10)
 	return ch, nil
 }
 
@@ -68,8 +68,8 @@ func TestExecute_KillAgent(t *testing.T) {
 
 func TestExecute_KillLeader(t *testing.T) {
 	rt := &mockRuntime{
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{
 				{ID: "leader-1", Type: "leader"},
 			}
 		},
@@ -175,7 +175,7 @@ func TestExecute_EmitsEvent(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	require.Len(t, store.appended, 1)
-	assert.Equal(t, events.EventType("arena.action.executed"), store.appended[0].Type)
+	assert.Equal(t, ares_events.EventType("arena.action.executed"), store.appended[0].Type)
 	assert.Equal(t, "arena", store.appended[0].StreamID)
 	assert.Equal(t, "test-7", store.appended[0].Payload["action_id"])
 }
@@ -201,7 +201,7 @@ func TestExecute_EmitsFailedEvent(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	require.Len(t, store.appended, 1)
-	assert.Equal(t, events.EventType("arena.action.failed"), store.appended[0].Type)
+	assert.Equal(t, ares_events.EventType("arena.action.failed"), store.appended[0].Type)
 }
 
 func TestHistory(t *testing.T) {

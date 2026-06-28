@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -73,7 +73,7 @@ type ToolNode struct {
 	tool        core.Tool
 	nodeID      string
 	executionID string
-	eventSink   func(ctx context.Context, eventType events.EventType, payload map[string]any)
+	eventSink   func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)
 }
 
 // WithNodeID sets the node identifier for event payload correlation.
@@ -100,10 +100,10 @@ func NewToolNode(tool core.Tool) (*ToolNode, error) {
 	return &ToolNode{tool: tool}, nil
 }
 
-// WithEventSink attaches an event sink for lifecycle events.
+// WithEventSink attaches an event sink for lifecycle ares_events.
 // The sink is called before and after tool execution with EventToolCallStarted
-// and EventToolCallCompleted events respectively.
-func (n *ToolNode) WithEventSink(sink func(ctx context.Context, eventType events.EventType, payload map[string]any)) *ToolNode {
+// and EventToolCallCompleted ares_events respectively.
+func (n *ToolNode) WithEventSink(sink func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)) *ToolNode {
 	n.eventSink = sink
 	return n
 }
@@ -132,7 +132,7 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 
 	// Pre-execution hook: emit tool call started event with correlation IDs.
 	if n.eventSink != nil {
-		n.eventSink(ctx, events.EventToolCallStarted, map[string]any{
+		n.eventSink(ctx, ares_events.EventToolCallStarted, map[string]any{
 			"tool":         toolName,
 			"tool_call_id": toolCallID,
 			"node_id":      nodeID,
@@ -167,7 +167,7 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 			payload["status"] = "success"
 			payload["summary"] = truncateString(fmt.Sprintf("%v", result.Data), 200)
 		}
-		n.eventSink(ctx, events.EventToolCallCompleted, payload)
+		n.eventSink(ctx, ares_events.EventToolCallCompleted, payload)
 	}
 
 	if err != nil {

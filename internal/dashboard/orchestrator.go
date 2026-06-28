@@ -5,14 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -111,7 +110,7 @@ type Orchestrator struct {
 	agents      map[string]*AgentResult
 	cancels     map[string]context.CancelFunc // per-agent cancel functions
 	hub         *WSHub                        // optional, for real-time WS updates
-	store       *events.MemoryEventStore      // optional, for event persistence
+	store       *ares_events.MemoryEventStore // optional, for event persistence
 	flight      *flight.FlightRecorder        // optional, for flight recording
 	mu          sync.RWMutex
 	nextID      atomic.Int64
@@ -141,7 +140,7 @@ func (o *Orchestrator) SetHub(hub *WSHub) {
 }
 
 // SetEventStore attaches an event store for event persistence.
-func (o *Orchestrator) SetEventStore(store *events.MemoryEventStore) {
+func (o *Orchestrator) SetEventStore(store *ares_events.MemoryEventStore) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.store = store
@@ -162,7 +161,7 @@ func (o *Orchestrator) Stop() {
 }
 
 // EventStore returns the current event store. May be nil if not configured.
-func (o *Orchestrator) EventStore() *events.MemoryEventStore {
+func (o *Orchestrator) EventStore() *ares_events.MemoryEventStore {
 	return o.getStore()
 }
 
@@ -289,7 +288,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 
 		if agentCtx.Err() != nil && status != "completed" && o.baseCtx.Err() == nil {
 			if resurrectionCnt >= maxResurrections {
-				slog.Warn(
+				log.Warn(
 					"orchestrator: agent exceeded max resurrections",
 					"id", id,
 					"name", req.Name,
@@ -302,7 +301,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 				return
 			}
 
-			slog.Info(
+			log.Info(
 				"orchestrator: agent killed, resurrecting",
 				"id", id,
 				"name", req.Name,
@@ -316,7 +315,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 			// Increment resurrection counter for the next attempt.
 			req.ResumeFrom = id
 			if _, err := o.CreateAgent(req); err != nil {
-				slog.Error(
+				log.Error(
 					"orchestrator: resurrection failed",
 					"id", id,
 					"error", err,
@@ -373,12 +372,12 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 
 	o.updateStatus(id, "running", 10, "")
 	o.emitEvent(id, "agent.started", map[string]any{"name": req.Name, "tool": req.MCPTool})
-	slog.Info("orchestrator: agent started", "id", id, "name", req.Name, "tool", req.MCPTool)
+	log.Info("orchestrator: agent started", "id", id, "name", req.Name, "tool", req.MCPTool)
 
 	// Phase 1: MCP data gathering (single or multi-step).
 	o.updateStatus(id, "gathering data...", 20, "")
 
-	// Resume support: if ResumeFrom is set, read previous agent's events to
+	// Resume support: if ResumeFrom is set, read previous agent's ares_events to
 	// determine which steps were already completed and skip them.
 	startStep := 0
 	var resumeSummary string
@@ -387,7 +386,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		startStep = completedSteps
 		resumeSummary = summary
 		if startStep > 0 {
-			slog.Info("orchestrator: resuming agent from step",
+			log.Info("orchestrator: resuming agent from step",
 				"id", id, "resume_from", req.ResumeFrom, "start_step", startStep+1, "total_steps", len(req.Steps))
 			o.updateStatus(id, fmt.Sprintf("resuming from step %d/%d", startStep+1, len(req.Steps)), 20, "")
 			o.emitEvent(id, "agent.resumed", map[string]any{
@@ -406,7 +405,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		prevData := o.loadPreviousData(ctx, req.ResumeFrom)
 		if prevData != "" {
 			rawData = prevData
-			slog.Info("orchestrator: resuming with previous MCP data", "id", id, "data_len", len(rawData))
+			log.Info("orchestrator: resuming with previous MCP data", "id", id, "data_len", len(rawData))
 		}
 	}
 
@@ -414,6 +413,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	if rawData == "" && len(req.Steps) > 0 {
 		// Multi-step: call each tool in sequence, accumulate results.
 		// Skip steps that were already completed by the previous agent.
+		var sb strings.Builder
+		sb.Grow(len(req.Steps) * 4096)
 		for i, step := range req.Steps {
 			if i < startStep {
 				// Already completed by the previous agent; skip.
@@ -452,9 +453,10 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 			})
 
 			for _, b := range res.Content {
-				rawData += fmt.Sprintf("\n--- Step %d: %s ---\n%s\n", i+1, toolName, b.Text)
+				fmt.Fprintf(&sb, "\n--- Step %d: %s ---\n%s\n", i+1, toolName, b.Text)
 			}
 		}
+		rawData = sb.String()
 	} else if rawData == "" && req.MCPTool == "" {
 		// List tools.
 		mcpStart := time.Now()
@@ -492,9 +494,14 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	}
 
 	o.updateRawDataLen(id, len(rawData))
-	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": rawData})
+	const maxStoredData = 10 * 1024
+	storedData := rawData
+	if len(storedData) > maxStoredData {
+		storedData = storedData[:maxStoredData]
+	}
+	o.emitEvent(id, "mcp.data.gathered", map[string]any{"bytes": len(rawData), "data": storedData})
 	o.updateStatus(id, "analyzing with LLM...", 50, "")
-	slog.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
+	log.Info("orchestrator: MCP data gathered", "id", id, "bytes", len(rawData))
 
 	// Phase 2: LLM analysis.
 	// Prepend resume context to the prompt so the LLM knows what was already done.
@@ -551,7 +558,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		"duration": result.Duration,
 	})
 
-	slog.Info("orchestrator: agent completed", "id", id, "duration", result.Duration)
+	log.Info("orchestrator: agent completed", "id", id, "duration", result.Duration)
 	o.emitEvent(id, "agent.completed", map[string]any{"duration": result.Duration, "analysis_len": len(analysis)})
 
 	// Broadcast completion.
@@ -577,7 +584,7 @@ func (o *Orchestrator) llmGenerateStreaming(ctx context.Context, agentID, prompt
 			return o.consumeStream(ctx, agentID, ch)
 		}
 		// Streaming init failed — fall through to blocking call.
-		slog.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
+		log.Warn("orchestrator: GenerateStream failed, falling back to Generate", "id", agentID, "error", err)
 	}
 	return o.llm.Generate(ctx, prompt)
 }
@@ -674,7 +681,7 @@ func (o *Orchestrator) failAgent(id string, err error) {
 		fr.Diagnostics().Record(flight.AutoDiagnose(id, "", err, duration))
 	}
 
-	slog.Error("orchestrator: agent failed", "id", id, "error", err)
+	log.Error("orchestrator: agent failed", "id", id, "error", err)
 	o.emitEvent(id, "agent.failed", map[string]any{"error": err.Error()})
 
 	hub := o.getHub()
@@ -686,14 +693,14 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 }
 
-// emitEvent stores an event using the canonical events.Emit.
+// emitEvent stores an event using the canonical ares_events.Emit.
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
 	store := o.getStore()
 	if store == nil {
 		return
 	}
-	if !events.Emit(context.Background(), store, streamID, events.EventType(eventType), payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
+	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), "dashboard", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }
 
@@ -705,7 +712,7 @@ func (o *Orchestrator) getHub() *WSHub {
 }
 
 // getStore returns the current event store under a read lock. Safe for concurrent use.
-func (o *Orchestrator) getStore() *events.MemoryEventStore {
+func (o *Orchestrator) getStore() *ares_events.MemoryEventStore {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.store
@@ -772,26 +779,26 @@ func (o *Orchestrator) emitFlightDecision(agentID, selected, reason string) {
 	})
 }
 
-// loadResumeProgress reads events from a previous agent to determine how many
+// loadResumeProgress reads ares_events from a previous agent to determine how many
 // multi-step calls were already completed and builds a human-readable summary.
 // Returns the number of completed steps and a summary string.
-// Nil-safe: returns (0, "") if the event store is not configured or no events are found.
+// Nil-safe: returns (0, "") if the event store is not configured or no ares_events are found.
 func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID string, steps []AgentStep) (int, string) {
 	store := o.getStore()
 	if store == nil {
 		return 0, ""
 	}
 
-	prevEvents, err := store.Read(ctx, previousAgentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	prevEvents, err := store.Read(ctx, previousAgentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     10000,
 	})
 	if err != nil {
-		slog.Warn("orchestrator: failed to read resume events", "agent", previousAgentID, "error", err)
+		log.Warn("orchestrator: failed to read resume ares_events", "agent", previousAgentID, "error", err)
 		return 0, ""
 	}
 
-	// Count mcp.step.completed events to determine how far the previous agent got.
+	// Count mcp.step.completed ares_events to determine how far the previous agent got.
 	completedSteps := 0
 	var completedDetails []string
 	for _, evt := range prevEvents {
@@ -825,7 +832,7 @@ func (o *Orchestrator) loadResumeProgress(ctx context.Context, previousAgentID s
 	return completedSteps, summary
 }
 
-// loadPreviousData loads the raw MCP data from a previous agent's events.
+// loadPreviousData loads the raw MCP data from a previous agent's ares_events.
 // Used when resuming: all MCP steps completed, need the data for LLM.
 func (o *Orchestrator) loadPreviousData(ctx context.Context, previousAgentID string) string {
 	store := o.getStore()
@@ -833,8 +840,8 @@ func (o *Orchestrator) loadPreviousData(ctx context.Context, previousAgentID str
 		return ""
 	}
 
-	evts, err := store.Read(ctx, previousAgentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, err := store.Read(ctx, previousAgentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 		Limit:     10000,
 	})
 	if err != nil {

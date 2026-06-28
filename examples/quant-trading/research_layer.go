@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/quant/dataflow"
-	"github.com/Timwood0x10/ares/internal/quant/market"
-	"github.com/Timwood0x10/ares/internal/quant/research"
-	researchagents "github.com/Timwood0x10/ares/internal/quant/research/agents"
+	"github.com/Timwood0x10/ares/internal/ares_quant/dataflow"
+	"github.com/Timwood0x10/ares/internal/ares_quant/market"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
+	researchagents "github.com/Timwood0x10/ares/internal/ares_quant/research/agents"
 )
 
 // createResearchConfig builds a ResearchConfig from default values.

@@ -83,7 +83,7 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 	localOutputStore := NewOutputStore()
 	defer localOutputStore.Close()
 
-	resultChan := make(chan *StepResult, len(workflow.Steps))
+	resultChan := make(chan *StepResult, len(workflow.Steps)*2)
 	errChan := make(chan error, 1)
 
 	// Use errgroup to manage the runSteps goroutine
@@ -230,6 +230,8 @@ func (e *Executor) runSteps(
 	// the scheduler to re-check dependencies without false deadlock detection.
 	stepDone := make(chan struct{}, 1)
 
+	stepsByID := buildStepIndex(workflow.Steps)
+
 	for stepIndex < len(executionOrder) {
 		select {
 		case <-ctx.Done():
@@ -240,7 +242,7 @@ func (e *Executor) runSteps(
 		}
 
 		stepID := executionOrder[stepIndex]
-		step := e.findStep(workflow.Steps, stepID)
+		step := stepsByID[stepID]
 		if step == nil {
 			select {
 			case errChan <- fmt.Errorf("step %q not found in workflow definition", stepID):
@@ -291,8 +293,9 @@ func (e *Executor) runSteps(
 
 		stepIndex++
 
-		// Capture current stepID for goroutine.
+		// Capture current step and stepID for goroutine.
 		sid := stepID
+		st := step
 
 		wg.Add(1)
 		go func() {
@@ -326,7 +329,7 @@ func (e *Executor) runSteps(
 				}
 			}()
 
-			result := e.executeStep(ctx, workflow, sid, initialInput, completed, outputStore, &mu)
+			result := e.executeStep(ctx, workflow, st, sid, initialInput, completed, outputStore, &mu)
 
 			mu.Lock()
 			processed[sid] = true
@@ -368,7 +371,7 @@ func (e *Executor) runSteps(
 		mu.Lock()
 		isProcessed := processed[sid]
 		if !isProcessed {
-			step := e.findStep(workflow.Steps, sid)
+			step := stepsByID[sid]
 			if step == nil || !e.canExecute(step, completed) {
 				pending = true
 				mu.Unlock()
@@ -411,27 +414,26 @@ func (e *Executor) canExecuteWithDeps(deps []string, completed map[string]bool) 
 	return true
 }
 
-// findStep finds a step by ID.
-func (e *Executor) findStep(steps []*Step, stepID string) *Step {
-	for _, step := range steps {
-		if step.ID == stepID {
-			return step
-		}
+// buildStepIndex builds a step lookup map from a slice of steps.
+func buildStepIndex(steps []*Step) map[string]*Step {
+	m := make(map[string]*Step, len(steps))
+	for _, s := range steps {
+		m[s.ID] = s
 	}
-	return nil
+	return m
 }
 
 // executeStep executes a single step with HITL interrupt handling.
 func (e *Executor) executeStep(
 	ctx context.Context,
 	workflow *Workflow,
+	step *Step,
 	stepID string,
 	initialInput string,
 	completed map[string]bool,
 	outputStore *OutputStore,
 	mu *sync.Mutex,
 ) *StepResult {
-	step := e.findStep(workflow.Steps, stepID)
 	if step == nil {
 		return &StepResult{
 			StepID: stepID,
@@ -598,10 +600,12 @@ func (e *Executor) executeWithRetry(ctx context.Context, step *Step, input strin
 		lastErr = err
 
 		if attempt < maxAttempts {
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return "", ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
 			}
 
 			if step.RetryPolicy != nil {

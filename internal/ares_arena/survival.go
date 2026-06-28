@@ -2,7 +2,6 @@ package arena
 
 import (
 	"context"
-	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
@@ -86,7 +85,7 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 	if s.survival.running {
 		s.survival.mu.Unlock()
 		cancel()
-		slog.Warn("arena: survival already running, returning empty report")
+		log.Warn("arena: survival already running, returning empty report")
 		return SurvivalReport{}
 	}
 	s.survival.running = true
@@ -103,7 +102,7 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 	}()
 
 	start := time.Now()
-	slog.Info("arena: survival mode started",
+	log.Info("arena: survival mode started",
 		"duration", cfg.Duration,
 		"interval", cfg.Interval,
 	)
@@ -117,11 +116,11 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 	for {
 		select {
 		case <-survCtx.Done():
-			slog.Info("arena: survival mode cancelled")
+			log.Info("arena: survival mode cancelled")
 			return s.buildSurvivalReport(time.Since(start), timeline)
 		case now := <-ticker.C:
 			if now.After(deadline) {
-				slog.Info("arena: survival mode completed",
+				log.Info("arena: survival mode completed",
 					"actions", len(timeline),
 					"duration", time.Since(start),
 				)
@@ -143,7 +142,7 @@ func (s *Service) RunSurvival(ctx context.Context, cfg SurvivalConfig) SurvivalR
 			s.survival.events = append(s.survival.events, event)
 			s.survival.mu.Unlock()
 
-			slog.Info("arena: survival event",
+			log.Info("arena: survival event",
 				"type", action.Type,
 				"target", action.TargetID,
 				"success", result.Success,
@@ -184,7 +183,7 @@ func (s *Service) StopSurvival() {
 	defer s.survival.mu.Unlock()
 	if s.survival.running && s.survival.cancel != nil {
 		s.survival.cancel()
-		slog.Info("arena: survival mode stop requested")
+		log.Info("arena: survival mode stop requested")
 	}
 }
 

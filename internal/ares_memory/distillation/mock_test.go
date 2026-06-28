@@ -72,11 +72,19 @@ func (m *MockExperienceRepository) GetByMemoryType(ctx context.Context, tenantID
 	return m.experiences, nil
 }
 
+func (m *MockExperienceRepository) CountByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) (int, error) {
+	return len(m.experiences), nil
+}
+
 func (m *MockExperienceRepository) Update(ctx context.Context, experience *Experience) error {
 	return nil
 }
 
 func (m *MockExperienceRepository) Delete(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *MockExperienceRepository) DeleteBatch(ctx context.Context, ids []string) error {
 	return nil
 }
 

@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service/graph"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/workflow/graphservice"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 	}
 
 	// Parse configuration.
-	graphConfig, err := graph.ParseGraphConfig(configData)
+	graphConfig, err := graphservice.ParseGraphConfig(configData)
 	if err != nil {
 		log.Fatalf("failed to parse config: %v", err)
 	}
@@ -42,24 +42,24 @@ func main() {
 	fmt.Println()
 
 	// Build graph from configuration.
-	builder := graph.NewGraphBuilder()
+	builder := graphservice.NewGraphBuilder()
 	g, err := builder.Build(graphConfig)
 	if err != nil {
 		log.Fatalf("failed to build graph: %v", err)
 	}
 
 	// Create service.
-	service, err := graph.NewService(&graph.Config{
+	service, err := graphservice.NewService(&graphservice.Config{
 		RequestTimeout: 30 * time.Second,
-		Tracer:         observability.NewLogTracer(nil),
+		Tracer:         ares_observability.NewLogTracer(nil),
 	})
 	if err != nil {
 		log.Fatalf("failed to create service: %v", err)
 	}
 
-	// Execute graph.
+	// Execute graphservice.
 	fmt.Println("=== Executing graph ===")
-	request := &graph.ExecuteRequest{
+	request := &graphservice.ExecuteRequest{
 		GraphID: graphConfig.Graph.ID,
 		State: map[string]any{
 			"input": "test data from YAML config",

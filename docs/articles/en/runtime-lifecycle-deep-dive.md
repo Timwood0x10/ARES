@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (7): Runtime & Lifecycle — Birth, Death, and Resurrection
+# ares Architecture Deep Dive (VII): Runtime & Lifecycle — Birth, Death, and Resurrection
 
 What happens when an Agent dies? Every framework has to answer this, but few do it well. This article walks through the Runtime subsystem's design journey — from "how to prevent crashes" to "how to resurrect with memories intact" and "how to resume interrupted work without wasting tokens." You'll see the concurrency trap behind the Resurrection Guard, the fault-tolerance philosophy of two-phase state recovery, the detached-context distillation pattern, and the honest trade-offs behind every decision. Written for developers working on agent reliability, distributed orchestration, or stateful service auto-recovery.
 
@@ -399,7 +399,7 @@ func (r *Registry) Emit(ctx *Context) {
         func() {
             defer func() {
                 if r := recover(); r != nil {
-                    slog.Error("handler panicked", "event", ctx.Event)
+                    log.Error("handler panicked", "event", ctx.Event)
                 }
             }()
             h(ctx)
@@ -407,6 +407,16 @@ func (r *Registry) Emit(ctx *Context) {
     }
 }
 ```
+
+Note that `log` here is not `slog` — it's a module-scoped logger created via `logger.Module("runtime")`. Every log entry from Runtime automatically carries `module=runtime`. This sounds trivial until you have Runtime, Workflow, Memory, and Evolution all logging to the same stream at 3am when something breaks. Without module tags, you're staring at identical `slog.Info("started")` lines from four different subsystems with no way to tell them apart.
+
+The same problem exists in the event system itself. When you replay an event stream, you see `step.started` and `tool.call.completed` — but which module emitted them? The workflow engine? The runtime? The plugin bus? The payload doesn't say. That's why `Event` now carries a `ModuleName` field, and `Emit()` requires you to declare who you are at the call site:
+
+```go
+Emit(ctx, store, streamID, eventType, "runtime", payload)
+```
+
+Forcing the source at the call site means you can't accidentally emit an event without declaring your identity. It's a compile-time guarantee, not a runtime convention.
 
 **Honest reflection**: This system lives in an awkward state. It was designed early on for LLM/Agent/Tool lifecycle event notifications. Later, `events.EventStore` was added for event sourcing. Their functionality overlaps. The only reason it's still here is that some things still depend on callbacks (logging, metrics) and migrating is more expensive than keeping it. Classic "old and new system coexistence" — both emit events, but consumers are different, and debugging requires checking two places.
 
@@ -466,8 +476,8 @@ That moment I knew: **the money wasn't wasted.**
 
 | File | Core Responsibility |
 |------|-------------------|
-| `internal/runtime/runtime.go` | Runtime interface and config definition |
-| `internal/runtime/manager.go` | Register, start, stop, resurrect, health check |
+| `internal/ares_runtime/runtime.go` | Runtime interface and config definition |
+| `internal/ares_runtime/manager.go` | Register, start, stop, resurrect, health check |
 | `internal/agents/base/agent.go` | Agent interface hierarchy: Agent / StatefulAgent / Heartbeater |
 | `internal/agents/leader/agent.go` | Leader pipeline + state recovery + safe distillation |
 | `internal/agents/leader/dispatcher.go` | Semaphore concurrent dispatch |
@@ -476,8 +486,8 @@ That moment I knew: **the money wasn't wasted.**
 | `internal/agents/sub/agent.go` | Sub Agent lifecycle |
 | `internal/agents/sub/executor.go` | LLM execution engine (retry + degradation) |
 | `internal/agents/sub/heartbeat.go` | Heartbeat sender + sync.Once shutdown |
-| `internal/shutdown/manager.go` | Four-phase shutdown |
-| `internal/callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
+| `internal/ares_shutdown/manager.go` | Four-phase shutdown |
+| `internal/ares_callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
 
 ---
 

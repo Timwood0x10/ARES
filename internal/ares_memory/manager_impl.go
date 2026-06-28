@@ -4,7 +4,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -15,13 +14,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
@@ -43,9 +42,9 @@ type memoryManager struct {
 	// EmbeddingPipeline: unified embedding generation for memory and query paths.
 	pipeline memembed.EmbeddingPipeline
 
-	// Event sourcing: optional EventStore for emitting lifecycle events.
-	eventStore events.EventStore
-	streamID   string // Stream ID used when appending events.
+	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
+	eventStore ares_events.EventStore
+	streamID   string // Stream ID used when appending ares_events.
 
 	// ContextCleaner: strips tool call noise and repetitive content before LLM calls.
 	ctxCleaner *memctx.ContextCleaner
@@ -145,7 +144,7 @@ func (m *memoryManager) Start(ctx context.Context) error {
 	m.taskMemory.Start(ctx)
 	m.started = true
 
-	slog.Info("Memory manager started")
+	log.Info("Memory manager started")
 	return nil
 }
 
@@ -168,7 +167,7 @@ func (m *memoryManager) Stop(ctx context.Context) error {
 	if m.sessionMemory != nil {
 		if err := m.sessionMemory.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close session memory: %w", err))
-			slog.Warn("Failed to close session memory", "error", err)
+			log.Warn("Failed to close session memory", "error", err)
 		}
 	}
 
@@ -179,25 +178,25 @@ func (m *memoryManager) Stop(ctx context.Context) error {
 		for _, e := range errs {
 			msg = append(msg, e.Error())
 		}
-		slog.Error("Memory manager stopped with errors", "error_count", len(errs))
+		log.Error("Memory manager stopped with errors", "error_count", len(errs))
 		return fmt.Errorf("memory manager stop: %s", strings.Join(msg, "; "))
 	}
 
-	slog.Info("Memory manager stopped")
+	log.Info("Memory manager stopped")
 	return nil
 }
 
-// SetEventStore configures an optional EventStore for emitting lifecycle events.
+// SetEventStore configures an optional EventStore for emitting lifecycle ares_events.
 // If store is nil, event emission is a no-op.
-func (m *memoryManager) SetEventStore(store events.EventStore, streamID string) {
+func (m *memoryManager) SetEventStore(store ares_events.EventStore, streamID string) {
 	m.eventStore = store
 	m.streamID = streamID
 }
 
-// emitEvent appends a single event using the canonical events.Emit.
-func (m *memoryManager) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if !events.Emit(ctx, m.eventStore, m.streamID, eventType, payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
+// emitEvent appends a single event using the canonical ares_events.Emit.
+func (m *memoryManager) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if !ares_events.Emit(ctx, m.eventStore, m.streamID, eventType, "memory", payload) {
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", m.streamID)
 	}
 }
 
@@ -219,12 +218,12 @@ func (m *memoryManager) CreateSession(ctx context.Context, userID string) (strin
 	}
 
 	// Emit session created event.
-	m.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+	m.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 		"session_id": sessionID,
 		"user_id":    userID,
 	})
 
-	slog.Debug("Session created", "session_id", sessionID, "user_id", userID)
+	log.Debug("Session created", "session_id", sessionID, "user_id", userID)
 	return sessionID, nil
 }
 
@@ -241,12 +240,12 @@ func (m *memoryManager) AddMessage(ctx context.Context, sessionID, role, content
 	}
 
 	// Emit message added event.
-	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 		"session_id": sessionID,
 		"role":       role,
 	})
 
-	slog.Debug("Message added", "session_id", sessionID, "role", role)
+	log.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
 }
 
@@ -268,7 +267,7 @@ func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID stri
 		return errors.Wrap(err, "add structured message")
 	}
 
-	m.emitEvent(ctx, events.EventMessageAdded, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
 		"session_id": sessionID,
 		"role":       msg.Role,
 	})
@@ -299,7 +298,7 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 
 	stats := m.ctxCleaner.Stats()
 	if stats.BytesSaved > 0 || stats.DroppedToolMessages > 0 {
-		slog.Debug("Prompt messages cleaned", "session_id", sessionID,
+		log.Debug("Prompt messages cleaned", "session_id", sessionID,
 			"history_in", stats.HistoryIn,
 			"history_out", stats.HistoryOut,
 			"bytes_saved", stats.BytesSaved,
@@ -315,7 +314,7 @@ func (m *memoryManager) DeleteSession(ctx context.Context, sessionID string) err
 		return errors.Wrap(err, "delete session")
 	}
 
-	slog.Debug("Session deleted", "session_id", sessionID)
+	log.Debug("Session deleted", "session_id", sessionID)
 	return nil
 }
 
@@ -323,7 +322,7 @@ func (m *memoryManager) DeleteSession(ctx context.Context, sessionID string) err
 func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionID string) (string, error) {
 	messages, err := m.GetMessages(ctx, sessionID)
 	if err != nil {
-		slog.Warn("Failed to get messages, using raw input", "error", err)
+		log.Warn("Failed to get messages, using raw input", "error", err)
 		return input, nil
 	}
 
@@ -337,41 +336,42 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	cleaned := m.ctxCleaner.Clean(messages)
 
 	// Build context string.
-	var contextBuilder string
+	var contextBuilder strings.Builder
+	contextBuilder.Grow(len(cleaned) * 256)
 	if len(cleaned) > 0 {
-		contextBuilder = "Previous conversation history:\n\n"
+		contextBuilder.WriteString("Previous conversation history:\n\n")
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:
-				contextBuilder += fmt.Sprintf("User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleAssistant:
-				contextBuilder += fmt.Sprintf("Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolCall:
-				contextBuilder += fmt.Sprintf("Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleToolResult:
-				contextBuilder += fmt.Sprintf("Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			case memctx.RoleSystem:
-				contextBuilder += fmt.Sprintf("System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			default:
-				contextBuilder += fmt.Sprintf("Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
 			}
 		}
-		contextBuilder += "\nCurrent request:\n"
+		contextBuilder.WriteString("\nCurrent request:\n")
 	}
-	contextBuilder += input
+	contextBuilder.WriteString(input)
 
 	// Emit cleaner stats periodically for observability.
 	stats := m.ctxCleaner.Stats()
 	if stats.BytesSaved > 0 {
-		slog.Debug("Context cleaned", "session_id", sessionID,
+		log.Debug("Context cleaned", "session_id", sessionID,
 			"history_in", stats.HistoryIn,
 			"history_out", stats.HistoryOut,
 			"bytes_saved", stats.BytesSaved,
 			"tool_calls", stats.ToolCalls)
 	}
 
-	slog.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
-	return contextBuilder, nil
+	log.Debug("Context built", "session_id", sessionID, "history_length", len(cleaned))
+	return contextBuilder.String(), nil
 }
 
 // CreateTask creates a new task and returns the task ID.
@@ -382,7 +382,7 @@ func (m *memoryManager) CreateTask(ctx context.Context, sessionID, userID, input
 		return "", errors.Wrap(err, "create task")
 	}
 
-	slog.Debug("Task created", "task_id", taskID, "session_id", sessionID)
+	log.Debug("Task created", "task_id", taskID, "session_id", sessionID)
 	return taskID, nil
 }
 
@@ -392,13 +392,13 @@ func (m *memoryManager) UpdateTaskOutput(ctx context.Context, taskID, output str
 		return errors.Wrap(err, "update task output")
 	}
 
-	slog.Debug("Task output updated", "task_id", taskID)
+	log.Debug("Task output updated", "task_id", taskID)
 	return nil
 }
 
 // DistillTask extracts key information from task for future reference.
 func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
-	slog.Info("[Memory Distillation] Starting task distillation", "task_id", taskID)
+	log.Info("[Memory Distillation] Starting task distillation", "task_id", taskID)
 
 	task, err := m.taskMemory.Distill(ctx, taskID)
 	if err != nil {
@@ -407,16 +407,16 @@ func (m *memoryManager) DistillTask(ctx context.Context, taskID string) (*models
 
 	inputStr, ok := task.Payload["input"].(string)
 	if !ok {
-		slog.Warn("distill: missing or invalid input", "task_id", taskID)
+		log.Warn("distill: missing or invalid input", "task_id", taskID)
 		inputStr = ""
 	}
 
-	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		"task_id":     taskID,
 		"input_count": len(inputStr),
 	})
 
-	slog.Info("[Memory Distillation] Task distilled successfully",
+	log.Info("[Memory Distillation] Task distilled successfully",
 		"task_id", taskID,
 		"input_length", len(inputStr))
 
@@ -434,16 +434,16 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		return errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
 	}
 
-	slog.Info("[Memory Distillation] Storing distilled task", "task_id", taskID)
+	log.Info("[Memory Distillation] Storing distilled task", "task_id", taskID)
 
 	inputStr, ok := distilled.Payload["input"].(string)
 	if !ok {
-		slog.Warn("StoreDistilledTask: missing or invalid input", "task_id", taskID)
+		log.Warn("StoreDistilledTask: missing or invalid input", "task_id", taskID)
 		inputStr = ""
 	}
 	outputStr, ok := distilled.Payload["output"].(string)
 	if !ok {
-		slog.Warn("StoreDistilledTask: missing or invalid output", "task_id", taskID)
+		log.Warn("StoreDistilledTask: missing or invalid output", "task_id", taskID)
 		outputStr = ""
 	}
 
@@ -452,12 +452,12 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 	userID, ok := distilled.Payload["user_id"].(string)
 	if !ok {
-		slog.Warn("StoreDistilledTask: missing or invalid user_id", "task_id", taskID)
+		log.Warn("StoreDistilledTask: missing or invalid user_id", "task_id", taskID)
 		userID = ""
 	}
 	tenantID, ok := distilled.Payload["tenant_id"].(string)
 	if !ok {
-		slog.Warn("StoreDistilledTask: missing or invalid tenant_id", "task_id", taskID)
+		log.Warn("StoreDistilledTask: missing or invalid tenant_id", "task_id", taskID)
 		tenantID = ""
 	}
 	if tenantID == "" {
@@ -476,22 +476,22 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		g.Go(func() error {
 			problem, ok := mem.Metadata["problem"].(string)
 			if !ok {
-				slog.Warn("StoreDistilledTask: missing or invalid problem in memory metadata", "task_id", taskID)
+				log.Warn("StoreDistilledTask: missing or invalid problem in memory metadata", "task_id", taskID)
 				problem = ""
 			}
 			solution, ok := mem.Metadata["solution"].(string)
 			if !ok {
-				slog.Warn("StoreDistilledTask: missing or invalid solution in memory metadata", "task_id", taskID)
+				log.Warn("StoreDistilledTask: missing or invalid solution in memory metadata", "task_id", taskID)
 				solution = ""
 			}
 			confidence, ok := mem.Metadata["confidence"].(float64)
 			if !ok {
-				slog.Warn("StoreDistilledTask: missing or invalid confidence in memory metadata", "task_id", taskID)
+				log.Warn("StoreDistilledTask: missing or invalid confidence in memory metadata", "task_id", taskID)
 				confidence = 0
 			}
 			extractionMethodStr, ok := mem.Metadata["extraction_method"].(string)
 			if !ok {
-				slog.Warn("StoreDistilledTask: missing or invalid extraction_method in memory metadata", "task_id", taskID)
+				log.Warn("StoreDistilledTask: missing or invalid extraction_method in memory metadata", "task_id", taskID)
 				extractionMethodStr = ""
 			}
 			if extractionMethodStr == "" {
@@ -507,7 +507,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 			}
 
 			if err := m.expRepo.Create(storeCtx, exp); err != nil {
-				slog.Error("[Memory Distillation] Failed to store experience",
+				log.Error("[Memory Distillation] Failed to store experience",
 					"task_id", taskID, "error", err)
 				return nil
 			}
@@ -516,19 +516,19 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		})
 	}
 	if err := g.Wait(); err != nil {
-		slog.Error("memory manager: background task failed", "error", err)
+		log.Error("memory manager: background task failed", "error", err)
 	}
 
 	if len(memories) > 0 && atomic.LoadInt64(&storedCount) == 0 {
 		return errors.New("all experiences failed to store")
 	}
 
-	m.emitEvent(ctx, events.EventMemoryDistilled, map[string]any{
+	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		"task_id":      taskID,
 		"output_count": storedCount,
 	})
 
-	slog.Info("[Memory Distillation] Distillation completed",
+	log.Info("[Memory Distillation] Distillation completed",
 		"task_id", taskID,
 		"memories_created", storedCount)
 
@@ -541,7 +541,7 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		return nil, errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
 	}
 
-	slog.Info("[Memory Search] Searching for similar tasks",
+	log.Info("[Memory Search] Searching for similar tasks",
 		"query", truncpkg.WithEllipsis(query, 50),
 		"limit", limit)
 
@@ -574,7 +574,7 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		tasks = append(tasks, task)
 	}
 
-	slog.Info("[Memory Search] Search completed",
+	log.Info("[Memory Search] Search completed",
 		"results_count", len(tasks),
 		"limit", limit)
 
@@ -624,7 +624,7 @@ func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, ta
 	// Try to get session messages via the task's session.
 	taskData, ok := m.taskMemory.Get(ctx, taskID)
 	if !ok || taskData.SessionID == "" {
-		slog.Debug("[Memory Distillation] No session data for task, using raw input/output",
+		log.Debug("[Memory Distillation] No session data for task, using raw input/output",
 			"task_id", taskID)
 		return []distillation.Message{
 			{Role: "user", Content: inputStr},
@@ -634,7 +634,7 @@ func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, ta
 
 	rawMessages, err := m.sessionMemory.GetMessages(ctx, taskData.SessionID)
 	if err != nil || len(rawMessages) == 0 {
-		slog.Debug("[Memory Distillation] No session messages for task, using raw input/output",
+		log.Debug("[Memory Distillation] No session messages for task, using raw input/output",
 			"task_id", taskID, "error", err)
 		return []distillation.Message{
 			{Role: "user", Content: inputStr},
@@ -648,7 +648,7 @@ func (m *memoryManager) buildCleanedDistillationMessages(ctx context.Context, ta
 		cleanOpts = *m.config.CleanOptions
 	}
 	cleaned := m.ctxCleaner.CleanWithTurns(rawMessages, cleanOpts)
-	slog.Debug("[Memory Distillation] Built cleaned distillation messages",
+	log.Debug("[Memory Distillation] Built cleaned distillation messages",
 		"task_id", taskID,
 		"raw_count", len(rawMessages),
 		"cleaned_count", len(cleaned))

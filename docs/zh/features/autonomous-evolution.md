@@ -272,7 +272,7 @@ type RegressionResult struct {
 
 ---
 
-### 5. Callbacks 包 (`internal/callbacks/`)
+### 5. Callbacks 包 (`internal/ares_callbacks/`)
 
 用于监控 LLM、Tool 和 Agent 生命周期事件的**发布/订阅事件注册中心**。
 

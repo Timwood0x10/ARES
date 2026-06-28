@@ -78,10 +78,12 @@ func (h *Handler) RetryWithBackoff(ctx context.Context, appErr *AppError, attemp
 			backoff = maxBackoff
 		}
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(backoff):
+		case <-timer.C:
 			// Continue to next attempt
 		}
 	}

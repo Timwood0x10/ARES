@@ -28,15 +28,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/ares/api"
-	"github.com/Timwood0x10/ares/api/marketmaking"
 	"github.com/Timwood0x10/ares/examples/quant-trading/agents"
+	apiimpl "github.com/Timwood0x10/ares/internal/api_impl"
+	"github.com/Timwood0x10/ares/internal/ares_quant"
+	"github.com/Timwood0x10/ares/internal/ares_quant/dataflow"
+	"github.com/Timwood0x10/ares/internal/ares_quant/market"
+	marketmakingapi "github.com/Timwood0x10/ares/internal/ares_quant/marketmaking_api"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
+	researchagents "github.com/Timwood0x10/ares/internal/ares_quant/research/agents"
 	"github.com/Timwood0x10/ares/internal/llm"
-	"github.com/Timwood0x10/ares/internal/quant"
-	"github.com/Timwood0x10/ares/internal/quant/dataflow"
-	"github.com/Timwood0x10/ares/internal/quant/market"
-	"github.com/Timwood0x10/ares/internal/quant/research"
-	researchagents "github.com/Timwood0x10/ares/internal/quant/research/agents"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 
 	"gopkg.in/yaml.v3"
@@ -149,7 +149,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 		alt := cfgPath[:len(cfgPath)-4] + ".example.yml"
 		cfgPath = alt
 	}
-	cfg, err := api.LoadServiceConfig(cfgPath)
+	cfg, err := apiimpl.LoadServiceConfig(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -157,14 +157,14 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 		cfg.LLM.Model = modelName
 	}
 
-	svc, err := api.StartService(ctx, cfg)
+	svc, err := apiimpl.StartService(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("start service: %w", err)
 	}
 	defer svc.Wait()
 
 	reg := core.NewRegistry()
-	if err := quant.RegisterTools(reg); err != nil {
+	if err := ares_quant.RegisterTools(reg); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -510,9 +510,9 @@ func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir 
 	log("  Capital: $%.2f", capital)
 	log("  Strategy: %s", strategy)
 
-	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dataDir)
+	runner := marketmakingapi.NewDefaultBacktestRunnerWithDataDir(dataDir)
 
-	req := &marketmaking.BacktestRequest{
+	req := &marketmakingapi.BacktestRequest{
 		Symbols:        symList,
 		StartTime:      startTime,
 		EndTime:        endTime,
@@ -571,7 +571,7 @@ func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir 
 }
 
 // writeBacktestSummary writes summary.json with the backtest results.
-func writeBacktestSummary(outDir string, resp *marketmaking.BacktestResponse) error {
+func writeBacktestSummary(outDir string, resp *marketmakingapi.BacktestResponse) error {
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return err
@@ -580,7 +580,7 @@ func writeBacktestSummary(outDir string, resp *marketmaking.BacktestResponse) er
 }
 
 // writeEquityCurveCSV writes equity_curve.csv from the equity curve.
-func writeEquityCurveCSV(outDir string, curve []marketmaking.EquityPoint) error {
+func writeEquityCurveCSV(outDir string, curve []marketmakingapi.EquityPoint) error {
 	f, err := os.Create(filepath.Join(outDir, "equity_curve.csv"))
 	if err != nil {
 		return err
@@ -612,7 +612,7 @@ func writeEquityCurveCSV(outDir string, curve []marketmaking.EquityPoint) error 
 }
 
 // writeTradesCSV writes trades.csv from the trade log.
-func writeTradesCSV(outDir string, trades []marketmaking.TradeRecord) error {
+func writeTradesCSV(outDir string, trades []marketmakingapi.TradeRecord) error {
 	f, err := os.Create(filepath.Join(outDir, "trades.csv"))
 	if err != nil {
 		return err
@@ -648,7 +648,7 @@ func writeTradesCSV(outDir string, trades []marketmaking.TradeRecord) error {
 }
 
 // writeBacktestConfig writes config.json with the backtest configuration.
-func writeBacktestConfig(outDir string, req *marketmaking.BacktestRequest) error {
+func writeBacktestConfig(outDir string, req *marketmakingapi.BacktestRequest) error {
 	data, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
 		return err
@@ -657,7 +657,7 @@ func writeBacktestConfig(outDir string, req *marketmaking.BacktestRequest) error
 }
 
 // saveSimulationJSON writes a BacktestResponse to a JSON file for simulation results.
-func saveSimulationJSON(resp *marketmaking.BacktestResponse, outPath string) error {
+func saveSimulationJSON(resp *marketmakingapi.BacktestResponse, outPath string) error {
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal simulation result: %w", err)
@@ -685,9 +685,9 @@ func runSimulation(ctx context.Context, ticker string, dataDir string,
 	}
 
 	// Convert research signals to public API TradeSignal type.
-	apiSignals := make([]marketmaking.TradeSignal, len(signals))
+	apiSignals := make([]marketmakingapi.TradeSignal, len(signals))
 	for i, s := range signals {
-		apiSignals[i] = marketmaking.TradeSignal{
+		apiSignals[i] = marketmakingapi.TradeSignal{
 			Date:       s.Date,
 			Action:     s.Action,
 			Reason:     s.Reason,
@@ -695,8 +695,8 @@ func runSimulation(ctx context.Context, ticker string, dataDir string,
 		}
 	}
 
-	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dataDir)
-	req := &marketmaking.BacktestRequest{
+	runner := marketmakingapi.NewDefaultBacktestRunnerWithDataDir(dataDir)
+	req := &marketmakingapi.BacktestRequest{
 		Symbols:        []string{ticker},
 		InitialCapital: 100_000.0,
 		PositionSize:   0.10,

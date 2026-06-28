@@ -78,7 +78,7 @@ type UserFeedback struct {
 
 // IsValid checks if the rating is valid.
 func (f *UserFeedback) IsValid() bool {
-	return f.Rating >= 1 && f.Rating <= 5
+	return f != nil && f.Rating >= 1 && f.Rating <= 5
 }
 
 // SetRating sets the rating with validation.

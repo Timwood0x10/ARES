@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -31,6 +32,10 @@ type Config struct {
 	RequestTimeout time.Duration
 	// MaxParallel is the maximum number of parallel steps.
 	MaxParallel int
+	// PluginBus is the optional plugin bus for workflow lifecycle hooks,
+	// routing, checkpointing, and event emission. If nil, the executor
+	// runs without plugins (backward compatible).
+	PluginBus *ares_runtime.PluginBus
 }
 
 // NewService creates a new workflow service instance.
@@ -129,6 +134,9 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 		engine.ApplyAtCheckpoint,
 		engine.WithMaxParallel(s.config.MaxParallel),
 	)
+	if s.config.PluginBus != nil {
+		executor.WithPluginBus(s.config.PluginBus)
+	}
 
 	result, err := executor.ExecuteDynamic(ctx, wf, req.Input, mutableDAG)
 	if err != nil {
@@ -172,6 +180,9 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		engine.ApplyAtCheckpoint,
 		engine.WithMaxParallel(s.config.MaxParallel),
 	)
+	if s.config.PluginBus != nil {
+		executor.WithPluginBus(s.config.PluginBus)
+	}
 
 	events := make(chan core.WorkflowEvent, 64)
 

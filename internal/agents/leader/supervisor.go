@@ -2,17 +2,16 @@ package leader
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/ctxutil"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -52,7 +51,7 @@ type LeaderSupervisor struct {
 	strategy        FailoverStrategy
 	recovery        *TaskRecovery
 	checkpoint      *CheckpointRepository
-	eventStore      events.EventStore
+	eventStore      ares_events.EventStore
 	config          *LeaderSupervisorConfig
 	g               *errgroup.Group
 	ctx             context.Context
@@ -72,10 +71,10 @@ func NewLeaderSupervisor(
 	strategy FailoverStrategy,
 	recovery *TaskRecovery,
 	checkpoint *CheckpointRepository,
-	eventStore events.EventStore,
+	eventStore ares_events.EventStore,
 	config *LeaderSupervisorConfig,
 ) (*LeaderSupervisor, error) {
-	slog.Warn("LeaderSupervisor is deprecated, use Runtime-level supervision instead")
+	log.Warn("LeaderSupervisor is deprecated, use Runtime-level supervision instead")
 	if heartbeatMon == nil {
 		return nil, errors.New("leader supervisor: heartbeat monitor is required")
 	}
@@ -100,7 +99,7 @@ func NewLeaderSupervisor(
 // RegisterLeader registers a leader for health monitoring.
 func (s *LeaderSupervisor) RegisterLeader(id string, agent base.Agent) {
 	if id == "" || agent == nil {
-		slog.Warn("RegisterLeader: nil agent or empty id", "id", id)
+		log.Warn("RegisterLeader: nil agent or empty id", "id", id)
 		return
 	}
 	s.mu.Lock()
@@ -174,7 +173,7 @@ func (s *LeaderSupervisor) handleFailover(leaderID string) {
 	s.mu.RUnlock()
 
 	if stopped || g == nil {
-		slog.Debug("supervisor stopped, skipping failover", "leader_id", leaderID)
+		log.Debug("supervisor stopped, skipping failover", "leader_id", leaderID)
 		return
 	}
 
@@ -182,7 +181,7 @@ func (s *LeaderSupervisor) handleFailover(leaderID string) {
 	s.mu.Lock()
 	if s.failoverRunning[leaderID] {
 		s.mu.Unlock()
-		slog.Debug("failover already running, skipping", "leader_id", leaderID)
+		log.Debug("failover already running, skipping", "leader_id", leaderID)
 		return
 	}
 	s.failoverRunning[leaderID] = true
@@ -196,7 +195,7 @@ func (s *LeaderSupervisor) handleFailover(leaderID string) {
 
 // doFailover executes the full failover sequence for a failed leader.
 func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
-	slog.Warn("leader failover triggered", "leader_id", leaderID)
+	log.Warn("leader failover triggered", "leader_id", leaderID)
 
 	// Clear failoverRunning flag when done.
 	defer func() {
@@ -210,24 +209,24 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	eventStore := s.eventStore
 	s.mu.RUnlock()
 	if !exists {
-		slog.Warn("leader not registered, skipping failover", "leader_id", leaderID)
+		log.Warn("leader not registered, skipping failover", "leader_id", leaderID)
 		return
 	}
 	if agent.Status() == models.AgentStatusOffline {
-		slog.Debug("leader already offline, skipping failover", "leader_id", leaderID)
+		log.Debug("leader already offline, skipping failover", "leader_id", leaderID)
 		return
 	}
 
-	if !events.Emit(ctx, eventStore, leaderID, events.EventFailoverTriggered, map[string]any{"leader_id": leaderID}) {
-		slog.Warn("failed to emit event", "event_type", events.EventFailoverTriggered, "stream_id", leaderID)
+	if !ares_events.Emit(ctx, eventStore, leaderID, ares_events.EventFailoverTriggered, "leader", map[string]any{"leader_id": leaderID}) {
+		log.Warn("failed to emit event", "event_type", ares_events.EventFailoverTriggered, "stream_id", leaderID)
 	}
 
 	// Use a detached context for Stop because the incoming ctx (gctx) may already
 	// be cancelled during supervisor shutdown, which would cause Stop to fail
 	// immediately without actually cleaning up the agent.
-	stopCtx, stopCancel := ctxutil.WithDetachedTimeout("leader:stop-old", 30*time.Second)
+	stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("leader:stop-old", 30*time.Second)
 	if err := agent.Stop(stopCtx); err != nil {
-		slog.Warn("failed to stop old leader (best-effort)", "leader_id", leaderID, "error", err)
+		log.Warn("failed to stop old leader (best-effort)", "leader_id", leaderID, "error", err)
 	}
 	stopCancel()
 
@@ -236,7 +235,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		var err error
 		cp, err = s.checkpoint.GetLatest(ctx, leaderID)
 		if err != nil {
-			slog.Warn("failed to retrieve checkpoint for leader (best-effort)", "leader_id", leaderID, "error", err)
+			log.Warn("failed to retrieve checkpoint for leader (best-effort)", "leader_id", leaderID, "error", err)
 		}
 	}
 
@@ -245,13 +244,13 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		recovery := NewEventRecovery(eventStore)
 		state, err := recovery.RecoverFromEvents(ctx, leaderID)
 		if err != nil {
-			slog.Warn("event recovery failed", "leader_id", leaderID, "error", err)
+			log.Warn("event recovery failed", "leader_id", leaderID, "error", err)
 		} else if state != nil && state.SessionID != "" {
 			if cp == nil {
 				cp = &LeaderCheckpoint{LeaderID: leaderID}
 			}
 			cp.SessionID = state.SessionID
-			slog.Info("session recovered from events",
+			log.Info("session recovered from ares_events",
 				"leader_id", leaderID,
 				"session_id", state.SessionID,
 				"last_version", state.LastVersion,
@@ -274,16 +273,18 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 		if failoverErr == nil {
 			break
 		}
-		slog.Error("failover attempt failed",
+		log.Error("failover attempt failed",
 			"leader_id", leaderID,
 			"attempt", attempt,
 			"error", failoverErr,
 		)
 		if attempt < s.config.MaxFailoverAttempts {
+			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 			backoff *= 2
 			if backoff > s.config.MaxBackoff {
@@ -293,7 +294,7 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	}
 
 	if failoverErr != nil {
-		slog.Error("all failover attempts exhausted",
+		log.Error("all failover attempts exhausted",
 			"leader_id", leaderID,
 			"max_attempts", s.config.MaxFailoverAttempts,
 		)
@@ -305,13 +306,13 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	if s.recovery != nil && cp.SessionID != "" {
 		staleTasks, err := s.recovery.RecoverStaleTasks(ctx, cp.SessionID)
 		if err != nil {
-			slog.Warn("failed to recover stale tasks (best-effort)",
+			log.Warn("failed to recover stale tasks (best-effort)",
 				"leader_id", leaderID,
 				"session_id", cp.SessionID,
 				"error", err,
 			)
 		} else if len(staleTasks) > 0 {
-			slog.Info("recovered stale tasks",
+			log.Info("recovered stale tasks",
 				"leader_id", leaderID,
 				"session_id", cp.SessionID,
 				"count", len(staleTasks),
@@ -323,14 +324,14 @@ func (s *LeaderSupervisor) doFailover(ctx context.Context, leaderID string) {
 	s.leaders[leaderID] = newAgent
 	s.mu.Unlock()
 
-	if !events.Emit(ctx, eventStore, leaderID, events.EventFailoverCompleted, map[string]any{
+	if !ares_events.Emit(ctx, eventStore, leaderID, ares_events.EventFailoverCompleted, "leader", map[string]any{
 		"leader_id":    leaderID,
 		"new_agent_id": newAgent.ID(),
 	}) {
-		slog.Warn("failed to emit event", "event_type", events.EventFailoverCompleted, "stream_id", leaderID)
+		log.Warn("failed to emit event", "event_type", ares_events.EventFailoverCompleted, "stream_id", leaderID)
 	}
 
-	slog.Info("failover completed, new leader registered",
+	log.Info("failover completed, new leader registered",
 		"leader_id", leaderID,
 		"new_agent_id", newAgent.ID(),
 	)

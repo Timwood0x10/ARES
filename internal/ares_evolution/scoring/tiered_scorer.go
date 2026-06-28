@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -53,12 +53,11 @@ type TieredScorer struct {
 	heuristic genome.ScorerFunc // always-available cheap scorer
 	llm       genome.ScorerFunc // optional expensive LLM scorer (may be nil)
 
-	mu             sync.Mutex
-	cacheHits      int64
-	llmCalls       int64
-	heuristicCalls int64
-	fallbacks      int64
-	totalScored    int64
+	cacheHits      atomic.Int64
+	llmCalls       atomic.Int64
+	heuristicCalls atomic.Int64
+	fallbacks      atomic.Int64
+	totalScored    atomic.Int64
 }
 
 // TieredScorerConfig holds configuration for creating a tiered scorer.
@@ -132,17 +131,15 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 	// Tier 1: Check cache first.
 	if entry, ok := ts.cache.Get(hash); ok {
 		ts.budget.RecordCacheHit()
-		ts.mu.Lock()
-		ts.cacheHits++
-		ts.totalScored++
-		ts.mu.Unlock()
+		ts.cacheHits.Add(1)
+		ts.totalScored.Add(1)
 		slog.Debug("tiered_scorer: cache hit",
 			"hash", hash, "score", entry.Score, "scorer_type", entry.ScorerType)
 		return entry.Score, TierCache, nil
 	}
 
 	// Tier 2: Try LLM scorer if available and within budget.
-	if ts.llm != nil && ts.budget.CanCallLLM() {
+	if ts.llm != nil && ts.budget.TryRecordLLMCall() {
 		score, scored := ts.tryLLMScore(ctx, s, hash)
 		if scored {
 			return score, TierLLM, nil
@@ -155,10 +152,8 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 	entry := MakeEntry(hash, score, "heuristic", 1, 0.5)
 	ts.cache.Put(hash, entry)
 
-	ts.mu.Lock()
-	ts.heuristicCalls++
-	ts.totalScored++
-	ts.mu.Unlock()
+	ts.heuristicCalls.Add(1)
+	ts.totalScored.Add(1)
 
 	return score, TierHeuristic, nil
 }
@@ -176,8 +171,6 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 //	float64 - the fitness score (0.0 on failure).
 //	bool - true if scoring succeeded.
 func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, hash uint64) (float64, bool) {
-	ts.budget.RecordLLMCall()
-
 	var score float64
 	var success bool
 
@@ -187,9 +180,7 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 				slog.Warn("tiered_scorer: LLM scorer panicked",
 					"hash", hash, "recovery", r)
 				ts.budget.RecordFallback()
-				ts.mu.Lock()
-				ts.fallbacks++
-				ts.mu.Unlock()
+				ts.fallbacks.Add(1)
 				success = false
 			}
 		}()
@@ -205,10 +196,8 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 	entry := MakeEntry(hash, score, "llm", 1, 1.0)
 	ts.cache.Put(hash, entry)
 
-	ts.mu.Lock()
-	ts.llmCalls++
-	ts.totalScored++
-	ts.mu.Unlock()
+	ts.llmCalls.Add(1)
+	ts.totalScored.Add(1)
 
 	slog.Debug("tiered_scorer: LLM scored",
 		"hash", hash, "score", score)
@@ -222,14 +211,12 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 //	map[string]int64 - statistics including cache_hits, llm_calls, heuristic_calls,
 //	                  fallbacks, total_scored.
 func (ts *TieredScorer) Stats() map[string]int64 {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
 	return map[string]int64{
-		"cache_hits":      ts.cacheHits,
-		"llm_calls":       ts.llmCalls,
-		"heuristic_calls": ts.heuristicCalls,
-		"fallbacks":       ts.fallbacks,
-		"total_scored":    ts.totalScored,
+		"cache_hits":      ts.cacheHits.Load(),
+		"llm_calls":       ts.llmCalls.Load(),
+		"heuristic_calls": ts.heuristicCalls.Load(),
+		"fallbacks":       ts.fallbacks.Load(),
+		"total_scored":    ts.totalScored.Load(),
 	}
 }
 
@@ -237,11 +224,9 @@ func (ts *TieredScorer) Stats() map[string]int64 {
 // Call this at the start of each evolution generation.
 func (ts *TieredScorer) ResetForGeneration() {
 	ts.budget.Reset()
-	ts.mu.Lock()
-	ts.cacheHits = 0
-	ts.llmCalls = 0
-	ts.heuristicCalls = 0
-	ts.fallbacks = 0
-	ts.totalScored = 0
-	ts.mu.Unlock()
+	ts.cacheHits.Store(0)
+	ts.llmCalls.Store(0)
+	ts.heuristicCalls.Store(0)
+	ts.fallbacks.Store(0)
+	ts.totalScored.Store(0)
 }

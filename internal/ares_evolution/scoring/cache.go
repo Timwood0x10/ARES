@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"container/list"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,17 +28,24 @@ type CacheEntry struct {
 	Confidence float64
 }
 
+type cacheItem struct {
+	hash  uint64
+	entry CacheEntry
+}
+
 // ScoreCache provides thread-safe score caching for evolved strategies.
 // It avoids redundant LLM calls by caching previously computed scores.
 //
+// Uses LRU eviction via container/list when at capacity.
 // Zero-value is NOT usable; use NewScoreCache to create an instance.
 type ScoreCache struct {
 	mu        sync.RWMutex
-	entries   map[uint64]CacheEntry // hash -> cache entry
-	maxSize   int                   // maximum cache entries; 0 = unlimited
-	hits      int64                 // number of cache hits
-	misses    int64                 // number of cache misses
-	evictions int64                 // number of entries evicted due to capacity
+	entries   map[uint64]*list.Element // hash -> list element
+	lru       list.List                // LRU order (front = most recently used)
+	maxSize   int                      // maximum cache entries; 0 = unlimited
+	hits      int64                    // number of cache hits
+	misses    int64                    // number of cache misses
+	evictions int64                    // number of entries evicted due to capacity
 }
 
 // NewScoreCache creates a new score cache.
@@ -51,13 +59,13 @@ type ScoreCache struct {
 //	*ScoreCache - the cache instance.
 func NewScoreCache(maxSize int) *ScoreCache {
 	return &ScoreCache{
-		entries: make(map[uint64]CacheEntry),
+		entries: make(map[uint64]*list.Element),
 		maxSize: maxSize,
 	}
 }
 
 // Get retrieves a cached score for the given strategy hash.
-// This method is thread-safe and uses a read lock for concurrent access.
+// This method is thread-safe and promotes the entry as most recently used.
 //
 // Args:
 //
@@ -68,20 +76,22 @@ func NewScoreCache(maxSize int) *ScoreCache {
 //	CacheEntry - the cached entry, zero value if not found.
 //	bool - true if found in cache.
 func (c *ScoreCache) Get(hash uint64) (CacheEntry, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	entry, ok := c.entries[hash]
-	if ok {
-		atomic.AddInt64(&c.hits, 1)
-	} else {
+	elem, ok := c.entries[hash]
+	if !ok {
 		atomic.AddInt64(&c.misses, 1)
+		return CacheEntry{}, false
 	}
-	return entry, ok
+
+	c.lru.MoveToFront(elem)
+	atomic.AddInt64(&c.hits, 1)
+	return elem.Value.(*cacheItem).entry, true
 }
 
 // Put stores a score in the cache.
-// If the cache is full, evicts the oldest entry (by timestamp).
+// If the cache is full, evicts the least recently used entry.
 // This method is thread-safe and uses a write lock.
 //
 // Args:
@@ -92,23 +102,27 @@ func (c *ScoreCache) Put(hash uint64, entry CacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Evict oldest entry if at capacity.
+	// Existing entry: update in place and move to front.
+	if elem, ok := c.entries[hash]; ok {
+		elem.Value.(*cacheItem).entry = entry
+		c.lru.MoveToFront(elem)
+		return
+	}
+
+	// Evict LRU entry if at capacity.
 	if c.maxSize > 0 && len(c.entries) >= c.maxSize {
-		if _, exists := c.entries[hash]; !exists {
-			var oldestHash uint64
-			oldestTime := int64(0)
-			for h, e := range c.entries {
-				if oldestTime == 0 || e.Timestamp < oldestTime {
-					oldestTime = e.Timestamp
-					oldestHash = h
-				}
-			}
-			delete(c.entries, oldestHash)
+		back := c.lru.Back()
+		if back != nil {
+			item := back.Value.(*cacheItem)
+			delete(c.entries, item.hash)
+			c.lru.Remove(back)
 			c.evictions++
 		}
 	}
 
-	c.entries[hash] = entry
+	item := &cacheItem{hash: hash, entry: entry}
+	elem := c.lru.PushFront(item)
+	c.entries[hash] = elem
 }
 
 // Stats returns cache statistics.
@@ -129,7 +143,8 @@ func (c *ScoreCache) Stats() (hits, misses, size, evictions int64) {
 func (c *ScoreCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = make(map[uint64]CacheEntry)
+	c.entries = make(map[uint64]*list.Element)
+	c.lru.Init()
 	atomic.StoreInt64(&c.hits, 0)
 	atomic.StoreInt64(&c.misses, 0)
 	c.evictions = 0

@@ -7,16 +7,16 @@ import (
 	"log"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service/graph"
-	"github.com/Timwood0x10/ares/internal/observability"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/internal/workflow/graphservice"
 )
 
 func main() {
 	// Create graph service
-	service, err := graph.NewService(&graph.Config{
+	service, err := graphservice.NewService(&graphservice.Config{
 		RequestTimeout: 30 * time.Second,
-		Tracer:         observability.NewLogTracer(nil),
+		Tracer:         ares_observability.NewLogTracer(nil),
 	})
 	if err != nil {
 		log.Fatalf("failed to create service: %v", err)
@@ -37,7 +37,7 @@ func main() {
 	fmt.Println("\nAll scheduler examples completed successfully!")
 }
 
-func runWithDefaultScheduler(service *graph.Service) {
+func runWithDefaultScheduler(service *graphservice.Service) {
 	executionOrder := []string{}
 	g := newSchedulerGraph("fifo-example", &executionOrder,
 		[]timingNode{
@@ -53,7 +53,7 @@ func runWithDefaultScheduler(service *graph.Service) {
 		nil, nil,
 	)
 
-	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
+	response, err := service.Execute(context.Background(), g, &graphservice.ExecuteRequest{
 		GraphID: "fifo-example",
 	})
 	if err != nil {
@@ -64,7 +64,7 @@ func runWithDefaultScheduler(service *graph.Service) {
 	fmt.Printf("Duration: %v\n", response.Duration)
 }
 
-func runWithPriorityScheduler(service *graph.Service) {
+func runWithPriorityScheduler(service *graphservice.Service) {
 	executionOrder := []string{}
 	g := newSchedulerGraph("priority-example", &executionOrder,
 		[]timingNode{
@@ -85,7 +85,7 @@ func runWithPriorityScheduler(service *graph.Service) {
 		nil,
 	)
 
-	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
+	response, err := service.Execute(context.Background(), g, &graphservice.ExecuteRequest{
 		GraphID: "priority-example",
 	})
 	if err != nil {
@@ -96,7 +96,7 @@ func runWithPriorityScheduler(service *graph.Service) {
 	fmt.Printf("Duration: %v\n", response.Duration)
 }
 
-func runWithShortJobScheduler(service *graph.Service) {
+func runWithShortJobScheduler(service *graphservice.Service) {
 	executionOrder := []string{}
 	g := newSchedulerGraph("sjf-example", &executionOrder,
 		[]timingNode{
@@ -117,7 +117,7 @@ func runWithShortJobScheduler(service *graph.Service) {
 		nil,
 	)
 
-	response, err := service.Execute(context.Background(), g, &graph.ExecuteRequest{
+	response, err := service.Execute(context.Background(), g, &graphservice.ExecuteRequest{
 		GraphID: "sjf-example",
 	})
 	if err != nil {

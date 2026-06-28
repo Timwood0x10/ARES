@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 var agentIDSeq atomic.Int64
@@ -41,7 +41,7 @@ type AgentEvent struct {
 	Source string
 	// Data is the event payload. Type depends on the event type.
 	Data any
-	// Err contains any error that occurred. Non-nil only for error events.
+	// Err contains any error that occurred. Non-nil only for error ares_events.
 	Err error
 }
 
@@ -59,7 +59,7 @@ type Agent interface {
 	Stop(ctx context.Context) error
 	// Process handles input and returns result.
 	Process(ctx context.Context, input any) (any, error)
-	// ProcessStream handles input and returns a stream of events.
+	// ProcessStream handles input and returns a stream of ares_events.
 	// The returned channel is closed when processing completes.
 	ProcessStream(ctx context.Context, input any) (<-chan AgentEvent, error)
 }
@@ -80,16 +80,16 @@ type Heartbeater interface {
 	IsAlive() bool
 }
 
-// StatefulAgent can be restored from persisted state and events.
+// StatefulAgent can be restored from persisted state and ares_events.
 // Agents that support resurrection should implement this interface.
 type StatefulAgent interface {
 	// RestoreState restores the agent's state from a snapshot map.
 	// Called after factory creation during resurrection.
 	RestoreState(state map[string]any) error
 
-	// ReplayEvents replays a sequence of events to reconstruct state.
+	// ReplayEvents replays a sequence of ares_events to reconstruct state.
 	// Called after RestoreState to apply incremental changes.
-	ReplayEvents(events []*events.Event) error
+	ReplayEvents(ares_events []*ares_events.Event) error
 
 	// Snapshot returns a serializable snapshot of current state.
 	// Snapshots are periodically captured and used during resurrection

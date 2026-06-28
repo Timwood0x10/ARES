@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -12,8 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // TestNewDynamicExecutor verifies that NewDynamicExecutor returns a valid
@@ -824,7 +826,7 @@ func TestDynamicExecutor_ReplaceNodeChain(t *testing.T) {
 	assert.Equal(t, StepStatusCompleted, stepResults["step2"].Status, "downstream step should be completed")
 }
 
-// TestDynamicExecutor_RecoveryEvents verifies that recovery events are emitted
+// TestDynamicExecutor_RecoveryEvents verifies that recovery ares_events are emitted
 // in the correct order.
 func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	registry := NewAgentRegistry()
@@ -857,7 +859,7 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 				}, nil
 			},
 		}).
-		WithRecoveryEventSink(func(ctx context.Context, eventType events.EventType, payload map[string]any) {
+		WithRecoveryEventSink(func(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 			eventsMu.Lock()
 			emittedEvents = append(emittedEvents, string(eventType))
 			eventsMu.Unlock()
@@ -877,8 +879,8 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	dag, _ := NewMutableDAG([]*Step{step1})
 
 	workflow := &Workflow{
-		ID:    "wf-recovery-events",
-		Name:  "recovery events workflow",
+		ID:    "wf-recovery-ares_events",
+		Name:  "recovery ares_events workflow",
 		Steps: dag.Steps(),
 	}
 
@@ -889,9 +891,9 @@ func TestDynamicExecutor_RecoveryEvents(t *testing.T) {
 	defer eventsMu.Unlock()
 
 	require.Len(t, emittedEvents, 3, "should emit step.failed, step.recovery.started, step.recovery.completed")
-	assert.Equal(t, string(events.EventStepFailed), emittedEvents[0])
-	assert.Equal(t, string(events.EventStepRecoveryStarted), emittedEvents[1])
-	assert.Equal(t, string(events.EventStepRecoveryCompleted), emittedEvents[2])
+	assert.Equal(t, string(ares_events.EventStepFailed), emittedEvents[0])
+	assert.Equal(t, string(ares_events.EventStepRecoveryStarted), emittedEvents[1])
+	assert.Equal(t, string(ares_events.EventStepRecoveryCompleted), emittedEvents[2])
 }
 
 // mockRecoveryHandler implements StepRecoveryHandler for testing.
@@ -918,4 +920,433 @@ func TestDynamicExecutor_HITLBuilderMethods(t *testing.T) {
 	assert.Same(t, executor, result, "builder methods should return the same executor")
 	assert.NotNil(t, executor.hitlHandler)
 	assert.NotNil(t, executor.hitlStore)
+}
+
+// ---------------------------------------------------------------------------
+// Step condition tests
+// ---------------------------------------------------------------------------
+
+func TestDynamicExecutor_StepCondition_SkipsWhenFalse(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	conditionExecuted := false
+	shouldSkip := true
+	dag, _ := NewMutableDAG([]*Step{
+		{
+			ID: "s1", Name: "Step 1", AgentType: "test-agent", Input: "in",
+			Condition: func(vars map[string]any) bool {
+				conditionExecuted = true
+				return !shouldSkip
+			},
+		},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusSkipped, result.Steps[0].Status)
+	assert.True(t, conditionExecuted)
+}
+
+func TestDynamicExecutor_StepCondition_ExecutesWhenTrue(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{
+			ID: "s1", Name: "Step 1", AgentType: "test-agent", Input: "in",
+			Condition: func(vars map[string]any) bool { return true },
+		},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status)
+}
+
+func TestDynamicExecutor_StepCondition_NilCondition(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-cond", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status)
+}
+
+func TestDynamicExecutor_StepCondition_MixedChain(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+		{
+			ID: "s2", AgentType: "test-agent", DependsOn: []string{"s1"},
+			Condition: func(vars map[string]any) bool { return false },
+		},
+		{ID: "s3", AgentType: "test-agent", DependsOn: []string{"s1"}},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-chain", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	require.Len(t, result.Steps, 3)
+	assert.Equal(t, StepStatusCompleted, result.Steps[0].Status) // s1 executed
+	assert.Equal(t, StepStatusSkipped, result.Steps[1].Status)   // s2 skipped
+	assert.Equal(t, StepStatusCompleted, result.Steps[2].Status) // s3 executed
+}
+
+// ---------------------------------------------------------------------------
+// Router integration tests
+// ---------------------------------------------------------------------------
+
+func TestDynamicExecutor_RouterEmitsEvent(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	bus := ares_runtime.NewPluginBus()
+	router := ares_runtime.NewExpressionRouter("test-router", []ares_runtime.RouteRule{
+		{
+			FromStepID: "s1",
+			ToStepID:   "s2",
+			Condition:  func(output string, vars map[string]any) bool { return true },
+			Reason:     "always route to s2",
+		},
+	})
+	require.NoError(t, bus.Register(router))
+	require.NoError(t, bus.Start(context.Background()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, err := bus.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{ares_runtime.EventRouteDecided},
+	})
+	require.NoError(t, err)
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+		{ID: "s2", AgentType: "test-agent", DependsOn: []string{"s1"}},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	executor.WithPluginBus(bus)
+
+	wf := &Workflow{ID: "wf-router", Steps: dag.Steps()}
+	_, err = executor.ExecuteDynamic(ctx, wf, "init", dag)
+	require.NoError(t, err)
+
+	select {
+	case evt := <-eventCh:
+		assert.Equal(t, ares_runtime.EventRouteDecided, evt.Type)
+		assert.Equal(t, "s2", evt.Payload["next_step_id"])
+		assert.Equal(t, "always route to s2", evt.Payload["route_reason"])
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for route event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round loop integration tests
+// ---------------------------------------------------------------------------
+
+// mockMemoryPluginForTest is a simple MemoryPlugin used in round loop tests.
+type mockMemoryPluginForTest struct {
+	mu        sync.Mutex
+	adviseFn  func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error)
+	callCount int
+}
+
+func (m *mockMemoryPluginForTest) Name() string { return "mock-memory" }
+func (m *mockMemoryPluginForTest) Capabilities() []ares_runtime.Capability {
+	return []ares_runtime.Capability{ares_runtime.CapMemory}
+}
+func (m *mockMemoryPluginForTest) Start(ctx context.Context, bus ares_runtime.EventBus) error {
+	return nil
+}
+func (m *mockMemoryPluginForTest) Stop(ctx context.Context) error { return nil }
+func (m *mockMemoryPluginForTest) AdviseRoute(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	if m.adviseFn != nil {
+		return m.adviseFn(ctx, state)
+	}
+	return nil, nil
+}
+
+// mockEvolutionPluginForTest is a simple EvolutionPlugin used in round loop tests.
+type mockEvolutionPluginForTest struct {
+	mu          sync.Mutex
+	recommendFn func(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error)
+	callCount   int
+}
+
+func (m *mockEvolutionPluginForTest) Name() string { return "mock-evolution" }
+func (m *mockEvolutionPluginForTest) Capabilities() []ares_runtime.Capability {
+	return []ares_runtime.Capability{ares_runtime.CapEvolution}
+}
+func (m *mockEvolutionPluginForTest) Start(ctx context.Context, bus ares_runtime.EventBus) error {
+	return nil
+}
+func (m *mockEvolutionPluginForTest) Stop(ctx context.Context) error { return nil }
+func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error) {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	if m.recommendFn != nil {
+		return m.recommendFn(ctx, state)
+	}
+	return nil, nil
+}
+func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome ares_runtime.ExecutionOutcome) error {
+	return nil
+}
+
+// TestDynamicExecutor_CheckpointPluginSetRound verifies that SetRound
+// correctly persists the round number into the checkpoint data.
+func TestDynamicExecutor_CheckpointPluginSetRound(t *testing.T) {
+	ckptStore := newMemCheckpointStore()
+	bus := ares_runtime.NewPluginBus()
+	ckpt := ares_runtime.NewCheckpointPlugin("test-cp", ckptStore)
+	require.NoError(t, bus.Register(ckpt))
+	require.NoError(t, bus.Start(context.Background()))
+
+	// BeforeStep creates the checkpoint snapshot
+	err := bus.BeforeStep(context.Background(), "exec-round-1", &ares_runtime.Step{ID: "s1"})
+	require.NoError(t, err)
+
+	// SetRound via direct access — we need to flush to verify
+	ckpt.SetRound("exec-round-1", 3)
+	require.NoError(t, ckpt.Flush(context.Background(), "exec-round-1"))
+
+	// Load checkpoint data and inspect
+	data, err := ckptStore.Load(context.Background(), "checkpoint/exec-round-1")
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	var loaded ares_runtime.ExperienceCheckpoint
+	require.NoError(t, json.Unmarshal(data, &loaded))
+	assert.Equal(t, 3, loaded.CurrentRound, "SetRound should persist round to checkpoint")
+}
+
+// TestDynamicExecutor_ApplyRoundMutations verifies that applyRoundMutations
+// invokes MemoryPlugin.AdviseRoute and EvolutionPlugin.Recommend, and that
+// memory advice adds nodes to the DAG when confidence is sufficient.
+func TestDynamicExecutor_ApplyRoundMutations(t *testing.T) {
+	registry := NewAgentRegistry()
+	bus := ares_runtime.NewPluginBus()
+
+	// Memory plugin that advises adding a new step
+	memPlugin := &mockMemoryPluginForTest{
+		adviseFn: func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
+			return []ares_runtime.RouteAdvice{
+				{NextStepID: "suggested-step", Confidence: 0.9, Reason: "similar past execution"},
+				{NextStepID: "low-conf-step", Confidence: 0.3, Reason: "low confidence"},
+			}, nil
+		},
+	}
+
+	// Evolution plugin that suggests a preferred agent
+	evoPlugin := &mockEvolutionPluginForTest{
+		recommendFn: func(ctx context.Context, state ares_runtime.ExecutionState) (*ares_runtime.RuntimeRecommendation, error) {
+			return &ares_runtime.RuntimeRecommendation{
+				PreferredAgent: "advanced-agent",
+				RouterWeight:   0.8,
+			}, nil
+		},
+	}
+
+	require.NoError(t, bus.Register(memPlugin))
+	require.NoError(t, bus.Register(evoPlugin))
+	require.NoError(t, bus.Start(context.Background()))
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithPluginBus(bus)
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	execution := &WorkflowExecution{
+		ID:     "exec-mut-1",
+		Status: WorkflowStatusRunning,
+	}
+
+	executor.applyRoundMutations(context.Background(), 1, execution, dag)
+
+	// Verify: suggested-step was added (confidence >= 0.5)
+	steps := dag.Steps()
+	found := false
+	for _, s := range steps {
+		if s.ID == "suggested-step" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "applyRoundMutations should add high-confidence memory advice as DAG nodes")
+
+	// Verify: low-conf-step was NOT added (confidence < 0.5)
+	for _, s := range steps {
+		assert.NotEqual(t, "low-conf-step", s.ID, "low confidence advice should not create DAG nodes")
+	}
+
+	// Verify both plugins were called
+	memPlugin.mu.Lock()
+	assert.Equal(t, 1, memPlugin.callCount, "MemoryPlugin.AdviseRoute should be called once")
+	memPlugin.mu.Unlock()
+	evoPlugin.mu.Lock()
+	assert.Equal(t, 1, evoPlugin.callCount, "EvolutionPlugin.Recommend should be called once")
+	evoPlugin.mu.Unlock()
+}
+
+// TestDynamicExecutor_RoundLoopIntegration verifies the full round loop:
+// checkpoint round tracking, DAG mutations, and loop plugin iteration.
+func TestDynamicExecutor_RoundLoopIntegration(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.Register("echo", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock", "echo", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+	// Register an agent for the step that applyRoundMutations will create.
+	registry.Register("default", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock", "default", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	bus := ares_runtime.NewPluginBus()
+	ckptStore := newMemCheckpointStore()
+
+	// Memory plugin: suggest a new step after round 1
+	memPlugin := &mockMemoryPluginForTest{
+		adviseFn: func(ctx context.Context, state ares_runtime.RouteState) ([]ares_runtime.RouteAdvice, error) {
+			return []ares_runtime.RouteAdvice{
+				{NextStepID: "round2-step", Confidence: 0.9, Reason: "memory suggests continuation"},
+			}, nil
+		},
+	}
+
+	// Evolution plugin: track how many times it's called
+	evoPlugin := &mockEvolutionPluginForTest{}
+
+	// Loop plugin: allow exactly 2 rounds
+	loopPlugin := ares_runtime.NewLoopPlugin("round-loop", ares_runtime.LoopConfig{
+		MaxIterations: 2,
+	})
+
+	ckpt := ares_runtime.NewCheckpointPlugin("test-cp", ckptStore)
+
+	require.NoError(t, bus.Register(memPlugin))
+	require.NoError(t, bus.Register(evoPlugin))
+	require.NoError(t, bus.Register(loopPlugin))
+	require.NoError(t, bus.Register(ckpt))
+	require.NoError(t, bus.Start(context.Background()))
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "echo", Input: "hello"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint).
+		WithPluginBus(bus).
+		WithCheckpointStore(ckptStore)
+
+	wf := &Workflow{ID: "wf-round-int", Steps: dag.Steps()}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := executor.ExecuteDynamic(ctx, wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify plugins were called during round transitions
+	memPlugin.mu.Lock()
+	assert.Positive(t, memPlugin.callCount, "MemoryPlugin should be called in round mutations")
+	memPlugin.mu.Unlock()
+	evoPlugin.mu.Lock()
+	assert.Positive(t, evoPlugin.callCount, "EvolutionPlugin should be called in round mutations")
+	evoPlugin.mu.Unlock()
+
+	// Verify SetRound was called: load checkpoint and check CurrentRound >= 1
+	data, err := ckptStore.Load(context.Background(), "checkpoint/"+result.ExecutionID)
+	if err == nil && data != nil {
+		var loaded ares_runtime.ExperienceCheckpoint
+		require.NoError(t, json.Unmarshal(data, &loaded))
+		assert.GreaterOrEqual(t, loaded.CurrentRound, 1, "checkpoint should have round tracking")
+	}
+}
+
+func TestDynamicExecutor_RouterNoRouterRegistered(t *testing.T) {
+	// Executor without a plugin bus should work normally with no routing.
+	registry := NewAgentRegistry()
+	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return NewMockAgent("mock-1", "test-agent", func(ctx context.Context, input any) (any, error) {
+			return &models.RecommendResult{
+				Items: []*models.RecommendItem{{ItemID: "i1", Name: "item", Price: 10}},
+			}, nil
+		}), nil
+	})
+
+	dag, _ := NewMutableDAG([]*Step{
+		{ID: "s1", AgentType: "test-agent", Input: "in"},
+	})
+
+	executor := NewDynamicExecutor(registry, ApplyAtCheckpoint)
+	wf := &Workflow{ID: "wf-norouter", Steps: dag.Steps()}
+	result, err := executor.ExecuteDynamic(context.Background(), wf, "init", dag)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
 }

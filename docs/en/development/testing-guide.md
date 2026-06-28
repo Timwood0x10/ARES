@@ -331,7 +331,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/service"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 func TestEndToEndFlow(t *testing.T) {

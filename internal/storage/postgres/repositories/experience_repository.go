@@ -41,7 +41,7 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(exp.Embedding)
+	embeddingStr := postgres.FormatVector(exp.Embedding)
 
 	// Build query with optional decay_at and created_at
 	var query string
@@ -136,17 +136,17 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 	}
 
 	query := `
-		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
 			   score, success, agent_id, metadata::text, decay_at, created_at
 		FROM experiences_1024
 		WHERE id = $1
 	`
 
 	exp := &storage_models.Experience{}
-	var embeddingStr, metadataStr string
+	var metadataStr string
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-		&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
+		&exp.EmbeddingModel, &exp.EmbeddingVersion,
 		&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
 		&exp.DecayAt, &exp.CreatedAt,
 	)
@@ -156,12 +156,6 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get experience by id")
-	}
-
-	// Parse embedding string to float64 array
-	exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse embedding")
 	}
 
 	// Parse metadata JSON string to map
@@ -187,7 +181,7 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 	}
 
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(exp.Embedding)
+	embeddingStr := postgres.FormatVector(exp.Embedding)
 
 	query := `
 		UPDATE experiences_1024
@@ -236,7 +230,7 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id string) error {
 // Returns list of similar experiences ordered by similarity.
 func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
@@ -316,7 +310,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 	escapedQuery := postgres.EscapeILIKEPattern(query)
 
 	sqlQuery := `
-        SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+        SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
                score, success, agent_id, metadata::text, decay_at, created_at
         FROM experiences_1024
         WHERE (input ILIKE '%' || $1 || '%' ESCAPE '\' OR output ILIKE '%' || $1 || '%' ESCAPE '\')
@@ -335,19 +329,13 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 	experiences := make([]*storage_models.Experience, 0)
 	for rows.Next() {
 		exp := &storage_models.Experience{}
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		err := rows.Scan(
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-			&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
+			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
 			&exp.DecayAt, &exp.CreatedAt,
 		)
-		if err != nil {
-			continue
-		}
-
-		// Parse embedding string to float64 array
-		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -379,7 +367,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 // Returns list of experiences ordered by score (descending).
 func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
-		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
 			   score, success, agent_id, metadata::text, decay_at, created_at
 		FROM experiences_1024
 		WHERE type = $1
@@ -398,19 +386,13 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 	experiences := make([]*storage_models.Experience, 0)
 	for rows.Next() {
 		exp := &storage_models.Experience{}
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		err := rows.Scan(
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-			&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
+			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
 			&exp.DecayAt, &exp.CreatedAt,
 		)
-		if err != nil {
-			continue
-		}
-
-		// Parse embedding string to float64 array
-		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -472,7 +454,7 @@ func (r *ExperienceRepository) UpdateScore(ctx context.Context, id string, score
 // Returns list of experiences ordered by created time (descending).
 func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
-		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
 			   score, success, agent_id, metadata::text, decay_at, created_at
 		FROM experiences_1024
 		WHERE agent_id = $1
@@ -491,19 +473,13 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 	experiences := make([]*storage_models.Experience, 0)
 	for rows.Next() {
 		exp := &storage_models.Experience{}
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		err := rows.Scan(
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-			&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
+			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
 			&exp.DecayAt, &exp.CreatedAt,
 		)
-		if err != nil {
-			continue
-		}
-
-		// Parse embedding string to float64 array
-		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
 			continue
 		}
@@ -536,7 +512,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 // Returns error if update operation fails.
 func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
 	// Convert embedding to pgvector format
-	embeddingStr := float64ToVectorString(embedding)
+	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE experiences_1024

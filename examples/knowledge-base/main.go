@@ -20,8 +20,8 @@ import (
 
 	"github.com/google/uuid"
 
-	memory "github.com/Timwood0x10/ares/api/ares_memory"
 	internalMemory "github.com/Timwood0x10/ares/internal/ares_memory"
+	memoryapi "github.com/Timwood0x10/ares/internal/ares_memory/service"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -353,7 +353,7 @@ type KnowledgeBase struct {
 	llmClient       *llm.Client
 	retrieval       *services.SimpleRetrievalService
 	memMgr          internalMemory.MemoryManager
-	distillationSvc *memory.DistillationServiceImpl
+	distillationSvc *memoryapi.DistillationServiceImpl
 	profileService  *UserProfileService
 	sessionID       string
 	messageCount    int
@@ -550,13 +550,13 @@ func NewKnowledgeBase(config *Config) (*KnowledgeBase, error) {
 	}
 
 	// Create distillation service if memory is enabled and distillation is configured
-	var distillationSvc *memory.DistillationServiceImpl
+	var distillationSvc *memoryapi.DistillationServiceImpl
 	if config.Memory.Enabled && config.Memory.EnableDistillation {
 		// Create experience repository adapter
 		expRepo := NewExperienceRepositoryAdapter(distilledRepo)
 
 		// Create distillation configuration
-		distillConfig := &memory.DistillationConfig{
+		distillConfig := &memoryapi.DistillationConfig{
 			MinImportance:              0.6,
 			ConflictThreshold:          0.85,
 			MaxMemoriesPerDistillation: 3,
@@ -575,7 +575,7 @@ func NewKnowledgeBase(config *Config) (*KnowledgeBase, error) {
 		}
 
 		var err error
-		distillationSvc, err = memory.NewDistillationServiceWithEmbedder(distillConfig, embeddingClient, expRepo)
+		distillationSvc, err = memoryapi.NewDistillationServiceWithEmbedder(distillConfig, embeddingClient, expRepo)
 		if err != nil {
 			slog.Warn("Failed to create distillation service", "error", err)
 			distillationSvc = nil
@@ -1273,9 +1273,9 @@ func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, mes
 	}
 
 	// Convert internal messages to API messages
-	apiMessages := make([]memory.ConversationMessage, len(messages))
+	apiMessages := make([]memoryapi.ConversationMessage, len(messages))
 	for i, msg := range messages {
-		apiMessages[i] = memory.ConversationMessage{
+		apiMessages[i] = memoryapi.ConversationMessage{
 			Role:    msg.Role,
 			Content: msg.Content,
 		}
@@ -2015,9 +2015,9 @@ type experienceRepositoryAdapter struct {
 }
 
 // SearchByVector implements ExperienceRepository interface
-func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]*memory.Experience, error) {
+func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]*memoryapi.Experience, error) {
 	if vector == nil {
-		return []*memory.Experience{}, nil
+		return []*memoryapi.Experience{}, nil
 	}
 
 	// Search for similar memories using the distilled repository
@@ -2027,9 +2027,9 @@ func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector
 	}
 
 	// Convert DistilledMemory to Experience
-	experiences := make([]*memory.Experience, len(memories))
+	experiences := make([]*memoryapi.Experience, len(memories))
 	for i, mem := range memories {
-		experiences[i] = &memory.Experience{
+		experiences[i] = &memoryapi.Experience{
 			Problem:    extractProblemFromContent(mem.Content),
 			Solution:   extractSolutionFromContent(mem.Content),
 			Confidence: mem.Importance,
@@ -2040,7 +2040,7 @@ func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector
 }
 
 // GetByMemoryType implements ExperienceRepository interface
-func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenantID string, memoryType memory.MemoryType) ([]*memory.Experience, error) {
+func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenantID string, memoryType memoryapi.MemoryType) ([]*memoryapi.Experience, error) {
 	// Query distilled memories by memory type
 	memories, err := a.repo.GetByMemoryType(ctx, tenantID, string(memoryType), 100)
 	if err != nil {
@@ -2048,9 +2048,9 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenan
 	}
 
 	// Convert DistilledMemory to Experience
-	experiences := make([]*memory.Experience, len(memories))
+	experiences := make([]*memoryapi.Experience, len(memories))
 	for i, mem := range memories {
-		experiences[i] = &memory.Experience{
+		experiences[i] = &memoryapi.Experience{
 			Problem:    extractProblemFromContent(mem.Content),
 			Solution:   extractSolutionFromContent(mem.Content),
 			Confidence: mem.Importance,
@@ -2060,8 +2060,23 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenan
 	return experiences, nil
 }
 
+// CountByMemoryType implements ExperienceRepository interface
+func (a *experienceRepositoryAdapter) CountByMemoryType(ctx context.Context, tenantID string, memoryType memoryapi.MemoryType) (int, error) {
+	return a.repo.CountByMemoryType(ctx, tenantID, string(memoryType))
+}
+
+// DeleteBatch implements ExperienceRepository interface
+func (a *experienceRepositoryAdapter) DeleteBatch(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if err := a.repo.Delete(ctx, "default", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Update implements ExperienceRepository interface
-func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *memory.Experience) error {
+func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *memoryapi.Experience) error {
 	if experience == nil {
 		return fmt.Errorf("experience cannot be nil")
 	}
@@ -2116,7 +2131,7 @@ func (a *experienceRepositoryAdapter) Delete(ctx context.Context, id string) err
 }
 
 // Create implements ExperienceRepository interface
-func (a *experienceRepositoryAdapter) Create(ctx context.Context, experience *memory.Experience) error {
+func (a *experienceRepositoryAdapter) Create(ctx context.Context, experience *memoryapi.Experience) error {
 	// Convert Experience to DistilledMemory
 	// Map solution type to interaction type to match database constraint
 	distilledMem := &repositories.DistilledMemory{

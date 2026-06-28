@@ -40,14 +40,14 @@ graph TB
 
 ## How an Agent Dies
 
-An agent can die in three ways. All are handled in `internal/runtime/manager.go`.
+An agent can die in three ways. All are handled in `internal/ares_runtime/manager.go`.
 
 ### 1. Panic During Execution
 
 Each agent runs in a goroutine wrapped with `defer recover()`. When a panic is caught, it calls `NotifyAgentDead`:
 
 ```go
-// internal/runtime/manager.go:146-166
+// internal/ares_runtime/manager.go:146-166
 m.g.Go(func() error {
     defer func() {
         if r := recover(); r != nil {
@@ -115,7 +115,7 @@ flowchart TD
     ASYNC --> TIMEOUT["Timeout: 60s"]
 ```
 
-The actual code from `internal/runtime/manager.go:416-454`:
+The actual code from `internal/ares_runtime/manager.go:416-454`:
 
 ```go
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
@@ -187,7 +187,7 @@ sequenceDiagram
 The old agent is marked `stopped = true` under write lock, its context is cancelled, and `agent.Stop()` is called with a 10s timeout.
 
 ```go
-// internal/runtime/manager.go:310-328
+// internal/ares_runtime/manager.go:310-328
 m.mu.Lock()
 oldMA, oldExists := m.agents[agentID]
 if oldExists && oldMA != nil {

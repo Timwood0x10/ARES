@@ -2,8 +2,16 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExecuteWithNilGraph(t *testing.T) {
@@ -443,4 +451,377 @@ func TestExecuteAllConditionalEdgesFalse(t *testing.T) {
 	if len(executionOrder) != 3 {
 		t.Errorf("expected 3 nodes, got %d: %v", len(executionOrder), executionOrder)
 	}
+}
+
+func TestExecuteWithLoopPluginMaxIterations(t *testing.T) {
+	g := buildTestGraph(t, "loop-max",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		startDef("node1"),
+	)
+
+	var callCount atomic.Int32
+	origNode := g.nodes["node1"]
+	g.nodes["node1"] = &mockNode{id: "node1", executeFn: func(ctx context.Context, state *State) error {
+		callCount.Add(1)
+		return origNode.Execute(ctx, state)
+	}}
+
+	bus := ares_runtime.NewPluginBus()
+	loop := ares_runtime.NewLoopPlugin("loop", ares_runtime.LoopConfig{MaxIterations: 3})
+	require.NoError(t, bus.Register(loop))
+	require.NoError(t, bus.Start(context.Background()))
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	state := NewState()
+	state.Set("__loop_iteration", 0)
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	if n := callCount.Load(); n != 3 {
+		t.Errorf("expected node1 to execute 3 times, got %d", n)
+	}
+}
+
+func TestExecuteWithLoopPluginUntilCondition(t *testing.T) {
+	g := buildTestGraph(t, "loop-until",
+		nodeDef("counter", func(ctx context.Context, state *State) error {
+			v, _ := state.Get("count")
+			state.Set("count", v.(int)+1)
+			return nil
+		}),
+		startDef("counter"),
+	)
+
+	bus := ares_runtime.NewPluginBus()
+	loop := ares_runtime.NewLoopPlugin("loop", ares_runtime.LoopConfig{
+		UntilCondition: func(vars map[string]any) bool {
+			c, ok := vars["count"].(int)
+			return ok && c >= 5
+		},
+	})
+	require.NoError(t, bus.Register(loop))
+	require.NoError(t, bus.Start(context.Background()))
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	state := NewState()
+	state.Set("count", 0)
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	v, _ := state.Get("count")
+	if n := v.(int); n != 5 {
+		t.Errorf("expected count to reach 5, got %d", n)
+	}
+}
+
+func TestExecuteWithLoopPluginNoPlugin(t *testing.T) {
+	// Without a LoopPlugin, graph should execute once as usual.
+	var callCount atomic.Int32
+	g := buildTestGraph(t, "loop-none",
+		nodeDef("node1", func(ctx context.Context, state *State) error {
+			callCount.Add(1)
+			return nil
+		}),
+		startDef("node1"),
+	)
+
+	state := NewState()
+	_, err := g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("expected node1 to execute once, got %d", n)
+	}
+}
+
+func TestExecuteLifecycleEvents(t *testing.T) {
+	g := buildTestGraph(t, "lifecycle",
+		nodeDef("step1", func(ctx context.Context, state *State) error {
+			state.Set("seen", "step1")
+			return nil
+		}),
+		nodeDef("step2", func(ctx context.Context, state *State) error {
+			state.Set("seen", "step2")
+			return nil
+		}),
+		edgeDef("step1", "step2"),
+		startDef("step1"),
+	)
+
+	bus := ares_runtime.NewPluginBus()
+	require.NoError(t, bus.Start(context.Background()))
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var gotEvents []string
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	sub, err := bus.Subscribe(subCtx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			ares_runtime.EventWorkflowStarted,
+			ares_runtime.EventWorkflowCompleted,
+			ares_runtime.EventStepStarted,
+			ares_runtime.EventStepCompleted,
+		},
+	})
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for evt := range sub {
+			mu.Lock()
+			gotEvents = append(gotEvents, string(evt.Type))
+			mu.Unlock()
+		}
+	}()
+
+	_, err = g.Execute(context.Background(), NewState())
+	require.NoError(t, err)
+
+	subCancel() // close subscriber channel
+	<-done      // wait for goroutine to finish
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	expected := []string{
+		"workflow.started",
+		"step.started", "step.completed", // step1
+		"step.started", "step.completed", // step2
+		"workflow.completed",
+	}
+	require.Equal(t, len(expected), len(gotEvents), "got: %v", gotEvents)
+	for i, typ := range expected {
+		if gotEvents[i] != typ {
+			t.Errorf("event[%d]: expected %s, got %s", i, typ, gotEvents[i])
+		}
+	}
+}
+
+type memCheckpointStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func (s *memCheckpointStore) Save(_ context.Context, key string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data == nil {
+		s.data = make(map[string][]byte)
+	}
+	s.data[key] = data
+	return nil
+}
+
+func (s *memCheckpointStore) Load(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.data[key]
+	if !ok {
+		return nil, nil
+	}
+	return data, nil
+}
+
+func TestGraphCheckpointPlugin(t *testing.T) {
+	g := buildTestGraph(t, "ckpt-graph",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			state.Set("visited", "n1")
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			state.Set("visited", "n2")
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	store := &memCheckpointStore{}
+	bus := ares_runtime.NewPluginBus()
+	cp := ares_runtime.NewCheckpointPlugin("ckpt", store)
+	require.NoError(t, bus.Register(cp))
+	require.NoError(t, bus.Start(context.Background()))
+	_, err := g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	_, err = g.Execute(context.Background(), NewState())
+	require.NoError(t, err)
+
+	// Verify checkpoint was saved for the graph execution.
+	data, err := store.Load(context.Background(), "checkpoint/ckpt-graph")
+	require.NoError(t, err)
+	require.NotNil(t, data)
+
+	var ckpt ares_runtime.ExperienceCheckpoint
+	require.NoError(t, json.Unmarshal(data, &ckpt))
+	require.Equal(t, "ckpt-graph", ckpt.ExecutionID)
+	require.Len(t, ckpt.StepStates, 2)
+	// Both steps should be completed.
+	for _, ss := range ckpt.StepStates {
+		require.Equal(t, ares_runtime.StepStatusCompleted, ss.Status)
+	}
+}
+
+func TestExecuteFromCheckpoint_SkipsCompletedNodes(t *testing.T) {
+	g := buildTestGraph(t, "resume-graph",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			v, _ := state.Get("order")
+			state.Set("order", append(v.([]string), "n1"))
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			v, _ := state.Get("order")
+			state.Set("order", append(v.([]string), "n2"))
+			return nil
+		}),
+		nodeDef("n3", func(ctx context.Context, state *State) error {
+			v, _ := state.Get("order")
+			state.Set("order", append(v.([]string), "n3"))
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		edgeDef("n2", "n3"),
+		startDef("n1"),
+	)
+
+	// First execution.
+	state := NewState()
+	state.Set("order", []string{})
+	_, err := g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	order, _ := state.Get("order")
+	require.Equal(t, []string{"n1", "n2", "n3"}, order)
+
+	// Second execution resume from checkpoint: n1 and n2 already completed.
+	state2 := NewState()
+	state2.Set("order", []string{"n1", "n2"})
+	_, err = g.ExecuteFromCheckpoint(context.Background(), state2, []string{"n1", "n2"})
+	require.NoError(t, err)
+
+	order2, _ := state2.Get("order")
+	// Only n3 should execute (successors of n2 resume with decremented in-degree).
+	require.Equal(t, []string{"n1", "n2", "n3"}, order2)
+}
+
+func TestExecuteFromCheckpoint_AllNodesCompleted(t *testing.T) {
+	g := buildTestGraph(t, "resume-all-done",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		startDef("n1"),
+	)
+
+	state := NewState()
+	_, err := g.ExecuteFromCheckpoint(context.Background(), state, []string{"n1"})
+	require.NoError(t, err)
+}
+
+func TestGraphSetExecutionCollector_Nil(t *testing.T) {
+	g, err := NewGraph("test-collector-nil")
+	require.NoError(t, err)
+	_, err = g.SetExecutionCollector(nil)
+	require.Error(t, err)
+}
+
+func TestGraphSetExecutionCollector_NilGraph(t *testing.T) {
+	_, err := (*Graph)(nil).SetExecutionCollector(ares_runtime.NewExecutionCollector("exec-1"))
+	require.Error(t, err)
+}
+
+func TestGraphRouterRecordsToCollector(t *testing.T) {
+	// Verifies that when a NodeRouter is set and an ExecutionCollector is
+	// attached, route decisions are recorded in the collector.
+	g := buildTestGraph(t, "route-record",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	collector := ares_runtime.NewExecutionCollector("exec-route-record")
+	_, err := g.SetExecutionCollector(collector)
+	require.NoError(t, err)
+
+	_, err = g.SetRouter(func(ctx context.Context, currentNodeID string, state *State) string {
+		if currentNodeID == "n1" {
+			return "n2"
+		}
+		return ""
+	})
+	require.NoError(t, err)
+
+	state := NewState()
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	routes := collector.RouteHistory()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "n1", routes[0].StepID)
+	assert.Equal(t, "n2", routes[0].Decision)
+	assert.Equal(t, "node-router", routes[0].Source)
+}
+
+func TestGraphPluginBusRouterRecordsToCollector(t *testing.T) {
+	// Verifies that when a PluginBus-based RouterPlugin routes and an
+	// ExecutionCollector is attached, route decisions are recorded.
+	g := buildTestGraph(t, "route-pb-record",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		nodeDef("n2", func(ctx context.Context, state *State) error {
+			return nil
+		}),
+		edgeDef("n1", "n2"),
+		startDef("n1"),
+	)
+
+	_, err := g.SetExecutionCollector(ares_runtime.NewExecutionCollector("exec-pb-record"))
+	require.NoError(t, err)
+
+	bus := ares_runtime.NewPluginBus()
+	require.NoError(t, bus.Register(ares_runtime.NewExpressionRouter("test-router", []ares_runtime.RouteRule{
+		{FromStepID: "n1", ToStepID: "n2", Reason: "test route"},
+	})))
+	require.NoError(t, bus.Start(context.Background()))
+	_, err = g.SetPluginBus(bus)
+	require.NoError(t, err)
+
+	state := NewState()
+	_, err = g.Execute(context.Background(), state)
+	require.NoError(t, err)
+
+	routes := g.collector.RouteHistory()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "n1", routes[0].StepID)
+	assert.Equal(t, "n2", routes[0].Decision)
+	assert.Equal(t, "test route", routes[0].Reason)
+	assert.Equal(t, "expression", routes[0].Source)
+}
+
+func TestExecuteFromCheckpoint_EmptyExecuted(t *testing.T) {
+	// Empty executed list behaves like a fresh Execute.
+	var callCount atomic.Int32
+	g := buildTestGraph(t, "resume-empty",
+		nodeDef("n1", func(ctx context.Context, state *State) error {
+			callCount.Add(1)
+			return nil
+		}),
+		startDef("n1"),
+	)
+
+	state := NewState()
+	_, err := g.ExecuteFromCheckpoint(context.Background(), state, nil)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), callCount.Load())
 }

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // workerAgent simulates any agent type.

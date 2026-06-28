@@ -11,13 +11,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 )
 
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
@@ -43,6 +43,25 @@ type GenomePopulationAdapter struct {
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
 	// and after each evolution cycle.
 	guardrails *EvolutionGuardrails
+
+	// Memory-aware scorer for evidence-based scoring adjustments (optional).
+	// When set via WithAdapterMemoryAwareScoring, Run() wraps the tiered
+	// scorer pipeline with memory-aware adjustments, preserving tiered
+	// scoring stats and context propagation.
+	memoryScorer *scoring.MemoryAwareScorer
+
+	// AdaptiveDist adjusts mutation type probabilities based on observed
+	// outcomes from previous evolution cycles (optional). When set, Run()
+	// records outcome feedback after each evolution cycle.
+	adaptiveDist *mutation.AdaptiveDistribution
+
+	// FeedbackRecorder records strategy outcomes to the experience feedback
+	// system for experience reinforcement (optional). When set, Run()
+	// records outcome feedback after each evolution cycle.
+	feedbackRecorder *FeedbackRecorder
+
+	// Metrics records Prometheus counters for evolution events (optional).
+	metrics *ares_observability.PrometheusMetrics
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -142,6 +161,76 @@ func WithAdapterGuardrails(g *EvolutionGuardrails) GenomeAdapterOption {
 	}
 }
 
+// WithAdapterMemoryAwareScoring configures the adapter to wrap the tiered
+// scorer with memory-aware scoring adjustments. The MemoryAwareScorer adds
+// evidence-based bonuses and cost/latency penalties to the fitness score.
+//
+// This must be used together with WithAdapterTieredScoring. The memory-aware
+// scorer wraps the tiered pipeline, preserving all tiered scoring stats
+// (cache hits, LLM calls, fallbacks) and proper context propagation.
+//
+// Args:
+//
+//	ms - the configured memory-aware scorer (must not be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterMemoryAwareScoring(ms *scoring.MemoryAwareScorer) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.memoryScorer = ms
+	}
+}
+
+// WithAdapterAdaptiveDistribution sets the adaptive mutation distribution
+// for outcome-driven probability adjustment. When set, Run() records
+// outcome feedback after each evolution cycle.
+//
+// Args:
+//
+//	ad - the adaptive distribution instance (may be nil to disable).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterAdaptiveDistribution(ad *mutation.AdaptiveDistribution) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.adaptiveDist = ad
+	}
+}
+
+// WithAdapterFeedbackRecorder sets the feedback recorder for experience
+// reinforcement. When set, Run() records strategy outcomes to the feedback
+// service after each evolution cycle.
+//
+// Args:
+//
+//	fr - the feedback recorder instance (may be nil to disable).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.feedbackRecorder = fr
+	}
+}
+
+// WithAdapterMetrics sets the metrics recorder for evolution event counters.
+//
+// Args:
+//
+//	metrics - the Prometheus metrics instance (may be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.metrics = metrics
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -161,6 +250,17 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		// Reset per-generation budget at start of each cycle.
 		a.tieredScorer.ResetForGeneration()
 		scorer = func(s *mutation.Strategy) float64 {
+			// When memory-aware scorer is set, delegate through it to get
+			// evidence-based bonuses and cost/latency penalties.
+			if a.memoryScorer != nil {
+				score, _, err := a.memoryScorer.Score(ctx, s)
+				if err != nil {
+					slog.WarnContext(ctx, "[GenomeAdapter] memory-aware scorer failed, using heuristic",
+						"error", err, "strategy_id", s.ID)
+					return 50.0
+				}
+				return score
+			}
 			score, _, err := a.tieredScorer.Score(ctx, s)
 			if err != nil {
 				slog.WarnContext(ctx, "[GenomeAdapter] tiered scorer failed, using baseline",
@@ -181,6 +281,14 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		}()
 	} else {
 		scorer = buildScorer(a.scorer)
+	}
+
+	// Capture pre-evolution snapshot for outcome recording when feedback
+	// components are wired. This lets us compare offspring scores with
+	// their parent scores after evolution.
+	var agentsBefore []*mutation.Strategy
+	if a.adaptiveDist != nil || a.feedbackRecorder != nil {
+		agentsBefore, _ = a.pop.Snapshot()
 	}
 
 	// --- Pre-evolution guardrails checkpoint ---
@@ -204,6 +312,9 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
 			)
+			if a.metrics != nil {
+				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+			}
 		}
 
 		if preResult.ShouldStop {
@@ -214,6 +325,13 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
 		return fmt.Errorf("genome evolve on idle: %w", err)
+	}
+
+	// Record outcomes for adaptive distribution and feedback service.
+	// This closes the feedback loop: evolution results flow back to
+	// update probability distributions and experience rankings.
+	if agentsBefore != nil {
+		a.recordOutcomesLocked(ctx, agentsBefore)
 	}
 
 	// --- Post-evolution guardrails checkpoint ---
@@ -236,6 +354,9 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
 			)
+			if a.metrics != nil {
+				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+			}
 		}
 
 		if postResult.ShouldStop {
@@ -257,6 +378,75 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		"avg_score", stats.AvgScore,
 	)
 	return nil
+}
+
+// recordOutcomesLocked records strategy outcomes to the adaptive distribution
+// and feedback recorder after an evolution cycle. It compares offspring scores
+// with their parent scores to determine wins and score deltas.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//	agentsBefore - pre-evolution population snapshot for parent score lookup.
+func (a *GenomePopulationAdapter) recordOutcomesLocked(
+	ctx context.Context,
+	agentsBefore []*mutation.Strategy,
+) {
+	parentScores := make(map[string]float64, len(agentsBefore))
+	for _, parent := range agentsBefore {
+		parentScores[parent.ID] = parent.Score
+	}
+
+	agentsAfter, _ := a.pop.Snapshot()
+
+	for _, child := range agentsAfter {
+		if child.ParentID == "" {
+			continue
+		}
+		if child.Score < 0 {
+			continue
+		}
+
+		parentScore, ok := parentScores[child.ParentID]
+		if !ok {
+			if parts := strings.Split(child.ParentID, "\u00d7"); len(parts) == 2 {
+				if ps1, ok1 := parentScores[parts[0]]; ok1 {
+					if ps2, ok2 := parentScores[parts[1]]; ok2 {
+						parentScore = (ps1 + ps2) / 2
+						ok = true
+					}
+				}
+			}
+		}
+		if !ok {
+			continue
+		}
+		scoreDelta := child.Score - parentScore
+		won := scoreDelta > 0
+
+		if a.adaptiveDist != nil {
+			a.adaptiveDist.RecordOutcome(
+				child.StrategyMutationType,
+				scoreDelta,
+				0,
+				won,
+			)
+		}
+
+		if a.feedbackRecorder != nil {
+			outcome := StrategyOutcome{
+				StrategyID: child.ID,
+				Success:    won,
+				Score:      child.Score,
+			}
+			if err := a.feedbackRecorder.Register(ctx, outcome); err != nil {
+				slog.WarnContext(ctx, "[GenomeAdapter] feedback recording failed",
+					"strategy_id", child.ID,
+					"error", err,
+				)
+			}
+		}
+	}
 }
 
 // scorerWarningOnce ensures the missing-scorer warning is logged at most once
@@ -312,30 +502,41 @@ func (a *GenomePopulationAdapter) Population() *genome.Population {
 	return a.pop
 }
 
-// GenomeMutatorAdapter wraps a *mutation.Mutator to implement genome.MutatorInterface.
-// This enables genome.Population to use the production mutator directly.
+// PopulationSize returns the current population size for guardrail checks.
+func (a *GenomePopulationAdapter) PopulationSize() int {
+	if a.pop == nil {
+		return 0
+	}
+	return len(a.pop.Agents)
+}
+
+// GenomeMutatorAdapter wraps a genome.MutatorInterface-compatible mutator
+// to implement genome.MutatorInterface. This enables genome.Population to
+// use both the production mutator and the experience-guided mutator.
 type GenomeMutatorAdapter struct {
-	mutator *mutation.Mutator
+	mutator genome.MutatorInterface
 }
 
 // NewGenomeMutatorAdapter creates a genome-compatible mutator adapter.
+// The provided mutator must implement the genome.MutatorInterface (both
+// *mutation.Mutator and *mutation.ExperienceGuidedMutator satisfy this).
 //
 // Args:
 //
-//	m - the production mutator to wrap (must not be nil).
+//	m - the mutator to wrap (must not be nil).
 //
 // Returns:
 //
 //	*GenomeMutatorAdapter - the adapter instance.
 //	error - non-nil if mutator is nil.
-func NewGenomeMutatorAdapter(m *mutation.Mutator) (*GenomeMutatorAdapter, error) {
+func NewGenomeMutatorAdapter(m genome.MutatorInterface) (*GenomeMutatorAdapter, error) {
 	if m == nil {
 		return nil, fmt.Errorf("mutator must not be nil")
 	}
 	return &GenomeMutatorAdapter{mutator: m}, nil
 }
 
-// Mutate delegates to the wrapped mutation.Mutator.
+// Mutate delegates to the wrapped mutator.
 // The signature matches genome.MutatorInterface (uses *mutation.Strategy).
 //
 // Args:
@@ -466,6 +667,7 @@ func RecordPopulationLineage(
 	agents, generation := pop.Snapshot()
 
 	count := 0
+	seen := make(map[string]bool, len(agents))
 	for _, agent := range agents {
 		if agent.ParentID == "" {
 			continue
@@ -473,6 +675,12 @@ func RecordPopulationLineage(
 		if agent.Version <= 1 {
 			continue
 		}
+
+		key := agent.ParentID + "->" + agent.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 
 		lineage := StrategyLineage{
 			ParentID:     agent.ParentID,
@@ -495,468 +703,4 @@ func RecordPopulationLineage(
 	}
 
 	return count, nil
-}
-
-// WiredEvolutionSystem holds a fully wired autonomous evolution system.
-// It contains all components pre-connected and ready for production use.
-type WiredEvolutionSystem struct {
-	Scheduler  *EvolutionScheduler
-	DreamCycle *DreamCycle
-	PopAdapter *GenomePopulationAdapter
-	Population *genome.Population
-	Genealogy  *PopulationGenealogyRecorder
-
-	// StrategyStore persists deployed strategies (optional, may be nil).
-	StrategyStore StrategyStore
-}
-
-// SystemConfig holds configuration for creating a wired evolution system.
-type SystemConfig struct {
-	// PopulationSize is the target population size for genome evolution.
-	PopulationSize int `json:"population_size"`
-
-	// EliteCount is the number of elite strategies to preserve per generation.
-	EliteCount int `json:"elite_count"`
-
-	// MutationRate is the probability of mutating each offspring.
-	MutationRate float64 `json:"mutation_rate"`
-
-	// SurvivalRate is the fraction of top performers to keep.
-	SurvivalRate float64 `json:"survival_rate"`
-
-	// Callbacks is the callback registrar for event subscription.
-	Callbacks callbacks.CallbackRegistrar `json:"-"`
-
-	// EnableDreamCycle enables the dream cycle orchestrator.
-	EnableDreamCycle bool `json:"enable_dream_cycle"`
-
-	// EnableScheduler enables the evolution scheduler.
-	EnableScheduler bool `json:"enable_scheduler"`
-
-	// MinTasksBeforeEvolve is the minimum tasks before first evolution.
-	MinTasksBeforeEvolve int `json:"min_tasks_before_evolve"`
-
-	// SchedulerTrigger is the trigger mode for the scheduler.
-	SchedulerTrigger EvolutionTrigger `json:"scheduler_trigger"`
-
-	// MutatorSeed is the random seed for the mutator (0 = non-deterministic).
-	MutatorSeed int64 `json:"mutator_seed,omitempty"`
-
-	// CrossoverSeed is the random seed for the crossover engine (0 = non-deterministic).
-	CrossoverSeed int64 `json:"crossover_seed,omitempty"`
-
-	// PopulationSeed is the random seed for the population (0 = non-deterministic).
-	PopulationSeed int64 `json:"population_seed,omitempty"`
-
-	// UseDeterministicIDs enables counter-based IDs instead of UUIDs.
-	// Produces reproducible strategy IDs across runs with the same seeds.
-	UseDeterministicIDs bool `json:"use_deterministic_ids,omitempty"`
-
-	// StrategyStore persists deployed strategies (optional, may be nil).
-	StrategyStore StrategyStore `json:"-"`
-
-	// MinMutationRate is the floor for adaptive mutation rate clamping.
-	MinMutationRate float64 `json:"min_mutation_rate"`
-
-	// MaxMutationRate is the ceiling for adaptive mutation rate clamping.
-	MaxMutationRate float64 `json:"max_mutation_rate"`
-
-	// MaxStagnantGenerations is the stagnation threshold for bottom-performer reset.
-	MaxStagnantGenerations int `json:"max_stagnant_generations"`
-
-	// DiversityThreshold minimum average pairwise distance before adaptive
-	// mutation becomes more aggressive.
-	DiversityThreshold float64 `json:"diversity_threshold"`
-
-	// BreedingPoolRatio limits breeding to the top fraction of survivors.
-	BreedingPoolRatio float64 `json:"breeding_pool_ratio"`
-
-	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
-	// 0 = PromptInherit (higher-scoring parent), 1 = PromptHalfSplit (half-sentence),
-	// 2 = PromptUniform (random parent pick). Default is 0.
-	PromptCrossoverMode int `json:"prompt_crossover_mode"`
-
-	// Scorer is an optional function that evaluates strategy fitness after each
-	// evolution cycle. When set, newly generated offspring receive valid scores
-	// instead of the Score=-1 default, closing the scoring loop for the
-	// scheduler-triggered path. When nil, the caller must score externally.
-	Scorer func(*mutation.Strategy) float64 `json:"-"`
-
-	// MaxLLMCallsPerGeneration is the LLM call budget per evolution generation.
-	// When 0 or unset, LLM tier is disabled and all scoring uses heuristic.
-	MaxLLMCallsPerGeneration int `json:"max_llm_calls_per_generation,omitempty"`
-
-	// ScoreCacheSize is the maximum entries in the strategy score cache.
-	// When 0, cache is unlimited.
-	ScoreCacheSize int `json:"score_cache_size,omitempty"`
-
-	// HeuristicScorer is a fast, cheap scoring function used as fallback
-	// when LLM budget is exhausted or unavailable. If nil, defaults to
-	// ConstantScorer(50.0).
-	HeuristicScorer func(*mutation.Strategy) float64 `json:"-"`
-
-	// PromptTemplates is the pool of prompt templates for prompt mutation.
-	// When non-empty, the mutator can generate MutationPrompt type mutations
-	// that swap the strategy's prompt template with alternatives from this pool.
-	// Empty (default) means prompt mutation is disabled.
-	PromptTemplates []string `json:"prompt_templates,omitempty"`
-
-	// Guardrails provides pre/post evolution safety checks (optional).
-	// When set, the adapter runs guardrail checks before and after each
-	// evolution cycle. Nil (default) means guardrails are disabled.
-	Guardrails *EvolutionGuardrails `json:"-"`
-
-	// HistoryMaxSize limits the number of per-generation history entries
-	// stored for trajectory reporting. When > 0, each evolution cycle
-	// appends a GenerationHistoryEntry to the population history (default 0 = disabled).
-	HistoryMaxSize int `json:"history_max_size"`
-}
-
-// DefaultSystemConfig returns sensible defaults for a wired evolution system.
-//
-// Returns:
-//
-//	SystemConfig - configuration with default values.
-func DefaultSystemConfig() SystemConfig {
-	return SystemConfig{
-		PopulationSize:         20,
-		EliteCount:             3,
-		MutationRate:           0.2,
-		SurvivalRate:           0.6,
-		EnableDreamCycle:       false,
-		EnableScheduler:        false,
-		MinTasksBeforeEvolve:   10,
-		SchedulerTrigger:       TriggerOnIdle,
-		MinMutationRate:        0.05,
-		MaxMutationRate:        0.5,
-		MaxStagnantGenerations: 10,
-		DiversityThreshold:     0.15,
-		BreedingPoolRatio:      0.6,
-	}
-}
-
-// NewWiredEvolutionSystem creates a fully connected evolution system.
-// It creates and wires together all components:
-//
-//  1. mutation.Mutator (production mutator)
-//  2. genome.MutatorAdapter (genome-compatible wrapper)
-//  3. genome.Crossover (crossover engine)
-//  4. genome.Population (managed population)
-//  5. GenomePopulationAdapter (scheduler-compatible runner)
-//  6. PopulationGenealogyRecorder (lineage tracking)
-//  7. MutationAdapter (dream-cycle-compatible mutator)
-//  8. DreamCycle (orchestrator, optional)
-//  9. EvolutionScheduler (event-driven trigger, optional)
-//
-// Args:
-//
-//	baseStrategy - the root strategy to evolve from (must not be nil).
-//	cfg - system configuration (use DefaultSystemConfig() for sensible defaults).
-//
-// Returns:
-//
-//	*WiredEvolutionSystem - the fully wired system ready for use.
-//	error - non-nil if any component creation or wiring fails.
-func NewWiredEvolutionSystem(
-	baseStrategy *mutation.Strategy,
-	cfg SystemConfig,
-) (*WiredEvolutionSystem, error) {
-	if baseStrategy == nil {
-		return nil, fmt.Errorf("base strategy must not be nil")
-	}
-
-	// Step 1: Create production mutator with optional seed, deterministic IDs,
-	// and prompt template pool for prompt mutation support.
-	var mutatorOpts []mutation.MutatorOption
-	if cfg.MutatorSeed != 0 {
-		mutatorOpts = append(mutatorOpts, mutation.WithSeed(cfg.MutatorSeed))
-	}
-	if cfg.UseDeterministicIDs {
-		mutatorOpts = append(mutatorOpts, mutation.WithDeterministicIDs(true))
-	}
-	if len(cfg.PromptTemplates) > 0 {
-		mutatorOpts = append(mutatorOpts, mutation.WithPromptPool(cfg.PromptTemplates))
-	}
-	rawMutator, err := mutation.NewMutator(mutatorOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("create mutator: %w", err)
-	}
-
-	// Step 2: Wrap for genome compatibility.
-	genomeMutator, err := NewGenomeMutatorAdapter(rawMutator)
-	if err != nil {
-		return nil, fmt.Errorf("create genome mutator adapter: %w", err)
-	}
-
-	// Step 3: Create crossover engine with optional seed and deterministic IDs.
-	var crosserOpts []genome.CrossoverOption
-	if cfg.CrossoverSeed != 0 {
-		crosserOpts = append(crosserOpts, genome.WithSeed(cfg.CrossoverSeed))
-	}
-	if cfg.UseDeterministicIDs {
-		crosserOpts = append(crosserOpts, genome.WithDeterministicIDs(true))
-	}
-	switch cfg.PromptCrossoverMode {
-	case 1:
-		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptHalfSplit))
-	case 2:
-		crosserOpts = append(crosserOpts, genome.WithPromptMode(genome.PromptUniform))
-	}
-	crosser, err := genome.NewCrossover(crosserOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("create crossover: %w", err)
-	}
-
-	// Step 4: Create genome population with optional seed and adaptive config.
-	popOpts := []genome.PopulationOption{
-		genome.WithPopulationSize(cfg.PopulationSize),
-		genome.WithEliteCount(cfg.EliteCount),
-		genome.WithMutationRate(cfg.MutationRate),
-		genome.WithSurvivalRate(cfg.SurvivalRate),
-		genome.WithMinMutationRate(cfg.MinMutationRate),
-		genome.WithMaxMutationRate(cfg.MaxMutationRate),
-		genome.WithMaxStagnantGenerations(cfg.MaxStagnantGenerations),
-		genome.WithDiversityThreshold(cfg.DiversityThreshold),
-		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
-	}
-	if cfg.HistoryMaxSize > 0 {
-		popOpts = append(popOpts, genome.WithHistoryEnabled(cfg.HistoryMaxSize))
-	}
-	if cfg.PopulationSeed != 0 {
-		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.PopulationSeed))
-	}
-	pop, err := genome.NewPopulation(
-		context.Background(),
-		baseStrategy,
-		genomeMutator,
-		popOpts...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create population: %w", err)
-	}
-
-	// Step 5: Build adapter options (scorer + optional tiered scoring pipeline).
-	var adapterOpts []GenomeAdapterOption
-	if cfg.Scorer != nil {
-		adapterOpts = append(adapterOpts, WithAdapterScorer(cfg.Scorer))
-	}
-
-	// Step 5b: Optionally create tiered scorer pipeline for cost-controlled scoring.
-	if cfg.MaxLLMCallsPerGeneration > 0 || cfg.HeuristicScorer != nil {
-		cacheSize := cfg.ScoreCacheSize
-		if cacheSize <= 0 {
-			cacheSize = 0 // unlimited
-		}
-		scoreCache := scoring.NewScoreCache(cacheSize)
-
-		budget, err := scoring.NewBudget(cfg.MaxLLMCallsPerGeneration)
-		if err != nil {
-			return nil, fmt.Errorf("create scoring budget: %w", err)
-		}
-
-		heuristic := cfg.HeuristicScorer
-		if heuristic == nil {
-			heuristic = genome.ConstantScorer(50.0)
-		}
-
-		// LLM scorer is the configured adapter-level scorer (may be nil).
-		var llmScorer genome.ScorerFunc
-		if cfg.Scorer != nil {
-			llmScorer = cfg.Scorer
-		}
-
-		tiered, err := scoring.NewTieredScorer(scoring.TieredScorerConfig{
-			Cache:           scoreCache,
-			Budget:          budget,
-			HeuristicScorer: heuristic,
-			LLMScorer:       llmScorer,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create tiered scorer: %w", err)
-		}
-
-		adapterOpts = append(adapterOpts, WithAdapterTieredScoring(tiered, budget, scoreCache))
-	}
-
-	// Step 5c: Optionally attach guardrails for pre/post evolution safety checks.
-	if cfg.Guardrails != nil {
-		adapterOpts = append(adapterOpts, WithAdapterGuardrails(cfg.Guardrails))
-	}
-
-	popAdapter, err := NewGenomePopulationAdapter(pop, genomeMutator, crosser, adapterOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("create population adapter: %w", err)
-	}
-
-	// Step 6: Create genealogy recorder.
-	genealogy := NewPopulationGenealogyRecorder()
-
-	system := &WiredEvolutionSystem{
-		PopAdapter: popAdapter,
-		Population: pop,
-		Genealogy:  genealogy,
-	}
-
-	// Step 7: Attach optional strategy store.
-	if cfg.StrategyStore != nil {
-		system.StrategyStore = cfg.StrategyStore
-	}
-
-	// Step 8: Optionally create dream cycle with evolution-layer adapters.
-	if cfg.EnableDreamCycle {
-		mutationAdapter, err := NewMutationAdapter(rawMutator)
-		if err != nil {
-			return nil, fmt.Errorf("create dream cycle mutator adapter: %w", err)
-		}
-
-		dreamCycle, err := NewDreamCycle(
-			nil, // Scheduler attached later if needed.
-			mutationAdapter,
-			nil, // Tester requires arena integration; use nil for now.
-			genealogy,
-			WithDreamCycleConfig(DreamCycleConfig{
-				Enabled:              true,
-				MinTasksBeforeEvolve: cfg.MinTasksBeforeEvolve,
-				MaxMutations:         3,
-				MinWinRate:           0.55,
-				Cooldown:             5 * time.Minute,
-			}),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create dream cycle: %w", err)
-		}
-		system.DreamCycle = dreamCycle
-	}
-
-	// Step 9: Optionally create scheduler with callback registration.
-	if cfg.EnableScheduler && cfg.Callbacks != nil {
-		scheduler := NewEvolutionScheduler(
-			cfg.Callbacks,
-			popAdapter,
-			WithTrigger(cfg.SchedulerTrigger),
-			WithEnabled(true),
-		)
-
-		// Attach dream cycle if available.
-		if system.DreamCycle != nil {
-			scheduler.SetDreamCycle(system.DreamCycle)
-			system.DreamCycle.scheduler = scheduler
-		}
-
-		system.Scheduler = scheduler
-	}
-
-	slog.Info("[WiredSystem] Evolution system created and wired",
-		"population_size", cfg.PopulationSize,
-		"elite_count", cfg.EliteCount,
-		"mutation_rate", cfg.MutationRate,
-		"dream_cycle_enabled", cfg.EnableDreamCycle,
-		"scheduler_enabled", cfg.EnableScheduler,
-	)
-
-	return system, nil
-}
-
-// RunIdleEvolution performs N idle evolution cycles on the wired system.
-// This is the primary entry point for zero-cost background evolution.
-//
-// Args:
-//
-//	ctx - operation context for cancellation.
-//	system - the wired evolution system to run.
-//	generations - number of generations to evolve.
-//
-// Returns:
-//
-//	error - non-nil if any evolution cycle fails.
-func RunIdleEvolution(
-	ctx context.Context,
-	system *WiredEvolutionSystem,
-	generations int,
-) error {
-	if system == nil || system.PopAdapter == nil {
-		return fmt.Errorf("system or population adapter is nil")
-	}
-
-	for i := 0; i < generations; i++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if err := system.PopAdapter.Run(ctx); err != nil {
-			return fmt.Errorf("idle evolution generation %d: %w", i+1, err)
-		}
-		// Note: Post-scoring is now handled atomically inside PopAdapter.Run()
-		// via EvolveAfterScoring. No redundant manual scoring needed here.
-
-		// Record lineage after each evolution cycle.
-		_, gen := system.Population.Snapshot()
-		prevGen := gen - 1
-		if prevGen >= 0 {
-			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, prevGen)
-			if err != nil {
-				slog.WarnContext(ctx, "lineage recording failed",
-					"generation", prevGen, "error", err)
-			}
-		}
-	}
-	return nil
-}
-
-// BestStrategyFromSystem returns the best strategy from the wired system's population.
-// This is the deployment-ready strategy after evolution completes.
-//
-// Args:
-//
-//	system - the wired evolution system.
-//
-// Returns:
-//
-//	*mutation.Strategy - cloned best strategy, or nil if empty.
-//	error - non-nil if system is nil.
-func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, error) {
-	if system == nil || system.Population == nil {
-		return nil, fmt.Errorf("system or population is nil")
-	}
-	best := system.Population.BestStrategy()
-	if best == nil {
-		return nil, fmt.Errorf("population has no strategies")
-	}
-	return best, nil
-}
-
-// Deprecated: Kept for backward compatibility with tests.
-// RegisterScheduler registers the wired system's scheduler callback handlers.
-//
-// Args:
-//
-//	system - the wired evolution system whose scheduler should be registered.
-//
-// Returns:
-//
-//	error - non-nil if the scheduler is nil.
-func RegisterScheduler(system *WiredEvolutionSystem) error {
-	if system == nil || system.Scheduler == nil {
-		return fmt.Errorf("system or scheduler is nil")
-	}
-	system.Scheduler.Register()
-	return nil
-}
-
-// Shutdown gracefully stops the wired evolution system.
-// It cancels pending evolution goroutines and releases resources.
-//
-// Args:
-//
-//	system - the wired evolution system to shut down.
-func Shutdown(system *WiredEvolutionSystem) {
-	if system == nil {
-		return
-	}
-	if system.Scheduler != nil {
-		system.Scheduler.Shutdown()
-	}
-	slog.Info("[WiredSystem] Evolution system shut down")
 }

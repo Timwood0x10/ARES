@@ -63,11 +63,30 @@ func main() {
 	runArena(ctx, kit)
 	runDreamCycle(ctx, kit)
 
-	// Run scenarios 6-7 only if evolution is enabled.
-	// LLM scorer (if configured) is initialized inside runMultiGenGA.
+	// Run control group comparison if evolution is enabled.
+	// Scenario 6: Pure autonomous evolution (deterministic scoring, no LLM)
+	// Scenario 7: LLM-guided evolution (LLM scoring in the loop)
+	// Both use identical GA configurations — the only difference is the scorer.
 	if evoEnabled {
-		runMultiGenGA(ctx, kit, evoCfg)
-		runMultiGenGA(ctx, kit, mergeGACfg(cfgWired, projectCfg))
+		fmt.Println("\n  🧪 Control Group Experiment")
+		fmt.Println("  ────────────────────────────────────────────────")
+		fmt.Println("  A: Pure Autonomous — GA + DeterministicScore (no LLM)")
+		fmt.Println("  B: LLM-Guided     — GA + LLMScorer (with deterministic fallback)")
+		fmt.Println("  Same GA config, same seed — only the scorer differs.")
+		fmt.Println("  ────────────────────────────────────────────────")
+		fmt.Println()
+
+		// Scenario 6: Pure autonomous (no LLM).
+		resultA := runScenario6(ctx, kit, evoCfg)
+
+		// Scenario 7: LLM-guided (LLM in the loop).
+		resultB := runScenario7(ctx, kit, mergeGACfg(cfgWired, projectCfg))
+
+		// Compare the two approaches.
+		if resultA != nil && resultB != nil {
+			compareResults(resultA, resultB,
+				"Autonomous (no LLM)", "LLM-Guided")
+		}
 	} else {
 		printInsight("Evolution Disabled", `
   🔒 The Genetic Algorithm evolution scenarios (6 & 7) are currently DISABLED.

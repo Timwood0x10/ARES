@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sync"
 
-	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	evolutionservice "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	storageModels "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
@@ -175,7 +175,7 @@ func (s *unifiedScorer) Score(input any) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	score := apievol.DeterministicScore(&apievol.Strategy{
+	score := evolutionservice.DeterministicScore(&evolutionservice.Strategy{
 		Params:         extractParams(input),
 		PromptTemplate: extractPromptTemplate(input),
 	})

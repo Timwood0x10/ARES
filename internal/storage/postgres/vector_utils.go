@@ -2,7 +2,6 @@
 package postgres
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -77,13 +76,11 @@ func ParseVectorString(vecStr string) ([]float64, error) {
 	parts := strings.Split(vecStr, ",")
 	result := make([]float64, len(parts))
 	for i, part := range parts {
-		val, err := fmt.Sscanf(strings.TrimSpace(part), "%f", &result[i])
+		v, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to parse vector component")
 		}
-		if val != 1 {
-			return nil, fmt.Errorf("failed to parse vector component: expected 1 match, got %d", val)
-		}
+		result[i] = v
 	}
 
 	return result, nil

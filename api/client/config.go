@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/api/service/agent"
-	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
-	memorySvc "github.com/Timwood0x10/ares/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
+	agentSvc "github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
+	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
+	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 
 	"gopkg.in/yaml.v3"
 )
@@ -468,15 +468,15 @@ func (c *ConfigFile) ToClientConfig() *Config {
 			BaseConfig: baseConfig,
 			Repo:       agentSvc.NewMemoryRepository(),
 		},
-		Memory: &memorySvc.Config{
+		Memory: &memoryservice.Config{
 			BaseConfig: baseConfig,
-			Repo:       memorySvc.NewMemoryRepository(),
+			Repo:       memoryservice.NewMemoryRepository(),
 		},
-		Retrieval: &retrievalSvc.Config{
+		Retrieval: &retrievalservice.Config{
 			BaseConfig: baseConfig,
-			Repo:       retrievalSvc.NewMemoryRepository(),
+			Repo:       retrievalservice.NewMemoryRepository(),
 		},
-		LLM: &llmSvc.Config{
+		LLM: &llmservice.Config{
 			BaseConfig: baseConfig,
 			LLMConfig:  &c.LLM,
 		},

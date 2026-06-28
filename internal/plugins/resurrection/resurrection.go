@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/ctxutil"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -110,7 +110,7 @@ type Supervisor struct {
 	agents        map[string]*watched
 	health        HealthChecker
 	config        Config
-	eventStore    events.EventStore
+	eventStore    ares_events.EventStore
 	snapshotStore base.SnapshotStore
 	cancel        context.CancelFunc
 	g             *errgroup.Group
@@ -133,7 +133,7 @@ type Supervisor struct {
 //
 //	supervisor - the resurrection supervisor.
 //	err - if health is nil.
-func New(health HealthChecker, config Config, eventStore events.EventStore) (*Supervisor, error) {
+func New(health HealthChecker, config Config, eventStore ares_events.EventStore) (*Supervisor, error) {
 	if health == nil {
 		return nil, ErrNilHealthChecker
 	}
@@ -316,7 +316,7 @@ type Stats struct {
 // WithSnapshotStore sets the snapshot store for periodic state persistence.
 // When set, the supervisor periodically calls Snapshot() on stateful agents
 // and persists the result. On resurrection, the latest snapshot is loaded
-// and restored before replaying events.
+// and restored before replaying ares_events.
 //
 // Args:
 //
@@ -373,10 +373,12 @@ func (s *Supervisor) backoffWait(attempt int, backoff *time.Duration) {
 	if attempt >= s.config.MaxAttempts {
 		return
 	}
+	timer := time.NewTimer(*backoff)
 	select {
 	case <-s.gctx.Done():
+		timer.Stop()
 		return
-	case <-time.After(*backoff):
+	case <-timer.C:
 	}
 	*backoff *= 2
 	if *backoff > s.config.MaxBackoff {
@@ -384,9 +386,9 @@ func (s *Supervisor) backoffWait(attempt int, backoff *time.Duration) {
 	}
 }
 
-// replayEvents reads all events for the given agent stream and reconstructs
+// replayEvents reads all ares_events for the given agent stream and reconstructs
 // state that can be restored via StatefulAgent.RestoreState.
-// Returns nil if eventStore is nil or no events are found.
+// Returns nil if eventStore is nil or no ares_events are found.
 // Verifies event stream integrity; logs warnings on gaps or corruption.
 //
 // Supported event types for state reconstruction:
@@ -397,17 +399,17 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 	if s.eventStore == nil {
 		return nil
 	}
-	evts, err := s.eventStore.Read(ctx, agentID, events.ReadOptions{})
+	evts, err := s.eventStore.Read(ctx, agentID, ares_events.ReadOptions{})
 	if err != nil || len(evts) == 0 {
 		return nil
 	}
 
-	if err := events.VerifyStreamIntegrity(evts); err != nil {
+	if err := ares_events.VerifyStreamIntegrity(evts); err != nil {
 		slog.Error("resurrection: event stream integrity check failed",
 			"agent_id", agentID,
 			"event_count", len(evts),
 			"error", err,
-			"hash", events.StreamHash(evts),
+			"hash", ares_events.StreamHash(evts),
 		)
 	}
 
@@ -420,10 +422,10 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 				"last_replayed", lastVersion,
 				"stream_version", streamVersion,
 				"missing_events", streamVersion-lastVersion,
-				"hash", events.StreamHash(evts),
+				"hash", ares_events.StreamHash(evts),
 			)
 		}
-	} else if svErr != events.ErrStreamNotFound {
+	} else if svErr != ares_events.ErrStreamNotFound {
 		slog.Warn("resurrection: failed to check stream version",
 			"agent_id", agentID, "error", svErr,
 		)
@@ -433,19 +435,19 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 
 	for _, ev := range evts {
 		switch ev.Type {
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			state["session_id"] = ev.Payload["session_id"]
 			state["user_id"] = ev.Payload["user_id"]
 
-		case events.EventTaskCreated:
+		case ares_events.EventTaskCreated:
 			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
 				state["last_task_id"] = tid
 			}
 
-		case events.EventAgentStarted:
+		case ares_events.EventAgentStarted:
 			state["agent_status"] = string(models.AgentStatusReady)
 
-		case events.EventAgentStopped:
+		case ares_events.EventAgentStopped:
 			state["agent_status"] = string(models.AgentStatusOffline)
 
 		default:
@@ -499,7 +501,7 @@ func (s *Supervisor) resurrect(agentID string) {
 		s.mu.RLock()
 		store := s.snapshotStore
 		s.mu.RUnlock()
-		state = runtime.RecoverSnapshotOrEvents(resCtx, store, agentID, func() map[string]any {
+		state = ares_runtime.RecoverSnapshotOrEvents(resCtx, store, agentID, func() map[string]any {
 			return s.replayEvents(resCtx, agentID)
 		})
 		if state != nil {
@@ -540,7 +542,7 @@ func (s *Supervisor) resurrect(agentID string) {
 	}
 	oldAgent := oldEntry.agent
 	if oldAgent != nil {
-		stopCtx, stopCancel := ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
+		stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
 		if err := oldAgent.Stop(stopCtx); err != nil {
 			slog.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
 		}

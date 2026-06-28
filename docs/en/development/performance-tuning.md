@@ -443,7 +443,7 @@ func (m *PerformanceMonitor) PrintReport() {
 }
 ```
 
-**Code Location**: `internal/observability/monitor.go:80-120`
+**Code Location**: `internal/ares_observability/monitor.go:80-120`
 
 ## Common Performance Issues
 
@@ -478,7 +478,7 @@ func DiagnoseSlowResponse() {
 - Optimize SQL queries
 - Increase cache size
 
-**Code Location**: `internal/observability/diagnostics.go:50-100`
+**Code Location**: `internal/ares_observability/diagnostics.go:50-100`
 
 ### Issue 2: High Memory Usage
 
@@ -510,7 +510,7 @@ func CheckMemoryLeak() {
 - Limit concurrency
 - Check for goroutine leaks
 
-**Code Location**: `internal/observability/diagnostics.go:150-200`
+**Code Location**: `internal/ares_observability/diagnostics.go:150-200`
 
 ### Issue 3: Database Connection Exhaustion
 

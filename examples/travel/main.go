@@ -15,12 +15,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // Travel Planning Agent Example
@@ -35,18 +35,18 @@ func main() {
 	// Load configuration from file
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = "./examples/travel/config/server.yaml"
+		configPath = "./examples/travel/ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
+		slog.Error("Failed to load ares_config", "error", err)
 		os.Exit(1)
 	}
 
 	// Load environment variables
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Failed to load env config", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Failed to load env ares_config", "error", err)
 		os.Exit(1)
 	}
 
@@ -106,14 +106,14 @@ type components struct {
 	llmAdapter    output.LLMAdapter
 	llmFactory    *output.Factory
 	llmConfig     *output.Config
-	tracer        observability.Tracer
+	tracer        ares_observability.Tracer
 	messageQueue  *ahp.MessageQueue
 	validator     *output.Validator
 	template      *output.TemplateEngine
 	memoryManager memory.MemoryManager
 }
 
-func initializeComponents(cfg *config.Config) (*components, error) {
+func initializeComponents(cfg *ares_config.Config) (*components, error) {
 	// Create LLM adapter based on user configuration
 	llmFactory := output.NewFactory()
 	llmCfg := &output.Config{
@@ -131,7 +131,7 @@ func initializeComponents(cfg *config.Config) (*components, error) {
 	}
 
 	// Create tracer
-	tracer := observability.NewNoopTracer()
+	tracer := ares_observability.NewNoopTracer()
 
 	// Create message queue
 	messageQueue := ahp.NewMessageQueue("travel-main", &ahp.QueueOptions{MaxSize: 1000})
@@ -187,7 +187,7 @@ func getLLMAdapter(comps *components, agentModel string, agentProvider string) o
 	return adapter
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
+func createLeaderAgent(cfg *ares_config.Config, comps *components) (leader.Agent, error) {
 	// Create ProfileParser - for travel, we parse user preferences
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
@@ -197,7 +197,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 		cfg.Agents.Leader.MaxValidationRetry,
 	)
 
-	// Create TaskPlanner with sub-agent config for trigger-based task selection
+	// Create TaskPlanner with sub-agent ares_config for trigger-based task selection
 	subAgentConfigs := make([]leader.SubAgentConfig, len(cfg.Agents.Sub))
 	for i, sub := range cfg.Agents.Sub {
 		subAgentConfigs[i] = leader.SubAgentConfig{
@@ -244,7 +244,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	// Create ResultAggregator
 	resultAggregator := leader.NewResultAggregator(true, 10, leader.SortByNone)
 
-	// Create LeaderAgent config
+	// Create LeaderAgent ares_config
 	leaderCfg := &leader.LeaderAgentConfig{
 		Config: base.Config{
 			ID:   cfg.Agents.Leader.ID,
@@ -275,7 +275,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	return agent, nil
 }
 
-func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
+func createSubAgents(cfg *ares_config.Config, comps *components) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {
@@ -321,7 +321,7 @@ func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
 	return agents
 }
 
-func processSampleRequests(agent leader.Agent, cfg *config.Config) {
+func processSampleRequests(agent leader.Agent, cfg *ares_config.Config) {
 	requests := []string{
 		"我想去日本东京旅游，5天4晚，预算10000元，喜欢美食和购物",
 		"计划去泰国清迈3天2夜，预算3000元，喜欢自然风光和文化",
@@ -345,7 +345,7 @@ func processSampleRequests(agent leader.Agent, cfg *config.Config) {
 	}
 }
 
-func formatTravelOutput(outputCfg config.OutputConfig, items []*models.RecommendItem) {
+func formatTravelOutput(outputCfg ares_config.OutputConfig, items []*models.RecommendItem) {
 	switch outputCfg.Format {
 	case "json":
 		jsonBytes, err := json.MarshalIndent(items, "", "  ")

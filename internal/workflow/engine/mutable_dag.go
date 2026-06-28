@@ -375,6 +375,18 @@ func (m *MutableDAG) Steps() []*Step {
 	return result
 }
 
+// StepIndex returns a copy of the step index map under read lock.
+func (m *MutableDAG) StepIndex() map[string]*Step {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	idx := make(map[string]*Step, len(m.steps))
+	for id, s := range m.steps {
+		idx[id] = s
+	}
+	return idx
+}
+
 // Subscribe returns a channel for graph change events.
 func (m *MutableDAG) Subscribe() <-chan GraphEvent {
 	_, ch := m.hub.Subscribe()

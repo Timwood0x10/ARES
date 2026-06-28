@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (9): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal
+# ares Architecture Deep Dive (IX): Arena / Fault Injection — Break It Deliberately, Watch It Self-Heal
 
 > Other agent frameworks show you how smart the agent is: fluent conversations, strong reasoning, smooth tool usage.
 > ares shows you something else: **when you deliberately kill its agents, can it survive?**

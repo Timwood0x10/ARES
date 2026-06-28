@@ -5,9 +5,9 @@
 //  1. Create Runtime + EventStore + MemoryManager.
 //  2. Register 4 agents: leader, worker-a, worker-b, planner.
 //  3. Start all agents.
-//  4. Worker-a processes 3 tasks, emits events.
+//  4. Worker-a processes 3 tasks, emits ares_events.
 //  5. Worker-a crashes (simulated panic).
-//  6. Runtime detects crash -> creates new worker-a -> replays events -> restores state.
+//  6. Runtime detects crash -> creates new worker-a -> replays ares_events -> restores state.
 //  7. New worker-a continues from task 4.
 //  8. Planner modifies the workflow (MutableDAG).
 //  9. Worker-b processes tasks with the new workflow.
@@ -26,10 +26,10 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -54,13 +54,13 @@ func setupLogger() *slog.Logger {
 // Lifecycle Agent -- generic agent used for leader, worker, planner roles.
 // ============================================================
 
-// lifecycleAgent is a generic agent that processes tasks and emits events.
+// lifecycleAgent is a generic agent that processes tasks and emits ares_events.
 type lifecycleAgent struct {
 	mu          sync.Mutex
 	id          string
 	agentType   models.AgentType
 	status      models.AgentStatus
-	eventStore  events.EventStore
+	eventStore  ares_events.EventStore
 	memManager  memory.MemoryManager
 	taskCount   atomic.Int64
 	sessionID   string
@@ -71,7 +71,7 @@ type lifecycleAgent struct {
 func newLifecycleAgent(
 	id string,
 	agentType models.AgentType,
-	store events.EventStore,
+	store ares_events.EventStore,
 	memMgr memory.MemoryManager,
 ) *lifecycleAgent {
 	return &lifecycleAgent{
@@ -137,14 +137,14 @@ func (a *lifecycleAgent) Start(ctx context.Context) error {
 	}
 
 	// Emit agent started event.
-	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id":   a.id,
 		"agent_type": string(a.agentType),
 		"session_id": a.getSessionID(),
 	})
 
 	// Emit session created event.
-	a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+	a.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 		"session_id": a.getSessionID(),
 		"agent_id":   a.id,
 	})
@@ -185,7 +185,7 @@ func (a *lifecycleAgent) Process(_ context.Context, _ any) (any, error) {
 	return fmt.Sprintf("processed by %s", a.id), nil
 }
 
-// ProcessStream returns a stream of agent events.
+// ProcessStream returns a stream of agent ares_events.
 func (a *lifecycleAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
 	ch := make(chan base.AgentEvent, 1)
 	close(ch)
@@ -212,8 +212,8 @@ func (a *lifecycleAgent) RestoreState(state map[string]any) error {
 	return nil
 }
 
-// ReplayEvents replays events to reconstruct incremental state.
-func (a *lifecycleAgent) ReplayEvents(evts []*events.Event) error {
+// ReplayEvents replays ares_events to reconstruct incremental state.
+func (a *lifecycleAgent) ReplayEvents(evts []*ares_events.Event) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -222,16 +222,16 @@ func (a *lifecycleAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			a.taskCount.Add(1)
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				a.sessionID = sid
 			}
 		}
 	}
 
-	slog.Info("events replayed",
+	slog.Info("ares_events replayed",
 		"agent_id", a.id,
 		"total_events", len(evts),
 		"restored_task_count", a.taskCount.Load(),
@@ -270,7 +270,7 @@ func (a *lifecycleAgent) workLoop(ctx context.Context) {
 			taskID := fmt.Sprintf("task-%d", a.taskCount.Load())
 
 			// Emit task created event.
-			a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   a.id,
 				"session_id": a.getSessionID(),
@@ -291,7 +291,7 @@ func (a *lifecycleAgent) workLoop(ctx context.Context) {
 			time.Sleep(300 * time.Millisecond)
 
 			// Emit task completed event.
-			a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   a.id,
 				"session_id": a.getSessionID(),
@@ -309,16 +309,16 @@ func (a *lifecycleAgent) workLoop(ctx context.Context) {
 }
 
 // emitEvent appends an event to the EventStore.
-func (a *lifecycleAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+func (a *lifecycleAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	if a.eventStore == nil {
 		return
 	}
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: a.id,
 		Type:     eventType,
 		Payload:  payload,
 	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
+	if err := a.eventStore.Append(ctx, a.id, []*ares_events.Event{event}, 0); err != nil {
 		slog.Warn("failed to emit event",
 			"agent_id", a.id,
 			"type", eventType,
@@ -379,7 +379,7 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Step 1: Create Infrastructure")
 
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 	memManager, err := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 	if err != nil {
 		slog.Error("failed to create memory manager", "error", err)
@@ -390,12 +390,12 @@ func main() {
 		return
 	}
 
-	rtConfig := &runtime.Config{
+	rtConfig := &ares_runtime.Config{
 		HealthCheckInterval: 1 * time.Second,
 		MaxRestartsPerAgent: 5,
 		MaxReplayEvents:     1000,
 	}
-	rt := runtime.New(rtConfig, eventStore, memManager)
+	rt := ares_runtime.New(rtConfig, eventStore, memManager)
 
 	fmt.Println("  Infrastructure created:")
 	fmt.Println("    - MemoryEventStore (in-memory)")
@@ -441,7 +441,7 @@ func main() {
 	phaseSeparator("Step 3: Start All Agents")
 
 	if err := rt.Start(ctx); err != nil {
-		slog.Error("failed to start runtime", "error", err)
+		slog.Error("failed to start ares_runtime", "error", err)
 		return
 	}
 
@@ -460,10 +460,10 @@ func main() {
 	snapshot, _ := workerA.Snapshot()
 	fmt.Printf("  Worker-a snapshot before crash: %+v\n", snapshot)
 
-	evtsA, _ := eventStore.Read(ctx, "worker-a", events.ReadOptions{
-		Direction: events.ReadAscending,
+	evtsA, _ := eventStore.Read(ctx, "worker-a", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
-	fmt.Printf("  Worker-a events before crash: %d\n", len(evtsA))
+	fmt.Printf("  Worker-a ares_events before crash: %d\n", len(evtsA))
 
 	// ----------------------------------------------------------
 	// Step 5: Worker-a crashes.
@@ -488,11 +488,11 @@ func main() {
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
-	// Check events were preserved.
-	evtsA, _ = eventStore.Read(ctx, "worker-a", events.ReadOptions{
-		Direction: events.ReadAscending,
+	// Check ares_events were preserved.
+	evtsA, _ = eventStore.Read(ctx, "worker-a", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
-	fmt.Printf("  Worker-a events after resurrection: %d\n", len(evtsA))
+	fmt.Printf("  Worker-a ares_events after resurrection: %d\n", len(evtsA))
 
 	// Check memory.
 	messages, _ := memManager.GetMessages(ctx, workerA.getSessionID())
@@ -508,16 +508,16 @@ func main() {
 	stats = rt.Stats()
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 
-	evtsA, _ = eventStore.Read(ctx, "worker-a", events.ReadOptions{
-		Direction: events.ReadAscending,
+	evtsA, _ = eventStore.Read(ctx, "worker-a", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
 	taskCompleted := 0
 	for _, ev := range evtsA {
-		if ev.Type == events.EventTaskCompleted {
+		if ev.Type == ares_events.EventTaskCompleted {
 			taskCompleted++
 		}
 	}
-	fmt.Printf("  Worker-a total completed tasks (events): %d\n", taskCompleted)
+	fmt.Printf("  Worker-a total completed tasks (ares_events): %d\n", taskCompleted)
 
 	// ----------------------------------------------------------
 	// Step 8: Planner modifies the workflow (MutableDAG).
@@ -593,12 +593,12 @@ func main() {
 
 	time.Sleep(4 * time.Second)
 
-	evtsB, _ := eventStore.Read(ctx, "worker-b", events.ReadOptions{
-		Direction: events.ReadAscending,
+	evtsB, _ := eventStore.Read(ctx, "worker-b", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
 	taskCompletedB := 0
 	for _, ev := range evtsB {
-		if ev.Type == events.EventTaskCompleted {
+		if ev.Type == ares_events.EventTaskCompleted {
 			taskCompletedB++
 		}
 	}
@@ -614,9 +614,9 @@ func main() {
 		slog.Warn("memory manager stop failed", "error", err)
 	}
 
-	// Stop runtime (stops all agents).
+	// Stop ares_runtime (stops all agents).
 	if err := rt.Stop(); err != nil {
-		slog.Error("runtime stop failed", "error", err)
+		slog.Error("ares_runtime stop failed", "error", err)
 	}
 
 	stats = rt.Stats()
@@ -629,10 +629,10 @@ func main() {
 	// ----------------------------------------------------------
 	phaseSeparator("Step 11: Full Event History")
 
-	allEvents, _ := eventStore.ReadAll(ctx, events.ReadOptions{})
-	fmt.Printf("  Total events in store: %d\n\n", len(allEvents))
+	allEvents, _ := eventStore.ReadAll(ctx, ares_events.ReadOptions{})
+	fmt.Printf("  Total ares_events in store: %d\n\n", len(allEvents))
 
-	// Group events by agent.
+	// Group ares_events by agent.
 	streamCounts := make(map[string]int)
 	streamTypes := make(map[string]map[string]int)
 	for _, ev := range allEvents {
@@ -645,23 +645,23 @@ func main() {
 
 	fmt.Println("  Events per agent:")
 	for stream, count := range streamCounts {
-		fmt.Printf("    %s: %d events\n", stream, count)
+		fmt.Printf("    %s: %d ares_events\n", stream, count)
 		for evtType, typeCount := range streamTypes[stream] {
 			fmt.Printf("      - %s: %d\n", evtType, typeCount)
 		}
 	}
 
-	// Show timeline of significant events.
+	// Show timeline of significant ares_events.
 	fmt.Println("\n  Event timeline (task completions and agent lifecycle):")
 	for _, ev := range allEvents {
 		switch ev.Type {
-		case events.EventAgentStarted:
+		case ares_events.EventAgentStarted:
 			fmt.Printf("    [%s] %s started (session=%v)\n",
 				ev.Timestamp.Format("15:04:05"), ev.StreamID, ev.Payload["session_id"])
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			fmt.Printf("    [%s] %s completed %v\n",
 				ev.Timestamp.Format("15:04:05"), ev.StreamID, ev.Payload["task_id"])
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			fmt.Printf("    [%s] %s session created: %v\n",
 				ev.Timestamp.Format("15:04:05"), ev.StreamID, ev.Payload["session_id"])
 		}
@@ -671,7 +671,7 @@ func main() {
 	fmt.Println("Key takeaways:")
 	fmt.Println("  - Runtime + EventStore + MemoryManager form the recovery infrastructure.")
 	fmt.Println("  - StatefulAgent interface enables full state restoration after crash.")
-	fmt.Println("  - MutableDAG allows runtime workflow modification by planner agents.")
+	fmt.Println("  - MutableDAG allows ares_runtime workflow modification by planner agents.")
 	fmt.Println("  - Event history provides complete audit trail of agent activities.")
 	fmt.Println("  - Multiple agents can crash and recover independently.")
 }

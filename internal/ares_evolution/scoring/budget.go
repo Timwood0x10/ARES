@@ -2,7 +2,7 @@ package scoring
 
 import (
 	"fmt"
-	"sync"
+	"sync/atomic"
 )
 
 // ErrInvalidBudgetLimit is returned when maxLLMCalls is <= 0.
@@ -10,19 +10,18 @@ var ErrInvalidBudgetLimit = fmt.Errorf("max LLM calls must be > 0")
 
 // Budget holds LLM scoring resource limits and current usage for one evolution generation.
 type Budget struct {
-	mu sync.Mutex
-
 	// MaxLLMCalls is the maximum number of LLM scorer calls allowed per generation.
-	MaxLLMCalls int
+	// Immutable after construction.
+	MaxLLMCalls int64
 
 	// UsedLLMCalls is the number of LLM scorer calls made in the current generation.
-	UsedLLMCalls int
+	UsedLLMCalls atomic.Int64
 
 	// CacheHits is the number of score lookups served from cache.
-	CacheHits int
+	CacheHits atomic.Int64
 
 	// FallbackCount is the number of times LLM scoring failed and fell back.
-	FallbackCount int
+	FallbackCount atomic.Int64
 }
 
 // NewBudget creates a new scoring budget.
@@ -40,8 +39,22 @@ func NewBudget(maxLLMCalls int) (*Budget, error) {
 		return nil, fmt.Errorf("new budget: %w", ErrInvalidBudgetLimit)
 	}
 	return &Budget{
-		MaxLLMCalls: maxLLMCalls,
+		MaxLLMCalls: int64(maxLLMCalls),
 	}, nil
+}
+
+// TryRecordLLMCall atomically checks the budget and records a call if within limit.
+//
+// Returns true if the call was recorded (budget allowed), false if at capacity.
+func (b *Budget) TryRecordLLMCall() bool {
+	used := b.UsedLLMCalls.Load()
+	for used < b.MaxLLMCalls {
+		if b.UsedLLMCalls.CompareAndSwap(used, used+1) {
+			return true
+		}
+		used = b.UsedLLMCalls.Load()
+	}
+	return false
 }
 
 // CanCallLLM checks if an LLM call is still within budget.
@@ -50,39 +63,24 @@ func NewBudget(maxLLMCalls int) (*Budget, error) {
 //
 //	bool - true if an LLM call can be made.
 func (b *Budget) CanCallLLM() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.UsedLLMCalls < b.MaxLLMCalls
-}
-
-// RecordLLMCall records one LLM call against the budget.
-func (b *Budget) RecordLLMCall() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.UsedLLMCalls++
+	return b.UsedLLMCalls.Load() < b.MaxLLMCalls
 }
 
 // RecordCacheHit records a cache hit (does not consume budget).
 func (b *Budget) RecordCacheHit() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.CacheHits++
+	b.CacheHits.Add(1)
 }
 
 // RecordFallback records a fallback to heuristic scoring.
 func (b *Budget) RecordFallback() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.FallbackCount++
+	b.FallbackCount.Add(1)
 }
 
 // Reset resets usage counters for a new generation while keeping limits.
 func (b *Budget) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.UsedLLMCalls = 0
-	b.CacheHits = 0
-	b.FallbackCount = 0
+	b.UsedLLMCalls.Store(0)
+	b.CacheHits.Store(0)
+	b.FallbackCount.Store(0)
 }
 
 // Usage returns current budget utilization.
@@ -94,7 +92,5 @@ func (b *Budget) Reset() {
 //	cacheHits - cache hit count.
 //	fallbacks - fallback count.
 func (b *Budget) Usage() (used, max, cacheHits, fallbacks int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.UsedLLMCalls, b.MaxLLMCalls, b.CacheHits, b.FallbackCount
+	return int(b.UsedLLMCalls.Load()), int(b.MaxLLMCalls), int(b.CacheHits.Load()), int(b.FallbackCount.Load())
 }

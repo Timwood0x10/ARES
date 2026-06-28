@@ -87,7 +87,7 @@ jobs:
       - name: Integration tests
         env:
           TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
-        run: go test -race -count=1 -timeout=300s ./internal/integration/...
+        run: go test -race -tags=integration -count=1 -timeout=300s ./...
 
   benchmark:
     name: Benchmarks

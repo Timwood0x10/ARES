@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (8): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
+# ares Architecture Deep Dive (VIII): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
 
 > Agent startup is an event, task assignment is an event, tool call is an event, LLM response is an event, Agent crash is an event too.
 > I thought at the time: **If I record every single thing the Agent does, can I fully reconstruct its state after it crashes?**
@@ -48,16 +48,16 @@ Core files:
 
 | File | Purpose |
 |------|---------|
-| `internal/events/types.go` | Event model, EventStore interface |
-| `internal/events/memory_store.go` | In-memory EventStore |
-| `internal/events/pg_store.go` | PostgreSQL EventStore |
-| `internal/events/compactor.go` | Event compaction into summaries |
-| `internal/events/trim_store.go` | Delete old events after compaction |
-| `internal/events/compactable_store.go` | Auto-compacting EventStore wrapper |
-| `internal/events/summary.go` | EventSummary model + CompactionConfig |
-| `internal/events/summary_repository.go` | PgSummaryRepository |
-| `internal/events/memory_summary_repo.go` | In-memory SummaryRepository |
-| `internal/flight/replay.go` | ReplaySession for step-by-step replay |
+| `internal/ares_events/types.go` | Event model, EventStore interface |
+| `internal/ares_events/memory_store.go` | In-memory EventStore |
+| `internal/ares_events/pg_store.go` | PostgreSQL EventStore |
+| `internal/ares_events/compactor.go` | Event compaction into summaries |
+| `internal/ares_events/trim_store.go` | Delete old events after compaction |
+| `internal/ares_events/compactable_store.go` | Auto-compacting EventStore wrapper |
+| `internal/ares_events/summary.go` | EventSummary model + CompactionConfig |
+| `internal/ares_events/summary_repository.go` | PgSummaryRepository |
+| `internal/ares_events/memory_summary_repo.go` | In-memory SummaryRepository |
+| `internal/ares_flight/replay.go` | ReplaySession for step-by-step replay |
 
 ---
 
@@ -65,21 +65,22 @@ Core files:
 
 ### 2.1 Event Structure
 
-`internal/events/types.go` defines the foundational types:
+`internal/ares_events/types.go` defines the foundational types:
 
 ```go
 type Event struct {
-    ID        string         `json:"id"`
-    StreamID  string         `json:"stream_id"`
-    Type      EventType      `json:"type"`
-    Payload   map[string]any `json:"payload"`
-    Metadata  map[string]any `json:"metadata,omitempty"`
-    Version   int64          `json:"version"`
-    Timestamp time.Time      `json:"timestamp"`
+    ID         string         `json:"id"`
+    StreamID   string         `json:"stream_id"`
+    Type       EventType      `json:"type"`
+    ModuleName string         `json:"module_name,omitempty"`
+    Payload    map[string]any `json:"payload"`
+    Metadata   map[string]any `json:"metadata,omitempty"`
+    Version    int64          `json:"version"`
+    Timestamp  time.Time      `json:"timestamp"`
 }
 ```
 
-Each event belongs to a **stream** (identified by `StreamID`). A stream is an append-only sequence of events for a single entity — typically an Agent. The `Version` field enables optimistic concurrency control, and the `Type` field is used for routing and replay classification.
+Each event belongs to a **stream** (identified by `StreamID`). A stream is an append-only sequence of events for a single entity — typically an Agent. The `Version` field enables optimistic concurrency control, and the `Type` field is used for routing and replay classification. The `ModuleName` field records which subsystem emitted the event — "runtime", "workflow", "memory", etc. This sounds obvious until you try to replay an event stream and discover you can't tell whether `step.started` came from the workflow engine or the plugin bus. Without it, you're reverse-engineering the source from the payload shape. With it, you know.
 
 ### 2.2 Event Types
 
@@ -160,7 +161,7 @@ Key semantics:
 
 ### 3.1 MemoryEventStore
 
-`internal/events/memory_store.go` provides an in-memory implementation, primarily used for testing and demo mode:
+`internal/ares_events/memory_store.go` provides an in-memory implementation, primarily used for testing and demo mode:
 
 ```go
 type MemoryEventStore struct {
@@ -175,7 +176,7 @@ The `Append` method performs: lock → version validation → assign sequence nu
 
 ### 3.2 PostgresEventStore
 
-`internal/events/pg_store.go` provides a production-grade PostgreSQL implementation:
+`internal/ares_events/pg_store.go` provides a production-grade PostgreSQL implementation:
 
 ```sql
 INSERT INTO events (id, stream_id, type, payload, metadata, version, created_at, timestamp)
@@ -271,7 +272,7 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 
 ## 5. ReplaySession
 
-`internal/flight/replay.go` provides step-by-step event replay for a task:
+`internal/ares_flight/replay.go` provides step-by-step event replay for a task:
 
 ```mermaid
 sequenceDiagram
@@ -392,6 +393,29 @@ graph TB
         CES -->|SSE| DV
     end
 ```
+
+---
+
+## v0.2.4 Update
+
+**Event.ModuleName**: Every event now carries a `ModuleName` field identifying which module emitted it. The `Emit()` signature changed from:
+
+```go
+// Before: who emitted this event?
+Emit(ctx, store, streamID, eventType, payload)
+
+// After: always traceable
+Emit(ctx, store, streamID, eventType, "runtime", payload)
+```
+
+When you replay an event stream, you can now see:
+```json
+{"type": "step.started", "module_name": "workflow", ...}
+{"type": "tool.call.completed", "module_name": "runtime", ...}
+{"type": "memory.distilled", "module_name": "memory", ...}
+```
+
+This closes the "who did what" gap — previously you had to infer the source from the event type and payload. Now it's explicit.
 
 ---
 

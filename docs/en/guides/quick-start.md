@@ -1,33 +1,87 @@
 # Quick Start Guide
 
-This guide helps you run your first go-agent example within 10 minutes.
+This guide helps you run your first ARES example within 10 minutes.
 
 ## Prerequisites
 
 ### Required Components
 
-- **Go 1.21+**
+- **Go 1.26+**
   ```bash
   go version  # Check version
   ```
 
-- **PostgreSQL 15+ with pgvector**
+- **PostgreSQL 15+ with pgvector** (optional, for persistence)
   ```bash
-  # Install PostgreSQL
-  # macOS: brew install postgresql@15
-  # Ubuntu: apt install postgresql-15
-
-  # Install pgvector extension
-  # Download: https://github.com/pgvector/pgvector/releases
+  # Quick start with Docker:
+  ./scripts/docker/restart.sh
   ```
 
-- **Ollama (or other LLM service)**
+- **LLM API Key** (optional, for AI features)
   ```bash
-  # Install Ollama
-  # macOS: brew install ollama
-  # Linux: curl -fsSL https://ollama.com/install.sh | sh
+  export OPENROUTER_API_KEY="your-api-key"
+  ```
 
-  # Pull model
+## Quick Start with Bootstrap
+
+The fastest way to start using ARES is through the bootstrap API:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/Timwood0x10/ares/api/bootstrap"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create ARES instance with all modules wired.
+    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ares.Stop()
+
+    // Start runtime.
+    if err := ares.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("ARES started!")
+
+    // Use the modules:
+    // ares.Runtime  — agent lifecycle
+    // ares.Memory   — memory management
+    // ares.Evolution — genetic algorithm
+    // ares.Arena    — chaos engineering
+}
+```
+
+## Run Examples
+
+```bash
+# Quick start (bootstrap API)
+go run examples/quickstart/main.go
+
+# Graph workflow demos
+go run examples/graph_demo/basic/basic_example.go
+go run examples/graph_demo/conditional/conditional_example.go
+go run examples/graph_demo/scheduler/scheduler_example.go
+
+# Advanced patterns
+go run examples/advanced/mutable_dag/main.go
+go run examples/advanced/dynamic_executor/main.go
+go run examples/advanced/leader_failover/main.go
+
+# Multi-agent collaboration
+go run examples/travel/main.go
+
+# Chaos engineering
+go run examples/mcp-dashboard/main.go
   ollama pull llama3.2
   ```
 

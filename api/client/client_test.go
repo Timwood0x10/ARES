@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/api/service/agent"
-	llmSvc "github.com/Timwood0x10/ares/api/service/llm"
-	memorySvc "github.com/Timwood0x10/ares/api/service/memory"
-	retrievalSvc "github.com/Timwood0x10/ares/api/service/retrieval"
+	agentSvc "github.com/Timwood0x10/ares/internal/agents"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
+	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
+	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 )
 
 // TestNewClient tests the creation of a new client instance.
@@ -171,9 +171,9 @@ func TestClientMemory(t *testing.T) {
 			}
 
 			if tt.memoryConfig {
-				config.Memory = &memorySvc.Config{
+				config.Memory = &memoryservice.Config{
 					BaseConfig: config.BaseConfig,
-					Repo:       memorySvc.NewMemoryRepository(),
+					Repo:       memoryservice.NewMemoryRepository(),
 				}
 			}
 
@@ -231,9 +231,9 @@ func TestClientRetrieval(t *testing.T) {
 			}
 
 			if tt.retrievalConfig {
-				config.Retrieval = &retrievalSvc.Config{
+				config.Retrieval = &retrievalservice.Config{
 					BaseConfig: config.BaseConfig,
-					Repo:       retrievalSvc.NewMemoryRepository(),
+					Repo:       retrievalservice.NewMemoryRepository(),
 				}
 			}
 
@@ -291,7 +291,7 @@ func TestClientLLM(t *testing.T) {
 			}
 
 			if tt.llmConfig {
-				config.LLM = &llmSvc.Config{
+				config.LLM = &llmservice.Config{
 					BaseConfig: config.BaseConfig,
 					LLMConfig: &core.LLMConfig{
 						Provider: core.LLMProviderOllama,
@@ -430,21 +430,21 @@ func TestClientPing(t *testing.T) {
 					},
 					Repo: agentSvc.NewMemoryRepository(),
 				},
-				Memory: &memorySvc.Config{
+				Memory: &memoryservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: memorySvc.NewMemoryRepository(),
+					Repo: memoryservice.NewMemoryRepository(),
 				},
-				Retrieval: &retrievalSvc.Config{
+				Retrieval: &retrievalservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: retrievalSvc.NewMemoryRepository(),
+					Repo: retrievalservice.NewMemoryRepository(),
 				},
 			},
 			wantResult: true,
@@ -457,21 +457,21 @@ func TestClientPing(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1 * time.Second,
 				},
-				Memory: &memorySvc.Config{
+				Memory: &memoryservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: memorySvc.NewMemoryRepository(),
+					Repo: memoryservice.NewMemoryRepository(),
 				},
-				Retrieval: &retrievalSvc.Config{
+				Retrieval: &retrievalservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: retrievalSvc.NewMemoryRepository(),
+					Repo: retrievalservice.NewMemoryRepository(),
 				},
 			},
 			wantResult: false,
@@ -492,13 +492,13 @@ func TestClientPing(t *testing.T) {
 					},
 					Repo: agentSvc.NewMemoryRepository(),
 				},
-				Retrieval: &retrievalSvc.Config{
+				Retrieval: &retrievalservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: retrievalSvc.NewMemoryRepository(),
+					Repo: retrievalservice.NewMemoryRepository(),
 				},
 			},
 			wantResult: false,
@@ -519,13 +519,13 @@ func TestClientPing(t *testing.T) {
 					},
 					Repo: agentSvc.NewMemoryRepository(),
 				},
-				Memory: &memorySvc.Config{
+				Memory: &memoryservice.Config{
 					BaseConfig: &core.BaseConfig{
 						RequestTimeout: 30 * time.Second,
 						MaxRetries:     3,
 						RetryDelay:     1 * time.Second,
 					},
-					Repo: memorySvc.NewMemoryRepository(),
+					Repo: memoryservice.NewMemoryRepository(),
 				},
 			},
 			wantResult: false,

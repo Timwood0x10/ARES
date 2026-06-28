@@ -2,16 +2,20 @@ package dashboard
 
 import (
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// Lock ordering: always acquire c.mu (WSClient) before h.mu (WSHub).
-// This invariant is upheld by Subscribe/Unsubscribe and must not be violated
-// by future changes to avoid deadlocks.
+// Lock ordering: always acquire h.mu (WSHub) before c.mu (WSClient).
+// This invariant is upheld by Subscribe/Unsubscribe and removeClient.
+
+// broadcastMsg carries a pre-marshaled WebSocket message and its target channel.
+type broadcastMsg struct {
+	channel string
+	data    []byte
+}
 
 // WSHub manages WebSocket client connections and channel-based message routing.
 type WSHub struct {
@@ -19,7 +23,7 @@ type WSHub struct {
 	channels   map[string]map[*WSClient]struct{}
 	register   chan *WSClient
 	unregister chan *WSClient
-	broadcast  chan *WSMessage
+	broadcast  chan broadcastMsg
 	mu         sync.RWMutex
 	done       chan struct{}
 	stopOnce   sync.Once
@@ -42,7 +46,7 @@ func NewWSHub() *WSHub {
 		channels:   make(map[string]map[*WSClient]struct{}),
 		register:   make(chan *WSClient),
 		unregister: make(chan *WSClient),
-		broadcast:  make(chan *WSMessage, 256),
+		broadcast:  make(chan broadcastMsg, 256),
 		done:       make(chan struct{}),
 	}
 }
@@ -63,17 +67,17 @@ func (h *WSHub) Run() {
 
 		case msg := <-h.broadcast:
 			h.mu.RLock()
-			if msg.Channel != "" {
+			if msg.channel != "" {
 				// Send to channel subscribers.
-				if subs, ok := h.channels[msg.Channel]; ok {
+				if subs, ok := h.channels[msg.channel]; ok {
 					for client := range subs {
-						h.sendToClient(client, msg)
+						h.sendRawToClient(client, msg.data)
 					}
 				}
 			} else {
 				// Broadcast to all clients.
 				for client := range h.clients {
-					h.sendToClient(client, msg)
+					h.sendRawToClient(client, msg.data)
 				}
 			}
 			h.mu.RUnlock()
@@ -95,8 +99,12 @@ func (h *WSHub) Stop() {
 func (h *WSHub) BroadcastToChannel(channel string, msg *WSMessage) {
 	msg.Channel = channel
 	msg.TS = time.Now()
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	select {
-	case h.broadcast <- msg:
+	case h.broadcast <- broadcastMsg{channel: channel, data: data}:
 	default:
 		// Drop message if buffer is full.
 	}
@@ -105,8 +113,12 @@ func (h *WSHub) BroadcastToChannel(channel string, msg *WSMessage) {
 // BroadcastAll sends a message to all connected clients.
 func (h *WSHub) BroadcastAll(msg *WSMessage) {
 	msg.TS = time.Now()
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	select {
-	case h.broadcast <- msg:
+	case h.broadcast <- broadcastMsg{data: data}:
 	default:
 	}
 }
@@ -165,16 +177,11 @@ func (h *WSHub) removeClient(client *WSClient) {
 	close(client.send)
 }
 
-// sendToClient queues a message for a client. Caller must hold h.mu (read or write lock).
+// sendRawToClient queues pre-marshaled data for a client. Caller must hold h.mu.
 // No need to lock client.mu: client.send is a buffered channel and is only closed
 // under h.mu.Lock() (in removeClient). Holding h.mu (even RLock) prevents removeClient
 // from acquiring the write lock, so client.send cannot be closed concurrently.
-func (h *WSHub) sendToClient(client *WSClient, msg *WSMessage) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
-
+func (h *WSHub) sendRawToClient(client *WSClient, data []byte) {
 	select {
 	case client.send <- data:
 	default:
@@ -193,12 +200,13 @@ func NewWSClient(hub *WSHub, conn *websocket.Conn) *WSClient {
 }
 
 // Subscribe adds the client to a channel.
+// Lock ordering: c.hub.mu before c.mu (matching removeClient).
 func (c *WSClient) Subscribe(channel string) {
+	c.hub.mu.Lock()
 	c.mu.Lock()
 	c.channels[channel] = struct{}{}
 	c.mu.Unlock()
 
-	c.hub.mu.Lock()
 	if _, ok := c.hub.channels[channel]; !ok {
 		c.hub.channels[channel] = make(map[*WSClient]struct{})
 	}
@@ -208,11 +216,11 @@ func (c *WSClient) Subscribe(channel string) {
 
 // Unsubscribe removes the client from a channel.
 func (c *WSClient) Unsubscribe(channel string) {
+	c.hub.mu.Lock()
 	c.mu.Lock()
 	delete(c.channels, channel)
 	c.mu.Unlock()
 
-	c.hub.mu.Lock()
 	if subs, ok := c.hub.channels[channel]; ok {
 		delete(subs, c)
 		if len(subs) == 0 {
@@ -246,17 +254,17 @@ func (c *WSClient) ReadPump() {
 	defer func() {
 		c.hub.Unregister(c)
 		if err := c.conn.Close(); err != nil {
-			slog.Warn("ws: close connection failed", "error", err)
+			log.Warn("ws: close connection failed", "error", err)
 		}
 	}()
 
 	c.conn.SetReadLimit(4096)
 	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		slog.Warn("ws: set read deadline", "error", err)
+		log.Warn("ws: set read deadline", "error", err)
 	}
 	c.conn.SetPongHandler(func(string) error {
 		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			slog.Warn("ws: set read deadline", "error", err)
+			log.Warn("ws: set read deadline", "error", err)
 		}
 		return nil
 	})
@@ -303,7 +311,7 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 	defer func() {
 		ticker.Stop()
 		if err := c.conn.Close(); err != nil {
-			slog.Warn("ws: close connection failed", "error", err)
+			log.Warn("ws: close connection failed", "error", err)
 		}
 	}()
 
@@ -311,11 +319,11 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 		select {
 		case message, ok := <-c.send:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				slog.Warn("ws: set write deadline", "error", err)
+				log.Warn("ws: set write deadline", "error", err)
 			}
 			if !ok {
 				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-					slog.Warn("ws: write close message", "error", err)
+					log.Warn("ws: write close message", "error", err)
 				}
 				return
 			}
@@ -326,7 +334,7 @@ func (c *WSClient) WritePump(pingInterval time.Duration) {
 
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				slog.Warn("ws: set write deadline", "error", err)
+				log.Warn("ws: set write deadline", "error", err)
 			}
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return

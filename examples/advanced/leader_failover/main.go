@@ -2,7 +2,7 @@
 //
 // This example shows:
 //   - Runtime-managed leader lifecycle (no standalone Supervisor).
-//   - Checkpoint-based recovery: leader saves checkpoints via EventStore events.
+//   - Checkpoint-based recovery: leader saves checkpoints via EventStore ares_events.
 //   - Full failover sequence with timing measurements.
 //   - Event emission for operational state tracking.
 //
@@ -11,7 +11,7 @@
 //  2. Leader crashes (simulated).
 //  3. Runtime detects crash via health check.
 //  4. Factory creates new leader instance.
-//  5. Runtime replays events from EventStore.
+//  5. Runtime replays ares_events from EventStore.
 //  6. New leader restores from last checkpoint and continues.
 package main
 
@@ -26,8 +26,8 @@ import (
 
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // phaseSeparator prints a visual phase separator for readable output.
@@ -56,7 +56,7 @@ type leaderAgent struct {
 	mu          sync.Mutex
 	id          string
 	status      models.AgentStatus
-	eventStore  events.EventStore
+	eventStore  ares_events.EventStore
 	checkpoint  int
 	taskCount   int
 	sessionID   string
@@ -64,7 +64,7 @@ type leaderAgent struct {
 }
 
 // newLeader creates a new leaderAgent.
-func newLeader(id string, store events.EventStore) *leaderAgent {
+func newLeader(id string, store ares_events.EventStore) *leaderAgent {
 	return &leaderAgent{
 		id:         id,
 		status:     models.AgentStatusOffline,
@@ -107,7 +107,7 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 	a.mu.Unlock()
 
 	// Emit agent started event.
-	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id":   a.id,
 		"agent_type": string(a.Type()),
 		"session_id": sid,
@@ -116,7 +116,7 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 	})
 
 	// Emit session created event.
-	a.emitEvent(ctx, events.EventSessionCreated, map[string]any{
+	a.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
 		"session_id": sid,
 		"agent_id":   a.id,
 	})
@@ -159,7 +159,7 @@ func (a *leaderAgent) Process(_ context.Context, input any) (any, error) {
 	return fmt.Sprintf("leader %s processed (checkpoint=%d)", a.id, a.checkpoint), nil
 }
 
-// ProcessStream returns a stream of agent events.
+// ProcessStream returns a stream of agent ares_events.
 func (a *leaderAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
 	ch := make(chan base.AgentEvent, 1)
 	close(ch)
@@ -190,8 +190,8 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 	return nil
 }
 
-// ReplayEvents replays events to reconstruct incremental state.
-func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
+// ReplayEvents replays ares_events to reconstruct incremental state.
+func (a *leaderAgent) ReplayEvents(evts []*ares_events.Event) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -200,19 +200,19 @@ func (a *leaderAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventTaskCompleted:
+		case ares_events.EventTaskCompleted:
 			if cp, ok := ev.Payload["checkpoint"].(int); ok && cp > a.checkpoint {
 				a.checkpoint = cp
 			}
 			a.taskCount++
-		case events.EventSessionCreated:
+		case ares_events.EventSessionCreated:
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				a.sessionID = sid
 			}
 		}
 	}
 
-	slog.Info("leader events replayed",
+	slog.Info("leader ares_events replayed",
 		"agent_id", a.id,
 		"total_events", len(evts),
 		"restored_checkpoint", a.checkpoint,
@@ -258,7 +258,7 @@ func (a *leaderAgent) workLoop(ctx context.Context) {
 			a.mu.Unlock()
 
 			// Emit task started event.
-			a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+			a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   a.id,
 				"session_id": sid,
@@ -269,7 +269,7 @@ func (a *leaderAgent) workLoop(ctx context.Context) {
 			time.Sleep(200 * time.Millisecond)
 
 			// Save checkpoint via event.
-			a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+			a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 				"task_id":    taskID,
 				"agent_id":   a.id,
 				"session_id": sid,
@@ -287,16 +287,16 @@ func (a *leaderAgent) workLoop(ctx context.Context) {
 }
 
 // emitEvent appends an event to the EventStore.
-func (a *leaderAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
+func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	if a.eventStore == nil {
 		return
 	}
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: a.id,
 		Type:     eventType,
 		Payload:  payload,
 	}
-	if err := a.eventStore.Append(ctx, a.id, []*events.Event{event}, 0); err != nil {
+	if err := a.eventStore.Append(ctx, a.id, []*ares_events.Event{event}, 0); err != nil {
 		slog.Warn("failed to emit event",
 			"agent_id", a.id,
 			"type", eventType,
@@ -424,8 +424,8 @@ func main() {
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
-	evts, _ := eventStore.Read(ctx, "leader-1", events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, _ := eventStore.Read(ctx, "leader-1", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
 	fmt.Printf("  Events for leader-1: %d\n", len(evts))
 
@@ -458,16 +458,16 @@ func main() {
 	fmt.Printf("\n  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
-	// Check that events were preserved.
-	evts, _ = eventStore.Read(ctx, "leader-1", events.ReadOptions{
-		Direction: events.ReadAscending,
+	// Check that ares_events were preserved.
+	evts, _ = eventStore.Read(ctx, "leader-1", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
-	fmt.Printf("  Total events for leader-1: %d\n", len(evts))
+	fmt.Printf("  Total ares_events for leader-1: %d\n", len(evts))
 
 	// Show checkpoint progression.
 	fmt.Println("\n  Checkpoint progression:")
 	for _, ev := range evts {
-		if ev.Type == events.EventTaskCompleted {
+		if ev.Type == ares_events.EventTaskCompleted {
 			if cp, ok := ev.Payload["checkpoint"]; ok {
 				fmt.Printf("    Checkpoint %v (task=%v)\n", cp, ev.Payload["task_id"])
 			}
@@ -485,25 +485,25 @@ func main() {
 	fmt.Printf("  Active agents: %d\n", stats.ActiveAgents)
 	fmt.Printf("  Total restarts: %d\n", stats.TotalRestarts)
 
-	evts, _ = eventStore.Read(ctx, "leader-1", events.ReadOptions{
-		Direction: events.ReadAscending,
+	evts, _ = eventStore.Read(ctx, "leader-1", ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
-	fmt.Printf("  Total events for leader-1: %d\n", len(evts))
+	fmt.Printf("  Total ares_events for leader-1: %d\n", len(evts))
 
 	// ----------------------------------------------------------
 	// Phase 6: Full event history.
 	// ----------------------------------------------------------
 	phaseSeparator("Phase 6: Full Event History")
 
-	allEvents, _ := eventStore.ReadAll(ctx, events.ReadOptions{})
-	fmt.Printf("  Total events: %d\n\n", len(allEvents))
+	allEvents, _ := eventStore.ReadAll(ctx, ares_events.ReadOptions{})
+	fmt.Printf("  Total ares_events: %d\n\n", len(allEvents))
 
-	// Show last 15 events.
+	// Show last 15 ares_events.
 	start := 0
 	if len(allEvents) > 15 {
 		start = len(allEvents) - 15
 	}
-	fmt.Println("  Recent events:")
+	fmt.Println("  Recent ares_events:")
 	for _, ev := range allEvents[start:] {
 		fmt.Printf("    [%s] %s", ev.StreamID, ev.Type)
 		if cp, ok := ev.Payload["checkpoint"]; ok {

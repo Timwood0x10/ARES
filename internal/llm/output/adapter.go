@@ -31,13 +31,14 @@ type StreamChunk struct {
 
 // Config holds LLM configuration.
 type Config struct {
-	Provider    string
-	Model       string
-	BaseURL     string
-	APIKey      string
-	MaxTokens   int
-	Temperature float64
-	Timeout     int
+	Provider        string
+	Model           string
+	BaseURL         string
+	APIKey          string
+	MaxTokens       int
+	MaxPromptLength int
+	Temperature     float64
+	Timeout         int
 }
 
 // DefaultConfig returns default configuration.

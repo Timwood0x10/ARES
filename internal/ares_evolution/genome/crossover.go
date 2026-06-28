@@ -501,12 +501,14 @@ func generateCrossoverPoints(rng *rand.Rand, k, n int) []int {
 // --- Deprecated APIs kept for backward compatibility with tests and benchmarks ---
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // HalfSplitCrossoverInterface defines the contract for half-split crossover operations.
 type HalfSplitCrossoverInterface interface {
 	CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error)
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // MultiPointCrossover performs k-point crossover on two parent strategies.
 func (c *Crossover) MultiPointCrossover(ctx context.Context, a, b *mutation.Strategy, k int) (*mutation.Strategy, error) {
 	if a == nil || b == nil {
@@ -551,6 +553,7 @@ func (c *Crossover) MultiPointCrossover(ctx context.Context, a, b *mutation.Stra
 }
 
 // Deprecated: Kept for backward compatibility with tests and benchmarks.
+// TODO(remove): remove in v2
 // CrossoverWithHalfSplit performs uniform parameter crossover combined with
 // half-split prompt template crossover (first half of A's prompt + second half of B's prompt).
 func (c *Crossover) CrossoverWithHalfSplit(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error) {

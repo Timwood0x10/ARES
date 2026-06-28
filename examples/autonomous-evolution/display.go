@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	apievol "github.com/Timwood0x10/ares/api/ares_evolution"
+	evolutionservice "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 )
 
 // sep prints a visual section separator with a centered title.
@@ -74,7 +74,7 @@ func printInsight(title, message string) {
 // printEvolutionInsightReport generates a comprehensive evolution analysis report
 // after GA completes. It shows trajectory phases, mutation statistics,
 // genealogy tree, and key learnings in a visual format.
-func printEvolutionInsightReport(title string, result *apievol.EvolutionResult, lineages []apievol.StrategyLineage, parent *apievol.Strategy) {
+func printEvolutionInsightReport(title string, result *evolutionservice.EvolutionResult, lineages []evolutionservice.StrategyLineage, parent *evolutionservice.Strategy) {
 	fmt.Println("\n╔════════════════════════════════════════════════════╗")
 	fmt.Println("║          🧬 Evolution Insight Report               ║")
 	fmt.Println("╚════════════════════════════════════════════════════╝")
@@ -86,7 +86,7 @@ func printEvolutionInsightReport(title string, result *apievol.EvolutionResult, 
 	printKeyLearnings(result, parent)
 }
 
-func printTrajectory(stats []apievol.Stats, bestStrategy *apievol.Strategy) {
+func printTrajectory(stats []evolutionservice.Stats, bestStrategy *evolutionservice.Strategy) {
 	nGen := len(stats)
 	if nGen == 0 {
 		return
@@ -140,7 +140,7 @@ func printTrajectory(stats []apievol.Stats, bestStrategy *apievol.Strategy) {
 		trend, firstBest, lastBest, nGen)
 }
 
-func printMutationAnalysis(lineages []apievol.StrategyLineage) {
+func printMutationAnalysis(lineages []evolutionservice.StrategyLineage) {
 	fmt.Println("\n🧪 Mutation Analysis:")
 
 	paramCount := 0
@@ -191,7 +191,7 @@ func printMutationAnalysis(lineages []apievol.StrategyLineage) {
 	}
 }
 
-func printGenealogyTree(lineages []apievol.StrategyLineage) {
+func printGenealogyTree(lineages []evolutionservice.StrategyLineage) {
 	fmt.Println("\n🏆 Genealogy Tree (top lineages):")
 
 	showN := min(5, len(lineages))
@@ -251,7 +251,7 @@ func printGenealogyTree(lineages []apievol.StrategyLineage) {
 	}
 }
 
-func printBestStrategyDiff(best *apievol.Strategy, parent *apievol.Strategy) {
+func printBestStrategyDiff(best *evolutionservice.Strategy, parent *evolutionservice.Strategy) {
 	fmt.Println("\n🎯 Best Strategy vs Baseline:")
 	if best == nil {
 		fmt.Println("   (No best strategy found)")
@@ -283,7 +283,7 @@ func printBestStrategyDiff(best *apievol.Strategy, parent *apievol.Strategy) {
 	}
 }
 
-func printKeyLearnings(result *apievol.EvolutionResult, parent *apievol.Strategy) {
+func printKeyLearnings(result *evolutionservice.EvolutionResult, parent *evolutionservice.Strategy) {
 	fmt.Println("\n💡 Key Learnings:")
 
 	learnings := []string{}

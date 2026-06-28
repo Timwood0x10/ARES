@@ -21,8 +21,9 @@ var (
 
 // OllamaAdapter implements LLMAdapter for Ollama.
 type OllamaAdapter struct {
-	config *Config
-	client *http.Client
+	config       *Config
+	client       *http.Client
+	streamClient *http.Client
 }
 
 // NewOllamaAdapter creates a new OllamaAdapter.
@@ -33,11 +34,22 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 	if config.BaseURL == "" {
 		config.BaseURL = "http://localhost:11434"
 	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
 
 	return &OllamaAdapter{
 		config: config,
 		client: &http.Client{
-			Timeout: time.Duration(config.Timeout) * time.Second,
+			Timeout: time.Duration(timeout) * time.Second,
+		},
+		streamClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -75,7 +87,7 @@ func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
 			return "", gerr.Wrap(err, "read response body")
 		}
@@ -139,17 +151,14 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Use a client without Timeout for streaming: http.Client.Timeout covers
-	// the entire response body read, which would kill long-running streams.
-	// Instead, timeout is controlled via the request context.
-	streamClient := &http.Client{Transport: http.DefaultTransport}
-	resp, err := streamClient.Do(req)
+	// Timeout is controlled via the request context, not the client.
+	resp, err := a.streamClient.Do(req)
 	if err != nil {
 		return nil, gerr.Wrap(err, "send stream request")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
 		return nil, gerr.Newf("ollama stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}

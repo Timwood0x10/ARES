@@ -44,7 +44,7 @@ package main
 import (
     "context"
     "github.com/Timwood0x10/ares/api/service"
-    "github.com/Timwood0x10/ares/internal/config"
+    "github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 func main() {
@@ -101,7 +101,7 @@ storage:
   enabled: false  # 如果不需要持久化，可以禁用
 ```
 
-**代码位置**: `internal/config/config.go:20-50`
+**代码位置**: `internal/ares_config/config.go:20-50`
 
 ### 服务模式（推荐用于多语言项目）
 
@@ -277,7 +277,7 @@ agents:
     max_parallel_tasks: 4
 ```
 
-**代码位置**: `internal/config/config.go:20-50`
+**代码位置**: `internal/ares_config/config.go:20-50`
 
 ### 工具配置
 
@@ -355,7 +355,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**代码位置**: `examples/devagent/main.go:150-200`
+**代码位置**: `examples/quickstart/main.go:150-200`
 
 ### 场景 2: CLI 工具集成
 
@@ -399,7 +399,7 @@ func main() {
 }
 ```
 
-**代码位置**: `examples/multi-agent-dialog/main.go:50-100`
+**代码位置**: `examples/travel/main.go:50-100`
 
 ### 场景 3: 微服务集成
 
@@ -446,7 +446,7 @@ if _, err := os.Stat(configPath); os.IsNotExist(err) {
 }
 ```
 
-**代码位置**: `internal/config/config.go:80-100`
+**代码位置**: `internal/ares_config/config.go:80-100`
 
 #### 错误 2: LLM 连接失败
 

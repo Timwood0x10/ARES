@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func TestNewEventRecovery_NilStore(t *testing.T) {
@@ -17,7 +17,7 @@ func TestNewEventRecovery_NilStore(t *testing.T) {
 }
 
 func TestNewEventRecovery_NonNilStore(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
@@ -32,7 +32,7 @@ func TestEventRecovery_RecoverFromEvents_NilReceiver(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_EmptyLeaderID(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
@@ -42,7 +42,7 @@ func TestEventRecovery_RecoverFromEvents_EmptyLeaderID(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_NoEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	r := NewEventRecovery(store)
@@ -56,13 +56,13 @@ func TestEventRecovery_RecoverFromEvents_NoEvents(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_SessionCreated(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-abc",
 				"user_id":    "user-1",
@@ -79,34 +79,34 @@ func TestEventRecovery_RecoverFromEvents_SessionCreated(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_TaskTracking(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id":    "task-1",
 				"session_id": "session-1",
 			},
 		},
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id":    "task-2",
 				"session_id": "session-1",
 			},
 		},
 		{
-			Type: events.EventTaskCreated,
+			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
 				"task_id":    "task-3",
 				"session_id": "session-1",
 			},
 		},
 		{
-			Type: events.EventTaskCompleted,
+			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
 				"task_id": "task-2",
 			},
@@ -125,15 +125,15 @@ func TestEventRecovery_RecoverFromEvents_TaskTracking(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_FailoverDetection(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	failoverTime := time.Date(2026, 6, 11, 10, 30, 0, 0, time.UTC)
 
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type:      events.EventFailoverTriggered,
+			Type:      ares_events.EventFailoverTriggered,
 			Timestamp: failoverTime,
 			Payload: map[string]any{
 				"leader_id": leaderID,
@@ -149,16 +149,16 @@ func TestEventRecovery_RecoverFromEvents_FailoverDetection(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 	baseTime := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
 
 	// Simulate a full lifecycle: session, tasks, messages, distillation, failover.
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type:      events.EventSessionCreated,
+			Type:      ares_events.EventSessionCreated,
 			Timestamp: baseTime,
 			Payload: map[string]any{
 				"session_id": "session-1",
@@ -166,7 +166,7 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventMessageAdded,
+			Type:      ares_events.EventMessageAdded,
 			Timestamp: baseTime.Add(1 * time.Second),
 			Payload: map[string]any{
 				"session_id": "session-1",
@@ -174,7 +174,7 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventTaskCreated,
+			Type:      ares_events.EventTaskCreated,
 			Timestamp: baseTime.Add(2 * time.Second),
 			Payload: map[string]any{
 				"task_id":    "task-1",
@@ -182,7 +182,7 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventTaskCreated,
+			Type:      ares_events.EventTaskCreated,
 			Timestamp: baseTime.Add(3 * time.Second),
 			Payload: map[string]any{
 				"task_id":    "task-2",
@@ -190,14 +190,14 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventTaskCompleted,
+			Type:      ares_events.EventTaskCompleted,
 			Timestamp: baseTime.Add(4 * time.Second),
 			Payload: map[string]any{
 				"task_id": "task-1",
 			},
 		},
 		{
-			Type:      events.EventMessageAdded,
+			Type:      ares_events.EventMessageAdded,
 			Timestamp: baseTime.Add(5 * time.Second),
 			Payload: map[string]any{
 				"session_id": "session-1",
@@ -205,7 +205,7 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventMemoryDistilled,
+			Type:      ares_events.EventMemoryDistilled,
 			Timestamp: baseTime.Add(6 * time.Second),
 			Payload: map[string]any{
 				"task_id":    "task-1",
@@ -213,14 +213,14 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 			},
 		},
 		{
-			Type:      events.EventFailoverTriggered,
+			Type:      ares_events.EventFailoverTriggered,
 			Timestamp: baseTime.Add(10 * time.Minute),
 			Payload: map[string]any{
 				"leader_id": leaderID,
 			},
 		},
 		{
-			Type:      events.EventFailoverCompleted,
+			Type:      ares_events.EventFailoverCompleted,
 			Timestamp: baseTime.Add(10*time.Minute + 5*time.Second),
 			Payload: map[string]any{
 				"leader_id":    leaderID,
@@ -242,15 +242,15 @@ func TestEventRecovery_RecoverFromEvents_FullScenario(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 
 	// First session.
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-old",
 			},
@@ -259,9 +259,9 @@ func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second session (should be the recovered one).
-	err = store.Append(context.Background(), leaderID, []*events.Event{
+	err = store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-new",
 			},
@@ -276,15 +276,15 @@ func TestEventRecovery_RecoverFromEvents_MultipleSessions(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_NilEventsSkipped(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	leaderID := "leader-1"
 
 	// Append a valid event first.
-	err := store.Append(context.Background(), leaderID, []*events.Event{
+	err := store.Append(context.Background(), leaderID, []*ares_events.Event{
 		{
-			Type: events.EventSessionCreated,
+			Type: ares_events.EventSessionCreated,
 			Payload: map[string]any{
 				"session_id": "session-1",
 			},
@@ -300,7 +300,7 @@ func TestEventRecovery_RecoverFromEvents_NilEventsSkipped(t *testing.T) {
 }
 
 func TestEventRecovery_RecoverFromEvents_CancelledContext(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())

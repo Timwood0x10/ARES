@@ -5,13 +5,14 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // MemoryManager provides unified memory management.
@@ -67,9 +68,9 @@ type MemoryManager interface {
 	// Stop stops the memory manager and cleans up resources.
 	Stop(ctx context.Context) error
 
-	// SetEventStore configures an optional EventStore for emitting lifecycle events.
+	// SetEventStore configures an optional EventStore for emitting lifecycle ares_events.
 	// If store is nil, event emission is a no-op.
-	SetEventStore(store events.EventStore, streamID string)
+	SetEventStore(store ares_events.EventStore, streamID string)
 }
 
 // MemoryConfig holds configuration for MemoryManager.
@@ -264,8 +265,9 @@ func ToBuildContextFormat(messages []Message) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	var b string
-	b = "Previous conversation history:\n\n"
+	var sb strings.Builder
+	sb.Grow(len(messages) * 256)
+	sb.WriteString("Previous conversation history:\n\n")
 	for _, msg := range messages {
 		label := msg.Role
 		switch label {
@@ -280,9 +282,9 @@ func ToBuildContextFormat(messages []Message) string {
 		case memctx.RoleSystem:
 			label = "System"
 		}
-		b += fmt.Sprintf("%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
+		fmt.Fprintf(&sb, "%s: %s\n", label, truncpkg.WithEllipsis(msg.Content, 100))
 	}
-	return b
+	return sb.String()
 }
 
 // validate checks that config fields have sensible values.

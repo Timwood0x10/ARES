@@ -216,6 +216,43 @@ var coreMigrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_event_summaries_agent ON event_summaries(agent_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_event_summaries_agent_task ON event_summaries(agent_id, task_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_event_summaries_created ON event_summaries(created_at)`,
+
+	// Evolution strategies — persisted state for autonomous evolution system.
+	`CREATE TABLE IF NOT EXISTS evolution_strategies (
+			id VARCHAR(255) PRIMARY KEY,
+			is_active BOOLEAN NOT NULL DEFAULT false,
+			name VARCHAR(255) NOT NULL DEFAULT '',
+			version INTEGER NOT NULL DEFAULT 1,
+			params JSONB DEFAULT '{}'::jsonb,
+			parent_id VARCHAR(255) DEFAULT '',
+			prompt_template TEXT DEFAULT '',
+			strategy_mutation_type VARCHAR(100) DEFAULT '',
+			mutation_desc TEXT DEFAULT '',
+			score DOUBLE PRECISION DEFAULT -1,
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW()
+		)`,
+
+	`CREATE INDEX IF NOT EXISTS idx_evolution_strategies_active ON evolution_strategies(is_active)`,
+	`CREATE INDEX IF NOT EXISTS idx_evolution_strategies_score ON evolution_strategies(score)`,
+
+	// Rollback events — audit trail for strategy rollback decisions.
+	`CREATE TABLE IF NOT EXISTS evolution_rollback_events (
+			id SERIAL PRIMARY KEY,
+			strategy_id VARCHAR(255) NOT NULL,
+			previous_strategy_id VARCHAR(255) DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			decision JSONB DEFAULT '{}'::jsonb,
+			current_score DOUBLE PRECISION DEFAULT 0,
+			reference_score DOUBLE PRECISION DEFAULT 0,
+			degradation DOUBLE PRECISION DEFAULT 0,
+			threshold DOUBLE PRECISION DEFAULT 0,
+			recommended_action TEXT DEFAULT '',
+			created_at TIMESTAMP DEFAULT NOW()
+		)`,
+
+	`CREATE INDEX IF NOT EXISTS idx_rollback_events_strategy ON evolution_rollback_events(strategy_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_rollback_events_created ON evolution_rollback_events(created_at)`,
 }
 
 // Migrate runs database migrations.

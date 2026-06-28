@@ -1,8 +1,8 @@
-// Command mcp-null provides a minimal MCP server for demos that don't need
+// Command ares_mcp-null provides a minimal MCP server for demos that don't need
 // external MCP tools. It uses the ares MCP SDK to respond to initialize,
 // tools/list, and tools/call with proper responses.
 //
-// Usage: mcp-null serve
+// Usage: ares_mcp-null serve
 package main
 
 import (
@@ -14,21 +14,21 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Timwood0x10/ares/internal/mcp"
+	"github.com/Timwood0x10/ares/internal/ares_mcp"
 
 	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintf(os.Stderr, "Usage: mcp-null serve\n")
+		fmt.Fprintf(os.Stderr, "Usage: ares_mcp-null serve\n")
 		os.Exit(1)
 	}
 
 	// Create MCPServer with stdio transport.
-	server := mcp.NewMCPServer(
-		mcp.Implementation{Name: "mcp-null", Version: "1.0.0"},
-		mcp.NewStdioServerTransport(),
+	server := ares_mcp.NewMCPServer(
+		ares_mcp.Implementation{Name: "ares_mcp-null", Version: "1.0.0"},
+		ares_mcp.NewStdioServerTransport(),
 	)
 
 	// Register echo tool (no-op for demos).
@@ -41,11 +41,11 @@ func main() {
 	}`)
 
 	err := server.RegisterTool("echo", "Echoes back the input (no-op for demos)", echoSchema,
-		func(ctx context.Context, args map[string]any) (*mcp.ToolCallResult, error) {
+		func(ctx context.Context, args map[string]any) (*ares_mcp.ToolCallResult, error) {
 			msg, _ := args["message"].(string)
-			return &mcp.ToolCallResult{
-				Content: []mcp.ContentBlock{
-					{Type: "text", Text: fmt.Sprintf("mcp-null: %s", msg)},
+			return &ares_mcp.ToolCallResult{
+				Content: []ares_mcp.ContentBlock{
+					{Type: "text", Text: fmt.Sprintf("ares_mcp-null: %s", msg)},
 				},
 			}, nil
 		})
@@ -65,7 +65,7 @@ func main() {
 	sigEg.Go(func() error {
 		select {
 		case <-sigCh:
-			slog.Info("mcp-null: shutting down...")
+			slog.Info("ares_mcp-null: shutting down...")
 			cancel()
 			return nil
 		case <-sigCtx.Done():
@@ -75,7 +75,7 @@ func main() {
 
 	// Start serving.
 	if err := server.Serve(ctx); err != nil {
-		slog.Error("mcp-null: serve error", "error", err)
+		slog.Error("ares_mcp-null: serve error", "error", err)
 		os.Exit(1)
 	}
 	_ = sigEg.Wait() // Clean up signal goroutine

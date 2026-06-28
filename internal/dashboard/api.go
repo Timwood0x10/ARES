@@ -11,12 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
 
 	"github.com/gorilla/websocket"
 )
@@ -84,6 +84,7 @@ type APIv2 struct {
 	start    time.Time
 	arena    ArenaProvider
 	survival SurvivalProvider
+	upgrader *websocket.Upgrader
 }
 
 // NewAPIv2 creates a new unified API.
@@ -93,6 +94,18 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 		mcp:   mcp,
 		hub:   hub,
 		start: time.Now(),
+		upgrader: &websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true
+				}
+				host := r.Host
+				return strings.Contains(origin, host) || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "https://localhost")
+			},
+		},
 	}
 }
 
@@ -158,6 +171,9 @@ func (a *APIv2) Handler() http.Handler {
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
 	mux.HandleFunc("/", a.handleRoot)
+
+	// ── Prometheus metrics ─────────────────
+	ares_observability.RegisterMetricsRouter(mux)
 
 	return withRecovery(withCORS(mux))
 }
@@ -308,8 +324,7 @@ func (a *APIv2) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upgrader := newUpgrader()
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -342,7 +357,7 @@ func (a *APIv2) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(data); err != nil {
-		slog.Debug("dashboard: failed to write index.html", "error", err)
+		log.Debug("dashboard: failed to write index.html", "error", err)
 	}
 }
 
@@ -664,7 +679,7 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial connection event.
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", time.Now().Format(time.RFC3339)); err != nil {
-		slog.Warn("sse write failed", "error", err)
+		log.Warn("sse write failed", "error", err)
 	}
 	flusher.Flush()
 
@@ -677,14 +692,13 @@ func (a *APIv2) handleArenaStream(w http.ResponseWriter, r *http.Request) {
 			}
 			data, _ := json.Marshal(h)
 			if _, err := fmt.Fprintf(w, "event: arena_action\ndata: %s\n\n", data); err != nil {
-				slog.Warn("sse write failed", "error", err)
+				log.Warn("sse write failed", "error", err)
 			}
 			flusher.Flush()
-			time.Sleep(100 * time.Millisecond)
 		}
 	}
 	if _, err := fmt.Fprintf(w, "event: done\ndata: {}\n\n"); err != nil {
-		slog.Warn("sse write failed", "error", err)
+		log.Warn("sse write failed", "error", err)
 	}
 	flusher.Flush()
 }
@@ -888,7 +902,7 @@ func withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("api: panic recovered", "path", r.URL.Path, "recover", rec)
+				log.Error("api: panic recovered", "path", r.URL.Path, "recover", rec)
 				writeJSON(w, http.StatusInternalServerError, errResp("internal server error"))
 			}
 		}()
@@ -900,12 +914,4 @@ func withRecovery(next http.Handler) http.Handler {
 
 func errResp(msg string) map[string]string {
 	return map[string]string{"error": msg}
-}
-
-func newUpgrader() *websocket.Upgrader {
-	return &websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
-	}
 }

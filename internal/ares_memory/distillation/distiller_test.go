@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func TestNewDistiller(t *testing.T) {
@@ -163,7 +163,7 @@ func TestSubscribeAndDistill_NilStore(t *testing.T) {
 }
 
 func TestSubscribeAndDistill_CancelledContext(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
@@ -179,7 +179,7 @@ func TestSubscribeAndDistill_CancelledContext(t *testing.T) {
 }
 
 func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
@@ -198,16 +198,16 @@ func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
 	defer waitCancel()
 	<-waitCtx.Done()
 
-	// Publish events to the store.
-	err := store.Append(context.Background(), "stream-1", []*events.Event{
+	// Publish ares_events to the store.
+	err := store.Append(context.Background(), "stream-1", []*ares_events.Event{
 		{
-			Type: events.EventMessageAdded,
+			Type: ares_events.EventMessageAdded,
 			Payload: map[string]any{
 				"role": "user",
 			},
 		},
 		{
-			Type: events.EventTaskCompleted,
+			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
 				"task_id": "task-1",
 			},
@@ -215,7 +215,7 @@ func TestSubscribeAndDistill_ReceivesEvents(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Wait for the subscriber goroutine to process published events.
+	// Wait for the subscriber goroutine to process published ares_events.
 	processCtx, processCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer processCancel()
 	<-processCtx.Done()
@@ -238,9 +238,9 @@ func TestProcessEvent_MessageAdded(t *testing.T) {
 	repo := NewMockExperienceRepository([]Experience{})
 	distiller := NewDistiller(config, embedder, repo)
 
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: "stream-1",
-		Type:     events.EventMessageAdded,
+		Type:     ares_events.EventMessageAdded,
 		Payload: map[string]any{
 			"role": "user",
 		},
@@ -256,9 +256,9 @@ func TestProcessEvent_TaskCompleted(t *testing.T) {
 	repo := NewMockExperienceRepository([]Experience{})
 	distiller := NewDistiller(config, embedder, repo)
 
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: "stream-1",
-		Type:     events.EventTaskCompleted,
+		Type:     ares_events.EventTaskCompleted,
 		Payload: map[string]any{
 			"task_id": "task-1",
 		},
@@ -274,18 +274,18 @@ func TestProcessEvent_UnknownEventType(t *testing.T) {
 	repo := NewMockExperienceRepository([]Experience{})
 	distiller := NewDistiller(config, embedder, repo)
 
-	event := &events.Event{
+	event := &ares_events.Event{
 		StreamID: "stream-1",
-		Type:     events.EventAgentStarted,
+		Type:     ares_events.EventAgentStarted,
 		Payload:  map[string]any{},
 	}
 
-	// Should not panic — unknown events are handled by the default case.
+	// Should not panic — unknown ares_events are handled by the default case.
 	distiller.processEvent(context.Background(), event)
 }
 
 func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
-	store := events.NewMemoryEventStore()
+	store := ares_events.NewMemoryEventStore()
 	defer func() { _ = store.Close() }()
 
 	config := DefaultDistillationConfig()
@@ -303,25 +303,25 @@ func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 	defer waitCancel()
 	<-waitCtx.Done()
 
-	// Publish events of various types; only EventMessageAdded and
+	// Publish ares_events of various types; only EventMessageAdded and
 	// EventTaskCompleted should be received by the subscriber.
-	err := store.Append(context.Background(), "stream-1", []*events.Event{
+	err := store.Append(context.Background(), "stream-1", []*ares_events.Event{
 		{
-			Type:    events.EventAgentStarted,
+			Type:    ares_events.EventAgentStarted,
 			Payload: map[string]any{},
 		},
 		{
-			Type: events.EventMessageAdded,
+			Type: ares_events.EventMessageAdded,
 			Payload: map[string]any{
 				"role": "assistant",
 			},
 		},
 		{
-			Type:    events.EventFailoverTriggered,
+			Type:    ares_events.EventFailoverTriggered,
 			Payload: map[string]any{},
 		},
 		{
-			Type: events.EventTaskCompleted,
+			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
 				"task_id": "task-2",
 			},
@@ -329,14 +329,14 @@ func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 	}, 0)
 	require.NoError(t, err)
 
-	// Wait for the subscriber goroutine to process published events.
+	// Wait for the subscriber goroutine to process published ares_events.
 	processCtx, processCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer processCancel()
 	<-processCtx.Done()
 
 	// Verify that the subscription filtered correctly by checking that
-	// no panic occurred and that the store has the expected events.
-	streamEvents, err := store.Read(context.Background(), "stream-1", events.ReadOptions{})
+	// no panic occurred and that the store has the expected ares_events.
+	streamEvents, err := store.Read(context.Background(), "stream-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
-	assert.Len(t, streamEvents, 4, "store should have all 4 events")
+	assert.Len(t, streamEvents, 4, "store should have all 4 ares_events")
 }

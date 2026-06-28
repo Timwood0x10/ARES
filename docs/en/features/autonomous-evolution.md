@@ -272,7 +272,7 @@ type RegressionResult struct {
 
 ---
 
-### 5. Callbacks Package (`internal/callbacks/`)
+### 5. Callbacks Package (`internal/ares_callbacks/`)
 
 **Pub/sub event registry** for monitoring LLM, Tool, and Agent lifecycle events.
 

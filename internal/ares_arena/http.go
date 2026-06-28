@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -353,11 +352,11 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request) {
 			}
 			data, err := json.Marshal(ev)
 			if err != nil {
-				slog.Error("arena: sse marshal error", "error", err)
+				log.Error("arena: sse marshal error", "error", err)
 				continue
 			}
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				slog.Debug("arena: sse write error (client disconnected?)", "error", err)
+				log.Debug("arena: sse write error (client disconnected?)", "error", err)
 				return
 			}
 			flusher.Flush()
@@ -397,7 +396,7 @@ func (h *Handler) handleSurvivalStart(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration*2)
 		defer cancel()
 		report := h.service.RunSurvival(ctx, cfg)
-		slog.Info("arena: survival run finished in background",
+		log.Info("arena: survival run finished in background",
 			"actions", report.ActionsRun,
 			"score", report.Score.Score,
 			"grade", report.Score.Grade,
@@ -510,7 +509,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("arena: json encode error", "error", err)
+		log.Error("arena: json encode error", "error", err)
 	}
 }
 
@@ -524,7 +523,7 @@ func RecoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("arena: handler panic recovered", "panic", rec, "path", r.URL.Path)
+				log.Error("arena: handler panic recovered", "panic", rec, "path", r.URL.Path)
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()

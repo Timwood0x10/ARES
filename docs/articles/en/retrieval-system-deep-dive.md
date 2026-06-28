@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (10): Retrieval System — Hybrid Search and Scoring Pipeline
+# ares Architecture Deep Dive (X): Retrieval System — Hybrid Search and Scoring Pipeline
 
 > The agent says: "Based on your past experience, I suggest..." — but the suggestion is completely irrelevant.
 > Even worse: the agent solved this exact problem before, but now it's starting from scratch.

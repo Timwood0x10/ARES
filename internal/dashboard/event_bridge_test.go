@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func TestNewEventBridge(t *testing.T) {
@@ -52,10 +52,10 @@ func TestEventBridgeHandleEventAgentStarted(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e1",
 		StreamID:  "agent-1",
-		Type:      events.EventAgentStarted,
+		Type:      ares_events.EventAgentStarted,
 		Payload:   nil,
 		Version:   1,
 		Timestamp: time.Now(),
@@ -75,10 +75,10 @@ func TestEventBridgeHandleEventAgentStopped(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e2",
 		StreamID:  "agent-1",
-		Type:      events.EventAgentStopped,
+		Type:      ares_events.EventAgentStopped,
 		Payload:   nil,
 		Version:   2,
 		Timestamp: time.Now(),
@@ -97,10 +97,10 @@ func TestEventBridgeHandleEventFailoverTriggered(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e3",
 		StreamID:  "agent-1",
-		Type:      events.EventFailoverTriggered,
+		Type:      ares_events.EventFailoverTriggered,
 		Payload:   nil,
 		Version:   3,
 		Timestamp: time.Now(),
@@ -119,10 +119,10 @@ func TestEventBridgeHandleEventFailoverCompleted(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e4",
 		StreamID:  "agent-1",
-		Type:      events.EventFailoverCompleted,
+		Type:      ares_events.EventFailoverCompleted,
 		Payload:   nil,
 		Version:   4,
 		Timestamp: time.Now(),
@@ -141,10 +141,10 @@ func TestEventBridgeHandleEventTaskCreated(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:       "e5",
 		StreamID: "workflow-1",
-		Type:     events.EventTaskCreated,
+		Type:     ares_events.EventTaskCreated,
 		Payload: map[string]any{
 			"execution_id": "exec-123",
 		},
@@ -166,10 +166,10 @@ func TestEventBridgeHandleEventTaskCompleted(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:       "e6",
 		StreamID: "workflow-1",
-		Type:     events.EventTaskCompleted,
+		Type:     ares_events.EventTaskCompleted,
 		Payload: map[string]any{
 			"workflow_id": "wf-abc",
 		},
@@ -190,10 +190,10 @@ func TestEventBridgeHandleEventTaskFailed(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:       "e7",
 		StreamID: "workflow-1",
-		Type:     events.EventTaskFailed,
+		Type:     ares_events.EventTaskFailed,
 		Payload: map[string]any{
 			"task_id": "task-456",
 		},
@@ -214,10 +214,10 @@ func TestEventBridgeHandleEventTaskWithoutExecutionID(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e8",
 		StreamID:  "workflow-1",
-		Type:      events.EventTaskCreated,
+		Type:      ares_events.EventTaskCreated,
 		Payload:   map[string]any{"other_key": "value"},
 		Version:   4,
 		Timestamp: time.Now(),
@@ -237,24 +237,24 @@ func TestEventBridgeHandleEventUnknownType(t *testing.T) {
 	store := &mockEventStore{}
 	bridge := NewEventBridge(store, hub)
 
-	evt := &events.Event{
+	evt := &ares_events.Event{
 		ID:        "e9",
 		StreamID:  "stream-1",
-		Type:      events.EventLLMCall,
+		Type:      ares_events.EventLLMCall,
 		Payload:   nil,
 		Version:   1,
 		Timestamp: time.Now(),
 	}
 
-	// Should broadcast to events channel but not route to agents/workflow.
+	// Should broadcast to ares_events channel but not route to agents/workflow.
 	bridge.handleEvent(evt)
 }
 
 func TestEventBridgeStartStop(t *testing.T) {
 	now := time.Now()
 	store := &mockEventStore{
-		events: []*events.Event{
-			{ID: "e1", StreamID: "s1", Type: events.EventAgentStarted, Timestamp: now},
+		ares_events: []*ares_events.Event{
+			{ID: "e1", StreamID: "s1", Type: ares_events.EventAgentStarted, Timestamp: now},
 		},
 	}
 
@@ -333,7 +333,7 @@ func TestExtractExecutionID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evt := &events.Event{
+			evt := &ares_events.Event{
 				Payload: tt.payload,
 			}
 			got := extractExecutionID(evt)

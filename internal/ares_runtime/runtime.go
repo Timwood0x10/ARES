@@ -1,6 +1,6 @@
 // Package runtime provides lifecycle management for agents.
 // Agents are disposable executors; the Runtime owns their birth, death, and resurrection.
-package runtime
+package ares_runtime
 
 import (
 	"context"

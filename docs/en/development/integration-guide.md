@@ -44,7 +44,7 @@ package main
 import (
     "context"
     "github.com/Timwood0x10/ares/api/service"
-    "github.com/Timwood0x10/ares/internal/config"
+    "github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 func main() {
@@ -101,7 +101,7 @@ storage:
   enabled: false  # Disable if persistence is not needed
 ```
 
-**Code Location**: `internal/config/config.go:20-50`
+**Code Location**: `internal/ares_config/config.go:20-50`
 
 ### Service Mode (Recommended for Multi-language Projects)
 
@@ -277,7 +277,7 @@ agents:
     max_parallel_tasks: 4
 ```
 
-**Code Location**: `internal/config/config.go:20-50`
+**Code Location**: `internal/ares_config/config.go:20-50`
 
 ### Tools Configuration
 
@@ -355,7 +355,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**Code Location**: `examples/devagent/main.go:150-200`
+**Code Location**: `examples/quickstart/main.go:150-200`
 
 ### Scenario 2: CLI Tool Integration
 
@@ -399,7 +399,7 @@ func main() {
 }
 ```
 
-**Code Location**: `examples/multi-agent-dialog/main.go:50-100`
+**Code Location**: `examples/travel/main.go:50-100`
 
 ### Scenario 3: Microservice Integration
 
@@ -446,7 +446,7 @@ if _, err := os.Stat(configPath); os.IsNotExist(err) {
 }
 ```
 
-**Code Location**: `internal/config/config.go:80-100`
+**Code Location**: `internal/ares_config/config.go:80-100`
 
 #### Error 2: LLM Connection Failed
 

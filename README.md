@@ -1,4 +1,3 @@
-# ares
 
 ```shell
            _____  ______  _____ 
@@ -14,17 +13,28 @@ ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime f
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
-## Architecture 
+## Architecture
 
 ```mermaid
 graph TB
-    User["User Request"] --> RT
+    User["User Request"] --> Bootstrap
+
+    subgraph api ["API Layer (api/core/)"]
+        Bootstrap["Bootstrap Factory"]
+        Interfaces["AgentService / Runtime / Evolution / Arena / MemoryService / LLMService / WorkflowService"]
+    end
+
+    Bootstrap --> RT
+    Bootstrap --> EvoSvc
+    Bootstrap --> ArenaSvc
+    Bootstrap --> MemMgr
 
     subgraph runtime ["Runtime Layer"]
         RT["Runtime Manager"]
         RT -->|"manages lifecycle"| Leader
         RT -->|"replays"| ES["EventStore"]
         RT -->|"restores"| MM["MemoryStore"]
+        RT -->|"module=runtime"| LOG["Structured Logger"]
     end
 
     subgraph agents ["Agent System"]
@@ -43,7 +53,9 @@ graph TB
     subgraph workflow ["Workflow Engine"]
         MutableDAG["MutableDAG"]
         DynamicExec["DynamicExecutor"]
+        PluginBus["PluginBus"]
         MutableDAG --> DynamicExec
+        DynamicExec --> PluginBus
         DynamicExec --> TopoSort["Topological Sort"]
         DynamicExec --> CycleDetect["Cycle Detection"]
     end
@@ -55,6 +67,7 @@ graph TB
     end
 
     subgraph mem ["Memory Manager"]
+        MemMgr["Memory Manager"]
         Session["Session Memory"]
         Task["Task Memory"]
         Distilled["Distilled Memory"]
@@ -64,10 +77,12 @@ graph TB
     end
 
     subgraph evo ["Evolution Engine"]
+        EvoSvc["Evolution Service"]
         Pop["GA Population"]
         Score["Scoring Pipeline"]
         Cross["Crossover"]
         Mut["Mutation"]
+        EvoSvc --> Pop
         Pop --> Score
         Score --> Cross
         Cross --> Mut
@@ -120,9 +135,11 @@ graph TB
     end
 
     subgraph arena ["Chaos Engineering"]
+        ArenaSvc["Arena Service"]
         FI["Fault Injector"]
         RS["Resilience Scoring"]
         SM["Survival Mode"]
+        ArenaSvc --> FI
         FI --> RS
         RS --> SM
     end
@@ -148,6 +165,71 @@ graph TB
     arena -.->|"stress test"| RT
     arena -.->|"stress test"| Leader
 ```
+
+### Plugin System Architecture
+
+```mermaid
+graph TB
+    subgraph executor ["Workflow Engine"]
+        DEX["DynamicExecutor"]
+        DAG["MutableDAG"]
+    end
+
+    subgraph plugins ["PluginBus & Plugins"]
+        PB["PluginBus"]
+        EB["EventBus"]
+        WH["WorkflowHook"]
+        REG["Plugin Registry"]
+        CAP["Capability Index"]
+
+        subgraph builtins ["Built-in Plugins"]
+            OBS["ObserverPlugin"]
+            CP["CheckpointPlugin"]
+            TP["ToolPlugin"]
+            RP["RouterPlugin<br/>(ExpressionRouter / MemoryRouter / EvolutionRouter)"]
+            LP["LoopPlugin"]
+            REC["RecoveryPlugin"]
+            IP["InterruptPlugin"]
+        end
+    end
+
+    subgraph storage ["Plugin Storage"]
+        ES[("EventStore")]
+        CKPT[("CheckpointStore")]
+        COL["ExecutionCollector"]
+    end
+
+    subgraph discovery ["Discovery & Routing"]
+        ADV["MemoryPlugin.AdviseRoute"]
+        EVO["EvolutionPlugin.Recommend"]
+    end
+
+    DEX -->|"BeforeStep / AfterStep"| WH
+    DEX -->|"flush checkpoints"| CP
+    DEX -->|"PluginsByCap"| CAP
+    REG --> builtins
+    PB --> REG
+    PB --> EB
+    PB --> WH
+    EB -->|"subscribe"| OBS
+    OBS -->|"persist"| ES
+    CP -->|"save to"| CKPT
+    CP -->|"collect data"| COL
+    RP -->|"Route(ctx, state)"| DEX
+    LP -->|"ShouldContinue"| DEX
+    REC -->|"ShouldRecover"| DEX
+    RP -.->|"optional"| ADV
+    RP -.->|"optional"| EVO
+
+    style DEX fill:#4a6fa5,color:#fff
+    style PB fill:#2e7d32,color:#fff
+    style EB fill:#2e7d32,color:#fff
+    style WH fill:#2e7d32,color:#fff
+    style ES fill:#6a1b9a,color:#fff
+    style CKPT fill:#6a1b9a,color:#fff
+```
+
+The PluginBus sits between the DynamicExecutor and all plugins. The executor calls **BeforeStep/AfterStep** hooks on every step boundary; hooks dispatch with configurable timeout and automatic panic recovery. **EventBus** enables pub/sub decoupling — plugins emit events without knowing who consumes them. **Capability Index** allows loose‑coupling lookup (`PluginsByCap`) so the executor never depends on concrete plugin types.
 
 ### Data Flow
 
@@ -297,18 +379,73 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
 - Elite preservation and adaptive survival rate across generations
 
+**Plugin System**
+- PluginBus: centralized plugin registry and lifecycle manager. Thread-safe Start/Stop with reverse-order shutdown, duplicate detection, and started-state guards.
+- EventBus: typed event pub/sub interface. `Emit` is non-blocking — drops events on full subscriber buffers. `Subscribe` supports filtering by stream ID, event type, and time range.
+- WorkflowHook: synchronous interceptor interface (`BeforeStep` / `AfterStep`) invoked by DynamicExecutor at every step boundary. Each dispatch has configurable timeout and automatic panic recovery with structured `PluginError` wrapping.
+- Capability-based discovery: `PluginsByCap(CapCheckpoint)` returns a copy of all plugins advertising that capability. Enables loose coupling between the workflow engine and plugins — the executor never depends on concrete plugin types.
+
+**Built-in Plugins**
+
+| Plugin | Capability | Role |
+|--------|------------|------|
+| ObserverPlugin | observer | Subscribes to workflow lifecycle events (workflow.started/completed/failed, step.started/completed/failed, checkpoint.saved) and persists them to EventStore |
+| CheckpointPlugin | checkpoint | Saves deep-copy execution snapshots at step boundaries. Configurable flush interval. 22-field schema covering step states, variables, route/tool/memory/interrupt/error/loop history, and scoring signals |
+| ToolPlugin | tool | Validates and records tool invocations via ExecutionCollector |
+| ExpressionRouter | router | Rule-based router: FromStepID → ToStepID with predicate condition. First-match semantics |
+| MemoryRouter | router | Queries `MemoryPlugin.AdviseRoute` first, falls back to expression rules |
+| EvolutionRouter | router | Queries `EvolutionPlugin.Recommend` first, falls back to expression rules |
+| LoopPlugin | loop | Controlled execution loops with MaxIterations, UntilCondition, and SubStepIDs |
+| BasicRecoveryPlugin | recovery | Allowlist-based step failure recovery decisions |
+| InterruptPlugin | — | Records HITL interrupt lifecycle events via collector |
+| ArenaPlugin | — | Fault injection for robustness testing (plugin_panic, plugin_timeout, plugin_error, bus_stop) |
+
+**ExecutionCollector**
+- Thread-safe data aggregator collecting route decisions, tool calls, memory hits, interrupts, and errors during workflow execution
+- `Export()` produces serializable maps; `MergeInto()` copies into `ExperienceCheckpoint`
+- Consumed by CheckpointPlugin, memory distillation pipeline, and evolution engine scoring
+
+**ExperienceCheckpoint** — full execution snapshot:
+```json
+{
+  "schema_version": 1,
+  "execution_id": "...",
+  "workflow_id": "...",
+  "workflow_version": "...",
+  "state_version": 1,
+  "status": "running",
+  "step_states": [...],
+  "variables": {...},
+  "output_store": {...},
+  "route_history": [...],
+  "tool_history": [...],
+  "memory_hits": [...],
+  "interrupt_history": [...],
+  "loop_history": [...],
+  "error_history": [...],
+  "scoring_signals": [...],
+  "created_at": "..."
+}
+```
+Enables complete execution state restore for leader failover and step-level recovery.
+
 ## Benchmark Highlights
 
-32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
+116 benchmarks total. 5675 tests pass with `-race` across 130 packages.
 
 Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 
 | Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
 |----------|-------|---------------|--------------------|--------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| Distillation | 9 | 0 | 8 | 1 |
-| Tools/Core | 8 | 3 | 5 | 0 |
-| Errors | 4 | 2 | 2 | 0 |
+| Distillation | 10 | 0 | 9 | 1 |
+| Tools/Core | 9 | 4 | 5 | 0 |
+| Errors | 4 | 3 | 1 | 0 |
+| Events | 6 | 0 | 5 | 1 |
+| Handler | 3 | 1 | 1 | 1 |
+| Evolution | 6 | 0 | 1 | 5 |
+| Evolution/Genome | 30+ | 0 | 20+ | 10+ |
+| **Total** | **116** | **10** | **43** | **20** |
 | Event Sourcing | 6 | 0 | 5 | 1 |
 | **Total** | **32** | **7** | **22** | **3** |
 
@@ -316,18 +453,19 @@ Selected hot-path results:
 
 | Operation | ns/op | allocs/op |
 |-----------|-------|-----------|
-| ExactMatchEvaluator | 180.3 | 0 |
-| ToolUsageEvaluator | 361.3 | 0 |
-| ToolExecution | 347.3 | 0 |
-| ConvertEvent | 97.00 | 0 |
-| ResultCreation (Success) | 125.0 | 0 |
-| ResultCreation (Error) | 55.33 | 0 |
-| ParameterValidation | 208.3 | 0 |
-| Wrap (error) | 69.67 | 0 |
-| WrapMultipleWraps | 69.33 | 0 |
-| ConflictDetection | 2125 | 0 |
+| ExactMatchEvaluator | 3.07 | 0 |
+| ToolUsageEvaluator | 28.49 | 0 |
+| ToolExecution | 14.69 | 0 |
+| ConvertEvent | 4.87 | 0 |
+| ParameterValidation | 7.22 | 0 |
+| Wrap (error) | 0.27 | 0 |
+| WrapMultipleWraps | 0.59 | 0 |
+| ResultCreation (Success) | 0.27 | 0 |
+| ResultCreation (Error) | 0.28 | 0 |
+| ConflictDetection | 1027 | 0 |
+| DreamCycle_SingleRun | 224 | 4 |
 
-7 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, event conversion, error wrapping, and conflict detection.
+10 of 116 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and parameter validation.
 
 Full benchmark report: `benchmarks/benchmark_report.md`
 
@@ -364,39 +502,36 @@ docker run -d \
 ### 3. Run Examples
 
 ```bash
-# Travel planning (multi-agent collaboration)
+# Quick start (bootstrap API)
+go run examples/quickstart/main.go
+
+# Graph workflow demos
+go run examples/graph_demo/basic/basic_example.go
+go run examples/graph_demo/conditional/conditional_example.go
+go run examples/graph_demo/scheduler/scheduler_example.go
+go run examples/graph_demo/recovery/recovery_example.go
+
+# Advanced patterns
+go run examples/advanced/mutable_dag/main.go
+go run examples/advanced/dynamic_executor/main.go
+go run examples/advanced/leader_failover/main.go
+go run examples/advanced/agent_resurrection/main.go
+
+# Multi-agent collaboration
 cd examples/travel && go run main.go
 
-# Knowledge base Q&A (requires database + embedding service)
-cd examples/knowledge-base
-go run main.go --save README.md              # Import document
-go run main.go --save docs/goagent-overview.md  # Import framework overview
-go run main.go --chat                         # Start Q&A (supports knowledge correction)
+# Knowledge base Q&A (requires database)
+cd examples/knowledge-base && go run main.go --chat
 
-# Advanced examples (v2 features)
-go run ./examples/advanced/leader_failover/
-go run ./examples/advanced/agent_resurrection/
-go run ./examples/advanced/runtime_resurrection/
-go run ./examples/advanced/dynamic_executor/
-go run ./examples/advanced/mutable_dag/
-
-# Dashboard with MCP integration
+# Chaos engineering
 cd examples/mcp-dashboard && go run main.go
 
-# Quantitative analysis demo
+# Quantitative trading
 cd examples/quant-trading && go run . --ticker AAPL
 
-# Development agent demo
-cd examples/devagent && go run main.go
-
-# Tool capability demo
-cd examples/capability-demo && go run main.go
-
-# Autonomous evolution (genetic algorithm) demo
+# Autonomous evolution (genetic algorithm)
 cd examples/autonomous-evolution && go run main.go
 ```
-
-See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
 
 ### 4. Run Tests
 
@@ -406,35 +541,101 @@ go test -race ./...                # With race detector
 go test -bench=. ./...             # Benchmarks
 ```
 
+### 5. Use the API
+
+ARES provides abstract interfaces in `api/core/` and a bootstrap factory in `api/bootstrap/`:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/Timwood0x10/ares/api/bootstrap"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create ARES instance with all modules wired.
+    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ares.Stop()
+
+    // Start runtime (manages agent lifecycles).
+    if err := ares.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Run genetic algorithm evolution.
+    result, err := ares.RunEvolution(ctx, 10)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Best score: %.2f\n", result.BestStrategy.Score)
+
+    // Execute chaos engineering action.
+    res := ares.ExecuteArenaAction(ctx, arena.Action{
+        Type:     arena.ActionKillAgent,
+        TargetID: "worker-1",
+    })
+    fmt.Printf("Chaos result: %v\n", res.Success)
+}
+```
+
+Available interfaces in `api/core/`:
+- `AgentService` — Agent CRUD + task execution
+- `Runtime` — Agent lifecycle management
+- `WorkflowService` — DAG workflow orchestration
+- `MemoryService` — Memory management + distillation
+- `LLMService` — LLM provider abstraction
+- `RetrievalService` — Vector retrieval
+- `Evolution` — Genetic algorithm evolution
+- `DreamCycle` — Autonomous self-evolution
+- `Arena` — Chaos engineering (fault injection + resilience scoring)
+- `ContextCleaner` — Context window management
+
 ## Project Structure
 
 ```
 ares/
+├── api/                  # Public API layer (interfaces only, no implementations)
+│   ├── core/             # Abstract interfaces: AgentService, Runtime, Evolution, Arena, etc.
+│   ├── errors/           # Unified error types
+│   ├── client/           # Go client SDK
+│   ├── handler/          # HTTP handlers (thin delegation)
+│   ├── router/           # Route registration
+│   └── bootstrap/        # Factory — wires all modules into ARES container
 ├── internal/
-│   ├── agents/          # Leader/Sub agent system
-│   ├── runtime/         # Runtime lifecycle management
-│   ├── protocol/ahp/    # AHP inter-agent protocol
-│   ├── memory/          # Memory system + distillation
-│   ├── events/          # EventStore interface + implementations
-│   ├── workflow/engine/  # DAG workflow engine
+│   ├── agents/           # Leader/Sub agent system
+│   ├── ares_runtime/     # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
+│   ├── ares_events/      # EventStore interface, MemoryEventStore, event types
+│   ├── ares_memory/      # Memory system + distillation
+│   ├── ares_evolution/   # Genetic algorithm evolution system
+│   ├── ares_arena/       # Chaos engineering arena
+│   ├── ares_flight/      # Flight recorder (timeline/genealogy/diagnostics)
+│   ├── ares_mcp/         # MCP client (stdio/SSE transport)
+│   ├── ares_callbacks/   # Event-driven callback system
+│   ├── ares_observability/ # OpenTelemetry + Prometheus metrics
+│   ├── ares_eval/        # Evaluation framework
+│   ├── ares_quant/       # Quantitative trading tools
+│   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus)
+│   ├── workflow/graph/   # Graph executor + checkpoint resume
+│   ├── protocol/ahp/     # AHP inter-agent protocol
 │   ├── storage/          # VectorStore interface + implementations
-│   │   ├── postgres/     # PostgreSQL + pgvector (production)
-│   │   └── memory/       # In-memory (dev/test)
-│   ├── mcp/             # MCP client (stdio/SSE transport)
+│   ├── llm/              # LLM client + output parsers
 │   ├── dashboard/        # Web dashboard (WebSocket + REST API)
-│   ├── flight/           # Flight recorder (timeline/genealogy/diagnostics)
-│   ├── arena/            # Chaos engineering arena
-│   ├── callbacks/        # Event-driven callback system
-│   ├── llm/output/       # LLM output parsers + prompt templates
+│   ├── logger/           # Module-scoped structured logging
+│   └── config/           # Configuration loading + validation
 │   └── tools/           # Tool registry and invocation
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
-├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...
+├── examples/            # Travel, knowledge-base, dashboard, quant, quickstart, ...
 ├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
-│   └── tools/           # Tool registry and invocation
-├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
-├── examples/            # Travel, knowledge-base, simple demos
-├── api/                 # Service interfaces and client
 └── benchmarks/          # Benchmark reports and logs
 ```
 

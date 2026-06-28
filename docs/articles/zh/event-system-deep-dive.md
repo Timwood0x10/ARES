@@ -48,16 +48,16 @@ graph LR
 
 | 文件 | 用途 |
 |------|------|
-| `internal/events/types.go` | Event 模型、EventStore 接口 |
-| `internal/events/memory_store.go` | 内存版 EventStore |
-| `internal/events/pg_store.go` | PostgreSQL 版 EventStore |
-| `internal/events/compactor.go` | 事件压缩为摘要 |
-| `internal/events/trim_store.go` | 压缩后删除旧事件 |
-| `internal/events/compactable_store.go` | 自动压缩的 EventStore 包装器 |
-| `internal/events/summary.go` | EventSummary 模型 + CompactionConfig |
-| `internal/events/summary_repository.go` | PgSummaryRepository |
-| `internal/events/memory_summary_repo.go` | 内存版 SummaryRepository |
-| `internal/flight/replay.go` | ReplaySession 逐步重放 |
+| `internal/ares_events/types.go` | Event 模型、EventStore 接口 |
+| `internal/ares_events/memory_store.go` | 内存版 EventStore |
+| `internal/ares_events/pg_store.go` | PostgreSQL 版 EventStore |
+| `internal/ares_events/compactor.go` | 事件压缩为摘要 |
+| `internal/ares_events/trim_store.go` | 压缩后删除旧事件 |
+| `internal/ares_events/compactable_store.go` | 自动压缩的 EventStore 包装器 |
+| `internal/ares_events/summary.go` | EventSummary 模型 + CompactionConfig |
+| `internal/ares_events/summary_repository.go` | PgSummaryRepository |
+| `internal/ares_events/memory_summary_repo.go` | 内存版 SummaryRepository |
+| `internal/ares_flight/replay.go` | ReplaySession 逐步重放 |
 
 ---
 
@@ -65,21 +65,22 @@ graph LR
 
 ### 2.1 事件结构
 
-`internal/events/types.go` 定义了基础类型：
+`internal/ares_events/types.go` 定义了基础类型：
 
 ```go
 type Event struct {
-    ID        string         `json:"id"`
-    StreamID  string         `json:"stream_id"`
-    Type      EventType      `json:"type"`
-    Payload   map[string]any `json:"payload"`
-    Metadata  map[string]any `json:"metadata,omitempty"`
-    Version   int64          `json:"version"`
-    Timestamp time.Time      `json:"timestamp"`
+    ID         string         `json:"id"`
+    StreamID   string         `json:"stream_id"`
+    Type       EventType      `json:"type"`
+    ModuleName string         `json:"module_name,omitempty"`
+    Payload    map[string]any `json:"payload"`
+    Metadata   map[string]any `json:"metadata,omitempty"`
+    Version    int64          `json:"version"`
+    Timestamp  time.Time      `json:"timestamp"`
 }
 ```
 
-每个事件属于一个**流**（由 `StreamID` 标识）。流是某个实体的只追加事件序列——通常是一个 Agent。`Version` 字段支持乐观并发控制，`Type` 字段用于路由和重放分类。
+每个事件属于一个**流**（由 `StreamID` 标识）。流是某个实体的只追加事件序列——通常是一个 Agent。`Version` 字段支持乐观并发控制，`Type` 字段用于路由和重放分类。`ModuleName` 字段记录哪个子系统发出了这个事件——"runtime"、"workflow"、"memory" 等。这听起来理所当然，直到你回放事件流时发现分不清 `step.started` 是工作流引擎发的还是插件总线发的。没有它，你得从 payload 结构反推来源。有了它，你直接知道。
 
 ### 2.2 事件类型
 
@@ -160,7 +161,7 @@ classDiagram
 
 ### 3.1 MemoryEventStore
 
-`internal/events/memory_store.go` 提供了内存实现，主要用于测试和演示模式：
+`internal/ares_events/memory_store.go` 提供了内存实现，主要用于测试和演示模式：
 
 ```go
 type MemoryEventStore struct {
@@ -175,7 +176,7 @@ type MemoryEventStore struct {
 
 ### 3.2 PostgresEventStore
 
-`internal/events/pg_store.go` 提供生产级 PostgreSQL 实现：
+`internal/ares_events/pg_store.go` 提供生产级 PostgreSQL 实现：
 
 ```sql
 INSERT INTO events (id, stream_id, type, payload, metadata, version, created_at, timestamp)
@@ -271,7 +272,7 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 
 ## 五、ReplaySession
 
-`internal/flight/replay.go` 提供了任务的逐步事件重放：
+`internal/ares_flight/replay.go` 提供了任务的逐步事件重放：
 
 ```mermaid
 sequenceDiagram

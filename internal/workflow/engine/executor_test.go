@@ -253,30 +253,21 @@ func TestExecutorCoverage(t *testing.T) {
 // =====================================================
 
 func TestExecutorHelperFunctionsCoverage(t *testing.T) {
-	t.Run("find step by ID", func(t *testing.T) {
-		registry := NewAgentRegistry()
-		executor := NewExecutor(registry)
-
-		workflow := &Workflow{
-			Steps: []*Step{
-				{ID: "step1", Name: "Step 1"},
-				{ID: "step2", Name: "Step 2"},
-				{ID: "step3", Name: "Step 3"},
-			},
+	t.Run("buildStepIndex", func(t *testing.T) {
+		steps := []*Step{
+			{ID: "step1", Name: "Step 1"},
+			{ID: "step2", Name: "Step 2"},
+			{ID: "step3", Name: "Step 3"},
 		}
 
-		step := executor.findStep(workflow.Steps, "step2")
-		if step == nil {
-			t.Error("Step should not be nil")
-			return
+		m := buildStepIndex(steps)
+		if m == nil {
+			t.Fatal("buildStepIndex returned nil")
 		}
-
-		if step.ID != "step2" {
-			t.Errorf("Expected step ID 'step2', got %s", step.ID)
+		if m["step2"] == nil || m["step2"].ID != "step2" {
+			t.Error("Expected step2 to be found")
 		}
-
-		nonExistentStep := executor.findStep(workflow.Steps, "non-existent")
-		if nonExistentStep != nil {
+		if m["non-existent"] != nil {
 			t.Error("Non-existent step should be nil")
 		}
 	})
@@ -416,7 +407,7 @@ func TestExecutorHelperFunctionsCoverage(t *testing.T) {
 		var mu sync.Mutex
 		result := executor.executeStep(context.Background(), &Workflow{
 			Steps: []*Step{step},
-		}, "step1", "initial input", completed, outputStore, &mu)
+		}, step, "step1", "initial input", completed, outputStore, &mu)
 
 		if result.Status != StepStatusCompleted {
 			t.Errorf("Expected status %s, got %s", StepStatusCompleted, result.Status)
@@ -465,7 +456,7 @@ func TestExecutorHelperFunctionsCoverage(t *testing.T) {
 		var mu sync.Mutex
 		result := executor.executeStep(context.Background(), &Workflow{
 			Steps: []*Step{step},
-		}, "step1", "initial input", completed, outputStore, &mu)
+		}, step, "step1", "initial input", completed, outputStore, &mu)
 
 		if result.Status == StepStatusCompleted {
 			t.Error("Expected failure due to timeout")

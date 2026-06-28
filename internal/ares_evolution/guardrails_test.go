@@ -435,3 +435,180 @@ func TestEvents_MaxEventsLimit(t *testing.T) {
 	// Should have at most MaxEvents
 	assert.LessOrEqual(t, len(events), 5)
 }
+
+// --- GuardrailErrorCode tests ---
+
+func TestGuardrailErrorCode_UnevaluatedPopulation(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails()
+	ctx := context.Background()
+	result := g.PreEvolveCheck(ctx, 75.0, 1, 100, 60)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, ErrCodeUnevaluatedPopulation, result.Events[0].ErrorCode)
+}
+
+func TestGuardrailErrorCode_Stagnation(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails(WithMaxStagnantGenerations(3))
+	ctx := context.Background()
+	for i := 0; i < 4; i++ {
+		g.PostEvolveCheck(ctx, 75.0, i+1, nil)
+	}
+	result := g.PreEvolveCheck(ctx, 75.0, 5, 100, 10)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, ErrCodeStagnation, result.Events[0].ErrorCode)
+}
+
+func TestGuardrailErrorCode_BaselineRegression(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails(WithBaselineScore(85.0))
+	ctx := context.Background()
+	g.PostEvolveCheck(ctx, 90.0, 1, nil)
+	result := g.PostEvolveCheck(ctx, 80.0, 2, nil)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, ErrCodeBaselineRegression, result.Events[0].ErrorCode)
+}
+
+func TestGuardrailErrorCode_LineageConcentration(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails(WithMaxLineageShare(0.5))
+	ctx := context.Background()
+	lineageShares := map[string]int{"lineage-a": 80, "lineage-b": 10, "lineage-c": 10}
+	result := g.PostEvolveCheck(ctx, 85.0, 1, lineageShares)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, ErrCodeLineageConcentration, result.Events[0].ErrorCode)
+}
+
+func TestGuardrailError_ErrorFormat(t *testing.T) {
+	err := &GuardrailError{
+		Code:       ErrCodeBaselineRegression,
+		Message:    "best score regressed below baseline",
+		Generation: 5,
+		Score:      70.0,
+		Threshold:  85.0,
+	}
+	msg := err.Error()
+	assert.Contains(t, msg, string(ErrCodeBaselineRegression))
+	assert.Contains(t, msg, "best score regressed below baseline")
+	assert.Contains(t, msg, "gen=5")
+	assert.Contains(t, msg, "score=70.00")
+	assert.Contains(t, msg, "threshold=85.00")
+}
+
+func TestToGuardrailError_UnevaluatedPopulation(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails()
+	event := GuardrailEvent{
+		Rule:      "unevaluated_population",
+		ErrorCode: ErrCodeUnevaluatedPopulation,
+		Message:   "majority population unevaluated",
+		Score:     75.0,
+	}
+	ge := g.ToGuardrailError(event)
+	require.NotNil(t, ge)
+	assert.Equal(t, ErrCodeUnevaluatedPopulation, ge.Code)
+	assert.Equal(t, 75.0, ge.Score)
+	assert.Equal(t, 0.5, ge.Threshold)
+	assert.Error(t, ge)
+}
+
+func TestToGuardrailError_Stagnation(t *testing.T) {
+	g, _ := NewEvolutionGuardrails(WithMaxStagnantGenerations(5))
+	event := GuardrailEvent{
+		Rule:      "stagnation",
+		ErrorCode: ErrCodeStagnation,
+		Message:   "no improvement for 5 generations",
+		Score:     75.0,
+	}
+	ge := g.ToGuardrailError(event)
+	require.NotNil(t, ge)
+	assert.Equal(t, ErrCodeStagnation, ge.Code)
+	assert.Equal(t, float64(5), ge.Threshold)
+	assert.Error(t, ge)
+}
+
+func TestToGuardrailError_BaselineRegression(t *testing.T) {
+	g, _ := NewEvolutionGuardrails(WithBaselineScore(85.0))
+	event := GuardrailEvent{
+		Rule:      "baseline_regression",
+		ErrorCode: ErrCodeBaselineRegression,
+		Message:   "best score regressed below baseline",
+		Score:     70.0,
+	}
+	ge := g.ToGuardrailError(event)
+	require.NotNil(t, ge)
+	assert.Equal(t, ErrCodeBaselineRegression, ge.Code)
+	assert.Equal(t, 85.0, ge.Threshold)
+	assert.Equal(t, 70.0, ge.Score)
+	assert.Error(t, ge)
+}
+
+func TestToGuardrailError_LineageConcentration(t *testing.T) {
+	g, _ := NewEvolutionGuardrails(WithMaxLineageShare(0.5))
+	event := GuardrailEvent{
+		Rule:      "lineage_concentration",
+		ErrorCode: ErrCodeLineageConcentration,
+		Message:   "lineage concentration exceeds threshold",
+		Score:     85.0,
+	}
+	ge := g.ToGuardrailError(event)
+	require.NotNil(t, ge)
+	assert.Equal(t, ErrCodeLineageConcentration, ge.Code)
+	assert.Equal(t, 0.5, ge.Threshold)
+	assert.Error(t, ge)
+}
+
+func TestToGuardrailError_UnknownRule(t *testing.T) {
+	g, _ := NewEvolutionGuardrails()
+	event := GuardrailEvent{
+		Rule:      "unknown_rule",
+		ErrorCode: "",
+		Message:   "unknown event",
+	}
+	ge := g.ToGuardrailError(event)
+	assert.Nil(t, ge)
+}
+
+func TestGuardrailEvent_ErrorCodeInAutomatedDecision(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails(WithBaselineScore(85.0))
+	ctx := context.Background()
+
+	// Trigger baseline regression.
+	g.PostEvolveCheck(ctx, 90.0, 1, nil)
+	result := g.PostEvolveCheck(ctx, 80.0, 2, nil)
+
+	require.Len(t, result.Events, 1)
+	event := result.Events[0]
+	assert.Equal(t, ErrCodeBaselineRegression, event.ErrorCode)
+
+	// Simulate automated decision: should stop based on error code.
+	if event.ErrorCode == ErrCodeBaselineRegression || event.ErrorCode == ErrCodeUnevaluatedPopulation {
+		assert.True(t, result.ShouldStop)
+	} else {
+		assert.False(t, result.ShouldStop)
+	}
+
+	// Converting to GuardrailError for retry/rollback logic.
+	guardrailErr := g.ToGuardrailError(event)
+	require.NotNil(t, guardrailErr)
+	assert.Equal(t, ErrCodeBaselineRegression, guardrailErr.Code)
+	assert.Equal(t, 85.0, guardrailErr.Threshold)
+	assert.Equal(t, 80.0, guardrailErr.Score)
+}
+
+func TestGuardrailEvent_ScoreFieldPopulated(t *testing.T) {
+	defer discardLogs()()
+	g, _ := NewEvolutionGuardrails(WithBaselineScore(50.0))
+	ctx := context.Background()
+
+	// Unevaluated population event should have score.
+	result := g.PreEvolveCheck(ctx, 75.0, 1, 100, 60)
+	require.Len(t, result.Events, 1)
+	assert.Equal(t, 75.0, result.Events[0].Score)
+
+	// Baseline regression event should have score.
+	result2 := g.PostEvolveCheck(ctx, 40.0, 2, nil)
+	require.Len(t, result2.Events, 1)
+	assert.Equal(t, 40.0, result2.Events[0].Score)
+}

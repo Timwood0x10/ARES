@@ -11,6 +11,42 @@ import (
 	"time"
 )
 
+// GuardrailErrorCode is a machine-readable identifier for guardrail events.
+type GuardrailErrorCode string
+
+const (
+	// ErrCodeUnevaluatedPopulation indicates a majority of the population is unevaluated.
+	ErrCodeUnevaluatedPopulation GuardrailErrorCode = "EVAL_UNEVALUATED_POPULATION"
+	// ErrCodeStagnation indicates no improvement for too many generations.
+	ErrCodeStagnation GuardrailErrorCode = "EVAL_STAGNATION"
+	// ErrCodeBaselineRegression indicates the best score regressed below baseline.
+	ErrCodeBaselineRegression GuardrailErrorCode = "EVAL_BASELINE_REGRESSION"
+	// ErrCodeLineageConcentration indicates a single lineage dominates the population.
+	ErrCodeLineageConcentration GuardrailErrorCode = "EVAL_LINEAGE_CONCENTRATION"
+	// ErrCodeScoreDecline indicates a significant score decline.
+	ErrCodeScoreDecline GuardrailErrorCode = "EVAL_SCORE_DECLINE"
+	// ErrCodeDiversityCollapse indicates critically low population diversity.
+	ErrCodeDiversityCollapse GuardrailErrorCode = "EVAL_DIVERSITY_COLLAPSE"
+)
+
+// GuardrailError wraps an error code with metadata for automated handling.
+type GuardrailError struct {
+	Code       GuardrailErrorCode
+	Message    string
+	Generation int
+	Score      float64
+	Threshold  float64
+}
+
+// Error returns a formatted string describing the guardrail error.
+//
+// Returns:
+//   - string: formatted error message including code, message, generation, score, and threshold.
+func (e *GuardrailError) Error() string {
+	return fmt.Sprintf("[%s] %s (gen=%d, score=%.2f, threshold=%.2f)",
+		e.Code, e.Message, e.Generation, e.Score, e.Threshold)
+}
+
 // GuardrailLevel indicates the severity of a guardrail trigger.
 type GuardrailLevel int
 
@@ -31,6 +67,10 @@ type GuardrailEvent struct {
 	Rule string
 	// Message describes what happened.
 	Message string
+	// ErrorCode is the machine-readable error code for automated handling.
+	ErrorCode GuardrailErrorCode
+	// Score is the relevant score at the time of the event (e.g., best score).
+	Score float64
 	// Generation when this event occurred.
 	Generation int
 	// Timestamp when this event occurred.
@@ -46,6 +86,10 @@ type GuardrailResult struct {
 	// Events lists all triggered guardrails (may include non-critical ones).
 	Events []GuardrailEvent
 }
+
+// GuardrailEventHandler is called when a guardrail event fires.
+// Implementations can record metrics, send alerts, or trigger other actions.
+type GuardrailEventHandler func(event GuardrailEvent)
 
 // EvolutionGuardrails runs safety checks before and after each evolution cycle.
 type EvolutionGuardrails struct {
@@ -74,6 +118,9 @@ type EvolutionGuardrails struct {
 
 	// MaxEvents limits stored events (0=unlimited).
 	MaxEvents int
+
+	// eventHandler is called on each guardrail event (optional).
+	eventHandler GuardrailEventHandler
 }
 
 // GuardrailOption configures EvolutionGuardrails.
@@ -97,6 +144,14 @@ func WithMaxStagnantGenerations(n int) GuardrailOption {
 func WithMaxLineageShare(share float64) GuardrailOption {
 	return func(g *EvolutionGuardrails) {
 		g.MaxLineageShare = share
+	}
+}
+
+// WithGuardrailEventHandler sets a callback for guardrail events.
+// The handler is invoked synchronously after each event is recorded.
+func WithGuardrailEventHandler(handler GuardrailEventHandler) GuardrailOption {
+	return func(g *EvolutionGuardrails) {
+		g.eventHandler = handler
 	}
 }
 
@@ -152,12 +207,16 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 			event := GuardrailEvent{
 				Level:           GuardrailCritical,
 				Rule:            "unevaluated_population",
+				ErrorCode:       ErrCodeUnevaluatedPopulation,
 				Message:         "majority population unevaluated",
+				Score:           currentBest,
 				Generation:      generation,
 				Timestamp:       time.Now(),
 				SuggestedAction: "evaluate all individuals before proceeding",
 			}
 			slog.Warn("guardrail: critical - majority population unevaluated",
+				"code", ErrCodeUnevaluatedPopulation,
+				"score", currentBest,
 				"generation", generation,
 				"ratio", unevaluatedRatio,
 				"total_pop", totalPop,
@@ -174,12 +233,16 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 		event := GuardrailEvent{
 			Level:           GuardrailWarning,
 			Rule:            "stagnation",
+			ErrorCode:       ErrCodeStagnation,
 			Message:         fmt.Sprintf("no improvement for %d generations", g.stagnantCount),
+			Score:           currentBest,
 			Generation:      generation,
 			Timestamp:       time.Now(),
 			SuggestedAction: "consider increasing mutation rate or introducing diversity",
 		}
 		slog.Warn("guardrail: warning - stagnation detected",
+			"code", ErrCodeStagnation,
+			"score", currentBest,
 			"generation", generation,
 			"stagnant_count", g.stagnantCount,
 			"threshold", g.MaxStagnantGenerations,
@@ -220,15 +283,20 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 		event := GuardrailEvent{
 			Level:           GuardrailCritical,
 			Rule:            "baseline_regression",
+			ErrorCode:       ErrCodeBaselineRegression,
 			Message:         "best score regressed below baseline",
+			Score:           newBest,
 			Generation:      generation,
 			Timestamp:       time.Now(),
 			SuggestedAction: "review recent changes and consider reverting to previous best strategy",
 		}
 		slog.Warn("guardrail: critical - baseline regression",
+			"code", ErrCodeBaselineRegression,
+			"score", newBest,
 			"generation", generation,
 			"new_best", newBest,
 			"baseline", g.BaselineScore,
+			"threshold", g.BaselineScore,
 		)
 		result.Events = append(result.Events, event)
 		result.ShouldStop = true
@@ -237,13 +305,14 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 
 	// Check 2: Improvement tracking and stagnation counter update
 	if newBest > g.bestKnownScore {
+		previousBest := g.bestKnownScore
 		g.stagnantCount = 0
 		g.bestKnownScore = newBest
 		g.lastImprovementGen = generation
 		slog.Info("guardrail: improvement detected",
 			"generation", generation,
 			"new_best", newBest,
-			"previous_best", g.bestKnownScore,
+			"previous_best", previousBest,
 		)
 	} else {
 		g.stagnantCount++
@@ -273,12 +342,16 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 				event := GuardrailEvent{
 					Level:           GuardrailWarning,
 					Rule:            "lineage_concentration",
+					ErrorCode:       ErrCodeLineageConcentration,
 					Message:         fmt.Sprintf("lineage concentration %.2f exceeds threshold %.2f", maxShare, g.MaxLineageShare),
+					Score:           newBest,
 					Generation:      generation,
 					Timestamp:       time.Now(),
 					SuggestedAction: "increase selection pressure or introduce external diversity",
 				}
 				slog.Warn("guardrail: warning - lineage concentration",
+					"code", ErrCodeLineageConcentration,
+					"score", newBest,
 					"generation", generation,
 					"max_share", maxShare,
 					"threshold", g.MaxLineageShare,
@@ -302,12 +375,17 @@ func (g *EvolutionGuardrails) RecordEvent(event GuardrailEvent) {
 	g.recordEventLocked(event)
 }
 
-// recordEventLocked stores an event (caller must hold lock).
+// recordEventLocked stores an event and invokes the handler if set.
+// Caller must hold lock.
 func (g *EvolutionGuardrails) recordEventLocked(event GuardrailEvent) {
 	g.events = append(g.events, event)
-	// Enforce MaxEvents limit
+	// Enforce MaxEvents limit.
 	if g.MaxEvents > 0 && len(g.events) > g.MaxEvents {
 		g.events = g.events[len(g.events)-g.MaxEvents:]
+	}
+	// Invoke post-action handler if configured.
+	if g.eventHandler != nil {
+		g.eventHandler(event)
 	}
 }
 
@@ -322,6 +400,43 @@ func (g *EvolutionGuardrails) Events() []GuardrailEvent {
 	eventsCopy := make([]GuardrailEvent, len(g.events))
 	copy(eventsCopy, g.events)
 	return eventsCopy
+}
+
+// ToGuardrailError converts a guardrail event to a machine-readable error
+// for automated retry, alert, downgrade, or rollback decisions.
+//
+// Returns nil if the event has no error code or if the event's Rule is
+// unrecognized. When non-nil, the returned *GuardrailError implements the
+// error interface and can be used in type-switch or errors.Is logic.
+//
+// Args:
+//   - event: the guardrail event to convert
+//
+// Returns:
+//   - *GuardrailError: machine-readable error with score and threshold metadata, or nil
+func (g *EvolutionGuardrails) ToGuardrailError(event GuardrailEvent) *GuardrailError {
+	// Find the threshold based on event context.
+	var threshold float64
+	switch event.Rule {
+	case "unevaluated_population":
+		threshold = 0.5 // >50% unevaluated
+	case "stagnation":
+		threshold = float64(g.MaxStagnantGenerations)
+	case "baseline_regression":
+		threshold = g.BaselineScore
+	case "lineage_concentration":
+		threshold = g.MaxLineageShare
+	default:
+		return nil
+	}
+
+	return &GuardrailError{
+		Code:       event.ErrorCode,
+		Message:    event.Message,
+		Generation: event.Generation,
+		Score:      event.Score,
+		Threshold:  threshold,
+	}
 }
 
 // Reset clears stagnation counters and events.

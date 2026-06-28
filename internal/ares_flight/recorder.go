@@ -2,18 +2,17 @@ package flight
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/events"
 )
 
 // FlightRecorder is the unified entry point for all flight data.
 // It aggregates Timeline, Graph, DecisionLog, DiagnosticsEngine, Genealogy, and MemoryPipeline.
 type FlightRecorder struct {
 	collector  *Collector
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 	memManager memory.MemoryManager
 	genealogy  *Genealogy
 	mu         sync.RWMutex
@@ -22,7 +21,7 @@ type FlightRecorder struct {
 
 // FlightRecorderConfig holds dependencies for the flight recorder.
 type FlightRecorderConfig struct {
-	EventStore events.EventStore
+	EventStore ares_events.EventStore
 	MemManager memory.MemoryManager
 	Genealogy  *Genealogy // optional, for agent genealogy tracking
 }
@@ -55,7 +54,7 @@ func (fr *FlightRecorder) Start(ctx context.Context) error {
 	}
 
 	fr.started = true
-	slog.Info("flight recorder started")
+	log.Info("flight recorder started")
 	return nil
 }
 
@@ -70,7 +69,7 @@ func (fr *FlightRecorder) Stop() {
 
 	fr.collector.Stop()
 	fr.started = false
-	slog.Info("flight recorder stopped")
+	log.Info("flight recorder stopped")
 }
 
 // Timeline returns the execution timeline.
@@ -94,9 +93,9 @@ func (fr *FlightRecorder) Diagnostics() *DiagnosticsEngine {
 }
 
 // EventStoreRef returns the underlying event store for direct subscription.
-// This allows external subscribers (e.g., evolution adapters) to receive events
+// This allows external subscribers (e.g., evolution adapters) to receive ares_events
 // without going through the Collector's internal processing pipeline.
-func (fr *FlightRecorder) EventStoreRef() events.EventStore {
+func (fr *FlightRecorder) EventStoreRef() ares_events.EventStore {
 	return fr.eventStore
 }
 

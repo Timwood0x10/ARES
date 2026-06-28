@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // ── Timeline Tests ─────────────────────────────
@@ -31,9 +31,9 @@ func TestTimelineAddAndGet(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", tl.Len())
 	}
 
-	events := tl.Events()
-	if events[0].ID != "e1" {
-		t.Errorf("expected e1, got %s", events[0].ID)
+	ares_events := tl.Events()
+	if ares_events[0].ID != "e1" {
+		t.Errorf("expected e1, got %s", ares_events[0].ID)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestTimelineFilterByAgent(t *testing.T) {
 
 	filtered := tl.FilterByAgent("a1")
 	if len(filtered) != 2 {
-		t.Fatalf("expected 2 events for a1, got %d", len(filtered))
+		t.Fatalf("expected 2 ares_events for a1, got %d", len(filtered))
 	}
 }
 
@@ -61,7 +61,7 @@ func TestTimelineFilterByType(t *testing.T) {
 
 	filtered := tl.FilterByType(EventToolCall)
 	if len(filtered) != 2 {
-		t.Fatalf("expected 2 tool events, got %d", len(filtered))
+		t.Fatalf("expected 2 tool ares_events, got %d", len(filtered))
 	}
 }
 
@@ -98,8 +98,8 @@ func TestTimelineSummary(t *testing.T) {
 	}
 }
 
-// TestTimelineSummaryWithZeroEndAt verifies that Summary() handles events
-// with zero EndAt (e.g. agent.start events that lack end timestamps).
+// TestTimelineSummaryWithZeroEndAt verifies that Summary() handles ares_events
+// with zero EndAt (e.g. agent.start ares_events that lack end timestamps).
 // The maxEnd calculation must skip EndAt.IsZero() to avoid zero Duration.
 func TestTimelineSummaryWithZeroEndAt(t *testing.T) {
 	tl := NewTimeline()
@@ -127,7 +127,7 @@ func TestTimelineSummaryWithZeroEndAt(t *testing.T) {
 		t.Errorf("EventCount = %d, want 3", summary.EventCount)
 	}
 	if summary.TotalDuration != 5*time.Second {
-		t.Errorf("TotalDuration = %v, want 5s (from tool.call, ignoring zero-EndAt events)", summary.TotalDuration)
+		t.Errorf("TotalDuration = %v, want 5s (from tool.call, ignoring zero-EndAt ares_events)", summary.TotalDuration)
 	}
 	if summary.ToolDuration != 5*time.Second {
 		t.Errorf("ToolDuration = %v, want 5s", summary.ToolDuration)
@@ -153,7 +153,7 @@ func TestTimelineConcurrentAdd(t *testing.T) {
 
 	wg.Wait()
 	if tl.Len() != 100 {
-		t.Errorf("expected 100 events, got %d", tl.Len())
+		t.Errorf("expected 100 ares_events, got %d", tl.Len())
 	}
 }
 
@@ -252,7 +252,7 @@ func TestDecisionLogAddAndGet(t *testing.T) {
 		Type:       DecisionToolSelect,
 		Candidates: []string{"google", "vector"},
 		Selected:   "google",
-		Reason:     "query has current events",
+		Reason:     "query has current ares_events",
 		Confidence: 0.92,
 		Timestamp:  time.Now(),
 	})
@@ -511,13 +511,13 @@ func TestReplaySessionOutOfRange(t *testing.T) {
 // ── Mock EventStore ────────────────────────────
 
 type mockEventStoreForFlight struct {
-	events map[string][]*events.Event
-	mu     sync.RWMutex
+	ares_events map[string][]*ares_events.Event
+	mu          sync.RWMutex
 }
 
 func newMockEventStore() *mockEventStoreForFlight {
 	return &mockEventStoreForFlight{
-		events: make(map[string][]*events.Event),
+		ares_events: make(map[string][]*ares_events.Event),
 	}
 }
 
@@ -529,46 +529,46 @@ func (s *mockEventStoreForFlight) addEvents(streamID string, evts []struct {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range evts {
-		evt := &events.Event{
+		evt := &ares_events.Event{
 			ID:        fmt.Sprintf("evt-%d", time.Now().UnixNano()),
 			StreamID:  streamID,
-			Type:      events.EventType(e.typ),
+			Type:      ares_events.EventType(e.typ),
 			Payload:   e.payload,
 			Timestamp: e.ts,
 		}
-		s.events[streamID] = append(s.events[streamID], evt)
+		s.ares_events[streamID] = append(s.ares_events[streamID], evt)
 	}
 }
 
-func (s *mockEventStoreForFlight) Append(_ context.Context, streamID string, evts []*events.Event, _ int64) error {
+func (s *mockEventStoreForFlight) Append(_ context.Context, streamID string, evts []*ares_events.Event, _ int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events[streamID] = append(s.events[streamID], evts...)
+	s.ares_events[streamID] = append(s.ares_events[streamID], evts...)
 	return nil
 }
 
-func (s *mockEventStoreForFlight) Read(_ context.Context, streamID string, opts events.ReadOptions) ([]*events.Event, error) {
+func (s *mockEventStoreForFlight) Read(_ context.Context, streamID string, opts ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	evts := s.events[streamID]
+	evts := s.ares_events[streamID]
 	if opts.Limit > 0 && opts.Limit < len(evts) {
 		evts = evts[:opts.Limit]
 	}
 	return evts, nil
 }
 
-func (s *mockEventStoreForFlight) ReadAll(_ context.Context, opts events.ReadOptions) ([]*events.Event, error) {
+func (s *mockEventStoreForFlight) ReadAll(_ context.Context, opts ares_events.ReadOptions) ([]*ares_events.Event, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var all []*events.Event
-	for _, evts := range s.events {
+	var all []*ares_events.Event
+	for _, evts := range s.ares_events {
 		all = append(all, evts...)
 	}
 	return all, nil
 }
 
-func (s *mockEventStoreForFlight) Subscribe(_ context.Context, _ events.EventFilter) (<-chan *events.Event, error) {
-	ch := make(chan *events.Event, 16)
+func (s *mockEventStoreForFlight) Subscribe(_ context.Context, _ ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	ch := make(chan *ares_events.Event, 16)
 	return ch, nil
 }
 
@@ -735,11 +735,11 @@ func TestMemoryPipelineStagesReturnsCopy(t *testing.T) {
 func TestCollectorProcessEvents(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	// Simulate agent lifecycle events.
+	// Simulate agent lifecycle ares_events.
 	base := time.Now()
 
-	c.processEvent(&events.Event{
-		ID: "e1", StreamID: "agent-1", Type: events.EventAgentStarted,
+	c.processEvent(&ares_events.Event{
+		ID: "e1", StreamID: "agent-1", Type: ares_events.EventAgentStarted,
 		Timestamp: base, Payload: map[string]any{"type": "leader"},
 	})
 
@@ -754,21 +754,21 @@ func TestCollectorProcessEvents(t *testing.T) {
 		t.Errorf("expected agent-1, got %s", c.Graph().Root().Name)
 	}
 
-	c.processEvent(&events.Event{
-		ID: "e2", StreamID: "agent-1", Type: events.EventAgentStopped,
+	c.processEvent(&ares_events.Event{
+		ID: "e2", StreamID: "agent-1", Type: ares_events.EventAgentStopped,
 		Timestamp: base.Add(5 * time.Second),
 	})
 
 	if c.Timeline().Len() != 2 {
-		t.Fatalf("expected 2 timeline events, got %d", c.Timeline().Len())
+		t.Fatalf("expected 2 timeline ares_events, got %d", c.Timeline().Len())
 	}
 }
 
 func TestCollectorProcessTaskFailed(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&events.Event{
-		ID: "f1", StreamID: "agent-1", Type: events.EventTaskFailed,
+	c.processEvent(&ares_events.Event{
+		ID: "f1", StreamID: "agent-1", Type: ares_events.EventTaskFailed,
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"error": "connection timeout"},
 	})
@@ -789,8 +789,8 @@ func TestCollectorProcessTaskFailed(t *testing.T) {
 func TestCollectorProcessMemoryDistilled(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&events.Event{
-		ID: "m1", StreamID: "session-1", Type: events.EventMemoryDistilled,
+	c.processEvent(&ares_events.Event{
+		ID: "m1", StreamID: "session-1", Type: ares_events.EventMemoryDistilled,
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"input_count": float64(500), "output_count": float64(32)},
 	})
@@ -811,8 +811,8 @@ func TestCollectorProcessMemoryDistilled(t *testing.T) {
 func TestCollectorProcessLLMCall(t *testing.T) {
 	c := NewCollector(CollectorConfig{})
 
-	c.processEvent(&events.Event{
-		ID: "llm1", StreamID: "agent-1", Type: events.EventLLMCall,
+	c.processEvent(&ares_events.Event{
+		ID: "llm1", StreamID: "agent-1", Type: ares_events.EventLLMCall,
 		Timestamp: time.Now(),
 	})
 

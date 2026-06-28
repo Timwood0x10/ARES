@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -91,6 +91,21 @@ func WithTrigger(trigger EvolutionTrigger) SchedulerOption {
 	}
 }
 
+// WithSchedulerGuardrails attaches guardrails to the scheduler for pre-evolution checks.
+//
+// Args:
+//
+//	guardrails - the evolution guardrails instance (may be nil to disable).
+//
+// Returns:
+//
+//	SchedulerOption - the option function.
+func WithSchedulerGuardrails(guardrails *EvolutionGuardrails) SchedulerOption {
+	return func(s *EvolutionScheduler) {
+		s.guardrails = guardrails
+	}
+}
+
 // WithEnabled sets whether the scheduler is enabled.
 //
 // Args:
@@ -122,20 +137,22 @@ const periodicEvolutionScoreThreshold = 100
 
 // EvolutionScheduler triggers evolution cycles based on callback events.
 // It registers handlers with the callback registry and decides when to run
-// the FlightToExperienceAdapter based on configurable trigger conditions.
+// the adapter based on configurable trigger conditions.
 type EvolutionScheduler struct {
-	callbacks    callbacks.CallbackRegistrar
-	adapter      AdapterRunner
-	minInterval  time.Duration
-	mu           sync.Mutex // Protects lastRun from concurrent access.
-	lastRun      time.Time
-	trigger      EvolutionTrigger
-	enabled      atomic.Bool
-	evolveMu     sync.Mutex         // Protects evolveCancel from concurrent access.
-	evolveCancel context.CancelFunc // Cancels the currently running evolution goroutine.
-	dreamCycle   *DreamCycle        // Optional dream cycle orchestrator for full evolution loop.
-	scores       []float64          // Sliding window of recent task scores for trend detection.
-	scoreMu      sync.Mutex         // Protects scores slice from concurrent access.
+	ares_callbacks ares_callbacks.CallbackRegistrar
+	adapter        AdapterRunner
+	minInterval    time.Duration
+	mu             sync.Mutex
+	lastRun        time.Time
+	trigger        EvolutionTrigger
+	enabled        atomic.Bool
+	evolveMu       sync.Mutex
+	evolveCancel   context.CancelFunc
+	evolveEg       *errgroup.Group // stored for Shutdown to wait on
+	dreamCycle     *DreamCycle
+	scores         []float64
+	scoreMu        sync.Mutex
+	guardrails     *EvolutionGuardrails
 }
 
 // NewEvolutionScheduler creates a new scheduler with sensible defaults.
@@ -147,20 +164,20 @@ type EvolutionScheduler struct {
 //
 // Args:
 //
-//	callbacks - the callback registrar for registering event handlers (implements CallbackRegistrar).
+//	ares_callbacks - the callback registrar for registering event handlers (implements CallbackRegistrar).
 //	adapter - the adapter runner to execute on evolution cycles (implements AdapterRunner).
 //	opts - optional configuration functions.
 //
 // Returns:
 //
 //	*EvolutionScheduler - the configured scheduler instance.
-func NewEvolutionScheduler(callbacks callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
+func NewEvolutionScheduler(ares_callbacks ares_callbacks.CallbackRegistrar, adapter AdapterRunner, opts ...SchedulerOption) *EvolutionScheduler {
 	s := &EvolutionScheduler{
-		callbacks:   callbacks,
-		adapter:     adapter,
-		minInterval: 5 * time.Minute,
-		lastRun:     time.Time{},
-		trigger:     TriggerOnIdle,
+		ares_callbacks: ares_callbacks,
+		adapter:        adapter,
+		minInterval:    5 * time.Minute,
+		lastRun:        time.Time{},
+		trigger:        TriggerOnIdle,
 	}
 	// enabled defaults to false (atomic.Bool zero value).
 
@@ -182,49 +199,11 @@ func (s *EvolutionScheduler) RecordScore(score float64) {
 	defer s.scoreMu.Unlock()
 
 	if len(s.scores) >= scoreWindowSize {
-		s.scores = s.scores[1:]
+		n := make([]float64, scoreWindowSize-1)
+		copy(n, s.scores[1:])
+		s.scores = n
 	}
 	s.scores = append(s.scores, score)
-}
-
-// averageScore returns the mean of all recorded scores.
-// Returns 0 if no scores have been recorded.
-func (s *EvolutionScheduler) averageScore() float64 {
-	s.scoreMu.Lock()
-	defer s.scoreMu.Unlock()
-
-	if len(s.scores) == 0 {
-		return 0
-	}
-
-	var total float64
-	for _, v := range s.scores {
-		total += v
-	}
-	return total / float64(len(s.scores))
-}
-
-// recentAverage returns the mean of the last n scores.
-// If fewer than n scores are available, returns the average of all scores.
-func (s *EvolutionScheduler) recentAverage(n int) float64 {
-	s.scoreMu.Lock()
-	defer s.scoreMu.Unlock()
-
-	if len(s.scores) == 0 {
-		return 0
-	}
-
-	window := n
-	if window > len(s.scores) {
-		window = len(s.scores)
-	}
-
-	recent := s.scores[len(s.scores)-window:]
-	var total float64
-	for _, v := range recent {
-		total += v
-	}
-	return total / float64(len(recent))
 }
 
 // OnAgentEnd handles agent completion events as a callback handler.
@@ -248,9 +227,17 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return
 	}
 
+	if !s.checkGuardrails(ctx) {
+		return
+	}
+
+	s.mu.Lock()
+	triggerStr := s.trigger.String()
+	s.mu.Unlock()
+
 	slog.InfoContext(ctx, "[Evolution] Starting evolution cycle",
 		"agent_id", data.AgentID,
-		"trigger", s.trigger.String())
+		"trigger", triggerStr)
 
 	// Cancel any previously running evolution before starting a new one
 	// to prevent concurrent evolution cycles and goroutine leaks.
@@ -270,6 +257,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 
 	s.evolveMu.Lock()
 	s.evolveCancel = egCancel
+	s.evolveEg = eg
 	s.evolveMu.Unlock()
 
 	eg.Go(func() error {
@@ -286,10 +274,9 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 		return nil
 	})
 
-	// Start error group in background; errors are logged above.
-	// NOTE: bare goroutine is used intentionally here because OnAgentEnd must return
-	// immediately (it's a callback handler). The errgroup itself manages the lifecycle
-	// of the inner work, and evolveCancel provides external cancellation via Shutdown().
+	// OnAgentEnd must return immediately (it's a callback handler), so the
+	// errgroup's Wait runs in a background goroutine. The errgroup is stored
+	// in s.evolveEg so Shutdown() can wait for it.
 	go func() {
 		if err := eg.Wait(); err != nil {
 			slog.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
@@ -301,12 +288,12 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 // Register registers the scheduler's handlers to the callback registry.
 // It subscribes to EventAgentEnd events for triggering evolution cycles.
 func (s *EvolutionScheduler) Register() {
-	if s.callbacks == nil {
+	if s.ares_callbacks == nil {
 		slog.Warn("[Evolution] Callback registry is nil, cannot register")
 		return
 	}
 
-	s.callbacks.On(callbacks.EventAgentEnd, func(ctx *callbacks.Context) {
+	s.ares_callbacks.On(ares_callbacks.EventAgentEnd, func(ctx *ares_callbacks.Context) {
 		data := CallbackData{
 			AgentID: ctx.AgentID,
 		}
@@ -343,25 +330,26 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	// Step 1: Check minimum interval protection.
 	s.mu.Lock()
 	lastRun := s.lastRun
+	minInterval := s.minInterval
+	trigger := s.trigger
 	s.mu.Unlock()
 
-	if !lastRun.IsZero() && time.Since(lastRun) < s.minInterval {
+	if !lastRun.IsZero() && time.Since(lastRun) < minInterval {
 		slog.DebugContext(ctx, "[Evolution] Skipping: minimum interval not elapsed",
 			"last_run", lastRun.Format(time.RFC3339),
-			"min_interval", s.minInterval)
+			"min_interval", minInterval)
 		return false
 	}
 
-	// Step 2: Check trigger mode.
-	switch s.trigger {
+	// Step 2: Snapshot score state under a single lock to avoid TOCTOU.
+	avg, recent, scoreCount := s.scoreSnapshot()
+
+	// Step 3: Check trigger mode.
+	switch trigger {
 	case TriggerOnDemand:
 		return false
 
 	case TriggerOnThreshold:
-		// Threshold mode: evolve when enough scores have accumulated
-		// and score degradation is detected.
-		avg := s.averageScore()
-		recent := s.recentAverage(10)
 		if avg <= 0 || recent <= 0 {
 			return false
 		}
@@ -376,16 +364,6 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		return false
 
 	case TriggerOnIdle:
-		// Idle mode: evolve when the system has enough score history
-		// and recent performance shows a meaningful drop, or periodically
-		// for exploration even without degradation.
-		avg := s.averageScore()
-		recent := s.recentAverage(10)
-
-		// Need at least 20 scores for a meaningful baseline.
-		s.scoreMu.Lock()
-		scoreCount := len(s.scores)
-		s.scoreMu.Unlock()
 		if scoreCount < minScoreCountForReliability {
 			return false
 		}
@@ -401,8 +379,6 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 			}
 		}
 
-		// Periodic exploration: even without degradation, evolve after enough
-		// tasks to explore the strategy space. This prevents stagnation.
 		if scoreCount >= periodicEvolutionScoreThreshold {
 			slog.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
 				"score_count", scoreCount)
@@ -413,6 +389,72 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	default:
 		return false
 	}
+}
+
+// scoreSnapshot reads avg, recent avg, and score count atomically under a single lock.
+func (s *EvolutionScheduler) scoreSnapshot() (avg, recent float64, count int) {
+	s.scoreMu.Lock()
+	defer s.scoreMu.Unlock()
+
+	if len(s.scores) == 0 {
+		return 0, 0, 0
+	}
+
+	var total float64
+	for _, v := range s.scores {
+		total += v
+	}
+	avg = total / float64(len(s.scores))
+
+	window := 10
+	if window > len(s.scores) {
+		window = len(s.scores)
+	}
+	var recentTotal float64
+	for _, v := range s.scores[len(s.scores)-window:] {
+		recentTotal += v
+	}
+	recent = recentTotal / float64(window)
+
+	count = len(s.scores)
+	return
+}
+
+// populationSizer is an optional interface that adapters can implement to
+// report the current population size for guardrail checks.
+type populationSizer interface {
+	PopulationSize() int
+}
+
+// checkGuardrails runs a pre-evolution guardrail check.
+// Returns true if evolution should proceed, false if guardrails block it.
+// Passes bestRecentScore from the score window for meaningful baseline comparison.
+//
+// Args:
+//
+//	ctx - operation context.
+//
+// Returns:
+//
+//	bool - true if evolution may proceed.
+func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
+	if s.guardrails == nil {
+		return true
+	}
+	// Use the most recent score as currentBest for baseline regression detection.
+	avg, _, _ := s.scoreSnapshot()
+	// Try to get population size if the adapter supports it.
+	totalPop := 0
+	if sizer, ok := s.adapter.(populationSizer); ok {
+		totalPop = sizer.PopulationSize()
+	}
+	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, totalPop, 0)
+	if result.ShouldStop {
+		slog.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
+			"events", len(result.Events))
+		return false
+	}
+	return true
 }
 
 // SetEnabled enables or disables the scheduler at runtime.
@@ -469,8 +511,40 @@ func (s *EvolutionScheduler) DreamCycle() *DreamCycle {
 // It should be called when the scheduler is no longer needed to prevent goroutine leaks.
 func (s *EvolutionScheduler) Shutdown() {
 	s.evolveMu.Lock()
-	defer s.evolveMu.Unlock()
-	if s.evolveCancel != nil {
-		s.evolveCancel()
+	cancel := s.evolveCancel
+	eg := s.evolveEg
+	s.evolveMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
+	if eg != nil {
+		_ = eg.Wait()
+	}
+}
+
+// ShouldEvolve delegates to the internal shouldEvolve logic.
+// This is the exported entry point for DreamCycle to check evolution conditions.
+//
+// Args:
+//
+//	ctx - operation context.
+//	data - callback data from the triggering event.
+//
+// Returns:
+//
+//	bool - true if evolution should run.
+func (s *EvolutionScheduler) ShouldEvolve(ctx context.Context, data CallbackData) bool {
+	return s.shouldEvolve(ctx, data)
+}
+
+// TriggerMode returns the current trigger mode.
+// Thread-safe: uses mutex to protect concurrent access.
+//
+// Returns:
+//
+//	EvolutionTrigger - the current trigger mode.
+func (s *EvolutionScheduler) TriggerMode() EvolutionTrigger {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trigger
 }

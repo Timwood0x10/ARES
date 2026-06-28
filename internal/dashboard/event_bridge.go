@@ -2,34 +2,33 @@ package dashboard
 
 import (
 	"context"
-	"log/slog"
 
-	"github.com/Timwood0x10/ares/internal/events"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 
 	"golang.org/x/sync/errgroup"
 )
 
-// EventBridge subscribes to the EventStore and forwards events to the WebSocket hub.
+// EventBridge subscribes to the EventStore and forwards ares_events to the WebSocket hub.
 type EventBridge struct {
-	eventStore events.EventStore
+	eventStore ares_events.EventStore
 	hub        *WSHub
 	cancel     context.CancelFunc
 	eg         errgroup.Group
 }
 
 // NewEventBridge creates a new EventBridge.
-func NewEventBridge(eventStore events.EventStore, hub *WSHub) *EventBridge {
+func NewEventBridge(eventStore ares_events.EventStore, hub *WSHub) *EventBridge {
 	return &EventBridge{
 		eventStore: eventStore,
 		hub:        hub,
 	}
 }
 
-// Start begins forwarding events to the WebSocket hub.
+// Start begins forwarding ares_events to the WebSocket hub.
 func (b *EventBridge) Start(ctx context.Context) error {
 	ctx, b.cancel = context.WithCancel(ctx)
 
-	ch, err := b.eventStore.Subscribe(ctx, events.EventFilter{})
+	ch, err := b.eventStore.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
 		b.cancel()
 		return err
@@ -48,12 +47,12 @@ func (b *EventBridge) Stop() {
 		b.cancel()
 	}
 	if err := b.eg.Wait(); err != nil {
-		slog.Error("dashboard: event bridge forward loop error", "error", err)
+		log.Error("dashboard: event bridge forward loop error", "error", err)
 	}
 }
 
-// forwardLoop reads events and broadcasts them to appropriate channels.
-func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *events.Event) error {
+// forwardLoop reads ares_events and broadcasts them to appropriate channels.
+func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *ares_events.Event) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -68,7 +67,7 @@ func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *events.Event) 
 }
 
 // handleEvent routes an event to the appropriate WebSocket channels.
-func (b *EventBridge) handleEvent(evt *events.Event) {
+func (b *EventBridge) handleEvent(evt *ares_events.Event) {
 	view := EventView{
 		ID:        evt.ID,
 		StreamID:  evt.StreamID,
@@ -78,7 +77,7 @@ func (b *EventBridge) handleEvent(evt *events.Event) {
 		Timestamp: evt.Timestamp,
 	}
 
-	// Always broadcast to the events channel.
+	// Always broadcast to the ares_events channel.
 	b.hub.BroadcastToChannel(WSChannelEvents, &WSMessage{
 		Type: WSTypeEvent,
 		Data: view,
@@ -86,14 +85,14 @@ func (b *EventBridge) handleEvent(evt *events.Event) {
 
 	// Route to specific channels based on event type.
 	switch evt.Type {
-	case events.EventAgentStarted, events.EventAgentStopped,
-		events.EventFailoverTriggered, events.EventFailoverCompleted:
+	case ares_events.EventAgentStarted, ares_events.EventAgentStopped,
+		ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
 		b.hub.BroadcastToChannel(WSChannelAgents, &WSMessage{
 			Type: WSTypeAgentUpdate,
 			Data: view,
 		})
 
-	case events.EventTaskCreated, events.EventTaskCompleted, events.EventTaskFailed:
+	case ares_events.EventTaskCreated, ares_events.EventTaskCompleted, ares_events.EventTaskFailed:
 		// Route to workflow channel if we can extract an execution ID.
 		if execID := extractExecutionID(evt); execID != "" {
 			channel := WSChannelPrefixWorkflow + execID
@@ -106,7 +105,7 @@ func (b *EventBridge) handleEvent(evt *events.Event) {
 }
 
 // extractExecutionID attempts to extract a workflow execution ID from event payload.
-func extractExecutionID(evt *events.Event) string {
+func extractExecutionID(evt *ares_events.Event) string {
 	if evt.Payload == nil {
 		return ""
 	}

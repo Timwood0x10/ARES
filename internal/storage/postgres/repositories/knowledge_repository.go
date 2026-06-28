@@ -37,20 +37,6 @@ func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB) *KnowledgeReposito
 	return &KnowledgeRepository{db: db, dbPool: dbPool}
 }
 
-// float64ToVectorString converts []float64 to pgvector format string.
-// Uses %.6f format to limit decimal places to 6 for compact representation.
-func float64ToVectorString(vec []float64) string {
-	if len(vec) == 0 {
-		return "[]"
-	}
-
-	strs := make([]string, len(vec))
-	for i, v := range vec {
-		strs[i] = fmt.Sprintf("%.6f", v)
-	}
-	return "[" + strings.Join(strs, ",") + "]"
-}
-
 // Create inserts a new knowledge chunk into the database.
 // Args:
 // ctx - database operation context.
@@ -70,7 +56,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 		embeddingStr = nil
 	} else {
 		// Convert embedding vector to pgvector format
-		embeddingStr = float64ToVectorString(chunk.Embedding)
+		embeddingStr = postgres.FormatVector(chunk.Embedding)
 	}
 
 	// Handle optional document_id
@@ -187,6 +173,10 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 // chunks - knowledge chunks to create.
 // Returns error if any insert operation fails or if transaction pool is not available.
 // Note: This method fills the ID field for each chunk after successful insertion.
+// maxBatchRows is the maximum number of rows per multi-row INSERT to stay
+// within PostgreSQL's parameter limit (65535) for 15-column rows.
+const maxBatchRows = 100
+
 func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage_models.KnowledgeChunk) error {
 	if len(chunks) == 0 {
 		return nil
@@ -209,81 +199,105 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 		}
 	}()
 
+	// Pre-marshal metadata for all chunks.
+	metadataJSONs := make([][]byte, len(chunks))
 	for i, chunk := range chunks {
-		// Convert metadata to JSON for database storage
-		metadataJSON, err := json.Marshal(chunk.Metadata)
+		mj, err := json.Marshal(chunk.Metadata)
 		if err != nil {
-			return errors.Wrap(err, "marshal metadata")
+			return errors.Wrapf(err, "marshal metadata for chunk %d", i)
 		}
+		metadataJSONs[i] = mj
+	}
 
-		// Handle nil or empty embedding vector
-		var embeddingStr interface{}
-		if len(chunk.Embedding) == 0 {
-			embeddingStr = nil
-		} else {
-			embeddingStr = float64ToVectorString(chunk.Embedding)
+	columns := "tenant_id, content, embedding, embedding_model, embedding_version, " +
+		"embedding_status, source_type, source, metadata, document_id, " +
+		"chunk_index, content_hash, access_count, created_at, updated_at"
+
+	colsPerRow := 15
+
+	for batchStart := 0; batchStart < len(chunks); batchStart += maxBatchRows {
+		batchEnd := batchStart + maxBatchRows
+		if batchEnd > len(chunks) {
+			batchEnd = len(chunks)
 		}
+		batch := chunks[batchStart:batchEnd]
 
-		// Handle optional document_id
-		var documentID interface{}
-		if chunk.DocumentID != "" {
-			documentID = chunk.DocumentID
-		} else {
-			documentID = nil
-		}
+		var valuesClause strings.Builder
+		params := make([]interface{}, 0, len(batch)*colsPerRow)
 
-		// Build INSERT dynamically to handle optional embedding and timestamps.
-		// Three variable parts:
-		//   1. embedding:  NULL (no vector) or ::vector cast
-		//   2. created_at: NOW() or $N
-		//   3. updated_at: NOW() or $N
-		// Using dynamic SQL avoids 4-way branch explosion (embedding×timestamp)
-		// while keeping a single query template with positional parameters.
-		columns := "tenant_id, content, embedding, embedding_model, embedding_version, " +
-			"embedding_status, source_type, source, metadata, document_id, " +
-			"chunk_index, content_hash, access_count, created_at, updated_at"
+		for j, chunk := range batch {
+			if j > 0 {
+				valuesClause.WriteString(", ")
+			}
+			base := j * colsPerRow
+			fmt.Fprintf(&valuesClause, "($%d, $%d, $%d::vector, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, COALESCE($%d, NOW()), COALESCE($%d, NOW()))",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10,
+				base+11, base+12, base+13, base+14, base+15)
 
-		var embeddingPlaceholder string
-		if embeddingStr == nil {
-			embeddingPlaceholder = "NULL"
-		} else {
-			embeddingPlaceholder = "$3::vector"
-		}
+			var embedding interface{}
+			if len(chunk.Embedding) > 0 {
+				embedding = postgres.FormatVector(chunk.Embedding)
+			}
+			var docID interface{}
+			if chunk.DocumentID != "" {
+				docID = chunk.DocumentID
+			}
+			var createdAt interface{}
+			if chunk.CreatedAt.IsZero() {
+				createdAt = nil
+			} else {
+				createdAt = chunk.CreatedAt
+			}
+			var updatedAt interface{}
+			if chunk.UpdatedAt.IsZero() {
+				updatedAt = nil
+			} else {
+				updatedAt = chunk.UpdatedAt
+			}
 
-		createdAtPlaceholder := "$14"
-		if chunk.CreatedAt.IsZero() {
-			createdAtPlaceholder = "NOW()"
-		}
-		updatedAtPlaceholder := "$15"
-		if chunk.UpdatedAt.IsZero() {
-			updatedAtPlaceholder = "NOW()"
+			params = append(params,
+				chunk.TenantID, chunk.Content, embedding,
+				chunk.EmbeddingModel, chunk.EmbeddingVersion, chunk.EmbeddingStatus,
+				chunk.SourceType, chunk.Source, metadataJSONs[batchStart+j], docID,
+				chunk.ChunkIndex, chunk.ContentHash, chunk.AccessCount,
+				createdAt, updatedAt)
 		}
 
 		query := fmt.Sprintf(`
 			INSERT INTO knowledge_chunks_1024
 			(%s)
-			VALUES ($1, $2, %s, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, %s, %s)
+			VALUES %s
 			ON CONFLICT (content_hash) DO UPDATE SET
 				access_count = knowledge_chunks_1024.access_count + 1,
 				updated_at = NOW()
-			RETURNING id`, columns, embeddingPlaceholder, createdAtPlaceholder, updatedAtPlaceholder) // #nosec G201
+			RETURNING id, content_hash`, columns, valuesClause.String())
 
-		// Always send CreatedAt and UpdatedAt; they are ignored via NOW() placeholder.
-		var id string
-		qerr := tx.QueryRowContext(ctx, query,
-			chunk.TenantID, chunk.Content, embeddingStr,
-			chunk.EmbeddingModel, chunk.EmbeddingVersion, chunk.EmbeddingStatus,
-			chunk.SourceType, chunk.Source, metadataJSON, documentID,
-			chunk.ChunkIndex, chunk.ContentHash, chunk.AccessCount,
-			chunk.CreatedAt, chunk.UpdatedAt,
-		).Scan(&id)
-
+		rows, qerr := tx.QueryContext(ctx, query, params...)
 		if qerr != nil {
-			return errors.Wrapf(qerr, "create knowledge chunk %d", i)
+			return errors.Wrapf(qerr, "batch insert starting at %d", batchStart)
 		}
 
-		// Fill the ID for the chunk
-		chunks[i].ID = id
+		// Map returned IDs back to input chunks by content_hash.
+		idByHash := make(map[string]string, len(batch))
+		for rows.Next() {
+			var id, contentHash string
+			if err := rows.Scan(&id, &contentHash); err != nil {
+				if err := rows.Close(); err != nil {
+					return errors.Wrap(err, "close rows")
+				}
+				return errors.Wrap(err, "scan returned id")
+			}
+			idByHash[contentHash] = id
+		}
+		if err := rows.Close(); err != nil {
+			return errors.Wrap(err, "close rows")
+		}
+
+		for j := batchStart; j < batchEnd; j++ {
+			if id, ok := idByHash[chunks[j].ContentHash]; ok {
+				chunks[j].ID = id
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -305,7 +319,7 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	}
 
 	query := `
-		SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+		SELECT id, tenant_id, content, embedding_model, embedding_version,
 			   embedding_status, source_type, source, metadata::text, document_id,
 			   chunk_index, content_hash, access_count, created_at, updated_at
 		FROM knowledge_chunks_1024
@@ -313,10 +327,10 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	`
 
 	chunk := &storage_models.KnowledgeChunk{}
-	var embeddingStr, metadataStr string
+	var metadataStr string
 	var documentID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
+		&chunk.ID, &chunk.TenantID, &chunk.Content,
 		&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 		&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 		&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
@@ -328,12 +342,6 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge chunk by id")
-	}
-
-	// Parse embedding string to float64 array
-	chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse embedding")
 	}
 
 	// Parse metadata JSON string to map
@@ -364,7 +372,7 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 	}
 
 	// Convert embedding vector to pgvector format
-	embeddingStr := float64ToVectorString(chunk.Embedding)
+	embeddingStr := postgres.FormatVector(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}
@@ -524,7 +532,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 // Returns list of matching knowledge chunks ordered by relevance.
 func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	sqlQuery := `
-        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+        SELECT id, tenant_id, content, embedding_model, embedding_version,
                embedding_status, source_type, source, metadata::text, document_id,
                chunk_index, content_hash, access_count, created_at, updated_at,
                ts_rank(tsv, plainto_tsquery('simple', $1)) as score
@@ -546,22 +554,16 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
 		var score float64
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		var documentID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
+			&chunk.ID, &chunk.TenantID, &chunk.Content,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 			&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt, &score,
 		)
 		if err != nil {
-			continue
-		}
-
-		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to parse embedding in keyword search", "error", err)
 			continue
 		}
 
@@ -598,7 +600,7 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
 // Returns list of knowledge chunks ordered by chunk index.
 func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, tenantID string) ([]*storage_models.KnowledgeChunk, error) {
 	query := `
-        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+        SELECT id, tenant_id, content, embedding_model, embedding_version,
                embedding_status, source_type, source, metadata::text, document_id,
                chunk_index, content_hash, access_count, created_at, updated_at
         FROM knowledge_chunks_1024
@@ -615,22 +617,16 @@ func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, te
 	chunks := make([]*storage_models.KnowledgeChunk, 0)
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		var docID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
+			&chunk.ID, &chunk.TenantID, &chunk.Content,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 			&chunk.SourceType, &chunk.Source, &metadataStr, &docID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt,
 		)
 		if err != nil {
-			continue
-		}
-
-		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to parse embedding in ListByDocument", "error", err)
 			continue
 		}
 
@@ -676,7 +672,7 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 	escapedQuery := postgres.EscapeILIKEPattern(query)
 
 	sqlQuery := `
-        SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
+        SELECT id, tenant_id, content, embedding_model, embedding_version,
                embedding_status, source_type, source, metadata::text, document_id,
                chunk_index, content_hash, access_count, created_at, updated_at
         FROM knowledge_chunks_1024
@@ -696,22 +692,16 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 	chunks := make([]*storage_models.KnowledgeChunk, 0)
 	for rows.Next() {
 		chunk := &storage_models.KnowledgeChunk{}
-		var embeddingStr, metadataStr string
+		var metadataStr string
 		var documentID sql.NullString
 		err := rows.Scan(
-			&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
+			&chunk.ID, &chunk.TenantID, &chunk.Content,
 			&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 			&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 			&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
 			&chunk.CreatedAt, &chunk.UpdatedAt,
 		)
 		if err != nil {
-			continue
-		}
-
-		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to parse embedding in SearchBySubstring", "error", err)
 			continue
 		}
 

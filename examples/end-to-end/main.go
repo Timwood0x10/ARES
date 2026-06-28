@@ -1,7 +1,7 @@
 // End-to-End Example: Full Chain Demonstration
 //
 // This example demonstrates the complete pipeline:
-//   Phase 1: Config file startup          -> config.Load + config.LoadFromEnv
+//   Phase 1: Config file startup          -> ares_config.Load + ares_config.LoadFromEnv
 //   Phase 2: Agent processes task          -> Leader agent + sub agents
 //   Phase 3: Memory distillation           -> TaskResult -> Experience (real Distiller with fallback)
 //   Phase 4: Workflow orchestration        -> DAG-based workflow execution
@@ -29,18 +29,18 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
-	"github.com/Timwood0x10/ares/internal/config"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/llm/output"
-	"github.com/Timwood0x10/ares/internal/observability"
 	"github.com/Timwood0x10/ares/internal/plugins/resurrection"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -56,17 +56,17 @@ func main() {
 
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
-		configPath = "./examples/end-to-end/config/server.yaml"
+		configPath = "./examples/end-to-end/ares_config/server.yaml"
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
+		slog.Error("Failed to load ares_config", "error", err)
 		os.Exit(1)
 	}
 
-	if err := config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Failed to load env config", "error", err)
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		slog.Error("Failed to load env ares_config", "error", err)
 		os.Exit(1)
 	}
 
@@ -229,15 +229,15 @@ type components struct {
 	llmAdapter    output.LLMAdapter
 	llmFactory    *output.Factory
 	llmConfig     *output.Config
-	tracer        observability.Tracer
+	tracer        ares_observability.Tracer
 	messageQueue  *ahp.MessageQueue
 	validator     *output.Validator
 	template      *output.TemplateEngine
 	memoryManager memory.MemoryManager
-	eventStore    events.EventStore // Real EventStore for resurrection demo
+	eventStore    ares_events.EventStore // Real EventStore for resurrection demo
 }
 
-func initializeComponents(cfg *config.Config) (*components, error) {
+func initializeComponents(cfg *ares_config.Config) (*components, error) {
 	llmFactory := output.NewFactory()
 	llmCfg := &output.Config{
 		Provider:  cfg.LLM.Provider,
@@ -253,7 +253,7 @@ func initializeComponents(cfg *config.Config) (*components, error) {
 		return nil, fmt.Errorf("create LLM adapter: %w", err)
 	}
 
-	tracer := observability.NewNoopTracer()
+	tracer := ares_observability.NewNoopTracer()
 	messageQueue := ahp.NewMessageQueue("e2e-main", &ahp.QueueOptions{MaxSize: 1000})
 	validator := output.NewValidator(output.WithSchemaType(cfg.Validation.SchemaType))
 	tmpl := output.NewTemplateEngine()
@@ -266,7 +266,7 @@ func initializeComponents(cfg *config.Config) (*components, error) {
 
 	// Create real in-memory EventStore for resurrection demo.
 	// In production this would be pg_store backed by Postgres.
-	eventStore := events.NewMemoryEventStore()
+	eventStore := ares_events.NewMemoryEventStore()
 
 	return &components{
 		llmAdapter:    llmAdapter,
@@ -309,9 +309,9 @@ func getLLMAdapter(comps *components, agentModel, agentProvider string) output.L
 // -----------------------------------------------------------------------
 
 // createExecutorForSubAgent builds a TaskExecutorWithValidation for a given
-// sub-agent config. This is the single source of truth for executor creation,
+// sub-agent ares_config. This is the single source of truth for executor creation,
 // used by both createLeaderAgent (for dispatcher registration) and createSubAgents.
-func createExecutorForSubAgent(comps *components, cfg *config.Config, subCfg config.SubAgentConfig) sub.TaskExecutor {
+func createExecutorForSubAgent(comps *components, cfg *ares_config.Config, subCfg ares_config.SubAgentConfig) sub.TaskExecutor {
 	agentLLM := getLLMAdapter(comps, subCfg.Model, subCfg.Provider)
 	return sub.NewTaskExecutorWithValidation(
 		nil, // toolBinder: nil for local execution mode
@@ -325,7 +325,7 @@ func createExecutorForSubAgent(comps *components, cfg *config.Config, subCfg con
 	)
 }
 
-func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, error) {
+func createLeaderAgent(cfg *ares_config.Config, comps *components) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		comps.llmAdapter,
 		comps.template,
@@ -397,7 +397,7 @@ func createLeaderAgent(cfg *config.Config, comps *components) (leader.Agent, err
 	return agent, nil
 }
 
-func createSubAgents(cfg *config.Config, comps *components) []sub.Agent {
+func createSubAgents(cfg *ares_config.Config, comps *components) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {
@@ -713,7 +713,7 @@ func initWorkflowRegistry(comps *components) *engine.AgentRegistry {
 	registry := engine.NewAgentRegistry()
 
 	// Register the "analyzer" agent type with the real LLM adapter.
-	_ = registry.Register("analyzer", func(ctx context.Context, config interface{}) (base.Agent, error) {
+	_ = registry.Register("analyzer", func(ctx context.Context, ares_config interface{}) (base.Agent, error) {
 		return &realWorkflowAgent{
 			id:        "wf-analyzer",
 			agentType: models.AgentType("analyzer"),
@@ -722,7 +722,7 @@ func initWorkflowRegistry(comps *components) *engine.AgentRegistry {
 	})
 
 	// Register the "recommender" agent type with the real LLM adapter.
-	_ = registry.Register("recommender", func(ctx context.Context, config interface{}) (base.Agent, error) {
+	_ = registry.Register("recommender", func(ctx context.Context, ares_config interface{}) (base.Agent, error) {
 		return &realWorkflowAgent{
 			id:        "wf-recommender",
 			agentType: models.AgentType("recommender"),
@@ -737,7 +737,7 @@ func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 	// Load workflow definition from YAML file.
 	// This mirrors the real workflow.NewYAMLFileLoader usage in production.
 	loader := engine.NewYAMLFileLoader()
-	workflow, err := loader.Load(ctx, "./examples/end-to-end/config/workflow.yaml")
+	workflow, err := loader.Load(ctx, "./examples/end-to-end/ares_config/workflow.yaml")
 	if err != nil {
 		slog.Error("Failed to load workflow", "error", err)
 		return &workflowResult{Status: "failed"}
@@ -1095,26 +1095,26 @@ func demoScorer(baselineQuality float64) genome.ScorerFunc {
 // This section demonstrates the full resurrection lifecycle using REAL infrastructure:
 //   1. Capture snapshot via StatefulAgent.Snapshot()
 //   2. Persist to MemorySnapshotStore (already working)
-//   3. Emit real events to EventStore during agent lifecycle
+//   3. Emit real ares_events to EventStore during agent lifecycle
 //   4. Simulate crash via heartbeat timeout detection
 //   5. Restore state from snapshot
-//   6. Replay REAL events from EventStore (not synthetic/hardcoded)
+//   6. Replay REAL ares_events from EventStore (not synthetic/hardcoded)
 //   7. Verify restored agent continues execution
 //
 // Key difference from previous version:
-//   - BEFORE: replayEvents used hardcoded []*events.Event slices
-//   - AFTER:  events are read from real EventStore that was populated during
+//   - BEFORE: replayEvents used hardcoded []*ares_events.Event slices
+//   - AFTER:  ares_events are read from real EventStore that was populated during
 //             the agent's normal operation lifecycle
 
 // executeResurrectionDemo demonstrates the full snapshot/resurrection lifecycle
 // using real EventStore for event sourcing and heartbeat-based crash detection.
-func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *components, originalAgent leader.Agent) {
+func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps *components, originalAgent leader.Agent) {
 	// Get the real EventStore from components.
 	eventStore := comps.eventStore
 	agentID := originalAgent.ID()
 
-	// Emit lifecycle events to the real EventStore before capturing snapshot.
-	// These events will later be replayed during resurrection (not hardcoded!).
+	// Emit lifecycle ares_events to the real EventStore before capturing snapshot.
+	// These ares_events will later be replayed during resurrection (not hardcoded!).
 	emitLifecycleEvents(ctx, eventStore, agentID)
 
 	// 5.1 Capture snapshot of the running leader agent.
@@ -1166,7 +1166,7 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 	}
 
 	// Emit crash event to EventStore for audit trail.
-	events.Emit(ctx, eventStore, agentID, events.EventAgentStopped, map[string]any{
+	ares_events.Emit(ctx, eventStore, agentID, ares_events.EventAgentStopped, "example", map[string]any{
 		"reason": "crash_simulation",
 	})
 	slog.Info("Agent stopped (crash simulated)",
@@ -1176,12 +1176,12 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 	// 5.3 Detect crash via heartbeat timeout simulation.
 	slog.Info("5.3 Crash detection via heartbeat timeout")
 
-	// Read events from EventStore to verify heartbeat gap (crash detection).
-	storedEvents, readErr := eventStore.Read(ctx, agentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	// Read ares_events from EventStore to verify heartbeat gap (crash detection).
+	storedEvents, readErr := eventStore.Read(ctx, agentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
 	if readErr != nil {
-		slog.Warn("Could not read events from EventStore for crash detection",
+		slog.Warn("Could not read ares_events from EventStore for crash detection",
 			"error", readErr,
 			"note", "falling back to timeout-based detection")
 	} else {
@@ -1247,22 +1247,22 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 		"agent_id", newAgent.ID(),
 		"restored_session_id", loadedSnapshot["session_id"])
 
-	// 5.6 Replay REAL events from EventStore (not hardcoded synthetic events).
-	slog.Info("5.6 Replay events from real EventStore")
+	// 5.6 Replay REAL ares_events from EventStore (not hardcoded synthetic ares_events).
+	slog.Info("5.6 Replay ares_events from real EventStore")
 
-	// KEY CHANGE: Instead of building hardcoded []*events.Event slices,
-	// we READ events from the real EventStore that was populated during
+	// KEY CHANGE: Instead of building hardcoded []*ares_events.Event slices,
+	// we READ ares_events from the real EventStore that was populated during
 	// the agent's lifecycle (emitLifecycleEvents above).
-	replayEvents, readErr := eventStore.Read(ctx, agentID, events.ReadOptions{
-		Direction: events.ReadAscending,
+	replayEvents, readErr := eventStore.Read(ctx, agentID, ares_events.ReadOptions{
+		Direction: ares_events.ReadAscending,
 	})
 	if readErr != nil {
-		slog.Error("Failed to read events from EventStore for replay",
+		slog.Error("Failed to read ares_events from EventStore for replay",
 			"error", readErr,
 			"falling_back_to", "empty event list")
-		replayEvents = []*events.Event{}
+		replayEvents = []*ares_events.Event{}
 	} else {
-		slog.Info("Read events from real EventStore for replay",
+		slog.Info("Read ares_events from real EventStore for replay",
 			"event_count", len(replayEvents),
 			"source", "real_event_store",
 			"agent_id", agentID)
@@ -1278,14 +1278,14 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 	}
 
 	if len(replayEvents) == 0 {
-		slog.Warn("[Demo] No events found in EventStore for replay. "+
+		slog.Warn("[Demo] No ares_events found in EventStore for replay. "+
 			"This can happen if the EventStore was not properly populated during agent lifecycle. "+
-			"In production, events are emitted automatically by agents.",
+			"In production, ares_events are emitted automatically by agents.",
 			"agent_id", agentID)
 	}
 
 	if err := newStatefulAgent.ReplayEvents(replayEvents); err != nil {
-		slog.Error("Failed to replay events", "error", err)
+		slog.Error("Failed to replay ares_events", "error", err)
 		return
 	}
 	slog.Info("Events replayed successfully",
@@ -1329,7 +1329,7 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 	}
 
 	// Emit post-restoration event to EventStore (demonstrates continued event sourcing).
-	events.Emit(ctx, eventStore, newAgent.ID(), events.EventTaskCompleted, map[string]any{
+	ares_events.Emit(ctx, eventStore, newAgent.ID(), ares_events.EventTaskCompleted, "example", map[string]any{
 		"task":            followUpTask,
 		"restore_session": originalSessionID,
 		"result":          restoreResultStr,
@@ -1371,9 +1371,9 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 		}
 	}
 
-	// Verify C: EventStore integrity — confirm events survived crash/recovery.
+	// Verify C: EventStore integrity — confirm ares_events survived crash/recovery.
 	finalEventCount := 0
-	if finalEvents, finalErr := eventStore.Read(ctx, agentID, events.ReadOptions{}); finalErr == nil {
+	if finalEvents, finalErr := eventStore.Read(ctx, agentID, ares_events.ReadOptions{}); finalErr == nil {
 		finalEventCount = len(finalEvents)
 	}
 	eventIntegrityOK := finalEventCount > 0
@@ -1396,51 +1396,51 @@ func executeResurrectionDemo(ctx context.Context, cfg *config.Config, comps *com
 		"events_replayed_from", "real_event_store_not_hardcoded")
 }
 
-// emitLifecycleEvents emits realistic lifecycle events to the EventStore
-// for the given agent. These events represent what a real agent would emit
+// emitLifecycleEvents emits realistic lifecycle ares_events to the EventStore
+// for the given agent. These ares_events represent what a real agent would emit
 // during its operational lifetime and are later replayed during resurrection.
 // This REPLACES the previous hardcoded event slice construction.
-func emitLifecycleEvents(ctx context.Context, store events.EventStore, agentID string) {
+func emitLifecycleEvents(ctx context.Context, store ares_events.EventStore, agentID string) {
 	sessionID := fmt.Sprintf("session-%s-%d", agentID, time.Now().UnixNano())
 
 	// Event 1: Agent started.
-	events.Emit(ctx, store, agentID, events.EventAgentStarted, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventAgentStarted, "example", map[string]any{
 		"agent_type": "leader",
 		"session_id": sessionID,
 	})
 
 	// Event 2: Session created.
-	events.Emit(ctx, store, agentID, events.EventSessionCreated, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventSessionCreated, "example", map[string]any{
 		"session_id": sessionID,
 		"user_id":    "demo-user",
 	})
 
 	// Event 3: Task created (the sample input from Phase 2).
-	events.Emit(ctx, store, agentID, events.EventTaskCreated, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCreated, "example", map[string]any{
 		"task_id":    "task-e2e-demo-001",
 		"session_id": sessionID,
 		"input":      "请分析Python项目中的代码质量，重点关注性能瓶颈和安全隐患",
 	})
 
 	// Event 4: Message added (user request).
-	events.Emit(ctx, store, agentID, events.EventMessageAdded, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventMessageAdded, "example", map[string]any{
 		"session_id": sessionID,
 		"role":       "user",
 		"content":    "请分析Python项目中的代码质量",
 	})
 
 	// Event 5: Task completed (result from Phase 2).
-	events.Emit(ctx, store, agentID, events.EventTaskCompleted, map[string]any{
+	ares_events.Emit(ctx, store, agentID, ares_events.EventTaskCompleted, "example", map[string]any{
 		"task_id":    "task-e2e-demo-001",
 		"session_id": sessionID,
 		"result":     "analysis completed successfully",
 	})
 
-	slog.Info("Lifecycle events emitted to EventStore",
+	slog.Info("Lifecycle ares_events emitted to EventStore",
 		"agent_id", agentID,
 		"session_id", sessionID,
 		"event_count", 5,
-		"note", "These events will be replayed during resurrection (not hardcoded)")
+		"note", "These ares_events will be replayed during resurrection (not hardcoded)")
 }
 
 func init() {

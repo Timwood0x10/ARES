@@ -1,7 +1,7 @@
 //go:build integration
 // +build integration
 
-// package graph - integration tests for observability and ratelimit.
+// package graph - integration tests for ares_observability and ares_ratelimit.
 
 package graph
 
@@ -10,23 +10,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 )
 
 func TestGraphWithObservability(t *testing.T) {
 	// Test that graph execution is properly traced
-	calls := make(chan *observability.ToolCall, 10)
+	calls := make(chan *ares_observability.ToolCall, 10)
 
 	tracer := &mockTracer{
-		recordToolCallFunc: func(ctx context.Context, call *observability.ToolCall) {
+		recordToolCallFunc: func(ctx context.Context, call *ares_observability.ToolCall) {
 			calls <- call
 		},
 	}
 
 	executionOrder := []string{}
 
-	graph, err := NewGraphWithTracer("observability-test", tracer)
+	graph, err := NewGraphWithTracer("ares_observability-test", tracer)
 	if err != nil {
 		t.Fatalf("failed to create graph: %v", err)
 	}
@@ -63,8 +63,8 @@ func TestGraphWithObservability(t *testing.T) {
 	// Wait for tracer call with timeout
 	select {
 	case call := <-calls:
-		if call.ToolName != "observability-test" {
-			t.Errorf("expected tool name observability-test, got %s", call.ToolName)
+		if call.ToolName != "ares_observability-test" {
+			t.Errorf("expected tool name ares_observability-test, got %s", call.ToolName)
 		}
 		if call.Duration == 0 {
 			t.Error("expected non-zero duration")
@@ -77,8 +77,8 @@ func TestGraphWithObservability(t *testing.T) {
 	}
 
 	// Verify graph execution completed
-	if result.GraphID != "observability-test" {
-		t.Errorf("expected graph ID observability-test, got %s", result.GraphID)
+	if result.GraphID != "ares_observability-test" {
+		t.Errorf("expected graph ID ares_observability-test, got %s", result.GraphID)
 	}
 
 	// Verify execution order
@@ -89,7 +89,7 @@ func TestGraphWithObservability(t *testing.T) {
 
 func TestGraphWithRateLimit(t *testing.T) {
 	// Test that graph execution respects rate limiting
-	limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+	limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
 		Rate:    10.0, // 10 requests per second
 		Burst:   1,    // burst size of 1
 		Timeout: 5 * time.Second,
@@ -139,7 +139,7 @@ func TestGraphWithRateLimit(t *testing.T) {
 
 func TestGraphWithRateLimitExceeded(t *testing.T) {
 	// Test that graph execution respects rate limiting by measuring execution time
-	limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+	limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
 		Rate:    100.0, // 100 requests per second
 		Burst:   1,     // burst size of 1 to ensure rate limiting
 		Timeout: 5 * time.Second,
@@ -183,16 +183,16 @@ func TestGraphWithRateLimitExceeded(t *testing.T) {
 }
 
 func TestGraphWithBothObservabilityAndRateLimit(t *testing.T) {
-	// Test that both observability and rate limiting work together
-	calls := make(chan *observability.ToolCall, 10)
+	// Test that both ares_observability and rate limiting work together
+	calls := make(chan *ares_observability.ToolCall, 10)
 
 	tracer := &mockTracer{
-		recordToolCallFunc: func(ctx context.Context, call *observability.ToolCall) {
+		recordToolCallFunc: func(ctx context.Context, call *ares_observability.ToolCall) {
 			calls <- call
 		},
 	}
 
-	limiter := ratelimit.NewTokenBucketLimiter(&ratelimit.LimiterConfig{
+	limiter := ares_ratelimit.NewTokenBucketLimiter(&ares_ratelimit.LimiterConfig{
 		Rate:    5.0, // 5 requests per second
 		Burst:   1,
 		Timeout: 5 * time.Second,
@@ -248,7 +248,7 @@ func TestGraphWithBothObservabilityAndRateLimit(t *testing.T) {
 
 func TestGraphWithCustomTracer(t *testing.T) {
 	// Test that custom tracer is properly integrated
-	tracer := observability.NewNoopTracer()
+	tracer := ares_observability.NewNoopTracer()
 
 	graph, err := NewGraph("custom-tracer-test")
 	if err != nil {
@@ -281,24 +281,24 @@ func TestGraphWithCustomTracer(t *testing.T) {
 
 // mockTracer is a simple mock tracer for testing.
 type mockTracer struct {
-	recordToolCallFunc func(ctx context.Context, call *observability.ToolCall)
+	recordToolCallFunc func(ctx context.Context, call *ares_observability.ToolCall)
 }
 
-func (m *mockTracer) RecordLLMCall(ctx context.Context, call *observability.LLMCall) {
+func (m *mockTracer) RecordLLMCall(ctx context.Context, call *ares_observability.LLMCall) {
 	// No-op
 }
 
-func (m *mockTracer) RecordToolCall(ctx context.Context, call *observability.ToolCall) {
+func (m *mockTracer) RecordToolCall(ctx context.Context, call *ares_observability.ToolCall) {
 	if m.recordToolCallFunc != nil {
 		m.recordToolCallFunc(ctx, call)
 	}
 }
 
-func (m *mockTracer) RecordAgentStep(ctx context.Context, step *observability.AgentStep) {
+func (m *mockTracer) RecordAgentStep(ctx context.Context, step *ares_observability.AgentStep) {
 	// No-op
 }
 
-func (m *mockTracer) RecordError(ctx context.Context, err *observability.AgentError) {
+func (m *mockTracer) RecordError(ctx context.Context, err *ares_observability.AgentError) {
 	// No-op
 }
 

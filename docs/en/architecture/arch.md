@@ -339,7 +339,7 @@ ares/
 │   ├── travel/              # Travel planning
 │   ├── knowledge-base/      # Knowledge base Q&A
 │   ├── simple/              # Simple example
-│   └── capability-demo/     # Feature demonstration
+│   └── quickstart/        # Quick start with bootstrap API
 ├── services/                # Standalone services
 │   └── embedding/           # Embedding service
 │       ├── app.py           # FastAPI service

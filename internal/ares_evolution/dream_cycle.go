@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // DreamCycleConfig holds configuration for the dream cycle orchestrator.
@@ -77,15 +80,20 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // It connects: Callback trigger -> Flight->Exp Adapter -> Scheduler ->
 // Mutator -> Arena Regression -> Genealogy recording.
 type DreamCycle struct {
-	scheduler     *EvolutionScheduler
-	mutator       MutatorInterface
-	tester        TesterInterface
-	genealogy     GenealogyRecorder
-	strategyStore StrategyStore
-	config        DreamCycleConfig
-	mu            sync.Mutex // Protects taskCount, lastCycle, and config.Enabled from concurrent access.
-	taskCount     int64
-	lastCycle     time.Time
+	scheduler       *EvolutionScheduler
+	mutator         MutatorInterface
+	tester          TesterInterface
+	genealogy       GenealogyRecorder
+	strategyStore   StrategyStore
+	guardrails      *EvolutionGuardrails
+	shadowEvaluator *ShadowEvaluator
+	stateManager    *ActiveStrategyManager
+	metrics         MetricsRecorder
+	population      *genome.Population
+	config          DreamCycleConfig
+	mu              sync.Mutex
+	taskCount       int64
+	lastCycle       time.Time
 }
 
 // NewDreamCycle creates a new dream cycle orchestrator with required dependencies.
@@ -159,6 +167,10 @@ func NewDreamCycle(
 //
 //	error - non-nil if a critical error occurs during orchestration.
 func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
+	// Enforce a max duration for the entire cycle to prevent hangs.
+	cycleCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	// Increment task counter unconditionally for threshold tracking.
 	// Also read Enabled under lock to prevent data races.
 	dc.mu.Lock()
@@ -198,14 +210,52 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		return nil
 	}
 
-	// Delegate evolution decision to scheduler's shouldEvolve logic.
-	if !dc.scheduler.shouldEvolve(ctx, data) {
+	// Delegate evolution decision to scheduler's exported ShouldEvolve method.
+	if !dc.scheduler.ShouldEvolve(ctx, data) {
 		return nil
 	}
 
+	popGen := 0
+	popSize := 0
+	if dc.population != nil {
+		popGen = dc.population.CurrentGeneration()
+		popSize = len(dc.population.Agents)
+	}
 	slog.InfoContext(ctx, "[DreamCycle] Starting evolution cycle",
 		"agent_id", data.AgentID,
-		"task_count", taskCount)
+		"task_count", taskCount,
+		"trigger", dc.scheduler.TriggerMode().String(),
+		"generation", popGen,
+		"population_size", popSize)
+
+	// Pre-evolution guardrail check.
+	// Pass taskCount as totalPop so the unevaluated ratio check is meaningful.
+	// Generation is not tracked yet; currentBest is sourced from active strategy.
+	var currentBest float64
+	if dc.stateManager != nil {
+		if cur := dc.stateManager.Current(); cur != nil {
+			currentBest = cur.Score
+		}
+	}
+	if dc.guardrails != nil {
+		gen := 0
+		unevaluatedCount := 0
+		if dc.population != nil {
+			gen = dc.population.CurrentGeneration()
+			agents, _ := dc.population.Snapshot()
+			for _, a := range agents {
+				if !genome.IsScoreEvaluated(a.Score) {
+					unevaluatedCount++
+				}
+			}
+		}
+		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, gen, int(taskCount), unevaluatedCount)
+		if preResult.ShouldStop {
+			slog.WarnContext(ctx, "[DreamCycle] Pre-evolution guardrails prevent cycle",
+				"events", len(preResult.Events))
+			return nil
+		}
+	}
 
 	// Step 1: Get current active strategy as parent for mutation.
 	parent, err := dc.getCurrentStrategy(ctx)
@@ -219,7 +269,7 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	}
 
 	// Step 2: Generate candidate mutations.
-	candidates, err := dc.mutator.Mutate(ctx, parent, dc.config.MaxMutations)
+	candidates, err := dc.mutator.Mutate(cycleCtx, parent, dc.config.MaxMutations)
 	if err != nil {
 		return fmt.Errorf("mutate strategy: %w", err)
 	}
@@ -253,7 +303,98 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		if err := dc.genealogy.Record(ctx, lineage); err != nil {
 			slog.ErrorContext(ctx, "[DreamCycle] Failed to record lineage",
 				"error", err)
-			// Non-fatal: continue without lineage record.
+		}
+	}
+
+	// Step 5: Post-evolution guardrail check.
+	if dc.guardrails != nil {
+		gen := 0
+		var lineageShares map[string]int
+		if dc.population != nil {
+			gen = dc.population.CurrentGeneration()
+			if agents, _ := dc.population.Snapshot(); len(agents) > 0 {
+				lineageShares = computeLineageShares(agents)
+			}
+		}
+		postResult := dc.guardrails.PostEvolveCheck(ctx, winner.winRate, gen, lineageShares)
+		if postResult.ShouldStop {
+			slog.WarnContext(ctx, "[DreamCycle] Post-evolution guardrails block deploy",
+				"winner_id", winner.strategy.ID,
+				"win_rate", winner.winRate,
+				"score", winner.winRate,
+				"events", len(postResult.Events),
+				"generation", gen)
+			return nil
+		}
+	}
+
+	// Step 6: Shadow evaluation before deployment.
+	if dc.shadowEvaluator != nil {
+		mtnWinner := winnerToMutationStrategy(winner)
+		if mtnWinner == nil {
+			slog.ErrorContext(ctx, "[DreamCycle] winnerToMutationStrategy returned nil, skipping shadow")
+			return nil
+		}
+		// Set active strategy for comparison and start shadow evaluation.
+		parentMutation := evolutionToMutationStrategy(parent)
+		dc.shadowEvaluator.SetActiveStrategy(&parentMutation)
+		dc.shadowEvaluator.StartShadow(mtnWinner)
+
+		// Use independent scorer if available, otherwise fall back to manual scores.
+		if dc.shadowEvaluator.HasIndependentScorer() {
+			dc.shadowEvaluator.Evaluate(ctx)
+		} else {
+			dc.shadowEvaluator.RecordResult(parent.Score, winner.scoreImprovement+parent.Score)
+		}
+
+		shouldDeploy, report := dc.shadowEvaluator.ShouldDeploy()
+		if !shouldDeploy {
+			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation rejects deployment",
+				"candidate_id", winner.strategy.ID,
+				"active_id", parent.ID,
+				"win_rate", report.WinRate,
+				"threshold", dc.shadowEvaluator.minWinRate,
+				"reason", report.Recommendation)
+			if dc.metrics != nil {
+				dc.metrics.RecordEvolutionShadow("rejected")
+			}
+			return nil
+		}
+		slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation approves deployment",
+			"candidate_id", winner.strategy.ID,
+			"active_id", parent.ID,
+			"win_rate", report.WinRate,
+			"threshold", dc.shadowEvaluator.minWinRate)
+		if dc.metrics != nil {
+			dc.metrics.RecordEvolutionShadow("promoted")
+		}
+	}
+
+	// Step 7: Deploy via ActiveStrategyManager.
+	if dc.stateManager != nil {
+		mtnWinner := winnerToMutationStrategy(winner)
+		if mtnWinner == nil {
+			slog.ErrorContext(ctx, "[DreamCycle] winnerToMutationStrategy returned nil, skipping deploy")
+			return nil
+		}
+		if err := ValidateStrategySize(mtnWinner); err != nil {
+			slog.ErrorContext(ctx, "[DreamCycle] Winning strategy exceeds size limits",
+				"winner_id", winner.strategy.ID,
+				"error", err)
+			return nil
+		}
+		if err := dc.stateManager.Deploy(cycleCtx, mtnWinner); err != nil {
+			slog.ErrorContext(ctx, "[DreamCycle] Failed to deploy winning strategy",
+				"winner_id", winner.strategy.ID,
+				"error", err)
+			return nil
+		}
+		slog.InfoContext(ctx, "[DreamCycle] Winning strategy deployed",
+			"winner_id", winner.strategy.ID,
+			"win_rate", winner.winRate)
+		if dc.metrics != nil {
+			dc.metrics.RecordEvolutionDeploy("success")
+			dc.metrics.SetEvolutionScore(winner.strategy.ID, winner.winRate)
 		}
 	}
 
@@ -264,7 +405,10 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	slog.InfoContext(ctx, "[DreamCycle] Evolution cycle complete",
 		"winner_id", winner.strategy.ID,
 		"win_rate", winner.winRate,
-		"score_improvement", winner.scoreImprovement)
+		"score_improvement", winner.scoreImprovement,
+		"trigger", dc.scheduler.TriggerMode().String(),
+		"generation", 0,
+		"population_size", 0)
 
 	return nil
 }
@@ -274,6 +418,86 @@ type candidateResult struct {
 	strategy         Strategy
 	winRate          float64
 	scoreImprovement float64
+}
+
+// WithDreamCycleGuardrails attaches a guardrail checker to the dream cycle.
+//
+// Args:
+//
+//	guardrails - the evolution guardrails instance (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleGuardrails(guardrails *EvolutionGuardrails) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.guardrails = guardrails
+		return nil
+	}
+}
+
+// WithDreamCycleShadowEvaluator attaches a shadow evaluator for safe deployment.
+//
+// Args:
+//
+//	se - the shadow evaluator instance (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleShadowEvaluator(se *ShadowEvaluator) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.shadowEvaluator = se
+		return nil
+	}
+}
+
+// WithDreamCycleMetrics attaches a metrics recorder for evolution event counters.
+//
+// Args:
+//
+//	metrics - the metrics recorder (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleMetrics(metrics MetricsRecorder) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.metrics = metrics
+		return nil
+	}
+}
+
+// WithDreamCycleTester attaches a regression tester for candidate evaluation.
+//
+// Args:
+//
+//	tester - the arena regression tester (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleTester(tester TesterInterface) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.tester = tester
+		return nil
+	}
+}
+
+// WithDreamCycleStrategyManager attaches a strategy manager for deployment.
+//
+// Args:
+//
+//	mgr - the active strategy manager (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleStrategyManager(mgr *ActiveStrategyManager) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.stateManager = mgr
+		return nil
+	}
 }
 
 // WithStrategyStore sets the strategy store for persisting evolved strategies.
@@ -481,6 +705,33 @@ func (dc *DreamCycle) recordFailure(ctx context.Context, parent Strategy) {
 		"parent_id", parent.ID,
 		"max_mutations", dc.config.MaxMutations,
 		"min_win_rate", dc.config.MinWinRate)
+}
+
+// MetricsRecorder abstracts Prometheus metrics recording for evolution events.
+// The observability.PrometheusMetrics type satisfies this interface.
+type MetricsRecorder interface {
+	RecordEvolutionDeploy(status string)
+	RecordEvolutionShadow(result string)
+	SetEvolutionScore(strategyID string, score float64)
+}
+
+// winnerToMutationStrategy converts a candidateResult to a mutation.Strategy
+// pointer for deployment via ActiveStrategyManager.
+//
+// Args:
+//
+//	result - the evaluated candidate result.
+//
+// Returns:
+//
+//	*mutation.Strategy - pointer to the strategy ready for deployment, or nil.
+func winnerToMutationStrategy(result *candidateResult) *mutation.Strategy {
+	if result == nil {
+		return nil
+	}
+	ms := evolutionToMutationStrategy(result.strategy)
+	ms.Score = result.winRate
+	return &ms
 }
 
 // SetEnabled enables or disables the dream cycle at runtime.

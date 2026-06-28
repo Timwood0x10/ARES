@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/marketmaking"
-	"github.com/Timwood0x10/ares/internal/quant/research"
+	marketmakingapi "github.com/Timwood0x10/ares/internal/ares_quant/marketmaking_api"
+	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 )
 
 // testCSVData is inline fixture data for simulator tests.
@@ -37,19 +37,19 @@ func writeTestCSV(t *testing.T, ticker string) string {
 }
 
 // runTestBacktest is a helper that runs a backtest via the public API with given signals.
-func runTestBacktest(t *testing.T, ticker, dataDir string, signals []TradeSignal, capital float64) *marketmaking.BacktestResponse {
+func runTestBacktest(t *testing.T, ticker, dataDir string, signals []TradeSignal, capital float64) *marketmakingapi.BacktestResponse {
 	t.Helper()
-	apiSignals := make([]marketmaking.TradeSignal, len(signals))
+	apiSignals := make([]marketmakingapi.TradeSignal, len(signals))
 	for i, s := range signals {
-		apiSignals[i] = marketmaking.TradeSignal{
+		apiSignals[i] = marketmakingapi.TradeSignal{
 			Date:       s.Date,
 			Action:     s.Action,
 			Reason:     s.Reason,
 			Confidence: s.Confidence,
 		}
 	}
-	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dataDir)
-	req := &marketmaking.BacktestRequest{
+	runner := marketmakingapi.NewDefaultBacktestRunnerWithDataDir(dataDir)
+	req := &marketmakingapi.BacktestRequest{
 		Symbols:        []string{ticker},
 		InitialCapital: capital,
 		PositionSize:   1.0,
@@ -236,7 +236,7 @@ func TestGenerateSignalsFromResearchNil(t *testing.T) {
 
 // TestSaveSimulationJSON verifies JSON serialization of BacktestResponse to file.
 func TestSaveSimulationJSON(t *testing.T) {
-	resp := &marketmaking.BacktestResponse{
+	resp := &marketmakingapi.BacktestResponse{
 		TotalPnL:      200.0,
 		TotalReturn:   20.0,
 		SharpeRatio:   1.5,
@@ -269,11 +269,11 @@ func TestSaveSimulationJSON(t *testing.T) {
 
 // TestLoadPriceDataMissingFile verifies error handling for missing CSV.
 func TestLoadPriceDataMissingFile(t *testing.T) {
-	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir("/tmp/no_such_dir_xyz")
-	req := &marketmaking.BacktestRequest{
+	runner := marketmakingapi.NewDefaultBacktestRunnerWithDataDir("/tmp/no_such_dir_xyz")
+	req := &marketmakingapi.BacktestRequest{
 		Symbols:        []string{"NONEXISTENT"},
 		InitialCapital: 10000.0,
-		Signals:        []marketmaking.TradeSignal{},
+		Signals:        []marketmakingapi.TradeSignal{},
 	}
 	_, err := runner.Run(context.Background(), req)
 	if err == nil {
@@ -288,11 +288,11 @@ func TestLoadPriceDataMissingFile(t *testing.T) {
 func TestContextCancellation(t *testing.T) {
 	dir := writeTestCSV(t, "TEST")
 
-	runner := marketmaking.NewDefaultBacktestRunnerWithDataDir(dir)
-	req := &marketmaking.BacktestRequest{
+	runner := marketmakingapi.NewDefaultBacktestRunnerWithDataDir(dir)
+	req := &marketmakingapi.BacktestRequest{
 		Symbols:        []string{"TEST"},
 		InitialCapital: 10000.0,
-		Signals: []marketmaking.TradeSignal{
+		Signals: []marketmakingapi.TradeSignal{
 			{Date: mustParseDate("2025-01-02"), Action: "BUY", Reason: "test"},
 		},
 	}

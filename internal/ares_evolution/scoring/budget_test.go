@@ -50,7 +50,7 @@ func TestNewBudget(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if b.MaxLLMCalls != tt.wantMaxLLM {
+			if int(b.MaxLLMCalls) != tt.wantMaxLLM {
 				t.Errorf("MaxLLMCalls = %d, want %d", b.MaxLLMCalls, tt.wantMaxLLM)
 			}
 		})
@@ -64,16 +64,21 @@ func TestCanCallLLM(t *testing.T) {
 			if !b.CanCallLLM() {
 				t.Errorf("call %d: expected CanCallLLM() = true", i+1)
 			}
-			b.RecordLLMCall()
+			if !b.TryRecordLLMCall() {
+				t.Errorf("call %d: expected TryRecordLLMCall() = true", i+1)
+			}
 		}
 	})
 
 	t.Run("after exhausting budget", func(t *testing.T) {
 		b, _ := NewBudget(2)
-		b.RecordLLMCall()
-		b.RecordLLMCall()
+		b.TryRecordLLMCall()
+		b.TryRecordLLMCall()
 		if b.CanCallLLM() {
 			t.Error("expected CanCallLLM() = false after exhausting budget")
+		}
+		if b.TryRecordLLMCall() {
+			t.Error("expected TryRecordLLMCall() = false after exhausting budget")
 		}
 	})
 
@@ -82,18 +87,22 @@ func TestCanCallLLM(t *testing.T) {
 		if !b.CanCallLLM() {
 			t.Error("expected CanCallLLM() = true before any calls")
 		}
-		b.RecordLLMCall()
+		if !b.TryRecordLLMCall() {
+			t.Error("expected TryRecordLLMCall() = true for first call")
+		}
 		if b.CanCallLLM() {
 			t.Error("expected CanCallLLM() = false after 1 call with limit 1")
 		}
 	})
 }
 
-func TestRecordLLMCall(t *testing.T) {
+func TestTryRecordLLMCall(t *testing.T) {
 	b, _ := NewBudget(5)
 
 	for i := 1; i <= 5; i++ {
-		b.RecordLLMCall()
+		if !b.TryRecordLLMCall() {
+			t.Errorf("call %d: expected TryRecordLLMCall() = true", i)
+		}
 		used, max, _, _ := b.Usage()
 		if used != i {
 			t.Errorf("after %d calls: UsedLLMCalls = %d, want %d", i, used, i)
@@ -139,8 +148,8 @@ func TestReset(t *testing.T) {
 	b, _ := NewBudget(5)
 
 	// Consume some budget.
-	b.RecordLLMCall()
-	b.RecordLLMCall()
+	b.TryRecordLLMCall()
+	b.TryRecordLLMCall()
 	b.RecordCacheHit()
 	b.RecordFallback()
 
@@ -169,9 +178,9 @@ func TestReset(t *testing.T) {
 func TestUsage(t *testing.T) {
 	b, _ := NewBudget(20)
 
-	b.RecordLLMCall()
-	b.RecordLLMCall()
-	b.RecordLLMCall()
+	b.TryRecordLLMCall()
+	b.TryRecordLLMCall()
+	b.TryRecordLLMCall()
 	b.RecordCacheHit()
 	b.RecordCacheHit()
 	b.RecordFallback()
@@ -196,7 +205,7 @@ func TestBudgetConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < opsPerGoroutine; j++ {
-				b.RecordLLMCall()
+				b.TryRecordLLMCall()
 			}
 		}()
 		go func() {
@@ -218,12 +227,11 @@ func TestBudgetConcurrency(t *testing.T) {
 	wg.Wait()
 
 	used, max, hits, fallbacks := b.Usage()
-	expectedCalls := goroutines * opsPerGoroutine
 	expectedHits := goroutines * opsPerGoroutine
 	expectedFallbacks := goroutines * opsPerGoroutine
 
-	if used != expectedCalls {
-		t.Errorf("UsedLLMCalls = %d, want %d", used, expectedCalls)
+	if used != max {
+		t.Errorf("UsedLLMCalls = %d, want %d (budget should be exactly exhausted)", used, max)
 	}
 	if max != 100 {
 		t.Errorf("MaxLLMCalls = %d, want 100", max)

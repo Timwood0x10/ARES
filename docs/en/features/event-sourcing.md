@@ -401,7 +401,7 @@ store := events.NewPostgresEventStore(pool)
 
 | File | Description |
 |------|-------------|
-| `internal/events/types.go` | Event struct, EventType constants, ReadOptions, EventFilter |
-| `internal/events/store.go` | EventStore interface, NewEventID |
-| `internal/events/memory_store.go` | In-memory implementation |
-| `internal/events/pg_store.go` | PostgreSQL implementation |
+| `internal/ares_events/types.go` | Event struct, EventType constants, ReadOptions, EventFilter |
+| `internal/ares_events/store.go` | EventStore interface, NewEventID |
+| `internal/ares_events/memory_store.go` | In-memory implementation |
+| `internal/ares_events/pg_store.go` | PostgreSQL implementation |

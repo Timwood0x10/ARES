@@ -2,14 +2,13 @@ package sub
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/events"
-	"github.com/Timwood0x10/ares/internal/protocol/ahp"
 )
 
 // Agent represents the Sub Agent interface.
@@ -48,7 +47,7 @@ var _ base.StatefulAgent = (*subAgent)(nil)
 type SubAgentOption func(*subAgent)
 
 // WithEventStore sets the event store for event sourcing.
-func WithEventStore(store events.EventStore) SubAgentOption {
+func WithEventStore(store ares_events.EventStore) SubAgentOption {
 	return func(a *subAgent) {
 		a.eventStore = store
 	}
@@ -66,7 +65,7 @@ type subAgent struct {
 	tools        map[string]func(ctx context.Context, args map[string]any) (any, error)
 	messageQueue *ahp.MessageQueue
 	heartbeatMon *ahp.HeartbeatMonitor
-	eventStore   events.EventStore
+	eventStore   ares_events.EventStore
 
 	// Lifecycle management
 	stopCh   chan struct{}  // Signals goroutines to stop.
@@ -159,16 +158,16 @@ func (a *subAgent) Start(ctx context.Context) error {
 
 	a.setStatus(models.AgentStatusReady)
 
-	// Wire event store to executor for tool/LLM call events.
+	// Wire event store to executor for tool/LLM call ares_events.
 	if a.eventStore != nil {
 		if setter, ok := a.executor.(interface {
-			SetEventStore(events.EventStore, string)
+			SetEventStore(ares_events.EventStore, string)
 		}); ok {
 			setter.SetEventStore(a.eventStore, a.id)
 		}
 	}
 
-	a.emitEvent(ctx, events.EventAgentStarted, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
 		"agent_id": a.id,
 		"type":     string(a.agentType),
 	})
@@ -193,7 +192,7 @@ func (a *subAgent) Stop(ctx context.Context) error {
 	}
 	a.streamWg.Wait()
 
-	a.emitEvent(ctx, events.EventAgentStopped, map[string]any{
+	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
 		"agent_id": a.id,
 	})
 
@@ -203,11 +202,15 @@ func (a *subAgent) Stop(ctx context.Context) error {
 
 // Process handles input and returns result.
 func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
-	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
+	a.mu.RLock()
+	status := a.status
+	a.mu.RUnlock()
+
+	if status != models.AgentStatusReady && status != models.AgentStatusOffline {
 		return nil, errors.ErrAgentNotReady
 	}
 
-	if a.Status() == models.AgentStatusOffline {
+	if status == models.AgentStatusOffline {
 		if err := a.Start(ctx); err != nil {
 			return nil, err
 		}
@@ -264,14 +267,14 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 		return nil, errors.ErrNilPointer
 	}
 
-	a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 		"task_id":  task.TaskID,
 		"agent_id": a.id,
 	})
 
 	result, err := a.executor.Execute(ctx, task)
 	if err != nil {
-		a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
 			"task_id":  task.TaskID,
 			"agent_id": a.id,
 			"error":    err.Error(),
@@ -279,7 +282,7 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 		return nil, err
 	}
 
-	a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+	a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 		"task_id":  task.TaskID,
 		"agent_id": a.id,
 	})
@@ -287,7 +290,7 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	return result, nil
 }
 
-// ProcessStream handles input and returns a stream of events.
+// ProcessStream handles input and returns a stream of ares_events.
 func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
 		return nil, errors.ErrAgentNotReady
@@ -331,7 +334,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			return
 		}
 
-		a.emitEvent(ctx, events.EventTaskCreated, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 			"task_id":  task.TaskID,
 			"agent_id": a.id,
 		})
@@ -339,7 +342,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		// Execute task
 		result, err := a.executor.Execute(ctx, task)
 		if err != nil {
-			a.emitEvent(ctx, events.EventTaskFailed, map[string]any{
+			a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
 				"task_id":  task.TaskID,
 				"agent_id": a.id,
 				"error":    err.Error(),
@@ -353,7 +356,7 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 			return
 		}
 
-		a.emitEvent(ctx, events.EventTaskCompleted, map[string]any{
+		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 			"task_id":  task.TaskID,
 			"agent_id": a.id,
 		})
@@ -393,9 +396,9 @@ func (a *subAgent) RestoreState(state map[string]any) error {
 	return nil
 }
 
-// ReplayEvents replays events to reconstruct sub-agent state.
+// ReplayEvents replays ares_events to reconstruct sub-agent state.
 // Implements base.StatefulAgent for resurrection support.
-func (a *subAgent) ReplayEvents(evts []*events.Event) error {
+func (a *subAgent) ReplayEvents(evts []*ares_events.Event) error {
 	if len(evts) == 0 {
 		return nil
 	}
@@ -405,8 +408,8 @@ func (a *subAgent) ReplayEvents(evts []*events.Event) error {
 			continue
 		}
 		switch ev.Type {
-		case events.EventTaskCompleted:
-			slog.Debug("sub-agent replayed task completion",
+		case ares_events.EventTaskCompleted:
+			log.Debug("sub-agent replayed task completion",
 				"agent_id", a.id,
 				"task_id", ev.Payload["task_id"],
 			)
@@ -426,9 +429,9 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 	}, nil
 }
 
-// emitEvent appends a single event using the canonical events.Emit.
-func (a *subAgent) emitEvent(ctx context.Context, eventType events.EventType, payload map[string]any) {
-	if events.Emit(ctx, a.eventStore, a.id, eventType, payload) {
-		slog.Debug("event emitted", "agent_id", a.id, "type", eventType)
+// emitEvent appends a single event using the canonical ares_events.Emit.
+func (a *subAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "sub", payload) {
+		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
 	}
 }

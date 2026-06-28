@@ -19,8 +19,9 @@ import (
 
 // OpenAIAdapter implements LLMAdapter for OpenAI.
 type OpenAIAdapter struct {
-	config *Config
-	client *http.Client
+	config       *Config
+	client       *http.Client
+	streamClient *http.Client
 }
 
 // NewOpenAIAdapter creates a new OpenAIAdapter.
@@ -31,17 +32,32 @@ func NewOpenAIAdapter(config *Config) *OpenAIAdapter {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.openai.com/v1"
 	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = 60
+	}
 
 	return &OpenAIAdapter{
 		config: config,
 		client: &http.Client{
-			Timeout: time.Duration(config.Timeout) * time.Second,
+			Timeout: time.Duration(timeout) * time.Second,
+		},
+		streamClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
 
 // Generate generates text from prompt.
 func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	if a.config.MaxPromptLength > 0 && len(prompt) > a.config.MaxPromptLength {
+		return "", fmt.Errorf("prompt exceeds maximum length of %d characters", a.config.MaxPromptLength)
+	}
+
 	messages := []map[string]string{
 		{"role": "user", "content": prompt},
 	}
@@ -78,7 +94,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
 			return "", fmt.Errorf("API request failed with status %d: %w", resp.StatusCode, readErr)
 		}
@@ -141,7 +157,7 @@ func (a *OpenAIAdapter) GenerateStructured(ctx context.Context, prompt string, s
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
 			return nil, errors.Wrap(err, "read response body")
 		}
@@ -194,17 +210,14 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
 
-	// Use a client without Timeout for streaming: http.Client.Timeout covers
-	// the entire response body read, which would kill long-running streams.
-	// Instead, timeout is controlled via the request context.
-	streamClient := &http.Client{Transport: http.DefaultTransport}
-	resp, err := streamClient.Do(req)
+	// Timeout is controlled via the request context, not the client.
+	resp, err := a.streamClient.Do(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			slog.Warn("http: close response body failed", "error", closeErr)
 		}

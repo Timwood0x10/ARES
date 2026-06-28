@@ -6,20 +6,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	goerrors "errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_callbacks"
+	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/observability"
-	"github.com/Timwood0x10/ares/internal/ratelimit"
 )
 
 // Default configuration constants for LLM client.
@@ -39,6 +39,23 @@ type HTTPError struct {
 // Error returns the error message.
 func (e *HTTPError) Error() string {
 	return e.Message
+}
+
+// isRateLimitError returns true if the error indicates rate limiting (HTTP 429).
+// Uses errors.As to unwrap error chains; falls back to message inspection for
+// providers that return plain fmt.Errorf.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Use errors.As so wrapped *HTTPError is still detected.
+	var httpErr *HTTPError
+	if goerrors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusTooManyRequests
+	}
+	// Fallback: check error message for edge cases.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "rate_limit")
 }
 
 // ProviderType represents the LLM provider type.
@@ -65,24 +82,25 @@ const (
 
 // Config holds LLM client configuration.
 type Config struct {
-	Provider  string            `yaml:"provider"`
-	APIKey    string            `yaml:"api_key"`
-	BaseURL   string            `yaml:"base_url"`
-	Model     string            `yaml:"model"`
-	Timeout   int               `yaml:"timeout"`
-	MaxTokens int               `yaml:"max_tokens"` // Maximum tokens in response (0 = use defaultMaxTokens)
-	Extra     map[string]string `yaml:"extra"`
+	Provider        string            `yaml:"provider"`
+	APIKey          string            `yaml:"api_key"`
+	BaseURL         string            `yaml:"base_url"`
+	Model           string            `yaml:"model"`
+	Timeout         int               `yaml:"timeout"`
+	MaxTokens       int               `yaml:"max_tokens"`        // Maximum tokens in response (0 = use defaultMaxTokens)
+	MaxPromptLength int               `yaml:"max_prompt_length"` // Maximum prompt characters (0 = use maxPromptLength default)
+	Extra           map[string]string `yaml:"extra"`
 }
 
 // Client represents an LLM client that supports multiple providers.
 type Client struct {
-	config       *Config
-	httpClient   *http.Client
-	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
-	tracer       observability.Tracer
-	callbacks    callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
-	limiter      ratelimit.Limiter // Optional: rate limiter for API calls.
-	closeOnce    sync.Once         // Ensures Close() is idempotent and safe for concurrent calls.
+	config         *Config
+	httpClient     *http.Client
+	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
+	tracer         ares_observability.Tracer
+	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
+	limiter        ares_ratelimit.Limiter // Optional: rate limiter for API calls.
+	closeOnce      sync.Once              // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
 // Option configures a Client instance during construction.
@@ -90,9 +108,9 @@ type Option func(*Client)
 
 // WithCallbacks sets the callback emitter on the LLM client.
 // When set, Generate and GenerateStream will emit lifecycle events.
-func WithCallbacks(emitter callbacks.Emitter) Option {
+func WithCallbacks(emitter ares_callbacks.Emitter) Option {
 	return func(c *Client) {
-		c.callbacks = emitter
+		c.ares_callbacks = emitter
 	}
 }
 
@@ -103,12 +121,12 @@ func WithCallbacks(emitter callbacks.Emitter) Option {
 //
 // Args:
 //
-//	limiter - the rate limiter to use (use ratelimit.NewTokenBucketLimiter, etc.).
+//	limiter - the rate limiter to use (use ares_ratelimit.NewTokenBucketLimiter, etc.).
 //
 // Returns:
 //
 //	Option - the configuration function.
-func WithRateLimiter(limiter ratelimit.Limiter) Option {
+func WithRateLimiter(limiter ares_ratelimit.Limiter) Option {
 	return func(c *Client) {
 		c.limiter = limiter
 	}
@@ -123,9 +141,9 @@ func (c *Client) Close() {
 	})
 }
 
-// SetTracer sets an optional observability tracer on the client.
+// SetTracer sets an optional ares_observability tracer on the client.
 // When set, Generate and GenerateStream will record LLM call spans.
-func (c *Client) SetTracer(t observability.Tracer) {
+func (c *Client) SetTracer(t ares_observability.Tracer) {
 	c.tracer = t
 }
 
@@ -192,12 +210,20 @@ func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.T
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
-	if len(prompt) > maxPromptLength {
-		err := fmt.Errorf("prompt exceeds maximum length of %d characters", maxPromptLength)
+	if len(prompt) > c.promptMaxLength() {
+		err := fmt.Errorf("prompt exceeds maximum length of %d characters", c.promptMaxLength())
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
 	return nil
+}
+
+// promptMaxLength returns the configured max prompt length, or the default.
+func (c *Client) promptMaxLength() int {
+	if c.config != nil && c.config.MaxPromptLength > 0 {
+		return c.config.MaxPromptLength
+	}
+	return maxPromptLength
 }
 
 // Generate sends a text generation request to the LLM.
@@ -213,15 +239,15 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	}
 
 	// Emit LLM start event.
-	c.emitCallback(&callbacks.Context{
-		Event: callbacks.EventLLMStart,
+	c.emitCallback(&ares_callbacks.Context{
+		Event: ares_callbacks.EventLLMStart,
 		Model: model,
 		Input: prompt,
 	})
 
 	if err := c.validatePrompt(ctx, prompt, start); err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -236,8 +262,8 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
-			c.emitCallback(&callbacks.Context{
-				Event: callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event: ares_callbacks.EventLLMError,
 				Model: model,
 				Input: prompt,
 				Error: waitErr,
@@ -262,16 +288,16 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 
 	// Emit LLM end or error event.
 	if err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventLLMError,
 			Model:    model,
 			Input:    prompt,
 			Error:    err,
 			Duration: duration,
 		})
 	} else {
-		c.emitCallback(&callbacks.Context{
-			Event:    callbacks.EventLLMEnd,
+		c.emitCallback(&ares_callbacks.Context{
+			Event:    ares_callbacks.EventLLMEnd,
 			Model:    model,
 			Input:    prompt,
 			Output:   result,
@@ -291,7 +317,7 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 	if c.config != nil {
 		model = c.config.Model
 	}
-	c.tracer.RecordLLMCall(ctx, &observability.LLMCall{
+	c.tracer.RecordLLMCall(ctx, &ares_observability.LLMCall{
 		TraceID:    c.tracer.GetTraceID(ctx),
 		Model:      model,
 		Prompt:     prompt,
@@ -303,11 +329,11 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 }
 
 // emitCallback emits a lifecycle event via the callback emitter if set.
-func (c *Client) emitCallback(ctx *callbacks.Context) {
-	if c.callbacks == nil {
+func (c *Client) emitCallback(ctx *ares_callbacks.Context) {
+	if c.ares_callbacks == nil {
 		return
 	}
-	c.callbacks.Emit(ctx)
+	c.ares_callbacks.Emit(ctx)
 }
 
 // generateOpenRouter generates text using OpenRouter API.
@@ -355,16 +381,16 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close response body: ", "error", err)
+			log.Error("failed to close response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
-		return "", fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	var response struct {
@@ -428,14 +454,14 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close response body: ", "error", err)
+			log.Error("failed to close response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		return "", &HTTPError{
 			StatusCode: resp.StatusCode,
@@ -499,16 +525,16 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string) (string, 
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close anthropic response body: ", "error", err)
+			log.Error("failed to close anthropic response body: ", "error", err)
 		}
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read anthropic error response body", "error", readErr)
+			log.Warn("llm: failed to read anthropic error response body", "error", readErr)
 		}
-		return "", fmt.Errorf("anthropic error (status %d): %s", resp.StatusCode, string(body))
+		return "", &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	// Anthropic response format: {"content": [{"type": "text", "text": "..."}]}
@@ -614,8 +640,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	}
 
 	if err := c.validatePrompt(ctx, prompt, start); err != nil {
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -630,8 +656,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
-			c.emitCallback(&callbacks.Context{
-				Event: callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event: ares_callbacks.EventLLMError,
 				Model: model,
 				Input: prompt,
 				Error: waitErr,
@@ -653,8 +679,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	if err != nil {
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
-		c.emitCallback(&callbacks.Context{
-			Event: callbacks.EventLLMError,
+		c.emitCallback(&ares_callbacks.Context{
+			Event: ares_callbacks.EventLLMError,
 			Model: model,
 			Input: prompt,
 			Error: err,
@@ -663,8 +689,8 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	}
 
 	// Emit LLM start event here: all validation passed, streaming will actually begin.
-	c.emitCallback(&callbacks.Context{
-		Event: callbacks.EventLLMStart,
+	c.emitCallback(&ares_callbacks.Context{
+		Event: ares_callbacks.EventLLMStart,
 		Model: model,
 		Input: prompt,
 	})
@@ -673,37 +699,42 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 	ch := make(chan StreamChunk, defaultStreamBuffer)
 	go func() {
 		defer close(ch)
-		var fullResponse string
+		var builder strings.Builder
 		var streamErr error
 		for chunk := range rawCh {
-			fullResponse += chunk.Content
+			if chunk.Content != "" {
+				builder.WriteString(chunk.Content)
+			}
 			if chunk.Err != nil {
 				streamErr = chunk.Err
+			}
+			if chunk.Content != "" || chunk.Done {
+				select {
+				case ch <- chunk:
+				case <-ctx.Done():
+					return
+				}
 			}
 			if chunk.Done {
 				break
 			}
-			select {
-			case ch <- chunk:
-			case <-ctx.Done():
-				return
-			}
 		}
+		fullResponse := builder.String()
 		duration := time.Since(start)
 		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
 
 		// Emit LLM end or error event for streaming.
 		if streamErr != nil {
-			c.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventLLMError,
+			c.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventLLMError,
 				Model:    model,
 				Input:    prompt,
 				Error:    streamErr,
 				Duration: duration,
 			})
 		} else {
-			c.emitCallback(&callbacks.Context{
-				Event:    callbacks.EventLLMEnd,
+			c.emitCallback(&ares_callbacks.Context{
+				Event:    ares_callbacks.EventLLMEnd,
 				Model:    model,
 				Input:    prompt,
 				Output:   fullResponse,
@@ -749,14 +780,14 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
-		return nil, fmt.Errorf("ollama stream error (status %d): %s", resp.StatusCode, string(body))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("ollama stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	ch := make(chan StreamChunk, defaultStreamBuffer)
@@ -765,7 +796,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -842,12 +873,12 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
+			log.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
 		}
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("anthropic stream error (status %d): %s", resp.StatusCode, string(body))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	ch := make(chan StreamChunk, defaultStreamBuffer)
@@ -856,7 +887,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close anthropic stream response body", "error", err)
+				log.Error("Failed to close anthropic stream response body", "error", err)
 			}
 		}()
 
@@ -864,8 +895,8 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line
 		for scanner.Scan() {
 			line := scanner.Text()
-			if line == "" {
-				continue
+			if line == "" || line[0] != '{' {
+				continue // skip SSE control lines (event:, data:, etc.)
 			}
 
 			// Anthropic SSE format: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
@@ -878,7 +909,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 			}
 
 			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				slog.Warn("Failed to unmarshal anthropic stream chunk", "error", err)
+				log.Debug("skipping non-JSON SSE line in anthropic stream", "line", line)
 				continue
 			}
 
@@ -950,14 +981,14 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
-			slog.Warn("llm: failed to read error response body", "error", readErr)
+			log.Warn("llm: failed to read error response body", "error", readErr)
 		}
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
-		return nil, fmt.Errorf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("openrouter stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
 
 	ch := make(chan StreamChunk, defaultStreamBuffer)
@@ -966,7 +997,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -993,7 +1024,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 				} `json:"choices"`
 			}
 			if err := json.Unmarshal([]byte(data), &result); err != nil {
-				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				log.Warn("Failed to unmarshal stream chunk", "error", err)
 				continue
 			}
 

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 func TestFlightBridgeNilRecorder(t *testing.T) {
@@ -130,8 +130,8 @@ func TestArenaActionToCategory(t *testing.T) {
 
 func TestServiceWithBridge(t *testing.T) {
 	rt := &mockRuntime{
-		listAgentsFn: func() []runtime.AgentInfo {
-			return []runtime.AgentInfo{{ID: "agent-1", Type: "sub"}}
+		listAgentsFn: func() []ares_runtime.AgentInfo {
+			return []ares_runtime.AgentInfo{{ID: "agent-1", Type: "sub"}}
 		},
 	}
 	inj := NewInjector(rt, nil)

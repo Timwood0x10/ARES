@@ -24,7 +24,7 @@ We welcome feature suggestions! Please:
 
 ### Pull Requests
 
-1. **Fork the repository** and create your branch from `main`
+1. **Fork the repository** and create your branch from `master`
 
 2. **Follow coding standards** as defined in `plan/code_rules.md`
 

@@ -14,10 +14,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/events"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
@@ -674,31 +674,52 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 		return nil
 	}
 
-	solutions, err := d.repo.GetByMemoryType(ctx, tenantID, MemoryKnowledge)
+	// Count first to avoid loading all solutions when under cap.
+	count, err := d.repo.CountByMemoryType(ctx, tenantID, MemoryKnowledge)
 	if err != nil {
 		return errors.Wrap(err, "failed to get solution count")
 	}
 
-	if len(solutions) <= d.config.MaxSolutionsPerTenant {
+	if count <= d.config.MaxSolutionsPerTenant {
 		return nil
 	}
 
-	slog.WarnContext(ctx, "solution count exceeds cap, pruning lowest importance memories",
-		"tenant_id", tenantID,
-		"current_count", len(solutions),
-		"max_count", d.config.MaxSolutionsPerTenant,
-	)
+	// Over cap: load only the excess lowest-confidence solutions.
+	solutions, err := d.repo.GetByMemoryType(ctx, tenantID, MemoryKnowledge)
+	if err != nil {
+		return errors.Wrap(err, "failed to get solutions for pruning")
+	}
 
+	// Sort by confidence ascending and delete the lowest ones.
 	sort.Slice(solutions, func(i, j int) bool {
 		return solutions[i].Confidence < solutions[j].Confidence
 	})
 
-	deleteCount := len(solutions) - d.config.MaxSolutionsPerTenant
+	deleteCount := count - d.config.MaxSolutionsPerTenant
+	if deleteCount > len(solutions) {
+		deleteCount = len(solutions)
+	}
+
+	ids := make([]string, deleteCount)
 	for i := 0; i < deleteCount; i++ {
-		if err := d.repo.Delete(ctx, solutions[i].Problem); err != nil {
-			slog.WarnContext(ctx, "failed to delete solution during pruning",
-				"problem", solutions[i].Problem,
-				"error", err)
+		ids[i] = solutions[i].Problem
+	}
+
+	slog.WarnContext(ctx, "solution count exceeds cap, pruning lowest importance memories",
+		"tenant_id", tenantID,
+		"current_count", count,
+		"max_count", d.config.MaxSolutionsPerTenant,
+		"delete_count", deleteCount,
+	)
+
+	if err := d.repo.DeleteBatch(ctx, ids); err != nil {
+		// Fall back to individual deletes on batch failure.
+		for i, id := range ids {
+			if err := d.repo.Delete(ctx, id); err != nil {
+				slog.WarnContext(ctx, "failed to delete solution during pruning",
+					"problem", solutions[i].Problem,
+					"error", err)
+			}
 		}
 	}
 
@@ -736,24 +757,24 @@ func (d *Distiller) ResetMetrics() {
 }
 
 // SubscribeAndDistill subscribes to an EventStore and automatically
-// distills memories from incoming events.
+// distills memories from incoming ares_events.
 //
 // Args:
 //
 //	ctx - operation context. Cancelling it closes the subscription.
 //	store - the event store to subscribe to. If nil, this method is a no-op.
-func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventStore) {
+func (d *Distiller) SubscribeAndDistill(ctx context.Context, store ares_events.EventStore) {
 	if store == nil {
 		return
 	}
-	ch, err := store.Subscribe(ctx, events.EventFilter{
-		Types: []events.EventType{
-			events.EventMessageAdded,
-			events.EventTaskCompleted,
+	ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{
+			ares_events.EventMessageAdded,
+			ares_events.EventTaskCompleted,
 		},
 	})
 	if err != nil {
-		slog.Error("failed to subscribe to events for distillation", "error", err)
+		slog.Error("failed to subscribe to ares_events for distillation", "error", err)
 		return
 	}
 
@@ -785,17 +806,17 @@ func (d *Distiller) SubscribeAndDistill(ctx context.Context, store events.EventS
 //
 //	ctx - operation context.
 //	event - the event to process. If nil, this method is a no-op.
-func (d *Distiller) processEvent(ctx context.Context, event *events.Event) {
+func (d *Distiller) processEvent(ctx context.Context, event *ares_events.Event) {
 	if event == nil {
 		return
 	}
 	switch event.Type {
-	case events.EventMessageAdded:
+	case ares_events.EventMessageAdded:
 		slog.Debug("distiller received message event",
 			"stream_id", event.StreamID,
 			"role", event.Payload["role"],
 		)
-	case events.EventTaskCompleted:
+	case ares_events.EventTaskCompleted:
 		taskID, _ := event.Payload["task_id"].(string)
 		slog.Debug("distiller received task completion",
 			"stream_id", event.StreamID,
