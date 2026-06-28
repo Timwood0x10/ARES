@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (8): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
+# ares Architecture Deep Dive (VIII): Event System — Event Sourcing Foundation for State Recovery and Audit Trails
 
 > Agent startup is an event, task assignment is an event, tool call is an event, LLM response is an event, Agent crash is an event too.
 > I thought at the time: **If I record every single thing the Agent does, can I fully reconstruct its state after it crashes?**
