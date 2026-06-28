@@ -110,3 +110,30 @@ func TestEvolutionTab_GenomeUsesModuleName(t *testing.T) {
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
 	assert.Equal(t, "fallback-agent", snap.Genomes[0].AgentID)
 }
+
+func TestEvolutionTab_Trim(t *testing.T) {
+	tab := NewEvolutionTab()
+	for i := 0; i < 10; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("g%d", i), Type: ares_events.EventAgentStarted,
+			Payload: map[string]any{"agent_id": fmt.Sprintf("a%d", i)}, Timestamp: time.Now(),
+		})
+	}
+	for i := 0; i < 12; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("m%d", i), Type: eventEvolutionMutated,
+			Payload: map[string]any{"agent_id": "a1"}, Timestamp: time.Now(),
+		})
+	}
+	for i := 0; i < 8; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("r%d", i), Type: eventEvolutionRecommended,
+			Payload: map[string]any{"agent_id": "a1"}, Timestamp: time.Now(),
+		})
+	}
+
+	tab.Trim(5)
+	assert.Equal(t, 5, len(tab.genomes))
+	assert.Equal(t, 5, len(tab.mutations))
+	assert.Equal(t, 5, len(tab.recommendations))
+}

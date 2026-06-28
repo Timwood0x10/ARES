@@ -55,10 +55,10 @@ func (h *mockHub) Messages() []hubMessage {
 
 // mockInteractionExecutor implements InteractionExecutor for testing.
 type mockInteractionExecutor struct {
-	mu      sync.Mutex
-	calls   []executorCall
-	result  *dag.ActionResult
-	err     error
+	mu     sync.Mutex
+	calls  []executorCall
+	result *dag.ActionResult
+	err    error
 }
 
 type executorCall struct {

@@ -134,3 +134,21 @@ func (t *EvolutionTab) handleRecommendation(evt *ares_events.Event) {
 	}
 	t.recommendations = append(t.recommendations, rec)
 }
+
+// Trim retains at most maxLen entries in each list, discarding the oldest.
+func (t *EvolutionTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.genomes) > maxLen {
+		t.genomes = t.genomes[len(t.genomes)-maxLen:]
+	}
+	if len(t.mutations) > maxLen {
+		t.mutations = t.mutations[len(t.mutations)-maxLen:]
+	}
+	if len(t.recommendations) > maxLen {
+		t.recommendations = t.recommendations[len(t.recommendations)-maxLen:]
+	}
+}

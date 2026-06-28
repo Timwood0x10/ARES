@@ -41,7 +41,7 @@ func TestConsoleClient_Snapshot(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/console", r.URL.Path)
 		assert.Equal(t, http.MethodGet, r.Method)
-		json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{
+		_ = json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{
 			Agents: []monitoring.UnifiedAgent{{ID: "a1", Name: "worker"}},
 		})
 	}))
@@ -56,7 +56,7 @@ func TestConsoleClient_Snapshot(t *testing.T) {
 func TestConsoleClient_Snapshot_Error(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
 	}))
 
 	c := NewConsoleClient(srv.URL)
@@ -68,7 +68,7 @@ func TestConsoleClient_Snapshot_Error(t *testing.T) {
 func TestConsoleClient_DAG(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/console/dag", r.URL.Path)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"nodes": map[string]any{},
 			"edges": map[string]any{},
 		})
@@ -84,7 +84,7 @@ func TestConsoleClient_Agent(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/agents/a1", r.URL.Path)
 		// Server returns UnifiedAgent-like data for the agent endpoint.
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":   "a1",
 			"name": "worker",
 		})
@@ -100,7 +100,7 @@ func TestConsoleClient_Agent(t *testing.T) {
 func TestConsoleClient_Agent_NotFound(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
 	}))
 
 	c := NewConsoleClient(srv.URL)
@@ -112,7 +112,7 @@ func TestConsoleClient_Agent_NotFound(t *testing.T) {
 func TestConsoleClient_CostBreakdown(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/cost", r.URL.Path)
-		json.NewEncoder(w).Encode(monitoring.CostBreakdown{
+		_ = json.NewEncoder(w).Encode(monitoring.CostBreakdown{
 			Total:    1.5,
 			Currency: "USD",
 		})
@@ -127,7 +127,7 @@ func TestConsoleClient_CostBreakdown(t *testing.T) {
 func TestConsoleClient_ListMCPTools(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/mcp/tools", r.URL.Path)
-		json.NewEncoder(w).Encode([]monitoring.MCPToolInfo{
+		_ = json.NewEncoder(w).Encode([]monitoring.MCPToolInfo{
 			{Name: "read_file", Description: "Read a file"},
 		})
 	}))
@@ -148,7 +148,7 @@ func TestConsoleClient_CallMCPTool(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&args))
 		assert.Equal(t, "/tmp/test", args["path"])
 
-		json.NewEncoder(w).Encode(monitoring.MCPToolResult{
+		_ = json.NewEncoder(w).Encode(monitoring.MCPToolResult{
 			ToolName: "read_file",
 			Output:   map[string]any{"content": "hello"},
 		})
@@ -164,7 +164,7 @@ func TestConsoleClient_CallMCPTool(t *testing.T) {
 func TestConsoleClient_Traces(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/trace/trace-1", r.URL.Path)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"trace_id": "trace-1",
 			"spans":    []monitoring.TraceSpan{{TraceID: "trace-1", SpanID: "s1"}},
 		})
@@ -179,7 +179,7 @@ func TestConsoleClient_Traces(t *testing.T) {
 func TestConsoleClient_WithAPIKey(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
-		json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{})
+		_ = json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{})
 	}))
 
 	c := NewConsoleClient(srv.URL, WithAPIKey("test-key"))
@@ -189,7 +189,7 @@ func TestConsoleClient_WithAPIKey(t *testing.T) {
 
 func TestConsoleClient_ContextCanceled(t *testing.T) {
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{})
+		_ = json.NewEncoder(w).Encode(monitoring.ConsoleSnapshot{})
 	}))
 
 	c := NewConsoleClient(srv.URL)

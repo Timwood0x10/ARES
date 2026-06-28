@@ -99,3 +99,24 @@ func TestMemoryTab_MissingPayloadFields(t *testing.T) {
 	assert.Len(t, dist, 1)
 	assert.Empty(t, dist[0].AgentID)
 }
+
+func TestMemoryTab_Trim(t *testing.T) {
+	tab := NewMemoryTab()
+	for i := 0; i < 10; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("d%d", i), Type: ares_events.EventMemoryDistilled,
+			Payload: map[string]any{"agent_id": "a1", "content": "c"}, Timestamp: time.Now(),
+		})
+	}
+	for i := 0; i < 8; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("r%d", i), Type: eventMemoryRetrieved,
+			Payload: map[string]any{"agent_id": "a1", "content": "c"}, Timestamp: time.Now(),
+		})
+	}
+
+	tab.Trim(4)
+	assert.Equal(t, 4, len(tab.distillations))
+	assert.Equal(t, 4, len(tab.retrievals))
+	assert.Equal(t, "d6", tab.distillations[0].ID)
+}

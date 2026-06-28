@@ -1,7 +1,11 @@
 package monitoring
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -153,9 +157,9 @@ func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 	result, err := s.plugin.ExecuteAction(c.Request.Context(), action)
 	if err != nil {
 		c.JSON(http.StatusNotImplemented, gin.H{
-			"action":  action,
-			"error":   err.Error(),
-			"status":  "error",
+			"action": action,
+			"error":  err.Error(),
+			"status": "error",
 		})
 		return
 	}
@@ -222,7 +226,56 @@ func (s *HTTPServer) handleTrace(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"trace_id": id, "spans": spans})
 }
 
-// handleSubscribe is a placeholder for SSE streaming.
+// handleSubscribe streams console snapshots as Server-Sent Events.
+// The client receives a "snapshot" event every 2 seconds until disconnect.
 func (s *HTTPServer) handleSubscribe(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "SSE not yet implemented"})
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
+		return
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	// Send initial snapshot immediately.
+	s.writeSSESnapshot(c.Writer, flusher)
+
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-ticker.C:
+			if !s.writeSSESnapshot(c.Writer, flusher) {
+				return
+			}
+		}
+	}
+}
+
+// writeSSESnapshot writes a single SSE event with the current console snapshot.
+// Returns false if the write failed (client disconnected).
+func (s *HTTPServer) writeSSESnapshot(w gin.ResponseWriter, flusher http.Flusher) bool {
+	snap, err := s.plugin.Snapshot(context.Background())
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
+		flusher.Flush()
+		return true
+	}
+
+	data, err := json.Marshal(snap)
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"marshal failed\"}\n\n")
+		flusher.Flush()
+		return true
+	}
+
+	_, _ = fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
+	flusher.Flush()
+	return true
 }

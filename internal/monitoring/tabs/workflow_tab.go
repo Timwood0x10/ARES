@@ -140,3 +140,17 @@ func (t *WorkflowTab) handleTaskFailed(evt *ares_events.Event) {
 		ex.Error = getString(evt.Payload, "error")
 	}
 }
+
+// Trim retains at most maxLen executions, discarding the oldest.
+func (t *WorkflowTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for len(t.order) > maxLen {
+		oldest := t.order[0]
+		t.order = t.order[1:]
+		delete(t.executions, oldest)
+	}
+}

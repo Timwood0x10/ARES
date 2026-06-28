@@ -199,3 +199,94 @@ func TestMainPage_ConcurrentAccess(t *testing.T) {
 func TestMainPage_GetTab_ImplementsInterface(t *testing.T) {
 	var _ Tab = (*mockTab)(nil)
 }
+
+func TestMainPage_HandleEvent_DispatchesToTracker(t *testing.T) {
+	tracker := newMockAgentTrackerImpl()
+	mp := NewMainPage(WithTracker(tracker))
+
+	mp.HandleEvent(&ares_events.Event{
+		ID: "e1", StreamID: "s1", Type: ares_events.EventAgentStarted,
+		Payload:   map[string]any{"agent_id": "a1", "name": "worker"},
+		Timestamp: time.Now(),
+	})
+
+	agent, ok := tracker.GetAgent("a1")
+	require.True(t, ok)
+	assert.Equal(t, dag.StatusRunning, agent.Status)
+}
+
+func TestMainPage_HandleEvent_DispatchesToLinker(t *testing.T) {
+	linker := &mockTraceLinkerImpl{}
+	mp := NewMainPage(WithTraceLinker(linker))
+
+	mp.HandleEvent(&ares_events.Event{
+		ID: "e1", StreamID: "s1", Type: ares_events.EventAgentStarted,
+		Payload:   map[string]any{"agent_id": "a1"},
+		Timestamp: time.Now(),
+	})
+
+	// The mock linker is a no-op, but this verifies the wiring doesn't panic.
+	assert.NotNil(t, mp.Linker())
+}
+
+func TestMainPage_Integration_EventFlow(t *testing.T) {
+	// Full integration: event flows through cost bar, DAG, tracker, and tabs.
+	tracker := newMockAgentTrackerImpl()
+	eventTab := newMockTab("events", "Events")
+	llmTab := newMockTab("llm", "LLM")
+
+	mp := NewMainPage(
+		WithTracker(tracker),
+		WithTabs(map[string]Tab{
+			"events": eventTab,
+			"llm":    llmTab,
+		}),
+	)
+
+	now := time.Now()
+
+	// 1. Agent starts.
+	mp.HandleEvent(&ares_events.Event{
+		ID: "e1", StreamID: "s1", Type: ares_events.EventAgentStarted,
+		Payload:   map[string]any{"agent_id": "a1", "name": "worker"},
+		Timestamp: now,
+	})
+
+	// 2. LLM call with cost.
+	mp.HandleEvent(&ares_events.Event{
+		ID: "e2", StreamID: "s1", Type: ares_events.EventLLMCall,
+		Payload: map[string]any{
+			"agent_id": "a1", "input_tokens": float64(100),
+			"output_tokens": float64(50), "estimated_cost": 0.01,
+		},
+		Timestamp: now,
+	})
+
+	// 3. Task created.
+	mp.HandleEvent(&ares_events.Event{
+		ID: "e3", StreamID: "s1", Type: ares_events.EventTaskCreated,
+		Payload:   map[string]any{"task_id": "t1", "name": "build", "agent_id": "a1"},
+		Timestamp: now,
+	})
+
+	// Verify tracker received all events.
+	agent, ok := tracker.GetAgent("a1")
+	require.True(t, ok)
+	assert.Equal(t, dag.StatusRunning, agent.Status)
+
+	// Verify cost bar accumulated.
+	snap := mp.Snapshot()
+	assert.InDelta(t, 0.01, snap.Cost.Total, 0.0001)
+
+	// Verify DAG has the agent node.
+	node, ok := mp.engine.GetNode("a1")
+	require.True(t, ok)
+	assert.Equal(t, dag.StatusRunning, node.Status)
+
+	// Verify tabs received events.
+	assert.Len(t, eventTab.events, 3)
+	assert.Len(t, llmTab.events, 3)
+
+	// Verify snapshot includes tasks.
+	assert.NotEmpty(t, snap.Tasks)
+}

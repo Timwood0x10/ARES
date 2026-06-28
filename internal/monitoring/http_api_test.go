@@ -2,10 +2,12 @@ package monitoring
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -187,11 +189,24 @@ func TestHTTPServer_Trace(t *testing.T) {
 
 func TestHTTPServer_Subscribe(t *testing.T) {
 	srv := newTestHTTPServer(t)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/subscribe", nil)
-	srv.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
+	ctx, cancel := context.WithCancel(context.Background())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/subscribe", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	// Wait for at least one SSE event to be written.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "event: snapshot")
 }
 
 func TestHTTPServer_ServeHTTP(t *testing.T) {

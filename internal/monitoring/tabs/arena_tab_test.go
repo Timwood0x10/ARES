@@ -100,3 +100,27 @@ func TestArenaTab_Capacity(t *testing.T) {
 	snap := tab.Snapshot().(ArenaTabSnapshot)
 	assert.Equal(t, maxFaultInjections, len(snap.FaultInjections))
 }
+
+func TestArenaTab_Trim(t *testing.T) {
+	tab := NewArenaTab()
+	for i := 0; i < 10; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:        fmt.Sprintf("f%d", i),
+			Type:      ares_events.EventFailoverTriggered,
+			Payload:   map[string]any{"agent_id": "a1"},
+			Timestamp: time.Now(),
+		})
+	}
+	for i := 0; i < 8; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:        fmt.Sprintf("s%d", i),
+			Type:      ares_events.EventFailoverCompleted,
+			Payload:   map[string]any{"agent_id": "a1", "status": "completed"},
+			Timestamp: time.Now(),
+		})
+	}
+
+	tab.Trim(3)
+	assert.Equal(t, 3, len(tab.faultInjections))
+	assert.Equal(t, 3, len(tab.survivalTests))
+}

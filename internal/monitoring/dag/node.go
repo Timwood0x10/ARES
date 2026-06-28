@@ -65,12 +65,12 @@ type TimelineEvent struct {
 // Nodes store only lightweight display fields. Full agent data is loaded
 // on demand via AgentTracker.GetAgent(id) for the detail panel.
 type DAGNode struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Type      string          `json:"type"`
-	Status    NodeStatus      `json:"status"`
-	Message   string          `json:"message,omitempty"`
-	ParentID  string          `json:"parent_id,omitempty"`
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Type     string     `json:"type"`
+	Status   NodeStatus `json:"status"`
+	Message  string     `json:"message,omitempty"`
+	ParentID string     `json:"parent_id,omitempty"`
 
 	// Lightweight display fields populated from events.
 	Label     string `json:"label,omitempty"`

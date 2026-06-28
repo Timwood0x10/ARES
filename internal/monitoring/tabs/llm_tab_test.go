@@ -125,3 +125,23 @@ func TestLLMTab_MissingPayload(t *testing.T) {
 	assert.Len(t, snap.Calls, 1)
 	assert.Equal(t, int64(0), snap.Calls[0].InputTokens)
 }
+
+func TestLLMTab_Trim(t *testing.T) {
+	tab := NewLLMTab()
+	for i := 0; i < 30; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:   fmt.Sprintf("llm-%d", i),
+			Type: ares_events.EventLLMCall,
+			Payload: map[string]any{
+				"input_tokens":  float64(100),
+				"output_tokens": float64(50),
+			},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Equal(t, 30, len(tab.calls))
+
+	tab.Trim(10)
+	assert.Equal(t, 10, len(tab.calls))
+	assert.Equal(t, "llm-20", tab.calls[0].ID)
+}

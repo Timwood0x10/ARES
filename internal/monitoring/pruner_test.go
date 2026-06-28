@@ -100,10 +100,10 @@ func TestPruner_NewPruner(t *testing.T) {
 	t.Run("custom", func(t *testing.T) {
 		mp := NewMainPage()
 		cfg := PruneConfig{
-			MaxAgentAge:   1 * time.Hour,
-			MaxEvents:     500,
+			MaxAgentAge:    1 * time.Hour,
+			MaxEvents:      500,
 			MaxTimelineLen: 50,
-			PruneInterval: 30 * time.Second,
+			PruneInterval:  30 * time.Second,
 		}
 		p := NewPruner(mp, cfg)
 		require.NotNil(t, p)
@@ -249,10 +249,10 @@ type mockTrimableTab struct {
 	trimmed int
 }
 
-func (t *mockTrimableTab) Name() string                       { return t.name }
-func (t *mockTrimableTab) Label() string                      { return t.name }
-func (t *mockTrimableTab) HandleEvent(_ *ares_events.Event)   {}
-func (t *mockTrimableTab) Snapshot() any                      { return nil }
+func (t *mockTrimableTab) Name() string                     { return t.name }
+func (t *mockTrimableTab) Label() string                    { return t.name }
+func (t *mockTrimableTab) HandleEvent(_ *ares_events.Event) {}
+func (t *mockTrimableTab) Snapshot() any                    { return nil }
 func (t *mockTrimableTab) Trim(maxLen int) {
 	if t.count > maxLen {
 		t.trimmed = t.count - maxLen

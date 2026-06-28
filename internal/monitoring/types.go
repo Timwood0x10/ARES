@@ -183,12 +183,12 @@ type Recommendation struct {
 
 // ConsoleSnapshot is the full console state at a point in time.
 type ConsoleSnapshot struct {
-	Agents     []UnifiedAgent      `json:"agents"`
-	Tasks      []TaskView          `json:"tasks"`
+	Agents     []UnifiedAgent       `json:"agents"`
+	Tasks      []TaskView           `json:"tasks"`
 	Events     []*ares_events.Event `json:"events"`
-	Cost       CostBreakdown       `json:"cost"`
-	Alerts     []CostAlert         `json:"alerts,omitempty"`
-	UpdateTime time.Time           `json:"update_time"`
+	Cost       CostBreakdown        `json:"cost"`
+	Alerts     []CostAlert          `json:"alerts,omitempty"`
+	UpdateTime time.Time            `json:"update_time"`
 }
 
 // ConsoleStats provides aggregate statistics for the console view.

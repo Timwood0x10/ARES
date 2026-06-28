@@ -162,3 +162,18 @@ func (t *ArenaTab) handleStepFailure(evt *ares_events.Event) {
 	}
 	t.survivalTests = append(t.survivalTests, st)
 }
+
+// Trim retains at most maxLen entries in each list, discarding the oldest.
+func (t *ArenaTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.faultInjections) > maxLen {
+		t.faultInjections = t.faultInjections[len(t.faultInjections)-maxLen:]
+	}
+	if len(t.survivalTests) > maxLen {
+		t.survivalTests = t.survivalTests[len(t.survivalTests)-maxLen:]
+	}
+}

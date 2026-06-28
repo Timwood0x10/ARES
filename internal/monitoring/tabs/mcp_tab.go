@@ -159,3 +159,15 @@ func (t *MCPTab) toolExists(name string) bool {
 	}
 	return false
 }
+
+// Trim retains at most maxLen tool calls, discarding the oldest.
+func (t *MCPTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.calls) > maxLen {
+		t.calls = t.calls[len(t.calls)-maxLen:]
+	}
+}

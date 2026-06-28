@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -390,4 +391,124 @@ func TestMonitorPlugin_RunHTTPServer(t *testing.T) {
 	// but we can verify the method exists and the server is created.
 	srv := NewHTTPServer(p)
 	assert.NotNil(t, srv)
+}
+
+// mockAgentTrackerImpl implements AgentTrackerReader for testing.
+type mockAgentTrackerImpl struct {
+	mu     sync.RWMutex
+	agents map[string]*UnifiedAgent
+}
+
+func newMockAgentTrackerImpl() *mockAgentTrackerImpl {
+	return &mockAgentTrackerImpl{agents: make(map[string]*UnifiedAgent)}
+}
+
+func (m *mockAgentTrackerImpl) HandleEvent(evt *ares_events.Event) {
+	if evt == nil || evt.Type != ares_events.EventAgentStarted {
+		return
+	}
+	agentID := evt.StreamID
+	if v, ok := evt.Payload["agent_id"].(string); ok && v != "" {
+		agentID = v
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agents[agentID] = &UnifiedAgent{
+		ID:     agentID,
+		Status: dag.StatusRunning,
+	}
+}
+
+func (m *mockAgentTrackerImpl) GetAgent(id string) (*UnifiedAgent, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	a, ok := m.agents[id]
+	if !ok {
+		return nil, false
+	}
+	cp := *a
+	return &cp, true
+}
+
+func (m *mockAgentTrackerImpl) ListAgents() []UnifiedAgent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]UnifiedAgent, 0, len(m.agents))
+	for _, a := range m.agents {
+		result = append(result, *a)
+	}
+	return result
+}
+
+func (m *mockAgentTrackerImpl) Snapshot() ConsoleStats {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return ConsoleStats{ActiveAgents: len(m.agents)}
+}
+
+// mockTraceLinkerImpl implements TraceReader for testing.
+type mockTraceLinkerImpl struct {
+	spans []TraceSpan
+}
+
+func (m *mockTraceLinkerImpl) HandleEvent(_ *ares_events.Event) {}
+func (m *mockTraceLinkerImpl) GetTrace(_ string) []TraceSpan    { return m.spans }
+func (m *mockTraceLinkerImpl) GetTracesByAgent(_ string) []TraceSpan {
+	return m.spans
+}
+func (m *mockTraceLinkerImpl) ListTraces() []string { return nil }
+
+func TestMonitorPlugin_WithAgentTracker(t *testing.T) {
+	tracker := newMockAgentTrackerImpl()
+	p := NewConsole(WithAgentTracker(tracker))
+	require.NotNil(t, p)
+
+	mp := p.(*MonitorPlugin)
+	assert.NotNil(t, mp.mainPage.Tracker())
+}
+
+func TestMonitorPlugin_WithTraceLinker(t *testing.T) {
+	linker := &mockTraceLinkerImpl{}
+	p := NewConsole(WithTraceLinkerOption(linker))
+	require.NotNil(t, p)
+
+	mp := p.(*MonitorPlugin)
+	assert.NotNil(t, mp.mainPage.Linker())
+}
+
+func TestMonitorPlugin_TrackerReceivesEvents(t *testing.T) {
+	bus := ares_runtime.NewPluginBus()
+	tracker := newMockAgentTrackerImpl()
+	p := NewConsole(WithAgentTracker(tracker))
+	plugin := p.(ares_runtime.RuntimePlugin)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := plugin.Start(ctx, bus)
+	require.NoError(t, err)
+
+	bus.Emit(ctx, "s1", ares_events.EventAgentStarted, "test", map[string]any{
+		"agent_id": "tracked-1", "name": "worker",
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	agent, ok := tracker.GetAgent("tracked-1")
+	require.True(t, ok)
+	assert.Equal(t, dag.StatusRunning, agent.Status)
+
+	_ = plugin.Stop(ctx)
+}
+
+func TestMonitorPlugin_TracesReturnsData(t *testing.T) {
+	linker := &mockTraceLinkerImpl{
+		spans: []TraceSpan{{TraceID: "t1", SpanID: "s1", Name: "test"}},
+	}
+	p := NewConsole(WithTraceLinkerOption(linker))
+	ctx := context.Background()
+
+	spans, err := p.Traces(ctx, "t1")
+	require.NoError(t, err)
+	assert.Len(t, spans, 1)
+	assert.Equal(t, "t1", spans[0].TraceID)
 }

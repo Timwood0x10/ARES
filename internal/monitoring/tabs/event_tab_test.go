@@ -163,3 +163,46 @@ func TestEventTab_SummaryFromPayload(t *testing.T) {
 	// Summary is now in the event payload, not a top-level field.
 	assert.Equal(t, "Agent booted up", snap.Events[0].Payload["summary"])
 }
+
+func TestEventTab_Trim(t *testing.T) {
+	tab := NewEventTab()
+	for i := 0; i < 50; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:        fmt.Sprintf("evt-%d", i),
+			Type:      ares_events.EventAgentStarted,
+			Payload:   map[string]any{},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Equal(t, 50, len(tab.events))
+
+	tab.Trim(20)
+	assert.Equal(t, 20, len(tab.events))
+	// Verify the most recent events are retained.
+	assert.Equal(t, "evt-30", tab.events[0].ID)
+	assert.Equal(t, "evt-49", tab.events[19].ID)
+}
+
+func TestEventTab_TrimNoop(t *testing.T) {
+	tab := NewEventTab()
+	for i := 0; i < 5; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("evt-%d", i), Type: ares_events.EventAgentStarted,
+			Payload: map[string]any{}, Timestamp: time.Now(),
+		})
+	}
+	tab.Trim(10)
+	assert.Equal(t, 5, len(tab.events))
+}
+
+func TestEventTab_TrimZero(t *testing.T) {
+	tab := NewEventTab()
+	for i := 0; i < 5; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID: fmt.Sprintf("evt-%d", i), Type: ares_events.EventAgentStarted,
+			Payload: map[string]any{}, Timestamp: time.Now(),
+		})
+	}
+	tab.Trim(0)
+	assert.Equal(t, 5, len(tab.events))
+}

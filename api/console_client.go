@@ -78,7 +78,7 @@ func (c *ConsoleClient) doRequest(ctx context.Context, method, path string, body
 	if err != nil {
 		return fmt.Errorf("execute request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		var errResp struct {
@@ -155,7 +155,7 @@ func (c *ConsoleClient) Tasks(_ context.Context, _ *dag.NodeStatus) ([]monitorin
 // Traces returns trace spans for a given trace ID.
 func (c *ConsoleClient) Traces(ctx context.Context, traceID string) ([]monitoring.TraceSpan, error) {
 	var resp struct {
-		TraceID string               `json:"trace_id"`
+		TraceID string                 `json:"trace_id"`
 		Spans   []monitoring.TraceSpan `json:"spans"`
 	}
 	if err := c.doRequest(ctx, http.MethodGet, "/api/trace/"+traceID, nil, &resp); err != nil {

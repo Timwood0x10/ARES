@@ -116,3 +116,23 @@ func TestWorkflowTab_CompleteBeforeCreate(t *testing.T) {
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
 	assert.Empty(t, snap.Executions)
 }
+
+func TestWorkflowTab_Trim(t *testing.T) {
+	tab := NewWorkflowTab()
+	for i := 0; i < 15; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:        fmt.Sprintf("t%d", i),
+			Type:      ares_events.EventTaskCreated,
+			Payload:   map[string]any{"task_id": fmt.Sprintf("task-%d", i)},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Equal(t, 15, len(tab.order))
+
+	tab.Trim(5)
+	assert.Equal(t, 5, len(tab.order))
+	assert.Equal(t, "task-10", tab.order[0])
+	// Verify evicted executions are deleted.
+	_, ok := tab.executions["task-0"]
+	assert.False(t, ok)
+}

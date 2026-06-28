@@ -95,3 +95,15 @@ func (t *EventTab) FilterByAgent(agentID string) []*ares_events.Event {
 	}
 	return result
 }
+
+// Trim retains at most maxLen events, discarding the oldest.
+func (t *EventTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.events) > maxLen {
+		t.events = t.events[len(t.events)-maxLen:]
+	}
+}

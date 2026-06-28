@@ -39,6 +39,30 @@ type DetailPanelReader interface {
 	SetViewedAgent(agentID string)
 }
 
+// EventSink is any component that consumes events.
+// Implemented by data.AgentTracker, data.TraceLinker, etc.
+type EventSink interface {
+	HandleEvent(evt *ares_events.Event)
+}
+
+// AgentTrackerReader provides read access to tracked agent state.
+// Implemented by data.AgentTracker.
+type AgentTrackerReader interface {
+	EventSink
+	GetAgent(id string) (*UnifiedAgent, bool)
+	ListAgents() []UnifiedAgent
+	Snapshot() ConsoleStats
+}
+
+// TraceReader provides read access to trace spans.
+// Implemented by data.TraceLinker.
+type TraceReader interface {
+	EventSink
+	GetTrace(traceID string) []TraceSpan
+	GetTracesByAgent(agentID string) []TraceSpan
+	ListTraces() []string
+}
+
 // MainPage assembles the full console state from sub-components.
 // It dispatches events to all registered components and produces
 // unified snapshots for the console UI.
@@ -47,6 +71,8 @@ type MainPage struct {
 	costBar     CostBarReader
 	engine      DAGEngineReader
 	detailPanel DetailPanelReader
+	tracker     AgentTrackerReader
+	linker      TraceReader
 	tabs        map[string]Tab
 	publisher   *Publisher
 }
@@ -89,6 +115,20 @@ func WithPublisher(pub *Publisher) MainPageOption {
 	}
 }
 
+// WithTracker sets the agent tracker for the main page.
+func WithTracker(tracker AgentTrackerReader) MainPageOption {
+	return func(mp *MainPage) {
+		mp.tracker = tracker
+	}
+}
+
+// WithTraceLinker sets the trace linker for the main page.
+func WithTraceLinker(linker TraceReader) MainPageOption {
+	return func(mp *MainPage) {
+		mp.linker = linker
+	}
+}
+
 // NewMainPage creates a MainPage with the given options.
 // Defaults: empty cost bar, empty engine, empty tabs map.
 func NewMainPage(opts ...MainPageOption) *MainPage {
@@ -104,7 +144,7 @@ func NewMainPage(opts ...MainPageOption) *MainPage {
 }
 
 // HandleEvent dispatches an event to all sub-components: cost bar,
-// DAG engine, detail panel, and all registered tabs.
+// DAG engine, detail panel, tracker, linker, and all registered tabs.
 func (mp *MainPage) HandleEvent(evt *ares_events.Event) {
 	if evt == nil {
 		return
@@ -114,6 +154,8 @@ func (mp *MainPage) HandleEvent(evt *ares_events.Event) {
 	costBar := mp.costBar
 	engine := mp.engine
 	detail := mp.detailPanel
+	tracker := mp.tracker
+	linker := mp.linker
 	tabList := make([]Tab, 0, len(mp.tabs))
 	for _, t := range mp.tabs {
 		tabList = append(tabList, t)
@@ -128,6 +170,12 @@ func (mp *MainPage) HandleEvent(evt *ares_events.Event) {
 	}
 	if detail != nil {
 		detail.HandleEvent(evt)
+	}
+	if tracker != nil {
+		tracker.HandleEvent(evt)
+	}
+	if linker != nil {
+		linker.HandleEvent(evt)
 	}
 	for _, t := range tabList {
 		t.HandleEvent(evt)
@@ -208,4 +256,18 @@ func (mp *MainPage) DetailPanelReader() DetailPanelReader {
 	mp.mu.RLock()
 	defer mp.mu.RUnlock()
 	return mp.detailPanel
+}
+
+// Tracker returns the agent tracker reader for external access.
+func (mp *MainPage) Tracker() AgentTrackerReader {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+	return mp.tracker
+}
+
+// Linker returns the trace linker reader for external access.
+func (mp *MainPage) Linker() TraceReader {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+	return mp.linker
 }

@@ -32,6 +32,8 @@ type pluginOptions struct {
 	orchCtrl    dag.OrchestratorController
 	mcp         MCPManager
 	pruneCfg    *PruneConfig
+	tracker     AgentTrackerReader
+	linker      TraceReader
 	hasRuntime  bool
 	hasOrch     bool
 }
@@ -112,6 +114,20 @@ func WithPruneConfig(cfg PruneConfig) Option {
 	}
 }
 
+// WithAgentTracker sets the agent tracker for agent state aggregation.
+func WithAgentTracker(tracker AgentTrackerReader) Option {
+	return func(o *pluginOptions) {
+		o.tracker = tracker
+	}
+}
+
+// WithTraceLinker sets the trace linker for distributed trace aggregation.
+func WithTraceLinkerOption(linker TraceReader) Option {
+	return func(o *pluginOptions) {
+		o.linker = linker
+	}
+}
+
 // NewConsole creates a new MonitorPlugin implementing ConsoleAPI.
 func NewConsole(opts ...Option) ConsoleAPI {
 	o := pluginOptions{interval: 2 * time.Second}
@@ -120,9 +136,16 @@ func NewConsole(opts ...Option) ConsoleAPI {
 	}
 
 	engine := dag.NewEngine()
+	mpOpts := []MainPageOption{WithDAG(engine)}
+	if o.tracker != nil {
+		mpOpts = append(mpOpts, WithTracker(o.tracker))
+	}
+	if o.linker != nil {
+		mpOpts = append(mpOpts, WithTraceLinker(o.linker))
+	}
 	p := &MonitorPlugin{
 		engine:    engine,
-		mainPage:  NewMainPage(WithDAG(engine)),
+		mainPage:  NewMainPage(mpOpts...),
 		mcp:       o.mcp,
 		opts:      o,
 		isStarted: false,
@@ -285,9 +308,14 @@ func (p *MonitorPlugin) Tasks(_ context.Context, _ *dag.NodeStatus) ([]TaskView,
 	return snap.Tasks, nil
 }
 
-// Traces returns trace spans for a given trace ID. Not yet wired.
-func (p *MonitorPlugin) Traces(_ context.Context, _ string) ([]TraceSpan, error) {
-	return nil, fmt.Errorf("traces: %w", ErrNotImplemented)
+// Traces returns trace spans for a given trace ID.
+func (p *MonitorPlugin) Traces(_ context.Context, traceID string) ([]TraceSpan, error) {
+	linker := p.mainPage.Linker()
+	if linker == nil {
+		return nil, fmt.Errorf("traces: %w", ErrNotImplemented)
+	}
+	spans := linker.GetTrace(traceID)
+	return spans, nil
 }
 
 // Timeline returns timeline events for a specific node.

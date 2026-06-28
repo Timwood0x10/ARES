@@ -76,6 +76,18 @@ func (t *LLMTab) Stats() LLMCallStats {
 	return t.stats
 }
 
+// Trim retains at most maxLen calls, discarding the oldest.
+func (t *LLMTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.calls) > maxLen {
+		t.calls = t.calls[len(t.calls)-maxLen:]
+	}
+}
+
 func (t *LLMTab) handleLLMCall(evt *ares_events.Event) {
 	inputTokens := getInt64(evt.Payload, "input_tokens")
 	outputTokens := getInt64(evt.Payload, "output_tokens")

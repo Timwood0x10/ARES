@@ -87,6 +87,21 @@ func (t *MemoryTab) Retrievals() []monitoring.MemoryRecord {
 	return out
 }
 
+// Trim retains at most maxLen entries in each list, discarding the oldest.
+func (t *MemoryTab) Trim(maxLen int) {
+	if maxLen <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.distillations) > maxLen {
+		t.distillations = t.distillations[len(t.distillations)-maxLen:]
+	}
+	if len(t.retrievals) > maxLen {
+		t.retrievals = t.retrievals[len(t.retrievals)-maxLen:]
+	}
+}
+
 func (t *MemoryTab) handleDistilled(evt *ares_events.Event) {
 	record := memoryRecordFromEvent(evt, "distilled")
 	t.mu.Lock()

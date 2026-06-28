@@ -47,14 +47,14 @@ type InteractionExecutor interface {
 // HTTP handlers for on-demand queries. All goroutines respect context
 // cancellation.
 type Publisher struct {
-	mu         sync.Mutex
-	mainPage   *MainPage
-	hub        WSHub
+	mu          sync.Mutex
+	mainPage    *MainPage
+	hub         WSHub
 	interEngine InteractionExecutor
-	interval   time.Duration
-	cancel     context.CancelFunc
-	running    bool
-	done       chan struct{}
+	interval    time.Duration
+	cancel      context.CancelFunc
+	running     bool
+	done        chan struct{}
 }
 
 // PublisherOption configures optional dependencies for Publisher.

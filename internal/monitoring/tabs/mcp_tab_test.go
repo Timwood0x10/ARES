@@ -125,3 +125,20 @@ func TestMCPTab_IgnoresIrrelevantEvents(t *testing.T) {
 	snap := tab.Snapshot().(MCPTabSnapshot)
 	assert.Empty(t, snap.Calls)
 }
+
+func TestMCPTab_Trim(t *testing.T) {
+	tab := NewMCPTab()
+	for i := 0; i < 20; i++ {
+		tab.HandleEvent(&ares_events.Event{
+			ID:        fmt.Sprintf("c%d", i),
+			Type:      ares_events.EventToolCallStarted,
+			Payload:   map[string]any{"tool_name": "grep"},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Equal(t, 20, len(tab.calls))
+
+	tab.Trim(5)
+	assert.Equal(t, 5, len(tab.calls))
+	assert.Equal(t, "c15", tab.calls[0].ID)
+}
