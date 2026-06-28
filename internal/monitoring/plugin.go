@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 )
@@ -15,6 +16,7 @@ import (
 var (
 	ErrPluginAlreadyStarted = errors.New("monitor plugin already started")
 	ErrPluginNotStarted     = errors.New("monitor plugin not started")
+	ErrNotStarted           = errors.New("console not started, call Start first")
 	ErrNotImplemented       = errors.New("not implemented")
 	ErrAgentNotFound        = errors.New("agent not found")
 	ErrCostNotConfigured    = errors.New("cost bar not configured")
@@ -34,11 +36,13 @@ type pluginOptions struct {
 
 // MonitorPlugin implements ares_runtime.RuntimePlugin and ConsoleAPI.
 // It assembles the main page, collector, and publisher into a single
-// lifecycle-managed unit.
+// lifecycle-managed unit. The real entry point is RuntimePlugin.Start(ctx, bus);
+// ConsoleAPI has no lifecycle methods of its own.
 type MonitorPlugin struct {
 	mainPage  *MainPage
 	collector *Collector
 	publisher *Publisher
+	bus       ares_runtime.EventBus
 
 	// Optional sub-components.
 	engine      *dag.Engine
@@ -143,6 +147,9 @@ func (p *MonitorPlugin) Start(ctx context.Context, bus ares_runtime.EventBus) er
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
 
+	// Store bus reference for later use by sub-components.
+	p.bus = bus
+
 	// Create and start collector.
 	p.collector = NewCollector(bus, p.mainPage)
 	if err := p.collector.Start(ctx); err != nil {
@@ -203,7 +210,7 @@ func (p *MonitorPlugin) DAG(_ context.Context) (*dag.DAGSnapshot, error) {
 
 // Events returns recent events. Currently returns an empty slice as event
 // history is not yet wired.
-func (p *MonitorPlugin) Events(_ context.Context, _ int) ([]EventView, error) {
+func (p *MonitorPlugin) Events(_ context.Context, _ int) ([]*ares_events.Event, error) {
 	return nil, fmt.Errorf("events: %w", ErrNotImplemented)
 }
 

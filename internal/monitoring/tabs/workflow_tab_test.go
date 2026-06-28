@@ -7,16 +7,13 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestWorkflowTab_Interface(t *testing.T) {
 	var tab Tab = NewWorkflowTab()
-	if tab.Name() != "workflow" {
-		t.Errorf("Name() = %q, want %q", tab.Name(), "workflow")
-	}
-	if tab.Label() != "Workflow" {
-		t.Errorf("Label() = %q, want %q", tab.Label(), "Workflow")
-	}
+	assert.Equal(t, "workflow", tab.Name())
+	assert.Equal(t, "Workflow", tab.Label())
 }
 
 func TestWorkflowTab_TaskLifecycle(t *testing.T) {
@@ -35,12 +32,8 @@ func TestWorkflowTab_TaskLifecycle(t *testing.T) {
 		Timestamp: now,
 	})
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
-	if len(snap.Executions) != 1 {
-		t.Fatalf("got %d executions, want 1", len(snap.Executions))
-	}
-	if snap.Executions[0].Status != dag.StatusRunning {
-		t.Errorf("Status = %q, want %q", snap.Executions[0].Status, dag.StatusRunning)
-	}
+	assert.Len(t, snap.Executions, 1)
+	assert.Equal(t, dag.StatusRunning, snap.Executions[0].Status)
 
 	// Complete the task.
 	tab.HandleEvent(&ares_events.Event{
@@ -52,12 +45,8 @@ func TestWorkflowTab_TaskLifecycle(t *testing.T) {
 		Timestamp: now.Add(time.Second),
 	})
 	snap = tab.Snapshot().(WorkflowTabSnapshot)
-	if snap.Executions[0].Status != dag.StatusCompleted {
-		t.Errorf("Status = %q, want %q", snap.Executions[0].Status, dag.StatusCompleted)
-	}
-	if snap.Executions[0].CompletedAt == nil {
-		t.Error("CompletedAt should be set")
-	}
+	assert.Equal(t, dag.StatusCompleted, snap.Executions[0].Status)
+	assert.NotNil(t, snap.Executions[0].CompletedAt)
 }
 
 func TestWorkflowTab_TaskFailed(t *testing.T) {
@@ -80,12 +69,8 @@ func TestWorkflowTab_TaskFailed(t *testing.T) {
 		Timestamp: now.Add(time.Second),
 	})
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
-	if snap.Executions[0].Status != dag.StatusFailed {
-		t.Errorf("Status = %q, want %q", snap.Executions[0].Status, dag.StatusFailed)
-	}
-	if snap.Executions[0].Error != "out of memory" {
-		t.Errorf("Error = %q, want %q", snap.Executions[0].Error, "out of memory")
-	}
+	assert.Equal(t, dag.StatusFailed, snap.Executions[0].Status)
+	assert.Equal(t, "out of memory", snap.Executions[0].Error)
 }
 
 func TestWorkflowTab_IgnoresIrrelevantEvents(t *testing.T) {
@@ -97,9 +82,7 @@ func TestWorkflowTab_IgnoresIrrelevantEvents(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
-	if len(snap.Executions) != 0 {
-		t.Error("non-workflow events should be ignored")
-	}
+	assert.Empty(t, snap.Executions)
 }
 
 func TestWorkflowTab_NilEvent(t *testing.T) {
@@ -118,9 +101,7 @@ func TestWorkflowTab_Capacity(t *testing.T) {
 		})
 	}
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
-	if len(snap.Executions) != maxExecutions {
-		t.Errorf("execution count = %d, want %d", len(snap.Executions), maxExecutions)
-	}
+	assert.Equal(t, maxExecutions, len(snap.Executions))
 }
 
 func TestWorkflowTab_CompleteBeforeCreate(t *testing.T) {
@@ -133,7 +114,5 @@ func TestWorkflowTab_CompleteBeforeCreate(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(WorkflowTabSnapshot)
-	if len(snap.Executions) != 0 {
-		t.Errorf("got %d executions, want 0", len(snap.Executions))
-	}
+	assert.Empty(t, snap.Executions)
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 )
 
 // Sentinel errors for the publisher.
@@ -19,29 +21,40 @@ var (
 )
 
 // WSHub abstracts a WebSocket broadcast hub for pushing real-time updates.
+// The dashboard.WSHub (internal/dashboard/ws_hub.go) satisfies this interface
+// via a thin adapter, since it uses *WSMessage rather than any for msg parameters.
+// Subscribe/Unsubscribe are client-level concerns on the dashboard hub and are
+// therefore excluded from this hub-level interface.
 type WSHub interface {
 	// BroadcastToChannel sends a message to all subscribers of the given channel.
 	BroadcastToChannel(channel string, msg any)
-	// Subscribe returns a channel that receives messages for the given channels.
-	Subscribe(channels ...string) <-chan any
-	// Unsubscribe removes a subscription channel.
-	Unsubscribe(ch <-chan any)
+	// BroadcastAll sends a message to all connected clients regardless of channel.
+	BroadcastAll(msg any)
+	// ClientCount returns the number of connected WebSocket clients.
+	ClientCount() int
 }
 
 // SnapshotFunc returns the current console snapshot.
 type SnapshotFunc func() ConsoleSnapshot
 
+// InteractionExecutor abstracts the DAG interaction engine for dispatching
+// node actions. This avoids a hard dependency on the concrete type.
+type InteractionExecutor interface {
+	ExecuteAction(ctx context.Context, nodeID string, action string) (*dag.ActionResult, error)
+}
+
 // Publisher periodically pushes console snapshots to a WSHub and exposes
 // HTTP handlers for on-demand queries. All goroutines respect context
 // cancellation.
 type Publisher struct {
-	mu       sync.Mutex
-	mainPage *MainPage
-	hub      WSHub
-	interval time.Duration
-	cancel   context.CancelFunc
-	running  bool
-	done     chan struct{}
+	mu         sync.Mutex
+	mainPage   *MainPage
+	hub        WSHub
+	interEngine InteractionExecutor
+	interval   time.Duration
+	cancel     context.CancelFunc
+	running    bool
+	done       chan struct{}
 }
 
 // PublisherOption configures optional dependencies for Publisher.
@@ -58,6 +71,13 @@ func WithHub(hub WSHub) PublisherOption {
 func WithInterval(d time.Duration) PublisherOption {
 	return func(p *Publisher) {
 		p.interval = d
+	}
+}
+
+// WithInteractionEngine sets the interaction engine for dispatching node actions.
+func WithInteractionEngine(engine InteractionExecutor) PublisherOption {
+	return func(p *Publisher) {
+		p.interEngine = engine
 	}
 }
 
@@ -197,29 +217,32 @@ func (p *Publisher) executeNodeAction(w http.ResponseWriter, r *http.Request, ac
 		return
 	}
 
-	engine := p.mainPage.DAGEngine()
+	p.mu.Lock()
+	engine := p.interEngine
+	p.mu.Unlock()
+
 	if engine == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "DAG engine not configured"})
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"action":   action,
+			"agent_id": agentID,
+			"status":   "not_implemented",
+			"error":    "interaction engine not wired to publisher",
+		})
 		return
 	}
 
-	// Access the interaction engine through the MainPage's parent plugin.
-	// For now, return 501 if no interaction engine is available.
-	// The plugin wires this at construction time.
-	p.mu.Lock()
-	mainPage := p.mainPage
-	p.mu.Unlock()
+	result, err := engine.ExecuteAction(r.Context(), agentID, action)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"action":   action,
+			"agent_id": agentID,
+			"status":   "error",
+			"error":    err.Error(),
+		})
+		return
+	}
 
-	_ = mainPage
-	_ = engine
-
-	// TODO: wire InteractionEngine through MainPage when available.
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"action":   action,
-		"agent_id": agentID,
-		"status":   "not_implemented",
-		"error":    "interaction engine not wired to publisher",
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
 // HandleKillAgent handles a POST request to kill an agent.

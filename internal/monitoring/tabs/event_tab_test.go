@@ -6,16 +6,13 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEventTab_Interface(t *testing.T) {
 	var tab Tab = NewEventTab()
-	if tab.Name() != "events" {
-		t.Errorf("Name() = %q, want %q", tab.Name(), "events")
-	}
-	if tab.Label() != "Events" {
-		t.Errorf("Label() = %q, want %q", tab.Label(), "Events")
-	}
+	assert.Equal(t, "events", tab.Name())
+	assert.Equal(t, "Events", tab.Label())
 }
 
 func TestEventTab_HandleEvent(t *testing.T) {
@@ -54,12 +51,8 @@ func TestEventTab_HandleEvent(t *testing.T) {
 				tab.HandleEvent(evt)
 			}
 			snap := tab.Snapshot().(EventTabSnapshot)
-			if len(snap.Events) != tt.wantCount {
-				t.Errorf("got %d events, want %d", len(snap.Events), tt.wantCount)
-			}
-			if snap.Total != tt.wantCount {
-				t.Errorf("Total = %d, want %d", snap.Total, tt.wantCount)
-			}
+			assert.Equal(t, tt.wantCount, len(snap.Events))
+			assert.Equal(t, tt.wantCount, snap.Total)
 		})
 	}
 }
@@ -75,13 +68,10 @@ func TestEventTab_Capacity(t *testing.T) {
 			Timestamp:  time.Now(),
 		})
 	}
-	// Should be capped at maxEvents, not maxEvents+50.
 	tab.mu.RLock()
 	count := len(tab.events)
 	tab.mu.RUnlock()
-	if count != maxEvents {
-		t.Errorf("event count = %d, want %d", count, maxEvents)
-	}
+	assert.Equal(t, maxEvents, count)
 }
 
 func TestEventTab_Snapshot_Limit(t *testing.T) {
@@ -95,12 +85,8 @@ func TestEventTab_Snapshot_Limit(t *testing.T) {
 		})
 	}
 	snap := tab.Snapshot().(EventTabSnapshot)
-	if len(snap.Events) != snapshotLimit {
-		t.Errorf("snapshot has %d events, want %d", len(snap.Events), snapshotLimit)
-	}
-	if snap.Total != 200 {
-		t.Errorf("Total = %d, want %d", snap.Total, 200)
-	}
+	assert.Equal(t, snapshotLimit, len(snap.Events))
+	assert.Equal(t, 200, snap.Total)
 }
 
 func TestEventTab_FilterByType(t *testing.T) {
@@ -117,12 +103,12 @@ func TestEventTab_FilterByType(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		eventType string
+		eventType ares_events.EventType
 		wantCount int
 	}{
-		{name: "filter agent.started", eventType: "agent.started", wantCount: 2},
-		{name: "filter task.created", eventType: "task.created", wantCount: 1},
-		{name: "filter llm.call", eventType: "llm.call", wantCount: 1},
+		{name: "filter agent.started", eventType: ares_events.EventAgentStarted, wantCount: 2},
+		{name: "filter task.created", eventType: ares_events.EventTaskCreated, wantCount: 1},
+		{name: "filter llm.call", eventType: ares_events.EventLLMCall, wantCount: 1},
 		{name: "filter nonexistent", eventType: "nonexistent", wantCount: 0},
 		{name: "filter empty string", eventType: "", wantCount: 0},
 	}
@@ -130,9 +116,7 @@ func TestEventTab_FilterByType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tab.FilterByType(tt.eventType)
-			if len(result) != tt.wantCount {
-				t.Errorf("FilterByType(%q) returned %d events, want %d", tt.eventType, len(result), tt.wantCount)
-			}
+			assert.Equal(t, tt.wantCount, len(result))
 		})
 	}
 }
@@ -161,9 +145,7 @@ func TestEventTab_FilterByAgent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := tab.FilterByAgent(tt.agentID)
-			if len(result) != tt.wantCount {
-				t.Errorf("FilterByAgent(%q) returned %d events, want %d", tt.agentID, len(result), tt.wantCount)
-			}
+			assert.Equal(t, tt.wantCount, len(result))
 		})
 	}
 }
@@ -177,10 +159,7 @@ func TestEventTab_SummaryFromPayload(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(EventTabSnapshot)
-	if len(snap.Events) != 1 {
-		t.Fatalf("got %d events, want 1", len(snap.Events))
-	}
-	if snap.Events[0].Summary != "Agent booted up" {
-		t.Errorf("Summary = %q, want %q", snap.Events[0].Summary, "Agent booted up")
-	}
+	assert.Len(t, snap.Events, 1)
+	// Summary is now in the event payload, not a top-level field.
+	assert.Equal(t, "Agent booted up", snap.Events[0].Payload["summary"])
 }

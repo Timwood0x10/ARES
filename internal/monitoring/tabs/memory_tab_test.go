@@ -6,16 +6,13 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMemoryTab_Interface(t *testing.T) {
 	var tab Tab = NewMemoryTab()
-	if tab.Name() != "memory" {
-		t.Errorf("Name() = %q, want %q", tab.Name(), "memory")
-	}
-	if tab.Label() != "Memory" {
-		t.Errorf("Label() = %q, want %q", tab.Label(), "Memory")
-	}
+	assert.Equal(t, "memory", tab.Name())
+	assert.Equal(t, "Memory", tab.Label())
 }
 
 func TestMemoryTab_HandleDistilled(t *testing.T) {
@@ -29,21 +26,11 @@ func TestMemoryTab_HandleDistilled(t *testing.T) {
 	tab.HandleEvent(evt)
 
 	snap := tab.Snapshot().(MemoryTabSnapshot)
-	if len(snap.Distillations) != 1 {
-		t.Fatalf("got %d distillations, want 1", len(snap.Distillations))
-	}
-	if snap.Distillations[0].AgentID != "a1" {
-		t.Errorf("AgentID = %q, want %q", snap.Distillations[0].AgentID, "a1")
-	}
-	if snap.Distillations[0].Content != "learned X" {
-		t.Errorf("Content = %q, want %q", snap.Distillations[0].Content, "learned X")
-	}
-	if snap.Distillations[0].Relevance != 0.9 {
-		t.Errorf("Relevance = %f, want %f", snap.Distillations[0].Relevance, 0.9)
-	}
-	if snap.Distillations[0].Category != "distilled" {
-		t.Errorf("Category = %q, want %q", snap.Distillations[0].Category, "distilled")
-	}
+	assert.Len(t, snap.Distillations, 1)
+	assert.Equal(t, "a1", snap.Distillations[0].AgentID)
+	assert.Equal(t, "learned X", snap.Distillations[0].Content)
+	assert.InDelta(t, 0.9, snap.Distillations[0].Relevance, 0.0001)
+	assert.Equal(t, "distilled", snap.Distillations[0].Category)
 }
 
 func TestMemoryTab_HandleRetrieved(t *testing.T) {
@@ -57,12 +44,8 @@ func TestMemoryTab_HandleRetrieved(t *testing.T) {
 	tab.HandleEvent(evt)
 
 	snap := tab.Snapshot().(MemoryTabSnapshot)
-	if len(snap.Retrievals) != 1 {
-		t.Fatalf("got %d retrievals, want 1", len(snap.Retrievals))
-	}
-	if snap.Retrievals[0].Category != "retrieved" {
-		t.Errorf("Category = %q, want %q", snap.Retrievals[0].Category, "retrieved")
-	}
+	assert.Len(t, snap.Retrievals, 1)
+	assert.Equal(t, "retrieved", snap.Retrievals[0].Category)
 }
 
 func TestMemoryTab_IgnoresIrrelevantEvents(t *testing.T) {
@@ -74,9 +57,8 @@ func TestMemoryTab_IgnoresIrrelevantEvents(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(MemoryTabSnapshot)
-	if len(snap.Distillations) != 0 || len(snap.Retrievals) != 0 {
-		t.Error("non-memory events should be ignored")
-	}
+	assert.Empty(t, snap.Distillations)
+	assert.Empty(t, snap.Retrievals)
 }
 
 func TestMemoryTab_NilEvent(t *testing.T) {
@@ -95,20 +77,14 @@ func TestMemoryTab_Capacity(t *testing.T) {
 		})
 	}
 	dist := tab.Distillations()
-	if len(dist) != maxDistillations {
-		t.Errorf("distillation count = %d, want %d", len(dist), maxDistillations)
-	}
+	assert.Equal(t, maxDistillations, len(dist))
 }
 
 func TestMemoryTab_EmptySnapshot(t *testing.T) {
 	tab := NewMemoryTab()
 	snap := tab.Snapshot().(MemoryTabSnapshot)
-	if len(snap.Distillations) != 0 {
-		t.Errorf("distillations = %d, want 0", len(snap.Distillations))
-	}
-	if len(snap.Retrievals) != 0 {
-		t.Errorf("retrievals = %d, want 0", len(snap.Retrievals))
-	}
+	assert.Empty(t, snap.Distillations)
+	assert.Empty(t, snap.Retrievals)
 }
 
 func TestMemoryTab_MissingPayloadFields(t *testing.T) {
@@ -120,11 +96,6 @@ func TestMemoryTab_MissingPayloadFields(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	dist := tab.Distillations()
-	if len(dist) != 1 {
-		t.Fatalf("got %d, want 1", len(dist))
-	}
-	// Should have empty strings, not panic.
-	if dist[0].AgentID != "" {
-		t.Errorf("AgentID = %q, want empty", dist[0].AgentID)
-	}
+	assert.Len(t, dist, 1)
+	assert.Empty(t, dist[0].AgentID)
 }

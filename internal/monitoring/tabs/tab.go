@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/monitoring"
 )
 
 // Tab is the interface that all monitoring tabs must implement.
@@ -30,22 +29,6 @@ const (
 	eventEvolutionMutated     ares_events.EventType = "evolution.mutated"
 	eventEvolutionRecommended ares_events.EventType = "evolution.recommended"
 )
-
-// eventToView converts an ares_events.Event to a console-friendly EventView.
-func eventToView(evt *ares_events.Event) monitoring.EventView {
-	summary := string(evt.Type)
-	if s, ok := evt.Payload["summary"].(string); ok && s != "" {
-		summary = s
-	}
-	return monitoring.EventView{
-		ID:        evt.ID,
-		Type:      string(evt.Type),
-		Source:    evt.ModuleName,
-		Summary:   summary,
-		Details:   evt.Payload,
-		Timestamp: evt.Timestamp,
-	}
-}
 
 // getString safely extracts a string value from a map.
 func getString(m map[string]any, key string) string {

@@ -262,6 +262,8 @@ func (e *Engine) HandleEvent(evt *ares_events.Event) {
 }
 
 // handleAgentStarted creates or reuses a node for the agent and sets it to running.
+// Lightweight display fields (Label, Source, AgentType) are populated from the
+// event payload so the node can be rendered without loading full agent data.
 func (e *Engine) handleAgentStarted(evt *ares_events.Event) {
 	nodeID := extractNodeID(evt)
 	if nodeID == "" {
@@ -271,13 +273,16 @@ func (e *Engine) handleAgentStarted(evt *ares_events.Event) {
 	defer e.mu.Unlock()
 	node, exists := e.nodes[nodeID]
 	if !exists {
+		name := extractPayloadString(evt, "name")
 		node = &DAGNode{
-			ID:       nodeID,
-			Name:     extractPayloadString(evt, "name"),
-			Type:     "agent",
-			Status:   StatusPending,
-			Timeline: make([]TimelineEvent, 0),
-			Metadata: evt.Payload,
+			ID:        nodeID,
+			Name:      name,
+			Type:      "agent",
+			Status:    StatusPending,
+			Label:     name,
+			Source:    extractPayloadString(evt, "source"),
+			AgentType: extractPayloadString(evt, "agent_type"),
+			Timeline:  make([]TimelineEvent, 0),
 		}
 		node.CreatedAt = evt.Timestamp
 		e.nodes[nodeID] = node
@@ -335,13 +340,16 @@ func (e *Engine) handleTaskCreated(evt *ares_events.Event) {
 	if _, exists := e.nodes[taskID]; exists {
 		return
 	}
+	name := extractPayloadString(evt, "name")
 	node := &DAGNode{
-		ID:       taskID,
-		Name:     extractPayloadString(evt, "name"),
-		Type:     "task",
-		Status:   StatusRunning,
-		Timeline: make([]TimelineEvent, 0),
-		Metadata: evt.Payload,
+		ID:        taskID,
+		Name:      name,
+		Type:      "task",
+		Status:    StatusRunning,
+		Label:     name,
+		Source:    extractPayloadString(evt, "source"),
+		AgentType: extractPayloadString(evt, "agent_type"),
+		Timeline:  make([]TimelineEvent, 0),
 	}
 	node.CreatedAt = evt.Timestamp
 	node.UpdatedAt = evt.Timestamp

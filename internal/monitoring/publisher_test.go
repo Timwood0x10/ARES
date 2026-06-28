@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,17 +35,53 @@ func (h *mockHub) BroadcastToChannel(channel string, msg any) {
 	h.messages = append(h.messages, hubMessage{channel: channel, msg: msg})
 }
 
-func (h *mockHub) Subscribe(channels ...string) <-chan any {
-	return make(chan any)
+func (h *mockHub) BroadcastAll(msg any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.messages = append(h.messages, hubMessage{msg: msg})
 }
 
-func (h *mockHub) Unsubscribe(ch <-chan any) {}
+func (h *mockHub) ClientCount() int {
+	return 0
+}
 
 func (h *mockHub) Messages() []hubMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	cp := make([]hubMessage, len(h.messages))
 	copy(cp, h.messages)
+	return cp
+}
+
+// mockInteractionExecutor implements InteractionExecutor for testing.
+type mockInteractionExecutor struct {
+	mu      sync.Mutex
+	calls   []executorCall
+	result  *dag.ActionResult
+	err     error
+}
+
+type executorCall struct {
+	nodeID string
+	action string
+}
+
+func newMockInteractionExecutor(result *dag.ActionResult, err error) *mockInteractionExecutor {
+	return &mockInteractionExecutor{result: result, err: err}
+}
+
+func (m *mockInteractionExecutor) ExecuteAction(_ context.Context, nodeID string, action string) (*dag.ActionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, executorCall{nodeID: nodeID, action: action})
+	return m.result, m.err
+}
+
+func (m *mockInteractionExecutor) Calls() []executorCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]executorCall, len(m.calls))
+	copy(cp, m.calls)
 	return cp
 }
 
@@ -75,7 +112,7 @@ func TestNewPublisher(t *testing.T) {
 func TestPublisher_StartStop(t *testing.T) {
 	mp := NewMainPage()
 	hub := newMockHub()
-	p := NewPublisher(mp, WithHub(hub), WithInterval(50*time.Millisecond))
+	p := NewPublisher(mp, WithHub(hub), WithInterval(10*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -85,8 +122,10 @@ func TestPublisher_StartStop(t *testing.T) {
 	// Double start should be a no-op.
 	p.Start(ctx)
 
-	// Wait for at least one push cycle.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for at least one push cycle using polling.
+	assert.Eventually(t, func() bool {
+		return len(hub.Messages()) >= 1
+	}, 2*time.Second, 10*time.Millisecond)
 
 	p.Stop()
 
@@ -225,7 +264,7 @@ func TestPublisher_HandleAgent(t *testing.T) {
 }
 
 func TestPublisher_HandleKillAgent(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
+	t.Run("no engine returns 501", func(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
@@ -251,28 +290,131 @@ func TestPublisher_HandleKillAgent(t *testing.T) {
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})
+
+	t.Run("wired engine success", func(t *testing.T) {
+		execResult := &dag.ActionResult{
+			ActionID: "act-kill-a1",
+			NodeID:   "a1",
+			Action:   "kill",
+			Success:  true,
+			Message:  "agent a1 killed",
+		}
+		engine := newMockInteractionExecutor(execResult, nil)
+		mp := NewMainPage()
+		p := NewPublisher(mp, WithInteractionEngine(engine))
+
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+		w := httptest.NewRecorder()
+		p.HandleKillAgent(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp dag.ActionResult
+		err := json.NewDecoder(w.Body).Decode(&resp)
+		require.NoError(t, err)
+		assert.Equal(t, "kill", resp.Action)
+		assert.Equal(t, "a1", resp.NodeID)
+		assert.True(t, resp.Success)
+
+		calls := engine.Calls()
+		require.Len(t, calls, 1)
+		assert.Equal(t, "a1", calls[0].nodeID)
+		assert.Equal(t, "kill", calls[0].action)
+	})
+
+	t.Run("wired engine error", func(t *testing.T) {
+		engine := newMockInteractionExecutor(nil, assert.AnError)
+		mp := NewMainPage()
+		p := NewPublisher(mp, WithInteractionEngine(engine))
+
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+		w := httptest.NewRecorder()
+		p.HandleKillAgent(w, req)
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+	})
 }
 
 func TestPublisher_HandleResumeAgent(t *testing.T) {
-	mp := NewMainPage()
-	p := NewPublisher(mp)
+	t.Run("no engine returns 501", func(t *testing.T) {
+		mp := NewMainPage()
+		p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
-	w := httptest.NewRecorder()
-	p.HandleResumeAgent(w, req)
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
+		w := httptest.NewRecorder()
+		p.HandleResumeAgent(w, req)
 
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
+		assert.Equal(t, http.StatusNotImplemented, w.Code)
+	})
+
+	t.Run("wired engine success", func(t *testing.T) {
+		execResult := &dag.ActionResult{
+			ActionID: "act-resume-a1",
+			NodeID:   "a1",
+			Action:   "resume",
+			Success:  true,
+			Message:  "agent a1 resumed",
+		}
+		engine := newMockInteractionExecutor(execResult, nil)
+		mp := NewMainPage()
+		p := NewPublisher(mp, WithInteractionEngine(engine))
+
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
+		w := httptest.NewRecorder()
+		p.HandleResumeAgent(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp dag.ActionResult
+		err := json.NewDecoder(w.Body).Decode(&resp)
+		require.NoError(t, err)
+		assert.Equal(t, "resume", resp.Action)
+
+		calls := engine.Calls()
+		require.Len(t, calls, 1)
+		assert.Equal(t, "resume", calls[0].action)
+	})
 }
 
 func TestPublisher_HandleRetryAgent(t *testing.T) {
-	mp := NewMainPage()
-	p := NewPublisher(mp)
+	t.Run("no engine returns 501", func(t *testing.T) {
+		mp := NewMainPage()
+		p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
-	w := httptest.NewRecorder()
-	p.HandleRetryAgent(w, req)
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
+		w := httptest.NewRecorder()
+		p.HandleRetryAgent(w, req)
 
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
+		assert.Equal(t, http.StatusNotImplemented, w.Code)
+	})
+
+	t.Run("wired engine success", func(t *testing.T) {
+		execResult := &dag.ActionResult{
+			ActionID: "act-retry-a1",
+			NodeID:   "a1",
+			Action:   "retry",
+			Success:  true,
+			Message:  "agent a1 retried",
+		}
+		engine := newMockInteractionExecutor(execResult, nil)
+		mp := NewMainPage()
+		p := NewPublisher(mp, WithInteractionEngine(engine))
+
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
+		w := httptest.NewRecorder()
+		p.HandleRetryAgent(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp dag.ActionResult
+		err := json.NewDecoder(w.Body).Decode(&resp)
+		require.NoError(t, err)
+		assert.Equal(t, "retry", resp.Action)
+
+		calls := engine.Calls()
+		require.Len(t, calls, 1)
+		assert.Equal(t, "retry", calls[0].action)
+	})
 }
 
 func TestPublisher_HandleTab(t *testing.T) {
@@ -394,9 +536,12 @@ func TestPublisher_PushLoop_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.Start(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for at least one push before cancelling.
+	assert.Eventually(t, func() bool {
+		return len(hub.Messages()) >= 1
+	}, 2*time.Second, 10*time.Millisecond)
+
 	cancel()
-	time.Sleep(30 * time.Millisecond)
 
 	// Stop waits for the goroutine to exit.
 	p.Stop()

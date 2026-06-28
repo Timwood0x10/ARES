@@ -62,6 +62,8 @@ type TimelineEvent struct {
 }
 
 // DAGNode represents a single node in the execution graph.
+// Nodes store only lightweight display fields. Full agent data is loaded
+// on demand via AgentTracker.GetAgent(id) for the detail panel.
 type DAGNode struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
@@ -69,6 +71,12 @@ type DAGNode struct {
 	Status    NodeStatus      `json:"status"`
 	Message   string          `json:"message,omitempty"`
 	ParentID  string          `json:"parent_id,omitempty"`
+
+	// Lightweight display fields populated from events.
+	Label     string `json:"label,omitempty"`
+	Source    string `json:"source,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+
 	Tags      []string        `json:"tags,omitempty"`
 	Metadata  map[string]any  `json:"metadata,omitempty"`
 	Timeline  []TimelineEvent `json:"timeline"`

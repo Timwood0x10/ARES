@@ -6,16 +6,13 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestArenaTab_Interface(t *testing.T) {
 	var tab Tab = NewArenaTab()
-	if tab.Name() != "arena" {
-		t.Errorf("Name() = %q, want %q", tab.Name(), "arena")
-	}
-	if tab.Label() != "Arena" {
-		t.Errorf("Label() = %q, want %q", tab.Label(), "Arena")
-	}
+	assert.Equal(t, "arena", tab.Name())
+	assert.Equal(t, "Arena", tab.Label())
 }
 
 func TestArenaTab_HandleFaultInjection(t *testing.T) {
@@ -30,15 +27,9 @@ func TestArenaTab_HandleFaultInjection(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(ArenaTabSnapshot)
-	if len(snap.FaultInjections) != 1 {
-		t.Fatalf("got %d fault injections, want 1", len(snap.FaultInjections))
-	}
-	if snap.FaultInjections[0].Type != "network_partition" {
-		t.Errorf("Type = %q, want %q", snap.FaultInjections[0].Type, "network_partition")
-	}
-	if snap.FaultInjections[0].CompletedAt != nil {
-		t.Error("CompletedAt should be nil before completion")
-	}
+	assert.Len(t, snap.FaultInjections, 1)
+	assert.Equal(t, "network_partition", snap.FaultInjections[0].Type)
+	assert.Nil(t, snap.FaultInjections[0].CompletedAt)
 }
 
 func TestArenaTab_HandleSurvivalTest(t *testing.T) {
@@ -58,19 +49,10 @@ func TestArenaTab_HandleSurvivalTest(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(ArenaTabSnapshot)
-	if len(snap.SurvivalTests) != 1 {
-		t.Fatalf("got %d survival tests, want 1", len(snap.SurvivalTests))
-	}
-	if !snap.SurvivalTests[0].Passed {
-		t.Error("SurvivalTest.Passed should be true")
-	}
-	// The fault injection should now be marked as completed.
-	if snap.FaultInjections[0].CompletedAt == nil {
-		t.Error("FaultInjection.CompletedAt should be set after completion")
-	}
-	if !snap.FaultInjections[0].Survived {
-		t.Error("FaultInjection.Survived should be true")
-	}
+	assert.Len(t, snap.SurvivalTests, 1)
+	assert.True(t, snap.SurvivalTests[0].Passed)
+	assert.NotNil(t, snap.FaultInjections[0].CompletedAt)
+	assert.True(t, snap.FaultInjections[0].Survived)
 }
 
 func TestArenaTab_HandleStepFailure(t *testing.T) {
@@ -82,15 +64,9 @@ func TestArenaTab_HandleStepFailure(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(ArenaTabSnapshot)
-	if len(snap.SurvivalTests) != 1 {
-		t.Fatalf("got %d survival tests, want 1", len(snap.SurvivalTests))
-	}
-	if snap.SurvivalTests[0].Passed {
-		t.Error("step failure should not pass")
-	}
-	if snap.SurvivalTests[0].TestType != "step_failure" {
-		t.Errorf("TestType = %q, want %q", snap.SurvivalTests[0].TestType, "step_failure")
-	}
+	assert.Len(t, snap.SurvivalTests, 1)
+	assert.False(t, snap.SurvivalTests[0].Passed)
+	assert.Equal(t, "step_failure", snap.SurvivalTests[0].TestType)
 }
 
 func TestArenaTab_IgnoresIrrelevantEvents(t *testing.T) {
@@ -102,9 +78,8 @@ func TestArenaTab_IgnoresIrrelevantEvents(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(ArenaTabSnapshot)
-	if len(snap.FaultInjections) != 0 || len(snap.SurvivalTests) != 0 {
-		t.Error("non-arena events should be ignored")
-	}
+	assert.Empty(t, snap.FaultInjections)
+	assert.Empty(t, snap.SurvivalTests)
 }
 
 func TestArenaTab_NilEvent(t *testing.T) {
@@ -123,7 +98,5 @@ func TestArenaTab_Capacity(t *testing.T) {
 		})
 	}
 	snap := tab.Snapshot().(ArenaTabSnapshot)
-	if len(snap.FaultInjections) != maxFaultInjections {
-		t.Errorf("fault injection count = %d, want %d", len(snap.FaultInjections), maxFaultInjections)
-	}
+	assert.Equal(t, maxFaultInjections, len(snap.FaultInjections))
 }

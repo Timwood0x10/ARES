@@ -4,6 +4,7 @@ package monitoring
 import (
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 )
 
@@ -80,16 +81,6 @@ type TraceSpan struct {
 	EndTime    time.Time      `json:"end_time,omitempty"`
 	Duration   time.Duration  `json:"duration"`
 	Attributes map[string]any `json:"attributes,omitempty"`
-}
-
-// EventView is a console-friendly representation of an event.
-type EventView struct {
-	ID        string         `json:"id"`
-	Type      string         `json:"type"`
-	Source    string         `json:"source"`
-	Summary   string         `json:"summary"`
-	Details   map[string]any `json:"details,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
 }
 
 // TaskView is a console-friendly representation of a task.
@@ -192,12 +183,12 @@ type Recommendation struct {
 
 // ConsoleSnapshot is the full console state at a point in time.
 type ConsoleSnapshot struct {
-	Agents     []UnifiedAgent `json:"agents"`
-	Tasks      []TaskView     `json:"tasks"`
-	Events     []EventView    `json:"events"`
-	Cost       CostBreakdown  `json:"cost"`
-	Alerts     []CostAlert    `json:"alerts,omitempty"`
-	UpdateTime time.Time      `json:"update_time"`
+	Agents     []UnifiedAgent      `json:"agents"`
+	Tasks      []TaskView          `json:"tasks"`
+	Events     []*ares_events.Event `json:"events"`
+	Cost       CostBreakdown       `json:"cost"`
+	Alerts     []CostAlert         `json:"alerts,omitempty"`
+	UpdateTime time.Time           `json:"update_time"`
 }
 
 // ConsoleStats provides aggregate statistics for the console view.

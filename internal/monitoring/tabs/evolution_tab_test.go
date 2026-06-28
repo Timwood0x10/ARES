@@ -6,16 +6,13 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEvolutionTab_Interface(t *testing.T) {
 	var tab Tab = NewEvolutionTab()
-	if tab.Name() != "evolution" {
-		t.Errorf("Name() = %q, want %q", tab.Name(), "evolution")
-	}
-	if tab.Label() != "Evolution" {
-		t.Errorf("Label() = %q, want %q", tab.Label(), "Evolution")
-	}
+	assert.Equal(t, "evolution", tab.Name())
+	assert.Equal(t, "Evolution", tab.Label())
 }
 
 func TestEvolutionTab_HandleAgentStarted(t *testing.T) {
@@ -27,15 +24,9 @@ func TestEvolutionTab_HandleAgentStarted(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if len(snap.Genomes) != 1 {
-		t.Fatalf("got %d genomes, want 1", len(snap.Genomes))
-	}
-	if snap.Genomes[0].AgentID != "a1" {
-		t.Errorf("AgentID = %q, want %q", snap.Genomes[0].AgentID, "a1")
-	}
-	if snap.Genomes[0].Generation != 3 {
-		t.Errorf("Generation = %d, want 3", snap.Genomes[0].Generation)
-	}
+	assert.Len(t, snap.Genomes, 1)
+	assert.Equal(t, "a1", snap.Genomes[0].AgentID)
+	assert.Equal(t, 3, snap.Genomes[0].Generation)
 }
 
 func TestEvolutionTab_HandleMutation(t *testing.T) {
@@ -52,12 +43,8 @@ func TestEvolutionTab_HandleMutation(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if len(snap.Mutations) != 1 {
-		t.Fatalf("got %d mutations, want 1", len(snap.Mutations))
-	}
-	if snap.Mutations[0].Description != "optimized prompt" {
-		t.Errorf("Description = %q, want %q", snap.Mutations[0].Description, "optimized prompt")
-	}
+	assert.Len(t, snap.Mutations, 1)
+	assert.Equal(t, "optimized prompt", snap.Mutations[0].Description)
 }
 
 func TestEvolutionTab_HandleRecommendation(t *testing.T) {
@@ -74,12 +61,8 @@ func TestEvolutionTab_HandleRecommendation(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if len(snap.Recommendations) != 1 {
-		t.Fatalf("got %d recommendations, want 1", len(snap.Recommendations))
-	}
-	if snap.Recommendations[0].Priority != "high" {
-		t.Errorf("Priority = %q, want %q", snap.Recommendations[0].Priority, "high")
-	}
+	assert.Len(t, snap.Recommendations, 1)
+	assert.Equal(t, "high", snap.Recommendations[0].Priority)
 }
 
 func TestEvolutionTab_IgnoresIrrelevantEvents(t *testing.T) {
@@ -91,9 +74,9 @@ func TestEvolutionTab_IgnoresIrrelevantEvents(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if len(snap.Genomes) != 0 || len(snap.Mutations) != 0 || len(snap.Recommendations) != 0 {
-		t.Error("non-evolution events should be ignored")
-	}
+	assert.Empty(t, snap.Genomes)
+	assert.Empty(t, snap.Mutations)
+	assert.Empty(t, snap.Recommendations)
 }
 
 func TestEvolutionTab_NilEvent(t *testing.T) {
@@ -112,9 +95,7 @@ func TestEvolutionTab_Capacity(t *testing.T) {
 		})
 	}
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if len(snap.Mutations) != maxMutations {
-		t.Errorf("mutation count = %d, want %d", len(snap.Mutations), maxMutations)
-	}
+	assert.Equal(t, maxMutations, len(snap.Mutations))
 }
 
 func TestEvolutionTab_GenomeUsesModuleName(t *testing.T) {
@@ -127,7 +108,5 @@ func TestEvolutionTab_GenomeUsesModuleName(t *testing.T) {
 		Timestamp:  time.Now(),
 	})
 	snap := tab.Snapshot().(EvolutionTabSnapshot)
-	if snap.Genomes[0].AgentID != "fallback-agent" {
-		t.Errorf("AgentID = %q, want %q", snap.Genomes[0].AgentID, "fallback-agent")
-	}
+	assert.Equal(t, "fallback-agent", snap.Genomes[0].AgentID)
 }

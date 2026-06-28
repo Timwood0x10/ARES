@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/monitoring"
 )
 
 const (
@@ -16,21 +15,21 @@ const (
 
 // EventTabSnapshot is the snapshot payload returned by EventTab.Snapshot.
 type EventTabSnapshot struct {
-	Events []monitoring.EventView `json:"events"`
-	Total  int                    `json:"total"`
+	Events []*ares_events.Event `json:"events"`
+	Total  int                  `json:"total"`
 }
 
 // EventTab implements the Tab interface for the Events tab.
 // It retains all incoming events in a capped circular buffer.
 type EventTab struct {
 	mu     sync.RWMutex
-	events []monitoring.EventView
+	events []*ares_events.Event
 }
 
 // NewEventTab creates a new EventTab instance.
 func NewEventTab() *EventTab {
 	return &EventTab{
-		events: make([]monitoring.EventView, 0, maxEvents),
+		events: make([]*ares_events.Event, 0, maxEvents),
 	}
 }
 
@@ -45,14 +44,13 @@ func (t *EventTab) HandleEvent(evt *ares_events.Event) {
 	if evt == nil {
 		return
 	}
-	view := eventToView(evt)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.events) >= maxEvents {
 		// Drop the oldest event to stay within the cap.
 		t.events = t.events[1:]
 	}
-	t.events = append(t.events, view)
+	t.events = append(t.events, evt)
 }
 
 // Snapshot returns the most recent events (up to snapshotLimit).
@@ -64,7 +62,7 @@ func (t *EventTab) Snapshot() any {
 	if total > snapshotLimit {
 		start = total - snapshotLimit
 	}
-	result := make([]monitoring.EventView, total-start)
+	result := make([]*ares_events.Event, total-start)
 	copy(result, t.events[start:])
 	return EventTabSnapshot{
 		Events: result,
@@ -72,40 +70,28 @@ func (t *EventTab) Snapshot() any {
 	}
 }
 
-// FilterByType returns copies of events matching the given event type string.
-func (t *EventTab) FilterByType(eventType string) []monitoring.EventView {
+// FilterByType returns events matching the given event type string.
+func (t *EventTab) FilterByType(eventType ares_events.EventType) []*ares_events.Event {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	var result []monitoring.EventView
+	var result []*ares_events.Event
 	for _, ev := range t.events {
 		if ev.Type == eventType {
-			result = append(result, copyEventView(ev))
+			result = append(result, ev)
 		}
 	}
 	return result
 }
 
-// FilterByAgent returns copies of events whose Source matches the given agent ID.
-func (t *EventTab) FilterByAgent(agentID string) []monitoring.EventView {
+// FilterByAgent returns events whose ModuleName matches the given agent ID.
+func (t *EventTab) FilterByAgent(agentID string) []*ares_events.Event {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	var result []monitoring.EventView
+	var result []*ares_events.Event
 	for _, ev := range t.events {
-		if ev.Source == agentID {
-			result = append(result, copyEventView(ev))
+		if ev.ModuleName == agentID {
+			result = append(result, ev)
 		}
 	}
 	return result
-}
-
-// copyEventView creates a deep copy of an EventView, including its Details map.
-func copyEventView(ev monitoring.EventView) monitoring.EventView {
-	cp := ev
-	if ev.Details != nil {
-		cp.Details = make(map[string]any, len(ev.Details))
-		for k, v := range ev.Details {
-			cp.Details[k] = v
-		}
-	}
-	return cp
 }

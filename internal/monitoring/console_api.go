@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 )
 
@@ -16,8 +17,8 @@ type ConsoleAPI interface {
 	// DAG returns the current DAG snapshot for graph visualization.
 	DAG(ctx context.Context) (*dag.DAGSnapshot, error)
 
-	// Events returns recent events as console-friendly views.
-	Events(ctx context.Context, limit int) ([]EventView, error)
+	// Events returns recent events.
+	Events(ctx context.Context, limit int) ([]*ares_events.Event, error)
 
 	// Agent returns details for a single agent by ID.
 	Agent(ctx context.Context, agentID string) (*UnifiedAgent, error)
