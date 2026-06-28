@@ -57,7 +57,7 @@ graph LR
 | `internal/ares_events/summary.go` | EventSummary 模型 + CompactionConfig |
 | `internal/ares_events/summary_repository.go` | PgSummaryRepository |
 | `internal/ares_events/memory_summary_repo.go` | 内存版 SummaryRepository |
-| `internal/flight/replay.go` | ReplaySession 逐步重放 |
+| `internal/ares_flight/replay.go` | ReplaySession 逐步重放 |
 
 ---
 
@@ -272,7 +272,7 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 
 ## 五、ReplaySession
 
-`internal/flight/replay.go` 提供了任务的逐步事件重放：
+`internal/ares_flight/replay.go` 提供了任务的逐步事件重放：
 
 ```mermaid
 sequenceDiagram

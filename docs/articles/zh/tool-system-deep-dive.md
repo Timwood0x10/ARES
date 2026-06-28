@@ -474,6 +474,6 @@ result, err := toolBinder.CallTool(ctx, name, args)
 | ToolNode (Workflow) | `internal/workflow/graph/node.go` |
 | MCP 工具适配器 | `internal/ares_mcp/mcp_tool.go` |
 | MCP 客户端 | `internal/ares_mcp/client.go` |
-| 回调系统 | `internal/callbacks/callbacks.go` |
+| 回调系统 | `internal/ares_callbacks/callbacks.go` |
 | 事件系统 | `internal/ares_events/` |
 | 内建工具注册 | `internal/tools/resources/builtin/builtin.go` |

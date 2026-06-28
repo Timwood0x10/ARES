@@ -139,7 +139,7 @@ ares had quietly accumulated pieces — Experience System, Flight Recorder, Eval
 
 ### 3.1 Experience System — Bandit Ranking
 
-`internal/experience/ranking_service.go` implements a lightweight bandit system:
+`internal/ares_experience/ranking_service.go` implements a lightweight bandit system:
 
 ```go
 // Rank ranks experiences using multi-signal scoring.
@@ -214,7 +214,7 @@ Supports three scoring scales (1-10, 1-5, pass/fail), bilingual prompts (Chinese
 
 ### 3.4 Callback System — Event Hooks
 
-`internal/callbacks/callbacks.go` defines a complete event bus:
+`internal/ares_callbacks/callbacks.go` defines a complete event bus:
 
 ```go
 const (
@@ -239,7 +239,7 @@ Register-dispatch model, multiple handlers per event, panic recovery per handler
 
 ### 3.5 Arena — Stress Testing
 
-`internal/arena/regression.go` implements a complete A/B regression testing framework:
+`internal/ares_arena/regression.go` implements a complete A/B regression testing framework:
 
 ```go
 type RegressionTester struct {
@@ -561,12 +561,12 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 }
 ```
 
-Note `getCurrentStrategy()` was previously a placeholder returning a hardcoded `root-strategy-v1` strategy. **This is now resolved** — see Section 9.8 (EvolutionStore) for the full database-backed implementation. The DreamCycle now connects to `StrategyStore.GetActive()` to read the real currently-deployed strategy, and `StrategyStore.SetActive()` to persist winners back to the database.
+Note `getCurrentStrategy()` was previously a placeholder returning a hardcoded `root-strategy-v1` strategy. **This is now resolved** — see Section 9.8 (PGStrategyStore) for the full database-backed implementation. The DreamCycle now connects to `StrategyStore.GetActive()` to read the real currently-deployed strategy, and `StrategyStore.SetActive()` to persist winners back to the database.
 
 ```go
 // dream_cycle.go - getCurrentStrategy() NOW RESOLVED
 // Previously returned hardcoded placeholder Strategy{ ID: "root-strategy-v1", ... }.
-// Now delegates to the injected StrategyStore (EvolutionStore backed by real DB):
+// Now delegates to the injected StrategyStore (PGStrategyStore backed by real DB):
 func (dc *DreamCycle) getCurrentStrategy() (Strategy, error) {
     if dc.strategyStore != nil {
         return dc.strategyStore.GetActive(dc.ctx)
@@ -724,7 +724,7 @@ type WiredComponents struct {
 | 4 | **Experience sync** | Distiller completes | ExperienceStoreAdapter.Create() | Closed |
 | 5 | **Evolution execution** | Scheduler.shouldEvolve() -> DreamCycle.Run() | Mutator -> Arena -> Genealogy -> StrategyStore [DB] | **Closed** |
 
-Link #5 is now fully closed: `getCurrentStrategy()` resolved via `EvolutionStore.GetActive()` (database-backed), `RecordPopulationLineage()` auto-builds genealogy after each generation, `BestStrategyFromSystem()` extracts deployment-ready strategies, `StrategyStore.SetActive()` persists winners. The remaining gap is `shouldEvolve()`'s score degradation detection (still a stub heuristic).
+Link #5 is now fully closed: `getCurrentStrategy()` resolved via `PGStrategyStore.GetActive()` (database-backed), `RecordPopulationLineage()` auto-builds genealogy after each generation, `BestStrategyFromSystem()` extracts deployment-ready strategies, `StrategyStore.SetActive()` persists winners. The remaining gap is `shouldEvolve()`'s score degradation detection (still a stub heuristic).
 
 ### main() One-Liner -> All Components Ready
 
@@ -772,7 +772,7 @@ From the caller's perspective, the evolution system is transparent — you don't
 | **Iteration 2** | Prompt evolution | Prompt template pool management + A/B testing + auto-replacement | Medium |
 | **Iteration 3** | Tool auto-generation | DevAgent integration + safety sandbox + tool approval workflow | High |
 
-Current status: **Iteration 1 complete**. WireAllEvolutionComponents available, parameter mutation and Arena validation chain connected. `getCurrentStrategy()` fully resolved via `EvolutionStore` (DB-backed StrategyStore). Population improvements (Snapshot, BestStrategy, Stats, BreedingPoolRatio) deployed. Serialization system (SaveEvolutionRun / LoadEvolutionRun) for checkpoint/resume. Auto-lineage recording via RecordPopulationLineage. Remaining work: `shouldEvolve()` hooks into actual score data for adaptive triggering.
+Current status: **Iteration 1 complete**. WireAllEvolutionComponents available, parameter mutation and Arena validation chain connected. `getCurrentStrategy()` fully resolved via `PGStrategyStore` (DB-backed StrategyStore). Population improvements (Snapshot, BestStrategy, Stats, BreedingPoolRatio) deployed. Auto-lineage recording via RecordPopulationLineage. Remaining work: `shouldEvolve()` hooks into actual score data for adaptive triggering.
 
 ### Risk Matrix
 
@@ -786,11 +786,11 @@ Current status: **Iteration 1 complete**. WireAllEvolutionComponents available, 
 
 ### Production Readiness Checklist
 
-- [x] `getCurrentStrategy()` connects to real Strategy Store (not placeholder) — **RESOLVED**: `EvolutionStore` implements `StrategyStore` with DB-backed `GetActive()` / `SetActive()` / `List()`
+- [x] `getCurrentStrategy()` connects to real Strategy Store (not placeholder) — **RESOLVED**: `PGStrategyStore` implements `StrategyStore` with DB-backed `GetActive()` / `SetActive()` / `GetHistory()`
 - [ ] `shouldEvolve()` integrates with EvalEngine or Flight Diagnostics real score data
 - [ ] DreamCycle defaults to Enabled=false, explicit opt-in required
 - [ ] Evolution results written to Audit Log, every strategy change traceable — **PARTIAL**: `RecordPopulationLineage()` auto-records after each generation; full audit log integration pending
-- [ ] Rollback API: one-click revert to any historical strategy version — **AVAILABLE**: `EvolutionStore.List(n)` returns ordered history; manual rollback via `SetActive(previousVersion)`
+- [ ] Rollback API: one-click revert to any historical strategy version — **AVAILABLE**: `PGStrategyStore.GetHistory(id, n)` returns ordered history; manual rollback via `SetActive(&previousVersion)`
 - [ ] Monitoring metrics: evolution cycles, average WinRate, average ScoreImprovement, strategy version — **PARTIAL**: `PopulationStats` provides per-generation metrics; Prometheus/Grafana dashboard integration pending
 - [ ] Resource limits: max concurrent evolutions, max duration per evolution, max storage
 
@@ -859,8 +859,8 @@ Real genetic algorithms need two things: **Crossover (recombination)** and **Pop
 
 But that was Iteration 1. Since then, I've added three major subsystems that transform the genome package from a toy GA into a production-grade evolution engine:
 
-1. **EvolutionStore** — database persistence for strategies (solves the `getCurrentStrategy()` placeholder problem)
-2. **Serialization & Snapshot System** — full checkpoint/resume for evolution runs
+1. **PGStrategyStore** — database persistence for strategies (solves the `getCurrentStrategy()` placeholder problem)
+2. **Runtime Snapshots with Auto-Genealogy** — in-memory population snapshots (`Population.Snapshot()`) and automatic genealogy recording via `RunIdleEvolution()`
 3. **Population Improvements** — configurable breeding pool, thread-safe snapshots, deployment-ready strategy extraction
 
 Let me talk about the detour I took first.
@@ -883,7 +883,7 @@ So I decided to write the genome package — introducing Population, Crossover, 
 
 ### 9.2 Population Struct: The Skeleton
 
-`internal/evolution/genome/population.go` defines the core data structure:
+`internal/ares_evolution/genome/population.go` defines the core data structure:
 
 ```go
 // population.go - Population core struct
@@ -1050,7 +1050,7 @@ if len(p.Agents) == 0 {
 
 ### 9.4 Three Crossover Operators
 
-`internal/evolution/genome/crossover.go` implements three recombination strategies:
+`internal/ares_evolution/genome/crossover.go` implements three recombination strategies:
 
 **Uniform Crossover (default)**
 
@@ -1124,7 +1124,7 @@ All crossover-produced children are tagged with `mutation.MutationCrossover` (a 
 
 ### 9.5 Three Selection Operators
 
-`internal/evolution/genome/selection.go` implements natural selection strategies:
+`internal/ares_evolution/genome/selection.go` implements natural selection strategies:
 
 **TruncationSelection** — simplest, take top-N by score directly.
 
@@ -1317,7 +1317,7 @@ func (p *Population) generateOffspring(...) ([]*mutation.Strategy, error) {
 
 Previously, if you cancelled context during a long evolution run (say, pop=100 with lots of offspring to generate), the goroutine would blindly continue until all slots were filled. Now it checks `ctx.Done()` every iteration — clean shutdown within one offspring generation cycle.
 
-### 9.8 EvolutionStore: Database Persistence (The Biggest Fix)
+### 9.8 PGStrategyStore: Database Persistence (The Biggest Fix)
 
 Remember that TODO that haunted the entire article?
 
@@ -1329,88 +1329,66 @@ return Strategy{ ID: "root-strategy-v1", ... }, nil
 
 **Gone. Deleted. Solved.**
 
-`internal/evolution/evolution_store.go` implements the `StrategyStore` interface defined in `interfaces.go` using a relational database:
+`internal/ares_evolution/pg_strategy_store.go` implements the `StrategyStore` interface using the repository pattern — no raw SQL, no `StoreDB` interface, just clean delegation to `*repositories.StrategyRepository`:
 
 ```go
 // interfaces.go - StrategyStore interface
 type StrategyStore interface {
     GetActive(ctx context.Context) (*Strategy, error)
-    SetActive(ctx context.Context, s Strategy) error
-    List(ctx context.Context, n int) ([]Strategy, error)
+    SetActive(ctx context.Context, strategy *Strategy) error
+    GetHistory(ctx context.Context, id string, n int) ([]*Strategy, error)
 }
 
-// evolution_store.go - Implementation
-type EvolutionStore struct {
-    db StoreDB
+// pg_strategy_store.go - Implementation
+type PGStrategyStore struct {
+    repo *repositories.StrategyRepository
 }
 
-var _ StrategyStore = (*EvolutionStore)(nil)  // Compile-time interface check
+// Compile-time interface check
+var _ StrategyStore = (*PGStrategyStore)(nil)
 ```
 
 Three methods, each solving a specific piece of the persistence puzzle:
 
 **GetActive(): Reading the Current Deployment**
 
+`GetActive` returns the currently deployed best strategy. If no strategy has been stored yet, it returns `nil, nil` (not an error — just "nothing stored yet"). The database layer ensures only one strategy is active at any time.
+
 ```go
-func (s *EvolutionStore) GetActive(ctx context.Context) (*Strategy, error) {
-    query := `
-        SELECT id, COALESCE(parent_id, ''), COALESCE(name, ''), version, params,
-               COALESCE(prompt_template, ''), COALESCE(strategy_mutation_type, ''),
-               COALESCE(mutation_desc, ''), score, created_at
-        FROM evolution_strategies
-        WHERE is_active = TRUE
-        ORDER BY version DESC
-        LIMIT 1
-    `
-    // Scan into Strategy struct, JSON-unmarshal params...
+func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
+    return s.repo.GetActiveStrategy(ctx)
 }
 ```
 
-The `is_active = TRUE` marker is key. Only ONE strategy can be active at any time. `ORDER BY version DESC LIMIT 1` means if somehow multiple rows got flagged (shouldn't happen, but defense in depth), we still get the latest version. Returns `nil, nil` when no strategy exists yet (not an error — just "nothing stored yet").
+The repository handles the SQL internally: `is_active = TRUE` with `ORDER BY version DESC LIMIT 1` — defense in depth to always return the latest version even in edge cases.
 
-**SetActive(): Upsert with Active Marker Flip**
+**SetActive(): Upsert with Atomic Deactivate**
+
+`SetActive` takes a pointer to `Strategy` and marks it as the sole active deployment. The repository handles the two-phase pattern: deactivate all → activate new.
 
 ```go
-func (s *EvolutionStore) SetActive(ctx context.Context, st Strategy) error {
-    paramsJSON, err := json.Marshal(st.Params)
-    // ...
-
-    // Step 1: Deactivate ALL current active strategies
-    if _, err := s.db.ExecContext(ctx,
-        `UPDATE evolution_strategies SET is_active = FALSE WHERE is_active = TRUE`); err != nil {
-        return err
-    }
-
-    // Step 2: Insert new strategy as active (upsert via ON CONFLICT)
-    query := `
-        INSERT INTO evolution_strategies (...) VALUES (..., TRUE, $10, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-            is_active = TRUE,
-            score = $9,
-            updated_at = NOW()
-    `
-    // ...
+func (s *PGStrategyStore) SetActive(ctx context.Context, st *Strategy) error {
+    return s.repo.SetActiveStrategy(ctx, st)
 }
 ```
 
-This is an **atomic two-phase commit pattern**: first deactivate everything, then insert/activate the new one. The `ON CONFLICT (id) DO UPDATE` clause handles the case where the same strategy ID already exists (e.g., re-deploying a previous version) — it flips `is_active` back to TRUE and updates the score. Params are stored as JSON (`json.Marshal(st.Params)`) since strategy parameters are inherently schema-less maps.
+Note the pointer receiver (`*Strategy`) — this was a deliberate change from the original value-type interface. The strategy struct can be large (including prompt templates and JSON params), and passing by pointer avoids unnecessary copying. The upsert semantics (`ON CONFLICT (id) DO UPDATE`) handle re-deployment of previous versions.
 
-**List(): Audit Trail Retrieval**
+**GetHistory(): Audit Trail Retrieval**
+
+`GetHistory` replaces the old `List()` method and adds a strategy ID filter. This lets you retrieve the evolution history for a specific strategy family:
 
 ```go
-func (s *EvolutionStore) List(ctx context.Context, n int) ([]Strategy, error) {
-    query := `
-        SELECT ... FROM evolution_strategies
-        ORDER BY version DESC
-        LIMIT $1
-    `
-    // Iterate rows, unmarshal params JSON, build slice...
+func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*Strategy, error) {
+    return s.repo.GetStrategyHistory(ctx, id, n)
 }
 ```
 
-Ordered by version descending, limited to N entries. This is your audit trail — every strategy ever deployed, in chronological order. Perfect for the evolution dashboard's strategy genealogy tree view.
+Ordered by version descending, limited to N entries. This is your audit trail — every version of a strategy ever deployed, in chronological order. The `id` parameter lets you focus on a specific strategy lineage.
 
-**StoreDB Interface: Dependency Injection Friendly**
+**Why Repository Pattern?**
+
+The old `EvolutionStore` defined a `StoreDB` interface with `ExecContext`, `QueryContext`, and `QueryRowContext`:
 
 ```go
 type StoreDB interface {
@@ -1420,9 +1398,17 @@ type StoreDB interface {
 }
 ```
 
-Both `*sql.DB` and `*sql.Tx` satisfy this interface automatically. Means you can use EvolutionStore in regular operations (with `*sql.DB`) AND inside transactions (with `*sql.Tx`) for atomic strategy deployments. No adapter needed — standard library compatibility out of the box.
+Both `*sql.DB` and `*sql.Tx` satisfied this interface, which was flexible — you could use it in regular operations or inside transactions. However, keeping SQL scattered across the evolution package made migrations and testing harder. The repository pattern centralizes all database access in `internal/repositories/`, making the store layer a thin delegation proxy:
 
-The table DDL (run via migration) looks like:
+| Aspect | Old (EvolutionStore) | New (PGStrategyStore) |
+|--------|---------------------|----------------------|
+| Struct | `EvolutionStore{ db StoreDB }` | `PGStrategyStore{ repo *repositories.StrategyRepository }` |
+| Interface | `StoreDB` (SQL injection) | Repository methods (domain logic) |
+| SQL queries | Inline in evolution package | Centralized in repository layer |
+| Constructor | `NewEvolutionStore(db)` | `NewPGStrategyStore(repo)` |
+| SetActive | `SetActive(ctx, Strategy)` value | `SetActive(ctx, *Strategy)` pointer |
+
+This is a **pure refactor** — the underlying database table and SQL queries remain the same:
 
 ```sql
 CREATE TABLE evolution_strategies (
@@ -1441,86 +1427,119 @@ CREATE TABLE evolution_strategies (
 );
 ```
 
-### 9.9 Serialization & Snapshot System: Checkpoint/Resume for Evolution Runs
+What changed is how the evolution system talks to this table — through a clean domain abstraction instead of raw SQL strings.
 
-Database persistence handles individual strategies. But what if you want to capture the **entire state** of an evolution run — all 100 agents across 50 generations, plus the complete genealogy tree? That's what `internal/evolution/serialize.go` does.
+### 9.9 State Snapshots: From File Serialization to Runtime Snapshots
 
-**EvolutionRunSnapshot Struct**
+The old `serialize.go` (now removed) saved entire evolution runs to JSON files on disk. This approach had fundamental problems: file I/O in production is slow, serialization formats break across deployments, and it encouraged a checkpoint/resume pattern that wasn't actually used in practice.
+
+The replacement is a **three-tier runtime snapshot system** — no files, no JSON serialization, just in-memory snapshots:
 
 ```go
-// serialize.go - Complete evolution state capture
-type EvolutionRunSnapshot struct {
-    Config     SystemConfig        `json:"config"`
-    Generation int                 `json:"generation"`
-    Agents     []*mutation.Strategy `json:"agents"`
-    Lineages   []StrategyLineage   `json:"lineages,omitempty"`
+type ScoreSnapshot struct {
+    Score     float64
+    Timestamp time.Time
 }
 ```
 
-Four fields tell the whole story:
-- **Config**: What parameters were used (population size, mutation rate, seeds, etc.) — essential for reproducibility
-- **Generation**: Where in the evolution timeline this snapshot was taken
-- **Agents**: Every strategy in the population, deep-copied (uses `Population.Snapshot()` internally)
-- **Lineages**: Complete genealogy tree — who begat whom, with mutation types and timestamps
+**1. Population.Snapshot() — Agent State**
 
-**SaveEvolutionRun(): Write Snapshot to Disk**
+The `genome.Population` already had `Snapshot()` from the old system — a thread-safe deep copy of all agents:
 
 ```go
-func SaveEvolutionRun(filepath string, system *WiredEvolutionSystem) error {
-    if system == nil {
-        return fmt.Errorf("system must not be nil")
-    }
-    if system.Population == nil {
-        return fmt.Errorf("system population must not be nil")
-    }
+agents, generation := system.Population.Snapshot()
+```
 
-    // Thread-safe snapshot of all agents + generation counter
-    agents, generation := system.Population.Snapshot()
+This returns a deep copy of every agent's genotype (mutation parameters, scores, etc.) along with the current generation counter. Used internally by `RunIdleEvolution()` for post-generation analysis.
 
-    // Collect genealogy records if available
-    var lineages []StrategyLineage
-    if system.Genealogy != nil {
-        lineages = system.Genealogy.Lineages()
+**2. EvolutionScheduler.scoreSnapshot() — Runtime Metrics**
+
+The scheduler captures a point-in-time metric snapshot:
+
+```go
+func (s *EvolutionScheduler) scoreSnapshot() map[string]float64 {
+    return map[string]float64{
+        "population_size":  float64(s.Population.Size()),
+        "current_score":    s.Population.BestScore(),
+        "generation_count": float64(s.generationCount),
+        "completed_cycles": float64(s.CompletedCycles()),
     }
-
-    snapshot := &EvolutionRunSnapshot{
-        Config:     system.config,
-        Generation: generation,
-        Agents:     agents,
-        Lineages:   lineages,
-    }
-
-    data, err := json.MarshalIndent(snapshot, "", "  ")
-    // ... write to file with 0644 permissions
 }
 ```
 
-The flow is: validate inputs → snapshot population (thread-safe deep copy) → collect genealogy → marshal to pretty-printed JSON → write to disk. The resulting file is human-readable (2-space indent), machine-parseable (standard JSON), and self-contained (includes config for reproducibility).
+These metrics are used for logging, observability, and the rollback policy to detect score degradation.
 
-**LoadEvolutionRun(): Restore State from Disk**
+**3. RollbackPolicy.ScoreSnapshot — Rollback Tracking**
+
+The `RollbackPolicy` stores a running history of score snapshots to detect degradation:
 
 ```go
-func LoadEvolutionRun(filepath string) (*EvolutionRunSnapshot, error) {
-    data, err := os.ReadFile(filepath)
-    // ... unmarshal, nil-slice guards ...
+type RollbackPolicy struct {
+    ScoreSnapshot ScoreSnapshot
+    // ... other fields
 }
 ```
 
-Simple read → unmarshal. Returns the complete snapshot struct, ready for inspection or reconstruction. Note: `LoadEvolutionRun` doesn't automatically restore state into a running `WiredEvolutionSystem` — that's intentional. Loading a snapshot is for analysis (post-mortem debugging, comparative studies); restoring into a live system requires explicit decision-making about which fields to overwrite.
+Updated after each evolution cycle. If the latest score drops below a threshold (e.g., 10% decrease from the snapshot), the rollback policy can trigger a mid-evolution correction.
 
-**What This Enables**
+**What This Means**
 
-The serialization system unlocks three capabilities that were impossible before:
+The old file-based approach had three selling points:
 
-1. **Checkpoint/Resume**: Run 100 generations, save snapshot, shut down server, restart next week, load snapshot, continue from generation 101. No state lost.
+1. **Checkpoint/Resume** — Never used. `WiredEvolutionSystem` is rebuilt fresh on each server restart, and `RunIdleEvolution()` auto-records genealogy in the database, which is the real source of truth.
+2. **State Auditing** — Now handled by the database lineage records and score snapshots. No need to serialize the entire population to inspect what happened.
+3. **Reproducible Experiments** — The database-backed strategy store + genealogy table provide full audit traceability without file-based snapshots.
 
-2. **State Auditing**: After noticing "generation 47 produced weird results," load the snapshot from before/after generation 47 and diff the populations. Find exactly which individual went rogue.
+**Auto-Recorded Genealogy**
 
-3. **Reproducible Experiments**: Share the snapshot file with a colleague. They load it, see exact same population state, verify your findings independently. No "works on my machine" — the JSON IS the truth.
+When `RunIdleEvolution()` runs a full evolution cycle, it automatically records the genealogy in the database via `PopulationGenealogyRecorder`, which is wired in through `WiredEvolutionSystem.Genealogy`. This means:
+
+- Every strategy deployment is recorded as a node in the strategy table
+- Parent-child relationships are tracked via `parent_id`
+- Mutation metadata is stored alongside each strategy
+
+No manual `SaveEvolutionRun()`. No file management. The database IS the state.
+
+#### Complete Data Flow (With Persistence)
+
+With PGStrategyStore in the picture, the complete data flow looks like this:
+
+```mermaid
+graph TD
+    subgraph "Evolution Layer"
+        POP["Population.EvolveOnIdle()"]
+        POP --> |"Snapshot()"| SNAP["Deep copy all Agents"]
+        SNAP --> CROSS["Crossover + Mutate"]
+        CROSS --> NEXT["Next Generation Population"]
+    end
+
+    subgraph "Persistence Layer"
+        NEXT --> |"RecordPopulationLineage()"| GENE["Genealogy Recorder<br/>In-memory lineage"]
+        NEXT --> |"BestStrategy()"| BEST["Best strategy deep copy"]
+        BEST --> STORE["PGStrategyStore.SetActive()<br/>DB Persistence"]
+        SCHED --> |"scoreSnapshot()"| METRICS["Runtime metrics snapshot<br/>Monitoring + Dashboard"]
+    end
+
+    subgraph "Rollback Layer"
+        POLICY["RollbackPolicy<br/>ScoreSnapshot History"]
+        POLICY -.-> |"Detect continuous decline"| ROLLBACK["Auto-rollback to<br/>historical peak"]
+    end
+
+    style STORE fill:#fff9c4
+    style METRICS fill:#e1f5fe
+    style ROLLBACK fill:#c8e6c9
+```
+
+Three persistence paths, each with a distinct role:
+- **Genealogy Recorder**: Real-time in-memory lineage (lightweight, low-latency)
+- **PGStrategyStore (DB)**: Persists the current best strategy (survives restarts)
+- **scoreSnapshot**: Runtime metrics snapshot (monitoring + Dashboard)
+
+Compared to the old JSON file snapshot approach, the current design trades "file-level checkpoint/resume" (rarely used in production) for lighter, real-time snapshots integrated with the monitoring system.
 
 ### 9.10 genome_wiring.go Upgrades: StrategyStore Integration & Auto-Lineage
 
-`internal/evolution/genome_wiring.go` is the integration layer that connects all genome components into a cohesive system. It received three major upgrades.
+`internal/ares_evolution/genome_wiring.go` is the integration layer that connects all genome components into a cohesive system. It received three major upgrades.
 
 **WiredEvolutionSystem Gains Config and StrategyStore**
 
@@ -1537,7 +1556,7 @@ type WiredEvolutionSystem struct {
 }
 ```
 
-Two new fields. `config SystemConfig` is stored so `SaveEvolutionRun` can include it in snapshots. `StrategyStore StrategyStore` is the database-backed strategy store — this is what finally closes the loop between "evolved a better strategy" and "deployed that strategy to production."
+Two new fields. `config SystemConfig` is stored so `Population.Snapshot()` can capture complete run metadata. `StrategyStore StrategyStore` is the database-backed strategy store — this is what finally closes the loop between "evolved a better strategy" and "deployed that strategy to production."
 
 **SystemConfig Expands With Determinism Controls**
 
@@ -1572,7 +1591,7 @@ if cfg.StrategyStore != nil {
 }
 ```
 
-Clean optional injection. If you pass a `StrategyStore` (i.e., `*EvolutionStore` backed by a real database), the wired system gains persistence capability. If you don't (nil), everything still works — strategies just live in memory. This is the **gradual migration path**: start without persistence, prove the evolution works, then add `EvolutionStore` with zero changes to evolution logic.
+Clean optional injection. If you pass a `StrategyStore` (i.e., `*PGStrategyStore` backed by a real database), the wired system gains persistence capability. If you don't (nil), everything still works — strategies just live in memory. This is the **gradual migration path**: start without persistence, prove the evolution works, then add `PGStrategyStore` with zero changes to evolution logic.
 
 **RunIdleEvolution Auto-Records Lineage**
 
@@ -1651,14 +1670,14 @@ This function bridges the gap between genome's internal `ParentID` tracking and 
 
 **Interface Extensions**
 
-`internal/evolution/interfaces.go` gained two important additions:
+`internal/ares_evolution/interfaces.go` gained two important additions:
 
 ```go
 // interfaces.go - New StrategyStore interface
 type StrategyStore interface {
     GetActive(ctx context.Context) (*Strategy, error)
-    SetActive(ctx context.Context, s Strategy) error
-    List(ctx context.Context, n int) ([]Strategy, error)
+    SetActive(ctx context.Context, strategy *Strategy) error
+    GetHistory(ctx context.Context, id string, n int) ([]Strategy, error)
 }
 
 // RegressionConfig gains AdaptiveBatchSize
@@ -1668,7 +1687,7 @@ type RegressionConfig struct {
 }
 ```
 
-All structs in interfaces.go now have complete JSON tags — `Strategy` has `json:"id"`, `json:"params"`, etc.; `StrategyLineage` has `json:"parent_id"`, `json:"child_id"`, etc. This isn't cosmetic: it's what makes `SaveEvolutionRun`'s `json.MarshalIndent` produce clean, usable output.
+All structs in interfaces.go now have complete JSON tags — `Strategy` has `json:"id"`, `json:"params"`, etc.; `StrategyLineage` has `json:"parent_id"`, `json:"child_id"`, etc. This isn't cosmetic: it's what makes `Population.Snapshot()`'s `json.MarshalIndent` produce clean, usable output.
 
 The wiring architecture now looks like this:
 
@@ -1681,12 +1700,24 @@ mutation.Mutator --> GenomeMutatorAdapter --> genome.Population
                                                     ↑
                                               DreamCycle <-- MutationAdapter + GenealogyRecorder
                                                     ↑
-                                         StrategyStore (DB) <-- EvolutionStore
+                                         StrategyStore (DB) <-- PGStrategyStore
                                                     ↑
-                                            Serialize (Snapshot/Load)
+                                            Infra Layer (Snapshot/Audit)
 ```
 
-Six layers deep, each with a clear responsibility. The genome layer (pure computation, zero I/O), the wiring layer (adapters and orchestration), the persistence layer (database and files), and the serialization layer (checkpoint/resume). Each layer can be tested, replaced, or upgraded independently.
+Six layers deep, each with a clear responsibility. The genome layer (pure computation, zero I/O), the wiring layer (adapters and orchestration), the persistence layer (database via repository pattern), and the infrastructure layer (runtime snapshots and genealogy auditing). Each layer can be tested, replaced, or upgraded independently.
+
+---
+
+### Lessons Learned
+
+Developing the genome package reshaped my understanding of one thing: **genetic algorithms are not "smarter random search" — they're a fundamentally different paradigm.**
+
+Random search is "keep the best solution, try again." Genetic algorithms are "keep a population of candidate solutions and let them exchange genes." The former is like a lone genius trying over and over; the latter is like a community iterating through collective intelligence. When the search space is large and evaluation is expensive, the efficiency advantage of the latter is overwhelming — especially when your evaluation doesn't require an LLM call (zero token cost).
+
+This large refactoring also taught me: **a good architecture leaves room for requirements that don't exist yet.** The `StrategyStore` interface was originally designed as a placeholder, but because the interface was clean (`GetActive`/`SetActive`/`GetHistory` — just three methods), when DB persistence was actually needed, the implementation could be developed independently without touching any upper-layer code. DreamCycle doesn't care where strategies come from — it just calls `getCurrentStrategy()`, and whether that method internally uses hardcoded values or a database query is completely transparent to the caller.
+
+Similarly, adding `Population.Snapshot()` seemed like just adding a "read operation," but it unlocked two completely independent advanced features: in-memory snapshots (serialization) and automatic lineage recording (`RecordPopulationLineage`). One method, two uses — that's the power of good abstraction.
 
 ---
 
@@ -1758,7 +1789,7 @@ These two paths aren't replacements — they're **complementary**. EvolveOnIdle 
 
 Alright, enough nice words. Time for some honesty.
 
-Looking back at this entire evolution system — Callback, FeedbackService, Arena, DreamCycle, genome package (4 files, 2000+ lines), genome_wiring (564 lines), plus the mutation package itself... how many lines total? Just under `internal/evolution/` there are a dozen+ files. You're probably thinking:
+Looking back at this entire evolution system — Callback, FeedbackService, Arena, DreamCycle, genome package (4 files, 2000+ lines), genome_wiring (564 lines), plus the mutation package itself... how many lines total? Just under `internal/ares_evolution/` there are a dozen+ files. You're probably thinking:
 
 > **Just to let an agent tune its own parameters, is all this complexity really necessary?**
 
@@ -1784,7 +1815,7 @@ So this design being "heavy" isn't a bug — it's a feature. It pays upfront for
 
 Some areas I'm personally unhappy with:
 
-- **~~getCurrentStrategy() is still placeholder~~ — FIXED**: The biggest TODO is gone. `EvolutionStore` implements `StrategyStore` with `GetActive()`, `SetActive()`, and `List()` methods backed by a real database table (`evolution_strategies`). `WiredEvolutionSystem.StrategyStore` holds the connection. The full deployment loop now works: evolve → `BestStrategyFromSystem()` → extract best → `StrategyStore.SetActive()` → persist to DB → next startup reads via `GetActive()`. No more hardcoded `root-strategy-v1`. See Section 9.8 for full details.
+- **~~getCurrentStrategy() is still placeholder~~ — FIXED**: The biggest TODO is gone. `PGStrategyStore` implements `StrategyStore` with `GetActive()`, `SetActive()`, and `GetHistory()` methods backed by a real database via the repository pattern. `WiredEvolutionSystem.StrategyStore` holds the connection. The full deployment loop now works: evolve → `BestStrategyFromSystem()` → extract best → `StrategyStore.SetActive()` → persist to DB → next startup reads via `GetActive()`. No more hardcoded `root-strategy-v1`. See Section 9.8 for full details.
 - **shouldEvolve() is a stub**: EvolutionScheduler's heuristic judgment is basically empty — no performance degradation detection, no trend analysis, no adaptive thresholds. Currently "every callback triggers evolution," which definitely won't work in production
 - **HalfSplitPromptCrossover Unicode safety**: Uses `len(string)` (byte length) instead of `len([]rune())` for prompt truncation, producing illegal UTF-8 sequences with multi-byte characters like Chinese. Should be rune-level splitting
 - **Roulette Wheel degeneration with uniform scores**: When all individuals have identical scores (all -1 unevaluated, or all 0 initialized), Roulette Wheel degrades to uniform random selection. Fine in isolation, but if the population stays in this state long-term, evolution stalls on random walk
@@ -1817,7 +1848,6 @@ Callback trigger -> Scheduler decides -> DreamCycle orchestrates
     -> Mutator.Mutate() vary offspring
   -> RecordPopulationLineage() auto-build family tree
   -> StrategyStore.SetActive() persist winner to DB  [NEW]
-  -> SaveEvolutionRun() checkpoint full state         [NEW]
   -> Arena validate (Welch's t-test)
   -> Genealogy record lineage
   -> Winner becomes new Baseline
@@ -1830,8 +1860,7 @@ The system's design philosophy is **conservative incrementalism**:
 - **Fully traceable**: every step has logs, lineage, Audit Trail — now with `RecordPopulationLineage()` building the family tree automatically after each generation
 - **Graceful degradation**: missing any component doesn't affect basic functionality, just skips evolution
 - **Zero-token option**: EvolveOnIdle drives evolution cost to zero — pure in-memory ops, microsecond latency
-- **Database persistence** [NEW]: EvolutionStore closes the deployment loop — evolved strategies are no longer stuck in memory, they persist across restarts via `GetActive()` / `SetActive()` / `List()`
-- **Checkpoint/Resume** [NEW]: SaveEvolutionRun / LoadEvolutionRun captures complete evolution state as JSON — checkpoint mid-run, resume later, audit historically, share reproducibly
+- **Database persistence** [NEW]: PGStrategyStore closes the deployment loop — evolved strategies are no longer stuck in memory, they persist across restarts via `GetActive()` / `SetActive()` / `GetHistory()`
 - **Deterministic reproduction** [NEW]: MutatorSeed + CrossoverSeed + PopulationSeed + UseDeterministicIDs = bit-for-bit reproducible evolution trajectories for debugging and scientific comparison
 
 Honestly, this system still has TODOs: `shouldEvolve()`'s score degradation detection isn't wired up, Level 3 tool auto-generation is just an enum value, HalfSplit Prompt Crossover hasn't been made Unicode-safe, genome/evolution type coupling still requires adapters. But the skeleton is solid, the biggest TODO (`getCurrentStrategy()` placeholder) is **resolved**, five of the six links are closed, the genome package's genetic algorithm engine is production-grade with DB persistence, serialization, thread-safe inspection, and traceable provenance — what's left is incremental polish, not foundational gaps.
@@ -1846,7 +1875,7 @@ NewPopulation(base) -> RunIdleEvolution(100 gens) ->
 
 That's a closed loop. Not a perfect one — but a working one.
 
-If you want to add self-evolution capability to your agent too, my advice: **don't start with the Genome package.** First wire up Callback + FeedbackService — record every success and failure. Then add Arena for strategy validation. Then Mutator + DreamCycle single-parent mutation evolution. Add EvolutionStore for persistence once you're ready to deploy evolved strategies. Finally — when you genuinely need to explore large-scale parameter spaces — bring in the Genome package's population genetic algorithm.
+If you want to add self-evolution capability to your agent too, my advice: **don't start with the Genome package.** First wire up Callback + FeedbackService — record every success and failure. Then add Arena for strategy validation. Then Mutator + DreamCycle single-parent mutation evolution. Add PGStrategyStore for persistence once you're ready to deploy evolved strategies. Finally — when you genuinely need to explore large-scale parameter spaces — bring in the Genome package's population genetic algorithm.
 
 Step by step, each step delivers independent value. That's what engineering should look like.
 

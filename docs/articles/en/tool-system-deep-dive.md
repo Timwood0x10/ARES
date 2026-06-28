@@ -474,6 +474,6 @@ Next up: **Memory system and knowledge distillation** — how the Agent remember
 | ToolNode (Workflow) | `internal/workflow/graph/node.go` |
 | MCP tool adapter | `internal/ares_mcp/mcp_tool.go` |
 | MCP client | `internal/ares_mcp/client.go` |
-| Callback system | `internal/callbacks/callbacks.go` |
+| Callback system | `internal/ares_callbacks/callbacks.go` |
 | Event system | `internal/ares_events/` |
 | Builtin tool registration | `internal/tools/resources/builtin/builtin.go` |

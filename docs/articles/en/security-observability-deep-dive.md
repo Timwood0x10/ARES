@@ -23,7 +23,7 @@ Core file list:
 | Security (Sanitizer) | `internal/security/sanitizer.go` |
 | Observability (Tracer) | `internal/observability/tracer.go`, `noop.go`, `log.go` |
 | Rate Limiting (Limiter) | `internal/ratelimit/` (four source files) |
-| Graceful Shutdown | `internal/shutdown/` (four source files) |
+| Graceful Shutdown | `internal/ares_shutdown/` (four source files) |
 | Middleware Pattern | `internal/dashboard/api.go`, `internal/arena/http.go` |
 | End-to-End Integration | `internal/workflow/graph/graph.go`, `.../executor.go` |
 | API Layer Integration | `api/service/graph/service.go` |

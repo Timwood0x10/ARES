@@ -484,8 +484,8 @@ Emit(ctx, store, streamID, eventType, "runtime", payload)
 | `internal/agents/sub/agent.go` | Sub Agent 生命周期 |
 | `internal/agents/sub/executor.go` | LLM 执行引擎（重试 + 降级） |
 | `internal/agents/sub/heartbeat.go` | 心跳发送 + sync.Once 关闭 |
-| `internal/shutdown/manager.go` | 四阶段关闭 |
-| `internal/callbacks/callbacks.go` | LLM/Agent/Tool 生命周期钩子 |
+| `internal/ares_shutdown/manager.go` | 四阶段关闭 |
+| `internal/ares_callbacks/callbacks.go` | LLM/Agent/Tool 生命周期钩子 |
 
 
 Agent 挂了怎么办？这是所有 Agent 框架都绕不开的问题，但很少有人认真回答。这篇文章会带你走一遍 Runtime 子系统的设计历程——从"怎么不让 Agent 

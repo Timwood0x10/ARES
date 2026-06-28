@@ -57,7 +57,7 @@ Core files:
 | `internal/ares_events/summary.go` | EventSummary model + CompactionConfig |
 | `internal/ares_events/summary_repository.go` | PgSummaryRepository |
 | `internal/ares_events/memory_summary_repo.go` | In-memory SummaryRepository |
-| `internal/flight/replay.go` | ReplaySession for step-by-step replay |
+| `internal/ares_flight/replay.go` | ReplaySession for step-by-step replay |
 
 ---
 
@@ -272,7 +272,7 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 
 ## 5. ReplaySession
 
-`internal/flight/replay.go` provides step-by-step event replay for a task:
+`internal/ares_flight/replay.go` provides step-by-step event replay for a task:
 
 ```mermaid
 sequenceDiagram

@@ -486,8 +486,8 @@ That moment I knew: **the money wasn't wasted.**
 | `internal/agents/sub/agent.go` | Sub Agent lifecycle |
 | `internal/agents/sub/executor.go` | LLM execution engine (retry + degradation) |
 | `internal/agents/sub/heartbeat.go` | Heartbeat sender + sync.Once shutdown |
-| `internal/shutdown/manager.go` | Four-phase shutdown |
-| `internal/callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
+| `internal/ares_shutdown/manager.go` | Four-phase shutdown |
+| `internal/ares_callbacks/callbacks.go` | LLM/Agent/Tool lifecycle hooks |
 
 ---
 

@@ -23,7 +23,7 @@
 | 安全（脱敏） | `internal/security/sanitizer.go` |
 | 可观测性（Tracer） | `internal/observability/tracer.go`、`noop.go`、`log.go` |
 | 限流（Limiter） | `internal/ratelimit/` 目录下四个源文件 |
-| 优雅关闭 | `internal/shutdown/` 目录下四个源文件 |
+| 优雅关闭 | `internal/ares_shutdown/` 目录下四个源文件 |
 | 中间件模式 | `internal/dashboard/api.go`、`internal/arena/http.go` |
 | 端到端集成 | `internal/workflow/graph/graph.go`、`.../executor.go` |
 | API 层集成 | `api/service/graph/service.go` |
