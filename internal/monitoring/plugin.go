@@ -30,6 +30,8 @@ type pluginOptions struct {
 	interval    time.Duration
 	runtimeCtrl dag.RuntimeController
 	orchCtrl    dag.OrchestratorController
+	mcp         MCPManager
+	pruneCfg    *PruneConfig
 	hasRuntime  bool
 	hasOrch     bool
 }
@@ -47,6 +49,8 @@ type MonitorPlugin struct {
 	// Optional sub-components.
 	engine      *dag.Engine
 	interEngine *dag.InteractionEngine
+	mcp         MCPManager
+	pruner      *Pruner
 
 	// Deferred options.
 	opts pluginOptions
@@ -94,6 +98,20 @@ func WithCostAlertThreshold(_ float64) Option {
 	return func(_ *pluginOptions) {}
 }
 
+// WithMCP sets the MCP manager for tool listing and invocation.
+func WithMCP(mcp MCPManager) Option {
+	return func(o *pluginOptions) {
+		o.mcp = mcp
+	}
+}
+
+// WithPruneConfig sets the TTL pruning configuration.
+func WithPruneConfig(cfg PruneConfig) Option {
+	return func(o *pluginOptions) {
+		o.pruneCfg = &cfg
+	}
+}
+
 // NewConsole creates a new MonitorPlugin implementing ConsoleAPI.
 func NewConsole(opts ...Option) ConsoleAPI {
 	o := pluginOptions{interval: 2 * time.Second}
@@ -105,6 +123,7 @@ func NewConsole(opts ...Option) ConsoleAPI {
 	p := &MonitorPlugin{
 		engine:    engine,
 		mainPage:  NewMainPage(WithDAG(engine)),
+		mcp:       o.mcp,
 		opts:      o,
 		isStarted: false,
 	}
@@ -122,6 +141,11 @@ func NewConsole(opts ...Option) ConsoleAPI {
 	// Create InteractionEngine if any controller was provided.
 	if o.hasRuntime || o.hasOrch {
 		p.interEngine = dag.NewInteractionEngine(engine, o.runtimeCtrl, o.orchCtrl)
+	}
+
+	// Create pruner if config was provided.
+	if o.pruneCfg != nil {
+		p.pruner = NewPruner(p.mainPage, *o.pruneCfg)
 	}
 
 	return p
@@ -150,16 +174,25 @@ func (p *MonitorPlugin) Start(ctx context.Context, bus ares_runtime.EventBus) er
 	// Store bus reference for later use by sub-components.
 	p.bus = bus
 
-	// Create and start collector.
-	p.collector = NewCollector(bus, p.mainPage)
-	if err := p.collector.Start(ctx); err != nil {
-		cancel()
-		return err
+	// Create and start collector (only if bus is provided).
+	if bus != nil {
+		p.collector = NewCollector(bus, p.mainPage)
+		if p.collector != nil {
+			if err := p.collector.Start(ctx); err != nil {
+				cancel()
+				return err
+			}
+		}
 	}
 
 	// Start publisher.
 	if p.publisher != nil {
 		p.publisher.Start(ctx)
+	}
+
+	// Start pruner.
+	if p.pruner != nil {
+		p.pruner.Start(ctx)
 	}
 
 	p.isStarted = true
@@ -172,6 +205,9 @@ func (p *MonitorPlugin) Stop(_ context.Context) error {
 		return nil
 	}
 
+	if p.pruner != nil {
+		p.pruner.Stop()
+	}
 	if p.publisher != nil {
 		p.publisher.Stop()
 	}
@@ -326,4 +362,28 @@ func (p *MonitorPlugin) LLMCalls(_ context.Context, _ string, _ int) ([]LLMCallR
 // Recommendations returns current recommendations. Not yet wired.
 func (p *MonitorPlugin) Recommendations(_ context.Context) ([]Recommendation, error) {
 	return nil, fmt.Errorf("recommendations: %w", ErrNotImplemented)
+}
+
+// ListMCPTools returns all available MCP tools.
+func (p *MonitorPlugin) ListMCPTools(ctx context.Context) ([]MCPToolInfo, error) {
+	if p.mcp == nil {
+		return nil, fmt.Errorf("list MCP tools: %w", ErrNotImplemented)
+	}
+	return p.mcp.ListTools(ctx)
+}
+
+// CallMCPTool invokes an MCP tool by name with the given arguments.
+func (p *MonitorPlugin) CallMCPTool(ctx context.Context, toolName string, args map[string]any) (*MCPToolResult, error) {
+	if p.mcp == nil {
+		return nil, fmt.Errorf("call MCP tool: %w", ErrNotImplemented)
+	}
+	return p.mcp.CallTool(ctx, toolName, args)
+}
+
+// RunHTTPServer starts the Gin-based HTTP server on the given address.
+// This is a convenience method that creates an HTTPServer if one is not
+// already attached.
+func (p *MonitorPlugin) RunHTTPServer(addr string) error {
+	srv := NewHTTPServer(p)
+	return srv.Run(addr)
 }

@@ -67,4 +67,10 @@ type ConsoleAPI interface {
 
 	// Recommendations returns current AI-generated recommendations.
 	Recommendations(ctx context.Context) ([]Recommendation, error)
+
+	// ListMCPTools returns all available MCP tools.
+	ListMCPTools(ctx context.Context) ([]MCPToolInfo, error)
+
+	// CallMCPTool invokes an MCP tool by name with the given arguments.
+	CallMCPTool(ctx context.Context, toolName string, args map[string]any) (*MCPToolResult, error)
 }

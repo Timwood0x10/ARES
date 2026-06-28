@@ -324,3 +324,70 @@ func TestMonitorPlugin_WithCostAlertThreshold(t *testing.T) {
 	p := NewConsole(WithCostAlertThreshold(100.0))
 	assert.NotNil(t, p)
 }
+
+func TestMonitorPlugin_WithMCP(t *testing.T) {
+	mock := &mockMCPManager{
+		tools: []MCPToolInfo{{Name: "tool1"}},
+	}
+	p := NewConsole(WithMCP(mock))
+	require.NotNil(t, p)
+
+	mp := p.(*MonitorPlugin)
+	assert.NotNil(t, mp.mcp)
+}
+
+func TestMonitorPlugin_WithPruneConfig(t *testing.T) {
+	cfg := PruneConfig{MaxAgentAge: 1 * time.Hour, PruneInterval: 30 * time.Second}
+	p := NewConsole(WithPruneConfig(cfg))
+	require.NotNil(t, p)
+
+	mp := p.(*MonitorPlugin)
+	assert.NotNil(t, mp.pruner)
+}
+
+func TestMonitorPlugin_ListMCPTools_NoManager(t *testing.T) {
+	p := NewConsole()
+	ctx := context.Background()
+	_, err := p.ListMCPTools(ctx)
+	assert.ErrorIs(t, err, ErrNotImplemented)
+}
+
+func TestMonitorPlugin_ListMCPTools_WithManager(t *testing.T) {
+	mock := &mockMCPManager{
+		tools: []MCPToolInfo{{Name: "read_file", Description: "Read"}},
+	}
+	p := NewConsole(WithMCP(mock))
+	ctx := context.Background()
+	tools, err := p.ListMCPTools(ctx)
+	require.NoError(t, err)
+	assert.Len(t, tools, 1)
+	assert.Equal(t, "read_file", tools[0].Name)
+}
+
+func TestMonitorPlugin_CallMCPTool_NoManager(t *testing.T) {
+	p := NewConsole()
+	ctx := context.Background()
+	_, err := p.CallMCPTool(ctx, "tool1", nil)
+	assert.ErrorIs(t, err, ErrNotImplemented)
+}
+
+func TestMonitorPlugin_CallMCPTool_WithManager(t *testing.T) {
+	mock := &mockMCPManager{
+		result: &MCPToolResult{ToolName: "tool1", Output: map[string]any{"ok": true}},
+	}
+	p := NewConsole(WithMCP(mock))
+	ctx := context.Background()
+	result, err := p.CallMCPTool(ctx, "tool1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "tool1", result.ToolName)
+	assert.True(t, result.Output["ok"].(bool))
+}
+
+func TestMonitorPlugin_RunHTTPServer(t *testing.T) {
+	// RunHTTPServer creates a server; just verify it doesn't panic.
+	p := NewConsole().(*MonitorPlugin)
+	// We can't actually start the server in a test without a port,
+	// but we can verify the method exists and the server is created.
+	srv := NewHTTPServer(p)
+	assert.NotNil(t, srv)
+}

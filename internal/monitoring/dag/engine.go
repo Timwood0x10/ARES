@@ -204,6 +204,32 @@ func (e *Engine) Snapshot() DAGSnapshot {
 	return snap
 }
 
+// TrimTimeline keeps at most maxLen timeline events per node, discarding the oldest.
+func (e *Engine) TrimTimeline(id string, maxLen int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	node, exists := e.nodes[id]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrNodeNotFound, id)
+	}
+	if maxLen > 0 && len(node.Timeline) > maxLen {
+		node.Timeline = node.Timeline[len(node.Timeline)-maxLen:]
+	}
+	return nil
+}
+
+// Nodes returns a snapshot of all node IDs and their current status.
+// This is intended for pruning and diagnostics, not for display.
+func (e *Engine) Nodes() map[string]NodeStatus {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	result := make(map[string]NodeStatus, len(e.nodes))
+	for id, n := range e.nodes {
+		result[id] = n.Status
+	}
+	return result
+}
+
 // Children returns all direct child nodes (nodes with an edge FROM the given node).
 func (e *Engine) Children(id string) []*DAGNode {
 	e.mu.RLock()
