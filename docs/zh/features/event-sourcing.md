@@ -401,7 +401,7 @@ store := events.NewPostgresEventStore(pool)
 
 | 文件 | 说明 |
 |------|------|
-| `internal/events/types.go` | Event 结构体、EventType 常量、ReadOptions、EventFilter |
-| `internal/events/store.go` | EventStore 接口、NewEventID |
-| `internal/events/memory_store.go` | 内存实现 |
-| `internal/events/pg_store.go` | PostgreSQL 实现 |
+| `internal/ares_events/types.go` | Event 结构体、EventType 常量、ReadOptions、EventFilter |
+| `internal/ares_events/store.go` | EventStore 接口、NewEventID |
+| `internal/ares_events/memory_store.go` | 内存实现 |
+| `internal/ares_events/pg_store.go` | PostgreSQL 实现 |

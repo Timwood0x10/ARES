@@ -443,7 +443,7 @@ func (m *PerformanceMonitor) PrintReport() {
 }
 ```
 
-**代码位置**: `internal/observability/monitor.go:80-120`
+**代码位置**: `internal/ares_observability/monitor.go:80-120`
 
 ## 常见性能问题
 
@@ -478,7 +478,7 @@ func DiagnoseSlowResponse() {
 - 优化 SQL 查询
 - 增加缓存大小
 
-**代码位置**: `internal/observability/diagnostics.go:50-100`
+**代码位置**: `internal/ares_observability/diagnostics.go:50-100`
 
 ### 问题 2: 内存占用高
 
@@ -510,7 +510,7 @@ func CheckMemoryLeak() {
 - 限制并发数
 - 检查 goroutine 泄漏
 
-**代码位置**: `internal/observability/diagnostics.go:150-200`
+**代码位置**: `internal/ares_observability/diagnostics.go:150-200`
 
 ### 问题 3: 数据库连接耗尽
 

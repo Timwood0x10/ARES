@@ -297,7 +297,7 @@ Dependencies: codegraph binary + Ollama running. No database.
 ## 5. File Layout
 
 ```
-internal/mcp/               # MCP client implementation
+internal/ares_mcp/               # MCP client implementation
 ├── jsonrpc.go              # JSON-RPC 2.0 types, encode/decode
 ├── transport.go            # Transport interface
 ├── transport_stdio.go      # Stdio subprocess transport

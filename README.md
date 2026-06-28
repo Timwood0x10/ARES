@@ -13,17 +13,28 @@ ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime f
 
 Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
 
-## Architecture 
+## Architecture
 
 ```mermaid
 graph TB
-    User["User Request"] --> RT
+    User["User Request"] --> Bootstrap
+
+    subgraph api ["API Layer (api/core/)"]
+        Bootstrap["Bootstrap Factory"]
+        Interfaces["AgentService / Runtime / Evolution / Arena / MemoryService / LLMService / WorkflowService"]
+    end
+
+    Bootstrap --> RT
+    Bootstrap --> EvoSvc
+    Bootstrap --> ArenaSvc
+    Bootstrap --> MemMgr
 
     subgraph runtime ["Runtime Layer"]
         RT["Runtime Manager"]
         RT -->|"manages lifecycle"| Leader
         RT -->|"replays"| ES["EventStore"]
         RT -->|"restores"| MM["MemoryStore"]
+        RT -->|"module=runtime"| LOG["Structured Logger"]
     end
 
     subgraph agents ["Agent System"]
@@ -42,7 +53,9 @@ graph TB
     subgraph workflow ["Workflow Engine"]
         MutableDAG["MutableDAG"]
         DynamicExec["DynamicExecutor"]
+        PluginBus["PluginBus"]
         MutableDAG --> DynamicExec
+        DynamicExec --> PluginBus
         DynamicExec --> TopoSort["Topological Sort"]
         DynamicExec --> CycleDetect["Cycle Detection"]
     end
@@ -54,6 +67,7 @@ graph TB
     end
 
     subgraph mem ["Memory Manager"]
+        MemMgr["Memory Manager"]
         Session["Session Memory"]
         Task["Task Memory"]
         Distilled["Distilled Memory"]
@@ -63,10 +77,12 @@ graph TB
     end
 
     subgraph evo ["Evolution Engine"]
+        EvoSvc["Evolution Service"]
         Pop["GA Population"]
         Score["Scoring Pipeline"]
         Cross["Crossover"]
         Mut["Mutation"]
+        EvoSvc --> Pop
         Pop --> Score
         Score --> Cross
         Cross --> Mut
@@ -119,9 +135,11 @@ graph TB
     end
 
     subgraph arena ["Chaos Engineering"]
+        ArenaSvc["Arena Service"]
         FI["Fault Injector"]
         RS["Resilience Scoring"]
         SM["Survival Mode"]
+        ArenaSvc --> FI
         FI --> RS
         RS --> SM
     end
@@ -413,16 +431,21 @@ Enables complete execution state restore for leader failover and step-level reco
 
 ## Benchmark Highlights
 
-32 benchmarks total. 2573 tests pass with `-race` across 49 packages.
+116 benchmarks total. 5675 tests pass with `-race` across 130 packages.
 
 Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 
 | Category | Count | Hot (< 1 us) | Normal (1-100 us) | Cold (> 100 us) |
 |----------|-------|---------------|--------------------|--------------------|
 | Eval | 5 | 2 | 2 | 1 |
-| Distillation | 9 | 0 | 8 | 1 |
-| Tools/Core | 8 | 3 | 5 | 0 |
-| Errors | 4 | 2 | 2 | 0 |
+| Distillation | 10 | 0 | 9 | 1 |
+| Tools/Core | 9 | 4 | 5 | 0 |
+| Errors | 4 | 3 | 1 | 0 |
+| Events | 6 | 0 | 5 | 1 |
+| Handler | 3 | 1 | 1 | 1 |
+| Evolution | 6 | 0 | 1 | 5 |
+| Evolution/Genome | 30+ | 0 | 20+ | 10+ |
+| **Total** | **116** | **10** | **43** | **20** |
 | Event Sourcing | 6 | 0 | 5 | 1 |
 | **Total** | **32** | **7** | **22** | **3** |
 
@@ -430,18 +453,19 @@ Selected hot-path results:
 
 | Operation | ns/op | allocs/op |
 |-----------|-------|-----------|
-| ExactMatchEvaluator | 180.3 | 0 |
-| ToolUsageEvaluator | 361.3 | 0 |
-| ToolExecution | 347.3 | 0 |
-| ConvertEvent | 97.00 | 0 |
-| ResultCreation (Success) | 125.0 | 0 |
-| ResultCreation (Error) | 55.33 | 0 |
-| ParameterValidation | 208.3 | 0 |
-| Wrap (error) | 69.67 | 0 |
-| WrapMultipleWraps | 69.33 | 0 |
-| ConflictDetection | 2125 | 0 |
+| ExactMatchEvaluator | 3.07 | 0 |
+| ToolUsageEvaluator | 28.49 | 0 |
+| ToolExecution | 14.69 | 0 |
+| ConvertEvent | 4.87 | 0 |
+| ParameterValidation | 7.22 | 0 |
+| Wrap (error) | 0.27 | 0 |
+| WrapMultipleWraps | 0.59 | 0 |
+| ResultCreation (Success) | 0.27 | 0 |
+| ResultCreation (Error) | 0.28 | 0 |
+| ConflictDetection | 1027 | 0 |
+| DreamCycle_SingleRun | 224 | 4 |
 
-7 of 32 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, event conversion, error wrapping, and conflict detection.
+10 of 116 benchmarks run under 1 us. Zero-allocation paths for evaluation, tool execution, result creation, error wrapping, and parameter validation.
 
 Full benchmark report: `benchmarks/benchmark_report.md`
 
@@ -478,39 +502,36 @@ docker run -d \
 ### 3. Run Examples
 
 ```bash
-# Travel planning (multi-agent collaboration)
+# Quick start (bootstrap API)
+go run examples/quickstart/main.go
+
+# Graph workflow demos
+go run examples/graph_demo/basic/basic_example.go
+go run examples/graph_demo/conditional/conditional_example.go
+go run examples/graph_demo/scheduler/scheduler_example.go
+go run examples/graph_demo/recovery/recovery_example.go
+
+# Advanced patterns
+go run examples/advanced/mutable_dag/main.go
+go run examples/advanced/dynamic_executor/main.go
+go run examples/advanced/leader_failover/main.go
+go run examples/advanced/agent_resurrection/main.go
+
+# Multi-agent collaboration
 cd examples/travel && go run main.go
 
-# Knowledge base Q&A (requires database + embedding service)
-cd examples/knowledge-base
-go run main.go --save README.md              # Import document
-go run main.go --save docs/goagent-overview.md  # Import framework overview
-go run main.go --chat                         # Start Q&A (supports knowledge correction)
+# Knowledge base Q&A (requires database)
+cd examples/knowledge-base && go run main.go --chat
 
-# Advanced examples (v2 features)
-go run ./examples/advanced/leader_failover/
-go run ./examples/advanced/agent_resurrection/
-go run ./examples/advanced/runtime_resurrection/
-go run ./examples/advanced/dynamic_executor/
-go run ./examples/advanced/mutable_dag/
-
-# Dashboard with MCP integration
+# Chaos engineering
 cd examples/mcp-dashboard && go run main.go
 
-# Quantitative analysis demo
+# Quantitative trading
 cd examples/quant-trading && go run . --ticker AAPL
 
-# Development agent demo
-cd examples/devagent && go run main.go
-
-# Tool capability demo
-cd examples/capability-demo && go run main.go
-
-# Autonomous evolution (genetic algorithm) demo
+# Autonomous evolution (genetic algorithm)
 cd examples/autonomous-evolution && go run main.go
 ```
-
-See [Advanced Examples](docs/en/development/examples.md) for detailed documentation.
 
 ### 4. Run Tests
 
@@ -612,7 +633,7 @@ ares/
 │   └── config/           # Configuration loading + validation
 │   └── tools/           # Tool registry and invocation
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
-├── examples/            # Travel, knowledge-base, dashboard, quant, devagent, ...
+├── examples/            # Travel, knowledge-base, dashboard, quant, quickstart, ...
 ├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
 └── benchmarks/          # Benchmark reports and logs

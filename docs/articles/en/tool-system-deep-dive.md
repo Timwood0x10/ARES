@@ -225,7 +225,7 @@ ToolNode's design hints at a different use case: **when you don't need LLM decis
 MCP (Model Context Protocol) is Anthropic's standardized tool protocol using JSON-RPC over stdin/SSE. ares's MCP adapter wraps external tools as standard `core.Tool`:
 
 ```go
-// internal/mcp/mcp_tool.go
+// internal/ares_mcp/mcp_tool.go
 type MCPTool struct {
     *base.BaseTool
     client     *MCPClient
@@ -472,8 +472,8 @@ Next up: **Memory system and knowledge distillation** — how the Agent remember
 | OpenAI adapter | `internal/llm/output/openai.go` |
 | Result formatter | `internal/tools/resources/formatter/result_formatter.go` |
 | ToolNode (Workflow) | `internal/workflow/graph/node.go` |
-| MCP tool adapter | `internal/mcp/mcp_tool.go` |
-| MCP client | `internal/mcp/client.go` |
+| MCP tool adapter | `internal/ares_mcp/mcp_tool.go` |
+| MCP client | `internal/ares_mcp/client.go` |
 | Callback system | `internal/callbacks/callbacks.go` |
-| Event system | `internal/events/` |
+| Event system | `internal/ares_events/` |
 | Builtin tool registration | `internal/tools/resources/builtin/builtin.go` |

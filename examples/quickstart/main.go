@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer ares.Stop()
+	defer func() { _ = ares.Stop() }()
 
 	// Start runtime (manages agent lifecycles).
 	if err := ares.Start(ctx); err != nil {

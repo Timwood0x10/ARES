@@ -242,9 +242,9 @@ ares arena run examples/quant-trading/chaos/pm_failover.yaml
 | `graph.AddNode()` | `ares/internal/workflow/graph` | 添加工作流节点 |
 | `graph.AddEdge()` | `ares/internal/workflow/graph` | 添加依赖边 |
 | `graph.Execute()` | `ares/internal/workflow/graph` | 执行工作流 |
-| `events.EventStore.Append()` | `ares/internal/events` | 写入事件 |
-| `events.EventStore.Read()` | `ares/internal/events` | 读取事件 |
-| `CompactableEventStore.GetSummariesForStream()` | `ares/internal/events` | 获取历史摘要 |
+| `events.EventStore.Append()` | `ares/internal/ares_events` | 写入事件 |
+| `events.EventStore.Read()` | `ares/internal/ares_events` | 读取事件 |
+| `CompactableEventStore.GetSummariesForStream()` | `ares/internal/ares_events` | 获取历史摘要 |
 | `arena.RunScenario()` | `ares/internal/arena` | 运行混沌场景 |
 | `tools/core.Registry.Register()` | `ares/internal/tools/resources/core` | 注册 MCP 工具 |
 | `dashboard.AgentRequest` | `ares/internal/dashboard` | Agent 参数结构体 |

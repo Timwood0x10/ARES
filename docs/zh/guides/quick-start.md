@@ -1,33 +1,87 @@
 # 快速开始
 
-本指南帮助你在 10 分钟内运行第一个 go-agent 示例。
+本指南帮助你在 10 分钟内运行第一个 ARES 示例。
 
 ## 前置条件
 
 ### 必需组件
 
-- **Go 1.21+**
+- **Go 1.26+**
   ```bash
   go version  # 检查版本
   ```
 
-- **PostgreSQL 15+ with pgvector**
+- **PostgreSQL 15+ with pgvector**（可选，用于持久化）
   ```bash
-  # 安装 PostgreSQL
-  # macOS: brew install postgresql@15
-  # Ubuntu: apt install postgresql-15
-
-  # 安装 pgvector 扩展
-  # 下载: https://github.com/pgvector/pgvector/releases
+  # Docker 快速启动：
+  ./scripts/docker/restart.sh
   ```
 
-- **Ollama（或其他 LLM 服务）**
+- **LLM API Key**（可选，用于 AI 功能）
   ```bash
-  # 安装 Ollama
-  # macOS: brew install ollama
-  # Linux: curl -fsSL https://ollama.com/install.sh | sh
+  export OPENROUTER_API_KEY="your-api-key"
+  ```
 
-  # 拉取模型
+## 使用 Bootstrap 快速开始
+
+通过 bootstrap API 启动 ARES 最简单：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/Timwood0x10/ares/api/bootstrap"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // 创建 ARES 实例，所有模块自动接线
+    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ares.Stop()
+
+    // 启动运行时
+    if err := ares.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("ARES 启动成功！")
+
+    // 使用模块：
+    // ares.Runtime   — Agent 生命周期
+    // ares.Memory    — 记忆管理
+    // ares.Evolution — 遗传算法
+    // ares.Arena     — 混沌工程
+}
+```
+
+## 运行示例
+
+```bash
+# 快速开始（bootstrap API）
+go run examples/quickstart/main.go
+
+# 图工作流演示
+go run examples/graph_demo/basic/basic_example.go
+go run examples/graph_demo/conditional/conditional_example.go
+go run examples/graph_demo/scheduler/scheduler_example.go
+
+# 高级模式
+go run examples/advanced/mutable_dag/main.go
+go run examples/advanced/dynamic_executor/main.go
+go run examples/advanced/leader_failover/main.go
+
+# 多 Agent 协作
+go run examples/travel/main.go
+
+# 混沌工程
+go run examples/mcp-dashboard/main.go
   ollama pull llama3.2
   ```
 

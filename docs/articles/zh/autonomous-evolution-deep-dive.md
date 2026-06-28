@@ -183,7 +183,7 @@ Flight Recorder 记录了 Agent 执行过程中的每一个决策点：哪个 to
 
 ### 3.3 Eval Engine — 评估框架
 
-`internal/eval/llm_judge.go` 实现了 LLM-as-Judge 评估器：
+`internal/ares_eval/llm_judge.go` 实现了 LLM-as-Judge 评估器：
 
 ```go
 type LLMJudgeEvaluator struct {

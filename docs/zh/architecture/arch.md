@@ -481,7 +481,7 @@ ares/
 │   ├── travel/              # 旅行规划
 │   ├── knowledge-base/      # 知识库问答
 │   ├── simple/              # 简单示例
-│   └── capability-demo/     # 功能演示
+│   └── quickstart/        # Bootstrap API 快速开始
 ├── services/                # 独立服务
 │   └── embedding/           # Embedding 服务
 │       ├── app.py           # FastAPI 服务

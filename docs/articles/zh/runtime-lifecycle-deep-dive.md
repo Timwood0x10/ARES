@@ -397,7 +397,7 @@ func (r *Registry) Emit(ctx *Context) {
         func() {
             defer func() {
                 if r := recover(); r != nil {
-                    slog.Error("handler panicked", "event", ctx.Event)
+                    log.Error("handler panicked", "event", ctx.Event)
                 }
             }()
             h(ctx)
@@ -405,6 +405,16 @@ func (r *Registry) Emit(ctx *Context) {
     }
 }
 ```
+
+注意这里的 `log` 不是 `slog`——它是通过 `logger.Module("runtime")` 创建的模块级 logger。Runtime 的每条日志自动带 `module=runtime`。听起来微不足道，直到凌晨三点出了问题，Runtime、Workflow、Memory、Evolution 四个子系统的日志混在一起，你盯着四行一模一样的 `slog.Info("started")`，完全不知道该看哪行。
+
+事件系统本身也有同样的问题。回放事件流时，你看到 `step.started` 和 `tool.call.completed`——但哪个模块发的？工作流引擎？运行时？插件总线？payload 里没说。所以 `Event` 现在带了 `ModuleName` 字段，`Emit()` 强制你在调用点声明身份：
+
+```go
+Emit(ctx, store, streamID, eventType, "runtime", payload)
+```
+
+在调用点强制声明来源，意味着你不可能在不表明身份的情况下发出事件。这是编译期保证，不是运行时约定。
 
 **反思**：这个系统存活得很尴尬。早期设计，用于 LLM/Agent/Tool 生命周期的事件通知。后来有了 `events.EventStore` 事件溯源系统，功能上是重叠的。之所以还没删，是因为有些地方还在用 callbacks（比如日志、指标上报），迁移成本比收益高。这就是典型的"新系统兼容旧系统"的过渡态——两个都能发出事件，但消费方不一样，排查时需要看两个地方。
 
@@ -464,8 +474,8 @@ func (r *Registry) Emit(ctx *Context) {
 
 | 文件 | 核心职责 |
 |------|----------|
-| `internal/runtime/runtime.go` | Runtime 接口与配置定义 |
-| `internal/runtime/manager.go` | 注册、启动、停止、复活、健康检查 |
+| `internal/ares_runtime/runtime.go` | Runtime 接口与配置定义 |
+| `internal/ares_runtime/manager.go` | 注册、启动、停止、复活、健康检查 |
 | `internal/agents/base/agent.go` | Agent 接口层级：Agent / StatefulAgent / Heartbeater |
 | `internal/agents/leader/agent.go` | Leader 编排管线 + 状态恢复 + 安全蒸馏 |
 | `internal/agents/leader/dispatcher.go` | 信号量并发分发 |

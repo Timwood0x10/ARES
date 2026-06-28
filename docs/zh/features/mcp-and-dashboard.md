@@ -297,7 +297,7 @@ dashboard:
 ## 5. 文件布局
 
 ```
-internal/mcp/               # MCP 客户端实现
+internal/ares_mcp/               # MCP 客户端实现
 ├── jsonrpc.go              # JSON-RPC 2.0 类型、编解码
 ├── transport.go            # Transport 接口
 ├── transport_stdio.go      # Stdio 子进程传输

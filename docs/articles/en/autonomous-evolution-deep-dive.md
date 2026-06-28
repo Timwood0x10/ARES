@@ -185,7 +185,7 @@ Flight Recorder records every decision point during agent execution: which tool 
 
 ### 3.3 Eval Engine — Evaluation Framework
 
-`internal/eval/llm_judge.go` implements an LLM-as-Judge evaluator:
+`internal/ares_eval/llm_judge.go` implements an LLM-as-Judge evaluator:
 
 ```go
 type LLMJudgeEvaluator struct {

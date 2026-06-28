@@ -9,9 +9,9 @@ import (
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution/service"
-	"github.com/Timwood0x10/ares/internal/ares_flight"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 )
@@ -141,7 +141,7 @@ func (a *ARES) Stop() error {
 		a.Evolution.Shutdown()
 	}
 	if a.MCP != nil {
-		a.MCP.Stop(context.Background())
+		_ = a.MCP.Stop(context.Background())
 	}
 	if a.Flight != nil {
 		a.Flight.Stop()

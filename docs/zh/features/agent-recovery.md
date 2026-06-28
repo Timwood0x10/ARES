@@ -40,14 +40,14 @@ graph TB
 
 ## Agent 怎么死的
 
-Agent 有三种死亡方式，都在 `internal/runtime/manager.go` 中处理。
+Agent 有三种死亡方式，都在 `internal/ares_runtime/manager.go` 中处理。
 
 ### 1. 执行过程中 Panic
 
 每个 Agent 在 goroutine 中运行，外层包裹 `defer recover()`。捕获到 panic 后调用 `NotifyAgentDead`：
 
 ```go
-// internal/runtime/manager.go:146-166
+// internal/ares_runtime/manager.go:146-166
 m.g.Go(func() error {
     defer func() {
         if r := recover(); r != nil {
@@ -115,7 +115,7 @@ flowchart TD
     ASYNC --> TIMEOUT["超时: 60s"]
 ```
 
-实际代码（`internal/runtime/manager.go:416-454`）：
+实际代码（`internal/ares_runtime/manager.go:416-454`）：
 
 ```go
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
@@ -187,7 +187,7 @@ sequenceDiagram
 旧 Agent 在写锁下标记 `stopped = true`，取消其 context，调用 `agent.Stop()`（10s 超时）。
 
 ```go
-// internal/runtime/manager.go:310-328
+// internal/ares_runtime/manager.go:310-328
 m.mu.Lock()
 oldMA, oldExists := m.agents[agentID]
 if oldExists && oldMA != nil {
