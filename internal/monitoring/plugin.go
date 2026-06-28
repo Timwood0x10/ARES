@@ -34,6 +34,7 @@ type pluginOptions struct {
 	pruneCfg    *PruneConfig
 	tracker     AgentTrackerReader
 	linker      TraceReader
+	tabMap      map[string]Tab
 	hasRuntime  bool
 	hasOrch     bool
 }
@@ -114,6 +115,13 @@ func WithPruneConfig(cfg PruneConfig) Option {
 	}
 }
 
+// WithTabMap sets the component tabs for the console.
+func WithTabMap(tabMap map[string]Tab) Option {
+	return func(o *pluginOptions) {
+		o.tabMap = tabMap
+	}
+}
+
 // WithAgentTracker sets the agent tracker for agent state aggregation.
 func WithAgentTracker(tracker AgentTrackerReader) Option {
 	return func(o *pluginOptions) {
@@ -142,6 +150,9 @@ func NewConsole(opts ...Option) ConsoleAPI {
 	}
 	if o.linker != nil {
 		mpOpts = append(mpOpts, WithTraceLinker(o.linker))
+	}
+	if o.tabMap != nil {
+		mpOpts = append(mpOpts, WithTabs(o.tabMap))
 	}
 	p := &MonitorPlugin{
 		engine:    engine,

@@ -61,7 +61,10 @@ func TestHTTPServer_Agents(t *testing.T) {
 }
 
 func TestHTTPServer_GetAgent_NotFound(t *testing.T) {
-	srv := newTestHTTPServer(t)
+	gin.SetMode(gin.TestMode)
+	p := NewConsole(WithAgentTracker(newMockAgentTrackerImpl())).(*MonitorPlugin)
+	srv := NewHTTPServer(p)
+
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/missing", nil)
 	srv.ServeHTTP(w, req)
@@ -214,4 +217,25 @@ func TestHTTPServer_ServeHTTP(t *testing.T) {
 
 	// Verify ServeHTTP implements http.Handler.
 	var _ http.Handler = srv
+}
+
+func TestHTTPServer_ConsolePage(t *testing.T) {
+	srv := newTestHTTPServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/console/", nil)
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ARES Console")
+	assert.Contains(t, w.Body.String(), "app.js")
+}
+
+func TestHTTPServer_ConsoleStatic(t *testing.T) {
+	srv := newTestHTTPServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/console/static/style.css", nil)
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "--bg:")
 }

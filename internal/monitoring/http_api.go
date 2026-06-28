@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -53,8 +54,24 @@ func (s *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.engine.ServeHTTP(w, r)
 }
 
-// registerRoutes wires all API endpoints.
+// registerRoutes wires all API endpoints and serves the console SPA.
 func (s *HTTPServer) registerRoutes() {
+	// Serve embedded static files.
+	staticFS, err := fs.Sub(consoleFS, "static")
+	if err == nil {
+		s.engine.StaticFS("/console/static", http.FS(staticFS))
+	}
+
+	// Serve index.html at /console/.
+	s.engine.GET("/console/", func(c *gin.Context) {
+		data, err := consoleFS.ReadFile("static/index.html")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "failed to load index.html")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	})
+
 	api := s.engine.Group("/api")
 
 	// Console
@@ -126,15 +143,90 @@ func (s *HTTPServer) handleListAgents(c *gin.Context) {
 	c.JSON(http.StatusOK, snap.Agents)
 }
 
-// handleGetAgent returns details for a single agent.
+// handleGetAgent returns a rich detail view for a single agent.
 func (s *HTTPServer) handleGetAgent(c *gin.Context) {
 	id := c.Param("id")
-	detail, err := s.plugin.Detail(c.Request.Context(), "agent", id)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+
+	tracker := s.plugin.mainPage.Tracker()
+	if tracker == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tracker not configured"})
 		return
 	}
-	c.JSON(http.StatusOK, detail)
+	agent, ok := tracker.GetAgent(id)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "agent not found: " + id})
+		return
+	}
+
+	snap := s.plugin.mainPage.Snapshot()
+
+	// Tasks belonging to this agent.
+	var agentTasks []TaskView
+	for _, t := range snap.Tasks {
+		if t.AgentID == id {
+			agentTasks = append(agentTasks, t)
+		}
+	}
+
+	// Relationships.
+	allAgents := snap.Agents
+	var parent *UnifiedAgent
+	var children []UnifiedAgent
+	var peers []UnifiedAgent
+	for _, a := range allAgents {
+		if a.ID == id {
+			continue
+		}
+		if a.ID == agent.ParentID {
+			cp := a
+			parent = &cp
+		}
+		if a.ParentID == id {
+			children = append(children, a)
+		}
+		if agent.ParentID != "" && a.ParentID == agent.ParentID {
+			peers = append(peers, a)
+		}
+	}
+
+	// Event count from events tab (count events where module_name matches).
+	var eventCount int
+	var eventTypes map[string]int
+	if tab, hasTab := s.plugin.mainPage.GetTab("events"); hasTab {
+		tabSnap := tab.Snapshot()
+		// The snapshot is EventTabSnapshot{Events, Total}.
+		// We can't type-assert across packages, so marshal/unmarshal.
+		raw, _ := json.Marshal(tabSnap)
+		var parsed struct {
+			Events []struct {
+				ModuleName string `json:"module_name"`
+				Type       string `json:"type"`
+			} `json:"events"`
+		}
+		if json.Unmarshal(raw, &parsed) == nil {
+			eventTypes = make(map[string]int)
+			for _, e := range parsed.Events {
+				if e.ModuleName == id {
+					eventCount++
+					eventTypes[e.Type]++
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"agent": agent,
+		"tasks": agentTasks,
+		"relationships": gin.H{
+			"parent":   parent,
+			"children": children,
+			"peers":    peers,
+		},
+		"events": gin.H{
+			"total": eventCount,
+			"by_type": eventTypes,
+		},
+	})
 }
 
 // handleKillAgent kills an agent.

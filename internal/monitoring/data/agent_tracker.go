@@ -137,6 +137,7 @@ func (at *AgentTracker) handleAgentStarted(evt *ares_events.Event) {
 		Role:      eventutil.ExtractString(evt, "role"),
 		ModelName: eventutil.ExtractString(evt, "model_name"),
 		TaskID:    eventutil.ExtractString(evt, "task_id"),
+		ParentID:  eventutil.ExtractString(evt, "parent_id"),
 		StartedAt: now,
 		UpdatedAt: now,
 	}

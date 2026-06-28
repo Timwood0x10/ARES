@@ -187,6 +187,7 @@ func (mp *MainPage) Snapshot() ConsoleSnapshot {
 	mp.mu.RLock()
 	costBar := mp.costBar
 	engine := mp.engine
+	tracker := mp.tracker
 	mp.mu.RUnlock()
 
 	snap := ConsoleSnapshot{
@@ -224,6 +225,10 @@ func (mp *MainPage) Snapshot() ConsoleSnapshot {
 				})
 			}
 		}
+	}
+
+	if tracker != nil {
+		snap.Agents = tracker.ListAgents()
 	}
 
 	return snap

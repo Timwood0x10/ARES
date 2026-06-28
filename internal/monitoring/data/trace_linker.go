@@ -29,6 +29,12 @@ func NewTraceLinker() *TraceLinker {
 	}
 }
 
+// HandleEvent processes an event and creates or closes trace spans.
+// It delegates to Record and satisfies the monitoring.EventSink interface.
+func (tl *TraceLinker) HandleEvent(evt *ares_events.Event) {
+	tl.Record(evt)
+}
+
 // Record processes an event and creates or closes trace spans.
 func (tl *TraceLinker) Record(evt *ares_events.Event) {
 	if evt == nil {
