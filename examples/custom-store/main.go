@@ -20,7 +20,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "cleanup temp dir: %v\n", err)
+		}
+	}()
 
 	// Use JSON file store instead of memory.
 	store := NewJSONFileStore(filepath.Join(dir, "services.json"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -37,8 +38,10 @@ func RegisterBuiltinTools(r *Registry) error {
 
 type calculatorTool struct{}
 
-func (t *calculatorTool) Name() string        { return "calculator" }
-func (t *calculatorTool) Description() string { return "Mathematical calculator with expression evaluation" }
+func (t *calculatorTool) Name() string { return "calculator" }
+func (t *calculatorTool) Description() string {
+	return "Mathematical calculator with expression evaluation"
+}
 
 func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	expr, _ := params["expression"].(string)
@@ -271,12 +274,17 @@ func (t *jsonTool) Execute(_ context.Context, params map[string]any) (Result, er
 
 // ── Web Search ───────────────────────────────────────────
 
+// webSearchTool searches the web using SearXNG meta search engine.
+// Requires a running SearXNG instance (default: http://localhost:5605).
 type webSearchTool struct {
-	client *http.Client
+	client  *http.Client
+	baseURL string
 }
 
-func (t *webSearchTool) Name() string        { return "web_search" }
-func (t *webSearchTool) Description() string { return "Search the web using DuckDuckGo" }
+func (t *webSearchTool) Name() string { return "web_search" }
+func (t *webSearchTool) Description() string {
+	return "Search the web using SearXNG meta search engine"
+}
 
 func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	query, _ := params["query"].(string)
@@ -284,24 +292,76 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 		return Result{Success: false, Data: "query is required"}, nil
 	}
 
-	searchURL := fmt.Sprintf("https://api.duckduckgo.com/?q=%s&format=json&no_html=1", url.QueryEscape(query))
+	baseURL := t.baseURL
+	if baseURL == "" {
+		baseURL = "http://localhost:5605"
+	}
+	if override, ok := params["searxng_base_url"].(string); ok && override != "" {
+		baseURL = override
+	}
+
+	maxResults := 10
+	if v, ok := params["max_results"].(float64); ok && v > 0 {
+		maxResults = int(v)
+	}
+
+	searchURL := fmt.Sprintf("%s/search?q=%s&format=json&pageno=1",
+		baseURL, url.QueryEscape(query))
+
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
 		return Result{Success: false, Data: err.Error()}, nil
 	}
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return Result{Success: false, Data: err.Error()}, nil
+		return Result{Success: false, Data: fmt.Sprintf("searxng request failed: %v", err)}, nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("web_search: response body close failed", "error", err)
+		}
+	}()
 
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return Result{Success: false, Data: err.Error()}, nil
+	if resp.StatusCode != http.StatusOK {
+		return Result{Success: false, Data: fmt.Sprintf("searxng returned HTTP %d", resp.StatusCode)}, nil
 	}
 
-	return Result{Success: true, Data: map[string]any{"query": query, "results": result}}, nil
+	var searxResp struct {
+		Query   string `json:"query"`
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+			Engine  string `json:"engine"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&searxResp); err != nil {
+		return Result{Success: false, Data: fmt.Sprintf("decode response: %v", err)}, nil
+	}
+
+	results := searxResp.Results
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	items := make([]map[string]string, 0, len(results))
+	for _, r := range results {
+		items = append(items, map[string]string{
+			"title":   r.Title,
+			"url":     r.URL,
+			"content": r.Content,
+			"engine":  r.Engine,
+		})
+	}
+
+	return Result{Success: true, Data: map[string]any{
+		"query":       query,
+		"count":       len(items),
+		"results":     items,
+		"searxng_url": baseURL,
+	}}, nil
 }
 
 // ── File Tools ───────────────────────────────────────────
