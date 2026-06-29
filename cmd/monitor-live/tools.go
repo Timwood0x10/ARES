@@ -2,80 +2,41 @@ package main
 
 import (
 	"context"
-	"time"
 
-	"github.com/Timwood0x10/ares/internal/agents/sub"
-	builtin_network "github.com/Timwood0x10/ares/internal/tools/resources/builtin/network"
-	builtin_text "github.com/Timwood0x10/ares/internal/tools/resources/builtin/text"
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	api_tools "github.com/Timwood0x10/ares/api/tools"
 )
 
-// newToolBinder creates a ToolBinder with built-in tools.
-func newToolBinder() sub.ToolBinder {
-	binder := sub.NewToolBinder()
-
-	// Web search (SearXNG)
-	webSearch := builtin_network.NewWebSearch()
-	binder.BindTool("web_search", func(ctx context.Context, args map[string]any) (any, error) {
-		return webSearch.Execute(ctx, args)
-	})
-
-	// HTTP request
-	httpReq := builtin_network.NewHTTPRequest()
-	binder.BindTool("http_request", func(ctx context.Context, args map[string]any) (any, error) {
-		return httpReq.Execute(ctx, args)
-	})
-
-	// Web scraper
-	fetcher := builtin_network.NewWebFetcher(builtin_network.NewDefaultHTTPClient(30 * time.Second))
-	scraper := builtin_network.NewWebScraper(fetcher)
-	binder.BindTool("web_scraper", func(ctx context.Context, args map[string]any) (any, error) {
-		return scraper.Execute(ctx, args)
-	})
-
-	// Regex tool
-	regexTool := builtin_text.NewRegexTool()
-	binder.BindTool("regex", func(ctx context.Context, args map[string]any) (any, error) {
-		return regexTool.Execute(ctx, args)
-	})
-
-	// JSON tools
-	jsonTools := builtin_text.NewJSONTools()
-	binder.BindTool("json_tools", func(ctx context.Context, args map[string]any) (any, error) {
-		return jsonTools.Execute(ctx, args)
-	})
-
-	return binder
+// newToolRegistry creates the public tool registry with built-in + custom tools.
+func newToolRegistry() *api_tools.Registry {
+	r := api_tools.NewRegistry()
+	api_tools.RegisterBuiltinTools(r)
+	return r
 }
 
-// registerBuiltinTools registers built-in tools into the core.Registry
-// so they appear in the /api/mcp/tools endpoint.
-func registerBuiltinTools(registry *core.Registry) {
-	tools := []core.Tool{
-		builtin_network.NewWebSearch(),
-		builtin_network.NewHTTPRequest(),
-		builtin_network.NewWebScraper(builtin_network.NewWebFetcher(builtin_network.NewDefaultHTTPClient(30 * time.Second))),
-		builtin_text.NewRegexTool(),
-		builtin_text.NewJSONTools(),
-	}
-	for _, t := range tools {
-		_ = registry.Register(t)
-	}
+// registryToolBinder adapts api/tools.Registry to sub.ToolBinder interface.
+type registryToolBinder struct {
+	registry *api_tools.Registry
 }
 
-// bridgeRegistryToToolBinder registers all tools from a core.Registry into a ToolBinder.
-func bridgeRegistryToToolBinder(binder sub.ToolBinder, registry *core.Registry) {
-	if registry == nil {
-		return
-	}
-	for _, name := range registry.List() {
-		tool, ok := registry.Get(name)
-		if !ok || tool == nil {
-			continue
-		}
-		t := tool // capture for closure
-		binder.BindTool(name, func(ctx context.Context, args map[string]any) (any, error) {
-			return t.Execute(ctx, args)
-		})
-	}
+func (b *registryToolBinder) BindTool(name string, fn func(ctx context.Context, args map[string]any) (any, error)) {
+	b.registry.Register(api_tools.ToolFunc{
+		ToolName: name,
+		ToolDesc: "",
+		Fn:       fn,
+	})
 }
+
+func (b *registryToolBinder) CallTool(ctx context.Context, name string, args map[string]any) (any, error) {
+	result, err := b.registry.Execute(ctx, name, args)
+	if err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+func (b *registryToolBinder) ListTools() []string {
+	return b.registry.List()
+}
+
+func (b *registryToolBinder) IsToolIdempotent(_ string) bool { return false }
+func (b *registryToolBinder) ListIdempotentTools() []string  { return nil }

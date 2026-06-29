@@ -7,20 +7,24 @@ import (
 	"net/http"
 	"strings"
 
+	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
-// actionHandler wraps the monitoring HTTP handler and overrides
-// kill/resume/retry routes + adds chaos engineering endpoints.
+// actionHandler wraps the monitoring HTTP handler with:
+//   - Agent lifecycle (kill/resume/retry)
+//   - Chaos engineering (random-kill/kill-all/recover)
+//   - Tool API (list/call)
 type actionHandler struct {
 	inner http.Handler
 	mgr   *ares_runtime.Manager
+	tools *api_tools.Registry
 }
 
 func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	// Agent lifecycle actions: /api/agents/:id/{kill,resume,retry}
+	// Agent lifecycle: POST /api/agents/:id/{kill,resume,retry}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/agents/") {
 		parts := strings.Split(strings.TrimPrefix(path, "/api/agents/"), "/")
 		if len(parts) == 2 {
@@ -38,10 +42,21 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Chaos engineering: /api/chaos/*
+	// Chaos engineering: POST /api/chaos/{random-kill,kill-all,recover}
 	if r.Method == "POST" && strings.HasPrefix(path, "/api/chaos/") {
-		chaosType := strings.TrimPrefix(path, "/api/chaos/")
-		h.handleChaos(w, r, chaosType)
+		h.handleChaos(w, r, strings.TrimPrefix(path, "/api/chaos/"))
+		return
+	}
+
+	// Tool API: POST /api/tools/call
+	if r.Method == "POST" && path == "/api/tools/call" {
+		h.handleCallTool(w, r)
+		return
+	}
+
+	// Tool API: GET /api/tools
+	if r.Method == "GET" && path == "/api/tools" {
+		h.handleListTools(w)
 		return
 	}
 
@@ -49,10 +64,11 @@ func (h *actionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.inner.ServeHTTP(w, r)
 }
 
+// ── Agent Lifecycle ──────────────────────────────────────
+
 func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, agentID, action string, fn func(context.Context, string) error) {
 	w.Header().Set("Content-Type", "application/json")
-	err := fn(r.Context(), agentID)
-	if err != nil {
+	if err := fn(r.Context(), agentID); err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"action": action, "agent": agentID, "error": err.Error(), "status": "error",
@@ -65,10 +81,10 @@ func (h *actionHandler) handleAction(w http.ResponseWriter, r *http.Request, age
 	})
 }
 
-// handleChaos implements chaos engineering injection.
+// ── Chaos Engineering ────────────────────────────────────
+
 func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chaosType string) {
 	w.Header().Set("Content-Type", "application/json")
-
 	switch chaosType {
 	case "random-kill":
 		agents := h.mgr.ListAgents()
@@ -87,10 +103,9 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 			"chaos": "random-kill", "target": target.ID, "success": true,
 			"message": "chaos: killed random agent " + target.ID,
 		})
-
 	case "kill-all":
 		agents := h.mgr.ListAgents()
-		killed := make([]string, 0)
+		killed := make([]string, 0, len(agents))
 		for _, a := range agents {
 			if err := h.mgr.StopAgent(r.Context(), a.ID); err == nil {
 				killed = append(killed, a.ID)
@@ -98,12 +113,10 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"chaos": "kill-all", "killed": killed, "success": true,
-			"message": "chaos: killed all agents",
 		})
-
 	case "recover":
 		agents := h.mgr.ListAgents()
-		recovered := make([]string, 0)
+		recovered := make([]string, 0, len(agents))
 		for _, a := range agents {
 			if a.Status != "running" {
 				if err := h.mgr.RestartAgent(r.Context(), a.ID); err == nil {
@@ -113,9 +126,7 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"chaos": "recover", "recovered": recovered, "success": true,
-			"message": "chaos: recovered agents",
 		})
-
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -123,4 +134,55 @@ func (h *actionHandler) handleChaos(w http.ResponseWriter, r *http.Request, chao
 			"available": []string{"random-kill", "kill-all", "recover"},
 		})
 	}
+}
+
+// ── Tool API ─────────────────────────────────────────────
+
+// callToolRequest is the body for POST /api/tools/call.
+type callToolRequest struct {
+	Name   string         `json:"name"`
+	Params map[string]any `json:"params"`
+}
+
+func (h *actionHandler) handleCallTool(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var req callToolRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "name is required"})
+		return
+	}
+
+	if h.tools != nil {
+		result, err := h.tools.Execute(r.Context(), req.Name, req.Params)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": "tool not found: " + req.Name,
+				"tools": h.tools.List(),
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tool": req.Name, "success": result.Success, "data": result.Data,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": "no tool registry"})
+}
+
+func (h *actionHandler) handleListTools(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	names := h.tools.List()
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"tools": names,
+		"count": len(names),
+	})
 }

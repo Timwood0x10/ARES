@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -81,15 +82,15 @@ func main() {
 	// --- LLM adapter with fallback ---
 	llmAdapter := createLLMAdapterWithFallback(cfg)
 
+	// --- Tool registry (public API) ---
+	registry := newToolRegistry()
+
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
-	registry := core.NewRegistry()
-	registerBuiltinTools(registry)
 	setupMCP(ctx, cfg, registry)
 
-	// --- ToolBinder: built-in tools + MCP tools ---
-	toolBinder := newToolBinder()
-	bridgeRegistryToToolBinder(toolBinder, registry)
-	slog.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
+	// --- ToolBinder for agents ---
+	toolBinder := &registryToolBinder{registry: registry}
+	slog.Info("tools registered", "count", len(registry.List()), "tools", registry.List())
 
 	// --- Memory manager (required by leader) ---
 	memConfig := memory.DefaultMemoryConfig()
@@ -145,7 +146,7 @@ func main() {
 	rtAdapter := adapter.NewRuntimeAdapter(&runtimeAdapterShim{mgr})
 
 	// MCP adapter: exposes tools via /api/mcp/tools endpoint
-	mcpMgr := newMCPAdapter(registry)
+	mcpMgr := &mcpAdapter{registry: registry}
 
 	plugin := monitoring.NewConsole(
 		monitoring.WithAgentTracker(tracker),
@@ -191,7 +192,7 @@ func main() {
 	fmt.Println()
 
 	server := monitoring.NewHTTPServer(plugin)
-	handler := &actionHandler{inner: server, mgr: mgr}
+	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
 
 	httpSrv := &http.Server{
 		Addr:         addr,
@@ -265,20 +266,42 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	return adapter
 }
 
-// setupMCP connects to MCP servers and registers their tools in the registry.
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *core.Registry) {
+// setupMCP connects to MCP servers and registers their tools in the public registry.
+func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) {
 	if len(cfg.MCP.Servers) == 0 {
 		slog.Info("no MCP servers configured")
 		return
 	}
 
-	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, registry)
+	// ares_bootstrap.SetupMCP needs an internal core.Registry
+	internalReg := core.NewRegistry()
+	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
 	if err != nil {
 		slog.Warn("MCP setup failed", "error", err)
 		return
 	}
 	if mcpMgr != nil {
 		slog.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
+	}
+
+	// Bridge: register MCP tools into the public api/tools registry
+	for _, name := range internalReg.List() {
+		tool, ok := internalReg.Get(name)
+		if !ok || tool == nil {
+			continue
+		}
+		t := tool
+		_ = registry.Register(api_tools.ToolFunc{
+			ToolName: t.Name(),
+			ToolDesc: t.Description(),
+			Fn: func(ctx context.Context, params map[string]any) (any, error) {
+				res, err := t.Execute(ctx, params)
+				if err != nil {
+					return nil, err
+				}
+				return res.Data, nil
+			},
+		})
 	}
 }
 
