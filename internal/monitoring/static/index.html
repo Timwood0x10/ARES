@@ -7,121 +7,187 @@
 <link rel="stylesheet" href="/console/static/style.css">
 </head>
 <body>
-<div id="app">
-  <!-- Top Bar -->
-  <header class="topbar">
-    <div class="topbar-left">
-      <div class="logo">
-        <div class="logo-glyph">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L2 7l10 5 10-5-10-5z" fill="url(#g1)" opacity="0.9"/>
-            <path d="M2 17l10 5 10-5" stroke="url(#g2)" stroke-width="2" fill="none" opacity="0.6"/>
-            <path d="M2 12l10 5 10-5" stroke="url(#g2)" stroke-width="2" fill="none" opacity="0.8"/>
-            <defs><linearGradient id="g1" x1="2" y1="2" x2="22" y2="12"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient><linearGradient id="g2" x1="2" y1="12" x2="22" y2="22"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
-          </svg>
-        </div>
+
+<!-- ─── Top Bar ─── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="logo">
+      <div class="logo-glyph"></div>
+      <div class="logo-text-group">
         <span class="logo-text">ARES</span>
-        <span class="logo-sub">CONSOLE</span>
+        <span class="logo-sub">Console</span>
       </div>
     </div>
-    <div id="cost-summary" class="topbar-center"></div>
-    <div class="topbar-right">
-      <div id="live-indicator" class="live-dot"></div>
-      <span class="live-text">LIVE</span>
+  </div>
+  <div class="topbar-center">
+    <div class="global-stats">
+      <div class="gs-item">
+        <div class="gs-icon cost-icon">$</div>
+        <div class="gs-info"><span class="gs-label">Cost</span><span class="gs-value cost" id="gs-cost">$0.00</span></div>
+      </div>
+      <div class="gs-divider"></div>
+      <div class="gs-item">
+        <div class="gs-icon gs-token-icon">T</div>
+        <div class="gs-info"><span class="gs-label">Tokens</span><span class="gs-value" id="gs-tokens">0</span></div>
+      </div>
+      <div class="gs-divider"></div>
+      <div class="gs-item">
+        <div class="gs-icon gs-agent-icon">A</div>
+        <div class="gs-info"><span class="gs-label">Agents</span><span class="gs-value" id="gs-agents">0</span></div>
+      </div>
+      <div class="gs-divider"></div>
+      <div class="gs-item">
+        <div class="gs-icon gs-task-icon">E</div>
+        <div class="gs-info"><span class="gs-label">Tasks</span><span class="gs-value" id="gs-tasks">0</span></div>
+      </div>
     </div>
-  </header>
+  </div>
+  <div class="topbar-right">
+    <div class="status-pill"><div class="live-dot"></div><span class="live-text">Live</span></div>
+    <span class="update-time" id="update-time"></span>
+  </div>
+</header>
 
-  <!-- Metrics Strip -->
-  <div id="metrics-strip" class="metrics-strip"></div>
-
-  <!-- Cost Bar -->
-  <div id="cost-bar-wrap" class="cost-bar-wrap"></div>
-
-  <!-- Main Content -->
-  <div class="main">
-    <!-- DAG Panel -->
-    <section class="dag-panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/></svg>
-          Agent Topology
-        </div>
-        <span id="dag-stats" class="panel-stats"></span>
+<!-- ─── Main Layout ─── -->
+<div class="main-layout">
+  <!-- Left Sidebar -->
+  <div class="left-sidebar">
+    <!-- Agents -->
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span class="sidebar-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg> Agents</span>
+        <span class="count-badge" id="agent-count-badge">0</span>
       </div>
-      <div class="dag-canvas">
-        <svg id="dag"></svg>
+      <div class="agent-filter-bar">
+        <input class="agent-search" id="agent-search" type="text" placeholder="Filter agents...">
       </div>
-      <div id="dag-tooltip" class="dag-tooltip"></div>
-    </section>
-
-    <!-- Side Panel -->
-    <section class="side-panel">
-      <div class="side-header">
-        <span class="side-title">Agents</span>
-        <span id="agent-count" class="agent-count"></span>
+      <div class="agent-list" id="agent-list"></div>
+    </div>
+    <!-- Cost Breakdown -->
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span class="sidebar-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg> Cost</span>
       </div>
-      <div id="agent-grid" class="agent-grid"></div>
-      <div class="side-header" style="border-top:1px solid var(--border)">
-        <span class="side-title">Activity</span>
-      </div>
-      <div id="event-log" class="event-log"></div>
-    </section>
+      <div class="cost-breakdown-list" id="cost-breakdown-list"></div>
+    </div>
   </div>
 
-  <!-- Tab Bar -->
-  <nav class="tab-bar">
-    <div class="tab-bar-inner">
-      <button class="tab active" data-tab="events">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Events
-      </button>
-      <button class="tab" data-tab="workflow">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><line x1="10" y1="6.5" x2="14" y2="6.5"/><line x1="6.5" y1="10" x2="6.5" y2="14"/></svg>
-        Workflow
-      </button>
-      <button class="tab" data-tab="mcp">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
-        MCP
-      </button>
-      <button class="tab" data-tab="llm">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-        LLM
-      </button>
-      <button class="tab" data-tab="memory">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
-        Memory
-      </button>
-      <button class="tab" data-tab="evolution">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-        Evolution
-      </button>
-      <button class="tab" data-tab="arena">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        Arena
-      </button>
-    </div>
-  </nav>
-
-  <!-- Tab Content -->
-  <section id="tab-content" class="tab-content"></section>
-
-  <!-- Detail Panel (slide-in) -->
-  <aside id="detail-panel" class="detail-panel">
-    <div class="detail-header">
-      <div class="detail-header-left">
-        <div id="detail-dot" class="detail-dot"></div>
-        <span id="detail-title" class="detail-title">Agent Detail</span>
+  <!-- Center Content -->
+  <div class="center-content">
+    <!-- DAG Panel -->
+    <div class="panel dag-panel">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <div class="panel-icon dag-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/></svg></div>
+          <div><span class="panel-title">Agent Topology</span><span class="panel-subtitle" id="dag-subtitle">Agent dependency graph</span></div>
+        </div>
+        <div class="panel-actions">
+          <div class="status-legend">
+            <span class="legend-item"><span class="legend-dot running"></span>Running</span>
+            <span class="legend-item"><span class="legend-dot completed"></span>Done</span>
+            <span class="legend-item"><span class="legend-dot pending"></span>Pending</span>
+            <span class="legend-item"><span class="legend-dot dead"></span>Dead</span>
+          </div>
+          <span class="panel-stats-badge" id="dag-stats">0 agents</span>
+        </div>
       </div>
-      <button id="detail-close" class="detail-close">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      <div class="dag-canvas-wrap">
+        <div class="dag-canvas">
+          <svg id="dag"></svg>
+        </div>
+      </div>
+      <div class="dag-tooltip" id="dag-tooltip"></div>
     </div>
-    <div id="detail-body" class="detail-body"></div>
-  </aside>
 
-  <!-- Overlay -->
-  <div id="detail-overlay" class="detail-overlay"></div>
+    <!-- Cost Bar Panel -->
+    <div class="panel cost-panel">
+      <div class="panel-header compact">
+        <div class="panel-title-group">
+          <div class="panel-icon cost-panel-icon">$</div>
+          <span class="panel-title-sm">Cost Breakdown</span>
+        </div>
+        <span class="cost-total-label" id="cost-total-label">$0.00</span>
+      </div>
+      <div class="cost-bar-container">
+        <div class="cost-bar" id="cost-bar"></div>
+        <div class="cost-legend-grid" id="cost-legend"></div>
+      </div>
+    </div>
+
+    <!-- Tabs Panel -->
+    <div class="panel tabs-panel">
+      <div class="tabs-header">
+        <nav class="tabs-nav" id="tabs-nav">
+          <button class="tab-btn active" data-tab="events">Events <span class="tab-count" id="tab-count-events">0</span></button>
+          <button class="tab-btn" data-tab="workflow">Workflow <span class="tab-count" id="tab-count-workflow">0</span></button>
+          <button class="tab-btn" data-tab="llm">LLM <span class="tab-count" id="tab-count-llm">0</span></button>
+          <button class="tab-btn" data-tab="mcp">MCP</button>
+          <button class="tab-btn" data-tab="memory">Memory</button>
+          <button class="tab-btn" data-tab="evolution">Evolution</button>
+          <button class="tab-btn" data-tab="arena">Arena</button>
+        </nav>
+      </div>
+      <div class="tab-content-area" id="tab-content"></div>
+    </div>
+  </div>
+
+  <!-- Right Sidebar -->
+  <div class="right-sidebar">
+    <!-- Activity Feed -->
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span class="sidebar-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Activity</span>
+      </div>
+      <div class="activity-feed" id="activity-feed"></div>
+    </div>
+    <!-- Tasks -->
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span class="sidebar-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg> Tasks</span>
+        <span class="count-badge" id="task-count-badge">0</span>
+      </div>
+      <div class="task-list" id="task-list"></div>
+    </div>
+    <!-- Alerts -->
+    <div class="sidebar-section">
+      <div class="sidebar-header">
+        <span class="sidebar-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Alerts</span>
+        <span class="count-badge alert-count-badge" id="alert-count">0</span>
+      </div>
+      <div class="alerts-list" id="alerts-list"></div>
+    </div>
+  </div>
 </div>
+
+<!-- ─── Detail Drawer ─── -->
+<div class="detail-overlay" id="detail-overlay"></div>
+<div class="detail-drawer" id="detail-panel">
+  <div class="drawer-header">
+    <div class="drawer-header-left">
+      <div class="status-indicator"><div class="si-dot" id="drawer-dot"></div><span class="si-text" id="drawer-status-text">-</span></div>
+      <div><div class="drawer-title" id="detail-title">Agent</div><div class="drawer-subtitle" id="detail-subtitle">-</div></div>
+    </div>
+    <button class="drawer-close-btn" id="detail-close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="drawer-tabs" id="drawer-tabs">
+    <button class="drawer-tab active" data-dtab="overview" id="drawer-tab-overview">Overview</button>
+    <button class="drawer-tab" data-dtab="tasks" id="drawer-tab-tasks">Tasks</button>
+    <button class="drawer-tab" data-dtab="relations" id="drawer-tab-relations">Relations</button>
+    <button class="drawer-tab" data-dtab="timeline" id="drawer-tab-timeline">Timeline</button>
+    <button class="drawer-tab" data-dtab="cost" id="drawer-tab-cost">Cost</button>
+    <button class="drawer-tab" data-dtab="trace" id="drawer-tab-trace">Trace</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+  <div class="drawer-footer">
+    <button class="action-btn danger" id="btn-kill">Kill</button>
+    <button class="action-btn warning" id="btn-retry">Retry</button>
+    <button class="action-btn primary" id="btn-resume">Resume</button>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
 <script src="/console/static/app.js"></script>
 </body>
 </html>
