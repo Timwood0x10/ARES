@@ -1,0 +1,144 @@
+# Monitor-Live Configuration
+# Real agents + real LLM + real MCP tools (codegraph + codebase-memory-mcp)
+#
+# LLM priority: sensenova → stepfun → ollama (local)
+# Override any value via env: LLM_API_KEY, LLM_PROVIDER, LLM_BASE_URL, LLM_MODEL
+
+server:
+  host: "localhost"
+  port: 9091
+
+llm:
+  provider: "openai"
+  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
+  base_url: "https://token.sensenova.cn/v1"
+  model: "sensenova-6.7-flash-lite"
+  timeout: 120
+  max_tokens: 2048
+  fallbacks:
+    - provider: "openai"
+      api_key: "2oid20ODpluxOC5H4fd4HuDalxynxLUbb8ULfJ2yRFwzWERDToD6ttnUOAYMSnEOO"
+      base_url: "https://api.stepfun.com/step_plan/v1"
+      model: "step-3.7-flash"
+      timeout: 60
+      max_tokens: 2048
+
+# MCP servers — tools available to sub-agents
+mcp:
+  servers:
+    - name: codegraph
+      enabled: true
+      auto_start: true
+      timeout: 30
+      transport:
+        type: stdio
+        stdio:
+          command: codegraph
+          args: ["serve", "--mcp"]
+
+    - name: codebase-memory
+      enabled: true
+      auto_start: true
+      timeout: 30
+      transport:
+        type: stdio
+        stdio:
+          command: codebase-memory-mcp
+
+agents:
+  leader:
+    id: "leader-1"
+    max_steps: 5
+    max_parallel_tasks: 2
+    max_validation_retry: 2
+    enable_cache: false
+
+  sub:
+    - id: "coder-a"
+      type: "bottom"
+      category: "analysis"
+      triggers:
+        - "analysis"
+        - "code"
+      max_retries: 2
+      timeout: 120
+      model: ""
+      provider: ""
+
+    - id: "coder-b"
+      type: "bottom"
+      category: "recommendation"
+      triggers:
+        - "recommendation"
+        - "optimization"
+      max_retries: 2
+      timeout: 120
+      model: ""
+      provider: ""
+
+prompts:
+  profile_extraction: |
+    你是一位智能分析助手。请从用户的输入中提取分析需求。
+
+    用户输入: {{.input}}
+
+    请分析用户输入，返回JSON格式：
+    - task_type: 任务类型（"analysis", "recommendation", "optimization", "review"）
+    - domain: 领域（如"technology", "business", "education"）
+    - requirements: 用户的核心需求列表
+    - constraints: 任何限制条件
+
+    只返回JSON，不要其他内容。
+
+  recommendation: |
+    你是一位专业分析师，拥有以下工具：
+    - codegraph_files: 搜索代码库中的文件
+    - codegraph_symbols: 搜索代码库中的符号和函数
+    - search_graph: 在代码知识图谱中搜索函数、类、路由
+    - trace_path: 追踪函数调用链
+    - web_search: 搜索网络获取信息
+
+    请根据以下信息完成任务 {{.Category}}：
+
+    任务类型: {{if index . "task_type"}}{{index . "task_type"}}{{else}}<no value>{{end}}
+    领域: {{if index . "domain"}}{{index . "domain"}}{{else}}<no value>{{end}}
+    需求: {{if index . "requirements"}}{{index . "requirements"}}{{else}}<no value>{{end}}
+
+    请先使用工具收集信息，然后提供详细的分析结果。
+    返回JSON格式：
+    ```json
+    {
+      "items": [
+        {
+          "item_id": "唯一ID",
+          "name": "名称",
+          "description": "简要描述",
+          "category": "{{.Category}}",
+          "score": 评分(0-100),
+          "highlights": ["要点1", "要点2"]
+        }
+      ],
+      "reason": "分析理由"
+    }
+    ```
+
+output:
+  format: "table"
+  item_template: "{{.Name}} (Score: {{.Score}})"
+  summary_template: "共分析 {{.Count}} 个选项"
+
+validation:
+  enabled: true
+  schema_type: "custom"
+  retry_on_fail: false
+  max_retries: 2
+  strict_mode: false
+
+memory:
+  enabled: false
+  session:
+    enabled: false
+  user_profile:
+    enabled: false
+  task_distillation:
+    enabled: false

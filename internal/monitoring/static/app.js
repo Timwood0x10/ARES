@@ -19,7 +19,8 @@
     activeDrawerTab: 'overview',
     tabData: {},
     searchQuery: '',
-    agentDetail: null
+    agentDetail: null,
+    dagView: { scale: 1, tx: 0, ty: 0 }
   };
 
   var SSE = null;
@@ -158,6 +159,7 @@
     bindDrawerTabs();
     bindDetailClose();
     bindSearch();
+    setupDAGInteractions();
 
     tick();
     PollTimer = setInterval(tick, POLL_MS);
@@ -456,21 +458,39 @@
           updated_at: a.updated_at
         };
       });
-      // Build edges from parent relationships
-      var agentMap = {};
-      nodes.forEach(function (n) { agentMap[n.id] = n; });
-      nodes.forEach(function (n) {
-        if (n.parent_id && agentMap[n.parent_id]) {
-          edges.push({
-            id: n.parent_id + '-' + n.id,
-            from_id: n.parent_id,
-            to_id: n.id,
-            type: 'parent',
-            label: ''
-          });
-        }
-      });
     }
+
+    // Always build edges from parent relationships (merges with any existing edges)
+    var edgeMap2 = {};
+    edges.forEach(function (e) { edgeMap2[e.id || (e.from_id + '-' + e.to_id)] = e; });
+    nodes.forEach(function (n) {
+      if (n.parent_id) {
+        var edgeId = n.parent_id + '-' + n.id;
+        if (!edgeMap2[edgeId]) {
+          var parentExists = nodes.some(function (p) { return p.id === n.parent_id; });
+          if (parentExists) {
+            edgeMap2[edgeId] = {
+              id: edgeId,
+              from_id: n.parent_id,
+              to_id: n.id,
+              type: 'parent',
+              label: ''
+            };
+          }
+        }
+      }
+    });
+    edges = Object.values(edgeMap2);
+
+    // Fix: nodes that look like agents but were tagged as tasks
+    nodes.forEach(function (n) {
+      if (n.type === 'task' && !n.id.startsWith('task') && !n.id.startsWith('tl-')) {
+        // If it's not a task-like ID and has agent-like properties, mark as agent
+        if (n.role || n.model_name || (n.status === 'running' && !n.parent_id)) {
+          n.type = 'agent';
+        }
+      }
+    });
 
     // Stats display
     var statsEl = document.getElementById('dag-stats');
@@ -503,83 +523,63 @@
     var nodeMap = {};
     nodes.forEach(function (n) { nodeMap[n.id] = n; });
 
-    // Compute positions using hierarchical layout
-    var positions = {};
+    // Adaptive node sizing - initial values based on total node count
+    var nodeCount = nodes.length;
+    var baseNodeR = 22;
+    var labelFontSize = 9.5;
+    var showLabels = true;
+    var showStatusLabel = true;
+    var showCostBadge = true;
 
-    // Find root nodes (no parent or parent not in list)
-    var roots = nodes.filter(function (n) {
-      var pid = n.parent_id || n.ParentID;
-      return !pid || !nodeMap[pid];
-    });
-
-    if (roots.length > 0 && roots.length < nodes.length) {
-      // BFS to determine levels
-      var visited = {};
-      var queue = roots.map(function (r) { return { id: r.id, level: 0 }; });
-      var levelMap = {};
-
-      while (queue.length) {
-        var item = queue.shift();
-        if (visited[item.id]) continue;
-        visited[item.id] = true;
-        if (!levelMap[item.level]) levelMap[item.level] = [];
-        levelMap[item.level].push(item.id);
-
-        // Find children from edges
-        edges.forEach(function (e) {
-          var fromId = e.from_id || e.FromID;
-          var toId = e.to_id || e.ToID;
-          if (fromId === item.id && !visited[toId]) {
-            queue.push({ id: toId, level: item.level + 1 });
-          }
-        });
-
-        // Also check parent_id field as fallback
-        nodes.forEach(function (n) {
-          var pid = n.parent_id || n.ParentID;
-          if (pid === item.id && !visited[n.id]) {
-            queue.push({ id: n.id, level: item.level + 1 });
-          }
-        });
-      }
-
-      // Add unvisited nodes to a final level
-      var unvisited = [];
-      nodes.forEach(function (n) {
-        if (!visited[n.id]) unvisited.push(n.id);
-      });
-      if (unvisited.length) {
-        var maxLevel = Math.max.apply(null, Object.keys(levelMap).map(Number));
-        if (!levelMap[maxLevel + 1]) levelMap[maxLevel + 1] = [];
-        levelMap[maxLevel + 1] = levelMap[maxLevel + 1].concat(unvisited);
-      }
-
-      var levelKeys = Object.keys(levelMap).map(Number).sort(function (a, b) { return a - b; });
-      var numLevels = levelKeys.length;
-
-      levelKeys.forEach(function (lvl, li) {
-        var ids = levelMap[lvl];
-        var lx = W * 0.1 + (li / Math.max(1, numLevels - 1)) * (W * 0.8);
-        ids.forEach(function (id, ni) {
-          var ly = H * 0.15 + (ni / Math.max(1, ids.length - 1)) * (H * 0.7);
-          positions[id] = { x: lx, y: ly };
-        });
-      });
-    } else {
-      // Radial layout
-      var cx = W / 2, cy = H / 2;
-      var radiusX = Math.min(W * 0.38, 280);
-      var radiusY = Math.min(H * 0.35, 140);
-      nodes.forEach(function (a, i) {
-        var angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2;
-        positions[a.id] = {
-          x: cx + radiusX * Math.cos(angle),
-          y: cy + radiusY * Math.sin(angle)
-        };
-      });
+    if (nodeCount > 300) {
+      baseNodeR = 5;
+      labelFontSize = 0;
+      showLabels = false;
+      showStatusLabel = false;
+      showCostBadge = false;
+    } else if (nodeCount > 200) {
+      baseNodeR = 7;
+      labelFontSize = 0;
+      showLabels = false;
+      showStatusLabel = false;
+      showCostBadge = false;
+    } else if (nodeCount > 120) {
+      baseNodeR = 9;
+      labelFontSize = 7;
+      showLabels = true;
+      showStatusLabel = false;
+      showCostBadge = false;
+    } else if (nodeCount > 80) {
+      baseNodeR = 12;
+      labelFontSize = 8;
+      showLabels = true;
+      showStatusLabel = false;
+      showCostBadge = false;
+    } else if (nodeCount > 50) {
+      baseNodeR = 15;
+      labelFontSize = 8.5;
+      showLabels = true;
+      showStatusLabel = true;
+      showCostBadge = false;
+    } else if (nodeCount > 25) {
+      baseNodeR = 19;
+      labelFontSize = 9;
+      showLabels = true;
+      showStatusLabel = true;
+      showCostBadge = true;
     }
 
+    // Compute positions using improved hierarchical layout
+    // The function may adjust baseNodeR/showLabels based on actual level distribution
+    var layoutResult = computeDAGLayout(nodes, edges, W, H, baseNodeR, showLabels, showStatusLabel);
+    var positions = layoutResult.positions;
+    if (layoutResult.adjustedNodeR != null) baseNodeR = layoutResult.adjustedNodeR;
+    if (layoutResult.adjustedShowLabels != null) showLabels = layoutResult.adjustedShowLabels;
+    if (layoutResult.adjustedShowStatus != null) showStatusLabel = layoutResult.adjustedShowStatus;
+    if (layoutResult.adjustedLabelSize != null) labelFontSize = layoutResult.adjustedLabelSize;
+
     // Draw edges first (behind nodes)
+    var viewportGroup = mk('g', { class: 'dag-viewport' });
     var edgesGroup = mk('g', { class: 'edges-group' });
     var drawnEdges = {};
 
@@ -598,13 +598,36 @@
       var p1 = positions[fromId];
       var p2 = positions[toId];
 
-      // Curved path
+      // Calculate edge endpoints offset to node boundaries
       var dx = p2.x - p1.x;
       var dy = p2.y - p1.y;
-      var cx1 = p1.x + dx * 0.5;
-      var cy1 = p1.y;
-      var cx2 = p1.x + dx * 0.5;
-      var cy2 = p2.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var edgeStart = { x: p1.x, y: p1.y };
+      var edgeEnd = { x: p2.x, y: p2.y };
+
+      if (dist > 0) {
+        var fromR = baseNodeR;
+        var toR = baseNodeR;
+        var fromNode = nodeMap[fromId];
+        var toNode = nodeMap[toId];
+        if (fromNode && fromNode.type === 'task') fromR = baseNodeR - 4;
+        if (toNode && toNode.type === 'task') toR = baseNodeR - 4;
+        fromR = Math.max(4, fromR);
+        toR = Math.max(4, toR);
+
+        var nx = dx / dist;
+        var ny = dy / dist;
+        edgeStart = { x: p1.x + nx * fromR, y: p1.y + ny * fromR };
+        edgeEnd = { x: p2.x - nx * (toR + 2), y: p2.y - ny * (toR + 2) };
+      }
+
+      // Curved path using offset endpoints
+      var cdx = edgeEnd.x - edgeStart.x;
+      var cdy = edgeEnd.y - edgeStart.y;
+      var cx1 = edgeStart.x + cdx * 0.5;
+      var cy1 = edgeStart.y;
+      var cx2 = edgeStart.x + cdx * 0.5;
+      var cy2 = edgeEnd.y;
 
       // Edge color based on type
       var edgeColor, markerEnd;
@@ -626,8 +649,10 @@
           markerEnd = 'url(#arrowhead)';
       }
 
+      var pathData = 'M' + edgeStart.x + ',' + edgeStart.y + ' C' + cx1 + ',' + cy1 + ' ' + cx2 + ',' + cy2 + ' ' + edgeEnd.x + ',' + edgeEnd.y;
+
       var path = mk('path', {
-        d: 'M' + p1.x + ',' + p1.y + ' C' + cx1 + ',' + cy1 + ' ' + cx2 + ',' + cy2 + ' ' + p2.x + ',' + p2.y,
+        d: pathData,
         fill: 'none',
         stroke: edgeColor,
         'stroke-width': '1.5',
@@ -639,7 +664,7 @@
 
       // Glow layer
       var glowPath = mk('path', {
-        d: 'M' + p1.x + ',' + p1.y + ' C' + cx1 + ',' + cy1 + ' ' + cx2 + ',' + cy2 + ' ' + p2.x + ',' + p2.y,
+        d: pathData,
         fill: 'none',
         stroke: edgeColor.replace('0.3', '0.1').replace('0.35', '0.1'),
         'stroke-width': '4',
@@ -679,8 +704,9 @@
       var color = stColor(st);
       var isSel = State.selectedAgentId === node.id;
       var nodeType = node.type || 'agent';
-      var r = isSel ? 28 : 24;
-      if (nodeType === 'task') r = isSel ? 22 : 18;
+      var r = isSel ? baseNodeR + 4 : baseNodeR;
+      if (nodeType === 'task') r = isSel ? baseNodeR - 2 : baseNodeR - 4;
+      r = Math.max(4, r);
 
       var g = mk('g', {
         class: 'node-group',
@@ -736,13 +762,28 @@
       grad.appendChild(stop2);
       defs.appendChild(grad);
 
-      g.appendChild(mk('circle', {
-        r: r,
-        fill: 'url(#' + gradId + ')',
-        stroke: isSel ? 'var(--accent)' : color,
-        'stroke-width': isSel ? '2.5' : '1.5',
-        class: 'node-circle-main'
-      }));
+      if (nodeType === 'task') {
+        // Task nodes: rounded rectangle
+        var rectW = r * 2.2;
+        var rectH = r * 1.4;
+        var rectR = 4;
+        g.appendChild(mk('rect', {
+          x: -rectW / 2, y: -rectH / 2, width: rectW, height: rectH, rx: rectR, ry: rectR,
+          fill: 'url(#' + gradId + ')',
+          stroke: isSel ? 'var(--accent)' : color,
+          'stroke-width': isSel ? '2.5' : '1.5',
+          class: 'node-rect-main'
+        }));
+      } else {
+        // Agent nodes: circle
+        g.appendChild(mk('circle', {
+          r: r,
+          fill: 'url(#' + gradId + ')',
+          stroke: isSel ? 'var(--accent)' : color,
+          'stroke-width': isSel ? '2.5' : '1.5',
+          class: 'node-circle-main'
+        }));
+      }
 
       // Inner ring
       g.appendChild(mk('circle', {
@@ -762,12 +803,13 @@
 
       // Agent initial/icon
       var initial = (node.name || node.label || node.id || '?').charAt(0).toUpperCase();
+      var initialFontSize = Math.max(6, baseNodeR * 0.5);
       var label = mk('text', {
         y: '4',
         'text-anchor': 'middle',
         'dominant-baseline': 'central',
         fill: 'var(--text-bright)',
-        'font-size': nodeType === 'task' ? '10' : '11',
+        'font-size': nodeType === 'task' ? initialFontSize * 0.9 : initialFontSize,
         'font-weight': '700',
         'pointer-events': 'none',
         'font-family': 'var(--font-sans)'
@@ -775,74 +817,94 @@
       label.textContent = initial;
       g.appendChild(label);
 
+      // Type indicator badge (agent = person icon, task = gear icon)
+      if (baseNodeR >= 12) {
+        var typeBadge = mk('text', {
+          y: -r - 2,
+          'text-anchor': 'middle',
+          fill: nodeType === 'task' ? 'rgba(251,191,36,0.8)' : 'rgba(129,140,248,0.8)',
+          'font-size': Math.max(7, baseNodeR * 0.45),
+          'pointer-events': 'none'
+        });
+        typeBadge.textContent = nodeType === 'task' ? '⚙' : '●';
+        g.appendChild(typeBadge);
+      }
+
       // Type indicator (small icon for task nodes)
-      if (nodeType === 'task') {
+      if (nodeType === 'task' && baseNodeR >= 12) {
         var typeIcon = mk('text', {
           y: -r - 2,
           'text-anchor': 'middle',
           fill: 'var(--text-muted)',
-          'font-size': '8',
+          'font-size': Math.max(6, baseNodeR * 0.4),
           'pointer-events': 'none'
         });
         typeIcon.textContent = '⚙';
         g.appendChild(typeIcon);
       }
 
-      // Name label below
-      var name = (node.name || node.label || node.id || '?');
-      var displayName = name.length > 16 ? name.slice(0, 14) + '..' : name;
-      var nameLabel = mk('text', {
-        y: r + 14,
-        'text-anchor': 'middle',
-        fill: 'var(--text-dim)',
-        'font-size': '9.5',
-        'font-weight': '500',
-        'pointer-events': 'none',
-        'font-family': 'var(--font-sans)'
-      });
-      nameLabel.textContent = displayName;
-      g.appendChild(nameLabel);
-
-      // Status pill
-      var statusLabel = mk('text', {
-        y: r + 26,
-        'text-anchor': 'middle',
-        fill: color,
-        'font-size': '8',
-        'font-weight': '600',
-        'pointer-events': 'none',
-        'text-transform': 'uppercase',
-        'letter-spacing': '0.08em',
-        'font-family': 'var(--font-sans)'
-      });
-      statusLabel.textContent = st;
-      g.appendChild(statusLabel);
-
-      // Cost badge
-      var ac = costByAgent[node.id] || {};
-      if (ac.estimated_cost > 0) {
-        var badgeR = 10;
-        var bx = r - 2;
-        var by = -r + 2;
-
-        g.appendChild(mk('circle', {
-          cx: bx, cy: by, r: badgeR,
-          fill: 'var(--bg-card)',
-          stroke: 'var(--ok)',
-          'stroke-width': '1.2'
-        }));
-        var costLbl = mk('text', {
-          x: bx, y: by + 1,
+      // Name label below (conditionally rendered)
+      if (showLabels) {
+        var name = (node.name || node.label || node.id || '?');
+        var maxNameLen = Math.max(8, Math.floor(baseNodeR * 0.8));
+        var displayName = name.length > maxNameLen ? name.slice(0, maxNameLen - 2) + '..' : name;
+        var nameLabel = mk('text', {
+          y: r + 12,
           'text-anchor': 'middle',
-          'dominant-baseline': 'central',
-          fill: 'var(--ok)',
-          'font-size': '6.5',
-          'font-weight': '800',
+          fill: 'var(--text-dim)',
+          'font-size': labelFontSize,
+          'font-weight': '500',
           'pointer-events': 'none',
           'font-family': 'var(--font-sans)'
         });
-        costLbl.textContent = '$';
-        g.appendChild(costLbl);
+        nameLabel.textContent = displayName;
+        g.appendChild(nameLabel);
+      }
+
+      // Status pill (conditionally rendered)
+      if (showStatusLabel) {
+        var statusLabel = mk('text', {
+          y: r + 24,
+          'text-anchor': 'middle',
+          fill: color,
+          'font-size': Math.max(6, labelFontSize * 0.85),
+          'font-weight': '600',
+          'pointer-events': 'none',
+          'text-transform': 'uppercase',
+          'letter-spacing': '0.08em',
+          'font-family': 'var(--font-sans)'
+        });
+        statusLabel.textContent = st;
+        g.appendChild(statusLabel);
+      }
+
+      // Cost badge (conditionally rendered)
+      if (showCostBadge) {
+        var ac = costByAgent[node.id] || {};
+        if (ac.estimated_cost > 0) {
+          var badgeR = Math.max(6, baseNodeR * 0.45);
+          var bx = r - 2;
+          var by = -r + 2;
+
+          g.appendChild(mk('circle', {
+            cx: bx, cy: by, r: badgeR,
+            fill: 'var(--bg-card)',
+            stroke: 'var(--ok)',
+            'stroke-width': '1.2'
+          }));
+          var costLbl = mk('text', {
+            x: bx, y: by + 1,
+            'text-anchor': 'middle',
+            'dominant-baseline': 'central',
+            fill: 'var(--ok)',
+            'font-size': Math.max(5, badgeR * 0.65),
+            'font-weight': '800',
+            'pointer-events': 'none',
+            'font-family': 'var(--font-sans)'
+          });
+          costLbl.textContent = '$';
+          g.appendChild(costLbl);
+        }
       }
 
       // Hit area
@@ -861,7 +923,394 @@
       nodesGroup.appendChild(g);
     });
 
-    svg.appendChild(nodesGroup);
+    viewportGroup.appendChild(edgesGroup);
+    viewportGroup.appendChild(nodesGroup);
+    viewportGroup.setAttribute('transform', 'translate(' + State.dagView.tx + ',' + State.dagView.ty + ') scale(' + State.dagView.scale + ')');
+    svg.appendChild(viewportGroup);
+  }
+
+  // Setup DAG interactions (zoom, pan, reset)
+  function setupDAGInteractions() {
+    var svg = document.getElementById('dag');
+    if (!svg) return;
+
+    var isPanning = false;
+    var startX = 0, startY = 0;
+    var startTx = 0, startTy = 0;
+    var minScale = 0.3;
+    var maxScale = 3;
+
+    // Zoom UI elements
+    var zoomLevelEl = document.getElementById('dag-zoom-level');
+
+    function getViewport() {
+      return svg.querySelector('.dag-viewport');
+    }
+
+    function updateTransform() {
+      var vp = getViewport();
+      if (vp) {
+        vp.setAttribute('transform',
+          'translate(' + State.dagView.tx + ',' + State.dagView.ty + ') scale(' + State.dagView.scale + ')');
+      }
+      if (zoomLevelEl) {
+        zoomLevelEl.textContent = Math.round(State.dagView.scale * 100) + '%';
+      }
+    }
+
+    // Mouse wheel zoom
+    svg.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var rect = svg.getBoundingClientRect();
+      var mx = e.clientX - rect.left;
+      var my = e.clientY - rect.top;
+
+      var delta = e.deltaY > 0 ? 0.9 : 1.1;
+      var newScale = State.dagView.scale * delta;
+      newScale = Math.max(minScale, Math.min(maxScale, newScale));
+
+      // Zoom towards mouse position
+      var k = newScale / State.dagView.scale;
+      State.dagView.tx = mx - (mx - State.dagView.tx) * k;
+      State.dagView.ty = my - (my - State.dagView.ty) * k;
+      State.dagView.scale = newScale;
+
+      updateTransform();
+    }, { passive: false });
+
+    // Pan on drag
+    svg.addEventListener('mousedown', function (e) {
+      // Only pan with left mouse button and not on a node
+      if (e.button !== 0) return;
+      var target = e.target;
+      if (target.closest('.node-group')) return;
+
+      isPanning = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startTx = State.dagView.tx;
+      startTy = State.dagView.ty;
+      svg.style.cursor = 'grabbing';
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', function (e) {
+      if (!isPanning) return;
+      var dx = e.clientX - startX;
+      var dy = e.clientY - startY;
+      State.dagView.tx = startTx + dx;
+      State.dagView.ty = startTy + dy;
+      updateTransform();
+    });
+
+    window.addEventListener('mouseup', function () {
+      if (isPanning) {
+        isPanning = false;
+        svg.style.cursor = '';
+      }
+    });
+
+    // Double click to reset view
+    svg.addEventListener('dblclick', function (e) {
+      State.dagView.scale = 1;
+      State.dagView.tx = 0;
+      State.dagView.ty = 0;
+      updateTransform();
+    });
+
+    // Hover cursor
+    svg.addEventListener('mouseover', function (e) {
+      if (!isPanning && !e.target.closest('.node-group')) {
+        svg.style.cursor = 'grab';
+      }
+    });
+
+    svg.addEventListener('mouseout', function (e) {
+      if (!isPanning) {
+        svg.style.cursor = '';
+      }
+    });
+
+    // Zoom control buttons
+    var zoomInBtn = document.getElementById('dag-zoom-in');
+    var zoomOutBtn = document.getElementById('dag-zoom-out');
+    var resetBtn = document.getElementById('dag-reset');
+
+    if (zoomInBtn) {
+      zoomInBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var W = svg.clientWidth || 800;
+        var H = svg.clientHeight || 350;
+        var newScale = Math.min(maxScale, State.dagView.scale * 1.2);
+        var cx = W / 2, cy = H / 2;
+        var k = newScale / State.dagView.scale;
+        State.dagView.tx = cx - (cx - State.dagView.tx) * k;
+        State.dagView.ty = cy - (cy - State.dagView.ty) * k;
+        State.dagView.scale = newScale;
+        updateTransform();
+      });
+    }
+
+    if (zoomOutBtn) {
+      zoomOutBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var W = svg.clientWidth || 800;
+        var H = svg.clientHeight || 350;
+        var newScale = Math.max(minScale, State.dagView.scale / 1.2);
+        var cx = W / 2, cy = H / 2;
+        var k = newScale / State.dagView.scale;
+        State.dagView.tx = cx - (cx - State.dagView.tx) * k;
+        State.dagView.ty = cy - (cy - State.dagView.ty) * k;
+        State.dagView.scale = newScale;
+        updateTransform();
+      });
+    }
+
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        State.dagView.scale = 1;
+        State.dagView.tx = 0;
+        State.dagView.ty = 0;
+        updateTransform();
+      });
+    }
+
+    // Initial zoom level display
+    updateTransform();
+  }
+
+  // Compute improved hierarchical layout for DAG with proper spacing
+  function computeDAGLayout(nodes, edges, W, H, nodeR, showLabels, showStatus) {
+    var positions = {};
+    var nodeMap = {};
+    nodes.forEach(function (n) { nodeMap[n.id] = n; });
+
+    // Build adjacency and find roots
+    var incomingCount = {};
+    var childrenMap = {};
+    nodes.forEach(function (n) {
+      incomingCount[n.id] = 0;
+      childrenMap[n.id] = [];
+    });
+
+    edges.forEach(function (e) {
+      var fromId = e.from_id || e.FromID;
+      var toId = e.to_id || e.ToID;
+      if (fromId && toId && nodeMap[fromId] && nodeMap[toId]) {
+        incomingCount[toId] = (incomingCount[toId] || 0) + 1;
+        childrenMap[fromId].push(toId);
+      }
+    });
+
+    // Also consider parent_id field as fallback
+    nodes.forEach(function (n) {
+      var pid = n.parent_id || n.ParentID;
+      if (pid && nodeMap[pid]) {
+        var alreadyCounted = edges.some(function (e) {
+          var fid = e.from_id || e.FromID;
+          var tid = e.to_id || e.ToID;
+          return fid === pid && tid === n.id;
+        });
+        if (!alreadyCounted) {
+          incomingCount[n.id] = (incomingCount[n.id] || 0) + 1;
+          childrenMap[pid].push(n.id);
+        }
+      }
+    });
+
+    // Find root nodes (nodes with no incoming edges)
+    var roots = nodes.filter(function (n) { return incomingCount[n.id] === 0; });
+
+    // If no clear hierarchy or all nodes are roots, use grid layout
+    if (roots.length === 0 || roots.length === nodes.length) {
+      // Grid layout for flat structures
+      var gridCols, gridRows;
+      var n = nodes.length;
+      var ratio = W / H;
+      gridCols = Math.max(1, Math.ceil(Math.sqrt(n * ratio)));
+      gridRows = Math.ceil(n / gridCols);
+
+      var paddingX = W * 0.08;
+      var paddingY = H * 0.08;
+      var cellW = (W - paddingX * 2) / Math.max(1, gridCols - 1 || 1);
+      var cellH = (H - paddingY * 2) / Math.max(1, gridRows - 1 || 1);
+
+      // If only one row or column, center them
+      if (gridCols === 1) cellW = 0;
+      if (gridRows === 1) cellH = 0;
+
+      nodes.forEach(function (a, i) {
+        var col = i % gridCols;
+        var row = Math.floor(i / gridCols);
+        var gx = paddingX + col * cellW + (gridCols > 1 ? 0 : W / 2 - paddingX);
+        var gy = paddingY + row * cellH + (gridRows > 1 ? 0 : H / 2 - paddingY);
+        positions[a.id] = { x: gx, y: gy };
+      });
+      return { positions: positions };
+    }
+
+    // BFS to assign levels
+    var levelMap = {};
+    var nodeLevel = {};
+    var queue = [];
+    var visited = {};
+
+    roots.forEach(function (r) {
+      queue.push({ id: r.id, level: 0 });
+    });
+
+    while (queue.length > 0) {
+      var item = queue.shift();
+      if (visited[item.id]) continue;
+      visited[item.id] = true;
+      nodeLevel[item.id] = item.level;
+      if (!levelMap[item.level]) levelMap[item.level] = [];
+      levelMap[item.level].push(item.id);
+
+      var children = childrenMap[item.id] || [];
+      children.forEach(function (childId) {
+        if (!visited[childId]) {
+          queue.push({ id: childId, level: item.level + 1 });
+        }
+      });
+    }
+
+    // Collect unvisited nodes and add them as the last level
+    var unvisited = nodes.filter(function (n) { return !visited[n.id]; });
+    var totalNodes = nodes.length;
+
+    if (unvisited.length > 0) {
+      var maxLv = 0;
+      Object.keys(levelMap).forEach(function (l) {
+        if (parseInt(l) > maxLv) maxLv = parseInt(l);
+      });
+      levelMap[maxLv + 1] = unvisited.map(function (n) { return n.id; });
+    }
+
+    // Get sorted levels
+    var levels = Object.keys(levelMap).map(Number).sort(function (a, b) { return a - b; });
+
+    // Layout parameters
+    var paddingX = W * 0.05;
+    var paddingY = H * 0.05;
+    var usableW = W - paddingX * 2;
+    var usableH = H - paddingY * 2;
+
+    var targetNodeR = nodeR;
+    var targetShowLabels = showLabels;
+    var targetShowStatus = showStatus;
+
+    function estHeight(r, lbl, st) {
+      var h = r * 2;
+      if (lbl) h += 14;
+      if (st) h += 12;
+      return h;
+    }
+
+    var nodeH = estHeight(targetNodeR, targetShowLabels, targetShowStatus);
+    var spacingMult = 1.1;
+
+    // Adjust node size until layout fits
+    for (var iter = 0; iter < 6; iter++) {
+      var nodesPerCol = Math.max(1, Math.floor(usableH / (nodeH * spacingMult)));
+
+      var totalColsNeeded = 0;
+      levels.forEach(function (lvl) {
+        totalColsNeeded += Math.max(1, Math.ceil(levelMap[lvl].length / nodesPerCol));
+      });
+
+      var minColGap = Math.max(16, targetNodeR * 2.5);
+      var maxPossibleCols = Math.floor(usableW / minColGap);
+
+      if (totalColsNeeded <= maxPossibleCols) {
+        break;
+      }
+
+      // Shrink progressively
+      if (targetShowStatus) {
+        targetShowStatus = false;
+        nodeH = estHeight(targetNodeR, targetShowLabels, targetShowStatus);
+        continue;
+      }
+      if (targetShowLabels) {
+        targetShowLabels = false;
+        targetShowStatus = false;
+        nodeH = estHeight(targetNodeR, targetShowLabels, targetShowStatus);
+        continue;
+      }
+
+      targetNodeR = Math.max(3, Math.floor(targetNodeR * 0.75));
+      if (targetNodeR < 8) {
+        targetShowLabels = false;
+        targetShowStatus = false;
+      }
+      nodeH = estHeight(targetNodeR, targetShowLabels, targetShowStatus);
+    }
+
+    // Final calculation
+    var nodesPerCol = Math.max(1, Math.floor(usableH / (nodeH * spacingMult)));
+    var totalColsNeeded = 0;
+    levels.forEach(function (lvl) {
+      totalColsNeeded += Math.max(1, Math.ceil(levelMap[lvl].length / nodesPerCol));
+    });
+
+    var minColGap = Math.max(16, targetNodeR * 2.5);
+    var maxPossibleCols = Math.floor(usableW / minColGap);
+    var totalCols = Math.min(totalColsNeeded, maxPossibleCols);
+    var colGap = totalCols > 1 ? usableW / (totalCols - 1) : 0;
+
+    // Position nodes level by level, splitting wide levels into multiple columns
+    var currentCol = 0;
+    levels.forEach(function (lvl) {
+      var nodeIds = levelMap[lvl];
+      var numInLevel = nodeIds.length;
+      var colsForLevel = Math.max(1, Math.ceil(numInLevel / nodesPerCol));
+
+      var basePerCol = Math.floor(numInLevel / colsForLevel);
+      var extra = numInLevel % colsForLevel;
+
+      var nodeIdx = 0;
+      for (var ci = 0; ci < colsForLevel; ci++) {
+        var colCount = basePerCol + (ci < extra ? 1 : 0);
+        if (colCount === 0) continue;
+
+        var lx = totalCols > 1 ? paddingX + currentCol * colGap : W / 2;
+
+        var totalColH = colCount * nodeH * spacingMult;
+        var startY, yStep;
+
+        if (totalColH <= usableH) {
+          startY = paddingY + (usableH - totalColH) / 2 + nodeH / 2;
+          yStep = nodeH * spacingMult;
+        } else {
+          startY = paddingY + nodeH / 2;
+          yStep = (usableH - nodeH) / Math.max(1, colCount - 1);
+        }
+
+        for (var ni = 0; ni < colCount; ni++) {
+          if (nodeIdx >= nodeIds.length) break;
+          var id = nodeIds[nodeIdx++];
+          positions[id] = { x: lx, y: startY + ni * yStep };
+        }
+
+        currentCol++;
+      }
+    });
+
+    // Calculate adjusted label size
+    var adjLabelSize = 0;
+    if (targetShowLabels) {
+      adjLabelSize = Math.max(6.5, Math.min(10, targetNodeR * 0.5));
+    }
+
+    return {
+      positions: positions,
+      adjustedNodeR: targetNodeR !== nodeR ? targetNodeR : null,
+      adjustedShowLabels: targetShowLabels !== showLabels ? targetShowLabels : null,
+      adjustedShowStatus: targetShowStatus !== showStatus ? targetShowStatus : null,
+      adjustedLabelSize: adjLabelSize > 0 ? adjLabelSize : null
+    };
   }
 
   // ── DAG Tooltip ─────────────────────────
@@ -2282,6 +2731,16 @@
   window._selectAgent = function (id) {
     selectAgent(id);
   };
+
+  // ── Bind action buttons ─────────────────
+  document.addEventListener('DOMContentLoaded', function () {
+    var btnKill = document.getElementById('btn-kill');
+    var btnRetry = document.getElementById('btn-retry');
+    var btnResume = document.getElementById('btn-resume');
+    if (btnKill) btnKill.addEventListener('click', window._killCurrent);
+    if (btnRetry) btnRetry.addEventListener('click', window._retryCurrent);
+    if (btnResume) btnResume.addEventListener('click', window._resumeCurrent);
+  });
 
   // ── Boot ────────────────────────────────
   document.addEventListener('DOMContentLoaded', init);

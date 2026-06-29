@@ -223,7 +223,7 @@ func (s *HTTPServer) handleGetAgent(c *gin.Context) {
 			"peers":    peers,
 		},
 		"events": gin.H{
-			"total": eventCount,
+			"total":   eventCount,
 			"by_type": eventTypes,
 		},
 	})
