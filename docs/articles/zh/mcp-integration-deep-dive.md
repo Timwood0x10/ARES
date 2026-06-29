@@ -185,7 +185,164 @@ func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data strin
 
 ---
 
-## 四、MCPManager：多服务器的生命线
+## 四、服务发现：自动发现 MCP 服务器
+
+Transport 层负责通信，Manager 负责连接。但有一个问题它们都没有回答：**应该连哪些服务器？**
+
+在 Discovery 子系统出现之前，每个 MCP 服务器都得手动配在 YAML 里。用户装了一个新的 MCP 工具——比如一个用 Rust 写的代码分析服务器——就必须知道它的命令、参数、传输类型，才能让它出现在 ares 里。新工具接入，先配半天配置。
+
+Discovery 子系统改变了这一点。它能从多个来源自动发现 MCP 服务器、标准化身份标识、做健康检查，然后把结果喂给框架——不需要写 YAML。
+
+### 分层架构
+
+```
+api/discovery/              → 公共 API（类型别名 + 代理，无代码重复）
+internal/discovery/         → 引擎、身份、健康检查、事件、存储
+internal/discovery/providers/ → 文件系统扫描器、二进制探针
+```
+
+`api/discovery` 暴露类型别名和薄代理层——给外部调用者一个稳定的 API 契约，内部 `internal/discovery` 做真正的活儿。
+
+### Provider 系统
+
+发现机制的背后是 Provider。每个 Provider 实现一个简单的接口：
+
+```go
+type DiscoveryProvider interface {
+    Name() string
+    Confidence() int
+    Discover(ctx context.Context) ([]DiscoveryRecord, error)
+}
+```
+
+`Confidence`（置信度）告诉引擎每个来源的可信程度——显式配置文件比启发式扫描的信任度更高。
+
+**文件系统 Provider**（`internal/discovery/providers/filesystem.go`）扫描已知配置文件位置：
+
+- **Claude**：`.claude/settings.json`，`mcpServers` 键
+- **Cursor**：`.cursor/mcp.json`
+- **VS Code**：`.vscode/mcp.json`
+- **ARES**：`.codegraph/mcp-servers.json`
+
+每种配置格式的 schema 不同，但 Provider 会统一归一化为 `DiscoveryRecord`。`config_name` 等元数据会被保留，让框架能溯源每个工具的来源。
+
+**二进制探针 Provider**（`internal/discovery/providers/binary.go`）扫描系统 `PATH` 里的已知 MCP 二进制文件。对每个候选程序执行 `--help`，检查输出中是否有 MCP 关键词。匹配到的结果标记为 `ConfidenceMedium`——可能是 MCP 工具，但可信度不如显式配置文件。
+
+### 并发发现
+
+Providers 通过 `errgroup` 并行执行。一个失败了不影响其他的：
+
+```go
+g, gctx := errgroup.WithContext(ctx)
+for i, p := range providers {
+    idx, prov := i, p
+    g.Go(func() error {
+        records, err := prov.Discover(gctx)
+        if err != nil {
+            slog.Warn("discovery: provider failed",
+                "provider", prov.Name(), "error", err)
+            return nil
+        }
+        results[idx] = providerResult{records: records, name: prov.Name()}
+        return nil
+    })
+}
+_ = g.Wait()
+```
+
+文件系统扫描不会被卡住的二进制扫描拖慢。所有 Provider 完成后，引擎才会合并结果。
+
+### 身份归一化与合并
+
+同一个 MCP 服务器可能被多个 Provider 发现——Claude 配了 `codegraph`，VS Code 也配了，二进制探针也在 PATH 里找到了。引擎通过置信度规则把这些合并成一个 `DiscoveredService`：
+
+- 高置信度的记录优先采用
+- `bestEndpoint()` 从最高置信度的记录中选择连接细节
+- 已知启动器（`uvx`、`npx`、`bunx`、`pipx`）被保留为端点身份的一部分
+- 来自所有记录的标签和元数据被合并
+
+`normalizeEndpoint` 负责从原始端点中提取规范身份：
+
+```go
+var knownLaunchers = map[string]bool{
+    "uvx": true, "npx": true, "bunx": true, "pipx": true,
+}
+
+func normalizeEndpoint(endpoint string) string {
+    // 从路径中提取二进制名
+    // 保留已知启动器前缀
+    // 去掉其他参数
+}
+```
+
+`hasChanged` 方法检测有意义的差异——端点变化、标签添加、配置名更新——这样引擎可以发出精确的事件，而不是全量刷新。
+
+### 健康检查
+
+发现告诉你一个服务器"可能存在"。健康检查告诉你它"真的在运行"。`MCPHealthChecker` 连接到每个已发现的服务，调用 `list_tools`：
+
+- **二进制端点**：通过 stdio 连接（`ConnectStdio`）
+- **URL 端点**：通过 SSE 连接（`ConnectSSE`）
+
+如果探针失败，服务被标记为 `Healthy: false`。服务可以随时重新检查——对仪表盘刷新周期或重连尝试非常有用。
+
+### 事件系统
+
+发现生命周期会发出类型化事件，框架的其他部分可以订阅：
+
+```go
+const (
+    EventServiceAdded      EventType = "service.added"
+    EventServiceRemoved    EventType = "service.removed"
+    EventServiceUpdated    EventType = "service.updated"
+    EventHealthChanged     EventType = "health.changed"
+    EventDiscoveryComplete EventType = "discovery.complete"
+)
+```
+
+任何组件都可以通过 `EventHandler` 接口订阅：
+
+```go
+type EventHandler interface {
+    HandleDiscoveryEvent(event Event)
+}
+```
+
+Dashboard 用这些事件来实时更新界面。MCP Manager 监听 `EventServiceAdded`，自动连接新发现的服务器。事件系统把发现和消费解耦——引擎不知道也不关心谁在听。
+
+### 被动注册与 ServiceStore
+
+不是所有服务器都来自自动发现。有些是明确的——用户知道 URL 或命令，想直接注册。`Register` 方法处理这种情况：
+
+```go
+func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
+    // 创建一个 ConfidenceMax 的 DiscoveredService
+    // 设置 Healthy: false（健康检查是单独的步骤）
+    // 发出 EventServiceAdded 事件
+}
+```
+
+所有已发现和已注册的服务都存储在 `ServiceStore` 中。默认的 `MemoryStore` 使用深拷贝来防止数据竞争。`ServiceStore` 接口被设计为可替换的——可以接入 SQLite、Bolt、JSON 文件等持久化后端，而不需要修改引擎。
+
+### 完整流程
+
+```mermaid
+graph LR
+    A[文件系统 Provider] --> D[按身份合并]
+    B[二进制探针 Provider] --> D
+    D --> E[归一化端点]
+    E --> F[健康检查所有服务]
+    F --> G[发出发现事件]
+    G --> H[存入 ServiceStore]
+    H --> I[MCP Manager 连接<br>健康的服务]
+    I --> J[工具出现在 Registry 中]
+```
+
+Discovery 并没有取代 MCP Manager。它给 Manager 喂数据。发现找到服务器；Manager 连接它们；Bridge 包装它们的工具；Registry 提供给 Agent 使用。每层都有单一职责，组合得很干净。
+
+---
+
+## 五、MCPManager：多服务器的生命线
 
 单个 `MCPClient` 只能连一个服务器。实际场景里，用户可能同时连着一个数据库查询工具、一个代码搜索工具、一个文件操作工具——三个不同的 MCP 服务器。`MCPManager` 就是管这堆连接的。
 
@@ -267,7 +424,7 @@ func (m *MCPManager) unregisterTools(mc *managedClient) {
 
 ---
 
-## 五、MCPTool：让远程工具"假装"是本地的
+## 六、MCPTool：让远程工具"假装"是本地的
 
 `MCPTool` 是整个集成的关键适配器。它实现了 `core.Tool` 接口，但实际执行时把调用转发给 MCP 服务器：
 
@@ -306,7 +463,7 @@ func (t *MCPTool) Execute(ctx context.Context, params map[string]interface{}) (c
 
 注意工具的命名规则：`mcp.{serverName}.{toolName}`。这个命名策略是刻意的——当用户配了多个 MCP 服务器时，不同服务器可能有同名工具（比如都叫 `search`），加前缀避免冲突。
 
-### 5.1 Schema 转换：JSON Schema 到 ParameterSchema
+### 6.1 Schema 转换：JSON Schema 到 ParameterSchema
 
 MCP 工具的输入定义用的是标准 JSON Schema，但 ares 内部有自己的 `core.ParameterSchema`。`ConvertJSONSchema` 负责这个转换：
 
@@ -332,11 +489,11 @@ func ConvertJSONSchema(raw json.RawMessage) (*core.ParameterSchema, error) {
 
 ---
 
-## 六、错误处理：超时、断连、和"服务器突然不说话了"
+## 七、错误处理：超时、断连、和"服务器突然不说话了"
 
 这是我在写这篇文章时最想吐槽自己的部分。
 
-### 6.1 超时机制
+### 7.1 超时机制
 
 每个 `MCPClient` 调用都有超时控制：
 
@@ -359,7 +516,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 默认超时 30 秒。用户可以在配置里按服务器自定义。
 
-### 6.2 坦诚反思：重试和熔断在哪里？
+### 7.2 坦诚反思：重试和熔断在哪里？
 
 说实话，**目前的实现里没有重试，也没有熔断器。**
 
@@ -376,7 +533,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 这些是下一个迭代要补的。写这篇文章的时候我特意把这些缺口列出来，因为**承认问题比假装没问题更重要**。
 
-### 6.3 连接状态追踪
+### 7.3 连接状态追踪
 
 虽然没有自动重连，但至少有状态追踪。`MCPManager.ListServers()` 返回每个服务器的状态：
 
@@ -396,7 +553,7 @@ Dashboard 用这个来展示 MCP 服务器的健康状态。至少用户能**看
 
 ---
 
-## 七、Dashboard 集成：让用户看见
+## 八、Dashboard 集成：让用户看见
 
 Dashboard 是用户和 MCP 子系统交互的唯一窗口。在 `internal/dashboard/api.go` 里，`/mcp` 路径暴露了服务器状态：
 
@@ -432,7 +589,7 @@ Arena（混沌工程模块）也参与了 MCP 的测试。在 `internal/dashboar
 
 ---
 
-## 八、配置驱动：YAML 里的工具声明
+## 九、配置驱动：YAML 里的工具声明
 
 整个 MCP 集成是配置驱动的。用户在 YAML 里声明要连接哪些 MCP 服务器：
 
@@ -481,7 +638,7 @@ func (m *MCPManager) Start(ctx context.Context) error {
 
 ---
 
-## 九、工厂模式：MCPToolFactory
+## 十、工厂模式：MCPToolFactory
 
 除了通过 `MCPManager` 批量管理，MCP 工具还可以通过工厂模式动态创建：
 
@@ -504,7 +661,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 
 ---
 
-## 十、Server 端：ares 自己也能当 MCP 服务器
+## 十一、Server 端：ares 自己也能当 MCP 服务器
 
 到目前为止我们一直在说"ares 作为 MCP 客户端"。但 `internal/ares_mcp/server.go` 里还有另一面——ares 自己也能作为 MCP 服务器，把自己的能力暴露给其他 MCP 客户端。
 
@@ -568,6 +725,14 @@ type MCPServer struct {
 | `internal/ares_mcp/transport.go` | Transport 接口定义 |
 | `internal/ares_mcp/transport_stdio.go` | Stdio 传输：子进程 stdin/stdout 通信 |
 | `internal/ares_mcp/transport_sse.go` | SSE 传输：HTTP Server-Sent Events |
+| `api/discovery/discovery.go` | 公共 API 类型定义和代理 |
+| `internal/discovery/engine.go` | 发现引擎：编排 Providers 执行和结果合并 |
+| `internal/discovery/identity.go` | 身份归一化：normalizeEndpoint、knownLaunchers |
+| `internal/discovery/health.go` | 健康检查：MCPHealthChecker |
+| `internal/discovery/events.go` | 事件系统：EventHandler、EventType |
+| `internal/discovery/store.go` | 服务存储：ServiceStore、MemoryStore |
+| `internal/discovery/providers/filesystem.go` | 文件系统 Provider：扫描 Claude/Cursor/VSCode/ARES 配置 |
+| `internal/discovery/providers/binary.go` | 二进制探针 Provider：扫描 PATH |
 | `internal/ares_mcp/mcp_tool.go` | MCPTool 适配器：MCP 工具 → core.Tool |
 | `internal/ares_mcp/schema.go` | JSON Schema → ParameterSchema 转换 |
 | `internal/ares_mcp/jsonrpc.go` | JSON-RPC 2.0 消息模型和编解码 |

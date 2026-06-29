@@ -462,21 +462,35 @@
 
     // Always build edges from parent relationships (merges with any existing edges)
     var edgeMap2 = {};
+    var nodeIds = {};
+    nodes.forEach(function (n) { nodeIds[n.id] = true; });
+
+    // Add missing parent nodes (e.g. leader was killed but tasks still reference it)
+    nodes.forEach(function (n) {
+      if (n.parent_id && !nodeIds[n.parent_id]) {
+        nodeIds[n.parent_id] = true;
+        nodes.push({
+          id: n.parent_id,
+          name: n.parent_id,
+          type: 'agent',
+          status: 'completed',
+          label: n.parent_id
+        });
+      }
+    });
+
     edges.forEach(function (e) { edgeMap2[e.id || (e.from_id + '-' + e.to_id)] = e; });
     nodes.forEach(function (n) {
       if (n.parent_id) {
         var edgeId = n.parent_id + '-' + n.id;
         if (!edgeMap2[edgeId]) {
-          var parentExists = nodes.some(function (p) { return p.id === n.parent_id; });
-          if (parentExists) {
-            edgeMap2[edgeId] = {
-              id: edgeId,
-              from_id: n.parent_id,
-              to_id: n.id,
-              type: 'parent',
-              label: ''
-            };
-          }
+          edgeMap2[edgeId] = {
+            id: edgeId,
+            from_id: n.parent_id,
+            to_id: n.id,
+            type: 'parent',
+            label: ''
+          };
         }
       }
     });

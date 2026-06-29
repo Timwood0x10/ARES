@@ -93,11 +93,30 @@ func main() {
 					continue
 				}
 				defer func() { _ = client.Close() }()
-				if err := client.RegisterTools(ctx, registry); err != nil {
-					fmt.Printf("      (register failed: %v)\n", err)
+
+				// List and register MCP tools into the registry.
+				mcpTools, err := client.ListTools(ctx)
+				if err != nil {
+					fmt.Printf("      (list tools failed: %v)\n", err)
 					continue
 				}
-				fmt.Printf("      ✓ Registered tools\n")
+				for _, mt := range mcpTools {
+					toolName := fmt.Sprintf("mcp.%s.%s", client.Name(), mt.Name)
+					mcpClient := client
+					toolDef := mt
+					_ = registry.Register(tools.ToolFunc{
+						ToolName: toolName,
+						ToolDesc: toolDef.Description,
+						Fn: func(ctx context.Context, params map[string]any) (any, error) {
+							result, err := mcpClient.CallTool(ctx, toolDef.Name, params)
+							if err != nil {
+								return nil, err
+							}
+							return map[string]any{"content": result.Content, "is_error": result.IsError}, nil
+						},
+					})
+				}
+				fmt.Printf("      ✓ Registered %d tools\n", len(mcpTools))
 			}
 		}
 	}

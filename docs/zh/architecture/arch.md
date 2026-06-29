@@ -112,7 +112,7 @@ graph TB
 **代码位置**:
 - Leader Agent: `internal/agents/leader/agent.go`
 - Sub Agent: `internal/agents/sub/agent.go`
-- Protocol: `internal/protocol/ahp/`
+- Protocol: `internal/ares_protocol/ahp/`
 - LLM Client: `internal/llm/client.go`
 - Storage Pool: `internal/storage/postgres/pool.go`
 - Memory Manager: `internal/memory/production_manager.go`
@@ -502,7 +502,7 @@ ares/
 |------|----------|----------|
 | 语言 | Go 1.21+ | - |
 | LLM | Ollama / OpenRouter | `internal/llm/client.go` |
-| 协议 | AHP (Agent Handshake Protocol) | `internal/protocol/ahp/` |
+| 协议 | AHP (Agent Handshake Protocol) | `internal/ares_protocol/ahp/` |
 | 存储 | PostgreSQL 15+ with pgvector | `internal/storage/postgres/` |
 | 并发 | errgroup, sync | - |
 | 工具 | 内置工具 | `internal/tools/` |
@@ -512,7 +512,7 @@ ares/
 
 ## 消息格式 (AHP Protocol)
 
-**代码位置**: `internal/protocol/ahp/message.go`
+**代码位置**: `internal/ares_protocol/ahp/message.go`
 
 ```go
 type Message struct {

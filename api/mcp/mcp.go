@@ -1,204 +1,344 @@
 // Package mcp provides the public API for MCP (Model Context Protocol) integration.
 //
-// External projects can use this package to:
-//   - Connect to MCP servers (stdio or SSE transport)
-//   - List and call tools exposed by MCP servers
-//   - Register MCP tools into an api/tools.Registry
+// This package is self-contained with no dependency on internal/.
+// External projects can use it to connect to MCP servers and call tools.
 //
 // Usage:
 //
 //	import "github.com/Timwood0x10/ares/api/mcp"
 //
-//	// Connect to an MCP server via stdio
 //	client, err := mcp.ConnectStdio(ctx, "my-server", "codegraph", []string{"serve", "--mcp"})
-//
-//	// Or from config
-//	client, err := mcp.ConnectFromConfig(ctx, mcp.ServerConfig{
-//	    Name:    "codegraph",
-//	    Command: "codegraph",
-//	    Args:    []string{"serve", "--mcp"},
-//	})
-//
-//	// List tools
 //	tools, _ := client.ListTools(ctx)
-//
-//	// Call a tool
-//	result, _ := client.CallTool(ctx, "codegraph_files", map[string]any{"query": "*.go"})
-//
-//	// Register all MCP tools into an api/tools.Registry
-//	client.RegisterTools(ctx, registry)
+//	result, _ := client.CallTool(ctx, "tool_name", map[string]any{"key": "value"})
 package mcp
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sync"
 	"time"
-
-	api_tools "github.com/Timwood0x10/ares/api/tools"
-	"github.com/Timwood0x10/ares/internal/ares_mcp"
 )
 
-// ServerConfig holds MCP server connection configuration.
-type ServerConfig struct {
-	Name    string   `json:"name"`              // Server name (used as prefix in tool names)
-	Command string   `json:"command,omitempty"` // For stdio: command to run
-	Args    []string `json:"args,omitempty"`    // For stdio: command arguments
-	URL     string   `json:"url,omitempty"`     // For SSE: server URL
-	Timeout int      `json:"timeout,omitempty"` // Connection timeout in seconds (default: 30)
-}
-
-// Client wraps an MCP server connection.
+// Client connects to an MCP server and provides tool access.
 type Client struct {
-	inner      *ares_mcp.MCPClient
-	serverName string
+	name      string
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Scanner
+	mu        sync.Mutex
+	idCounter int
+	tools     []ToolInfo
+	connected bool
 }
 
-// ConnectStdio connects to an MCP server via stdio transport.
-func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
-	return ConnectFromConfig(ctx, ServerConfig{
-		Name:    name,
-		Command: command,
-		Args:    args,
-	})
-}
-
-// ConnectSSE connects to an MCP server via SSE transport.
-func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
-	return ConnectFromConfig(ctx, ServerConfig{
-		Name: name,
-		URL:  url,
-	})
-}
-
-// ConnectFromConfig connects to an MCP server from a ServerConfig.
-func ConnectFromConfig(ctx context.Context, cfg ServerConfig) (*Client, error) {
-	if cfg.Name == "" {
-		return nil, fmt.Errorf("server name is required")
-	}
-
-	timeout := 30 * time.Second
-	if cfg.Timeout > 0 {
-		timeout = time.Duration(cfg.Timeout) * time.Second
-	}
-
-	client := ares_mcp.NewMCPClient(ares_mcp.MCPClientConfig{
-		ServerName: cfg.Name,
-		Timeout:    timeout,
-	})
-
-	transportCfg := ares_mcp.TransportConfig{}
-	if cfg.Command != "" {
-		transportCfg.Type = "stdio"
-		transportCfg.Stdio = &ares_mcp.StdioConfig{
-			Command: cfg.Command,
-			Args:    cfg.Args,
-		}
-	} else if cfg.URL != "" {
-		transportCfg.Type = "sse"
-		transportCfg.SSE = &ares_mcp.SSEConfig{
-			URL: cfg.URL,
-		}
-	} else {
-		return nil, fmt.Errorf("either command (stdio) or url (sse) is required")
-	}
-
-	transport, err := ares_mcp.NewTransportFromConfig(transportCfg)
-	if err != nil {
-		return nil, fmt.Errorf("create transport: %w", err)
-	}
-
-	if err := client.Connect(ctx, transport); err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
-	}
-
-	return &Client{inner: client, serverName: cfg.Name}, nil
-}
-
-// ToolInfo describes an MCP tool.
+// ToolInfo describes a tool exposed by an MCP server.
 type ToolInfo struct {
 	Name        string `json:"name"`
-	Description string `json:"description"`
+	Description string `json:"description,omitempty"`
 }
 
-// ListTools returns all tools exposed by the MCP server.
-func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	defs, err := c.inner.ListTools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	infos := make([]ToolInfo, len(defs))
-	for i, d := range defs {
-		infos[i] = ToolInfo{Name: d.Name, Description: d.Description}
-	}
-	return infos, nil
-}
-
-// ContentBlock represents a content block returned by an MCP tool.
-type ContentBlock struct {
-	Type     string `json:"type"`               // "text", "image", etc.
-	Text     string `json:"text,omitempty"`     // Text content
-	MimeType string `json:"mimeType,omitempty"` // MIME type (for images, etc.)
-	Data     string `json:"data,omitempty"`     // Base64-encoded data (for images, etc.)
-	URI      string `json:"uri,omitempty"`      // Resource URI
-}
-
-// CallToolResult is the result of calling an MCP tool.
-type CallToolResult struct {
+// CallResult is the result of calling an MCP tool.
+type CallResult struct {
 	Content []ContentBlock `json:"content"`
 	IsError bool           `json:"is_error"`
 }
 
-// CallTool invokes a tool on the MCP server.
-func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*CallToolResult, error) {
-	result, err := c.inner.CallTool(ctx, name, args)
-	if err != nil {
-		return nil, err
-	}
-	blocks := make([]ContentBlock, len(result.Content))
-	for i, b := range result.Content {
-		blocks[i] = ContentBlock{Type: b.Type, Text: b.Text}
-	}
-	return &CallToolResult{
-		Content: blocks,
-		IsError: result.IsError,
-	}, nil
+// ContentBlock represents a content block in a tool result.
+type ContentBlock struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
-// RegisterTools registers all MCP tools into an api/tools.Registry.
-// Tool names are prefixed with "mcp.<server_name>." to avoid conflicts.
-func (c *Client) RegisterTools(ctx context.Context, registry *api_tools.Registry) error {
-	defs, err := c.inner.ListTools(ctx)
+// ConnectStdio connects to an MCP server via stdio transport.
+func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start: %w", err)
+	}
+
+	c := &Client{
+		name:      name,
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    bufio.NewScanner(stdout),
+		idCounter: 1,
+	}
+
+	// Initialize handshake.
+	if err := c.initialize(ctx); err != nil {
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+
+	c.connected = true
+	return c, nil
+}
+
+func (c *Client) initialize(ctx context.Context) error {
+	req := jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID(),
+		Method:  "initialize",
+		Params: map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
+				"name":    "ares-mcp-client",
+				"version": "1.0.0",
+			},
+		},
+	}
+
+	resp, err := c.sendRequest(ctx, req)
 	if err != nil {
 		return err
 	}
-	for _, def := range defs {
-		d := def // capture
-		toolName := fmt.Sprintf("mcp.%s.%s", c.serverName, d.Name)
-		_ = registry.Register(api_tools.ToolFunc{
-			ToolName: toolName,
-			ToolDesc: d.Description,
-			Fn: func(ctx context.Context, params map[string]any) (any, error) {
-				result, err := c.inner.CallTool(ctx, d.Name, params)
-				if err != nil {
-					return nil, err
-				}
-				blocks := make([]ContentBlock, len(result.Content))
-				for i, b := range result.Content {
-					blocks[i] = ContentBlock{Type: b.Type, Text: b.Text}
-				}
-				return CallToolResult{Content: blocks, IsError: result.IsError}, nil
-			},
-		})
+	if resp.Error != nil {
+		return fmt.Errorf("initialize error: %s", resp.Error.Message)
 	}
+
+	// Send initialized notification.
+	notif := jsonrpcNotification{
+		JSONRPC: "2.0",
+		Method:  "notifications/initialized",
+	}
+	_ = c.sendNotification(notif)
+
 	return nil
 }
 
-// ServerName returns the MCP server name.
-func (c *Client) ServerName() string {
-	return c.serverName
+// ListTools returns all tools exposed by the MCP server.
+func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
+	req := jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID(),
+		Method:  "tools/list",
+	}
+
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("list tools error: %s", resp.Error.Message)
+	}
+
+	var result struct {
+		Tools []ToolInfo `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal tools: %w", err)
+	}
+
+	c.tools = result.Tools
+	return c.tools, nil
+}
+
+// CallTool invokes a tool on the MCP server.
+func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*CallResult, error) {
+	req := jsonrpcRequest{
+		JSONRPC: "2.0",
+		ID:      c.nextID(),
+		Method:  "tools/call",
+		Params: map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	}
+
+	resp, err := c.sendRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return &CallResult{IsError: true}, fmt.Errorf("call tool error: %s", resp.Error.Message)
+	}
+
+	var result CallResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Name returns the server name.
+func (c *Client) Name() string {
+	return c.name
 }
 
 // Close closes the MCP connection.
 func (c *Client) Close() error {
-	return c.inner.Close()
+	if c.cmd != nil && c.cmd.Process != nil {
+		return c.cmd.Process.Kill()
+	}
+	return nil
+}
+
+// ── JSON-RPC Protocol ────────────────────────────────────
+
+type jsonrpcRequest struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+type jsonrpcNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+type jsonrpcResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int             `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *jsonrpcError   `json:"error,omitempty"`
+}
+
+type jsonrpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (c *Client) nextID() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id := c.idCounter
+	c.idCounter++
+	return id
+}
+
+func (c *Client) sendRequest(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(c.stdin, "%s\n", data); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+
+	// Read response with timeout.
+	type result struct {
+		resp *jsonrpcResponse
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		if c.stdout.Scan() {
+			var resp jsonrpcResponse
+			if err := json.Unmarshal(c.stdout.Bytes(), &resp); err != nil {
+				ch <- result{nil, err}
+				return
+			}
+			ch <- result{&resp, nil}
+		} else {
+			ch <- result{nil, fmt.Errorf("connection closed")}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.resp, r.err
+	case <-time.After(30 * time.Second):
+		return nil, fmt.Errorf("timeout waiting for response")
+	}
+}
+
+func (c *Client) sendNotification(notif jsonrpcNotification) error {
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(c.stdin, "%s\n", data)
+	return err
+}
+
+// ServerConfig holds MCP server connection configuration.
+type ServerConfig struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	URL     string   `json:"url,omitempty"`
+}
+
+// ConnectFromConfig connects to an MCP server from a ServerConfig.
+func ConnectFromConfig(ctx context.Context, cfg ServerConfig) (*Client, error) {
+	if cfg.Command != "" {
+		return ConnectStdio(ctx, cfg.Name, cfg.Command, cfg.Args)
+	}
+	if cfg.URL != "" {
+		return nil, fmt.Errorf("SSE transport not yet supported in public API")
+	}
+	return nil, fmt.Errorf("either command or url is required")
+}
+
+// DiscoverServers scans ~/.claude.json for MCP server definitions.
+func DiscoverServers(projectDir string) []ServerConfig {
+	home, _ := os.UserHomeDir()
+	var servers []ServerConfig
+	seen := make(map[string]bool)
+
+	// ~/.claude.json
+	if home != "" {
+		servers = append(servers, scanClaudeConfig(home+"/.claude.json", seen)...)
+	}
+	// Project .claude/settings.json
+	if projectDir != "" {
+		servers = append(servers, scanClaudeConfig(projectDir+"/.claude/settings.json", seen)...)
+	}
+	return servers
+}
+
+func scanClaudeConfig(path string, seen map[string]bool) []ServerConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	var servers []ServerConfig
+	for name, sc := range cfg.MCPServers {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		servers = append(servers, ServerConfig{
+			Name:    name,
+			Command: sc.Command,
+			Args:    sc.Args,
+		})
+	}
+	return servers
 }

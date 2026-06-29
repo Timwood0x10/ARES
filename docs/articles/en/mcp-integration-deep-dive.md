@@ -114,6 +114,163 @@ func NewTransportFromConfig(config TransportConfig) (Transport, error) {
 
 ---
 
+## Discovery: Finding Tool Servers in the Wild
+
+The Transport layer handles communication. The Manager handles connections. But there's a question neither answers: **which servers should we connect to?**
+
+Before the Discovery subsystem, every MCP server had to be manually configured in YAML. If a user installed a new MCP tool — say, a code analysis server written in Rust — they had to know the exact command, arguments, and transport type before it would appear in ares. New tool adoption required manual scaffolding.
+
+The Discovery subsystem changed this. It's a layered system that automatically finds MCP tool servers from multiple sources, normalizes identities, runs health checks, and feeds results into the framework — no YAML required.
+
+### Layered Architecture
+
+```
+api/discovery/              → public API (type aliases, no duplication)
+internal/discovery/         → engine, identity, health, events, store
+internal/discovery/providers/ → filesystem scanner, binary probe
+```
+
+The public layer at `api/discovery` exports type aliases and thin delegation wrappers — a stable API contract for external consumers with zero code duplication. The internal layer below it does the real work.
+
+### Provider System
+
+Discovery is powered by providers. Each implements a simple interface:
+
+```go
+type DiscoveryProvider interface {
+    Name() string
+    Confidence() int
+    Discover(ctx context.Context) ([]DiscoveryRecord, error)
+}
+```
+
+The `Confidence` value tells the engine how much to trust each source — explicit config files score higher than heuristic scans.
+
+**Filesystem provider** (`internal/discovery/providers/filesystem.go`) scans well-known config file locations for MCP server definitions:
+
+- **Claude**: `.claude/settings.json` with `mcpServers` key
+- **Cursor**: `.cursor/mcp.json`
+- **VS Code**: `.vscode/mcp.json`
+- **ARES**: `.codegraph/mcp-servers.json`
+
+Each format has a different schema, but the provider normalizes everything into a common `DiscoveryRecord`. Metadata like `config_name` is preserved across all formats so the framework can trace where each tool came from.
+
+**Binary probe provider** (`internal/discovery/providers/binary.go`) scans `$PATH` for known MCP binaries. It runs each candidate with `--help` and looks for MCP-specific keywords in the output. Matches get `ConfidenceMedium` — likely MCP tools, but less certain than an explicit config file.
+
+### Concurrent Discovery
+
+Providers run in parallel via `errgroup`. One failure doesn't block the others:
+
+```go
+g, gctx := errgroup.WithContext(ctx)
+for i, p := range providers {
+    idx, prov := i, p
+    g.Go(func() error {
+        records, err := prov.Discover(gctx)
+        if err != nil {
+            slog.Warn("discovery: provider failed",
+                "provider", prov.Name(), "error", err)
+            return nil
+        }
+        results[idx] = providerResult{records: records, name: prov.Name()}
+        return nil
+    })
+}
+_ = g.Wait()
+```
+
+A slow binary scan doesn't delay filesystem discovery. Results are merged after all providers complete — the engine waits for everyone before proceeding.
+
+### Identity Normalization and Merging
+
+The same MCP server might be discovered by multiple providers — Claude's config lists `codegraph`, VS Code's config lists it too, and the binary probe finds it in PATH. The engine merges duplicates into a single `DiscoveredService` through confidence-based rules:
+
+- Higher-confidence records take precedence for connection details
+- `bestEndpoint()` selects the endpoint from the highest-confidence record
+- Known launchers (`uvx`, `npx`, `bunx`, `pipx`) are preserved as part of the endpoint identity
+- Tags and metadata are merged from all contributing records
+
+The `normalizeEndpoint` function extracts a canonical identity from raw endpoints:
+
+```go
+var knownLaunchers = map[string]bool{
+    "uvx": true, "npx": true, "bunx": true, "pipx": true,
+}
+
+func normalizeEndpoint(endpoint string) string {
+    // Extract binary name from path
+    // Preserve known launcher prefixes
+    // Strip everything else
+}
+```
+
+The `hasChanged` method detects meaningful differences — endpoint changes, tag additions, config name updates — so the engine emits targeted events instead of full resyncs.
+
+### Health Verification
+
+Discovery tells you a server *might* exist. Health checks tell you it's actually running. The `MCPHealthChecker` connects to each discovered service and calls `list_tools`:
+
+- **Binary endpoints**: connects via stdio (`ConnectStdio`)
+- **URL endpoints**: connects via SSE (`ConnectSSE`)
+
+If the probe fails, the service is marked `Healthy: false`. Services can be re-probed at any time — useful for dashboard refresh cycles or recovery attempts.
+
+### Event System
+
+The discovery lifecycle emits typed events that the rest of the framework subscribes to:
+
+```go
+const (
+    EventServiceAdded      EventType = "service.added"
+    EventServiceRemoved    EventType = "service.removed"
+    EventServiceUpdated    EventType = "service.updated"
+    EventHealthChanged     EventType = "health.changed"
+    EventDiscoveryComplete EventType = "discovery.complete"
+)
+```
+
+Any component can subscribe via the `EventHandler` interface:
+
+```go
+type EventHandler interface {
+    HandleDiscoveryEvent(event Event)
+}
+```
+
+The dashboard uses these events to update its UI in real time. The MCP Manager listens for `EventServiceAdded` and automatically connects to newly discovered servers. The event system decouples discovery from consumption — the engine doesn't know or care who's listening.
+
+### Passive Registration and ServiceStore
+
+Not all servers come from automated discovery. Some are explicit — the user knows the URL or command and wants a permanent entry. The `Register` method handles this:
+
+```go
+func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
+    // Creates a DiscoveredService with ConfidenceMax
+    // Sets Healthy: false (separate health check step)
+    // Emits EventServiceAdded
+}
+```
+
+All discovered and registered services live in a `ServiceStore`. The default `MemoryStore` uses proper deep copy to prevent data races. The `ServiceStore` interface is designed to be swappable — a persistent backend (SQLite, Bolt, JSON file) can be plugged in without changing the engine.
+
+### The Full Flow
+
+```mermaid
+graph LR
+    A[Filesystem Provider] --> D[Merge by Identity]
+    B[Binary Probe Provider] --> D
+    D --> E[Normalize Endpoints]
+    E --> F[Health Check All Services]
+    F --> G[Emit Discovery Events]
+    G --> H[Store in ServiceStore]
+    H --> I[MCP Manager connects<br>to healthy servers]
+    I --> J[Tools appear in Registry]
+```
+
+Discovery doesn't replace the MCP Manager. It feeds it. Discovery finds the servers; the Manager connects to them; the Bridge wraps their tools; the Registry serves them to agents. Each layer has a single responsibility, and they compose cleanly.
+
+---
+
 ## The Manager: Juggling Multiple Servers
 
 A single MCP client is useful. But in practice, you want to connect to multiple tool servers simultaneously — one for code analysis, one for database access, one for file operations. That's where `MCPManager` comes in.

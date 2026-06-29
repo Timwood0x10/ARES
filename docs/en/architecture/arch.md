@@ -112,7 +112,7 @@ graph TB
 **Code Locations**:
 - Leader Agent: `internal/agents/leader/agent.go`
 - Sub Agent: `internal/agents/sub/agent.go`
-- Protocol: `internal/protocol/ahp/`
+- Protocol: `internal/ares_protocol/ahp/`
 - LLM Client: `internal/llm/client.go`
 - Storage Pool: `internal/storage/postgres/pool.go`
 - Memory Manager: `internal/memory/production_manager.go`
@@ -262,7 +262,7 @@ func (p *Pool) WithConnection(ctx context.Context, fn func(*sql.Conn) error) err
 |-------|-----------|---------------|
 | Language | Go 1.21+ | - |
 | LLM | Ollama / OpenRouter | `internal/llm/client.go` |
-| Protocol | AHP (Agent Handshake Protocol) | `internal/protocol/ahp/` |
+| Protocol | AHP (Agent Handshake Protocol) | `internal/ares_protocol/ahp/` |
 | Storage | PostgreSQL 15+ with pgvector | `internal/storage/postgres/` |
 | Concurrency | errgroup, sync | - |
 | Tools | Built-in tools | `internal/tools/` |
@@ -272,7 +272,7 @@ func (p *Pool) WithConnection(ctx context.Context, fn func(*sql.Conn) error) err
 
 ## Message Format (AHP Protocol)
 
-**Code Location**: `internal/protocol/ahp/message.go`
+**Code Location**: `internal/ares_protocol/ahp/message.go`
 
 ```go
 type Message struct {

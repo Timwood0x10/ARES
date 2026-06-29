@@ -320,7 +320,7 @@ This is more reliable than checkpoints because no state is lost between snapshot
 
 ## DLQ Auto-Retry
 
-Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
+Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/ares_protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
 
 ```go
 dlq := ahp.NewDLQ(10000)

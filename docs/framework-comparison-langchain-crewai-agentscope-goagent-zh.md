@@ -816,9 +816,9 @@ GoAgent 现在的差距（状态检查点、条件边）可以通过借鉴其他
 | DAG 定义            | `internal/workflow/engine/types.go`                         |
 | DAG 执行器           | `internal/workflow/engine/executor.go`                      |
 | 热更新               | `internal/workflow/engine/reloader.go`                      |
-| AHP 消息            | `internal/protocol/ahp/message.go`                          |
-| 心跳检测              | `internal/protocol/ahp/heartbeat.go`                        |
-| 死信队列              | `internal/protocol/ahp/dlq.go`                              |
+| AHP 消息            | `internal/ares_protocol/ahp/message.go`                          |
+| 心跳检测              | `internal/ares_protocol/ahp/heartbeat.go`                        |
+| 死信队列              | `internal/ares_protocol/ahp/dlq.go`                              |
 | Leader Agent      | `internal/agents/leader/agent.go`                           |
 | 任务分发器             | `internal/agents/leader/dispatcher.go`                      |
 | 结果聚合器             | `internal/agents/leader/aggregator.go`                      |

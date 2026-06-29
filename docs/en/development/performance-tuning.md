@@ -335,7 +335,7 @@ func (m *Message) Release() {
 }
 ```
 
-**Code Location**: `internal/protocol/ahp/message.go:50-80`
+**Code Location**: `internal/ares_protocol/ahp/message.go:50-80`
 
 ## Monitoring Metrics
 

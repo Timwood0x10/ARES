@@ -47,7 +47,7 @@ sequenceDiagram
 
 ### HeartbeatMonitor
 
-Located at `internal/protocol/ahp/heartbeat.go`. Periodically detects agent heartbeats, marks timed-out agents as offline and triggers callbacks.
+Located at `internal/ares_protocol/ahp/heartbeat.go`. Periodically detects agent heartbeats, marks timed-out agents as offline and triggers callbacks.
 
 ```go
 // Configure heartbeat parameters
