@@ -41,6 +41,20 @@ func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
 			svc.Identity.Tags = tags
 		}
 
+		// Merge metadata from all records (highest confidence wins on conflict).
+		mergedMeta := make(map[string]string)
+		for _, r := range group {
+			for k, v := range r.Metadata {
+				if existing, ok := mergedMeta[k]; !ok || r.Confidence >= best.Confidence {
+					_ = existing
+					mergedMeta[k] = v
+				}
+			}
+		}
+		if len(mergedMeta) > 0 {
+			svc.Identity.Metadata = mergedMeta
+		}
+
 		services[key] = svc
 	}
 

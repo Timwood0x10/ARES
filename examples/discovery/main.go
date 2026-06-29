@@ -1,5 +1,7 @@
 // discovery demonstrates the Service Discovery Engine.
 //
+// Shows: active discovery, passive registration, tag management, health check.
+//
 // Run: go run ./examples/discovery
 package main
 
@@ -13,35 +15,90 @@ import (
 func main() {
 	ctx := context.Background()
 
-	engine := discovery.NewEngine("", nil)
-
-	// Event handler — events can be persisted to any DB.
-	engine.OnEvent(func(evt discovery.Event) {
-		fmt.Printf("  [event] %-25s service=%-30s source=%s\n",
-			evt.Type, evt.ServiceID, evt.Source)
+	// ── Create engine with pluggable store ────────────────
+	// Users can pass their own Store (SQLite, Postgres, etc.)
+	// Default: in-memory.
+	engine := discovery.NewEngine(discovery.EngineConfig{
+		ProjectDir: "",
+		Store:      nil, // Uses MemoryStore by default.
 	})
 
-	fmt.Println("=== Discovery ===")
-	if err := engine.DiscoverNow(ctx); err != nil {
-		fmt.Printf("error: %v\n", err)
-		return
-	}
+	// Events → can be persisted to any DB.
+	engine.OnEvent(func(evt discovery.Event) {
+		fmt.Printf("  [event] %-25s %s\n", evt.Type, evt.ServiceID)
+	})
+
+	// ── 1. Active Discovery ───────────────────────────────
+	fmt.Println("=== 1. Active Discovery ===")
+	_ = engine.DiscoverNow(ctx)
 
 	services, _ := engine.List(ctx)
-	fmt.Printf("\n=== %d Services Found ===\n", len(services))
+	fmt.Printf("  Found %d services\n", len(services))
+
+	// ── 2. Passive Registration ───────────────────────────
+	fmt.Println("\n=== 2. Passive Registration ===")
+	err := engine.Register(ctx, discovery.RegisterRequest{
+		Name:     "my-custom-mcp",
+		Endpoint: "/usr/local/bin/my-custom-mcp",
+		Tags:     []string{"capability:analytics", "domain:business"},
+		Metadata: map[string]string{"team": "platform", "env": "prod"},
+	})
+	if err != nil {
+		fmt.Printf("  register error: %v\n", err)
+	} else {
+		fmt.Println("  ✓ Registered my-custom-mcp")
+	}
+
+	// ── 3. Tag Management ─────────────────────────────────
+	fmt.Println("\n=== 3. Tag Management ===")
+	err = engine.UpdateTags(ctx, "my-custom-mcp", discovery.UpdateTagsRequest{
+		Add:    []string{"capability:export", "priority:high"},
+		Remove: []string{"domain:business"},
+	})
+	if err != nil {
+		fmt.Printf("  update tags error: %v\n", err)
+	} else {
+		fmt.Println("  ✓ Updated tags on my-custom-mcp")
+	}
+
+	// ── 4. Health Check ───────────────────────────────────
+	fmt.Println("\n=== 4. Health Check ===")
+	_ = engine.CheckHealth(ctx)
+
+	// ── 5. List All Services ──────────────────────────────
+	fmt.Println("\n=== 5. All Services ===")
+	services, _ = engine.List(ctx)
 	for _, svc := range services {
 		conf := bestConfidence(svc)
-		sources := sourceList(svc)
+		healthIcon := "✗"
+		healthMsg := "unchecked"
+		if svc.CheckedAt != nil {
+			if svc.Healthy {
+				healthIcon = "✓"
+			}
+			healthMsg = svc.HealthMsg
+		}
 
-		fmt.Printf("\n  %s\n", svc.Identity.Name)
+		fmt.Printf("\n  %s %s\n", healthIcon, svc.Identity.Name)
 		fmt.Printf("    endpoint:    %s\n", svc.Identity.Endpoint)
 		fmt.Printf("    confidence:  %d%%\n", conf)
-		fmt.Printf("    sources:     %s\n", sources)
-		fmt.Printf("    records:     %d\n", len(svc.Records))
+		fmt.Printf("    sources:     %s\n", sourceList(svc))
+		fmt.Printf("    health:      %s\n", healthMsg)
 		if len(svc.Identity.Tags) > 0 {
 			fmt.Printf("    tags:        %v\n", svc.Identity.Tags)
 		}
+		if len(svc.Identity.Metadata) > 0 {
+			fmt.Printf("    metadata:    %v\n", svc.Identity.Metadata)
+		}
 	}
+
+	// ── 6. Unregister ─────────────────────────────────────
+	fmt.Println("\n=== 6. Unregister ===")
+	_ = engine.Unregister(ctx, "my-custom-mcp")
+	fmt.Println("  ✓ Unregistered my-custom-mcp")
+
+	services, _ = engine.List(ctx)
+	fmt.Printf("  Remaining: %d services\n", len(services))
 }
 
 func bestConfidence(svc *discovery.DiscoveredService) discovery.Confidence {

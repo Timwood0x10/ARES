@@ -50,12 +50,13 @@ type ServiceIdentity struct {
 
 // DiscoveryRecord is a single observation of a service from one source.
 type DiscoveryRecord struct {
-	Source     string     `json:"source"`
-	Confidence Confidence `json:"confidence"`
-	Endpoint   string     `json:"endpoint"`
-	Args       []string   `json:"args,omitempty"`
-	Tags       []string   `json:"tags,omitempty"`
-	LastSeen   time.Time  `json:"last_seen"`
+	Source     string            `json:"source"`
+	Confidence Confidence        `json:"confidence"`
+	Endpoint   string            `json:"endpoint"`
+	Args       []string          `json:"args,omitempty"`
+	Tags       []string          `json:"tags,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	LastSeen   time.Time         `json:"last_seen"`
 }
 
 // DiscoveredService is the merged result of one or more discovery records.

@@ -62,13 +62,21 @@ func (p *BinaryProbeProvider) Discover(ctx context.Context) ([]discovery.Discove
 			continue
 		}
 
-		records = append(records, discovery.DiscoveryRecord{
+		rec := discovery.DiscoveryRecord{
 			Source:     "binary-probe",
 			Confidence: discovery.ConfidenceMedium,
 			Endpoint:   path,
 			Args:       metadata.defaultArgs,
 			Tags:       metadata.tags,
-		})
+			Metadata:   make(map[string]string),
+		}
+		if metadata.version != "" {
+			rec.Metadata["version"] = metadata.version
+		}
+		if metadata.description != "" {
+			rec.Metadata["description"] = metadata.description
+		}
+		records = append(records, rec)
 	}
 
 	return records, nil

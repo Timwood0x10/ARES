@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	api_mcp "github.com/Timwood0x10/ares/api/mcp"
 )
 
-// MCPHealthChecker checks MCP servers by attempting connection.
+// MCPHealthChecker checks MCP servers by connecting and listing tools.
 type MCPHealthChecker struct {
 	timeout time.Duration
 }
@@ -24,44 +26,64 @@ func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredServi
 		return nil, fmt.Errorf("service is nil")
 	}
 
+	// Pick best endpoint.
+	endpoint, args := bestEndpoint(svc)
+	if endpoint == "" {
+		return &HealthStatus{
+			Healthy:   false,
+			Message:   "no endpoint",
+			CheckedAt: time.Now(),
+		}, nil
+	}
+
 	start := time.Now()
-
-	endpoint := ""
-	for _, r := range svc.Records {
-		if r.Source == svc.BestSource {
-			endpoint = r.Endpoint
-			break
-		}
-	}
-	if endpoint == "" && len(svc.Records) > 0 {
-		endpoint = svc.Records[0].Endpoint
-	}
-
 	checkCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	status := probeMCP(checkCtx, endpoint)
+	status := probeMCP(checkCtx, endpoint, args)
 	status.Latency = time.Since(start)
 	status.CheckedAt = time.Now()
 
 	return status, nil
 }
 
-// probeMCP attempts a lightweight MCP connection check.
-func probeMCP(ctx context.Context, endpoint string) *HealthStatus {
-	select {
-	case <-ctx.Done():
-		return &HealthStatus{Healthy: false, Message: "timeout"}
-	default:
+// probeMCP connects to an MCP server, does initialize → list_tools → close.
+func probeMCP(ctx context.Context, endpoint string, args []string) *HealthStatus {
+	client, err := api_mcp.ConnectStdio(ctx, endpoint, endpoint, args)
+	if err != nil {
+		return &HealthStatus{
+			Healthy: false,
+			Message: fmt.Sprintf("connect failed: %v", err),
+		}
+	}
+	defer client.Close()
+
+	// list_tools verifies the server is fully functional.
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		return &HealthStatus{
+			Healthy: false,
+			Message: fmt.Sprintf("list_tools failed: %v", err),
+		}
 	}
 
-	if endpoint == "" {
-		return &HealthStatus{Healthy: false, Message: "no endpoint"}
-	}
-
-	// TODO: implement actual MCP probe (connect → initialize → list_tools → close).
 	return &HealthStatus{
 		Healthy: true,
-		Message: "probe not implemented, assumed healthy",
+		Message: fmt.Sprintf("ok, %d tools", len(tools)),
 	}
+}
+
+// bestEndpoint extracts the highest-confidence endpoint from a service.
+func bestEndpoint(svc *DiscoveredService) (string, []string) {
+	if len(svc.Records) == 0 {
+		return "", nil
+	}
+
+	best := svc.Records[0]
+	for _, r := range svc.Records[1:] {
+		if r.Confidence > best.Confidence {
+			best = r
+		}
+	}
+	return best.Endpoint, best.Args
 }
