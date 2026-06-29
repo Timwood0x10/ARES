@@ -33,7 +33,6 @@ package discovery
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	internal "github.com/Timwood0x10/ares/internal/discovery"
@@ -131,96 +130,26 @@ func (e *Engine) CheckHealth(ctx context.Context) error {
 // ── Passive Registration ─────────────────────────────────
 
 // RegisterRequest is the input for passive service registration.
-type RegisterRequest struct {
-	Name       string            `json:"name"`
-	Endpoint   string            `json:"endpoint"`
-	Args       []string          `json:"args,omitempty"`
-	Tags       []string          `json:"tags,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	Confidence Confidence        `json:"confidence,omitempty"` // Default: ConfidenceMax (100).
-}
+type RegisterRequest = internal.RegisterRequest
 
-// Register passively registers a service. The service is immediately available
-// without going through discovery providers. Emits EventServiceAdded.
+// Register passively registers a service. Emits EventServiceAdded.
 func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
-	if req.Name == "" {
-		return fmt.Errorf("name is required")
-	}
-	if req.Endpoint == "" {
-		return fmt.Errorf("endpoint is required")
-	}
-	if req.Confidence == 0 {
-		req.Confidence = ConfidenceMax
-	}
-
-	svc := &internal.DiscoveredService{
-		Identity: internal.ServiceIdentity{
-			ID:       req.Name,
-			Name:     req.Name,
-			Type:     internal.ServiceTypeMCP,
-			Endpoint: req.Endpoint,
-			Tags:     req.Tags,
-			Metadata: req.Metadata,
-		},
-		Records: []internal.DiscoveryRecord{
-			{
-				Source:     "register",
-				Confidence: req.Confidence,
-				Endpoint:   req.Endpoint,
-				Args:       req.Args,
-				Tags:       req.Tags,
-				Metadata:   req.Metadata,
-				LastSeen:   time.Now(),
-			},
-		},
-		BestSource: "register",
-		Healthy:    true,
-	}
-
-	return e.store.Save(ctx, svc)
+	return e.inner.Register(ctx, req)
 }
 
 // Unregister removes a service by ID. Emits EventServiceRemoved.
 func (e *Engine) Unregister(ctx context.Context, id string) error {
-	return e.store.Delete(ctx, id)
+	return e.inner.Unregister(ctx, id)
 }
 
 // ── Tag Management ───────────────────────────────────────
 
 // UpdateTagsRequest modifies tags on a service.
-type UpdateTagsRequest struct {
-	Add    []string `json:"add,omitempty"`    // Tags to add.
-	Remove []string `json:"remove,omitempty"` // Tags to remove.
-}
+type UpdateTagsRequest = internal.UpdateTagsRequest
 
 // UpdateTags adds or removes tags on a service. Emits EventServiceUpdated.
 func (e *Engine) UpdateTags(ctx context.Context, id string, req UpdateTagsRequest) error {
-	svc, err := e.store.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if svc == nil {
-		return fmt.Errorf("service not found: %s", id)
-	}
-
-	tagSet := make(map[string]bool)
-	for _, t := range svc.Identity.Tags {
-		tagSet[t] = true
-	}
-	for _, t := range req.Add {
-		tagSet[t] = true
-	}
-	for _, t := range req.Remove {
-		delete(tagSet, t)
-	}
-
-	newTags := make([]string, 0, len(tagSet))
-	for t := range tagSet {
-		newTags = append(newTags, t)
-	}
-	svc.Identity.Tags = newTags
-
-	return e.store.Save(ctx, svc)
+	return e.inner.UpdateTags(ctx, id, req)
 }
 
 // ── Query ────────────────────────────────────────────────

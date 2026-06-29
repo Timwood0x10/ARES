@@ -5,6 +5,7 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/discovery"
@@ -46,39 +47,52 @@ func (p *BinaryProbeProvider) Confidence() discovery.Confidence {
 }
 
 func (p *BinaryProbeProvider) Discover(ctx context.Context) ([]discovery.DiscoveryRecord, error) {
-	var records []discovery.DiscoveryRecord
+	var (
+		mu      sync.Mutex
+		records []discovery.DiscoveryRecord
+		wg      sync.WaitGroup
+	)
 
 	for _, bin := range knownMCPBinaries {
 		path, err := exec.LookPath(bin)
 		if err != nil {
-			continue // Not in PATH.
-		}
-
-		probeCtx, cancel := context.WithTimeout(ctx, p.timeout)
-		metadata := probeBinary(probeCtx, path)
-		cancel()
-
-		if !metadata.isMCP {
 			continue
 		}
 
-		rec := discovery.DiscoveryRecord{
-			Source:     "binary-probe",
-			Confidence: discovery.ConfidenceMedium,
-			Endpoint:   path,
-			Args:       metadata.defaultArgs,
-			Tags:       metadata.tags,
-			Metadata:   make(map[string]string),
-		}
-		if metadata.version != "" {
-			rec.Metadata["version"] = metadata.version
-		}
-		if metadata.description != "" {
-			rec.Metadata["description"] = metadata.description
-		}
-		records = append(records, rec)
+		wg.Add(1)
+		go func(binPath string) {
+			defer wg.Done()
+
+			probeCtx, cancel := context.WithTimeout(ctx, p.timeout)
+			defer cancel()
+
+			metadata := probeBinary(probeCtx, binPath)
+			if !metadata.isMCP {
+				return
+			}
+
+			rec := discovery.DiscoveryRecord{
+				Source:     "binary-probe",
+				Confidence: discovery.ConfidenceMedium,
+				Endpoint:   binPath,
+				Args:       metadata.defaultArgs,
+				Tags:       metadata.tags,
+				Metadata:   make(map[string]string),
+			}
+			if metadata.version != "" {
+				rec.Metadata["version"] = metadata.version
+			}
+			if metadata.description != "" {
+				rec.Metadata["description"] = metadata.description
+			}
+
+			mu.Lock()
+			records = append(records, rec)
+			mu.Unlock()
+		}(path)
 	}
 
+	wg.Wait()
 	return records, nil
 }
 

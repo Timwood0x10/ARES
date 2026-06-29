@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Engine orchestrates the discovery lifecycle:
@@ -48,21 +50,37 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 	copy(providers, e.providers)
 	e.mu.RUnlock()
 
-	// Phase 1: Collect records from all providers.
+	// Phase 1: Collect records from all providers concurrently.
+	type providerResult struct {
+		records []DiscoveryRecord
+		name    string
+	}
+	results := make([]providerResult, len(providers))
+	g, gctx := errgroup.WithContext(ctx)
+	for i, p := range providers {
+		idx := i
+		prov := p
+		g.Go(func() error {
+			records, err := prov.Discover(gctx)
+			if err != nil {
+				slog.Warn("discovery: provider failed",
+					"provider", prov.Name(),
+					"error", err,
+				)
+				return nil // Don't fail the whole group.
+			}
+			for j := range records {
+				records[j].LastSeen = time.Now()
+			}
+			results[idx] = providerResult{records: records, name: prov.Name()}
+			return nil
+		})
+	}
+	_ = g.Wait() // Errors are logged, not propagated.
+
 	var allRecords []DiscoveryRecord
-	for _, p := range providers {
-		records, err := p.Discover(ctx)
-		if err != nil {
-			slog.Warn("discovery: provider failed",
-				"provider", p.Name(),
-				"error", err,
-			)
-			continue
-		}
-		for i := range records {
-			records[i].LastSeen = time.Now()
-		}
-		allRecords = append(allRecords, records...)
+	for _, r := range results {
+		allRecords = append(allRecords, r.records...)
 	}
 
 	// Phase 2: Merge records into services.
@@ -217,6 +235,124 @@ func (e *Engine) List(ctx context.Context) ([]*DiscoveredService, error) {
 // Get returns a service by ID.
 func (e *Engine) Get(ctx context.Context, id string) (*DiscoveredService, error) {
 	return e.store.Get(ctx, id)
+}
+
+// RegisterRequest is the input for passive service registration.
+type RegisterRequest struct {
+	Name       string            `json:"name"`
+	Endpoint   string            `json:"endpoint"`
+	Args       []string          `json:"args,omitempty"`
+	Tags       []string          `json:"tags,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Confidence Confidence        `json:"confidence,omitempty"`
+}
+
+// Register passively registers a service. Emits EventServiceAdded.
+func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
+	if req.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if req.Endpoint == "" {
+		return fmt.Errorf("endpoint is required")
+	}
+	if req.Confidence == 0 {
+		req.Confidence = ConfidenceMax
+	}
+
+	svc := &DiscoveredService{
+		Identity: ServiceIdentity{
+			ID:       req.Name,
+			Name:     req.Name,
+			Type:     ServiceTypeMCP,
+			Endpoint: req.Endpoint,
+			Tags:     req.Tags,
+			Metadata: req.Metadata,
+		},
+		Records: []DiscoveryRecord{
+			{
+				Source:     "register",
+				Confidence: req.Confidence,
+				Endpoint:   req.Endpoint,
+				Args:       req.Args,
+				Tags:       req.Tags,
+				Metadata:   req.Metadata,
+				LastSeen:   time.Now(),
+			},
+		},
+		BestSource: "register",
+		Healthy:    false,
+	}
+
+	if err := e.store.Save(ctx, svc); err != nil {
+		return err
+	}
+	e.emit(Event{
+		Type:      EventServiceAdded,
+		ServiceID: req.Name,
+		Service:   svc,
+		Source:    "register",
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// Unregister removes a service by ID. Emits EventServiceRemoved.
+func (e *Engine) Unregister(ctx context.Context, id string) error {
+	if err := e.store.Delete(ctx, id); err != nil {
+		return err
+	}
+	e.emit(Event{
+		Type:      EventServiceRemoved,
+		ServiceID: id,
+		Message:   "unregistered",
+		Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// UpdateTagsRequest modifies tags on a service.
+type UpdateTagsRequest struct {
+	Add    []string `json:"add,omitempty"`
+	Remove []string `json:"remove,omitempty"`
+}
+
+// UpdateTags adds or removes tags on a service. Emits EventServiceUpdated.
+func (e *Engine) UpdateTags(ctx context.Context, id string, req UpdateTagsRequest) error {
+	svc, err := e.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if svc == nil {
+		return fmt.Errorf("service not found: %s", id)
+	}
+
+	tagSet := make(map[string]bool)
+	for _, t := range svc.Identity.Tags {
+		tagSet[t] = true
+	}
+	for _, t := range req.Add {
+		tagSet[t] = true
+	}
+	for _, t := range req.Remove {
+		delete(tagSet, t)
+	}
+
+	newTags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		newTags = append(newTags, t)
+	}
+	svc.Identity.Tags = newTags
+
+	if err := e.store.Save(ctx, svc); err != nil {
+		return err
+	}
+	e.emit(Event{
+		Type:      EventServiceUpdated,
+		ServiceID: id,
+		Service:   svc,
+		Timestamp: time.Now(),
+	})
+	return nil
 }
 
 // emit sends an event to all registered handlers.

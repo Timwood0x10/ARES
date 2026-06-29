@@ -13,32 +13,29 @@ import (
 )
 
 // RegisterBuiltinTools registers all built-in tools into the given registry.
-func RegisterBuiltinTools(r *Registry) {
-	// Math
-	r.Register(NewCalculatorTool())
-	r.Register(NewDateTimeTool())
-	r.Register(NewTextProcessorTool())
-
-	// Network
-	r.Register(NewWebSearchTool())
-	r.Register(NewHTTPRequestTool())
-	r.Register(NewWebScraperTool())
-
-	// Text
-	r.Register(NewRegexTool())
-	r.Register(NewJSONTools())
-	r.Register(NewDataValidationTool())
-	r.Register(NewDataTransformTool())
-	r.Register(NewLogAnalyzerTool())
-
-	// System
-	r.Register(NewIDGeneratorTool())
-
-	// File
-	r.Register(NewFileToolsTool())
-
-	// Execution
-	r.Register(NewCodeRunnerTool())
+func RegisterBuiltinTools(r *Registry) error {
+	tools := []Tool{
+		NewCalculatorTool(),
+		NewDateTimeTool(),
+		NewTextProcessorTool(),
+		NewWebSearchTool(),
+		NewHTTPRequestTool(),
+		NewWebScraperTool(),
+		NewRegexTool(),
+		NewJSONTools(),
+		NewDataValidationTool(),
+		NewDataTransformTool(),
+		NewLogAnalyzerTool(),
+		NewIDGeneratorTool(),
+		NewFileToolsTool(),
+		NewCodeRunnerTool(),
+	}
+	for _, t := range tools {
+		if err := r.Register(t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ── Math ─────────────────────────────────────────────────
@@ -48,8 +45,10 @@ type CalculatorTool struct{ inner *builtin_math.Calculator }
 func NewCalculatorTool() *CalculatorTool {
 	return &CalculatorTool{inner: builtin_math.NewCalculator()}
 }
-func (t *CalculatorTool) Name() string        { return "calculator" }
-func (t *CalculatorTool) Description() string { return "Mathematical calculator with expression evaluation" }
+func (t *CalculatorTool) Name() string { return "calculator" }
+func (t *CalculatorTool) Description() string {
+	return "Mathematical calculator with expression evaluation"
+}
 func (t *CalculatorTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -63,8 +62,10 @@ type DateTimeTool struct{ inner *builtin_math.DateTime }
 func NewDateTimeTool() *DateTimeTool {
 	return &DateTimeTool{inner: builtin_math.NewDateTime()}
 }
-func (t *DateTimeTool) Name() string        { return "datetime" }
-func (t *DateTimeTool) Description() string { return "Date/time operations, formatting, timezone conversion" }
+func (t *DateTimeTool) Name() string { return "datetime" }
+func (t *DateTimeTool) Description() string {
+	return "Date/time operations, formatting, timezone conversion"
+}
 func (t *DateTimeTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -78,8 +79,10 @@ type TextProcessorTool struct{ inner *builtin_math.TextProcessor }
 func NewTextProcessorTool() *TextProcessorTool {
 	return &TextProcessorTool{inner: builtin_math.NewTextProcessor()}
 }
-func (t *TextProcessorTool) Name() string        { return "text_processor" }
-func (t *TextProcessorTool) Description() string { return "Text processing: case conversion, trimming, splitting" }
+func (t *TextProcessorTool) Name() string { return "text_processor" }
+func (t *TextProcessorTool) Description() string {
+	return "Text processing: case conversion, trimming, splitting"
+}
 func (t *TextProcessorTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -95,8 +98,10 @@ type WebSearchTool struct{ inner *builtin_network.WebSearch }
 func NewWebSearchTool() *WebSearchTool {
 	return &WebSearchTool{inner: builtin_network.NewWebSearch()}
 }
-func (t *WebSearchTool) Name() string        { return "web_search" }
-func (t *WebSearchTool) Description() string { return "Search the web using SearXNG meta search engine" }
+func (t *WebSearchTool) Name() string { return "web_search" }
+func (t *WebSearchTool) Description() string {
+	return "Search the web using SearXNG meta search engine"
+}
 func (t *WebSearchTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -173,8 +178,10 @@ type DataValidationTool struct{ inner *builtin_text.DataValidation }
 func NewDataValidationTool() *DataValidationTool {
 	return &DataValidationTool{inner: builtin_text.NewDataValidation()}
 }
-func (t *DataValidationTool) Name() string        { return "data_validation" }
-func (t *DataValidationTool) Description() string { return "Data validation: email, URL, phone, format checks" }
+func (t *DataValidationTool) Name() string { return "data_validation" }
+func (t *DataValidationTool) Description() string {
+	return "Data validation: email, URL, phone, format checks"
+}
 func (t *DataValidationTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -188,8 +195,10 @@ type DataTransformTool struct{ inner *builtin_text.DataTransform }
 func NewDataTransformTool() *DataTransformTool {
 	return &DataTransformTool{inner: builtin_text.NewDataTransform()}
 }
-func (t *DataTransformTool) Name() string        { return "data_transform" }
-func (t *DataTransformTool) Description() string { return "Data transformation: CSV, XML, YAML conversion" }
+func (t *DataTransformTool) Name() string { return "data_transform" }
+func (t *DataTransformTool) Description() string {
+	return "Data transformation: CSV, XML, YAML conversion"
+}
 func (t *DataTransformTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -203,8 +212,10 @@ type LogAnalyzerTool struct{ inner *builtin_text.LogAnalyzer }
 func NewLogAnalyzerTool() *LogAnalyzerTool {
 	return &LogAnalyzerTool{inner: builtin_text.NewLogAnalyzer()}
 }
-func (t *LogAnalyzerTool) Name() string        { return "log_analyzer" }
-func (t *LogAnalyzerTool) Description() string { return "Log analysis: parse, filter, aggregate log entries" }
+func (t *LogAnalyzerTool) Name() string { return "log_analyzer" }
+func (t *LogAnalyzerTool) Description() string {
+	return "Log analysis: parse, filter, aggregate log entries"
+}
 func (t *LogAnalyzerTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -237,8 +248,10 @@ type FileToolsTool struct{ inner *builtin_file.FileTools }
 func NewFileToolsTool() *FileToolsTool {
 	return &FileToolsTool{inner: builtin_file.NewFileTools()}
 }
-func (t *FileToolsTool) Name() string        { return "file_tools" }
-func (t *FileToolsTool) Description() string { return "File operations: read, write, list, exists, delete" }
+func (t *FileToolsTool) Name() string { return "file_tools" }
+func (t *FileToolsTool) Description() string {
+	return "File operations: read, write, list, exists, delete"
+}
 func (t *FileToolsTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {
@@ -254,8 +267,10 @@ type CodeRunnerTool struct{ inner *builtin_exec.CodeRunner }
 func NewCodeRunnerTool() *CodeRunnerTool {
 	return &CodeRunnerTool{inner: builtin_exec.NewCodeRunner()}
 }
-func (t *CodeRunnerTool) Name() string        { return "code_runner" }
-func (t *CodeRunnerTool) Description() string { return "Run Python/JavaScript code snippets in a sandbox" }
+func (t *CodeRunnerTool) Name() string { return "code_runner" }
+func (t *CodeRunnerTool) Description() string {
+	return "Run Python/JavaScript code snippets in a sandbox"
+}
 func (t *CodeRunnerTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	res, err := t.inner.Execute(ctx, params)
 	if err != nil {

@@ -6,10 +6,10 @@ import "time"
 type EventType string
 
 const (
-	EventServiceAdded     EventType = "discovery.service.added"
-	EventServiceRemoved   EventType = "discovery.service.removed"
-	EventServiceUpdated   EventType = "discovery.service.updated"
-	EventHealthChanged    EventType = "discovery.health.changed"
+	EventServiceAdded      EventType = "discovery.service.added"
+	EventServiceRemoved    EventType = "discovery.service.removed"
+	EventServiceUpdated    EventType = "discovery.service.updated"
+	EventHealthChanged     EventType = "discovery.health.changed"
 	EventDiscoveryComplete EventType = "discovery.cycle.complete"
 )
 

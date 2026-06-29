@@ -1,5 +1,7 @@
 package discovery
 
+import "strings"
+
 // mergeRecords groups discovery records by endpoint and merges them into services.
 func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
 	groups := make(map[string][]DiscoveryRecord)
@@ -45,8 +47,7 @@ func mergeRecords(records []DiscoveryRecord) map[string]*DiscoveredService {
 		mergedMeta := make(map[string]string)
 		for _, r := range group {
 			for k, v := range r.Metadata {
-				if existing, ok := mergedMeta[k]; !ok || r.Confidence >= best.Confidence {
-					_ = existing
+				if _, ok := mergedMeta[k]; !ok || r.Confidence >= best.Confidence {
 					mergedMeta[k] = v
 				}
 			}
@@ -90,6 +91,8 @@ func hasChanged(old, new *DiscoveredService) bool {
 	if old.BestSource != new.BestSource {
 		return true
 	}
+
+	// Check source set.
 	oldSources := make(map[string]bool, len(old.Records))
 	for _, r := range old.Records {
 		oldSources[r.Source] = true
@@ -99,28 +102,92 @@ func hasChanged(old, new *DiscoveredService) bool {
 			return true
 		}
 	}
+
+	// Check tags changed.
+	if !stringSliceEqual(old.Identity.Tags, new.Identity.Tags) {
+		return true
+	}
+
+	// Check metadata changed.
+	if !stringMapEqual(old.Identity.Metadata, new.Identity.Metadata) {
+		return true
+	}
+
 	return false
 }
 
+// stringSliceEqual compares two string slices as sets.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, s := range a {
+		set[s] = true
+	}
+	for _, s := range b {
+		if !set[s] {
+			return false
+		}
+	}
+	return true
+}
+
+// stringMapEqual compares two string maps.
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// knownLaunchers are wrapper commands that launch MCP servers.
+// For these, the identity includes the first argument (the actual server).
+var knownLaunchers = map[string]bool{
+	"uvx":  true,
+	"npx":  true,
+	"bunx": true,
+	"pipx": true,
+}
+
 // normalizeEndpoint creates a stable key from an endpoint string.
+// Uses the binary name (last path segment) as the key so that
+// "codegraph" and "/usr/local/bin/codegraph" are merged.
+// For known launchers (uvx, npx, etc.), includes the first argument.
 func normalizeEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return "unknown"
 	}
-	return endpoint
-}
-
-// extractName derives a human-readable name from a record.
-func extractName(record DiscoveryRecord) string {
-	if record.Endpoint == "" {
-		return "unknown"
-	}
-	name := record.Endpoint
+	// Extract binary name from path.
+	name := endpoint
 	for i := len(name) - 1; i >= 0; i-- {
 		if name[i] == '/' {
 			name = name[i+1:]
 			break
 		}
 	}
+	if name == "" {
+		return endpoint
+	}
+	// For known launchers, include the first argument.
+	// "uvx blender-mcp" → "uvx blender-mcp"
+	// "npx @modelcontextprotocol/server-filesystem" → "npx @modelcontextprotocol/server-filesystem"
+	if idx := strings.IndexByte(name, ' '); idx >= 0 {
+		launcher := name[:idx]
+		if knownLaunchers[launcher] {
+			return name
+		}
+		return launcher
+	}
 	return name
+}
+
+// extractName derives a human-readable name from a record.
+func extractName(record DiscoveryRecord) string {
+	return normalizeEndpoint(record.Endpoint)
 }

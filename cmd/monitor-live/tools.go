@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
 	api_tools "github.com/Timwood0x10/ares/api/tools"
 )
 
 // newToolRegistry creates the public tool registry with built-in + custom tools.
-func newToolRegistry() *api_tools.Registry {
+func newToolRegistry() (*api_tools.Registry, error) {
 	r := api_tools.NewRegistry()
-	api_tools.RegisterBuiltinTools(r)
-	return r
+	if err := api_tools.RegisterBuiltinTools(r); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // registryToolBinder adapts api/tools.Registry to sub.ToolBinder interface.
@@ -19,11 +22,13 @@ type registryToolBinder struct {
 }
 
 func (b *registryToolBinder) BindTool(name string, fn func(ctx context.Context, args map[string]any) (any, error)) {
-	b.registry.Register(api_tools.ToolFunc{
+	if err := b.registry.Register(api_tools.ToolFunc{
 		ToolName: name,
 		ToolDesc: "",
 		Fn:       fn,
-	})
+	}); err != nil {
+		slog.Warn("bind tool failed", "name", name, "error", err)
+	}
 }
 
 func (b *registryToolBinder) CallTool(ctx context.Context, name string, args map[string]any) (any, error) {

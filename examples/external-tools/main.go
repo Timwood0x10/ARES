@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Timwood0x10/ares/api/discovery"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/tools"
 )
@@ -23,7 +24,10 @@ func main() {
 
 	// ── 1. Built-in tools ─────────────────────────────────
 	registry := tools.NewRegistry()
-	tools.RegisterBuiltinTools(registry)
+	if err := tools.RegisterBuiltinTools(registry); err != nil {
+		fmt.Printf("register builtin tools: %v\n", err)
+		return
+	}
 
 	fmt.Println("=== Built-in Tools ===")
 	for _, t := range registry.ListTools() {
@@ -31,7 +35,7 @@ func main() {
 	}
 
 	// ── 2. Custom tools ───────────────────────────────────
-	registry.Register(tools.ToolFunc{
+	if err := registry.Register(tools.ToolFunc{
 		ToolName: "sentiment",
 		ToolDesc: "Analyze text sentiment",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -41,16 +45,22 @@ func main() {
 			}
 			return map[string]any{"sentiment": "neutral"}, nil
 		},
-	})
+	}); err != nil {
+		fmt.Printf("register sentiment: %v\n", err)
+		return
+	}
 
-	registry.Register(tools.ToolFunc{
+	if err := registry.Register(tools.ToolFunc{
 		ToolName: "word_count",
 		ToolDesc: "Count words in text",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
 			text, _ := params["text"].(string)
 			return map[string]any{"count": len(strings.Fields(text))}, nil
 		},
-	})
+	}); err != nil {
+		fmt.Printf("register word_count: %v\n", err)
+		return
+	}
 
 	// ── 3. Call tools ─────────────────────────────────────
 	fmt.Println("\n=== Tool Calls ===")
@@ -64,34 +74,33 @@ func main() {
 	r3, _ := registry.Execute(ctx, "word_count", map[string]any{"text": "hello world foo bar"})
 	fmt.Printf("  word_count:        %v\n", r3.Data)
 
-	// ── 4. MCP auto-discovery ──────────────────────────────
+	// ── 4. MCP auto-discovery via api/discovery ────────────
 	fmt.Println("\n=== MCP Auto-Discovery ===")
-	servers := mcp.DiscoverServers("")
-	if len(servers) == 0 {
-		fmt.Println("  No MCP servers found in ~/.claude.json or .claude/settings.json")
+	engine := discovery.NewEngine(discovery.EngineConfig{})
+	_ = engine.DiscoverNow(ctx)
+	services, _ := engine.List(ctx)
+	if len(services) == 0 {
+		fmt.Println("  No MCP servers found")
 	} else {
-		fmt.Printf("  Found %d MCP server(s):\n", len(servers))
-		for _, s := range servers {
-			fmt.Printf("    %s: %s %v\n", s.Name, s.Command, s.Args)
-		}
-		// Connect and register
-		for _, s := range servers {
-			client, err := mcp.ConnectFromConfig(ctx, s)
-			if err != nil {
-				fmt.Printf("  (skip %s: %v)\n", s.Name, err)
-				continue
+		fmt.Printf("  Found %d MCP server(s):\n", len(services))
+		for _, svc := range services {
+			fmt.Printf("    %s (confidence=%d%%)\n", svc.Identity.Name, bestConf(svc))
+			// Connect via endpoint
+			if len(svc.Records) > 0 {
+				client, err := mcp.ConnectStdio(ctx, svc.Identity.Name, svc.Records[0].Endpoint, svc.Records[0].Args)
+				if err != nil {
+					fmt.Printf("      (connect failed: %v)\n", err)
+					continue
+				}
+				defer func() { _ = client.Close() }()
+				if err := client.RegisterTools(ctx, registry); err != nil {
+					fmt.Printf("      (register failed: %v)\n", err)
+					continue
+				}
+				fmt.Printf("      ✓ Registered tools\n")
 			}
-			defer client.Close()
-			if err := client.RegisterTools(ctx, registry); err != nil {
-				fmt.Printf("  (skip %s register: %v)\n", s.Name, err)
-				continue
-			}
-			fmt.Printf("  ✓ Connected to %s\n", s.Name)
 		}
 	}
-
-	// Also try manual connection
-	tryMCP(ctx, registry)
 
 	// ── 5. List all tools ─────────────────────────────────
 	fmt.Printf("\n=== All %d Tools ===\n", len(registry.List()))
@@ -100,24 +109,12 @@ func main() {
 	}
 }
 
-func tryMCP(ctx context.Context, registry *tools.Registry) {
-	client, err := mcp.ConnectStdio(ctx, "codebase-memory", "codebase-memory-mcp", nil)
-	if err != nil {
-		fmt.Println("  (MCP not available, skipping)")
-		return
+func bestConf(svc *discovery.DiscoveredService) int {
+	best := 0
+	for _, r := range svc.Records {
+		if int(r.Confidence) > best {
+			best = int(r.Confidence)
+		}
 	}
-	defer client.Close()
-
-	if err := client.RegisterTools(ctx, registry); err != nil {
-		fmt.Printf("  (MCP register error: %v)\n", err)
-		return
-	}
-
-	// Call an MCP tool
-	result, err := registry.Execute(ctx, "mcp.codebase-memory.list_projects", map[string]any{})
-	if err != nil {
-		fmt.Printf("  (MCP call error: %v)\n", err)
-		return
-	}
-	fmt.Printf("  MCP list_projects: %v\n", result.Data)
+	return best
 }

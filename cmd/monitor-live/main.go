@@ -83,7 +83,10 @@ func main() {
 	llmAdapter := createLLMAdapterWithFallback(cfg)
 
 	// --- Tool registry (public API) ---
-	registry := newToolRegistry()
+	registry, err := newToolRegistry()
+	if err != nil {
+		log.Fatalf("create tool registry: %v", err)
+	}
 
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
 	setupMCP(ctx, cfg, registry)

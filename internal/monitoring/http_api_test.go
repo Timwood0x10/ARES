@@ -237,5 +237,5 @@ func TestHTTPServer_ConsoleStatic(t *testing.T) {
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "--bg:")
+	assert.Contains(t, w.Body.String(), "--bg-deep:")
 }

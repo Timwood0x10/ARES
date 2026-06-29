@@ -13,7 +13,7 @@
 //	registry := tools.NewRegistry()
 //
 //	// Register built-in tools
-//	tools.RegisterBuiltinTools(registry)
+//	_ = tools.RegisterBuiltinTools(registry)
 //
 //	// Register custom tool
 //	registry.Register(tools.ToolFunc{

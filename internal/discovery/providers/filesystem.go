@@ -112,17 +112,22 @@ func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery
 	}
 	if err := json.Unmarshal(data, &claudeCfg); err == nil && len(claudeCfg.MCPServers) > 0 {
 		records := make([]discovery.DiscoveryRecord, 0, len(claudeCfg.MCPServers))
-		for _, sc := range claudeCfg.MCPServers {
+		for name, sc := range claudeCfg.MCPServers {
 			endpoint := sc.Command
 			if endpoint == "" {
 				endpoint = sc.URL
 			}
-			records = append(records, discovery.DiscoveryRecord{
+			rec := discovery.DiscoveryRecord{
 				Source:     source,
 				Confidence: conf,
 				Endpoint:   endpoint,
 				Args:       sc.Args,
-			})
+				Metadata:   make(map[string]string),
+			}
+			if name != "" {
+				rec.Metadata["config_name"] = name
+			}
+			records = append(records, rec)
 		}
 		return records, nil
 	}
@@ -143,12 +148,17 @@ func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery
 			if endpoint == "" {
 				endpoint = s.URL
 			}
-			records = append(records, discovery.DiscoveryRecord{
+			rec := discovery.DiscoveryRecord{
 				Source:     source,
 				Confidence: conf,
 				Endpoint:   endpoint,
 				Args:       s.Args,
-			})
+				Metadata:   make(map[string]string),
+			}
+			if s.Name != "" {
+				rec.Metadata["config_name"] = s.Name
+			}
+			records = append(records, rec)
 		}
 		return records, nil
 	}
@@ -163,17 +173,22 @@ func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery
 	}
 	if err := json.Unmarshal(data, &vscodeCfg); err == nil && len(vscodeCfg.Servers) > 0 {
 		records := make([]discovery.DiscoveryRecord, 0, len(vscodeCfg.Servers))
-		for _, sc := range vscodeCfg.Servers {
+		for name, sc := range vscodeCfg.Servers {
 			endpoint := sc.Command
 			if endpoint == "" {
 				endpoint = sc.URL
 			}
-			records = append(records, discovery.DiscoveryRecord{
+			rec := discovery.DiscoveryRecord{
 				Source:     source,
 				Confidence: conf,
 				Endpoint:   endpoint,
 				Args:       sc.Args,
-			})
+				Metadata:   make(map[string]string),
+			}
+			if name != "" {
+				rec.Metadata["config_name"] = name
+			}
+			records = append(records, rec)
 		}
 		return records, nil
 	}

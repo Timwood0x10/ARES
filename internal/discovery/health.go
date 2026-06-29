@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	api_mcp "github.com/Timwood0x10/ares/api/mcp"
@@ -40,7 +42,7 @@ func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredServi
 	checkCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	status := probeMCP(checkCtx, endpoint, args)
+	status := probeMCP(checkCtx, svc.Identity.Name, endpoint, args)
 	status.Latency = time.Since(start)
 	status.CheckedAt = time.Now()
 
@@ -48,15 +50,27 @@ func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredServi
 }
 
 // probeMCP connects to an MCP server, does initialize → list_tools → close.
-func probeMCP(ctx context.Context, endpoint string, args []string) *HealthStatus {
-	client, err := api_mcp.ConnectStdio(ctx, endpoint, endpoint, args)
+// Supports both stdio (binary command) and SSE (URL) endpoints.
+func probeMCP(ctx context.Context, name, endpoint string, args []string) *HealthStatus {
+	var client *api_mcp.Client
+	var err error
+
+	if isURL(endpoint) {
+		client, err = api_mcp.ConnectSSE(ctx, name, endpoint)
+	} else {
+		client, err = api_mcp.ConnectStdio(ctx, name, endpoint, args)
+	}
 	if err != nil {
 		return &HealthStatus{
 			Healthy: false,
 			Message: fmt.Sprintf("connect failed: %v", err),
 		}
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			slog.Warn("health: close mcp client failed", "name", name, "error", err)
+		}
+	}()
 
 	// list_tools verifies the server is fully functional.
 	tools, err := client.ListTools(ctx)
@@ -86,4 +100,9 @@ func bestEndpoint(svc *DiscoveredService) (string, []string) {
 		}
 	}
 	return best.Endpoint, best.Args
+}
+
+// isURL checks if an endpoint looks like a URL (http/https).
+func isURL(endpoint string) bool {
+	return strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://")
 }
