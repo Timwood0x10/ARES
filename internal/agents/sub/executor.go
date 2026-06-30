@@ -2,26 +2,40 @@ package sub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // FallbackHandler produces a recommendation fallback result for a given task type.
 // Used when the LLM is unavailable or fails. Returns items, explanation, error.
 type FallbackHandler func(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error)
 
+// ChatClient sends chat messages with tool support to the LLM.
+// When set on the executor, the agent can use native tool calling
+// instead of text-only prompt generation.
+type ChatClient interface {
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
+}
+
+const defaultMaxToolRounds = 5
+
 // taskExecutor executes recommendation tasks.
 type taskExecutor struct {
 	toolBinder       ToolBinder
 	llmAdapter       output.LLMAdapter
+	chatClient       ChatClient // Optional: enables native tool calling via Chat API
+	maxToolRounds    int        // Max tool-calling iterations (default 5)
 	template         *output.TemplateEngine
 	promptTpl        string
 	validator        *output.Validator
@@ -44,6 +58,23 @@ type TaskExecutorOption func(*taskExecutor)
 func WithTaskExecutorCallbacks(emitter ares_callbacks.Emitter) TaskExecutorOption {
 	return func(e *taskExecutor) {
 		e.ares_callbacks = emitter
+	}
+}
+
+// WithChatClient returns a TaskExecutorOption that enables native tool calling
+// via the Chat API. When set, the executor will pass tool definitions to the LLM
+// and handle tool_calls in a loop until the LLM returns a final text response.
+func WithChatClient(client ChatClient) TaskExecutorOption {
+	return func(e *taskExecutor) {
+		e.chatClient = client
+	}
+}
+
+// WithMaxToolRounds sets the maximum number of tool-calling iterations.
+// Defaults to 5 if not set. A value of 0 means no tool calling.
+func WithMaxToolRounds(n int) TaskExecutorOption {
+	return func(e *taskExecutor) {
+		e.maxToolRounds = n
 	}
 }
 
@@ -76,15 +107,16 @@ func NewTaskExecutorWithValidation(
 		maxRetries = 3
 	}
 	e := &taskExecutor{
-		toolBinder:  toolBinder,
-		llmAdapter:  llmAdapter,
-		template:    template,
-		promptTpl:   promptTpl,
-		validator:   validator,
-		maxRetries:  maxRetries,
-		retryOnFail: retryOnFail,
-		strictMode:  strictMode,
-		logger:      slog.Default(),
+		toolBinder:    toolBinder,
+		llmAdapter:    llmAdapter,
+		template:      template,
+		promptTpl:     promptTpl,
+		validator:     validator,
+		maxRetries:    maxRetries,
+		retryOnFail:   retryOnFail,
+		strictMode:    strictMode,
+		maxToolRounds: defaultMaxToolRounds,
+		logger:        slog.Default(),
 	}
 	e.fallbackHandlers = make(map[models.AgentType]FallbackHandler)
 	for _, opt := range opts {
@@ -320,7 +352,125 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	}
 	log.Debug("Generated prompt", "preview", prompt[:min(200, len(prompt))])
 
-	// Call LLM
+	// Try Chat API with tool support when chatClient is available and tools exist.
+	if e.chatClient != nil && e.toolBinder != nil {
+		schemas := e.toolBinder.GetToolSchemas()
+		if len(schemas) > 0 {
+			return e.executeWithChatAndTools(ctx, prompt, schemas)
+		}
+	}
+
+	// Fall back to text-only generation.
+	return e.executeWithLLMTextOnly(ctx, prompt)
+}
+
+// executeWithChatAndTools uses the Chat API with native tool calling.
+// Implements the agentic loop: LLM → tool_calls → execute → result → LLM → final answer.
+func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, schemas []resources.ToolSchema) ([]*models.RecommendItem, error) {
+	// Convert tool schemas to LLM format.
+	llmTools := make([]core.Tool, 0, len(schemas))
+	for _, s := range schemas {
+		llmTools = append(llmTools, resources.ToolSchemaToLLMTool(s))
+	}
+
+	// Build initial messages.
+	messages := []*core.LLMMessage{
+		{Role: "user", Content: prompt},
+	}
+
+	maxRounds := e.maxToolRounds
+	if maxRounds <= 0 {
+		maxRounds = defaultMaxToolRounds
+	}
+
+	for round := 0; round < maxRounds; round++ {
+		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
+			"agent_id":   e.agentID,
+			"round":      round + 1,
+			"max_rounds": maxRounds,
+			"tool_count": len(llmTools),
+			"msg_count":  len(messages),
+		})
+
+		resp, err := e.chatClient.Chat(ctx, messages, llmTools)
+		if err != nil {
+			return nil, errors.Wrap(err, "chat API call failed")
+		}
+
+		// No tool calls: LLM gave a final text answer.
+		if len(resp.ToolCalls) == 0 {
+			log.Debug("Chat API returned final text", "round", round+1, "content_len", len(resp.Content))
+			return e.parseRecommendResult(resp.Content)
+		}
+
+		// Execute each tool call and collect results.
+		log.Debug("Chat API returned tool calls", "round", round+1, "count", len(resp.ToolCalls))
+
+		// Append assistant message with tool_calls to conversation.
+		messages = append(messages, &core.LLMMessage{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		// Keep tools available so the LLM can make additional calls if needed.
+		// The loop naturally terminates when the LLM produces a final text
+		// answer (no tool_calls in response).
+
+		// Execute each tool call and append tool result messages.
+		for _, tc := range resp.ToolCalls {
+			e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
+				"agent_id":     e.agentID,
+				"tool_name":    tc.Function.Name,
+				"tool_call_id": tc.ID,
+			})
+
+			result, err := e.executeToolCall(ctx, tc)
+			if err != nil {
+				log.Warn("tool execution failed", "tool", tc.Function.Name, "error", err)
+				result = fmt.Sprintf("error: %s", err.Error())
+			}
+
+			e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
+				"agent_id":     e.agentID,
+				"tool_name":    tc.Function.Name,
+				"tool_call_id": tc.ID,
+			})
+
+			messages = append(messages, &core.LLMMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	return nil, fmt.Errorf("exceeded max tool rounds (%d) without final answer", maxRounds)
+}
+
+// executeToolCall parses arguments and calls the tool via toolBinder.
+func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (string, error) {
+	var args map[string]any
+	if tc.Function.Arguments != "" {
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return "", errors.Wrap(err, "parse tool arguments")
+		}
+	}
+
+	result, err := e.toolBinder.CallTool(ctx, tc.Function.Name, args)
+	if err != nil {
+		return "", err
+	}
+
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Sprintf("%v", result), nil
+	}
+	return string(resultJSON), nil
+}
+
+// executeWithLLMTextOnly performs a text-only LLM generation (original behavior).
+func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string) ([]*models.RecommendItem, error) {
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 		"agent_id": e.agentID,
 		"prompt":   prompt[:min(200, len(prompt))],
@@ -336,7 +486,11 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	}
 	log.Debug("LLM response", "preview", response[:min(500, len(response))])
 
-	// Parse response
+	return e.parseRecommendResult(response)
+}
+
+// parseRecommendResult parses the LLM text response into RecommendItems.
+func (e *taskExecutor) parseRecommendResult(response string) ([]*models.RecommendItem, error) {
 	parser := output.NewParser()
 	result, err := parser.ParseRecommendResult(response)
 	if err != nil {

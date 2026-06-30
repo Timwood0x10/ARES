@@ -15,6 +15,7 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	llm "github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
 
@@ -22,21 +23,23 @@ import (
 func createAgents(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
 ) (leader.Agent, []sub.Agent) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, toolBinder, memMgr, store)
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 	if err != nil {
 		log.Fatalf("create leader: %v", err)
 	}
-	subAgents := createSubAgents(cfg, llmAdapter, toolBinder, store)
+	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store)
 	return leaderAgent, subAgents
 }
 
 func createLeaderAgent(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
@@ -77,7 +80,7 @@ func createLeaderAgent(
 	// Also wire event store to each executor so LLM/tool events have a stream_id.
 	for _, subCfg := range cfg.Agents.Sub {
 		agentType := models.AgentType(subCfg.Type)
-		executor := createExecutor(llmAdapter, toolBinder, cfg, subCfg)
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg)
 		// Type-assert to the internal interface that has SetEventStore.
 		if setter, ok := executor.(interface {
 			SetEventStore(ares_events.EventStore, string)
@@ -120,13 +123,14 @@ func createLeaderAgent(
 func createSubAgents(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	store ares_events.EventStore,
 ) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {
-		executor := createExecutor(llmAdapter, toolBinder, cfg, subCfg)
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg)
 
 		hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 		msgQueue := ahp.NewMessageQueue(subCfg.ID, &ahp.QueueOptions{MaxSize: 500})
@@ -160,12 +164,13 @@ func createSubAgents(
 
 func createExecutor(
 	llmAdapter output.LLMAdapter,
+	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	cfg *ares_config.Config,
 	subCfg ares_config.SubAgentConfig,
 ) sub.TaskExecutor {
 	return sub.NewTaskExecutorWithValidation(
-		toolBinder, // Pass real tool binder with MCP tools
+		toolBinder,
 		llmAdapter,
 		output.NewTemplateEngine(),
 		cfg.Prompts.Recommendation,
@@ -173,7 +178,46 @@ func createExecutor(
 		subCfg.MaxRetries,
 		cfg.Validation.RetryOnFail,
 		cfg.Validation.StrictMode,
+		sub.WithChatClient(chatClient),
 	)
+}
+
+// createChatClient creates a FailoverClient from the LLM config for Chat API support.
+// Both *llm.Client and *llm.FailoverClient satisfy the sub.ChatClient interface.
+func createChatClient(cfg *ares_config.Config) (sub.ChatClient, error) {
+	configs := []*llm.Config{
+		{
+			Provider:  cfg.LLM.Provider,
+			APIKey:    cfg.LLM.APIKey,
+			BaseURL:   cfg.LLM.BaseURL,
+			Model:     cfg.LLM.Model,
+			Timeout:   cfg.LLM.Timeout,
+			MaxTokens: cfg.LLM.MaxTokens,
+		},
+	}
+	for _, fb := range cfg.LLM.Fallbacks {
+		provider := fb.Provider
+		if provider == "" {
+			provider = "openai"
+		}
+		configs = append(configs, &llm.Config{
+			Provider:  provider,
+			APIKey:    fb.APIKey,
+			BaseURL:   fb.BaseURL,
+			Model:     fb.Model,
+			Timeout:   fb.Timeout,
+			MaxTokens: fb.MaxTokens,
+		})
+	}
+
+	timeout := time.Duration(cfg.LLM.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+
+	rate := cfg.LLM.ScorerAPIRate
+	burst := cfg.LLM.ScorerAPIBurst
+	return llm.NewFailoverClient(configs, timeout, rate, burst)
 }
 
 // submitTasks sends real tasks to the leader agent periodically.

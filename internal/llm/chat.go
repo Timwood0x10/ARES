@@ -519,9 +519,9 @@ func buildAnthropicChatMessages(messages []*core.LLMMessage) ([]map[string]any, 
 				"role": "user",
 				"content": []map[string]any{
 					{
-						"type":       "tool_result",
+						"type":        "tool_result",
 						"tool_use_id": msg.ToolCallID,
-						"content":    msg.Content,
+						"content":     msg.Content,
 					},
 				},
 			})

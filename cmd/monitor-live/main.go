@@ -89,11 +89,18 @@ func main() {
 	}
 
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
-	setupMCP(ctx, cfg, registry)
+	internalReg := setupMCP(ctx, cfg, registry)
 
-	// --- ToolBinder for agents ---
-	toolBinder := &registryToolBinder{registry: registry}
-	slog.Info("tools registered", "count", len(registry.List()), "tools", registry.List())
+	// --- ToolBinder for agents (bridged from internal core.Registry for schema support) ---
+	toolBinder := newToolBinder(internalReg)
+	slog.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
+
+	// --- ChatClient for native tool calling ---
+	chatClient, err := createChatClient(cfg)
+	if err != nil {
+		log.Fatalf("create chat client: %v", err)
+	}
+	slog.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Memory manager (required by leader) ---
 	memConfig := memory.DefaultMemoryConfig()
@@ -104,14 +111,14 @@ func main() {
 	memMgr.SetEventStore(store, "memory")
 
 	// --- Create agents ---
-	leaderAgent, subAgents := createAgents(cfg, llmAdapter, toolBinder, memMgr, store)
+	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 
 	// --- Runtime manager ---
 	mgr := ares_runtime.New(nil, store, nil)
 
 	// Register leader
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, toolBinder, memMgr, store)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
@@ -120,7 +127,7 @@ func main() {
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs := createAgents(cfg, llmAdapter, toolBinder, memMgr, store)
+			_, subs := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s
@@ -270,18 +277,19 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 }
 
 // setupMCP connects to MCP servers and registers their tools in the public registry.
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) {
+// Returns the internal core.Registry for use by the ToolBinder (tool schemas for LLM Chat API).
+func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) *core.Registry {
+	internalReg := core.NewRegistry()
+
 	if len(cfg.MCP.Servers) == 0 {
 		slog.Info("no MCP servers configured")
-		return
+		return internalReg
 	}
 
-	// ares_bootstrap.SetupMCP needs an internal core.Registry
-	internalReg := core.NewRegistry()
 	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
 	if err != nil {
 		slog.Warn("MCP setup failed", "error", err)
-		return
+		return internalReg
 	}
 	if mcpMgr != nil {
 		slog.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
@@ -306,6 +314,8 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 			},
 		})
 	}
+
+	return internalReg
 }
 
 // runtimeAdapterShim adapts ares_runtime.Manager to adapter.RuntimeManager.

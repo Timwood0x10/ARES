@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	llmcore "github.com/Timwood0x10/ares/api/core"
 	gerr "github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -183,6 +184,17 @@ func (r *Registry) GetSchemas() []ToolSchema {
 	}
 
 	return r.schemaCache
+}
+
+// GetLLMTools converts all registered tools to api/core.Tool format
+// for passing to the LLM Chat API. Uses ToolSchemaToLLMTool internally.
+func (r *Registry) GetLLMTools() []llmcore.Tool {
+	schemas := r.GetSchemas()
+	tools := make([]llmcore.Tool, 0, len(schemas))
+	for _, schema := range schemas {
+		tools = append(tools, ToolSchemaToLLMTool(schema))
+	}
+	return tools
 }
 
 // ToolFilter defines filter criteria for tools.
