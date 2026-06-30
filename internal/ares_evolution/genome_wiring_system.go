@@ -84,6 +84,7 @@ type DependencyConfig struct {
 	Guardrails           *EvolutionGuardrails                  `json:"-"`
 	Metrics              *ares_observability.PrometheusMetrics `json:"-"`
 	FeedbackService      *aresExperience.FeedbackService       `json:"-"`
+	HintProvider         mutation.HintProvider                 `json:"-"`
 	RollbackPolicyConfig RollbackPolicyConfig                  `json:"rollback_policy,omitempty"`
 	ShadowEvalConfig     ShadowEvaluationConfig                `json:"shadow_eval_config,omitempty"`
 }
@@ -375,6 +376,9 @@ func buildDreamCycle(mutator MutatorInterface, cfg SystemConfig) (*DreamCycle, e
 	if cfg.Metrics != nil {
 		dreamOpts = append(dreamOpts, WithDreamCycleMetrics(cfg.Metrics))
 	}
+	if cfg.HintProvider != nil {
+		dreamOpts = append(dreamOpts, WithDreamCycleHintProvider(cfg.HintProvider))
+	}
 
 	return NewDreamCycle(nil, mutator, tester, nil, dreamOpts...)
 }
@@ -438,7 +442,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	needDreamCycle := cfg.EnableDreamCycle || cfg.EnableScheduler
 	var dreamCycle *DreamCycle
 	if needDreamCycle {
-		dreamMutator := &mutatorAdapter{inner: mutResult.rawMutator}
+		dreamMutator := &mutatorAdapter{inner: mutResult.genomeMut}
 		dreamCycle, err = buildDreamCycle(dreamMutator, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build dream cycle: %w", err)

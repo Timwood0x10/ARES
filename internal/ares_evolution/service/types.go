@@ -307,6 +307,24 @@ type SystemConfig struct {
 	// the mutator biases its decisions toward patterns that worked in the past.
 	EnableExperienceGuidedMutation bool
 
+	// EnableLLMHints enables automatic outcome recording and LLM-based hint
+	// generation for the DreamCycle evolution path. When true AND LLMClient
+	// is set, an LLMHintProvider is automatically constructed and wired into
+	// the DreamCycle for recording strategy outcomes and generating
+	// mutation hints from past experiences via LLM reflection.
+	EnableLLMHints bool
+
+	// MaxHintHistory limits the number of strategy outcomes retained for
+	// LLM-based hint generation (default 10). Only applies when
+	// EnableLLMHints is true.
+	MaxHintHistory int
+
+	// LLMClient provides the LLM interface for hint generation and other
+	// LLM-dependent features. When EnableLLMHints is true, this client is
+	// used to automatically construct an LLMHintProvider that generates
+	// mutation hints from past strategy outcomes.
+	LLMClient LLMClient
+
 	// MemoryExperienceProvider provides access to past experiences for
 	// memory-aware scoring. When non-nil AND MemoryAwareScoringConfig.Enabled
 	// is true, the scorer adjusts fitness scores based on historical evidence.

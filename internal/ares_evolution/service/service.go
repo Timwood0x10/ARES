@@ -166,6 +166,23 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		internalCfg.EnableExperienceGuidedMutation = cfg.EnableExperienceGuidedMutation
 	}
 
+	// Wire LLM hint provider for DreamCycle outcome recording and
+	// LLM-based hint generation. Only applies when EnableLLMHints is set
+	// and an LLMClient is configured.
+	if cfg.EnableLLMHints && cfg.LLMClient != nil {
+		maxHistory := cfg.MaxHintHistory
+		if maxHistory <= 0 {
+			maxHistory = 10
+		}
+		hintProvider, err := mutation.NewLLMHintProvider(&llmClientAdapter{inner: cfg.LLMClient}, &mutation.LLMHintProviderConfig{
+			MaxHistory: maxHistory,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create LLM hint provider: %w", err)
+		}
+		internalCfg.HintProvider = hintProvider
+	}
+
 	// Wire memory experience provider for memory-aware scoring.
 	if cfg.MemoryExperienceProvider != nil {
 		internalCfg.MemoryExperienceProvider = &apiMemoryBridge{provider: cfg.MemoryExperienceProvider}
@@ -567,6 +584,19 @@ type apiMemoryBridge struct {
 // FindSimilar delegates directly to the API provider (same signature).
 func (b *apiMemoryBridge) FindSimilar(ctx context.Context, taskType string, limit int) (int, float64, error) {
 	return b.provider.FindSimilar(ctx, taskType, limit)
+}
+
+// llmClientAdapter adapts the service-layer LLMClient (service package) to
+// the mutation package's LLMClient interface. Both interfaces are structurally
+// identical (Generate(ctx, prompt) -> (string, error)), but live in different
+// packages, so an explicit adapter is required.
+type llmClientAdapter struct {
+	inner LLMClient
+}
+
+// Generate delegates to the wrapped service-layer LLMClient.
+func (a *llmClientAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	return a.inner.Generate(ctx, prompt)
 }
 
 // ──────────────────────────────────────────────
