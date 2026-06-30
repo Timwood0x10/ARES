@@ -109,25 +109,29 @@ func (r *LLMReflector) buildReflectionPrompt(history []GenerationHistoryEntry, a
 		history = history[len(history)-maxHistory:]
 	}
 
-	var b strings.Builder
-	b.WriteString("Evolution History:\n")
+	// Build history section.
+	historyLines := make([]string, 0, len(history)+2)
+	historyLines = append(historyLines, "Evolution History:")
 	for _, h := range history {
-		fmt.Fprintf(&b, "  Gen %d: best=%.3f, avg=%.3f, diversity=%.3f, pop=%d\n",
-			h.Generation, h.BestScore, h.AvgScore, h.Diversity, h.PopulationSize)
+		historyLines = append(historyLines, fmt.Sprintf("  Gen %d: best=%.3f, avg=%.3f, diversity=%.3f, pop=%d",
+			h.Generation, h.BestScore, h.AvgScore, h.Diversity, h.PopulationSize))
 	}
 
-	b.WriteString("\nCurrent Population:\n")
+	// Build population section.
+	popLines := make([]string, 0, len(agents)+2)
+	popLines = append(popLines, "\nCurrent Population:")
 	maxAgents := 30
 	for i, a := range agents {
 		if i >= maxAgents {
-			fmt.Fprintf(&b, "  ... and %d more\n", len(agents)-maxAgents)
+			popLines = append(popLines, fmt.Sprintf("  ... and %d more", len(agents)-maxAgents))
 			break
 		}
-		fmt.Fprintf(&b, "  ID=%s score=%.3f type=%s\n", a.ID, a.Score, a.StrategyMutationType.String())
+		popLines = append(popLines, fmt.Sprintf("  ID=%s score=%.3f type=%s", a.ID, a.Score, a.StrategyMutationType.String()))
 	}
 
 	return fmt.Sprintf(`You are an evolutionary strategy analyst. Analyze the evolution data and provide structured insights.
 
+%s
 %s
 
 Return a JSON object with:
@@ -136,30 +140,51 @@ Return a JSON object with:
 - "recommendations": array of {"target":"...","action":"...","rationale":"...","expected_impact":"...","confidence":0.0-1.0}
 - "confidence": overall confidence 0.0-1.0
 
-Return ONLY valid JSON. No markdown, no explanation.`, b.String())
+Return ONLY valid JSON. No markdown, no explanation.`,
+		strings.Join(historyLines, "\n"),
+		strings.Join(popLines, "\n"),
+	)
 }
 
 // extractJSONBracketOuter finds the outermost JSON object or array in a string.
+// Uses a bracket-depth counter to correctly match the first opening bracket
+// with its corresponding closing bracket, even with nested structures.
 func extractJSONBracketOuter(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
-	for _, open := range []byte{'{', '['} {
+	for _, pair := range [][2]byte{{'{', '}'}, {'[', ']'}} {
+		open, close := pair[0], pair[1]
 		openIdx := strings.IndexByte(s, open)
 		if openIdx < 0 {
 			continue
 		}
-		var close byte
-		if open == '{' {
-			close = '}'
-		} else {
-			close = ']'
-		}
-		closeIdx := strings.LastIndexByte(s, close)
-		if closeIdx > openIdx {
-			return s[openIdx : closeIdx+1]
+		depth := 0
+		for i := openIdx; i < len(s); i++ {
+			switch s[i] {
+			case open:
+				depth++
+			case close:
+				depth--
+				if depth == 0 {
+					return s[openIdx : i+1]
+				}
+			case '"':
+				// Skip string contents to avoid counting brackets inside strings.
+				i++
+				for i < len(s) {
+					if s[i] == '\\' {
+						i += 2
+						continue
+					}
+					if s[i] == '"' {
+						break
+					}
+					i++
+				}
+			}
 		}
 	}
-	return s
+	return ""
 }

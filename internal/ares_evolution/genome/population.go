@@ -479,17 +479,25 @@ func WithTournamentSelection(size int) PopulationOption {
 	}
 }
 
+// validSelectionStrategies is the shared whitelist of supported selection strategies.
+var validSelectionStrategies = map[string]bool{
+	"":            true,
+	"random":      true,
+	"tournament":  true,
+	"rank":        true,
+	"sus":         true,
+	"roulette":    true,
+	"truncation":  true,
+}
+
 // WithSelectionStrategy sets the parent selection algorithm.
-// Valid values: "tournament", "rank", "sus", "roulette", "random" (or "").
 func WithSelectionStrategy(strategy string) PopulationOption {
 	return func(cfg *PopulationConfig) error {
-		switch strategy {
-		case "tournament", "rank", "sus", "roulette", "random", "":
+		if validSelectionStrategies[strategy] {
 			cfg.SelectionStrategy = strategy
 			return nil
-		default:
-			return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, random)", strategy)
 		}
+		return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, truncation, random)", strategy)
 	}
 }
 
@@ -973,6 +981,8 @@ func (p *Population) buildSelector() (Selection, error) {
 		return NewSUSSelection(), nil
 	case "roulette":
 		return NewRouletteWheelSelection()
+	case "truncation":
+		return NewTruncationSelection(), nil
 	default:
 		return nil, fmt.Errorf("unsupported selection strategy: %s", p.cfg.SelectionStrategy)
 	}
@@ -1255,10 +1265,21 @@ func (p *Population) Stats() *PopulationStats {
 		return stats
 	}
 
-	var totalScore float64
-	bestScore := p.Agents[0].Score
-	worstScore := p.Agents[0].Score
+	stats.BestScore, stats.AvgScore, stats.WorstScore = p.computeStatsLocked()
+	stats.Diversity = p.measureDiversityReportLocked()
 
+	return stats
+}
+
+// computeStatsLocked calculates best/avg/worst scores from current agents.
+// Caller must hold at least a read lock on p.mu.
+func (p *Population) computeStatsLocked() (bestScore, avgScore, worstScore float64) {
+	if len(p.Agents) == 0 {
+		return 0, 0, 0
+	}
+	var totalScore float64
+	bestScore = p.Agents[0].Score
+	worstScore = p.Agents[0].Score
 	for _, agent := range p.Agents {
 		totalScore += agent.Score
 		if agent.Score > bestScore {
@@ -1268,13 +1289,7 @@ func (p *Population) Stats() *PopulationStats {
 			worstScore = agent.Score
 		}
 	}
-
-	stats.AvgScore = totalScore / float64(len(p.Agents))
-	stats.BestScore = bestScore
-	stats.WorstScore = worstScore
-	stats.Diversity = p.measureDiversityReportLocked()
-
-	return stats
+	return bestScore, totalScore / float64(len(p.Agents)), worstScore
 }
 
 // appendHistoryLocked appends a generation snapshot to the history.
@@ -1290,28 +1305,9 @@ func (p *Population) appendHistoryLocked() {
 		Diversity:      p.measureDiversityReportLocked().Overall,
 	}
 
-	if len(p.Agents) == 0 {
-		p.history = append(p.history, entry)
-		return
+	if len(p.Agents) > 0 {
+		entry.BestScore, entry.AvgScore, entry.WorstScore = p.computeStatsLocked()
 	}
-
-	var totalScore float64
-	bestScore := p.Agents[0].Score
-	worstScore := p.Agents[0].Score
-
-	for _, agent := range p.Agents {
-		totalScore += agent.Score
-		if agent.Score > bestScore {
-			bestScore = agent.Score
-		}
-		if agent.Score < worstScore {
-			worstScore = agent.Score
-		}
-	}
-
-	entry.BestScore = bestScore
-	entry.AvgScore = totalScore / float64(len(p.Agents))
-	entry.WorstScore = worstScore
 
 	// Record mutation type distribution and diverse lineage count.
 	entry.MutationTypes = make(map[string]int)
@@ -1363,6 +1359,20 @@ func (p *Population) CurrentGeneration() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.Generation
+}
+
+// StagnantGenerations returns the count of consecutive generations without improvement.
+func (p *Population) StagnantGenerations() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.stagnantGens
+}
+
+// CurrentMutationRate returns the current runtime mutation rate.
+func (p *Population) CurrentMutationRate() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.currentMutationRate
 }
 
 // PopulationStats holds statistical information about a population's state.

@@ -95,9 +95,6 @@ func (hg *HypothesisGenerator) recommendationToHypothesis(rec Recommendation) *M
 	} else if strings.HasPrefix(target, "tool:") {
 		hyp.TargetType = "tool"
 		hyp.TargetKey = strings.TrimPrefix(target, "tool:")
-	} else if strings.HasPrefix(target, "param:") {
-		hyp.TargetType = "param"
-		hyp.TargetKey = target
 	} else {
 		// Generic target: try to infer from action.
 		switch rec.Action {
@@ -138,16 +135,24 @@ func ApplyHypothesis(base *mutation.Strategy, hyp MutationHypothesis) *mutation.
 	switch hyp.TargetType {
 	case "param":
 		if hyp.SuggestedValue != nil {
-			clone.Params[hyp.TargetKey] = hyp.SuggestedValue
+			if v, ok := hyp.SuggestedValue.(float64); ok {
+				clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v)
+			} else {
+				clone.Params[hyp.TargetKey] = hyp.SuggestedValue
+			}
 		} else {
 			// Apply direction-based change to numeric params.
 			if v, ok := clone.Params[hyp.TargetKey].(float64); ok {
 				switch hyp.Direction {
 				case "increase":
-					clone.Params[hyp.TargetKey] = v * 1.3
+					clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v*1.3)
 				case "decrease":
-					clone.Params[hyp.TargetKey] = v * 0.7
+					clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v*0.7)
 				}
+			} else {
+				slog.Debug("ApplyHypothesis: skipping non-float64 param",
+					"key", hyp.TargetKey, "direction", hyp.Direction,
+				)
 			}
 		}
 	case "prompt":
@@ -167,6 +172,55 @@ func ApplyHypothesis(base *mutation.Strategy, hyp MutationHypothesis) *mutation.
 	clone.Score = -1
 	clone.MutationDesc = fmt.Sprintf("hypothesis: %s (%.0f%%)", hyp.Rationale, hyp.Confidence*100)
 	return clone
+}
+
+// paramRanges defines known parameter bounds (min, max) for common LLM parameters.
+// Unknown params default to a wide range [0, 10000] to avoid clamping integer params
+// like max_steps (5-20) or memory_limit (3-10) to overly small values.
+var paramRanges = map[string][2]float64{
+	"temperature":        {0, 2.0},
+	"top_k":              {1, 100},
+	"topK":               {1, 100},
+	"topk":               {1, 100},
+	"top_p":              {0, 1.0},
+	"topP":               {0, 1.0},
+	"topp":               {0, 1.0},
+	"max_tokens":         {1, 32768},
+	"maxTokens":          {1, 32768},
+	"maxtokens":          {1, 32768},
+	"max_steps":          {1, 100},
+	"maxSteps":           {1, 100},
+	"memory_limit":       {1, 100},
+	"memoryLimit":        {1, 100},
+	"conflict_threshold": {0, 1.0},
+	"conflictThreshold":  {0, 1.0},
+}
+
+// clampParam bounds a parameter value to its known valid range.
+// Unknown params use a wide default [0, 10000] to accommodate integer params.
+// Note: parameters with range starting at 0 (temperature, top_p) will never
+// reach exactly 0 — any value ≤ 0 is lifted to epsilon (0.0001). This is
+// intentional: some LLM providers reject temperature=0 as invalid, and a
+// near-zero value is effectively deterministic for practical purposes.
+func clampParam(key string, v float64) float64 {
+	const epsilon = 0.0001
+	r, ok := paramRanges[key]
+	if !ok {
+		r = [2]float64{0, 10000}
+	}
+	if v <= 0 || v < r[0] {
+		if r[0] > 0 {
+			return r[0]
+		}
+		return epsilon
+	}
+	if v > 0 && v < epsilon {
+		return epsilon
+	}
+	if v > r[1] {
+		return r[1]
+	}
+	return v
 }
 
 // FormatHypotheses formats a set of hypotheses as a diagnostic string.

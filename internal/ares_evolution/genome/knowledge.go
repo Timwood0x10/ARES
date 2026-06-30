@@ -2,6 +2,7 @@ package genome
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -56,6 +57,20 @@ func NewKnowledgeBase() *KnowledgeBase {
 	}
 }
 
+// knowledgeConfidence computes confidence using add-one smoothing
+// (Laplace smoothing) to avoid 0.0 or 1.0 extremes on sparse data:
+//
+//	confidence = (successCount + 1) / (observationCount + 2)
+//
+// This gives conservative starting values (positive: 2/3≈0.67, negative: 1/3≈0.33)
+// that converge toward the true rate as more observations accumulate.
+func knowledgeConfidence(successCount, observationCount int) float64 {
+	if observationCount <= 0 {
+		return 0.5
+	}
+	return float64(successCount+1) / float64(observationCount+2)
+}
+
 // Record stores or updates a knowledge entry by pattern+mutation key.
 // If an entry with the same pattern+mutation already exists, it updates
 // the confidence, counts, and timestamp.
@@ -73,15 +88,15 @@ func (kb *KnowledgeBase) Record(pattern, mutation, outcome string, scoreDelta fl
 			existing.SuccessCount++
 		}
 		existing.ScoreDelta = (existing.ScoreDelta*float64(existing.ObservationCount-1) + scoreDelta) / float64(existing.ObservationCount)
-		existing.Confidence = float64(existing.SuccessCount) / float64(existing.ObservationCount)
+		existing.Confidence = knowledgeConfidence(existing.SuccessCount, existing.ObservationCount)
 		existing.Outcome = outcome
 		existing.UpdatedAt = now
 		return
 	}
 
-	confidence := 0.5
+	successCount := 0
 	if scoreDelta > 0 {
-		confidence = 0.6
+		successCount = 1
 	}
 
 	kb.entries[key] = &EvolutionKnowledge{
@@ -90,14 +105,11 @@ func (kb *KnowledgeBase) Record(pattern, mutation, outcome string, scoreDelta fl
 		Mutation:         mutation,
 		Outcome:          outcome,
 		ScoreDelta:       scoreDelta,
-		Confidence:       confidence,
+		Confidence:       knowledgeConfidence(successCount, 1),
 		ObservationCount: 1,
-		SuccessCount:     0,
+		SuccessCount:     successCount,
 		CreatedAt:        now,
 		UpdatedAt:        now,
-	}
-	if scoreDelta > 0 {
-		kb.entries[key].SuccessCount = 1
 	}
 }
 
@@ -116,14 +128,9 @@ func (kb *KnowledgeBase) Lookup(pattern string) []*EvolutionKnowledge {
 	if len(results) == 0 {
 		return nil
 	}
-	// Sort by confidence descending.
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Confidence > results[i].Confidence {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Confidence > results[j].Confidence
+	})
 	return results
 }
 
@@ -136,14 +143,9 @@ func (kb *KnowledgeBase) All() []*EvolutionKnowledge {
 	for _, e := range kb.entries {
 		results = append(results, e)
 	}
-	// Sort by confidence descending.
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Confidence > results[i].Confidence {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Confidence > results[j].Confidence
+	})
 	return results
 }
 

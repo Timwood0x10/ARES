@@ -194,25 +194,25 @@ func ApplyMetaToPopulation(pop *Population, controller *MetaController) bool {
 	pop.mu.Lock()
 	defer pop.mu.Unlock()
 
-	if pop.Generation == pop.cfg.MaxStagnantGenerations {
-		// Don't tune on first generation (not enough data).
+	// Need enough history entries for score improvement trend analysis.
+	// Without history (HistoryMaxSize==0), pop.history will be empty and
+	// scoreImprovement defaults to 0, which incorrectly triggers survival
+	// rate degradation in Tune().
+	if pop.Generation < 3 || len(pop.history) < 3 {
 		return false
 	}
 
 	report := pop.measureDiversityReportLocked()
 
 	// Calculate score improvement rate over last few generations.
-	scoreImprovement := 0.0
-	if len(pop.history) >= 3 {
-		recent := pop.history[len(pop.history)-3:]
-		improvements := 0
-		for i := 1; i < len(recent); i++ {
-			if recent[i].BestScore > recent[i-1].BestScore {
-				improvements++
-			}
+	recent := pop.history[len(pop.history)-3:]
+	improvements := 0
+	for i := 1; i < len(recent); i++ {
+		if recent[i].BestScore > recent[i-1].BestScore {
+			improvements++
 		}
-		scoreImprovement = float64(improvements) / float64(len(recent)-1)
 	}
+	scoreImprovement := float64(improvements) / float64(len(recent)-1)
 
 	modified := controller.Tune(&pop.cfg, report, scoreImprovement, pop.stagnantGens)
 

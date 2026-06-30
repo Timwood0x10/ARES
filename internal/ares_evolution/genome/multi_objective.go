@@ -1,6 +1,7 @@
 package genome
 
 import (
+	"log/slog"
 	"math"
 	"sort"
 
@@ -22,6 +23,12 @@ var DefaultDimensionWeights = map[string]float64{
 // no worse in all others.
 func ParetoDominance(a, b *mutation.Strategy) bool {
 	if a.DimensionScores == nil || b.DimensionScores == nil {
+		if (a.DimensionScores == nil) != (b.DimensionScores == nil) {
+			slog.Warn("ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
+				"a_dim", a.DimensionScores != nil, "b_dim", b.DimensionScores != nil,
+				"a_score", a.Score, "b_score", b.Score,
+			)
+		}
 		return a.Score > b.Score
 	}
 
@@ -210,7 +217,9 @@ func collectDimensionNames(strategies []*mutation.Strategy) []string {
 	return names
 }
 
-// mergeWeights returns weights with defaults applied for missing keys.
+// mergeWeights returns a complete weight map starting with DefaultDimensionWeights,
+// then overlays caller-supplied weights on top. This ensures all dimensions
+// always have a weight value for scoring.
 func mergeWeights(weights map[string]float64) map[string]float64 {
 	result := make(map[string]float64, len(DefaultDimensionWeights))
 	for k, v := range DefaultDimensionWeights {

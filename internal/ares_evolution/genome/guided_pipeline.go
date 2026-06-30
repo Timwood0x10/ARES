@@ -42,8 +42,15 @@ func NewGuidedPipeline(
 // 1. Analyze history → generate reflection
 // 2. Convert reflection → mutation hypotheses
 // 3. Distill observations → knowledge base
+//
+// Note: RunReflectionCycle captures a snapshot of population state (history + agents)
+// and then passes it to the LLM reflector. During the LLM call, other goroutines
+// may evolve the population further (via EvolveOnIdle). The reflection is therefore
+// based on a stale snapshot — this is intentional "async feedback" design:
+// the system doesn't block evolution waiting for LLM analysis. If synchronous
+// reflection is needed, callers should pause evolution before invoking this method.
 func (p *GuidedPipeline) RunReflectionCycle(ctx context.Context, pop *Population) []MutationHypothesis {
-	if p.reflector == nil || p.hypothesisGen == nil {
+	if p.reflector == nil || p.hypothesisGen == nil || pop == nil {
 		return nil
 	}
 
@@ -130,12 +137,10 @@ func (h *HypothesisHintProvider) HintsForTask(ctx context.Context, taskType stri
 		// Map hypothesis target to hint fields.
 		switch hyp.TargetType {
 		case "param":
-			if hyp.TargetKey == "temperature" || hyp.TargetKey == "top_k" {
-				hint.ParamHints = map[string]float64{hyp.TargetKey: 0.0}
-				if hyp.SuggestedValue != nil {
-					if v, ok := hyp.SuggestedValue.(float64); ok {
-						hint.ParamHints[hyp.TargetKey] = v
-					}
+			hint.ParamHints = map[string]float64{hyp.TargetKey: 0.0}
+			if hyp.SuggestedValue != nil {
+				if v, ok := hyp.SuggestedValue.(float64); ok {
+					hint.ParamHints[hyp.TargetKey] = v
 				}
 			}
 		case "prompt":
