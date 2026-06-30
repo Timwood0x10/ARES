@@ -40,7 +40,7 @@ func TestChat_OpenAI_WithTools(t *testing.T) {
 			t.Errorf("expected Authorization header, got %s", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -108,7 +108,7 @@ func TestChat_OpenAI_TextOnly(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -161,7 +161,7 @@ func TestChat_OpenRouter_WithTools(t *testing.T) {
 			t.Errorf("expected X-Title header GoAgent, got %s", r.Header.Get("X-Title"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -246,7 +246,7 @@ func TestChat_Anthropic_WithTools(t *testing.T) {
 			t.Error("expected tools field in request body")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -325,7 +325,7 @@ func TestChat_Anthropic_SystemMessage(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -372,7 +372,7 @@ func TestChat_Anthropic_ToolResult(t *testing.T) {
 			receivedMsgs[i] = m.(map[string]any)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -462,7 +462,7 @@ func TestChat_Ollama_WithTools(t *testing.T) {
 			t.Errorf("expected path /api/chat, got %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -548,7 +548,7 @@ func TestChat_OpenAI_ToolResultMessage(t *testing.T) {
 			receivedMsgs[i] = m.(map[string]any)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer server.Close()
 
@@ -603,13 +603,13 @@ func TestFailoverClient_Chat_AllProviders(t *testing.T) {
 
 	openAIServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseBody)
+		_, _ = fmt.Fprint(w, responseBody)
 	}))
 	defer openAIServer.Close()
 
 	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"message": {"role": "assistant", "content": "Hello from Ollama"}}`)
+		_, _ = fmt.Fprint(w, `{"message": {"role": "assistant", "content": "Hello from Ollama"}}`)
 	}))
 	defer ollamaServer.Close()
 

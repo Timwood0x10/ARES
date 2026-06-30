@@ -190,8 +190,8 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"message"`
@@ -209,7 +209,7 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 			Type: tc.Type,
 			Function: core.FunctionCall{
 				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
+				Arguments: string(tc.Function.Arguments),
 			},
 		})
 	}
