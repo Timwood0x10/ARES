@@ -123,18 +123,9 @@ func summarizeMessages(messages []*core.LLMMessage) string {
 //	*core.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
 func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
-	type chatMsg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	ollamaMsgs := make([]chatMsg, 0, len(messages))
-	for _, m := range messages {
-		ollamaMsgs = append(ollamaMsgs, chatMsg{Role: m.Role, Content: m.Content})
-	}
-
 	body := map[string]any{
 		"model":    c.config.Model,
-		"messages": ollamaMsgs,
+		"messages": buildOpenAIChatMessages(messages),
 		"stream":   false,
 		"options": map[string]any{
 			"temperature": 0.7,
