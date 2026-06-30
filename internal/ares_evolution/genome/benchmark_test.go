@@ -211,13 +211,10 @@ func BenchmarkCrossoverParallel(b *testing.B) {
 // Group 2: Selection Benchmarks
 // ==========================================================================
 
-// BenchmarkTruncationSelection benchmarks truncation selection on various population sizes.
+// BenchmarkTruncationSelection benchmarks top-N selection on various population sizes.
 // Selects top 30% of individuals. Measures sort + slice cost as population scales.
 func BenchmarkTruncationSelection(b *testing.B) {
 	b.ReportAllocs()
-
-	sel := NewTruncationSelection()
-	ctx := context.Background()
 
 	for _, size := range []int{10, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("pop_%d", size), func(b *testing.B) {
@@ -234,7 +231,11 @@ func BenchmarkTruncationSelection(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = sel.Select(ctx, population, selectN)
+				// Inline: sort by score descending, take top N.
+				sorted := make([]*mutation.Strategy, len(population))
+				copy(sorted, population)
+				SortByScore(sorted)
+				_ = sorted[:selectN]
 			}
 		})
 	}

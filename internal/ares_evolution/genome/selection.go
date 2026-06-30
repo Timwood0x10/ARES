@@ -284,76 +284,86 @@ func findMinScore(population []*mutation.Strategy) float64 {
 	return min
 }
 
-// --- Deprecated APIs kept for backward compatibility with tests and benchmarks ---
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-// TruncationSelection selects the top n individuals by score (elite selection).
-type TruncationSelection struct{}
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-func NewTruncationSelection() *TruncationSelection {
-	return &TruncationSelection{}
-}
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-func (ts *TruncationSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
-	if err := validateSelectInputs(ctx, population, n); err != nil {
-		return nil, err
-	}
-	sorted := make([]*mutation.Strategy, len(population))
-	copy(sorted, population)
-	SortByScore(sorted)
-	if n > len(sorted) {
-		n = len(sorted)
-	}
-	return sorted[:n], nil
-}
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-// RouletteWheelSelection selects individuals with probability proportional to fitness.
-type RouletteWheelSelection struct {
+// RankSelection selects individuals using linear ranking selection.
+// Individuals are sorted by score and assigned selection probability proportional
+// to rank (not raw score), reducing the impact of score distribution shape
+// and preventing super-individuals from dominating early generations.
+type RankSelection struct {
 	rng *rand.Rand
 }
 
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-type RouletteOption func(*RouletteWheelSelection) error
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-func WithRouletteSeed(seed int64) RouletteOption {
-	return func(rw *RouletteWheelSelection) error {
-		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
-		return nil
+// NewRankSelection creates a rank-based selector.
+func NewRankSelection() *RankSelection {
+	return &RankSelection{
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404
 	}
 }
 
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
-	rw := &RouletteWheelSelection{
-		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404 - selection doesn't need crypto rand
-	}
-	for _, opt := range opts {
-		if err := opt(rw); err != nil {
-			return nil, fmt.Errorf("apply roulette option: %w", err)
-		}
-	}
-	return rw, nil
-}
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+// Select picks n individuals with probability proportional to linear rank.
+// The best individual gets the highest selection probability; the worst gets
+// the lowest. Selection pressure is controlled by the rank distribution
+// (linear by default).
+func (rs *RankSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
 	if err := validateSelectInputs(ctx, population, n); err != nil {
 		return nil, err
 	}
 
-	// Filter out unevaluated strategies (score == -1).
+	sorted := make([]*mutation.Strategy, len(population))
+	copy(sorted, population)
+	SortByScore(sorted)
+
+	// Assign linear rank weights (best = N, worst = 1).
+	totalWeight := float64(len(sorted) * (len(sorted) + 1) / 2)
+	weights := make([]float64, len(sorted))
+	for i := range weights {
+		weights[i] = float64(len(sorted) - i) // best = N, worst = 1
+	}
+
+	result := make([]*mutation.Strategy, 0, n)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return result, fmt.Errorf("rank select %d: %w", i, ctx.Err())
+		default:
+		}
+
+		spin := rs.rng.Float64() * totalWeight
+		cumulative := 0.0
+		for j, w := range weights {
+			cumulative += w
+			if spin <= cumulative {
+				result = append(result, sorted[j])
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+// SUSSelection implements Stochastic Universal Sampling.
+// Instead of independent spins, it uses a single random start + evenly spaced
+// picks, ensuring minimum selection spread across the fitness distribution.
+// This reduces genetic drift compared to standard roulette wheel selection.
+type SUSSelection struct {
+	rng *rand.Rand
+}
+
+// NewSUSSelection creates a Stochastic Universal Sampling selector.
+func NewSUSSelection() *SUSSelection {
+	return &SUSSelection{
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404
+	}
+}
+
+// Select picks n individuals using SUS: one random pointer + evenly spaced picks.
+// Guarantees that an individual with above-average fitness is selected at least
+// floor(fitness/avg_fitness) times, reducing sampling variance.
+func (sus *SUSSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+
+	// Filter to evaluated strategies only.
 	var scored []*mutation.Strategy
 	for _, s := range population {
 		if IsScoreEvaluated(s.Score) {
@@ -366,10 +376,106 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 
 	// Shift scores to non-negative range.
 	minScore := findMinScore(scored)
+	totalWeight := 0.0
+	weights := make([]float64, len(scored))
+	for i, s := range scored {
+		w := s.Score - minScore + 1e-9
+		weights[i] = w
+		totalWeight += w
+	}
+
+	if totalWeight < 1e-12 {
+		// All scores equal — pick uniformly.
+		result := make([]*mutation.Strategy, n)
+		for i := range result {
+			result[i] = scored[sus.rng.Intn(len(scored))]
+		}
+		return result, nil
+	}
+
+	distance := totalWeight / float64(n)
+	start := sus.rng.Float64() * distance
+
+	result := make([]*mutation.Strategy, 0, n)
+	cumulative := 0.0
+	idx := 0
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return result, fmt.Errorf("sus select %d: %w", i, ctx.Err())
+		default:
+		}
+
+		pointer := start + float64(i)*distance
+		for cumulative < pointer && idx < len(weights) {
+			cumulative += weights[idx]
+			idx++
+		}
+		pick := idx - 1
+		if pick < 0 {
+			pick = 0
+		}
+		if pick >= len(scored) {
+			pick = len(scored) - 1
+		}
+		result = append(result, scored[pick])
+	}
+	return result, nil
+}
+
+// RouletteWheelSelection selects individuals with probability proportional to fitness.
+// Higher-scoring individuals have proportionally higher selection probability.
+// Note: this is sensitive to score distribution — a super-individual can dominate.
+type RouletteWheelSelection struct {
+	rng *rand.Rand
+}
+
+// NewRouletteWheelSelection creates a fitness-proportional selector.
+func NewRouletteWheelSelection(opts ...RouletteOption) (*RouletteWheelSelection, error) {
+	rw := &RouletteWheelSelection{
+		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404
+	}
+	for _, opt := range opts {
+		if err := opt(rw); err != nil {
+			return nil, fmt.Errorf("apply roulette option: %w", err)
+		}
+	}
+	return rw, nil
+}
+
+// RouletteOption configures RouletteWheelSelection.
+type RouletteOption func(*RouletteWheelSelection) error
+
+// WithRouletteSeed sets the random seed for deterministic selection.
+func WithRouletteSeed(seed int64) RouletteOption {
+	return func(rw *RouletteWheelSelection) error {
+		rw.rng = rand.New(rand.NewSource(seed)) // #nosec G404
+		return nil
+	}
+}
+
+// Select picks n individuals with probability proportional to shifted fitness.
+// Scores are shifted to be non-negative. Returns error on empty population.
+func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+
+	var scored []*mutation.Strategy
+	for _, s := range population {
+		if IsScoreEvaluated(s.Score) {
+			scored = append(scored, s)
+		}
+	}
+	if len(scored) == 0 {
+		return nil, ErrSelectionEmptyPopulation
+	}
+
+	minScore := findMinScore(scored)
 	weights := make([]float64, len(scored))
 	totalWeight := 0.0
 	for i, s := range scored {
-		w := s.Score - minScore + 1e-9 // small epsilon to avoid zero weight
+		w := s.Score - minScore + 1e-9
 		weights[i] = w
 		totalWeight += w
 	}
@@ -391,17 +497,36 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 				break
 			}
 		}
-		// Fallback: if spin exceeds cumulative due to floating-point, pick last.
-		if len(result) <= i {
-			result = append(result, scored[len(scored)-1])
-		}
 	}
-
 	return result, nil
 }
 
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
+// TruncationSelection selects the top n individuals by score (elite selection).
+// This is a deterministic selector useful for baseline comparisons and
+// hybrid strategies where strict elite preservation is needed before applying
+// other selection pressure.
+type TruncationSelection struct{}
+
+// NewTruncationSelection creates a truncation-based selector.
+func NewTruncationSelection() *TruncationSelection {
+	return &TruncationSelection{}
+}
+
+// Select returns the top n highest-scoring individuals. If n exceeds population
+// size, returns the full population. Unevaluated individuals sort last.
+func (ts *TruncationSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+	sorted := make([]*mutation.Strategy, len(population))
+	copy(sorted, population)
+	SortByScore(sorted)
+	if n > len(sorted) {
+		n = len(sorted)
+	}
+	return sorted[:n], nil
+}
+
 // PickParent selects a single parent from the population using the given selector and RNG.
 func PickParent(ctx context.Context, population []*mutation.Strategy, sel Selection, rng *rand.Rand) (*mutation.Strategy, error) {
 	if sel == nil {

@@ -103,7 +103,16 @@ type Strategy struct {
 	MutationDesc string `json:"mutation_desc,omitempty"`
 
 	// Score is the current evaluation score (-1 = unevaluated).
+	// In single-objective mode, this holds the aggregate score.
+	// In multi-objective mode, DimensionScores holds per-dimension values
+	// and Score is AggregateDimensions(DimensionScores, weights).
 	Score float64 `json:"score"`
+
+	// DimensionScores holds per-objective scores for multi-objective evaluation.
+	// Keys are dimension names (e.g. "success_rate", "cost", "latency", "quality").
+	// Nil means single-objective mode (backward compatible).
+	// When non-nil, Score should be the aggregate of these values.
+	DimensionScores map[string]float64 `json:"dimension_scores,omitempty"`
 
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
@@ -120,7 +129,7 @@ func (s *Strategy) Clone() *Strategy {
 		return nil
 	}
 
-	return &Strategy{
+	clone := &Strategy{
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
 		Version:              s.Version,
@@ -134,6 +143,13 @@ func (s *Strategy) Clone() *Strategy {
 		hashCache:            s.hashCache,
 		hashCached:           s.hashCached,
 	}
+	if s.DimensionScores != nil {
+		clone.DimensionScores = make(map[string]float64, len(s.DimensionScores))
+		for k, v := range s.DimensionScores {
+			clone.DimensionScores[k] = v
+		}
+	}
+	return clone
 }
 
 // HashCached returns true if the StrategyHash has been cached on this object.

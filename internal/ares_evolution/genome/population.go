@@ -188,13 +188,18 @@ type PopulationConfig struct {
 	// Range [0, 1], default 0.15.
 	DiversityThreshold float64 `json:"diversity_threshold"`
 
-	// TournamentSize is the number of competitors per tournament round (default 3).
-	// Used when UseTournamentSelection is true. Values < 2 fall back to random selection.
-	TournamentSize int `json:"tournament_size"`
+	// SelectionStrategy selects the parent selection algorithm.
+	// Valid values: "tournament", "rank", "sus", "roulette", "random" (default).
+	// "tournament" uses TournamentSelection with the configured TournamentSize.
+	// "rank" uses RankSelection (linear rank-based probability).
+	// "sus" uses Stochastic Universal Sampling (reduced variance).
+	// "roulette" uses fitness-proportional selection.
+	// "random" (or empty) selects parents uniformly from the breeding pool.
+	SelectionStrategy string `json:"selection_strategy"`
 
-	// UseTournamentSelection enables tournament-based parent selection during offspring generation.
-	// When false (default), parents are chosen randomly from the breeding pool.
-	UseTournamentSelection bool `json:"use_tournament_selection"`
+	// TournamentSize is the number of competitors per tournament round (default 3).
+	// Only used when SelectionStrategy is "tournament".
+	TournamentSize int `json:"tournament_size"`
 
 	// DiversityWeights controls the relative contribution of each diversity
 	// component to the overall diversity metric. All weights must be non-negative
@@ -240,8 +245,8 @@ func DefaultPopulationConfig() PopulationConfig {
 		MaxMutationRate:           0.5,
 		MaxStagnantGenerations:    10,
 		DiversityThreshold:        0.15,
+		SelectionStrategy:         "", // empty = random (backward compatible)
 		TournamentSize:            3,
-		UseTournamentSelection:    false,                   // Opt-in for backward compatibility
 		DiversityWeights:          DiversityWeightConfig{}, // Zero → defaults applied in normalize()
 		FitnessSharingSampleLimit: 50,
 		FitnessSharingSampleSize:  30,
@@ -468,9 +473,23 @@ func WithTournamentSelection(size int) PopulationOption {
 		if size < 2 {
 			return fmt.Errorf("%w: got %d", ErrInvalidTournamentSize, size)
 		}
-		cfg.UseTournamentSelection = true
+		cfg.SelectionStrategy = "tournament"
 		cfg.TournamentSize = size
 		return nil
+	}
+}
+
+// WithSelectionStrategy sets the parent selection algorithm.
+// Valid values: "tournament", "rank", "sus", "roulette", "random" (or "").
+func WithSelectionStrategy(strategy string) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		switch strategy {
+		case "tournament", "rank", "sus", "roulette", "random", "":
+			cfg.SelectionStrategy = strategy
+			return nil
+		default:
+			return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, random)", strategy)
+		}
 	}
 }
 
@@ -586,6 +605,10 @@ type Population struct {
 	// bestEverGeneration records the generation number when the best-ever score
 	// was discovered. Used by BestEverGeneration() for accurate reporting.
 	bestEverGeneration int
+
+	// paretoFront stores the Pareto-optimal front from the latest generation
+	// when using multi-objective fitness. Updated after each scoring pass.
+	paretoFront []*mutation.Strategy
 
 	// stagnantGens counts consecutive generations without best-score improvement.
 	stagnantGens int
@@ -789,20 +812,12 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return nil
 	}
 
-	// Prepare tournament selector once for reproducibility.
-	var ts *TournamentSelection
-	if p.cfg.UseTournamentSelection {
-		var err error
-		ts, err = NewTournamentSelection(
-			WithTournamentSize(p.cfg.TournamentSize),
-			WithTournamentSeed(p.rng.Int63()),
-		)
-		if err != nil {
-			return fmt.Errorf("create tournament selector: %w", err)
-		}
+	selector, err := p.buildSelector()
+	if err != nil {
+		return fmt.Errorf("build selector: %w", err)
 	}
 
-	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, ts, remainingSlots)
+	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, selector, remainingSlots)
 	if err != nil {
 		return fmt.Errorf("generate offspring: %w", err)
 	}
@@ -858,9 +873,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 
 // generateOffspring creates new strategies through crossover and mutation
 // to fill the specified number of population slots.
-// When UseTournamentSelection is configured, parents are chosen via tournament
-// selection (higher-scoring individuals have higher probability). Otherwise,
-// parents are selected randomly from the breeding pool (backward compatible).
+// When selector is non-nil, parents are chosen via the configured selection
+// strategy (tournament, rank, SUS, roulette). Otherwise, parents are selected
+// randomly from the breeding pool (backward compatible).
 //
 // Args:
 //
@@ -868,14 +883,14 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 //	parentPool - eligible parent strategies for crossover.
 //	mutator - the mutation engine for generating variations.
 //	crosser - the crossover engine for combining parents.
-//	ts - optional tournament selector (nil for random selection).
+//	sel - optional Selection strategy (nil for random selection).
 //	count - number of offspring to generate.
 //
 // Returns:
 //
 //	[]*mutation.Strategy - generated offspring strategies.
 //	error - non-nil if generation fails or context is cancelled.
-func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, ts *TournamentSelection, count int) ([]*mutation.Strategy, error) {
+func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, sel Selection, count int) ([]*mutation.Strategy, error) {
 	if count <= 0 {
 		return []*mutation.Strategy{}, nil
 	}
@@ -890,11 +905,10 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 		}
 
 		var parentA, parentB *mutation.Strategy
-		if ts != nil {
-			// Tournament selection: run 2 tournaments to pick 2 parents.
-			winners, err := ts.Select(ctx, parentPool, 2)
+		if sel != nil {
+			winners, err := sel.Select(ctx, parentPool, 2)
 			if err != nil {
-				return nil, fmt.Errorf("tournament select parents: %w", err)
+				return nil, fmt.Errorf("select parents: %w", err)
 			}
 			if len(winners) >= 2 {
 				parentA = winners[0]
@@ -903,7 +917,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 				parentA = winners[0]
 				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
 			} else {
-				return nil, fmt.Errorf("tournament returned no winners")
+				return nil, fmt.Errorf("selection returned no winners")
 			}
 		} else {
 			// Original random selection (backward compatible).
@@ -940,6 +954,28 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 	}
 
 	return offspring, nil
+}
+
+// buildSelector creates a Selection strategy based on the configured SelectionStrategy.
+// Returns nil for "random" or "" (backward compatible random parent selection).
+func (p *Population) buildSelector() (Selection, error) {
+	switch p.cfg.SelectionStrategy {
+	case "", "random":
+		return nil, nil
+	case "tournament":
+		return NewTournamentSelection(
+			WithTournamentSize(p.cfg.TournamentSize),
+			WithTournamentSeed(p.rng.Int63()),
+		)
+	case "rank":
+		return NewRankSelection(), nil
+	case "sus":
+		return NewSUSSelection(), nil
+	case "roulette":
+		return NewRouletteWheelSelection()
+	default:
+		return nil, fmt.Errorf("unsupported selection strategy: %s", p.cfg.SelectionStrategy)
+	}
 }
 
 // Snapshot returns a thread-safe copy of all agents and the current generation.
@@ -998,8 +1034,55 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	p.updateBestEverLocked()
 }
 
+// ParetoFrontStrategy returns the current Pareto-optimal strategies (deep clones).
+// Returns nil if multi-objective tracking is not enabled (no DimensionScores set).
+func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.paretoFront) == 0 {
+		return nil
+	}
+	result := make([]*mutation.Strategy, len(p.paretoFront))
+	for i, s := range p.paretoFront {
+		result[i] = s.Clone()
+	}
+	return result
+}
+
+// MultiObjectiveScorerFunc scores a strategy across multiple dimensions.
+// Returns per-dimension scores and optionally an aggregated single score.
+type MultiObjectiveScorerFunc func(agent *mutation.Strategy) (dims map[string]float64, aggregate float64)
+
+// ScoreAgentsMulti scores all agents using a multi-objective scorer.
+// Sets both DimensionScores and Score (aggregate) on each agent.
+func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, agent := range p.Agents {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("multi-objective scorer panicked for agent, marking as unevaluated",
+						"generation", p.Generation,
+						"agent_index", i,
+						"agent_id", agent.ID,
+						"panic_value", r,
+					)
+					agent.Score = ScoreUnevaluated
+					agent.DimensionScores = nil
+				}
+			}()
+			dims, agg := scorer(agent)
+			agent.DimensionScores = dims
+			agent.Score = agg
+		}()
+	}
+	p.updateBestEverLocked()
+}
+
 // updateBestEverLocked checks all evaluated agents against the current bestEver
-// and updates it if a higher score is found.
+// and updates it if a higher score is found. Also updates the Pareto front when
+// multi-objective fitness is enabled (DimensionScores set).
 //
 // Concurrency safety contract:
 //   - Caller MUST hold p.mu write lock (not just RLock). This is enforced by
@@ -1021,6 +1104,16 @@ func (p *Population) updateBestEverLocked() {
 			p.bestEver = a.Clone()
 			p.bestEverGeneration = p.Generation
 		}
+	}
+	// Update Pareto front for multi-objective mode.
+	var withDims []*mutation.Strategy
+	for _, a := range p.Agents {
+		if IsScoreEvaluated(a.Score) && a.DimensionScores != nil {
+			withDims = append(withDims, a)
+		}
+	}
+	if len(withDims) > 0 {
+		p.paretoFront = ParetoFront(withDims)
 	}
 }
 
