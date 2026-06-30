@@ -142,7 +142,8 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 		},
 	}
 	if len(tools) > 0 {
-		body["tools"] = tools
+		body["tools"] = buildOpenAIChatTools(tools)
+		body["tool_choice"] = "auto"
 	}
 
 	jsonBody, err := json.Marshal(body)
