@@ -18,6 +18,7 @@ import (
 type LLMClient interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string
@@ -118,50 +119,94 @@ func NewService(config *Config) (*Service, error) {
 }
 
 // Generate generates text from the given messages.
+// When tools are present or any message contains tool-related data, routes to
+// the Chat API which supports tool calling. Otherwise falls back to plain text
+// generation for backward compatibility.
 // Args:
-// ctx - operation context.
-// request - the generation request.
+//
+//	ctx - operation context.
+//	request - the generation request.
+//
 // Returns the generation response or error.
 func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
-	if request == nil {
-		return nil, ErrInvalidConfig
-	}
+    if request == nil {
+        return nil, ErrInvalidConfig
+    }
 
-	if len(request.Messages) == 0 {
-		return nil, ErrInvalidMessages
-	}
+    if len(request.Messages) == 0 {
+        return nil, ErrInvalidMessages
+    }
 
-	// Build prompt from messages
-	prompt := s.buildPrompt(request.Messages)
+    // Route to Chat API when tools are present or messages contain tool data.
+    if len(request.Tools) > 0 || s.hasToolMessages(request.Messages) {
+        return s.generateWithChat(ctx, request)
+    }
 
-	// Generate text
-	content, err := s.client.Generate(ctx, prompt)
-	if err != nil {
-		return nil, errors.Wrap(err, "generate text")
-	}
+    // Build prompt from messages for plain text generation.
+    prompt := s.buildPrompt(request.Messages)
 
-	response := &core.GenerateResponse{
-		Content:      content,
-		FinishReason: "stop",
-		Usage: core.TokenUsage{
-			PromptTokens:     s.calculateTokens(prompt),
-			CompletionTokens: s.calculateTokens(content),
-			TotalTokens:      0, // Will be calculated below
-		},
-		Model: s.getModel(),
-	}
+    content, err := s.client.Generate(ctx, prompt)
+    if err != nil {
+        return nil, errors.Wrap(err, "generate text")
+    }
 
-	response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
+    response := &core.GenerateResponse{
+        Content:      content,
+        FinishReason: "stop",
+        Usage: core.TokenUsage{
+            PromptTokens:     s.calculateTokens(prompt),
+            CompletionTokens: s.calculateTokens(content),
+            TotalTokens:      0,
+        },
+        Model: s.getModel(),
+    }
 
-	// Log generation if repository is available
-	if s.repo != nil {
-		if err := s.repo.LogGeneration(ctx, request, response); err != nil {
-			// Log error but don't fail the request
-			slog.Warn("failed to log generation", "error", err)
-		}
-	}
+    response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
 
-	return response, nil
+    if s.repo != nil {
+        if err := s.repo.LogGeneration(ctx, request, response); err != nil {
+            slog.Warn("failed to log generation", "error", err)
+        }
+    }
+
+    return response, nil
+}
+
+// hasToolMessages returns true if any message contains tool call data,
+// indicating the conversation requires Chat API routing.
+func (s *Service) hasToolMessages(messages []*core.LLMMessage) bool {
+    for _, msg := range messages {
+        if len(msg.ToolCalls) > 0 || msg.ToolCallID != "" {
+            return true
+        }
+    }
+    return false
+}
+
+// generateWithChat routes the request through the Chat API with tool support.
+func (s *Service) generateWithChat(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
+    resp, err := s.client.Chat(ctx, request.Messages, request.Tools)
+    if err != nil {
+        return nil, errors.Wrap(err, "chat with tools")
+    }
+
+    // Fill in fields not provided by the Chat layer.
+    resp.Model = s.getModel()
+    if resp.FinishReason == "" {
+        if len(resp.ToolCalls) > 0 {
+            resp.FinishReason = "tool_calls"
+        } else {
+            resp.FinishReason = "stop"
+        }
+    }
+
+    if s.repo != nil {
+        if err := s.repo.LogGeneration(ctx, request, resp); err != nil {
+            slog.Warn("failed to log generation", "error", err)
+        }
+    }
+
+    return resp, nil
 }
 
 // GenerateSimple generates text from a simple prompt.
