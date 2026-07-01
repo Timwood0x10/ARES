@@ -110,7 +110,7 @@ func (s *MemoryEventStore) Read(_ context.Context, streamID string, opts ReadOpt
 
 	stream := s.streams[streamID]
 	if len(stream) == 0 {
-		return nil, nil
+		return []*Event{}, nil
 	}
 
 	// Filter by FromVersion (inclusive per ReadOptions contract).
@@ -144,9 +144,6 @@ func (s *MemoryEventStore) Read(_ context.Context, streamID string, opts ReadOpt
 		filtered = filtered[:opts.Limit]
 	}
 
-	if filtered == nil {
-		return nil, nil
-	}
 	return filtered, nil
 }
 

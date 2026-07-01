@@ -630,7 +630,7 @@ func (b *apiGuidanceBridge) HintsForTask(ctx context.Context, taskType string, l
 		return nil, err
 	}
 	if hints == nil {
-		return nil, nil
+		return []evolution.EvolutionHint{}, nil
 	}
 	result := make([]evolution.EvolutionHint, len(hints))
 	for i, h := range hints {

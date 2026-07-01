@@ -547,14 +547,3 @@ func PickParent(ctx context.Context, population []*mutation.Strategy, sel Select
 	idx := rng.Intn(len(selected))
 	return selected[idx], nil
 }
-
-// Deprecated: Kept for backward compatibility with tests and benchmarks.
-// TODO(remove): remove in v2
-// sumFloat64 returns the sum of all float64 values in the slice.
-func sumFloat64(values []float64) float64 {
-	var total float64
-	for _, v := range values {
-		total += v
-	}
-	return total
-}

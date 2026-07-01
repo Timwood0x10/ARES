@@ -20,17 +20,17 @@ func TestSaveReport_WritesToFile(t *testing.T) {
 	path := filepath.Join(dir, "reports", "latest.txt")
 
 	report := &EvolutionReport{
-		TotalGenerations:     10,
-		BestEverScore:        95.5,
-		BestEverGeneration:   8,
-		FinalBestScore:       92.0,
-		WinnerStrategyID:     "s1",
-		WinnerScore:          92.0,
-		PromotionState:       "champion",
-		PromotionReason:      "exceeds threshold",
-		SuccessRate:          0.85,
-		SampleCount:          25,
-		Confidence:           0.72,
+		TotalGenerations:   10,
+		BestEverScore:      95.5,
+		BestEverGeneration: 8,
+		FinalBestScore:     92.0,
+		WinnerStrategyID:   "s1",
+		WinnerScore:        92.0,
+		PromotionState:     "champion",
+		PromotionReason:    "exceeds threshold",
+		SuccessRate:        0.85,
+		SampleCount:        25,
+		Confidence:         0.72,
 	}
 
 	err := SaveReport(context.Background(), report, path)

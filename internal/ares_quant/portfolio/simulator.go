@@ -343,7 +343,7 @@ func loadPriceData(ticker string, dataDir string) ([]priceBar, error) {
 	}
 
 	if len(records) < 2 {
-		return nil, nil // header only or empty
+		return nil, fmt.Errorf("load price data: CSV has no data rows (header only or empty)")
 	}
 
 	var bars []priceBar

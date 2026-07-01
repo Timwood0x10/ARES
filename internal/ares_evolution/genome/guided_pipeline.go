@@ -119,7 +119,7 @@ func NewHypothesisHintProvider(pipeline *GuidedPipeline, pop *Population, minCon
 func (h *HypothesisHintProvider) HintsForTask(ctx context.Context, taskType string, limit int) ([]mutation.EvolutionHint, error) {
 	hypotheses := h.pipeline.RunReflectionCycle(ctx, h.pop)
 	if len(hypotheses) == 0 {
-		return nil, nil
+		return []mutation.EvolutionHint{}, nil
 	}
 
 	hints := make([]mutation.EvolutionHint, 0, len(hypotheses))

@@ -260,7 +260,7 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 
 	tools := mc.client.ToolCount()
 	if tools == 0 {
-		return nil, nil
+		return []string{}, nil
 	}
 
 	// Get all tool definitions.

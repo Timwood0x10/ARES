@@ -139,51 +139,6 @@ func BenchmarkCrossoverUniform_LargeParams(b *testing.B) {
 	}
 }
 
-// BenchmarkCrossoverMultiPoint benchmarks k-point crossover at different k values.
-// Sub-benchmarks test k=3, k=10, k=50 to measure cost scaling with crossover points.
-func BenchmarkCrossoverMultiPoint(b *testing.B) {
-	b.ReportAllocs()
-
-	crosser, err := NewCrossover(WithSeed(42))
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	parentA := randStrategy(rand.New(rand.NewSource(10)), 50, 200)
-	parentB := randStrategy(rand.New(rand.NewSource(20)), 50, 200)
-
-	ctx := context.Background()
-
-	for _, k := range []int{3, 10, 50} {
-		b.Run(fmt.Sprintf("k=%d", k), func(b *testing.B) {
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, _ = crosser.MultiPointCrossover(ctx, parentA, parentB, k)
-			}
-		})
-	}
-}
-
-// BenchmarkCrossoverHalfSplit benchmarks half-split prompt template crossover.
-// Parents have long prompt templates (~1000 chars) to stress-test string concatenation cost.
-func BenchmarkCrossoverHalfSplit(b *testing.B) {
-	b.ReportAllocs()
-
-	crosser, err := NewCrossover(WithSeed(42))
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	parentA := randStrategy(rand.New(rand.NewSource(10)), 10, 1000)
-	parentB := randStrategy(rand.New(rand.NewSource(20)), 10, 1000)
-
-	b.ResetTimer()
-	ctx := context.Background()
-	for i := 0; i < b.N; i++ {
-		_, _ = crosser.CrossoverWithHalfSplit(ctx, parentA, parentB)
-	}
-}
-
 // BenchmarkCrossoverParallel benchmarks concurrent crossover operations using RunParallel.
 // Measures throughput under parallel load with GOMAXPROCS workers.
 func BenchmarkCrossoverParallel(b *testing.B) {

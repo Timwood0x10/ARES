@@ -110,7 +110,7 @@ func (p *defaultEvolutionPlugin) Stop(_ context.Context) error {
 // is configured or no recommendation is available.
 func (p *defaultEvolutionPlugin) Recommend(ctx context.Context, _ ExecutionState) (*RuntimeRecommendation, error) {
 	if p.provider == nil {
-		return nil, nil
+		return nil, fmt.Errorf("evolution: no recommendation provider configured")
 	}
 
 	p.mu.Lock()
@@ -142,7 +142,7 @@ func (p *defaultEvolutionPlugin) Recommend(ctx context.Context, _ ExecutionState
 	}
 
 	if rec == nil {
-		return nil, nil
+		return nil, fmt.Errorf("evolution: provider returned nil recommendation")
 	}
 	cp := *rec
 	return &cp, nil

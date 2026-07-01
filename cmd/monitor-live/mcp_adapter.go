@@ -14,7 +14,7 @@ type mcpAdapter struct {
 
 func (a *mcpAdapter) ListTools(_ context.Context) ([]monitoring.MCPToolInfo, error) {
 	if a.registry == nil {
-		return nil, nil
+		return []monitoring.MCPToolInfo{}, nil
 	}
 	infos := make([]monitoring.MCPToolInfo, 0)
 	for _, t := range a.registry.ListTools() {

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Event represents something that happened in the system.
@@ -81,11 +83,15 @@ var (
 	// ErrVersionConflict indicates an optimistic concurrency violation on append.
 	ErrVersionConflict = errors.New("version conflict")
 	// ErrStreamNotFound indicates the requested stream does not exist.
-	ErrStreamNotFound = errors.New("stream not found")
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrStreamNotFound = fmt.Errorf("stream not found: %w", apperrors.ErrNotFound)
 	// ErrEventStoreClosed indicates the store has been closed and cannot accept operations.
 	ErrEventStoreClosed = errors.New("event store closed")
 	// ErrEventIntegrity indicates event stream has gaps or version anomalies.
 	ErrEventIntegrity = errors.New("event stream integrity violation")
+	// ErrSummaryNotFound indicates the requested event summary does not exist.
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrSummaryNotFound = fmt.Errorf("summary not found: %w", apperrors.ErrNotFound)
 )
 
 // VerifyStreamIntegrity checks that a sequence of events has contiguous versions

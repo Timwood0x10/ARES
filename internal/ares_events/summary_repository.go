@@ -227,7 +227,7 @@ func (r *PgSummaryRepository) FindLatestByStreamID(ctx context.Context, streamID
 	s, err := scanSummary(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return nil, ErrSummaryNotFound
 		}
 		return nil, apperrors.Wrap(err, "scan event summary")
 	}

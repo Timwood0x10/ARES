@@ -21,7 +21,7 @@ func GetByID[T any](ctx context.Context, db DBTX, table, id string, scan func(Sc
 	entity, err := scan(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return nil, coreerrors.ErrRecordNotFound
 		}
 		return nil, errors.Wrap(err, "get by id")
 	}

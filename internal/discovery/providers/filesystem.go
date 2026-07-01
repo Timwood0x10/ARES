@@ -193,5 +193,5 @@ func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery
 		return records, nil
 	}
 
-	return nil, nil
+	return []discovery.DiscoveryRecord{}, nil
 }

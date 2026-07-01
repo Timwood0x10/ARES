@@ -10,14 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	qerrors "github.com/Timwood0x10/ares/internal/ares_quant/errors"
 )
 
 // yahooDownloadURL is the Yahoo Finance CSV download endpoint.
 // More reliable than the v8 chart JSON API.
 const yahooDownloadURL = "https://query1.finance.yahoo.com/v7/finance/download/%s?period1=%d&period2=%d&interval=1d&events=history"
-
-// ErrNoMarketData is returned when market data cannot be fetched and mock fallback is disabled.
-var ErrNoMarketData = fmt.Errorf("no market data available")
 
 // YahooFeed implements Feed using Yahoo Finance's CSV download API.
 type YahooFeed struct {
@@ -35,7 +34,7 @@ func NewYahooFeed() *YahooFeed {
 func (f *YahooFeed) Name() string { return "yahoo" }
 
 // Candles fetches historical OHLCV data.
-// When AllowMock is false (default) and the fetch fails, it returns ErrNoMarketData
+// When AllowMock is false (default) and the fetch fails, it returns qerrors.ErrNoMarketData
 // instead of silently falling back to generated data, preventing LLM from receiving fake data.
 func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (TimeSeries, error) {
 	bars, err := f.fetchCSV(ticker, start, end)
@@ -45,7 +44,7 @@ func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (
 
 	// FIX: only fall back to mock data when explicitly allowed; otherwise return sentinel error.
 	if !f.AllowMock {
-		return TimeSeries{}, fmt.Errorf("%w: yahoo fetch failed for ticker %q", ErrNoMarketData, ticker)
+		return TimeSeries{}, fmt.Errorf("%w: yahoo fetch failed for ticker %q", qerrors.ErrNoMarketData, ticker)
 	}
 
 	bars = generateMockData(ticker, start, end)

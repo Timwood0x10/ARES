@@ -117,26 +117,26 @@ func (p *LLMHintProvider) HintsForTask(ctx context.Context, taskType string, lim
 	p.mu.RUnlock()
 
 	if len(recent) == 0 {
-		return nil, nil
+		return []EvolutionHint{}, nil
 	}
 
 	prompt, err := p.buildPrompt(taskType, recent)
 	if err != nil {
 		slog.WarnContext(ctx, "[LLMHintProvider] Failed to build prompt", "error", err)
-		return nil, nil
+		return []EvolutionHint{}, nil
 	}
 
 	resp, err := p.client.Generate(ctx, prompt)
 	if err != nil {
 		slog.WarnContext(ctx, "[LLMHintProvider] LLM generation failed", "error", err)
-		return nil, nil
+		return []EvolutionHint{}, nil
 	}
 
 	hints, err := p.parseResponse(resp, limit)
 	if err != nil {
 		slog.WarnContext(ctx, "[LLMHintProvider] Failed to parse LLM response",
 			"error", err, "response_length", len(resp))
-		return nil, nil
+		return []EvolutionHint{}, nil
 	}
 
 	return hints, nil

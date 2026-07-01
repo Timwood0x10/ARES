@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/api/core"
-	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // MemoryRepository provides an in-memory implementation of RetrievalRepository.
@@ -73,11 +72,11 @@ func (r *MemoryRepository) GetKnowledge(ctx context.Context, tenantID, itemID st
 
 	item, exists := r.knowledge[itemID]
 	if !exists {
-		return nil, apperrors.ErrNotFound
+		return nil, ErrKnowledgeNotFound
 	}
 
 	if item.TenantID != tenantID {
-		return nil, apperrors.ErrNotFound
+		return nil, ErrKnowledgeNotFound
 	}
 
 	// Return a copy to avoid mutation

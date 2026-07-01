@@ -42,7 +42,7 @@ func LoadSignalsFromCSV(path string) ([]TradeSignal, error) {
 	}
 
 	if len(records) < 2 {
-		return nil, nil // header only or empty
+		return nil, fmt.Errorf("load signals: CSV has no data rows (header only or empty)")
 	}
 
 	var signals []TradeSignal
@@ -164,7 +164,7 @@ func LoadCustomBarsFromCSV(path string) (map[string][]priceBar, error) {
 	}
 
 	if len(records) < 2 {
-		return nil, nil // header only or empty
+		return nil, fmt.Errorf("load custom bars: CSV has no data rows (header only or empty)")
 	}
 
 	result := make(map[string][]priceBar)

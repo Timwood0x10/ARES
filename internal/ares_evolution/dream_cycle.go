@@ -612,7 +612,7 @@ func (dc *DreamCycle) findWinner(
 	baseline Strategy,
 ) (*candidateResult, error) {
 	if len(candidates) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("dream cycle: no candidates to evaluate")
 	}
 
 	// Stage 1: Quick reject — screen all candidates in parallel with small N.
@@ -676,7 +676,7 @@ func (dc *DreamCycle) findWinner(
 	}
 
 	if len(survivors) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("dream cycle: all candidates rejected in quick pass")
 	}
 
 	// Stage 2: Full evaluation — run survivors in parallel with full N.

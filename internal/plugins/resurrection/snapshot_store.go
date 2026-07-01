@@ -2,10 +2,16 @@ package resurrection
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
+
+// ErrSnapshotNotFound is returned when no snapshot exists for the given agent.
+// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+var ErrSnapshotNotFound = fmt.Errorf("snapshot not found: %w", apperrors.ErrNotFound)
 
 // Ensure MemorySnapshotStore implements SnapshotStore.
 var _ base.SnapshotStore = (*MemorySnapshotStore)(nil)
@@ -46,13 +52,13 @@ func (s *MemorySnapshotStore) Save(_ context.Context, agentID string, snapshot m
 // The returned map is a deep copy to prevent data races.
 func (s *MemorySnapshotStore) Load(_ context.Context, agentID string) (map[string]any, error) {
 	if agentID == "" {
-		return nil, nil
+		return nil, ErrSnapshotNotFound
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snap, ok := s.snapshots[agentID]
 	if !ok || snap == nil {
-		return nil, nil
+		return nil, ErrSnapshotNotFound
 	}
 	cpy := make(map[string]any, len(snap))
 	for k, v := range snap {

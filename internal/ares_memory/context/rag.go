@@ -124,7 +124,7 @@ func (r *RAG) Search(ctx context.Context, query []float64, topK int) ([]*Knowled
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if len(r.index.entries) == 0 {
-		return nil, nil
+		return []*KnowledgeEntry{}, nil
 	}
 
 	scores := make([]struct {

@@ -840,26 +840,3 @@ func TestFindMinScore(t *testing.T) {
 		})
 	}
 }
-
-func TestSumFloat64(t *testing.T) {
-	tests := []struct {
-		name     string
-		values   []float64
-		expected float64
-	}{
-		{"empty slice", []float64{}, 0.0},
-		{"single value", []float64{5.0}, 5.0},
-		{"multiple values", []float64{1.0, 2.0, 3.0}, 6.0},
-		{"negative values", []float64{-1.0, -2.0, 3.0}, 0.0},
-		{"zeros", []float64{0.0, 0.0, 0.0}, 0.0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sumFloat64(tt.values)
-			if got != tt.expected {
-				t.Errorf("got %.1f, want %.1f", got, tt.expected)
-			}
-		})
-	}
-}

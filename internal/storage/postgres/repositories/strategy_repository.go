@@ -74,7 +74,7 @@ func (r *StrategyRepository) GetActive(ctx context.Context) (*StrategyRow, error
 		&promptTmpl, &mutationType, &mutationDesc, &score, &createdAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return nil, errors.ErrNotFound
 		}
 		return nil, errors.Wrap(err, "get active strategy")
 	}

@@ -5,12 +5,14 @@ package dataflow
 
 import (
 	"fmt"
+
+	qerrors "github.com/Timwood0x10/ares/internal/ares_quant/errors"
 )
 
 // ─── Sentinel Errors ────────────────────────────────────────
 
 // ErrNoMarketData indicates no market data is available for the requested symbol.
-var ErrNoMarketData = fmt.Errorf("no market data available")
+var ErrNoMarketData = qerrors.ErrNoMarketData
 
 // ErrSymbolEmpty indicates an empty symbol was provided.
 var ErrSymbolEmpty = fmt.Errorf("symbol must not be empty")

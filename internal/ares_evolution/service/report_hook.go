@@ -58,9 +58,9 @@ func wireAfterRunReport(
 			return fmt.Errorf("generate report: %w", err)
 		}
 
-	report.WinnerStrategyID = best.ID
-	report.WinnerScore = best.Score
-	if ev.SampleCount > 0 {
+		report.WinnerStrategyID = best.ID
+		report.WinnerScore = best.Score
+		if ev.SampleCount > 0 {
 			report.PromotionState = state
 			report.PromotionReason = reason
 			report.SuccessRate = ev.SuccessRate

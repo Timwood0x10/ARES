@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/api/core"
-	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // MemoryRepository provides an in-memory implementation of AgentRepository.
@@ -61,7 +60,7 @@ func (r *MemoryRepository) Get(ctx context.Context, agentID string) (*core.Agent
 
 	agent, exists := r.agents[agentID]
 	if !exists {
-		return nil, apperrors.ErrNotFound
+		return nil, ErrAgentNotFound
 	}
 
 	// Return a copy to avoid mutation

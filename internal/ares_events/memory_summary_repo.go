@@ -143,7 +143,7 @@ func (r *MemorySummaryRepository) FindLatestByStreamID(_ context.Context, stream
 
 	ids := r.byStream[streamID]
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, ErrSummaryNotFound
 	}
 	latest := r.summaries[ids[len(ids)-1]]
 	return latest, nil

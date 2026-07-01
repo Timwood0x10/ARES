@@ -2,9 +2,11 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -44,10 +46,10 @@ func NewPGStrategyStore(repo *repositories.StrategyRepository) (*PGStrategyStore
 func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 	row, err := s.repo.GetActive(ctx)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("pg get active: %w", err)
-	}
-	if row == nil {
-		return nil, nil
 	}
 	return &Strategy{
 		ID:                   row.ID,

@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	_ "modernc.org/sqlite"
+
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // SQLiteStore implements Store using SQLite (via modernc.org/sqlite, no CGO).
@@ -110,7 +111,7 @@ func (s *SQLiteStore) LatestDecision(ctx context.Context, ticker string) (*Decis
 		FROM quant_decisions WHERE ticker = ? ORDER BY decision_date DESC LIMIT 1`, ticker)
 	d, err := scanDecisionRow(row)
 	if err == sql.ErrNoRows {
-		return nil, apperrors.ErrNotFound
+		return nil, coreerrors.ErrRecordNotFound
 	}
 	return d, err
 }

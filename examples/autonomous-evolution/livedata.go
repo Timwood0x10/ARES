@@ -11,13 +11,13 @@ import (
 // ── Strategy Profiles ──────────────────────────────────────────
 
 type strategyProfile struct {
-	id          string
-	temperature float64
-	topK        float64
-	maxTokens   float64
-	freqPenalty float64
+	id             string
+	temperature    float64
+	topK           float64
+	maxTokens      float64
+	freqPenalty    float64
 	presentPenalty float64
-	prompt      string
+	prompt         string
 	// tool → success probability [0,1]
 	proficiencies map[string]float64
 }
@@ -63,13 +63,13 @@ var defaultProfiles = []strategyProfile{
 // ── Conversation Scenarios ──────────────────────────────────────
 
 type toolCallTemplate struct {
-	tool        string
-	input       string
-	output      string
-	latency     int64
-	latencyVar  int64
-	resultSize  int64
-	errPattern  string // error code when applicable
+	tool       string
+	input      string
+	output     string
+	latency    int64
+	latencyVar int64
+	resultSize int64
+	errPattern string // error code when applicable
 }
 
 type conversationScenario struct {

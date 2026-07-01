@@ -2,12 +2,15 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Engine orchestrates the discovery lifecycle:
@@ -320,10 +323,10 @@ type UpdateTagsRequest struct {
 func (e *Engine) UpdateTags(ctx context.Context, id string, req UpdateTagsRequest) error {
 	svc, err := e.store.Get(ctx, id)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return fmt.Errorf("service not found: %s", id)
+		}
 		return err
-	}
-	if svc == nil {
-		return fmt.Errorf("service not found: %s", id)
 	}
 
 	tagSet := make(map[string]bool)

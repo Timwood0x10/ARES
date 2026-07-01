@@ -3,6 +3,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/errors"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Service provides agent management operations.
@@ -77,6 +78,9 @@ func (s *Service) CreateAgent(ctx context.Context, agentConfig *core.AgentConfig
 		if err == nil && existing != nil {
 			return nil, ErrAgentAlreadyExists
 		}
+		if err != nil && !errors.Is(err, apperrors.ErrNotFound) {
+			return nil, apperrors.Wrap(err, "check agent existence")
+		}
 	}
 
 	// Create session for the agent
@@ -85,7 +89,7 @@ func (s *Service) CreateAgent(ctx context.Context, agentConfig *core.AgentConfig
 	if s.memoryMgr != nil {
 		sessionID, err = s.memoryMgr.CreateSession(ctx, agentConfig.ID)
 		if err != nil {
-			return nil, errors.Wrap(err, "create session")
+			return nil, apperrors.Wrap(err, "create session")
 		}
 	}
 
@@ -128,11 +132,10 @@ func (s *Service) GetAgent(ctx context.Context, agentID string) (*core.Agent, er
 
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
 		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
 	}
 
 	return agent, nil
@@ -155,11 +158,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
 		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
 	}
 
 	// Apply updates
@@ -205,11 +207,10 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 	// Get agent to retrieve session ID
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return ErrAgentNotFound
+		}
 		return errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return ErrAgentNotFound
 	}
 
 	// Delete agent
@@ -345,11 +346,10 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 	// Get agent
 	agent, err := s.repo.Get(ctx, task.AgentID)
 	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
 		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
 	}
 
 	// Update agent status
