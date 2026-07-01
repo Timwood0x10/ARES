@@ -176,7 +176,7 @@ func TestDeterministicScore_NumericTypeHandling(t *testing.T) {
 			expected: 5.0,
 		},
 		{
-			name: "nil_strategy",
+			name:     "nil_strategy",
 			strategy: nil,
 			expected: 50.0,
 		},

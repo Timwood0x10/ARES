@@ -77,20 +77,20 @@ func (n *DefaultNormalizer) Normalize(ctx context.Context, raw RawExperience) (N
 
 	// Create normalized experience with defaults
 	normalized := NormalizedExperience{
-		ID:               uuid.New().String(),
-		StrategyID:       raw.StrategyID,
-		TaskType:         raw.TaskType,
-		CreatedAt:        raw.Timestamp.UTC(),
-		Score:            n.config.DefaultScore,
-		LatencyMs:        n.config.DefaultLatencyMs,
-		WallTimeSeconds:  n.config.DefaultWallTimeSeconds,
-		ErrorRate:        n.config.DefaultErrorRate,
-		Success:          n.config.DefaultSuccess,
-		Cost:             n.config.DefaultCost,
-		MutationType:     raw.MutationType,
-		Metadata:         make(map[string]interface{}),
-		IsFiltered:       false,
-		FilterReason:     "",
+		ID:              uuid.New().String(),
+		StrategyID:      raw.StrategyID,
+		TaskType:        raw.TaskType,
+		CreatedAt:       raw.Timestamp.UTC(),
+		Score:           n.config.DefaultScore,
+		LatencyMs:       n.config.DefaultLatencyMs,
+		WallTimeSeconds: n.config.DefaultWallTimeSeconds,
+		ErrorRate:       n.config.DefaultErrorRate,
+		Success:         n.config.DefaultSuccess,
+		Cost:            n.config.DefaultCost,
+		MutationType:    raw.MutationType,
+		Metadata:        make(map[string]interface{}),
+		IsFiltered:      false,
+		FilterReason:    "",
 	}
 
 	// Copy and clean metadata

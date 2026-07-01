@@ -145,92 +145,8 @@ type ToolCallRecord struct {
 	ResultSizeBytes int64 `json:"result_size_bytes"`
 }
 
-// ExecutionExperience represents raw execution metrics from agent runtime.
-// It aggregates data from tool calls and execution traces to provide
-// a complete picture of a strategy's performance on a specific task.
-// This is used by the GA/Memory/Tool fusion system for strategy evaluation.
-type ExecutionExperience struct {
-	// StrategyID is the identifier of the strategy used.
-	StrategyID string `json:"strategy_id"`
-
-	// TaskType is the type of task being executed.
-	TaskType string `json:"task_type"`
-
-	// Success indicates whether the overall task completed successfully.
-	Success bool `json:"success"`
-
-	// LatencyMs is the total execution latency in milliseconds.
-	LatencyMs int64 `json:"latency_ms"`
-
-	// RetryCount is the total number of retries across all operations.
-	RetryCount int `json:"retry_count"`
-
-	// ErrorRate is the proportion of operations that resulted in errors (0.0 to 1.0).
-	ErrorRate float64 `json:"error_rate"`
-
-	// ToolChain is a hash string representing the sequence of tools used.
-	// This enables grouping experiences by tool usage patterns.
-	ToolChain string `json:"tool_chain"`
-
-	// ResultQuality is a quality score of the final result (0.0 to 1.0).
-	ResultQuality float64 `json:"result_quality"`
-
-	// TokenCost is the total token cost incurred during execution.
-	TokenCost int64 `json:"token_cost"`
-
-	// WallTime is the wall-clock time in milliseconds including waiting.
-	WallTime int64 `json:"wall_time"`
-
-	// Timestamp is when this experience was recorded.
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// NormalizedExecutionExperience represents a normalized version of ExecutionExperience.
-// All values are scaled to standard ranges for consistent comparison
-// and aggregation across different task types and strategies.
-// This is used by the GA/Memory/Tool fusion system for evidence aggregation.
-type NormalizedExecutionExperience struct {
-	// StrategyID is the identifier of the strategy used.
-	StrategyID string `json:"strategy_id"`
-
-	// TaskType is the type of task being executed.
-	TaskType string `json:"task_type"`
-
-	// Success is the normalized success indicator (1.0 for success, 0.0 for failure).
-	Success float64 `json:"success"`
-
-	// LatencyMs is the normalized latency value (0.0 to 1.0, where 1.0 is best).
-	// Higher values indicate better (faster) performance.
-	LatencyMs float64 `json:"latency_ms"`
-
-	// RetryCount is the normalized retry count (0.0 to 1.0, where 1.0 is best).
-	// Higher values indicate fewer retries (better performance).
-	RetryCount float64 `json:"retry_count"`
-
-	// ErrorRate is the inverted and normalized error rate (0.0 to 1.0, where 1.0 is best).
-	// Higher values indicate lower error rates.
-	ErrorRate float64 `json:"error_rate"`
-
-	// ToolChain is a hash string representing the sequence of tools used.
-	ToolChain string `json:"tool_chain"`
-
-	// ResultQuality is the normalized result quality (0.0 to 1.0).
-	ResultQuality float64 `json:"result_quality"`
-
-	// TokenCost is the normalized token cost (0.0 to 1.0, where 1.0 is best).
-	// Higher values indicate lower cost (better efficiency).
-	TokenCost float64 `json:"token_cost"`
-
-	// WallTime is the normalized wall-clock time (0.0 to 1.0, where 1.0 is best).
-	// Higher values indicate shorter execution time.
-	WallTime float64 `json:"wall_time"`
-
-	// Timestamp is when this experience was recorded.
-	Timestamp time.Time `json:"timestamp"`
-}
-
 // Evidence represents multi-dimensional aggregated statistics.
-// It aggregates multiple execution experiences into statistical summaries
+// It aggregates multiple normalized experiences into statistical summaries
 // to support strategy evaluation and selection decisions.
 // This is used by the GA/Memory/Tool fusion system for strategy comparison.
 type Evidence struct {
@@ -256,6 +172,7 @@ type Evidence struct {
 	SampleCount int64 `json:"sample_count"`
 
 	// ToolChainHash is a hash representing the most common tool chain pattern.
+	// Populated from NormalizedExperience.ToolChain when available.
 	ToolChainHash string `json:"tool_chain_hash"`
 
 	// Confidence is the confidence level of this evidence (0.0 to 1.0).
@@ -266,101 +183,10 @@ type Evidence struct {
 	LastUpdated time.Time `json:"last_updated"`
 }
 
-// NormalizeExecution converts an ExecutionExperience to a NormalizedExecutionExperience.
-// It applies min-max normalization to all numeric fields, scaling them
-// to the [0.0, 1.0] range. For metrics where lower is better (latency,
-// retry count, error rate, token cost, wall time), the values are inverted
-// so that higher normalized values always indicate better performance.
-//
-// Parameters:
-//   - raw: The raw execution experience to normalize
-//   - maxLatencyMs: Maximum expected latency for normalization
-//   - maxRetryCount: Maximum expected retry count for normalization
-//   - maxTokenCost: Maximum expected token cost for normalization
-//   - maxWallTime: Maximum expected wall time for normalization
-//
-// Returns a NormalizedExecutionExperience with all values scaled to [0.0, 1.0].
-func NormalizeExecution(
-	raw ExecutionExperience,
-	maxLatencyMs int64,
-	maxRetryCount int,
-	maxTokenCost int64,
-	maxWallTime int64,
-) NormalizedExecutionExperience {
-	if maxLatencyMs <= 0 {
-		maxLatencyMs = 1
-	}
-	if maxRetryCount <= 0 {
-		maxRetryCount = 1
-	}
-	if maxTokenCost <= 0 {
-		maxTokenCost = 1
-	}
-	if maxWallTime <= 0 {
-		maxWallTime = 1
-	}
-
-	normalizedLatency := 1.0 - float64(raw.LatencyMs)/float64(maxLatencyMs)
-	if normalizedLatency < 0 {
-		normalizedLatency = 0
-	}
-
-	normalizedRetry := 1.0 - float64(raw.RetryCount)/float64(maxRetryCount)
-	if normalizedRetry < 0 {
-		normalizedRetry = 0
-	}
-
-	normalizedErrorRate := 1.0 - raw.ErrorRate
-	if normalizedErrorRate < 0 {
-		normalizedErrorRate = 0
-	}
-
-	normalizedTokenCost := 1.0 - float64(raw.TokenCost)/float64(maxTokenCost)
-	if normalizedTokenCost < 0 {
-		normalizedTokenCost = 0
-	}
-
-	normalizedWallTime := 1.0 - float64(raw.WallTime)/float64(maxWallTime)
-	if normalizedWallTime < 0 {
-		normalizedWallTime = 0
-	}
-
-	var successValue float64
-	if raw.Success {
-		successValue = 1.0
-	}
-
-	return NormalizedExecutionExperience{
-		StrategyID:    raw.StrategyID,
-		TaskType:      raw.TaskType,
-		Success:       successValue,
-		LatencyMs:     normalizedLatency,
-		RetryCount:    normalizedRetry,
-		ErrorRate:     normalizedErrorRate,
-		ToolChain:     raw.ToolChain,
-		ResultQuality: raw.ResultQuality,
-		TokenCost:     normalizedTokenCost,
-		WallTime:      normalizedWallTime,
-		Timestamp:     raw.Timestamp,
-	}
-}
-
 // IsEmpty returns true if the ToolCallRecord has no meaningful data.
 // A record is considered empty if StrategyID and ToolName are both empty.
 func (r *ToolCallRecord) IsEmpty() bool {
 	return r.StrategyID == "" && r.ToolName == ""
-}
-
-// IsEmpty returns true if the ExecutionExperience has no meaningful data.
-// An experience is considered empty if StrategyID is empty.
-func (e *ExecutionExperience) IsEmpty() bool {
-	return e.StrategyID == ""
-}
-
-// IsEmpty returns true if the NormalizedExecutionExperience has no meaningful data.
-// An experience is considered empty if StrategyID is empty.
-func (e *NormalizedExecutionExperience) IsEmpty() bool {
-	return e.StrategyID == ""
 }
 
 // IsEmpty returns true if the Evidence has no meaningful data.
@@ -374,29 +200,27 @@ func (e *Evidence) HasSamples() bool {
 	return e.SampleCount > 0
 }
 
-// MergeEvidence combines multiple NormalizedExecutionExperience values into a single Evidence.
-// This aggregates normalized metrics and computes statistical summaries.
+// AggregateEvidence combines multiple NormalizedExperience values into a single
+// Evidence. This is the canonical aggregation path: NormalizedExperience →
+// Evidence. All callers should use this function instead of implementing
+// their own aggregation logic.
 //
-// Parameters:
-//   - experiences: Slice of normalized execution experiences to merge
-//
-// Returns an Evidence struct containing aggregated statistics.
 // Returns an empty Evidence if the input slice is empty.
-func MergeEvidence(experiences []NormalizedExecutionExperience) Evidence {
+func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 	if len(experiences) == 0 {
 		return Evidence{}
 	}
 
 	var (
-		totalSuccess      float64
-		totalLatencyNorm  float64
-		totalErrorRate    float64
-		totalQuality      float64
-		strategyID        string
-		taskType          string
-		toolChainHash     string
-		lastTimestamp     time.Time
-		latencyNormValues []float64
+		totalScore     float64
+		totalLatency   int64
+		successCount   int
+		totalErrorRate float64
+		strategyID     string
+		taskType       string
+		toolChainHash  string
+		lastTimestamp  time.Time
+		latencyValues  []int64
 	)
 
 	for _, exp := range experiences {
@@ -404,7 +228,7 @@ func MergeEvidence(experiences []NormalizedExecutionExperience) Evidence {
 			if strategyID == "" {
 				strategyID = exp.StrategyID
 			} else if strategyID != exp.StrategyID {
-				slog.Warn("MergeEvidence: mixed strategy IDs in batch",
+				slog.Warn("AggregateEvidence: mixed strategy IDs in batch",
 					"first", strategyID, "encountered", exp.StrategyID)
 			}
 		}
@@ -412,88 +236,63 @@ func MergeEvidence(experiences []NormalizedExecutionExperience) Evidence {
 			if taskType == "" {
 				taskType = exp.TaskType
 			} else if taskType != exp.TaskType {
-				slog.Warn("MergeEvidence: mixed task types in batch",
+				slog.Warn("AggregateEvidence: mixed task types in batch",
 					"first", taskType, "encountered", exp.TaskType)
 			}
 		}
 		if exp.ToolChain != "" && toolChainHash == "" {
 			toolChainHash = exp.ToolChain
 		}
-		if exp.Timestamp.After(lastTimestamp) {
-			lastTimestamp = exp.Timestamp
+		if exp.CreatedAt.After(lastTimestamp) {
+			lastTimestamp = exp.CreatedAt
 		}
 
-		totalSuccess += exp.Success
-		totalLatencyNorm += exp.LatencyMs
+		totalScore += exp.Score
+		totalLatency += exp.LatencyMs
 		totalErrorRate += exp.ErrorRate
-		totalQuality += exp.ResultQuality
-		latencyNormValues = append(latencyNormValues, exp.LatencyMs)
+		if exp.Success || exp.Outcome == "success" {
+			successCount++
+		}
+		latencyValues = append(latencyValues, exp.LatencyMs)
 	}
 
 	count := float64(len(experiences))
-	successRate := totalSuccess / count
-	avgErrorRate := totalErrorRate / count
 
-	confidence := calculateEvidenceConfidence(int64(len(experiences)))
-
-	latencyP50, latencyP95 := calculateLatencyPercentilesFromNormalized(latencyNormValues)
+	latencyP50, latencyP95 := calculateLatencyPercentiles(latencyValues)
 
 	return Evidence{
 		StrategyID:    strategyID,
 		TaskType:      taskType,
-		SuccessRate:   successRate,
+		SuccessRate:   float64(successCount) / count,
 		LatencyP50:    latencyP50,
 		LatencyP95:    latencyP95,
-		ErrorRate:     avgErrorRate,
+		ErrorRate:     totalErrorRate / count,
 		SampleCount:   int64(len(experiences)),
 		ToolChainHash: toolChainHash,
-		Confidence:    confidence,
+		Confidence:    0.0,
 		LastUpdated:   lastTimestamp,
 	}
 }
 
-// calculateEvidenceConfidence computes the confidence level based on sample count.
-// Uses a linear scale: confidence = (sampleCount + 1) / 15, capped at 1.0.
-// Minimum confidence is 0.1 for a single sample.
-func calculateEvidenceConfidence(sampleCount int64) float64 {
-	if sampleCount <= 0 {
-		return 0
-	}
-	confidence := float64(sampleCount+1) / 15.0
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-	if confidence < 0.1 {
-		confidence = 0.1
-	}
-	return confidence
-}
-
-// calculateLatencyPercentilesFromNormalized computes p50 and p95 latency percentiles
-// from a slice of normalized latency values.
-// Since these are normalized (higher is better), we convert back to
-// approximate millisecond values using a standard reference.
-func calculateLatencyPercentilesFromNormalized(values []float64) (p50 int64, p95 int64) {
+// calculateLatencyPercentiles computes p50 and p95 from a slice of raw
+// latency values in milliseconds.
+func calculateLatencyPercentiles(values []int64) (p50 int64, p95 int64) {
 	if len(values) == 0 {
 		return 0, 0
 	}
 
-	sorted := make([]float64, len(values))
+	sorted := make([]int64, len(values))
 	copy(sorted, values)
-	sort.Float64s(sorted)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
 	p50Index := len(sorted) / 2
-	p50Norm := sorted[p50Index]
+	p50 = sorted[p50Index]
 
 	p95Index := int(float64(len(sorted)) * 0.95)
 	if p95Index >= len(sorted) {
 		p95Index = len(sorted) - 1
 	}
-	p95Norm := sorted[p95Index]
-
-	const maxLatencyMs = 10000.0
-	p50 = int64((1.0 - p50Norm) * maxLatencyMs)
-	p95 = int64((1.0 - p95Norm) * maxLatencyMs)
+	p95 = sorted[p95Index]
 
 	return p50, p95
 }

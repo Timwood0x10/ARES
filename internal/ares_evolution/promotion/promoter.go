@@ -59,11 +59,11 @@ func NewDefaultPromoter(criteria *PromotionCriteria) *DefaultPromoter {
 	}
 
 	return &DefaultPromoter{
-		criteria:       criteria,
-		strategies:     make(map[string]*StrategyInfo),
-		history:        make(map[string][]StrategyPromotionRecord),
-		champions:      make(map[string][]string),
-		previousScores: make(map[string]float64),
+		criteria:          criteria,
+		strategies:        make(map[string]*StrategyInfo),
+		history:           make(map[string][]StrategyPromotionRecord),
+		champions:         make(map[string][]string),
+		previousScores:    make(map[string]float64),
 		currentGeneration: 0,
 	}
 }
@@ -182,7 +182,7 @@ func (p *DefaultPromoter) evaluateChampion(
 	// Check if performance has degraded
 	if evidence.SampleCount >= int64(p.criteria.MinSampleCount) {
 		// Check for significant performance drop
-		if evidence.SuccessRate < (p.criteria.MinSuccessRate - p.criteria.DemotionThreshold) ||
+		if evidence.SuccessRate < (p.criteria.MinSuccessRate-p.criteria.DemotionThreshold) ||
 			evidence.ErrorRate > p.criteria.MaxErrorRate ||
 			evidence.LatencyP95 > p.criteria.MaxLatencyP95 {
 			return StrategyStateDemoted, fmt.Sprintf(
@@ -424,13 +424,13 @@ func (p *DefaultPromoter) transitionState(
 
 	// Record in history
 	record := StrategyPromotionRecord{
-		StrategyID:     info.StrategyID,
-		State:          newState,
-		PreviousState:  oldState,
-		Generation:     generation,
-		Evidence:       experience.Evidence{}, // Will be populated by caller if needed
-		Reason:         reason,
-		Timestamp:      time.Now(),
+		StrategyID:    info.StrategyID,
+		State:         newState,
+		PreviousState: oldState,
+		Generation:    generation,
+		Evidence:      experience.Evidence{}, // Will be populated by caller if needed
+		Reason:        reason,
+		Timestamp:     time.Now(),
 	}
 
 	p.history[info.StrategyID] = append(p.history[info.StrategyID], record)

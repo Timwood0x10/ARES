@@ -122,8 +122,8 @@ func TestNormalizeMissingFields(t *testing.T) {
 			expectedErr: "missing required field: timestamp",
 		},
 		{
-			name: "all fields missing",
-			raw:  RawExperience{},
+			name:        "all fields missing",
+			raw:         RawExperience{},
 			expectedErr: "missing required field: strategy_id",
 		},
 	}
@@ -165,10 +165,10 @@ func TestNormalizeOutliers(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name             string
-		raw              RawExperience
-		expectFiltered   bool
-		expectedReason   string
+		name           string
+		raw            RawExperience
+		expectFiltered bool
+		expectedReason string
 	}{
 		{
 			name: "latency exceeds threshold",
@@ -363,8 +363,8 @@ func TestNormalizeTypeConversion(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name     string
-		raw      RawExperience
+		name      string
+		raw       RawExperience
 		checkFunc func(NormalizedExperience) bool
 	}{
 		{
@@ -584,8 +584,8 @@ func TestNormalizeBatchDeduplication(t *testing.T) {
 			Score:      85.0,
 		},
 		{
-			StrategyID: "strategy-001", // Duplicate
-			TaskType:   "code_generation", // Duplicate
+			StrategyID: "strategy-001",            // Duplicate
+			TaskType:   "code_generation",         // Duplicate
 			Timestamp:  now.Add(30 * time.Second), // Within 1 minute window
 			Score:      90.0,
 		},

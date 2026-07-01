@@ -77,6 +77,11 @@ type SchedulerConfig struct {
 
 	// SampleThreshold is the minimum new samples to trigger (default 100).
 	SampleThreshold int `json:"sample_threshold"`
+
+	// IdleLoadThreshold is the maximum system load for idle detection.
+	// Systems with load above this threshold are not considered idle.
+	// Range: [0, 1]. Default: 0.5.
+	IdleLoadThreshold float64 `json:"idle_load_threshold"`
 }
 
 // DefaultSchedulerConfig returns sensible defaults for the scheduler.
@@ -89,6 +94,7 @@ func DefaultSchedulerConfig() SchedulerConfig {
 		MinIdleDuration:      10 * time.Minute,
 		MaxEvolutionDuration: 30 * time.Minute,
 		SampleThreshold:      100,
+		IdleLoadThreshold:    0.5,
 	}
 }
 
@@ -442,9 +448,13 @@ func (s *DefaultScheduler) IsIdle(ctx context.Context) bool {
 
 	// Check system load metric.
 	load := s.idleChecker.GetSystemLoad(ctx)
-	if load > 0.5 { // Threshold for "low load"
+	threshold := s.config.IdleLoadThreshold
+	if threshold <= 0 {
+		threshold = 0.5
+	}
+	if load > threshold {
 		slog.DebugContext(ctx, "[Scheduler] System load too high",
-			"load", load)
+			"load", load, "threshold", threshold)
 		return false
 	}
 
@@ -538,224 +548,6 @@ func (s *DefaultScheduler) SetIdleChecker(checker IdleChecker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.idleChecker = checker
-}
-
-// SimpleIdleChecker is a mock implementation of IdleChecker for testing.
-// It returns configurable idle status values.
-type SimpleIdleChecker struct {
-	mu          sync.Mutex
-	systemIdle  bool
-	queueLength int
-	systemLoad  float64
-}
-
-// NewSimpleIdleChecker creates a new SimpleIdleChecker with default values.
-//
-// Returns:
-//
-//	*SimpleIdleChecker - the checker instance with defaults (idle=true, queue=0, load=0).
-func NewSimpleIdleChecker() *SimpleIdleChecker {
-	return &SimpleIdleChecker{
-		systemIdle:  true,
-		queueLength: 0,
-		systemLoad:  0.0,
-	}
-}
-
-// IsSystemIdle returns the configured idle status.
-//
-// Args:
-//
-//	ctx - operation context.
-//
-// Returns:
-//
-//	bool - configured system idle status.
-func (c *SimpleIdleChecker) IsSystemIdle(ctx context.Context) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.systemIdle
-}
-
-// GetQueueLength returns the configured queue length.
-//
-// Args:
-//
-//	ctx - operation context.
-//
-// Returns:
-//
-//	int - configured queue length.
-func (c *SimpleIdleChecker) GetQueueLength(ctx context.Context) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.queueLength
-}
-
-// GetSystemLoad returns the configured system load.
-//
-// Args:
-//
-//	ctx - operation context.
-//
-// Returns:
-//
-//	float64 - configured system load (0-1 scale).
-func (c *SimpleIdleChecker) GetSystemLoad(ctx context.Context) float64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.systemLoad
-}
-
-// SetIdleStatus allows configuring the idle status for testing.
-//
-// Args:
-//
-//	idle - true if system should be considered idle.
-func (c *SimpleIdleChecker) SetIdleStatus(idle bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.systemIdle = idle
-}
-
-// SetQueueLength allows configuring the queue length for testing.
-//
-// Args:
-//
-//	length - the queue length to return.
-func (c *SimpleIdleChecker) SetQueueLength(length int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.queueLength = length
-}
-
-// SetSystemLoad allows configuring the system load for testing.
-//
-// Args:
-//
-//	load - the system load to return (0-1 scale).
-func (c *SimpleIdleChecker) SetSystemLoad(load float64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.systemLoad = load
-}
-
-// MockEvolutionRunner is a mock implementation of EvolutionRunner for testing.
-type MockEvolutionRunner struct {
-	mu          sync.Mutex
-	runCount    int
-	runErr      error
-	runDuration time.Duration
-}
-
-// NewMockEvolutionRunner creates a new MockEvolutionRunner.
-//
-// Returns:
-//
-//	*MockEvolutionRunner - the runner instance.
-func NewMockEvolutionRunner() *MockEvolutionRunner {
-	return &MockEvolutionRunner{}
-}
-
-// RunEvolution simulates an evolution run.
-//
-// Args:
-//
-//	ctx - operation context.
-//
-// Returns:
-//
-//	error - configured error or nil.
-func (r *MockEvolutionRunner) RunEvolution(ctx context.Context) error {
-	r.mu.Lock()
-	runErr := r.runErr
-	runDuration := r.runDuration
-	r.runCount++
-	r.mu.Unlock()
-
-	if runDuration > 0 {
-		select {
-		case <-time.After(runDuration):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	return runErr
-}
-
-// SetRunError allows configuring the error returned by RunEvolution.
-//
-// Args:
-//
-//	err - the error to return.
-func (r *MockEvolutionRunner) SetRunError(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.runErr = err
-}
-
-// SetRunDuration allows configuring the duration of RunEvolution.
-//
-// Args:
-//
-//	duration - how long RunEvolution should take.
-func (r *MockEvolutionRunner) SetRunDuration(duration time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.runDuration = duration
-}
-
-// RunCount returns the number of times RunEvolution was called.
-//
-// Returns:
-//
-//	int - the call count.
-func (r *MockEvolutionRunner) RunCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.runCount
-}
-
-// MockSampleCounter is a mock implementation of SampleCounter for testing.
-type MockSampleCounter struct {
-	mu    sync.Mutex
-	count int
-}
-
-// NewMockSampleCounter creates a new MockSampleCounter.
-//
-// Returns:
-//
-//	*MockSampleCounter - the counter instance.
-func NewMockSampleCounter() *MockSampleCounter {
-	return &MockSampleCounter{}
-}
-
-// GetNewSampleCount returns the configured sample count.
-//
-// Args:
-//
-//	ctx - operation context.
-//
-// Returns:
-//
-//	int - configured sample count.
-func (c *MockSampleCounter) GetNewSampleCount(ctx context.Context) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.count
-}
-
-// SetSampleCount allows configuring the sample count for testing.
-//
-// Args:
-//
-//	count - the sample count to return.
-func (c *MockSampleCounter) SetSampleCount(count int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.count = count
 }
 
 // WiredSystemRunner adapts WiredEvolutionSystem to EvolutionRunner interface.

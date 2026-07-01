@@ -33,6 +33,9 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 	if cfg.SampleThreshold != 100 {
 		t.Errorf("expected SampleThreshold 100, got %d", cfg.SampleThreshold)
 	}
+	if cfg.IdleLoadThreshold != 0.5 {
+		t.Errorf("expected IdleLoadThreshold 0.5, got %f", cfg.IdleLoadThreshold)
+	}
 }
 
 // TestNewDefaultScheduler tests the scheduler constructor.
@@ -832,6 +835,143 @@ func TestIdlePeriodReset(t *testing.T) {
 	if !idleStart.IsZero() {
 		t.Error("expected idleStartTime to be reset after evolution")
 	}
+}
+
+// SimpleIdleChecker is a mock implementation of IdleChecker for testing.
+type SimpleIdleChecker struct {
+	mu          sync.Mutex
+	systemIdle  bool
+	queueLength int
+	systemLoad  float64
+}
+
+// NewSimpleIdleChecker creates a new SimpleIdleChecker with default values.
+func NewSimpleIdleChecker() *SimpleIdleChecker {
+	return &SimpleIdleChecker{
+		systemIdle:  true,
+		queueLength: 0,
+		systemLoad:  0.0,
+	}
+}
+
+// IsSystemIdle returns the configured idle status.
+func (c *SimpleIdleChecker) IsSystemIdle(ctx context.Context) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.systemIdle
+}
+
+// GetQueueLength returns the configured queue length.
+func (c *SimpleIdleChecker) GetQueueLength(ctx context.Context) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.queueLength
+}
+
+// GetSystemLoad returns the configured system load.
+func (c *SimpleIdleChecker) GetSystemLoad(ctx context.Context) float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.systemLoad
+}
+
+// SetIdleStatus allows configuring the idle status for testing.
+func (c *SimpleIdleChecker) SetIdleStatus(idle bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.systemIdle = idle
+}
+
+// SetQueueLength allows configuring the queue length for testing.
+func (c *SimpleIdleChecker) SetQueueLength(length int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queueLength = length
+}
+
+// SetSystemLoad allows configuring the system load for testing.
+func (c *SimpleIdleChecker) SetSystemLoad(load float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.systemLoad = load
+}
+
+// MockEvolutionRunner is a mock implementation of EvolutionRunner for testing.
+type MockEvolutionRunner struct {
+	mu          sync.Mutex
+	runCount    int
+	runErr      error
+	runDuration time.Duration
+}
+
+// NewMockEvolutionRunner creates a new MockEvolutionRunner.
+func NewMockEvolutionRunner() *MockEvolutionRunner {
+	return &MockEvolutionRunner{}
+}
+
+// RunEvolution simulates an evolution run.
+func (r *MockEvolutionRunner) RunEvolution(ctx context.Context) error {
+	r.mu.Lock()
+	runErr := r.runErr
+	runDuration := r.runDuration
+	r.runCount++
+	r.mu.Unlock()
+
+	if runDuration > 0 {
+		select {
+		case <-time.After(runDuration):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return runErr
+}
+
+// SetRunError allows configuring the error returned by RunEvolution.
+func (r *MockEvolutionRunner) SetRunError(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runErr = err
+}
+
+// SetRunDuration allows configuring the duration of RunEvolution.
+func (r *MockEvolutionRunner) SetRunDuration(duration time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runDuration = duration
+}
+
+// RunCount returns the number of times RunEvolution was called.
+func (r *MockEvolutionRunner) RunCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.runCount
+}
+
+// MockSampleCounter is a mock implementation of SampleCounter for testing.
+type MockSampleCounter struct {
+	mu    sync.Mutex
+	count int
+}
+
+// NewMockSampleCounter creates a new MockSampleCounter.
+func NewMockSampleCounter() *MockSampleCounter {
+	return &MockSampleCounter{}
+}
+
+// GetNewSampleCount returns the configured sample count.
+func (c *MockSampleCounter) GetNewSampleCount(ctx context.Context) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.count
+}
+
+// SetSampleCount allows configuring the sample count for testing.
+func (c *MockSampleCounter) SetSampleCount(count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.count = count
 }
 
 // mockWiredSystem is a mock implementation for testing WiredSystemRunner.

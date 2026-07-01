@@ -62,6 +62,10 @@ type NormalizedExperience struct {
 	// MutationType describes the type of mutation used.
 	MutationType string `json:"mutation_type,omitempty"`
 
+	// ToolChain is a hash string representing the sequence of tools used.
+	// This enables grouping experiences by tool usage patterns.
+	ToolChain string `json:"tool_chain,omitempty"`
+
 	// IsFiltered indicates whether this experience was filtered out as noise.
 	IsFiltered bool `json:"is_filtered,omitempty"`
 

@@ -1,6 +1,7 @@
-// Package experience provides evidence aggregation for the GA/Memory/Tool fusion system.
-// This file implements EvidenceAggregator that aggregates NormalizedExecutionExperience
-// into multi-dimensional Evidence for strategy evaluation.
+// Package experience provides evidence aggregation for the GA/Memory/Tool
+// fusion system. This file implements EvidenceAggregator that aggregates
+// NormalizedExperience values from ExperienceStore into multi-dimensional
+// Evidence for strategy evaluation.
 package experience
 
 import (
@@ -10,49 +11,8 @@ import (
 	"time"
 )
 
-// ExecutionExperienceStore defines the interface for storing and retrieving
-// normalized execution experiences. Implementations must be thread-safe.
-type ExecutionExperienceStore interface {
-	// Query retrieves execution experiences filtered by strategy_id and time range.
-	// Returns experiences sorted by Timestamp in descending order.
-	//
-	// Args:
-	//   ctx - timeout and cancellation context.
-	//   strategyID - the strategy identifier to filter by (empty for all).
-	//   startTime - the start of the time range (inclusive).
-	//   endTime - the end of the time range (inclusive).
-	//
-	// Returns:
-	//   []NormalizedExecutionExperience - matching experiences, may be empty.
-	//   error - storage error if query fails.
-	Query(ctx context.Context, strategyID string, startTime, endTime time.Time) ([]NormalizedExecutionExperience, error)
-
-	// QueryByTaskType retrieves execution experiences for a specific task type.
-	// Returns experiences sorted by Timestamp in descending order.
-	//
-	// Args:
-	//   ctx - timeout and cancellation context.
-	//   taskType - the task type to filter by.
-	//   limit - maximum number of experiences to return (0 for no limit).
-	//
-	// Returns:
-	//   []NormalizedExecutionExperience - matching experiences, may be empty.
-	//   error - storage error if query fails.
-	QueryByTaskType(ctx context.Context, taskType string, limit int) ([]NormalizedExecutionExperience, error)
-
-	// Append adds a normalized execution experience to the store.
-	//
-	// Args:
-	//   ctx - timeout and cancellation context.
-	//   exp - the experience to store.
-	//
-	// Returns:
-	//   error - validation or storage error.
-	Append(ctx context.Context, exp NormalizedExecutionExperience) error
-}
-
-// EvidenceAggregator defines the interface for aggregating execution experiences
-// into multi-dimensional Evidence for strategy evaluation.
+// EvidenceAggregator defines the interface for aggregating normalized
+// experiences into multi-dimensional Evidence for strategy evaluation.
 type EvidenceAggregator interface {
 	// Aggregate aggregates all experiences for a specific strategy.
 	// Returns Evidence containing statistical summaries.
@@ -127,20 +87,20 @@ type AggregatorConfig struct {
 // DefaultAggregatorConfig returns an AggregatorConfig with sensible defaults.
 func DefaultAggregatorConfig() *AggregatorConfig {
 	return &AggregatorConfig{
-		MinSampleCount:   10,
-		MaxSampleCount:   1000,
-		CacheTTLSeconds:  300,
-		EnableCache:      true,
+		MinSampleCount:  10,
+		MaxSampleCount:  1000,
+		CacheTTLSeconds: 300,
+		EnableCache:     true,
 	}
 }
 
 // DefaultEvidenceAggregator implements EvidenceAggregator with configurable
 // aggregation parameters and thread-safe caching.
 type DefaultEvidenceAggregator struct {
-	mu    sync.RWMutex
-	store ExecutionExperienceStore
+	store  ExperienceStore
 	config *AggregatorConfig
-	cache *evidenceCache
+	cache  *evidenceCache
+	mu     sync.RWMutex
 }
 
 // evidenceCache holds cached evidence with expiration tracking.
@@ -148,24 +108,26 @@ type evidenceCache struct {
 	mu         sync.RWMutex
 	byStrategy map[string]*cachedEvidence
 	byTaskType map[string]*cachedEvidence
-	byWindow   map[string]*cachedEvidence // key: strategyID|window
+	byWindow   map[string]*cachedEvidence
 }
 
 // cachedEvidence holds an Evidence with its cache timestamp.
 type cachedEvidence struct {
-	evidence   Evidence
- cachedAt   time.Time
+	evidence Evidence
+	cachedAt time.Time
 }
 
 // NewDefaultEvidenceAggregator creates a new DefaultEvidenceAggregator.
 //
 // Args:
-//   store - the execution experience store to read from.
-//   config - aggregator configuration (nil uses defaults).
+//
+//	store - the experience store to read from (must not be nil).
+//	config - aggregator configuration (nil uses defaults).
 //
 // Returns:
-//   *DefaultEvidenceAggregator - the initialized aggregator.
-func NewDefaultEvidenceAggregator(store ExecutionExperienceStore, config *AggregatorConfig) *DefaultEvidenceAggregator {
+//
+//	*DefaultEvidenceAggregator - the initialized aggregator.
+func NewDefaultEvidenceAggregator(store ExperienceStore, config *AggregatorConfig) *DefaultEvidenceAggregator {
 	if config == nil {
 		config = DefaultAggregatorConfig()
 	}
@@ -190,12 +152,14 @@ func NewDefaultEvidenceAggregator(store ExecutionExperienceStore, config *Aggreg
 // Uses cached evidence if available and not stale.
 //
 // Args:
-//   ctx - timeout and cancellation context.
-//   strategyID - the strategy identifier to aggregate.
+//
+//	ctx - timeout and cancellation context.
+//	strategyID - the strategy identifier to aggregate.
 //
 // Returns:
-//   Evidence - aggregated statistics, empty if no experiences found.
-//   error - context cancellation or storage error.
+//
+//	Evidence - aggregated statistics, empty if no experiences found.
+//	error - context cancellation or storage error.
 func (a *DefaultEvidenceAggregator) Aggregate(ctx context.Context, strategyID string) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
@@ -212,8 +176,8 @@ func (a *DefaultEvidenceAggregator) Aggregate(ctx context.Context, strategyID st
 		}
 	}
 
-	// Query all experiences for the strategy.
-	startTime := time.Time{} // Beginning of time.
+	// Query all experiences for the strategy from ExperienceStore.
+	startTime := time.Time{}
 	endTime := time.Now()
 
 	experiences, err := a.store.Query(ctx, strategyID, startTime, endTime)
@@ -221,18 +185,14 @@ func (a *DefaultEvidenceAggregator) Aggregate(ctx context.Context, strategyID st
 		return Evidence{}, err
 	}
 
-	// Handle empty store gracefully.
 	if len(experiences) == 0 {
 		return Evidence{StrategyID: strategyID}, nil
 	}
 
-	// Aggregate using MergeEvidence.
-	evidence := MergeEvidence(experiences)
+	evidence := AggregateEvidence(experiences)
 
-	// Calculate confidence based on sample count.
 	evidence.Confidence = a.calculateConfidence(evidence.SampleCount)
 
-	// Update cache.
 	if a.config.EnableCache && a.cache != nil {
 		a.setCachedByStrategy(strategyID, evidence)
 	}
@@ -244,12 +204,14 @@ func (a *DefaultEvidenceAggregator) Aggregate(ctx context.Context, strategyID st
 // Uses cached evidence if available and not stale.
 //
 // Args:
-//   ctx - timeout and cancellation context.
-//   taskType - the task type to aggregate.
+//
+//	ctx - timeout and cancellation context.
+//	taskType - the task type to aggregate.
 //
 // Returns:
-//   Evidence - aggregated statistics, empty if no experiences found.
-//   error - context cancellation or storage error.
+//
+//	Evidence - aggregated statistics, empty if no experiences found.
+//	error - context cancellation or storage error.
 func (a *DefaultEvidenceAggregator) AggregateByTaskType(ctx context.Context, taskType string) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
@@ -266,24 +228,20 @@ func (a *DefaultEvidenceAggregator) AggregateByTaskType(ctx context.Context, tas
 		}
 	}
 
-	// Query experiences for the task type.
+	// Query experiences for the task type from ExperienceStore.
 	experiences, err := a.store.QueryByTaskType(ctx, taskType, 0)
 	if err != nil {
 		return Evidence{}, err
 	}
 
-	// Handle empty store gracefully.
 	if len(experiences) == 0 {
 		return Evidence{TaskType: taskType}, nil
 	}
 
-	// Aggregate using MergeEvidence.
-	evidence := MergeEvidence(experiences)
+	evidence := AggregateEvidence(experiences)
 
-	// Calculate confidence based on sample count.
 	evidence.Confidence = a.calculateConfidence(evidence.SampleCount)
 
-	// Update cache.
 	if a.config.EnableCache && a.cache != nil {
 		a.setCachedByTaskType(taskType, evidence)
 	}
@@ -295,13 +253,15 @@ func (a *DefaultEvidenceAggregator) AggregateByTaskType(ctx context.Context, tas
 // Supported window values: "hourly", "daily", "weekly".
 //
 // Args:
-//   ctx - timeout and cancellation context.
-//   strategyID - the strategy identifier to aggregate.
-//   window - the time window type ("hourly", "daily", "weekly").
+//
+//	ctx - timeout and cancellation context.
+//	strategyID - the strategy identifier to aggregate.
+//	window - the time window type ("hourly", "daily", "weekly").
 //
 // Returns:
-//   Evidence - aggregated statistics for the current time window.
-//   error - context cancellation, invalid window, or storage error.
+//
+//	Evidence - aggregated statistics for the current time window.
+//	error - context cancellation, invalid window, or storage error.
 func (a *DefaultEvidenceAggregator) AggregateByTimeWindow(ctx context.Context, strategyID, window string) (Evidence, error) {
 	if err := ctx.Err(); err != nil {
 		return Evidence{}, err
@@ -316,24 +276,21 @@ func (a *DefaultEvidenceAggregator) AggregateByTimeWindow(ctx context.Context, s
 		return Evidence{}, err
 	}
 
-	// Check cache first with window-specific key.
 	cacheKey := strategyID + "|" + window
 	if a.config.EnableCache && a.cache != nil {
 		if cached, ok := a.getCachedByWindow(cacheKey); ok && !a.isStale(cached) {
-			// Check if cached window still matches current window.
 			if a.windowMatches(cached.evidence.LastUpdated, startTime, endTime) {
 				return cached.evidence, nil
 			}
 		}
 	}
 
-	// Query experiences within the time window.
+	// Query experiences within the time window from ExperienceStore.
 	experiences, err := a.store.Query(ctx, strategyID, startTime, endTime)
 	if err != nil {
 		return Evidence{}, err
 	}
 
-	// Handle empty store gracefully.
 	if len(experiences) == 0 {
 		return Evidence{
 			StrategyID:  strategyID,
@@ -341,13 +298,10 @@ func (a *DefaultEvidenceAggregator) AggregateByTimeWindow(ctx context.Context, s
 		}, nil
 	}
 
-	// Aggregate using MergeEvidence.
-	evidence := MergeEvidence(experiences)
+	evidence := AggregateEvidence(experiences)
 
-	// Calculate confidence based on sample count.
 	evidence.Confidence = a.calculateConfidence(evidence.SampleCount)
 
-	// Update cache.
 	if a.config.EnableCache && a.cache != nil {
 		a.setCachedByWindow(cacheKey, evidence)
 	}
@@ -359,10 +313,12 @@ func (a *DefaultEvidenceAggregator) AggregateByTimeWindow(ctx context.Context, s
 // Clears stale cache entries and forces recomputation.
 //
 // Args:
-//   ctx - timeout and cancellation context.
+//
+//	ctx - timeout and cancellation context.
 //
 // Returns:
-//   error - context cancellation or storage error.
+//
+//	error - context cancellation or storage error.
 func (a *DefaultEvidenceAggregator) RefreshAll(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -372,7 +328,6 @@ func (a *DefaultEvidenceAggregator) RefreshAll(ctx context.Context) error {
 		return nil
 	}
 
-	// Clear all cache entries.
 	a.cache.mu.Lock()
 	defer a.cache.mu.Unlock()
 
@@ -405,14 +360,12 @@ func (a *DefaultEvidenceAggregator) calculateConfidence(sampleCount int64) float
 	}
 
 	if sampleCount < min {
-		// Scale down confidence for small sample sizes.
 		return float64(sampleCount) / float64(min) * 0.5
 	}
 
-	// Linear interpolation between min and max.
 	rangeSize := max - min
 	position := sampleCount - min
-	confidence := float64(position) / float64(rangeSize) * 0.5 + 0.5
+	confidence := float64(position)/float64(rangeSize)*0.5 + 0.5
 
 	return confidence
 }
@@ -429,10 +382,9 @@ func (a *DefaultEvidenceAggregator) getTimeWindow(window string) (startTime, end
 		startTime = now.Truncate(24 * time.Hour)
 		endTime = startTime.Add(24 * time.Hour)
 	case "weekly":
-		// Calculate start of current week (Monday).
 		dayOffset := int(now.Weekday() - time.Monday)
 		if dayOffset < 0 {
-		 dayOffset += 7
+			dayOffset += 7
 		}
 		startTime = now.AddDate(0, 0, -dayOffset).Truncate(24 * time.Hour)
 		endTime = startTime.AddDate(0, 0, 7)
@@ -459,7 +411,7 @@ func (a *DefaultEvidenceAggregator) getCachedByStrategy(strategyID string) (*cac
 	a.cache.mu.RLock()
 	defer a.cache.mu.RUnlock()
 
- cached, ok := a.cache.byStrategy[strategyID]
+	cached, ok := a.cache.byStrategy[strategyID]
 	return cached, ok
 }
 
@@ -469,8 +421,8 @@ func (a *DefaultEvidenceAggregator) setCachedByStrategy(strategyID string, evide
 	defer a.cache.mu.Unlock()
 
 	a.cache.byStrategy[strategyID] = &cachedEvidence{
-		evidence:   evidence,
-	 cachedAt:   time.Now(),
+		evidence: evidence,
+		cachedAt: time.Now(),
 	}
 }
 
@@ -479,7 +431,7 @@ func (a *DefaultEvidenceAggregator) getCachedByTaskType(taskType string) (*cache
 	a.cache.mu.RLock()
 	defer a.cache.mu.RUnlock()
 
- cached, ok := a.cache.byTaskType[taskType]
+	cached, ok := a.cache.byTaskType[taskType]
 	return cached, ok
 }
 
@@ -489,8 +441,8 @@ func (a *DefaultEvidenceAggregator) setCachedByTaskType(taskType string, evidenc
 	defer a.cache.mu.Unlock()
 
 	a.cache.byTaskType[taskType] = &cachedEvidence{
-		evidence:   evidence,
-	 cachedAt:   time.Now(),
+		evidence: evidence,
+		cachedAt: time.Now(),
 	}
 }
 
@@ -499,7 +451,7 @@ func (a *DefaultEvidenceAggregator) getCachedByWindow(key string) (*cachedEviden
 	a.cache.mu.RLock()
 	defer a.cache.mu.RUnlock()
 
- cached, ok := a.cache.byWindow[key]
+	cached, ok := a.cache.byWindow[key]
 	return cached, ok
 }
 
@@ -509,7 +461,7 @@ func (a *DefaultEvidenceAggregator) setCachedByWindow(key string, evidence Evide
 	defer a.cache.mu.Unlock()
 
 	a.cache.byWindow[key] = &cachedEvidence{
-		evidence:   evidence,
-	 cachedAt:   time.Now(),
+		evidence: evidence,
+		cachedAt: time.Now(),
 	}
 }

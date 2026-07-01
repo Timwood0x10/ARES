@@ -40,15 +40,15 @@ type cacheItem struct {
 // Uses LRU eviction via container/list when at capacity.
 // Zero-value is NOT usable; use NewScoreCache to create an instance.
 type ScoreCache struct {
-	mu           sync.RWMutex
-	entries      map[uint64]*list.Element // hash -> list element
-	lru          list.List                // LRU order (front = most recently used)
-	maxSize      int                      // maximum cache entries; 0 = unlimited
-	maxCacheAge  int                      // max generations before stale; 0 = unlimited
-	generation   uint64                   // current generation counter
-	hits         int64                    // number of cache hits
-	misses       int64                    // number of cache misses
-	evictions    int64                    // number of entries evicted due to capacity
+	mu          sync.RWMutex
+	entries     map[uint64]*list.Element // hash -> list element
+	lru         list.List                // LRU order (front = most recently used)
+	maxSize     int                      // maximum cache entries; 0 = unlimited
+	maxCacheAge int                      // max generations before stale; 0 = unlimited
+	generation  uint64                   // current generation counter
+	hits        int64                    // number of cache hits
+	misses      int64                    // number of cache misses
+	evictions   int64                    // number of entries evicted due to capacity
 }
 
 // NewScoreCache creates a new score cache.
