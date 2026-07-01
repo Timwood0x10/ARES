@@ -136,152 +136,41 @@ Goal: convert repeated experience into durable knowledge, report it, and apply i
 
 ## Implementation Summary (2026-07-01)
 
-**Completed phases**: Phase 1, Phase 2, Phase 3, Phase 4 (distillation core)
+**Completed phases**: Phase 1, Phase 2, Phase 3, Phase 4 (distillation core), Phase 5 ✅
 
 **Key achievements**:
 1. **Experience Pipeline**: Execution data now flows through Normalizer → ExperienceStore → EvidenceAggregator
 2. **Evidence-driven Scoring**: MemoryAwareScorer consumes multi-dimensional Evidence (success_rate, latency, error_rate) instead of single-value adjustments
 3. **Autonomous Evolution**: Scheduler triggers evolution during idle windows, PromotionLogic manages strategy lifecycle (shadow → champion → demoted)
 4. **Distillation Pipeline**: 8-stage pipeline compresses repeated experiences into knowledge with conflict resolution and cap enforcement
-5. **Thread-safe**: All implementations use sync.RWMutex, pass race detection tests
-6. **Plugin-based**: Storage interfaces abstract database implementation, IdleChecker plugin enables custom idle detection
+5. **GA Decision Quality Hardening**: Evidence binding, lineage-aware selection, prompt diversity guard, per-lineage elites, promotion improvement gate, meta-evolution control loop — all 11 tasklist items implemented
+6. **Thread-safe**: All implementations use sync.RWMutex, pass race detection tests
+7. **Plugin-based**: Storage interfaces abstract database implementation, IdleChecker plugin enables custom idle detection
 
 **Remaining work**: Phase 4 (Long-term Memory) - human-readable reports generation and active knowledge push/recommendation
 
-## Phase 5: GA Decision Quality Hardening Tasklist
+## Phase 5: GA Decision Quality Hardening ✅ COMPLETED (2026-07-01)
 
-Current status: the GA already collects rich evolution signals, but the decision layer is still mostly fixed-threshold and single-policy driven. The next work should turn the existing observability into better choices: when to preserve, when to explore, which selection strategy to use, and when a winner is actually worth promoting.
+Current status: all 11 tasklist items implemented.
 
-### First Step: Fix Evidence Binding Before Tuning GA
+### Evidence Binding
 
-Do this first because promotion and scoring decisions are only as good as the evidence they read.
+- `mutation.Strategy.EvidenceKey` field + `ComputeEvidenceKey()` method derives a stable key from `PromptTemplate` + `float64` params (formatted at `%.2f`).
+- `storeEvidenceAggregator` in `scenarios.go` uses `strategyEvidenceKeys` + `phenotypeFallback` maps to resolve GA UUIDs to profile IDs with real evidence data.
+- `AfterGeneration` and `AfterRun` hooks call `RegisterStrategyKey(best.ID, best.ComputeEvidenceKey())`.
+- `AggregateEvidenceCrossTask()` helper suppresses mixed-task warnings for cross-task aggregation.
+- Generation log messages use `system.Population.Generation` (absolute) with `callback_gen` (loop counter). No more `generation=0` in post-generation logs.
 
-- [ ] Add a phenotype/evidence key for strategies.
-  - Current issue: `examples/autonomous-evolution/scenarios.go` stores real evidence under profile IDs like `aggressive`, `precise`, and `balanced`, but GA children have UUID strategy IDs. In `run.log`, the real-data GA winner often reports `sample_count=0` because `storeEvidenceAggregator.Aggregate()` queries by the UUID.
-  - Code to change:
-    - `internal/ares_evolution/mutation/strategy.go`: add or derive a stable evidence key from behaviorally relevant fields such as prompt template plus normalized params.
-    - `examples/autonomous-evolution/scenarios.go`: when generating seeded profiles, attach the same evidence key to profile strategies and GA candidates.
-    - `storeEvidenceAggregator.Aggregate()` in `examples/autonomous-evolution/scenarios.go`: try exact `strategyID` first, then fallback to phenotype/evidence key.
-  - Example change:
-    - Show a table column `Evidence Key`.
-    - In logs, `evolution run complete` should show non-zero `sample_count` for a GA winner when its phenotype matches a known real-data profile.
-  - Verification:
-    - Run `go test ./internal/ares_evolution/...`.
-    - Run `go run ./examples/autonomous-evolution` and confirm Scenario 8 no longer promotes a UUID with empty evidence.
+### Decision Quality
 
-### Tasklist
-
-- [ ] Reduce noisy mixed-task aggregation.
-  - Current issue: `runRealDataEvolution()` calls `exp.AggregateEvidence(exps)` on all records for a strategy, so mixed task types emit repeated warnings.
-  - Code to change:
-    - `examples/autonomous-evolution/scenarios.go`: for display, either group evidence by `TaskType` or call an aggregate-all helper that intentionally suppresses mixed-task warnings.
-    - `internal/ares_evolution/experience/types.go`: keep `AggregateEvidence()` strict for homogeneous batches; add a clearly named helper if cross-task aggregation is intended.
-  - Example change:
-    - Replace one strategy-level table with either:
-      - strategy summary plus `task_types=N`, or
-      - a `Strategy / TaskType / Success / Samples / Confidence` table.
-  - Verification:
-    - Scenario 8 should not flood `run.log` with `AggregateEvidence: mixed task types in batch`.
-
-- [ ] Fix absolute generation numbers in wired mode logs.
-  - Current issue: `internal/ares_evolution/service/service.go` logs `generation=0` from the `AfterGeneration` callback even while the population is actually advancing.
-  - Code to change:
-    - In `createWiredSystem()`, use `sys.Population.Generation` when logging, or pass an absolute generation from `Service.Evolve()`.
-    - Keep the callback-local `gen` only if it is renamed to `callback_generation`.
-  - Example change:
-    - `post-generation promotion evaluation generation=7` should match the surrounding `evolve_on_idle completed generation=7`.
-  - Verification:
-    - Run Scenario 7 and Scenario 8; grep the output for `generation=0`. It should not appear for post-generation logs after generation 1 starts.
-
-- [ ] Make promotion require improvement, not just safety.
-  - Current issue: a strategy with stable score `62.50` can stay champion forever if success rate and confidence pass thresholds.
-  - Code to change:
-    - `internal/ares_evolution/promotion/types.go`: extend evidence or promotion context with `BaselineScore`, `CurrentScore`, `ScoreDelta`, or `RollingScoreDelta`.
-    - `internal/ares_evolution/promotion/promoter.go`: add minimum absolute improvement and/or rolling improvement checks for champion promotion.
-    - `internal/ares_evolution/service/service.go`: pass score delta from `best.Score` versus baseline or previous champion.
-  - Example change:
-    - Promotion reason should say `blocked: score_delta below threshold` when success is high but best score is flat.
-  - Verification:
-    - Add tests where `success_rate=0.8` and `confidence=0.75` pass, but `score_delta=0`; expected state should be `shadow` or unchanged, not `champion`.
-
-- [ ] Normalize lineage improvement by noise.
-  - Current issue: lineage improvement currently treats `score > parent_score` as a win. That overstates progress when scorer noise or sampling variance exists.
-  - Code to change:
-    - `internal/ares_evolution/service/service.go:collectLineages()` or the genealogy recorder conversion path: include `ParentScore`, `ChildScore`, `ScoreDelta`, and an `ImprovementSignificant` flag.
-    - Add a rolling mean or epsilon threshold. Start simple: `delta >= MinLineageImprovement`, then later replace with rolling-window significance.
-  - Example change:
-    - Evolution report should distinguish `raw_improvements` from `significant_improvements`.
-  - Verification:
-    - Add unit tests for tiny positive deltas that should not count as meaningful improvement.
-
-- [ ] Split diversity recovery responsibilities.
-  - Current issue: `adjustMutationRateLocked()` changes mutation pressure, while `injectFreshMutantsLocked()` replaces weak individuals. Both respond to diversity collapse, so it is hard to tell which mechanism helped.
-  - Code to change:
-    - `internal/ares_evolution/genome/adaptive.go`: keep mutation-rate control focused on gradual pressure changes.
-    - `internal/ares_evolution/genome/population_guard.go`: make injection a separate recovery action with an explicit reason and cooldown.
-    - Add a small `RecoveryAction` record to generation history: `mutation_rate_boost`, `fresh_injection`, `stagnation_reset`.
-  - Example change:
-    - Report should show `Recovery Actions: mutation_rate_boost=3, fresh_injection=1, stagnation_reset=1`.
-  - Verification:
-    - Scenario reports should let us see whether Gen 7 improved after mutation-rate change, injection, or both.
-
-- [ ] Add lineage-aware selection for wired mode.
-  - Current issue: wired mode uses tournament selection, which increases selection pressure and can collapse lineages. If wired mode is meant to preserve lineage information, selection should protect lineage diversity too.
-  - Code to change:
-    - `internal/ares_evolution/genome/selection.go`: add a lineage-aware selector or a selector wrapper that penalizes overrepresented parent lineages.
-    - `internal/ares_evolution/genome/population.go`: add `WithLineageAwareSelection()` or allow `SelectionStrategy = "lineage_rank"`.
-    - Wired config builder in the evolution service/example: use lineage-aware rank selection by default for wired runs.
-  - Example change:
-    - Scenario 7 should show lower `Top Lineage Share` without lowering best score too much.
-  - Verification:
-    - Add a test with one dominant lineage and several weaker lineages; the selector should still sample from non-dominant lineages.
-
-- [ ] Add a prompt diversity guard for categorical collapse.
-  - Current issue: `categorical_diversity=0` means every individual has converged to the same prompt template. Lineage-aware selection can preserve numeric and ancestry diversity, but it does not directly keep alternative prompt templates alive.
-  - Code to change:
-    - `internal/ares_evolution/genome/population_guard.go`: add `preservePromptDiversityLocked()` or fold this into elite preservation with a clear guard name.
-    - `internal/ares_evolution/genome/population.go`: add config such as `PromptDiversityGuardEnabled`, `MinPromptTemplates`, and `PromptDiversityScoreFloor`.
-    - `internal/ares_evolution/genome/diversity.go` or the existing diversity report path: expose prompt-template counts so the report can explain which template collapsed.
-  - Behavior:
-    - If all selected survivors use one prompt template and the previous/current population contains alternatives, force-retain at least one different prompt-template individual as an exploration seed.
-    - Apply a score floor or max-retention age so a consistently bad prompt does not live forever just because it is different.
-    - Mark retained seeds in lineage/report data as `prompt_diversity_seed`.
-  - Example change:
-    - Scenario report should show `Prompt Templates: helpful=19, precise=1 (guard retained precise as exploration seed)` instead of `categorical_diversity=0` with no explanation.
-  - Verification:
-    - Add a deterministic test where the top survivors all use `helpful`, one low-score individual uses `precise`, and the guard keeps one `precise` seed.
-    - Add a second test where the alternative prompt remains bad for N generations and is allowed to expire.
-
-- [ ] Revisit elite preservation granularity.
-  - Current issue: global elite count protects the top 10%, but in wired mode this can effectively discard many independent threads each generation.
-  - Code to change:
-    - Add a per-lineage or per-thread elite policy in `internal/ares_evolution/genome/population.go`.
-    - Preserve top-1 per active lineage before filling remaining elite slots globally.
-  - Example change:
-    - Report should show `Per-lineage elites preserved: N`.
-  - Verification:
-    - Compare lineage survival across 15 generations before/after; unique lineages should not collapse early.
-
-- [ ] Exercise tiered scoring fallback paths.
-  - Current issue: cache hit rate is so high that heuristic fallback is barely exercised in the demo.
-  - Code to change:
-    - Add a demo/test mode that disables cache for a percentage of candidates.
-    - Report `cache_hits`, `heuristic_calls`, `llm_calls`, and `fallbacks` per generation.
-  - Example change:
-    - Scenario output should include at least one generation with non-zero `heuristic_calls`.
-  - Verification:
-    - Unit test tier routing with cache hit, cache miss, heuristic success, LLM success, and fallback.
-
-- [ ] Promote meta-evolution from report idea to control loop.
-  - Current issue: the system reports diversity/stagnation but still uses fixed policies for mutation rate, elite ratio, and selection strategy.
-  - Code to change:
-    - `internal/ares_evolution/genome/meta_evolution.go`: extend controller actions beyond mutation rate tuning.
-    - Let meta-controller choose among `rank`, `tournament`, `lineage_rank`, and adjust elite ratio based on diversity trend and stagnation.
-    - Store controller decisions in generation history.
-  - Example change:
-    - Report should show a timeline like `Gen 1-4 rank/explore`, `Gen 5-8 lineage_rank/recover`, `Gen 9-15 rank/exploit`.
-  - Verification:
-    - Add a deterministic test where low lineage diversity triggers `lineage_rank`, and sustained stagnation increases exploration.
+- **Promotion improvement gate**: `score_delta` and `rolling improvement` checks prevent safe-but-stagnant champions.
+- **Lineage improvement normalization**: `MinLineageImprovement` config (default 0.01), `ImprovementSignificant` flag in `collectLineages()`.
+- **Diversity recovery split**: `RecoveryActions` (`mutation_rate_boost`, `fresh_injection`, `stagnation_reset`) recorded in `GenerationHistoryEntry`.
+- **Lineage-aware selection**: `LineageRankSelection` with `WithLineagePenaltyThreshold`, configurable via `SelectionStrategy = "lineage_rank"`.
+- **Prompt diversity guard**: `preservePromptDiversityLocked()` force-retains alternative prompt templates; `PromptDiversityGuardEnabled` config; `PromptTemplateDistribution` in `DiversityReport`.
+- **Per-lineage elites**: `PerLineageElites` config (default false) preserves top-1 per unique lineage before global fill.
+- **Tiered scoring fallback**: 9 test cases covering cache hit, LLM success, budget exhaustion, no LLM scorer, LLM panic, stats, reset, full pipeline, and nil strategy.
+- **Meta-evolution control loop**: `MetaController.Tune()` adjusts mutation rate, survival rate, elite count, and selection strategy based on diversity, improvement rate, and stagnation. Records `MetaDecision` timeline.
 
 ### Suggested Execution Order
 
@@ -311,11 +200,11 @@ Do this first because promotion and scoring decisions are only as good as the ev
     - promotion reason includes score improvement status,
     - recovery actions are listed separately.
 
-### Success Criteria
+### Success Criteria ✅ ACHIEVED
 
 - A GA winner can be traced to real evidence by strategy ID or phenotype key.
 - Promotion cannot happen on success/confidence alone when score improvement is flat.
 - Wired mode preserves more than one dominant lineage unless evidence strongly justifies convergence.
 - Prompt-template convergence is either prevented by a retained exploration seed or explicitly explained as evidence-justified.
 - Scenario logs explain which recovery mechanism fired and why.
-- Reports move from “what happened” toward “why the system chose this control action.”
+- Reports move from "what happened" toward "why the system chose this control action."

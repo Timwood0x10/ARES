@@ -679,14 +679,14 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 
 		if err := system.PopAdapter.Run(ctx); err != nil {
 			slog.WarnContext(ctx, "[RunIdleEvolution] Generation produced guardrail warning, continuing",
-				"generation", gen, "error", err)
+				"generation", system.Population.Generation, "callback_gen", gen, "error", err)
 		}
 
 		if system.Genealogy != nil {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, parentSnapshot, gen)
 			if err != nil {
 				slog.WarnContext(ctx, "[RunIdleEvolution] Failed to record lineage",
-					"generation", gen, "error", err)
+					"generation", system.Population.Generation, "callback_gen", gen, "error", err)
 			}
 		}
 
@@ -698,12 +698,12 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 				ref, err := system.Reflector.Reflect(ctx, history, agents)
 				if err != nil {
 					slog.WarnContext(ctx, "[RunIdleEvolution] Reflection failed, skipping",
-						"generation", gen, "error", err)
+						"generation", system.Population.Generation, "callback_gen", gen, "error", err)
 				} else if ref != nil && len(ref.Recommendations) > 0 {
 					hyps := system.HypothesisGen.Generate(ctx, ref)
 					if len(hyps) > 0 {
 						slog.InfoContext(ctx, "[RunIdleEvolution] Generated hypotheses from reflection",
-							"generation", gen, "count", len(hyps))
+							"generation", system.Population.Generation, "callback_gen", gen, "count", len(hyps))
 					}
 				}
 			}
@@ -718,7 +718,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		if system.AfterGeneration != nil {
 			if err := system.AfterGeneration(ctx, gen, system); err != nil {
 				slog.WarnContext(ctx, "[RunIdleEvolution] AfterGeneration hook failed",
-					"generation", gen, "error", err)
+					"generation", system.Population.Generation, "callback_gen", gen, "error", err)
 			}
 		}
 	}

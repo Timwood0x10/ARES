@@ -125,9 +125,11 @@ type Strategy struct {
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
 
-	// GenerationCreated is the evolution generation when this strategy was created.
-	// Used by AgentMaxAge eviction: if currentGen - GenerationCreated > maxAge,
-	// the agent is eligible for eviction. 0 = unknown/root (never evicted by age).
+	// GenerationCreated is the generation number when this strategy first entered
+	// the population. Used by AgentMaxAge eviction: if currentGen - GenerationCreated
+	// > AgentMaxAge, the agent is eligible for eviction.
+	// 0 = unknown/legacy (never evicted by age — backward-compatible default for
+	// strategies created before this field existed).
 	GenerationCreated int `json:"generation_created,omitempty"`
 
 	// hashCache caches the StrategyHash result. Set hashValid=false on mutation.

@@ -892,8 +892,8 @@ func TestLineageRankSelection_Select(t *testing.T) {
 		//   Total=15, expected B probability = 3/15 = 20.0%
 		//   N=5000, μ=1000.0, σ=√(5000*0.20*0.80)≈28.3, ±3σ → [915, 1085]
 
-		countPenalty := runLineageSelection(ctx, lsWithPenalty, pop, 5000)
-		countNoPenalty := runLineageSelection(ctx, lsNoPenalty, pop, 5000)
+		countPenalty := runLineageSelection(t, ctx, lsWithPenalty, pop, 5000)
+		countNoPenalty := runLineageSelection(t, ctx, lsNoPenalty, pop, 5000)
 
 		pB := countPenalty["B"]
 		nB := countNoPenalty["B"]
@@ -1039,12 +1039,14 @@ func TestLineageRankSelection_EdgeCases(t *testing.T) {
 }
 
 // runLineageSelection runs n single-selection iterations and returns per-lineage counts.
-func runLineageSelection(ctx context.Context, ls *LineageRankSelection, pop []*mutation.Strategy, n int) map[string]int {
+// Errors from the selector are fatal — silent skipping would mask regressions.
+func runLineageSelection(t *testing.T, ctx context.Context, ls *LineageRankSelection, pop []*mutation.Strategy, n int) map[string]int {
+	t.Helper()
 	counts := make(map[string]int)
 	for i := 0; i < n; i++ {
 		result, err := ls.Select(ctx, pop, 1)
 		if err != nil {
-			continue
+			t.Fatalf("lineage selection iteration %d: %v", i, err)
 		}
 		if len(result) > 0 {
 			pid := result[0].ParentID

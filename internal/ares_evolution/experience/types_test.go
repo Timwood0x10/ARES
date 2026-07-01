@@ -282,6 +282,156 @@ func TestAggregateEvidenceLatencyPercentiles(t *testing.T) {
 	}
 }
 
+func TestAggregateEvidenceCrossTask(t *testing.T) {
+	now := time.Now()
+
+	t.Run("empty input returns empty", func(t *testing.T) {
+		result := AggregateEvidenceCrossTask(nil)
+		if !result.IsEmpty() {
+			t.Error("expected empty Evidence for nil input")
+		}
+		result = AggregateEvidenceCrossTask([]NormalizedExperience{})
+		if !result.IsEmpty() {
+			t.Error("expected empty Evidence for empty slice")
+		}
+	})
+
+	t.Run("mixed task types aggregated together", func(t *testing.T) {
+		experiences := []NormalizedExperience{
+			{
+				StrategyID: "strategy-A",
+				TaskType:   "code_generation",
+				Score:      0.9,
+				Success:    true,
+				Outcome:    "success",
+				LatencyMs:  100,
+				ErrorRate:  0.01,
+				ToolChain:  "search|write",
+				CreatedAt:  now,
+			},
+			{
+				StrategyID: "strategy-A",
+				TaskType:   "code_review",
+				Score:      0.7,
+				Success:    true,
+				Outcome:    "success",
+				LatencyMs:  200,
+				ErrorRate:  0.03,
+				ToolChain:  "search|read",
+				CreatedAt:  now,
+			},
+			{
+				StrategyID: "strategy-A",
+				TaskType:   "testing",
+				Score:      0.4,
+				Success:    false,
+				Outcome:    "failure",
+				LatencyMs:  500,
+				ErrorRate:  0.15,
+				ToolChain:  "test|run",
+				CreatedAt:  now,
+			},
+		}
+
+		result := AggregateEvidenceCrossTask(experiences)
+
+		if result.SampleCount != 3 {
+			t.Errorf("SampleCount = %d, want 3", result.SampleCount)
+		}
+		if result.SuccessRate != 2.0/3.0 {
+			t.Errorf("SuccessRate = %.2f, want 0.67", result.SuccessRate)
+		}
+		if result.StrategyID != "strategy-A" {
+			t.Errorf("StrategyID = %q, want strategy-A", result.StrategyID)
+		}
+		// Sorted latencies: [100, 200, 500], p50 (index 1) = 200, p95 (index 2) = 500.
+		if result.LatencyP50 != 200 {
+			t.Errorf("LatencyP50 = %d, want 200", result.LatencyP50)
+		}
+		if result.LatencyP95 != 500 {
+			t.Errorf("LatencyP95 = %d, want 500", result.LatencyP95)
+		}
+		// ErrorRate averaged: (0.01 + 0.03 + 0.15) / 3 ≈ 0.063
+		if result.ErrorRate < 0.06 || result.ErrorRate > 0.07 {
+			t.Errorf("ErrorRate = %.4f, want ≈0.063", result.ErrorRate)
+		}
+	})
+
+	t.Run("mixed strategy IDs picks first", func(t *testing.T) {
+		experiences := []NormalizedExperience{
+			{
+				StrategyID: "strategy-first",
+				TaskType:   "task_a",
+				Score:      0.8,
+				Success:    true,
+				Outcome:    "success",
+				CreatedAt:  now,
+			},
+			{
+				StrategyID: "strategy-second",
+				TaskType:   "task_b",
+				Score:      0.6,
+				Success:    true,
+				Outcome:    "success",
+				CreatedAt:  now,
+			},
+		}
+
+		result := AggregateEvidenceCrossTask(experiences)
+		if result.StrategyID != "strategy-first" {
+			t.Errorf("Expected first strategy ID %q, got %q", "strategy-first", result.StrategyID)
+		}
+	})
+
+	t.Run("SampleCount and success from Outcome string", func(t *testing.T) {
+		// Tests the fallback: Success bool is false but Outcome == "success" counts as success.
+		experiences := []NormalizedExperience{
+			{
+				TaskType:  "task_x",
+				Success:   false,
+				Outcome:   "success",
+				LatencyMs: 150,
+				CreatedAt: now,
+			},
+			{
+				TaskType:  "task_y",
+				Success:   true,
+				Outcome:   "",
+				LatencyMs: 250,
+				CreatedAt: now,
+			},
+		}
+
+		result := AggregateEvidenceCrossTask(experiences)
+		if result.SampleCount != 2 {
+			t.Errorf("SampleCount = %d, want 2", result.SampleCount)
+		}
+		// Both should count as success: task_x via Outcome, task_y via Success bool.
+		if result.SuccessRate != 1.0 {
+			t.Errorf("SuccessRate = %.2f, want 1.0", result.SuccessRate)
+		}
+	})
+
+	t.Run("empty TaskType is valid", func(t *testing.T) {
+		experiences := []NormalizedExperience{
+			{
+				TaskType:  "",
+				Score:     0.5,
+				Success:   true,
+				Outcome:   "",
+				CreatedAt: now,
+			},
+		}
+		result := AggregateEvidenceCrossTask(experiences)
+		if result.SampleCount != 1 {
+			t.Errorf("SampleCount = %d, want 1", result.SampleCount)
+		}
+		if result.SuccessRate != 1.0 {
+			t.Errorf("empty TaskType should still be valid, SuccessRate = %.2f", result.SuccessRate)
+		}
+	})
+}
+
 func TestAggregateEvidenceToolChain(t *testing.T) {
 	now := time.Now()
 

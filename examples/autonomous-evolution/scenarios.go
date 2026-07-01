@@ -1006,7 +1006,7 @@ func (a *storeEvidenceAggregator) Aggregate(ctx context.Context, strategyID stri
 		return evolutionservice.Evidence{}, fmt.Errorf("query store: %w", err)
 	}
 	if len(exps) > 0 {
-		ev := exp.AggregateEvidence(exps)
+		ev := exp.AggregateEvidenceCrossTask(exps)
 		return evolutionservice.Evidence{
 			StrategyID:  ev.StrategyID,
 			SuccessRate: ev.SuccessRate,
@@ -1035,7 +1035,7 @@ func (a *storeEvidenceAggregator) Aggregate(ctx context.Context, strategyID stri
 	if len(exps) == 0 {
 		return evolutionservice.Evidence{StrategyID: strategyID}, nil
 	}
-	ev := exp.AggregateEvidence(exps)
+	ev := exp.AggregateEvidenceCrossTask(exps)
 	return evolutionservice.Evidence{
 		StrategyID:  strategyID,
 		SuccessRate: ev.SuccessRate,

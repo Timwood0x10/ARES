@@ -251,18 +251,20 @@ type PopulationConfig struct {
 	// When nil, default adaptive parameters are used.
 	AdaptiveConfig *AdaptiveConfig `json:"adaptive_config,omitempty"`
 
-	// PromptDiversityGuardEnabled enables prompt template diversity preservation
-	// during elite selection (default true). When enabled, if all elites share
-	// one prompt template and a viable alternative exists in the population,
-	// that alternative is force-retained as an exploration seed.
-	PromptDiversityGuardEnabled bool `json:"prompt_diversity_guard_enabled"`
+	// DisablePromptDiversityGuard disables prompt template diversity preservation
+	// during elite selection. By default the guard IS enabled — set this to true
+	// to disable it (inverted bool avoids Go zero-value = disabled trap).
+	// When enabled (default), if all elites share one prompt template and a
+	// viable alternative exists in the population, that alternative is
+	// force-retained as an exploration seed.
+	DisablePromptDiversityGuard bool `json:"disable_prompt_diversity_guard,omitempty"`
 
 	// AgentMaxAge is the maximum number of generations an agent can survive
 	// before being evicted (0 = disabled, no age-based eviction).
 	// When enabled, agents whose currentGen - GenerationCreated > AgentMaxAge
 	// are removed from the population before each evolution cycle.
-	// Root agents (GenerationCreated == 0) are exempt from age eviction
-	// to preserve the founding lineage.
+	// Root agents (StrategyMutationType == MutationRoot) and legacy/unknown
+	// agents (GenerationCreated == 0) are exempt from age eviction.
 	AgentMaxAge int `json:"agent_max_age"`
 }
 
@@ -288,7 +290,7 @@ func DefaultPopulationConfig() PopulationConfig {
 		FitnessSharingSampleLimit:   50,
 		FitnessSharingSampleSize:    30,
 		SpatialIndexThreshold:       500,
-		PromptDiversityGuardEnabled: true,
+		DisablePromptDiversityGuard: false,
 		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}
 }
@@ -874,13 +876,14 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	SortByScore(sorted)
 
 	// Step 1a: Evict aged-out agents (AgentMaxAge > 0).
-	// Agents whose generation age exceeds AgentMaxAge are removed, unless
-	// they are root strategies (MutationRoot) which are founding lineage.
+	// Agents whose generation age exceeds AgentMaxAge are removed, unless:
+	//   - they are root strategies (MutationRoot), or
+	//   - GenerationCreated == 0 (unknown/legacy — never evict by age).
 	if p.cfg.AgentMaxAge > 0 {
 		keep := sorted[:0]
 		for _, s := range sorted {
 			age := p.Generation - s.GenerationCreated
-			if s.StrategyMutationType == mutation.MutationRoot || age <= p.cfg.AgentMaxAge {
+			if s.StrategyMutationType == mutation.MutationRoot || s.GenerationCreated == 0 || age <= p.cfg.AgentMaxAge {
 				keep = append(keep, s)
 			}
 		}
@@ -943,7 +946,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	for len(nextGen) < p.Size && len(survivors) > 0 {
 		idx := len(nextGen) % len(survivors)
 		clone := survivors[idx].Clone()
-		clone.GenerationCreated = p.Generation
+		clone.GenerationCreated = p.Generation + 1
 		nextGen = append(nextGen, clone)
 	}
 
@@ -1064,8 +1067,10 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			// keep the unmutated crossover child as-is.
 		}
 
-		// Record the generation when this offspring was created for age-based eviction.
-		child.GenerationCreated = p.Generation
+		// Record the generation when this offspring enters the population.
+		// Using p.Generation+1 so age = 0 in the next eviction check — an agent
+		// survives exactly AgentMaxAge generations after creation.
+		child.GenerationCreated = p.Generation + 1
 		offspring = append(offspring, child)
 	}
 

@@ -302,6 +302,62 @@ func AggregateEvidenceByTask(experiences []NormalizedExperience) map[string]Evid
 	return result
 }
 
+// AggregateEvidenceCrossTask aggregates experiences across multiple task types
+// silently, without emitting mixed-task-type or mixed-strategy-ID warnings.
+// This is intended for display/demo contexts where cross-task aggregation is
+// intentional and the warnings would be noisy. For strict homogeneous batches,
+// use AggregateEvidence instead.
+func AggregateEvidenceCrossTask(experiences []NormalizedExperience) Evidence {
+	if len(experiences) == 0 {
+		return Evidence{}
+	}
+
+	var (
+		totalScore     float64
+		totalLatency   int64
+		successCount   int
+		totalErrorRate float64
+		strategyID     string
+		toolChainHash  string
+		lastTimestamp  time.Time
+		latencyValues  []int64
+	)
+
+	for _, exp := range experiences {
+		if exp.StrategyID != "" && strategyID == "" {
+			strategyID = exp.StrategyID
+		}
+		if exp.ToolChain != "" && toolChainHash == "" {
+			toolChainHash = exp.ToolChain
+		}
+		if exp.CreatedAt.After(lastTimestamp) {
+			lastTimestamp = exp.CreatedAt
+		}
+		totalScore += exp.Score
+		totalLatency += exp.LatencyMs
+		totalErrorRate += exp.ErrorRate
+		if exp.Success || exp.Outcome == "success" {
+			successCount++
+		}
+		latencyValues = append(latencyValues, exp.LatencyMs)
+	}
+
+	count := float64(len(experiences))
+	latencyP50, latencyP95 := calculateLatencyPercentiles(latencyValues)
+
+	return Evidence{
+		StrategyID:    strategyID,
+		SuccessRate:   float64(successCount) / count,
+		LatencyP50:    latencyP50,
+		LatencyP95:    latencyP95,
+		ErrorRate:     totalErrorRate / count,
+		SampleCount:   int64(len(experiences)),
+		ToolChainHash: toolChainHash,
+		Confidence:    0.0,
+		LastUpdated:   lastTimestamp,
+	}
+}
+
 // calculateLatencyPercentiles computes p50 and p95 from a slice of raw
 // latency values in milliseconds.
 func calculateLatencyPercentiles(values []int64) (p50 int64, p95 int64) {

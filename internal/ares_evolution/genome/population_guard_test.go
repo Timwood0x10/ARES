@@ -150,9 +150,7 @@ func TestPreservePerLineageElites(t *testing.T) {
 
 func TestPreservePromptDiversityLocked(t *testing.T) {
 	t.Run("all same template injects diversity seed", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 			{ID: "eb", Score: 90, PromptTemplate: "template1"},
@@ -172,9 +170,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("already diverse does nothing", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 			{ID: "eb", Score: 90, PromptTemplate: "template2"},
@@ -190,9 +186,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("no alternative template does nothing", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
@@ -215,9 +209,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("low score alternative not injected", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
@@ -232,9 +224,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("clone isolation: modifying injected seed does not affect original", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
@@ -262,7 +252,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 
 	t.Run("disabled guard returns elites unchanged", func(t *testing.T) {
 		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: false},
+			cfg: PopulationConfig{DisablePromptDiversityGuard: true},
 		}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
@@ -319,7 +309,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 		// appending (which would get truncated away by the caller).
 		pop := &Population{
 			Size: 2,
-			cfg:  PopulationConfig{PromptDiversityGuardEnabled: true, EliteCount: 2},
+			cfg:  PopulationConfig{EliteCount: 2},
 		}
 		elites := []*mutation.Strategy{
 			{ID: "strong", Score: 100, PromptTemplate: "template1"},
@@ -351,9 +341,7 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("injected seed preserves alternative template score", func(t *testing.T) {
-		pop := &Population{
-			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
-		}
+		pop := &Population{}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
