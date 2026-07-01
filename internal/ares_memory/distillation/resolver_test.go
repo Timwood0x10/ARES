@@ -3,6 +3,7 @@ package distillation
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 )
 
@@ -158,12 +159,16 @@ func TestConflictResolver_DetectConflict(t *testing.T) {
 			ctx := context.Background()
 			conflict, err := resolver.DetectConflict(ctx, tt.vector, tt.tenantID)
 
-			if err != nil {
+			if tt.expectConflict && err != nil {
 				t.Errorf("DetectConflict() returned error: %v", err)
 			}
 
 			if tt.expectConflict && conflict == nil {
 				t.Error("Expected conflict but got none")
+			}
+
+			if !tt.expectConflict && err != nil && !stderrors.Is(err, ErrNoConflict) {
+				t.Errorf("Expected no conflict but got unexpected error: %v", err)
 			}
 
 			if !tt.expectConflict && conflict != nil {
@@ -234,12 +239,16 @@ func TestConflictResolver_DetectConflictByExperience(t *testing.T) {
 			ctx := context.Background()
 			conflict, err := resolver.DetectConflictByExperience(ctx, tt.experience, tt.tenantID)
 
-			if err != nil {
+			if tt.expectConflict && err != nil {
 				t.Errorf("DetectConflictByExperience() returned error: %v", err)
 			}
 
 			if tt.expectConflict && conflict == nil {
 				t.Error("Expected conflict but got none")
+			}
+
+			if !tt.expectConflict && err != nil && !stderrors.Is(err, ErrNoConflict) {
+				t.Errorf("Expected no conflict but got unexpected error: %v", err)
 			}
 
 			if !tt.expectConflict && conflict != nil {

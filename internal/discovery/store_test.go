@@ -30,8 +30,8 @@ func TestMemoryStore_GetNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	got, err := store.Get(ctx, "nonexistent")
-	if err != nil {
-		t.Fatalf("get: %v", err)
+	if err == nil {
+		t.Fatal("expected error for nonexistent key")
 	}
 	if got != nil {
 		t.Errorf("expected nil, got %v", got)

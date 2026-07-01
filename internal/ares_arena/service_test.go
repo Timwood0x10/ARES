@@ -296,7 +296,8 @@ func TestSubscribe_NilStore(t *testing.T) {
 	svc := newTestService(nil, nil, nil)
 
 	ch, err := svc.Subscribe(context.Background())
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "event store not configured")
 	assert.Nil(t, ch)
 }
 

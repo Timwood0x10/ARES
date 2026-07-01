@@ -122,8 +122,8 @@ func TestLoadSignalsFromCSVMinimal(t *testing.T) {
 func TestLoadSignalsFromCSVEmptyFile(t *testing.T) {
 	path := writeTestCSVFile(t, "date,symbol,action,weight\n")
 	signals, err := LoadSignalsFromCSV(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Error("expected error for empty CSV file")
 	}
 	if signals != nil {
 		t.Errorf("expected nil for header-only file, got %d signals", len(signals))
@@ -206,8 +206,8 @@ func TestLoadCustomBarsFromCSVMinimal(t *testing.T) {
 func TestLoadCustomBarsFromCSVEmptyFile(t *testing.T) {
 	path := writeTestCSVFile(t, "date,symbol,open,high,low,close,volume\n")
 	bars, err := LoadCustomBarsFromCSV(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Error("expected error for empty CSV file")
 	}
 	if bars != nil {
 		t.Errorf("expected nil for header-only file, got %d symbols", len(bars))

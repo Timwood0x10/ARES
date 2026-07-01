@@ -196,7 +196,7 @@ func TestScanConfigFile_InvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if records != nil {
-		t.Errorf("expected nil records for invalid JSON, got %v", records)
+	if len(records) != 0 {
+		t.Errorf("expected 0 records for invalid JSON, got %d", len(records))
 	}
 }

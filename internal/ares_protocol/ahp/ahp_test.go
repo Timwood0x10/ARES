@@ -577,8 +577,8 @@ func TestQueueMethods(t *testing.T) {
 		queue := NewMessageQueue("agent1", nil)
 
 		peeked, err := queue.Peek()
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err == nil {
+			t.Errorf("expected error for empty queue")
 		}
 		if peeked != nil {
 			t.Errorf("expected nil for empty queue")
