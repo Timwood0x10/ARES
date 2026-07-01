@@ -143,6 +143,21 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		}
 	}
 
+	// Thread the API-level batch scorer into the wired system's adapter.
+	// When set, the adapter pre-fills the score cache with batch-scored values
+	// before EvolveAfterScoring, so the tiered scorer finds cache hits for all
+	// agents — turning N per-agent LLM calls into ceil(N/batchSize) batched calls.
+	if cfg.BatchScorer != nil {
+		apiBatch := cfg.BatchScorer
+		internalCfg.BatchScorer = func(_ context.Context, agents []*mutation.Strategy) []float64 {
+			apiStrats := make([]*Strategy, len(agents))
+			for i, ag := range agents {
+				apiStrats[i] = toAPIStrategy(ag)
+			}
+			return apiBatch.BatchScore(apiStrats)
+		}
+	}
+
 	// Wire guardrails when enabled.
 	if cfg.Guardrails != nil && cfg.Guardrails.Enabled {
 		var guardrailOpts []evolution.GuardrailOption
@@ -344,8 +359,8 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
 
-			// Re-score after each evolution so next generation selects on fresh data.
-			s.initScores()
+			// RunIdleEvolution → adapter.Run() → EvolveAfterScoring already
+			// post-scores all agents in Phase 3. No need to re-score here.
 
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)

@@ -480,7 +480,7 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 	}
 
 	printResult(result)
-	printEvolutionInsightReport(cfg.Title, result, nil, parent)
+	printEvolutionInsightReport(cfg.Title, result, result.Lineages, parent)
 	return result
 }
 
@@ -509,10 +509,13 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 
 	parent := defaultParent(cfg.BaseID)
 
-	// LLM as post-evolution validation only (not in the loop).
-	// Reason: stepfun takes ~12s/request, sensenova is rate-limited.
-	// LLM-in-loop would take ~80 minutes for 15 generations.
-	// Instead: evolve with deterministic scoring (ms), then validate with LLM.
+	// Pure deterministic evolution — LLM participates only in post-hoc validation.
+	// Rationale:
+	//   - GA converges reliably within ~3 generations on heuristic scoring.
+	//   - LLM-in-loop adds latency, API risk, and non-determinism for uncertain gain.
+	//   - Batch-scoring infrastructure exists (see BatchScorer in SystemConfig) but
+	//     is opted out here. Re-enable by wiring an LLMScorer as both Scorer and
+	//     BatchScorer when semantic guidance during evolution is desired.
 	svc, err := evolutionservice.NewService(fullGAConfig(parent, cfg, true, nil))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
@@ -520,10 +523,9 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "Wired evolution + LLM validation",
+	slog.InfoContext(ctx, "Wired evolution — deterministic only, LLM validates best strategy after",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
-		"scorer", "deterministic (LLM validates best strategy after)",
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
@@ -574,7 +576,7 @@ func fullGAConfig(parent *evolutionservice.Strategy, cfg GACfg, wired bool, scor
 	return &evolutionservice.SystemConfig{
 		BaseStrategy:           parent,
 		PopulationSize:         cfg.PopSize,
-		EliteCount:             3,                     // preserve top 3 unchanged
+		EliteCount:             max(1, cfg.PopSize/7), // ~14% of population, at least 1
 		SurvivalRate:           cfg.SurvRate,          // top 60% survive
 		MutationRate:           0.3,                   // base mutation rate
 		MinMutationRate:        0.05,                  // adaptive floor

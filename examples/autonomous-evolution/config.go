@@ -27,7 +27,7 @@ type GACfg struct {
 // Predefined configurations for each GA scenario.
 var (
 	cfgGA    = GACfg{Title: "Scenario 6: GA Evolution (Rank Selection)", BaseID: "ga-root", PopSize: 20, EliteCount: 2, SurvRate: 0.6, MutRate: 0.2, MinMutRate: 0.05, MaxMutRate: 0.5, SelectionStrategy: "rank", HistoryMaxSize: 100, NGen: 15}
-	cfgWired = GACfg{Title: "Scenario 7: Wired System (SUS Selection)", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, MinMutRate: 0.05, MaxMutRate: 0.5, SelectionStrategy: "sus", HistoryMaxSize: 100, NGen: 10, Wired: true}
+	cfgWired = GACfg{Title: "Scenario 7: Wired System (Tournament Selection)", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, MinMutRate: 0.05, MaxMutRate: 0.5, SelectionStrategy: "tournament", HistoryMaxSize: 100, NGen: 10, Wired: true}
 )
 
 // EvolutionConfigFromFile mirrors internal/config.EvolutionConfig for YAML parsing

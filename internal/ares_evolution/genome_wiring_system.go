@@ -40,6 +40,7 @@ type WiredEvolutionSystem struct {
 type ScoringConfig struct {
 	Scorer                   genome.ScorerFunc                `json:"-"`
 	HeuristicScorer          genome.ScorerFunc                `json:"-"`
+	BatchScorer              BatchScorer                      `json:"-"`
 	MaxLLMCallsPerGeneration int                              `json:"max_llm_calls_per_generation,omitempty"`
 	ScoreCacheSize           int                              `json:"score_cache_size,omitempty"`
 	MemoryAwareScoringConfig scoring.MemoryAwareScoringConfig `json:"memory_aware_scoring,omitempty"`
@@ -276,6 +277,10 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 		} else {
 			opts = append(opts, WithAdapterMemoryAwareScoring(memScorer))
 		}
+	}
+
+	if cfg.BatchScorer != nil {
+		opts = append(opts, WithAdapterBatchScoring(cfg.BatchScorer))
 	}
 
 	if cfg.Guardrails != nil {

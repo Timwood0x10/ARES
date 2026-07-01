@@ -518,14 +518,18 @@ func (p *Population) handleStagnationLocked() {
 		template := p.Agents[p.rng.Intn(startIdx)]
 		clone := template.Clone()
 
-		// Apply strong random perturbation to each numeric param.
+		// Apply wider perturbation with selective parameter mixing.
+		// 40% chance to keep a param unchanged, preserving good alleles.
 		for k, v := range clone.Params {
+			if p.rng.Float64() < 0.4 {
+				continue // keep original value
+			}
 			if f, ok := v.(float64); ok {
-				// Perturb by ±40% of original value: 60%–140% range.
-				perturbation := f * (0.6 + p.rng.Float64()*0.8)
+				// Perturb by ±80%: range [0.2x, 1.8x].
+				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				clone.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(iVal/2+1) - iVal/4
+				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
 				clone.Params[k] = iVal + delta
 			}
 		}

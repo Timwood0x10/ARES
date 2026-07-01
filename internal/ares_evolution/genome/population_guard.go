@@ -84,14 +84,19 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		}
 		template := p.Agents[templateIdx].Clone()
 
-		// Strong random perturbation on each numeric parameter.
+		// Apply wider perturbation with selective parameter mixing.
+		// Each param has a 40% chance to remain unchanged, preserving good
+		// alleles while introducing targeted variation in the rest.
 		for k, v := range template.Params {
+			if p.rng.Float64() < 0.4 {
+				continue // keep original value
+			}
 			if f, ok := v.(float64); ok {
-				// Perturb by ±50%: range [0.5x, 1.5x].
-				perturbation := f * (0.5 + p.rng.Float64())
+				// Perturb by ±80%: range [0.2x, 1.8x].
+				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				template.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(max(iVal, 1)+1) - iVal/2
+				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
 				template.Params[k] = iVal + delta
 			}
 		}
