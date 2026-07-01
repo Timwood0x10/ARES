@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
@@ -760,5 +762,538 @@ func TestMemoryAwareScorer_ScoreAsScorerFuncDisabled(t *testing.T) {
 	// Should return the tiered scorer's raw score (50.0) with no adjustments.
 	if score != 50.0 {
 		t.Errorf("expected 50.0 when disabled, got %f", score)
+	}
+}
+
+// --- Evidence-based scoring tests ---
+
+// mockEvidenceProvider implements EvidenceProvider for testing.
+type mockEvidenceProvider struct {
+	evidence      experience.Evidence
+	taskEvidence  experience.Evidence
+	err           error
+	strategyError error
+	taskError     error
+}
+
+func (m *mockEvidenceProvider) GetEvidence(ctx context.Context, strategyID string) (experience.Evidence, error) {
+	if m.strategyError != nil {
+		return experience.Evidence{}, m.strategyError
+	}
+	if m.err != nil {
+		return experience.Evidence{}, m.err
+	}
+	return m.evidence, nil
+}
+
+func (m *mockEvidenceProvider) GetEvidenceByTaskType(ctx context.Context, taskType string) (experience.Evidence, error) {
+	if m.taskError != nil {
+		return experience.Evidence{}, m.taskError
+	}
+	if m.err != nil {
+		return experience.Evidence{}, m.err
+	}
+	return m.taskEvidence, nil
+}
+
+// TestMemoryAwareScorer_EvidenceMode_Success verifies that the scorer
+// correctly uses multi-dimensional evidence when EvidenceProvider is available.
+func TestMemoryAwareScorer_EvidenceMode_Success(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	ev := experience.Evidence{
+		StrategyID:  "evidence-test",
+		TaskType:    "test",
+		SuccessRate: 0.8,
+		LatencyP50:  1000, // 1 second
+		ErrorRate:   0.1,
+		SampleCount: 10,
+		Confidence:  0.85,
+		LastUpdated: time.Now(),
+	}
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	ms.SetEvidenceProvider(&mockEvidenceProvider{evidence: ev})
+
+	strategy := &mutation.Strategy{
+		ID:             "evidence-test",
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "test prompt",
+	}
+
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("expected non-nil detail in evidence mode")
+	}
+
+	// Verify evidence fields are populated.
+	if detail.SuccessRateEvidence != 0.8 {
+		t.Errorf("expected SuccessRateEvidence=0.8, got %f", detail.SuccessRateEvidence)
+	}
+	if detail.LatencyEvidence != 1000 {
+		t.Errorf("expected LatencyEvidence=1000, got %d", detail.LatencyEvidence)
+	}
+	if detail.ErrorRateEvidence != 0.1 {
+		t.Errorf("expected ErrorRateEvidence=0.1, got %f", detail.ErrorRateEvidence)
+	}
+	if detail.SampleCountEvidence != 10 {
+		t.Errorf("expected SampleCountEvidence=10, got %d", detail.SampleCountEvidence)
+	}
+	if detail.Confidence != 0.85 {
+		t.Errorf("expected Confidence=0.85, got %f", detail.Confidence)
+	}
+
+	// Verify bonus is computed from evidence.
+	// Expected: success_bonus = 0.8 * 0.85 * 10.0 = 6.8
+	// latency_penalty_factor = 1000 / 10000 = 0.1
+	// error_penalty_factor = 0.1 * 0.85 = 0.085
+	// bonus = 6.8 * (1 - 0.1) * (1 - 0.085) ≈ 5.59
+	expectedBonus := 0.8 * 0.85 * 10.0 * (1.0 - 0.1) * (1.0 - 0.085)
+	if detail.MemoryEvidenceBonus < expectedBonus-0.1 || detail.MemoryEvidenceBonus > expectedBonus+0.1 {
+		t.Errorf("expected MemoryEvidenceBonus≈%f, got %f", expectedBonus, detail.MemoryEvidenceBonus)
+	}
+
+	// Final score should be quality + bonus - penalties.
+	if score < 50.0 {
+		t.Errorf("expected score > 50.0 (quality + evidence bonus), got %f", score)
+	}
+}
+
+// TestMemoryAwareScorer_EvidenceMode_FallbackToTaskType verifies that when
+// strategy evidence is not found, the scorer falls back to task type evidence.
+func TestMemoryAwareScorer_EvidenceMode_FallbackToTaskType(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	taskEvidence := experience.Evidence{
+		TaskType:    "fallback-task",
+		SuccessRate: 0.7,
+		LatencyP50:  2000,
+		ErrorRate:   0.2,
+		SampleCount: 20,
+		Confidence:  0.9,
+		LastUpdated: time.Now(),
+	}
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	ms.SetEvidenceProvider(&mockEvidenceProvider{
+		strategyError: errors.New("strategy not found"),
+		taskEvidence:  taskEvidence,
+	})
+
+	strategy := &mutation.Strategy{
+		ID:             "unknown-strategy",
+		Name:           "fallback-task",
+		Params:         map[string]any{"temperature": 0.7},
+		PromptTemplate: "test",
+	}
+
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("expected non-nil detail")
+	}
+
+	// Should use task type evidence.
+	if detail.SuccessRateEvidence != 0.7 {
+		t.Errorf("expected SuccessRateEvidence=0.7 (from task evidence), got %f", detail.SuccessRateEvidence)
+	}
+	if detail.SampleCountEvidence != 20 {
+		t.Errorf("expected SampleCountEvidence=20 (from task evidence), got %d", detail.SampleCountEvidence)
+	}
+	if score < 50.0 {
+		t.Errorf("expected score > 50.0, got %f", score)
+	}
+}
+
+// TestMemoryAwareScorer_EvidenceMode_NoEvidenceFound verifies that when
+// both strategy and task type evidence fail, the scorer returns base score.
+func TestMemoryAwareScorer_EvidenceMode_NoEvidenceFound(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	ms.SetEvidenceProvider(&mockEvidenceProvider{
+		strategyError: errors.New("strategy not found"),
+		taskError:     errors.New("task type not found"),
+	})
+
+	strategy := newTestStrategy("no-evidence")
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	// Should return base quality score when no evidence found.
+	if score != 50.0 {
+		t.Errorf("expected base score=50.0 when no evidence found, got %f", score)
+	}
+	if detail == nil {
+		t.Fatal("expected non-nil detail even when evidence not found")
+	}
+	if detail.QualityScore != 50.0 {
+		t.Errorf("expected QualityScore=50.0, got %f", detail.QualityScore)
+	}
+}
+
+// TestMemoryAwareScorer_EvidenceMode_EmptyEvidence verifies that empty
+// evidence returns minimum bonus.
+func TestMemoryAwareScorer_EvidenceMode_EmptyEvidence(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.MinEvidenceBonus = 0.0
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	ms.SetEvidenceProvider(&mockEvidenceProvider{
+		evidence: experience.Evidence{}, // Empty evidence
+	})
+
+	strategy := newTestStrategy("empty-evidence")
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	// Empty evidence should result in MinEvidenceBonus (0.0).
+	if detail.MemoryEvidenceBonus != 0.0 {
+		t.Errorf("expected MemoryEvidenceBonus=0.0 for empty evidence, got %f", detail.MemoryEvidenceBonus)
+	}
+	if score != 50.0 {
+		t.Errorf("expected score=50.0 for empty evidence, got %f", score)
+	}
+}
+
+// TestComputeEvidenceBasedBonus verifies the multi-dimensional bonus formula.
+func TestComputeEvidenceBasedBonus(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.MinEvidenceBonus = 0.0
+	cfg.MaxEvidenceBonus = 20.0
+
+	ms, _ := NewMemoryAwareScorer(ts, nil, cfg)
+
+	tests := []struct {
+		name     string
+		evidence experience.Evidence
+		expected float64
+	}{
+		{
+			name: "high success rate, low latency and error",
+			evidence: experience.Evidence{
+				SuccessRate: 0.9,
+				LatencyP50:  100,
+				ErrorRate:   0.01,
+				Confidence:  0.95,
+				SampleCount: 50,
+			},
+			expected: 8.55, // High bonus from good performance
+		},
+		{
+			name: "medium success rate, medium latency and error",
+			evidence: experience.Evidence{
+				SuccessRate: 0.7,
+				LatencyP50:  5000,
+				ErrorRate:   0.1,
+				Confidence:  0.8,
+				SampleCount: 20,
+			},
+			expected: 2.24, // Moderate bonus
+		},
+		{
+			name: "low success rate",
+			evidence: experience.Evidence{
+				SuccessRate: 0.3,
+				LatencyP50:  1000,
+				ErrorRate:   0.05,
+				Confidence:  0.7,
+				SampleCount: 10,
+			},
+			expected: 1.905, // Low bonus
+		},
+		{
+			name: "high latency penalty",
+			evidence: experience.Evidence{
+				SuccessRate: 0.9,
+				LatencyP50:  9000,
+				ErrorRate:   0.01,
+				Confidence:  0.9,
+				SampleCount: 30,
+			},
+			expected: 0.81, // High latency reduces bonus significantly
+		},
+		{
+			name: "high error rate",
+			evidence: experience.Evidence{
+				SuccessRate: 0.8,
+				LatencyP50:  1000,
+				ErrorRate:   0.5,
+				Confidence:  0.85,
+				SampleCount: 15,
+			},
+			expected: 3.4, // High error rate reduces bonus
+		},
+		{
+			name: "zero confidence",
+			evidence: experience.Evidence{
+				SuccessRate: 0.9,
+				LatencyP50:  100,
+				ErrorRate:   0.01,
+				Confidence:  0.0,
+				SampleCount: 10,
+			},
+			expected: 0.0, // Zero confidence = zero bonus
+		},
+		{
+			name: "no samples",
+			evidence: experience.Evidence{
+				SampleCount: 0,
+			},
+			expected: 0.0, // No samples = minimum bonus
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ms.computeEvidenceBasedBonus(tt.evidence)
+			// Allow small tolerance for floating point calculations.
+			if got < tt.expected-0.5 || got > tt.expected+0.5 {
+				t.Errorf("expected bonus≈%f, got %f", tt.expected, got)
+			}
+		})
+	}
+}
+
+// TestMemoryAwareScorer_EvidenceMode_WithCostAndLatency verifies that
+// evidence-based scoring works correctly with cost and latency penalties.
+func TestMemoryAwareScorer_EvidenceMode_WithCostAndLatency(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+	cfg.CostWeight = 0.1
+	cfg.LatencyWeight = 0.05
+
+	ev := experience.Evidence{
+		StrategyID:  "combined-test",
+		SuccessRate: 0.85,
+		LatencyP50:  500,
+		ErrorRate:   0.05,
+		SampleCount: 15,
+		Confidence:  0.9,
+		LastUpdated: time.Now(),
+	}
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	ms.SetEvidenceProvider(&mockEvidenceProvider{evidence: ev})
+
+	strategy := &mutation.Strategy{
+		ID: "combined-test",
+		Params: map[string]any{
+			"temperature": 0.7,
+			"cost":        5.0,
+			"latency":     2.0,
+		},
+		PromptTemplate: "test",
+	}
+
+	score, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	// Verify all components are populated.
+	if detail.SuccessRateEvidence != 0.85 {
+		t.Errorf("expected SuccessRateEvidence=0.85, got %f", detail.SuccessRateEvidence)
+	}
+	if detail.CostPenalty != 0.5 { // 5.0 * 0.1
+		t.Errorf("expected CostPenalty=0.5, got %f", detail.CostPenalty)
+	}
+	if detail.LatencyPenalty != 0.1 { // 2.0 * 0.05
+		t.Errorf("expected LatencyPenalty=0.1, got %f", detail.LatencyPenalty)
+	}
+
+	// Final score should include evidence bonus and penalties.
+	expectedBase := 50.0
+	expectedBonus := detail.MemoryEvidenceBonus
+	expectedPenalties := detail.CostPenalty + detail.LatencyPenalty + detail.RegressionPenalty
+	expectedFinal := expectedBase + expectedBonus - expectedPenalties
+
+	if score < expectedFinal-0.1 || score > expectedFinal+0.1 {
+		t.Errorf("expected final score≈%f, got %f", expectedFinal, score)
+	}
+}
+
+// TestMemoryAwareScorer_SetEvidenceProvider verifies that SetEvidenceProvider
+// correctly updates the evidence provider.
+func TestMemoryAwareScorer_SetEvidenceProvider(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	ms, err := NewMemoryAwareScorer(ts, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	// Initially should have no evidence provider.
+	strategy := newTestStrategy("initial")
+	_, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+	if detail != nil {
+		t.Error("expected nil detail before setting evidence provider")
+	}
+
+	// Set evidence provider.
+	ev := experience.Evidence{
+		StrategyID:  "initial",
+		SuccessRate: 0.8,
+		Confidence:  0.85,
+		SampleCount: 10,
+	}
+	ms.SetEvidenceProvider(&mockEvidenceProvider{evidence: ev})
+
+	// Now should use evidence mode.
+	_, detail, err = ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+	if detail == nil {
+		t.Fatal("expected non-nil detail after setting evidence provider")
+	}
+	if detail.SuccessRateEvidence != 0.8 {
+		t.Errorf("expected SuccessRateEvidence=0.8, got %f", detail.SuccessRateEvidence)
+	}
+}
+
+// TestMemoryAwareScorer_BackwardCompatibility verifies that the scorer
+// maintains backward compatibility with legacy ExperienceProvider.
+func TestMemoryAwareScorer_BackwardCompatibility(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	// Create scorer with legacy ExperienceProvider only.
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 3, confidence: 0.8}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	// Should not have evidence provider set.
+	strategy := newTestStrategy("legacy-test")
+	_, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("expected non-nil detail in legacy mode")
+	}
+
+	// Legacy mode should use ExperienceCount and Confidence from ExperienceProvider.
+	if detail.ExperienceCount != 3 {
+		t.Errorf("expected ExperienceCount=3, got %d", detail.ExperienceCount)
+	}
+	if detail.Confidence != 0.8 {
+		t.Errorf("expected Confidence=0.8, got %f", detail.Confidence)
+	}
+
+	// Evidence fields should be zero in legacy mode.
+	if detail.SuccessRateEvidence != 0 {
+		t.Errorf("expected SuccessRateEvidence=0 in legacy mode, got %f", detail.SuccessRateEvidence)
+	}
+	if detail.LatencyEvidence != 0 {
+		t.Errorf("expected LatencyEvidence=0 in legacy mode, got %d", detail.LatencyEvidence)
+	}
+	if detail.ErrorRateEvidence != 0 {
+		t.Errorf("expected ErrorRateEvidence=0 in legacy mode, got %f", detail.ErrorRateEvidence)
+	}
+	if detail.SampleCountEvidence != 0 {
+		t.Errorf("expected SampleCountEvidence=0 in legacy mode, got %d", detail.SampleCountEvidence)
+	}
+
+	// Bonus should be computed from legacy formula: count * confidence * 5.0.
+	expectedBonus := float64(3) * 0.8 * 5.0
+	if detail.MemoryEvidenceBonus != expectedBonus {
+		t.Errorf("expected legacy bonus=%f, got %f", expectedBonus, detail.MemoryEvidenceBonus)
+	}
+}
+
+// TestMemoryAwareScorer_EvidenceProviderPriority verifies that EvidenceProvider
+// takes priority over ExperienceProvider when both are available.
+func TestMemoryAwareScorer_EvidenceProviderPriority(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 5)
+	cfg := DefaultMemoryAwareScoringConfig()
+	cfg.Enabled = true
+
+	// Create scorer with both providers.
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 5, confidence: 0.9}, cfg)
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer failed: %v", err)
+	}
+
+	// Set EvidenceProvider (should take priority).
+	ev := experience.Evidence{
+		StrategyID:  "priority-test",
+		SuccessRate: 0.75,
+		Confidence:  0.8,
+		SampleCount: 20,
+	}
+	ms.SetEvidenceProvider(&mockEvidenceProvider{evidence: ev})
+
+	strategy := newTestStrategy("priority-test")
+	_, detail, err := ms.Score(context.Background(), strategy)
+	if err != nil {
+		t.Fatalf("Score failed: %v", err)
+	}
+
+	if detail == nil {
+		t.Fatal("expected non-nil detail")
+	}
+
+	// Should use evidence-based scoring (EvidenceProvider priority).
+	if detail.SuccessRateEvidence != 0.75 {
+		t.Errorf("expected SuccessRateEvidence=0.75 (from EvidenceProvider), got %f", detail.SuccessRateEvidence)
+	}
+	if detail.SampleCountEvidence != 20 {
+		t.Errorf("expected SampleCountEvidence=20 (from EvidenceProvider), got %d", detail.SampleCountEvidence)
+	}
+
+	// Should NOT use legacy ExperienceProvider values.
+	if detail.ExperienceCount == 5 {
+		t.Error("should not use legacy ExperienceCount when EvidenceProvider is available")
 	}
 }
