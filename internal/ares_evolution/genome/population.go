@@ -220,6 +220,13 @@ type PopulationConfig struct {
 	// when in sampled fitness sharing mode. Default 30.
 	FitnessSharingSampleSize int `json:"fitness_sharing_size"`
 
+	// SpatialIndexThreshold is the scored population size above which fitness sharing
+	// uses grid-based spatial indexing for neighbor lookup instead of random sampling.
+	// The spatial index assigns agents to grid cells in normalized parameter space
+	// and only checks the agent's own cell + adjacent cells, achieving sub-linear
+	// average-case lookup. Default 500; set to 0 to disable spatial indexing.
+	SpatialIndexThreshold int `json:"spatial_index_threshold"`
+
 	// HistoryMaxSize limits the number of historical generation entries (0 = unlimited).
 	// When > 0, each evolution cycle appends a GenerationHistoryEntry to the history.
 	HistoryMaxSize int `json:"history_max_size"`
@@ -250,6 +257,7 @@ func DefaultPopulationConfig() PopulationConfig {
 		DiversityWeights:          DiversityWeightConfig{}, // Zero → defaults applied in normalize()
 		FitnessSharingSampleLimit: 50,
 		FitnessSharingSampleSize:  30,
+		SpatialIndexThreshold:     500,
 	}
 }
 

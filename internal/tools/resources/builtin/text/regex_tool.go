@@ -79,10 +79,10 @@ func (t *RegexTool) Execute(ctx context.Context, params map[string]interface{}) 
 
 	switch operation {
 	case "match":
-		maxResults := getInt(params, "max_results", 0)
+		maxResults := getInt(params, "max_results", -1)
 		return t.match(ctx, text, re, maxResults)
 	case "extract":
-		maxResults := getInt(params, "max_results", 0)
+		maxResults := getInt(params, "max_results", -1)
 		return t.extract(ctx, text, re, maxResults)
 	case "replace":
 		replacement, ok := params["replacement"].(string)

@@ -49,17 +49,16 @@ func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredServi
 	return status, nil
 }
 
-// probeMCP connects to an MCP server via stdio, does initialize → list_tools → close.
+// probeMCP connects to an MCP server, does initialize → list_tools → close.
 func probeMCP(ctx context.Context, name, endpoint string, args []string) *HealthStatus {
-	if isURL(endpoint) {
-		// TODO: implement SSE health check when api/mcp supports it.
-		return &HealthStatus{
-			Healthy: true,
-			Message: "SSE endpoint assumed healthy (probe not implemented)",
-		}
-	}
+	var client *api_mcp.Client
+	var err error
 
-	client, err := api_mcp.ConnectStdio(ctx, name, endpoint, args)
+	if isURL(endpoint) {
+		client, err = api_mcp.ConnectSSE(ctx, name, endpoint)
+	} else {
+		client, err = api_mcp.ConnectStdio(ctx, name, endpoint, args)
+	}
 	if err != nil {
 		return &HealthStatus{
 			Healthy: false,

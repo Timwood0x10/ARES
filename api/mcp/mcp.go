@@ -13,23 +13,23 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"sync"
-	"time"
 )
+
+// transport abstracts MCP transport (stdio, SSE, etc.).
+type transport interface {
+	roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)
+	close() error
+}
 
 // Client connects to an MCP server and provides tool access.
 type Client struct {
 	name      string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Scanner
+	transport transport
 	mu        sync.Mutex
 	idCounter int
 	tools     []ToolInfo
@@ -55,42 +55,6 @@ type ContentBlock struct {
 	MimeType string `json:"mimeType,omitempty"`
 }
 
-// ConnectStdio connects to an MCP server via stdio transport.
-func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Stderr = os.Stderr
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start: %w", err)
-	}
-
-	c := &Client{
-		name:      name,
-		cmd:       cmd,
-		stdin:     stdin,
-		stdout:    bufio.NewScanner(stdout),
-		idCounter: 1,
-	}
-
-	// Initialize handshake.
-	if err := c.initialize(ctx); err != nil {
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("initialize: %w", err)
-	}
-
-	c.connected = true
-	return c, nil
-}
-
 func (c *Client) initialize(ctx context.Context) error {
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
@@ -114,7 +78,6 @@ func (c *Client) initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize error: %s", resp.Error.Message)
 	}
 
-	// Send initialized notification.
 	notif := jsonrpcNotification{
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
@@ -186,14 +149,39 @@ func (c *Client) Name() string {
 
 // Close closes the MCP connection.
 func (c *Client) Close() error {
-	if c.cmd != nil && c.cmd.Process != nil {
-		return c.cmd.Process.Kill()
+	return c.transport.close()
+}
+
+// sendRequest sends a JSON-RPC request through the transport.
+func (c *Client) sendRequest(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.transport.roundTrip(ctx, req)
+}
+
+func (c *Client) sendNotification(notif jsonrpcNotification) error {
+	// Notifications don't expect a response; for SSE transport they're
+	// sent as POST requests that we intentionally ignore the response.
+	// For stdio transport, notifications are fire-and-forget writes.
+	// Use roundTrip which works for both transports.
+	req := jsonrpcRequest{
+		JSONRPC: notif.JSONRPC,
+		Method:  notif.Method,
+		Params:  notif.Params,
 	}
+	_, _ = c.transport.roundTrip(context.Background(), req)
 	return nil
 }
 
-// ── JSON-RPC Protocol ────────────────────────────────────
+func (c *Client) nextID() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id := c.idCounter
+	c.idCounter++
+	return id
+}
 
+// jsonrpcRequest is a JSON-RPC 2.0 request.
 type jsonrpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      int    `json:"id"`
@@ -207,6 +195,7 @@ type jsonrpcNotification struct {
 	Params  any    `json:"params,omitempty"`
 }
 
+// jsonrpcResponse is a JSON-RPC 2.0 response.
 type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      int             `json:"id"`
@@ -217,65 +206,6 @@ type jsonrpcResponse struct {
 type jsonrpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
-}
-
-func (c *Client) nextID() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	id := c.idCounter
-	c.idCounter++
-	return id
-}
-
-func (c *Client) sendRequest(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	data, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	if _, err := fmt.Fprintf(c.stdin, "%s\n", data); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	// Read response with timeout.
-	type result struct {
-		resp *jsonrpcResponse
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		if c.stdout.Scan() {
-			var resp jsonrpcResponse
-			if err := json.Unmarshal(c.stdout.Bytes(), &resp); err != nil {
-				ch <- result{nil, err}
-				return
-			}
-			ch <- result{&resp, nil}
-		} else {
-			ch <- result{nil, fmt.Errorf("connection closed")}
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		return r.resp, r.err
-	case <-time.After(30 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for response")
-	}
-}
-
-func (c *Client) sendNotification(notif jsonrpcNotification) error {
-	data, err := json.Marshal(notif)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(c.stdin, "%s\n", data)
-	return err
 }
 
 // ServerConfig holds MCP server connection configuration.
@@ -292,7 +222,7 @@ func ConnectFromConfig(ctx context.Context, cfg ServerConfig) (*Client, error) {
 		return ConnectStdio(ctx, cfg.Name, cfg.Command, cfg.Args)
 	}
 	if cfg.URL != "" {
-		return nil, fmt.Errorf("SSE transport not yet supported in public API")
+		return ConnectSSE(ctx, cfg.Name, cfg.URL)
 	}
 	return nil, fmt.Errorf("either command or url is required")
 }
@@ -303,11 +233,9 @@ func DiscoverServers(projectDir string) []ServerConfig {
 	var servers []ServerConfig
 	seen := make(map[string]bool)
 
-	// ~/.claude.json
 	if home != "" {
 		servers = append(servers, scanClaudeConfig(home+"/.claude.json", seen)...)
 	}
-	// Project .claude/settings.json
 	if projectDir != "" {
 		servers = append(servers, scanClaudeConfig(projectDir+"/.claude/settings.json", seen)...)
 	}

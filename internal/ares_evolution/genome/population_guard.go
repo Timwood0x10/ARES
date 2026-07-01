@@ -172,10 +172,6 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 // this, consider enabling spatial indexing (grid-based KD-tree or similar) to
 // achieve sub-linear neighbor queries. See TODO below.
 //
-// TODO(spatial-index): For populations > 500 agents, implement a grid-based
-// spatial index on normalized parameter space to achieve O(log m) nearest-
-// neighbor lookups instead of O(m) sampling. This would reduce overall
-// complexity to O(m log m × k).
 // ---------------------------------------------------------------------------
 
 // applyFitnessSharing reduces scores of agents in crowded regions of parameter space.
@@ -225,13 +221,17 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 
 	// PERF: Choose computation strategy based on population size.
 	// Small populations use exact pairwise distances with matrix caching;
-	// large populations use randomized neighbor sampling to bound cost.
-	// The threshold and sample size are configurable via PopulationConfig.
+	// large populations use randomized neighbor sampling to bound cost;
+	// very large populations use grid-based spatial indexing to achieve
+	// sub-linear neighbor lookup. Thresholds are configurable.
 	limit := p.cfg.FitnessSharingSampleLimit
+	spatial := p.cfg.SpatialIndexThreshold
 	if limit <= 0 {
 		limit = m + 1 // Disable sampling: always use exact mode
 	}
-	if m <= limit {
+	if spatial > 0 && m > spatial {
+		p.applyFitnessSharingSpatial(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
+	} else if m <= limit {
 		p.applyFitnessSharingExact(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
 	} else {
 		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
@@ -333,6 +333,59 @@ func (p *Population) applyFitnessSharingSampled(
 				continue
 			}
 			dist := paramDistance(scored[ki], scored[kj], keys, ranges)
+			if dist < nicheRadius {
+				crowdCount++
+			}
+		}
+
+		if crowdCount > 0 {
+			penalty := shareSigma * float64(crowdCount)
+			p.Agents[i].Score /= (1.0 + penalty)
+		}
+	}
+}
+
+// applyFitnessSharingSpatial computes fitness sharing penalties using grid-based
+// spatial indexing. For very large populations (configurable via SpatialIndexThreshold),
+// this scales sub-linearly by only comparing each agent against neighbors in the
+// same or adjacent grid cells rather than random sampling or the full population.
+//
+// The spatial index is built on the top-N highest-variance float parameters
+// (capped at maxSpatialDims=6 to keep cell enumeration tractable). Distance
+// calculations still use the full parameter space.
+func (p *Population) applyFitnessSharingSpatial(
+	scoredIdx []int,
+	scored []*mutation.Strategy,
+	keys []string,
+	ranges map[string]float64,
+	eliteCount int,
+	nicheRadius float64,
+	shareSigma float64,
+) {
+	m := len(scoredIdx)
+	if m < 2 {
+		return
+	}
+
+	sidx := newSpatialIndex(scoredIdx, scored, keys, ranges, nicheRadius)
+	if sidx == nil {
+		// Fallback to sampled mode when spatial indexing doesn't apply.
+		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
+		return
+	}
+
+	for ki, i := range scoredIdx {
+		if i < eliteCount {
+			continue
+		}
+
+		neighbors := sidx.neighborsWithin(ki)
+		crowdCount := 0
+		for _, nk := range neighbors {
+			if nk == ki {
+				continue
+			}
+			dist := paramDistance(scored[ki], scored[nk], keys, ranges)
 			if dist < nicheRadius {
 				crowdCount++
 			}
