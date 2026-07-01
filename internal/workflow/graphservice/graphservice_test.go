@@ -43,7 +43,7 @@ func TestExecute_Validation(t *testing.T) {
 	t.Run("nil request", func(t *testing.T) {
 		s, _ := NewService(&Config{})
 		g, _ := wfgraph.NewGraph("test")
-		g.Start("a")
+		_, _ = g.Start("a")
 		_, err := s.Execute(ctx, g, nil)
 		if err != ErrInvalidRequest {
 			t.Errorf("expected ErrInvalidRequest, got %v", err)
@@ -59,8 +59,8 @@ func TestExecute_HappyPath(t *testing.T) {
 		st.Set("result", 42)
 		return nil
 	})
-	g.Node("a", fn)
-	g.Start("a")
+	_, _ = g.Node("a", fn)
+	_, _ = g.Start("a")
 
 	resp, err := s.Execute(ctx, g, &ExecuteRequest{GraphID: "test-graph"})
 	if err != nil {
@@ -82,8 +82,8 @@ func TestExecute_Timeout(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	})
-	g.Node("a", fn)
-	g.Start("a")
+	_, _ = g.Node("a", fn)
+	_, _ = g.Start("a")
 
 	_, err := s.Execute(ctx, g, &ExecuteRequest{
 		GraphID: "test",

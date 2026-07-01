@@ -875,7 +875,7 @@ func TestExecuteTask_SecondUpdateFails_StillReturnsResult(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	err := repo.mockAgentRepository.Create(ctx, &core.Agent{ID: "a1", Name: "alpha", Status: core.AgentStatusReady})
+	err := repo.Create(ctx, &core.Agent{ID: "a1", Name: "alpha", Status: core.AgentStatusReady})
 	require.NoError(t, err)
 
 	svc := newTestService(repo)
@@ -968,12 +968,11 @@ func TestGetTaskResult_ReturnsCopy(t *testing.T) {
 
 func TestGetTaskResult_ConcurrentSafe(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(newMockAgentRepository())
 
 	// Store a result directly via ExecuteTask is not possible without a repo,
 	// so we test concurrent reads of a known key. We'll create an agent+task.
 	repo := newMockAgentRepository()
-	svc = newTestService(repo)
+	svc := newTestService(repo)
 	err := repo.Create(ctx, &core.Agent{ID: "a1", Name: "alpha", Status: core.AgentStatusReady})
 	require.NoError(t, err)
 

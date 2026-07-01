@@ -539,9 +539,7 @@ func TestClient_SendNotification(t *testing.T) {
 
 func TestDiscoverServers_NoHomeDir(t *testing.T) {
 	// Temporarily override HOME to a non-existent directory.
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
-	os.Setenv("HOME", "/nonexistent/home")
+	t.Setenv("HOME", "/nonexistent/home")
 
 	servers := DiscoverServers("")
 	if len(servers) != 0 {
@@ -551,9 +549,7 @@ func TestDiscoverServers_NoHomeDir(t *testing.T) {
 
 func TestDiscoverServers_ProjectDirOnly(t *testing.T) {
 	// Temporarily override HOME to a non-existent directory to avoid noise.
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
-	os.Setenv("HOME", "/nonexistent/home")
+	t.Setenv("HOME", "/nonexistent/home")
 
 	dir := t.TempDir()
 	settingsDir := filepath.Join(dir, ".claude")
@@ -624,9 +620,7 @@ func TestDiscoverServers_GlobalAndProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
-	os.Setenv("HOME", homeDir)
+	t.Setenv("HOME", homeDir)
 
 	servers := DiscoverServers(projectDir)
 	if len(servers) != 2 {
@@ -680,9 +674,7 @@ func TestDiscoverServers_Deduplication(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
-	os.Setenv("HOME", homeDir)
+	t.Setenv("HOME", homeDir)
 
 	servers := DiscoverServers(projectDir)
 	if len(servers) != 1 {

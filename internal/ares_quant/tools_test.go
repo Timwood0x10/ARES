@@ -2,7 +2,6 @@ package ares_quant
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -234,10 +233,4 @@ func TestTechnicalIndicatorsTool_Config(t *testing.T) {
 	require.NotNil(t, params)
 	assert.Contains(t, params.Required, "ticker")
 	assert.Contains(t, params.Required, "indicator")
-}
-
-// ─── Candles helper ──────────────────────────────────────────
-
-func candle(close float64) market.Candle {
-	return market.Candle{Close: close, Date: time.Now()}
 }

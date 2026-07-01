@@ -40,7 +40,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 		return nil, fmt.Errorf("sse connect: %w", err)
 	}
 	if sseResp.StatusCode != http.StatusOK {
-		sseResp.Body.Close()
+		_ = sseResp.Body.Close()
 		return nil, fmt.Errorf("sse connect: unexpected status %d", sseResp.StatusCode)
 	}
 
@@ -51,7 +51,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	endpoint, err := tr.readEndpointEvent()
 	if err != nil {
 		tr.sseCancel()
-		sseResp.Body.Close()
+		_ = sseResp.Body.Close()
 		return nil, fmt.Errorf("read endpoint: %w", err)
 	}
 	tr.messageURL = endpoint
@@ -63,7 +63,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	}
 
 	if err := c.initialize(ctx); err != nil {
-		tr.close()
+		_ = tr.close()
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
@@ -117,7 +117,7 @@ func (tr *sseTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jsonr
 	if err != nil {
 		return nil, fmt.Errorf("post: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("post: unexpected status %d", httpResp.StatusCode)

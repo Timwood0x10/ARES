@@ -236,6 +236,22 @@ Do this first because promotion and scoring decisions are only as good as the ev
   - Verification:
     - Add a test with one dominant lineage and several weaker lineages; the selector should still sample from non-dominant lineages.
 
+- [ ] Add a prompt diversity guard for categorical collapse.
+  - Current issue: `categorical_diversity=0` means every individual has converged to the same prompt template. Lineage-aware selection can preserve numeric and ancestry diversity, but it does not directly keep alternative prompt templates alive.
+  - Code to change:
+    - `internal/ares_evolution/genome/population_guard.go`: add `preservePromptDiversityLocked()` or fold this into elite preservation with a clear guard name.
+    - `internal/ares_evolution/genome/population.go`: add config such as `PromptDiversityGuardEnabled`, `MinPromptTemplates`, and `PromptDiversityScoreFloor`.
+    - `internal/ares_evolution/genome/diversity.go` or the existing diversity report path: expose prompt-template counts so the report can explain which template collapsed.
+  - Behavior:
+    - If all selected survivors use one prompt template and the previous/current population contains alternatives, force-retain at least one different prompt-template individual as an exploration seed.
+    - Apply a score floor or max-retention age so a consistently bad prompt does not live forever just because it is different.
+    - Mark retained seeds in lineage/report data as `prompt_diversity_seed`.
+  - Example change:
+    - Scenario report should show `Prompt Templates: helpful=19, precise=1 (guard retained precise as exploration seed)` instead of `categorical_diversity=0` with no explanation.
+  - Verification:
+    - Add a deterministic test where the top survivors all use `helpful`, one low-score individual uses `precise`, and the guard keeps one `precise` seed.
+    - Add a second test where the alternative prompt remains bad for N generations and is allowed to expire.
+
 - [ ] Revisit elite preservation granularity.
   - Current issue: global elite count protects the top 10%, but in wired mode this can effectively discard many independent threads each generation.
   - Code to change:
@@ -272,7 +288,7 @@ Do this first because promotion and scoring decisions are only as good as the ev
 1. Evidence binding: make GA winners query real evidence correctly.
 2. Generation logging and aggregation cleanup: make the demo trustworthy and readable.
 3. Promotion improvement gate: prevent safe-but-stagnant champions.
-4. Lineage-aware selection and per-lineage elites: preserve useful diversity in wired mode.
+4. Lineage-aware selection, prompt diversity guard, and per-lineage elites: preserve useful numeric, categorical, and ancestry diversity in wired mode.
 5. Recovery-action reporting: separate mutation-rate boosts from fresh injections.
 6. Meta-evolution: let the system choose selection and control parameters dynamically.
 
@@ -300,5 +316,6 @@ Do this first because promotion and scoring decisions are only as good as the ev
 - A GA winner can be traced to real evidence by strategy ID or phenotype key.
 - Promotion cannot happen on success/confidence alone when score improvement is flat.
 - Wired mode preserves more than one dominant lineage unless evidence strongly justifies convergence.
+- Prompt-template convergence is either prevented by a retained exploration seed or explicitly explained as evidence-justified.
 - Scenario logs explain which recovery mechanism fired and why.
 - Reports move from “what happened” toward “why the system chose this control action.”

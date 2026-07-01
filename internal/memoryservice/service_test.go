@@ -176,7 +176,7 @@ func TestService_CreateSession(t *testing.T) {
 	})
 	t.Run("repo error", func(t *testing.T) {
 		repo := new(mockMemoryRepo)
-		repo.On("CreateSession", ctx, mock.AnythingOfType("*core.Session")).Return(assertAnError)
+		repo.On("CreateSession", ctx, mock.AnythingOfType("*core.Session")).Return(errAssertAnError)
 		s := &Service{repo: repo}
 		id, err := s.CreateSession(ctx, &core.SessionConfig{UserID: "u1", TenantID: "t1"})
 		require.Empty(t, id)
@@ -241,7 +241,7 @@ func TestService_DeleteSession(t *testing.T) {
 	})
 	t.Run("repo error on get", func(t *testing.T) {
 		repo := new(mockMemoryRepo)
-		repo.On("GetSession", ctx, "s1").Return((*core.Session)(nil), assertAnError)
+		repo.On("GetSession", ctx, "s1").Return((*core.Session)(nil), errAssertAnError)
 		s := &Service{repo: repo}
 		err := s.DeleteSession(ctx, "s1")
 		require.Error(t, err)
@@ -439,7 +439,7 @@ func TestTruncateString(t *testing.T) {
 	require.Len(t, result, 13)
 }
 
-var assertAnError = errors.New("expected error")
+var errAssertAnError = errors.New("expected error")
 
 func TestMemoryRepository(t *testing.T) {
 	ctx := context.Background()
@@ -462,7 +462,8 @@ func TestMemoryRepository(t *testing.T) {
 		require.ErrorIs(t, err, ErrSessionNotFound)
 	})
 	t.Run("UpdateSession", func(t *testing.T) {
-		r.UpdateSession(ctx, &core.Session{ID: "s1", UserID: "u1-updated"})
+		err := r.UpdateSession(ctx, &core.Session{ID: "s1", UserID: "u1-updated"})
+		require.NoError(t, err)
 		got, _ := r.GetSession(ctx, "s1")
 		require.Equal(t, "u1-updated", got.UserID)
 	})
@@ -478,10 +479,12 @@ func TestMemoryRepository(t *testing.T) {
 	})
 	t.Run("DeleteSession", func(t *testing.T) {
 		r2 := NewMemoryRepository()
-		r2.CreateSession(ctx, &core.Session{ID: "del1", UserID: "u1"})
-		r2.AddMessage(ctx, &core.Message{SessionID: "del1", Content: "x", Role: "user"})
+		err := r2.CreateSession(ctx, &core.Session{ID: "del1", UserID: "u1"})
+		require.NoError(t, err)
+		err = r2.AddMessage(ctx, &core.Message{SessionID: "del1", Content: "x", Role: "user"})
+		require.NoError(t, err)
 
-		err := r2.DeleteSession(ctx, "del1")
+		err = r2.DeleteSession(ctx, "del1")
 		require.NoError(t, err)
 
 		_, err = r2.GetSession(ctx, "del1")
@@ -504,12 +507,14 @@ func TestMemoryRepository(t *testing.T) {
 	})
 	t.Run("SearchSimilarTasks", func(t *testing.T) {
 		r3 := NewMemoryRepository()
-		r3.StoreDistilledTask(ctx, &core.DistilledTask{
+		err := r3.StoreDistilledTask(ctx, &core.DistilledTask{
 			TaskID: "search1", Tags: []string{"important"}, Input: "data",
 		})
-		r3.StoreDistilledTask(ctx, &core.DistilledTask{
+		require.NoError(t, err)
+		err = r3.StoreDistilledTask(ctx, &core.DistilledTask{
 			TaskID: "search2", Tags: []string{"other"}, Input: "more",
 		})
+		require.NoError(t, err)
 
 		results, err := r3.SearchSimilarTasks(ctx, &core.SearchQuery{
 			Query: "test",
