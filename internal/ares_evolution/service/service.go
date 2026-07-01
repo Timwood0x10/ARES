@@ -14,8 +14,10 @@ import (
 	"time"
 
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 )
 
@@ -239,6 +241,54 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		system.Reflector = genome.NewLLMReflector(llmAdapter)
 		system.HypothesisGen = genome.NewHypothesisGenerator(0.3)
 		system.MetaCtrl = genome.NewMetaController(genome.DefaultMetaConfig())
+	}
+
+	// Wire post-evolution hook for promotion evaluation and reporting.
+	evidenceAgg := resolveEvidenceAggregator(cfg.EvidenceAggregator)
+	promoter := resolvePromotionLogic(cfg.PromotionLogic)
+	if evidenceAgg != nil || promoter != nil {
+		system.AfterGeneration = func(ctx context.Context, gen int, sys *evolution.WiredEvolutionSystem) error {
+			best := sys.Population.Best()
+			if best == nil {
+				return nil
+			}
+
+			var ev Evidence
+			if evidenceAgg != nil {
+				var err error
+				ev, err = evidenceAgg(ctx, best.ID)
+				if err != nil {
+					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
+						"generation", gen, "strategy_id", best.ID, "error", err)
+				}
+			}
+
+			if promoter != nil && ev.SampleCount > 0 {
+				state, reason, err := promoter(ctx, best.ID, ev)
+				if err != nil {
+					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
+						"generation", gen, "strategy_id", best.ID, "error", err)
+				} else {
+					slog.InfoContext(ctx, "post-generation promotion evaluation",
+						"generation", gen,
+						"winner", best.ID,
+						"fitness", best.Score,
+						"success_rate", ev.SuccessRate,
+						"sample_count", ev.SampleCount,
+						"confidence", ev.Confidence,
+						"promotion_state", state,
+						"reason", reason,
+					)
+				}
+			} else {
+				slog.InfoContext(ctx, "generation complete",
+					"generation", gen,
+					"winner", best.ID,
+					"fitness", best.Score,
+				)
+			}
+			return nil
+		}
 	}
 
 	return system, nil
@@ -872,6 +922,81 @@ func (s *Service) recordGenealogy(prevBest *mutation.Strategy) {
 		ScoreDelta:   scoreDelta,
 		Timestamp:    time.Now().UnixMilli(),
 	})
+}
+
+// resolveEvidenceAggregator unwraps cfg.EvidenceAggregator, which can be
+// either a local EvidenceAggregator or an internal experience.EvidenceAggregator.
+// Returns nil when v is nil.
+func resolveEvidenceAggregator(v interface{}) func(ctx context.Context, strategyID string) (Evidence, error) {
+	if v == nil {
+		return nil
+	}
+	// Local interface.
+	if local, ok := v.(EvidenceAggregator); ok {
+		return local.Aggregate
+	}
+	// Internal experience.EvidenceAggregator — wrap with adapter.
+	if internal, ok := v.(experience.EvidenceAggregator); ok {
+		return func(ctx context.Context, strategyID string) (Evidence, error) {
+			ev, err := internal.Aggregate(ctx, strategyID)
+			if err != nil {
+				return Evidence{}, err
+			}
+			return Evidence{
+				StrategyID:  ev.StrategyID,
+				SuccessRate: ev.SuccessRate,
+				LatencyP50:  ev.LatencyP50,
+				ErrorRate:   ev.ErrorRate,
+				SampleCount: ev.SampleCount,
+				Confidence:  ev.Confidence,
+			}, nil
+		}
+	}
+	slog.Warn("evidence aggregator: unrecognised type, ignoring",
+		"type", fmt.Sprintf("%T", v))
+	return nil
+}
+
+// resolvePromotionLogic unwraps cfg.PromotionLogic, which can be
+// either a local PromotionLogic or an internal promotion.PromotionLogic.
+// Returns nil when v is nil.
+func resolvePromotionLogic(v interface{}) func(ctx context.Context, strategyID string, evidence Evidence) (string, string, error) {
+	if v == nil {
+		return nil
+	}
+	// Local interface.
+	if local, ok := v.(PromotionLogic); ok {
+		return local.Evaluate
+	}
+	// Internal promotion.PromotionLogic — wrap with adapter.
+	if internal, ok := v.(promotion.PromotionLogic); ok {
+		return func(ctx context.Context, strategyID string, evidence Evidence) (string, string, error) {
+			ev, err := toInternalEvidence(evidence)
+			if err != nil {
+				return "", "", err
+			}
+			state, reason, err := internal.Evaluate(ctx, strategyID, ev)
+			if err != nil {
+				return "", "", err
+			}
+			return string(state), reason, nil
+		}
+	}
+	slog.Warn("promotion logic: unrecognised type, ignoring",
+		"type", fmt.Sprintf("%T", v))
+	return nil
+}
+
+// toInternalEvidence converts a local Evidence to internal experience.Evidence.
+func toInternalEvidence(ev Evidence) (experience.Evidence, error) {
+	return experience.Evidence{
+		StrategyID:  ev.StrategyID,
+		SuccessRate: ev.SuccessRate,
+		LatencyP50:  ev.LatencyP50,
+		ErrorRate:   ev.ErrorRate,
+		SampleCount: ev.SampleCount,
+		Confidence:  ev.Confidence,
+	}, nil
 }
 
 // recordLineages records lineage entries for each offspring in non-wired mode,

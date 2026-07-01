@@ -11,6 +11,7 @@ import (
 type MockExperienceStore struct {
 	mu           sync.RWMutex
 	experiences  []NormalizedExperience
+	appendErr    error
 	queryFunc    func(ctx context.Context, strategyID string, startTime, endTime time.Time) ([]NormalizedExperience, error)
 	taskTypeFunc func(ctx context.Context, taskType string, limit int) ([]NormalizedExperience, error)
 }
@@ -23,6 +24,9 @@ func NewMockExperienceStore() *MockExperienceStore {
 }
 
 func (m *MockExperienceStore) Append(ctx context.Context, exp NormalizedExperience) error {
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.experiences = append(m.experiences, exp)
@@ -30,6 +34,9 @@ func (m *MockExperienceStore) Append(ctx context.Context, exp NormalizedExperien
 }
 
 func (m *MockExperienceStore) AppendBatch(ctx context.Context, exps []NormalizedExperience) error {
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.experiences = append(m.experiences, exps...)

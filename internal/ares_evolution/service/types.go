@@ -96,6 +96,33 @@ type GuidanceProvider interface {
 	RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error
 }
 
+// EvidenceAggregator provides aggregated evidence for a strategy,
+// used by the post-evolution promotion/report hook.
+type EvidenceAggregator interface {
+	// Aggregate returns aggregated multi-dimensional evidence for a strategy.
+	Aggregate(ctx context.Context, strategyID string) (Evidence, error)
+}
+
+// PromotionLogic evaluates strategies for champion/candidate/demotion
+// decisions after each evolution generation.
+type PromotionLogic interface {
+	// Evaluate checks whether a strategy should be promoted, demoted,
+	// or kept at the current level based on its evidence.
+	// Returns the suggested state, a human-readable reason, and any error.
+	Evaluate(ctx context.Context, strategyID string, evidence Evidence) (state string, reason string, err error)
+}
+
+// Evidence holds aggregated statistics for a strategy, used by the
+// post-evolution promotion/report hook.
+type Evidence struct {
+	StrategyID  string
+	SuccessRate float64
+	LatencyP50  int64
+	ErrorRate   float64
+	SampleCount int64
+	Confidence  float64
+}
+
 // MemoryExperienceProvider provides access to past experiences for
 // memory-aware scoring. Implementations may query a vector database,
 // keyword index, or other experience store.
@@ -357,6 +384,22 @@ type SystemConfig struct {
 	// MemoryAwareScoringConfig.Enabled is true and MemoryExperienceProvider
 	// is non-nil, the tiered scorer wraps with memory adjustments.
 	MemoryAwareScoringConfig MemoryAwareScoringConfig
+
+	// EvidenceAggregator provides aggregated evidence for post-evolution
+	// promotion evaluation and reporting. Accepts either:
+	//   - experience.EvidenceAggregator (internal)
+	//   - evolution.EvidenceAggregator (local interface)
+	// When non-nil, the AfterGeneration hook uses it to produce evidence
+	// for the best strategy each generation.
+	EvidenceAggregator interface{}
+
+	// PromotionLogic evaluates strategies for promotion after each evolution
+	// generation. Accepts either:
+	//   - promotion.PromotionLogic (internal)
+	//   - evolution.PromotionLogic (local interface)
+	// When non-nil AND EvidenceAggregator is also set, the AfterGeneration
+	// hook calls Evaluate on the best strategy each round and logs the result.
+	PromotionLogic interface{}
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.

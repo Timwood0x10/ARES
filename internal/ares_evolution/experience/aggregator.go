@@ -100,7 +100,6 @@ type DefaultEvidenceAggregator struct {
 	store  ExperienceStore
 	config *AggregatorConfig
 	cache  *evidenceCache
-	mu     sync.RWMutex
 }
 
 // evidenceCache holds cached evidence with expiration tracking.

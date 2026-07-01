@@ -34,6 +34,14 @@ type WiredEvolutionSystem struct {
 	Reflector     *genome.LLMReflector        `json:"-"`
 	HypothesisGen *genome.HypothesisGenerator `json:"-"`
 	MetaCtrl      *genome.MetaController      `json:"-"`
+
+	// AfterGeneration is called after each idle evolution generation with
+	// the generation index and the system. When non-nil, it receives the
+	// fully evolved state (population already scored, lineage recorded).
+	// Can be used for promotion evaluation, report generation, or metrics.
+	// Returning an error is non-fatal — the error is logged and evolution
+	// continues to the next generation.
+	AfterGeneration func(ctx context.Context, gen int, system *WiredEvolutionSystem) error `json:"-"`
 }
 
 // ScoringConfig groups scorer pipeline settings.
@@ -698,6 +706,14 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// Apply meta-controller tuning to self-adapt evolution hyperparameters.
 		if system.MetaCtrl != nil {
 			genome.ApplyMetaToPopulation(system.Population, system.MetaCtrl)
+		}
+
+		// Run the post-generation hook (promotion, report, etc.).
+		if system.AfterGeneration != nil {
+			if err := system.AfterGeneration(ctx, gen, system); err != nil {
+				slog.WarnContext(ctx, "[RunIdleEvolution] AfterGeneration hook failed",
+					"generation", gen, "error", err)
+			}
 		}
 	}
 
