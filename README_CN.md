@@ -80,6 +80,9 @@ graph TB
         EvoSvc["Evolution Service"]
         Pop["GA 种群"]
         Score["评分管线"]
+        EvidAgg["证据聚合器"]
+        Promo["推广逻辑"]
+        Report["进化报告"]
         Cross["交叉"]
         Mut["变异"]
         EvoSvc --> Pop
@@ -87,6 +90,17 @@ graph TB
         Score --> Cross
         Cross --> Mut
         Mut --> Pop
+        Score -->|"每代"| EvidAgg
+        EvidAgg -->|"证据"| Promo
+        Promo -->|"运行结束"| Report
+        ExpStore["经验存储"]
+        Norm["标准化器"]
+        OutcomeRec["结果记录器"]
+        ToolCollect["工具调用收集器"]
+        OutcomeRec --> Norm
+        ToolCollect --> Norm
+        Norm --> ExpStore
+        ExpStore --> EvidAgg
     end
 
     subgraph hitl ["人工审批"]

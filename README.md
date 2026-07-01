@@ -80,6 +80,9 @@ graph TB
         EvoSvc["Evolution Service"]
         Pop["GA Population"]
         Score["Scoring Pipeline"]
+        EvidAgg["Evidence Aggregator"]
+        Promo["Promotion Logic"]
+        Report["Evolution Report"]
         Cross["Crossover"]
         Mut["Mutation"]
         EvoSvc --> Pop
@@ -87,6 +90,17 @@ graph TB
         Score --> Cross
         Cross --> Mut
         Mut --> Pop
+        Score -->|"per-generation"| EvidAgg
+        EvidAgg -->|"evidence"| Promo
+        Promo -->|"after all gens"| Report
+        ExpStore["Experience Store"]
+        Norm["Normalizer"]
+        OutcomeRec["Outcome Recorder"]
+        ToolCollect["Tool Call Collector"]
+        OutcomeRec --> Norm
+        ToolCollect --> Norm
+        Norm --> ExpStore
+        ExpStore --> EvidAgg
     end
 
     subgraph hitl ["Human-in-the-Loop"]
@@ -145,9 +159,11 @@ graph TB
     end
 
     EmbedSvc["Embedding Service"]
+    ReportFile["Report File"]
 
     evo -->|"stores results"| Distilled
     evo -->|"uses"| Score
+    Report -->|"persists to"| ReportFile
 
     Leader --> MutableDAG
     Leader --> Session
@@ -378,6 +394,9 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Event-driven callback system for LLM/Tool/Agent lifecycle hooks
 - Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
 - Elite preservation and adaptive survival rate across generations
+- Post-run evolution report generation: winner score, generation trajectory, scorer cost summary, lineage concentration, and promotion summary persisted to file
+- Evidence aggregation and promotion evaluation pipeline: per-generation evidence collection with success rate, latency, error rate, confidence; promotion state/reason computed for champion/candidate decisions
+- AfterRun hook for finalization: one-shot evidence collection, promotion evaluation, report generation, and file persistence
 
 **Plugin System**
 - PluginBus: centralized plugin registry and lifecycle manager. Thread-safe Start/Stop with reverse-order shutdown, duplicate detection, and started-state guards.

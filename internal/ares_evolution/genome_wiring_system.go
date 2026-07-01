@@ -42,6 +42,12 @@ type WiredEvolutionSystem struct {
 	// Returning an error is non-fatal — the error is logged and evolution
 	// continues to the next generation.
 	AfterGeneration func(ctx context.Context, gen int, system *WiredEvolutionSystem) error `json:"-"`
+
+	// AfterRun is called once after RunIdleEvolution completes all generations.
+	// When non-nil, it receives the final system state after the evolution loop
+	// ends. Can be used for final report generation, persistence, or cleanup.
+	// Returning an error is non-fatal — the error is logged but not propagated.
+	AfterRun func(ctx context.Context, system *WiredEvolutionSystem) error `json:"-"`
 }
 
 // ScoringConfig groups scorer pipeline settings.
@@ -714,6 +720,14 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 				slog.WarnContext(ctx, "[RunIdleEvolution] AfterGeneration hook failed",
 					"generation", gen, "error", err)
 			}
+		}
+	}
+
+	// Run the post-run hook for final report generation.
+	if system.AfterRun != nil {
+		if err := system.AfterRun(ctx, system); err != nil {
+			slog.WarnContext(ctx, "[RunIdleEvolution] AfterRun hook failed",
+				"error", err)
 		}
 	}
 

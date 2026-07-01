@@ -3,8 +3,15 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+)
+
+// Sentinel errors for common domain conditions.
+var (
+	// ErrNotFound indicates the requested entity does not exist.
+	ErrNotFound = errors.New("not found")
 )
 
 // New creates a new error with the given message.

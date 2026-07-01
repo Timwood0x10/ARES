@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // MemoryRepository provides an in-memory implementation of MemoryRepository.
@@ -64,7 +65,7 @@ func (r *MemoryRepository) GetSession(ctx context.Context, sessionID string) (*c
 
 	session, exists := r.sessions[sessionID]
 	if !exists {
-		return nil, nil
+		return nil, apperrors.ErrNotFound
 	}
 
 	// Return a copy to avoid mutation
@@ -224,7 +225,7 @@ func (r *MemoryRepository) GetDistilledTask(ctx context.Context, taskID string) 
 
 	task, exists := r.tasks[taskID]
 	if !exists {
-		return nil, nil
+		return nil, apperrors.ErrNotFound
 	}
 
 	// Return a copy to avoid mutation

@@ -47,6 +47,21 @@ type EvolutionReport struct {
 
 	// LineageConcentration tracks dominant lineage share (if available).
 	LineageConcentration *LineageConcentration `json:"lineage_concentration,omitempty"`
+
+	// WinnerStrategyID is the ID of the best strategy at run completion.
+	WinnerStrategyID string `json:"winner_strategy_id,omitempty"`
+	// WinnerScore is the final score of the best strategy.
+	WinnerScore float64 `json:"winner_score,omitempty"`
+	// PromotionState is the state of the winner (candidate/shadow/champion/demoted).
+	PromotionState string `json:"promotion_state,omitempty"`
+	// PromotionReason explains the promotion decision.
+	PromotionReason string `json:"promotion_reason,omitempty"`
+	// SuccessRate from evidence aggregation.
+	SuccessRate float64 `json:"success_rate,omitempty"`
+	// SampleCount from evidence aggregation.
+	SampleCount int64 `json:"sample_count,omitempty"`
+	// Confidence from evidence aggregation.
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // ScorerCostSummary summarizes scorer resource usage.
@@ -116,6 +131,12 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 		return nil, fmt.Errorf("generate report: %w", ErrNilSystem)
 	}
 
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	cfg := &reportConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -183,11 +204,17 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 	}
 
 	// Inject scorer cost summary if provided.
-	if cfg.scoringStats != nil && len(cfg.budgetUsage) >= 4 {
+	if cfg.scoringStats != nil && len(cfg.budgetUsage) >= 2 {
+		cacheHits := 0
+		fallbacks := 0
+		if len(cfg.budgetUsage) >= 4 {
+			cacheHits = cfg.budgetUsage[2]
+			fallbacks = cfg.budgetUsage[3]
+		}
 		report.ScorerCostSummary = &ScorerCostSummary{
 			TotalLLMCalls:  int(cfg.scoringStats["llm_calls"]),
-			TotalCacheHits: int(cfg.scoringStats["cache_hits"]),
-			TotalFallbacks: int(cfg.scoringStats["fallbacks"]),
+			TotalCacheHits: cacheHits,
+			TotalFallbacks: fallbacks,
 			LLMBudgetUsed:  cfg.budgetUsage[0],
 			LLMBudgetMax:   cfg.budgetUsage[1],
 		}
@@ -347,6 +374,28 @@ func ReportString(r *EvolutionReport) string {
 		b.WriteString("\n--- Lineage Concentration ---\n")
 		fmt.Fprintf(&b, "  Top Lineage Share: %.2f%%\n", lc.TopLineageShare*100)
 		fmt.Fprintf(&b, "  Unique Lineages:   %d\n", lc.UniqueLineages)
+	}
+
+	// Promotion and evidence summary.
+	if r.PromotionState != "" || r.WinnerStrategyID != "" {
+		b.WriteString("\n--- Promotion Summary ---\n")
+		if r.WinnerStrategyID != "" {
+			fmt.Fprintf(&b, "  Winner:        %s\n", r.WinnerStrategyID)
+		}
+		if r.WinnerScore > 0 || r.WinnerStrategyID != "" {
+			fmt.Fprintf(&b, "  Winner Score:  %.4f\n", r.WinnerScore)
+		}
+		if r.PromotionState != "" {
+			fmt.Fprintf(&b, "  State:         %s\n", r.PromotionState)
+		}
+		if r.PromotionReason != "" {
+			fmt.Fprintf(&b, "  Reason:        %s\n", r.PromotionReason)
+		}
+		if r.SampleCount > 0 {
+			fmt.Fprintf(&b, "  Samples:       %d\n", r.SampleCount)
+			fmt.Fprintf(&b, "  Success Rate:  %.2f%%\n", r.SuccessRate*100)
+			fmt.Fprintf(&b, "  Confidence:    %.2f%%\n", r.Confidence*100)
+		}
 	}
 
 	b.WriteString("========================\n")

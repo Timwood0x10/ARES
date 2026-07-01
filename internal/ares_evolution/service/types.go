@@ -400,6 +400,12 @@ type SystemConfig struct {
 	// When non-nil AND EvidenceAggregator is also set, the AfterGeneration
 	// hook calls Evaluate on the best strategy each round and logs the result.
 	PromotionLogic interface{}
+
+	// ReportPath is the optional path to write the evolution report after
+	// RunIdleEvolution completes. When non-empty, a human-readable report
+	// is saved to this file. Parent directories are created automatically.
+	// Example: "var/evolution/report.txt"
+	ReportPath string
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.

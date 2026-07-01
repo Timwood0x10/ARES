@@ -19,6 +19,9 @@ type EvolutionConfig struct {
 	EliteCount int
 	// ScoringMethod selects the scoring pipeline ("llm", "deterministic", "hybrid").
 	ScoringMethod string
+	// ReportPath is the optional path to write the evolution report.
+	// When non-empty, a human-readable report is saved after RunIdleEvolution completes.
+	ReportPath string
 }
 
 // Strategy represents an evolved agent strategy.
@@ -69,6 +72,15 @@ type LineageRecord struct {
 type Evolution interface {
 	// Evolve runs the evolution for the specified number of generations.
 	Evolve(ctx context.Context, generations int) (*EvolutionResult, error)
+
+	// RunIdleEvolution runs N generations of idle evolution on a wired system.
+	// When ReportPath is set on the config, a human-readable report is saved
+	// after all generations complete.
+	RunIdleEvolution(ctx context.Context, generations int) error
+
+	// LatestReport returns the most recent evolution report text.
+	// Returns empty string if no report has been generated yet.
+	LatestReport() (string, error)
 
 	// BestStrategy returns the current best strategy.
 	BestStrategy() (*EvolutionStrategy, error)

@@ -12,6 +12,7 @@ import (
 type Router struct {
 	mux     *http.ServeMux
 	streamH *handler.StreamHandler
+	evoH    *handler.EvolutionHandler
 }
 
 // NewRouter creates a new router.
@@ -28,6 +29,15 @@ type AgentProcessorFunc func(ctx any, input any) (<-chan base.AgentEvent, error)
 // RegisterStreamEndpoint registers the streaming endpoint with a processor.
 func (r *Router) RegisterStreamEndpoint(processor handler.AgentProcessor) {
 	r.mux.HandleFunc("POST /api/v1/stream", r.streamH.HandleStream(processor))
+}
+
+// RegisterEvolutionEndpoints registers evolution HTTP endpoints.
+func (r *Router) RegisterEvolutionEndpoints(evolutionHandler *handler.EvolutionHandler) {
+	r.evoH = evolutionHandler
+	r.mux.HandleFunc("POST /api/v1/evolution/start", r.evoH.HandleStart)
+	r.mux.HandleFunc("POST /api/v1/evolution/idle", r.evoH.HandleIdleStart)
+	r.mux.HandleFunc("GET /api/v1/evolution/report", r.evoH.HandleReport)
+	r.mux.HandleFunc("GET /api/v1/evolution/status", r.evoH.HandleStatus)
 }
 
 // ServeHTTP implements http.Handler.

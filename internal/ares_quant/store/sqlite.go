@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	_ "modernc.org/sqlite"
 )
 
@@ -109,7 +110,7 @@ func (s *SQLiteStore) LatestDecision(ctx context.Context, ticker string) (*Decis
 		FROM quant_decisions WHERE ticker = ? ORDER BY decision_date DESC LIMIT 1`, ticker)
 	d, err := scanDecisionRow(row)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, apperrors.ErrNotFound
 	}
 	return d, err
 }

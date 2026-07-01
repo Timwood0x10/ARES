@@ -5,6 +5,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"os"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -155,6 +156,35 @@ func (a *ARES) RunEvolution(ctx context.Context, generations int) (*evolution.Ev
 		return nil, fmt.Errorf("bootstrap: evolution not initialized")
 	}
 	return a.Evolution.Evolve(ctx, generations)
+}
+
+// RunIdleEvolution runs idle evolution with report generation.
+// When ReportPath is set on the evolution config, the report is saved to file.
+func (a *ARES) RunIdleEvolution(ctx context.Context, generations int) error {
+	if a.Evolution == nil {
+		return fmt.Errorf("bootstrap: evolution not initialized")
+	}
+	return a.Evolution.RunIdleEvolution(ctx, generations)
+}
+
+// LatestReport reads and returns the content of the latest evolution report file.
+// Returns empty string if ReportPath was not configured or the file doesn't exist.
+func (a *ARES) LatestReport() (string, error) {
+	if a.Evolution == nil {
+		return "", fmt.Errorf("bootstrap: evolution not initialized")
+	}
+
+	path := a.Evolution.ReportPath()
+	if path == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap: read report: %w", err)
+	}
+
+	return string(data), nil
 }
 
 // ExecuteArenaAction executes a chaos engineering action.

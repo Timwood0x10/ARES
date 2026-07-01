@@ -45,6 +45,14 @@ type Service struct {
 	lineages []StrategyLineage
 }
 
+// ReportPath returns the configured report file path, or empty string if not set.
+func (s *Service) ReportPath() string {
+	if s.config == nil {
+		return ""
+	}
+	return s.config.ReportPath
+}
+
 // NewService creates a new evolution service instance with the given configuration.
 //
 // Args:
@@ -89,7 +97,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 	}
 
 	if cfg.EnableWiredMode {
-		wired, err := s.createWiredSystem(cfg)
+		wired, err := s.CreateWiredSystem(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("create wired system: %w", err)
 		}
@@ -114,7 +122,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 }
 
 // createWiredSystem creates a fully wired evolution system from the API config.
-func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
+func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 
 	internalCfg := evolution.DefaultSystemConfig()
@@ -291,6 +299,9 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		}
 	}
 
+	// Wire the post-run report hook (only when ReportPath is set).
+	wireAfterRunReport(system, cfg, evidenceAgg, promoter)
+
 	return system, nil
 }
 
@@ -370,6 +381,25 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 	}
 
 	return pop, rawMutator, crosser, nil
+}
+
+// RunIdleEvolution runs idle evolution with the wired system.
+// When ReportPath is configured, the report is saved after all generations.
+//
+// Args:
+//
+//	ctx - operation context.
+//	generations - number of generations to run.
+//
+// Returns:
+//
+//	error - non-nil if system creation or evolution fails.
+func (s *Service) RunIdleEvolution(ctx context.Context, generations int) error {
+	system, err := s.CreateWiredSystem(s.config)
+	if err != nil {
+		return fmt.Errorf("run idle evolution: %w", err)
+	}
+	return evolution.RunIdleEvolution(ctx, system, generations)
 }
 
 // Evolve runs N generations of evolution and returns the complete result.

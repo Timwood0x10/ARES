@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"sync"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // MemoryStore is an in-memory ServiceStore for development and testing.
@@ -33,7 +35,7 @@ func (s *MemoryStore) Get(_ context.Context, id string) (*DiscoveredService, err
 	defer s.mu.RUnlock()
 	svc, ok := s.services[id]
 	if !ok {
-		return nil, nil
+		return nil, apperrors.ErrNotFound
 	}
 	return deepCopyService(svc), nil
 }
