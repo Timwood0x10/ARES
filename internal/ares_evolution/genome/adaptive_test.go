@@ -499,6 +499,69 @@ func TestHandleStagnation_EliteProtection(t *testing.T) {
 	t.Logf("reset %d agents (eliteCount=%d)", resetCount, 4)
 }
 
+func TestDiversityReport_PromptTemplateDistribution(t *testing.T) {
+	t.Run("reports multiple templates", func(t *testing.T) {
+		pop := &Population{
+			Agents: []*mutation.Strategy{
+				{Score: 100, PromptTemplate: "template1"},
+				{Score: 80, PromptTemplate: "template1"},
+				{Score: 60, PromptTemplate: "template2"},
+			},
+		}
+		dr := pop.measureDiversityReportLocked()
+		if dr.PromptTemplateDistribution == nil {
+			t.Fatal("PromptTemplateDistribution should not be nil")
+		}
+		if dr.PromptTemplateDistribution["template1"] != 2 {
+			t.Errorf("template1 count = %d, want 2", dr.PromptTemplateDistribution["template1"])
+		}
+		if dr.PromptTemplateDistribution["template2"] != 1 {
+			t.Errorf("template2 count = %d, want 1", dr.PromptTemplateDistribution["template2"])
+		}
+	})
+
+	t.Run("includes empty template", func(t *testing.T) {
+		pop := &Population{
+			Agents: []*mutation.Strategy{
+				{Score: 100, PromptTemplate: ""},
+				{Score: 80, PromptTemplate: "template1"},
+			},
+		}
+		dr := pop.measureDiversityReportLocked()
+		if dr.PromptTemplateDistribution[""] != 1 {
+			t.Errorf("empty template count = %d, want 1", dr.PromptTemplateDistribution[""])
+		}
+	})
+
+	t.Run("single agent still reports", func(t *testing.T) {
+		pop := &Population{
+			Agents: []*mutation.Strategy{
+				{Score: 100, PromptTemplate: "solo"},
+			},
+		}
+		dr := pop.measureDiversityReportLocked()
+		if dr.PromptTemplateDistribution["solo"] != 1 {
+			t.Errorf("solo template count = %d, want 1", dr.PromptTemplateDistribution["solo"])
+		}
+		if len(dr.PromptTemplateDistribution) != 1 {
+			t.Errorf("expected 1 entry, got %d", len(dr.PromptTemplateDistribution))
+		}
+	})
+
+	t.Run("DiversityStats returns report via read lock", func(t *testing.T) {
+		pop := &Population{
+			Agents: []*mutation.Strategy{
+				{Score: 100, PromptTemplate: "tpl_a"},
+				{Score: 80, PromptTemplate: "tpl_b"},
+			},
+		}
+		dr := pop.DiversityStats()
+		if dr.PromptTemplateDistribution["tpl_a"] != 1 {
+			t.Errorf("tpl_a count = %d, want 1", dr.PromptTemplateDistribution["tpl_a"])
+		}
+	})
+}
+
 func TestEvolveOnIdleEliteCount(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

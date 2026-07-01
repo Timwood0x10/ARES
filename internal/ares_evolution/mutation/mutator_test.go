@@ -327,6 +327,7 @@ func TestStrategy_Clone(t *testing.T) {
 		MutationDesc:         "test mutation",
 		Score:                0.85,
 		CreatedAt:            time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC),
+		GenerationCreated:    3,
 	}
 
 	cloned := original.Clone()
@@ -343,6 +344,9 @@ func TestStrategy_Clone(t *testing.T) {
 	}
 	if cloned.Score != original.Score {
 		t.Errorf("Score mismatch")
+	}
+	if cloned.GenerationCreated != original.GenerationCreated {
+		t.Errorf("GenerationCreated mismatch: %d vs %d", cloned.GenerationCreated, original.GenerationCreated)
 	}
 	if cloned.PromptTemplate != original.PromptTemplate {
 		t.Errorf("PromptTemplate mismatch")

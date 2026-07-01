@@ -232,7 +232,7 @@ func (p *Population) preservePerLineageElites(survivors []*mutation.Strategy) []
 //
 //	[]*mutation.Strategy - potentially expanded elite set with diversity seed.
 func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, population []*mutation.Strategy) []*mutation.Strategy {
-	if len(elites) == 0 || len(population) <= len(elites) {
+	if !p.cfg.PromptDiversityGuardEnabled || len(elites) == 0 || len(population) <= len(elites) {
 		return elites
 	}
 
@@ -255,13 +255,33 @@ func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, 
 		if s.PromptTemplate != firstTemplate && IsScoreEvaluated(s.Score) && s.Score >= promptDiversityScoreFloor {
 			clone := s.Clone()
 			clone.MutationDesc = "prompt_diversity_seed"
-			elites = append(elites, clone)
-			slog.Debug("prompt diversity seed force-retained",
-				"template", s.PromptTemplate,
-				"score", s.Score,
-				"agent_id", s.ID,
-				"elite_count_before", len(elites)-1,
-			)
+			clone.GenerationCreated = p.Generation
+
+			// If elites already fill the population, replace the weakest elite
+			// with the diversity seed instead of appending beyond p.Size.
+			if p.Size > 0 && len(elites) >= p.Size {
+				// Find the weakest (lowest score) elite to replace.
+				weakestIdx := 0
+				for i := 1; i < len(elites); i++ {
+					if elites[i].Score < elites[weakestIdx].Score {
+						weakestIdx = i
+					}
+				}
+				elites[weakestIdx] = clone
+				slog.Debug("prompt diversity seed replaced weakest elite",
+					"template", s.PromptTemplate,
+					"replaced_id", elites[weakestIdx].ID,
+					"agent_id", s.ID,
+				)
+			} else {
+				elites = append(elites, clone)
+				slog.Debug("prompt diversity seed force-retained",
+					"template", s.PromptTemplate,
+					"score", s.Score,
+					"agent_id", s.ID,
+					"elite_count_before", len(elites)-1,
+				)
+			}
 			return elites
 		}
 	}

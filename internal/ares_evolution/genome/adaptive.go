@@ -29,6 +29,11 @@ type DiversityReport struct {
 	// EffectiveWeights is the actual weight configuration used to compute Overall.
 	// Useful for observability and debugging custom weight configurations.
 	EffectiveWeights DiversityWeightConfig
+
+	// PromptTemplateDistribution maps each prompt template string to the number
+	// of agents using it. Empty-string template is included as a key if any agent
+	// has no prompt template set.
+	PromptTemplateDistribution map[string]int
 }
 
 // DiversityMetricVersion indicates the current diversity metric version.
@@ -100,10 +105,11 @@ func (p *Population) computeBestScoreLocked() float64 {
 func (p *Population) measureDiversityReportLocked() DiversityReport {
 	n := len(p.Agents)
 	report := DiversityReport{
-		Overall:     1.0,
-		Numeric:     1.0,
-		Categorical: 1.0,
-		Lineage:     1.0,
+		Overall:                    1.0,
+		Numeric:                    1.0,
+		Categorical:                1.0,
+		Lineage:                    1.0,
+		PromptTemplateDistribution: p.countPromptTemplateDistributionLocked(),
 	}
 
 	if n < 2 {

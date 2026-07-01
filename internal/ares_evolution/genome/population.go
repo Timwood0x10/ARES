@@ -250,6 +250,20 @@ type PopulationConfig struct {
 	// AdaptiveConfig controls adaptive mutation rate tuning behavior.
 	// When nil, default adaptive parameters are used.
 	AdaptiveConfig *AdaptiveConfig `json:"adaptive_config,omitempty"`
+
+	// PromptDiversityGuardEnabled enables prompt template diversity preservation
+	// during elite selection (default true). When enabled, if all elites share
+	// one prompt template and a viable alternative exists in the population,
+	// that alternative is force-retained as an exploration seed.
+	PromptDiversityGuardEnabled bool `json:"prompt_diversity_guard_enabled"`
+
+	// AgentMaxAge is the maximum number of generations an agent can survive
+	// before being evicted (0 = disabled, no age-based eviction).
+	// When enabled, agents whose currentGen - GenerationCreated > AgentMaxAge
+	// are removed from the population before each evolution cycle.
+	// Root agents (GenerationCreated == 0) are exempt from age eviction
+	// to preserve the founding lineage.
+	AgentMaxAge int `json:"agent_max_age"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -259,21 +273,23 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:                      20,
-		SurvivalRate:              0.6,
-		MutationRate:              0.2,
-		EliteCount:                3,
-		BreedingPoolRatio:         0.6,
-		MinMutationRate:           0.05,
-		MaxMutationRate:           0.5,
-		MaxStagnantGenerations:    10,
-		DiversityThreshold:        0.15,
-		SelectionStrategy:         "", // empty = random (backward compatible)
-		TournamentSize:            3,
-		DiversityWeights:          DiversityWeightConfig{}, // Zero → defaults applied in normalize()
-		FitnessSharingSampleLimit: 50,
-		FitnessSharingSampleSize:  30,
-		SpatialIndexThreshold:     500,
+		Size:                        20,
+		SurvivalRate:                0.6,
+		MutationRate:                0.2,
+		EliteCount:                  3,
+		BreedingPoolRatio:           0.6,
+		MinMutationRate:             0.05,
+		MaxMutationRate:             0.5,
+		MaxStagnantGenerations:      10,
+		DiversityThreshold:          0.15,
+		SelectionStrategy:           "", // empty = random (backward compatible)
+		TournamentSize:              3,
+		DiversityWeights:            DiversityWeightConfig{}, // Zero → defaults applied in normalize()
+		FitnessSharingSampleLimit:   50,
+		FitnessSharingSampleSize:    30,
+		SpatialIndexThreshold:       500,
+		PromptDiversityGuardEnabled: true,
+		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}
 }
 
@@ -857,6 +873,23 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	copy(sorted, p.Agents)
 	SortByScore(sorted)
 
+	// Step 1a: Evict aged-out agents (AgentMaxAge > 0).
+	// Agents whose generation age exceeds AgentMaxAge are removed, unless
+	// they are root strategies (MutationRoot) which are founding lineage.
+	if p.cfg.AgentMaxAge > 0 {
+		keep := sorted[:0]
+		for _, s := range sorted {
+			age := p.Generation - s.GenerationCreated
+			if s.StrategyMutationType == mutation.MutationRoot || age <= p.cfg.AgentMaxAge {
+				keep = append(keep, s)
+			}
+		}
+		sorted = keep
+		if len(sorted) == 0 {
+			return ErrSelectionEmptyPopulation
+		}
+	}
+
 	survivorCount := max(1, int(float64(len(sorted))*cfg.survivalRate))
 	survivorCount = min(survivorCount, len(sorted))
 	survivors := sorted[:survivorCount]
@@ -909,7 +942,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	// Pad if under target size.
 	for len(nextGen) < p.Size && len(survivors) > 0 {
 		idx := len(nextGen) % len(survivors)
-		nextGen = append(nextGen, survivors[idx].Clone())
+		clone := survivors[idx].Clone()
+		clone.GenerationCreated = p.Generation
+		nextGen = append(nextGen, clone)
 	}
 
 	p.Agents = nextGen
@@ -1029,6 +1064,8 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			// keep the unmutated crossover child as-is.
 		}
 
+		// Record the generation when this offspring was created for age-based eviction.
+		child.GenerationCreated = p.Generation
 		offspring = append(offspring, child)
 	}
 

@@ -125,6 +125,11 @@ type Strategy struct {
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
 
+	// GenerationCreated is the evolution generation when this strategy was created.
+	// Used by AgentMaxAge eviction: if currentGen - GenerationCreated > maxAge,
+	// the agent is eligible for eviction. 0 = unknown/root (never evicted by age).
+	GenerationCreated int `json:"generation_created,omitempty"`
+
 	// hashCache caches the StrategyHash result. Set hashValid=false on mutation.
 	hashCache  uint64
 	hashCached bool
@@ -149,6 +154,7 @@ func (s *Strategy) Clone() *Strategy {
 		MutationDesc:         s.MutationDesc,
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
+		GenerationCreated:    s.GenerationCreated,
 		hashCache:            s.hashCache,
 		hashCached:           s.hashCached,
 	}

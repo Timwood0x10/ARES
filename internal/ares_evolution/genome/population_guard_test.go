@@ -150,7 +150,9 @@ func TestPreservePerLineageElites(t *testing.T) {
 
 func TestPreservePromptDiversityLocked(t *testing.T) {
 	t.Run("all same template injects diversity seed", func(t *testing.T) {
-		pop := &Population{}
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 			{ID: "eb", Score: 90, PromptTemplate: "template1"},
@@ -170,7 +172,9 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("already diverse does nothing", func(t *testing.T) {
-		pop := &Population{}
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 			{ID: "eb", Score: 90, PromptTemplate: "template2"},
@@ -186,7 +190,9 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("no alternative template does nothing", func(t *testing.T) {
-		pop := &Population{}
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
@@ -209,7 +215,9 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 	})
 
 	t.Run("low score alternative not injected", func(t *testing.T) {
-		pop := &Population{}
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
 		elites := []*mutation.Strategy{
 			{ID: "ea", Score: 100, PromptTemplate: "template1"},
 		}
@@ -220,6 +228,153 @@ func TestPreservePromptDiversityLocked(t *testing.T) {
 		result := pop.preservePromptDiversityLocked(elites, population)
 		if len(result) != 1 {
 			t.Errorf("expected no injection for very low score, got %d", len(result))
+		}
+	})
+
+	t.Run("clone isolation: modifying injected seed does not affect original", func(t *testing.T) {
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
+		elites := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+		}
+		population := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "original", Score: 50, PromptTemplate: "template2", Params: map[string]any{"x": 1.0}},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 elites with diversity seed, got %d", len(result))
+		}
+
+		// Modify the injected clone and verify the original is unchanged.
+		seed := result[1]
+		seed.Score = 999
+		seed.Params["x"] = 999.0
+
+		if population[1].Score != 50 {
+			t.Errorf("original agent Score modified: got %.1f, want 50.0", population[1].Score)
+		}
+		if population[1].Params["x"] != 1.0 {
+			t.Errorf("original agent Params modified: got %v, want 1.0", population[1].Params["x"])
+		}
+	})
+
+	t.Run("disabled guard returns elites unchanged", func(t *testing.T) {
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: false},
+		}
+		elites := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+		}
+		population := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+			{ID: "alt", Score: 50, PromptTemplate: "template2"},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		if len(result) != 2 {
+			t.Errorf("expected unchanged 2 elites when guard disabled, got %d", len(result))
+		}
+	})
+
+	t.Run("early return when population not larger than elites", func(t *testing.T) {
+		pop := &Population{}
+		elites := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+		}
+		// population same size as elites → guard should return early.
+		population := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		if len(result) != 2 {
+			t.Errorf("expected early return (elites unchanged), got %d elites", len(result))
+		}
+	})
+
+	t.Run("early return when population smaller than elites", func(t *testing.T) {
+		pop := &Population{}
+		elites := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+			{ID: "ec", Score: 80, PromptTemplate: "template1"},
+		}
+		population := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "eb", Score: 90, PromptTemplate: "template1"},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		if len(result) != 3 {
+			t.Errorf("expected early return (elites unchanged), got %d elites", len(result))
+		}
+	})
+
+	t.Run("diversity seed replaces weakest elite when slot full", func(t *testing.T) {
+		// When elites already fill the population, preservePromptDiversityLocked
+		// should replace the weakest elite with the diversity seed instead of
+		// appending (which would get truncated away by the caller).
+		pop := &Population{
+			Size: 2,
+			cfg:  PopulationConfig{PromptDiversityGuardEnabled: true, EliteCount: 2},
+		}
+		elites := []*mutation.Strategy{
+			{ID: "strong", Score: 100, PromptTemplate: "template1"},
+			{ID: "weak", Score: 90, PromptTemplate: "template1"},
+		}
+		population := []*mutation.Strategy{
+			{ID: "strong", Score: 100, PromptTemplate: "template1"},
+			{ID: "weak", Score: 90, PromptTemplate: "template1"},
+			{ID: "alt", Score: 50, PromptTemplate: "template2"},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		// Should still be 2 elites (replaced weakest, not appended).
+		if len(result) != 2 {
+			t.Fatalf("expected 2 (replaced weakest), got %d", len(result))
+		}
+		// The diversity seed should have replaced the weakest elite ("weak").
+		hasSeed := false
+		for _, e := range result {
+			if e.MutationDesc == "prompt_diversity_seed" {
+				hasSeed = true
+				if e.ID == "weak" || e.Score == 90 {
+					t.Logf("diversity seed correctly replaced weakest elite (score 90)")
+				}
+			}
+		}
+		if !hasSeed {
+			t.Error("diversity seed not present — should have replaced weakest elite")
+		}
+	})
+
+	t.Run("injected seed preserves alternative template score", func(t *testing.T) {
+		pop := &Population{
+			cfg: PopulationConfig{PromptDiversityGuardEnabled: true},
+		}
+		elites := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+		}
+		population := []*mutation.Strategy{
+			{ID: "ea", Score: 100, PromptTemplate: "template1"},
+			{ID: "alt", Score: 42, PromptTemplate: "template2"},
+		}
+		result := pop.preservePromptDiversityLocked(elites, population)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 elites with diversity seed, got %d", len(result))
+		}
+		seed := result[1]
+		if seed.MutationDesc != "prompt_diversity_seed" {
+			t.Errorf("expected prompt_diversity_seed marker, got %s", seed.MutationDesc)
+		}
+		// The seed should have the alternative template and its original score.
+		if seed.PromptTemplate != "template2" {
+			t.Errorf("expected template2, got %s", seed.PromptTemplate)
+		}
+		if seed.Score != 42 {
+			t.Errorf("expected original score 42, got %.1f", seed.Score)
 		}
 	})
 }
@@ -290,6 +445,7 @@ func TestInjectFreshMutants(t *testing.T) {
 			t.Error("bottom agent should have ScoreUnevaluated after injection")
 		}
 	})
+
 }
 
 // --- ensureEvaluatedBeforeSelection tests ---

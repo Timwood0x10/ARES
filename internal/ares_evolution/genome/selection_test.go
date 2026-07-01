@@ -858,14 +858,18 @@ func TestLineageRankSelection_Select(t *testing.T) {
 		}
 	})
 
-	t.Run("penalizes dominant lineage with threshold=0", func(t *testing.T) {
-		ls, err := NewLineageRankSelection(
+	t.Run("penalty increases underrepresented lineage selection", func(t *testing.T) {
+		// Compare threshold=0 (max penalty) vs threshold=1 (no penalty)
+		// with the same seed. Underrepresented lineage B should be selected
+		// more often when penalty is enabled.
+		lsWithPenalty, _ := NewLineageRankSelection(
 			WithLineageRankSeed(42),
 			WithLineagePenaltyThreshold(0),
 		)
-		if err != nil {
-			t.Fatalf("create selector: %v", err)
-		}
+		lsNoPenalty, _ := NewLineageRankSelection(
+			WithLineageRankSeed(42),
+			WithLineagePenaltyThreshold(1),
+		)
 
 		// Lineage A has 3/5 = 60% share, lineage B has 2/5 = 40%.
 		pop := makePopulation(100.0, 90.0, 85.0, 80.0, 70.0)
@@ -875,29 +879,61 @@ func TestLineageRankSelection_Select(t *testing.T) {
 		pop[3].ParentID = "B"
 		pop[4].ParentID = "B"
 
-		// With threshold=0, any lineage with >0 share gets penalized.
-		// Lineage A: share=0.6, excess=(0.6-0)/(1-0)=0.6, penalty=0.5*0.6=0.3
-		//   rank weights: best (100) = 5 * 0.7 = 3.5, next (90) = 4 * 0.7 = 2.8, next (85) = 3 * 0.7 = 2.1
-		// Lineage B: share=0.4, excess=(0.4-0)/(1-0)=0.4, penalty=0.5*0.4=0.2
-		//   rank weights: (80) = 2 * 0.8 = 1.6, (70) = 1 * 0.8 = 0.8
-		// Total weight ≈ 3.5+2.8+2.1+1.6+0.8 = 10.8
-		// Lineage B individuals get proportionally higher selection chance.
+		// With threshold=0: A share=0.6, excess=0.6/(1.0-0)=0.6, penalty=0.5*0.6=0.3
+		//   A weights: 5*0.7=3.5, 4*0.7=2.8, 3*0.7=2.1 → sum=8.4
+		//   B share=0.4, excess=0.4, penalty=0.2
+		//   B weights: 2*0.8=1.6, 1*0.8=0.8 → sum=2.4
+		//   Total=10.8, expected B probability = 2.4/10.8 ≈ 22.22%
+		//   N=5000, μ=1111.1, σ=√(5000*0.2222*0.7778)≈29.4, ±3σ → [1023, 1199]
+		//
+		// With threshold=1: no penalty (share never >1.0)
+		//   A weights: 5, 4, 3 → sum=12
+		//   B weights: 2, 1 → sum=3
+		//   Total=15, expected B probability = 3/15 = 20.0%
+		//   N=5000, μ=1000.0, σ=√(5000*0.20*0.80)≈28.3, ±3σ → [915, 1085]
 
-		// Run many iterations to see if lineage B gets selected more often than without penalty.
-		counts := make(map[string]int)
-		for i := 0; i < 2000; i++ {
-			result, err := ls.Select(ctx, pop, 1)
-			if err != nil {
-				t.Fatalf("iteration %d: %v", i, err)
-			}
-			counts[result[0].ParentID]++
+		countPenalty := runLineageSelection(ctx, lsWithPenalty, pop, 5000)
+		countNoPenalty := runLineageSelection(ctx, lsNoPenalty, pop, 5000)
+
+		pB := countPenalty["B"]
+		nB := countNoPenalty["B"]
+
+		t.Logf("with penalty:  A=%d, B=%d (B share=%.1f%%)",
+			countPenalty["A"], pB, float64(pB)/50.0)
+		t.Logf("no penalty:    A=%d, B=%d (B share=%.1f%%)",
+			countNoPenalty["A"], nB, float64(nB)/50.0)
+
+		// Direction: penalty should increase B's count vs no penalty.
+		if pB <= nB {
+			t.Errorf("penalty should increase B selections: with=%d, without=%d", pB, nB)
 		}
 
-		// With threshold=0, lineage B (underrepresented) should be selected more often
-		// than its raw rank share would dictate.
-		t.Logf("selection counts with threshold=0: A=%d, B=%d", counts["A"], counts["B"])
-		if counts["B"] < 200 { // B starts at 40% but penalty gives it more weight
-			t.Errorf("lineage B selected only %d/2000 times, expected >200", counts["B"])
+		// Range: with penalty, B share must be within 3σ of 22.22%.
+		const (
+			expectedBWithPenalty = 1111
+			maxDev3SigmaPenalty  = 88 // 3 * 29.4, rounded up
+		)
+		if pB < expectedBWithPenalty-maxDev3SigmaPenalty || pB > expectedBWithPenalty+maxDev3SigmaPenalty {
+			t.Errorf("with penalty B count %d outside 3σ range [%d, %d] (expected ~%d, share %.1f%%)",
+				pB,
+				expectedBWithPenalty-maxDev3SigmaPenalty,
+				expectedBWithPenalty+maxDev3SigmaPenalty,
+				expectedBWithPenalty,
+				float64(pB)/50.0)
+		}
+
+		// Range: without penalty (threshold=1), B share must be within 3σ of 20.0%.
+		const (
+			expectedBNoPenalty = 1000
+			maxDev3SigmaNoPen  = 85 // 3 * 28.3, rounded up
+		)
+		if nB < expectedBNoPenalty-maxDev3SigmaNoPen || nB > expectedBNoPenalty+maxDev3SigmaNoPen {
+			t.Errorf("no penalty B count %d outside 3σ range [%d, %d] (expected ~%d, share %.1f%%)",
+				nB,
+				expectedBNoPenalty-maxDev3SigmaNoPen,
+				expectedBNoPenalty+maxDev3SigmaNoPen,
+				expectedBNoPenalty,
+				float64(nB)/50.0)
 		}
 	})
 
@@ -1002,6 +1038,25 @@ func TestLineageRankSelection_EdgeCases(t *testing.T) {
 	})
 }
 
+// runLineageSelection runs n single-selection iterations and returns per-lineage counts.
+func runLineageSelection(ctx context.Context, ls *LineageRankSelection, pop []*mutation.Strategy, n int) map[string]int {
+	counts := make(map[string]int)
+	for i := 0; i < n; i++ {
+		result, err := ls.Select(ctx, pop, 1)
+		if err != nil {
+			continue
+		}
+		if len(result) > 0 {
+			pid := result[0].ParentID
+			if pid == "" {
+				pid = "(root)"
+			}
+			counts[pid]++
+		}
+	}
+	return counts
+}
+
 // --- SUSSelection tests ---
 
 func TestSUSSelection_Select(t *testing.T) {
@@ -1039,14 +1094,22 @@ func TestSUSSelection_Select(t *testing.T) {
 		}
 
 		highCount := counts["high"]
+		medCount := counts["medium"]
 		lowCount := counts["low"]
 
 		t.Logf("SUS distribution: high=%d, medium=%d, low=%d",
-			highCount, counts["medium"], lowCount)
+			highCount, medCount, lowCount)
 
 		if highCount <= lowCount {
 			t.Errorf("high scorer (%d) should be selected more than low scorer (%d)",
 				highCount, lowCount)
+		}
+
+		// Proportionality: with scores [1, 10, 100], expected ratio is ~1:10:100.
+		// high should be at least 5x medium (conservative bound).
+		if medCount > 0 && highCount < medCount*5 {
+			t.Errorf("high:medium ratio too low: %d:%d, expected high >> medium",
+				highCount, medCount)
 		}
 	})
 

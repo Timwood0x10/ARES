@@ -360,11 +360,15 @@ func (p *DefaultPromoter) Demote(ctx context.Context, strategyID string, reason 
 		return ErrCoolDownActive
 	}
 
+	// Save old state before transition for champion list management.
+	oldState := info.CurrentState
+
 	// Perform demotion
 	p.transitionState(info, targetState, p.currentGeneration, reason)
 
-	// Remove from champions list if demoted from champion
-	if info.CurrentState == StrategyStateChampion {
+	// Remove from champions list if demoted from champion.
+	// Must check oldState because transitionState has already updated CurrentState.
+	if oldState == StrategyStateChampion {
 		p.removeFromChampions(info.TaskType, strategyID)
 	}
 
