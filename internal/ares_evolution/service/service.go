@@ -125,6 +125,8 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.MaxStagnantGenerations = cfg.MaxStagnantGenerations
 	internalCfg.DiversityThreshold = cfg.DiversityThreshold
 	internalCfg.BreedingPoolRatio = cfg.BreedingPoolRatio
+	internalCfg.SelectionStrategy = cfg.SelectionStrategy
+	internalCfg.HistoryMaxSize = cfg.HistoryMaxSize
 	internalCfg.MutatorSeed = cfg.Seed
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
@@ -214,6 +216,16 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		return nil, fmt.Errorf("new wired evolution system: %w", err)
 	}
 
+	// Wire intelligence pipeline (Phase 3-5): reflection → hypothesis → meta.
+	// Only when EnableIntelligence is set, LLMClient is available, and
+	// history tracking is enabled (required for meta-controller).
+	if cfg.EnableIntelligence && cfg.LLMClient != nil && cfg.HistoryMaxSize > 0 {
+		llmAdapter := &llmClientAdapter{inner: cfg.LLMClient}
+		system.Reflector = genome.NewLLMReflector(llmAdapter)
+		system.HypothesisGen = genome.NewHypothesisGenerator(0.3)
+		system.MetaCtrl = genome.NewMetaController(genome.DefaultMetaConfig())
+	}
+
 	return system, nil
 }
 
@@ -276,6 +288,12 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 		genome.WithMaxStagnantGenerations(cfg.MaxStagnantGenerations),
 		genome.WithDiversityThreshold(cfg.DiversityThreshold),
 		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
+	}
+	if cfg.HistoryMaxSize > 0 {
+		popOpts = append(popOpts, genome.WithHistoryEnabled(cfg.HistoryMaxSize))
+	}
+	if cfg.SelectionStrategy != "" {
+		popOpts = append(popOpts, genome.WithSelectionStrategy(cfg.SelectionStrategy))
 	}
 	if cfg.Seed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.Seed))
@@ -609,15 +627,16 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 		return nil
 	}
 	return &Strategy{
-		ID:             s.ID,
-		Name:           s.Name,
-		Version:        s.Version,
-		Params:         mutation.CloneParams(s.Params),
-		ParentID:       s.ParentID,
-		PromptTemplate: s.PromptTemplate,
-		MutationType:   s.StrategyMutationType.String(),
-		Score:          s.Score,
-		CreatedAt:      s.CreatedAt,
+		ID:              s.ID,
+		Name:            s.Name,
+		Version:         s.Version,
+		Params:          mutation.CloneParams(s.Params),
+		ParentID:        s.ParentID,
+		PromptTemplate:  s.PromptTemplate,
+		MutationType:    s.StrategyMutationType.String(),
+		Score:           s.Score,
+		DimensionScores: cloneDimensionScores(s.DimensionScores),
+		CreatedAt:       s.CreatedAt,
 	}
 }
 
@@ -635,8 +654,21 @@ func toInternalStrategy(s *Strategy) *mutation.Strategy {
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: mutation.ParseMutationType(s.MutationType),
 		Score:                s.Score,
+		DimensionScores:      cloneDimensionScores(s.DimensionScores),
 		CreatedAt:            s.CreatedAt,
 	}
+}
+
+// cloneDimensionScores returns a shallow copy of a dimension scores map.
+func cloneDimensionScores(src map[string]float64) map[string]float64 {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]float64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // toAPILineage converts an internal evolution.StrategyLineage to the public API type.
@@ -682,13 +714,23 @@ func (s *Service) collectStats() Stats {
 // collectStatsFromPopulation extracts stats from a genome.Population into API Stats.
 func collectStatsFromPopulation(pop *genome.Population) Stats {
 	ps := pop.Stats()
-	return Stats{
+	s := Stats{
 		Generation: ps.Generation,
 		Size:       ps.Size,
 		BestScore:  ps.BestScore,
 		AvgScore:   ps.AvgScore,
 		WorstScore: ps.WorstScore,
 	}
+	if d := ps.Diversity; d.Overall != 0 || d.Numeric != 0 || d.Categorical != 0 {
+		s.Diversity = &DiversityReporter{
+			Overall:              d.Overall,
+			Numeric:              d.Numeric,
+			Categorical:          d.Categorical,
+			Lineage:              d.Lineage,
+			DominantLineageShare: d.DominantLineageShare,
+		}
+	}
+	return s
 }
 
 // collectLineages gathers all recorded lineages from the genealogy recorder.

@@ -193,7 +193,7 @@ func NormalizeDimensions(dims map[string]float64, bounds map[string][2]float64) 
 			result[k] = v
 			continue
 		}
-		result[k] = clamp((v-b[0])/(b[1]-b[0]), 0, 1)
+		result[k] = mutation.Clamp((v-b[0])/(b[1]-b[0]), 0, 1)
 	}
 	return result
 }
@@ -229,15 +229,4 @@ func mergeWeights(weights map[string]float64) map[string]float64 {
 		result[k] = v
 	}
 	return result
-}
-
-// clamp restricts v to [lo, hi].
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

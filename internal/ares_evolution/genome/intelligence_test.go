@@ -539,86 +539,86 @@ func TestNormalizeDimensions_Identity(t *testing.T) {
 	}
 }
 
-// --- extractJSONBracketOuter Tests ---
+// --- ExtractJSONBracket Tests ---
 
-func TestExtractJSONBracketOuter_Object(t *testing.T) {
+func TestExtractJSONBracket_Object(t *testing.T) {
 	t.Parallel()
 
 	input := `some text {"key": "value"} more text`
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	want := `{"key": "value"}`
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-func TestExtractJSONBracketOuter_Array(t *testing.T) {
+func TestExtractJSONBracket_Array(t *testing.T) {
 	t.Parallel()
 
 	input := `before [1, 2, 3] after`
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	want := `[1, 2, 3]`
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-func TestExtractJSONBracketOuter_Nested(t *testing.T) {
+func TestExtractJSONBracket_Nested(t *testing.T) {
 	t.Parallel()
 
 	input := `{"outer": {"inner": "value"}, "arr": [1, 2, {"nested": 3}]}`
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	if got != input {
 		t.Errorf("expected to extract full nested object, got %q", got)
 	}
 }
 
-func TestExtractJSONBracketOuter_SkipStrings(t *testing.T) {
+func TestExtractJSONBracket_SkipStrings(t *testing.T) {
 	t.Parallel()
 
 	input := `{"key": "with { and } chars", "num": 42}`
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	if got != input {
 		t.Errorf("expected to skip braces inside strings, got %q", got)
 	}
 }
 
-func TestExtractJSONBracketOuter_CodeFence(t *testing.T) {
+func TestExtractJSONBracket_CodeFence(t *testing.T) {
 	t.Parallel()
 
 	input := "```\n{\"a\": 1}\n```"
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	want := `{"a": 1}`
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-func TestExtractJSONBracketOuter_TrailingBrace(t *testing.T) {
+func TestExtractJSONBracket_TrailingBrace(t *testing.T) {
 	t.Parallel()
 
 	// LLM sometimes appends closing braces from the chat template.
 	input := `{"result": "ok"}}`
-	got := extractJSONBracketOuter(input)
+	got := mutation.ExtractJSONBracket(input)
 	want := `{"result": "ok"}`
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-func TestExtractJSONBracketOuter_NoBrackets(t *testing.T) {
+func TestExtractJSONBracket_NoBrackets(t *testing.T) {
 	t.Parallel()
 
-	got := extractJSONBracketOuter("plain text")
+	got := mutation.ExtractJSONBracket("plain text")
 	if got != "" {
 		t.Errorf("expected empty for no brackets, got %q", got)
 	}
 }
 
-func TestExtractJSONBracketOuter_Empty(t *testing.T) {
+func TestExtractJSONBracket_Empty(t *testing.T) {
 	t.Parallel()
 
-	if got := extractJSONBracketOuter(""); got != "" {
+	if got := mutation.ExtractJSONBracket(""); got != "" {
 		t.Errorf("expected empty for empty input, got %q", got)
 	}
 }
@@ -716,8 +716,8 @@ func TestDistillFromHistory_Empty(t *testing.T) {
 
 	kb := NewKnowledgeBase()
 	kd := NewKnowledgeDistiller(kb)
-	kd.DistillFromHistory(nil)  // should not panic
-	kd.DistillFromHistory([]GenerationHistoryEntry{})  // should not panic
+	kd.DistillFromHistory(nil)                                       // should not panic
+	kd.DistillFromHistory([]GenerationHistoryEntry{})                // should not panic
 	kd.DistillFromHistory([]GenerationHistoryEntry{{Generation: 0}}) // single entry
 }
 
@@ -1245,8 +1245,8 @@ func TestKnowledgeBase_RecordMixedSuccess(t *testing.T) {
 	t.Parallel()
 
 	kb := NewKnowledgeBase()
-	kb.Record("p", "m", "ok", 0.1)  // positive: success=1, obs=1 → (1+1)/(1+2)=0.67
-	kb.Record("p", "m", "bad", -0.1) // negative: success stays 1, obs=2 → (1+1)/(2+2)=0.5
+	kb.Record("p", "m", "ok", 0.1)     // positive: success=1, obs=1 → (1+1)/(1+2)=0.67
+	kb.Record("p", "m", "bad", -0.1)   // negative: success stays 1, obs=2 → (1+1)/(2+2)=0.5
 	kb.Record("p", "m", "worse", -0.2) // negative: success stays 1, obs=3 → (1+1)/(3+2)=0.4
 
 	entries := kb.All()

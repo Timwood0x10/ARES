@@ -29,6 +29,11 @@ type WiredEvolutionSystem struct {
 	Budget                *scoring.Budget
 	ScoreCache            *scoring.ScoreCache
 	Metrics               *ares_observability.PrometheusMetrics
+
+	// Intelligence components (Phase 3-5). Set to nil to disable.
+	Reflector     *genome.LLMReflector        `json:"-"`
+	HypothesisGen *genome.HypothesisGenerator `json:"-"`
+	MetaCtrl      *genome.MetaController      `json:"-"`
 }
 
 // ScoringConfig groups scorer pipeline settings.
@@ -66,6 +71,7 @@ type GenomeConfig struct {
 	DiversityThreshold     float64 `json:"diversity_threshold"`
 	BreedingPoolRatio      float64 `json:"breeding_pool_ratio"`
 	HistoryMaxSize         int     `json:"history_max_size"`
+	SelectionStrategy      string  `json:"selection_strategy,omitempty"`
 }
 
 // SchedulerConfig groups scheduler and dream cycle settings.
@@ -211,6 +217,9 @@ func buildPopulation(ctx context.Context, base *mutation.Strategy, cfg SystemCon
 	if cfg.HistoryMaxSize > 0 {
 		popOpts = append(popOpts, genome.WithHistoryEnabled(cfg.HistoryMaxSize))
 	}
+	if cfg.SelectionStrategy != "" {
+		popOpts = append(popOpts, genome.WithSelectionStrategy(cfg.SelectionStrategy))
+	}
 
 	return genome.NewPopulation(ctx, base, mutResult.genomeMut, popOpts...)
 }
@@ -232,6 +241,7 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 	}
 
 	cache := scoring.NewScoreCache(cfg.ScoreCacheSize)
+	cache.SetMaxCacheAge(2) // re-evaluate strategies every 3 generations
 	if cfg.MaxLLMCallsPerGeneration <= 0 {
 		cfg.MaxLLMCallsPerGeneration = 100
 	}
@@ -641,17 +651,48 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		default:
 		}
 
+		// Capture parent snapshot BEFORE evolving so lineage can reference
+		// pre-evolution agent scores for ScoreImprovement computation.
+		var parentSnapshot []*mutation.Strategy
+		if system.Genealogy != nil {
+			parentSnapshot, _ = system.Population.Snapshot()
+		}
+
 		if err := system.PopAdapter.Run(ctx); err != nil {
 			slog.WarnContext(ctx, "[RunIdleEvolution] Generation produced guardrail warning, continuing",
 				"generation", gen, "error", err)
 		}
 
 		if system.Genealogy != nil {
-			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, gen)
+			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, parentSnapshot, gen)
 			if err != nil {
 				slog.WarnContext(ctx, "[RunIdleEvolution] Failed to record lineage",
 					"generation", gen, "error", err)
 			}
+		}
+
+		// Run reflection cycle to analyze evolution patterns.
+		if system.Reflector != nil && system.HypothesisGen != nil {
+			history := system.Population.History()
+			if len(history) > 0 {
+				agents, _ := system.Population.Snapshot()
+				ref, err := system.Reflector.Reflect(ctx, history, agents)
+				if err != nil {
+					slog.WarnContext(ctx, "[RunIdleEvolution] Reflection failed, skipping",
+						"generation", gen, "error", err)
+				} else if ref != nil && len(ref.Recommendations) > 0 {
+					hyps := system.HypothesisGen.Generate(ctx, ref)
+					if len(hyps) > 0 {
+						slog.InfoContext(ctx, "[RunIdleEvolution] Generated hypotheses from reflection",
+							"generation", gen, "count", len(hyps))
+					}
+				}
+			}
+		}
+
+		// Apply meta-controller tuning to self-adapt evolution hyperparameters.
+		if system.MetaCtrl != nil {
+			genome.ApplyMetaToPopulation(system.Population, system.MetaCtrl)
 		}
 	}
 

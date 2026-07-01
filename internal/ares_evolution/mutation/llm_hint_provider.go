@@ -219,32 +219,26 @@ func (p *LLMHintProvider) buildPrompt(taskType string, outcomes []StrategyOutcom
 	return buf.String(), nil
 }
 
-// extractJSONBracket finds a JSON array [...] anywhere in the response text.
-// It tries, in order:
-//  1. Direct match if the string is already a JSON array (fast path)
-//  2. Content inside a markdown code fence (```json ... ``` or ``` ... ```)
-//  3. The first [...] bracket pair in any surrounding text
+// ExtractJSONBracket finds the outermost JSON object or array in a string.
+// It handles, in order:
+//  1. Content inside a markdown code fence (```json ... ``` or ``` ... ```)
+//  2. The first outermost bracket pair in any surrounding text
 //
-// Returns empty string if no JSON array can be found.
-func extractJSONBracket(s string) string {
+// Uses a bracket-depth counter with string-skipping to correctly match
+// nested structures and brackets inside string literals.
+// Returns empty string if no valid JSON is found.
+func ExtractJSONBracket(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
 
-	// Fast path: already looks like a JSON array.
-	if len(s) > 0 && s[0] == '[' {
-		return s
-	}
-
-	// Try extracting from markdown code fences.
+	// Try extracting from markdown code fences first.
 	if idx := strings.Index(s, "```"); idx >= 0 {
-		// Skip past opening fence and optional language tag.
 		start := idx + 3
 		if nl := strings.Index(s[start:], "\n"); nl >= 0 {
 			start += nl + 1
 		}
-		// Find closing fence.
 		end := strings.LastIndex(s, "```")
 		var inner string
 		if end > start {
@@ -252,22 +246,64 @@ func extractJSONBracket(s string) string {
 		} else {
 			inner = strings.TrimSpace(s[start:])
 		}
-		if js := strings.Index(inner, "["); js >= 0 {
-			if je := strings.LastIndex(inner, "]"); je > js {
-				return inner[js : je+1]
-			}
+		if extracted := extractOutermostBracket(inner); extracted != "" {
+			return extracted
 		}
 		return inner
 	}
 
-	// Fallback: find the first [ and last ] anywhere in the response.
-	if start := strings.Index(s, "["); start >= 0 {
-		if end := strings.LastIndex(s, "]"); end > start {
-			return s[start : end+1]
-		}
+	if extracted := extractOutermostBracket(s); extracted != "" {
+		return extracted
+	}
+	return ""
+}
+
+// extractOutermostBracket finds the first outermost [..] or {..} pair using
+// a bracket-depth counter with string-skipping for correct nesting handling.
+func extractOutermostBracket(s string) string {
+	// Find whichever open bracket comes first.
+	braceIdx := strings.IndexByte(s, '{')
+	bracketIdx := strings.IndexByte(s, '[')
+
+	openIdx := -1
+	var open, close byte
+	if braceIdx >= 0 && (bracketIdx < 0 || braceIdx < bracketIdx) {
+		open, close = '{', '}'
+		openIdx = braceIdx
+	} else if bracketIdx >= 0 {
+		open, close = '[', ']'
+		openIdx = bracketIdx
+	}
+	if openIdx < 0 {
+		return ""
 	}
 
-	return s
+	depth := 0
+	for i := openIdx; i < len(s); i++ {
+		switch s[i] {
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return s[openIdx : i+1]
+			}
+		case '"':
+			// Skip string contents to avoid counting brackets inside strings.
+			i++
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					break
+				}
+				i++
+			}
+		}
+	}
+	return ""
 }
 
 // llmHintJSON is the JSON structure for LLM-generated hints.
@@ -282,7 +318,7 @@ type llmHintJSON struct {
 // Handles markdown code fences, explanatory text around the JSON, and
 // plain whitespace — any format an LLM might produce despite instructions.
 func (p *LLMHintProvider) parseResponse(resp string, limit int) ([]EvolutionHint, error) {
-	jsonStr := extractJSONBracket(resp)
+	jsonStr := ExtractJSONBracket(resp)
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON array found in response")
 	}

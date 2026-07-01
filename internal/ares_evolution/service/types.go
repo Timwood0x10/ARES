@@ -184,6 +184,11 @@ type Strategy struct {
 	// Score is the current evaluation score (-1 = unevaluated).
 	Score float64 `json:"score"`
 
+	// DimensionScores holds per-dimension fitness scores for multi-objective
+	// optimization. When non-nil, Score is typically a weighted aggregate.
+	// Nil means single-objective mode.
+	DimensionScores map[string]float64 `json:"dimension_scores,omitempty"`
+
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -261,6 +266,17 @@ type SystemConfig struct {
 	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.6).
 	BreedingPoolRatio float64
 
+	// SelectionStrategy selects the parent selection algorithm.
+	// Supported values: "tournament", "rank", "sus", "roulette", "truncation", "random", "".
+	// Empty or "random" = random parent selection (backward compatible).
+	// Default: "" (random).
+	SelectionStrategy string
+
+	// HistoryMaxSize enables generation history tracking when > 0.
+	// History is required for meta-controller tuning and score improvement analysis.
+	// Default: 0 (disabled).
+	HistoryMaxSize int
+
 	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
 	// 0 = inherit from higher-scoring parent (default), 1 = half-sentence split,
 	// 2 = random parent pick (uniform).
@@ -325,6 +341,13 @@ type SystemConfig struct {
 	// mutation hints from past strategy outcomes.
 	LLMClient LLMClient
 
+	// EnableIntelligence enables the Phase 3-5 intelligence pipeline:
+	// reflection → hypothesis generation → meta-controller tuning.
+	// When true AND LLMClient is set, an LLMReflector is wired into the
+	// evolution cycle to analyze patterns, generate hypotheses, and
+	// self-tune hyperparameters. Requires HistoryMaxSize > 0.
+	EnableIntelligence bool
+
 	// MemoryExperienceProvider provides access to past experiences for
 	// memory-aware scoring. When non-nil AND MemoryAwareScoringConfig.Enabled
 	// is true, the scorer adjusts fitness scores based on historical evidence.
@@ -359,6 +382,25 @@ func DefaultConfig() *SystemConfig {
 	}
 }
 
+// DiversityReporter is the interface for population diversity information.
+// It mirrors genome.DiversityReport without importing the genome package.
+type DiversityReporter struct {
+	// Overall is the weighted average of all diversity components [0, 1].
+	Overall float64 `json:"overall"`
+
+	// Numeric is the average pairwise normalized parameter distance [0, 1].
+	Numeric float64 `json:"numeric"`
+
+	// Categorical measures differences in prompt templates, tool configs, etc. [0, 1].
+	Categorical float64 `json:"categorical"`
+
+	// Lineage measures parent ID concentration; 1.0 = all different parents, 0.0 = same.
+	Lineage float64 `json:"lineage"`
+
+	// DominantLineageShare is the fraction sharing the most common ParentID [0, 1].
+	DominantLineageShare float64 `json:"dominant_lineage_share"`
+}
+
 // Stats holds population statistics after each evolution generation.
 type Stats struct {
 	// Generation is the current generation number.
@@ -375,6 +417,9 @@ type Stats struct {
 
 	// WorstScore is the lowest score among all agents.
 	WorstScore float64
+
+	// Diversity is the population diversity breakdown, if computed.
+	Diversity *DiversityReporter `json:"diversity,omitempty"`
 }
 
 // EvolutionResult holds the result of a complete evolution run.

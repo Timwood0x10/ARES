@@ -574,19 +574,22 @@ func fullGAConfig(parent *evolutionservice.Strategy, cfg GACfg, wired bool, scor
 	return &evolutionservice.SystemConfig{
 		BaseStrategy:           parent,
 		PopulationSize:         cfg.PopSize,
-		EliteCount:             3,            // preserve top 3 unchanged
-		SurvivalRate:           cfg.SurvRate, // top 60% survive
-		MutationRate:           0.3,          // base mutation rate
-		MinMutationRate:        0.05,         // adaptive floor
-		MaxMutationRate:        0.5,          // adaptive ceiling
-		MaxStagnantGenerations: 5,            // reset bottom 1/3 after 5 stale gens
-		DiversityThreshold:     0.2,          // boost mutation when diversity drops
-		BreedingPoolRatio:      0.5,          // breed from top 50% of survivors
-		PromptCrossoverMode:    1,            // half-sentence split for prompts
+		EliteCount:             3,                     // preserve top 3 unchanged
+		SurvivalRate:           cfg.SurvRate,          // top 60% survive
+		MutationRate:           0.3,                   // base mutation rate
+		MinMutationRate:        0.05,                  // adaptive floor
+		MaxMutationRate:        0.5,                   // adaptive ceiling
+		MaxStagnantGenerations: 5,                     // reset bottom 1/3 after 5 stale gens
+		DiversityThreshold:     0.2,                   // boost mutation when diversity drops
+		BreedingPoolRatio:      0.5,                   // breed from top 50% of survivors
+		SelectionStrategy:      cfg.SelectionStrategy, // parent selection algorithm
+		HistoryMaxSize:         100,                   // enable history for meta-controller + reflection
+		PromptCrossoverMode:    1,                     // half-sentence split for prompts
 		Generations:            cfg.NGen,
 		Seed:                   42, // deterministic for reproducibility
 		PromptPool:             []string{"careful", "creative", "precise"},
 		EnableWiredMode:        wired,
+		EnableIntelligence:     true, // reflection → hypotheses → meta-controller
 		Scorer:                 scorer,
 	}
 }
@@ -611,26 +614,50 @@ func defaultParent(id string) *evolutionservice.Strategy {
 	}
 }
 
-// printResult prints the evolution stats table.
+// printResult prints the evolution stats table with diversity, lineages, and dimension scores.
 func printResult(result *evolutionservice.EvolutionResult) {
 	var rows [][]string
 	for i, st := range result.Stats {
+		div := ""
+		if st.Diversity != nil {
+			div = fmt.Sprintf("%.0f%%", st.Diversity.Overall*100)
+		}
 		rows = append(rows, []string{
 			fmt.Sprintf("%d", i+1),
 			fmt.Sprintf("%.2f", st.BestScore),
 			fmt.Sprintf("%.2f", st.AvgScore),
 			fmt.Sprintf("%.2f", st.WorstScore),
+			div,
 		})
 	}
-	tbl([]string{"Gen", "Best", "Avg", "Worst"}, rows)
+	headers := []string{"Gen", "Best", "Avg", "Worst", "Diversity"}
+	tbl(headers, rows)
 
-	if bst := result.BestStrategy; bst != nil {
-		slog.Info("Best strategy found",
-			"id", bst.ID,
-			"version", bst.Version,
-			"score", bst.Score,
+	if len(result.Lineages) > 0 {
+		slog.Info("Lineage records",
+			"count", len(result.Lineages),
+			"with_improvement", countWithImprovement(result.Lineages),
 		)
 	}
+
+	if bst := result.BestStrategy; bst != nil {
+		attrs := []any{"id", bst.ID, "version", bst.Version, "score", bst.Score}
+		if len(bst.DimensionScores) > 0 {
+			attrs = append(attrs, "dims", fmt.Sprintf("%v", bst.DimensionScores))
+		}
+		slog.Info("Best strategy found", attrs...)
+	}
+}
+
+// countWithImprovement returns the number of lineages with positive ScoreDelta.
+func countWithImprovement(lineages []evolutionservice.StrategyLineage) int {
+	n := 0
+	for _, l := range lineages {
+		if l.ScoreDelta > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // compareResults prints a side-by-side comparison of two evolution results.

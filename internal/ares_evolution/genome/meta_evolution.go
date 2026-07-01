@@ -3,6 +3,8 @@ package genome
 import (
 	"log/slog"
 	"math"
+
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // MetaParams are the evolution hyperparameters that the MetaController
@@ -91,14 +93,14 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 		if diversityGap < 0 {
 			// Below target: increase mutation rate to boost exploration.
 			delta := ar * (1 + exp) * (-diversityGap)
-			popCfg.MutationRate = clamp(
+			popCfg.MutationRate = mutation.Clamp(
 				popCfg.MutationRate*(1+delta),
 				popCfg.MinMutationRate,
 				popCfg.MaxMutationRate,
 			)
 		} else {
 			// Above target: slightly reduce mutation rate.
-			popCfg.MutationRate = clamp(
+			popCfg.MutationRate = mutation.Clamp(
 				popCfg.MutationRate*(1-ar*diversityGap),
 				popCfg.MinMutationRate,
 				popCfg.MaxMutationRate,

@@ -466,7 +466,7 @@ func (p *Population) adjustMutationRateLocked() {
 	if div < ac.DiversityFloorThreshold {
 		effectiveMin = maxFloat(ac.MinMutationFloor, p.cfg.MinMutationRate)
 	}
-	p.currentMutationRate = clampFloat(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
+	p.currentMutationRate = mutation.Clamp(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
 
 	slog.Debug("adaptive mutation rate adjusted",
 		"diversity", div,
@@ -556,15 +556,4 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-// clampFloat restricts a value to the [min, max] range.
-func clampFloat(v, min, max float64) float64 {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
 }

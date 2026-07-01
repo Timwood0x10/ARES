@@ -59,9 +59,9 @@ func TestExtractJSONBracket(t *testing.T) {
 			want:  `[{"problem":"p1"},{"problem":"p2"}]`,
 		},
 		{
-			name:  "no JSON array in response",
+			name:  "no JSON in response returns empty",
 			input: "I don't know what to suggest.",
-			want:  "I don't know what to suggest.",
+			want:  "",
 		},
 		{
 			name:  "brackets but not valid JSON content",
@@ -80,9 +80,9 @@ func TestExtractJSONBracket(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := extractJSONBracket(tt.input)
+			got := ExtractJSONBracket(tt.input)
 			if got != tt.want {
-				t.Errorf("extractJSONBracket() = %q, want %q", got, tt.want)
+				t.Errorf("ExtractJSONBracket() = %q, want %q", got, tt.want)
 			}
 		})
 	}

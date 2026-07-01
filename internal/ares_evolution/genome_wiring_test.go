@@ -199,7 +199,7 @@ func TestRecordPopulationLineage(t *testing.T) {
 		}
 		recorder := NewPopulationGenealogyRecorder()
 
-		count, err := RecordPopulationLineage(ctx, pop, recorder, 4)
+		count, err := RecordPopulationLineage(ctx, pop, recorder, nil, 4)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -216,7 +216,7 @@ func TestRecordPopulationLineage(t *testing.T) {
 		}
 		recorder := NewPopulationGenealogyRecorder()
 
-		count, err := RecordPopulationLineage(ctx, pop, recorder, 0)
+		count, err := RecordPopulationLineage(ctx, pop, recorder, nil, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -226,7 +226,7 @@ func TestRecordPopulationLineage(t *testing.T) {
 	})
 
 	t.Run("nil_pop_or_recorder_is_noop", func(t *testing.T) {
-		count, err := RecordPopulationLineage(ctx, nil, NewPopulationGenealogyRecorder(), 0)
+		count, err := RecordPopulationLineage(ctx, nil, NewPopulationGenealogyRecorder(), nil, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -235,7 +235,7 @@ func TestRecordPopulationLineage(t *testing.T) {
 		}
 
 		pop := &genome.Population{Agents: []*mutation.Strategy{}}
-		count, err = RecordPopulationLineage(ctx, pop, nil, 0)
+		count, err = RecordPopulationLineage(ctx, pop, nil, nil, 0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

@@ -481,13 +481,13 @@ func WithTournamentSelection(size int) PopulationOption {
 
 // validSelectionStrategies is the shared whitelist of supported selection strategies.
 var validSelectionStrategies = map[string]bool{
-	"":            true,
-	"random":      true,
-	"tournament":  true,
-	"rank":        true,
-	"sus":         true,
-	"roulette":    true,
-	"truncation":  true,
+	"":           true,
+	"random":     true,
+	"tournament": true,
+	"rank":       true,
+	"sus":        true,
+	"roulette":   true,
+	"truncation": true,
 }
 
 // WithSelectionStrategy sets the parent selection algorithm.

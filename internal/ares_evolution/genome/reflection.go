@@ -85,7 +85,7 @@ func (r *LLMReflector) Reflect(ctx context.Context, history []GenerationHistoryE
 		return nil, fmt.Errorf("LLM reflection failed: %w", err)
 	}
 
-	jsonStr := extractJSONBracketOuter(resp)
+	jsonStr := mutation.ExtractJSONBracket(resp)
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON found in LLM reflection response")
 	}
@@ -144,47 +144,4 @@ Return ONLY valid JSON. No markdown, no explanation.`,
 		strings.Join(historyLines, "\n"),
 		strings.Join(popLines, "\n"),
 	)
-}
-
-// extractJSONBracketOuter finds the outermost JSON object or array in a string.
-// Uses a bracket-depth counter to correctly match the first opening bracket
-// with its corresponding closing bracket, even with nested structures.
-func extractJSONBracketOuter(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	for _, pair := range [][2]byte{{'{', '}'}, {'[', ']'}} {
-		open, close := pair[0], pair[1]
-		openIdx := strings.IndexByte(s, open)
-		if openIdx < 0 {
-			continue
-		}
-		depth := 0
-		for i := openIdx; i < len(s); i++ {
-			switch s[i] {
-			case open:
-				depth++
-			case close:
-				depth--
-				if depth == 0 {
-					return s[openIdx : i+1]
-				}
-			case '"':
-				// Skip string contents to avoid counting brackets inside strings.
-				i++
-				for i < len(s) {
-					if s[i] == '\\' {
-						i += 2
-						continue
-					}
-					if s[i] == '"' {
-						break
-					}
-					i++
-				}
-			}
-		}
-	}
-	return ""
 }

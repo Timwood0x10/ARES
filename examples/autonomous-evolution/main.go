@@ -33,6 +33,7 @@ func main() {
 	// Scenario execution table — always show what's running
 	fmt.Println("\n📋 Scenario Configuration:")
 	fmt.Println("   ✓ ON   1-5: Core scenarios (Bandit, Callbacks, Mutation, Arena, Dream)")
+	fmt.Println("   ✓ ON   Selection strategies: rank, SUS, roulette, tournament, truncation")
 
 	// Check if evolution is enabled via project-level config
 	evoEnabled := false

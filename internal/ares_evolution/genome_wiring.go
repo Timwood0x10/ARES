@@ -647,6 +647,7 @@ func (r *PopulationGenealogyRecorder) Count() int {
 //
 //	ctx - operation context.
 //	pop - the post-evolution population to extract lineage from.
+//	parentSnapshot - pre-evolution snapshot for parent score lookup (may be nil).
 //	prevGeneration - the generation number before evolution (for filtering).
 //
 // Returns:
@@ -657,6 +658,7 @@ func RecordPopulationLineage(
 	ctx context.Context,
 	pop *genome.Population,
 	recorder GenealogyRecorder,
+	parentSnapshot []*mutation.Strategy,
 	prevGeneration int,
 ) (int, error) {
 	if pop == nil || recorder == nil {
@@ -665,6 +667,12 @@ func RecordPopulationLineage(
 
 	// Snapshot provides a thread-safe locked read of all agents and generation.
 	agents, generation := pop.Snapshot()
+
+	// Build parent score lookup from pre-evolution snapshot.
+	parentScores := make(map[string]float64, len(parentSnapshot))
+	for _, p := range parentSnapshot {
+		parentScores[p.ID] = p.Score
+	}
 
 	count := 0
 	seen := make(map[string]bool, len(agents))
@@ -682,11 +690,36 @@ func RecordPopulationLineage(
 		}
 		seen[key] = true
 
+		// Compute score improvement: child score - parent score.
+		parentScore, ok := parentScores[agent.ParentID]
+		if !ok {
+			// Handle crossover: ParentID may contain "\u00d7" separator.
+			if parts := strings.Split(agent.ParentID, "\u00d7"); len(parts) == 2 {
+				if ps1, ok1 := parentScores[parts[0]]; ok1 {
+					if ps2, ok2 := parentScores[parts[1]]; ok2 {
+						parentScore = (ps1 + ps2) / 2
+						ok = true
+					}
+				}
+			}
+		}
+
+		scoreDelta := 0.0
+		winRate := 0.0
+		if ok {
+			scoreDelta = agent.Score - parentScore
+			if scoreDelta > 0 {
+				winRate = 1.0
+			}
+		}
+
 		lineage := StrategyLineage{
-			ParentID:     agent.ParentID,
-			ChildID:      agent.ID,
-			MutationType: agent.StrategyMutationType.String(),
-			Timestamp:    agent.CreatedAt.Unix(),
+			ParentID:         agent.ParentID,
+			ChildID:          agent.ID,
+			MutationType:     agent.StrategyMutationType.String(),
+			WinRate:          winRate,
+			ScoreImprovement: scoreDelta,
+			Timestamp:        agent.CreatedAt.Unix(),
 		}
 
 		if err := recorder.Record(ctx, lineage); err != nil {
