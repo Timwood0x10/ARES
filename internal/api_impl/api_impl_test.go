@@ -456,14 +456,20 @@ func TestBuildToolAliases_Empty(t *testing.T) {
 // ──────────────────────────────────────────────
 
 func TestNewEventStore_NonNil(t *testing.T) {
-	es := NewEventStore()
+	es, err := NewEventStore()
+	if err != nil {
+		t.Fatalf("NewEventStore() returned error: %v", err)
+	}
 	if es == nil {
 		t.Fatal("NewEventStore() returned nil")
 	}
 }
 
 func TestEventStore_RawStore(t *testing.T) {
-	es := NewEventStore()
+	es, err := NewEventStore()
+	if err != nil {
+		t.Fatalf("NewEventStore() returned error: %v", err)
+	}
 	raw := es.RawStore()
 	if raw == nil {
 		t.Fatal("RawStore() returned nil")
@@ -471,7 +477,10 @@ func TestEventStore_RawStore(t *testing.T) {
 }
 
 func TestEventStore_CompactableEmbedding(t *testing.T) {
-	es := NewEventStore()
+	es, err := NewEventStore()
+	if err != nil {
+		t.Fatalf("NewEventStore() returned error: %v", err)
+	}
 	if es.CompactableEventStore == nil {
 		t.Fatal("CompactableEventStore is nil (embedding failed)")
 	}

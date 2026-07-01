@@ -4,6 +4,8 @@
 package apiimpl
 
 import (
+	"fmt"
+
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
@@ -22,20 +24,20 @@ type EventStore struct {
 // NewEventStore creates an event store with auto-compaction.
 // Events are stored in-memory with default compaction thresholds
 // (500 ares_events per stream, keep recent 100).
-func NewEventStore() *EventStore {
+// Returns an error if the underlying compactable event store cannot be created.
+func NewEventStore() (*EventStore, error) {
 	mem := ares_events.NewMemoryEventStore()
 	repo := ares_events.NewMemorySummaryRepository()
 	ces, err := ares_events.NewCompactableEventStore(
 		mem, repo, nil, ares_events.DefaultCompactionConfig(),
 	)
 	if err != nil {
-		// This should never happen with valid in-memory components.
-		panic(err)
+		return nil, fmt.Errorf("create compactable event store: %w", err)
 	}
 	return &EventStore{
 		CompactableEventStore: ces,
 		raw:                   mem,
-	}
+	}, nil
 }
 
 // RawStore exposes the underlying MemoryEventStore for components

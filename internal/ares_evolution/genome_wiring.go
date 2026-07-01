@@ -771,6 +771,8 @@ func RecordPopulationLineage(
 			MutationType:     agent.StrategyMutationType.String(),
 			WinRate:          winRate,
 			ScoreImprovement: scoreDelta,
+			ParentScore:      parentScore,
+			ChildScore:       agent.Score,
 			Timestamp:        agent.CreatedAt.Unix(),
 		}
 

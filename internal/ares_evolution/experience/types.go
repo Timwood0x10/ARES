@@ -274,6 +274,34 @@ func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 	}
 }
 
+// AggregateEvidenceByTask groups NormalizedExperience values by TaskType
+// and produces aggregated Evidence for each group. Returns a map keyed by
+// TaskType. This avoids the mixed-task-type warning from AggregateEvidence
+// when experiences span multiple task types.
+//
+// Returns an empty map if the input slice is empty.
+func AggregateEvidenceByTask(experiences []NormalizedExperience) map[string]Evidence {
+	result := make(map[string]Evidence)
+	if len(experiences) == 0 {
+		return result
+	}
+
+	byTask := make(map[string][]NormalizedExperience)
+	for _, exp := range experiences {
+		taskType := exp.TaskType
+		if taskType == "" {
+			taskType = "unknown"
+		}
+		byTask[taskType] = append(byTask[taskType], exp)
+	}
+
+	for taskType, exps := range byTask {
+		result[taskType] = AggregateEvidence(exps)
+	}
+
+	return result
+}
+
 // calculateLatencyPercentiles computes p50 and p95 from a slice of raw
 // latency values in milliseconds.
 func calculateLatencyPercentiles(values []int64) (p50 int64, p95 int64) {

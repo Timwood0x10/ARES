@@ -4,7 +4,10 @@
 package mutation
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -84,6 +87,11 @@ type Strategy struct {
 	// ParentID is the parent strategy ID (empty for root strategies).
 	ParentID string `json:"parent_id,omitempty"`
 
+	// EvidenceKey is a stable key derived from behaviorally relevant fields
+	// (prompt template + normalized numeric params). It enables evidence
+	// lookup by phenotype across different strategy IDs.
+	EvidenceKey string `json:"evidence_key,omitempty"`
+
 	// Version is the monotonically increasing version number.
 	Version int `json:"version"`
 
@@ -132,6 +140,7 @@ func (s *Strategy) Clone() *Strategy {
 	clone := &Strategy{
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
+		EvidenceKey:          s.EvidenceKey,
 		Version:              s.Version,
 		Name:                 s.Name,
 		Params:               CloneParams(s.Params),
@@ -165,6 +174,44 @@ func (s *Strategy) SetHash(h uint64) {
 	}
 	s.hashCache = h
 	s.hashCached = true
+}
+
+// ComputeEvidenceKey derives a stable evidence key from behaviorally relevant
+// fields: prompt template and sorted numeric params. The key format is:
+// "promptTemplate|key1=value1,key2=value2". Only numeric values (float64)
+// in Params are included, sorted by key for determinism.
+func (s *Strategy) ComputeEvidenceKey() string {
+	if s == nil {
+		return ""
+	}
+
+	prompt := s.PromptTemplate
+	if prompt == "" {
+		prompt = "default"
+	}
+
+	var pairs []string
+	keys := make([]string, 0, len(s.Params))
+	for k := range s.Params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v, ok := s.Params[k].(float64)
+		if !ok {
+			continue
+		}
+		pairs = append(pairs, fmt.Sprintf("%s=%.2f", k, v))
+	}
+
+	evidenceKey := prompt
+	if len(pairs) > 0 {
+		evidenceKey = prompt + "|" + strings.Join(pairs, ",")
+	}
+
+	s.EvidenceKey = evidenceKey
+	return evidenceKey
 }
 
 // ParamRange defines the allowed range for a mutable parameter.

@@ -203,6 +203,16 @@ type StrategyLineage struct {
 	// ScoreImprovement is the delta between child and parent scores.
 	ScoreImprovement float64 `json:"score_improvement"`
 
+	// ParentScore is the evaluated score of the parent strategy.
+	ParentScore float64 `json:"parent_score"`
+
+	// ChildScore is the evaluated score of the child strategy.
+	ChildScore float64 `json:"child_score"`
+
+	// ImprovementSignificant indicates whether the score improvement
+	// meets the configured significance threshold (MinLineageImprovement).
+	ImprovementSignificant bool `json:"improvement_significant"`
+
 	// Timestamp when this lineage record was created.
 	Timestamp int64 `json:"timestamp"`
 }

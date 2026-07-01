@@ -237,6 +237,16 @@ type StrategyLineage struct {
 	// ScoreDelta is the delta between child and parent scores.
 	ScoreDelta float64 `json:"score_delta"`
 
+	// ParentScore is the evaluated score of the parent strategy.
+	ParentScore float64 `json:"parent_score"`
+
+	// ChildScore is the evaluated score of the child strategy.
+	ChildScore float64 `json:"child_score"`
+
+	// ImprovementSignificant indicates whether the score improvement
+	// meets the configured significance threshold (MinLineageImprovement).
+	ImprovementSignificant bool `json:"improvement_significant"`
+
 	// Timestamp when this lineage record was created.
 	Timestamp int64 `json:"timestamp"`
 }
@@ -406,6 +416,11 @@ type SystemConfig struct {
 	// is saved to this file. Parent directories are created automatically.
 	// Example: "var/evolution/report.txt"
 	ReportPath string
+
+	// MinLineageImprovement is the minimum absolute score delta required
+	// for a lineage improvement to be considered significant (default 0.01).
+	// Deltas below this threshold are treated as noise (scorer variance).
+	MinLineageImprovement float64
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.
@@ -428,6 +443,7 @@ func DefaultConfig() *SystemConfig {
 		Seed:                   0,
 		PromptPool:             []string{},
 		EnableWiredMode:        true,
+		MinLineageImprovement:  0.01,
 	}
 }
 

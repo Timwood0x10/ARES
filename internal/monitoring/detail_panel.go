@@ -61,7 +61,7 @@ func WithCostProvider(provider CostProvider) DetailOption {
 // The tracker must not be nil.
 func NewDetailPanel(tracker TrackerReader, opts ...DetailOption) *DetailPanel {
 	if tracker == nil {
-		panic("tracker must not be nil")
+		return nil
 	}
 	dp := &DetailPanel{
 		tracker: tracker,

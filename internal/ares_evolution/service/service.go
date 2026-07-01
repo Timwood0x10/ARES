@@ -30,6 +30,10 @@ const (
 	maxLineages = 1000
 )
 
+// scoreContextKey is used to pass the population best score through context
+// for promotion evaluation callbacks that need score improvement information.
+type scoreContextKey struct{}
+
 // Service provides high-level genetic algorithm evolution operations.
 // It wraps either a fully wired evolution system (WiredEvolutionSystem) or
 // a raw population with mutator and crosser, exposing a simple API for
@@ -261,24 +265,36 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				return nil
 			}
 
+			// Register the best strategy's evidence key so that the evidence
+			// aggregator can resolve GA-generated UUIDs to phenotype keys for
+			// fallback lookup. This enables evidence-based evaluation even when
+			// the exact strategy ID is unknown to the store.
+			if reg, ok := cfg.EvidenceAggregator.(interface{ RegisterStrategyKey(string, string) }); ok {
+				reg.RegisterStrategyKey(best.ID, best.ComputeEvidenceKey())
+			}
+
 			var ev Evidence
 			if evidenceAgg != nil {
 				var err error
 				ev, err = evidenceAgg(ctx, best.ID)
 				if err != nil {
 					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
-						"generation", gen, "strategy_id", best.ID, "error", err)
+						"generation", sys.Population.Generation, "callback_gen", gen, "strategy_id", best.ID, "error", err)
 				}
 			}
 
 			if promoter != nil && ev.SampleCount > 0 {
-				state, reason, err := promoter(ctx, best.ID, ev)
+				// Pass population best score through context for downstream
+				// promotion logic that needs score improvement info.
+				scoreCtx := context.WithValue(ctx, scoreContextKey{}, best.Score)
+				state, reason, err := promoter(scoreCtx, best.ID, ev)
 				if err != nil {
 					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
-						"generation", gen, "strategy_id", best.ID, "error", err)
+						"generation", sys.Population.Generation, "callback_gen", gen, "strategy_id", best.ID, "error", err)
 				} else {
 					slog.InfoContext(ctx, "post-generation promotion evaluation",
-						"generation", gen,
+						"generation", sys.Population.Generation,
+						"callback_gen", gen,
 						"winner", best.ID,
 						"fitness", best.Score,
 						"success_rate", ev.SuccessRate,
@@ -290,7 +306,8 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				}
 			} else {
 				slog.InfoContext(ctx, "generation complete",
-					"generation", gen,
+					"generation", sys.Population.Generation,
+					"callback_gen", gen,
 					"winner", best.ID,
 					"fitness", best.Score,
 				)
@@ -485,8 +502,27 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		result.BestStrategy = best
 	}
 
+	// Count raw improvements vs significant improvements for reporting.
+	rawCount := 0
+	sigCount := 0
+	threshold := s.config.MinLineageImprovement
+	if threshold <= 0 {
+		threshold = 0.01
+	}
+	for _, l := range result.Lineages {
+		if l.ScoreDelta > 0 {
+			rawCount++
+		}
+		if l.ScoreDelta >= threshold {
+			sigCount++
+		}
+	}
+
 	slog.InfoContext(ctx, "evolution completed",
 		"total_generations", result.TotalGens,
+		"raw_improvements", rawCount,
+		"significant_improvements", sigCount,
+		"improvement_threshold", threshold,
 	)
 
 	return result, nil
@@ -769,12 +805,15 @@ func cloneDimensionScores(src map[string]float64) map[string]float64 {
 // toAPILineage converts an internal evolution.StrategyLineage to the public API type.
 func toAPILineage(l evolution.StrategyLineage) StrategyLineage {
 	return StrategyLineage{
-		ParentID:     l.ParentID,
-		ChildID:      l.ChildID,
-		MutationType: l.MutationType,
-		WinRate:      l.WinRate,
-		ScoreDelta:   l.ScoreImprovement,
-		Timestamp:    l.Timestamp,
+		ParentID:               l.ParentID,
+		ChildID:                l.ChildID,
+		MutationType:           l.MutationType,
+		WinRate:                l.WinRate,
+		ScoreDelta:             l.ScoreImprovement,
+		ParentScore:            l.ParentScore,
+		ChildScore:             l.ChildScore,
+		ImprovementSignificant: l.ImprovementSignificant,
+		Timestamp:              l.Timestamp,
 	}
 }
 
@@ -833,8 +872,15 @@ func (s *Service) collectLineages() []StrategyLineage {
 	if s.wiredSystem != nil && s.wiredSystem.Genealogy != nil {
 		internal := s.wiredSystem.Genealogy.Lineages()
 		result := make([]StrategyLineage, 0, len(internal))
+		threshold := s.config.MinLineageImprovement
+		if threshold <= 0 {
+			threshold = 0.01
+		}
 		for _, l := range internal {
-			result = append(result, toAPILineage(l))
+			apiLineage := toAPILineage(l)
+			// Set significance flag: absolute delta must meet or exceed threshold.
+			apiLineage.ImprovementSignificant = l.ScoreImprovement >= threshold
+			result = append(result, apiLineage)
 		}
 		return result
 	}

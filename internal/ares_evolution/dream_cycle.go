@@ -299,6 +299,8 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			MutationType:     "dream_cycle",
 			WinRate:          winner.winRate,
 			ScoreImprovement: winner.scoreImprovement,
+			ParentScore:      parent.Score,
+			ChildScore:       winner.scoreImprovement + parent.Score,
 			Timestamp:        time.Now().Unix(),
 		}
 		if err := dc.genealogy.Record(ctx, lineage); err != nil {

@@ -54,6 +54,21 @@ type StrategyPromotionRecord struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// ScoreSnapshot captures a strategy's score at a specific generation.
+type ScoreSnapshot struct {
+	// StrategyID is the unique identifier of the strategy.
+	StrategyID string `json:"strategy_id"`
+
+	// Score is the evidence score at this snapshot.
+	Score float64 `json:"score"`
+
+	// Generation is the evolution generation when this snapshot was taken.
+	Generation int `json:"generation"`
+
+	// Timestamp is when this snapshot was recorded.
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // PromotionCriteria defines the criteria for promoting or demoting strategies.
 type PromotionCriteria struct {
 	// MinSampleCount is the minimum number of samples to consider promotion.
@@ -89,19 +104,34 @@ type PromotionCriteria struct {
 	// This prevents rapid promotion/demotion cycles.
 	// Default: 3.
 	CoolDownGenerations int `json:"cool_down_generations"`
+
+	// MinAbsoluteImprovement is the minimum absolute score improvement required
+	// for champion promotion from shadow state. Default: 0.5.
+	MinAbsoluteImprovement float64 `json:"min_absolute_improvement"`
+
+	// MinRollingImprovement is the minimum rolling average improvement required
+	// for champion retention. Default: 0.1.
+	MinRollingImprovement float64 `json:"min_rolling_improvement"`
+
+	// ImprovementWindow is the number of generations to look back when computing
+	// the rolling average improvement. Default: 3.
+	ImprovementWindow int `json:"improvement_window"`
 }
 
 // DefaultPromotionCriteria returns a PromotionCriteria with sensible defaults.
 func DefaultPromotionCriteria() *PromotionCriteria {
 	return &PromotionCriteria{
-		MinSampleCount:      100,
-		MinSuccessRate:      0.85,
-		MaxErrorRate:        0.15,
-		MaxLatencyP95:       5000,
-		MinConfidence:       0.7,
-		ChampionHoldPeriod:  5,
-		DemotionThreshold:   0.3,
-		CoolDownGenerations: 3,
+		MinSampleCount:         100,
+		MinSuccessRate:         0.85,
+		MaxErrorRate:           0.15,
+		MaxLatencyP95:          5000,
+		MinConfidence:          0.7,
+		ChampionHoldPeriod:     5,
+		DemotionThreshold:      0.3,
+		CoolDownGenerations:    3,
+		MinAbsoluteImprovement: 0.5,
+		MinRollingImprovement:  0.1,
+		ImprovementWindow:      3,
 	}
 }
 
@@ -127,6 +157,13 @@ type StrategyInfo struct {
 
 	// GenerationCount counts how many generations the strategy has held its current state.
 	GenerationCount int `json:"generation_count"`
+
+	// ScoreHistory tracks recent evidence scores for rolling improvement calculation.
+	ScoreHistory []ScoreSnapshot `json:"score_history,omitempty"`
+
+	// BaselineScore is the evidence score when the strategy entered its current state.
+	// Used to measure absolute improvement for promotion decisions.
+	BaselineScore float64 `json:"baseline_score"`
 }
 
 // PromotionLogic defines the interface for strategy promotion and demotion.

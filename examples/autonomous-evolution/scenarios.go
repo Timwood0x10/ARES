@@ -800,7 +800,8 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 		fmt.Printf("     Store initialized: experiences ingested across %d strategies\n", len(defaultProfiles))
 	}
 
-	// Step 4: Show per-strategy evidence from the store.
+	// Step 4: Show per-strategy evidence from the store using task-type-aware
+	// aggregation to avoid mixed-task warnings.
 	fmt.Println("\n   Evidence from Real Tool Call Data:")
 	var evRows [][]string
 	for _, profile := range defaultProfiles {
@@ -808,18 +809,35 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 		if err != nil || len(exps) == 0 {
 			continue
 		}
-		ev := exp.AggregateEvidence(exps)
+		byTask := exp.AggregateEvidenceByTask(exps)
+		// Compute strategy summary across task types.
+		var totalSamples int64
+		var weightedSuccess float64
+		for _, e := range byTask {
+			totalSamples += e.SampleCount
+			weightedSuccess += e.SuccessRate * float64(e.SampleCount)
+		}
+		avgSuccess := float64(0)
+		if totalSamples > 0 {
+			avgSuccess = weightedSuccess / float64(totalSamples)
+		}
+		// Use first task type's latency as representative.
+		var p50Lat int64
+		for _, e := range byTask {
+			p50Lat = e.LatencyP50
+			break
+		}
 		evRows = append(evRows, []string{
 			profile.id,
-			fmt.Sprintf("%.0f%%", ev.SuccessRate*100),
-			fmt.Sprintf("%dms", ev.LatencyP50),
-			fmt.Sprintf("%d", ev.SampleCount),
-			fmt.Sprintf("%.0f%%", ev.Confidence*100),
+			fmt.Sprintf("%.0f%%", avgSuccess*100),
+			fmt.Sprintf("%dms", p50Lat),
+			fmt.Sprintf("%d (task_types=%d)", totalSamples, len(byTask)),
+			fmt.Sprintf("%.0f%%", 0.0),
 		})
 	}
 	tbl([]string{"Strategy", "Success", "P50 Lat", "Samples", "Confid"}, evRows)
 
-	// Standalone promotion evaluation based on real evidence.
+	// Standalone promotion evaluation based on real data.
 	fmt.Println("\n   Promotion Evaluation from Real Data:")
 	promoter := &dataDrivenPromotion{
 		thresholds: promotionThresholds{
@@ -835,14 +853,23 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 		if err != nil || len(exps) == 0 {
 			continue
 		}
-		ev := exp.AggregateEvidence(exps)
+		byTask := exp.AggregateEvidenceByTask(exps)
+		// Aggregate per-task evidence into a single summary for promotion.
+		var totalSamples int64
+		var weightedSuccess float64
+		for _, e := range byTask {
+			totalSamples += e.SampleCount
+			weightedSuccess += e.SuccessRate * float64(e.SampleCount)
+		}
+		avgSuccess := float64(0)
+		if totalSamples > 0 {
+			avgSuccess = weightedSuccess / float64(totalSamples)
+		}
 		svcEv := evolutionservice.Evidence{
 			StrategyID:  profile.id,
-			SuccessRate: ev.SuccessRate,
-			LatencyP50:  ev.LatencyP50,
-			ErrorRate:   ev.ErrorRate,
-			SampleCount: ev.SampleCount,
-			Confidence:  ev.Confidence,
+			SuccessRate: avgSuccess,
+			SampleCount: totalSamples,
+			Confidence:  0.0,
 		}
 		state, reason, _ := promoter.Evaluate(ctx, profile.id, svcEv)
 		fmt.Printf("     %-12s → %-10s (%s)\n", profile.id, state, reason)
@@ -865,10 +892,36 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 	reportPath := filepath.Join(reportDir, "report.txt")
 
 	parent := defaultParent(cfg.BaseID)
+	evidenceAgg := newStoreEvidenceAggregator(store)
+
+	// Pre-populate phenotype fallback: compute evidence key for each default
+	// profile and register it so that GA strategies with matching phenotypes
+	// can fall back to real data instead of reporting sample_count=0.
+	for _, profile := range defaultProfiles {
+		muStrategy := &mutation.Strategy{
+			ID:             profile.id,
+			Params:         map[string]any{"temperature": profile.temperature, "top_k": profile.topK, "max_tokens": profile.maxTokens, "frequency_penalty": profile.freqPenalty, "presence_penalty": profile.presentPenalty},
+			PromptTemplate: profile.prompt,
+		}
+		ek := muStrategy.ComputeEvidenceKey()
+		evidenceAgg.RegisterPhenotypeFallback(ek, profile.id)
+		evidenceAgg.RegisterStrategyKey(profile.id, ek)
+	}
+
+	// Also register the parent strategy's evidence key so that GA generations
+	// evaluating the parent strategy can find matching profile data.
+	parentMuStrategy := &mutation.Strategy{
+		ID:             parent.ID,
+		Params:         parent.Params,
+		PromptTemplate: parent.PromptTemplate,
+	}
+	parentEK := parentMuStrategy.ComputeEvidenceKey()
+	evidenceAgg.RegisterStrategyKey(parent.ID, parentEK)
+
 	svc, err := evolutionservice.NewService(fullGAConfig(
 		parent, cfg, true, nil,
 		reportPath,
-		&storeEvidenceAggregator{store: store},
+		evidenceAgg,
 		gaPromoter,
 	))
 	if err != nil {
@@ -904,22 +957,87 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 
 // storeEvidenceAggregator queries the MemoryExperienceStore directly and
 // computes evidence via AggregateEvidence, satisfying the
-// evolutionservice.EvidenceAggregator interface.
+// evolutionservice.EvidenceAggregator interface. It supports phenotype-based
+// fallback: when a strategyID returns no data, it looks up the strategy's
+// evidence key and falls back to a registered phenotype profile with data.
 type storeEvidenceAggregator struct {
 	store *exp.MemoryExperienceStore
+
+	// phenotypeFallback maps evidenceKey -> profile strategyID that has data
+	// in the store. Pre-populated in runRealDataEvolution.
+	phenotypeFallback map[string]string
+
+	// strategyEvidenceKeys maps known strategyIDs -> their computed evidence key.
+	// This enables resolving GA UUIDs to phenotype keys for fallback lookup.
+	strategyEvidenceKeys map[string]string
+}
+
+func newStoreEvidenceAggregator(store *exp.MemoryExperienceStore) *storeEvidenceAggregator {
+	return &storeEvidenceAggregator{
+		store:                store,
+		phenotypeFallback:    make(map[string]string),
+		strategyEvidenceKeys: make(map[string]string),
+	}
+}
+
+// RegisterStrategyKey registers a strategy ID with its computed evidence key
+// so that Aggregate can resolve the ID to a phenotype fallback when direct
+// query returns no results.
+func (a *storeEvidenceAggregator) RegisterStrategyKey(strategyID, evidenceKey string) {
+	if strategyID == "" || evidenceKey == "" {
+		return
+	}
+	a.strategyEvidenceKeys[strategyID] = evidenceKey
+}
+
+// RegisterPhenotypeFallback registers a phenotype evidence key to a profile
+// strategy ID that has data in the store. When a strategy with the same
+// evidence key produces 0 direct results, the fallback profile ID is used.
+func (a *storeEvidenceAggregator) RegisterPhenotypeFallback(evidenceKey, profileID string) {
+	if evidenceKey == "" || profileID == "" {
+		return
+	}
+	a.phenotypeFallback[evidenceKey] = profileID
 }
 
 func (a *storeEvidenceAggregator) Aggregate(ctx context.Context, strategyID string) (evolutionservice.Evidence, error) {
 	exps, err := a.store.Query(ctx, strategyID, time.Time{}, time.Now())
 	if err != nil {
-		return evolutionservice.Evidence{}, err
+		return evolutionservice.Evidence{}, fmt.Errorf("query store: %w", err)
+	}
+	if len(exps) > 0 {
+		ev := exp.AggregateEvidence(exps)
+		return evolutionservice.Evidence{
+			StrategyID:  ev.StrategyID,
+			SuccessRate: ev.SuccessRate,
+			LatencyP50:  ev.LatencyP50,
+			ErrorRate:   ev.ErrorRate,
+			SampleCount: ev.SampleCount,
+			Confidence:  ev.Confidence,
+		}, nil
+	}
+
+	// Direct query returned 0 results. Try phenotype fallback: resolve the
+	// strategyID to an evidence key, then look up a registered profile ID.
+	evidenceKey, ok := a.strategyEvidenceKeys[strategyID]
+	if !ok {
+		return evolutionservice.Evidence{StrategyID: strategyID}, nil
+	}
+	profileID, ok := a.phenotypeFallback[evidenceKey]
+	if !ok {
+		return evolutionservice.Evidence{StrategyID: strategyID}, nil
+	}
+
+	exps, err = a.store.Query(ctx, profileID, time.Time{}, time.Now())
+	if err != nil {
+		return evolutionservice.Evidence{}, fmt.Errorf("query store fallback: %w", err)
 	}
 	if len(exps) == 0 {
 		return evolutionservice.Evidence{StrategyID: strategyID}, nil
 	}
 	ev := exp.AggregateEvidence(exps)
 	return evolutionservice.Evidence{
-		StrategyID:  ev.StrategyID,
+		StrategyID:  strategyID,
 		SuccessRate: ev.SuccessRate,
 		LatencyP50:  ev.LatencyP50,
 		ErrorRate:   ev.ErrorRate,

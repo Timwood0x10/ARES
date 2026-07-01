@@ -64,6 +64,11 @@ type GenerationHistoryEntry struct {
 
 	// NumDiverse counts distinct lineages (agents with unique ParentIDs) at this generation.
 	NumDiverse int `json:"num_diverse"`
+
+	// RecoveryActions records diversity recovery actions taken this generation.
+	// Keys are action names (e.g., "mutation_rate_boost", "fresh_injection",
+	// "stagnation_reset"), values are counts.
+	RecoveryActions map[string]int `json:"recovery_actions"`
 }
 
 // DiversityWeightConfig holds relative weights for diversity metric components.
@@ -189,11 +194,12 @@ type PopulationConfig struct {
 	DiversityThreshold float64 `json:"diversity_threshold"`
 
 	// SelectionStrategy selects the parent selection algorithm.
-	// Valid values: "tournament", "rank", "sus", "roulette", "random" (default).
+	// Valid values: "tournament", "rank", "sus", "roulette", "lineage_rank", "random" (default).
 	// "tournament" uses TournamentSelection with the configured TournamentSize.
 	// "rank" uses RankSelection (linear rank-based probability).
 	// "sus" uses Stochastic Universal Sampling (reduced variance).
 	// "roulette" uses fitness-proportional selection.
+	// "lineage_rank" uses LineageRankSelection (lineage-aware rank selection).
 	// "random" (or empty) selects parents uniformly from the breeding pool.
 	SelectionStrategy string `json:"selection_strategy"`
 
@@ -230,6 +236,16 @@ type PopulationConfig struct {
 	// HistoryMaxSize limits the number of historical generation entries (0 = unlimited).
 	// When > 0, each evolution cycle appends a GenerationHistoryEntry to the history.
 	HistoryMaxSize int `json:"history_max_size"`
+
+	// PerLineageElites enables per-lineage elite preservation (default false).
+	// When enabled, each active lineage retains at least one representative in the
+	// elite set before filling remaining slots from global top performers.
+	// This prevents wired mode from discarding independent threads each generation.
+	PerLineageElites bool `json:"per_lineage_elites"`
+
+	// PerLineageEliteCount is the number of elites to preserve per unique lineage
+	// (default 1). Only used when PerLineageElites is true.
+	PerLineageEliteCount int `json:"per_lineage_elite_count"`
 
 	// AdaptiveConfig controls adaptive mutation rate tuning behavior.
 	// When nil, default adaptive parameters are used.
@@ -489,13 +505,14 @@ func WithTournamentSelection(size int) PopulationOption {
 
 // validSelectionStrategies is the shared whitelist of supported selection strategies.
 var validSelectionStrategies = map[string]bool{
-	"":           true,
-	"random":     true,
-	"tournament": true,
-	"rank":       true,
-	"sus":        true,
-	"roulette":   true,
-	"truncation": true,
+	"":             true,
+	"random":       true,
+	"tournament":   true,
+	"rank":         true,
+	"sus":          true,
+	"roulette":     true,
+	"truncation":   true,
+	"lineage_rank": true,
 }
 
 // WithSelectionStrategy sets the parent selection algorithm.
@@ -505,7 +522,7 @@ func WithSelectionStrategy(strategy string) PopulationOption {
 			cfg.SelectionStrategy = strategy
 			return nil
 		}
-		return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, truncation, random)", strategy)
+		return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, truncation, lineage_rank, random)", strategy)
 	}
 }
 
@@ -574,6 +591,44 @@ func WithHistoryEnabled(maxSize int) PopulationOption {
 	}
 }
 
+// WithPerLineageElites enables or disables per-lineage elite preservation.
+// When enabled, each active lineage retains at least one elite representative.
+//
+// Args:
+//
+//	enabled - whether per-lineage elite preservation is active.
+//
+// Returns:
+//
+//	PopulationOption - functional option for NewPopulation.
+func WithPerLineageElites(enabled bool) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		cfg.PerLineageElites = enabled
+		return nil
+	}
+}
+
+// WithPerLineageEliteCount sets the number of elites to preserve per unique lineage.
+// Only used when PerLineageElites is true. Must be >= 1.
+//
+// Args:
+//
+//	count - number of elites per lineage (must be >= 1).
+//
+// Returns:
+//
+//	PopulationOption - functional option for NewPopulation.
+//	error - non-nil if count < 1.
+func WithPerLineageEliteCount(count int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if count < 1 {
+			return fmt.Errorf("per-lineage elite count must be at least 1, got %d", count)
+		}
+		cfg.PerLineageEliteCount = count
+		return nil
+	}
+}
+
 // WithAdaptiveConfig sets custom adaptive mutation rate tuning parameters.
 // When nil or unset, DefaultAdaptiveConfig() is used.
 //
@@ -634,6 +689,10 @@ type Population struct {
 	// The original cfg.MutationRate is preserved as the base rate for drift-back.
 	currentMutationRate float64
 
+	// recoveryActions tracks diversity recovery actions taken in the current generation.
+	// Reset at the start of each evolution cycle and captured into history at the end.
+	recoveryActions map[string]int
+
 	// history stores per-generation stats snapshots for trajectory reporting.
 	// When HistoryEnabled is true, each evolution cycle appends a snapshot.
 	history []GenerationHistoryEntry
@@ -692,6 +751,7 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		rng:                 rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
 		bestScore:           math.Inf(-1),
 		currentMutationRate: cfg.MutationRate,
+		recoveryActions:     make(map[string]int),
 		HistoryMaxSize:      cfg.HistoryMaxSize,
 	}
 
@@ -803,6 +863,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 
 	// Step 2: Preserve elites (method-specific).
 	elites := cfg.eliteFn(survivors)
+
+	// Step 2.5: Preserve prompt diversity if all elites use one prompt template.
+	elites = p.preservePromptDiversityLocked(elites, sorted)
 
 	// Step 3: Generate offspring using method-specific parent pool.
 	parentPool := cfg.parentPoolFn(survivors)
@@ -991,6 +1054,8 @@ func (p *Population) buildSelector() (Selection, error) {
 		return NewRouletteWheelSelection()
 	case "truncation":
 		return NewTruncationSelection(), nil
+	case "lineage_rank":
+		return NewLineageRankSelection()
 	default:
 		return nil, fmt.Errorf("unsupported selection strategy: %s", p.cfg.SelectionStrategy)
 	}
@@ -1332,6 +1397,14 @@ func (p *Population) appendHistoryLocked() {
 	}
 	entry.NumDiverse = len(parentSet)
 
+	// Capture recovery actions taken during this generation.
+	entry.RecoveryActions = make(map[string]int, len(p.recoveryActions))
+	for k, v := range p.recoveryActions {
+		entry.RecoveryActions[k] = v
+	}
+	// Reset for next generation.
+	p.recoveryActions = make(map[string]int)
+
 	p.history = append(p.history, entry)
 
 	// Truncate if exceeding max size.
@@ -1381,6 +1454,37 @@ func (p *Population) CurrentMutationRate() float64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.currentMutationRate
+}
+
+// RecordRecoveryAction records a diversity recovery action taken during the
+// current generation. Actions are accumulated and stored in the generation
+// history entry when appendHistoryLocked is called.
+//
+// Args:
+//
+//	action - the action name (e.g., "mutation_rate_boost", "fresh_injection", "stagnation_reset").
+func (p *Population) RecordRecoveryAction(action string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.recoveryActions == nil {
+		p.recoveryActions = make(map[string]int)
+	}
+	p.recoveryActions[action]++
+}
+
+// RecoveryActions returns a copy of the recovery actions map for the
+// current generation. Returns nil if no actions have been recorded.
+func (p *Population) RecoveryActions() map[string]int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.recoveryActions) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(p.recoveryActions))
+	for k, v := range p.recoveryActions {
+		result[k] = v
+	}
+	return result
 }
 
 // PopulationStats holds statistical information about a population's state.

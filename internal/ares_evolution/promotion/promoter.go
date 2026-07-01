@@ -80,6 +80,11 @@ func (p *DefaultPromoter) Evaluate(
 
 	// Get or create strategy info
 	info, exists := p.strategies[strategyID]
+
+	// Calculate score and record in ScoreHistory
+	score := CalculateEvidenceScore(evidence)
+	p.previousScores[strategyID] = score
+
 	if !exists {
 		info = &StrategyInfo{
 			StrategyID:      strategyID,
@@ -87,13 +92,31 @@ func (p *DefaultPromoter) Evaluate(
 			CurrentState:    StrategyStateCandidate,
 			Generation:      p.currentGeneration,
 			LastStateChange: time.Now(),
+			BaselineScore:   score,
 		}
 		p.strategies[strategyID] = info
 	}
 
-	// Calculate score
-	score := CalculateEvidenceScore(evidence)
-	p.previousScores[strategyID] = score
+	// Record score snapshot in history.
+	snapshot := ScoreSnapshot{
+		StrategyID: strategyID,
+		Score:      score,
+		Generation: p.currentGeneration,
+		Timestamp:  time.Now(),
+	}
+	info.ScoreHistory = append(info.ScoreHistory, snapshot)
+
+	// Cap history to prevent unbounded growth (keep last 20 entries).
+	if len(info.ScoreHistory) > 20 {
+		info.ScoreHistory = info.ScoreHistory[len(info.ScoreHistory)-20:]
+	}
+
+	// Set baseline score when entering shadow state for the first time.
+	// This captures the score at the point the strategy became shadow
+	// and is used to measure absolute improvement for promotion.
+	if info.CurrentState == StrategyStateShadow && info.BaselineScore == 0 {
+		p.captureBaselineOnShadow(info)
+	}
 
 	// Check cool-down period
 	if !p.canTransition(info) {
@@ -154,6 +177,24 @@ func (p *DefaultPromoter) evaluateShadow(
 ) (StrategyState, string) {
 	// Check if evidence meets promotion criteria
 	if MeetsPromotionCriteria(evidence, p.criteria) {
+		// Also require score improvement over baseline when a baseline exists.
+		// A strategy with stable but non-improving scores should not
+		// replace the current champion.
+		if info.BaselineScore > 0 {
+			scoreDelta := score - info.BaselineScore
+			if scoreDelta < p.criteria.MinAbsoluteImprovement {
+				return StrategyStateShadow, fmt.Sprintf(
+					"blocked: score_delta=%.2f below min_improvement=%.2f",
+					scoreDelta, p.criteria.MinAbsoluteImprovement,
+				)
+			}
+
+			return StrategyStateChampion, fmt.Sprintf(
+				"promoted to champion: success_rate=%.2f, error_rate=%.2f, latency_p95=%d, confidence=%.2f, score_delta=%.2f",
+				evidence.SuccessRate, evidence.ErrorRate, evidence.LatencyP95, evidence.Confidence, scoreDelta,
+			)
+		}
+
 		return StrategyStateChampion, fmt.Sprintf(
 			"promoted to champion: success_rate=%.2f, error_rate=%.2f, latency_p95=%d, confidence=%.2f",
 			evidence.SuccessRate, evidence.ErrorRate, evidence.LatencyP95, evidence.Confidence,
@@ -192,8 +233,15 @@ func (p *DefaultPromoter) evaluateChampion(
 		}
 	}
 
-	// Check if champion hold period has passed
+	// Check if champion hold period has passed but no significant improvement.
 	if info.GenerationCount >= p.criteria.ChampionHoldPeriod {
+		rollingImprovement := p.calculateRollingImprovement(info)
+		if rollingImprovement < p.criteria.MinRollingImprovement {
+			return StrategyStateChampion, fmt.Sprintf(
+				"champion flagged: rolling_improvement=%.4f below min=%.2f",
+				rollingImprovement, p.criteria.MinRollingImprovement,
+			)
+		}
 		return StrategyStateChampion, "champion status maintained"
 	}
 
@@ -259,6 +307,14 @@ func (p *DefaultPromoter) Promote(ctx context.Context, strategyID string) error 
 
 	// Perform promotion
 	p.transitionState(info, targetState, p.currentGeneration, "manual promotion")
+
+	// Capture baseline score when entering shadow state via promotion.
+	// This ensures the improvement check in evaluateShadow has a reference point.
+	if targetState == StrategyStateShadow {
+		// Use the previous entry in ScoreHistory if available, otherwise leave
+		// baseline at the value set during initial strategy creation.
+		p.captureBaselineOnShadow(info)
+	}
 
 	// Update champions list if promoted to champion
 	if targetState == StrategyStateChampion {
@@ -398,6 +454,44 @@ func (p *DefaultPromoter) canTransition(info *StrategyInfo) bool {
 		return false
 	}
 	return true
+}
+
+// calculateRollingImprovement computes the average score improvement over
+// the recent ImprovementWindow generations from the strategy's score history.
+// Returns 0 if there are fewer than 2 data points in the window.
+func (p *DefaultPromoter) calculateRollingImprovement(info *StrategyInfo) float64 {
+	window := p.criteria.ImprovementWindow
+	if window <= 0 {
+		window = 3
+	}
+	history := info.ScoreHistory
+	if len(history) < 2 {
+		return 0
+	}
+	// Look at last `window` entries for the rolling average.
+	start := len(history) - window
+	if start < 0 {
+		start = 0
+	}
+	var totalDelta float64
+	count := 0
+	for i := start + 1; i < len(history); i++ {
+		totalDelta += history[i].Score - history[i-1].Score
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return totalDelta / float64(count)
+}
+
+// captureBaselineOnShadow sets the baseline score from the most recent
+// ScoreHistory entry when a strategy enters shadow state. This captures the
+// score at shadow entry as the reference point for improvement checks.
+func (p *DefaultPromoter) captureBaselineOnShadow(info *StrategyInfo) {
+	if len(info.ScoreHistory) > 0 {
+		info.BaselineScore = info.ScoreHistory[len(info.ScoreHistory)-1].Score
+	}
 }
 
 // transitionState performs a state transition and records it in history.

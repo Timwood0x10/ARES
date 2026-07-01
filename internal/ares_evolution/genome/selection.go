@@ -423,6 +423,188 @@ func (sus *SUSSelection) Select(ctx context.Context, population []*mutation.Stra
 	return result, nil
 }
 
+// LineageRankSelection extends rank selection with lineage diversity awareness.
+// It sorts by score like rank selection, then applies a lineage diversity penalty:
+// if an individual's parent lineage is overrepresented (> threshold), its effective
+// rank is reduced, giving underrepresented lineages a better chance.
+// This prevents lineage collapse in wired mode where tournament selection would
+// otherwise increase selection pressure and collapse lineages.
+type LineageRankSelection struct {
+	rng              *rand.Rand
+	penaltyThreshold float64 // Lineage share above this gets penalized (default 0.4).
+	penaltyStrength  float64 // How much to reduce selection weight (default 0.5).
+}
+
+// LineageRankOption configures LineageRankSelection.
+type LineageRankOption func(*LineageRankSelection) error
+
+// NewLineageRankSelection creates a lineage-aware rank selector with options.
+//
+// Default configuration:
+//   - penaltyThreshold: 0.4
+//   - penaltyStrength: 0.5
+//   - rng: seeded with current time (non-deterministic)
+//
+// Args:
+//
+//	opts - optional configuration functions (WithLineageRankSeed,
+//	  WithLineagePenaltyThreshold, WithLineagePenaltyStrength).
+//
+// Returns:
+//
+//	*LineageRankSelection - the configured selector instance.
+//	error - non-nil if any option fails validation.
+func NewLineageRankSelection(opts ...LineageRankOption) (*LineageRankSelection, error) {
+	ls := &LineageRankSelection{
+		rng:              rand.New(rand.NewSource(rand.Int63())), // #nosec G404
+		penaltyThreshold: 0.4,
+		penaltyStrength:  0.5,
+	}
+	for _, opt := range opts {
+		if err := opt(ls); err != nil {
+			return nil, fmt.Errorf("apply lineage rank option: %w", err)
+		}
+	}
+	return ls, nil
+}
+
+// WithLineageRankSeed sets the random seed for deterministic behavior.
+// Useful for reproducible experiments and testing.
+//
+// Args:
+//
+//	seed - random seed value.
+//
+// Returns:
+//
+//	LineageRankOption - configuration function.
+func WithLineageRankSeed(seed int64) LineageRankOption {
+	return func(ls *LineageRankSelection) error {
+		ls.rng = rand.New(rand.NewSource(seed)) // #nosec G404
+		return nil
+	}
+}
+
+// WithLineagePenaltyThreshold sets the lineage share threshold above which
+// selection weight is penalized. Default 0.4.
+//
+// Args:
+//
+//	threshold - lineage share in [0, 1] that triggers penalty (must be in [0, 1]).
+//
+// Returns:
+//
+//	LineageRankOption - configuration function.
+//	error - non-nil if threshold is out of range.
+func WithLineagePenaltyThreshold(threshold float64) LineageRankOption {
+	return func(ls *LineageRankSelection) error {
+		if threshold < 0 || threshold > 1 {
+			return fmt.Errorf("lineage penalty threshold must be in [0, 1], got %f", threshold)
+		}
+		ls.penaltyThreshold = threshold
+		return nil
+	}
+}
+
+// WithLineagePenaltyStrength sets how much to reduce selection weight for
+// overrepresented lineages. Default 0.5.
+//
+// Args:
+//
+//	strength - penalty multiplier in [0, 1] (must be in [0, 1]).
+//
+// Returns:
+//
+//	LineageRankOption - configuration function.
+//	error - non-nil if strength is out of range.
+func WithLineagePenaltyStrength(strength float64) LineageRankOption {
+	return func(ls *LineageRankSelection) error {
+		if strength < 0 || strength > 1 {
+			return fmt.Errorf("lineage penalty strength must be in [0, 1], got %f", strength)
+		}
+		ls.penaltyStrength = strength
+		return nil
+	}
+}
+
+// Select picks n individuals using lineage-aware rank weighting.
+// First sorts by score descending, then computes lineage distribution across
+// the population. For each individual, if its parent lineage share exceeds
+// the penalty threshold, its effective rank weight is reduced proportionally.
+// This penalizes individuals from already-dominant lineages, giving
+// underrepresented lineages a better chance of selection.
+func (ls *LineageRankSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if err := validateSelectInputs(ctx, population, n); err != nil {
+		return nil, err
+	}
+
+	sorted := make([]*mutation.Strategy, len(population))
+	copy(sorted, population)
+	SortByScore(sorted)
+
+	// Count lineage distribution across the sorted population.
+	lineageCount := make(map[string]int)
+	for _, s := range sorted {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		lineageCount[pid]++
+	}
+	total := float64(len(sorted))
+
+	// Compute effective weights with lineage penalty applied.
+	weights := make([]float64, len(sorted))
+	totalWeight := 0.0
+	for i, s := range sorted {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		share := float64(lineageCount[pid]) / total
+		// Rank weight: best (index 0) gets N, worst gets 1.
+		rankWeight := float64(len(sorted) - i)
+
+		if share > ls.penaltyThreshold {
+			// Apply lineage penalty proportional to overshoot.
+			excess := (share - ls.penaltyThreshold) / (1.0 - ls.penaltyThreshold)
+			penalty := ls.penaltyStrength * excess
+			rankWeight *= (1.0 - penalty)
+		}
+		weights[i] = rankWeight
+		totalWeight += rankWeight
+	}
+
+	if totalWeight < 1e-12 {
+		// All weights zero — pick uniformly.
+		result := make([]*mutation.Strategy, n)
+		for i := range result {
+			result[i] = sorted[ls.rng.Intn(len(sorted))]
+		}
+		return result, nil
+	}
+
+	result := make([]*mutation.Strategy, 0, n)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return result, fmt.Errorf("lineage rank select %d: %w", i, ctx.Err())
+		default:
+		}
+
+		spin := ls.rng.Float64() * totalWeight
+		cumulative := 0.0
+		for j, w := range weights {
+			cumulative += w
+			if spin <= cumulative {
+				result = append(result, sorted[j])
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
 // RouletteWheelSelection selects individuals with probability proportional to fitness.
 // Higher-scoring individuals have proportionally higher selection probability.
 // Note: this is sensitive to score distribution — a super-individual can dominate.

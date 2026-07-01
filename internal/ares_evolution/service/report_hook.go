@@ -34,6 +34,11 @@ func wireAfterRunReport(
 			return nil
 		}
 
+		// Register strategy evidence key for phenotype fallback resolution.
+		if reg, ok := cfg.EvidenceAggregator.(interface{ RegisterStrategyKey(string, string) }); ok {
+			reg.RegisterStrategyKey(best.ID, best.ComputeEvidenceKey())
+		}
+
 		var ev Evidence
 		var state, reason string
 		if evidenceAgg != nil {

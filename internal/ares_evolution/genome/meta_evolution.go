@@ -1,6 +1,7 @@
 package genome
 
 import (
+	"fmt"
 	"log/slog"
 	"math"
 
@@ -54,12 +55,30 @@ type MetaConfig struct {
 // DefaultMetaConfig returns sensible defaults for meta-evolution.
 func DefaultMetaConfig() MetaConfig {
 	return MetaConfig{
-		Enabled:            false, // Opt-in
+		Enabled:            true, // Control loop active by default
 		AdjustmentRate:     0.1,
 		TargetDiversity:    0.3,
 		MinImprovementRate: 0.3,
 		ExplorationBias:    0.5,
 	}
+}
+
+// MetaDecision records a single meta-controller decision for reporting.
+type MetaDecision struct {
+	// Generation when the decision was made.
+	Generation int `json:"generation"`
+
+	// Action describes what was changed (e.g., "mutation_rate", "selection_strategy").
+	Action string `json:"action"`
+
+	// Reason explains why the change was made.
+	Reason string `json:"reason"`
+
+	// OldValue is the parameter value before the change.
+	OldValue string `json:"old_value"`
+
+	// NewValue is the parameter value after the change.
+	NewValue string `json:"new_value"`
 }
 
 // MetaController adjusts PopulationConfig parameters based on observed
@@ -68,6 +87,9 @@ func DefaultMetaConfig() MetaConfig {
 type MetaController struct {
 	cfg        MetaConfig
 	generation int
+
+	// DecisionHistory records all meta-controller decisions for reporting.
+	DecisionHistory []MetaDecision
 }
 
 // NewMetaController creates a meta-controller for self-adapting evolution.
@@ -90,6 +112,7 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 	// 1. Adjust mutation rate based on diversity gap.
 	diversityGap := report.Overall - mc.cfg.TargetDiversity
 	if math.Abs(diversityGap) > 0.05 {
+		oldRate := popCfg.MutationRate
 		if diversityGap < 0 {
 			// Below target: increase mutation rate to boost exploration.
 			delta := ar * (1 + exp) * (-diversityGap)
@@ -106,23 +129,30 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 				popCfg.MaxMutationRate,
 			)
 		}
-		modified = true
+		if oldRate != popCfg.MutationRate {
+			modified = true
+			mc.recordDecision("mutation_rate", "diversity gap", fmt.Sprintf("%.4f", oldRate), fmt.Sprintf("%.4f", popCfg.MutationRate))
+		}
 	}
 
 	// 2. Adjust survival rate based on score improvement trend.
 	if scoreImprovement < mc.cfg.MinImprovementRate {
 		// Low improvement: be more selective (lower survival rate).
+		oldRate := popCfg.SurvivalRate
 		newRate := popCfg.SurvivalRate * (1 - ar)
 		if newRate >= 0.2 {
 			popCfg.SurvivalRate = newRate
 			modified = true
+			mc.recordDecision("survival_rate", "low improvement", fmt.Sprintf("%.4f", oldRate), fmt.Sprintf("%.4f", popCfg.SurvivalRate))
 		}
 	} else if scoreImprovement > mc.cfg.MinImprovementRate*2 {
 		// High improvement: be more generous (higher survival rate).
+		oldRate := popCfg.SurvivalRate
 		newRate := popCfg.SurvivalRate * (1 + ar)
 		if newRate <= 0.9 {
 			popCfg.SurvivalRate = newRate
 			modified = true
+			mc.recordDecision("survival_rate", "high improvement", fmt.Sprintf("%.4f", oldRate), fmt.Sprintf("%.4f", popCfg.SurvivalRate))
 		}
 	}
 
@@ -130,23 +160,31 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 	if stagnantGens > 3 {
 		// Stagnating: reduce elite count to allow more exploration.
 		if popCfg.EliteCount > 1 {
+			oldCount := popCfg.EliteCount
 			popCfg.EliteCount--
 			modified = true
+			mc.recordDecision("elite_count", "stagnation", fmt.Sprintf("%d", oldCount), fmt.Sprintf("%d", popCfg.EliteCount))
 		}
 	} else if stagnantGens == 0 && popCfg.EliteCount < 5 {
 		// Improving: increase elite preservation.
 		if popCfg.EliteCount < popCfg.Size/4 {
+			oldCount := popCfg.EliteCount
 			popCfg.EliteCount++
 			modified = true
+			mc.recordDecision("elite_count", "improving", fmt.Sprintf("%d", oldCount), fmt.Sprintf("%d", popCfg.EliteCount))
 		}
 	}
 
-	// 4. Switch selection strategy based on exploration bias.
-	if mc.generation%20 == 0 && mc.generation > 0 {
-		newStrategy := mc.selectBestStrategy(popCfg, report)
-		if newStrategy != popCfg.SelectionStrategy {
+	// 4. Switch selection strategy based on diversity and improvement trends.
+	// Check more frequently: every 5 generations or when conditions change.
+	if mc.generation%5 == 0 || mc.generation == 1 {
+		oldStrategy := popCfg.SelectionStrategy
+		newStrategy := mc.selectBestStrategy(popCfg, report, scoreImprovement, stagnantGens)
+		if newStrategy != oldStrategy {
 			popCfg.SelectionStrategy = newStrategy
 			modified = true
+			reason := mc.buildStrategyReason(report, scoreImprovement, stagnantGens)
+			mc.recordDecision("selection_strategy", reason, oldStrategy, newStrategy)
 		}
 	}
 
@@ -163,16 +201,66 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 	return modified
 }
 
+// buildStrategyReason constructs a human-readable reason for a strategy change.
+func (mc *MetaController) buildStrategyReason(report DiversityReport, scoreImprovement float64, stagnantGens int) string {
+	var reasons []string
+	if report.Lineage < 0.3 {
+		reasons = append(reasons, "low_lineage_diversity")
+	}
+	if report.Overall < 0.15 {
+		reasons = append(reasons, "low_overall_diversity")
+	}
+	if scoreImprovement > 0.5 {
+		reasons = append(reasons, "high_improvement")
+	}
+	if stagnantGens > 5 {
+		reasons = append(reasons, "persistent_stagnation")
+	}
+	if len(reasons) == 0 {
+		return "balanced"
+	}
+	return reasons[0]
+}
+
+// recordDecision stores a meta-controller decision in the decision history.
+func (mc *MetaController) recordDecision(action, reason, oldValue, newValue string) {
+	mc.DecisionHistory = append(mc.DecisionHistory, MetaDecision{
+		Generation: mc.generation,
+		Action:     action,
+		Reason:     reason,
+		OldValue:   oldValue,
+		NewValue:   newValue,
+	})
+}
+
 // selectBestStrategy chooses the best selection strategy based on current state.
-// Higher exploration bias → more stochastic selection; lower → more deterministic.
-func (mc *MetaController) selectBestStrategy(popCfg *PopulationConfig, report DiversityReport) string {
+// Considers diversity metrics, score improvement, and stagnation to pick
+// the most appropriate selection strategy for the current conditions.
+func (mc *MetaController) selectBestStrategy(popCfg *PopulationConfig, report DiversityReport, scoreImprovement float64, stagnantGens int) string {
 	exp := mc.cfg.ExplorationBias
 	div := report.Overall
+	lineageDiv := report.Lineage
+
+	// Low lineage diversity: use lineage_rank to promote diverse parent selection.
+	if lineageDiv < 0.3 && div < 0.3 {
+		return "lineage_rank"
+	}
 
 	if div < 0.15 {
 		// Low diversity: use rank selection (reduces pressure, allows more diversity).
 		return "rank"
 	}
+
+	// High score improvement: use tournament for more pressure to exploit.
+	if scoreImprovement > 0.5 && exp < 0.3 {
+		return "tournament"
+	}
+
+	// Persistent stagnation: try rank for gentler pressure.
+	if stagnantGens > 5 {
+		return "rank"
+	}
+
 	if div > 0.5 && exp < 0.3 {
 		// High diversity + low exploration bias: use tournament for pressure.
 		return "tournament"

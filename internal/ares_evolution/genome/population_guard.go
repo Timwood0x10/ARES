@@ -125,9 +125,12 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		"start_index", startIdx,
 		"elite_count", eliteCount,
 	)
+	p.recordRecoveryActionLocked("fresh_injection", 1)
 }
 
 // preserveElites copies the top EliteCount survivors without modification.
+// When PerLineageElites is enabled, first reserves top-1 per unique lineage,
+// then fills remaining slots from global top performers.
 // Elites are deep-cloned to prevent shared state across generations.
 //
 // Args:
@@ -138,6 +141,10 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 //
 //	[]*mutation.Strategy - deep-cloned elite strategies.
 func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.Strategy {
+	if p.cfg.PerLineageElites {
+		return p.preservePerLineageElites(survivors)
+	}
+
 	eliteCount := min(p.cfg.EliteCount, len(survivors))
 	if eliteCount <= 0 {
 		return []*mutation.Strategy{}
@@ -146,6 +153,117 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 	elites := make([]*mutation.Strategy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
 		elites = append(elites, survivors[i].Clone())
+	}
+
+	return elites
+}
+
+// preservePerLineageElites implements per-lineage elite preservation.
+// First selects the best individual from each unique ParentID, then fills
+// remaining elite slots from global top performers.
+func (p *Population) preservePerLineageElites(survivors []*mutation.Strategy) []*mutation.Strategy {
+	if len(survivors) == 0 {
+		return []*mutation.Strategy{}
+	}
+
+	// Find the best index for each unique lineage.
+	lineageBest := make(map[string]int)
+	for i, s := range survivors {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		existingIdx, ok := lineageBest[pid]
+		if !ok || s.Score > survivors[existingIdx].Score {
+			lineageBest[pid] = i
+		}
+	}
+
+	targetCount := p.cfg.EliteCount
+	if targetCount <= 0 {
+		targetCount = 1
+	}
+
+	// First pass: reserve top-1 per active lineage.
+	reserved := make(map[int]bool, len(survivors))
+	elites := make([]*mutation.Strategy, 0, targetCount)
+
+	for _, idx := range lineageBest {
+		if len(elites) >= targetCount {
+			break
+		}
+		elites = append(elites, survivors[idx].Clone())
+		reserved[idx] = true
+	}
+
+	// Fill remaining slots from global top performers.
+	for i := 0; i < len(survivors) && len(elites) < targetCount; i++ {
+		if reserved[i] {
+			continue
+		}
+		elites = append(elites, survivors[i].Clone())
+		reserved[i] = true
+	}
+
+	slog.Debug("per-lineage elites preserved",
+		"total_elites", len(elites),
+		"unique_lineages", len(lineageBest),
+		"elite_count_config", p.cfg.EliteCount,
+	)
+
+	return elites
+}
+
+// preservePromptDiversityLocked checks if all elites use the same prompt template.
+// If they do, and the current population contains an alternative template individual
+// with a score above the floor threshold, that individual is force-retained as an
+// exploration seed. This prevents categorical collapse where all individuals converge
+// to the same prompt template.
+//
+// The method is called after elite preservation and before offspring generation.
+// It modifies the elite set in-place by appending a prompt diversity seed when needed.
+//
+// Args:
+//
+//	elites - the current set of elite strategies (may be modified).
+//	population - the full sorted population (used to check for alternatives).
+//
+// Returns:
+//
+//	[]*mutation.Strategy - potentially expanded elite set with diversity seed.
+func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, population []*mutation.Strategy) []*mutation.Strategy {
+	if len(elites) == 0 || len(population) <= len(elites) {
+		return elites
+	}
+
+	// Check if all elites use one prompt template.
+	firstTemplate := elites[0].PromptTemplate
+	allSame := true
+	for _, e := range elites {
+		if e.PromptTemplate != firstTemplate {
+			allSame = false
+			break
+		}
+	}
+	if !allSame {
+		return elites
+	}
+
+	// All elites use the same template. Look for an alternative in the population.
+	const promptDiversityScoreFloor = -0.5 // Allow negative scores but not extremely bad ones.
+	for _, s := range population {
+		if s.PromptTemplate != firstTemplate && IsScoreEvaluated(s.Score) && s.Score >= promptDiversityScoreFloor {
+			clone := s.Clone()
+			clone.MutationDesc = "prompt_diversity_seed"
+			elites = append(elites, clone)
+			slog.Debug("prompt diversity seed force-retained",
+				"template", s.PromptTemplate,
+				"score", s.Score,
+				"agent_id", s.ID,
+				"elite_count_before", len(elites)-1,
+			)
+			return elites
+		}
 	}
 
 	return elites

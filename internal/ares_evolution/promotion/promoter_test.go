@@ -90,20 +90,50 @@ func TestDefaultPromoter_Evaluate(t *testing.T) {
 		assert.Contains(t, reason, "promoted to shadow")
 	})
 
-	t.Run("shadow promotes to champion", func(t *testing.T) {
-		// Register and manually set to shadow state
-		err := promoter.RegisterStrategy("strategy-3", "code_generation")
+	t.Run("shadow blocked by score_delta below threshold", func(t *testing.T) {
+		// Fresh promoter for clean state
+		p := NewDefaultPromoter(nil)
+		err := p.RegisterStrategy("strategy-blocked", "code_generation")
 		require.NoError(t, err)
 
-		// Manually set to shadow state
-		promoter.mu.Lock()
-		promoter.strategies["strategy-3"].CurrentState = StrategyStateShadow
-		promoter.strategies["strategy-3"].GenerationCount = 5 // Allow transition
-		promoter.mu.Unlock()
+		p.mu.Lock()
+		p.strategies["strategy-blocked"].CurrentState = StrategyStateShadow
+		p.strategies["strategy-blocked"].GenerationCount = 5
+		p.strategies["strategy-blocked"].BaselineScore = 0.5 // Set high baseline
+		p.mu.Unlock()
 
-		// Evaluate with champion-level evidence
+		// Evidence producing score ≈ 0.80 (< 0.5 improvement)
 		evidence := experience.Evidence{
-			StrategyID:  "strategy-3",
+			StrategyID:  "strategy-blocked",
+			TaskType:    "code_generation",
+			SampleCount: 150,
+			SuccessRate: 0.85,
+			ErrorRate:   0.10,
+			LatencyP95:  3000,
+			Confidence:  0.80,
+		}
+
+		state, reason, err := p.Evaluate(ctx, "strategy-blocked", evidence)
+		require.NoError(t, err)
+		assert.Equal(t, StrategyStateShadow, state)
+		assert.Contains(t, reason, "blocked")
+		assert.Contains(t, reason, "score_delta")
+	})
+
+	t.Run("shadow promotes to champion when score_delta sufficient", func(t *testing.T) {
+		// Fresh promoter for clean state
+		p := NewDefaultPromoter(nil)
+		err := p.RegisterStrategy("strategy-pass", "code_generation")
+		require.NoError(t, err)
+
+		p.mu.Lock()
+		p.strategies["strategy-pass"].CurrentState = StrategyStateShadow
+		p.strategies["strategy-pass"].GenerationCount = 5
+		p.strategies["strategy-pass"].BaselineScore = 0.3 // Low baseline → big delta
+		p.mu.Unlock()
+
+		evidence := experience.Evidence{
+			StrategyID:  "strategy-pass",
 			TaskType:    "code_generation",
 			SampleCount: 150,
 			SuccessRate: 0.90,
@@ -112,7 +142,7 @@ func TestDefaultPromoter_Evaluate(t *testing.T) {
 			Confidence:  0.85,
 		}
 
-		state, reason, err := promoter.Evaluate(ctx, "strategy-3", evidence)
+		state, reason, err := p.Evaluate(ctx, "strategy-pass", evidence)
 		require.NoError(t, err)
 		assert.Equal(t, StrategyStateChampion, state)
 		assert.Contains(t, reason, "promoted to champion")
@@ -641,4 +671,118 @@ func TestDefaultPromoter_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 	assert.Equal(t, int64(0), atomic.LoadInt64(&errCount))
+}
+
+func TestEvaluate_RollingImprovementFlagged(t *testing.T) {
+	promoter := NewDefaultPromoter(nil)
+	ctx := context.Background()
+
+	t.Run("rolling improvement below threshold flagged", func(t *testing.T) {
+		err := promoter.RegisterStrategy("strategy-ri", "code_generation")
+		require.NoError(t, err)
+
+		// Promote to champion
+		err = promoter.Promote(ctx, "strategy-ri")
+		require.NoError(t, err)
+
+		promoter.mu.Lock()
+		promoter.strategies["strategy-ri"].GenerationCount = 5
+		promoter.mu.Unlock()
+
+		err = promoter.Promote(ctx, "strategy-ri")
+		require.NoError(t, err)
+
+		promoter.mu.Lock()
+		promoter.strategies["strategy-ri"].GenerationCount = 10
+		// Set ScoreHistory so that avg rolling improvement < 0.1 after evaluate adds the new score.
+		// With evidence score ≈ 0.84 and history [0.80, 0.82]:
+		// rolling = ((0.82-0.80) + (0.84-0.82)) / 2 = (0.02 + 0.02) / 2 = 0.02 < 0.1
+		promoter.strategies["strategy-ri"].ScoreHistory = []ScoreSnapshot{
+			{Score: 0.80},
+			{Score: 0.82},
+		}
+		promoter.mu.Unlock()
+
+		evidence := experience.Evidence{
+			StrategyID:  "strategy-ri",
+			TaskType:    "code_generation",
+			SampleCount: 150,
+			SuccessRate: 0.85,
+			ErrorRate:   0.10,
+			LatencyP95:  3000,
+			Confidence:  0.80,
+		}
+
+		state, reason, err := promoter.Evaluate(ctx, "strategy-ri", evidence)
+		require.NoError(t, err)
+		assert.Equal(t, StrategyStateChampion, state)
+		assert.Contains(t, reason, "flagged")
+		assert.Contains(t, reason, "rolling_improvement")
+	})
+
+	t.Run("rolling improvement above threshold maintained", func(t *testing.T) {
+		err := promoter.RegisterStrategy("strategy-rm", "code_generation")
+		require.NoError(t, err)
+
+		// Promote to champion
+		err = promoter.Promote(ctx, "strategy-rm")
+		require.NoError(t, err)
+
+		promoter.mu.Lock()
+		promoter.strategies["strategy-rm"].GenerationCount = 5
+		promoter.mu.Unlock()
+
+		err = promoter.Promote(ctx, "strategy-rm")
+		require.NoError(t, err)
+
+		promoter.mu.Lock()
+		promoter.strategies["strategy-rm"].GenerationCount = 10
+		// Set ScoreHistory so that avg rolling improvement >= 0.1 after evaluate adds the new score.
+		// With evidence score ≈ 0.84 and history [0.40, 0.62]:
+		// rolling = ((0.62-0.40) + (0.84-0.62)) / 2 = (0.22 + 0.22) / 2 = 0.22 >= 0.1
+		promoter.strategies["strategy-rm"].ScoreHistory = []ScoreSnapshot{
+			{Score: 0.40},
+			{Score: 0.62},
+		}
+		promoter.mu.Unlock()
+
+		evidence := experience.Evidence{
+			StrategyID:  "strategy-rm",
+			TaskType:    "code_generation",
+			SampleCount: 150,
+			SuccessRate: 0.85,
+			ErrorRate:   0.10,
+			LatencyP95:  3000,
+			Confidence:  0.80,
+		}
+
+		state, reason, err := promoter.Evaluate(ctx, "strategy-rm", evidence)
+		require.NoError(t, err)
+		assert.Equal(t, StrategyStateChampion, state)
+		assert.Contains(t, reason, "maintained")
+	})
+}
+
+func TestEvaluate_ScoreHistoryCapped(t *testing.T) {
+	promoter := NewDefaultPromoter(nil)
+	ctx := context.Background()
+
+	err := promoter.RegisterStrategy("strategy-sh", "code_generation")
+	require.NoError(t, err)
+
+	// Evaluate 25 times to exceed the cap of 20
+	for i := 0; i < 25; i++ {
+		evidence := experience.Evidence{
+			StrategyID:  "strategy-sh",
+			TaskType:    "code_generation",
+			SampleCount: int64(i + 1),
+			SuccessRate: 0.7,
+		}
+		_, _, err := promoter.Evaluate(ctx, "strategy-sh", evidence)
+		require.NoError(t, err)
+	}
+
+	info, err := promoter.GetStrategyInfo(ctx, "strategy-sh")
+	require.NoError(t, err)
+	assert.Len(t, info.ScoreHistory, 20)
 }

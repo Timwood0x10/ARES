@@ -390,9 +390,8 @@ func TestExecuteAction_ConcurrentActions(t *testing.T) {
 }
 
 func TestNewInteractionEngine_NilDAG(t *testing.T) {
-	assert.Panics(t, func() {
-		NewInteractionEngine(nil, nil, nil)
-	})
+	ie := NewInteractionEngine(nil, nil, nil)
+	assert.Nil(t, ie)
 }
 
 func TestExecuteAction_KillUnknownSourceNode(t *testing.T) {

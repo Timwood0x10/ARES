@@ -239,6 +239,23 @@ func (p *Population) measureCategoricalDiversityLocked() float64 {
 	return totalDist / float64(pairCount)
 }
 
+// countPromptTemplateDistributionLocked returns the count of each prompt template
+// in the current population. Useful for detecting categorical convergence where
+// all agents use the same prompt template.
+//
+// Caller must hold at least a read lock on p.mu.
+//
+// Returns:
+//
+//	map[string]int - mapping of prompt template to count of agents using it.
+func (p *Population) countPromptTemplateDistributionLocked() map[string]int {
+	dist := make(map[string]int)
+	for _, a := range p.Agents {
+		dist[a.PromptTemplate]++
+	}
+	return dist
+}
+
 // measureLineageDiversityLocked computes lineage (parent ID) diversity.
 //
 // Returns:
@@ -442,6 +459,7 @@ func (p *Population) adjustMutationRateLocked() {
 			"mutation_rate", p.cfg.MaxMutationRate,
 		)
 		p.currentMutationRate = p.cfg.MaxMutationRate
+		p.recordRecoveryActionLocked("mutation_rate_boost", 1)
 		return
 	}
 
@@ -450,6 +468,7 @@ func (p *Population) adjustMutationRateLocked() {
 		deficit := p.cfg.DiversityThreshold - div
 		boostFactor := ac.LowDiversityBoostFactor + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
 		p.currentMutationRate = minFloat(p.currentMutationRate*boostFactor, p.cfg.MaxMutationRate)
+		p.recordRecoveryActionLocked("mutation_rate_boost", 1)
 	} else if div > p.cfg.DiversityThreshold*3 {
 		// Very high diversity: allow gentle decay toward floor.
 		p.currentMutationRate = maxFloat(p.currentMutationRate*ac.HighDecayRate, p.cfg.MinMutationRate)
@@ -544,6 +563,16 @@ func (p *Population) handleStagnationLocked() {
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,
 	)
+	p.recordRecoveryActionLocked("stagnation_reset", 1)
+}
+
+// recordRecoveryActionLocked increments the recovery action counter for the
+// current generation. Caller must hold p.mu write lock.
+func (p *Population) recordRecoveryActionLocked(action string, count int) {
+	if p.recoveryActions == nil {
+		p.recoveryActions = make(map[string]int)
+	}
+	p.recoveryActions[action] += count
 }
 
 // minFloat returns the smaller of two float64 values.

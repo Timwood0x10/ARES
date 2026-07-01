@@ -66,7 +66,7 @@ type InteractionEngine struct {
 // but actions that require them will return errors.
 func NewInteractionEngine(dag *Engine, runtime RuntimeController, orch OrchestratorController) *InteractionEngine {
 	if dag == nil {
-		panic("dag engine must not be nil")
+		return nil
 	}
 	return &InteractionEngine{
 		dag:     dag,

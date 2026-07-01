@@ -120,9 +120,8 @@ func TestNewDetailPanel(t *testing.T) {
 }
 
 func TestNewDetailPanel_NilTracker(t *testing.T) {
-	assert.Panics(t, func() {
-		NewDetailPanel(nil)
-	})
+	dp := NewDetailPanel(nil)
+	assert.Nil(t, dp)
 }
 
 func TestGetDetail_BasicAgent(t *testing.T) {
