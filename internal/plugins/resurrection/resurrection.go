@@ -273,6 +273,15 @@ func (s *Supervisor) Stop() error {
 	return nil
 }
 
+// SetSnapshotStore attaches a snapshot store for stateful agent recovery.
+// Must be called before Start(). After Start(), the snapshot loop runs
+// at the configured SnapshotInterval to persist agent state periodically.
+func (s *Supervisor) SetSnapshotStore(store base.SnapshotStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshotStore = store
+}
+
 // Agent returns the current instance of a watched agent.
 func (s *Supervisor) Agent(agentID string) base.Agent {
 	s.mu.RLock()
