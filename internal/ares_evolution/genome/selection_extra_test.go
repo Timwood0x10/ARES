@@ -606,18 +606,20 @@ func TestRouletteWheelSelection_Proportionality(t *testing.T) {
 		counts["low"], counts["mid"], counts["high"])
 
 	// Proportionality check: high should be selected ~11x more often than mid.
-	// Allow a wide band (5x to 20x) to absorb statistical noise.
+	// Allow a moderate band (6x to 18x) to absorb statistical noise.
 	if counts["mid"] == 0 {
 		t.Fatalf("mid count is 0 — cannot compute ratio")
 	}
 	ratio := float64(counts["high"]) / float64(counts["mid"])
-	if ratio < 5.0 || ratio > 20.0 {
-		t.Errorf("high:mid ratio %.2f outside expected band [5, 20] "+
+	if ratio < 6.0 || ratio > 18.0 {
+		t.Errorf("high:mid ratio %.2f outside expected band [6, 18] "+
 			"(theoretical ~11): high=%d, mid=%d", ratio, counts["high"], counts["mid"])
 	}
 
 	// Low scorer should almost never be picked (weight ≈ 0).
-	if counts["low"] > iterations/20 { // > 5% would be suspicious
+	// With 5000 iterations and P(low) ≈ 0, the expected count is 0;
+	// any selection above 10 (0.2%) strongly suggests a regression.
+	if counts["low"] > 10 {
 		t.Errorf("low scorer selected %d/%d times — expected near-zero "+
 			"(shifted weight ≈ 0)", counts["low"], iterations)
 	}

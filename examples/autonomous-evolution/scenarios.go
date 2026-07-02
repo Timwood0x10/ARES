@@ -810,29 +810,13 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 			continue
 		}
 		byTask := exp.AggregateEvidenceByTask(exps)
-		// Compute strategy summary across task types.
-		var totalSamples int64
-		var weightedSuccess float64
-		for _, e := range byTask {
-			totalSamples += e.SampleCount
-			weightedSuccess += e.SuccessRate * float64(e.SampleCount)
-		}
-		avgSuccess := float64(0)
-		if totalSamples > 0 {
-			avgSuccess = weightedSuccess / float64(totalSamples)
-		}
-		// Use first task type's latency as representative.
-		var p50Lat int64
-		for _, e := range byTask {
-			p50Lat = e.LatencyP50
-			break
-		}
+		ev := exp.AggregateEvidenceCrossTask(exps)
 		evRows = append(evRows, []string{
 			profile.id,
-			fmt.Sprintf("%.0f%%", avgSuccess*100),
-			fmt.Sprintf("%dms", p50Lat),
-			fmt.Sprintf("%d (task_types=%d)", totalSamples, len(byTask)),
-			fmt.Sprintf("%.0f%%", 0.0),
+			fmt.Sprintf("%.0f%%", ev.SuccessRate*100),
+			fmt.Sprintf("%dms", ev.LatencyP50),
+			fmt.Sprintf("%d (task_types=%d)", ev.SampleCount, len(byTask)),
+			fmt.Sprintf("%.0f%%", ev.Confidence*100),
 		})
 	}
 	tbl([]string{"Strategy", "Success", "P50 Lat", "Samples", "Confid"}, evRows)
@@ -853,23 +837,13 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 		if err != nil || len(exps) == 0 {
 			continue
 		}
-		byTask := exp.AggregateEvidenceByTask(exps)
-		// Aggregate per-task evidence into a single summary for promotion.
-		var totalSamples int64
-		var weightedSuccess float64
-		for _, e := range byTask {
-			totalSamples += e.SampleCount
-			weightedSuccess += e.SuccessRate * float64(e.SampleCount)
-		}
-		avgSuccess := float64(0)
-		if totalSamples > 0 {
-			avgSuccess = weightedSuccess / float64(totalSamples)
-		}
+		ev := exp.AggregateEvidenceCrossTask(exps)
 		svcEv := evolutionservice.Evidence{
 			StrategyID:  profile.id,
-			SuccessRate: avgSuccess,
-			SampleCount: totalSamples,
-			Confidence:  0.0,
+			SuccessRate: ev.SuccessRate,
+			LatencyP50:  ev.LatencyP50,
+			SampleCount: ev.SampleCount,
+			Confidence:  ev.Confidence,
 		}
 		state, reason, _ := promoter.Evaluate(ctx, profile.id, svcEv)
 		fmt.Printf("     %-12s → %-10s (%s)\n", profile.id, state, reason)

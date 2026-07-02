@@ -157,7 +157,11 @@ func (r *Report) writeRecommendations(sb *strings.Builder) {
 }
 
 // truncate shortens a string to maxLen characters, appending "..." if truncated.
+// Returns empty string when maxLen <= 0.
 func truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if len(s) <= maxLen {
 		return s
 	}

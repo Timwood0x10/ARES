@@ -5,7 +5,9 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -178,6 +180,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineRunResult, error) {
 
 	var lastReportErr error
 	var lastPushErr error
+	var lastReportTime time.Time
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -186,8 +189,11 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineRunResult, error) {
 
 		batch, err := p.source.Next(ctx)
 		if err != nil {
-			// End of source or unrecoverable error: stop the loop.
-			slog.DebugContext(ctx, "[Pipeline] source exhausted or errored", "error", err)
+			if errors.Is(err, io.EOF) {
+				slog.DebugContext(ctx, "[Pipeline] source exhausted")
+			} else {
+				slog.WarnContext(ctx, "[Pipeline] source error", "error", err)
+			}
 			break
 		}
 		if batch == nil {
@@ -206,10 +212,21 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineRunResult, error) {
 
 		// Optionally generate a report on an interval.
 		if p.config.ReportInterval > 0 {
-			if err := p.runReport(ctx); err != nil {
-				lastReportErr = err
-				slog.WarnContext(ctx, "[Pipeline] periodic report generation failed", "error", err)
+			if lastReportTime.IsZero() || time.Since(lastReportTime) >= p.config.ReportInterval {
+				if err := p.runReport(ctx); err != nil {
+					lastReportErr = err
+					slog.WarnContext(ctx, "[Pipeline] periodic report generation failed", "error", err)
+				}
+				lastReportTime = time.Now()
 			}
+		}
+	}
+
+	// Final push after source exhaustion.
+	if p.config.PushAfterDistill {
+		if err := p.runPush(ctx); err != nil {
+			lastPushErr = err
+			slog.WarnContext(ctx, "[Pipeline] final push failed", "error", err)
 		}
 	}
 

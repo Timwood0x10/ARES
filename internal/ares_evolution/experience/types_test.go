@@ -355,6 +355,9 @@ func TestAggregateEvidenceCrossTask(t *testing.T) {
 		if result.ErrorRate < 0.06 || result.ErrorRate > 0.07 {
 			t.Errorf("ErrorRate = %.4f, want ≈0.063", result.ErrorRate)
 		}
+		if result.Confidence <= 0 {
+			t.Errorf("Confidence = %.2f, want positive sample-based confidence", result.Confidence)
+		}
 	})
 
 	t.Run("mixed strategy IDs picks first", func(t *testing.T) {

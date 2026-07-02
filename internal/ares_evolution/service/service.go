@@ -145,6 +145,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
 	internalCfg.PromptCrossoverMode = cfg.PromptCrossoverMode
+	internalCfg.PromptTemplates = cfg.PromptPool
 
 	// Thread the API-level scorer into the wired system's adapter so the
 	// scheduler path automatically scores new offspring after each generation.

@@ -378,3 +378,57 @@ The following tasks from the audit were completed:
 `internal/ares_memory/pipeline.go` has unused imports from concurrent work
 by another agent that require cleanup. This file is not in scope for this task
 and should be fixed by the owning agent.
+
+---
+
+## Refresh (2026-07-02)
+
+### codebase-memory-mcp Index
+
+- **Previous (moderate mode, 2026-07-01):** 22,411 nodes / 111,338 edges / 883 files / 17 excluded dirs (`internal/tools` was excluded)
+- **Current (full mode, 2026-07-02):** **22,384 nodes / 114,056 edges / 1,193 files / 11 excluded dirs** — `internal/tools` is now included.
+- Test detection: **17,324 tests across 271 test files**.
+- Index was force-recreated from scratch (project deleted then re-indexed) to pick up file-level graph data for `internal/tools`.
+
+### Coverage Gaps (High Priority)
+
+| Package | Coverage | Problem |
+|---|---|---|
+| `internal/storage/postgres/repositories` | **0.0%** | 6 test files all behind `//go:build integration` + require Postgres; 0% in normal/short runs |
+| `internal/ares_evolution/service` | **10.2%** | `NewLLMScorer`, `Score`, `ScoreWithContext`, `BatchScore`, `Evolve`, `CreateWiredSystem` — all 0% |
+| `internal/workflow/graphservice` | **13.8%** | Only 1 test file, very low coverage |
+| `internal/storage/postgres` | **17.6%** | Core Postgres logic lightly tested |
+| `api/mcp` | **36.5%** | MCP server/transport uncovered |
+| `api/handler` | **39.0%** | API handlers under-tested |
+
+**Recommendation:** `internal/ares_evolution/service` is the most actionable — `llm_scorer.go` has 14 functions, only 2 with coverage, and most are pure logic (`buildPrompt`, `parseScore`, `extractScoreFromText`, `fallbackScore`) that don't need a real LLM to unit-test.
+
+### Test Quality: Non-testify Test Files
+
+- **200/374 (53%) test files** use raw `t.Errorf`/`t.Fatalf` instead of testify assertions.
+- Raw assertions produce less informative failure output and are more verbose to maintain.
+- Affected packages include: `internal/llm`, `internal/ares_bootstrap`, `internal/ares_eval`, `internal/ares_callbacks`, `internal/ares_flight`, `internal/logger`.
+- **Recommendation:** Low-priority, but these packages would benefit from testify migration for readability.
+
+### Benchmarks Underutilized
+
+- Only **2 benchmark files** exist for the entire project (`api/handler/stream_bench_test.go`, `internal/ares_eval/eval_bench_test.go`).
+- Genomic selection, scoring, memory retrieval, and workflow execution lack benchmarks.
+
+### Large Test Files
+
+- **20 files > 1,000 lines** — largest is `retrieval_service_test.go` (2,110 lines / 98 Test functions).
+- Could benefit from table-driven test patterns to reduce repetition.
+
+### Patterns to Watch
+
+- `internal/ares_memory/service/service_test.go` uses `init()` instead of `TestMain` for slog configuration (minor).
+- `go test -run=NOMATCH ./...` passes cleanly — entire project compiles.
+- Recent improvements in `selection_extra_test.go` (tightened statistical bands 5–20x → 6–18x, lower scorer threshold 5% → 0.2%) are good.
+
+### Recommended Next Actions
+
+1. **High** — Add unit tests for `internal/ares_evolution/service/llm_scorer.go` (pure logic, no LLM needed)
+2. **Medium** — Re-evaluate whether integration-tagged storage tests are run in CI; add fast unit tests with `pgxmock` for 0%-coverage repository package
+3. **Low** — Migrate non-testify test files in `internal/llm/`, `internal/ares_eval/`, `internal/ares_bootstrap/`
+4. **Low** — Add benchmarks for hot paths (selection, scoring, memory retrieval)

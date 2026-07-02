@@ -353,9 +353,31 @@ func AggregateEvidenceCrossTask(experiences []NormalizedExperience) Evidence {
 		ErrorRate:     totalErrorRate / count,
 		SampleCount:   int64(len(experiences)),
 		ToolChainHash: toolChainHash,
-		Confidence:    0.0,
+		Confidence:    calculateSampleConfidence(int64(len(experiences))),
 		LastUpdated:   lastTimestamp,
 	}
+}
+
+func calculateSampleConfidence(sampleCount int64) float64 {
+	if sampleCount <= 0 {
+		return 0.0
+	}
+
+	const (
+		minSampleCount int64 = 10
+		maxSampleCount int64 = 1000
+	)
+
+	if sampleCount >= maxSampleCount {
+		return 1.0
+	}
+	if sampleCount < minSampleCount {
+		return float64(sampleCount) / float64(minSampleCount) * 0.5
+	}
+
+	rangeSize := maxSampleCount - minSampleCount
+	position := sampleCount - minSampleCount
+	return float64(position)/float64(rangeSize)*0.5 + 0.5
 }
 
 // calculateLatencyPercentiles computes p50 and p95 from a slice of raw
