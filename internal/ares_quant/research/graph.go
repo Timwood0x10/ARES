@@ -228,8 +228,8 @@ func (g *ResearchGraph) Execute(ctx context.Context, state *ResearchState) error
 		}
 
 		// Apply timeout if configured.
-		// FIX: use explicit cancel after handler returns instead of defer inside loop,
-		// to prevent context resource accumulation when handlers block.
+		// Cancel is called explicitly after handler returns to prevent context
+		// resource accumulation when handlers block.
 		execCtx := ctx
 		var cancel context.CancelFunc
 		if node.Timeout > 0 {

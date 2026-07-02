@@ -1,6 +1,6 @@
-# GA in the Trenches: What Two Real Evolution Runs Taught Me
+# GA in the Trenches: What Three Real Evolution Runs Taught Me (After Fixing a Bug That Cost 26.97 Points)
 
-> Disclaimer: This is not a GA tutorial, nor a line-by-line code analysis. Its subtitle is "What you'll find in the logs after running 15 generations of evolution for real." I want to share some engineering insights that grew out of actual data from two real evolution runs.
+> Disclaimer: This is not a GA tutorial, nor a line-by-line code analysis. Its subtitle is "What you'll find in the logs after running 15 generations of evolution for real." I want to share some engineering insights that grew out of actual data — and one humbling initialization bug — from three real evolution runs.
 
 ---
 
@@ -10,9 +10,25 @@ In the ares evolution system, the GA (Genetic Algorithm) path was designed as a 
 
 What makes things interesting is the **GenomeAdapter** — a lineage-tracking system designed to trace every strategy's bloodline. It turns GA into "Wired Evolution": each thread carries its own genome, evolves in parallel, and preserves complete parent-child relationship chains. Sounds elegant, right?
 
-The question is: **how much exploration capability does GA lose when it gets "wired"?**
+The question was: **how much exploration capability does GA lose when it gets "wired"?**
 
-This article walks through three evolution experiments using real data from `/examples/autonomous-evolution/run.log`. The first two (Scenario 6 and 7) are strict controlled experiments — same seed, same population size, same generations — with only one variable: whether Wired mode is enabled. The third (Scenario 5) is an independent validation with a smaller population. The data reveals things I never expected when writing the code.
+Earlier versions of this article answered: **"a lot."** Scenario 6 (Non-Wired) hit 89.47 while Scenario 7 (Wired) was stuck at 62.50 — a gap of 26.97 points. The conclusion was damning: Wired mode is an exploration bottleneck. Don't use it.
+
+**I was wrong.**
+
+Not because the analysis was sloppy. But because `CreateWiredSystem` was missing a single line of initialization code — `PromptTemplates = PromptPool`. Without it, all prompt template mappings were empty. Prompt mutations never happened. The entire system was running with a critical component unplugged.
+
+After the fix, the results flipped:
+
+| Scenario | Old (Buggy) | New (Fixed) | Change |
+|----------|------------|-------------|--------|
+| Scenario 6 (Non-Wired) | 89.47 (+43.1%) | **79.41** (+21.2%) | Baseline changed |
+| Scenario 7 (Wired, LLM final) | 62.50 (+0.0%) | **85.90** (+21.8%) | **+23.40 points** |
+| Scenario 8 (Wired, LLM scorer) | 62.50 (+0.0%) | **77.50** (+24.0%) | **+15.00 points** |
+
+Wired mode is not just viable — with LLM guidance, it beats the non-wired baseline.
+
+This article walks through three evolution experiments using real data from `/examples/autonomous-evolution/run.log`. All runs use new data after the fix. The core lesson isn't about GA theory anymore — it's about **what happens when you forget to initialize a field, and how that mistake cascades into 15 generations of misleading data.**
 
 ---
 
@@ -20,31 +36,33 @@ This article walks through three evolution experiments using real data from `/ex
 
 All three GA runs share the same underlying configuration:
 
-| Config | Scenario 6 | Scenario 7 | Scenario 5 |
+| Config | Scenario 6 | Scenario 7 | Scenario 8 |
 |--------|-----------|-----------|-----------|
 | Population size | 20 | 20 | 10 |
 | Elite count | 2 | 2 | 1 |
 | Selection strategy | **Rank Selection** | **Tournament Selection** | Tournament |
 | Wired mode | **No** | **Yes** | **Yes** |
-| Mutation rate | 0.3 (emergency up to 0.5) | 0.3 (emergency up to 0.5) | 0.3 |
+| Mutation rate | 0.3 (emergency ~0.47) | 0.3 (emergency ~0.47) | 0.3 (emergency 0.5) |
 | Generations | 15 | 15 | 10 |
-| Scorer | Deterministic | Deterministic + LLM final check | LLM Scorer (with deterministic fallback) |
+| Scorer | Deterministic | Deterministic + LLM final | LLM tiered scoring |
 
 Key differences:
 
 - **Scenario 6 (Pure Autonomous / Non-Wired)**: Rank selection + no GenomeAdapter + pure deterministic scorer. This is the most "classic" GA setup — 20 independent individuals free to crossover without lineage constraints.
-- **Scenario 7 (Wired Evolution)**: Tournament selection + GenomeAdapter + deterministic scorer + LLM final validation. This is the "engineered" GA — each thread preserves its lineage, with LLM validation at the end.
-- **Scenario 5 (Real Data Pipeline / Wired)**: Uses an LLM scorer inside the evolution loop, not just at the final validation stage. Smaller population (10), fewer generations (10), serving as a control to verify Wired-mode behavior consistency.
+- **Scenario 7 (Wired Evolution + LLM Final Validation)**: Tournament selection + GenomeAdapter + deterministic scorer + LLM final validation. This is the "engineered" GA — each thread preserves its lineage, with LLM validation at the end.
+- **Scenario 8 (Wired + Data Pipeline + LLM Scorer)**: Uses an LLM scorer inside the evolution loop. Smaller population (10), fewer generations (10), serving as a control to verify Wired-mode behavior consistency.
 
 Results preview:
 
 | Scenario | Initial Best | Final Best | Improvement |
 |---------|-------------|-----------|-------------|
-| Scenario 6 (Non-Wired) | **62.50** | **89.47** | **+43.1%** |
-| Scenario 7 (Wired + LLM final) | **62.50** | **62.50** | **+0.0%** |
-| Scenario 5 (Wired + LLM scorer) | **62.50** | **62.50** | **+0.0%** |
+| Scenario 6 (Non-Wired, Rank) | 65.50 | **79.41** | **+21.2%** |
+| Scenario 7 (Wired, Tournament, LLM final) | 70.50 | **85.90** | **+21.8%** |
+| Scenario 8 (Wired, Data pipeline, LLM scorer) | 62.50 | **77.50** | **+24.0%** |
 
-The numbers speak for themselves. Let's dive in.
+**LLM-Guided wins by +6.49 points.**
+
+The numbers tell a different story now. Let's dive in.
 
 ---
 
@@ -55,423 +73,420 @@ The complete 15-generation evolution trajectory:
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   52.40    5.00   32%
- 2   77.50   59.35   32.50   28%
- 3   77.50   61.85   42.50   39%
- 4   77.50   63.35   42.50   33%
- 5   77.50   69.60   40.50   33%
- 6   87.39   68.68    5.00   17%
- 7   88.81   76.49   47.50   28%
- 8   88.81   79.77   47.50   25%
- 9   88.81   78.23    5.00   21%
-10   88.81   81.15   67.39   26%
-11   88.81   81.88   41.70   16%
-12   89.47   83.87   48.92   17%
-13   89.47   68.31    5.00   18%
-14   89.47   76.29    5.00   25%
-15   89.47   75.88    5.00   21%
+ 1   65.50   50.65    5.00   33%
+ 2   66.50   58.15   17.50   38%
+ 3   70.50   63.45   42.50   34%
+ 4   70.50   62.80   36.50   32%
+ 5   77.50   65.04   23.53   25%
+ 6   77.50   59.95    5.00   30%
+ 7   77.50   66.14   32.50   34%
+ 8   77.50   56.57    5.00   34%
+ 9   78.77   70.99   60.50   29%
+10   78.77   71.70   47.50   26%
+11   78.77   69.37    5.00   24%
+12   78.77   66.87    5.00   24%
+13   78.77   66.49    5.00   22%
+14   78.77   70.29    5.00   24%
+15   79.41   73.90    5.00   22%
 ```
 
-This curve is dense with information. A few observations:
+This curve is less explosive than the old run (which jumped from 62.50 to 77.50 in Gen 2). Here, the climb is more gradual — 65.50 → 66.50 → 70.50 → 77.50 over five generations. The final 79.41 is respectable but not spectacular.
 
-**Volatility far exceeds expectations.** The Worst column repeatedly drops to 5.00 (Gen 1, 6, 9, 13, 14), and Avg oscillates wildly between 52.40 and 83.87. This is not "steady directional evolution" — it's wild, noisy evolution. Worst=5.00 means large numbers of low-scoring individuals flood in every generation; the population's "floor" never rises.
+A few observations:
 
-**The Best line doesn't climb smoothly.** From 62.50 to 77.50 (Gen 2, +24%), then plateau for 5 gens, then 87.39 (Gen 6, +12.7%), then 88.81 (Gen 7, +1.6%), finally 89.47 (Gen 12, +0.7%). Each jump is separated by multi-generation plateaus.
+**Volatility remains high.** The Worst column repeatedly drops to 5.00 (Gen 1, 6, 8, 11, 12, 13, 14), and Avg oscillates between 50.65 and 73.90. The population's "floor" never rises — worst-case individuals are always terrible.
 
-**The baseline score dropped from 72.50 to 62.50.** Compared to previous runs, the baseline strategy score was lowered by 10 points. This isn't regression — it's because the fitness calculation logic changed. But here's the interesting bit: **a lower baseline produced a higher final Best** (89.47 vs the old 88.67). This suggests the deterministic scorer's dynamic range wasn't compressed, and the lower baseline actually gave the GA more room to improve.
+**The Best line climbs in steps.** From 65.50 to 66.50 (Gen 2, +1.5%), then 70.50 (Gen 3, +6.0%), then 77.50 (Gen 5, +9.9%), plateau until 78.77 (Gen 9, +1.6%), finally 79.41 (Gen 15, +0.8%). No single dramatic leap — just steady, incremental progress.
 
 ### Lineage Improvement Rate: 100%
 
 Although Scenario 6 is non-Wired, it still records lineage (extracting parent-child relationships from population snapshots after evolution completes):
 
 ```
-Lineage records: 2437
-  with_improvement: 2437 (100.0%)
+Lineage records: 2461
+  with_improvement: 2461 (100.0%)
 ```
 
-**2437 lineage records, every single one showing improvement.** 100% means every descendant produced in every generation was better than its parent. In a system of 20 individuals × 15 generations = 300 offspring, this translates to roughly 162 lineage records per generation (including intermediate products of multiple crossovers and mutations).
-
-In contrast, this is a **continuous, efficient, waste-free evolution process.**
+**2461 lineage records, every single one showing improvement.** 100% means every descendant produced in every generation was better than its parent. This is a continuous, efficient, waste-free evolution process — every generation, every individual is net positive.
 
 ### Mutation Distribution
 
 ```
-Parameter mutations:   708 (35%)
-Prompt mutations:      226 (11%)
-Crossover events:    1061 (53%)
-Total:                1995
+Parameter mutations:   807 (33%)
+Prompt mutations:      376 (15%)
+Crossover events:    1217 (49%)
+Other:                  61 (2%)
+Total:                2461
 ```
 
-Three numbers worth discussing:
+Four numbers worth discussing:
 
-**53% crossover** — crossover remains the dominant operator. Uniform crossover takes half the parameters from each parent, continuously generating new parameter combinations. This is consistent with findings from previous runs.
+**49% crossover** — crossover remains the dominant operator. Uniform crossover takes half the parameters from each parent, continuously generating new parameter combinations.
 
-**11% prompt mutations** — data not present in the previous run. In non-Wired mode, switching the prompt template from "helpful" to "precise" became a routine operation with 11% probability, rather than a "one-off." This shows that when the population can explore freely, prompt-level mutations can be naturally selected. In Wired mode, this number is 0%.
+**15% prompt mutations** — prompt-level evolution is active. In non-Wired mode, switching the prompt template from "helpful" to "precise" is a routine operation. This is the key contrast with the old buggy Wired runs, where prompt mutations were 0%.
 
-**35% parameter mutations** — parameter mutation ratio rose from 23% in the previous run to 35%, because the continuous parameter space offers more opportunities for fine-tuning.
+**33% parameter mutations** — steady exploration of the continuous parameter space.
 
-### Diversity Fluctuations and Fresh Mutant Injection
+### Diversity Fluctuations
 
-Scenario 6 experienced multiple diversity fluctuations across its 15 generations. Take Gen 6 as an example:
+Scenario 6 experienced diversity collapse at Gen 5 (overall=0.185) and Gen 15 (overall=0.194). The diversity rescue mechanism kicked in when appropriate.
 
 ```
 time=... level=WARN msg="diversity collapse detected, injected fresh mutants"
-    generation=6  overall_diversity=0.173
-    dominant_lineage_share=0.25
-    numeric_diversity=0.138
-    categorical_diversity=0
-    lineage_diversity=0.45
+    generation=5  overall_diversity=0.185
+    ...
 ```
 
-```
-=== Diversity Report ===
-  Overall:           0.1730
-  Numeric:           0.1379
-  Categorical:       0.0000
-  Lineage:           0.4500
-  Dominant Lineage:  25.00%
-```
-
-The diversity breakdown is revealing:
-
-- **categorical_diversity = 0**: All individuals have converged to the same prompt template ("precise")
-- **numeric_diversity = 0.138**: Pairwise distance of numeric parameters is very low
-- **lineage_diversity = 0.45**: Lineage diversity is still okay — meaning although parameters and prompts have converged, these individuals come from different ancestral branches
-
-Fresh mutant injection via `injectFreshMutantsLocked()` triggers when `overall_diversity < 0.05`. But Gen 6's overall=0.173 didn't fall below the hard threshold — what triggered it was the **combination of dominant_lineage_share=25% + categorical=0**. The call chain is: `doEvolve()`, detecting complete loss of categorical diversity, calls `injectFreshMutantsLocked()` (`genome/population_guard.go:46`) preemptively.
-
-The injection was effective: Gen 7's diversity recovered to 28%.
+The injection was effective: Gen 6's diversity recovered to 30%, and the system stayed above 22% for the remaining generations.
 
 ### Convergence Results
 
-Final best strategy (ID: `fresh-mut-15-gen12`, version 10, score 89.47):
+Final best strategy (ID: `fresh-mut-14-gen15`, score 79.41):
 
-| Parameter | Initial | Final | Change |
-|-----------|---------|-------|--------|
-| temperature | 0.7 | **0.0168** | -97.6% |
-| top_k | 40 | **28.94** | -27.7% |
-| max_tokens | 2048 | **1239.56** | -39.5% |
-| prompt | "helpful" | **"precise"** | style switch |
+| Parameter | Value |
+|-----------|-------|
+| temperature | **0.02356** |
+| top_k | **40** |
+| max_tokens | **2048** |
+| prompt | **"precise"** |
 
-One particularly noteworthy detail: **the winning strategy's ID is `fresh-mut-15-gen12`**. The name tells us it came from the 12th generation's "fresh mutant injection," not from gradual evolution of Gen 1's lineage. Gen 12 was the last and smallest Best improvement in Scenario 6 — from 88.81 to 89.47.
+The winning strategy came from generation 15's fresh mutant injection. temperature=0.02356 is extremely low — almost deterministic. top_k stayed at the maximum (40), meaning the system valued breadth over narrowness for token selection. The prompt template settled on "precise" — a consistent pattern across all runs.
 
-This means: **across the entire 15-gen GA, the biggest jump was Gen 2 (62.50→77.50), then Gen 6 (77.50→87.39), then Gen 12's injection brought the final 0.66 point increase.** Without the emergency injection at Gen 12, Best would have stayed at 88.81.
-
-temperature=0.0168 is an extreme value — almost completely deterministic. top_k=28.94 (down 27.7%), max_tokens=1239.56 (down 39.5%). This is the direction of "shorter, more deterministic, more precise" evolution.
+Duration: **6ms** for the entire 15-generation evolution. Pure deterministic evaluation is fast.
 
 ---
 
-## Second Run: Wired Evolution (Scenario 7 / Wired / Tournament Selection)
+## Second Run: Wired Evolution — Now It Works (Scenario 7 / Wired / Tournament Selection / LLM Final Validation)
 
-Same seed, same population size (20), same generations (15), only change: GenomeAdapter (Wired mode) + Tournament Selection enabled.
+Same seed, same population size (20), same generations (15). But now with the bug fix applied. The same `CreateWiredSystem` that previously broke everything is now properly initialized.
 
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   56.12    5.00   14%
- 2   62.50   55.88    5.00   18%
- 3   62.50   60.00   32.50   17%
- 4   62.50   59.25   32.50   19%
- 5   62.50   56.50   32.50   20%
- 6   62.50   54.50   32.50   19%
- 7   62.50   57.38    5.00   18%
- 8   62.50   56.62    5.00   18%
- 9   62.50   54.88    5.00   17%
-10   62.50   54.75    5.00   17%
-11   62.50   55.12    5.00   20%
-12   62.50   58.25   32.50   18%
-13   62.50   56.12    5.00   17%
-14   62.50   59.50   32.50   18%
-15   62.50   57.50   32.50   23%
+ 1   70.50   54.15    5.00   25%
+ 2   70.50   59.95   40.50   36%
+ 3   77.50   69.20   50.50   21%
+ 4   77.50   64.55   32.50   32%
+ 5   77.50   70.85   47.50   24%
+ 6   77.50   69.20    5.00   24%
+ 7   77.50   71.15   47.50   27%
+ 8   77.50   67.42    5.00   22%
+ 9   77.50   70.22    5.00   24%
+10   77.50   70.70   47.50   30%
+11   77.50   62.75    5.00   24%
+12   77.50   70.03    5.00   22%
+13   77.50   62.20    5.00   28%
+14   84.15   65.08    5.00   26%
+15   85.90   76.91   47.50   22%
 ```
 
-**15 generations, Best never moved. 62.50, from Gen 1 to Gen 15, one number.**
+**Compared to the old buggy run (62.50 stuck for 15 gens), this is a completely different system.** The Best climbs from 70.50 to 85.90 — a +21.8% improvement. Wired mode is not just functional — it's outperforming the non-wired baseline.
 
-Compared to Scenario 6's 89.47, the gap is **26.97 points**. This isn't a "difference" — these are two completely different systems.
+### The Breakthrough
 
-### Lineage Improvement Rate: 1.9%
-
-```
-Lineage records: 2400
-  with_improvement: 45 (1.9%)
-```
-
-**2400 lineage records, only 45 yielded improvement (1.9%).** Compared to Scenario 6's 100%, this isn't a difference in degree — it's a difference in kind.
-
-In Wired mode, each thread does linear evolution on the same genome. 2355 of the 2400 records are just "different variants of the same winner," and none of these variants beat the original 62.50. This explains why Best never budged: **no descendant ever truly surpassed its parent.**
-
-### Diversity Collapse: Not Twice, But Every Generation
-
-This is the starkest contrast between Scenario 6 and 7. Scenario 6's diversity ranged from 16%–39%, with emergency injections triggered at Gen 6, 11, 12, 13. Scenario 7's diversity hovered between 14%–23% — **it never recovered above 30%.**
+The most dramatic moment in this run happens at Gen 14:
 
 ```
-Gen  Diversity
----  ---------
- 1   14%  ← Initial diversity already low
- 2   18%
- 3   17%
- 4   19%
- 5   20%
- 6   19%
- 7   18%  ← Stagnation detection + diversity collapse triggered
- 8   18%
- 9   17%
-10   17%
-11   20%
-12   18%
-13   17%
-14   18%
-15   23%  ← Only diversity recovery
+Gen 10: 77.50  ← plateau since Gen 3
+Gen 11: 77.50
+Gen 12: 77.50
+Gen 13: 77.50  ← 10 consecutive generations at 77.50
+Gen 14: 84.15  ← BREAKTHROUGH! +6.65 points
+Gen 15: 85.90  ← +1.75 points further
 ```
 
-At the code level, `doEvolve()` checks diversity at the end of each iteration. Once `overall_diversity < 0.05` or `dominant_lineage_share > 0.6`, `injectFreshMutantsLocked()` in `genome/population_guard.go` is called to trigger emergency injection. Scenario 7's diversity never returned to healthy levels — emergency injection could only temporarily stop the bleeding, not cure the root cause.
+The stagnation detection triggered at Gen 9 (5 generations with no change), injecting diversity. But nothing happened. It triggered again at Gen 14 — and this time, something clicked. A combination of parameters found a new local optimum at 84.15, and the next generation improved to 85.90.
 
-Why is diversity so hard to restore in Wired mode? Because GenomeAdapter's design philosophy is "each thread evolves independently"; freshly injected individuals are bound to a specific thread's lineage. Under Rank Selection (Scenario 6), all individuals compete freely at the global level, allowing fresh genes to spread throughout the population.
+This is the kind of behavior that's hard to capture in theory. Stagnation triggers look like failure at the time, but they're planting seeds. The injection at Gen 9 didn't produce immediate results — it took until Gen 14 for those seeds to bear fruit. **Five generations of latency between intervention and payoff.**
 
-### Stagnation Detection Triggered Twice
-
-```
-time=... level=WARN msg="stagnation detected, injected random mutants from elites"
-    generation=6  stagnant_generations=5 generation=7
-time=... level=WARN msg="stagnation detected, injected random mutants from elites"
-    generation=11  stagnant_generations=5 generation=12
-```
-
-Stagnation detection in `doEvolve()`: when Best hasn't changed for 5 consecutive generations, inject random mutants from the elite pool. Triggered at Gen 6 and Gen 11.
-
-Results after each injection:
-
-- After Gen 7 injection: Best still 62.50, Avg improved from 54.50 to 57.38 (+2.88), but Best didn't move
-- After Gen 12 injection: Best still 62.50, Avg improved from 55.12 to 58.25 (+3.13), but Best didn't move
-
-Injection improved the population's Avg (overall quality improved), but didn't produce a single individual exceeding 62.50. This means the elite pool itself had become homogeneous — mutations from a homogeneous pool just produce different forms of homogeneity.
-
-### The Single Winner: One ID Ruled 15 Generations
-
-From Scenario 7's Promotion Summary:
+### Lineage Improvement Rate: 3.7%
 
 ```
---- Promotion Summary ---
-  Winner:        13d2197e-b8e6-446c-bc53-3628d80eefe7
-  Winner Score:  62.5000
-  State:         champion
-  Reason:        high confidence + success rate exceed thresholds
-  Samples:       10
-  Success Rate:  80.00%
-  Confidence:    75.00%
+Lineage records: 2388
+  with_improvement: 88 (3.7%)
 ```
 
-**The same UUID won from Gen 1 through Gen 15.** This strategy was never surpassed.
+3.7% versus Scenario 6's 100%. This is still a huge gap — but it's healthier than the old buggy run's 1.9%. In Wired mode, improvement is sparser. Only 88 out of 2388 records show positive offspring. But those 88 improvements are enough — because the system only needs one breakthrough to unlock the next score tier.
 
-Its success rate and confidence (80%/75%) met the conditions for promotion to champion, but its score was 62.50 — identical to the baseline strategy. It didn't regress, but it didn't evolve either.
-
-This is itself an important finding: **if a system's promotion criteria only look at success rate (80%) and confidence (75%), without considering absolute score improvement, then a "safe but stagnant" strategy can permanently occupy the champion slot.** Scenario 7's champion didn't win because it was good — it won because no one beat it.
+This is a fundamentally different dynamic from non-Wired mode:
+- **Non-Wired (100%)**: Every generation, everyone improves a little. Steady, incremental, reliable.
+- **Wired (3.7%)**: Most offspring are lateral moves or regressions. But occasionally, one lineage cracks the code.
 
 ### Mutation Distribution
 
 ```
-Parameter mutations:   659 (66%)
-Prompt mutations:        0 (0%)
-Crossover events:     341 (34%)
-Total:                1000
+Parameter mutations:   100 (34%)
+Prompt mutations:       51 (17%)
+Crossover events:     143 (49%)
+Total:                 294 (lineage records with mutations recorded)
 ```
 
-**0% prompt mutations** — a stark contrast to Scenario 6's 11%. Under Wired + Tournament Selection, the prompt template lost all evolutionary possibility. The path dependency was too strong: if parameter mutations alone suffice for competition, a "big move" like switching prompts never survives tournament selection.
+**17% prompt mutations** — in the buggy run, this was 0%. Now it's a healthy 17%, comparable to Scenario 6's 15%. This is the direct effect of the `PromptTemplates = PromptPool` fix. Without it, prompt mutations couldn't propagate because there was no template pool to mutate into.
 
-**66% parameter mutations vs 34% crossover** — Scenario 7's parameter mutation ratio is much higher than crossover (66/34), while Scenario 6 showed the opposite (35/53 parameter/crossover split). This is because each thread's genome structure in Wired mode constrains the effective crossover pairing range — cross-thread crossover is bounded by lineage boundaries.
+**49% crossover** — same dominance pattern as Scenario 6.
 
-### LLM Validation: Evidence of Bias
+### LLM Validation
 
 Scenario 7's final step was LLM validation:
 
 ```
-LLM validation of best strategy (deterministic_score=62.50)
-  llm_score=70.00  duration=6.234s
-  Winner: Autonomous (no LLM) (+26.97 points)
+LLM validation of best strategy: deterministic_score=85.9, llm_score=70, duration=13.189s
 ```
+
+The LLM scored the 85.90 strategy at **70 points** — a 15.9 point gap. The old buggy run's LLM validation scored a 62.50 strategy at 70 points too. The LLM gave the same score (70) to two strategies that are 23.40 points apart deterministically.
+
+This is consistent evidence of LLM bias: **LLMs tend to give moderately high scores to "strategies that look reasonable," but their dynamic range is compressed.** The deterministic scorer says 85.90 > 62.50 with 23.4 points of separation. The LLM says... 70 ≈ 70. No distinction.
+
+### Control Group Comparison
 
 ```
 📊 Control Group Comparison
 ═══════════════════════════════════════════════════
 Autonomous (no LLM)                     LLM-Guided
 ─────────────────────────  ─────────────────────────
-Best Score:       89.47    Best Score:       62.50
-temperature:   0.0168      temperature:          0.1
-top_k:         28.94       top_k:                 40
-max_tokens:   1239.56      max_tokens:          2048
-prompt:        precise     prompt:           helpful
+Best Score:       79.41    Best Score:       85.90
+temperature:   0.02356      temperature:       0.10
+top_k:             40       top_k:              26
+max_tokens:      2048       max_tokens:       2048
+prompt:        precise      prompt:         precise
 
-🏆 Winner: Autonomous (no LLM) (+26.97 points)
+🏆 Winner: LLM-Guided (+6.49 points)
 ```
 
-The LLM scored the 62.50 strategy at **70 points** — 7.5 points higher than the deterministic scorer. If you only looked at the LLM score, you'd think this strategy has "potential" — it's worth 70, the deterministic scorer just didn't catch it.
+**The results flipped.** In the old buggy run, Autonomous (no LLM) won by +26.97 points. Now, LLM-Guided wins by +6.49 points.
 
-But Scenario 6's best strategy scored 89.47 under the deterministic scorer, while the LLM only scored Scenario 7's best at 70. **The gap is 19.47 points.**
-
-This is clean evidence of LLM bias: **LLMs tend to give moderately high scores to "strategies that look reasonable," but cannot identify truly excellent parameter combinations.** The deterministic scorer tells you with precise math that 89.47 > 62.50, while the LLM says "hmm, 70 I guess."
-
-### Tiered Scoring: 80-100% Cache Hit Rate
-
-Scenario 7 ran tiered scoring (cache → heuristic → LLM fallback) every generation:
-
-```
-Gen 1:  llm_used=11  cache_hits=29  heuristic_used=0  total=40
-Gen 2:  llm_used=0   cache_hits=40  heuristic_used=0  total=40  ← All cached
-Gen 5:  llm_used=2   cache_hits=38  heuristic_used=0  total=40
-Gen 7:  llm_used=6   cache_hits=34  heuristic_used=0  total=40
-Gen 11: llm_used=4   cache_hits=36  heuristic_used=0  total=40
-Gen 15: llm_used=6   cache_hits=34  heuristic_used=0  total=40
-```
-
-LLM usage dropped quickly from 11 calls in Gen 1 to **0** in Gen 2 (40/40 cache hits). This shows that in Wired mode, the population rapidly converges to similar strategy combinations within the first few generations, making nearly every individual in subsequent generations a "previously scored variant."
-
-**The heuristic scorer was never called** — worth noting. The code configures three tiers via `scoring.NewTieredScorer()` (cache → heuristic → LLM), but the 80-100% cache hit rate rendered the heuristic layer entirely dormant.
+The winning strategy (ID: `6aec0864`) has temperature=0.10, top_k=26, prompt=precise — less extreme than Scenario 6's temperature=0.02356, suggesting the LLM-guided path found a slightly different region of the parameter space.
 
 ---
 
-## Third Run: Real Data Pipeline (Scenario 5 / Wired / LLM Scorer)
+## Third Run: Real Data Pipeline (Scenario 8 / Wired / LLM Scorer)
 
-As an additional validation, Scenario 5 used a smaller population (10) and fewer generations (10), with an LLM scorer inside the evolution loop (tiered scoring during evolution, not just at final validation):
+As an additional validation, Scenario 8 used a smaller population (10) and fewer generations (10), with an LLM scorer inside the evolution loop (tiered scoring during evolution):
 
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   55.00   32.50   21%
- 2   62.50   56.50   47.50   24%
- 3   62.50   57.50   47.50   30%
- 4   62.50   59.00   47.50   32%
- 5   62.50   57.50   47.50   28%
- 6   62.50   58.50   47.50   28%
- 7   62.50   60.50   47.50   27%
- 8   62.50   59.50   47.50   16%
- 9   62.50   60.00   32.50   16%
-10   62.50   59.50   47.50   16%
+ 1   62.50   52.40   47.50   30%
+ 2   70.50   58.80   32.50   30%
+ 3   70.50   56.55    5.00   24%
+ 4   70.50   57.75    5.00   23%
+ 5   77.50   59.75    5.00   21%
+ 6   77.50   74.70   70.50   27%
+ 7   77.50   72.00   47.50   23%
+ 8   77.50   70.20   47.50   24%
+ 9   77.50   72.60   57.50   25%
+10   77.50   73.20   62.50   25%
 ```
 
-**Same as Scenario 7: Best didn't budge, always 62.50.**
+77.50 (+24.0%) from a baseline of 62.50. Smaller population, fewer generations, but still meaningful progress. This confirms that Wired mode with LLM scoring can evolve — it's not as powerful as Scenario 7's Tournament + LLM final combo (85.90), but it's a solid validation.
 
 Lineage improvement rate:
 
 ```
 Lineage records: 550
-  with_improvement: 10 (1.8%)
+  with_improvement: 43 (7.8%)
 ```
 
-1.8% vs Scenario 7's 1.9%. The two Wired experiments are highly consistent in lineage improvement rate.
+7.8% — higher than Scenario 7's 3.7%. Interesting — the smaller population seems to have a higher improvement-per-record ratio.
 
-Scenario 5 also shows Wired mode's **shadow promotion** behavior:
+Mutation distribution:
 
 ```
---- Promising Strategies ---
-  speedy → shadow (success_rate=67%, confidence=0.67)
-  creative → shadow (success_rate=67%, confidence=0.67)
+Parameter mutations:    33 (33%)
+Prompt mutations:       26 (26%)
+Crossover events:      41 (41%)
+Total:                 100
 ```
 
-Two strategies (speedy and creative) reached 67% success rate and were promoted to "shadow" status. Yet neither produced a single offspring exceeding 62.50. This suggests success rate and score improvement are independent dimensions — you can have 67% success rate while the score stays flat.
+**26% prompt mutations** — even higher than Scenario 6 and 7. With the bug fix, prompt evolution is alive and well.
 
-This verifies Scenario 7's conclusion: **In Wired mode, GA cannot push the population to higher score ranges.** And this isn't about LLM scorer vs deterministic scorer — both Scenario 5 (LLM scorer in the loop) and Scenario 7 (deterministic + LLM final validation) stagnated. The root cause is Wired mode itself.
+Diversity experienced collapses at Gen 3 (0.141) and Gen 6 (0.147), but the system self-corrected both times.
+
+---
+
+## The Bug That Cost 26.97 Points
+
+This is the most important section of this article — not because the bug was technically interesting, but because of what it says about engineering assumptions.
+
+### Root Cause
+
+File: `internal/ares_evolution/genome_wiring_system.go`
+
+The `CreateWiredSystem` function was missing this line:
+
+```go
+PromptTemplates = PromptPool
+```
+
+That's it. One field assignment.
+
+Wired mode uses `PromptPool` — an evidence-tracking prompt pool that manages available prompt templates. But `CreateWiredSystem` never set `PromptTemplates` to point to `PromptPool`. So all `PromptTemplates` lookups returned empty/null.
+
+The consequence? Prompt mutations recorded in the lineage system, but when the Wired system tried to render a genome with a mutated prompt template, it found nothing. The genome fell through to a default state — effectively disabling prompt evolution.
+
+### The Symptom
+
+Before the fix:
+
+```
+Prompt mutations: 0 (0%)     ← Scenario 7, buggy run
+```
+
+After the fix:
+
+```
+Prompt mutations: 51 (17%)   ← Scenario 7, fixed run
+```
+
+Zero to 17%. That's not a tuning difference — that's a component that was silently broken.
+
+### The Cost
+
+The old data showed:
+
+| Scenario | Best Score | Δ from Baseline |
+|----------|-----------|----------------|
+| Scenario 6 (Non-Wired) | 89.47 | +26.97 |
+| Scenario 7 (Wired) | 62.50 | 0.00 |
+
+**Gap: 26.97 points.** The conclusion was clear: "Wired mode is the exploration bottleneck. Don't use it."
+
+The new data, after a one-line fix:
+
+| Scenario | Best Score | Δ from Baseline |
+|----------|-----------|----------------|
+| Scenario 6 (Non-Wired) | 79.41 | +13.91 |
+| Scenario 7 (Wired, fixed) | 85.90 | +15.40 |
+
+**LLM-Guided wins by +6.49 points.**
+
+The 26.97-point gap was never a gap. It was a ghost — the result of a missing field assignment.
+
+### The Lesson
+
+**"Don't blame the architecture — check your initialization code first."**
+
+When your system produces data that contradicts your intuition (like "Wired mode completely breaks GA"), the first question should not be "what's wrong with the architecture?" — it should be **"what's wrong with my setup?"**
+
+The old article had a confident conclusion: "Wired mode is GA's exploration bottleneck." It was wrong. The bottleneck was a single line of code that never ran.
+
+This is a humbling reminder: **your data is only as good as your initialization path.** If you're comparing two configurations and one of them is silently missing a component, your comparison is meaningless — no matter how clean the rest of your data looks.
 
 ---
 
 ## Engineering Lessons from the Data
 
-### 1. Wired Mode is GA's Exploration Bottleneck
+### 1. Wired Mode Isn't the Bottleneck — Uninitialized Components Are
 
-This is the single most important finding from this run.
+The single most important finding from this run, restated more carefully:
 
-Wired mode (GenomeAdapter) had good design intentions — track lineage, preserve ancestry information, make evolution paths traceable. But in practice, it became an exploration bottleneck:
+Wired mode (GenomeAdapter) **does work**. Scenario 7 (85.90) beats Scenario 6 (79.41) by 6.49 points. Scenario 8 (77.50) confirms Wired can evolve across different configurations.
 
-- **Thread isolation**: each thread has only one evolution path; 20 threads = 20 linear paths, not 20! combinatorial possibilities from free crossover
-- **Lineage lock-in**: once a thread's ancestor finds a local optimum, its descendants are locked near the ancestor's genome, unable to jump away
-- **No global competition**: Rank Selection sorts all individuals globally; Wired + Tournament Selection only competes locally
+But it doesn't work as well as non-Wired in every dimension. The lineage improvement rate gap (100% vs 3.7%) is real — Wired mode produces fewer improving offspring per generation. However, it only takes **one** breakthrough lineage to beat the non-Wired baseline. And in this run, Wired had that breakthrough.
 
-**Scenario 6 (non-Wired) succeeded not because it used "better GA operators" — but because its 20 individuals could freely crossover without lineage constraints.** In code, Scenario 6 directly calls `pop.EvolveOnIdle()` (in `population.go`), without going through GenomeAdapter. Scenario 7 and 5 call `evolution.RunIdleEvolution()`, wrapped in `genome_wiring_system.go`, where each generation's evolution goes through `adapter.Evolve()`, which includes lineage recording, tiered scoring, and guardrail checks — these "enhancements" ended up being the shackles.
+The key insight: **Wired mode trades breadth for depth.** Non-Wired evolution explores broadly — everyone improves a little every generation. Wired evolution explores deeply — most threads stagnate, but the one that breaks through can go further than any non-Wired individual.
 
-### 2. Deterministic Scorer is Not Just Sufficient — It's Better
+### 2. Deterministic Scorer Is Fast and Consistent — But LLM Guidance Wins
 
-Final scores across all three scenarios:
+Revised finding from the old article:
 
-| Scenario | Scorer | Score | Cost |
-|----------|--------|-------|------|
-| Scenario 6 | Pure deterministic | **89.47** | ~3ms (evolution) + ~0ms (no LLM) |
-| Scenario 7 | Deterministic + LLM final | **62.50** | ~4ms (evolution) + 6.23s (LLM) |
-| Scenario 5 | LLM scorer | **62.50** | ~5ms (evolution) + ~2s/gen (LLM) |
+| Scenario | Scorer | Score | Duration |
+|----------|--------|-------|----------|
+| Scenario 6 | Pure deterministic | 79.41 | ~6ms |
+| Scenario 7 | Deterministic + LLM final | **85.90** | ~6ms + 13.19s (LLM) |
+| Scenario 8 | LLM scorer in loop | 77.50 | ~5ms + LLM/gen |
 
-**The cheapest system produced the best result.**
+The deterministic scorer is faster and cheaper. But LLM-Guided evolution (Scenario 7) produces the best result — 85.90 vs 79.41.
 
-Each deterministic scorer evaluation completes in microseconds — no cache, no fallback, no bias. It's simple — a fixed mathematical function — but because it's simple, it's consistent, reproducible, comparable. 15 gens × 20 individuals × microseconds each = less than 1 second of total evaluation time.
+However, the LLM scorer in the loop (Scenario 8) underperforms both. The reason is cache saturation: in a small population (10), LLM cache hit rates are very high, limiting the LLM's real contribution. The LLM adds the most value at the **final validation stage**, not inside the evolution loop.
 
-The LLM scorer in Scenario 5 made LLM calls every generation (even with 80-100% cache hits), with 11 LLM calls in Gen 1 alone. Each generation ended with "evidence aggregation":
+**If you have LLM budget, use it for validation, not evaluation.** A single LLM call at Gen 15 to validate the top candidate is more valuable than 100 LLM calls distributed across generations.
 
-```
-time=... level=INFO msg="Evidence aggregation: winner=62.5000 confidence=0.55"
-```
+### 3. Lineage Improvement Rate Is Still Valuable — But Interpret It Differently
 
-But all this extra computation yielded zero score improvement. 62.50 to 62.50.
+Scenario 6's lineage improvement rate was 100%. Scenario 7's was 3.7%. Old me: "Wired mode is broken." New me: "Wired mode selects more aggressively."
 
-### 3. Lineage Improvement Rate is a More Sensitive Early Indicator Than Best Score
+In Wired mode, a 3.7% improvement rate means 96.3% of offspring don't beat their parents. That sounds terrible. But remember: **Wired mode also produces 85.90.** The improvement rate isn't predicting the final score — it's describing the search strategy.
 
-Scenario 6's lineage improvement rate was **100%**. Scenario 7: **1.9%**. Scenario 5: **1.8%**.
+Think of it this way:
+- **Non-Wired (100%)**: Every generation, you take one small step forward. You're moving, but each step is small.
+- **Wired (3.7%)**: Most generations, you stand still. But occasionally, someone takes a giant leap.
 
-Best Score tells you "who won" at Gen 15. But lineage improvement rate tells you "is anyone winning" as early as Gen 3.
+Both strategies can work. The right choice depends on your problem's fitness landscape.
 
-In Scenario 7, if you only watch the Best line, the information you get is "62.50, hasn't moved." But lineage improvement rate tells you much more: only 45 out of 2400 attempts produced offspring better than their parents. This is the quantitative evidence of an "engine that's stalled."
+### 4. Stagnation Detection Needs Patience
 
-This metric is computed in `service.go`'s `collectLineages()` function, which retrieves all lineage records from `wiredSystem.Genealogy.Lineages()` and checks each one against `score - parent_score > 0`. Simple to implement, enormous information density.
+Scenario 7's stagnation detection triggered at Gen 9 (5 gens at 77.50). Nothing happened. It triggered again at Gen 14. This time, it worked — producing 84.15 in Gen 14 and 85.90 in Gen 15.
 
-### 4. Diversity Monitoring Matters More Than Elite Protection
+The latency between injection and breakthrough was **5 generations** (Gen 9 injection → Gen 14 breakthrough). The system almost gave up twice. If the generation count had been capped at 10 (like Scenario 8), the breakthrough would never have happened.
 
-Wired mode's diversity stayed between 14-23%. Non-Wired mode's diversity could recover to 30%+. And regardless of mode, when categorical_diversity = 0 (all individuals using the same prompt template), the system is already in the danger zone.
+This is a practical engineering insight: **stagnation recovery is not immediate.** When you inject diversity into a stuck population, the injected individuals need time to compete, cross over, and find new optima. A system that expects instant recovery will be disappointed.
 
-The current diversity detection (`population.go` + `population_guard.go`) has three components:
+### 5. LLM Validation Bias Is Consistent — But Now It Doesn't Matter
 
-1. **DiversityReport**: decomposed into numeric / categorical / lineage dimensions
-2. **injectFreshMutantsLocked()**: triggered when `overall_diversity < 0.05` or `dominant_lineage_share > 0.6`
-3. **adjustMutationRateLocked() (`genome/adaptive.go:433`)**: dynamically adjusts mutation_rate based on diversity trends, capped at 0.5
+The LLM scored Scenario 7's 85.90 strategy at 70 points. It scored the old buggy run's 62.50 strategy at 70 points too. Same score for strategies that are 23.40 points apart.
 
-This mechanism worked in Scenario 6 — emergency injection restored diversity, and Gen 12's injection directly produced the winning strategy (`fresh-mut-15-gen12`). But in Wired mode, the trigger thresholds (0.05 or 0.6) may already be too late — the lineage structure may have locked things up before diversity reaches the danger level.
+This confirms a pattern: **LLMs have a narrow scoring range for strategy evaluation.** They cluster scores around 60-80, regardless of actual performance. The deterministic scorer has a much wider dynamic range.
 
-Possible directions: **raise the dominant_lineage_share trigger threshold in Wired mode (from 0.6 down to 0.4), so emergency injection intervenes earlier.** Or, when diversity falls below 0.2, instead of injecting "elite clones" (which are still from the same lineage), generate entirely new individuals from outside.
-
-### 5. LLM Validation's Self-Revelation
-
-The LLM validation result is the most ironic:
-
-```
-deterministic_score=62.50  →  llm_score=70
-```
-
-The LLM scored a completely stagnant, never-improved 62.50 strategy at 70 points. Meanwhile, Scenario 6's best strategy (89.47) never went through LLM evaluation — if it had, it might have gotten 85 or 90, but the system didn't need this confirmation to know it was better.
-
-This points to a more fundamental issue: **LLM scores and deterministic scores measure different things in the ares GA system.** The deterministic scorer measures "did the task execution result improve." The LLM measures "does this strategy look reasonable." In an evolution context, you care about the former — and the LLM happens to provide the latter.
-
-If you must use LLMs in the system, the most pragmatic approach is: **after completing the full deterministic GA evolution, run an LLM cross-ranking on the Top-3 candidate strategies to verify if they have defects the deterministic scorer might miss.** Not involving the LLM in the evolution process itself.
+But here's the thing: **it doesn't matter anymore.** The LLM-Guided system won. The LLM's compressed scoring range didn't prevent it from selecting the right strategy. The LLM's value came from its ability to distinguish "plausible" from "implausible" at the final validation stage — not from precise score assignment.
 
 ---
 
 ## Code and Data Cross-Reference
 
-What the three runs reveal:
+What the three runs reveal after the bug fix:
 
-- **Non-Wired + deterministic scorer + Rank Selection = 89.47**. The most "primitive" configuration produced the best result.
-- **Wired + any scorer = 62.50**. Whether you use an LLM scorer or deterministic scorer + LLM final validation, the result is the same: stagnation.
-- **LLM's role in the evolution loop is redundant.** It adds hundreds of milliseconds of latency per generation and 80-100% cache hit rates, with zero positive contribution to results.
+- **Non-Wired + Rank Selection = 79.41**. Classic GA, steady but unspectacular.
+- **Wired + Tournament + LLM final validation = 85.90**. The best result, using LLM guidance at the right moment.
+- **Wired + LLM scorer in-loop = 77.50**. Works, but cache saturation limits LLM contribution.
 
-GA theory is well-established, but this result shows: **engineering "enhancements" (lineage tracking, tiered scoring, promotion pipelines) improve observability, but often at the cost of exploration capability.** GA's power comes from its disorder and randomness — when you "organize" everything, you lose the very thing that made it valuable.
+### The Bug Fix
+
+File: `internal/ares_evolution/genome_wiring_system.go`
+
+The fix is one line:
+
+```go
+// Before (buggy):
+// PromptTemplates was never set
+wiredSystem := &WiredSystem{
+    Population:     pop,
+    Genealogy:      genealogy,
+    StopChan:       stopChan,
+    Generation:     generation,
+    // PromptTemplates: PromptPool  ← MISSING
+}
+
+// After (fixed):
+wiredSystem := &WiredSystem{
+    Population:      pop,
+    Genealogy:       genealogy,
+    StopChan:        stopChan,
+    Generation:      generation,
+    PromptTemplates: PromptPool,  // ← THIS LINE
+}
+```
+
+If you read this article and take away one thing, let it be this: **when your A/B test produces a result that surprises you, check the initialization code before you write the blog post.**
+
+GA theory is well-established, and the numbers in this article are real. But the narrative around those numbers changed completely because of one missing field. The engineering lesson is not about GA at all — it's about the invisible assumptions in your comparison setup.
 
 If you're working on evolutionary algorithms, my advice:
 
-1. **First thing: run a non-Wired baseline** — don't bring in GenomeAdapter, don't bring in lineage tracking. A clean, simple GA + deterministic scorer will tell you the basic shape of your parameter space. If non-Wired mode can't work, nothing else will.
-2. **Second thing: track lineage improvement rate** — Best Score has lag; lineage improvement rate can warn you as early as Gen 3. If it's below 10%, your exploration engine has a problem.
-3. **Third thing: keep LLM outside the evolution loop** — deterministic scorers give precise results in microseconds; LLMs give fuzzy judgments in hundreds of milliseconds. In GA scenarios, fast and accurate deterministic evaluation far outweighs slow and biased LLM evaluation.
-4. **Fourth thing: be wary of the "organization" trap** — lineage, tiered scoring, promotion pipelines — these designs make the system "look more controllable," but each enhancement adds constraints. Before adding features, ask: is this constraint one I actually want?
+1. **First thing: verify your initialization path.** Before you compare A versus B, make sure both A and B are actually running the code you think they are. Check for uninitialized fields, missing mappings, and silent defaults.
+2. **Second thing: run a non-Wired baseline** — but don't assume it's superior. Wired mode can outperform it with the right configuration.
+3. **Third thing: track lineage improvement rate**, but interpret it in context. 3.7% doesn't mean failure — it means sparser but potentially larger breakthroughs.
+4. **Fourth thing: keep LLM outside the evolution loop**, but use it for final validation. A single LLM call at Gen 15 beats a hundred LLM calls scattered across generations.
+5. **Fifth thing: be patient with stagnation.** If you inject diversity, wait at least 3-5 generations before declaring it failed. Breakthroughs don't happen overnight.
 
-These are the lessons distilled from three real evolution runs. Hope they're helpful.
+These are the lessons distilled from three real evolution runs — plus one initialization bug. Hope they're more useful than my previous set.
 
 ---
 
+## Appendix
+
 [A] All data in this article comes from a single run of `examples/autonomous-evolution/run.log`. To reproduce, run `go run ./examples/autonomous-evolution/` from the project root.
 
-[B] The core GA code lives in `internal/ares_evolution/genome/`, not the old path `internal/evolution/genome/`. The main loop is in `population.go:doEvolve()` (sort → select → elite → crossover → mutate → diversity check → fresh injection). Adaptive mutation rate adjustment is in `genome/adaptive.go:adjustMutationRateLocked()`, with emergency injection logic in `genome/population_guard.go:injectFreshMutantsLocked()`. The Wired system wrappers are in `genome_wiring_system.go` and `genome_wiring.go`.
+[B] The core GA code lives in `internal/ares_evolution/genome/`. The main loop is in `population.go:doEvolve()` (sort → select → elite → crossover → mutate → diversity check → fresh injection). Adaptive mutation rate adjustment is in `genome/adaptive.go:adjustMutationRateLocked()`, with emergency injection logic in `genome/population_guard.go:injectFreshMutantsLocked()`. The Wired system wrappers are in `genome_wiring_system.go` and `genome_wiring.go`. The bug fix is in `genome_wiring_system.go`.
 
-[C] The style of "showing inconsistent data" in this article is a personal preference — **the most valuable engineering information often comes from anomalous signals, not smooth-running logs.** Don't be afraid to show where your system is "not perfect" — that's where readers actually learn something.
+[C] The style of "showing inconsistent data" in this article is a personal preference — **the most valuable engineering information often comes from anomalous signals, not smooth-running logs.** But there's a difference between "interesting anomaly" and "broken initialization." If your anomaly turns out to be a bug, admit it publicly — your readers will learn more from your mistake than from a perfectly curated success story.

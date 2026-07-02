@@ -1151,7 +1151,7 @@ func (s *RetrievalService) searchSingleQuery(ctx context.Context, q WeightedQuer
 
 	// Use database timeout from retrieval guard
 	searchCtx, dbCancel := s.retrievalGuard.WithDBTimeout(searchCtx)
-	defer dbCancel() // FIX: Preserve and call cancel to prevent resource leak
+	defer dbCancel()
 
 	// Create errgroup for parallel search (per design standard)
 	eg, ctx := errgroup.WithContext(searchCtx)

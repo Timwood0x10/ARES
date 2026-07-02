@@ -13,85 +13,121 @@ func TestTaskPlanner_New(t *testing.T) {
 	assert.Equal(t, "task_planner", tp.Name())
 }
 
-func TestTaskPlanner_Execute_MissingOperation(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"goal": "do something",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
+func TestTaskPlanner_Execute_Validation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		params    map[string]any
+		wantError string // substring expected in result.Error
+	}{
+		{
+			name:      "missing_operation",
+			params:    map[string]any{"goal": "do something"},
+			wantError: "operation is required",
+		},
+		{
+			name:      "missing_goal",
+			params:    map[string]any{"operation": "plan_tasks"},
+			wantError: "goal is required",
+		},
+		{
+			name:      "unsupported_operation",
+			params:    map[string]any{"operation": "invalid_op", "goal": "test"},
+			wantError: "unsupported operation: invalid_op",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp := NewTaskPlanner(nil)
+			result, err := tp.Execute(context.Background(), tt.params)
+			assert.NoError(t, err)
+			assert.False(t, result.Success)
+			assert.Contains(t, result.Error, tt.wantError,
+				"Execute() Error should mention %q", tt.wantError)
+		})
+	}
 }
 
-func TestTaskPlanner_Execute_MissingGoal(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "plan_tasks",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
-}
+func TestTaskPlanner_Execute_LLMClientRequired(t *testing.T) {
+	t.Parallel()
 
-func TestTaskPlanner_Execute_UnsupportedOperation(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "invalid_op",
-		"goal":      "test",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
-}
+	tests := []struct {
+		name      string
+		params    map[string]any
+		wantError string // substring expected in result.Error
+	}{
+		{
+			name: "plan_tasks_nil_client",
+			params: map[string]any{
+				"operation": "plan_tasks",
+				"goal":      "build a website",
+			},
+			wantError: "LLM client",
+		},
+		{
+			name: "decompose_task_missing_task",
+			params: map[string]any{
+				"operation": "decompose_task",
+				"goal":      "test",
+			},
+			wantError: "task is required",
+		},
+		{
+			name: "decompose_task_nil_client",
+			params: map[string]any{
+				"operation": "decompose_task",
+				"goal":      "test",
+				"task":      "complex task",
+			},
+			wantError: "LLM client",
+		},
+		{
+			name: "decompose_task_with_complexity_nil_client",
+			params: map[string]any{
+				"operation":  "decompose_task",
+				"goal":       "test",
+				"task":       "complex task",
+				"complexity": "complex",
+			},
+			wantError: "LLM client",
+		},
+		{
+			name: "plan_tasks_with_context_tools_nil_client",
+			params: map[string]any{
+				"operation":       "plan_tasks",
+				"goal":            "build app",
+				"context":         "limited budget",
+				"available_tools": []any{"code", "test"},
+			},
+			wantError: "LLM client",
+		},
+		{
+			name: "estimate_time_nil_client",
+			params: map[string]any{
+				"operation": "estimate_time",
+				"goal":      "build a website",
+			},
+			// estimateTime returns default estimation even without LLM client.
+			wantError: "",
+		},
+	}
 
-func TestTaskPlanner_Execute_PlanTasks_NilClient(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "plan_tasks",
-		"goal":      "build a website",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
-}
-
-func TestTaskPlanner_Execute_DecomposeTask_MissingTask(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "decompose_task",
-		"goal":      "test",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
-}
-
-func TestTaskPlanner_Execute_DecomposeTask_NilClient(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "decompose_task",
-		"goal":      "test",
-		"task":      "complex task",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
-}
-
-func TestTaskPlanner_Execute_EstimateTime_NilClient(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation": "estimate_time",
-		"goal":      "build a website",
-	})
-	assert.NoError(t, err)
-	assert.True(t, result.Success) // Returns default estimation
-}
-
-func TestTaskPlanner_Execute_DecomposeTask_WithComplexity(t *testing.T) {
-	tp := NewTaskPlanner(nil)
-	result, err := tp.Execute(context.Background(), map[string]interface{}{
-		"operation":  "decompose_task",
-		"goal":       "test",
-		"task":       "complex task",
-		"complexity": "complex",
-	})
-	assert.NoError(t, err)
-	assert.False(t, result.Success)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp := NewTaskPlanner(nil)
+			result, err := tp.Execute(context.Background(), tt.params)
+			assert.NoError(t, err)
+			if tt.wantError != "" {
+				assert.False(t, result.Success, "Execute(%q) should fail", tt.name)
+				assert.Contains(t, result.Error, tt.wantError,
+					"Execute() Error should mention %q", tt.wantError)
+			} else {
+				assert.True(t, result.Success, "Execute(%q) should succeed", tt.name)
+			}
+		})
+	}
 }
 
 func TestTaskPlanner_parsePlan(t *testing.T) {
@@ -181,19 +217,30 @@ func TestExtractJSON(t *testing.T) {
 }
 
 func TestFormatToolsList(t *testing.T) {
-	result := formatToolsList([]string{"tool1", "tool2"})
-	assert.Equal(t, "- tool1\n- tool2\n", result)
-}
+	t.Parallel()
 
-func TestFormatToolsList_Empty(t *testing.T) {
-	result := formatToolsList([]string{})
-	assert.Equal(t, "", result)
+	tests := []struct {
+		name  string
+		tools []string
+		want  string
+	}{
+		{name: "multiple_tools", tools: []string{"tool1", "tool2"}, want: "- tool1\n- tool2\n"},
+		{name: "empty_list", tools: []string{}, want: ""},
+		{name: "single_tool", tools: []string{"only"}, want: "- only\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatToolsList(tt.tools)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestSetLLMClient(t *testing.T) {
 	tp := NewTaskPlanner(nil)
 	tp.SetLLMClient(nil)
-	assert.NotNil(t, tp)
+	// SetLLMClient with nil should not panic.
+	assert.Equal(t, "task_planner", tp.Name())
 }
 
 func TestTaskPlanner_DecomposeTask_DefaultComplexity(t *testing.T) {

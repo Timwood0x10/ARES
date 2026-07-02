@@ -280,7 +280,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				ev, err = evidenceAgg(ctx, best.ID)
 				if err != nil {
 					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
-						"generation", sys.Population.Generation, "callback_gen", gen, "strategy_id", best.ID, "error", err)
+						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				}
 			}
 
@@ -291,11 +291,10 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				state, reason, err := promoter(scoreCtx, best.ID, ev)
 				if err != nil {
 					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
-						"generation", sys.Population.Generation, "callback_gen", gen, "strategy_id", best.ID, "error", err)
+						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				} else {
 					slog.InfoContext(ctx, "post-generation promotion evaluation",
 						"generation", sys.Population.Generation,
-						"callback_gen", gen,
 						"winner", best.ID,
 						"fitness", best.Score,
 						"success_rate", ev.SuccessRate,
@@ -308,7 +307,6 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 			} else {
 				slog.InfoContext(ctx, "generation complete",
 					"generation", sys.Population.Generation,
-					"callback_gen", gen,
 					"winner", best.ID,
 					"fitness", best.Score,
 				)

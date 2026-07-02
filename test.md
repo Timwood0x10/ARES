@@ -428,7 +428,119 @@ and should be fixed by the owning agent.
 
 ### Recommended Next Actions
 
-1. **High** — Add unit tests for `internal/ares_evolution/service/llm_scorer.go` (pure logic, no LLM needed)
+1. ~~**High** — Add unit tests for `internal/ares_evolution/service/llm_scorer.go` (pure logic, no LLM needed)~~ ✅ **Completed**
 2. **Medium** — Re-evaluate whether integration-tagged storage tests are run in CI; add fast unit tests with `pgxmock` for 0%-coverage repository package
 3. **Low** — Migrate non-testify test files in `internal/llm/`, `internal/ares_eval/`, `internal/ares_bootstrap/`
 4. **Low** — Add benchmarks for hot paths (selection, scoring, memory retrieval)
+
+---
+
+## Test Update (2026-07-02, Round 2)
+
+### Target: `internal/ares_evolution/service/llm_scorer_test.go`
+
+Added **4 table-driven test functions** covering the previously uncovered pure-logic functions in `llm_scorer.go`:
+
+| Test Function | Symbol Tested | Cases | Coverage Impact |
+|---|---|---|---|
+| `TestExtractScoreFromText` | `extractScoreFromText` (pure func) | 13 | 0% → 100% |
+| `TestFallbackScore` | `(*LLMScorer).fallbackScore` (method) | 10 | 0% → 100% |
+| `TestBuildPrompt` | `(*LLMScorer).buildPrompt` (method) | 4 | 0% → 100% |
+| `TestParseScore` | `(*LLMScorer).parseScore` (method) | 8 | 0% → 100% |
+
+**35 test cases total**, all pure-logic / no LLM required.
+
+Key edge cases covered:
+- `extractScoreFromText`: score at upper/lower bounds (100/0), out-of-range (101, -5), wrong key, no quotes, empty input, non-numeric value, first-valid-key selection, decimal precision
+- `fallbackScore`: multi-keyword highest-wins, keywords below default-50 do NOT override, case insensitivity, empty input
+- `buildPrompt`: seed appended vs omitted, empty params, all template fields present
+- `parseScore`: direct JSON, cap-at-100, zero-→extract fallthrough, no-json-→fallback, mixed reasoning text
+
+### Verification
+
+- `go vet` — pass
+- `go test -race -count=1 ./internal/ares_evolution/service/` — pass
+- `gofmt -w` — compliant
+- File size: **506 lines** (≤ 1000 limit)
+- All test functions ≤ 100 lines
+
+---
+
+## Tech Debt & Bug Fixes (2026-07-02, Round 3)
+
+### Scope
+Full codebase scan for stale FIXMEs, ignored errors, resource leaks, and perfunctory test cases.
+
+### Findings & Fixes
+
+#### 1. Stale FIXME Comments (code already fixed, comments misleading)
+**6 files cleaned up.** The FIX annotations remained after the actual fix was implemented — future readers would waste time investigating non-issues.
+
+| File | Comment | Status |
+|---|---|---|
+| `internal/ares_quant/research/memory_store.go` (×2) | `FIX: check rows.Err()` | ✅ `rows.Err()` already called after loop |
+| `internal/ares_quant/research/reflection.go` | `FIX: persist reflection back to store` | ✅ `UpdateReflection()` already called |
+| `internal/ares_quant/research/memory_store.go` | `FIX: wrap update in a transaction` | ✅ `BeginTx`/`Commit` already used |
+| `internal/ares_quant/research/graph.go` | `FIX: use explicit cancel instead of defer` | ✅ Cancel explicitly called after handler |
+| `internal/storage/postgres/services/retrieval_service.go` | `FIX: Preserve and call cancel` | ✅ `defer dbCancel()` already in place |
+
+#### 2. Ignored Errors (Real Bug)
+**`internal/ares_events/summary_repository.go`** — 4 `json.Marshal` calls silently discarded errors with `_`. If any serializable field contained non-JSON-safe data, the DB would silently store `null` with no indication of failure.
+
+Fix: Propagate errors with `fmt.Errorf("marshal %s: %w", ...)`.
+- Added `"fmt"` to imports.
+- Changed `eventTypeCountsJSON, _ := json.Marshal(...)` → checked and returned.
+- Fixed secondary `:=` reuse bug (`_, err :=` → `_, err =`).
+
+#### 3. Non-perfunctory Test Assessment
+After sampling 20+ test files flagged by automated scans:
+- **Most "non-testify" files** have meaningful assertions (check fields, lengths, error types) — just using `t.Errorf` instead of `assert.Equal`. Not perfunctory.
+- **Skip-heavy Postgres tests** behind `//go:build integration` tag are properly isolated (✅ already tagged in Round 1).
+- **True perfunctory risk:** minimal — only `testutil_test.go` has 0 assertions, but it's a `TestMain` utility.
+
+### Verification
+- `go vet ./internal/ares_events/... ./internal/ares_quant/... ./internal/storage/postgres/services/...` — ✅ pass
+- `go build ./internal/ares_events/... ./internal/ares_quant/...` — ✅ pass
+- `go test -race -count=1 ./internal/ares_events/... ./internal/ares_quant/research/...` — ✅ pass
+
+---
+
+## Test Improvement: task_planner_test.go (2026-07-02, Round 4)
+
+### Problem
+`internal/tools/resources/builtin/planning/task_planner_test.go` had **10 repetitive test functions** each following the identical pattern:
+```go
+tp := NewTaskPlanner(nil)
+result, err := tp.Execute(ctx, params)
+assert.NoError(t, err)
+assert.False(t, result.Success)  // ← only checks Success boolean
+```
+None checked the actual error message (`result.Error`), making them **perfunctory** — they'd pass even if the wrong error was returned.
+
+### Fix
+Consolidated 10 functions → **2 table-driven tests** with meaningful `result.Error` assertions:
+
+| Before | After |
+|---|---|
+| `TestTaskPlanner_Execute_MissingOperation` | → `TestTaskPlanner_Execute_Validation` (table, + error message check) |
+| `TestTaskPlanner_Execute_MissingGoal` | ↳ |
+| `TestTaskPlanner_Execute_UnsupportedOperation` | ↳ |
+| `TestTaskPlanner_Execute_PlanTasks_NilClient` | → `TestTaskPlanner_Execute_LLMClientRequired` (table, + verify Error says "LLM client") |
+| `TestTaskPlanner_Execute_DecomposeTask_MissingTask` | ↳ |
+| `TestTaskPlanner_Execute_DecomposeTask_NilClient` | ↳ |
+| `TestTaskPlanner_Execute_DecomposeTask_WithComplexity` | ↳ |
+| `TestTaskPlanner_Execute_EstimateTime_NilClient` | ↳ |
+| `TestTaskPlanner_DecomposeTask_DefaultComplexity` | ↳ |
+| `TestTaskPlanner_PlanTasks_WithContextAndTools` | ↳ |
+
+Additional fixes:
+- **`TestFormatToolsList`** + `TestFormatToolsList_Empty` → single table-driven test with "single_tool" case added
+- **`TestSetLLMClient`**: was only `assert.NotNil(t, tp)` (always passes) → now asserts `tp.Name()` (meaningful)
+- Added `t.Parallel()` to enable safe parallel execution
+- Removed redundant `map[string]interface{}` → `map[string]any` per Go idiom
+
+### Verification
+- `go vet` — ✅ pass
+- `go test -race -count=1 ./internal/tools/resources/builtin/planning/` — ✅ pass
+- `gofmt -w` — compliant
+- File size: **267 lines** (≤ 1000)

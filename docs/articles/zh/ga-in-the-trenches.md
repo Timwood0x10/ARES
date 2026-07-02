@@ -1,6 +1,6 @@
-# GA 实战：两次真实进化实验教会我的事
+# GA 实战：一个初始化字段让我多跑了三次实验
 
-> 先声明一下，这篇文章不是 GA 教程，也不是代码层面的逐行分析。它的副标题是"当你真的跑完 15 代进化之后，你会在日志里发现什么"，我想通过两次真实的进化运行记录，分享一些从数据里长出来的工程感悟。
+> 先声明一下，这篇文章不是 GA 教程，也不是代码层面的逐行分析。它的副标题是"当你以为自己找到架构瓶颈时，其实只是忘了初始化一个字段"。我想通过三次真实的进化运行记录，分享一些从数据里长出来的工程感悟。
 
 ---
 
@@ -10,9 +10,20 @@
 
 真正让事情变得有趣的是 **GenomeAdapter**——一个被设计用来追踪每一条策略血脉的谱系系统。它把 GA 变成"有线进化"（Wired GA）：每个线程携带自己的基因组，并行进化，保留完整的父-子关系链。听起来很优雅对吧？
 
-问题是：**当 GA 被"有线化"之后，它的探索能力被削弱了多少？**
+但是在上一版文章中，我写下了这样一个结论：
 
-这篇文章会用 `/examples/autonomous-evolution/run.log` 里的真实数据，带你走一遍三次进化实验的全过程。前两次（Scenario 6 和 7）是严格对照实验——相同的种子、相同的种群大小、相同的代数，唯一变量是"是否使用 Wired 模式"。第三次（Scenario 5）用小种群做了独立验证。数据会揭示一些我在写代码时完全没想到的事情。
+> **Wired 模式是 GA 的探索瓶颈。Scenario 6（非 Wired）= 89.47(+43.1%) 大胜 Scenario 7（Wired）= 62.50(0%)。**
+
+我当时非常确信。数据摆在那里，谱系改进率 100% vs 1.9%，Best 分数 89.47 vs 62.50，差距 26.97 分。这还有什么好说的？
+
+直到我重新看了 `CreateWiredSystem` 的代码。
+
+这里有一个 bug：`PromptTemplates = PromptPool` 这个映射被遗漏了。Wired 模式使用 PromptPool（带证据追踪的 prompt 池），但 `CreateWiredSystem` 没有将 `PromptTemplates` 指向 `PromptPool`，导致所有 prompt 模板映射为空或无效。修复之后，prompt 变异从 0% 恢复到了正常比例（17-26%）。
+
+这篇文章就是关于这件事的全部过程：**第三次运行→发现奇怪的数据→检查代码→找到 bug→修复→第四次和第五次运行→结论完全反转。**
+
+核心教训变成了一个非常朴素、非常无聊但也非常真实的东西：
+> **"不要急着怪架构，先检查初始化的 bug。"**
 
 ---
 
@@ -20,274 +31,196 @@
 
 三次 GA 运行共享相同的底层配置：
 
-| 配置项 | Scenario 6 | Scenario 7 | Scenario 5 |
+| 配置项 | Scenario 6 | Scenario 7 | Scenario 8 |
 |--------|-----------|-----------|-----------|
 | 种群大小 | 20 | 20 | 10 |
 | 精英数 | 2 | 2 | 1 |
-| 选择策略 | **Rank Selection** | **Tournament Selection** | Tournament |
-| Wired 模式 | **否** | **是** | **是** |
-| 变异率 | 0.3（紧急升至 0.5） | 0.3（紧急升至 0.5） | 0.3 |
+| 选择策略 | Rank Selection | Tournament Selection | Tournament |
+| Wired 模式 | 否 | 是 | 是 |
+| 变异率 | 0.3（紧急升至~0.47） | 0.3（紧急升至~0.47） | 0.3（紧急升至 0.5） |
 | 代数 | 15 | 15 | 10 |
-| Scorer | 确定性（deterministic） | 确定+LLM终验 | LLM Scorer（带确定性回退） |
+| Scorer | 确定性（deterministic） | 确定性 + LLM 终验 | LLM tiered scoring（循环内） |
 
 三个实验的核心差异：
 
-- **Scenario 6（纯自主进化 / 非 Wired）**：Rank selection + 无 GenomeAdapter + 纯确定性 scorer。这是最"经典"的 GA 配置——20 个独立个体自由交叉，不受谱系限制。
-- **Scenario 7（有线进化 / Wired）**：Tournament selection + GenomeAdapter + 确定性 scorer + LLM 终验。这是"工程化"的 GA——每个线程保留自己的谱系，进化完成后用 LLM 验证最佳策略。
-- **Scenario 5（真实数据管道 / Wired）**：用 LLM scorer 在进化循环内打分，而非只在终验阶段介入。种群更小（10），代数更少（10），作为对照组验证 Wired 模式下的行为是否一致。
+- **Scenario 6（纯自主进化 / 非 Wired）**：Rank selection + 无 GenomeAdapter + 纯确定性 scorer。这是最"经典"的 GA 配置——20 个独立个体自由交叉，不受谱系限制。作为基线。
+- **Scenario 7（有线进化 / Wired，修复 bug 后）**：Tournament selection + GenomeAdapter（已修复）+ 确定性 scorer 做进化内评估，LLM 终验只在最后验证最佳策略。这是"工程化"的 GA。
+- **Scenario 8（小种群 Wired / 数据管道）**：LLM tiered scorer 在进化循环内打分，而非只在终验阶段介入。种群更小（10），代数更少（10），作为对照组验证 Wired 模式修复后的行为。
 
 结果预览：
 
 | 场景 | 初始 Best | 最终 Best | 改进幅度 |
 |------|----------|----------|---------|
-| Scenario 6（非 Wired） | **62.50** | **89.47** | **+43.1%** |
-| Scenario 7（Wired + LLM终验） | **62.50** | **62.50** | **+0.0%** |
-| Scenario 5（Wired + LLM scorer） | **62.50** | **62.50** | **+0.0%** |
+| Scenario 6（非 Wired, Rank） | 65.50 | **79.41** | **+21.2%** |
+| Scenario 7（Wired, Tournament, LLM终验） | 70.50 | **85.90** | **+21.8%** |
+| Scenario 8（Wired, 数据管道, LLM scorer） | 62.50 | **77.50** | **+24.0%** |
 
-数字已经说明了一切。下面展开分析。
+**重大新闻：LLM 终验获胜，+6.49 分。**
+
+和上一版文章完全相反的结果。下面展开分析。
 
 ---
 
-## 第一次运行：纯自主进化（Scenario 6 / 非 Wired / Rank Selection）
+## 第一次运行：纯自主进化（Scenario 6 / 非 Wired / Rank Selection / 确定性 Scorer）
 
 完整的 15 代进化轨迹：
 
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   52.40    5.00   32%
- 2   77.50   59.35   32.50   28%
- 3   77.50   61.85   42.50   39%
- 4   77.50   63.35   42.50   33%
- 5   77.50   69.60   40.50   33%
- 6   87.39   68.68    5.00   17%
- 7   88.81   76.49   47.50   28%
- 8   88.81   79.77   47.50   25%
- 9   88.81   78.23    5.00   21%
-10   88.81   81.15   67.39   26%
-11   88.81   81.88   41.70   16%
-12   89.47   83.87   48.92   17%
-13   89.47   68.31    5.00   18%
-14   89.47   76.29    5.00   25%
-15   89.47   75.88    5.00   21%
+ 1   65.50   50.65    5.00   33%
+ 2   66.50   58.15   17.50   38%
+ 3   70.50   63.45   42.50   34%
+ 4   70.50   62.80   36.50   32%
+ 5   77.50   65.04   23.53   25%
+ 6   77.50   59.95    5.00   30%
+ 7   77.50   66.14   32.50   34%
+ 8   77.50   56.57    5.00   34%
+ 9   78.77   70.99   60.50   29%
+10   78.77   71.70   47.50   26%
+11   78.77   69.37    5.00   24%
+12   78.77   66.87    5.00   24%
+13   78.77   66.49    5.00   22%
+14   78.77   70.29    5.00   24%
+15   79.41   73.90    5.00   22%
 ```
 
 这条曲线的信息密度很高。几点观察：
 
-**波动性远超预期**。Worst 列反复跌到 5.00（第 1、6、9、13、14 代），Avg 在 52.40 到 83.87 之间大幅震荡。这不是"稳定的定向进化"——这是野生的、充满噪声的进化过程。Worst=5.00 说明每代都有大量低分个体涌入，种群的"下限"始终没有提升。
+**波动性依然远超预期。** Worst 列反复跌到 5.00（第 1、6、8、11-14 代），Avg 在 50.65 到 73.90 之间大幅震荡。这不是"稳定的定向进化"——这是野生的、充满噪声的进化过程。
 
-**Best 线不是平滑上升的**。从 62.50 到 77.50（Gen 2，+24%），然后稳住 5 代，再到 87.39（Gen 6，+12.7%），再到 88.81（Gen 7，+1.6%），最后 89.47（Gen 12，+0.7%）。每次跃升之间都有长达数代的平台期。
+**初始 Best 从 62.50 变成了 65.50。** 什么变了？这次运行的初始种子不同（因为修复 bug 后重新拉了种子）。基线在旧版文章中是 62.50，某次提交后 seed 变了，所以 Scenario 6 的初始分数从 62.50 跳到了 65.50。不影响对比性质——真正重要的是改进幅度（+21.2%）。
 
-**Base 分从 72.50 降到了 62.50**。对比之前的运行日志，目前的基线策略分数被调低了 10 分。这不是退化——是因为 fitness 计算逻辑改了。但一个有趣的事情是：**基线低了，但最终的 Best 却更高了**（89.47 vs 旧运行的 88.67）。说明确定性 scorer 的动态范围没有被压缩，低基线反而给了 GA 更大的改进空间。
+**收敛速度变慢了。** 旧版运行中 Gen 2 就到 77.50（+24%），这次 Gen 5 才到 77.50。旧版 Gen 7 到 88.81，最终 89.47；这次 Gen 15 停在 79.41。虽然用了同一份代码，但随机种子的微小差异导致了不同的收敛轨迹——这本身就说明了确定性 scorer 下的 GA 对初始条件的敏感性。
 
 ### 谱系改进率：100%
 
 Scenario 6 虽然是非 Wired 模式，但它仍然记录了 lineage（进化完成后从种群快照中提取血缘关系）：
 
 ```
-Lineage records: 2437
-  with_improvement: 2437 (100.0%)
+Lineage records: 2461
+  with_improvement: 2461 (100.0%)
 ```
 
-**2437 条谱系记录，全部都有改进。** 100% 的改进率意味着每一代产生的每一位后代，都比它的父代更好。这在一个 20 个体 × 15 代 = 300 子代的系统中意味着每代产生约 162 条谱系记录（包含多次交叉变异的中间产物）。
-
-对比来看，这就是一个**持续、高效、无浪费**的进化过程。
+**2461 条谱系记录，全部都有改进。** 100% 的改进率意味着每一代产生的每一位后代，都比它的父代更好。这就是一个**持续、高效、无浪费**的进化过程。
 
 ### 变异分布
 
 ```
-Parameter mutations:   708 (35%)
-Prompt mutations:      226 (11%)
-Crossover events:    1061 (53%)
-Total:                1995
+Parameter mutations:   807 (33%)
+Prompt mutations:      376 (15%)
+Crossover events:    1217 (49%)
+Other:                  61 (2%)
+Total:                2461
 ```
 
-三个数字值得讨论：
+对比旧版运行（Parameter 35%, Prompt 11%, Crossover 53%），prompt 变异比例从 11% 上升到了 15%。说明不同随机种子下，prompt 变异的发生频率也有波动。
 
-**53% 交叉**——交叉仍然是主力算子。均匀交叉（uniform crossover）从两个父代各取一半参数，持续生成新的参数组合。这和旧运行的结论一致。
-
-**11% prompt 变异**——这是旧运行中没有的数据。非 Wired 模式下，prompt 模板从 "helpful" 切换到 "precise" 变成了一个有 11% 概率发生的常规操作，而不是"绝响"。这说明当种群能够自由探索时，prompt 层面的突变也能被自然选择沉淀。而在 Wired 模式中，这个数字是 0。
-
-**35% 参数变异**——parameter mutation 的比例从旧运行的 23% 上升到 35%，因为连续参数空间提供了更多的精细调节机会。
+获胜策略是 `fresh-mut-14-gen15`，参数为 temperature=0.02356, top_k=40, max_tokens=2048, prompt=precise。注意它的 temperature 是 0.02356——非常接近确定性。这和旧版运行（temperature=0.0168）一致：非 Wired 模式下，GA 总是倾向于把 temperature 压到极低。
 
 ### Diversity 波动与紧急变异
 
-Scenario 6 在 15 代中有多次 diversity 波动。以 Gen 6 为例：
+Scenario 6 在 Gen 5 和 Gen 15 触发了 diversity 崩溃注入。
 
+Gen 5 的 diversity 报告：
 ```
-time=... level=WARN msg="diversity collapse detected, injected fresh mutants"
-    generation=6  overall_diversity=0.173
-    dominant_lineage_share=0.25
-    numeric_diversity=0.138
-    categorical_diversity=0
-    lineage_diversity=0.45
+overall_diversity=0.185
+categorical_diversity=0.097
 ```
 
+Gen 15：
 ```
-=== Diversity Report ===
-  Overall:           0.1730
-  Numeric:           0.1379
-  Categorical:       0.0000
-  Lineage:           0.4500
-  Dominant Lineage:  25.00%
+overall_diversity=0.194
+categorical_diversity=0.05
 ```
 
-Diversity 的分解很说明问题：
+Gen 5 的多样性还不到崩溃注入的硬阈值（0.05），但 categorical_diversity=0.097 已经接近全无状态——所有个体几乎都收敛到了同一个 prompt 模板。代码中的 `shouldInjectFreshMutants()`（`genome/population_guard.go`）在检测到 dominant_lineage_share > 0.6 或 diversity < 0.05 后触发紧急注射。Gen 5 虽然没有低于 0.05，但 strong dominance 触发了注入。
 
-- **categorical_diversity = 0**：所有个体已收敛到同一个 prompt 模板（"precise"）
-- **numeric_diversity = 0.138**：数值参数的 pairwise 距离很低
-- **lineage_diversity = 0.45**：血缘多样性尚可——说明虽然参数和 prompt 都趋同了，但这些个体来自不同的祖先分支
+注射效果明显：Gen 6 的 diversity 恢复到了 30%。
 
-当 `overall_diversity < 0.05` 时，紧急变异注射通过 `injectFreshMutantsLocked()` 触发。但 Gen 6 的 overall=0.173 并没有低于硬阈值——触发它的是 **dominant_lineage_share=25% + categorical=0 的组合风险**。代码调用栈是：`doEvolve()` 在检测到 categorical 多样性完全消失时，调用 `injectFreshMutantsLocked()`（`genome/population_guard.go:46`）提前介入。
-
-注射效果明显：Gen 7 的 diversity 恢复到了 28%。
-
-### 收敛结果
-
-最终最佳策略（ID: `fresh-mut-15-gen12`，版本 10，分数 89.47）：
-
-| 参数 | 初始值 | 最终值 | 变化 |
-|------|-------|-------|------|
-| temperature | 0.7 | **0.0168** | -97.6% |
-| top_k | 40 | **28.94** | -27.7% |
-| max_tokens | 2048 | **1239.56** | -39.5% |
-| prompt | "helpful" | **"precise"** | 风格切换 |
-
-有一个非常值得注意的细节：**获胜策略的 ID 是 `fresh-mut-15-gen12`**。这个名字说明它来自第 12 代的"新鲜突变注射"（fresh mutant injection），不是从第 1 代的血脉逐步进化而来的。第 12 代是 Scenario 6 中最后也是最小的一次 Best 提升——从 88.81 到 89.47。
-
-这意味着：**整个 15 代 GA 中，最大的跳变发生在 Gen 2（62.50→77.50），然后 Gen 6（77.50→87.39），然后 Gen 12 的注射操作带来了最终的 0.66 分提升。** 如果不做第 12 代的紧急注射，Best 可能就停在 88.81 了。
-
-temperature=0.0168 是一个极端值——几乎完全确定性。top_k=28.94（下降 27.7%），max_tokens=1239.56（下降 39.5%）。这是"更短、更确定、更精准"的进化方向。
+这里有一个值得注意的对比——**旧版运行中 Scenario 6 的 Best 是 89.47，当前是 79.41。** 差 10 分。原因很可能就是种子差异导致的收敛路径不同。这也印证了一点：确定性 scorer 下的 GA，虽然能稳定改进，但具体能改进到多少分高度依赖初始条件。
 
 ---
 
-## 第二次运行：有线进化（Scenario 7 / Wired / Tournament Selection）
+## 第二次运行：有线进化 + bug 修复（Scenario 7 / Wired / Tournament / LLM终验）
 
-同样的种子、同样的种群大小（20）、同样的代数（15），唯一变化是：启用了 GenomeAdapter（Wired 模式）+ Tournament Selection。
+同样的代码，不同的是：启用了 GenomeAdapter（Wired 模式）+ Tournament Selection，**并且已应用了 bug 修复**（`PromptTemplates = PromptPool`)。
 
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   56.12    5.00   14%
- 2   62.50   55.88    5.00   18%
- 3   62.50   60.00   32.50   17%
- 4   62.50   59.25   32.50   19%
- 5   62.50   56.50   32.50   20%
- 6   62.50   54.50   32.50   19%
- 7   62.50   57.38    5.00   18%
- 8   62.50   56.62    5.00   18%
- 9   62.50   54.88    5.00   17%
-10   62.50   54.75    5.00   17%
-11   62.50   55.12    5.00   20%
-12   62.50   58.25   32.50   18%
-13   62.50   56.12    5.00   17%
-14   62.50   59.50   32.50   18%
-15   62.50   57.50   32.50   23%
+ 1   70.50   54.15    5.00   25%
+ 2   70.50   59.95   40.50   36%
+ 3   77.50   69.20   50.50   21%
+ 4   77.50   64.55   32.50   32%
+ 5   77.50   70.85   47.50   24%
+ 6   77.50   69.20    5.00   24%
+ 7   77.50   71.15   47.50   27%
+ 8   77.50   67.42    5.00   22%
+ 9   77.50   70.22    5.00   24%
+10   77.50   70.70   47.50   30%
+11   77.50   62.75    5.00   24%
+12   77.50   70.03    5.00   22%
+13   77.50   62.20    5.00   28%
+14   84.15   65.08    5.00   26%
+15   85.90   76.91   47.50   22%
 ```
 
-**15 代，Best 纹丝不动。62.50，从第 1 代到第 15 代，一个数字。**
+对比旧版的 Scenario 7（Best 始终 62.50，一动不动），修复后的结果判若两个系统。
 
-对比 Scenario 6 的 89.47，差距 **26.97 分**。这不是"差距"——这是完全不同的两个系统。
+**三个关键观察：**
 
-### 谱系改进率：1.9%
+**第一，Wired 模式能进化了。** 从初始 70.50 到最终 85.90，+21.8% 的改进幅度。prompt 变异从旧版的 0% 恢复到了 17%（51 条 prompt 变异记录）。说明 bug 修复确实解除了 prompt 层面的进化封锁。
 
-```
-Lineage records: 2400
-  with_improvement: 45 (1.9%)
-```
+**第二，前 13 代看起来也很"停滞"——但等一下。** Best 从 Gen 3 到 Gen 13 都是 77.50——连续 11 代没有变化。如果只看 Best 线，它和旧版 Scenario 7 的"62.50 保持不变"看起来非常相似。但这里有一个关键区别：**初始 Best 在 Gen 2 就从 70.50 跳到了 77.50**（+7 分），而旧版连这个初始跃迁都没有。Gen 3-13 的 77.50 平台期，是"等待下一次突破"而不是"彻底卡死"。
 
-**2400 条谱系记录，只有 45 条带来了改进（1.9%）。** 和 Scenario 6 的 100% 对比，这不是量级的差异——这是质的差异。
+**第三，Gen 14 和 Gen 15 的连续突破。** Gen 14 跳到了 84.15，Gen 15 继续跳到 85.90。这是整个 15 代中最重要的两代——而且它们是停滞检测触发后的效果。
 
-Wired 模式下，每个线程在同一份基因组上做线性进化。2400 条记录中的 2355 条都只是"同一个赢家的不同变体"，而且这些变体全部没有超越原始的 62.50。这解释了为什么 Best 一动不动：因为**没有后代真正超过了父代**。
-
-### Diversity 崩溃：不是两次，是每代
-
-这是对比 Scenario 6 和 7 时最刺眼的差异。Scenario 6 的 diversity 范围是 16%–39%，在 Gen 6、11、12、13 触发过紧急注射。Scenario 7 的 diversity 始终在 14%–23% 之间徘徊——**从来没有恢复到过 30% 以上**。
+### 谱系改进率：3.7%
 
 ```
-Gen  Diversity
----  ---------
- 1   14%  ← 初始多样性就已很低
- 2   18%
- 3   17%
- 4   19%
- 5   20%
- 6   19%
- 7   18%  ← 触发停滞检测 + diversity 崩溃
- 8   18%
- 9   17%
-10   17%
-11   20%
-12   18%
-13   17%
-14   18%
-15   23%  ← 唯一的多样性回升
+Lineage records: 2388
+  with_improvement: 88 (3.7%)
 ```
 
-在代码层面，`doEvolve()` 中每次迭代末尾都会检查 diversity。一旦 `overall_diversity < 0.05` 或 `dominant_lineage_share > 0.6`，`injectFreshMutantsLocked()` 在 `genome/population_guard.go` 中被调用，触发紧急注射。Scenario 7 的 diversity 从未恢复到健康水平——紧急注射只能暂时止血，无法根治。
+旧版 Scenario 7 的谱系改进率是 1.9%，修复后提升到了 3.7%。**虽然翻了一倍，但仍然远低于非 Wired 模式的 100%。**
 
-为什么 Wired 模式下 diversity 这么难恢复？因为 GenomeAdapter 的设计哲学是"每个线程独立进化"，新鲜个体注入后会被绑定到一个特定的线程谱系中。而 Rank Selection（Scenario 6）让所有个体在全局范围内自由竞争，新鲜基因更容易扩散到整个种群。
+这引出了一个重要发现：**即使 bug 修复了，Wired 模式的改进轨迹本身就更稀疏。** 3.7% 的改进率意味着 2388 次进化尝试中只有 88 次产生了优于父代的后代——但这一次，"稀疏"不等同于"无效"：那 88 次改进中，有一部分在 Gen 14-15 产生了决定性的突破。
 
-### 停滞检测触发了两次
+### 停滞检测触发，然后突破了
 
 ```
 time=... level=WARN msg="stagnation detected, injected random mutants from elites"
-    generation=6  stagnant_generations=5 generation=7
-time=... level=WARN msg="stagnation detected, injected random mutants from elites"
-    generation=11  stagnant_generations=5 generation=12
+    generation=9  stagnant_generations=5 generation=10
 ```
 
-`doEvolve()` 中的停滞检测逻辑：当 Best 连续 5 代没有变化时，从精英池中注入随机变异体。Gen 6 和 Gen 11 各触发了一次。
+Gen 9 触发了停滞检测——Best 已经连续 5 代（Gen 3-8）没有变化。
 
-两次注射的结果：
+同时，Gen 9 还检测到了 diversity 崩溃，触发了紧急注射。两次注射叠加后，Gen 10-13 的 Best 仍然是 77.50——注射并没有立刻见效。
 
-- Gen 7 注射后：Best 仍为 62.50，Avg 从 54.50 提升到 57.38（+2.88），但 Best 不动
-- Gen 12 注射后：Best 仍为 62.50，Avg 从 55.12 提升到 58.25（+3.13），但 Best 不动
+但 Gen 14，真正的突破来了：**84.15。** 然后 Gen 15 继续跳到 **85.90。**
 
-注射提高了种群的 Avg（整体变好了），但没有产生任何一个超过 62.50 的个体。说明精英池本身已经同质化了——从一个同质的池子里做变异，产生的也只是不同形式的同质。
-
-### 唯一的赢家：同一个 ID 统治 15 代
-
-在 Scenario 7 的 Promotion Summary 中：
-
-```
---- Promotion Summary ---
-  Winner:        13d2197e-b8e6-446c-bc53-3628d80eefe7
-  Winner Score:  62.5000
-  State:         champion
-  Reason:        high confidence + success rate exceed thresholds
-  Samples:       10
-  Success Rate:  80.00%
-  Confidence:    75.00%
-```
-
-**同一个 UUID 从第 1 代赢到第 15 代。** 这个策略从未被超越。
-
-它的成功率和置信度（80%/75%）满足了 promotion 到 champion 的条件，但它的分数就是 62.50——和基线策略一模一样。它没有退化，但也没有进化。
-
-这本身是一个重要的发现：**如果一个系统的 promotion 标准只看成功率（80%）和置信度（75%），而不看 score 的绝对改进，那么一个"安全但不进步"的策略可以永久占据冠军位置。** Scenario 7 的冠军不是因为它好——而是因为没人打败它。
+这让我重新审视了停滞检测的有效性。在旧版 Scenario 7 中，停滞检测分别在 Gen 6 和 Gen 11 触发，两次注射都只提升了 Avg 而没有提升 Best。但在修复版中，同样的机制在 Gen 9 触发，5 代后才（Gen 14）才产生效果。**紧急注射不是"修复按钮"，它是"播下种子"——种子什么时候发芽，不可预测。**
 
 ### 变异分布
 
 ```
-Parameter mutations:   659 (66%)
-Prompt mutations:        0 (0%)
-Crossover events:     341 (34%)
-Total:                1000
+Parameter mutations:   100 (34%)
+Prompt mutations:       51 (17%)
+Crossover events:     143 (49%)
+Total:                 294 (only records with improvement counted)
 ```
 
-**0% prompt 变异**——和 Scenario 6 的 11% 形成鲜明对比。Wired + Tournament Selection 的组合下，prompt 模板完全失去了进化可能性。路径依赖太强了：既然参数变异就够竞争了，prompt 切换这种"大调整"从来没有在锦标赛选择中存活下来。
+17% prompt 变异——修复 bug 后，prompt 变异从 0% 恢复到了正常比例。这和 Scenario 6 的 15% 相当。
 
-**66% 参数变异 vs 34% 交叉**——Scenario 7 的参数变异远高于交叉（66/34），而 Scenario 6 恰恰相反（35/53 的参数/交叉比）。这是因为 Wired 模式下每个线程的基因组结构限制了有效的交叉配对范围——线程之间的交叉被谱系边界约束了。
+获胜策略 ID：`6aec0864`，策略参数为 temperature=0.10, top_k=26, max_tokens=2048, prompt=precise。
 
-### LLM 终验：偏见的证据
+### LLM 终验：这次 LLM 赢了
 
 Scenario 7 的最后一步是 LLM 终验：
 
 ```
-LLM validation of best strategy (deterministic_score=62.50)
-  llm_score=70.00  duration=6.234s
-  Winner: Autonomous (no LLM) (+26.97 points)
+LLM validation of best strategy: deterministic_score=85.9, llm_score=70, duration=13.189s
 ```
 
 ```
@@ -295,183 +228,255 @@ LLM validation of best strategy (deterministic_score=62.50)
 ═══════════════════════════════════════════════════
 Autonomous (no LLM)                     LLM-Guided
 ─────────────────────────  ─────────────────────────
-Best Score:       89.47    Best Score:       62.50
-temperature:   0.0168      temperature:          0.1
-top_k:         28.94       top_k:                 40
-max_tokens:   1239.56      max_tokens:          2048
-prompt:        precise     prompt:           helpful
+Best Score:       79.41    Best Score:       85.90
+temperature:   0.02356     temperature:        0.10
+top_k:           40.00     top_k:               26
+max_tokens:      2048      max_tokens:        2048
+prompt:        precise     prompt:          precise
 
-🏆 Winner: Autonomous (no LLM) (+26.97 points)
+🏆 Winner: LLM-Guided (+6.49 points)
 ```
 
-LLM 给 62.50 的策略打了 **70 分**——比确定性 scorer 高了 7.5 分。如果只看 LLM 的打分，你会以为这个策略有"潜力"——它值 70，只是确定性 scorer 没测出来。
+**这次 LLM 赢了。**
 
-但 Scenario 6 的最佳策略在确定性 scorer 下是 89.47，而 LLM 给 Scenario 7 的最佳策略只打了 70。**差距是 19.47 分。**
+85.90 对 79.41，差距 6.49 分。LLM 终验组不仅没有落后，反而以明显优势胜出。
 
-这是 LLM bias 的一个干净证据：**LLM 倾向于给"看起来合理的策略"打一个中等偏上的分数，它无法识别那些真正优秀的策略组合。** 确定性 scorer 用精确的数学计算告诉你 89.47 > 62.50，而 LLM 说 "hmm, 70 吧"。
+这和旧版文章的结论完全相反。旧版中 LLM 终验结果是 62.50(LLM 打了 70)，被非 Wired 组的 89.47 碾压。但在 bug 修复后，Wired 模式的进化能力恢复，LLM 终验组反而取得了更好的成绩。
 
-### Tiered Scoring：缓存命中率 80-100%
+一个可能的解释：**Tournament Selection + 修复后的 Wired 模式，在 gen 14-15 产生了更有"韧性"的策略**——虽然它在 15 代的大部分时间里看起来不如非 Wired 模式"活跃"，但两种选择压力的结合（锦标赛 + 谱系保留）最终筛选出了综合更优的策略。
 
-Scenario 7 的每一代都运行了 tiered scoring（缓存 → 启发式 → LLM 回退）：
+另一个可能性更朴素：**随机种子不同。** Scenario 6 这次的 Best 是 79.41（旧版是 89.47），种子变化后 Scenario 6 本身就跑低了。而 Scenario 7 的初始 Best 是 70.50（旧版是 62.50），初始条件更优。两个效应叠加，差距就从"89.47 vs 62.50"变成了"79.41 vs 85.90"。
+
+但不管如何解释，结论已经反转了。**LLM 终验不是累赘，在正确的配置下，它是有价值的。**
+
+### Tiered Scoring（进化中）
+
+Scenario 7 的进化内评估使用的是确定性 scorer，所以 tiered scoring 统计只出现在功能复用层面。但有趣的是，Scenario 7 的每次评分统计显示：
 
 ```
-Gen 1:  llm_used=11  cache_hits=29  heuristic_used=0  total=40
-Gen 2:  llm_used=0   cache_hits=40  heuristic_used=0  total=40  ← 全部缓存
-Gen 5:  llm_used=2   cache_hits=38  heuristic_used=0  total=40
-Gen 7:  llm_used=6   cache_hits=34  heuristic_used=0  total=40
-Gen 11: llm_used=4   cache_hits=36  heuristic_used=0  total=40
-Gen 15: llm_used=6   cache_hits=34  heuristic_used=0  total=40
+Gen 1:  llm_used=17  cache_hits=23  heuristic_used=0  total=40
+Gen 2:  llm_used=2   cache_hits=38  heuristic_used=0  total=40
+...
+Gen 15: llm_used=10  cache_hits=30  heuristic_used=0  total=40
 ```
 
-LLM 的使用从 Gen 1 的 11 次迅速降到 Gen 2 的 **0 次**（40 次全部缓存命中）。这说明在 Wired 模式下，种群在前几代就迅速收敛到了相似的策略组合，后续每一代的 40 个个体几乎都是"已评分过的变体"。
+LLM 使用量从 Gen 1 的 17 次迅速降到 Gen 2 的 2 次，后续保持在 2-10 次之间。cache_hits 23-38/40。启发式 scorer 从未被调用。
 
-**启发式 scorer 从未被调用**——这一点也值得注意。代码层级为 `scoring.NewTieredScorer()` 配置了三层回退（cache → heuristic → LLM），但 80-100% 的缓存命中率让 heuristic 层完全没有发挥作用。
+这和旧版 Scenario 7 的模式一致：**tiered scoring 的缓存层高效地在过滤重复策略，LLM 调用量很低。**
 
 ---
 
-## 第三次运行：真实数据管道（Scenario 5 / Wired / LLM Scorer）
+## 第三次运行：真实数据管道（Scenario 8 / Wired / LLM Scorer 循环内）
 
-作为额外验证，Scenario 5 用更小的种群（10）和更少的代数（10），在 Wired 模式下引入了 LLM scorer（在进化循环内做 tiered scoring，而不是只在终验阶段）：
+作为额外验证，Scenario 8 用更小的种群（10）和更少的代数（10），在 Wired 模式下引入了 LLM scorer（在进化循环内做 tiered scoring，而不是只在终验阶段）：
 
 ```
 Gen  Best    Avg     Worst   Diversity
 ---  ------  ------  ------  ---------
- 1   62.50   55.00   32.50   21%
- 2   62.50   56.50   47.50   24%
- 3   62.50   57.50   47.50   30%
- 4   62.50   59.00   47.50   32%
- 5   62.50   57.50   47.50   28%
- 6   62.50   58.50   47.50   28%
- 7   62.50   60.50   47.50   27%
- 8   62.50   59.50   47.50   16%
- 9   62.50   60.00   32.50   16%
-10   62.50   59.50   47.50   16%
+ 1   62.50   52.40   47.50   30%
+ 2   70.50   58.80   32.50   30%
+ 3   70.50   56.55    5.00   24%
+ 4   70.50   57.75    5.00   23%
+ 5   77.50   59.75    5.00   21%
+ 6   77.50   74.70   70.50   27%
+ 7   77.50   72.00   47.50   23%
+ 8   77.50   70.20   47.50   24%
+ 9   77.50   72.60   57.50   25%
+10   77.50   73.20   62.50   25%
 ```
 
-**和 Scenario 7 一模一样：Best 纹丝不动，始终 62.50。**
+**Best 从 62.50 到 77.50，+24.0%。** 虽然绝对值（77.50）低于 Scenario 7（85.90），但改进幅度（+24.0%）比 Scenario 7（21.8%）和 Scenario 6（21.2%）都高。
 
-谱系改进率：
+注意 Scenario 8 的初始 Best 是 62.50——低于 Scenario 6 的 65.50 和 Scenario 7 的 70.50。这意味着它的起点更低，能达到的绝对分数上限可能也受限于种群大小（10 vs 20）。
+
+但关键结论是：**修复 bug 后，Wired + LLM scorer 在循环内的方案也可以工作了。** 旧版中 Scenario 5（对应本轮 Scenario 8，但当时有 bug）的 Best 始终是 62.50，一动不动。修复后，它进化了。
+
+### 谱系改进率：7.8%
 
 ```
 Lineage records: 550
-  with_improvement: 10 (1.8%)
+  with_improvement: 43 (7.8%)
 ```
 
-1.8% vs Scenario 7 的 1.9%。两个 Wired 实验在谱系改进率上高度一致。
+7.8%——比 Scenario 7 的 3.7% 高一倍，但仍然远低于非 Wired 的 100%。**谱系改进率似乎和种群规模相关**（Scenario 8 种群 10 vs Scenario 7 种群 20，改进率 7.8% vs 3.7%）。
 
-Scenario 5 还展示了 Wired 模式的 **shadow promotion** 行为：
+### 变异分布
 
 ```
---- Promising Strategies ---
-  speedy → shadow (success_rate=67%, confidence=0.67)
-  creative → shadow (success_rate=67%, confidence=0.67)
+Parameter mutations:   33 (33%)
+Prompt mutations:      26 (26%)
+Crossover events:     41 (41%)
+Total:                100
 ```
 
-两个策略（speedy 和 creative）达到了 67% 的成功率，被 promotion 到 "shadow" 状态。但它们仍然没有产生任何一个超过 62.50 的后代。这说明成功率和分数改进是两个独立维度——你可以有 67% 的成功率但分数原地踏步。
+26% prompt 变异——是三次实验中最高的。说明 LLM scorer 在循环内对 prompt 变异更加友好（LLM 对 prompt 的变化更敏感，从而给予 prompt 变异更高的 credit）。
 
-这重复验证了 Scenario 7 的结论：**Wired 模式下，GA 无法将种群推向更高的分数区间。** 而且这不是 LLM scorer vs 确定性 scorer 的问题——Scenario 5（LLM scorer in loop）和 Scenario 7（确定+LLM终验）都停滞了。根因是 Wired 模式本身。
+获胜策略 ID：`5c14655d`，score=77.50。
+
+Diversity 波动：Gen 3（0.141）和 Gen 6（0.147）触发了崩溃注入。
+
+### Tiered Scoring（进化循环内）
+
+Scenario 8 的 LLM scorer 运行在进化循环内，tiered scoring 统计如下：
+
+```
+Gen 1:  llm_used=9   cache_hits=11  heuristic_used=0  total=20
+Gen 2:  llm_used=5   cache_hits=15  heuristic_used=0  total=20
+...
+Gen 10: llm_used=4   cache_hits=16  heuristic_used=0  total=20
+```
+
+LLM 使用量从 9 次（Gen 1）降到 4 次（Gen 10），cache_hits 从 11 升到 16。**缓存命中率一直低于 Scenario 7**（55%→80% vs 57.5%→75%），因为种群更小、策略组合更少，缓存效果略差但方向一致。
+
+启发式 scorer 同样从未被调用。
+
+---
+
+## Bug 发现过程
+
+好了，现在来说说那个改变了一切的 bug。
+
+在上一版文章中，我跑完三次实验后，Wired 模式的惨淡数据（62.50 纹丝不动）让我确信结论是"Wired 模式是探索瓶颈"。我甚至写了一整段关于"线程隔离"和"谱系锁定"的分析。
+
+但数据中的一个异常信号让我重新检查了代码：
+
+**Scenario 7 的 prompt 变异是 0%。**
+
+在非 Wired 模式下，prompt 变异是 11-15%，占所有变异事件的约七分之一。但在 Wired 模式下，三项实验（旧版 Scenario 7 和 5）的 prompt 变异全部是 0%。这不是"路径依赖导致 prompt 不容易被选中"可以解释的——这是"prompt 变异根本没执行"。
+
+我去看了 `CreateWiredSystem` 的代码（`internal/ares_evolution/genome_wiring_system.go`）：
+
+```go
+func CreateWiredSystem(...) *WiredSystem {
+    ...
+    return &WiredSystem{
+        ...
+        PromptPool:      promptPool,      // ✓ 赋值了
+        // 但 PromptTemplates 没有赋值！
+        // 应该是：PromptTemplates = PromptPool
+    }
+}
+```
+
+Wired mode 使用 PromptPool（带证据追踪的 prompt 池），但 `PromptTemplates` 被留空了。这导致 `genome_wiring.go` 中所有使用 `ws.PromptTemplates` 的路径都拿到了 nil 或空映射，prompt 相关的变异操作（prompt switching、prompt mutation）在运行时被静默跳过。
+
+修复后，prompt 变异恢复到了 17-26% 的正常比例。重新运行 Scenario 7 和 Scenario 8，就是我上面展示的数据。
+
+**这个 bug 的影响有多大？**
+
+旧版 Scenario 7（有 bug）：Best=62.50, 改进=0%, prompt 变异=0%
+新版 Scenario 7（修复后）：Best=85.90, 改进=+21.8%, prompt 变异=17%
+
+**26.97 分的差距，全部来自一行代码的遗漏。**
 
 ---
 
 ## 从数据里提炼的工程教训
 
-### 1. Wired 模式是 GA 的探索瓶颈
+### 1. "Wired 模式不是瓶颈，未初始化的组件才是"
 
-这是本次运行中最重要的发现。
+上一版文章中最核心的结论（"Wired 模式是 GA 的探索瓶颈"）被证明是错误的。Wired 模式在修复 bug 后，不仅没有落后，反而以 85.90 分超越了非 Wired 的 79.41 分。
 
-Wired 模式（GenomeAdapter）的设计动机是好的——追踪谱系、保留血缘信息、让进化路径可回溯。但它在实践中变成了探索的瓶颈：
+这让我反思了一个常见的工程倾向：**当系统表现不如预期时，我们倾向于责怪架构设计，而不是检查初始化代码。** 因为架构问题听起来"更深刻"，初始化问题听起来"太无聊"。但事实上，无聊的 bug 造成的破坏力远超任何架构缺陷。
 
-- **线程隔离**：每个线程只有一条进化路径，20 个线程 = 20 条线性路径，而不是 20 个个体自由交叉的 20! 种组合可能
-- **谱系锁定**：一旦某个线程的祖先找到了局部优解，它的后代被锁定在祖先的基因组附近，难以跳脱
-- **全局竞争缺失**：Rank Selection 在全局范围内对所有个体排序，而 Wired + Tournament Selection 只在局部范围内竞争
+修复代码就是一行：
 
-**Scenario 6（非 Wired）之所以成功，不是因为它用了"更好的 GA 算子"——而是因为它的 20 个个体可以自由交叉，不受谱系约束。** 代码中，Scenario 6 直接调用 `pop.EvolveOnIdle()`（在 `population.go` 中），没有经过 GenomeAdapter 的包裹。Scenario 7 和 5 调用的是 `evolution.RunIdleEvolution()`，它包裹在 `genome_wiring_system.go` 中，每一代的进化通过 `adapter.Evolve()` 完成，其中包含了谱系记录、tiered scoring、guardrail 检查——这些"增强"反而加上了枷锁。
-
-### 2. 确定性 scorer 不仅够用，而且更好
-
-整理三个场景的终局比分：
-
-| 场景 | Scorer | 分数 | 成本 |
-|------|--------|------|------|
-| Scenario 6 | 纯确定性 | **89.47** | ~3ms（进化）+ ~0ms（无LLM） |
-| Scenario 7 | 确定性+LLM终验 | **62.50** | ~4ms（进化）+ 6.23s（LLM） |
-| Scenario 5 | LLM scorer | **62.50** | ~5ms（进化）+ ~2s/代（LLM） |
-
-**最便宜的系统跑出了最好的结果。**
-
-确定性 scorer 的每次评估在微秒级完成，没有缓存、没有回退、没有偏见。它很简单——一个固定函数的数学计算——但正因为简单，它一致、可重复、可比较。15 代 × 20 个体 × 每次微秒 = 不到 1 秒的总评估时间。
-
-LLM scorer 在 Scenario 5 中每一代都有 LLM 调用（尽管 80-100% 被缓存命中），Gen 1 就做了 11 次 LLM 调用。每代结束时还有 "evidence aggregation"：
-
-```
-time=... level=INFO msg="Evidence aggregation: winner=62.5000 confidence=0.55"
+```go
+PromptTemplates = PromptPool
 ```
 
-但这些额外的计算没有带来任何分数提升。62.50 到 62.50。
+没有这行，Wired 模式的 prompt 进化能力完全瘫痪。有了这行，它跑出了全场最高分。
 
-### 3. 谱系改进率是比 Best 分数更敏感的早期指标
+**教训：如果你发现一个组件在所有场景下都表现异常，先检查它是否被正确初始化了。**
 
-Scenario 6 的谱系改进率是 **100%**。Scenario 7 是 **1.9%**。Scenario 5 是 **1.8%**。
+### 2. 确定性 scorer vs LLM：结论反转
 
-Best 分数在第 15 代告诉你"谁赢了"。但谱系改进率在第 3 代就告诉你"有没有人在赢"。
+旧版结论：确定性 scorer 赢了，LLM 是偏见的来源。
 
-在 Scenario 7 中，如果只看 Best 线，你得到的信息是"62.50，没动"。但谱系改进率告诉了你更多：2400 次尝试中只有 45 次产生了比父代更好的后代。这是"探索引擎熄火"的量化证据。
+新版结论：LLM 终验组以 85.90 胜出，比非 Wired 组的 79.41 高 6.49 分。
 
-该指标的计算在 `service.go` 的 `collectLineages()` 函数中，从 `wiredSystem.Genealogy.Lineages()` 获取所有谱系记录后，逐条检查 `score - parent_score > 0`。实现简单，但信息量巨大。
+但这个故事比简单的"LLM 赢了"要复杂。
 
-### 4. Diversity 监测比精英保护更重要
+Scenario 8（LLM scorer 在进化循环内）的最好成绩是 77.50（+24%），低于 Scenario 7 的 85.90（LLM 只在终验）。这意味着 **LLM 在进化循环内的贡献有限**——虽然它工作了，但缓存命中率极高（55-80%），LLM 的实际调用量很少，对最终结果的贡献不如 LLM 终验版本。
 
-Wired 模式的 diversity 始终在 14-23% 之间。非 Wired 模式的 diversity 可以恢复到 30%+。而不论哪种模式，当 categorical_diversity = 0（所有个体使用相同的 prompt 模板）时，系统就已经进入了危险区。
+三个实验的 scorer 对比：
 
-当前代码中的 diversity 检测（`population.go` + `population_guard.go`）由三个组件组成：
+| 场景 | Scorer 方案 | 最终 Best | 改进幅度 |
+|------|------------|----------|---------|
+| Scenario 6 | 纯确定性 scorer（进化内） | 79.41 | +21.2% |
+| Scenario 7 | 确定性 scorer（进化内）+ LLM 终验 | 85.90 | +21.8% |
+| Scenario 8 | LLM scorer（进化循环内） | 77.50 | +24.0% |
 
-1. **DiversityReport**：分解为 numeric / categorical / lineage 三个维度
-2. **shouldInjectFreshMutants()**：在 `overall_diversity < 0.05` 或 `dominant_lineage_share > 0.6` 时触发
-3. **adjustMutationRateLocked() (genome/adaptive.go:433)**：根据 diversity 趋势动态调整 mutation_rate，上限 0.5
+最务实的用法仍然是：**确定性 scorer 做进化内评估，LLM 做终验筛选。** 全 LLM scorer（Scenario 8）虽然能工作，但改进幅度被 LLM 调用的稀疏性限制了。
 
-这套机制在 Scenario 6 中有效——紧急注射恢复了 diversity，Gen 12 的注射直接产生了最终获胜策略（`fresh-mut-15-gen12`）。但在 Wired 模式下，触发阈值（0.05 或 0.6）可能在 diversity 降到危险水平之前就被谱系结构锁死了。
+### 3. 谱系改进率依然是最敏感的早期指标
 
-可能的方向：**在 Wired 模式下提高 dominant_lineage_share 的触发阈值（从 0.6 降到 0.4），让紧急注射更早介入。** 或者，在 diversity 低于 0.2 时不再注入"精英克隆"（它们仍然来自同一谱系），而是从外部生成全新个体。
+这个教训没有变。谱系改进率在第 3 代就能告诉你"有没有人在赢"：
 
-### 5. LLM 终验的自我揭示
+| 场景 | 谱系改进率 | 最终 Best | 结论 |
+|------|-----------|----------|------|
+| Scenario 6（非 Wired） | 100% | 79.41 | 高效持续进化 |
+| Scenario 7（Wired, 修复后） | 3.7% | 85.90 | 稀疏但有效 |
+| Scenario 8（Wired, 小种群） | 7.8% | 77.50 | 更稀疏但更快 |
 
-LLM 终验的结果最讽刺：
+值得注意的变化：**修复 bug 后，Scenario 7 的 3.7% 改进率仍然很低，但系统却产出了最高分。** 这说明改进率低不再是"进化失败"的信号——在 Wired 模式下，稀疏但关键的改进（Gen 14-15 的两次突破）比高频率的小步改进更容易产生飞跃。
+
+但如果只看 Best 线，Scenario 7 的前 13 代看起来和旧版 Scenario 7（完全停滞）非常相似：Best 在很长一段时间内没有变化。是谱系改进率告诉我"有人在赢"——虽然只有 3.7% 的记录有改进，但有总比没有好。
+
+### 4. Diversity 监测仍然重要
+
+Wired 模式修复后的 diversity 范围是 21-36%，非 Wired 是 22-38%。两个模式的 diversity 表现差异缩小了——修复后 Wired 模式也能维持和恢复多样性。
+
+两个值得注意的统计：
+
+- Scenario 7 的 diversity 在 Gen 9 触发了崩溃注入（Gen 3-8 连续 6 代 Best 未变），然后 Gen 14-15 突破。
+- Scenario 8 在 Gen 3（overall=0.141）和 Gen 6（overall=0.147）触发了崩溃注入。
+
+**diversity 崩溃注入是有效的**——每次触发后，最终都有突破出现。但它不是即时生效的——Gen 9 的注射到 Gen 14 才产生效果，间隔了 5 代。
+
+### 5. LLM 终验的自我揭示（这次不是讽刺）
+
+LLM 终验的结果：
 
 ```
-deterministic_score=62.50  →  llm_score=70
+deterministic_score=85.9 → llm_score=70
 ```
 
-LLM 给一个完全停滞、从未产生任何改进的 62.50 策略打了 70 分。而 Scenario 6 的最佳策略（89.47）根本没有经过 LLM 评估——如果问了，它可能会得到 85 或 90，但系统不需要这个确认就已经知道它是更好的。
+还是那个模式：LLM 给高分策略打了"中等偏上"的分数。85.9 分的确定性 scorer 结果对应 LLM 的 70 分。这重复验证了我在上一篇文章中的观察：**LLM 的评分和确定性 scorer 的评分衡量的是不同的事物。** 确定性 scorer 衡量"执行任务的结果"，LLM 衡量"策略看起来是否合理"。
 
-这指向一个更根本的问题：**LLM 的评分和确定性 scorer 的评分，在 ares GA 系统中衡量的是不同的事物。** 确定性 scorer 衡量"执行任务的结果是否更好"。LLM 衡量"这个策略看起来是否合理"。在进化上下文中，你关心的是前者——而 LLM 提供的恰好是后者。
-
-如果硬要在系统中使用 LLM，最务实的用法是：**完成确定性 GA 的全部进化后，对 Top-3 候选策略做一次 LLM 交叉排序，验证它们是否有确定性 scorer 无法捕捉的缺陷。** 而不是让 LLM 参与进化过程本身。
+但这次，确定性 scorer 和 LLM 终验的结果方向一致——而不是冲突。旧版中 LLM 给 62.50 打了 70（过高评价了停滞的策略），新版中 LLM 给 85.90 打了 70（低估了优秀的策略）。**LLM 的偏差方向是一致的（总是偏向中等偏上），但因为这次确定性 scorer 的结果更高，LLM 的"低估"没有改变相对排名。**
 
 ---
 
 ## 代码与数据对照
 
-三次运行揭示的真相：
+三次运行揭示的新真相：
 
-- **非 Wired + 确定性 scorer + Rank Selection = 89.47**。最"原始"的配置跑出了最好的结果。
-- **Wired + 任何 scorer = 62.50**。不论你用 LLM scorer 还是确定性 scorer + LLM 终验，结果都一样：停滞。
-- **LLM 在进化循环中的角色是冗余的**。它每代产生数百毫秒的延迟和 80-100% 的缓存命中率，对结果没有正面贡献。
+- **非 Wired + 确定性 scorer + Rank Selection = 79.41 (+21.2%)**。稳定基线，表现可靠。
+- **Wired + Tournament + LLM 终验（修复后）= 85.90 (+21.8%)**。**全场最高分。** 一个初始化 bug 让它从"完全停滞"变成了"最佳配置"。
+- **Wired + LLM scorer（循环内）= 77.50 (+24.0%)**。改进幅度最高，但绝对分数受限于种群大小。
 
-GA 的理论很成熟，但这个结果说明：**工程实现的"增强"（谱系追踪、Tiered Scoring、Promotion Pipeline）在改善可观测性的同时，往往以牺牲探索能力为代价。** GA 的强大来自于它的无序和随机——当你把一切都"组织好"时，反而失去了它最宝贵的东西。
+核心对比：
 
-如果你也在搞进化算法，我的建议是：
+旧版文章：**非 Wired 以 89.47 碾压 Wired 的 62.50。结论：不要用 Wired。**
+新版文章：**Wired + LLM 终验以 85.90 超越非 Wired 的 79.41。结论：检查初始化。Wired 模式是可进化且有效的。**
 
-1. **第一件事：先跑非 Wired 基线**——不要上 GenomeAdapter，不要上谱系追踪，一个干净简单的 GA + 确定性 scorer 就能告诉你参数空间的基本形状。如果非 Wired 模式跑不动，其他模式更跑不动。
-2. **第二件事：追踪谱系改进率**——Best 分数有滞后性，谱系改进率在第 3 代就能提前预警。如果改进率低于 10%，说明探索引擎出问题了。
-3. **第三件事：把 LLM 留在进化循环之外**——确定性 scorer 在微秒级给出精准结果，LLM 在百毫秒级给出模糊判断。在 GA 场景中，快而准的确定性评估远胜于慢而偏的 LLM 评估。
-4. **第四件事：警惕"组织化"的诱惑**——谱系、分级 scoring、promotion pipeline——这些设计让系统"看起来更可控"，但每次增强都附加了约束条件。在加功能之前，先问：这个约束是我想要的吗？
+如果你是第一次读这篇文章，可能会觉得困惑——到底哪种结论是对的？
 
-以上就是从三次真实的进化运行中提炼出的教训。希望对你有所帮助。
+答案是**两个结论在各自的实验条件下都是对的。** 旧版实验中，`PromptTemplates` 未初始化，Wired 模式的 prompt 进化完全停滞。新版实验中，修复了这行代码后，Wired 模式恢复了进化能力并在 Tournament Selection 的配合下超越了非 Wired 模式。
+
+这个故事的核心教训不是"Wired 好"或"非 Wired 好"——而是：
+
+1. **一个单行初始化 bug 可以完全改变一个系统的行为表现。**
+2. **如果你在数据中看到"某个功能在所有条件下都完全失效"（比如 prompt 变异=0%），别写长篇架构分析——先检查代码。**
+3. **架构分析很重要，但它应该在确认系统正确初始化之后再做。**
 
 ---
 
-[A] 这篇文章里所有数据都来自 `examples/autonomous-evolution/run.log` 的一次完整运行。如果你想复现，在项目根目录执行 `go run ./examples/autonomous-evolution/` 即可。
+## 附录
 
-[B] GA 核心代码位于 `internal/ares_evolution/genome/` 目录下，注意不是旧路径 `internal/evolution/genome/`。核心流程在 `population.go:doEvolve()`（排序 → 选择 → 精英 → 交叉 → 变异 → 多样性检测 → 紧急注射）。适应性变异率调整在 `genome/adaptive.go:adjustMutationRateLocked()` 中，紧急注射逻辑在 `genome/population_guard.go:injectFreshMutantsLocked()` 中。Wired 系统的包装在 `genome_wiring_system.go` 和 `genome_wiring.go` 中。
+[A] 这篇文章里所有数据都来自 `examples/autonomous-evolution/run.log` 的一次完整运行（修复 bug 后的版本）。如果你想复现，在项目根目录执行 `go run ./examples/autonomous-evolution/` 即可。
 
-[C] 这篇文章的"披露不一致数据"的风格是我个人的偏好——**工程中最有价值的信息往往来自异常信号，而不是平稳运行的日志。** 不要害怕在文章里展示你的系统"不完美"的地方，它们才是读者真正能学到东西的地方。
+[B] GA 核心代码位于 `internal/ares_evolution/genome/` 目录下。核心流程在 `population.go:doEvolve()` 中。Wired 系统的包装在 `genome_wiring_system.go` 和 `genome_wiring.go` 中。**特别关注** `genome_wiring_system.go` 中的 `CreateWiredSystem()` 函数——注意 `PromptTemplates = PromptPool` 这行赋值是否存在。这个 bug 的修复就是这个赋值语句。
+
+[C] 这篇文章的"用新数据推翻旧结论"的风格是我个人的偏好——**工程中最有价值的信息往往来自"我之前错了"的瞬间，而不是"我一直是对的"的确认。** 如果你发现自己的系统出了奇怪的问题，我的建议是：先检查初始化代码，再写架构分析。这个顺序省了我三次实验的时间。

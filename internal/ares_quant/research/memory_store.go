@@ -148,7 +148,7 @@ func (s *MemoryStore) GetEntries(ctx context.Context, symbol string, limit int) 
 		}
 		entries = append(entries, entry)
 	}
-	// FIX: check rows.Err() to catch iteration errors (e.g., connection drops mid-scan).
+	// Check rows.Err() to catch iteration errors (e.g., connection drops mid-scan).
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate entries: %w", err)
 	}
@@ -188,7 +188,7 @@ func (s *MemoryStore) GetPendingEntries(ctx context.Context) ([]*MemoryEntry, er
 		}
 		entries = append(entries, entry)
 	}
-	// FIX: check rows.Err() to catch iteration errors (e.g., connection drops mid-scan).
+	// Check rows.Err() to catch iteration errors (e.g., connection drops mid-scan).
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate pending entries: %w", err)
 	}
@@ -208,7 +208,6 @@ func (s *MemoryStore) UpdateOutcome(ctx context.Context, id string, outcome *Out
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// FIX: wrap update in a transaction to ensure atomicity.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("memory store begin tx: %w", err)

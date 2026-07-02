@@ -6,30 +6,30 @@
    ✓ ON   1-5: Core scenarios (Bandit, Callbacks, Mutation, Arena, Dream)
    ✓ ON   Selection strategies: rank, SUS, roulette, tournament, truncation
    ✓ ON   8: Real Data Evolution Pipeline (440 records, 5 strategies)
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="evolution: enabled via project config"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="evolution: enabled via project config"
    ✓ ON   6: Multi-Gen GA Evolution
    ✓ ON   7: Wired Evolution System
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Initializing experiences"
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Experience created" id=exp-001 score=0.9
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Experience created" id=exp-002 score=0.75
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Experience created" id=exp-003 score=0.6
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Simulating task executions"
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Task executed" index=1 mark=✓ task=gen exp_id=exp-001
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Task executed" index=2 mark=✓ task=g2 exp_id=exp-001
-time=2026-07-02T10:05:05.664+08:00 level=INFO msg="Task executed" index=3 mark=✓ task=g3 exp_id=exp-001
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Task executed" index=4 mark=✓ task=par exp_id=exp-002
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Task executed" index=5 mark=✗ task=to exp_id=exp-003
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Task executed" index=6 mark=✗ task=er exp_id=exp-003
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Task executed" index=7 mark=✗ task=fm exp_id=exp-002
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Task executed" index=8 mark=✓ task=4t exp_id=exp-001
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Initializing experiences"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Experience created" id=exp-001 score=0.9
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Experience created" id=exp-002 score=0.75
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Experience created" id=exp-003 score=0.6
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Simulating task executions"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=1 mark=✓ task=gen exp_id=exp-001
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=2 mark=✓ task=g2 exp_id=exp-001
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=3 mark=✓ task=g3 exp_id=exp-001
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=4 mark=✓ task=par exp_id=exp-002
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=5 mark=✗ task=to exp_id=exp-003
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=6 mark=✗ task=er exp_id=exp-003
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=7 mark=✗ task=fm exp_id=exp-002
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Task executed" index=8 mark=✓ task=4t exp_id=exp-001
  Exp     Usage Rank  
 ------- ----- ------
  exp-001 4     0.9000
  exp-002 1     0.6750
  exp-003 0     0.4860
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Bandit feedback summary" note="usage reinforces reliability, failures decay rank"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Bandit feedback summary" note="usage reinforces reliability, failures decay rank"
 
   💬 What did we learn? — Bandit Feedback
   ────────────────────────────────────────────────────────
@@ -41,13 +41,13 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Bandit feedback summary" note
   poor content gets downweighted by negative user feedback. The Bandit algorithm balances
   "exploiting known good strategies" vs "exploring new ones" (ε-greedy concept).
 
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Scenario completed" scenario="Bandit Feedback Loop" duration_ms=0
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=1 event=llm.start
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=2 event=llm.end
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=3 event=tool.start
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=4 event=agent.start
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=5 event=llm.error
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=6 event=llm.start
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Scenario completed" scenario="Bandit Feedback Loop" duration_ms=0
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=1 event=llm.start
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=2 event=llm.end
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=3 event=tool.start
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=4 event=agent.start
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=5 event=llm.error
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Event emitted" index=6 event=llm.start
  Event       Count
 ----------- -----
  llm.start   2    
@@ -55,7 +55,7 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Event emitted" index=6 event=
  tool.start  1    
  agent.start 1    
  Total       6    
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Callback summary" note="pub/sub panic-safe with rich metadata"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Callback summary" note="pub/sub panic-safe with rich metadata"
 
   💬 What did we learn? — Callback Event System
   ────────────────────────────────────────────────────────
@@ -67,14 +67,14 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Callback summary" note="pub/s
   event (LLM call / tool use / agent start) can be captured by external listeners,
   enabling logging, billing, security auditing, and other cross-cutting concerns.
 
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Scenario completed" scenario="Callback Event System" duration_ms=0
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Mutation generated" parent_id=p-v1 params="map[temperature:0.7 top_k:40]" children=5
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Child strategy" index=1 id=9ba10c8f-d7c5-434b-b type=parameter description="parameter \"temperature\" changed to 0.1"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Child strategy" index=2 id=2d1c6a1a-d4e6-48f5-a type=parameter description="parameter \"temperature\" changed to 0.3"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Child strategy" index=3 id=7e19223d-dc21-4d23-a type=prompt description="prompt template changed"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Child strategy" index=4 id=ba3e11c0-a0f1-4702-8 type=parameter description="parameter \"temperature\" changed to 0.3"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Child strategy" index=5 id=fa0d4038-9944-4fb5-a type=parameter description="parameter \"temperature\" changed to 0.1"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Determinism check" same_seed_reproducible=true note="80% param mut, 20% prompt change, reproducible"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Scenario completed" scenario="Callback Event System" duration_ms=0
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Mutation generated" parent_id=p-v1 params="map[temperature:0.7 top_k:40]" children=5
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Child strategy" index=1 id=ff181de4-239f-4cd3-9 type=parameter description="parameter \"temperature\" changed to 0.1"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Child strategy" index=2 id=a21ffebf-1ac8-4df5-9 type=parameter description="parameter \"temperature\" changed to 0.3"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Child strategy" index=3 id=1212906b-4ec6-43ff-b type=prompt description="prompt template changed"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Child strategy" index=4 id=13ac4cb0-0ffe-42ec-8 type=parameter description="parameter \"temperature\" changed to 0.3"
+time=2026-07-02T10:30:35.669+08:00 level=INFO msg="Child strategy" index=5 id=7d70a86b-fc2d-429e-b type=parameter description="parameter \"temperature\" changed to 0.1"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Determinism check" same_seed_reproducible=true note="80% param mut, 20% prompt change, reproducible"
 
   💬 What did we learn? — Strategy Mutation Engine
   ────────────────────────────────────────────────────────
@@ -86,10 +86,10 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Determinism check" same_seed_
   produce identical results, enabling debugging, A/B test comparison, and issue traceback.
   The Mutator's WithSeed() option makes the entire GA evolution process fully deterministic.
 
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Scenario completed" scenario="Strategy Mutation Engine" duration_ms=0
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Arena regression completed" baseline_avg=50 candidate_avg=50 win_rate=1 confident=false p_value=1
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Scenario completed" scenario="Strategy Mutation Engine" duration_ms=0
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Arena regression completed" baseline_avg=50 candidate_avg=50 win_rate=1 confident=false p_value=1
  # Base    Cand       
 - ------- ------- ---
  1 50.0000 50.0000 ✓  
@@ -97,7 +97,7 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Arena regression completed" b
  3 50.0000 50.0000 ✓  
  4 50.0000 50.0000 ✓  
  5 50.0000 50.0000 ✓  
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Arena summary" note="Welch t-test data-driven adoption"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Arena summary" note="Welch t-test data-driven adoption"
 
   💬 What did we learn? — Arena Regression Test
   ────────────────────────────────────────────────────────
@@ -109,21 +109,21 @@ time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Arena summary" note="Welch t-
   to rule out random fluctuations. In production, at least 20-30 comparison rounds are recommended.
   confident=false means "promising results but needs more data", not outright rejection.
 
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Scenario completed" scenario="Arena Regression Test" duration_ms=0
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Scenario completed" scenario="Arena Regression Test" duration_ms=0
 
 ============================================================
   Scenario 5: Dream Cycle Orchestration
 ============================================================
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="WARN NewService: nil injector module=arena"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="WARN NewService: nil event store module=arena"
 
  🔄 Dream Cycle: Mutate → Test → Select → Record
    ┌─────────────────────────────────────────────────────┐
    │ Parent: root-v1  temperature=0.7 top_k=40 prompt=helpful
    └─────────────────────────────────────────────────────┘
-time=2026-07-02T10:05:05.665+08:00 level=INFO msg="Candidate evaluated" index=1 win_rate=1 improvement=0 passed=true
-time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Candidate evaluated" index=2 win_rate=1 improvement=0 passed=true
-time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Candidate evaluated" index=3 win_rate=1 improvement=0 passed=true
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Candidate evaluated" index=1 win_rate=1 improvement=0 passed=true
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Candidate evaluated" index=2 win_rate=1 improvement=0 passed=true
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Candidate evaluated" index=3 win_rate=1 improvement=0 passed=true
 
  📋 Candidate Evaluation Results:
  #     Mutation Type        Temp   TopK Prompt  WinRate ΔScore  OK 
@@ -140,8 +140,8 @@ time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Candidate evaluated" index=3 
     Winner: Candidate #1 — selected for highest improvement (+0.000)
     Why: win_rate=1.00 ≥ threshold(0.55) AND best Δscore among passers
     Insight: Lower temperature (0.70→0.50) reduced hallucination risk
-time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Best lineage recorded" parent_id=root-v1 child_id=be31ccdc-20f win_rate=1
-time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Dream cycle pipeline" note="Mutate -> ArenaTest -> SelectBest -> Genealogy"
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Best lineage recorded" parent_id=root-v1 child_id=5f3910cb-ce5 win_rate=1
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Dream cycle pipeline" note="Mutate -> ArenaTest -> SelectBest -> Genealogy"
 
   💬 What did we learn? — Dream Cycle
   ────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Dream cycle pipeline" note="M
   natural selection (arena testing) eliminates the weak, and the fittest survive and get recorded.
   Each Dream Cycle round is a micro-evolution.
 
-time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Scenario completed" scenario="Dream Cycle Orchestration" duration_ms=0
+time=2026-07-02T10:30:35.670+08:00 level=INFO msg="Scenario completed" scenario="Dream Cycle Orchestration" duration_ms=0
 
 ============================================================
   Scenario 8: Real Data Evolution Pipeline
@@ -200,105 +200,96 @@ time=2026-07-02T10:05:05.666+08:00 level=INFO msg="Scenario completed" scenario=
      balanced     → champion   (confidence=50% success_rate=80% samples=15 p50_latency=82ms)
      speedy       → shadow     (promising: success_rate=67% with 15 samples, needs more data for champion)
      creative     → shadow     (promising: success_rate=67% with 15 samples, needs more data for champion)
-time=2026-07-02T10:05:05.667+08:00 level=INFO msg="population created" size=10 generation=0
-time=2026-07-02T10:05:05.667+08:00 level=INFO msg="evolution service created" population_size=10 elite_count=1 wired_mode=true
-time=2026-07-02T10:05:05.667+08:00 level=INFO msg="Running GA evolution with real data evidence pipeline" pop_size=10 generations=10
-time=2026-07-02T10:05:05.668+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=1 overall_diversity=0.08133333333333335 dominant_lineage_share=0.9 numeric_diversity=0.10333333333333337 categorical_diversity=0 lineage_diversity=0.2
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=1 population_size=10 best_score=62.5 avg_score=59
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=9 llm_max=100 cache_hits=11 fallbacks=0 tier_stats="map[cache_hits:11 fallbacks:0 heuristic_calls:0 llm_calls:9 total_scored:20]"
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=1
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="generation complete" generation=1 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.668+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=2 overall_diversity=0.11911111111111111 dominant_lineage_share=0.3 numeric_diversity=0.04777777777777777 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=2 population_size=10 best_score=62.5 avg_score=60
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=0 llm_max=100 cache_hits=20 fallbacks=0 tier_stats="map[cache_hits:20 fallbacks:0 heuristic_calls:0 llm_calls:0 total_scored:20]"
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=2
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="generation complete" generation=2 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.668+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.669+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=3 overall_diversity=0.14666666666666667 dominant_lineage_share=0.4 numeric_diversity=0.11666666666666668 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=3 population_size=10 best_score=62.5 avg_score=52.25
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=18 fallbacks=0 tier_stats="map[cache_hits:18 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:20]"
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=3
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="generation complete" generation=3 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.669+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=4 overall_diversity=0.1426666666666667 dominant_lineage_share=0.3 numeric_diversity=0.10666666666666669 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=4 population_size=10 best_score=62.5 avg_score=51.75
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=17 fallbacks=0 tier_stats="map[cache_hits:17 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:20]"
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=4
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="generation complete" generation=4 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.669+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.670+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=5 overall_diversity=0.14444444444444446 dominant_lineage_share=0.3 numeric_diversity=0.11111111111111115 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=5 population_size=10 best_score=62.5 avg_score=61.5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=1 llm_max=100 cache_hits=19 fallbacks=0 tier_stats="map[cache_hits:19 fallbacks:0 heuristic_calls:0 llm_calls:1 total_scored:20]"
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="generation complete" generation=5 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.670+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=3 stagnant_generations=5 generation=6
-time=2026-07-02T10:05:05.670+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=6 overall_diversity=0.1649491900870632 dominant_lineage_share=0.3 numeric_diversity=0.16237297521765806 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.670+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=6 population_size=10 best_score=62.5 avg_score=60.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=0 llm_max=100 cache_hits=20 fallbacks=0 tier_stats="map[cache_hits:20 fallbacks:0 heuristic_calls:0 llm_calls:0 total_scored:20]"
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=6
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="generation complete" generation=6 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.671+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=7 overall_diversity=0.15185185185185188 dominant_lineage_share=0.3 numeric_diversity=0.12962962962962965 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=7 population_size=10 best_score=62.5 avg_score=59
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=16 fallbacks=0 tier_stats="map[cache_hits:16 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:20]"
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=7
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="generation complete" generation=7 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.671+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=8 overall_diversity=0.14355555555555558 dominant_lineage_share=0.4 numeric_diversity=0.1088888888888889 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=8 population_size=10 best_score=62.5 avg_score=54.75
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=18 fallbacks=0 tier_stats="map[cache_hits:18 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:20]"
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=8
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="generation complete" generation=8 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.671+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.672+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=9 overall_diversity=0.16622222222222227 dominant_lineage_share=0.3 numeric_diversity=0.16555555555555562 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=9 population_size=10 best_score=62.5 avg_score=50
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=1 llm_max=100 cache_hits=19 fallbacks=0 tier_stats="map[cache_hits:19 fallbacks:0 heuristic_calls:0 llm_calls:1 total_scored:20]"
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=9
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="generation complete" generation=9 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.672+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=10 overall_diversity=0.15066666666666667 dominant_lineage_share=0.4 numeric_diversity=0.12666666666666665 categorical_diversity=0 lineage_diversity=0.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=10 elite_count=1 mutation_rate=0.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=10 population_size=10 best_score=62.5 avg_score=59.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=17 fallbacks=0 tier_stats="map[cache_hits:17 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:20]"
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=10
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="generation complete" generation=10 callback_gen=0 winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolution run complete" winner=f29c050e-a9b5-4741-93cf-f870744be175 fitness=62.5 promotion_state="" sample_count=0
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-2728237591/report.txt
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="evolution completed" total_generations=10 raw_improvements=10 significant_improvements=10 improvement_threshold=0.01
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="population created" size=10 generation=0
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="evolution service created" population_size=10 elite_count=1 wired_mode=true
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="Running GA evolution with real data evidence pipeline" pop_size=10 generations=10
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=10 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=1 population_size=10 best_score=62.5 avg_score=52.4
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=9 llm_max=100 cache_hits=11 fallbacks=0 tier_stats="map[cache_hits:11 fallbacks:0 heuristic_calls:0 llm_calls:9 total_scored:20]"
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=1
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="generation complete" generation=1 winner=963fed64-04e5-4200-8c5c-ca7cd918ddaf fitness=62.5
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="evolution run complete" winner=963fed64-04e5-4200-8c5c-ca7cd918ddaf fitness=62.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.672+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=10 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=2 population_size=10 best_score=70.5 avg_score=58.8
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=16 fallbacks=0 tier_stats="map[cache_hits:16 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:20]"
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=2
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="generation complete" generation=2 winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolution run complete" winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.673+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=3 overall_diversity=0.14133333333333334 dominant_lineage_share=0.8 numeric_diversity=0.10333333333333335 categorical_diversity=0.1 lineage_diversity=0.3
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=3 population_size=10 best_score=70.5 avg_score=56.55
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=17 fallbacks=0 tier_stats="map[cache_hits:17 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:20]"
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=3
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="generation complete" generation=3 winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolution run complete" winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=4 population_size=10 best_score=70.5 avg_score=57.75
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=18 fallbacks=0 tier_stats="map[cache_hits:18 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:20]"
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=4
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="generation complete" generation=4 winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5
+time=2026-07-02T10:30:35.673+08:00 level=INFO msg="evolution run complete" winner=de74ae00-0771-48e1-ac14-26fb83bf4fe4 fitness=70.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=5 population_size=10 best_score=77.5 avg_score=59.75
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=17 fallbacks=0 tier_stats="map[cache_hits:17 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:20]"
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=5
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="generation complete" generation=5 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.674+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.675+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=6 overall_diversity=0.1471111111111111 dominant_lineage_share=0.8 numeric_diversity=0.039999999999999994 categorical_diversity=0.17777777777777778 lineage_diversity=0.3
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=6 population_size=10 best_score=77.5 avg_score=74.7
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=18 fallbacks=0 tier_stats="map[cache_hits:18 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:20]"
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=6
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="generation complete" generation=6 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=7 population_size=10 best_score=77.5 avg_score=72
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=17 fallbacks=0 tier_stats="map[cache_hits:17 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:20]"
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=7
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="generation complete" generation=7 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=8 population_size=10 best_score=77.5 avg_score=70.2
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=16 fallbacks=0 tier_stats="map[cache_hits:16 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:20]"
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=8
+time=2026-07-02T10:30:35.675+08:00 level=INFO msg="generation complete" generation=8 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=9 population_size=10 best_score=77.5 avg_score=72.6
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=1 llm_max=100 cache_hits=19 fallbacks=0 tier_stats="map[cache_hits:19 fallbacks:0 heuristic_calls:0 llm_calls:1 total_scored:20]"
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=9
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="generation complete" generation=9 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=10 elite_count=2 mutation_rate=0.5
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=10 population_size=10 best_score=77.5 avg_score=73.2
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=16 fallbacks=0 tier_stats="map[cache_hits:16 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:20]"
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=10 generation=10
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="generation complete" generation=10 winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5
+time=2026-07-02T10:30:35.676+08:00 level=INFO msg="evolution run complete" winner=5c14655d-3057-42fa-9449-bfec6081ffa9 fitness=77.5 promotion_state="" sample_count=0
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-live-report-474425001/report.txt
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="evolution completed" total_generations=10 raw_improvements=43 significant_improvements=43 improvement_threshold=0.01
  Gen Best  Avg   Worst Diversity
 --- ----- ----- ----- ---------
- 1   62.50 59.00 42.50 13%      
- 2   62.50 60.00 42.50 18%      
- 3   62.50 52.25 5.00  17%      
- 4   62.50 51.75 5.00  18%      
- 5   62.50 61.50 57.50 18%      
- 6   62.50 60.50 42.50 17%      
- 7   62.50 59.00 42.50 16%      
- 8   62.50 54.75 5.00  19%      
- 9   62.50 50.00 32.50 20%      
- 10  62.50 59.50 47.50 13%      
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="Lineage records" count=550 with_improvement=10
-time=2026-07-02T10:05:05.672+08:00 level=INFO msg="Best strategy found" id=f29c050e-a9b5-4741-93cf-f870744be175 version=2 score=62.5
+ 1   62.50 52.40 47.50 30%      
+ 2   70.50 58.80 32.50 30%      
+ 3   70.50 56.55 5.00  24%      
+ 4   70.50 57.75 5.00  23%      
+ 5   77.50 59.75 5.00  21%      
+ 6   77.50 74.70 70.50 27%      
+ 7   77.50 72.00 47.50 23%      
+ 8   77.50 70.20 47.50 24%      
+ 9   77.50 72.60 57.50 25%      
+ 10  77.50 73.20 62.50 25%      
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="Lineage records" count=550 with_improvement=43
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="Best strategy found" id=5c14655d-3057-42fa-9449-bfec6081ffa9 version=8 score=77.5
 
 ╔════════════════════════════════════════════════════╗
 ║          🧬 Evolution Insight Report               ║
@@ -306,93 +297,92 @@ time=2026-07-02T10:05:05.672+08:00 level=INFO msg="Best strategy found" id=f29c0
 
 📊 Evolution Trajectory:
    Gen 1 → Gen 3:  Exploration phase (random search)
-             ↓ Best strategy: {top_k:40, max_tokens:2048, frequency_penalty:0}
+             ↓ Best strategy: {top_k:40, frequency_penalty:0, max_tokens:2048}
              ↓ Key insight: Diverse mutations explore the parameter space
    Gen 4 → Gen 6: Exploitation phase (refining winners)
-             ↓ Best strategy: {temperature:0.1, top_k:40, max_tokens:2048}
+             ↓ Best strategy: {top_k:40, frequency_penalty:0, max_tokens:2048}
              ↓ Breakthrough: Elite preservation keeps top performers
    Gen 7 → Gen 10: Convergence phase
-             ↓ Final best: score=62.50, avg=59.50 (+0.0% vs baseline)
+             ↓ Final best: score=77.50, avg=73.20 (+24.0% vs baseline)
 
-   Trend: → STAGNANT  |  Best: 62.50 → 62.50  |  Generations: 10
+   Trend: ↗ IMPROVING  |  Best: 62.50 → 77.50  |  Generations: 10
 
 🧪 Mutation Analysis:
-   ├─ Param mutations: 67 (67%)
-   ├─ Prompt mutations: 0 (0%)
-   ├─ Crossover events: 33 (33%)
+   ├─ Param mutations: 33 (33%)
+   ├─ Prompt mutations: 26 (26%)
+   ├─ Crossover events: 41 (41%)
    └─ Other: 0 (0%)
    Avg win_rate (lineages): 1.00
 
 🏆 Genealogy Tree (top lineages):
    wired-root
-      └── f29c050e-a... [parameter wr:1.00 Δ:+15.00]
-   f29c050e-a...
-      ├── 1b2ac73f-6... [parameter Δ:-20.00]
-      ├── c7e51c93-4... [crossover]
-      ├── c3ed3f6c-0... [parameter]
-      └── bcb8f43d-5... [parameter Δ:-15.00]
+      ├── 963fed64-0... [parameter wr:1.00 Δ:+15.00]
+      └── 5aad023d-6... [prompt wr:1.00 Δ:+15.00]
+   5aad023d-6...
+      ├── da8d0daf-4... [prompt Δ:-11.00]
+      └── 8f8e8600-9... [crossover Δ:-15.00]
+   963fed64-0...
+      └── 9780fb82-2... [parameter Δ:-15.00]
    ... and 95 more lineage records
 
 🎯 Best Strategy vs Baseline:
-   ID: f29c050e-a9b5-4741-93cf-f870744be175  v2  score=62.50  evidence_key=helpful|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10,top_k=40.00
+   ID: 5c14655d-3057-42fa-9449-bfec6081ffa9  v8  score=77.50  evidence_key=precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10,top_k=40.00
    Param changes:
      ▸ temperature: 0.7 → 0.1
         top_k: 40 → 40
-        max_tokens: 2048 → 2048
         frequency_penalty: 0 → 0
+        max_tokens: 2048 → 2048
         presence_penalty: 0 → 0
+     ▸ prompt: "helpful" → "precise"
 
 💡 Key Learnings:
-  1. Score plateau detected — adaptive mutation rate may need tuning
-  2. Parameter tuning (temp/top_k) was the primary performance driver
+  1. Fitness improved from 62.50 → 77.50 (+24.0%) — evolution is working
+  2. Prompt switch "helpful"→"precise" had significant impact on fitness
   3. Elite preservation prevented loss of top genes across 10 generations
 
 === Evolution Report ===
 Total Generations:    10
-Best Ever Score:      62.5000 (gen 0)
-Final Best Score:     62.5000
+Best Ever Score:      77.5000 (gen 5)
+Final Best Score:     77.5000
 
 --- Generation 1 ---
   Generation:       1
   Population Size:  10
   Best Score:       62.5000
-  Avg Score:        59.0000
-  Worst Score:      42.5000
-  Diversity:        0.1331
-  Diverse Lineages: 3
+  Avg Score:        52.4000
+  Worst Score:      47.5000
+  Diversity:        0.2973
+  Diverse Lineages: 5
   Mutation Types:
-    parameter: 7
-    crossover: 3
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    parameter: 3
+    prompt: 2
+    crossover: 5
 
 --- Generation 2 ---
   Generation:       2
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        60.0000
-  Worst Score:      42.5000
-  Diversity:        0.1815
-  Diverse Lineages: 6
+  Best Score:       70.5000
+  Avg Score:        58.8000
+  Worst Score:      32.5000
+  Diversity:        0.2987
+  Diverse Lineages: 4
   Mutation Types:
-    parameter: 6
-    crossover: 4
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    parameter: 2
+    prompt: 2
+    crossover: 6
 
 --- Generation 3 ---
   Generation:       3
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        52.2500
+  Best Score:       70.5000
+  Avg Score:        56.5500
   Worst Score:      5.0000
-  Diversity:        0.1742
-  Diverse Lineages: 6
+  Diversity:        0.2447
+  Diverse Lineages: 5
   Mutation Types:
+    crossover: 2
+    prompt: 1
     parameter: 7
-    crossover: 3
   Recovery Actions:
     mutation_rate_boost: 1
     fresh_injection: 1
@@ -400,120 +390,108 @@ Final Best Score:     62.5000
 --- Generation 4 ---
   Generation:       4
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        51.7500
+  Best Score:       70.5000
+  Avg Score:        57.7500
   Worst Score:      5.0000
-  Diversity:        0.1778
+  Diversity:        0.2276
   Diverse Lineages: 6
   Mutation Types:
-    crossover: 3
-    parameter: 7
-  Recovery Actions:
-    fresh_injection: 1
-    mutation_rate_boost: 1
+    prompt: 2
+    parameter: 4
+    crossover: 4
 
 --- Generation 5 ---
   Generation:       5
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        61.5000
-  Worst Score:      57.5000
-  Diversity:        0.1825
-  Diverse Lineages: 6
+  Best Score:       77.5000
+  Avg Score:        59.7500
+  Worst Score:      5.0000
+  Diversity:        0.2076
+  Diverse Lineages: 5
   Mutation Types:
-    parameter: 6
+    prompt: 3
+    parameter: 3
     crossover: 4
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
 
 --- Generation 6 ---
   Generation:       6
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        60.5000
-  Worst Score:      42.5000
-  Diversity:        0.1689
-  Diverse Lineages: 6
+  Best Score:       77.5000
+  Avg Score:        74.7000
+  Worst Score:      70.5000
+  Diversity:        0.2669
+  Diverse Lineages: 5
   Mutation Types:
-    parameter: 5
-    crossover: 5
+    prompt: 3
+    crossover: 4
+    parameter: 3
   Recovery Actions:
     mutation_rate_boost: 1
-    stagnation_reset: 1
     fresh_injection: 1
 
 --- Generation 7 ---
   Generation:       7
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        59.0000
-  Worst Score:      42.5000
-  Diversity:        0.1624
+  Best Score:       77.5000
+  Avg Score:        72.0000
+  Worst Score:      47.5000
+  Diversity:        0.2265
   Diverse Lineages: 5
   Mutation Types:
-    parameter: 7
-    crossover: 3
-  Recovery Actions:
-    fresh_injection: 1
-    mutation_rate_boost: 1
+    prompt: 4
+    parameter: 2
+    crossover: 4
 
 --- Generation 8 ---
   Generation:       8
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        54.7500
-  Worst Score:      5.0000
-  Diversity:        0.1868
+  Best Score:       77.5000
+  Avg Score:        70.2000
+  Worst Score:      47.5000
+  Diversity:        0.2390
   Diverse Lineages: 6
   Mutation Types:
-    parameter: 7
+    prompt: 3
+    parameter: 4
     crossover: 3
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
 
 --- Generation 9 ---
   Generation:       9
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        50.0000
-  Worst Score:      32.5000
-  Diversity:        0.1969
+  Best Score:       77.5000
+  Avg Score:        72.6000
+  Worst Score:      57.5000
+  Diversity:        0.2538
   Diverse Lineages: 6
   Mutation Types:
-    parameter: 9
-    crossover: 1
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    prompt: 3
+    parameter: 3
+    crossover: 4
 
 --- Generation 10 ---
   Generation:       10
   Population Size:  10
-  Best Score:       62.5000
-  Avg Score:        59.5000
-  Worst Score:      47.5000
-  Diversity:        0.1252
-  Diverse Lineages: 4
+  Best Score:       77.5000
+  Avg Score:        73.2000
+  Worst Score:      62.5000
+  Diversity:        0.2483
+  Diverse Lineages: 6
   Mutation Types:
-    parameter: 6
-    crossover: 4
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    crossover: 5
+    parameter: 2
+    prompt: 3
 
 --- Lineage Concentration ---
   Top Lineage Share: 40.00%
-  Unique Lineages:   4
+  Unique Lineages:   6
 
 --- Promotion Summary ---
-  Winner:        f29c050e-a9b5-4741-93cf-f870744be175
-  Winner Score:  62.5000
+  Winner:        5c14655d-3057-42fa-9449-bfec6081ffa9
+  Winner Score:  77.5000
 ========================
 
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="evolution service shut down"
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="Scenario completed" scenario="Real Data Evolution Pipeline" duration_ms=7
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="evolution service shut down"
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="Scenario completed" scenario="Real Data Evolution Pipeline" duration_ms=6
 
   🧪 Control Group Experiment
   ────────────────────────────────────────────────
@@ -526,47 +504,47 @@ time=2026-07-02T10:05:05.673+08:00 level=INFO msg="Scenario completed" scenario=
 ============================================================
   Scenario 6: GA Evolution (Rank Selection)
 ============================================================
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="population created" size=20 generation=0
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="evolution service created" population_size=20 elite_count=2 wired_mode=false
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="Pure autonomous evolution — no LLM" pop_size=20 generations=15 scorer=deterministic
-time=2026-07-02T10:05:05.673+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=20 elite_count=2 mutation_rate=0.3
-time=2026-07-02T10:05:05.674+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=20 elite_count=2 mutation_rate=0.3
-time=2026-07-02T10:05:05.674+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=20 elite_count=3 mutation_rate=0.3
-time=2026-07-02T10:05:05.675+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=20 elite_count=2 mutation_rate=0.3
-time=2026-07-02T10:05:05.675+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=20 elite_count=2 mutation_rate=0.3
-time=2026-07-02T10:05:05.675+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=20 elite_count=2 mutation_rate=0.3
-time=2026-07-02T10:05:05.675+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=20 elite_count=3 mutation_rate=0.3
-time=2026-07-02T10:05:05.676+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=8 overall_diversity=0.16621052631578945 dominant_lineage_share=0.15 numeric_diversity=0.06552631578947363 categorical_diversity=0.05 lineage_diversity=0.6
-time=2026-07-02T10:05:05.676+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.676+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.677+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=10
-time=2026-07-02T10:05:05.677+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.677+08:00 level=INFO msg="evolve_on_idle completed" generation=11 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.678+08:00 level=INFO msg="evolve_on_idle completed" generation=12 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.678+08:00 level=INFO msg="evolve_on_idle completed" generation=13 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.678+08:00 level=INFO msg="evolve_on_idle completed" generation=14 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.678+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=15
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="evolve_on_idle completed" generation=15 population_size=20 elite_count=3 mutation_rate=0.5
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="evolution completed" total_generations=15 raw_improvements=2440 significant_improvements=2440 improvement_threshold=0.01
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="population created" size=20 generation=0
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="evolution service created" population_size=20 elite_count=2 wired_mode=false
+time=2026-07-02T10:30:35.677+08:00 level=INFO msg="Pure autonomous evolution — no LLM" pop_size=20 generations=15 scorer=deterministic
+time=2026-07-02T10:30:35.678+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=20 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.678+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=20 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.678+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=20 elite_count=3 mutation_rate=0.3
+time=2026-07-02T10:30:35.679+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=20 elite_count=3 mutation_rate=0.3
+time=2026-07-02T10:30:35.679+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=5 overall_diversity=0.18494736842105267 dominant_lineage_share=0.2 numeric_diversity=0.04000000000000002 categorical_diversity=0.09736842105263158 lineage_diversity=0.65
+time=2026-07-02T10:30:35.679+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.679+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=20 elite_count=2 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.680+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=20 elite_count=2 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.680+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.681+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.681+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.681+08:00 level=INFO msg="evolve_on_idle completed" generation=11 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.682+08:00 level=INFO msg="evolve_on_idle completed" generation=12 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.682+08:00 level=INFO msg="evolve_on_idle completed" generation=13 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.682+08:00 level=INFO msg="evolve_on_idle completed" generation=14 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.683+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=15
+time=2026-07-02T10:30:35.683+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=15 overall_diversity=0.19363806863452196 dominant_lineage_share=0.2 numeric_diversity=0.13409517158630488 categorical_diversity=0.05 lineage_diversity=0.6
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="evolve_on_idle completed" generation=15 population_size=20 elite_count=3 mutation_rate=0.472578947368421
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="evolution completed" total_generations=15 raw_improvements=2461 significant_improvements=2461 improvement_threshold=0.01
  Gen Best  Avg   Worst Diversity
 --- ----- ----- ----- ---------
- 1   62.50 50.40 5.00  31%      
- 2   66.50 60.60 32.50 29%      
- 3   70.50 62.35 46.50 35%      
- 4   77.50 61.75 32.50 33%      
- 5   77.50 62.90 47.50 36%      
- 6   77.50 60.15 5.00  31%      
- 7   77.50 70.15 47.50 29%      
- 8   77.50 65.87 5.45  20%      
- 9   77.50 73.40 47.50 24%      
- 10  77.50 50.29 5.00  23%      
- 11  77.50 67.87 5.00  24%      
- 12  77.50 65.95 5.00  25%      
- 13  77.50 72.45 47.50 25%      
- 14  77.50 64.25 5.00  27%      
- 15  81.58 65.95 5.00  21%      
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="Lineage records" count=2440 with_improvement=2440
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="Best strategy found" id=det-mut-det-cros-127 version=17 score=81.57504430182296
+ 1   65.50 50.65 5.00  33%      
+ 2   66.50 58.15 17.50 38%      
+ 3   70.50 63.45 42.50 34%      
+ 4   70.50 62.80 36.50 32%      
+ 5   77.50 65.04 23.53 25%      
+ 6   77.50 59.95 5.00  30%      
+ 7   77.50 66.14 32.50 34%      
+ 8   77.50 56.57 5.00  34%      
+ 9   78.77 70.99 60.50 29%      
+ 10  78.77 71.70 47.50 26%      
+ 11  78.77 69.37 5.00  24%      
+ 12  78.77 66.87 5.00  24%      
+ 13  78.77 66.49 5.00  22%      
+ 14  78.77 70.29 5.00  24%      
+ 15  79.41 73.90 5.00  22%      
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="Lineage records" count=2461 with_improvement=2461
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="Best strategy found" id=fresh-mut-14-gen15 version=15 score=79.41094196282914
 
 ╔════════════════════════════════════════════════════╗
 ║          🧬 Evolution Insight Report               ║
@@ -574,196 +552,185 @@ time=2026-07-02T10:05:05.679+08:00 level=INFO msg="Best strategy found" id=det-m
 
 📊 Evolution Trajectory:
    Gen 1 → Gen 5:  Exploration phase (random search)
-             ↓ Best strategy: {temperature:0.1, top_k:20, frequency_penalty:0}
+             ↓ Best strategy: {presence_penalty:0, temperature:0.02356232148683442, top_k:40}
              ↓ Key insight: Diverse mutations explore the parameter space
    Gen 6 → Gen 10: Exploitation phase (refining winners)
-             ↓ Best strategy: {top_k:20, frequency_penalty:0, max_tokens:2048}
+             ↓ Best strategy: {frequency_penalty:0, max_tokens:2048, presence_penalty:0}
              ↓ Breakthrough: Elite preservation keeps top performers
    Gen 11 → Gen 15: Convergence phase
-             ↓ Final best: score=81.58, avg=65.95 (+30.5% vs baseline)
+             ↓ Final best: score=79.41, avg=73.90 (+21.2% vs baseline)
 
-   Trend: ↗ IMPROVING  |  Best: 62.50 → 81.58  |  Generations: 15
+   Trend: ↗ IMPROVING  |  Best: 65.50 → 79.41  |  Generations: 15
 
 🧪 Mutation Analysis:
-   ├─ Param mutations: 694 (28%)
-   ├─ Prompt mutations: 375 (15%)
-   ├─ Crossover events: 1331 (55%)
-   └─ Other: 40 (2%)
+   ├─ Param mutations: 807 (33%)
+   ├─ Prompt mutations: 376 (15%)
+   ├─ Crossover events: 1217 (49%)
+   └─ Other: 61 (2%)
 
 🏆 Genealogy Tree (top lineages):
+   det-mut-ga...
+      ├── det-mut-de... [evolution Δ:+3.00]
+      ├── det-cross-... [crossover Δ:+62.50]
+      └── det-mut-de... [parameter Δ:+32.50]
    ga-root
       ├── det-mut-ga... [parameter Δ:+62.50]
       └── det-mut-ga... [prompt Δ:+62.50]
-   det-mut-ga...
-      ├── det-cross-... [crossover Δ:+47.50]
-      ├── det-mut-de... [parameter Δ:+32.50]
-      └── det-cross-... [crossover Δ:+47.50]
-   ... and 2435 more lineage records
+   ... and 2456 more lineage records
 
 🎯 Best Strategy vs Baseline:
-   ID: det-mut-det-cros-127  v17  score=81.58  evidence_key=precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10
+   ID: fresh-mut-14-gen15  v15  score=79.41  evidence_key=precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.02,top_k=40.00
    Param changes:
+        frequency_penalty: 0 → 0
         max_tokens: 2048 → 2048
         presence_penalty: 0 → 0
-     ▸ temperature: 0.7 → 0.1
-     ▸ top_k: 40 → 20
-        frequency_penalty: 0 → 0
+     ▸ temperature: 0.7 → 0.02356232148683442
+        top_k: 40 → 40
      ▸ prompt: "helpful" → "precise"
 
 💡 Key Learnings:
-  1. Fitness improved from 62.50 → 81.58 (+30.5%) — evolution is working
+  1. Fitness improved from 65.50 → 79.41 (+21.2%) — evolution is working
   2. Prompt switch "helpful"→"precise" had significant impact on fitness
   3. Elite preservation prevented loss of top genes across 15 generations
 
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="evolution service shut down"
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="Scenario completed" scenario="Scenario 6: GA Evolution (Rank Selection)" duration_ms=6
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="evolution service shut down"
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="Scenario completed" scenario="Scenario 6: GA Evolution (Rank Selection)" duration_ms=6
 
 ============================================================
   Scenario 7: Wired System (Tournament Selection)
 ============================================================
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="population created" size=20 generation=0
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="evolution service created" population_size=20 elite_count=2 wired_mode=true
-time=2026-07-02T10:05:05.679+08:00 level=INFO msg="Wired evolution — deterministic only, LLM validates best strategy after" pop_size=20 generations=15
-time=2026-07-02T10:05:05.680+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=1 overall_diversity=0.11803007518796997 dominant_lineage_share=0.2 numeric_diversity=0.0700751879699249 categorical_diversity=0 lineage_diversity=0.45
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=1 population_size=20 best_score=62.5 avg_score=56.125
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=11 llm_max=100 cache_hits=29 fallbacks=0 tier_stats="map[cache_hits:29 fallbacks:0 heuristic_calls:0 llm_calls:11 total_scored:40]"
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=1
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="post-generation promotion evaluation" generation=1 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.680+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=2 overall_diversity=0.1824661654135338 dominant_lineage_share=0.1 numeric_diversity=0.08116541353383451 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=2 population_size=20 best_score=62.5 avg_score=55.875
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=0 llm_max=100 cache_hits=40 fallbacks=0 tier_stats="map[cache_hits:40 fallbacks:0 heuristic_calls:0 llm_calls:0 total_scored:40]"
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=2
-time=2026-07-02T10:05:05.680+08:00 level=INFO msg="post-generation promotion evaluation" generation=2 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.681+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=3 overall_diversity=0.17049122807017544 dominant_lineage_share=0.15 numeric_diversity=0.05122807017543857 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=3 population_size=20 best_score=62.5 avg_score=60
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=0 llm_max=100 cache_hits=40 fallbacks=0 tier_stats="map[cache_hits:40 fallbacks:0 heuristic_calls:0 llm_calls:0 total_scored:40]"
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=3
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="post-generation promotion evaluation" generation=3 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.681+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.682+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=4 overall_diversity=0.19136842105263155 dominant_lineage_share=0.15 numeric_diversity=0.10342105263157883 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=4 population_size=20 best_score=62.5 avg_score=59.25
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=5 llm_max=100 cache_hits=35 fallbacks=0 tier_stats="map[cache_hits:35 fallbacks:0 heuristic_calls:0 llm_calls:5 total_scored:40]"
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=4
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="post-generation promotion evaluation" generation=4 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=5 population_size=20 best_score=62.5 avg_score=56.5
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=38 fallbacks=0 tier_stats="map[cache_hits:38 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:40]"
-time=2026-07-02T10:05:05.682+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=5
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="post-generation promotion evaluation" generation=5 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.683+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=6
-time=2026-07-02T10:05:05.683+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=6 overall_diversity=0.18813305974760738 dominant_lineage_share=0.15 numeric_diversity=0.17033264936901843 categorical_diversity=0 lineage_diversity=0.6
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=6 population_size=20 best_score=62.5 avg_score=54.5
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=1 llm_max=100 cache_hits=39 fallbacks=0 tier_stats="map[cache_hits:39 fallbacks:0 heuristic_calls:0 llm_calls:1 total_scored:40]"
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=6
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="post-generation promotion evaluation" generation=6 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.683+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.684+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=7 overall_diversity=0.17747368421052628 dominant_lineage_share=0.1 numeric_diversity=0.0936842105263157 categorical_diversity=0 lineage_diversity=0.7
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=7 population_size=20 best_score=62.5 avg_score=57.375
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=6 llm_max=100 cache_hits=34 fallbacks=0 tier_stats="map[cache_hits:34 fallbacks:0 heuristic_calls:0 llm_calls:6 total_scored:40]"
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=7
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="post-generation promotion evaluation" generation=7 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.684+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=8 overall_diversity=0.18518796992481198 dominant_lineage_share=0.1 numeric_diversity=0.08796992481202993 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.684+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=8 population_size=20 best_score=62.5 avg_score=56.625
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=8
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="post-generation promotion evaluation" generation=8 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.685+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=9 overall_diversity=0.1823308270676692 dominant_lineage_share=0.1 numeric_diversity=0.10582706766917299 categorical_diversity=0 lineage_diversity=0.7
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=9 population_size=20 best_score=62.5 avg_score=54.875
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=0 llm_max=100 cache_hits=40 fallbacks=0 tier_stats="map[cache_hits:40 fallbacks:0 heuristic_calls:0 llm_calls:0 total_scored:40]"
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=9
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="post-generation promotion evaluation" generation=9 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.685+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.686+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=10 overall_diversity=0.18061654135338343 dominant_lineage_share=0.15 numeric_diversity=0.07654135338345854 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=10 population_size=20 best_score=62.5 avg_score=54.75
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=5 llm_max=100 cache_hits=35 fallbacks=0 tier_stats="map[cache_hits:35 fallbacks:0 heuristic_calls:0 llm_calls:5 total_scored:40]"
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=10
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="post-generation promotion evaluation" generation=10 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.686+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=11
-time=2026-07-02T10:05:05.686+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=11 overall_diversity=0.17871528526648145 dominant_lineage_share=0.15 numeric_diversity=0.12178821316620361 categorical_diversity=0 lineage_diversity=0.65
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="evolve_on_idle completed" generation=11 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=11 population_size=20 best_score=62.5 avg_score=55.125
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=38 fallbacks=0 tier_stats="map[cache_hits:38 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:40]"
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=11
-time=2026-07-02T10:05:05.686+08:00 level=INFO msg="post-generation promotion evaluation" generation=11 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.687+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=12 overall_diversity=0.19147368421052635 dominant_lineage_share=0.15 numeric_diversity=0.1286842105263159 categorical_diversity=0 lineage_diversity=0.7
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="evolve_on_idle completed" generation=12 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=12 population_size=20 best_score=62.5 avg_score=58.25
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=38 fallbacks=0 tier_stats="map[cache_hits:38 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:40]"
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=12
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="post-generation promotion evaluation" generation=12 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.687+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.688+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=13 overall_diversity=0.18745864661654132 dominant_lineage_share=0.1 numeric_diversity=0.09364661654135326 categorical_diversity=0 lineage_diversity=0.75
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="evolve_on_idle completed" generation=13 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=13 population_size=20 best_score=62.5 avg_score=56.125
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=5 llm_max=100 cache_hits=35 fallbacks=0 tier_stats="map[cache_hits:35 fallbacks:0 heuristic_calls:0 llm_calls:5 total_scored:40]"
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=13
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="post-generation promotion evaluation" generation=13 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.688+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=14 overall_diversity=0.18580451127819547 dominant_lineage_share=0.1 numeric_diversity=0.06451127819548862 categorical_diversity=0 lineage_diversity=0.8
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="evolve_on_idle completed" generation=14 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=14 population_size=20 best_score=62.5 avg_score=59.5
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=14
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="post-generation promotion evaluation" generation=14 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.688+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="evolve_on_idle completed" generation=15 population_size=20 elite_count=2 mutation_rate=0.5
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=15 population_size=20 best_score=62.5 avg_score=57.5
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=38 fallbacks=0 tier_stats="map[cache_hits:38 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:40]"
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=15
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="post-generation promotion evaluation" generation=15 callback_gen=0 winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="evolution run complete" winner=98802c49-03b6-40d6-8d55-fac812d58549 fitness=62.5 promotion_state=champion sample_count=10
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-1823229105/report.txt
-time=2026-07-02T10:05:05.689+08:00 level=INFO msg="evolution completed" total_generations=15 raw_improvements=45 significant_improvements=45 improvement_threshold=0.01
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="population created" size=20 generation=0
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="evolution service created" population_size=20 elite_count=2 wired_mode=true
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="Wired evolution — deterministic only, LLM validates best strategy after" pop_size=20 generations=15
+time=2026-07-02T10:30:35.683+08:00 level=INFO msg="evolve_on_idle completed" generation=1 population_size=20 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=1 population_size=20 best_score=70.5 avg_score=54.15
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=17 llm_max=100 cache_hits=23 fallbacks=0 tier_stats="map[cache_hits:23 fallbacks:0 heuristic_calls:0 llm_calls:17 total_scored:40]"
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=1
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="post-generation promotion evaluation" generation=1 winner=ffc1023f-b373-45ad-8f26-b90cf6f2387e fitness=70.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="evolution run complete" winner=ffc1023f-b373-45ad-8f26-b90cf6f2387e fitness=70.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="evolve_on_idle completed" generation=2 population_size=20 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=2 population_size=20 best_score=70.5 avg_score=59.95
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=8 llm_max=100 cache_hits=32 fallbacks=0 tier_stats="map[cache_hits:32 fallbacks:0 heuristic_calls:0 llm_calls:8 total_scored:40]"
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=2
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="post-generation promotion evaluation" generation=2 winner=ffc1023f-b373-45ad-8f26-b90cf6f2387e fitness=70.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.684+08:00 level=INFO msg="evolution run complete" winner=ffc1023f-b373-45ad-8f26-b90cf6f2387e fitness=70.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="evolve_on_idle completed" generation=3 population_size=20 elite_count=3 mutation_rate=0.3
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=3 population_size=20 best_score=77.5 avg_score=69.2
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=3
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="post-generation promotion evaluation" generation=3 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.685+08:00 level=INFO msg="evolve_on_idle completed" generation=4 population_size=20 elite_count=2 mutation_rate=0.3
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=4 population_size=20 best_score=77.5 avg_score=64.55
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=9 llm_max=100 cache_hits=31 fallbacks=0 tier_stats="map[cache_hits:31 fallbacks:0 heuristic_calls:0 llm_calls:9 total_scored:40]"
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=4
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="post-generation promotion evaluation" generation=4 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="evolve_on_idle completed" generation=5 population_size=20 elite_count=3 mutation_rate=0.3
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=5 population_size=20 best_score=77.5 avg_score=70.85
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=5 llm_max=100 cache_hits=35 fallbacks=0 tier_stats="map[cache_hits:35 fallbacks:0 heuristic_calls:0 llm_calls:5 total_scored:40]"
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=5
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="post-generation promotion evaluation" generation=5 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.686+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.687+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=6 overall_diversity=0.18726315789473685 dominant_lineage_share=0.15 numeric_diversity=0.04315789473684213 categorical_diversity=0.05 lineage_diversity=0.75
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="evolve_on_idle completed" generation=6 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=6 population_size=20 best_score=77.5 avg_score=69.2
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=2 llm_max=100 cache_hits=38 fallbacks=0 tier_stats="map[cache_hits:38 fallbacks:0 heuristic_calls:0 llm_calls:2 total_scored:40]"
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=6
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="post-generation promotion evaluation" generation=6 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.687+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="evolve_on_idle completed" generation=7 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=7 population_size=20 best_score=77.5 avg_score=71.15
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=7
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="post-generation promotion evaluation" generation=7 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="evolve_on_idle completed" generation=8 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=8 population_size=20 best_score=77.5 avg_score=67.425
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=36 fallbacks=0 tier_stats="map[cache_hits:36 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:40]"
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=8
+time=2026-07-02T10:30:35.688+08:00 level=INFO msg="post-generation promotion evaluation" generation=8 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.689+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=9
+time=2026-07-02T10:30:35.689+08:00 level=WARN msg="diversity collapse detected, injected fresh mutants" generation=9 overall_diversity=0.1996920042348744 dominant_lineage_share=0.15 numeric_diversity=0.12423001058718594 categorical_diversity=0.05 lineage_diversity=0.65
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="evolve_on_idle completed" generation=9 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=9 population_size=20 best_score=77.5 avg_score=70.225
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=36 fallbacks=0 tier_stats="map[cache_hits:36 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:40]"
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=9
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="post-generation promotion evaluation" generation=9 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.689+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolve_on_idle completed" generation=10 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=10 population_size=20 best_score=77.5 avg_score=70.7
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=10
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="post-generation promotion evaluation" generation=10 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolve_on_idle completed" generation=11 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=11 population_size=20 best_score=77.5 avg_score=62.75
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=7 llm_max=100 cache_hits=33 fallbacks=0 tier_stats="map[cache_hits:33 fallbacks:0 heuristic_calls:0 llm_calls:7 total_scored:40]"
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=11
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="post-generation promotion evaluation" generation=11 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.690+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="evolve_on_idle completed" generation=12 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=12 population_size=20 best_score=77.5 avg_score=70.025
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=3 llm_max=100 cache_hits=37 fallbacks=0 tier_stats="map[cache_hits:37 fallbacks:0 heuristic_calls:0 llm_calls:3 total_scored:40]"
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=12
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="post-generation promotion evaluation" generation=12 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="evolve_on_idle completed" generation=13 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=13 population_size=20 best_score=77.5 avg_score=62.2
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=4 llm_max=100 cache_hits=36 fallbacks=0 tier_stats="map[cache_hits:36 fallbacks:0 heuristic_calls:0 llm_calls:4 total_scored:40]"
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=13
+time=2026-07-02T10:30:35.691+08:00 level=INFO msg="post-generation promotion evaluation" generation=13 winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolution run complete" winner=79b90050-1a03-4c61-85b2-15dffcb0b3b8 fitness=77.5 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.692+08:00 level=WARN msg="stagnation detected, injected random mutants from elites" reset_count=6 stagnant_generations=5 generation=14
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolve_on_idle completed" generation=14 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=14 population_size=20 best_score=84.14812252757233 avg_score=65.08061232850687
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=10 llm_max=100 cache_hits=30 fallbacks=0 tier_stats="map[cache_hits:30 fallbacks:0 heuristic_calls:0 llm_calls:10 total_scored:40]"
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=14 generation=14
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="post-generation promotion evaluation" generation=14 winner=455f7448-b6ee-49c0-8be2-066ccb7e4f14 fitness=84.14812252757233 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolution run complete" winner=455f7448-b6ee-49c0-8be2-066ccb7e4f14 fitness=84.14812252757233 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.692+08:00 level=INFO msg="evolve_on_idle completed" generation=15 population_size=20 elite_count=3 mutation_rate=0.4691052631578947
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="[GenomeAdapter] Evolution cycle completed" generation=15 population_size=20 best_score=85.9 avg_score=76.91396292255845
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="[GenomeAdapter] Tiered scoring stats" llm_used=8 llm_max=100 cache_hits=32 fallbacks=0 tier_stats="map[cache_hits:32 fallbacks:0 heuristic_calls:0 llm_calls:8 total_scored:40]"
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="[Genealogy] Recorded population lineage" new_records=20 generation=15
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="post-generation promotion evaluation" generation=15 winner=6aec0864-845b-4d1e-9d51-eb1ddb9197ad fitness=85.9 success_rate=0.8 sample_count=10 confidence=0.75 promotion_state=champion reason="high confidence + success rate exceed thresholds"
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="evolution run complete" winner=6aec0864-845b-4d1e-9d51-eb1ddb9197ad fitness=85.9 promotion_state=champion sample_count=10
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="evolution report saved" path=/var/folders/7x/_rgdcdg53k799dgty8hp7rfc0000gn/T/evolution-report-585562126/report.txt
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="evolution completed" total_generations=15 raw_improvements=88 significant_improvements=88 improvement_threshold=0.01
  Gen Best  Avg   Worst Diversity
 --- ----- ----- ----- ---------
- 1   62.50 56.12 5.00  14%      
- 2   62.50 55.88 5.00  18%      
- 3   62.50 60.00 32.50 16%      
- 4   62.50 59.25 32.50 19%      
- 5   62.50 56.50 32.50 20%      
- 6   62.50 54.50 32.50 20%      
- 7   62.50 57.38 5.00  17%      
- 8   62.50 56.62 5.00  18%      
- 9   62.50 54.88 5.00  17%      
- 10  62.50 54.75 5.00  17%      
- 11  62.50 55.12 5.00  20%      
- 12  62.50 58.25 32.50 18%      
- 13  62.50 56.12 5.00  17%      
- 14  62.50 59.50 32.50 18%      
- 15  62.50 57.50 32.50 23%      
-time=2026-07-02T10:05:05.690+08:00 level=INFO msg="Lineage records" count=2400 with_improvement=45
-time=2026-07-02T10:05:05.690+08:00 level=INFO msg="Best strategy found" id=98802c49-03b6-40d6-8d55-fac812d58549 version=2 score=62.5
+ 1   70.50 54.15 5.00  25%      
+ 2   70.50 59.95 40.50 36%      
+ 3   77.50 69.20 50.50 21%      
+ 4   77.50 64.55 32.50 32%      
+ 5   77.50 70.85 47.50 24%      
+ 6   77.50 69.20 5.00  24%      
+ 7   77.50 71.15 47.50 27%      
+ 8   77.50 67.42 5.00  22%      
+ 9   77.50 70.22 5.00  24%      
+ 10  77.50 70.70 47.50 30%      
+ 11  77.50 62.75 5.00  24%      
+ 12  77.50 70.03 5.00  22%      
+ 13  77.50 62.20 5.00  28%      
+ 14  84.15 65.08 5.00  26%      
+ 15  85.90 76.91 47.50 22%      
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="Lineage records" count=2388 with_improvement=88
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="Best strategy found" id=6aec0864-845b-4d1e-9d51-eb1ddb9197ad version=15 score=85.9
 
 ╔════════════════════════════════════════════════════╗
 ║          🧬 Evolution Insight Report               ║
@@ -771,284 +738,267 @@ time=2026-07-02T10:05:05.690+08:00 level=INFO msg="Best strategy found" id=98802
 
 📊 Evolution Trajectory:
    Gen 1 → Gen 5:  Exploration phase (random search)
-             ↓ Best strategy: {max_tokens:2048, frequency_penalty:0, presence_penalty:0}
+             ↓ Best strategy: {frequency_penalty:0, max_tokens:2048, presence_penalty:0}
              ↓ Key insight: Diverse mutations explore the parameter space
    Gen 6 → Gen 10: Exploitation phase (refining winners)
-             ↓ Best strategy: {max_tokens:2048, frequency_penalty:0, presence_penalty:0}
+             ↓ Best strategy: {max_tokens:2048, presence_penalty:0, temperature:0.1}
              ↓ Breakthrough: Elite preservation keeps top performers
    Gen 11 → Gen 15: Convergence phase
-             ↓ Final best: score=62.50, avg=57.50 (+0.0% vs baseline)
+             ↓ Final best: score=85.90, avg=76.91 (+21.8% vs baseline)
 
-   Trend: → STAGNANT  |  Best: 62.50 → 62.50  |  Generations: 15
+   Trend: ↗ IMPROVING  |  Best: 70.50 → 85.90  |  Generations: 15
 
 🧪 Mutation Analysis:
-   ├─ Param mutations: 198 (66%)
-   ├─ Prompt mutations: 0 (0%)
-   ├─ Crossover events: 102 (34%)
+   ├─ Param mutations: 100 (34%)
+   ├─ Prompt mutations: 51 (17%)
+   ├─ Crossover events: 143 (49%)
    └─ Other: 0 (0%)
    Avg win_rate (lineages): 1.00
 
 🏆 Genealogy Tree (top lineages):
    wired-root
-      ├── 98802c49-0... [parameter wr:1.00 Δ:+15.00]
-      └── 4a76afe2-8... [parameter wr:1.00 Δ:+15.00]
-   4a76afe2-8...
-      ├── 10a2f3c7-6... [parameter Δ:-57.50]
-      └── 01b84790-a... [crossover]
-   98802c49-0...
-      └── ceb63834-0... [parameter Δ:-30.00]
-   ... and 295 more lineage records
+      ├── 42c1dc35-c... [parameter wr:1.00 Δ:+15.00]
+      └── 9dc87bf1-7... [prompt wr:1.00 Δ:+15.00]
+   a690b5aa-5...
+      └── 10864ef4-2... [parameter Δ:-30.00]
+   2c30ebe3-c...
+      └── 392114ed-c... [crossover]
+   42c1dc35-c...
+      └── 4349c58d-c... [parameter Δ:-57.50]
+   ... and 289 more lineage records
 
 🎯 Best Strategy vs Baseline:
-   ID: 98802c49-03b6-40d6-8d55-fac812d58549  v2  score=62.50  evidence_key=helpful|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10,top_k=40.00
+   ID: 6aec0864-845b-4d1e-9d51-eb1ddb9197ad  v15  score=85.90  evidence_key=precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10
    Param changes:
-        top_k: 40 → 40
-        max_tokens: 2048 → 2048
+     ▸ top_k: 40 → 26
         frequency_penalty: 0 → 0
+        max_tokens: 2048 → 2048
         presence_penalty: 0 → 0
      ▸ temperature: 0.7 → 0.1
+     ▸ prompt: "helpful" → "precise"
 
 💡 Key Learnings:
-  1. Score plateau detected — adaptive mutation rate may need tuning
-  2. Parameter tuning (temp/top_k) was the primary performance driver
+  1. Fitness improved from 70.50 → 85.90 (+21.8%) — evolution is working
+  2. Prompt switch "helpful"→"precise" had significant impact on fitness
   3. Elite preservation prevented loss of top genes across 15 generations
 
-time=2026-07-02T10:05:05.690+08:00 level=INFO msg="failover LLM client created" providers=2 primary=https://token.sensenova.cn/v1:sensenova-6.7-flash-lite timeout=20s
-time=2026-07-02T10:05:05.691+08:00 level=WARN msg="failover: provider failed, cooling down" provider=https://token.sensenova.cn/v1:sensenova-6.7-flash-lite cooldown=30s error="API request: Post \"https://token.sensenova.cn/v1/chat/completions\": dial tcp: lookup token.sensenova.cn: no such host"
-time=2026-07-02T10:05:05.692+08:00 level=WARN msg="failover: provider failed, cooling down" provider=https://api.stepfun.com/step_plan/v1:step-3.7-flash cooldown=30s error="API request: Post \"https://api.stepfun.com/step_plan/v1/chat/completions\": dial tcp: lookup api.stepfun.com: no such host"
-time=2026-07-02T10:05:05.692+08:00 level=INFO msg="LLM validation of best strategy" strategy_id=98802c49-03b6-40d6-8d55-fac812d58549 deterministic_score=62.5 llm_score=62.5 duration=2ms
+time=2026-07-02T10:30:35.693+08:00 level=INFO msg="failover LLM client created" providers=2 primary=https://token.sensenova.cn/v1:sensenova-6.7-flash-lite timeout=20s
+time=2026-07-02T10:30:48.882+08:00 level=INFO msg="LLM validation of best strategy" strategy_id=6aec0864-845b-4d1e-9d51-eb1ddb9197ad deterministic_score=85.9 llm_score=70 duration=13.189s
 === Evolution Report ===
 Total Generations:    15
-Best Ever Score:      62.5000 (gen 0)
-Final Best Score:     62.5000
+Best Ever Score:      85.9000 (gen 15)
+Final Best Score:     85.9000
 
 --- Generation 1 ---
   Generation:       1
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        56.1250
+  Best Score:       70.5000
+  Avg Score:        54.1500
   Worst Score:      5.0000
-  Diversity:        0.1393
-  Diverse Lineages: 10
+  Diversity:        0.2453
+  Diverse Lineages: 12
   Mutation Types:
-    parameter: 12
-    crossover: 8
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    parameter: 5
+    prompt: 2
+    crossover: 13
 
 --- Generation 2 ---
   Generation:       2
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        55.8750
-  Worst Score:      5.0000
-  Diversity:        0.1810
+  Best Score:       70.5000
+  Avg Score:        59.9500
+  Worst Score:      40.5000
+  Diversity:        0.3560
   Diverse Lineages: 14
   Mutation Types:
-    parameter: 14
-    crossover: 6
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    prompt: 4
+    parameter: 5
+    crossover: 11
 
 --- Generation 3 ---
   Generation:       3
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        60.0000
-  Worst Score:      32.5000
-  Diversity:        0.1640
-  Diverse Lineages: 13
+  Best Score:       77.5000
+  Avg Score:        69.2000
+  Worst Score:      50.5000
+  Diversity:        0.2073
+  Diverse Lineages: 10
   Mutation Types:
-    parameter: 11
-    crossover: 9
-  Recovery Actions:
-    fresh_injection: 1
-    mutation_rate_boost: 1
+    prompt: 4
+    parameter: 4
+    crossover: 12
 
 --- Generation 4 ---
   Generation:       4
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        59.2500
+  Best Score:       77.5000
+  Avg Score:        64.5500
   Worst Score:      32.5000
-  Diversity:        0.1913
-  Diverse Lineages: 15
+  Diversity:        0.3215
+  Diverse Lineages: 13
   Mutation Types:
-    parameter: 11
-    crossover: 9
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    prompt: 3
+    parameter: 6
+    crossover: 11
 
 --- Generation 5 ---
   Generation:       5
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        56.5000
-  Worst Score:      32.5000
-  Diversity:        0.2002
-  Diverse Lineages: 16
+  Best Score:       77.5000
+  Avg Score:        70.8500
+  Worst Score:      47.5000
+  Diversity:        0.2385
+  Diverse Lineages: 12
   Mutation Types:
-    parameter: 9
-    crossover: 11
+    parameter: 4
+    prompt: 3
+    crossover: 13
 
 --- Generation 6 ---
   Generation:       6
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        54.5000
-  Worst Score:      32.5000
-  Diversity:        0.2007
-  Diverse Lineages: 14
+  Best Score:       77.5000
+  Avg Score:        69.2000
+  Worst Score:      5.0000
+  Diversity:        0.2353
+  Diverse Lineages: 15
   Mutation Types:
-    parameter: 17
-    crossover: 3
+    prompt: 2
+    crossover: 10
+    parameter: 8
   Recovery Actions:
+    mutation_rate_boost: 1
     fresh_injection: 1
-    stagnation_reset: 1
 
 --- Generation 7 ---
   Generation:       7
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        57.3750
-  Worst Score:      5.0000
-  Diversity:        0.1745
-  Diverse Lineages: 13
+  Best Score:       77.5000
+  Avg Score:        71.1500
+  Worst Score:      47.5000
+  Diversity:        0.2714
+  Diverse Lineages: 17
   Mutation Types:
-    parameter: 13
-    crossover: 7
-  Recovery Actions:
-    fresh_injection: 1
-    mutation_rate_boost: 1
+    prompt: 5
+    crossover: 10
+    parameter: 5
 
 --- Generation 8 ---
   Generation:       8
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        56.6250
+  Best Score:       77.5000
+  Avg Score:        67.4250
   Worst Score:      5.0000
-  Diversity:        0.1814
-  Diverse Lineages: 14
+  Diversity:        0.2172
+  Diverse Lineages: 15
   Mutation Types:
-    parameter: 14
-    crossover: 6
-  Recovery Actions:
-    fresh_injection: 1
-    mutation_rate_boost: 1
+    prompt: 3
+    crossover: 8
+    parameter: 9
 
 --- Generation 9 ---
   Generation:       9
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        54.8750
+  Best Score:       77.5000
+  Avg Score:        70.2250
   Worst Score:      5.0000
-  Diversity:        0.1683
-  Diverse Lineages: 12
+  Diversity:        0.2407
+  Diverse Lineages: 15
   Mutation Types:
-    crossover: 3
-    parameter: 17
+    prompt: 2
+    crossover: 7
+    parameter: 11
   Recovery Actions:
-    mutation_rate_boost: 1
+    stagnation_reset: 1
     fresh_injection: 1
 
 --- Generation 10 ---
   Generation:       10
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        54.7500
-  Worst Score:      5.0000
-  Diversity:        0.1694
-  Diverse Lineages: 13
+  Best Score:       77.5000
+  Avg Score:        70.7000
+  Worst Score:      47.5000
+  Diversity:        0.3015
+  Diverse Lineages: 19
   Mutation Types:
-    parameter: 13
-    crossover: 7
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    parameter: 9
+    prompt: 5
+    crossover: 6
 
 --- Generation 11 ---
   Generation:       11
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        55.1250
+  Best Score:       77.5000
+  Avg Score:        62.7500
   Worst Score:      5.0000
-  Diversity:        0.2018
-  Diverse Lineages: 15
+  Diversity:        0.2436
+  Diverse Lineages: 14
   Mutation Types:
-    parameter: 15
-    crossover: 5
-  Recovery Actions:
-    mutation_rate_boost: 1
-    stagnation_reset: 1
-    fresh_injection: 1
+    prompt: 5
+    crossover: 7
+    parameter: 8
 
 --- Generation 12 ---
   Generation:       12
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        58.2500
-  Worst Score:      32.5000
-  Diversity:        0.1845
-  Diverse Lineages: 13
+  Best Score:       77.5000
+  Avg Score:        70.0250
+  Worst Score:      5.0000
+  Diversity:        0.2224
+  Diverse Lineages: 18
   Mutation Types:
-    parameter: 14
-    crossover: 6
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    prompt: 2
+    crossover: 12
+    parameter: 6
 
 --- Generation 13 ---
   Generation:       13
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        56.1250
+  Best Score:       77.5000
+  Avg Score:        62.2000
   Worst Score:      5.0000
-  Diversity:        0.1687
-  Diverse Lineages: 12
+  Diversity:        0.2834
+  Diverse Lineages: 17
   Mutation Types:
-    parameter: 13
-    crossover: 7
-  Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    prompt: 5
+    crossover: 5
+    parameter: 10
 
 --- Generation 14 ---
   Generation:       14
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        59.5000
-  Worst Score:      32.5000
-  Diversity:        0.1839
+  Best Score:       84.1481
+  Avg Score:        65.0806
+  Worst Score:      5.0000
+  Diversity:        0.2551
   Diverse Lineages: 14
   Mutation Types:
-    parameter: 14
-    crossover: 6
+    prompt: 5
+    crossover: 9
+    parameter: 6
   Recovery Actions:
-    mutation_rate_boost: 1
-    fresh_injection: 1
+    stagnation_reset: 1
 
 --- Generation 15 ---
   Generation:       15
   Population Size:  20
-  Best Score:       62.5000
-  Avg Score:        57.5000
-  Worst Score:      32.5000
-  Diversity:        0.2314
-  Diverse Lineages: 18
+  Best Score:       85.9000
+  Avg Score:        76.9140
+  Worst Score:      47.5000
+  Diversity:        0.2225
+  Diverse Lineages: 14
   Mutation Types:
-    parameter: 11
-    crossover: 9
+    crossover: 10
+    prompt: 3
+    parameter: 7
 
 --- Lineage Concentration ---
-  Top Lineage Share: 10.00%
-  Unique Lineages:   18
+  Top Lineage Share: 25.00%
+  Unique Lineages:   14
 
 --- Promotion Summary ---
-  Winner:        98802c49-03b6-40d6-8d55-fac812d58549
-  Winner Score:  62.5000
+  Winner:        6aec0864-845b-4d1e-9d51-eb1ddb9197ad
+  Winner Score:  85.9000
   State:         champion
   Reason:        high confidence + success rate exceed thresholds
   Samples:       10
@@ -1056,22 +1006,22 @@ Final Best Score:     62.5000
   Confidence:    75.00%
 ========================
 
-time=2026-07-02T10:05:05.692+08:00 level=INFO msg="evolution service shut down"
-time=2026-07-02T10:05:05.692+08:00 level=INFO msg="Scenario completed" scenario="Scenario 7: Wired System (Tournament Selection)" duration_ms=12
+time=2026-07-02T10:30:48.883+08:00 level=INFO msg="evolution service shut down"
+time=2026-07-02T10:30:48.884+08:00 level=INFO msg="Scenario completed" scenario="Scenario 7: Wired System (Tournament Selection)" duration_ms=13200
 
   📊 Control Group Comparison
   ═══════════════════════════════════════════════════
   Autonomous (no LLM)                      LLM-Guided
   ───────────────────────── ─────────────────────────
-  Best Score:       81.58         Best Score:       62.50
-  Evidence Key:  precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10  Evidence Key:  helpful|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10,top_k=40.00
+  Best Score:       79.41         Best Score:       85.90
+  Evidence Key:  precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.02,top_k=40.00  Evidence Key:  precise|frequency_penalty=0.00,max_tokens=2048.00,presence_penalty=0.00,temperature=0.10
   Generations:         15         Generations:         15
-  temperature:          0.1         temperature:          0.1
-  top_k:                 20         top_k:                 40 ← DIFF
+  temperature:   0.02356232148683442         temperature:          0.1 ← DIFF
+  top_k:                 40         top_k:                 26 ← DIFF
   max_tokens:          2048         max_tokens:          2048
-  prompt:           precise         prompt:           helpful ← DIFF
+  prompt:           precise         prompt:           precise
 
-  🏆 Winner: Autonomous (no LLM) (+19.08 points)
+  🏆 Winner: LLM-Guided (+6.49 points)
   ═══════════════════════════════════════════════════
 
 
