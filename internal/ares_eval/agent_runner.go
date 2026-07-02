@@ -2,13 +2,12 @@ package ares_eval
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 )
 
 // ErrNilExecutor is returned when a nil executor is provided.
-var ErrNilExecutor = errors.New("executor is nil")
+// Errors are defined in errors.go.
 
 // AgentTestRunner runs test cases against an agent.
 // It optionally holds an EvaluatorRegistry for dynamic evaluator selection.

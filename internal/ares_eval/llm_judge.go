@@ -3,7 +3,6 @@ package ares_eval
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -12,10 +11,10 @@ import (
 )
 
 // ErrNilLLMClient is returned when a nil LLM client is provided to the judge evaluator.
-var ErrNilLLMClient = errors.New("llm client is nil")
+// Errors are defined in errors.go.
 
 // ErrInvalidJudgeResponse is returned when the LLM judge response cannot be parsed.
-var ErrInvalidJudgeResponse = errors.New("invalid judge response")
+// Errors are defined in errors.go.
 
 // LLMClient defines the interface for calling an LLM to generate text.
 // This abstraction allows the evaluator to work with any LLM implementation.

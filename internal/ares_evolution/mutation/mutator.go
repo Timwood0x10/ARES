@@ -11,10 +11,10 @@ import (
 )
 
 // ErrNilParent is returned when a nil parent strategy is passed to Mutate.
-var ErrNilParent = fmt.Errorf("parent strategy must not be nil")
+// Errors are defined in errors.go.
 
 // ErrInvalidCount is returned when the requested mutation count is invalid.
-var ErrInvalidCount = fmt.Errorf("mutation count must be positive")
+// Errors are defined in errors.go.
 
 // Mutator generates mutated strategies from a parent strategy.
 // It supports parameter value mutations, prompt template mutations, and tool

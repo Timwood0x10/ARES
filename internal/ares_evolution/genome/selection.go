@@ -33,16 +33,7 @@ type Selection interface {
 	Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error)
 }
 
-// Error definitions for selection operations.
-
-// ErrSelectionEmptyPopulation is returned when an empty or nil population is provided to a selector.
-var ErrSelectionEmptyPopulation = fmt.Errorf("selection: population must not be empty")
-
-// ErrInvalidSelectionSize is returned when the requested selection count n is invalid.
-var ErrInvalidSelectionSize = fmt.Errorf("selection size must be positive")
-
-// ErrInvalidTournamentSize is returned when tournament size k is less than 2.
-var ErrInvalidTournamentSize = fmt.Errorf("tournament size must be at least 2")
+// Error definitions for selection operations are in errors.go.
 
 // TournamentSelection selects individuals via tournament.
 // Randomly pick k individuals, return the best among them. Repeat n times.

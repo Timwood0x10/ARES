@@ -10,13 +10,13 @@ import (
 )
 
 // ErrNilCache is returned when a nil cache is passed to NewTieredScorer.
-var ErrNilTieredCache = fmt.Errorf("cache must not be nil")
+// Errors are defined in errors.go.
 
 // ErrNilBudget is returned when a nil budget is passed to NewTieredScorer.
-var ErrNilBudget = fmt.Errorf("budget must not be nil")
+// Errors are defined in errors.go.
 
 // ErrNilHeuristicScorer is returned when a nil heuristic scorer is passed to NewTieredScorer.
-var ErrNilHeuristicScorer = fmt.Errorf("heuristic scorer must not be nil")
+// Errors are defined in errors.go.
 
 // Tier defines a scoring tier in the pipeline.
 type Tier int

@@ -19,41 +19,7 @@ import (
 // and the method name to every log line.
 var el = logger.New("genome")
 
-// ErrNilBaseStrategy is returned when a nil base strategy is provided to NewPopulation.
-var ErrNilBaseStrategy = fmt.Errorf("base strategy must not be nil")
-
-// ErrNilMutator is returned when a nil mutator is provided.
-var ErrNilMutator = fmt.Errorf("mutator must not be nil")
-
-// ErrNilCrosser is returned when a nil crosser is provided.
-var ErrNilCrosser = fmt.Errorf("crosser must not be nil")
-
-// ErrInvalidPopulationSize is returned when population size is invalid.
-var ErrInvalidPopulationSize = fmt.Errorf("population size must be positive")
-
-// ErrInvalidSurvivalRate is returned when survival rate is out of valid range [0, 1].
-var ErrInvalidSurvivalRate = fmt.Errorf("survival rate must be between 0 and 1")
-
-// ErrInvalidMutationRate is returned when mutation rate is out of valid range [0, 1].
-var ErrInvalidMutationRate = fmt.Errorf("mutation rate must be between 0 and 1")
-
-// ErrInvalidEliteCount is returned when elite count is negative or exceeds size.
-var ErrInvalidEliteCount = fmt.Errorf("elite count must be non-negative and <= population size")
-
-// ErrInvalidBreedingPoolRatio is returned when breeding pool ratio is out of range [0, 1].
-var ErrInvalidBreedingPoolRatio = fmt.Errorf("breeding pool ratio must be between 0 and 1")
-
-// ErrInvalidMinMutationRate is returned when min mutation rate is out of range [0, 1].
-var ErrInvalidMinMutationRate = fmt.Errorf("min mutation rate must be between 0 and 1")
-
-// ErrInvalidMaxMutationRate is returned when max mutation rate is out of range [0, 1].
-var ErrInvalidMaxMutationRate = fmt.Errorf("max mutation rate must be between 0 and 1")
-
-// ErrInvalidMaxStagnantGenerations is returned when max stagnant generations is negative.
-var ErrInvalidMaxStagnantGenerations = fmt.Errorf("max stagnant generations must be non-negative")
-
-// ErrInvalidDiversityThreshold is returned when diversity threshold is out of range [0, 1].
-var ErrInvalidDiversityThreshold = fmt.Errorf("diversity threshold must be between 0 and 1")
+// Sentinel errors are defined in errors.go.
 
 // GenerationHistoryEntry captures a per-generation snapshot for trajectory reporting.
 type GenerationHistoryEntry struct {

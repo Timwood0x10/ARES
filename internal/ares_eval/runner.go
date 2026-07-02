@@ -2,7 +2,6 @@ package ares_eval
 
 import (
 	"context"
-	"errors"
 )
 
 // TestRunner runs test cases and produces results.
@@ -20,7 +19,7 @@ type AgentExecutor interface {
 }
 
 // ErrNilRegistry is returned when a registry is required but not set.
-var ErrNilRegistry = errors.New("evaluator registry is nil")
+// Errors are defined in errors.go.
 
 // ErrEvaluatorNotFound is returned when no evaluator is found by name.
-var ErrEvaluatorNotFound = errors.New("evaluator not found in registry")
+// Errors are defined in errors.go.
