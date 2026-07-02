@@ -239,31 +239,31 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_ev
 // SAFETY: Emit holds RLock during dispatch, and the cleanup goroutine holds
 // exclusive Lock when closing the channel, so close() and send() never race.
 func (b *PluginBus) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
- ch := make(chan *ares_events.Event, eventChanBufferSize)
+	ch := make(chan *ares_events.Event, eventChanBufferSize)
 
- sub := &subscriber{
-  ch:     ch,
-  filter: filter,
- }
+	sub := &subscriber{
+		ch:     ch,
+		filter: filter,
+	}
 
- b.mu.Lock()
- b.subscribers = append(b.subscribers, sub)
- b.mu.Unlock()
+	b.mu.Lock()
+	b.subscribers = append(b.subscribers, sub)
+	b.mu.Unlock()
 
- go func() {
-  <-ctx.Done()
-  b.mu.Lock()
-  defer b.mu.Unlock()
-  for i, s := range b.subscribers {
-   if s == sub {
-    b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
-    close(ch)
-    return
-   }
-  }
- }()
+	go func() {
+		<-ctx.Done()
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		for i, s := range b.subscribers {
+			if s == sub {
+				b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
+				close(ch)
+				return
+			}
+		}
+	}()
 
- return ch, nil
+	return ch, nil
 }
 
 // PluginsByCap returns a copy of the registered plugins with the given capability.
