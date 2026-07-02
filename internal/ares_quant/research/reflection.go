@@ -95,7 +95,7 @@ func (r *Reflector) BatchReflect(ctx context.Context) (int, error) {
 			if err != nil {
 				continue // Skip failed reflections, continue with others.
 			}
-			// FIX: persist reflection back to store instead of only updating in-memory copy.
+			// Persist reflection back to store after generating it.
 			if storeErr := r.memoryLog.store.UpdateReflection(ctx, entry.ID, reflection); storeErr != nil {
 				continue // Skip persistence failures, continue with others.
 			}

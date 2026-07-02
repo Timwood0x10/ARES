@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -363,7 +364,7 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			SpecHash: item.SpecHash,
 		}
 		if err := b.queue.EnqueueTx(ctx, tx, task); err != nil {
-			if err == ErrDuplicateTask {
+			if stderrors.Is(err, ErrDuplicateTask) {
 				// Task already queued; proceed without rolling back.
 				slog.Debug("Duplicate embedding task, skipping", "table", item.Table)
 				continue

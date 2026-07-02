@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/memory"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
@@ -70,7 +71,8 @@ func TestVectorStoreInMemorySearchNonExistentCollection(t *testing.T) {
 	vec := make([]float64, 128)
 	vec[0] = 1.0
 	results, err := store.Search(ctx, "non-existent", vec, 10)
-	require.NoError(t, err, "search on non-existent collection should not error")
+	require.Error(t, err, "search on non-existent collection should error")
+	assert.ErrorIs(t, err, apperrors.ErrNotFound)
 	assert.Nil(t, results, "expected nil results for non-existent collection")
 }
 

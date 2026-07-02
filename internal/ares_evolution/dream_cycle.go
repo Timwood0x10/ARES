@@ -89,6 +89,7 @@ type DreamCycle struct {
 	shadowEvaluator *ShadowEvaluator
 	stateManager    *ActiveStrategyManager
 	metrics         MetricsRecorder
+	hintProvider    mutation.HintProvider
 	population      *genome.Population
 	config          DreamCycleConfig
 	mu              sync.Mutex
@@ -298,6 +299,8 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			MutationType:     "dream_cycle",
 			WinRate:          winner.winRate,
 			ScoreImprovement: winner.scoreImprovement,
+			ParentScore:      parent.Score,
+			ChildScore:       winner.scoreImprovement + parent.Score,
 			Timestamp:        time.Now().Unix(),
 		}
 		if err := dc.genealogy.Record(ctx, lineage); err != nil {
@@ -396,6 +399,22 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			dc.metrics.RecordEvolutionDeploy("success")
 			dc.metrics.SetEvolutionScore(winner.strategy.ID, winner.winRate)
 		}
+
+		// Record successful outcome for hint provider learning.
+		if dc.hintProvider != nil {
+			outcome := mutation.StrategyOutcome{
+				StrategyID:   winner.strategy.ID,
+				TaskType:     data.AgentID,
+				Success:      true,
+				Score:        winner.winRate,
+				MutationType: "dream_cycle",
+				Timestamp:    time.Now(),
+			}
+			if err := dc.hintProvider.RecordStrategyOutcome(cycleCtx, outcome); err != nil {
+				slog.WarnContext(ctx, "[DreamCycle] Failed to record strategy outcome",
+					"error", err)
+			}
+		}
 	}
 
 	dc.mu.Lock()
@@ -464,6 +483,24 @@ func WithDreamCycleShadowEvaluator(se *ShadowEvaluator) DreamCycleOption {
 func WithDreamCycleMetrics(metrics MetricsRecorder) DreamCycleOption {
 	return func(dc *DreamCycle) error {
 		dc.metrics = metrics
+		return nil
+	}
+}
+
+// WithDreamCycleHintProvider attaches a hint provider for recording strategy
+// outcomes after each evolution cycle. The hint provider learns from real
+// execution outcomes and provides better hints for future mutations.
+//
+// Args:
+//
+//	provider - the hint provider (may be nil to disable).
+//
+// Returns:
+//
+//	DreamCycleOption - the option function.
+func WithDreamCycleHintProvider(provider mutation.HintProvider) DreamCycleOption {
+	return func(dc *DreamCycle) error {
+		dc.hintProvider = provider
 		return nil
 	}
 }
@@ -577,7 +614,7 @@ func (dc *DreamCycle) findWinner(
 	baseline Strategy,
 ) (*candidateResult, error) {
 	if len(candidates) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("dream cycle: no candidates to evaluate")
 	}
 
 	// Stage 1: Quick reject — screen all candidates in parallel with small N.
@@ -641,7 +678,7 @@ func (dc *DreamCycle) findWinner(
 	}
 
 	if len(survivors) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("dream cycle: all candidates rejected in quick pass")
 	}
 
 	// Stage 2: Full evaluation — run survivors in parallel with full N.
@@ -699,12 +736,27 @@ func (dc *DreamCycle) findWinner(
 	return best, nil
 }
 
-// recordFailure logs a failed evolution cycle for future analysis.
+// recordFailure logs a failed evolution cycle for future analysis and records
+// the failure outcome for hint provider learning.
 func (dc *DreamCycle) recordFailure(ctx context.Context, parent Strategy) {
 	slog.InfoContext(ctx, "[DreamCycle] Evolution cycle produced no acceptable candidate",
 		"parent_id", parent.ID,
 		"max_mutations", dc.config.MaxMutations,
 		"min_win_rate", dc.config.MinWinRate)
+
+	if dc.hintProvider != nil {
+		outcome := mutation.StrategyOutcome{
+			StrategyID:   parent.ID,
+			Success:      false,
+			Score:        parent.Score,
+			MutationType: "dream_cycle",
+			Timestamp:    time.Now(),
+		}
+		if err := dc.hintProvider.RecordStrategyOutcome(ctx, outcome); err != nil {
+			slog.WarnContext(ctx, "[DreamCycle] Failed to record failure outcome",
+				"error", err)
+		}
+	}
 }
 
 // MetricsRecorder abstracts Prometheus metrics recording for evolution events.

@@ -96,7 +96,7 @@ func (r *ExpressionRouter) Route(_ context.Context, state RouteState) (*RouteDec
 			Source:     "expression",
 		}, nil
 	}
-	return nil, nil
+	return nil, fmt.Errorf("router: no matching rule for step")
 }
 
 // AddRule adds a rule to the router.

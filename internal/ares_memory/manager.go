@@ -11,8 +11,8 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
-	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // MemoryManager provides unified memory management.

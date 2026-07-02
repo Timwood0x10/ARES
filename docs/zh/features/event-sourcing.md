@@ -320,7 +320,7 @@ sequenceDiagram
 
 ## DLQ 自动重试
 
-失败的消息处理与 `internal/protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
+失败的消息处理与 `internal/ares_protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
 
 ```go
 dlq := ahp.NewDLQ(10000)

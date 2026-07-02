@@ -97,75 +97,218 @@ Mark first, cancel second — that's the **Resurrection Guard**.
 The full guard logic has four conditions; any match skips resurrection:
 
 ```go
-if m.isStopped ||         // Runtime itself is stopping
-   ma.stopped ||           // Agent was voluntarily stopped
-   ma.resurrecting ||      // Resurrection already in progress
-   ma.restarts >= MaxRestarts  // Too many resurrections
+if m.isStopped ||                     // Runtime itself is stopping
+   ma.stopped ||                       // Agent was voluntarily stopped
+   ma.resurrecting ||                  // Resurrection already in progress
+   (m.config.MaxRestartsPerAgent > 0 &&
+    ma.restarts >= m.config.MaxRestartsPerAgent) // Too many restarts
 {
     return  // Don't resurrect
 }
 ```
 
-**Honest reflection**: `MaxRestarts = 10` is a number I pulled out of thin air. Why 10, not 3 or 20? No basis whatsoever. We once hit a real issue: an Agent kept dying one second after startup due to a config error. It got resurrected, died, resurrected, died — all 10 restarts burned, stone dead. The logs were full of resurrection spam, and debugging was a nightmare. Should've used **exponential backoff** instead of a hard counter. Never got around to fixing it.
+The restart limit is not a hardcoded 10 — it's configured via `Config.MaxRestartsPerAgent` (see `DefaultConfig()` for defaults), and resurrection uses **exponential backoff** to gradually reduce frequency:
+
+```go
+func (m *Manager) scheduleResurrection(agentID string, factory AgentFactory) {
+    m.g.Go(func() error {
+        backoff := time.Second
+        const maxBackoff = 30 * time.Second
+        const maxAttempts = 5
+        for attempt := 1; attempt <= maxAttempts; attempt++ {
+            restoreCtx, restoreCancel := context.WithTimeout(m.gctx, m.config.RestoreTimeout)
+            err := m.RestoreAgent(restoreCtx, agentID, factory)
+            restoreCancel()
+            if err == nil { return nil }
+            backoff *= 2
+            if backoff > maxBackoff { backoff = maxBackoff }
+        }
+        return fmt.Errorf("resurrection failed after %d attempts", maxAttempts)
+    })
+}
+```
+
+**Honest reflection**: I used to have `MaxRestarts = 10` as a hardcoded constant — a number I pulled out of thin air. Why 10, not 3 or 20? No basis whatsoever. The "exponential backoff should be there but hasn't been" was the old story. Now the code actually has `scheduleResurrection` with backoff (1s → 2s → 4s → 8s → 30s max, 5 attempts). But we still lack a death-counter alert: if an Agent dies 5 times in 30 seconds, ops should be paged immediately. The config-based limit (`MaxRestartsPerAgent`) is better, but without alerting, a "flapping" agent still goes unnoticed until the customer reports it.
 
 ---
 
-## 4. Two-Phase State Recovery: Dying is Fine, Amnesia is Not
+## 4. Two-Phase State Recovery: Snapshot First, Events Second
 
-The core of resurrection is `recoverAgentState`:
+Agent resurrection is not **only** about event replay. The actual strategy is **snapshot-first, event-replay-fallback** — a significant evolution from earlier designs.
+
+### Snapshot-First: The Fastest, Most Reliable Recovery Path
+
+`RecoverSnapshotOrEvents` is the entry point for the entire recovery system:
+
+```go
+// RecoverSnapshotOrEvents implements snapshot-first recovery strategy:
+//   Priority 1: SnapshotStore.Load (agent-level snapshot) — sub-second
+//   Priority 2: Event replay (EventStore) — seconds to tens of seconds
+//   Priority 3: Cognitive recovery (MemoryManager) — fastest but least complete
+func RecoverSnapshotOrEvents(ctx context.Context, store base.SnapshotStore,
+    agentID string, eventFn func() map[string]any) map[string]any {
+    if store != nil {
+        snap, err := store.Load(ctx, agentID)
+        if err != nil {
+            return eventFn()  // Snapshot load failed → fallback to event replay
+        }
+        if snap != nil {
+            return snap  // Snapshot hit → use directly
+        }
+    }
+    return eventFn()  // No snapshot store → direct event replay
+}
+```
+
+| Priority | Method | When it applies | Speed |
+|----------|--------|----------------|-------|
+| 1 | `SnapshotStore.Load()` | `SnapshotAgent` impl + persisted snapshot | Fastest (<1s) |
+| 2 | Event replay | EventStore available | Medium (1-30s) |
+| 3 | Cognitive recovery | Always available | Fastest but incomplete |
 
 ```mermaid
-graph LR
+graph TB
     subgraph At the crash scene
         A[Agent died] --> F[Factory creates new instance]
     end
-    subgraph Phase 1: Operational state
-        F --> ES[Query EventStore<br/>Replay what the Agent did]
-        ES --> ST[Rebuild state snapshot<br/>Session ID / Pending tasks / Execution context]
+    subgraph Snapshot-First Recovery
+        F --> SS{Has SnapshotStore?}
+        SS -->|Yes| SNAP[Load snapshot<br/>sub-second]
+        SNAP -->|Hit| RESTORE[RestoreState from snapshot]
+        SNAP -->|Miss/Expired| ES[Query EventStore<br/>Replay events]
+        SS -->|No| ES
     end
     subgraph Phase 2: Cognitive state
-        ST --> MM[Query MemoryManager<br/>Restore conversation history]
-        MM --> RE[RestoreState — load snapshot]
-        RE --> RP[ReplayEvents — replay incremental events]
+        RESTORE --> MM[Query MemoryManager<br/>Restore conversation history]
+        ES --> MM
+        MM --> OK[New Agent starts up<br/>Resumes work]
     end
-    RP --> OK[New Agent starts up<br/>Resumes work]
-```
-
-**The most critical fault tolerance design**: the two phases are independent. Either one can fail without blocking the entire resurrection:
-
-```go
-func (m *Manager) recoverAgentState(ctx context.Context, ...) (base.Agent, error) {
-    newAgent := factory()  // Fresh instance
-
-    evts := m.replayEvents(ctx, agentID)  // Phase 1
-    // replayEvents failure logs a warning and returns empty list
-
-    if sa, ok := newAgent.(base.StatefulAgent); ok {
-        state := buildStateFromEvents(evts)
-        sa.RestoreState(state)
-        sa.ReplayEvents(evts)
-        // Phase 2 is also fault-tolerant
-    }
-    return newAgent, nil  // Agent starts regardless of recovery completeness
-}
 ```
 
 ```go
-// Cognitive recovery: pull conversation history from MemoryManager
-func (m *Manager) buildCognitiveState(ctx context.Context, ...) map[string]any {
-    sessionID, _ := operationalState["session_id"].(string)
-    if sessionID == "" {
-        sid, err := m.memManager.GetLatestSessionForLeader(ctx, agentID)
-        sessionID = sid  // Not found? Leave empty. Not fatal.
+// In Manager.recoverAgentState: snapshot-first recovery
+state := RecoverSnapshotOrEvents(ctx, m.snapshotStore, agentID,
+    func() map[string]any { return m.buildStateFromEvents(ctx, agentID) })
+if sa, ok := newAgent.(base.StatefulAgent); ok {
+    sa.RestoreState(state)
+    // Event stream integrity verification
+    if len(evts) > 1 {
+        if err := ares_events.VerifyStreamIntegrity(evts); err != nil {
+            log.Error("runtime: event stream integrity check failed", "error", err)
+        }
+        // Truncation detection: compare expected vs actual stream version
+        if streamVersion, _ := m.eventStore.StreamVersion(ctx, streamID); streamVersion > maxVersion {
+            log.Error("runtime: event stream truncated — possible data loss")
+        }
     }
-    messages, _ := m.memManager.GetMessages(ctx, sessionID)
-    state["session_id"] = sessionID
-    state["conversation_history"] = messages
-    return state
+    sa.ReplayEvents(evts)
 }
 ```
 
-**Honest reflection**: This "partial recovery is better than none" design was inspired by Kubernetes' Init Container strategy. But there's a big problem — if event replay only recovers 80% of the state, the Agent might think it completed a task it didn't. How do you verify recovery completeness? There's no mechanism today. The fix should be an integrity check in the event stream (like WAL checksum).
+### The Snapshot Interface: Two-Layer Design
+
+```go
+type StatefulAgent interface {
+    Agent
+    RestoreState(state map[string]any)
+    ReplayEvents(events []*ares_events.Event)
+    Snapshot() (map[string]any, error)     // Key addition
+}
+
+type SnapshotStore interface {
+    Save(ctx context.Context, agentID string, data map[string]any) error
+    Load(ctx context.Context, agentID string) (map[string]any, error)
+    Delete(ctx context.Context, agentID string) error
+}
+```
+
+`Snapshot()` and `RestoreState()` are paired. `Manager.Stop()` captures a final snapshot for every stateful agent, ensuring fast recovery on cold restart. The snapshot is **agent-chosen** — each agent decides what's critical enough to persist (session ID, entry point, pending tasks etc.).
+
+### Event Stream Integrity Verification
+
+The `replayEvents` path now includes three-tier integrity checks — a direct response to the old "partial amnesia" concern:
+
+1. **Hash chain check** — `VerifyStreamIntegrity()` validates the cryptographic chain between consecutive events, detecting corruption or tampering
+2. **Truncation detection** — compares the replayed stream's max version against `EventStore.StreamVersion()`; if the store has more events than what was replayed, the stream was likely truncated
+3. **Max replay limit** — a safety cap (default 10000 events) prevents unbounded replay from overwhelming memory
+
+### ExperienceCheckpoint: Workflow-Level Step Resume
+
+Beyond agent-level snapshots, the system has an **independent workflow checkpoint system** — `ExperienceCheckpoint`. This is for `Workflow/(MutableDAG)`, not for agents:
+
+```
+Scope:
+  LeaderCheckpoint (PostgreSQL)          → Agent-level session
+  ExperienceCheckpoint (CheckpointStore) → Workflow step-level
+```
+
+`ExperienceCheckpoint` has 30+ fields across 8 categories:
+
+```go
+type ExperienceCheckpoint struct {
+    // Metadata
+    SchemaVersion    int                    `json:"schema_version"`
+    ExecutionID      string                 `json:"execution_id"`
+    WorkflowID       string                 `json:"workflow_id"`
+    WorkflowVersion  string                 `json:"workflow_version,omitempty"`
+    StateVersion     int64                  `json:"state_version"`
+    Status           string                 `json:"status"`
+    CurrentRound     int                    `json:"current_round"`
+    Error            string                 `json:"error,omitempty"`
+
+    // Step state — which steps completed, which failed
+    StepStates       []StepStateSnapshot    `json:"step_states"`
+
+    // Runtime data
+    Variables        map[string]interface{} `json:"variables,omitempty"`
+    OutputStore      map[string]string      `json:"output_store,omitempty"`
+
+    // DAG topology — for reconstructing the execution graph
+    DAGNodes         []string               `json:"dag_nodes,omitempty"`
+    DAGEdges         []DAGEdge              `json:"dag_edges,omitempty"`
+
+    // Execution history
+    RouteHistory     []RouteEntry           `json:"route_history,omitempty"`
+    ToolHistory      []ToolEntry            `json:"tool_history,omitempty"`
+    MemoryHits       []MemoryEntry          `json:"memory_hits,omitempty"`
+    InterruptHistory []InterruptEntry       `json:"interrupt_history,omitempty"`
+    LoopHistory      []LoopEntry            `json:"loop_history,omitempty"`
+    ErrorHistory     []ErrorEntry           `json:"error_history,omitempty"`
+
+    // Quality signals
+    ScoringSignals   []ScoringSignal        `json:"scoring_signals,omitempty"`
+
+    CreatedAt        time.Time              `json:"created_at"`
+}
+```
+
+The `CheckpointPlugin` hooks into `BeforeStep` and `AfterStep` lifecycle events:
+
+- **BeforeStep**: Creates/updates checkpoint, marks step as `running`, saves (or batches via `flushInterval`)
+- **AfterStep**: Updates step result (status/output/error), appends error history for failed steps
+- **Flush**: Forces immediate save when execution completes — ignores the flush interval
+- **Cleanup**: Removes in-memory snapshots to prevent unbounded map growth
+
+`DynamicExecutor.ExecuteDynamicFromCheckpoint()` uses this to skip completed steps:
+
+```go
+func (e *DynamicExecutor) ExecuteDynamicFromCheckpoint(ctx context.Context, executionID string) error {
+    ckpt := e.checkpointPlugin.Snapshot(executionID)
+    // Rebuild completed/processed maps from checkpoint
+    for _, ss := range ckpt.StepStates {
+        if ss.Status == StepStatusCompleted {
+            e.completed[ss.StepID] = ss.Output
+            e.processed[ss.StepID] = true
+        }
+    }
+    // Only execute uncompleted steps via shared execLoop
+    return e.execLoop(ctx, ckpt)
+}
+```
+
+**Honest reflection**: Snapshot-first recovery sounds great, but it depends on agents correctly implementing `Snapshot()`. If an agent misses a critical field in `Snapshot()`, the recovered state may be **less accurate** than pure event replay. "Snapshot is the best path, not the absolutely reliable path" — this understanding should be systematically documented in every agent's `Snapshot()` implementation.
+
+`ExperienceCheckpoint` has its own data volume concern: a complex workflow execution may produce hundreds of RouteHistory and ToolHistory records. Deserialization + reconstruction is not free. There's currently no automatic TTL cleanup or large-checkpoint sharding.
 
 ---
 
@@ -270,21 +413,51 @@ func (m *Manager) healthCheck() {
 
 There's a subtle problem here: **`NotifyAgentDead` is called from the health check goroutine**, but `NotifyAgentDead` triggers async resurrection (`m.g.Go(func()...)`). This means health check detects a death -> triggers resurrection -> but has no idea whether the resurrection succeeded, how long it took, or whether the Agent died again.
 
-**Honest reflection**: The health check loop is one-way. It only says "found problem -> threw to resurrection" without ever confirming "problem is resolved." The ideal design would let health check observe resurrection status — e.g., a flag that gets set on successful resurrection, letting health check reset its counter. This would also detect "resurrection loops" and alert instead of silently retrying 10 times.
+**Honest reflection**: The health check loop is one-way. It only says "found problem -> threw to resurrection" without ever confirming "problem is resolved." The ideal design would let health check observe resurrection status — e.g., a flag that gets set on successful resurrection, letting health check reset its counter. This would also detect "resurrection loops" early and alert ops, rather than letting the configured `MaxRestartsPerAgent` × exponential backoff cycle run its full course before surfacing a problem. Without this feedback, a flapping agent will exhaust all retries (5 attempts with 30s max backoff) before anyone notices.
 
 ---
 
-## 7. Supervisor Failover: Cold Restart Strategy
+## 7. Supervisor Failover: Checkpoint-First Cold Restart
 
-When a Leader's heartbeat times out, `LeaderSupervisor` executes failover:
+**Note**: `LeaderSupervisor` has been superseded by the **resurrection plugin** (`scheduleResurrection`), which shares the same snapshot-first recovery mechanism as the Runtime Manager. `LeaderSupervisor` is retained only for test compatibility. New code should use `Manager.RestoreAgent()` directly.
+
+### LeaderCheckpoint: PostgreSQL-Persisted Session State
+
+`LeaderCheckpoint` is an agent-level database checkpoint for failover. It is **not** for workflow steps (that's `ExperienceCheckpoint`'s job) — it saves the Leader Agent's **session-level** state:
+
+```go
+type LeaderCheckpoint struct {
+    LeaderID     string    `db:"leader_id,primary"`  // Primary key
+    SessionID    string    `db:"session_id"`
+    EntryID      string    `db:"entry_id"`
+    RootMsgID    string    `db:"root_msg_id"`
+    StatusPayload []byte   `db:"checkpoint_payload"` // JSON-serialized full state
+    CreatedAt    time.Time `db:"created_at"`
+    UpdatedAt    time.Time `db:"updated_at"`
+}
+```
+
+Database operations use UPSERT semantics (`INSERT ... ON CONFLICT (leader_id) DO UPDATE`), guaranteed by the `db:"leader_id,primary"` primary key so each agent has at most one checkpoint row. The interface:
+
+```go
+type LeaderCheckpointer interface {
+    Save(ctx context.Context, ckpt *LeaderCheckpoint) error
+    GetLatest(ctx context.Context, leaderID string) (*LeaderCheckpoint, error)
+    Delete(ctx context.Context, leaderID string) error
+}
+```
+
+### Failover Flow
 
 ```mermaid
 graph TB
     TIMEOUT[Heartbeat timeout] --> EMIT[Emit EventFailoverTriggered]
     EMIT --> STOP[Stop old Leader<br/>use detached context<br/>prevent cancellation propagation]
-    STOP --> CP[Read checkpoint from DB]
-    CP --> ER[EventRecovery — event replay<br/>rebuild RecoveryState]
-    ER --> RETRY[Retry loop max 3 attempts]
+    STOP --> CP{DB Checkpoint?}
+    CP -->|Yes| SNAP[Snapshot Restore<br/>Load from Checkpoint directly]
+    CP -->|No snapshot| ER[EventRecovery — event replay<br/>rebuild RecoveryState]
+    SNAP --> RETRY[Retry loop max 3 attempts]
+    ER --> RETRY
     RETRY --> COLD[ColdRestartStrategy<br/>factory creates new Agent]
     COLD --> START[Start new Leader]
     START --> CLEAN[Clean up orphan tasks]
@@ -299,6 +472,29 @@ type RecoveryState struct {
     LastFailover  time.Time   // Last failover time
 }
 ```
+
+**Two paths**: With checkpoint → snapshot recovery (seconds); without → falls back to event replay (potentially tens of seconds).
+
+### DAG Status Transitions & Genealogy Tracking
+
+During resurrection, the Manager tracks agent status transitions via `DAGRuntimeManager`:
+
+```
+StatusRunning → StatusDead → StatusResurrecting → StatusRunning
+```
+
+Each state transition emits corresponding events through the `ares_events` system. The Manager subscribes to these events and maintains **genealogy tracking**:
+
+```go
+m.eventBus.Subscribe(ares_events.TypeAgentDead, func(evt *ares_events.Event) {
+    m.recordDeath(evt)     // Records death cause, timestamp
+})
+m.eventBus.Subscribe(ares_events.TypeAgentResurrected, func(evt *ares_events.Event) {
+    m.recordResurrection(evt)  // Records new instance ID after resurrection
+})
+```
+
+Genealogy data is stored in `RuntimeManager.deathRecords` and can be queried via `GetAgentGenealogy()`, helping debug an agent's death-resurrection history.
 
 **Honest reflection**: `EventRecovery.RecoverFromEvents()` uses a degradation strategy — if an event field is corrupted, it skips instead of erroring. This guarantees "recover as much as possible," but might produce a "looks normal but logically wrong" state. E.g., there's a task in `PendingTasks` that was actually already completed in the event stream, but a corrupted field makes it appear unprocessed. The Agent re-executes, potentially producing duplicate results.
 
@@ -424,31 +620,27 @@ Forcing the source at the call site means you can't accidentally emit an event w
 
 ## 11. Known Issues & Design Flaws
 
-**1. Restart count has no exponential backoff**
+**1. Health check has no feedback loop**
 
-`MaxRestarts` is a hard cap of 10. Repeated resurrection failures flood the logs. Should use exponential backoff (1s, 2s, 4s...) to gradually reduce frequency.
+It only says "found problem, tossed it to resurrection" — never confirms whether the problem was actually solved. Exponential backoff is now implemented (see Section 3), which reduces log flooding from repeated resurrection failures, but it doesn't fundamentally solve the "death loop" detection problem. Needs a death-counter threshold + alerting mechanism.
 
-**2. Health check has no feedback loop**
+**2. Event replay semantic completeness is unverifiable**
 
-It only says "found problem, tossed it to resurrection" — never confirms whether the problem was actually solved. Resurrection loops go undetected.
+`VerifyStreamIntegrity()` now provides hash-chain + truncation detection for the event stream, but it can't guarantee semantic completeness after recovery. If an intermediate event corrupts a critical field, the Agent can resurrect with "partial amnesia" — thinking it completed a task it didn't. Needs WAL-level field-level integrity checks.
 
-**3. Event replay completeness is unverifiable**
+**3. Context detachment (distillation) is invisible to ops**
 
-If the event stream is corrupted or replay is incomplete, the Agent can resurrect with "partial amnesia" — thinking it completed tasks it didn't. Needs WAL-level integrity checks.
+`context.Background()` ensures distillation doesn't get cancelled, but it also means **nobody knows it's running**. No visibility into background task progress.
 
-**4. Context detachment (distillation) is invisible to ops**
-
-`context.Background()` ensures distillation doesn't get cancelled, but it also means **nobody knows it's running**. No visibility into background tasks.
-
-**5. Sub Agent degradation coverage is incomplete**
+**4. Sub Agent degradation coverage is incomplete**
 
 `executeByType` only covers 4 task types. For everything else, degradation = just error out — same as not having degradation at all.
 
-**6. Non-idempotent tools are at risk**
+**5. Non-idempotent tools are at risk**
 
 "Better to redo than miss" is catastrophic for non-idempotent tools (place order, send email). Needs tool-level idempotency markers.
 
-**7. Callbacks and Events coexist**
+**6. Callbacks and Events coexist**
 
 Both emit events, both consume events, but there's no unified event model. Debugging requires checking two places.
 
@@ -459,12 +651,15 @@ Both emit events, both consume events, but there's no unified event model. Debug
 | Pattern | Problem Solved | Gap |
 |---------|---------------|-----|
 | Resurrection Guard (stopped before cancel) | Prevents voluntary stop from being misidentified as accidental death | — |
-| Error-tolerant recovery chain | Partial recovery > no recovery | Recovery completeness unverifiable |
+| Exponential backoff resurrection | Reduces log flooding from repeated resurrection failures | Still no death-counter alerting |
+| Snapshot-first recovery (RecoverSnapshotOrEvents) | Sub-second state recovery > slow event replay | Snapshot may be stale |
+| ExperienceCheckpoint | Workflow step-level precise resumption | 30+ field cognitive burden |
+| Event integrity verification (VerifyStreamIntegrity) | Prevents silent errors from corrupted event stream | Field-level semantic checks still missing |
+| Error-tolerant recovery chain | Partial recovery > no recovery | Semantic completeness unverifiable |
+| Genealogy tracking | Traceable death-resurrection history | In-memory only, lost on restart |
 | Context detachment (Background) | Distillation survives request cancellation | Invisible to operations |
 | Semaphore concurrency control | Limits parallel sub-tasks | — |
 | Factory pattern + event replay | State reconstruction | Unsafe for non-idempotent tools |
-| sync.Once + Mutex | Prevents Add after Wait panic | — |
-| Multi-phase shutdown | Ordered resource release | — |
 
 The most satisfying test I ever ran: I started 10 Agents running analysis tasks, then manually `kill -9`'d the process. When it restarted, every Agent auto-resurrected and continued where it left off.
 
@@ -477,12 +672,17 @@ That moment I knew: **the money wasn't wasted.**
 | File | Core Responsibility |
 |------|-------------------|
 | `internal/ares_runtime/runtime.go` | Runtime interface and config definition |
-| `internal/ares_runtime/manager.go` | Register, start, stop, resurrect, health check |
-| `internal/agents/base/agent.go` | Agent interface hierarchy: Agent / StatefulAgent / Heartbeater |
-| `internal/agents/leader/agent.go` | Leader pipeline + state recovery + safe distillation |
+| `internal/ares_runtime/manager.go` | Register, start, stop, resurrection guard, exponential backoff resurrection, health check |
+| `internal/ares_runtime/recovery.go` | Snapshot-first recovery: `RecoverSnapshotOrEvents()` (try snapshot first, fallback to event stream) |
+| `internal/ares_runtime/checkpoint.go` | ExperienceCheckpoint: 30+ field workflow step-level snapshot + CheckpointPlugin |
+| `internal/agents/base/agent.go` | Agent interface hierarchy: Agent / StatefulAgent / Heartbeater (includes `Snapshot()`) |
+| `internal/agents/leader/agent.go` | Leader orchestration pipeline + state recovery + safe distillation |
 | `internal/agents/leader/dispatcher.go` | Semaphore concurrent dispatch |
-| `internal/agents/leader/supervisor.go` | Heartbeat monitor + failover + cold restart |
-| `internal/agents/leader/event_recovery.go` | Rebuild RecoveryState from event stream |
+| `internal/agents/leader/supervisor.go` | **Deprecated**: Heartbeat monitor + failover + cold restart (test compat only) |
+| `internal/agents/leader/checkpoint.go` | LeaderCheckpoint: PostgreSQL-persisted Agent-level session checkpoint |
+| `internal/agents/leader/event_recovery.go` | Rebuild RecoveryState from event stream (degradation strategy) |
+| `internal/plugins/resurrection/resurrection.go` | Resurrection plugin: replaces deprecated LeaderSupervisor, shares snapshot-first recovery |
+| `internal/workflow/engine/dynamic_executor.go` | `ExecuteDynamicFromCheckpoint()`: step-level resumption from ExperienceCheckpoint |
 | `internal/agents/sub/agent.go` | Sub Agent lifecycle |
 | `internal/agents/sub/executor.go` | LLM execution engine (retry + degradation) |
 | `internal/agents/sub/heartbeat.go` | Heartbeat sender + sync.Once shutdown |

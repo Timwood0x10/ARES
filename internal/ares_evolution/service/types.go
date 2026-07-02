@@ -96,6 +96,33 @@ type GuidanceProvider interface {
 	RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error
 }
 
+// EvidenceAggregator provides aggregated evidence for a strategy,
+// used by the post-evolution promotion/report hook.
+type EvidenceAggregator interface {
+	// Aggregate returns aggregated multi-dimensional evidence for a strategy.
+	Aggregate(ctx context.Context, strategyID string) (Evidence, error)
+}
+
+// PromotionLogic evaluates strategies for champion/candidate/demotion
+// decisions after each evolution generation.
+type PromotionLogic interface {
+	// Evaluate checks whether a strategy should be promoted, demoted,
+	// or kept at the current level based on its evidence.
+	// Returns the suggested state, a human-readable reason, and any error.
+	Evaluate(ctx context.Context, strategyID string, evidence Evidence) (state string, reason string, err error)
+}
+
+// Evidence holds aggregated statistics for a strategy, used by the
+// post-evolution promotion/report hook.
+type Evidence struct {
+	StrategyID  string
+	SuccessRate float64
+	LatencyP50  int64
+	ErrorRate   float64
+	SampleCount int64
+	Confidence  float64
+}
+
 // MemoryExperienceProvider provides access to past experiences for
 // memory-aware scoring. Implementations may query a vector database,
 // keyword index, or other experience store.
@@ -181,8 +208,17 @@ type Strategy struct {
 	// MutationType records the mutation type that created this strategy.
 	MutationType string `json:"mutation_type"`
 
+	// EvidenceKey is the stable evidence key derived from strategy parameters,
+	// used to trace this strategy back to real execution evidence.
+	EvidenceKey string `json:"evidence_key,omitempty"`
+
 	// Score is the current evaluation score (-1 = unevaluated).
 	Score float64 `json:"score"`
+
+	// DimensionScores holds per-dimension fitness scores for multi-objective
+	// optimization. When non-nil, Score is typically a weighted aggregate.
+	// Nil means single-objective mode.
+	DimensionScores map[string]float64 `json:"dimension_scores,omitempty"`
 
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
@@ -204,6 +240,16 @@ type StrategyLineage struct {
 
 	// ScoreDelta is the delta between child and parent scores.
 	ScoreDelta float64 `json:"score_delta"`
+
+	// ParentScore is the evaluated score of the parent strategy.
+	ParentScore float64 `json:"parent_score"`
+
+	// ChildScore is the evaluated score of the child strategy.
+	ChildScore float64 `json:"child_score"`
+
+	// ImprovementSignificant indicates whether the score improvement
+	// meets the configured significance threshold (MinLineageImprovement).
+	ImprovementSignificant bool `json:"improvement_significant"`
 
 	// Timestamp when this lineage record was created.
 	Timestamp int64 `json:"timestamp"`
@@ -261,6 +307,17 @@ type SystemConfig struct {
 	// BreedingPoolRatio limits breeding to the top fraction of survivors (default 0.6).
 	BreedingPoolRatio float64
 
+	// SelectionStrategy selects the parent selection algorithm.
+	// Supported values: "tournament", "rank", "sus", "roulette", "truncation", "random", "".
+	// Empty or "random" = random parent selection (backward compatible).
+	// Default: "" (random).
+	SelectionStrategy string
+
+	// HistoryMaxSize enables generation history tracking when > 0.
+	// History is required for meta-controller tuning and score improvement analysis.
+	// Default: 0 (disabled).
+	HistoryMaxSize int
+
 	// PromptCrossoverMode controls how PromptTemplate is combined during crossover.
 	// 0 = inherit from higher-scoring parent (default), 1 = half-sentence split,
 	// 2 = random parent pick (uniform).
@@ -307,6 +364,31 @@ type SystemConfig struct {
 	// the mutator biases its decisions toward patterns that worked in the past.
 	EnableExperienceGuidedMutation bool
 
+	// EnableLLMHints enables automatic outcome recording and LLM-based hint
+	// generation for the DreamCycle evolution path. When true AND LLMClient
+	// is set, an LLMHintProvider is automatically constructed and wired into
+	// the DreamCycle for recording strategy outcomes and generating
+	// mutation hints from past experiences via LLM reflection.
+	EnableLLMHints bool
+
+	// MaxHintHistory limits the number of strategy outcomes retained for
+	// LLM-based hint generation (default 10). Only applies when
+	// EnableLLMHints is true.
+	MaxHintHistory int
+
+	// LLMClient provides the LLM interface for hint generation and other
+	// LLM-dependent features. When EnableLLMHints is true, this client is
+	// used to automatically construct an LLMHintProvider that generates
+	// mutation hints from past strategy outcomes.
+	LLMClient LLMClient
+
+	// EnableIntelligence enables the Phase 3-5 intelligence pipeline:
+	// reflection → hypothesis generation → meta-controller tuning.
+	// When true AND LLMClient is set, an LLMReflector is wired into the
+	// evolution cycle to analyze patterns, generate hypotheses, and
+	// self-tune hyperparameters. Requires HistoryMaxSize > 0.
+	EnableIntelligence bool
+
 	// MemoryExperienceProvider provides access to past experiences for
 	// memory-aware scoring. When non-nil AND MemoryAwareScoringConfig.Enabled
 	// is true, the scorer adjusts fitness scores based on historical evidence.
@@ -316,6 +398,33 @@ type SystemConfig struct {
 	// MemoryAwareScoringConfig.Enabled is true and MemoryExperienceProvider
 	// is non-nil, the tiered scorer wraps with memory adjustments.
 	MemoryAwareScoringConfig MemoryAwareScoringConfig
+
+	// EvidenceAggregator provides aggregated evidence for post-evolution
+	// promotion evaluation and reporting. Accepts either:
+	//   - experience.EvidenceAggregator (internal)
+	//   - evolution.EvidenceAggregator (local interface)
+	// When non-nil, the AfterGeneration hook uses it to produce evidence
+	// for the best strategy each generation.
+	EvidenceAggregator interface{}
+
+	// PromotionLogic evaluates strategies for promotion after each evolution
+	// generation. Accepts either:
+	//   - promotion.PromotionLogic (internal)
+	//   - evolution.PromotionLogic (local interface)
+	// When non-nil AND EvidenceAggregator is also set, the AfterGeneration
+	// hook calls Evaluate on the best strategy each round and logs the result.
+	PromotionLogic interface{}
+
+	// ReportPath is the optional path to write the evolution report after
+	// RunIdleEvolution completes. When non-empty, a human-readable report
+	// is saved to this file. Parent directories are created automatically.
+	// Example: "var/evolution/report.txt"
+	ReportPath string
+
+	// MinLineageImprovement is the minimum absolute score delta required
+	// for a lineage improvement to be considered significant (default 0.01).
+	// Deltas below this threshold are treated as noise (scorer variance).
+	MinLineageImprovement float64
 }
 
 // DefaultConfig returns a sensible default configuration for the evolution system.
@@ -338,7 +447,27 @@ func DefaultConfig() *SystemConfig {
 		Seed:                   0,
 		PromptPool:             []string{},
 		EnableWiredMode:        true,
+		MinLineageImprovement:  0.01,
 	}
+}
+
+// DiversityReporter is the interface for population diversity information.
+// It mirrors genome.DiversityReport without importing the genome package.
+type DiversityReporter struct {
+	// Overall is the weighted average of all diversity components [0, 1].
+	Overall float64 `json:"overall"`
+
+	// Numeric is the average pairwise normalized parameter distance [0, 1].
+	Numeric float64 `json:"numeric"`
+
+	// Categorical measures differences in prompt templates, tool configs, etc. [0, 1].
+	Categorical float64 `json:"categorical"`
+
+	// Lineage measures parent ID concentration; 1.0 = all different parents, 0.0 = same.
+	Lineage float64 `json:"lineage"`
+
+	// DominantLineageShare is the fraction sharing the most common ParentID [0, 1].
+	DominantLineageShare float64 `json:"dominant_lineage_share"`
 }
 
 // Stats holds population statistics after each evolution generation.
@@ -357,6 +486,9 @@ type Stats struct {
 
 	// WorstScore is the lowest score among all agents.
 	WorstScore float64
+
+	// Diversity is the population diversity breakdown, if computed.
+	Diversity *DiversityReporter `json:"diversity,omitempty"`
 }
 
 // EvolutionResult holds the result of a complete evolution run.

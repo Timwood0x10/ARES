@@ -20,6 +20,11 @@ type GenerationStats struct {
 	Diversity      float64        `json:"diversity"`      // overall diversity metric
 	NumDiverse     int            `json:"num_diverse"`    // count of diverse lineages
 	MutationTypes  map[string]int `json:"mutation_types"` // mutation type distribution
+
+	// RecoveryActions records diversity recovery actions taken this generation.
+	// Keys are action names (e.g., "mutation_rate_boost", "fresh_injection"),
+	// values are counts. Populated from population generation history.
+	RecoveryActions map[string]int `json:"recovery_actions,omitempty"`
 }
 
 // EvolutionReport is a comprehensive data-driven report for an evolution run.
@@ -47,6 +52,25 @@ type EvolutionReport struct {
 
 	// LineageConcentration tracks dominant lineage share (if available).
 	LineageConcentration *LineageConcentration `json:"lineage_concentration,omitempty"`
+
+	// WinnerStrategyID is the ID of the best strategy at run completion.
+	WinnerStrategyID string `json:"winner_strategy_id,omitempty"`
+	// WinnerScore is the final score of the best strategy.
+	WinnerScore float64 `json:"winner_score,omitempty"`
+	// PromotionState is the state of the winner (candidate/shadow/champion/demoted).
+	PromotionState string `json:"promotion_state,omitempty"`
+	// PromotionReason explains the promotion decision.
+	PromotionReason string `json:"promotion_reason,omitempty"`
+	// SuccessRate from evidence aggregation.
+	SuccessRate float64 `json:"success_rate,omitempty"`
+	// SampleCount from evidence aggregation.
+	SampleCount int64 `json:"sample_count,omitempty"`
+	// Confidence from evidence aggregation.
+	Confidence float64 `json:"confidence,omitempty"`
+
+	// MetaDecisionHistory records meta-controller decisions during the run.
+	// Each entry documents a tuning action, its reason, and parameter change.
+	MetaDecisionHistory []MetaDecision `json:"meta_decision_history,omitempty"`
 }
 
 // ScorerCostSummary summarizes scorer resource usage.
@@ -64,6 +88,20 @@ type LineageConcentration struct {
 	TopLineageID    string         `json:"top_lineage_id"`
 	LineageCounts   map[string]int `json:"lineage_counts"`
 	UniqueLineages  int            `json:"unique_lineages"`
+}
+
+// MetaDecision records a single meta-controller decision during the evolution run.
+type MetaDecision struct {
+	// Generation when the decision was made.
+	Generation int `json:"generation"`
+	// Action describes what was changed (e.g., "mutation_rate", "selection_strategy").
+	Action string `json:"action"`
+	// Reason explains why the change was made.
+	Reason string `json:"reason"`
+	// OldValue is the parameter value before the change.
+	OldValue string `json:"old_value"`
+	// NewValue is the parameter value after the change.
+	NewValue string `json:"new_value"`
 }
 
 // ReportOption configures GenerateReport behavior.
@@ -114,6 +152,12 @@ var ErrNilSystem = fmt.Errorf("system must not be nil")
 func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...ReportOption) (*EvolutionReport, error) {
 	if system == nil {
 		return nil, fmt.Errorf("generate report: %w", ErrNilSystem)
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 
 	cfg := &reportConfig{}
@@ -183,11 +227,17 @@ func GenerateReport(ctx context.Context, system *WiredEvolutionSystem, opts ...R
 	}
 
 	// Inject scorer cost summary if provided.
-	if cfg.scoringStats != nil && len(cfg.budgetUsage) >= 4 {
+	if cfg.scoringStats != nil && len(cfg.budgetUsage) >= 2 {
+		cacheHits := 0
+		fallbacks := 0
+		if len(cfg.budgetUsage) >= 4 {
+			cacheHits = cfg.budgetUsage[2]
+			fallbacks = cfg.budgetUsage[3]
+		}
 		report.ScorerCostSummary = &ScorerCostSummary{
 			TotalLLMCalls:  int(cfg.scoringStats["llm_calls"]),
-			TotalCacheHits: int(cfg.scoringStats["cache_hits"]),
-			TotalFallbacks: int(cfg.scoringStats["fallbacks"]),
+			TotalCacheHits: cacheHits,
+			TotalFallbacks: fallbacks,
 			LLMBudgetUsed:  cfg.budgetUsage[0],
 			LLMBudgetMax:   cfg.budgetUsage[1],
 		}
@@ -244,14 +294,15 @@ func buildGenerationStats(pop *genome.Population, stats *genome.PopulationStats)
 // so no approximation from the current population is needed.
 func historyEntryToGenerationStats(entry genome.GenerationHistoryEntry, pop *genome.Population) GenerationStats {
 	gs := GenerationStats{
-		Generation:     entry.Generation,
-		PopulationSize: entry.PopulationSize,
-		BestScore:      entry.BestScore,
-		AvgScore:       entry.AvgScore,
-		WorstScore:     entry.WorstScore,
-		Diversity:      entry.Diversity,
-		MutationTypes:  entry.MutationTypes,
-		NumDiverse:     entry.NumDiverse,
+		Generation:      entry.Generation,
+		PopulationSize:  entry.PopulationSize,
+		BestScore:       entry.BestScore,
+		AvgScore:        entry.AvgScore,
+		WorstScore:      entry.WorstScore,
+		Diversity:       entry.Diversity,
+		MutationTypes:   entry.MutationTypes,
+		NumDiverse:      entry.NumDiverse,
+		RecoveryActions: entry.RecoveryActions,
 	}
 
 	// If the history entry lacks MutationTypes (e.g., recorded before field was added),
@@ -317,6 +368,7 @@ func ReportString(r *EvolutionReport) string {
 	// Generation trajectory.
 	for _, gs := range r.GenerationTrajectory {
 		fmt.Fprintf(&b, "\n--- Generation %d ---\n", gs.Generation)
+		fmt.Fprintf(&b, "  Generation:       %d\n", gs.Generation)
 		fmt.Fprintf(&b, "  Population Size:  %d\n", gs.PopulationSize)
 		fmt.Fprintf(&b, "  Best Score:       %.4f\n", gs.BestScore)
 		fmt.Fprintf(&b, "  Avg Score:        %.4f\n", gs.AvgScore)
@@ -328,6 +380,13 @@ func ReportString(r *EvolutionReport) string {
 			b.WriteString("  Mutation Types:\n")
 			for mt, count := range gs.MutationTypes {
 				fmt.Fprintf(&b, "    %s: %d\n", mt, count)
+			}
+		}
+
+		if len(gs.RecoveryActions) > 0 {
+			b.WriteString("  Recovery Actions:\n")
+			for action, count := range gs.RecoveryActions {
+				fmt.Fprintf(&b, "    %s: %d\n", action, count)
 			}
 		}
 	}
@@ -347,6 +406,37 @@ func ReportString(r *EvolutionReport) string {
 		b.WriteString("\n--- Lineage Concentration ---\n")
 		fmt.Fprintf(&b, "  Top Lineage Share: %.2f%%\n", lc.TopLineageShare*100)
 		fmt.Fprintf(&b, "  Unique Lineages:   %d\n", lc.UniqueLineages)
+	}
+
+	// Promotion and evidence summary.
+	if r.PromotionState != "" || r.WinnerStrategyID != "" {
+		b.WriteString("\n--- Promotion Summary ---\n")
+		if r.WinnerStrategyID != "" {
+			fmt.Fprintf(&b, "  Winner:        %s\n", r.WinnerStrategyID)
+		}
+		if r.WinnerScore > 0 || r.WinnerStrategyID != "" {
+			fmt.Fprintf(&b, "  Winner Score:  %.4f\n", r.WinnerScore)
+		}
+		if r.PromotionState != "" {
+			fmt.Fprintf(&b, "  State:         %s\n", r.PromotionState)
+		}
+		if r.PromotionReason != "" {
+			fmt.Fprintf(&b, "  Reason:        %s\n", r.PromotionReason)
+		}
+		if r.SampleCount > 0 {
+			fmt.Fprintf(&b, "  Samples:       %d\n", r.SampleCount)
+			fmt.Fprintf(&b, "  Success Rate:  %.2f%%\n", r.SuccessRate*100)
+			fmt.Fprintf(&b, "  Confidence:    %.2f%%\n", r.Confidence*100)
+		}
+	}
+
+	// Meta-controller decision timeline.
+	if len(r.MetaDecisionHistory) > 0 {
+		b.WriteString("\n--- Meta-Controller Decision Timeline ---\n")
+		for _, d := range r.MetaDecisionHistory {
+			fmt.Fprintf(&b, "  Gen %d: %s (%s) %s -> %s\n",
+				d.Generation, d.Action, d.Reason, d.OldValue, d.NewValue)
+		}
 	}
 
 	b.WriteString("========================\n")

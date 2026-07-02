@@ -66,30 +66,6 @@ func (c *JSONCodec) DecodeMultiple(data []byte) ([]*AHPMessage, error) {
 	return msgs, nil
 }
 
-// MustEncode encodes a message and panics on error.
-//
-// DEPRECATED: This method is only for use in test code where failure is fatal.
-// Do not use in production code. Use Encode instead and handle the error properly.
-func (c *JSONCodec) MustEncode(msg *AHPMessage) []byte {
-	data, err := c.Encode(msg)
-	if err != nil {
-		panic(err)
-	}
-	return data
-}
-
-// MustDecode decodes data and panics on error.
-//
-// DEPRECATED: This method is only for use in test code where failure is fatal.
-// Do not use in production code. Use Decode instead and handle the error properly.
-func (c *JSONCodec) MustDecode(data []byte) *AHPMessage {
-	msg, err := c.Decode(data)
-	if err != nil {
-		panic(err)
-	}
-	return msg
-}
-
 // CodecRegistry manages available codecs.
 type CodecRegistry struct {
 	codecs map[string]Codec

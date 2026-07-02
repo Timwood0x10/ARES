@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"text/template"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // ErrNilLLMClient is returned when a nil LLM client is provided to the judge evaluator.
@@ -264,7 +266,7 @@ func (e *LLMJudgeEvaluator) parseResponse(raw string) (*judgeResponse, error) {
 	// Extract JSON from potential markdown code fences.
 	jsonStr := extractJudgeJSON(trimmed)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("%w: no valid JSON found in response: %q", ErrInvalidJudgeResponse, truncateStr(trimmed, 200))
+		return nil, fmt.Errorf("%w: no valid JSON found in response: %q", ErrInvalidJudgeResponse, truncate.WithEllipsis(trimmed, 200))
 	}
 
 	var resp judgeResponse
@@ -377,12 +379,4 @@ func findJSONEnd(s string, start int) int {
 func isValidJSON(s string) bool {
 	var js json.RawMessage
 	return json.Unmarshal([]byte(s), &js) == nil
-}
-
-// truncateStr truncates a string to the specified maximum length, appending "...".
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

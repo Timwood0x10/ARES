@@ -398,9 +398,9 @@ func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	ad.toolProb = math.Max(ad.toolProb, floor)
 
 	// Clamp to configured bounds.
-	ad.paramProb = clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
-	ad.promptProb = clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
-	ad.toolProb = clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
+	ad.paramProb = Clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
+	ad.promptProb = Clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
+	ad.toolProb = Clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
 
 	// Normalize to sum to 1.0.
 	total := ad.paramProb + ad.promptProb + ad.toolProb
@@ -411,9 +411,9 @@ func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	}
 
 	// Re-clamp after normalization to handle floating-point drift.
-	ad.paramProb = clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
-	ad.promptProb = clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
-	ad.toolProb = clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
+	ad.paramProb = Clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
+	ad.promptProb = Clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
+	ad.toolProb = Clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
 
 	slog.Debug("adaptive distribution adjusted",
 		"param_prob", ad.paramProb,
@@ -422,8 +422,8 @@ func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	)
 }
 
-// clamp restricts a value to the [min, max] range.
-func clamp(v, min, max float64) float64 {
+// Clamp restricts a value to the [min, max] range.
+func Clamp(v, min, max float64) float64 {
 	if v < min {
 		return min
 	}

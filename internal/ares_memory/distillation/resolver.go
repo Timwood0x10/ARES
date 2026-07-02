@@ -3,10 +3,15 @@ package distillation
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
+
+// ErrNoConflict is a sentinel error returned by DetectConflict when no conflicting memory is found.
+// This allows callers to distinguish "no conflict" from "no error" when both the value and err would otherwise be nil.
+var ErrNoConflict = fmt.Errorf("no conflict detected")
 
 // ConflictResolver detects and resolves memory conflicts.
 type ConflictResolver struct {
@@ -78,11 +83,11 @@ func (r *ConflictResolver) ResolveConflict(newMemory *Experience, oldMemory *Exp
 //	error - any error encountered.
 func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64, tenantID string) (*Experience, error) {
 	if r.repo == nil {
-		return nil, nil // No repository configured
+		return nil, ErrNoConflict
 	}
 
 	if len(vector) == 0 {
-		return nil, nil // No vector provided
+		return nil, ErrNoConflict
 	}
 
 	similar, err := r.repo.SearchByVector(ctx, vector, tenantID, r.searchLimit)
@@ -91,7 +96,7 @@ func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64,
 	}
 
 	if len(similar) == 0 {
-		return nil, nil
+		return nil, ErrNoConflict
 	}
 
 	for i := range similar {
@@ -104,7 +109,7 @@ func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64,
 		}
 	}
 
-	return nil, nil
+	return nil, ErrNoConflict
 }
 
 // DetectConflictByExperience detects conflicts using an Experience struct.
@@ -124,10 +129,10 @@ func (r *ConflictResolver) DetectConflict(ctx context.Context, vector []float64,
 //	error - any error encountered.
 func (r *ConflictResolver) DetectConflictByExperience(ctx context.Context, exp *Experience, tenantID string) (*Experience, error) {
 	if exp == nil {
-		return nil, nil
+		return nil, ErrNoConflict
 	}
 	if len(exp.Vector) == 0 {
-		return nil, nil // Experience has no vector
+		return nil, ErrNoConflict
 	}
 	return r.DetectConflict(ctx, exp.Vector, tenantID)
 }

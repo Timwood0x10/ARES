@@ -201,6 +201,11 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	if err != nil {
 		return fmt.Errorf("create CSV: %w", err)
 	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Error("CSV file close error (defer)", "err", err)
+		}
+	}()
 	w := csv.NewWriter(f)
 
 	if err := w.Write([]string{"date", "open", "high", "low", "close", "volume"}); err != nil {

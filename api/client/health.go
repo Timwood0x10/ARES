@@ -101,8 +101,7 @@ func checkServiceHealth(name string, svc interface{}) ServiceStatus {
 func buildHealthReport(
 	llm, memory, retrieval, workflow ServiceStatus,
 ) HealthReport {
-	// FIX: use var declaration for zero-value slice per Uber Go style rule
-	// ("nil Is a Valid Slice" — return nil instead of empty slice literal).
+	// Use var declaration for zero-value slice per Uber Go style ("nil Is a Valid Slice").
 	var configured []ServiceStatus
 	if llm.Error != "" || llm.Available {
 		configured = append(configured, llm)

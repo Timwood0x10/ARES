@@ -72,11 +72,11 @@ func (r *MemoryRepository) GetKnowledge(ctx context.Context, tenantID, itemID st
 
 	item, exists := r.knowledge[itemID]
 	if !exists {
-		return nil, nil
+		return nil, ErrKnowledgeNotFound
 	}
 
 	if item.TenantID != tenantID {
-		return nil, nil
+		return nil, ErrKnowledgeNotFound
 	}
 
 	// Return a copy to avoid mutation

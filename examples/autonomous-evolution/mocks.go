@@ -241,6 +241,49 @@ func newMockTester(scorer arena.Scorer) (*mockTester, error) {
 	return &mockTester{rt: rt}, nil
 }
 
+// mockEvidenceAggregator provides simulated evidence for the best strategy.
+type mockEvidenceAggregator struct {
+	winCount    int
+	totalCount  int
+	successRate float64
+	confidence  float64
+}
+
+func newMockEvidenceAggregator() *mockEvidenceAggregator {
+	return &mockEvidenceAggregator{
+		winCount:    8,
+		totalCount:  10,
+		successRate: 0.8,
+		confidence:  0.75,
+	}
+}
+
+func (m *mockEvidenceAggregator) Aggregate(ctx context.Context, strategyID string) (evolutionservice.Evidence, error) {
+	return evolutionservice.Evidence{
+		StrategyID:  strategyID,
+		SuccessRate: m.successRate,
+		SampleCount: int64(m.totalCount),
+		Confidence:  m.confidence,
+	}, nil
+}
+
+// mockPromotionLogic evaluates strategies for promotion based on simulated evidence.
+type mockPromotionLogic struct{}
+
+func newMockPromotionLogic() *mockPromotionLogic {
+	return &mockPromotionLogic{}
+}
+
+func (m *mockPromotionLogic) Evaluate(ctx context.Context, strategyID string, ev evolutionservice.Evidence) (string, string, error) {
+	if ev.Confidence >= 0.7 && ev.SuccessRate >= 0.75 && ev.SampleCount >= 5 {
+		return "champion", "high confidence + success rate exceed thresholds", nil
+	}
+	if ev.SampleCount >= 3 {
+		return "shadow", "sufficient data, needs more samples for champion promotion", nil
+	}
+	return "candidate", "insufficient data for promotion decision", nil
+}
+
 func (t *mockTester) Run(ctx context.Context, cfg evolution.RegressionConfig) (*evolution.RegressionResult, error) {
 	r, err := t.rt.Run(ctx, arena.RegressionConfig{
 		OldStrategy:  cfg.Baseline,

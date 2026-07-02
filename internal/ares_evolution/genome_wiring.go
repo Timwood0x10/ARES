@@ -20,6 +20,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 )
 
+// BatchScorer scores multiple internal strategies in a single call.
+// Used to reduce LLM API calls by batching strategies together.
+// The returned slice length must match the input slice length.
+type BatchScorer func(ctx context.Context, strategies []*mutation.Strategy) []float64
+
 // GenomePopulationAdapter wraps a genome.Population to implement AdapterRunner.
 // It allows the EvolutionScheduler to trigger genome-based evolution cycles
 // when agents complete tasks.
@@ -38,6 +43,13 @@ type GenomePopulationAdapter struct {
 	tieredScorer *scoring.TieredScorer
 	budget       *scoring.Budget
 	scoreCache   *scoring.ScoreCache
+
+	// batchScorer scores all agents in a single call (optional).
+	// When set together with tieredScorer and scoreCache, Run() pre-fills
+	// the cache with batch-scored values before EvolveAfterScoring, so
+	// Phase 1 finds cache hits for all agents — turning N per-agent LLM
+	// calls into ceil(N/batchSize) batched calls.
+	batchScorer BatchScorer
 
 	// Guardrails for pre/post evolution safety checks (optional).
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
@@ -231,6 +243,27 @@ func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAda
 	}
 }
 
+// WithAdapterBatchScoring sets a batch scorer that scores all unevaluated
+// strategies in a single call before the tiered scorer runs. This pre-fills
+// the score cache so the tiered scorer finds cache hits during Phase 1 of
+// EvolveAfterScoring, reducing N per-agent LLM calls to ceil(N/batchSize)
+// batched calls.
+//
+// Requires tieredScorer and scoreCache to be set (via WithAdapterTieredScoring).
+//
+// Args:
+//
+//	bs - the batch scorer function.
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterBatchScoring(bs BatchScorer) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.batchScorer = bs
+	}
+}
+
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
 // triggered by scheduler. The atomic API handles pre-scoring, evolution, and
 // post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
@@ -249,6 +282,25 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		// Use tiered scorer pipeline: cache → LLM(budget-gated) → heuristic.
 		// Reset per-generation budget at start of each cycle.
 		a.tieredScorer.ResetForGeneration()
+
+		// Pre-fill cache with batch-scored values before tiered scoring runs.
+		// This turns N per-agent LLM calls into ceil(N/batchSize) batched calls.
+		if a.batchScorer != nil && a.scoreCache != nil {
+			agents, ver := a.pop.Snapshot()
+			if len(agents) > 0 {
+				scores := a.batchScorer(ctx, agents)
+				n := min(len(scores), len(agents))
+				for i := 0; i < n; i++ {
+					hash, err := scoring.StrategyHash(agents[i])
+					if err == nil {
+						a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
+					}
+				}
+				slog.DebugContext(ctx, "[GenomeAdapter] Pre-filled score cache via batch scorer",
+					"count", n, "version", ver, "scored", len(scores))
+			}
+		}
+
 		scorer = func(s *mutation.Strategy) float64 {
 			// When memory-aware scorer is set, delegate through it to get
 			// evidence-based bonuses and cost/latency penalties.
@@ -647,6 +699,7 @@ func (r *PopulationGenealogyRecorder) Count() int {
 //
 //	ctx - operation context.
 //	pop - the post-evolution population to extract lineage from.
+//	parentSnapshot - pre-evolution snapshot for parent score lookup (may be nil).
 //	prevGeneration - the generation number before evolution (for filtering).
 //
 // Returns:
@@ -657,6 +710,7 @@ func RecordPopulationLineage(
 	ctx context.Context,
 	pop *genome.Population,
 	recorder GenealogyRecorder,
+	parentSnapshot []*mutation.Strategy,
 	prevGeneration int,
 ) (int, error) {
 	if pop == nil || recorder == nil {
@@ -665,6 +719,12 @@ func RecordPopulationLineage(
 
 	// Snapshot provides a thread-safe locked read of all agents and generation.
 	agents, generation := pop.Snapshot()
+
+	// Build parent score lookup from pre-evolution snapshot.
+	parentScores := make(map[string]float64, len(parentSnapshot))
+	for _, p := range parentSnapshot {
+		parentScores[p.ID] = p.Score
+	}
 
 	count := 0
 	seen := make(map[string]bool, len(agents))
@@ -682,11 +742,38 @@ func RecordPopulationLineage(
 		}
 		seen[key] = true
 
+		// Compute score improvement: child score - parent score.
+		parentScore, ok := parentScores[agent.ParentID]
+		if !ok {
+			// Handle crossover: ParentID may contain "\u00d7" separator.
+			if parts := strings.Split(agent.ParentID, "\u00d7"); len(parts) == 2 {
+				if ps1, ok1 := parentScores[parts[0]]; ok1 {
+					if ps2, ok2 := parentScores[parts[1]]; ok2 {
+						parentScore = (ps1 + ps2) / 2
+						ok = true
+					}
+				}
+			}
+		}
+
+		scoreDelta := 0.0
+		winRate := 0.0
+		if ok {
+			scoreDelta = agent.Score - parentScore
+			if scoreDelta > 0 {
+				winRate = 1.0
+			}
+		}
+
 		lineage := StrategyLineage{
-			ParentID:     agent.ParentID,
-			ChildID:      agent.ID,
-			MutationType: agent.StrategyMutationType.String(),
-			Timestamp:    agent.CreatedAt.Unix(),
+			ParentID:         agent.ParentID,
+			ChildID:          agent.ID,
+			MutationType:     agent.StrategyMutationType.String(),
+			WinRate:          winRate,
+			ScoreImprovement: scoreDelta,
+			ParentScore:      parentScore,
+			ChildScore:       agent.Score,
+			Timestamp:        agent.CreatedAt.Unix(),
 		}
 
 		if err := recorder.Record(ctx, lineage); err != nil {

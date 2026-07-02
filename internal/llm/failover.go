@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 )
@@ -283,6 +284,61 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 		len(fc.clients), lastErr)
 }
 
+// Chat tries each LLM client in order and returns the first successful chat
+// response with tool support. Failed providers are cooled down with the same
+// policy as Generate.
+// Args:
+//
+//	ctx - operation context.
+//	messages - conversation messages.
+//	tools - available tools for function calling.
+//
+// Returns:
+//
+//	*core.GenerateResponse - the chat response including optional tool_calls.
+//	error - all clients failed or no provider available.
+func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+	var lastErr error
+
+	for _, client := range fc.clients {
+		key := fc.clientKey(client)
+
+		if fc.isCooledDown(key) {
+			log.Debug("FailoverClient: skipping cooled-down provider (chat)",
+				"provider", client.GetProvider(),
+				"model", client.GetModel(),
+			)
+			continue
+		}
+
+		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
+		resp, err := client.Chat(cctx, messages, tools)
+		cancel()
+
+		if err == nil {
+			fc.clearCooldown(key)
+			return resp, nil
+		}
+
+		lastErr = err
+		cd := fc.cooldownForError(err)
+		fc.markCooldown(key)
+
+		log.Warn("FailoverClient: provider failed on chat, cooling down",
+			"provider", client.GetProvider(),
+			"model", client.GetModel(),
+			"cooldown", cd,
+			"error", err,
+		)
+	}
+
+	if lastErr == nil {
+		return nil, fmt.Errorf("FailoverClient: no provider available for chat")
+	}
+	return nil, fmt.Errorf("FailoverClient: all chat clients failed; last error: %w",
+		lastErr)
+}
+
 // IsEnabled returns true if the primary client is enabled.
 func (fc *FailoverClient) IsEnabled() bool {
 	if len(fc.clients) == 0 {
@@ -353,10 +409,11 @@ func (fc *FailoverClient) ActiveProviders() []string {
 // Deprecated: Use FailoverClient instead.
 type FailoverScorer = FailoverClient
 
-// Ensure FailoverClient satisfies the common Generate interface.
+// Ensure FailoverClient satisfies the common Generate and Chat interfaces.
 var _ interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error)
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-07-02
+
+### Performance
+
+- **GA Diversity Sampling**: Added `DiversitySampleSize` config (default 200) to estimate numeric diversity via random neighbor sampling instead of O(n²) exact computation. Stats(pop=1000) latency dropped **38%** (69.5ms → 43.3ms). Configurable per `PopulationConfig.DiversitySampleSize`.
+- **Fitness Sharing Optimization**: Replaced per-agent Fisher-Yates full permutation with Reservoir Sampling in `applyFitnessSharingSampled`. Allocation reduced **44%** for all population sizes (pop=100: 185→106 allocs, pop=500: 905→506 allocs). GC pressure halved in large evolution runs.
+- **Subscribe Allocation Reduction**: Replaced UUID subscription IDs with `atomic.Int64` counter and removed `*sync.Once` per subscriber. Allocs reduced **33%** (900→600 per 100 subscribers). Channel buffer increased from 1→64 to reduce burst drops.
+- **Benchmark Report**: Comprehensive benchmark report across all modules (events, GA genome/evaluation, memory distillation, tools core, handlers, errors) with full platform config (Apple M3 Max, Go 1.26, 3-run average).
+
+### New Features
+
+- **Memory Pipeline Complete**: End-to-end memory pipeline with `ReportGenerator`, `PushService`, and report formatting for human-readable evolution summaries. Full cycle: evaluation → distillation → report → push.
+- **Agent Age Eviction**: `AgentMaxAge` config limits strategy lifespan; `GenerationCreated` tracking ensures agents survive exactly `AgentMaxAge` generations. Legacy strategies (GenerationCreated==0) exempted.
+- **Confidence Calculation**: Added sample-based confidence to `AggregateEvidenceCrossTask`, enabling evidence quality scoring in cross-task aggregation.
+
+### Refactors
+
+- **Truncate Utility Consolidation**: Unified `internal/ares_memory/internal/truncate` package for reusable truncation logic across memory and LLM modules.
+- **Evidence Logic Cleanup**: `AggregateEvidence` refactored for clarity; cross-task evidence aggregation now filters mixed-task noise with `AggregateEvidenceCrossTask`.
+- **FIXME Cleanup (22 files)**: Removed stale FIXME comments in `internal/ares_quant/`, `internal/api_impl/`, `api/client/`, `internal/ares_events/`, `internal/storage/postgres/services/`. All had already been implemented but comments were not updated.
+- **Promotion Logic**: Tightened statistical bands (5-20x → 6-18x) in `selection_extra_test.go` and reduced low-scorer threshold (5% → 0.2%) for more deterministic selection verification.
+
+### Bug Fixes
+
+- **Ignored json.Marshal Errors**: Fixed 4 ignored `json.Marshal` calls in `internal/ares_events/summary_repository.go` — previously would silently produce `null` DB values on serialization failure. Now errors propagate with `fmt.Errorf("marshal %s: %w", ...)`.
+- **Errgroup Context Propagation**: In `internal/api_impl/service.go`, `errgroup.WithContext(ctx)` returned a derived context cancelled on sibling errors — but it was discarded with `_`. Fix: `s.g, s.ctx = errgroup.WithContext(ctx)` to enable proper error propagation.
+- **SSE Health Probe**: Implemented real SSE health check via `ConnectSSE` instead of hardcoded assumed healthy.
+- **Generation Logging**: Fixed generation=0 in logs by using absolute `Population.Generation` in callback_gen.
+- **GenerationCreated Off-by-One**: Use Generation+1 so agents survive exactly `AgentMaxAge` generations.
+- **Guardrail Config Default**: Inverted `PromptDiversityGuardEnabled` → `DisablePromptDiversityGuard` (default enabled).
+
+### Code Quality
+
+- **Unit Test Coverage (service.go)**: Added `internal/ares_evolution/service/service_test.go` (383 lines, 23 test cases). Coverage of `service.go` increased **16.3% → 47.2%**. Key functions: `NewService` 93.3%, `Evolve` 80.4%, `toAPIStrategy`/`toInternalStrategy`/`cloneDimensionScores` all 100%.
+- **LLM Scorer Tests**: Added pure-logic tests for `extractScoreFromText`, `fallbackScore`, `buildPrompt`, `parseScore` (35 table-driven test cases). No LLM required.
+- **Task Planner Tests**: Consolidated 10 repetitive test functions into 2 table-driven tests with meaningful `result.Error` content assertions. `TestFormatToolsList` converted to table-driven.
+- **Test Weakness Assessment**: Sampled 20+ non-testify test files — confirmed they have meaningful multi-field assertions (not perfunctory). Postgres integration tests properly isolated behind `//go:build integration`.
+- **Docker Compose Update**: Added Ollama service for local LLM fallback in development stack. Updated benchmark links in both EN and CN README.
+
 ## [0.2.4] - 2026-06-28
 
 ### New Features

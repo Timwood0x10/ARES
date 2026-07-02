@@ -3,6 +3,7 @@ package genome
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func newSelStrategy(id string, score float64) *mutation.Strategy {
 func makePopulation(scores ...float64) []*mutation.Strategy {
 	pop := make([]*mutation.Strategy, 0, len(scores))
 	for i, s := range scores {
-		pop = append(pop, newSelStrategy(string(rune('A'+i)), s))
+		pop = append(pop, newSelStrategy(fmt.Sprintf("S%d", i), s))
 	}
 	return pop
 }
@@ -556,8 +557,8 @@ func TestRouletteWheelSelection(t *testing.T) {
 			t.Fatalf("got %d results, want 10", len(result))
 		}
 		for i, s := range result {
-			if s.ID != "A" {
-				t.Errorf("index %d: got ID %q, want A", i, s.ID)
+			if s.ID != "S0" {
+				t.Errorf("index %d: got ID %q, want S0", i, s.ID)
 			}
 		}
 	})
@@ -607,11 +608,11 @@ func TestRouletteWheelSelection(t *testing.T) {
 			counts[result[0].ID]++
 		}
 
-		dCount := counts["D"] // 15.0 highest
-		aCount := counts["A"] // 0.0 lowest
+		dCount := counts["S3"] // 15.0 highest
+		aCount := counts["S0"] // 0.0 lowest
 
-		t.Logf("mixed dist: A(0)=%d, B(5)=%d, C(10)=%d, D(15)=%d",
-			counts["A"], counts["B"], counts["C"], dCount)
+		t.Logf("mixed dist: S0(0)=%d, S1(5)=%d, S2(10)=%d, S3(15)=%d",
+			counts["S0"], counts["S1"], counts["S2"], dCount)
 
 		if dCount <= aCount {
 			t.Error("highest score should be selected most often")
@@ -752,12 +753,26 @@ func TestSelectionInterface(t *testing.T) {
 	rw, _ := NewRouletteWheelSelection()
 	var _ Selection = rw
 
+	lr, _ := NewLineageRankSelection()
+	var _ Selection = lr
+
+	rs := NewRankSelection()
+	var _ Selection = rs
+
+	sus := NewSUSSelection()
+	var _ Selection = sus
+
 	// Verify interface works polymorphically.
 	selectors := []struct {
 		name string
 		sel  Selection
 	}{
 		{"truncation", NewTruncationSelection()},
+		{"tournament", ts},
+		{"roulette", rw},
+		{"lineage_rank", lr},
+		{"rank", rs},
+		{"sus", sus},
 	}
 
 	for _, tc := range selectors {
@@ -816,6 +831,516 @@ func TestValidateSelectInputs(t *testing.T) {
 	})
 }
 
+// --- LineageRankSelection tests ---
+
+func TestLineageRankSelection_Select(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns correct count", func(t *testing.T) {
+		ls, err := NewLineageRankSelection(WithLineageRankSeed(42))
+		if err != nil {
+			t.Fatalf("create selector: %v", err)
+		}
+
+		pop := makePopulation(100.0, 80.0, 60.0, 40.0, 20.0)
+		pop[0].ParentID = "A"
+		pop[1].ParentID = "A"
+		pop[2].ParentID = "B"
+		pop[3].ParentID = "B"
+		pop[4].ParentID = "C"
+
+		result, err := ls.Select(ctx, pop, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 3 {
+			t.Fatalf("got %d results, want 3", len(result))
+		}
+	})
+
+	t.Run("penalty increases underrepresented lineage selection", func(t *testing.T) {
+		// Compare threshold=0 (max penalty) vs threshold=1 (no penalty)
+		// with the same seed. Underrepresented lineage B should be selected
+		// more often when penalty is enabled.
+		lsWithPenalty, _ := NewLineageRankSelection(
+			WithLineageRankSeed(42),
+			WithLineagePenaltyThreshold(0),
+		)
+		lsNoPenalty, _ := NewLineageRankSelection(
+			WithLineageRankSeed(42),
+			WithLineagePenaltyThreshold(1),
+		)
+
+		// Lineage A has 3/5 = 60% share, lineage B has 2/5 = 40%.
+		pop := makePopulation(100.0, 90.0, 85.0, 80.0, 70.0)
+		pop[0].ParentID = "A"
+		pop[1].ParentID = "A"
+		pop[2].ParentID = "A"
+		pop[3].ParentID = "B"
+		pop[4].ParentID = "B"
+
+		// With threshold=0: A share=0.6, excess=0.6/(1.0-0)=0.6, penalty=0.5*0.6=0.3
+		//   A weights: 5*0.7=3.5, 4*0.7=2.8, 3*0.7=2.1 → sum=8.4
+		//   B share=0.4, excess=0.4, penalty=0.2
+		//   B weights: 2*0.8=1.6, 1*0.8=0.8 → sum=2.4
+		//   Total=10.8, expected B probability = 2.4/10.8 ≈ 22.22%
+		//   N=5000, μ=1111.1, σ=√(5000*0.2222*0.7778)≈29.4, ±3σ → [1023, 1199]
+		//
+		// With threshold=1: no penalty (share never >1.0)
+		//   A weights: 5, 4, 3 → sum=12
+		//   B weights: 2, 1 → sum=3
+		//   Total=15, expected B probability = 3/15 = 20.0%
+		//   N=5000, μ=1000.0, σ=√(5000*0.20*0.80)≈28.3, ±3σ → [915, 1085]
+
+		countPenalty := runLineageSelection(t, ctx, lsWithPenalty, pop, 5000)
+		countNoPenalty := runLineageSelection(t, ctx, lsNoPenalty, pop, 5000)
+
+		pB := countPenalty["B"]
+		nB := countNoPenalty["B"]
+
+		t.Logf("with penalty:  A=%d, B=%d (B share=%.1f%%)",
+			countPenalty["A"], pB, float64(pB)/50.0)
+		t.Logf("no penalty:    A=%d, B=%d (B share=%.1f%%)",
+			countNoPenalty["A"], nB, float64(nB)/50.0)
+
+		// Direction: penalty should increase B's count vs no penalty.
+		if pB <= nB {
+			t.Errorf("penalty should increase B selections: with=%d, without=%d", pB, nB)
+		}
+
+		// Range: with penalty, B share must be within 3σ of 22.22%.
+		const (
+			expectedBWithPenalty = 1111
+			maxDev3SigmaPenalty  = 88 // 3 * 29.4, rounded up
+		)
+		if pB < expectedBWithPenalty-maxDev3SigmaPenalty || pB > expectedBWithPenalty+maxDev3SigmaPenalty {
+			t.Errorf("with penalty B count %d outside 3σ range [%d, %d] (expected ~%d, share %.1f%%)",
+				pB,
+				expectedBWithPenalty-maxDev3SigmaPenalty,
+				expectedBWithPenalty+maxDev3SigmaPenalty,
+				expectedBWithPenalty,
+				float64(pB)/50.0)
+		}
+
+		// Range: without penalty (threshold=1), B share must be within 3σ of 20.0%.
+		const (
+			expectedBNoPenalty = 1000
+			maxDev3SigmaNoPen  = 85 // 3 * 28.3, rounded up
+		)
+		if nB < expectedBNoPenalty-maxDev3SigmaNoPen || nB > expectedBNoPenalty+maxDev3SigmaNoPen {
+			t.Errorf("no penalty B count %d outside 3σ range [%d, %d] (expected ~%d, share %.1f%%)",
+				nB,
+				expectedBNoPenalty-maxDev3SigmaNoPen,
+				expectedBNoPenalty+maxDev3SigmaNoPen,
+				expectedBNoPenalty,
+				float64(nB)/50.0)
+		}
+	})
+
+	t.Run("no penalty with threshold=1", func(t *testing.T) {
+		ls, err := NewLineageRankSelection(
+			WithLineageRankSeed(42),
+			WithLineagePenaltyThreshold(1),
+		)
+		if err != nil {
+			t.Fatalf("create selector: %v", err)
+		}
+
+		pop := makePopulation(100.0, 90.0, 80.0)
+		pop[0].ParentID = "A"
+		pop[1].ParentID = "A"
+		pop[2].ParentID = "B"
+
+		result, err := ls.Select(ctx, pop, 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+	})
+
+	t.Run("invalid threshold out of range", func(t *testing.T) {
+		_, err := NewLineageRankSelection(WithLineagePenaltyThreshold(1.5))
+		if err == nil {
+			t.Fatal("expected error for threshold > 1")
+		}
+		_, err = NewLineageRankSelection(WithLineagePenaltyThreshold(-0.1))
+		if err == nil {
+			t.Fatal("expected error for threshold < 0")
+		}
+	})
+
+	t.Run("invalid strength out of range", func(t *testing.T) {
+		_, err := NewLineageRankSelection(WithLineagePenaltyStrength(1.5))
+		if err == nil {
+			t.Fatal("expected error for strength > 1")
+		}
+	})
+}
+
+func TestLineageRankSelection_EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty population returns error", func(t *testing.T) {
+		ls, _ := NewLineageRankSelection()
+		_, err := ls.Select(ctx, []*mutation.Strategy{}, 2)
+		if err == nil {
+			t.Fatal("expected error for empty population")
+		}
+		if !errors.Is(err, ErrSelectionEmptyPopulation) {
+			t.Errorf("got %v, want ErrSelectionEmptyPopulation", err)
+		}
+	})
+
+	t.Run("n zero returns error", func(t *testing.T) {
+		ls, _ := NewLineageRankSelection()
+		pop := makePopulation(10.0, 20.0)
+		_, err := ls.Select(ctx, pop, 0)
+		if err == nil {
+			t.Fatal("expected error for n=0")
+		}
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ls, _ := NewLineageRankSelection()
+		cancel()
+
+		pop := makePopulation(1.0, 2.0, 3.0)
+		_, err := ls.Select(ctx, pop, 10000)
+		if err == nil {
+			t.Fatal("expected context cancellation error")
+		}
+	})
+
+	t.Run("deterministic with same seed", func(t *testing.T) {
+		ctx := context.Background()
+		ls1, _ := NewLineageRankSelection(WithLineageRankSeed(999))
+		ls2, _ := NewLineageRankSelection(WithLineageRankSeed(999))
+
+		pop := makePopulation(1.0, 2.0, 3.0, 4.0, 5.0)
+
+		result1, err := ls1.Select(ctx, pop, 5)
+		if err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		result2, err := ls2.Select(ctx, pop, 5)
+		if err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+
+		for i := range result1 {
+			if result1[i].ID != result2[i].ID {
+				t.Errorf("index %d: got %q, want %q (not deterministic)", i, result1[i].ID, result2[i].ID)
+			}
+		}
+	})
+}
+
+// runLineageSelection runs n single-selection iterations and returns per-lineage counts.
+// Errors from the selector are fatal — silent skipping would mask regressions.
+func runLineageSelection(t *testing.T, ctx context.Context, ls *LineageRankSelection, pop []*mutation.Strategy, n int) map[string]int {
+	t.Helper()
+	counts := make(map[string]int)
+	for i := 0; i < n; i++ {
+		result, err := ls.Select(ctx, pop, 1)
+		if err != nil {
+			t.Fatalf("lineage selection iteration %d: %v", i, err)
+		}
+		if len(result) > 0 {
+			pid := result[0].ParentID
+			if pid == "" {
+				pid = "(root)"
+			}
+			counts[pid]++
+		}
+	}
+	return counts
+}
+
+// --- SUSSelection tests ---
+
+func TestSUSSelection_Select(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns correct count", func(t *testing.T) {
+		sus := NewSUSSelection()
+		pop := makePopulation(10.0, 20.0, 30.0, 40.0, 50.0)
+		result, err := sus.Select(ctx, pop, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 3 {
+			t.Fatalf("got %d results, want 3", len(result))
+		}
+	})
+
+	t.Run("higher scores selected more often", func(t *testing.T) {
+		sus := NewSUSSelection()
+
+		pop := []*mutation.Strategy{
+			newSelStrategy("low", 1.0),
+			newSelStrategy("medium", 10.0),
+			newSelStrategy("high", 100.0),
+		}
+
+		counts := make(map[string]int)
+		iterations := 2000
+		for i := 0; i < iterations; i++ {
+			result, err := sus.Select(ctx, pop, 1)
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			counts[result[0].ID]++
+		}
+
+		highCount := counts["high"]
+		medCount := counts["medium"]
+		lowCount := counts["low"]
+
+		t.Logf("SUS distribution: high=%d, medium=%d, low=%d",
+			highCount, medCount, lowCount)
+
+		if highCount <= lowCount {
+			t.Errorf("high scorer (%d) should be selected more than low scorer (%d)",
+				highCount, lowCount)
+		}
+
+		// Proportionality: with scores [1, 10, 100], expected ratio is ~1:10:100.
+		// high should be at least 5x medium (conservative bound).
+		if medCount > 0 && highCount < medCount*5 {
+			t.Errorf("high:medium ratio too low: %d:%d, expected high >> medium",
+				highCount, medCount)
+		}
+	})
+
+	t.Run("all unevaluated returns error", func(t *testing.T) {
+		sus := NewSUSSelection()
+		pop := []*mutation.Strategy{
+			newSelStrategy("a", -1),
+			newSelStrategy("b", -1),
+		}
+		_, err := sus.Select(ctx, pop, 1)
+		if !errors.Is(err, ErrSelectionEmptyPopulation) {
+			t.Errorf("got %v, want ErrSelectionEmptyPopulation", err)
+		}
+	})
+
+	t.Run("mixed evaluated and unevaluated", func(t *testing.T) {
+		sus := NewSUSSelection()
+		pop := []*mutation.Strategy{
+			newSelStrategy("ev1", 10.0),
+			newSelStrategy("unev", -1),
+			newSelStrategy("ev2", 20.0),
+		}
+		result, err := sus.Select(ctx, pop, 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+		for _, s := range result {
+			if s.Score < 0 {
+				t.Errorf("unevaluated strategy should not be selected")
+			}
+		}
+	})
+}
+
+func TestSUSSelection_UniformDistribution(t *testing.T) {
+	ctx := context.Background()
+	sus := NewSUSSelection()
+
+	pop := makePopulation(5.0, 5.0, 5.0, 5.0, 5.0)
+
+	counts := make(map[string]int)
+	iterations := 5000
+	for i := 0; i < iterations; i++ {
+		result, err := sus.Select(ctx, pop, 1)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		counts[result[0].ID]++
+	}
+
+	expected := iterations / len(pop)
+	tolerance := expected / 10 // 10% tolerance
+
+	for id, count := range counts {
+		diff := count - expected
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > tolerance {
+			t.Errorf("%s: got %d selections, expected ~%d (±%d)", id, count, expected, tolerance)
+		}
+	}
+}
+
+func TestSUSSelection_EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty population returns error", func(t *testing.T) {
+		sus := NewSUSSelection()
+		_, err := sus.Select(ctx, []*mutation.Strategy{}, 2)
+		if err == nil {
+			t.Fatal("expected error for empty population")
+		}
+	})
+
+	t.Run("n zero returns error", func(t *testing.T) {
+		sus := NewSUSSelection()
+		pop := makePopulation(10.0, 20.0)
+		_, err := sus.Select(ctx, pop, 0)
+		if err == nil {
+			t.Fatal("expected error for n=0")
+		}
+	})
+
+	t.Run("n greater than pop size succeeds", func(t *testing.T) {
+		sus := NewSUSSelection()
+		pop := makePopulation(10.0, 20.0, 30.0)
+		result, err := sus.Select(ctx, pop, 50)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 50 {
+			t.Fatalf("got %d results, want 50", len(result))
+		}
+	})
+}
+
+// --- RankSelection tests ---
+
+func TestRankSelection_Select(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns correct count", func(t *testing.T) {
+		rs := NewRankSelection()
+		pop := makePopulation(10.0, 20.0, 30.0)
+		result, err := rs.Select(ctx, pop, 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+	})
+
+	t.Run("higher scores selected more often", func(t *testing.T) {
+		rs := NewRankSelection()
+
+		pop := []*mutation.Strategy{
+			newSelStrategy("low", 1.0),
+			newSelStrategy("med", 10.0),
+			newSelStrategy("high", 100.0),
+		}
+
+		counts := make(map[string]int)
+		iterations := 2000
+		for i := 0; i < iterations; i++ {
+			result, err := rs.Select(ctx, pop, 1)
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			counts[result[0].ID]++
+		}
+
+		highCount := counts["high"]
+		lowCount := counts["low"]
+
+		t.Logf("Rank distribution: high=%d, med=%d, low=%d",
+			highCount, counts["med"], lowCount)
+
+		if highCount <= lowCount {
+			t.Errorf("high scorer (%d) should be selected more than low scorer (%d)",
+				highCount, lowCount)
+		}
+	})
+
+	t.Run("all equal scores uniform distribution", func(t *testing.T) {
+		rs := NewRankSelection()
+		pop := makePopulation(5.0, 5.0, 5.0)
+
+		counts := make(map[string]int)
+		iterations := 3000
+		for i := 0; i < iterations; i++ {
+			result, err := rs.Select(ctx, pop, 1)
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			counts[result[0].ID]++
+		}
+
+		// Rank still assigns different weights by position: 3, 2, 1
+		// S0 gets rank 3 (highest), S1 gets 2, S2 gets 1
+		// S0 should have higher selection than S2
+		if counts["S0"] <= counts["S2"] {
+			t.Errorf("S0 (rank=3, count=%d) should be selected more than S2 (rank=1, count=%d)",
+				counts["S0"], counts["S2"])
+		}
+	})
+
+	t.Run("single individual selected repeatedly", func(t *testing.T) {
+		rs := NewRankSelection()
+		pop := makePopulation(42.0)
+		result, err := rs.Select(ctx, pop, 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 5 {
+			t.Fatalf("got %d results, want 5", len(result))
+		}
+	})
+}
+
+func TestRankSelection_EdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty population returns error", func(t *testing.T) {
+		rs := NewRankSelection()
+		_, err := rs.Select(ctx, []*mutation.Strategy{}, 2)
+		if err == nil {
+			t.Fatal("expected error for empty population")
+		}
+	})
+
+	t.Run("n zero returns error", func(t *testing.T) {
+		rs := NewRankSelection()
+		pop := makePopulation(10.0, 20.0)
+		_, err := rs.Select(ctx, pop, 0)
+		if err == nil {
+			t.Fatal("expected error for n=0")
+		}
+	})
+
+	t.Run("n greater than pop size succeeds", func(t *testing.T) {
+		rs := NewRankSelection()
+		pop := makePopulation(10.0, 20.0)
+		result, err := rs.Select(ctx, pop, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != 10 {
+			t.Fatalf("got %d results, want 10", len(result))
+		}
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		rs := NewRankSelection()
+		cancel()
+
+		pop := makePopulation(1.0, 2.0, 3.0, 4.0, 5.0)
+		_, err := rs.Select(ctx, pop, 100000)
+		if err == nil {
+			t.Fatal("expected context cancellation error")
+		}
+	})
+}
+
 // --- Helper function tests ---
 
 func TestFindMinScore(t *testing.T) {
@@ -834,29 +1359,6 @@ func TestFindMinScore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := findMinScore(tt.pop)
-			if got != tt.expected {
-				t.Errorf("got %.1f, want %.1f", got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestSumFloat64(t *testing.T) {
-	tests := []struct {
-		name     string
-		values   []float64
-		expected float64
-	}{
-		{"empty slice", []float64{}, 0.0},
-		{"single value", []float64{5.0}, 5.0},
-		{"multiple values", []float64{1.0, 2.0, 3.0}, 6.0},
-		{"negative values", []float64{-1.0, -2.0, 3.0}, 0.0},
-		{"zeros", []float64{0.0, 0.0, 0.0}, 0.0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sumFloat64(tt.values)
 			if got != tt.expected {
 				t.Errorf("got %.1f, want %.1f", got, tt.expected)
 			}

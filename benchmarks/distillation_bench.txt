@@ -1,0 +1,31 @@
+BenchmarkScoreMemory-14             	  195710	      6166 ns/op	    8096 B/op	      20 allocs/op
+BenchmarkScoreMemory-14             	  196196	      6134 ns/op	    8096 B/op	      20 allocs/op
+BenchmarkScoreMemory-14             	  195794	      6337 ns/op	    8096 B/op	      20 allocs/op
+BenchmarkConflictDetection-14       	 1000000	      1100 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConflictDetection-14       	 1000000	      1093 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConflictDetection-14       	 1000000	      1075 ns/op	       0 B/op	       0 allocs/op
+BenchmarkNoiseFilter-14             	  173421	      6980 ns/op	     592 B/op	      11 allocs/op
+BenchmarkNoiseFilter-14             	  173666	      6955 ns/op	     592 B/op	      11 allocs/op
+BenchmarkNoiseFilter-14             	  171294	      7034 ns/op	     592 B/op	      11 allocs/op
+BenchmarkMemoryClassification-14    	  613152	      1990 ns/op	     592 B/op	      15 allocs/op
+BenchmarkMemoryClassification-14    	  594060	      1997 ns/op	     592 B/op	      15 allocs/op
+BenchmarkMemoryClassification-14    	  590496	      1965 ns/op	     592 B/op	      15 allocs/op
+BenchmarkExperienceExtraction-14    	    8065	    150206 ns/op	   21200 B/op	     267 allocs/op
+BenchmarkExperienceExtraction-14    	    7992	    155103 ns/op	   21200 B/op	     267 allocs/op
+BenchmarkExperienceExtraction-14    	    8026	    155486 ns/op	   21200 B/op	     267 allocs/op
+BenchmarkTopNFilter-14              	  367611	      3093 ns/op	   12040 B/op	      10 allocs/op
+BenchmarkTopNFilter-14              	  559966	      2413 ns/op	    5896 B/op	       9 allocs/op
+BenchmarkTopNFilter-14              	  375064	      3202 ns/op	   12040 B/op	      10 allocs/op
+BenchmarkMemoryOperations/Create-14 	13336074	        91.78 ns/op	      24 B/op	       2 allocs/op
+BenchmarkMemoryOperations/Create-14 	13277407	        91.94 ns/op	      24 B/op	       2 allocs/op
+BenchmarkMemoryOperations/Create-14 	13166310	        90.77 ns/op	      24 B/op	       2 allocs/op
+BenchmarkMemoryOperations/Classification-14         	 4165071	       288.7 ns/op	      64 B/op	       3 allocs/op
+BenchmarkMemoryOperations/Classification-14         	 4181010	       295.4 ns/op	      64 B/op	       3 allocs/op
+BenchmarkMemoryOperations/Classification-14         	 3832088	       301.1 ns/op	      64 B/op	       3 allocs/op
+BenchmarkStringOperations/Format-14                 	16182793	        75.34 ns/op	      64 B/op	       3 allocs/op
+BenchmarkStringOperations/Format-14                 	16214234	        75.97 ns/op	      64 B/op	       3 allocs/op
+BenchmarkStringOperations/Format-14                 	16193166	        72.88 ns/op	      64 B/op	       3 allocs/op
+BenchmarkDistillation-14                            	2026/07/02 11:38:33 INFO [Memory Distillation] Starting distillation process conversation_id=bench-conv tenant_id=default user_id=user1 message_count=2 timestamp=2026-07-02T11:38:33+08:00
+BenchmarkDistillation-14                            	2026/07/02 11:38:35 INFO [Memory Distillation] Starting distillation process conversation_id=bench-conv tenant_id=default user_id=user1 message_count=2 timestamp=2026-07-02T11:38:35+08:00
+BenchmarkDistillation-14                            	2026/07/02 11:38:36 INFO [Memory Distillation] Starting distillation process conversation_id=bench-conv tenant_id=default user_id=user1 message_count=2 timestamp=2026-07-02T11:38:36+08:00
+ok  	github.com/Timwood0x10/ares/internal/ares_memory/distillation	41.938s

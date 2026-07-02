@@ -12,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // Node represents an executable unit in the graph.
@@ -162,10 +163,10 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 			payload["error"] = err.Error()
 		} else if !result.Success {
 			payload["status"] = "failed"
-			payload["summary"] = truncateString(result.Error, 200)
+			payload["summary"] = truncate.WithEllipsis(result.Error, 200)
 		} else {
 			payload["status"] = "success"
-			payload["summary"] = truncateString(fmt.Sprintf("%v", result.Data), 200)
+			payload["summary"] = truncate.WithEllipsis(fmt.Sprintf("%v", result.Data), 200)
 		}
 		n.eventSink(ctx, ares_events.EventToolCallCompleted, payload)
 	}
@@ -180,18 +181,6 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 		state.Set("node."+toolName, result.Error)
 	}
 	return nil
-}
-
-// truncateString truncates a string to maxLen runes.
-func truncateString(s string, maxLen int) string {
-	if maxLen <= 0 || len(s) <= maxLen {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
 }
 
 // ID returns the tool name.

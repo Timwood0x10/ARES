@@ -92,7 +92,7 @@ func (r *CheckpointRepository) GetLatest(ctx context.Context, leaderID string) (
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return nil, errors.ErrNotFound
 		}
 		return nil, errors.Wrap(err, "get latest checkpoint")
 	}

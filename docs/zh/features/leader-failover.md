@@ -47,7 +47,7 @@ sequenceDiagram
 
 ### HeartbeatMonitor
 
-位于 `internal/protocol/ahp/heartbeat.go`。定期检测 Agent 心跳，超时后标记为 offline 并触发回调。
+位于 `internal/ares_protocol/ahp/heartbeat.go`。定期检测 Agent 心跳，超时后标记为 offline 并触发回调。
 
 ```go
 // 配置心跳参数

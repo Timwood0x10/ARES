@@ -1,0 +1,268 @@
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=test-above-threshold summary_id=06e7c774-37f9-4a65-b516-10623859232f events_compacted=22 version_range=1-22
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=test-keeprecent-zero summary_id=27a26d62-d6b2-47fb-a05d-2ef9664d2127 events_compacted=20 version_range=1-20
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=test-type-counts summary_id=bf73e4ad-6df5-41c4-8e57-3af1bde25a31 events_compacted=9 version_range=1-9
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=test-task-extract summary_id=dbd04107-31b3-4812-bd4e-ecc661a9043c events_compacted=5 version_range=1-5
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=test-custom-summarizer summary_id=fe538b42-9d1e-456c-a41f-a4347a5de50a events_compacted=5 version_range=1-5
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=multi-stream-a summary_id=a8e9e198-e8f7-4112-aaac-ede9aad40200 events_compacted=18 version_range=1-18
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=multi-stream-c summary_id=769bda5c-25b7-43cb-a46a-1094a9a274b6 events_compacted=8 version_range=1-8
+2026/07/02 11:26:30 INFO memory event store: trimmed old events module=events stream_id=trim-test up_to_version=50 removed=50
+2026/07/02 11:26:30 INFO memory event store: trimmed old events module=events stream_id=trim-all up_to_version=999 removed=10
+2026/07/02 11:26:30 INFO memory event store: trimmed old events module=events stream_id=stream-a up_to_version=10 removed=10
+2026/07/02 11:26:30 INFO memory event store: trimmed old events module=events stream_id=stream-x up_to_version=25 removed=25
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=4c8c56d8-eacc-4542-ac6f-91dd182ff16a events_compacted=12 version_range=1-12
+2026/07/02 11:26:30 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=11
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=c95fe88c-8069-4bac-a9db-ebd78e199403 events_compacted=12 version_range=1-12
+2026/07/02 11:26:30 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=15
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=force-compact summary_id=c5ecf15e-df3b-454e-b373-791f4b269090 events_compacted=3 version_range=1-3
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=8fe926c2-e954-460d-ad37-c22b65c2f0fd events_compacted=5 version_range=1-5
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=f4775521-8ad5-4afb-ab8c-76c34c66e2af events_compacted=5 version_range=1-5
+2026/07/02 11:26:30 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=4a64df66-7168-4e72-9ae2-b2a0e8737ca2 events_compacted=5 version_range=1-5
+2026/07/02 11:26:30 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:30 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:30 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=bcbb6a1c-2cd4-48c1-b47d-f0acb9327105 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=4
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=268b89fe-627b-4ff8-96a7-f57aba8c2e55 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=63973201-ffd4-4d4c-92ab-d1fe4b224807 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=4866bc77-164e-4d12-bf3a-2ab3707e7bd8 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=5b17718d-a9e4-4b94-817e-ef998c416cf5 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=47798269-a3bd-4fbc-986e-588cbeb85dc0 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=d6cf5c82-49a2-4809-a0e2-39507cc596df events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=0e3281b6-8b9a-4364-80f2-dd98cb97cb0b events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=f225c184-845e-4e0e-8cf1-83124c1c8e84 events_compacted=5 version_range=1-5
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=e792455b-112e-4060-9baa-06b09e34a9ac events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=2648b652-fb9e-47be-a49e-c9bab0611f4b events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=a20c9f48-fbc7-4ca6-8bbb-c39c87b7f42e events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=3a1fe8da-e65e-4538-b60a-ac72c41fab66 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=6282c1f5-fecd-4bbf-8bc3-29ac93ed1ef3 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=f86764ab-43e5-4567-bb3f-ca023cdff6a2 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=86072db2-5984-4a5a-a356-59c1d4f65b31 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=d128797f-4c08-472c-8cc4-73ef67d136d1 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=d3769cc4-a39f-4b9d-810a-b74d95dbaeef events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=f1f08e30-6a29-4fa6-9554-01d93c7cce09 events_compacted=95 version_range=1-95
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=a500a6fa-f6bc-4472-999c-b31290a0a504 events_compacted=16 version_range=1-16
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=21
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=547a3c38-5349-4b67-9391-6f907a1f8867 events_compacted=22 version_range=1-22
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=27
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=d61b6dc1-3cd8-4e18-adaa-e2f5b8243071 events_compacted=27 version_range=1-27
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=32
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=c38d07cc-6c7e-4a97-a42d-5b8d738d3847 events_compacted=34 version_range=1-34
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=37
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=2335fdb4-15eb-4c1d-b95c-5f42d62853a8 events_compacted=37 version_range=1-37
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=42
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=e6d80562-55b8-4889-b539-d366caf5f050 events_compacted=43 version_range=1-43
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=47
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=11d7094c-59d3-471e-9144-85f89c0dbc9c events_compacted=49 version_range=1-49
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=54
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=7f2e3632-1a93-44c6-8291-8442c2ee1030 events_compacted=59 version_range=1-59
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=64
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=53f207a6-04c6-4ef6-ab78-baa343241467 events_compacted=65 version_range=1-65
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=70
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=06b2d94d-4699-4bd9-acda-93b6f80f75c4 events_compacted=71 version_range=1-71
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=76
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=4394ff4a-7eda-48b3-bdaf-b77f62e3ba84 events_compacted=78 version_range=1-78
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=83
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=b5bfb5f3-f3e9-424d-a046-a25d4b52f677 events_compacted=83 version_range=1-83
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=88
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=37c13820-25be-4f8f-8cec-1dfc62eeac68 events_compacted=89 version_range=1-89
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=94
+2026/07/02 11:26:31 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=33362c55-fb35-4ee4-9ee7-e4738f4c8722 events_compacted=94 version_range=1-94
+2026/07/02 11:26:31 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=99
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=test-above-threshold summary_id=b9c14c0f-bfbd-40be-af4f-73d2603727c3 events_compacted=22 version_range=1-22
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=test-keeprecent-zero summary_id=4dc91960-62e5-4fbc-8a4e-d9ad0f6072e9 events_compacted=20 version_range=1-20
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=test-type-counts summary_id=d1758d96-71cb-4e39-8ebf-3769bae30ed2 events_compacted=9 version_range=1-9
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=test-task-extract summary_id=88be80b3-650a-4224-a8e4-864100553e7f events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=test-custom-summarizer summary_id=f1747867-6f1c-43d2-9b42-3d63267b7a99 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=multi-stream-a summary_id=92e47aa9-643e-4a53-a088-88d69e94dfeb events_compacted=18 version_range=1-18
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=multi-stream-c summary_id=71bb61cb-392d-49ff-a1a7-2c8af8e3d3d9 events_compacted=8 version_range=1-8
+2026/07/02 11:26:32 INFO memory event store: trimmed old events module=events stream_id=trim-test up_to_version=50 removed=50
+2026/07/02 11:26:32 INFO memory event store: trimmed old events module=events stream_id=trim-all up_to_version=999 removed=10
+2026/07/02 11:26:32 INFO memory event store: trimmed old events module=events stream_id=stream-a up_to_version=10 removed=10
+2026/07/02 11:26:32 INFO memory event store: trimmed old events module=events stream_id=stream-x up_to_version=25 removed=25
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=2734cacc-6a46-4cc9-be7f-93db6b0a49e4 events_compacted=9 version_range=1-9
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=11
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=dc26ffad-a286-4678-8721-d7e380273a5e events_compacted=12 version_range=1-12
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=fa5222c9-a7c5-4f5f-ae6b-fd72c9cda7fa events_compacted=12 version_range=1-12
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=15
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=13
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=force-compact summary_id=8bf7c07e-31c8-411c-84eb-738813fd1fe9 events_compacted=3 version_range=1-3
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=c6016a7b-22a6-421d-aaa8-b79f8e92c501 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=33f143a0-3544-4d5f-ac61-ebf987ae6906 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=092e8b06-73ea-4584-8a9a-4daee3736c78 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=270910c8-3922-4dac-8cdd-9d7975fc4da1 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=95a9789e-d22d-4ac1-9af6-66f30aef111d events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=7794283c-7766-4afa-9506-788746f0ba6a events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=b82e4b93-d983-4bfe-9efd-70c20a3f6ddc events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=f6ff0c4d-d00b-43fb-933b-da6b3bd43ce6 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=4
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=c7c55dd0-e50b-4ee2-a77c-506b598b88a2 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=0d3158c6-6ebe-4945-b680-78c231d7e1a1 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=068b3f65-d195-4533-9bbc-0d18b17683d3 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=f9d7f3a5-8dfc-46ea-8ab6-f4bd4a5f3566 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:32 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=0975f161-946a-4a54-905f-338aec4395b0 events_compacted=5 version_range=1-5
+2026/07/02 11:26:32 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=f76fe74a-cbde-494e-98dd-ae16a0bd6614 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=3ce14bdf-2392-4e68-8c82-bd499848d996 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=be0da886-0b14-415a-ba1e-58fd5ced861c events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=6e3fb0c0-df3d-4a08-ab3f-2619d3e9a772 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=944bf788-d3e9-42c5-b5a7-b2ffb4a38f81 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=8a37cf42-cbe1-4f51-8505-1230e4386397 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=a5bb3fe1-d7d3-49a8-a8f4-d993ee637999 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=06020870-9d6b-467b-af94-14dd2ecef934 events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=e03b7fe7-3282-4b3c-bd34-985db0e9b02a events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=e35e2f78-36cc-454e-95ab-4c111648b1ac events_compacted=95 version_range=1-95
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=2320eede-f3c5-432a-b30a-31489d977a37 events_compacted=20 version_range=1-20
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=21
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=f3fb70b3-9215-41fc-9ae1-cd7b68ba9ac1 events_compacted=23 version_range=1-23
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=26
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=eb2dcd4a-4e9d-4810-8dbd-6a2208feb15b events_compacted=27 version_range=1-27
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=32
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=eb0fbb03-d1e3-4bc1-887f-b3dbcd95a0bb events_compacted=34 version_range=1-34
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=37
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=3f23fad9-ec8c-4ce8-be01-c38717c0d10b events_compacted=37 version_range=1-37
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=42
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=f6215c3f-530d-41bd-9463-aaeea55855be events_compacted=44 version_range=1-44
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=47
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=90ee9667-cb39-4073-98f8-c6082fceddd4 events_compacted=47 version_range=1-47
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=52
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=3a08054c-a230-4a8e-aa82-5f115c471684 events_compacted=54 version_range=1-54
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=57
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=6db02cdd-d769-497e-abf8-a5f915323f84 events_compacted=57 version_range=1-57
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=62
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=ef33d575-450a-4801-bfcc-9deef006e78e events_compacted=62 version_range=1-62
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=67
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=3721d54f-19e1-45c6-b277-978e78244556 events_compacted=67 version_range=1-67
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=72
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=93d02b5d-dfab-48fd-9f09-cbbb38ff2604 events_compacted=73 version_range=1-73
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=78
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=1690a566-0dbb-44c9-80ae-00c4f9395714 events_compacted=78 version_range=1-78
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=83
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=8a5bcaca-9069-47d1-af88-6b02e5c57d2f events_compacted=83 version_range=1-83
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=88
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=2f1f9e67-1bb3-4868-973e-d605e265e2ab events_compacted=89 version_range=1-89
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=94
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=f58c3455-f073-42b4-9225-0fac2d9b018b events_compacted=94 version_range=1-94
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=99
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=test-above-threshold summary_id=ad8a9a64-8ca3-4f2f-a677-d7dae5d36169 events_compacted=22 version_range=1-22
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=test-keeprecent-zero summary_id=5e6b3477-3457-459f-a732-df515b03c9e8 events_compacted=20 version_range=1-20
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=test-type-counts summary_id=faae8f7a-4b2c-4a0e-973a-3628d8bdda83 events_compacted=9 version_range=1-9
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=test-task-extract summary_id=50b5b360-8eed-401c-9f96-fd71a985ddba events_compacted=5 version_range=1-5
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=test-custom-summarizer summary_id=986a339f-be51-4c41-b5c5-286ce244d4f6 events_compacted=5 version_range=1-5
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=multi-stream-a summary_id=fa5dd469-5569-4714-839e-86b189d9aacf events_compacted=18 version_range=1-18
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=multi-stream-c summary_id=a49f3813-9386-4163-b96a-c427782e1fbe events_compacted=8 version_range=1-8
+2026/07/02 11:26:33 INFO memory event store: trimmed old events module=events stream_id=trim-test up_to_version=50 removed=50
+2026/07/02 11:26:33 INFO memory event store: trimmed old events module=events stream_id=trim-all up_to_version=999 removed=10
+2026/07/02 11:26:33 INFO memory event store: trimmed old events module=events stream_id=stream-a up_to_version=10 removed=10
+2026/07/02 11:26:33 INFO memory event store: trimmed old events module=events stream_id=stream-x up_to_version=25 removed=25
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=5e51abd6-b49c-4952-b475-25a4ef1d48b2 events_compacted=12 version_range=1-12
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=13
+2026/07/02 11:26:33 INFO compaction: summary created module=events stream_id=auto-compact-test summary_id=a30bcbe7-6a5e-42ac-a608-77f01cc6ba44 events_compacted=12 version_range=1-12
+2026/07/02 11:26:33 INFO compaction: automatic compaction completed module=events stream_id=auto-compact-test current_version=15
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=force-compact summary_id=0c9d9dce-116b-4bd6-9c0d-0d3428543b15 events_compacted=3 version_range=1-3
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=195f675e-7043-47ef-b8a3-a6dae48b3c76 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=8148bc56-94aa-4756-ad50-612523d50729 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=53fcd8ec-ab1b-49e5-a1e7-15cf46578247 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=1f673827-df2b-4bf3-a259-8d729466be86 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=get-summary-test summary_id=e55bdc53-c747-4b66-a020-64ad2569508e events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=get-summary-test current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=a112e7bf-239c-4c67-9fc1-ff0605794243 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=4
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=3b91c612-dc73-4fe5-a131-0d888f70f73e events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=4ebdc246-3d65-4d4b-bc90-1b7c933f4808 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=c32198cc-43fd-4b01-9908-8a9bc1908198 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=agent-1-stream summary_id=8f3045bb-d8da-44e9-91f0-e02832da355f events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=agent-1-stream current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=0457403b-f8a9-4648-af05-a5c13dc60857 events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=custom-wrapped summary_id=7d5f417d-5e68-4dbe-a056-bacca489e5bf events_compacted=5 version_range=1-5
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=custom-wrapped current_version=5
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=c9ecabff-2834-4a68-9d21-42d55278eb01 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=76d8233d-bccc-40e1-b6de-4f9e06a929b9 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=7f93b166-3a6f-48e8-b10f-b71bdc2a1d68 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=89928169-b1c6-4032-9197-1c3080035e2f events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=8749e52f-264b-48e5-9ec5-8fb626cb9420 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=43083afe-4926-41d3-a9ef-389533878b3a events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=c95fc912-67c7-493c-bf74-3d13871bf702 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=cbf47e46-2395-4319-b949-4deba6796142 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=b0964137-cd64-4092-9d74-dff3bb03d717 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=concurrent-compact summary_id=1fb790fa-9382-48d8-b6aa-fef5604d1571 events_compacted=95 version_range=1-95
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=d864179f-81fe-4ea4-b60a-e501188b8a96 events_compacted=16 version_range=1-16
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=21
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=d93398d7-33b9-426a-b09a-65942bfe73df events_compacted=21 version_range=1-21
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=26
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=f6f624c7-9536-4a4b-b485-199df8869fd9 events_compacted=28 version_range=1-28
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=31
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=e94d805c-8d7f-4f55-86b5-fd8ff8aff89a events_compacted=34 version_range=1-34
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=37
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=1f8aff60-8fdd-4031-9bc0-4a2f1610e894 events_compacted=37 version_range=1-37
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=42
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=a3e32f73-2cfb-48ad-a0ab-7de9ad07a44d events_compacted=44 version_range=1-44
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=47
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=6e765a02-75e9-42c5-8219-acfe7d7a8be5 events_compacted=48 version_range=1-48
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=53
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=ce4b5a69-dece-4a79-96f1-180eebf3de2c events_compacted=55 version_range=1-55
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=58
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=54220d77-9f93-4c83-a4e2-d48a05ed3d8c events_compacted=62 version_range=1-62
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=67
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=da3ffc94-8c2e-4e54-8442-476675d71308 events_compacted=67 version_range=1-67
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=72
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=ca2b6a8b-718c-4b8b-95d6-be98977e7113 events_compacted=72 version_range=1-72
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=77
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=3961457e-313f-4101-b206-28ae7a83ad5f events_compacted=77 version_range=1-77
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=82
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=a9831b0f-8bdb-4e38-9e95-7bf6caf1a657 events_compacted=82 version_range=1-82
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=87
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=5de8178c-ab8a-424e-8d13-645eaed74193 events_compacted=89 version_range=1-89
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=92
+2026/07/02 11:26:34 INFO compaction: summary created module=events stream_id=race-append-compact summary_id=049e91ce-4af1-4693-8ed8-8b1060d6ae65 events_compacted=93 version_range=1-93
+2026/07/02 11:26:34 INFO compaction: automatic compaction completed module=events stream_id=race-append-compact current_version=98
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/ares_events
+cpu: Apple M3 Max
+BenchmarkMemoryStore_Append-14              	 2268348	       509.4 ns/op	     617 B/op	       7 allocs/op
+BenchmarkMemoryStore_Append-14              	 2452425	       536.3 ns/op	     620 B/op	       7 allocs/op
+BenchmarkMemoryStore_Append-14              	 2395146	       543.1 ns/op	     623 B/op	       7 allocs/op
+BenchmarkMemoryStore_AppendBatch-14         	  299901	      4598 ns/op	    8937 B/op	       1 allocs/op
+BenchmarkMemoryStore_AppendBatch-14         	  286629	      4604 ns/op	    9350 B/op	       1 allocs/op
+BenchmarkMemoryStore_AppendBatch-14         	  286420	      4237 ns/op	    9356 B/op	       1 allocs/op
+BenchmarkMemoryStore_Read-14                	  168516	      6973 ns/op	   17528 B/op	      11 allocs/op
+BenchmarkMemoryStore_Read-14                	  173521	      7410 ns/op	   17528 B/op	      11 allocs/op
+BenchmarkMemoryStore_Read-14                	  166449	      7035 ns/op	   17528 B/op	      11 allocs/op
+BenchmarkMemoryStore_ReadAll-14             	   30277	     39386 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_ReadAll-14             	   30404	     40047 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_ReadAll-14             	   30375	     42146 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    117672 ns/op	  151814 B/op	     899 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    325753 ns/op	  151701 B/op	     899 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    118018 ns/op	  152367 B/op	     900 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1000000	      1406 ns/op	     627 B/op	       6 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1000000	      1773 ns/op	     626 B/op	       6 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1640476	       712.1 ns/op	     626 B/op	       6 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/ares_events	58.387s

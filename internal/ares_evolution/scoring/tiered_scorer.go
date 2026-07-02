@@ -224,6 +224,7 @@ func (ts *TieredScorer) Stats() map[string]int64 {
 // Call this at the start of each evolution generation.
 func (ts *TieredScorer) ResetForGeneration() {
 	ts.budget.Reset()
+	ts.cache.NewGeneration()
 	ts.cacheHits.Store(0)
 	ts.llmCalls.Store(0)
 	ts.heuristicCalls.Store(0)

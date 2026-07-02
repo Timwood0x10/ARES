@@ -309,21 +309,27 @@ func TestCodec(t *testing.T) {
 		}
 	})
 
-	t.Run("must encode", func(t *testing.T) {
+	t.Run("encode", func(t *testing.T) {
 		codec := &JSONCodec{}
 		msg := NewMessage(AHPMethodTask, "leader", "sub1", "task1", "session1")
 
-		data := codec.MustEncode(msg)
+		data, err := codec.Encode(msg)
+		if err != nil {
+			t.Errorf("encode error: %v", err)
+		}
 		if len(data) == 0 {
 			t.Errorf("expected data")
 		}
 	})
 
-	t.Run("must decode", func(t *testing.T) {
+	t.Run("decode", func(t *testing.T) {
 		codec := &JSONCodec{}
 		data := []byte(`{"method":"TASK","agent_id":"leader"}`)
 
-		msg := codec.MustDecode(data)
+		msg, err := codec.Decode(data)
+		if err != nil {
+			t.Errorf("decode error: %v", err)
+		}
 		if msg.Method != AHPMethodTask {
 			t.Errorf("expected TASK method")
 		}
@@ -577,8 +583,8 @@ func TestQueueMethods(t *testing.T) {
 		queue := NewMessageQueue("agent1", nil)
 
 		peeked, err := queue.Peek()
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err == nil {
+			t.Errorf("expected error for empty queue")
 		}
 		if peeked != nil {
 			t.Errorf("expected nil for empty queue")

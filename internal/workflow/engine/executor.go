@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -446,7 +447,7 @@ func (e *Executor) executeStep(
 
 	// HITL: check if this step requires human approval.
 	if err := e.handleInterrupt(ctx, workflow, step); err != nil {
-		if err == ErrInterruptRejected {
+		if stderrors.Is(err, ErrInterruptRejected) {
 			return &StepResult{
 				StepID:   stepID,
 				Name:     step.Name,

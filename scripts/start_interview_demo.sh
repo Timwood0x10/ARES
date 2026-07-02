@@ -55,26 +55,71 @@ log_info "Docker is running."
 
 # ── 2. Start SearXNG ───────────────────────────
 log_step "Starting SearXNG"
-log_info "Bringing up searxng service..."
 
-docker compose up -d searxng
+# Check if already running
+if docker ps --format '{{.Names}}' | grep -q 'goagent-searxng'; then
+  log_info "SearXNG container already running."
+else
+  # Remove exited container if present
+  docker rm -f goagent-searxng 2>/dev/null || true
 
-log_info "Waiting for SearXNG to be ready..."
+  log_info "Bringing up searxng service..."
+  if ! docker compose up -d searxng 2>&1; then
+    log_error "Failed to start SearXNG container."
+    log_error "Check: docker compose logs searxng"
+    exit 1
+  fi
+fi
+
+# Wait for container to be running
+log_info "Waiting for SearXNG container..."
+MAX_WAIT=30
+WAIT=0
+while [ $WAIT -lt $MAX_WAIT ]; do
+  STATUS=$(docker inspect -f '{{.State.Status}}' goagent-searxng 2>/dev/null || echo "missing")
+  if [ "$STATUS" = "running" ]; then
+    break
+  elif [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ]; then
+    log_error "SearXNG container exited unexpectedly."
+    log_error "Logs:"
+    docker logs --tail 10 goagent-searxng 2>&1 | sed 's/^/  /'
+    exit 1
+  fi
+  WAIT=$((WAIT + 1))
+  sleep 1
+done
+
+if [ $WAIT -ge $MAX_WAIT ]; then
+  log_error "SearXNG container did not start within ${MAX_WAIT}s."
+  exit 1
+fi
+
+# Wait for HTTP endpoint
+log_info "Waiting for SearXNG HTTP endpoint..."
 MAX_RETRIES=30
 RETRY=0
+SEARXNG_URL="${SEARXNG_URL:-http://localhost:5605}"
 while [ $RETRY -lt $MAX_RETRIES ]; do
-  if curl -sf "http://localhost:5605/search?q=health&format=json" >/dev/null 2>&1; then
-    log_info "SearXNG is ready on http://localhost:5605"
+  if curl -sf "${SEARXNG_URL}/search?q=health&format=json" >/dev/null 2>&1; then
+    log_info "SearXNG is ready on ${SEARXNG_URL}"
     break
   fi
   RETRY=$((RETRY + 1))
   if [ $RETRY -eq $MAX_RETRIES ]; then
-    log_error "SearXNG did not start within ${MAX_RETRIES}s. Check: docker compose logs searxng"
+    log_error "SearXNG HTTP not ready within ${MAX_RETRIES}s."
+    log_error "Check: docker compose logs searxng"
     exit 1
   fi
   sleep 1
 done
-log_info "$(curl -sf "http://localhost:5605/search?q=health&format=json" | python3 -c "import sys,json;d=json.load(sys.stdin);print(f'Query: {d.get(\"query\",\"?\")}, Results: {len(d.get(\"results\",[]))}')" 2>/dev/null || echo "SearXNG responding")"
+
+# Verify JSON API works
+RESULT=$(curl -sf "${SEARXNG_URL}/search?q=test&format=json" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('results',[])))" 2>/dev/null || echo "0")
+if [ "$RESULT" -gt 0 ]; then
+  log_info "SearXNG JSON API working (${RESULT} results for 'test')"
+else
+  log_warn "SearXNG responding but JSON API may have issues"
+fi
 
 # ── 3. Build and start the Interview Agent ──────
 log_step "Starting Interview Agent"

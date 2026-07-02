@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // JSONParser provides generic JSON extraction and deserialization from LLM output.
@@ -73,7 +75,7 @@ type ParseError struct {
 // Error implements the error interface.
 func (e *ParseError) Error() string {
 	return fmt.Sprintf("json parse failed for type %s: could not extract valid JSON from LLM output (first 200 chars: %s...)",
-		e.TargetType, truncate(e.Raw, 200))
+		e.TargetType, truncate.Plain(e.Raw, 200))
 }
 
 // Unwrap allows errors.Is/As to work with ParseError.
@@ -118,13 +120,6 @@ func extractJSONObject(raw string) string {
 		return ""
 	}
 	return match
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
 }
 
 // genericTypeName returns a readable identifier for the generic type T without using reflect.

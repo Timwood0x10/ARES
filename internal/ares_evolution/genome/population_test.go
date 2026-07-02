@@ -1298,3 +1298,134 @@ func TestRootStrategyHasCorrectMutationType(t *testing.T) {
 		t.Errorf("root strategy MutationDesc = %q, want %q", rootAgent.MutationDesc, "root strategy")
 	}
 }
+
+// --- Agent aging / eviction tests ---
+
+func TestAgentMaxAgeEviction(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	base := newTestStrategy(0.5)
+	mutator := &mockMutator{}
+	crosser := &mockCrosser{}
+
+	t.Run("evicts old agents when AgentMaxAge set", func(t *testing.T) {
+		t.Parallel()
+
+		pop, err := NewPopulation(ctx, base, mutator,
+			WithPopulationSize(6),
+			WithSurvivalRate(0.6),
+			WithEliteCount(1),
+		)
+		if err != nil {
+			t.Fatalf("failed to create population: %v", err)
+		}
+
+		// Set AgentMaxAge to 2.
+		pop.cfg.AgentMaxAge = 2
+
+		// Root agents are exempt (StrategyMutationType == MutationRoot).
+		// Only test with non-root agents by creating a synthetic population
+		// where GenerationCreated is explicitly set.
+		pop.Generation = 3 // simulate being 3 generations in
+		pop.Agents = []*mutation.Strategy{
+			{ID: "young", Score: 100, GenerationCreated: 3, StrategyMutationType: mutation.MutationCrossover},
+			{ID: "mid", Score: 80, GenerationCreated: 2, StrategyMutationType: mutation.MutationCrossover},
+			{ID: "old", Score: 60, GenerationCreated: 0, StrategyMutationType: mutation.MutationCrossover},      // age=3 > max=2
+			{ID: "ancient", Score: 40, GenerationCreated: -1, StrategyMutationType: mutation.MutationCrossover}, // age=4 > max=2
+		}
+
+		err = pop.Evolve(ctx, mutator, crosser)
+		if err != nil {
+			t.Fatalf("evolve failed: %v", err)
+		}
+
+		// After Evolve, old agents (age > 2) should be evicted.
+		for _, agent := range pop.Agents {
+			if agent.ID == "old" || agent.ID == "ancient" {
+				t.Errorf("old agent %q survived eviction (GenerationCreated=%d, gen=%d)",
+					agent.ID, agent.GenerationCreated, pop.Generation)
+			}
+		}
+	})
+
+	t.Run("root agents exempt from age eviction", func(t *testing.T) {
+		t.Parallel()
+
+		pop, err := NewPopulation(ctx, base, mutator,
+			WithPopulationSize(4),
+			WithSurvivalRate(1.0), // keep all survivors
+			WithEliteCount(2),
+		)
+		if err != nil {
+			t.Fatalf("failed to create population: %v", err)
+		}
+
+		pop.cfg.AgentMaxAge = 1
+
+		// Create a synthetic population with old root agents (never evicted by age)
+		// and old non-root agents (should be evicted).
+		// Set all scores high so selection doesn't eliminate them.
+		pop.Generation = 5
+		pop.Agents = []*mutation.Strategy{
+			{ID: "root-old", Score: 100, GenerationCreated: 0, StrategyMutationType: mutation.MutationRoot},
+			{ID: "root-mid", Score: 99, GenerationCreated: 0, StrategyMutationType: mutation.MutationRoot},
+			{ID: "nonroot-old", Score: 98, GenerationCreated: 0, StrategyMutationType: mutation.MutationCrossover},
+			{ID: "nonroot-young", Score: 97, GenerationCreated: 4, StrategyMutationType: mutation.MutationCrossover},
+		}
+
+		err = pop.Evolve(ctx, mutator, crosser)
+		if err != nil {
+			t.Fatalf("evolve failed: %v", err)
+		}
+
+		// Root agents should survive (age doesn't matter for roots).
+		rootIDs := map[string]bool{"root-old": false, "root-mid": false}
+		for _, agent := range pop.Agents {
+			if agent.StrategyMutationType == mutation.MutationRoot {
+				rootIDs[agent.ID] = true
+			}
+		}
+		for id, found := range rootIDs {
+			if !found {
+				t.Errorf("root agent %q was evicted — root should be exempt from age eviction", id)
+			}
+		}
+		// Non-root old agent (GenerationCreated=0, MutationCrossover) should be evicted.
+		for _, agent := range pop.Agents {
+			if agent.ID == "nonroot-old" {
+				t.Errorf("non-root old agent survived eviction — age=%d > AgentMaxAge=%d",
+					pop.Generation-agent.GenerationCreated, pop.cfg.AgentMaxAge)
+			}
+		}
+	})
+
+	t.Run("AgentMaxAge zero disables eviction", func(t *testing.T) {
+		t.Parallel()
+
+		pop, err := NewPopulation(ctx, base, mutator,
+			WithPopulationSize(6),
+			WithSurvivalRate(0.6),
+			WithEliteCount(1),
+		)
+		if err != nil {
+			t.Fatalf("failed to create population: %v", err)
+		}
+
+		pop.cfg.AgentMaxAge = 0 // disabled
+
+		for i, agent := range pop.Agents {
+			agent.Score = float64(i)
+			agent.GenerationCreated = pop.Generation - 100 // very old
+		}
+
+		err = pop.Evolve(ctx, mutator, crosser)
+		if err != nil {
+			t.Fatalf("evolve failed: %v", err)
+		}
+
+		if len(pop.Agents) == 0 {
+			t.Error("population empty after evolve with AgentMaxAge=0")
+		}
+	})
+}

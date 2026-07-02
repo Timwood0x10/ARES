@@ -14,8 +14,10 @@ import (
 	"time"
 
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 )
 
@@ -27,6 +29,10 @@ const (
 	// unbounded memory growth during long-running evolution sessions.
 	maxLineages = 1000
 )
+
+// scoreContextKey is used to pass the population best score through context
+// for promotion evaluation callbacks that need score improvement information.
+type scoreContextKey struct{}
 
 // Service provides high-level genetic algorithm evolution operations.
 // It wraps either a fully wired evolution system (WiredEvolutionSystem) or
@@ -41,6 +47,14 @@ type Service struct {
 
 	// lineages tracks recorded parent-child lineages for non-wired mode.
 	lineages []StrategyLineage
+}
+
+// ReportPath returns the configured report file path, or empty string if not set.
+func (s *Service) ReportPath() string {
+	if s.config == nil {
+		return ""
+	}
+	return s.config.ReportPath
 }
 
 // NewService creates a new evolution service instance with the given configuration.
@@ -87,7 +101,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 	}
 
 	if cfg.EnableWiredMode {
-		wired, err := s.createWiredSystem(cfg)
+		wired, err := s.CreateWiredSystem(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("create wired system: %w", err)
 		}
@@ -112,7 +126,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 }
 
 // createWiredSystem creates a fully wired evolution system from the API config.
-func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
+func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 
 	internalCfg := evolution.DefaultSystemConfig()
@@ -125,10 +139,13 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	internalCfg.MaxStagnantGenerations = cfg.MaxStagnantGenerations
 	internalCfg.DiversityThreshold = cfg.DiversityThreshold
 	internalCfg.BreedingPoolRatio = cfg.BreedingPoolRatio
+	internalCfg.SelectionStrategy = cfg.SelectionStrategy
+	internalCfg.HistoryMaxSize = cfg.HistoryMaxSize
 	internalCfg.MutatorSeed = cfg.Seed
 	internalCfg.CrossoverSeed = cfg.Seed
 	internalCfg.PopulationSeed = cfg.Seed
 	internalCfg.PromptCrossoverMode = cfg.PromptCrossoverMode
+	internalCfg.PromptTemplates = cfg.PromptPool
 
 	// Thread the API-level scorer into the wired system's adapter so the
 	// scheduler path automatically scores new offspring after each generation.
@@ -138,6 +155,21 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 		apiScorer := cfg.Scorer
 		internalCfg.Scorer = func(agent *mutation.Strategy) float64 {
 			return apiScorer(toAPIStrategy(agent))
+		}
+	}
+
+	// Thread the API-level batch scorer into the wired system's adapter.
+	// When set, the adapter pre-fills the score cache with batch-scored values
+	// before EvolveAfterScoring, so the tiered scorer finds cache hits for all
+	// agents — turning N per-agent LLM calls into ceil(N/batchSize) batched calls.
+	if cfg.BatchScorer != nil {
+		apiBatch := cfg.BatchScorer
+		internalCfg.BatchScorer = func(_ context.Context, agents []*mutation.Strategy) []float64 {
+			apiStrats := make([]*Strategy, len(agents))
+			for i, ag := range agents {
+				apiStrats[i] = toAPIStrategy(ag)
+			}
+			return apiBatch.BatchScore(apiStrats)
 		}
 	}
 
@@ -164,6 +196,23 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	if cfg.GuidanceProvider != nil {
 		internalCfg.GuidanceProvider = &apiGuidanceBridge{provider: cfg.GuidanceProvider}
 		internalCfg.EnableExperienceGuidedMutation = cfg.EnableExperienceGuidedMutation
+	}
+
+	// Wire LLM hint provider for DreamCycle outcome recording and
+	// LLM-based hint generation. Only applies when EnableLLMHints is set
+	// and an LLMClient is configured.
+	if cfg.EnableLLMHints && cfg.LLMClient != nil {
+		maxHistory := cfg.MaxHintHistory
+		if maxHistory <= 0 {
+			maxHistory = 10
+		}
+		hintProvider, err := mutation.NewLLMHintProvider(&llmClientAdapter{inner: cfg.LLMClient}, &mutation.LLMHintProviderConfig{
+			MaxHistory: maxHistory,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create LLM hint provider: %w", err)
+		}
+		internalCfg.HintProvider = hintProvider
 	}
 
 	// Wire memory experience provider for memory-aware scoring.
@@ -196,6 +245,78 @@ func (s *Service) createWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 	if err != nil {
 		return nil, fmt.Errorf("new wired evolution system: %w", err)
 	}
+
+	// Wire intelligence pipeline (Phase 3-5): reflection → hypothesis → meta.
+	// Only when EnableIntelligence is set, LLMClient is available, and
+	// history tracking is enabled (required for meta-controller).
+	if cfg.EnableIntelligence && cfg.LLMClient != nil && cfg.HistoryMaxSize > 0 {
+		llmAdapter := &llmClientAdapter{inner: cfg.LLMClient}
+		system.Reflector = genome.NewLLMReflector(llmAdapter)
+		system.HypothesisGen = genome.NewHypothesisGenerator(0.3)
+		system.MetaCtrl = genome.NewMetaController(genome.DefaultMetaConfig())
+	}
+
+	// Wire post-evolution hook for promotion evaluation and reporting.
+	evidenceAgg := resolveEvidenceAggregator(cfg.EvidenceAggregator)
+	promoter := resolvePromotionLogic(cfg.PromotionLogic)
+	if evidenceAgg != nil || promoter != nil {
+		system.AfterGeneration = func(ctx context.Context, gen int, sys *evolution.WiredEvolutionSystem) error {
+			best := sys.Population.Best()
+			if best == nil {
+				return nil
+			}
+
+			// Register the best strategy's evidence key so that the evidence
+			// aggregator can resolve GA-generated UUIDs to phenotype keys for
+			// fallback lookup. This enables evidence-based evaluation even when
+			// the exact strategy ID is unknown to the store.
+			if reg, ok := cfg.EvidenceAggregator.(interface{ RegisterStrategyKey(string, string) }); ok {
+				reg.RegisterStrategyKey(best.ID, best.ComputeEvidenceKey())
+			}
+
+			var ev Evidence
+			if evidenceAgg != nil {
+				var err error
+				ev, err = evidenceAgg(ctx, best.ID)
+				if err != nil {
+					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
+						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
+				}
+			}
+
+			if promoter != nil && ev.SampleCount > 0 {
+				// Pass population best score through context for downstream
+				// promotion logic that needs score improvement info.
+				scoreCtx := context.WithValue(ctx, scoreContextKey{}, best.Score)
+				state, reason, err := promoter(scoreCtx, best.ID, ev)
+				if err != nil {
+					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
+						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
+				} else {
+					slog.InfoContext(ctx, "post-generation promotion evaluation",
+						"generation", sys.Population.Generation,
+						"winner", best.ID,
+						"fitness", best.Score,
+						"success_rate", ev.SuccessRate,
+						"sample_count", ev.SampleCount,
+						"confidence", ev.Confidence,
+						"promotion_state", state,
+						"reason", reason,
+					)
+				}
+			} else {
+				slog.InfoContext(ctx, "generation complete",
+					"generation", sys.Population.Generation,
+					"winner", best.ID,
+					"fitness", best.Score,
+				)
+			}
+			return nil
+		}
+	}
+
+	// Wire the post-run report hook (only when ReportPath is set).
+	wireAfterRunReport(system, cfg, evidenceAgg, promoter)
 
 	return system, nil
 }
@@ -260,6 +381,12 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 		genome.WithDiversityThreshold(cfg.DiversityThreshold),
 		genome.WithBreedingPoolRatio(cfg.BreedingPoolRatio),
 	}
+	if cfg.HistoryMaxSize > 0 {
+		popOpts = append(popOpts, genome.WithHistoryEnabled(cfg.HistoryMaxSize))
+	}
+	if cfg.SelectionStrategy != "" {
+		popOpts = append(popOpts, genome.WithSelectionStrategy(cfg.SelectionStrategy))
+	}
 	if cfg.Seed != 0 {
 		popOpts = append(popOpts, genome.WithPopulationSeed(cfg.Seed))
 	}
@@ -270,6 +397,25 @@ func (s *Service) createRawComponents(cfg *SystemConfig) (*genome.Population, *m
 	}
 
 	return pop, rawMutator, crosser, nil
+}
+
+// RunIdleEvolution runs idle evolution with the wired system.
+// When ReportPath is configured, the report is saved after all generations.
+//
+// Args:
+//
+//	ctx - operation context.
+//	generations - number of generations to run.
+//
+// Returns:
+//
+//	error - non-nil if system creation or evolution fails.
+func (s *Service) RunIdleEvolution(ctx context.Context, generations int) error {
+	system, err := s.CreateWiredSystem(s.config)
+	if err != nil {
+		return fmt.Errorf("run idle evolution: %w", err)
+	}
+	return evolution.RunIdleEvolution(ctx, system, generations)
 }
 
 // Evolve runs N generations of evolution and returns the complete result.
@@ -309,8 +455,8 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
 
-			// Re-score after each evolution so next generation selects on fresh data.
-			s.initScores()
+			// RunIdleEvolution → adapter.Run() → EvolveAfterScoring already
+			// post-scores all agents in Phase 3. No need to re-score here.
 
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
@@ -355,8 +501,27 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		result.BestStrategy = best
 	}
 
+	// Count raw improvements vs significant improvements for reporting.
+	rawCount := 0
+	sigCount := 0
+	threshold := s.config.MinLineageImprovement
+	if threshold <= 0 {
+		threshold = 0.01
+	}
+	for _, l := range result.Lineages {
+		if l.ScoreDelta > 0 {
+			rawCount++
+		}
+		if l.ScoreDelta >= threshold {
+			sigCount++
+		}
+	}
+
 	slog.InfoContext(ctx, "evolution completed",
 		"total_generations", result.TotalGens,
+		"raw_improvements", rawCount,
+		"significant_improvements", sigCount,
+		"improvement_threshold", threshold,
 	)
 
 	return result, nil
@@ -500,7 +665,7 @@ func (b *apiGuidanceBridge) HintsForTask(ctx context.Context, taskType string, l
 		return nil, err
 	}
 	if hints == nil {
-		return nil, nil
+		return []evolution.EvolutionHint{}, nil
 	}
 	result := make([]evolution.EvolutionHint, len(hints))
 	for i, h := range hints {
@@ -569,6 +734,19 @@ func (b *apiMemoryBridge) FindSimilar(ctx context.Context, taskType string, limi
 	return b.provider.FindSimilar(ctx, taskType, limit)
 }
 
+// llmClientAdapter adapts the service-layer LLMClient (service package) to
+// the mutation package's LLMClient interface. Both interfaces are structurally
+// identical (Generate(ctx, prompt) -> (string, error)), but live in different
+// packages, so an explicit adapter is required.
+type llmClientAdapter struct {
+	inner LLMClient
+}
+
+// Generate delegates to the wrapped service-layer LLMClient.
+func (a *llmClientAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	return a.inner.Generate(ctx, prompt)
+}
+
 // ──────────────────────────────────────────────
 // Type conversion helpers
 // ──────────────────────────────────────────────
@@ -579,15 +757,17 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 		return nil
 	}
 	return &Strategy{
-		ID:             s.ID,
-		Name:           s.Name,
-		Version:        s.Version,
-		Params:         mutation.CloneParams(s.Params),
-		ParentID:       s.ParentID,
-		PromptTemplate: s.PromptTemplate,
-		MutationType:   s.StrategyMutationType.String(),
-		Score:          s.Score,
-		CreatedAt:      s.CreatedAt,
+		ID:              s.ID,
+		Name:            s.Name,
+		Version:         s.Version,
+		Params:          mutation.CloneParams(s.Params),
+		ParentID:        s.ParentID,
+		PromptTemplate:  s.PromptTemplate,
+		MutationType:    s.StrategyMutationType.String(),
+		EvidenceKey:     s.ComputeEvidenceKey(),
+		Score:           s.Score,
+		DimensionScores: cloneDimensionScores(s.DimensionScores),
+		CreatedAt:       s.CreatedAt,
 	}
 }
 
@@ -605,19 +785,35 @@ func toInternalStrategy(s *Strategy) *mutation.Strategy {
 		PromptTemplate:       s.PromptTemplate,
 		StrategyMutationType: mutation.ParseMutationType(s.MutationType),
 		Score:                s.Score,
+		DimensionScores:      cloneDimensionScores(s.DimensionScores),
 		CreatedAt:            s.CreatedAt,
 	}
+}
+
+// cloneDimensionScores returns a shallow copy of a dimension scores map.
+func cloneDimensionScores(src map[string]float64) map[string]float64 {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]float64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // toAPILineage converts an internal evolution.StrategyLineage to the public API type.
 func toAPILineage(l evolution.StrategyLineage) StrategyLineage {
 	return StrategyLineage{
-		ParentID:     l.ParentID,
-		ChildID:      l.ChildID,
-		MutationType: l.MutationType,
-		WinRate:      l.WinRate,
-		ScoreDelta:   l.ScoreImprovement,
-		Timestamp:    l.Timestamp,
+		ParentID:               l.ParentID,
+		ChildID:                l.ChildID,
+		MutationType:           l.MutationType,
+		WinRate:                l.WinRate,
+		ScoreDelta:             l.ScoreImprovement,
+		ParentScore:            l.ParentScore,
+		ChildScore:             l.ChildScore,
+		ImprovementSignificant: l.ImprovementSignificant,
+		Timestamp:              l.Timestamp,
 	}
 }
 
@@ -652,13 +848,23 @@ func (s *Service) collectStats() Stats {
 // collectStatsFromPopulation extracts stats from a genome.Population into API Stats.
 func collectStatsFromPopulation(pop *genome.Population) Stats {
 	ps := pop.Stats()
-	return Stats{
+	s := Stats{
 		Generation: ps.Generation,
 		Size:       ps.Size,
 		BestScore:  ps.BestScore,
 		AvgScore:   ps.AvgScore,
 		WorstScore: ps.WorstScore,
 	}
+	if d := ps.Diversity; d.Overall != 0 || d.Numeric != 0 || d.Categorical != 0 {
+		s.Diversity = &DiversityReporter{
+			Overall:              d.Overall,
+			Numeric:              d.Numeric,
+			Categorical:          d.Categorical,
+			Lineage:              d.Lineage,
+			DominantLineageShare: d.DominantLineageShare,
+		}
+	}
+	return s
 }
 
 // collectLineages gathers all recorded lineages from the genealogy recorder.
@@ -666,8 +872,15 @@ func (s *Service) collectLineages() []StrategyLineage {
 	if s.wiredSystem != nil && s.wiredSystem.Genealogy != nil {
 		internal := s.wiredSystem.Genealogy.Lineages()
 		result := make([]StrategyLineage, 0, len(internal))
+		threshold := s.config.MinLineageImprovement
+		if threshold <= 0 {
+			threshold = 0.01
+		}
 		for _, l := range internal {
-			result = append(result, toAPILineage(l))
+			apiLineage := toAPILineage(l)
+			// Set significance flag: absolute delta must meet or exceed threshold.
+			apiLineage.ImprovementSignificant = l.ScoreImprovement >= threshold
+			result = append(result, apiLineage)
 		}
 		return result
 	}
@@ -785,6 +998,81 @@ func (s *Service) recordGenealogy(prevBest *mutation.Strategy) {
 		ScoreDelta:   scoreDelta,
 		Timestamp:    time.Now().UnixMilli(),
 	})
+}
+
+// resolveEvidenceAggregator unwraps cfg.EvidenceAggregator, which can be
+// either a local EvidenceAggregator or an internal experience.EvidenceAggregator.
+// Returns nil when v is nil.
+func resolveEvidenceAggregator(v interface{}) func(ctx context.Context, strategyID string) (Evidence, error) {
+	if v == nil {
+		return nil
+	}
+	// Local interface.
+	if local, ok := v.(EvidenceAggregator); ok {
+		return local.Aggregate
+	}
+	// Internal experience.EvidenceAggregator — wrap with adapter.
+	if internal, ok := v.(experience.EvidenceAggregator); ok {
+		return func(ctx context.Context, strategyID string) (Evidence, error) {
+			ev, err := internal.Aggregate(ctx, strategyID)
+			if err != nil {
+				return Evidence{}, err
+			}
+			return Evidence{
+				StrategyID:  ev.StrategyID,
+				SuccessRate: ev.SuccessRate,
+				LatencyP50:  ev.LatencyP50,
+				ErrorRate:   ev.ErrorRate,
+				SampleCount: ev.SampleCount,
+				Confidence:  ev.Confidence,
+			}, nil
+		}
+	}
+	slog.Warn("evidence aggregator: unrecognised type, ignoring",
+		"type", fmt.Sprintf("%T", v))
+	return nil
+}
+
+// resolvePromotionLogic unwraps cfg.PromotionLogic, which can be
+// either a local PromotionLogic or an internal promotion.PromotionLogic.
+// Returns nil when v is nil.
+func resolvePromotionLogic(v interface{}) func(ctx context.Context, strategyID string, evidence Evidence) (string, string, error) {
+	if v == nil {
+		return nil
+	}
+	// Local interface.
+	if local, ok := v.(PromotionLogic); ok {
+		return local.Evaluate
+	}
+	// Internal promotion.PromotionLogic — wrap with adapter.
+	if internal, ok := v.(promotion.PromotionLogic); ok {
+		return func(ctx context.Context, strategyID string, evidence Evidence) (string, string, error) {
+			ev, err := toInternalEvidence(evidence)
+			if err != nil {
+				return "", "", err
+			}
+			state, reason, err := internal.Evaluate(ctx, strategyID, ev)
+			if err != nil {
+				return "", "", err
+			}
+			return string(state), reason, nil
+		}
+	}
+	slog.Warn("promotion logic: unrecognised type, ignoring",
+		"type", fmt.Sprintf("%T", v))
+	return nil
+}
+
+// toInternalEvidence converts a local Evidence to internal experience.Evidence.
+func toInternalEvidence(ev Evidence) (experience.Evidence, error) {
+	return experience.Evidence{
+		StrategyID:  ev.StrategyID,
+		SuccessRate: ev.SuccessRate,
+		LatencyP50:  ev.LatencyP50,
+		ErrorRate:   ev.ErrorRate,
+		SampleCount: ev.SampleCount,
+		Confidence:  ev.Confidence,
+	}, nil
 }
 
 // recordLineages records lineage entries for each offspring in non-wired mode,

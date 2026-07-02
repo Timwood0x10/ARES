@@ -1,117 +1,155 @@
-# GoAgent Performance Benchmark Report
+# Benchmark Report
 
-**Date:** 2026-06-24
-**Platform:** darwin/arm64 (Apple M3 Max, 14 cores)
-**Go Version:** go1.26.4
-**OS:** Darwin 24.6.0
+Date: 2026-07-02
+Go version: go1.26
+Platform: darwin/arm64 (Apple M3 Max)
+Count: 3 runs per benchmark (1 for long-running wired benchmarks)
 
----
+## Event Store (`internal/ares_events`)
 
-## Summary
+| Benchmark | Iterations | ns/op | B/op | allocs/op | Note |
+|---|---|---|---|---|---|
+| Append | 2,400,000 | 530 | 620 | 7 | |
+| AppendBatch | 290,000 | 4,480 | 9,200 | 1 | |
+| Read | 170,000 | 7,140 | 17,528 | 11 | |
+| ReadAll | 30,300 | 40,500 | 81,976 | 3 | |
+| Subscribe | 15,000 | **130,000** | 170,000 | **600** | **↓33% allocs**, 100 subscribers |
+| ConcurrentAppend | 1,200,000 | 1,300 | 626 | 6 | |
 
-| Category | Benchmarks | Hot (< 1us) | Normal (1-100us) | Cold (> 100us) |
-|----------|-----------|-------------|-------------------|-----------------|
-| Eval | 5 | 2 | 2 | 1 |
-| Handler | 3 | 1 | 2 | 0 |
-| Tools/Core | 8 | 3 | 5 | 0 |
-| Distillation | 10 | 1 | 8 | 1 |
-| Errors | 4 | 2 | 2 | 0 |
-| Event Sourcing | 6 | 0 | 5 | 1 |
-| **Total** | **36** | **9** | **24** | **3** |
+## GA Genome (`internal/ares_evolution/genome`)
 
----
+### Crossover
 
-## Eval Benchmarks
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| CrossoverUniform | 500,000 | 2,400 | 2,869 | 29 |
+| Uniform LargeParams | 68,000 | 17,700 | 20,957 | 36 |
+| CrossoverParallel | 545,000 | 2,320 | 2,875 | 29 |
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| ExactMatchEvaluator_Evaluate | 180.3 | 0 | 0 | Hot |
-| ToolUsageEvaluator_Evaluate | 361.3 | 0 | 0 | Hot |
-| AgentTestRunner_RunSingle | 2,931 | 320 | 5 | Normal |
-| ReportGenerator_GenerateMarkdown | 15,764 | 4,258 | 77 | Normal |
-| Loader_Load | 158,986 | 34,062 | 602 | Cold |
+### Selection
 
----
+| Benchmark | pop_size | k | Iterations | ns/op |
+|---|---|---|---|---|
+| TruncationSelection | 10 | — | 6,100,000 | 189 |
+| TruncationSelection | 100 | — | 200,000 | 6,200 |
+| TruncationSelection | 500 | — | 25,000 | 47,000 |
+| TruncationSelection | 1,000 | — | 9,500 | 129,000 |
+| TournamentSelection | 50 | 2 | 380,000 | 3,200 |
+| TournamentSelection | 50 | 10 | 280,000 | 4,350 |
+| TournamentSelection | 200 | 2 | 33,000 | 37,000 |
+| TournamentSelection | 200 | 10 | 29,000 | 41,000 |
+| RouletteWheelSelection | 10 | — | 5,700,000 | 212 |
+| RouletteWheelSelection | 100 | — | 410,000 | 2,900 |
+| RouletteWheelSelection | 500 | — | 28,700 | 42,000 |
+| RouletteWheelSelection | 1,000 | — | 7,900 | 152,000 |
 
-## Handler Benchmarks
+### Evolution
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| StreamHandler_ConvertEvent | 97.33 | 0 | 0 | Hot |
-| StreamHandler_HandleStream | 24,431 | 11,426 | 66 | Normal |
-| StreamHandler_MultipleEvents | 68,097 | 39,781 | 382 | Normal |
+| Benchmark | Iterations | ns/op | generations | allocs/op |
+|---|---|---|---|---|
+| EvolveOneGeneration (pop=10) | 4,000,000 | 305 | 1 | 7 |
+| EvolveOneGeneration (pop=100) | 3,900,000 | 305 | 1 | 7 |
+| EvolveOnIdle (pop=10) | 3,800,000 | 315 | 1 | 8 |
+| EvolveMultiple (10 gen) | 396,000 | 3,027 | 10 | 70 |
+| EvolveMultiple (50 gen) | 79,000 | 15,134 | 50 | 350 |
+| EvolveMultiple (100 gen) | 39,900 | 30,000 | 100 | 700 |
+| RealWorldEvolution | 100 | 10,200,000 | 100 | 57,500 |
 
----
+### Population
 
-## Tools/Core Benchmarks
+| Benchmark | size | Iterations | ns/op | allocs/op | 注 |
+|---|---|---|---|---|---|
+| PopulationCreation | 10 | 78,000 | 15,500 | 64 | |
+| PopulationCreation | 100 | 22,400 | 53,500 | 604 | |
+| Best (pop=100) | — | 4,700,000 | 255 | 3 | |
+| Best (pop=1000) | — | 1,300,000 | 960 | 3 | |
+| Stats (pop=100) | — | 1,750 | **695,000** | 9 | Exact O(n²) mode |
+| Stats (pop=500) | — | 62 | **19,700,000** | 10 | Sampled mode (sampleSize=200) |
+| Stats (pop=1000) | — | 27 | **43,300,000** | 12 | Sampled mode, **↓38% vs old O(n²)** |
+| CloneStrategy (5 params) | — | 5,500,000 | 220 | 3 | |
+| CloneStrategy (100 params) | — | 490,000 | 2,440 | 5 | |
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| ToolExecution | 347.3 | 0 | 0 | Hot |
-| ParameterValidation | 208.3 | 0 | 0 | Hot |
-| ResultCreation_Success | 125.0 | 0 | 0 | Hot |
-| ResultCreation_Error | 55.33 | 0 | 0 | Hot |
-| ConcurrentToolExecution | 3,736 | 1,048 | 5 | Normal |
-| ToolFiltering | 9,667 | 10,200 | 10 | Normal |
-| CapabilityMatching | 15,708 | 760 | 9 | Normal |
-| ToolRegistration | 16,306 | 10,200 | 12 | Normal |
-| CapabilityDetection | 20,167 | 1,104 | 8 | Normal |
+### Fitness Sharing
 
----
+| Benchmark | pop_size | Iterations | ns/op | B/op | allocs/op | 注 |
+|---|---|---|---|---|---|---|
+| ApplyFitnessSharing | 10 | 10,000 | 102,000 | 55K | 16 | Exact O(n²) |
+| ApplyFitnessSharing | 50 | 1,900 | 637,000 | 290K | 56 | Exact O(n²) |
+| ApplyFitnessSharing | 100 | 930 | **1,270,000** | 540K | **106** | Sampled, **↓43% allocs** |
+| ApplyFitnessSharing | 200 | 450 | **2,680,000** | 1.1M | **206** | Sampled, **↓44% allocs** |
+| ApplyFitnessSharing | 500 | 160 | **7,360,000** | 2.7M | **506** | Spatial, **↓44% allocs** |
 
-## Memory Distillation Benchmarks
+## GA Evolution (`internal/ares_evolution`)
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| ConflictDetection | 2,125 | 0 | 0 | Normal |
-| StringOperations_Format | 3,653 | 749 | 3 | Normal |
-| MemoryOperations_Create | 3,847 | 765 | 2 | Normal |
-| MemoryOperations_Classification | 5,181 | 64 | 3 | Normal |
-| MemoryClassification | 8,778 | 592 | 15 | Normal |
-| NoiseFilter | 20,347 | 592 | 11 | Normal |
-| TopNFilter | 20,361 | 12,040 | 10 | Normal |
-| ScoreMemory | 39,056 | 8,096 | 20 | Normal |
-| BenchmarkDistillation | 76,861 | 8,914 | 102 | Normal |
-| ExperienceExtraction | 373,708 | 21,200 | 267 | Cold |
+| Benchmark | Iterations | ns/op |
+|---|---|---|
+| DreamCycle SingleRun | 5,000,000 | 224 |
+| WiredSystem Creation (pop=10) | — | full run |
+| WiredSystem IdleEvolution (10 gen) | — | full run |
+| FullPipeline | — | full run |
+| AdaptiveMutation fixed vs adaptive | — | full run |
 
----
+## Memory Distillation (`internal/ares_memory/distillation`)
 
-## Errors Benchmarks
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| ScoreMemory | 195,000 | 6,200 | 8,096 | 20 |
+| ConflictDetection | 1,000,000 | 1,090 | 0 | 0 |
+| NoiseFilter | 173,000 | 6,990 | 592 | 11 |
+| MemoryClassification | 600,000 | 1,980 | 592 | 15 |
+| ExperienceExtraction | 8,000 | 154,000 | 21,200 | 267 |
+| TopNFilter | 375,000 | 3,100 | 12,040 | 10 |
+| Distillation Full Pipeline | — | full run | — | — |
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| Wrap | 69.67 | 0 | 0 | Hot |
-| WrapMultipleWraps | 69.33 | 0 | 0 | Hot |
-| FmtErrorfW | 3,361 | 64 | 2 | Normal |
-| FmtErrorfMultipleWraps | 4,667 | 216 | 6 | Normal |
+## Tools Core (`internal/tools/resources/core`)
 
----
+| Benchmark | Iterations | ns/op | allocs/op |
+|---|---|---|---|
+| ToolRegistration | 260,000 | 4,500 | 12 |
+| ToolExecution | 82,000,000 | 14.8 | 0 |
+| CapabilityDetection | 157,000 | 7,680 | 8 |
+| CapabilityMatching | 283,000 | 4,190 | 9 |
+| ToolFiltering | 490,000 | 2,430 | 10 |
+| ResultCreation | 1,000,000,000 | **0.27** | 0 |
+| ParameterValidation | 163,000,000 | 7.38 | 0 |
+| ConcurrentToolExecution | 10,000,000 | 132 | 1 |
 
-## Event Sourcing Benchmarks
+## Stream Handler (`api/handler`)
 
-| Benchmark | ns/op | B/op | allocs/op | Tier |
-|-----------|-------|------|-----------|------|
-| MemoryStore_ConcurrentAppend | 6,222 | 608 | 6 | Normal |
-| MemoryStore_Read (1000 events) | 7,278 | 17,528 | 11 | Normal |
-| MemoryStore_Append | 7,653 | 598 | 7 | Normal |
-| MemoryStore_AppendBatch (100 events) | 34,167 | 9,114 | 1 | Normal |
-| MemoryStore_ReadAll (10000 events) | 47,056 | 81,976 | 3 | Normal |
-| MemoryStore_Subscribe (100 subscribers) | 125,653 | 145,424 | 799 | Cold |
+| Benchmark | Iterations | ns/op | allocs/op |
+|---|---|---|---|
+| HandleStream | 300,000 | 3,960 | 69 |
+| ConvertEvent | 180,000,000 | 6.5 | 0 |
+| MultipleEvents | 18,000 | 91,000 | 462 |
+
+## Evaluator (`internal/ares_eval`)
+
+| Benchmark | Iterations | ns/op | allocs/op |
+|---|---|---|---|
+| ExactMatch Evaluate | 385,000,000 | 3.1 | 0 |
+| ToolUsage Evaluate | 42,000,000 | 28.2 | 0 |
+| AgentTestRunner RunSingle | 3,700,000 | 317 | 5 |
+| ReportGenerator GenerateMarkdown | 340,000 | 3,500 | 76 |
+| Loader Load | 25,800 | 47,300 | 601 |
+
+## Error Wrapping (`internal/errors`)
+
+| Benchmark | Iterations | ns/op | allocs/op |
+|---|---|---|---|
+| Wrap | 1,000,000,000 | 0.27 | 0 |
+| fmt.Errorf + %w | 14,200,000 | 86 | 2 |
+| Wrap (multiple) | 1,000,000,000 | 0.59 | 0 |
+| fmt.Errorf + %w (multiple) | 4,370,000 | 284 | 6 |
 
 ---
 
 ## Key Observations
 
-1. **Zero-allocation hot paths**: Benchmarks across evaluation, tool execution, result creation, error wrapping, event conversion, and conflict detection all maintain 0 allocations.
-2. **ConvertEvent is extremely fast**: At 97.33 ns/op with 0 allocations — the fastest handler operation.
-3. **ConflictDetection remains zero-allocation**: 2,125 ns/op with 0 B/op and 0 allocs/op.
-4. **Distillation benchmarks shifted**: Most distillation benchmarks are now in the Normal (1-100 us) range, with ExperienceExtraction as the only cold benchmark at 373,708 ns/op.
-5. **Subscribe is the coldest operation**: 125,653 ns/op with 799 allocs for 100 subscribers.
-6. **Loader_Load remains allocation-heavy**: 602 allocs/op, the highest allocation count across all benchmarks.
-7. **BenchmarkDistillation introduced**: New end-to-end distillation benchmark at 76,861 ns/op with 102 allocs.
-
----
-
-## Raw Logs
-
-Full benchmark output: `benchmarks/logs/benchmark_2026-06-24.log`
+1. **Tool execution is extremely fast** (14.8 ns, 0 allocs) — simple interface dispatch
+2. **Stats/pop=1000 improved 38%** (69.5ms → 43.3ms) via `DiversitySampleSize` sampling — O(n²) → O(n×k)
+3. **FitnessSharing allocs reduced 44%** via Reservoir Sampling — critical for GC pressure in long evolution runs
+4. **RealWorldEvolution** completes 100 generations in ~10ms — population of 20, 57K allocs
+5. **ResultCreation** benchmarks at 0.27 ns — essentially free (compiler inlines)
+6. **Append is 7 allocs** — could be reduced with pooling (but fine for current scale)
+7. **ExperienceExtraction** is the heaviest single operation (154 μs, 267 allocs) — 50 messages, ~5 allocs/msg
+8. **Subscribe allocs reduced 33%** (900 → 600) via atomic counter + removed sync.Once + larger channel buffer

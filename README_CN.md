@@ -9,9 +9,11 @@
                     
 ```
 
-ARES（自适应弹性进化系统）：一种用于自主agent的自愈进化运行时
+ARES（自适应弹性进化系统）—— 一种面向自主 Agent 的自愈、自进化运行时
 
-Go 语言多 Agent 框架，支持 DAG 工作流编排、记忆蒸馏、AHP 协议通信。
+基于 Go 的多 Agent 框架，支持 DAG 工作流编排、遗传算法自进化、记忆蒸馏、Agent 间通信协议（AHP）和混沌工程 —— 面向生产级 Agent 编排。
+
+与静态 Agent 框架不同，ARES 将 Agent 行为视为可进化的基因组：策略通过变异、交叉和选择跨代演化，基于真实的执行证据。系统通过检查点恢复实现自愈，淘汰过期策略，通过闭环进化持续改进。
 
 ## 架构
 
@@ -80,6 +82,9 @@ graph TB
         EvoSvc["Evolution Service"]
         Pop["GA 种群"]
         Score["评分管线"]
+        EvidAgg["证据聚合器"]
+        Promo["推广逻辑"]
+        Report["进化报告"]
         Cross["交叉"]
         Mut["变异"]
         EvoSvc --> Pop
@@ -87,6 +92,17 @@ graph TB
         Score --> Cross
         Cross --> Mut
         Mut --> Pop
+        Score -->|"每代"| EvidAgg
+        EvidAgg -->|"证据"| Promo
+        Promo -->|"运行结束"| Report
+        ExpStore["经验存储"]
+        Norm["标准化器"]
+        OutcomeRec["结果记录器"]
+        ToolCollect["工具调用收集器"]
+        OutcomeRec --> Norm
+        ToolCollect --> Norm
+        Norm --> ExpStore
+        ExpStore --> EvidAgg
     end
 
     subgraph hitl ["人工审批"]
@@ -663,29 +679,69 @@ ares/
 │   ├── agents/           # Leader/Sub Agent 系统
 │   ├── ares_runtime/     # 运行时生命周期 + PluginBus（含 10 个内置插件）
 │   ├── ares_events/      # EventStore 接口、MemoryEventStore、事件类型
-│   ├── ares_memory/      # 记忆系统 + 蒸馏
-│   ├── ares_evolution/   # 遗传算法进化系统
-│   ├── ares_arena/       # 混沌工程测试平台
+│   ├── ares_memory/      # 记忆系统 + 蒸馏管线
+│   ├── ares_evolution/   # 遗传算法进化系统（genome、变异、评分）
+│   ├── ares_arena/       # 混沌工程 / 故障注入
 │   ├── ares_flight/      # Flight Recorder（时间线/谱系/诊断）
 │   ├── ares_mcp/         # MCP 客户端（stdio/SSE 传输）
-│   ├── ares_callbacks/   # 事件驱动回调系统
-│   ├── ares_observability/ # OpenTelemetry + Prometheus 指标
-│   ├── ares_eval/        # 评估框架
-│   ├── ares_quant/       # 量化交易工具
+│   ├── ares_callbacks/   # 事件驱动生命周期回调
+│   ├── ares_observability/ # OpenTelemetry + Prometheus
+│   ├── ares_eval/        # Agent 评估框架
+│   ├── ares_quant/       # 量化交易工具包
+│   ├── ares_config/      # 配置加载 + 校验
+│   ├── ares_ratelimit/   # 限流
+│   ├── ares_shutdown/    # 优雅关闭编排
+│   ├── ares_security/    # 输入清洗
+│   ├── ares_experience/  # 经验存储 + 反馈服务
+│   ├── ares_protocol/    # AHP Agent 间通信协议
+│   ├── ares_ctxutil/     # Context 工具
+│   ├── ares_bootstrap/   # 模块接线工厂
 │   ├── workflow/engine/  # DAG 工作流引擎（DynamicExecutor + PluginBus）
 │   ├── workflow/graph/   # 图执行器 + 检查点恢复
-│   ├── protocol/ahp/     # AHP Agent 间通信协议
-│   ├── storage/          # VectorStore 接口及实现
+│   ├── workflow/graphservice/ # RPC 图服务
+│   ├── storage/          # VectorStore 接口及实现（PG、内存、Qdrant、SQLite）
+│   ├── storage/postgres/ # PostgreSQL 适配器 + 迁移 + 仓库
+│   ├── storage/memory/   # 内存向量存储
 │   ├── llm/              # LLM 客户端 + 输出解析器
-│   ├── dashboard/        # Web 控制面板（WebSocket + REST API）
+│   ├── llmservice/       # LLM 服务抽象
+│   ├── memoryservice/    # 记忆服务抽象
+│   ├── retrievalservice/ # 检索服务抽象
+│   ├── llm/output/       # 输出适配器（OpenAI、Ollama、OpenRouter）
+│   ├── monitoring/       # Web 控制面板 + SSE + 指标
+│   ├── dashboard/        # Dashboard API + WebSocket Hub + 编排器
+│   ├── discovery/        # MCP 服务发现（文件、二进制）
 │   ├── logger/           # 模块级结构化日志
-│   └── config/           # 配置加载 + 校验
+│   ├── tools/            # 工具注册表（core、builtin、agent、resources）
+│   ├── plugins/          # 运行时插件（复活等）
+│   ├── errors/           # 统一错误类型
+│   └── config/           # 全局配置
 ├── services/embedding/  # Embedding 网关（FastAPI + Ollama）
 ├── examples/            # 示例项目：travel、knowledge-base、dashboard、quant、quickstart……
-├── api/                 # 服务接口与客户端
 ├── cmd/                 # CLI 工具（arena、flight、migration……）
+├── docs/                # 架构文档、功能文档、指南（中英文）
+├── scripts/             # Docker、CI、设置脚本
 └── benchmarks/          # 性能报告与日志
 ```
+
+## 性能基准
+
+关键性能数据（Apple M3 Max, Go 1.26）：
+
+| 操作 | 吞吐量 | 延迟 | 分配 |
+|-----------|---------|--------|---------|
+| 工具执行 | 68M ops/s | 14.8 ns | 0 | 接口分发 |
+| 结果创建 | 3.7B ops/s | 0.27 ns | 0 | 编译器内联 |
+| 参数校验 | 135M ops/s | 7.4 ns | 0 | 结构体比较 |
+| 事件追加 | 1.9M ops/s | 530 ns | 7 | |
+| 订阅（100个） | 7.7K ops/s | 130 μs | 600 alloc | ↓33% alloc |
+| GA 进化（1代） | 3.3M ops/s | 305 ns | 7 | 种群=20 |
+| GA 统计（pop=1000） | 23 runs/s | 43.3 ms | 12 | ↓38% 采样优化 |
+| 适应度共享（pop=500） | 136 runs/s | 7.4 ms | 506 alloc | ↓44% alloc |
+| GA 真实场景（100代） | 98 runs/s | 10.2 ms | 57K | 种群=20 |
+| 策略克隆（5参数） | 4.5M ops/s | 220 ns | 3 | |
+| 流处理 | 260K ops/s | 3.9 μs | 69 | |
+
+完整报告见 [性能报告](benchmarks/BENCHMARK_REPORT.md)。
 
 ## 文档
 
@@ -705,7 +761,7 @@ ares/
 - [集成测试](docs/zh/development/integration-testing.md)
 - [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)
-- [性能报告](benchmarks/benchmark_report.md)
+- [性能报告](benchmarks/BENCHMARK_REPORT.md)
 - [自主进化指南](docs/zh/features/autonomous-evolution.md)
 
 ## LICENSE

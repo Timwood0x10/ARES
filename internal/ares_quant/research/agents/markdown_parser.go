@@ -24,10 +24,9 @@ func NewMarkdownParser() *MarkdownParser {
 
 // ParseRating extracts a PortfolioRating from markdown text.
 // It looks for rating keywords in the text and maps them to PortfolioRating values.
-//
-// FIX: uses ordered slice with word-boundary matching instead of map iteration,
-// ensuring longer names (e.g., "overweight") match before shorter substrings
-// and providing deterministic matching order across runs.
+// Uses ordered slice with word-boundary matching to ensure longer names
+// (e.g., "overweight") match before shorter substrings, providing deterministic
+// matching order across runs.
 //
 // Args:
 //   - md: the markdown text to search.

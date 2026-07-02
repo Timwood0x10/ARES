@@ -84,14 +84,19 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		}
 		template := p.Agents[templateIdx].Clone()
 
-		// Strong random perturbation on each numeric parameter.
+		// Apply wider perturbation with selective parameter mixing.
+		// Each param has a 40% chance to remain unchanged, preserving good
+		// alleles while introducing targeted variation in the rest.
 		for k, v := range template.Params {
+			if p.rng.Float64() < 0.4 {
+				continue // keep original value
+			}
 			if f, ok := v.(float64); ok {
-				// Perturb by ±50%: range [0.5x, 1.5x].
-				perturbation := f * (0.5 + p.rng.Float64())
+				// Perturb by ±80%: range [0.2x, 1.8x].
+				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				template.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(max(iVal, 1)+1) - iVal/2
+				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
 				template.Params[k] = iVal + delta
 			}
 		}
@@ -120,9 +125,12 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		"start_index", startIdx,
 		"elite_count", eliteCount,
 	)
+	p.recordRecoveryActionLocked("fresh_injection", 1)
 }
 
 // preserveElites copies the top EliteCount survivors without modification.
+// When PerLineageElites is enabled, first reserves top-1 per unique lineage,
+// then fills remaining slots from global top performers.
 // Elites are deep-cloned to prevent shared state across generations.
 //
 // Args:
@@ -133,6 +141,10 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 //
 //	[]*mutation.Strategy - deep-cloned elite strategies.
 func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.Strategy {
+	if p.cfg.PerLineageElites {
+		return p.preservePerLineageElites(survivors)
+	}
+
 	eliteCount := min(p.cfg.EliteCount, len(survivors))
 	if eliteCount <= 0 {
 		return []*mutation.Strategy{}
@@ -141,6 +153,138 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 	elites := make([]*mutation.Strategy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
 		elites = append(elites, survivors[i].Clone())
+	}
+
+	return elites
+}
+
+// preservePerLineageElites implements per-lineage elite preservation.
+// First selects the best individual from each unique ParentID, then fills
+// remaining elite slots from global top performers.
+func (p *Population) preservePerLineageElites(survivors []*mutation.Strategy) []*mutation.Strategy {
+	if len(survivors) == 0 {
+		return []*mutation.Strategy{}
+	}
+
+	// Find the best index for each unique lineage.
+	lineageBest := make(map[string]int)
+	for i, s := range survivors {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		existingIdx, ok := lineageBest[pid]
+		if !ok || s.Score > survivors[existingIdx].Score {
+			lineageBest[pid] = i
+		}
+	}
+
+	targetCount := p.cfg.EliteCount
+	if targetCount <= 0 {
+		targetCount = 1
+	}
+
+	// First pass: reserve top-1 per active lineage.
+	reserved := make(map[int]bool, len(survivors))
+	elites := make([]*mutation.Strategy, 0, targetCount)
+
+	for _, idx := range lineageBest {
+		if len(elites) >= targetCount {
+			break
+		}
+		elites = append(elites, survivors[idx].Clone())
+		reserved[idx] = true
+	}
+
+	// Fill remaining slots from global top performers.
+	for i := 0; i < len(survivors) && len(elites) < targetCount; i++ {
+		if reserved[i] {
+			continue
+		}
+		elites = append(elites, survivors[i].Clone())
+		reserved[i] = true
+	}
+
+	slog.Debug("per-lineage elites preserved",
+		"total_elites", len(elites),
+		"unique_lineages", len(lineageBest),
+		"elite_count_config", p.cfg.EliteCount,
+	)
+
+	return elites
+}
+
+// preservePromptDiversityLocked checks if all elites use the same prompt template.
+// If they do, and the current population contains an alternative template individual
+// with a score above the floor threshold, that individual is force-retained as an
+// exploration seed. This prevents categorical collapse where all individuals converge
+// to the same prompt template.
+//
+// The method is called after elite preservation and before offspring generation.
+// It modifies the elite set in-place by appending a prompt diversity seed when needed.
+//
+// Args:
+//
+//	elites - the current set of elite strategies (may be modified).
+//	population - the full sorted population (used to check for alternatives).
+//
+// Returns:
+//
+//	[]*mutation.Strategy - potentially expanded elite set with diversity seed.
+func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, population []*mutation.Strategy) []*mutation.Strategy {
+	if p.cfg.DisablePromptDiversityGuard || len(elites) == 0 || len(population) <= len(elites) {
+		return elites
+	}
+
+	// Check if all elites use one prompt template.
+	firstTemplate := elites[0].PromptTemplate
+	allSame := true
+	for _, e := range elites {
+		if e.PromptTemplate != firstTemplate {
+			allSame = false
+			break
+		}
+	}
+	if !allSame {
+		return elites
+	}
+
+	// All elites use the same template. Look for an alternative in the population.
+	const promptDiversityScoreFloor = -0.5 // Allow negative scores but not extremely bad ones.
+	for _, s := range population {
+		if s.PromptTemplate != firstTemplate && IsScoreEvaluated(s.Score) && s.Score >= promptDiversityScoreFloor {
+			clone := s.Clone()
+			clone.MutationDesc = "prompt_diversity_seed"
+			clone.GenerationCreated = p.Generation + 1
+
+			// If elites already fill the population, replace the weakest elite
+			// with the diversity seed instead of appending beyond p.Size.
+			if p.Size > 0 && len(elites) >= p.Size {
+				// Find the weakest (lowest score) elite to replace.
+				weakestIdx := 0
+				for i := 1; i < len(elites); i++ {
+					if elites[i].Score < elites[weakestIdx].Score {
+						weakestIdx = i
+					}
+				}
+				replacedID := elites[weakestIdx].ID
+				elites[weakestIdx] = clone
+				slog.Debug("prompt diversity seed replaced weakest elite",
+					"template", s.PromptTemplate,
+					"replaced_id", replacedID,
+					"agent_id", s.ID,
+				)
+			} else {
+				elites = append(elites, clone)
+				slog.Debug("prompt diversity seed force-retained",
+					"template", s.PromptTemplate,
+					"score", s.Score,
+					"agent_id", s.ID,
+					"elite_count_before", len(elites)-1,
+				)
+			}
+			return elites
+		}
 	}
 
 	return elites
@@ -165,12 +309,8 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 //
 // Recommended max population size for real-time evolution: ~200 agents. Beyond
 // this, consider enabling spatial indexing (grid-based KD-tree or similar) to
-// achieve sub-linear neighbor queries. See TODO below.
+// achieve sub-linear neighbor queries.
 //
-// TODO(spatial-index): For populations > 500 agents, implement a grid-based
-// spatial index on normalized parameter space to achieve O(log m) nearest-
-// neighbor lookups instead of O(m) sampling. This would reduce overall
-// complexity to O(m log m × k).
 // ---------------------------------------------------------------------------
 
 // applyFitnessSharing reduces scores of agents in crowded regions of parameter space.
@@ -220,13 +360,17 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 
 	// PERF: Choose computation strategy based on population size.
 	// Small populations use exact pairwise distances with matrix caching;
-	// large populations use randomized neighbor sampling to bound cost.
-	// The threshold and sample size are configurable via PopulationConfig.
+	// large populations use randomized neighbor sampling to bound cost;
+	// very large populations use grid-based spatial indexing to achieve
+	// sub-linear neighbor lookup. Thresholds are configurable.
 	limit := p.cfg.FitnessSharingSampleLimit
+	spatial := p.cfg.SpatialIndexThreshold
 	if limit <= 0 {
 		limit = m + 1 // Disable sampling: always use exact mode
 	}
-	if m <= limit {
+	if spatial > 0 && m > spatial {
+		p.applyFitnessSharingSpatial(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
+	} else if m <= limit {
 		p.applyFitnessSharingExact(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
 	} else {
 		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
@@ -287,9 +431,9 @@ func (p *Population) applyFitnessSharingExact(
 // agent checks against FitnessSharingSampleSize randomly chosen neighbors,
 // bounding total work to O(m × FitnessSharingSampleSize × k).
 //
-// PERF: Sampling introduces stochastic approximation — crowd counts are estimates
-// rather than exact values. The penalty formula and niche radius remain identical;
-// only the set of compared neighbors differs from the exact version.
+// PERF: Uses reservoir sampling instead of full Fisher-Yates permutation to
+// select random neighbors. Each agent picks sampleSize random distinct indices
+// in O(m) time with O(k) memory instead of O(m²) time with O(m) memory.
 func (p *Population) applyFitnessSharingSampled(
 	scoredIdx []int,
 	scored []*mutation.Strategy,
@@ -302,32 +446,89 @@ func (p *Population) applyFitnessSharingSampled(
 	m := len(scoredIdx)
 	sampleSize := min(p.cfg.FitnessSharingSampleSize, m-1)
 
+	// PERF: Pre-allocate reservoir once and reuse across agents to avoid
+	// per-agent allocation in the hot loop.
+	reservoir := make([]int, sampleSize)
+
 	for ki, i := range scoredIdx {
 		if i < eliteCount {
 			continue // skip elites
 		}
 
-		// PERF: Inline Fisher-Yates partial shuffle on a pre-allocated slice.
-		// Replaces rng.Perm(m) which allocates a new []int each call, causing
-		// GC pressure in large-population evolution loops. This pattern allocates
-		// once per agent and shuffles in-place for O(m) time, O(m) space.
-		indices := make([]int, m)
-		for idx := range indices {
-			indices[idx] = idx
+		// Reservoir sampling: select sampleSize random distinct indices from [0, m)
+		// in O(m) time with O(k) memory. The first sampleSize elements are seeded
+		// sequentially, then each subsequent element has a decreasing probability
+		// of replacing an existing reservoir element.
+		for idx := 0; idx < sampleSize; idx++ {
+			reservoir[idx] = idx
 		}
-		for idx := m - 1; idx > 0; idx-- {
+		for idx := sampleSize; idx < m; idx++ {
 			j := p.rng.Intn(idx + 1)
-			indices[idx], indices[j] = indices[j], indices[idx]
+			if j < sampleSize {
+				reservoir[j] = idx
+			}
 		}
 
 		crowdCount := 0
-		sampleEnd := min(sampleSize, len(indices))
-		for s := 0; s < sampleEnd; s++ {
-			kj := indices[s]
+		for s := 0; s < sampleSize; s++ {
+			kj := reservoir[s]
 			if kj == ki {
 				continue
 			}
 			dist := paramDistance(scored[ki], scored[kj], keys, ranges)
+			if dist < nicheRadius {
+				crowdCount++
+			}
+		}
+
+		if crowdCount > 0 {
+			penalty := shareSigma * float64(crowdCount)
+			p.Agents[i].Score /= (1.0 + penalty)
+		}
+	}
+}
+
+// applyFitnessSharingSpatial computes fitness sharing penalties using grid-based
+// spatial indexing. For very large populations (configurable via SpatialIndexThreshold),
+// this scales sub-linearly by only comparing each agent against neighbors in the
+// same or adjacent grid cells rather than random sampling or the full population.
+//
+// The spatial index is built on the top-N highest-variance float parameters
+// (capped at maxSpatialDims=6 to keep cell enumeration tractable). Distance
+// calculations still use the full parameter space.
+func (p *Population) applyFitnessSharingSpatial(
+	scoredIdx []int,
+	scored []*mutation.Strategy,
+	keys []string,
+	ranges map[string]float64,
+	eliteCount int,
+	nicheRadius float64,
+	shareSigma float64,
+) {
+	m := len(scoredIdx)
+	if m < 2 {
+		return
+	}
+
+	sidx := newSpatialIndex(scoredIdx, scored, keys, ranges, nicheRadius)
+	if sidx == nil {
+		// Fallback to sampled mode when spatial indexing doesn't apply.
+		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
+		return
+	}
+
+	for ki, i := range scoredIdx {
+		if i < eliteCount {
+			continue
+		}
+
+		neighbors := sidx.neighborsWithin(ki)
+		crowdCount := 0
+		for _, nk := range neighbors {
+			if nk == ki {
+				continue
+			}
+			dist := paramDistance(scored[ki], scored[nk], keys, ranges)
 			if dist < nicheRadius {
 				crowdCount++
 			}

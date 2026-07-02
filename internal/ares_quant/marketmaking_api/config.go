@@ -85,7 +85,7 @@ func (c *MarketMakingConfig) Validate() error {
 	if len(c.Symbols) == 0 {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, ErrNoSymbols)
 	}
-	// FIX: use enum value comparison instead of hardcoded int checks (code rule 9).
+	// Validate mode using enum comparison.
 	switch c.Mode {
 	case ModeBacktest, ModePaper, ModeLive:
 		// valid

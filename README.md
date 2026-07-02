@@ -9,9 +9,13 @@
 
 ```
 
-ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime for Autonomous Agents
+ARES (Adaptive Resilient Evolution System) — A Self-Healing, Self-Evolving Runtime for Autonomous Agents
 
-Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
+Go-based multi-agent framework with DAG workflow orchestration, genetic algorithm self-evolution, memory distillation, inter-agent protocol (AHP), and chaos engineering — built for production-grade agent orchestration.
+
+Unlike static agent frameworks, ARES treats agent behavior as an evolvable genome: strategies are mutated, crossed over, and selected across generations based on real execution evidence. The system heals from failures via checkpoint recovery, ages out stale strategies, and continuously improves through closed-loop evolution.
+
+## Architecture
 
 ## Architecture
 
@@ -80,6 +84,9 @@ graph TB
         EvoSvc["Evolution Service"]
         Pop["GA Population"]
         Score["Scoring Pipeline"]
+        EvidAgg["Evidence Aggregator"]
+        Promo["Promotion Logic"]
+        Report["Evolution Report"]
         Cross["Crossover"]
         Mut["Mutation"]
         EvoSvc --> Pop
@@ -87,6 +94,17 @@ graph TB
         Score --> Cross
         Cross --> Mut
         Mut --> Pop
+        Score -->|"per-generation"| EvidAgg
+        EvidAgg -->|"evidence"| Promo
+        Promo -->|"after all gens"| Report
+        ExpStore["Experience Store"]
+        Norm["Normalizer"]
+        OutcomeRec["Outcome Recorder"]
+        ToolCollect["Tool Call Collector"]
+        OutcomeRec --> Norm
+        ToolCollect --> Norm
+        Norm --> ExpStore
+        ExpStore --> EvidAgg
     end
 
     subgraph hitl ["Human-in-the-Loop"]
@@ -145,9 +163,11 @@ graph TB
     end
 
     EmbedSvc["Embedding Service"]
+    ReportFile["Report File"]
 
     evo -->|"stores results"| Distilled
     evo -->|"uses"| Score
+    Report -->|"persists to"| ReportFile
 
     Leader --> MutableDAG
     Leader --> Session
@@ -378,6 +398,9 @@ Checkpoint-based recovery. Supervisor detects leader failure, recovers stale tas
 - Event-driven callback system for LLM/Tool/Agent lifecycle hooks
 - Wired high-level API: `NewWiredEvolutionSystem` for one-call component wiring
 - Elite preservation and adaptive survival rate across generations
+- Post-run evolution report generation: winner score, generation trajectory, scorer cost summary, lineage concentration, and promotion summary persisted to file
+- Evidence aggregation and promotion evaluation pipeline: per-generation evidence collection with success rate, latency, error rate, confidence; promotion state/reason computed for champion/candidate decisions
+- AfterRun hook for finalization: one-shot evidence collection, promotion evaluation, report generation, and file persistence
 
 **Plugin System**
 - PluginBus: centralized plugin registry and lifecycle manager. Thread-safe Start/Stop with reverse-order shutdown, duplicate detection, and started-state guards.
@@ -446,8 +469,6 @@ Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 | Evolution | 6 | 0 | 1 | 5 |
 | Evolution/Genome | 30+ | 0 | 20+ | 10+ |
 | **Total** | **116** | **10** | **43** | **20** |
-| Event Sourcing | 6 | 0 | 5 | 1 |
-| **Total** | **32** | **7** | **22** | **3** |
 
 Selected hot-path results:
 
@@ -614,28 +635,47 @@ ares/
 │   ├── agents/           # Leader/Sub agent system
 │   ├── ares_runtime/     # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
 │   ├── ares_events/      # EventStore interface, MemoryEventStore, event types
-│   ├── ares_memory/      # Memory system + distillation
-│   ├── ares_evolution/   # Genetic algorithm evolution system
-│   ├── ares_arena/       # Chaos engineering arena
-│   ├── ares_flight/      # Flight recorder (timeline/genealogy/diagnostics)
-│   ├── ares_mcp/         # MCP client (stdio/SSE transport)
-│   ├── ares_callbacks/   # Event-driven callback system
-│   ├── ares_observability/ # OpenTelemetry + Prometheus metrics
-│   ├── ares_eval/        # Evaluation framework
-│   ├── ares_quant/       # Quantitative trading tools
+│   ├── ares_memory/      # Memory system + distillation pipeline
+│   ├── ares_evolution/   # Genetic algorithm evolution system (genome, mutation, scoring)
+│   ├── ares_arena/       # Chaos engineering / fault injection
+│   ├── ares_flight/      # Flight recorder (timeline / genealogy / diagnostics)
+│   ├── ares_mcp/         # MCP client (stdio / SSE transport)
+│   ├── ares_callbacks/   # Event-driven lifecycle callbacks
+│   ├── ares_observability/ # OpenTelemetry + Prometheus
+│   ├── ares_eval/        # Agent evaluation framework
+│   ├── ares_quant/       # Quantitative trading toolkit
+│   ├── ares_config/      # Configuration loading + validation
+│   ├── ares_ratelimit/   # Rate limiting
+│   ├── ares_shutdown/    # Graceful shutdown orchestration
+│   ├── ares_security/    # Input sanitization
+│   ├── ares_experience/  # Experience store + feedback service
+│   ├── ares_protocol/    # AHP inter-agent protocol
+│   ├── ares_ctxutil/     # Context utilities
+│   ├── ares_bootstrap/   # Module wiring factory
 │   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus)
 │   ├── workflow/graph/   # Graph executor + checkpoint resume
-│   ├── protocol/ahp/     # AHP inter-agent protocol
-│   ├── storage/          # VectorStore interface + implementations
+│   ├── workflow/graphservice/ # RPC graph service
+│   ├── storage/          # VectorStore interface + implementations (PG, memory, Qdrant, SQLite)
+│   ├── storage/postgres/ # PostgreSQL adapter + migrations + repositories
+│   ├── storage/memory/   # In-memory vector store
 │   ├── llm/              # LLM client + output parsers
-│   ├── dashboard/        # Web dashboard (WebSocket + REST API)
+│   ├── llmservice/       # LLM service abstraction
+│   ├── memoryservice/    # Memory service abstraction
+│   ├── retrievalservice/ # Retrieval service abstraction
+│   ├── llm/output/       # Output adapters (OpenAI, Ollama, OpenRouter)
+│   ├── monitoring/       # Web dashboard + SSE + metrics
+│   ├── dashboard/        # Dashboard API + WebSocket hub + orchestrator
+│   ├── discovery/        # MCP server discovery (file, binary)
 │   ├── logger/           # Module-scoped structured logging
-│   └── config/           # Configuration loading + validation
-│   └── tools/           # Tool registry and invocation
+│   ├── tools/            # Tool registry (core, builtin, agent, resources)
+│   ├── plugins/          # Runtime plugins (resurrection, etc.)
+│   ├── errors/           # Unified error types
+│   └── config/           # Global config
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
 ├── examples/            # Travel, knowledge-base, dashboard, quant, quickstart, ...
-├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
+├── docs/                # Architecture, features, guides (EN + ZH)
+├── scripts/             # Docker, CI, setup scripts
 └── benchmarks/          # Benchmark reports and logs
 ```
 
@@ -678,6 +718,26 @@ memory:
 
 See `examples/travel/config.yaml` for a complete example.
 
+## Performance
+
+Key benchmark results (Apple M3 Max, Go 1.26):
+
+| Operation | Throughput | Latency | Allocs | Note |
+|-----------|-----------|---------|--------|------|
+| Tool Execution | 68M ops/s | 14.8 ns | 0 | Interface dispatch |
+| Result Creation | 3.7B ops/s | 0.27 ns | 0 | Compiler inlined |
+| Parameter Validation | 135M ops/s | 7.4 ns | 0 | Struct comparison |
+| Event Append | 1.9M ops/s | 530 ns | 7 | |
+| Subscribe (100 subs) | 7.7K ops/s | 130 μs | **600** alloc | **↓33% allocs** |
+| GA Evolve (1 gen) | 3.3M ops/s | 305 ns | 7 | Population=20 |
+| GA Stats (pop=1000) | 23 runs/s | **43.3 ms** | 12 | **↓38%** via DiversitySampleSize sampling |
+| FitnessSharing (pop=500) | 136 runs/s | 7.4 ms | **506** alloc | **↓44% allocs** via Reservoir Sampling |
+| GA RealWorld (100 gen) | 98 runs/s | 10.2 ms | 57K | Population=20 |
+| CloneStrategy (5 params) | 4.5M ops/s | 220 ns | 3 | |
+| Stream Handle | 260K ops/s | 3.9 μs | 69 | |
+
+See [Full Benchmark Report](benchmarks/BENCHMARK_REPORT.md) for detailed results across all modules.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -707,7 +767,7 @@ See `examples/travel/config.yaml` for a complete example.
 - [Integration Testing](docs/en/development/integration-testing.md)
 - [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)
-- [Benchmark Report](benchmarks/benchmark_report.md)
+- [Benchmark Report](benchmarks/BENCHMARK_REPORT.md)
 - [Autonomous Evolution Guide](docs/en/features/autonomous-evolution.md)
 
 ## LICENSE

@@ -824,9 +824,9 @@ GoAgent's current gaps (state checkpointing, cycles, conditional edges, HITL) ca
 | DAG Definition | `internal/workflow/engine/types.go` |
 | DAG Executor | `internal/workflow/engine/executor.go` |
 | Hot Reload | `internal/workflow/engine/reloader.go` |
-| AHP Message | `internal/protocol/ahp/message.go` |
-| Heartbeat | `internal/protocol/ahp/heartbeat.go` |
-| Dead Letter Queue | `internal/protocol/ahp/dlq.go` |
+| AHP Message | `internal/ares_protocol/ahp/message.go` |
+| Heartbeat | `internal/ares_protocol/ahp/heartbeat.go` |
+| Dead Letter Queue | `internal/ares_protocol/ahp/dlq.go` |
 | Leader Agent | `internal/agents/leader/agent.go` |
 | Task Dispatcher | `internal/agents/leader/dispatcher.go` |
 | Result Aggregator | `internal/agents/leader/aggregator.go` |

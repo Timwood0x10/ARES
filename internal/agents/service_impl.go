@@ -3,6 +3,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/errors"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Service provides agent management operations.
@@ -77,6 +78,9 @@ func (s *Service) CreateAgent(ctx context.Context, agentConfig *core.AgentConfig
 		if err == nil && existing != nil {
 			return nil, ErrAgentAlreadyExists
 		}
+		if err != nil && !errors.Is(err, apperrors.ErrNotFound) {
+			return nil, apperrors.Wrap(err, "check agent existence")
+		}
 	}
 
 	// Create session for the agent
@@ -85,7 +89,7 @@ func (s *Service) CreateAgent(ctx context.Context, agentConfig *core.AgentConfig
 	if s.memoryMgr != nil {
 		sessionID, err = s.memoryMgr.CreateSession(ctx, agentConfig.ID)
 		if err != nil {
-			return nil, errors.Wrap(err, "create session")
+			return nil, apperrors.Wrap(err, "create session")
 		}
 	}
 
@@ -104,7 +108,7 @@ func (s *Service) CreateAgent(ctx context.Context, agentConfig *core.AgentConfig
 	// Persist agent only if repo is configured
 	if s.repo != nil {
 		if err := s.repo.Create(ctx, agent); err != nil {
-			return nil, errors.Wrap(err, "create agent")
+			return nil, apperrors.Wrap(err, "create agent")
 		}
 	}
 
@@ -128,11 +132,10 @@ func (s *Service) GetAgent(ctx context.Context, agentID string) (*core.Agent, er
 
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
-		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
+		return nil, apperrors.Wrap(err, "get agent")
 	}
 
 	return agent, nil
@@ -155,11 +158,10 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 
 	agent, err := s.repo.Get(ctx, agentID)
 	if err != nil {
-		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
+		return nil, apperrors.Wrap(err, "get agent")
 	}
 
 	// Apply updates
@@ -182,7 +184,7 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 	agent.UpdatedAt = time.Now().Unix()
 
 	if err := s.repo.Update(ctx, agent); err != nil {
-		return nil, errors.Wrap(err, "update agent")
+		return nil, apperrors.Wrap(err, "update agent")
 	}
 
 	return agent, nil
@@ -202,19 +204,17 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 		return errors.New("agent repository not configured")
 	}
 
-	// Get agent to retrieve session ID
-	agent, err := s.repo.Get(ctx, agentID)
+	_, err := s.repo.Get(ctx, agentID)
 	if err != nil {
-		return errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return ErrAgentNotFound
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return ErrAgentNotFound
+		}
+		return apperrors.Wrap(err, "get agent")
 	}
 
 	// Delete agent
 	if err := s.repo.Delete(ctx, agentID); err != nil {
-		return errors.Wrap(err, "delete agent")
+		return apperrors.Wrap(err, "delete agent")
 	}
 
 	return nil
@@ -263,7 +263,7 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 
 	if err != nil {
 
-		return nil, nil, errors.Wrap(err, "list agents")
+		return nil, nil, apperrors.Wrap(err, "list agents")
 
 	}
 
@@ -345,18 +345,17 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 	// Get agent
 	agent, err := s.repo.Get(ctx, task.AgentID)
 	if err != nil {
-		return nil, errors.Wrap(err, "get agent")
-	}
-
-	if agent == nil {
-		return nil, ErrAgentNotFound
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return nil, ErrAgentNotFound
+		}
+		return nil, apperrors.Wrap(err, "get agent")
 	}
 
 	// Update agent status
 	agent.Status = core.AgentStatusRunning
 	agent.UpdatedAt = time.Now().Unix()
 	if err := s.repo.Update(ctx, agent); err != nil {
-		return nil, errors.Wrap(err, "update agent status")
+		return nil, apperrors.Wrap(err, "update agent status")
 	}
 
 	// Execute task logic
@@ -368,7 +367,7 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 		if updateErr := s.repo.Update(ctx, agent); updateErr != nil {
 			slog.Warn("failed to update agent status after error", "error", updateErr)
 		}
-		return nil, errors.Wrap(err, "execute task logic")
+		return nil, apperrors.Wrap(err, "execute task logic")
 	}
 
 	// Update agent status back to ready

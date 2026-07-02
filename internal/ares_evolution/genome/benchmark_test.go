@@ -139,51 +139,6 @@ func BenchmarkCrossoverUniform_LargeParams(b *testing.B) {
 	}
 }
 
-// BenchmarkCrossoverMultiPoint benchmarks k-point crossover at different k values.
-// Sub-benchmarks test k=3, k=10, k=50 to measure cost scaling with crossover points.
-func BenchmarkCrossoverMultiPoint(b *testing.B) {
-	b.ReportAllocs()
-
-	crosser, err := NewCrossover(WithSeed(42))
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	parentA := randStrategy(rand.New(rand.NewSource(10)), 50, 200)
-	parentB := randStrategy(rand.New(rand.NewSource(20)), 50, 200)
-
-	ctx := context.Background()
-
-	for _, k := range []int{3, 10, 50} {
-		b.Run(fmt.Sprintf("k=%d", k), func(b *testing.B) {
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, _ = crosser.MultiPointCrossover(ctx, parentA, parentB, k)
-			}
-		})
-	}
-}
-
-// BenchmarkCrossoverHalfSplit benchmarks half-split prompt template crossover.
-// Parents have long prompt templates (~1000 chars) to stress-test string concatenation cost.
-func BenchmarkCrossoverHalfSplit(b *testing.B) {
-	b.ReportAllocs()
-
-	crosser, err := NewCrossover(WithSeed(42))
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	parentA := randStrategy(rand.New(rand.NewSource(10)), 10, 1000)
-	parentB := randStrategy(rand.New(rand.NewSource(20)), 10, 1000)
-
-	b.ResetTimer()
-	ctx := context.Background()
-	for i := 0; i < b.N; i++ {
-		_, _ = crosser.CrossoverWithHalfSplit(ctx, parentA, parentB)
-	}
-}
-
 // BenchmarkCrossoverParallel benchmarks concurrent crossover operations using RunParallel.
 // Measures throughput under parallel load with GOMAXPROCS workers.
 func BenchmarkCrossoverParallel(b *testing.B) {
@@ -211,13 +166,10 @@ func BenchmarkCrossoverParallel(b *testing.B) {
 // Group 2: Selection Benchmarks
 // ==========================================================================
 
-// BenchmarkTruncationSelection benchmarks truncation selection on various population sizes.
+// BenchmarkTruncationSelection benchmarks top-N selection on various population sizes.
 // Selects top 30% of individuals. Measures sort + slice cost as population scales.
 func BenchmarkTruncationSelection(b *testing.B) {
 	b.ReportAllocs()
-
-	sel := NewTruncationSelection()
-	ctx := context.Background()
 
 	for _, size := range []int{10, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("pop_%d", size), func(b *testing.B) {
@@ -234,7 +186,11 @@ func BenchmarkTruncationSelection(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = sel.Select(ctx, population, selectN)
+				// Inline: sort by score descending, take top N.
+				sorted := make([]*mutation.Strategy, len(population))
+				copy(sorted, population)
+				SortByScore(sorted)
+				_ = sorted[:selectN]
 			}
 		})
 	}

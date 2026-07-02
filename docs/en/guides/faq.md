@@ -386,13 +386,13 @@ if err != nil {
 ```
 
 2. Use dead letter queue (DLQ):
-**Code Location**: `internal/protocol/ahp/dlq.go:30-50`
+**Code Location**: `internal/ares_protocol/ahp/dlq.go:30-50`
 ```go
 dlq := protocol.GetDLQ()
 dlq.Add(msg, err, reason)
 ```
 
-**Code Location**: `internal/protocol/ahp/dlq.go:30-50` (Dead letter queue)
+**Code Location**: `internal/ares_protocol/ahp/dlq.go:30-50` (Dead letter queue)
 
 ---
 

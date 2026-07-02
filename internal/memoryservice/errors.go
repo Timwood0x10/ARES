@@ -1,7 +1,12 @@
 // Package memory provides error definitions for memory service.
 package memoryservice
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+)
 
 var (
 	// ErrInvalidUserID is returned when user ID is empty.
@@ -26,8 +31,10 @@ var (
 	ErrInvalidConfig = errors.New("invalid configuration")
 
 	// ErrSessionNotFound is returned when session does not exist.
-	ErrSessionNotFound = errors.New("session not found")
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrSessionNotFound = fmt.Errorf("session not found: %w", apperrors.ErrNotFound)
 
 	// ErrTaskNotFound is returned when task does not exist.
-	ErrTaskNotFound = errors.New("task not found")
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrTaskNotFound = fmt.Errorf("task not found: %w", apperrors.ErrNotFound)
 )

@@ -5,6 +5,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 )
 
 // MemoryStore implements Store with in-memory maps.
@@ -76,7 +78,7 @@ func (s *MemoryStore) LatestDecision(_ context.Context, ticker string) (*Decisio
 
 	decisions := s.decisionsByTicker[ticker]
 	if len(decisions) == 0 {
-		return nil, nil
+		return nil, coreerrors.ErrRecordNotFound
 	}
 	d := decisions[0]
 	return &d, nil

@@ -724,6 +724,31 @@ func (a *leaderAgent) recordExperienceFeedback(ctx context.Context, tasks []*mod
 }
 
 // Process handles user input and orchestrates the recommendation workflow with automatic memory management.
+func (a *leaderAgent) fail(err error) (any, error) {
+	a.emitCallback(&ares_callbacks.Context{
+		Event:   ares_callbacks.EventAgentError,
+		AgentID: a.id,
+		Error:   err,
+	})
+	return nil, err
+}
+
+func (a *leaderAgent) checkStepLimit(stepCount, maxSteps int) error {
+	if stepCount > maxSteps {
+		return coreerrors.ErrMaxStepsExceeded
+	}
+	return nil
+}
+
+func (a *leaderAgent) checkAgentRunning() error {
+	select {
+	case <-a.stopCh:
+		return coreerrors.ErrAgentNotRunning
+	default:
+	}
+	return nil
+}
+
 func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	a.processingMu.Lock()
@@ -762,7 +787,6 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	defer func() {
 		a.setStatus(models.AgentStatusReady)
 		duration := time.Since(startTime)
-		// Emit agent end event on exit (success or error will be handled below).
 		a.emitCallback(&ares_callbacks.Context{
 			Event:    ares_callbacks.EventAgentEnd,
 			AgentID:  a.id,
@@ -772,12 +796,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	strInput, err := parseInput(input)
 	if err != nil {
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+		return a.fail(err)
 	}
 
 	// Initialize memory context (session, messages, similar tasks, task record).
@@ -785,118 +804,46 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	// Step 1: Parse profile
 	stepCount++
-	if stepCount > maxSteps {
-		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+	if err := a.checkStepLimit(stepCount, maxSteps); err != nil {
+		return a.fail(err)
 	}
-
-	select {
-	case <-a.stopCh:
-		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
-	default:
+	if err := a.checkAgentRunning(); err != nil {
+		return a.fail(err)
 	}
-
-	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-		"step": "parse",
-	})
-
+	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{"step": "parse"})
 	profile, err := a.parser.Parse(ctx, strInput)
 	if err != nil {
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+		return a.fail(err)
 	}
 
 	// Step 2: Plan tasks
 	stepCount++
-	if stepCount > maxSteps {
-		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+	if err := a.checkStepLimit(stepCount, maxSteps); err != nil {
+		return a.fail(err)
 	}
-
-	select {
-	case <-a.stopCh:
-		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
-	default:
+	if err := a.checkAgentRunning(); err != nil {
+		return a.fail(err)
 	}
-
-	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
-		"step": "plan",
-	})
-
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "plan"})
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+		return a.fail(err)
 	}
 	log.Info("Leader tasks created", "module", "leader", "count", len(tasks))
 
 	// Step 3: Dispatch tasks
 	stepCount++
-	if stepCount > maxSteps {
-		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+	if err := a.checkStepLimit(stepCount, maxSteps); err != nil {
+		return a.fail(err)
 	}
-
-	select {
-	case <-a.stopCh:
-		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
-	default:
+	if err := a.checkAgentRunning(); err != nil {
+		return a.fail(err)
 	}
-
-	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
-		"step": "dispatch",
-	})
-
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "dispatch"})
 	log.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
 	if err != nil {
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+		return a.fail(err)
 	}
 	log.Info("Leader dispatch completed", "module", "leader", "result_count", len(results))
 	for i, r := range results {
@@ -905,36 +852,15 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 
 	// Step 4: Aggregate results
 	stepCount++
-	if stepCount > maxSteps {
-		err := coreerrors.ErrMaxStepsExceeded
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+	if err := a.checkStepLimit(stepCount, maxSteps); err != nil {
+		return a.fail(err)
 	}
-
-	select {
-	case <-a.stopCh:
-		err := coreerrors.ErrAgentNotRunning
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
-	default:
+	if err := a.checkAgentRunning(); err != nil {
+		return a.fail(err)
 	}
-
 	result, err := a.aggregator.Aggregate(ctx, results, tasks)
 	if err != nil {
-		a.emitCallback(&ares_callbacks.Context{
-			Event:   ares_callbacks.EventAgentError,
-			AgentID: a.id,
-			Error:   err,
-		})
-		return nil, err
+		return a.fail(err)
 	}
 
 	// Finalize memory (update task, record assistant message, distill).

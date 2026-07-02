@@ -13,7 +13,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
 	"unicode/utf8"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
@@ -332,7 +335,7 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 	// 5. Apply minimum score filter
 	s.logger.Info("Before score filter", "results_count", len(finalResults), "min_score", req.MinScore)
 	for i, result := range finalResults {
-		s.logger.Info("Result before filter", "index", i, "score", result.Score, "content", truncateForLog(result.Content, 50))
+		s.logger.Info("Result before filter", "index", i, "score", result.Score, "content", truncate.WithEllipsis(result.Content, 50))
 	}
 
 	finalResults = s.filterByScore(finalResults, req.MinScore)
@@ -609,7 +612,7 @@ func (s *RetrievalService) getEmbeddingCached(ctx context.Context, query string)
 	s.embeddingCacheMu.RLock()
 	if embedding, ok := s.embeddingCache[query]; ok {
 		s.embeddingCacheMu.RUnlock()
-		s.logger.Debug("Embedding cache hit", "query", truncateForLog(query, 30))
+		s.logger.Debug("Embedding cache hit", "query", truncate.WithEllipsis(query, 30))
 		return embedding
 	}
 	s.embeddingCacheMu.RUnlock()
@@ -630,13 +633,13 @@ func (s *RetrievalService) getEmbeddingCached(ctx context.Context, query string)
 			oldestKey := s.embeddingCacheAccessList[0]
 			delete(s.embeddingCache, oldestKey)
 			s.embeddingCacheAccessList = s.embeddingCacheAccessList[1:]
-			s.logger.Debug("Embedding cache eviction", "evicted_key", truncateForLog(oldestKey, 30))
+			s.logger.Debug("Embedding cache eviction", "evicted_key", truncate.WithEllipsis(oldestKey, 30))
 		}
 	}
 
 	s.embeddingCache[query] = embedding
 	s.embeddingCacheAccessList = append(s.embeddingCacheAccessList, query)
-	s.logger.Debug("Embedding cache miss, stored in cache", "query", truncateForLog(query, 30), "cache_size", len(s.embeddingCache))
+	s.logger.Debug("Embedding cache miss, stored in cache", "query", truncate.WithEllipsis(query, 30), "cache_size", len(s.embeddingCache))
 
 	return embedding
 }
@@ -1151,7 +1154,7 @@ func (s *RetrievalService) searchSingleQuery(ctx context.Context, q WeightedQuer
 
 	// Use database timeout from retrieval guard
 	searchCtx, dbCancel := s.retrievalGuard.WithDBTimeout(searchCtx)
-	defer dbCancel() // FIX: Preserve and call cancel to prevent resource leak
+	defer dbCancel()
 
 	// Create errgroup for parallel search (per design standard)
 	eg, ctx := errgroup.WithContext(searchCtx)
@@ -1992,18 +1995,6 @@ func (s *RetrievalService) countResultsBySource(results []*SearchResult) map[str
 }
 
 // Helper functions for string manipulation
-
-// truncateForLog truncates string for logging
-func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
-}
 
 func toLower(s string) string {
 	return strings.ToLower(s)

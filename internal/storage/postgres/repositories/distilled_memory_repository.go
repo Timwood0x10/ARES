@@ -12,6 +12,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // DistilledMemory represents a distilled memory from conversation history.
@@ -105,7 +106,7 @@ func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *Distille
 		"session_id", memory.SessionID,
 		"memory_type", memory.MemoryType,
 		"importance", memory.Importance,
-		"content_preview", truncateString(memory.Content, 50))
+		"content_preview", truncate.WithEllipsis(memory.Content, 50))
 
 	metadataJSON, err := json.Marshal(memory.Metadata)
 	if err != nil {
@@ -505,16 +506,4 @@ func (r *DistilledMemoryRepository) Delete(ctx context.Context, tenantID, id str
 
 		return nil
 	})
-}
-
-// truncateString truncates a string to the specified maximum length.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
 }

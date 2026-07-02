@@ -157,3 +157,15 @@ func (b *toolBinder) ToolIdempotent(name string) bool {
 	entry, ok := b.tools[name]
 	return ok && entry.idempotent
 }
+
+// GetToolSchemas returns tool schemas from the bridged registry.
+// Returns nil if no registry is bridged.
+func (b *toolBinder) GetToolSchemas() []core.ToolSchema {
+	b.mu.RLock()
+	reg := b.registry
+	b.mu.RUnlock()
+	if reg == nil {
+		return nil
+	}
+	return reg.GetSchemas()
+}

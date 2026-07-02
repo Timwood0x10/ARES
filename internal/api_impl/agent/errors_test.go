@@ -19,7 +19,7 @@ func TestErrorVariables(t *testing.T) {
 		{
 			name:  "ErrAgentNotFound",
 			error: ErrAgentNotFound,
-			want:  "agent not found",
+			want:  "agent not found: not found",
 		},
 		{
 			name:  "ErrAgentAlreadyExists",

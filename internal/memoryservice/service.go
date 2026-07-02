@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // Service provides memory management operations.
@@ -301,13 +302,13 @@ func (s *Service) generateSummary(input, output string) string {
 	maxLen := 200
 	summary := ""
 	if input != "" {
-		summary = "Input: " + truncateString(input, maxLen)
+		summary = "Input: " + truncate.WithEllipsis(input, maxLen)
 	}
 	if output != "" {
 		if summary != "" {
 			summary += " | "
 		}
-		summary += "Output: " + truncateString(output, maxLen)
+		summary += "Output: " + truncate.WithEllipsis(output, maxLen)
 	}
 
 	return summary
@@ -340,14 +341,6 @@ func (s *Service) generateTags(taskType, input, output string) []string {
 	}
 
 	return tags
-}
-
-// truncateString truncates a string to the specified maximum length.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // SearchSimilarTasks searches for similar tasks.

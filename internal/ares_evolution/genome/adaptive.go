@@ -29,6 +29,11 @@ type DiversityReport struct {
 	// EffectiveWeights is the actual weight configuration used to compute Overall.
 	// Useful for observability and debugging custom weight configurations.
 	EffectiveWeights DiversityWeightConfig
+
+	// PromptTemplateDistribution maps each prompt template string to the number
+	// of agents using it. Empty-string template is included as a key if any agent
+	// has no prompt template set.
+	PromptTemplateDistribution map[string]int
 }
 
 // DiversityMetricVersion indicates the current diversity metric version.
@@ -100,10 +105,11 @@ func (p *Population) computeBestScoreLocked() float64 {
 func (p *Population) measureDiversityReportLocked() DiversityReport {
 	n := len(p.Agents)
 	report := DiversityReport{
-		Overall:     1.0,
-		Numeric:     1.0,
-		Categorical: 1.0,
-		Lineage:     1.0,
+		Overall:                    1.0,
+		Numeric:                    1.0,
+		Categorical:                1.0,
+		Lineage:                    1.0,
+		PromptTemplateDistribution: p.countPromptTemplateDistributionLocked(),
 	}
 
 	if n < 2 {
@@ -139,6 +145,10 @@ func (p *Population) measureDiversityLocked() float64 {
 
 // measureNumericDiversityLocked computes average pairwise normalized parameter distance.
 // Only numeric parameters participate. Returns [0, 1].
+//
+// PERF: When population exceeds DiversitySampleSize, estimates diversity by comparing
+// each agent against DiversitySampleSize random neighbors instead of all O(n²) pairs.
+// This bounds the cost to O(n × DiversitySampleSize) instead of O(n²).
 func (p *Population) measureNumericDiversityLocked() float64 {
 	n := len(p.Agents)
 	if n < 2 {
@@ -152,19 +162,65 @@ func (p *Population) measureNumericDiversityLocked() float64 {
 
 	ranges := computeParamRanges(p.Agents, allKeys)
 
+	sampleSize := p.cfg.DiversitySampleSize
+	if sampleSize <= 0 || n <= sampleSize {
+		// Exact mode: compute all O(n²/2) pairwise distances.
+		var totalDist float64
+		var pairCount int
+		for i := 0; i < n; i++ {
+			for j := i + 1; j < n; j++ {
+				dist := numericParamDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
+				totalDist += dist
+				pairCount++
+			}
+		}
+		if pairCount == 0 {
+			return 1.0
+		}
+		return totalDist / float64(pairCount)
+	}
+
+	// Sampled mode: each agent compares against sampleSize random neighbors.
+	// Uses rejection sampling with linear dedup scan over a small reusable slice.
+	// For sampleSize ≈ 200, scanning 200 ints per rejection is cheaper than
+	// allocating and GCing a map per agent. Total: O(n × DiversitySampleSize).
 	var totalDist float64
-	var pairCount int
+	var sampleCount int
+	neighbors := make([]int, 0, sampleSize)
+
 	for i := 0; i < n; i++ {
-		for j := i + 1; j < n; j++ {
+		neighbors = neighbors[:0]
+
+		for len(neighbors) < sampleSize {
+			j := p.rng.Intn(n)
+			if j == i {
+				continue
+			}
+			// Linear scan dedup over small slice — faster than map allocation.
+			dup := false
+			for _, nj := range neighbors {
+				if nj == j {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			neighbors = append(neighbors, j)
+		}
+
+		for _, j := range neighbors {
 			dist := numericParamDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
 			totalDist += dist
-			pairCount++
+			sampleCount++
 		}
 	}
-	if pairCount == 0 {
+
+	if sampleCount == 0 {
 		return 1.0
 	}
-	return totalDist / float64(pairCount)
+	return totalDist / float64(sampleCount)
 }
 
 // numericParamDistance computes normalized distance using only numeric parameters.
@@ -237,6 +293,23 @@ func (p *Population) measureCategoricalDiversityLocked() float64 {
 		return 1.0
 	}
 	return totalDist / float64(pairCount)
+}
+
+// countPromptTemplateDistributionLocked returns the count of each prompt template
+// in the current population. Useful for detecting categorical convergence where
+// all agents use the same prompt template.
+//
+// Caller must hold at least a read lock on p.mu.
+//
+// Returns:
+//
+//	map[string]int - mapping of prompt template to count of agents using it.
+func (p *Population) countPromptTemplateDistributionLocked() map[string]int {
+	dist := make(map[string]int)
+	for _, a := range p.Agents {
+		dist[a.PromptTemplate]++
+	}
+	return dist
 }
 
 // measureLineageDiversityLocked computes lineage (parent ID) diversity.
@@ -442,6 +515,7 @@ func (p *Population) adjustMutationRateLocked() {
 			"mutation_rate", p.cfg.MaxMutationRate,
 		)
 		p.currentMutationRate = p.cfg.MaxMutationRate
+		p.recordRecoveryActionLocked("mutation_rate_boost", 1)
 		return
 	}
 
@@ -450,6 +524,7 @@ func (p *Population) adjustMutationRateLocked() {
 		deficit := p.cfg.DiversityThreshold - div
 		boostFactor := ac.LowDiversityBoostFactor + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
 		p.currentMutationRate = minFloat(p.currentMutationRate*boostFactor, p.cfg.MaxMutationRate)
+		p.recordRecoveryActionLocked("mutation_rate_boost", 1)
 	} else if div > p.cfg.DiversityThreshold*3 {
 		// Very high diversity: allow gentle decay toward floor.
 		p.currentMutationRate = maxFloat(p.currentMutationRate*ac.HighDecayRate, p.cfg.MinMutationRate)
@@ -466,7 +541,7 @@ func (p *Population) adjustMutationRateLocked() {
 	if div < ac.DiversityFloorThreshold {
 		effectiveMin = maxFloat(ac.MinMutationFloor, p.cfg.MinMutationRate)
 	}
-	p.currentMutationRate = clampFloat(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
+	p.currentMutationRate = mutation.Clamp(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
 
 	slog.Debug("adaptive mutation rate adjusted",
 		"diversity", div,
@@ -518,14 +593,18 @@ func (p *Population) handleStagnationLocked() {
 		template := p.Agents[p.rng.Intn(startIdx)]
 		clone := template.Clone()
 
-		// Apply strong random perturbation to each numeric param.
+		// Apply wider perturbation with selective parameter mixing.
+		// 40% chance to keep a param unchanged, preserving good alleles.
 		for k, v := range clone.Params {
+			if p.rng.Float64() < 0.4 {
+				continue // keep original value
+			}
 			if f, ok := v.(float64); ok {
-				// Perturb by ±40% of original value: 60%–140% range.
-				perturbation := f * (0.6 + p.rng.Float64()*0.8)
+				// Perturb by ±80%: range [0.2x, 1.8x].
+				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				clone.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(iVal/2+1) - iVal/4
+				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
 				clone.Params[k] = iVal + delta
 			}
 		}
@@ -540,6 +619,16 @@ func (p *Population) handleStagnationLocked() {
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,
 	)
+	p.recordRecoveryActionLocked("stagnation_reset", 1)
+}
+
+// recordRecoveryActionLocked increments the recovery action counter for the
+// current generation. Caller must hold p.mu write lock.
+func (p *Population) recordRecoveryActionLocked(action string, count int) {
+	if p.recoveryActions == nil {
+		p.recoveryActions = make(map[string]int)
+	}
+	p.recoveryActions[action] += count
 }
 
 // minFloat returns the smaller of two float64 values.
@@ -556,15 +645,4 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-// clampFloat restricts a value to the [min, max] range.
-func clampFloat(v, min, max float64) float64 {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
 }

@@ -4,7 +4,10 @@
 package mutation
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -84,6 +87,11 @@ type Strategy struct {
 	// ParentID is the parent strategy ID (empty for root strategies).
 	ParentID string `json:"parent_id,omitempty"`
 
+	// EvidenceKey is a stable key derived from behaviorally relevant fields
+	// (prompt template + normalized numeric params). It enables evidence
+	// lookup by phenotype across different strategy IDs.
+	EvidenceKey string `json:"evidence_key,omitempty"`
+
 	// Version is the monotonically increasing version number.
 	Version int `json:"version"`
 
@@ -103,10 +111,26 @@ type Strategy struct {
 	MutationDesc string `json:"mutation_desc,omitempty"`
 
 	// Score is the current evaluation score (-1 = unevaluated).
+	// In single-objective mode, this holds the aggregate score.
+	// In multi-objective mode, DimensionScores holds per-dimension values
+	// and Score is AggregateDimensions(DimensionScores, weights).
 	Score float64 `json:"score"`
+
+	// DimensionScores holds per-objective scores for multi-objective evaluation.
+	// Keys are dimension names (e.g. "success_rate", "cost", "latency", "quality").
+	// Nil means single-objective mode (backward compatible).
+	// When non-nil, Score should be the aggregate of these values.
+	DimensionScores map[string]float64 `json:"dimension_scores,omitempty"`
 
 	// CreatedAt is the timestamp when this strategy was created.
 	CreatedAt time.Time `json:"created_at"`
+
+	// GenerationCreated is the generation number when this strategy first entered
+	// the population. Used by AgentMaxAge eviction: if currentGen - GenerationCreated
+	// > AgentMaxAge, the agent is eligible for eviction.
+	// 0 = unknown/legacy (never evicted by age — backward-compatible default for
+	// strategies created before this field existed).
+	GenerationCreated int `json:"generation_created,omitempty"`
 
 	// hashCache caches the StrategyHash result. Set hashValid=false on mutation.
 	hashCache  uint64
@@ -120,9 +144,10 @@ func (s *Strategy) Clone() *Strategy {
 		return nil
 	}
 
-	return &Strategy{
+	clone := &Strategy{
 		ID:                   s.ID,
 		ParentID:             s.ParentID,
+		EvidenceKey:          s.EvidenceKey,
 		Version:              s.Version,
 		Name:                 s.Name,
 		Params:               CloneParams(s.Params),
@@ -131,9 +156,17 @@ func (s *Strategy) Clone() *Strategy {
 		MutationDesc:         s.MutationDesc,
 		Score:                s.Score,
 		CreatedAt:            s.CreatedAt,
+		GenerationCreated:    s.GenerationCreated,
 		hashCache:            s.hashCache,
 		hashCached:           s.hashCached,
 	}
+	if s.DimensionScores != nil {
+		clone.DimensionScores = make(map[string]float64, len(s.DimensionScores))
+		for k, v := range s.DimensionScores {
+			clone.DimensionScores[k] = v
+		}
+	}
+	return clone
 }
 
 // HashCached returns true if the StrategyHash has been cached on this object.
@@ -149,6 +182,44 @@ func (s *Strategy) SetHash(h uint64) {
 	}
 	s.hashCache = h
 	s.hashCached = true
+}
+
+// ComputeEvidenceKey derives a stable evidence key from behaviorally relevant
+// fields: prompt template and sorted numeric params. The key format is:
+// "promptTemplate|key1=value1,key2=value2". Only numeric values (float64)
+// in Params are included, sorted by key for determinism.
+func (s *Strategy) ComputeEvidenceKey() string {
+	if s == nil {
+		return ""
+	}
+
+	prompt := s.PromptTemplate
+	if prompt == "" {
+		prompt = "default"
+	}
+
+	var pairs []string
+	keys := make([]string, 0, len(s.Params))
+	for k := range s.Params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v, ok := s.Params[k].(float64)
+		if !ok {
+			continue
+		}
+		pairs = append(pairs, fmt.Sprintf("%s=%.2f", k, v))
+	}
+
+	evidenceKey := prompt
+	if len(pairs) > 0 {
+		evidenceKey = prompt + "|" + strings.Join(pairs, ",")
+	}
+
+	s.EvidenceKey = evidenceKey
+	return evidenceKey
 }
 
 // ParamRange defines the allowed range for a mutable parameter.

@@ -227,8 +227,8 @@ func TestIsRetryable(t *testing.T) {
 
 func TestSentinelErrors(t *testing.T) {
 	t.Run("agent errors", func(t *testing.T) {
-		if ErrAgentNotFound.Error() != "agent not found" {
-			t.Errorf("expected agent not found")
+		if ErrAgentNotFound.Error() != "agent not found: not found" {
+			t.Errorf("expected agent not found: not found")
 		}
 	})
 
@@ -257,8 +257,8 @@ func TestSentinelErrors(t *testing.T) {
 	})
 
 	t.Run("workflow errors", func(t *testing.T) {
-		if ErrWorkflowNotFound.Error() != "workflow not found" {
-			t.Errorf("expected workflow not found")
+		if ErrWorkflowNotFound.Error() != "workflow not found: not found" {
+			t.Errorf("expected workflow not found: not found")
 		}
 	})
 

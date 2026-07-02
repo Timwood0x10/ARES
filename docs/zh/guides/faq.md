@@ -386,13 +386,13 @@ if err != nil {
 ```
 
 2. 使用死信队列（DLQ）：
-**代码位置**: `internal/protocol/ahp/dlq.go:30-50`
+**代码位置**: `internal/ares_protocol/ahp/dlq.go:30-50`
 ```go
 dlq := protocol.GetDLQ()
 dlq.Add(msg, err, reason)
 ```
 
-**代码位置**: `internal/protocol/ahp/dlq.go:30-50`（死信队列）
+**代码位置**: `internal/ares_protocol/ahp/dlq.go:30-50`（死信队列）
 
 ---
 

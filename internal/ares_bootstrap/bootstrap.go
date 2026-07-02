@@ -43,7 +43,7 @@ type MCPDashboard struct {
 // SetupMCP initializes the MCP manager from ares_config and connects to servers.
 func SetupMCP(ctx context.Context, cfg *ares_config.MCPConfig, registry *core.Registry) (*ares_mcp.MCPManager, error) {
 	if cfg == nil || len(cfg.Servers) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("bootstrap: MCP not configured")
 	}
 
 	managerConfig := &ares_mcp.MCPManagerConfig{
@@ -108,7 +108,7 @@ func SetupDashboard(
 	mcpMgr dashboard.MCPStatusProvider,
 ) (*MCPDashboard, error) {
 	if cfg == nil || cfg.Addr == "" {
-		return nil, nil
+		return nil, fmt.Errorf("bootstrap: dashboard not configured")
 	}
 
 	dashConfig := &dashboard.DashboardConfig{
@@ -350,7 +350,7 @@ func SetupEvolution(
 ) (*EvolutionComponents, error) {
 	if flightRecorder == nil || expRepo == nil || callbackReg == nil {
 		slog.InfoContext(ctx, "bootstrap: evolution skipped (missing dependencies)")
-		return nil, nil
+		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
 	}
 
 	// Create adapter wrapper to bridge flight recorder interfaces with evolution package.

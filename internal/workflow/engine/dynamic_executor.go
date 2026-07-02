@@ -236,6 +236,13 @@ func (e *DynamicExecutor) ExecuteDynamic(
 		return nil, errors.New("mutableDAG must not be nil")
 	}
 
+	// Early context check: if context is already cancelled, return immediately
+	// instead of entering execLoop where errgroup async paths may race with
+	// the cancellation signal.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	execution := &WorkflowExecution{
 		ID:         generateDynamicExecutionID(),
 		WorkflowID: workflow.ID,

@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // Agent represents the Sub Agent interface.
@@ -38,6 +39,8 @@ type ToolBinder interface {
 	ListTools() []string
 	IsToolIdempotent(name string) bool
 	ListIdempotentTools() []string
+	GetToolSchemas() []resources.ToolSchema
+	BridgeFromRegistry(registry *resources.Registry)
 }
 
 // Compile-time check: subAgent must satisfy base.StatefulAgent.

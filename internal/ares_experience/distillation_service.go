@@ -65,7 +65,7 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 	}
 
 	if !s.ShouldDistill(ctx, task) {
-		return nil, nil
+		return nil, fmt.Errorf("distillation skipped: task does not meet distillation criteria")
 	}
 
 	extracted, err := s.extractExperience(ctx, task)

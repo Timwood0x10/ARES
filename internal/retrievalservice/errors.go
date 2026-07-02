@@ -1,7 +1,12 @@
 // Package retrieval provides error definitions for retrieval service.
 package retrievalservice
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+)
 
 var (
 	// ErrInvalidTenantID is returned when tenant ID is empty.
@@ -20,7 +25,8 @@ var (
 	ErrInvalidItemID = errors.New("invalid item ID")
 
 	// ErrKnowledgeNotFound is returned when knowledge item does not exist.
-	ErrKnowledgeNotFound = errors.New("knowledge not found")
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrKnowledgeNotFound = fmt.Errorf("knowledge not found: %w", apperrors.ErrNotFound)
 
 	// ErrAccessDenied is returned when access to a resource is denied.
 	ErrAccessDenied = errors.New("access denied")

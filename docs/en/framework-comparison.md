@@ -369,7 +369,7 @@ sequenceDiagram
 #### AHP Message Structure
 
 ```go
-// internal/protocol/ahp/message.go
+// internal/ares_protocol/ahp/message.go
 type AHPMessage struct {
     MessageID   string         `json:"message_id"`    // <ts>.<counter>.<rand6>
     Method      AHPMethod      `json:"method"`        // TASK|RESULT|PROGRESS|ACK|HEARTBEAT
@@ -726,11 +726,11 @@ quadrantChart
 | Hot Reload | `internal/workflow/engine/reloader.go` |
 | Graph Execution | `internal/workflow/graph/executor.go` |
 | Graph Scheduler | `internal/workflow/graph/scheduler.go` |
-| AHP Message | `internal/protocol/ahp/message.go` |
-| AHP Protocol | `internal/protocol/ahp/protocol.go` |
-| AHP Queue | `internal/protocol/ahp/queue.go` |
-| Heartbeat | `internal/protocol/ahp/heartbeat.go` |
-| Dead Letter Queue | `internal/protocol/ahp/dlq.go` |
+| AHP Message | `internal/ares_protocol/ahp/message.go` |
+| AHP Protocol | `internal/ares_protocol/ahp/protocol.go` |
+| AHP Queue | `internal/ares_protocol/ahp/queue.go` |
+| Heartbeat | `internal/ares_protocol/ahp/heartbeat.go` |
+| Dead Letter Queue | `internal/ares_protocol/ahp/dlq.go` |
 | Leader Agent | `internal/agents/leader/agent.go` |
 | Task Dispatcher | `internal/agents/leader/dispatcher.go` |
 | Task Planner | `internal/agents/leader/planner.go` |

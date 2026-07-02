@@ -60,7 +60,7 @@ func (r *MemoryRepository) Get(ctx context.Context, agentID string) (*core.Agent
 
 	agent, exists := r.agents[agentID]
 	if !exists {
-		return nil, nil
+		return nil, ErrAgentNotFound
 	}
 
 	// Return a copy to avoid mutation

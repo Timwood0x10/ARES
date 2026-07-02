@@ -5,15 +5,18 @@ package ares_runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Sentinel errors for the runtime package.
 var (
 	// ErrAgentNotFound indicates the requested agent is not registered.
-	ErrAgentNotFound = errors.New("agent not found")
+	// Wraps apperrors.ErrNotFound for generic checks via errors.Is(err, apperrors.ErrNotFound).
+	ErrAgentNotFound = fmt.Errorf("agent not found: %w", apperrors.ErrNotFound)
 	// ErrAgentAlreadyRegistered indicates an agent with the same ID is already registered.
 	ErrAgentAlreadyRegistered = errors.New("agent already registered")
 	// ErrRuntimeStopped indicates the runtime has been stopped and cannot accept new work.

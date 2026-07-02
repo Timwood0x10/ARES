@@ -54,7 +54,8 @@ func TestEvolutionPlugin_StartStop(t *testing.T) {
 func TestEvolutionPlugin_RecommendWithoutProvider(t *testing.T) {
 	p := NewEvolutionPlugin("test", nil, nil)
 	rec, err := p.Recommend(context.Background(), ExecutionState{})
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no recommendation provider configured")
 	assert.Nil(t, rec)
 }
 
@@ -177,7 +178,8 @@ func TestEvolutionPlugin_NilProviderAfterConstruct(t *testing.T) {
 
 	// Calling with nil provider should not panic.
 	rec, err := p.Recommend(context.Background(), ExecutionState{})
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no recommendation provider configured")
 	assert.Nil(t, rec)
 }
 

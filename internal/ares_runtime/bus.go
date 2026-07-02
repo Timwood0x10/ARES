@@ -201,6 +201,10 @@ func (b *PluginBus) AfterStep(ctx context.Context, executionID string, result *S
 // Emit publishes an event with the given stream ID to all matching
 // subscribers. Non-blocking; ares_events are dropped for subscribers whose
 // channel buffer is full.
+//
+// PERF: Holds RLock during the entire dispatch to prevent close-channel race
+// with Subscribe's cleanup goroutine. The subscriber list copy + sends are
+// fast (buffered channel sends); holding RLock is negligible.
 func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_events.EventType, moduleName string, payload map[string]any) {
 	evt := &ares_events.Event{
 		ID:         ares_events.NewEventID(),
@@ -212,33 +216,28 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_ev
 	}
 
 	b.mu.RLock()
-	subs := make([]*subscriber, len(b.subscribers))
-	copy(subs, b.subscribers)
-	b.mu.RUnlock()
+	defer b.mu.RUnlock()
 
-	for _, s := range subs {
+	for _, s := range b.subscribers {
 		if !matchFilter(evt, s.filter) {
 			continue
 		}
-		// Guard against send-on-closed-channel when a subscriber's
-		// cleanup goroutine closes the channel between our copy
-		// of the subscriber list and this send.
-		func() {
-			defer func() { _ = recover() }()
-			select {
-			case s.ch <- evt:
-			case <-ctx.Done():
-				return
-			default:
-				// Drop event if buffer full.
-			}
-		}()
+		select {
+		case s.ch <- evt:
+		case <-ctx.Done():
+			return
+		default:
+			// Drop event if buffer full.
+		}
 	}
 }
 
 // Subscribe returns a channel that receives ares_events matching the given filter.
 // The channel must be drained to prevent backpressure; when ctx is cancelled
 // the subscription is automatically removed and the channel is closed.
+//
+// SAFETY: Emit holds RLock during dispatch, and the cleanup goroutine holds
+// exclusive Lock when closing the channel, so close() and send() never race.
 func (b *PluginBus) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	ch := make(chan *ares_events.Event, eventChanBufferSize)
 

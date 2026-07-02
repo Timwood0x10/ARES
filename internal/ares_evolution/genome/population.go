@@ -64,6 +64,11 @@ type GenerationHistoryEntry struct {
 
 	// NumDiverse counts distinct lineages (agents with unique ParentIDs) at this generation.
 	NumDiverse int `json:"num_diverse"`
+
+	// RecoveryActions records diversity recovery actions taken this generation.
+	// Keys are action names (e.g., "mutation_rate_boost", "fresh_injection",
+	// "stagnation_reset"), values are counts.
+	RecoveryActions map[string]int `json:"recovery_actions"`
 }
 
 // DiversityWeightConfig holds relative weights for diversity metric components.
@@ -188,13 +193,19 @@ type PopulationConfig struct {
 	// Range [0, 1], default 0.15.
 	DiversityThreshold float64 `json:"diversity_threshold"`
 
-	// TournamentSize is the number of competitors per tournament round (default 3).
-	// Used when UseTournamentSelection is true. Values < 2 fall back to random selection.
-	TournamentSize int `json:"tournament_size"`
+	// SelectionStrategy selects the parent selection algorithm.
+	// Valid values: "tournament", "rank", "sus", "roulette", "lineage_rank", "random" (default).
+	// "tournament" uses TournamentSelection with the configured TournamentSize.
+	// "rank" uses RankSelection (linear rank-based probability).
+	// "sus" uses Stochastic Universal Sampling (reduced variance).
+	// "roulette" uses fitness-proportional selection.
+	// "lineage_rank" uses LineageRankSelection (lineage-aware rank selection).
+	// "random" (or empty) selects parents uniformly from the breeding pool.
+	SelectionStrategy string `json:"selection_strategy"`
 
-	// UseTournamentSelection enables tournament-based parent selection during offspring generation.
-	// When false (default), parents are chosen randomly from the breeding pool.
-	UseTournamentSelection bool `json:"use_tournament_selection"`
+	// TournamentSize is the number of competitors per tournament round (default 3).
+	// Only used when SelectionStrategy is "tournament".
+	TournamentSize int `json:"tournament_size"`
 
 	// DiversityWeights controls the relative contribution of each diversity
 	// component to the overall diversity metric. All weights must be non-negative
@@ -204,6 +215,13 @@ type PopulationConfig struct {
 	// These defaults were chosen based on initial experimentation but should be
 	// calibrated via ablation study for production use (see GA Hardening Plan v0.2.0).
 	DiversityWeights DiversityWeightConfig `json:"diversity_weights"`
+
+	// DiversitySampleSize sets the number of random pairwise comparisons used
+	// for numeric diversity estimation in large populations. When > 0 and the
+	// scored population exceeds FitnessSharingSampleLimit, diversity is estimated
+	// by comparing each agent against DiversitySampleSize random neighbors instead
+	// of all O(n²) pairs. Default 0 (exact O(n²) mode for all sizes).
+	DiversitySampleSize int `json:"diversity_sample_size"`
 
 	// FitnessSharingSampleLimit is the population size threshold above which
 	// fitness sharing switches from exact O(m²) pairwise comparison to sampled
@@ -215,13 +233,46 @@ type PopulationConfig struct {
 	// when in sampled fitness sharing mode. Default 30.
 	FitnessSharingSampleSize int `json:"fitness_sharing_size"`
 
+	// SpatialIndexThreshold is the scored population size above which fitness sharing
+	// uses grid-based spatial indexing for neighbor lookup instead of random sampling.
+	// The spatial index assigns agents to grid cells in normalized parameter space
+	// and only checks the agent's own cell + adjacent cells, achieving sub-linear
+	// average-case lookup. Default 500; set to 0 to disable spatial indexing.
+	SpatialIndexThreshold int `json:"spatial_index_threshold"`
+
 	// HistoryMaxSize limits the number of historical generation entries (0 = unlimited).
 	// When > 0, each evolution cycle appends a GenerationHistoryEntry to the history.
 	HistoryMaxSize int `json:"history_max_size"`
 
+	// PerLineageElites enables per-lineage elite preservation (default false).
+	// When enabled, each active lineage retains at least one representative in the
+	// elite set before filling remaining slots from global top performers.
+	// This prevents wired mode from discarding independent threads each generation.
+	PerLineageElites bool `json:"per_lineage_elites"`
+
+	// PerLineageEliteCount is the number of elites to preserve per unique lineage
+	// (default 1). Only used when PerLineageElites is true.
+	PerLineageEliteCount int `json:"per_lineage_elite_count"`
+
 	// AdaptiveConfig controls adaptive mutation rate tuning behavior.
 	// When nil, default adaptive parameters are used.
 	AdaptiveConfig *AdaptiveConfig `json:"adaptive_config,omitempty"`
+
+	// DisablePromptDiversityGuard disables prompt template diversity preservation
+	// during elite selection. By default the guard IS enabled — set this to true
+	// to disable it (inverted bool avoids Go zero-value = disabled trap).
+	// When enabled (default), if all elites share one prompt template and a
+	// viable alternative exists in the population, that alternative is
+	// force-retained as an exploration seed.
+	DisablePromptDiversityGuard bool `json:"disable_prompt_diversity_guard,omitempty"`
+
+	// AgentMaxAge is the maximum number of generations an agent can survive
+	// before being evicted (0 = disabled, no age-based eviction).
+	// When enabled, agents whose currentGen - GenerationCreated > AgentMaxAge
+	// are removed from the population before each evolution cycle.
+	// Root agents (StrategyMutationType == MutationRoot) and legacy/unknown
+	// agents (GenerationCreated == 0) are exempt from age eviction.
+	AgentMaxAge int `json:"agent_max_age"`
 }
 
 // DefaultPopulationConfig returns a PopulationConfig with sensible defaults.
@@ -231,20 +282,24 @@ type PopulationConfig struct {
 //	PopulationConfig - configuration with default values applied.
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:                      20,
-		SurvivalRate:              0.6,
-		MutationRate:              0.2,
-		EliteCount:                3,
-		BreedingPoolRatio:         0.6,
-		MinMutationRate:           0.05,
-		MaxMutationRate:           0.5,
-		MaxStagnantGenerations:    10,
-		DiversityThreshold:        0.15,
-		TournamentSize:            3,
-		UseTournamentSelection:    false,                   // Opt-in for backward compatibility
-		DiversityWeights:          DiversityWeightConfig{}, // Zero → defaults applied in normalize()
-		FitnessSharingSampleLimit: 50,
-		FitnessSharingSampleSize:  30,
+		Size:                        20,
+		SurvivalRate:                0.6,
+		MutationRate:                0.2,
+		EliteCount:                  3,
+		BreedingPoolRatio:           0.6,
+		MinMutationRate:             0.05,
+		MaxMutationRate:             0.5,
+		MaxStagnantGenerations:      10,
+		DiversityThreshold:          0.15,
+		SelectionStrategy:           "", // empty = random (backward compatible)
+		TournamentSize:              3,
+		DiversityWeights:            DiversityWeightConfig{}, // Zero → defaults applied in normalize()
+		FitnessSharingSampleLimit:   50,
+		FitnessSharingSampleSize:    30,
+		SpatialIndexThreshold:       500,
+		DiversitySampleSize:         200, // Sample pairs for pop > 200 to avoid O(n²)
+		DisablePromptDiversityGuard: false,
+		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}
 }
 
@@ -468,9 +523,32 @@ func WithTournamentSelection(size int) PopulationOption {
 		if size < 2 {
 			return fmt.Errorf("%w: got %d", ErrInvalidTournamentSize, size)
 		}
-		cfg.UseTournamentSelection = true
+		cfg.SelectionStrategy = "tournament"
 		cfg.TournamentSize = size
 		return nil
+	}
+}
+
+// validSelectionStrategies is the shared whitelist of supported selection strategies.
+var validSelectionStrategies = map[string]bool{
+	"":             true,
+	"random":       true,
+	"tournament":   true,
+	"rank":         true,
+	"sus":          true,
+	"roulette":     true,
+	"truncation":   true,
+	"lineage_rank": true,
+}
+
+// WithSelectionStrategy sets the parent selection algorithm.
+func WithSelectionStrategy(strategy string) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if validSelectionStrategies[strategy] {
+			cfg.SelectionStrategy = strategy
+			return nil
+		}
+		return fmt.Errorf("unknown selection strategy: %q (valid: tournament, rank, sus, roulette, truncation, lineage_rank, random)", strategy)
 	}
 }
 
@@ -539,6 +617,44 @@ func WithHistoryEnabled(maxSize int) PopulationOption {
 	}
 }
 
+// WithPerLineageElites enables or disables per-lineage elite preservation.
+// When enabled, each active lineage retains at least one elite representative.
+//
+// Args:
+//
+//	enabled - whether per-lineage elite preservation is active.
+//
+// Returns:
+//
+//	PopulationOption - functional option for NewPopulation.
+func WithPerLineageElites(enabled bool) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		cfg.PerLineageElites = enabled
+		return nil
+	}
+}
+
+// WithPerLineageEliteCount sets the number of elites to preserve per unique lineage.
+// Only used when PerLineageElites is true. Must be >= 1.
+//
+// Args:
+//
+//	count - number of elites per lineage (must be >= 1).
+//
+// Returns:
+//
+//	PopulationOption - functional option for NewPopulation.
+//	error - non-nil if count < 1.
+func WithPerLineageEliteCount(count int) PopulationOption {
+	return func(cfg *PopulationConfig) error {
+		if count < 1 {
+			return fmt.Errorf("per-lineage elite count must be at least 1, got %d", count)
+		}
+		cfg.PerLineageEliteCount = count
+		return nil
+	}
+}
+
 // WithAdaptiveConfig sets custom adaptive mutation rate tuning parameters.
 // When nil or unset, DefaultAdaptiveConfig() is used.
 //
@@ -587,6 +703,10 @@ type Population struct {
 	// was discovered. Used by BestEverGeneration() for accurate reporting.
 	bestEverGeneration int
 
+	// paretoFront stores the Pareto-optimal front from the latest generation
+	// when using multi-objective fitness. Updated after each scoring pass.
+	paretoFront []*mutation.Strategy
+
 	// stagnantGens counts consecutive generations without best-score improvement.
 	stagnantGens int
 
@@ -594,6 +714,10 @@ type Population struct {
 	// Initialized from cfg.MutationRate and modified by adjustMutationRateLocked.
 	// The original cfg.MutationRate is preserved as the base rate for drift-back.
 	currentMutationRate float64
+
+	// recoveryActions tracks diversity recovery actions taken in the current generation.
+	// Reset at the start of each evolution cycle and captured into history at the end.
+	recoveryActions map[string]int
 
 	// history stores per-generation stats snapshots for trajectory reporting.
 	// When HistoryEnabled is true, each evolution cycle appends a snapshot.
@@ -653,6 +777,7 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		rng:                 rand.New(rand.NewSource(seed)), // #nosec G404 - GA doesn't need crypto rand
 		bestScore:           math.Inf(-1),
 		currentMutationRate: cfg.MutationRate,
+		recoveryActions:     make(map[string]int),
 		HistoryMaxSize:      cfg.HistoryMaxSize,
 	}
 
@@ -758,12 +883,33 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	copy(sorted, p.Agents)
 	SortByScore(sorted)
 
+	// Step 1a: Evict aged-out agents (AgentMaxAge > 0).
+	// Agents whose generation age exceeds AgentMaxAge are removed, unless:
+	//   - they are root strategies (MutationRoot), or
+	//   - GenerationCreated == 0 (unknown/legacy — never evict by age).
+	if p.cfg.AgentMaxAge > 0 {
+		keep := sorted[:0]
+		for _, s := range sorted {
+			age := p.Generation - s.GenerationCreated
+			if s.StrategyMutationType == mutation.MutationRoot || s.GenerationCreated == 0 || age <= p.cfg.AgentMaxAge {
+				keep = append(keep, s)
+			}
+		}
+		sorted = keep
+		if len(sorted) == 0 {
+			return ErrSelectionEmptyPopulation
+		}
+	}
+
 	survivorCount := max(1, int(float64(len(sorted))*cfg.survivalRate))
 	survivorCount = min(survivorCount, len(sorted))
 	survivors := sorted[:survivorCount]
 
 	// Step 2: Preserve elites (method-specific).
 	elites := cfg.eliteFn(survivors)
+
+	// Step 2.5: Preserve prompt diversity if all elites use one prompt template.
+	elites = p.preservePromptDiversityLocked(elites, sorted)
 
 	// Step 3: Generate offspring using method-specific parent pool.
 	parentPool := cfg.parentPoolFn(survivors)
@@ -789,20 +935,12 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		return nil
 	}
 
-	// Prepare tournament selector once for reproducibility.
-	var ts *TournamentSelection
-	if p.cfg.UseTournamentSelection {
-		var err error
-		ts, err = NewTournamentSelection(
-			WithTournamentSize(p.cfg.TournamentSize),
-			WithTournamentSeed(p.rng.Int63()),
-		)
-		if err != nil {
-			return fmt.Errorf("create tournament selector: %w", err)
-		}
+	selector, err := p.buildSelector()
+	if err != nil {
+		return fmt.Errorf("build selector: %w", err)
 	}
 
-	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, ts, remainingSlots)
+	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, selector, remainingSlots)
 	if err != nil {
 		return fmt.Errorf("generate offspring: %w", err)
 	}
@@ -815,7 +953,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	// Pad if under target size.
 	for len(nextGen) < p.Size && len(survivors) > 0 {
 		idx := len(nextGen) % len(survivors)
-		nextGen = append(nextGen, survivors[idx].Clone())
+		clone := survivors[idx].Clone()
+		clone.GenerationCreated = p.Generation + 1
+		nextGen = append(nextGen, clone)
 	}
 
 	p.Agents = nextGen
@@ -858,9 +998,9 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 
 // generateOffspring creates new strategies through crossover and mutation
 // to fill the specified number of population slots.
-// When UseTournamentSelection is configured, parents are chosen via tournament
-// selection (higher-scoring individuals have higher probability). Otherwise,
-// parents are selected randomly from the breeding pool (backward compatible).
+// When selector is non-nil, parents are chosen via the configured selection
+// strategy (tournament, rank, SUS, roulette). Otherwise, parents are selected
+// randomly from the breeding pool (backward compatible).
 //
 // Args:
 //
@@ -868,14 +1008,14 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 //	parentPool - eligible parent strategies for crossover.
 //	mutator - the mutation engine for generating variations.
 //	crosser - the crossover engine for combining parents.
-//	ts - optional tournament selector (nil for random selection).
+//	sel - optional Selection strategy (nil for random selection).
 //	count - number of offspring to generate.
 //
 // Returns:
 //
 //	[]*mutation.Strategy - generated offspring strategies.
 //	error - non-nil if generation fails or context is cancelled.
-func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, ts *TournamentSelection, count int) ([]*mutation.Strategy, error) {
+func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutation.Strategy, mutator MutatorInterface, crosser CrossoverInterface, sel Selection, count int) ([]*mutation.Strategy, error) {
 	if count <= 0 {
 		return []*mutation.Strategy{}, nil
 	}
@@ -890,11 +1030,10 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 		}
 
 		var parentA, parentB *mutation.Strategy
-		if ts != nil {
-			// Tournament selection: run 2 tournaments to pick 2 parents.
-			winners, err := ts.Select(ctx, parentPool, 2)
+		if sel != nil {
+			winners, err := sel.Select(ctx, parentPool, 2)
 			if err != nil {
-				return nil, fmt.Errorf("tournament select parents: %w", err)
+				return nil, fmt.Errorf("select parents: %w", err)
 			}
 			if len(winners) >= 2 {
 				parentA = winners[0]
@@ -903,7 +1042,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 				parentA = winners[0]
 				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
 			} else {
-				return nil, fmt.Errorf("tournament returned no winners")
+				return nil, fmt.Errorf("selection returned no winners")
 			}
 		} else {
 			// Original random selection (backward compatible).
@@ -936,10 +1075,40 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			// keep the unmutated crossover child as-is.
 		}
 
+		// Record the generation when this offspring enters the population.
+		// Using p.Generation+1 so age = 0 in the next eviction check — an agent
+		// survives exactly AgentMaxAge generations after creation.
+		child.GenerationCreated = p.Generation + 1
 		offspring = append(offspring, child)
 	}
 
 	return offspring, nil
+}
+
+// buildSelector creates a Selection strategy based on the configured SelectionStrategy.
+// Returns nil for "random" or "" (backward compatible random parent selection).
+func (p *Population) buildSelector() (Selection, error) {
+	switch p.cfg.SelectionStrategy {
+	case "", "random":
+		return nil, nil
+	case "tournament":
+		return NewTournamentSelection(
+			WithTournamentSize(p.cfg.TournamentSize),
+			WithTournamentSeed(p.rng.Int63()),
+		)
+	case "rank":
+		return NewRankSelection(), nil
+	case "sus":
+		return NewSUSSelection(), nil
+	case "roulette":
+		return NewRouletteWheelSelection()
+	case "truncation":
+		return NewTruncationSelection(), nil
+	case "lineage_rank":
+		return NewLineageRankSelection()
+	default:
+		return nil, fmt.Errorf("unsupported selection strategy: %s", p.cfg.SelectionStrategy)
+	}
 }
 
 // Snapshot returns a thread-safe copy of all agents and the current generation.
@@ -998,8 +1167,55 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	p.updateBestEverLocked()
 }
 
+// ParetoFrontStrategy returns the current Pareto-optimal strategies (deep clones).
+// Returns nil if multi-objective tracking is not enabled (no DimensionScores set).
+func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.paretoFront) == 0 {
+		return nil
+	}
+	result := make([]*mutation.Strategy, len(p.paretoFront))
+	for i, s := range p.paretoFront {
+		result[i] = s.Clone()
+	}
+	return result
+}
+
+// MultiObjectiveScorerFunc scores a strategy across multiple dimensions.
+// Returns per-dimension scores and optionally an aggregated single score.
+type MultiObjectiveScorerFunc func(agent *mutation.Strategy) (dims map[string]float64, aggregate float64)
+
+// ScoreAgentsMulti scores all agents using a multi-objective scorer.
+// Sets both DimensionScores and Score (aggregate) on each agent.
+func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, agent := range p.Agents {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("multi-objective scorer panicked for agent, marking as unevaluated",
+						"generation", p.Generation,
+						"agent_index", i,
+						"agent_id", agent.ID,
+						"panic_value", r,
+					)
+					agent.Score = ScoreUnevaluated
+					agent.DimensionScores = nil
+				}
+			}()
+			dims, agg := scorer(agent)
+			agent.DimensionScores = dims
+			agent.Score = agg
+		}()
+	}
+	p.updateBestEverLocked()
+}
+
 // updateBestEverLocked checks all evaluated agents against the current bestEver
-// and updates it if a higher score is found.
+// and updates it if a higher score is found. Also updates the Pareto front when
+// multi-objective fitness is enabled (DimensionScores set).
 //
 // Concurrency safety contract:
 //   - Caller MUST hold p.mu write lock (not just RLock). This is enforced by
@@ -1021,6 +1237,16 @@ func (p *Population) updateBestEverLocked() {
 			p.bestEver = a.Clone()
 			p.bestEverGeneration = p.Generation
 		}
+	}
+	// Update Pareto front for multi-objective mode.
+	var withDims []*mutation.Strategy
+	for _, a := range p.Agents {
+		if IsScoreEvaluated(a.Score) && a.DimensionScores != nil {
+			withDims = append(withDims, a)
+		}
+	}
+	if len(withDims) > 0 {
+		p.paretoFront = ParetoFront(withDims)
 	}
 }
 
@@ -1162,10 +1388,21 @@ func (p *Population) Stats() *PopulationStats {
 		return stats
 	}
 
-	var totalScore float64
-	bestScore := p.Agents[0].Score
-	worstScore := p.Agents[0].Score
+	stats.BestScore, stats.AvgScore, stats.WorstScore = p.computeStatsLocked()
+	stats.Diversity = p.measureDiversityReportLocked()
 
+	return stats
+}
+
+// computeStatsLocked calculates best/avg/worst scores from current agents.
+// Caller must hold at least a read lock on p.mu.
+func (p *Population) computeStatsLocked() (bestScore, avgScore, worstScore float64) {
+	if len(p.Agents) == 0 {
+		return 0, 0, 0
+	}
+	var totalScore float64
+	bestScore = p.Agents[0].Score
+	worstScore = p.Agents[0].Score
 	for _, agent := range p.Agents {
 		totalScore += agent.Score
 		if agent.Score > bestScore {
@@ -1175,13 +1412,7 @@ func (p *Population) Stats() *PopulationStats {
 			worstScore = agent.Score
 		}
 	}
-
-	stats.AvgScore = totalScore / float64(len(p.Agents))
-	stats.BestScore = bestScore
-	stats.WorstScore = worstScore
-	stats.Diversity = p.measureDiversityReportLocked()
-
-	return stats
+	return bestScore, totalScore / float64(len(p.Agents)), worstScore
 }
 
 // appendHistoryLocked appends a generation snapshot to the history.
@@ -1197,28 +1428,9 @@ func (p *Population) appendHistoryLocked() {
 		Diversity:      p.measureDiversityReportLocked().Overall,
 	}
 
-	if len(p.Agents) == 0 {
-		p.history = append(p.history, entry)
-		return
+	if len(p.Agents) > 0 {
+		entry.BestScore, entry.AvgScore, entry.WorstScore = p.computeStatsLocked()
 	}
-
-	var totalScore float64
-	bestScore := p.Agents[0].Score
-	worstScore := p.Agents[0].Score
-
-	for _, agent := range p.Agents {
-		totalScore += agent.Score
-		if agent.Score > bestScore {
-			bestScore = agent.Score
-		}
-		if agent.Score < worstScore {
-			worstScore = agent.Score
-		}
-	}
-
-	entry.BestScore = bestScore
-	entry.AvgScore = totalScore / float64(len(p.Agents))
-	entry.WorstScore = worstScore
 
 	// Record mutation type distribution and diverse lineage count.
 	entry.MutationTypes = make(map[string]int)
@@ -1234,6 +1446,14 @@ func (p *Population) appendHistoryLocked() {
 		}
 	}
 	entry.NumDiverse = len(parentSet)
+
+	// Capture recovery actions taken during this generation.
+	entry.RecoveryActions = make(map[string]int, len(p.recoveryActions))
+	for k, v := range p.recoveryActions {
+		entry.RecoveryActions[k] = v
+	}
+	// Reset for next generation.
+	p.recoveryActions = make(map[string]int)
 
 	p.history = append(p.history, entry)
 
@@ -1270,6 +1490,51 @@ func (p *Population) CurrentGeneration() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.Generation
+}
+
+// StagnantGenerations returns the count of consecutive generations without improvement.
+func (p *Population) StagnantGenerations() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.stagnantGens
+}
+
+// CurrentMutationRate returns the current runtime mutation rate.
+func (p *Population) CurrentMutationRate() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.currentMutationRate
+}
+
+// RecordRecoveryAction records a diversity recovery action taken during the
+// current generation. Actions are accumulated and stored in the generation
+// history entry when appendHistoryLocked is called.
+//
+// Args:
+//
+//	action - the action name (e.g., "mutation_rate_boost", "fresh_injection", "stagnation_reset").
+func (p *Population) RecordRecoveryAction(action string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.recoveryActions == nil {
+		p.recoveryActions = make(map[string]int)
+	}
+	p.recoveryActions[action]++
+}
+
+// RecoveryActions returns a copy of the recovery actions map for the
+// current generation. Returns nil if no actions have been recorded.
+func (p *Population) RecoveryActions() map[string]int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.recoveryActions) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(p.recoveryActions))
+	for k, v := range p.recoveryActions {
+		result[k] = v
+	}
+	return result
 }
 
 // PopulationStats holds statistical information about a population's state.

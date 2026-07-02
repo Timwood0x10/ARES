@@ -33,6 +33,8 @@ func main() {
 	// Scenario execution table — always show what's running
 	fmt.Println("\n📋 Scenario Configuration:")
 	fmt.Println("   ✓ ON   1-5: Core scenarios (Bandit, Callbacks, Mutation, Arena, Dream)")
+	fmt.Println("   ✓ ON   Selection strategies: rank, SUS, roulette, tournament, truncation")
+	fmt.Println("   ✓ ON   8: Real Data Evolution Pipeline (440 records, 5 strategies)")
 
 	// Check if evolution is enabled via project-level config
 	evoEnabled := false
@@ -62,6 +64,11 @@ func main() {
 	runMutation(ctx, kit)
 	runArena(ctx, kit)
 	runDreamCycle(ctx, kit)
+
+	// Scenario 8: Real Data Evolution Pipeline (always on, no LLM required).
+	// Uses ~440 realistic tool call records from 15 conversation scenarios
+	// to demonstrate the complete GA/Memory/Tool fusion pipeline end-to-end.
+	runRealDataEvolution(ctx, kit, cfgWired)
 
 	// Run control group comparison if evolution is enabled.
 	// Scenario 6: Pure autonomous evolution (deterministic scoring, no LLM)

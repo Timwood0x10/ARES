@@ -34,8 +34,8 @@ func TestTournamentSelectionIntegration(t *testing.T) {
 	}
 
 	// Verify config was applied.
-	if !pop.cfg.UseTournamentSelection {
-		t.Fatal("UseTournamentSelection should be true after WithTournamentSelection")
+	if pop.cfg.SelectionStrategy != "tournament" {
+		t.Fatal("SelectionStrategy should be \"tournament\" after WithTournamentSelection")
 	}
 	if pop.cfg.TournamentSize != 3 {
 		t.Fatalf("TournamentSize = %d, want 3", pop.cfg.TournamentSize)
@@ -76,8 +76,8 @@ func TestTournamentSelectionDisabledByDefault(t *testing.T) {
 
 	cfg := DefaultPopulationConfig()
 
-	if cfg.UseTournamentSelection {
-		t.Error("UseTournamentSelection should be false by default")
+	if cfg.SelectionStrategy == "tournament" {
+		t.Error("SelectionStrategy should not be \"tournament\" by default")
 	}
 
 	if cfg.TournamentSize != 3 {
@@ -99,8 +99,8 @@ func TestTournamentSelectionDisabledByDefault(t *testing.T) {
 		t.Fatalf("failed to create population: %v", err)
 	}
 
-	if pop.cfg.UseTournamentSelection {
-		t.Error("population should have UseTournamentSelection=false by default")
+	if pop.cfg.SelectionStrategy != "" {
+		t.Error("population should have SelectionStrategy=\"\" by default")
 	}
 
 	// Score agents and verify evolution works with random selection.
@@ -444,8 +444,8 @@ func TestDefaultPopulationConfigIncludesTournamentDefaults(t *testing.T) {
 		t.Errorf("default TournamentSize = %d, want 3", cfg.TournamentSize)
 	}
 
-	if cfg.UseTournamentSelection {
-		t.Error("default UseTournamentSelection should be false (opt-in)")
+	if cfg.SelectionStrategy != "" {
+		t.Error("default SelectionStrategy should be empty (random)")
 	}
 }
 

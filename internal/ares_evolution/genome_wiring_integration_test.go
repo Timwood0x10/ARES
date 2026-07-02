@@ -596,7 +596,7 @@ func TestWiredSystem_FullIntegrationWithRealMutator(t *testing.T) {
 	// Record lineage for the new generation and verify lineage was produced.
 	prevGen := genAfter - 1
 	if prevGen >= 0 {
-		count, err := RecordPopulationLineage(context.Background(), system.Population, system.Genealogy, prevGen)
+		count, err := RecordPopulationLineage(context.Background(), system.Population, system.Genealogy, nil, prevGen)
 		if err != nil {
 			t.Fatalf("RecordPopulationLineage failed: %v", err)
 		}

@@ -537,7 +537,9 @@ func (d *CostDashboard) RegisterCostRoutes(mux *http.ServeMux) {
 func writeJSONCost(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		slog.Warn("cost: encode response", "error", err)
+	}
 }
 
 // writeJSONError writes a JSON error response.

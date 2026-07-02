@@ -19,13 +19,15 @@ type GACfg struct {
 	PopSize, EliteCount, NGen int
 	SurvRate, MutRate         float64
 	MinMutRate, MaxMutRate    float64
+	SelectionStrategy         string
+	HistoryMaxSize            int
 	Wired                     bool
 }
 
 // Predefined configurations for each GA scenario.
 var (
-	cfgGA    = GACfg{Title: "Scenario 6: GA Evolution", BaseID: "ga-root", PopSize: 20, EliteCount: 2, SurvRate: 0.6, MutRate: 0.2, MinMutRate: 0.05, MaxMutRate: 0.5, NGen: 15}
-	cfgWired = GACfg{Title: "Scenario 7: Wired System", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, MinMutRate: 0.05, MaxMutRate: 0.5, NGen: 10, Wired: true}
+	cfgGA    = GACfg{Title: "Scenario 6: GA Evolution (Rank Selection)", BaseID: "ga-root", PopSize: 20, EliteCount: 2, SurvRate: 0.6, MutRate: 0.2, MinMutRate: 0.05, MaxMutRate: 0.5, SelectionStrategy: "rank", HistoryMaxSize: 100, NGen: 15}
+	cfgWired = GACfg{Title: "Scenario 7: Wired System (Tournament Selection)", BaseID: "wired-root", PopSize: 10, EliteCount: 1, SurvRate: 0.5, MutRate: 0.3, MinMutRate: 0.05, MaxMutRate: 0.5, SelectionStrategy: "tournament", HistoryMaxSize: 100, NGen: 10, Wired: true}
 )
 
 // EvolutionConfigFromFile mirrors internal/config.EvolutionConfig for YAML parsing
@@ -40,6 +42,8 @@ type EvolutionConfigFromFile struct {
 	MaxMutationRate   float64 `yaml:"max_mutation_rate"`
 	Generations       int     `yaml:"generations"`
 	BreedingPoolRatio float64 `yaml:"breeding_pool_ratio"`
+	SelectionStrategy string  `yaml:"selection_strategy"`
+	HistoryMaxSize    int     `yaml:"history_max_size"`
 	MinInterval       string  `yaml:"min_interval"`
 }
 
@@ -107,6 +111,12 @@ func mergeGACfg(base GACfg, proj *EvolutionConfigFromFile) GACfg {
 	}
 	if proj.Generations > 0 {
 		out.NGen = proj.Generations
+	}
+	if proj.SelectionStrategy != "" {
+		out.SelectionStrategy = proj.SelectionStrategy
+	}
+	if proj.HistoryMaxSize > 0 {
+		out.HistoryMaxSize = proj.HistoryMaxSize
 	}
 	return out
 }

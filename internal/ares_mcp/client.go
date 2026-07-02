@@ -81,7 +81,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 	})
 
 	// Perform initialize handshake.
-	if err := c.initialize(); err != nil {
+	if err := c.initialize(c.ctx); err != nil {
 		if closeErr := c.Close(); closeErr != nil {
 			log.Warn("mcp: close after init failure", "error", closeErr)
 		}
@@ -102,7 +102,7 @@ func (c *MCPClient) Connect(ctx context.Context, transport Transport) error {
 }
 
 // initialize performs the MCP initialize handshake.
-func (c *MCPClient) initialize() error {
+func (c *MCPClient) initialize(ctx context.Context) error {
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersion,
 		ClientInfo: Implementation{
@@ -117,7 +117,7 @@ func (c *MCPClient) initialize() error {
 	}
 
 	var result InitializeResult
-	if err := c.call(context.Background(), MethodInitialize, params, &result); err != nil {
+	if err := c.call(ctx, MethodInitialize, params, &result); err != nil {
 		return fmt.Errorf("initialize call: %w", err)
 	}
 
@@ -131,7 +131,7 @@ func (c *MCPClient) initialize() error {
 		return fmt.Errorf("create initialized notification: %w", err)
 	}
 
-	if err := c.transport.Send(context.Background(), notif); err != nil {
+	if err := c.transport.Send(ctx, notif); err != nil {
 		return fmt.Errorf("send initialized: %w", err)
 	}
 

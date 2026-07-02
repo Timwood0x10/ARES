@@ -83,7 +83,8 @@ func TestEvolutionRouter_Route(t *testing.T) {
 		require.True(t, ok)
 
 		dec, err := router.Route(context.Background(), RouteState{CurrentStepID: "step-1"})
-		require.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no matching rule for step")
 		assert.Nil(t, dec)
 	})
 

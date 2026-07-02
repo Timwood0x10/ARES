@@ -29,8 +29,9 @@ type CacheEntry struct {
 }
 
 type cacheItem struct {
-	hash  uint64
-	entry CacheEntry
+	hash       uint64
+	entry      CacheEntry
+	generation uint64 // generation when this entry was created
 }
 
 // ScoreCache provides thread-safe score caching for evolved strategies.
@@ -39,13 +40,15 @@ type cacheItem struct {
 // Uses LRU eviction via container/list when at capacity.
 // Zero-value is NOT usable; use NewScoreCache to create an instance.
 type ScoreCache struct {
-	mu        sync.RWMutex
-	entries   map[uint64]*list.Element // hash -> list element
-	lru       list.List                // LRU order (front = most recently used)
-	maxSize   int                      // maximum cache entries; 0 = unlimited
-	hits      int64                    // number of cache hits
-	misses    int64                    // number of cache misses
-	evictions int64                    // number of entries evicted due to capacity
+	mu          sync.RWMutex
+	entries     map[uint64]*list.Element // hash -> list element
+	lru         list.List                // LRU order (front = most recently used)
+	maxSize     int                      // maximum cache entries; 0 = unlimited
+	maxCacheAge int                      // max generations before stale; 0 = unlimited
+	generation  uint64                   // current generation counter
+	hits        int64                    // number of cache hits
+	misses      int64                    // number of cache misses
+	evictions   int64                    // number of entries evicted due to capacity
 }
 
 // NewScoreCache creates a new score cache.
@@ -64,8 +67,27 @@ func NewScoreCache(maxSize int) *ScoreCache {
 	}
 }
 
+// SetMaxCacheAge sets the maximum number of generations an entry is valid.
+// After this many generations, the entry is treated as a cache miss and
+// re-evaluated on the next lookup. 0 (default) means unlimited — entries
+// never expire by age. Use NewGeneration() to advance the counter.
+func (c *ScoreCache) SetMaxCacheAge(generations int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxCacheAge = generations
+}
+
+// NewGeneration advances the generation counter. Entries older than
+// maxCacheAge will be treated as misses on subsequent Get() calls.
+func (c *ScoreCache) NewGeneration() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation++
+}
+
 // Get retrieves a cached score for the given strategy hash.
 // This method is thread-safe and promotes the entry as most recently used.
+// Entries older than maxCacheAge generations are treated as misses.
 //
 // Args:
 //
@@ -85,9 +107,18 @@ func (c *ScoreCache) Get(hash uint64) (CacheEntry, bool) {
 		return CacheEntry{}, false
 	}
 
+	item := elem.Value.(*cacheItem)
+	if c.maxCacheAge > 0 && c.generation-item.generation > uint64(c.maxCacheAge) {
+		// Entry is stale: evict and treat as miss.
+		delete(c.entries, hash)
+		c.lru.Remove(elem)
+		atomic.AddInt64(&c.misses, 1)
+		return CacheEntry{}, false
+	}
+
 	c.lru.MoveToFront(elem)
 	atomic.AddInt64(&c.hits, 1)
-	return elem.Value.(*cacheItem).entry, true
+	return item.entry, true
 }
 
 // Put stores a score in the cache.
@@ -102,9 +133,11 @@ func (c *ScoreCache) Put(hash uint64, entry CacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Existing entry: update in place and move to front.
+	// Existing entry: update in place, refresh generation, and move to front.
 	if elem, ok := c.entries[hash]; ok {
-		elem.Value.(*cacheItem).entry = entry
+		item := elem.Value.(*cacheItem)
+		item.entry = entry
+		item.generation = c.generation
 		c.lru.MoveToFront(elem)
 		return
 	}
@@ -120,7 +153,7 @@ func (c *ScoreCache) Put(hash uint64, entry CacheEntry) {
 		}
 	}
 
-	item := &cacheItem{hash: hash, entry: entry}
+	item := &cacheItem{hash: hash, entry: entry, generation: c.generation}
 	elem := c.lru.PushFront(item)
 	c.entries[hash] = elem
 }

@@ -181,10 +181,12 @@ func writeError(w http.ResponseWriter, status int, message string, err error) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{
+	if err := json.NewEncoder(w).Encode(errorResponse{
 		Error: message,
 		Code:  status,
-	})
+	}); err != nil {
+		slog.Warn("eval: encode error response", "error", err)
+	}
 }
 
 // --- Request parsing helpers ---

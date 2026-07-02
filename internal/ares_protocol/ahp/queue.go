@@ -161,7 +161,7 @@ func (q *MessageQueue) Peek() (*AHPMessage, error) {
 			return msg, nil
 		}
 	default:
-		return nil, nil
+		return nil, errors.ErrQueueEmpty
 	}
 }
 

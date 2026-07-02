@@ -34,6 +34,50 @@ const (
 	deterministicCreativeReward = 4.0
 )
 
+// getParamFloat extracts a float64 from a params map, handling multiple numeric types.
+// Returns (value, true) if the key exists and can be converted, (0, false) otherwise.
+// Supports float64, int, int64, int32, float32, and json.Number types.
+//
+// Args:
+//
+//	params - the strategy parameters map.
+//	key - the parameter key to look up.
+//
+// Returns:
+//
+//	float64 - the parameter value as float64.
+//	bool - true if the parameter was found and converted successfully.
+func getParamFloat(params map[string]any, key string) (float64, bool) {
+	if params == nil {
+		return 0, false
+	}
+	val, ok := params[key]
+	if !ok {
+		return 0, false
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
 // DeterministicScore computes a parameter-aware fitness score for a strategy.
 // This is a pure heuristic (no random noise / no LLM call) used as fallback
 // scorer when no custom LLM scorer is configured. The scoring formula:
@@ -59,13 +103,17 @@ func DeterministicScore(s *Strategy) float64 {
 	score := deterministicBaseScore
 
 	// Temperature: lower is better (0.0 -> +25, 1.0 -> +0).
-	if temp, ok := s.Params["temperature"].(float64); ok {
+	// Handle multiple numeric types since mutation may store values as int/int64.
+	temp, tempFound := getParamFloat(s.Params, "temperature")
+	if tempFound {
 		score += (1.0 - temp) * 25
 	}
 
 	// Top_k: optimal near 30. Penalty is quadratic distance from optimum.
-	if tk, ok := s.Params["top_k"].(float64); ok {
-		dist := tk - 30.0
+	// Handle multiple numeric types since mutation may store values as int/int64.
+	topK, topKFound := getParamFloat(s.Params, "top_k")
+	if topKFound {
+		dist := topK - 30.0
 		score -= (dist * dist) / 10.0
 	}
 

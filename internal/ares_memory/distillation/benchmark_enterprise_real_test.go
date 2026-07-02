@@ -83,7 +83,11 @@ func callLLMFull(t *testing.T, cfg enterpriseConfig, contextName, content string
 		t.Logf("API call failed: %v", err)
 		return nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Logf("close response body: %v", err)
+		}
+	}()
 
 	var result LLMResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

@@ -48,7 +48,7 @@ func (v *VectorStore) Search(_ context.Context, table string, embedding []float6
 
 	col, ok := v.collections[table]
 	if !ok {
-		return nil, nil
+		return nil, apperrors.ErrNotFound
 	}
 
 	type scored struct {

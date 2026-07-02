@@ -1,10 +1,15 @@
 package errors
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+)
 
 // Sentinel errors for Agent module.
 var (
-	ErrAgentNotFound       = errors.New("agent not found")
+	ErrAgentNotFound       = fmt.Errorf("agent not found: %w", apperrors.ErrNotFound)
 	ErrAgentTimeout        = errors.New("agent execution timeout")
 	ErrAgentPanic          = errors.New("agent internal panic")
 	ErrTaskQueueFull       = errors.New("task queue is full")
@@ -14,7 +19,7 @@ var (
 	ErrAgentAlreadyStarted = errors.New("agent already started")
 	ErrAgentNotRunning     = errors.New("agent not running")
 	ErrQueueNotInitialized = errors.New("message queue not initialized")
-	ErrToolNotFound        = errors.New("tool not found")
+	ErrToolNotFound        = fmt.Errorf("tool not found: %w", apperrors.ErrNotFound)
 	ErrMaxStepsExceeded    = errors.New("agent max steps exceeded")
 )
 
@@ -33,7 +38,7 @@ var (
 	ErrDBConnectionFailed = errors.New("database connection failed")
 	ErrQueryFailed        = errors.New("query execution failed")
 	ErrVectorSearchFailed = errors.New("vector search failed")
-	ErrRecordNotFound     = errors.New("record not found")
+	ErrRecordNotFound     = fmt.Errorf("record not found: %w", apperrors.ErrNotFound)
 	ErrTransactionFailed  = errors.New("transaction failed")
 	ErrNoTransaction      = errors.New("no active transaction")
 	ErrInvalidArgument    = errors.New("invalid argument provided")
@@ -87,7 +92,7 @@ var (
 
 // Sentinel errors for Workflow module.
 var (
-	ErrWorkflowNotFound     = errors.New("workflow not found")
+	ErrWorkflowNotFound     = fmt.Errorf("workflow not found: %w", apperrors.ErrNotFound)
 	ErrWorkflowLoadFailed   = errors.New("workflow load failed")
 	ErrWorkflowCyclicDAG    = errors.New("workflow has cyclic dependency")
 	ErrWorkflowInvalidPhase = errors.New("invalid workflow phase")

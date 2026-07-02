@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -33,6 +34,39 @@ type ExperienceProvider interface {
 	//	float64 - confidence factor in [0, 1].
 	//	error - non-nil if the query fails.
 	FindSimilar(ctx context.Context, taskType string, limit int) (int, float64, error)
+}
+
+// EvidenceProvider defines the interface for retrieving multi-dimensional
+// evidence that can inform strategy scoring. This interface provides
+// aggregated statistics (success rate, latency, error rate, etc.) rather
+// than simple count and confidence values.
+type EvidenceProvider interface {
+	// GetEvidence returns multi-dimensional evidence for a specific strategy.
+	//
+	// Args:
+	//
+	//	ctx - operation context.
+	//	strategyID - the identifier of the strategy to retrieve evidence for.
+	//
+	// Returns:
+	//
+	//	Evidence - multi-dimensional aggregated statistics.
+	//	error - non-nil if the query fails.
+	GetEvidence(ctx context.Context, strategyID string) (experience.Evidence, error)
+
+	// GetEvidenceByTaskType returns multi-dimensional evidence aggregated
+	// across all strategies for a specific task type.
+	//
+	// Args:
+	//
+	//	ctx - operation context.
+	//	taskType - the type of task to retrieve evidence for.
+	//
+	// Returns:
+	//
+	//	Evidence - multi-dimensional aggregated statistics.
+	//	error - non-nil if the query fails.
+	GetEvidenceByTaskType(ctx context.Context, taskType string) (experience.Evidence, error)
 }
 
 // MemoryAwareScoringConfig holds configuration for memory-aware scoring.
@@ -65,6 +99,21 @@ type MemoryAwareScoringConfig struct {
 	// ExperienceLookupLimit is the maximum number of similar experiences to
 	// retrieve per scoring call (default 10).
 	ExperienceLookupLimit int `json:"experience_lookup_limit"`
+
+	// SuccessRateBonusScale controls the bonus multiplier for success rate
+	// in evidence-based scoring (default 10.0).
+	// Formula: success_rate * confidence * SuccessRateBonusScale.
+	SuccessRateBonusScale float64 `json:"success_rate_bonus_scale"`
+
+	// LatencyPenaltyScale controls the penalty multiplier for latency_p50
+	// in evidence-based scoring (default 1.0).
+	// Formula: (latency_p50 / 10000) * LatencyPenaltyScale.
+	LatencyPenaltyScale float64 `json:"latency_penalty_scale"`
+
+	// ErrorRatePenaltyScale controls the penalty multiplier for error rate
+	// in evidence-based scoring (default 1.0).
+	// Formula: error_rate * confidence * ErrorRatePenaltyScale.
+	ErrorRatePenaltyScale float64 `json:"error_rate_penalty_scale"`
 }
 
 // DefaultMemoryAwareScoringConfig returns sensible defaults for memory-aware
@@ -79,6 +128,9 @@ func DefaultMemoryAwareScoringConfig() MemoryAwareScoringConfig {
 		MinEvidenceBonus:      0.0,
 		MaxEvidenceBonus:      20.0,
 		ExperienceLookupLimit: 10,
+		SuccessRateBonusScale: 10.0,
+		LatencyPenaltyScale:   1.0,
+		ErrorRatePenaltyScale: 1.0,
 	}
 }
 
@@ -108,6 +160,22 @@ type ScoreDetail struct {
 
 	// Confidence is the confidence factor in [0, 1].
 	Confidence float64 `json:"confidence"`
+
+	// SuccessRateEvidence is the success rate from multi-dimensional evidence.
+	// Range: [0.0, 1.0]. Higher values indicate better historical performance.
+	SuccessRateEvidence float64 `json:"success_rate_evidence"`
+
+	// LatencyEvidence is the P50 latency in milliseconds from multi-dimensional evidence.
+	// Lower values indicate better (faster) historical performance.
+	LatencyEvidence int64 `json:"latency_evidence"`
+
+	// ErrorRateEvidence is the error rate from multi-dimensional evidence.
+	// Range: [0.0, 1.0]. Lower values indicate better historical performance.
+	ErrorRateEvidence float64 `json:"error_rate_evidence"`
+
+	// SampleCountEvidence is the number of samples aggregated in the evidence.
+	// Higher values indicate more reliable statistics.
+	SampleCountEvidence int64 `json:"sample_count_evidence"`
 }
 
 // MemoryAwareScorer extends a TieredScorer with experience-driven bonuses
@@ -116,10 +184,18 @@ type ScoreDetail struct {
 //
 // When the ExperienceProvider is nil or the scorer is disabled, it behaves
 // exactly like the underlying tiered scorer with no adjustments.
+//
+// The scorer supports two modes:
+//  1. Legacy mode (ExperienceProvider only): uses simple count and confidence
+//     for memory bonus calculation.
+//  2. Evidence mode (EvidenceProvider available): uses multi-dimensional
+//     evidence (success_rate, latency_p50, error_rate) for more nuanced
+//     scoring adjustments.
 type MemoryAwareScorer struct {
-	tiered *TieredScorer
-	exp    ExperienceProvider
-	cfg    MemoryAwareScoringConfig
+	tiered           *TieredScorer
+	exp              ExperienceProvider
+	evidenceProvider EvidenceProvider
+	cfg              MemoryAwareScoringConfig
 
 	mu           sync.Mutex
 	adjustments  int64 // total number of adjustments applied
@@ -173,6 +249,17 @@ func NewMemoryAwareScorer(ts *TieredScorer, exp ExperienceProvider, cfg MemoryAw
 	}, nil
 }
 
+// SetEvidenceProvider sets the evidence provider for multi-dimensional
+// scoring adjustments. This allows the scorer to use EvidenceProvider
+// in addition to or instead of the legacy ExperienceProvider.
+//
+// Args:
+//
+//	ep - the evidence provider (may be nil).
+func (ms *MemoryAwareScorer) SetEvidenceProvider(ep EvidenceProvider) {
+	ms.evidenceProvider = ep
+}
+
 // Score evaluates a strategy through the tiered pipeline and applies
 // memory-aware adjustments. The final fitness is computed as:
 //
@@ -181,6 +268,10 @@ func NewMemoryAwareScorer(ts *TieredScorer, exp ExperienceProvider, cfg MemoryAw
 //
 // If the experience provider is nil or the scorer is not enabled, this
 // delegates directly to the underlying tiered scorer.
+//
+// When EvidenceProvider is available, the scorer uses multi-dimensional
+// evidence (success_rate, latency_p50, error_rate) for more nuanced
+// adjustments. Otherwise, it falls back to legacy ExperienceProvider.
 //
 // Args:
 //
@@ -194,8 +285,8 @@ func NewMemoryAwareScorer(ts *TieredScorer, exp ExperienceProvider, cfg MemoryAw
 //	  experience provider is nil).
 //	error - non-nil if scoring fails.
 func (ms *MemoryAwareScorer) Score(ctx context.Context, s *mutation.Strategy) (float64, *ScoreDetail, error) {
-	// If not enabled or no experience provider, delegate directly.
-	if !ms.cfg.Enabled || ms.exp == nil {
+	// If not enabled or no providers, delegate directly.
+	if !ms.cfg.Enabled || (ms.exp == nil && ms.evidenceProvider == nil) {
 		score, _, err := ms.tiered.Score(ctx, s)
 		if err != nil {
 			return 0, nil, fmt.Errorf("memory-aware scorer: %w", err)
@@ -215,6 +306,127 @@ func (ms *MemoryAwareScorer) Score(ctx context.Context, s *mutation.Strategy) (f
 		FinalScore:   qualityScore,
 	}
 
+	// Try EvidenceProvider first (multi-dimensional evidence mode).
+	if ms.evidenceProvider != nil {
+		return ms.scoreWithEvidence(ctx, s, qualityScore, detail)
+	}
+
+	// Fall back to legacy ExperienceProvider (simple count/confidence mode).
+	return ms.scoreWithLegacyExperience(ctx, s, qualityScore, detail)
+}
+
+// scoreWithEvidence applies adjustments using multi-dimensional evidence.
+// This method uses EvidenceProvider to get success_rate, latency_p50,
+// error_rate, and sample_count for more nuanced scoring.
+//
+// Args:
+//
+//	ctx - operation context.
+//	s - the strategy to score.
+//	qualityScore - the base quality score from tiered pipeline.
+//	detail - the score detail to populate.
+//
+// Returns:
+//
+//	float64 - the adjusted fitness score.
+//	*ScoreDetail - breakdown of score components.
+//	error - non-nil if scoring fails.
+func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.Strategy, qualityScore float64, detail *ScoreDetail) (float64, *ScoreDetail, error) {
+	// Try to get evidence by strategy ID first, then by task type.
+	var ev experience.Evidence
+	var err error
+
+	if s.ID != "" {
+		ev, err = ms.evidenceProvider.GetEvidence(ctx, s.ID)
+		if err != nil {
+			slog.Debug("memory-aware scorer: evidence lookup by strategy_id failed, trying task_type",
+				"strategy_id", s.ID, "error", err)
+		}
+	}
+
+	if err != nil || ev.IsEmpty() {
+		taskType := taskTypeFromStrategy(s)
+		ev, err = ms.evidenceProvider.GetEvidenceByTaskType(ctx, taskType)
+		if err != nil {
+			slog.Warn("memory-aware scorer: evidence lookup failed",
+				"strategy_id", s.ID, "task_type", taskType, "error", err)
+			detail.FinalScore = qualityScore
+			return qualityScore, detail, nil
+		}
+	}
+
+	// Populate evidence fields in detail.
+	detail.SuccessRateEvidence = ev.SuccessRate
+	detail.LatencyEvidence = ev.LatencyP50
+	detail.ErrorRateEvidence = ev.ErrorRate
+	detail.SampleCountEvidence = ev.SampleCount
+	detail.Confidence = ev.Confidence
+	detail.ExperienceCount = int(ev.SampleCount)
+
+	// Compute multi-dimensional adjustments.
+	bonus := ms.computeEvidenceBasedBonus(ev)
+	detail.MemoryEvidenceBonus = bonus
+
+	// Compute cost penalty (from strategy params or default).
+	cost := strategyCost(s)
+	costPenalty := cost * ms.cfg.CostWeight
+	detail.CostPenalty = costPenalty
+
+	// Compute latency penalty (from strategy params or default).
+	latency := strategyLatency(s)
+	latencyPenalty := latency * ms.cfg.LatencyWeight
+	detail.LatencyPenalty = latencyPenalty
+
+	// Compute regression penalty (from strategy params or default).
+	regression := strategyRegression(s)
+	regressionPenalty := regression * ms.cfg.RegressionWeight
+	detail.RegressionPenalty = regressionPenalty
+
+	// Apply adjustments.
+	finalScore := qualityScore + bonus - costPenalty - latencyPenalty - regressionPenalty
+	detail.FinalScore = finalScore
+
+	// Track aggregate stats.
+	ms.mu.Lock()
+	ms.adjustments++
+	ms.bonusTotal += bonus
+	ms.penaltyTotal += costPenalty + latencyPenalty + regressionPenalty
+	ms.mu.Unlock()
+
+	slog.Debug("memory-aware score computed (evidence mode)",
+		"strategy_id", s.ID,
+		"quality", qualityScore,
+		"bonus", bonus,
+		"cost_penalty", costPenalty,
+		"latency_penalty", latencyPenalty,
+		"regression_penalty", regressionPenalty,
+		"final", finalScore,
+		"success_rate", ev.SuccessRate,
+		"latency_p50", ev.LatencyP50,
+		"error_rate", ev.ErrorRate,
+		"sample_count", ev.SampleCount,
+		"confidence", ev.Confidence,
+	)
+
+	return finalScore, detail, nil
+}
+
+// scoreWithLegacyExperience applies adjustments using legacy ExperienceProvider.
+// This method uses simple count and confidence for memory bonus calculation.
+//
+// Args:
+//
+//	ctx - operation context.
+//	s - the strategy to score.
+//	qualityScore - the base quality score from tiered pipeline.
+//	detail - the score detail to populate.
+//
+// Returns:
+//
+//	float64 - the adjusted fitness score.
+//	*ScoreDetail - breakdown of score components.
+//	error - non-nil if scoring fails.
+func (ms *MemoryAwareScorer) scoreWithLegacyExperience(ctx context.Context, s *mutation.Strategy, qualityScore float64, detail *ScoreDetail) (float64, *ScoreDetail, error) {
 	// Query experience provider for similar past experiences.
 	expCount, confidence, err := ms.exp.FindSimilar(ctx, taskTypeFromStrategy(s), ms.cfg.ExperienceLookupLimit)
 	if err != nil {
@@ -356,6 +568,63 @@ func (ms *MemoryAwareScorer) computeMemoryBonus(expCount int, confidence float64
 	if bonus < ms.cfg.MinEvidenceBonus {
 		bonus = ms.cfg.MinEvidenceBonus
 	}
+	return bonus
+}
+
+// computeEvidenceBasedBonus calculates the evidence bonus using multi-dimensional
+// evidence. This method considers success_rate, latency_p50, and error_rate
+// to provide more nuanced scoring adjustments.
+//
+// Formula:
+//
+//	success_bonus = success_rate * confidence * 10.0
+//	latency_penalty_factor = max(0, min(1.0, latency_p50 / 10000.0))
+//	error_penalty_factor = error_rate * confidence
+//	bonus = success_bonus * (1.0 - latency_penalty_factor) * (1.0 - error_penalty_factor)
+//	bonus = min(bonus, MaxEvidenceBonus)
+//	bonus = max(bonus, MinEvidenceBonus)
+//
+// The formula rewards high success rates and penalizes high latency and error rates.
+// The confidence factor scales the adjustments based on sample reliability.
+func (ms *MemoryAwareScorer) computeEvidenceBasedBonus(ev experience.Evidence) float64 {
+	// If no samples, return minimum bonus.
+	if !ev.HasSamples() {
+		return ms.cfg.MinEvidenceBonus
+	}
+
+	// Success rate bonus: higher success rate → higher bonus.
+	// Max contribution: 1.0 * 1.0 * 10.0 = 10.0.
+	successBonus := ev.SuccessRate * ev.Confidence * 10.0
+
+	// Latency penalty factor: normalize latency to [0, 1] range.
+	// Lower latency (better) → lower penalty factor → higher bonus.
+	// Reference: 10000ms (10 seconds) as max acceptable latency.
+	maxLatencyMs := 10000.0
+	latencyPenaltyFactor := float64(ev.LatencyP50) / maxLatencyMs
+	if latencyPenaltyFactor > 1.0 {
+		latencyPenaltyFactor = 1.0
+	}
+	if latencyPenaltyFactor < 0 {
+		latencyPenaltyFactor = 0
+	}
+
+	// Error rate penalty factor: higher error rate → lower bonus.
+	errorPenaltyFactor := ev.ErrorRate * ev.Confidence
+	if errorPenaltyFactor > 1.0 {
+		errorPenaltyFactor = 1.0
+	}
+
+	// Combine factors: bonus is scaled by (1 - latency_penalty) and (1 - error_penalty).
+	bonus := successBonus * (1.0 - latencyPenaltyFactor) * (1.0 - errorPenaltyFactor)
+
+	// Clamp to configured bounds.
+	if bonus > ms.cfg.MaxEvidenceBonus {
+		bonus = ms.cfg.MaxEvidenceBonus
+	}
+	if bonus < ms.cfg.MinEvidenceBonus {
+		bonus = ms.cfg.MinEvidenceBonus
+	}
+
 	return bonus
 }
 

@@ -2,6 +2,7 @@ package ares_events
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -214,7 +215,7 @@ func (s *CompactableEventStore) CleanupSummaries(ctx context.Context) (int64, er
 // GetSummariesForStream returns all summaries for a given stream.
 func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, streamID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, nil
+		return nil, fmt.Errorf("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByStreamID(ctx, streamID)
 }
@@ -222,7 +223,7 @@ func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, strea
 // GetSummariesForAgent returns all summaries for an agent across all tasks.
 func (s *CompactableEventStore) GetSummariesForAgent(ctx context.Context, agentID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, nil
+		return nil, fmt.Errorf("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByAgentID(ctx, agentID)
 }

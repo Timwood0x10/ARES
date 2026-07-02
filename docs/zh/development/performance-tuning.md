@@ -335,7 +335,7 @@ func (m *Message) Release() {
 }
 ```
 
-**代码位置**: `internal/protocol/ahp/message.go:50-80`
+**代码位置**: `internal/ares_protocol/ahp/message.go:50-80`
 
 ## 监控指标
 

@@ -27,7 +27,8 @@ func TestExpressionRouter_NoRules_ReturnsNil(t *testing.T) {
 	decision, err := r.Route(context.Background(), RouteState{
 		CurrentStepID: "s1",
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no matching rule for step")
 	assert.Nil(t, decision)
 }
 
@@ -103,7 +104,8 @@ func TestExpressionRouter_NoMatchingFromStep(t *testing.T) {
 	decision, err := r.Route(context.Background(), RouteState{
 		CurrentStepID: "s99",
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no matching rule for step")
 	assert.Nil(t, decision)
 }
 

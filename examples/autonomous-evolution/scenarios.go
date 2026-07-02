@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +13,7 @@ import (
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	exp "github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evolutionservice "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
@@ -459,8 +462,18 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 
 	sep(cfg.Title)
 
+	// Create a temp dir for the evolution report.
+	reportDir, _ := os.MkdirTemp("", "evolution-report-*")
+	defer func() { _ = os.RemoveAll(reportDir) }()
+	reportPath := filepath.Join(reportDir, "report.txt")
+
 	parent := defaultParent(cfg.BaseID)
-	svc, err := evolutionservice.NewService(fullGAConfig(parent, cfg, false, nil))
+	svc, err := evolutionservice.NewService(fullGAConfig(
+		parent, cfg, false, nil,
+		reportPath,
+		newMockEvidenceAggregator(),
+		newMockPromotionLogic(),
+	))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
 		return nil
@@ -480,7 +493,13 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 	}
 
 	printResult(result)
-	printEvolutionInsightReport(cfg.Title, result, nil, parent)
+	printEvolutionInsightReport(cfg.Title, result, result.Lineages, parent)
+
+	// Display the saved evolution report.
+	if data, err := os.ReadFile(reportPath); err == nil {
+		fmt.Println(string(data))
+	}
+
 	return result
 }
 
@@ -507,23 +526,35 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 
 	sep(cfg.Title)
 
+	// Create a temp dir for the evolution report.
+	reportDir, _ := os.MkdirTemp("", "evolution-report-*")
+	defer func() { _ = os.RemoveAll(reportDir) }()
+	reportPath := filepath.Join(reportDir, "report.txt")
+
 	parent := defaultParent(cfg.BaseID)
 
-	// LLM as post-evolution validation only (not in the loop).
-	// Reason: stepfun takes ~12s/request, sensenova is rate-limited.
-	// LLM-in-loop would take ~80 minutes for 15 generations.
-	// Instead: evolve with deterministic scoring (ms), then validate with LLM.
-	svc, err := evolutionservice.NewService(fullGAConfig(parent, cfg, true, nil))
+	// Pure deterministic evolution — LLM participates only in post-hoc validation.
+	// Rationale:
+	//   - GA converges reliably within ~3 generations on heuristic scoring.
+	//   - LLM-in-loop adds latency, API risk, and non-determinism for uncertain gain.
+	//   - Batch-scoring infrastructure exists (see BatchScorer in SystemConfig) but
+	//     is opted out here. Re-enable by wiring an LLMScorer as both Scorer and
+	//     BatchScorer when semantic guidance during evolution is desired.
+	svc, err := evolutionservice.NewService(fullGAConfig(
+		parent, cfg, true, nil,
+		reportPath,
+		newMockEvidenceAggregator(),
+		newMockPromotionLogic(),
+	))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
 		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "Wired evolution + LLM validation",
+	slog.InfoContext(ctx, "Wired evolution — deterministic only, LLM validates best strategy after",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
-		"scorer", "deterministic (LLM validates best strategy after)",
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
@@ -558,6 +589,12 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 			}
 		}
 	}
+
+	// Display the saved evolution report with evidence and promotion summary.
+	if data, err := os.ReadFile(reportPath); err == nil {
+		fmt.Println(string(data))
+	}
+
 	return result
 }
 
@@ -567,27 +604,44 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 
 // fullGAConfig returns a SystemConfig with ALL GA capabilities enabled.
 // scorer is optional — when nil, deterministic scoring is used.
-func fullGAConfig(parent *evolutionservice.Strategy, cfg GACfg, wired bool, scorer evolutionservice.ScorerFunc) *evolutionservice.SystemConfig {
+// When reportPath is non-empty, the evolution report is saved after the run.
+// When evidenceAgg and promotionLogic are non-nil, the post-run hook evaluates
+// the best strategy against aggregated evidence and makes promotion decisions.
+func fullGAConfig(
+	parent *evolutionservice.Strategy,
+	cfg GACfg,
+	wired bool,
+	scorer evolutionservice.ScorerFunc,
+	reportPath string,
+	evidenceAgg evolutionservice.EvidenceAggregator,
+	promotionLogic evolutionservice.PromotionLogic,
+) *evolutionservice.SystemConfig {
 	if scorer == nil {
 		scorer = func(s *evolutionservice.Strategy) float64 { return evolutionservice.DeterministicScore(s) }
 	}
 	return &evolutionservice.SystemConfig{
 		BaseStrategy:           parent,
 		PopulationSize:         cfg.PopSize,
-		EliteCount:             3,            // preserve top 3 unchanged
-		SurvivalRate:           cfg.SurvRate, // top 60% survive
-		MutationRate:           0.3,          // base mutation rate
-		MinMutationRate:        0.05,         // adaptive floor
-		MaxMutationRate:        0.5,          // adaptive ceiling
-		MaxStagnantGenerations: 5,            // reset bottom 1/3 after 5 stale gens
-		DiversityThreshold:     0.2,          // boost mutation when diversity drops
-		BreedingPoolRatio:      0.5,          // breed from top 50% of survivors
-		PromptCrossoverMode:    1,            // half-sentence split for prompts
+		EliteCount:             max(1, cfg.PopSize/7), // ~14% of population, at least 1
+		SurvivalRate:           cfg.SurvRate,          // top 60% survive
+		MutationRate:           0.3,                   // base mutation rate
+		MinMutationRate:        0.05,                  // adaptive floor
+		MaxMutationRate:        0.5,                   // adaptive ceiling
+		MaxStagnantGenerations: 5,                     // reset bottom 1/3 after 5 stale gens
+		DiversityThreshold:     0.2,                   // boost mutation when diversity drops
+		BreedingPoolRatio:      0.5,                   // breed from top 50% of survivors
+		SelectionStrategy:      cfg.SelectionStrategy, // parent selection algorithm
+		HistoryMaxSize:         100,                   // enable history for meta-controller + reflection
+		PromptCrossoverMode:    1,                     // half-sentence split for prompts
 		Generations:            cfg.NGen,
 		Seed:                   42, // deterministic for reproducibility
 		PromptPool:             []string{"careful", "creative", "precise"},
 		EnableWiredMode:        wired,
+		EnableIntelligence:     true, // reflection → hypotheses → meta-controller
 		Scorer:                 scorer,
+		ReportPath:             reportPath,
+		EvidenceAggregator:     evidenceAgg,
+		PromotionLogic:         promotionLogic,
 	}
 }
 
@@ -611,26 +665,401 @@ func defaultParent(id string) *evolutionservice.Strategy {
 	}
 }
 
-// printResult prints the evolution stats table.
+// printResult prints the evolution stats table with diversity, lineages, and dimension scores.
 func printResult(result *evolutionservice.EvolutionResult) {
 	var rows [][]string
 	for i, st := range result.Stats {
+		div := ""
+		if st.Diversity != nil {
+			div = fmt.Sprintf("%.0f%%", st.Diversity.Overall*100)
+		}
 		rows = append(rows, []string{
 			fmt.Sprintf("%d", i+1),
 			fmt.Sprintf("%.2f", st.BestScore),
 			fmt.Sprintf("%.2f", st.AvgScore),
 			fmt.Sprintf("%.2f", st.WorstScore),
+			div,
 		})
 	}
-	tbl([]string{"Gen", "Best", "Avg", "Worst"}, rows)
+	headers := []string{"Gen", "Best", "Avg", "Worst", "Diversity"}
+	tbl(headers, rows)
 
-	if bst := result.BestStrategy; bst != nil {
-		slog.Info("Best strategy found",
-			"id", bst.ID,
-			"version", bst.Version,
-			"score", bst.Score,
+	if len(result.Lineages) > 0 {
+		slog.Info("Lineage records",
+			"count", len(result.Lineages),
+			"with_improvement", countWithImprovement(result.Lineages),
 		)
 	}
+
+	if bst := result.BestStrategy; bst != nil {
+		attrs := []any{"id", bst.ID, "version", bst.Version, "score", bst.Score}
+		if len(bst.DimensionScores) > 0 {
+			attrs = append(attrs, "dims", fmt.Sprintf("%v", bst.DimensionScores))
+		}
+		slog.Info("Best strategy found", attrs...)
+	}
+}
+
+// countWithImprovement returns the number of lineages with positive ScoreDelta.
+func countWithImprovement(lineages []evolutionservice.StrategyLineage) int {
+	n := 0
+	for _, l := range lineages {
+		if l.ScoreDelta > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Scenario 8: Real Data Evolution Pipeline
+//
+// This scenario demonstrates the complete GA/Memory/Tool fusion pipeline
+// using ~600 realistic tool call records generated from 15 conversation
+// scenarios across 5 distinct strategy profiles.
+//
+// The pipeline flow:
+//   1. Generate realistic tool call data from conversation scenarios
+//   2. Feed through ToolCallExperienceCollector → DefaultNormalizer → MemoryExperienceStore
+//   3. DefaultEvidenceAggregator queries the store to produce evidence per strategy
+//   4. GA evolves strategy parameters, AfterRun hook evaluates the best strategy
+//      against real-world evidence and produces a promotion decision
+//   5. Final report shows the complete analysis
+//
+// No LLM required — fully self-contained demonstration of the fusion pipeline.
+// ────────────────────────────────────────────────────────────────────────────
+
+func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
+	start := time.Now()
+	defer func() {
+		slog.InfoContext(ctx, "Scenario completed",
+			"scenario", "Real Data Evolution Pipeline",
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}()
+
+	sep("Scenario 8: Real Data Evolution Pipeline")
+
+	// Step 1: Generate realistic tool call data.
+	fmt.Println("\n  📡 Generating realistic tool call data...")
+	records := generateToolCallRecords(42)
+	fmt.Printf("     %d records from %d conversations × %d strategy profiles\n",
+		len(records), len(scenarios), len(defaultProfiles))
+
+	// Count per tool and show stats.
+	toolCounts := map[string]int{}
+	toolSuccess := map[string]int{}
+	for _, r := range records {
+		toolCounts[r.ToolName]++
+		if r.Success {
+			toolSuccess[r.ToolName]++
+		}
+	}
+
+	fmt.Println("\n   Tool Call Distribution:")
+	var toolRows [][]string
+	for _, tool := range []string{"web_search", "calculator", "regex", "json_tools", "file_tools"} {
+		total := toolCounts[tool]
+		ok := toolSuccess[tool]
+		pct := float64(ok) / float64(total) * 100
+		toolRows = append(toolRows, []string{
+			tool,
+			fmt.Sprintf("%d", total),
+			fmt.Sprintf("%.0f%%", pct),
+		})
+	}
+	tbl([]string{"Tool", "Calls", "Success"}, toolRows)
+
+	// Print profile proficiency table.
+	printProfileTable()
+
+	// Step 2: Set up the experience pipeline.
+	fmt.Println("\n  ⚙️  Initializing experience pipeline...")
+	store := exp.NewMemoryExperienceStore(exp.ExperienceStoreConfig{
+		MaxSize:        10000,
+		EnableIndexing: true,
+	})
+	normalizer := exp.NewDefaultNormalizer(nil)
+
+	collector, err := exp.NewToolCallExperienceCollector(normalizer, store)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create collector", "error", err)
+		return nil
+	}
+
+	// Step 3: Feed all records through the pipeline.
+	fmt.Println("     Feeding data through normalizer → store...")
+	if err := collector.CollectBatch(ctx, records); err != nil {
+		slog.ErrorContext(ctx, "Failed to collect records", "error", err)
+		return nil
+	}
+
+	// Verify data landed in the store.
+	storeStats, err := store.GetStatistics(ctx, "aggressive")
+	if err == nil && len(storeStats) > 0 {
+		fmt.Printf("     Store initialized: experiences ingested across %d strategies\n", len(defaultProfiles))
+	}
+
+	// Step 4: Show per-strategy evidence from the store using task-type-aware
+	// aggregation to avoid mixed-task warnings.
+	fmt.Println("\n   Evidence from Real Tool Call Data:")
+	var evRows [][]string
+	for _, profile := range defaultProfiles {
+		exps, err := store.Query(ctx, profile.id, time.Time{}, time.Now())
+		if err != nil || len(exps) == 0 {
+			continue
+		}
+		byTask := exp.AggregateEvidenceByTask(exps)
+		ev := exp.AggregateEvidenceCrossTask(exps)
+		evRows = append(evRows, []string{
+			profile.id,
+			fmt.Sprintf("%.0f%%", ev.SuccessRate*100),
+			fmt.Sprintf("%dms", ev.LatencyP50),
+			fmt.Sprintf("%d (task_types=%d)", ev.SampleCount, len(byTask)),
+			fmt.Sprintf("%.0f%%", ev.Confidence*100),
+		})
+	}
+	tbl([]string{"Strategy", "Success", "P50 Lat", "Samples", "Confid"}, evRows)
+
+	// Standalone promotion evaluation based on real data.
+	fmt.Println("\n   Promotion Evaluation from Real Data:")
+	promoter := &dataDrivenPromotion{
+		thresholds: promotionThresholds{
+			championSuccessRate: 0.70,
+			championConfidence:  0.0,
+			championMinSamples:  10,
+			shadowSuccessRate:   0.60,
+			shadowMinSamples:    5,
+		},
+	}
+	for _, profile := range defaultProfiles {
+		exps, err := store.Query(ctx, profile.id, time.Time{}, time.Now())
+		if err != nil || len(exps) == 0 {
+			continue
+		}
+		ev := exp.AggregateEvidenceCrossTask(exps)
+		svcEv := evolutionservice.Evidence{
+			StrategyID:  profile.id,
+			SuccessRate: ev.SuccessRate,
+			LatencyP50:  ev.LatencyP50,
+			SampleCount: ev.SampleCount,
+			Confidence:  ev.Confidence,
+		}
+		state, reason, _ := promoter.Evaluate(ctx, profile.id, svcEv)
+		fmt.Printf("     %-12s → %-10s (%s)\n", profile.id, state, reason)
+	}
+
+	// Step 6: Create promotion logic for GA wired system.
+	gaPromoter := &dataDrivenPromotion{
+		thresholds: promotionThresholds{
+			championSuccessRate: 0.80,
+			championConfidence:  0.50,
+			championMinSamples:  20,
+			shadowSuccessRate:   0.65,
+			shadowMinSamples:    10,
+		},
+	}
+
+	// Step 6: Create and run the GA wired with real evidence.
+	reportDir, _ := os.MkdirTemp("", "evolution-live-report-*")
+	defer func() { _ = os.RemoveAll(reportDir) }()
+	reportPath := filepath.Join(reportDir, "report.txt")
+
+	parent := defaultParent(cfg.BaseID)
+	evidenceAgg := newStoreEvidenceAggregator(store)
+
+	// Pre-populate phenotype fallback: compute evidence key for each default
+	// profile and register it so that GA strategies with matching phenotypes
+	// can fall back to real data instead of reporting sample_count=0.
+	for _, profile := range defaultProfiles {
+		muStrategy := &mutation.Strategy{
+			ID:             profile.id,
+			Params:         map[string]any{"temperature": profile.temperature, "top_k": profile.topK, "max_tokens": profile.maxTokens, "frequency_penalty": profile.freqPenalty, "presence_penalty": profile.presentPenalty},
+			PromptTemplate: profile.prompt,
+		}
+		ek := muStrategy.ComputeEvidenceKey()
+		evidenceAgg.RegisterPhenotypeFallback(ek, profile.id)
+		evidenceAgg.RegisterStrategyKey(profile.id, ek)
+	}
+
+	// Also register the parent strategy's evidence key so that GA generations
+	// evaluating the parent strategy can find matching profile data.
+	parentMuStrategy := &mutation.Strategy{
+		ID:             parent.ID,
+		Params:         parent.Params,
+		PromptTemplate: parent.PromptTemplate,
+	}
+	parentEK := parentMuStrategy.ComputeEvidenceKey()
+	evidenceAgg.RegisterStrategyKey(parent.ID, parentEK)
+
+	svc, err := evolutionservice.NewService(fullGAConfig(
+		parent, cfg, true, nil,
+		reportPath,
+		evidenceAgg,
+		gaPromoter,
+	))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
+		return nil
+	}
+	defer svc.Shutdown()
+
+	slog.InfoContext(ctx, "Running GA evolution with real data evidence pipeline",
+		"pop_size", cfg.PopSize,
+		"generations", cfg.NGen,
+	)
+
+	result, err := svc.Evolve(ctx, cfg.NGen)
+	if err != nil {
+		slog.ErrorContext(ctx, "Evolution failed", "error", err)
+		return nil
+	}
+
+	lineages, _ := svc.Lineages()
+	printResult(result)
+	printEvolutionInsightReport(cfg.Title, result, lineages, parent)
+
+	// Step 7: Display the saved evolution report with promotion summary.
+	if data, err := os.ReadFile(reportPath); err == nil {
+		fmt.Println(string(data))
+	}
+
+	return result
+}
+
+// ── Evidence Aggregator Adapter ───────────────────────────────
+
+// storeEvidenceAggregator queries the MemoryExperienceStore directly and
+// computes evidence via AggregateEvidence, satisfying the
+// evolutionservice.EvidenceAggregator interface. It supports phenotype-based
+// fallback: when a strategyID returns no data, it looks up the strategy's
+// evidence key and falls back to a registered phenotype profile with data.
+type storeEvidenceAggregator struct {
+	store *exp.MemoryExperienceStore
+
+	// phenotypeFallback maps evidenceKey -> profile strategyID that has data
+	// in the store. Pre-populated in runRealDataEvolution.
+	phenotypeFallback map[string]string
+
+	// strategyEvidenceKeys maps known strategyIDs -> their computed evidence key.
+	// This enables resolving GA UUIDs to phenotype keys for fallback lookup.
+	strategyEvidenceKeys map[string]string
+}
+
+func newStoreEvidenceAggregator(store *exp.MemoryExperienceStore) *storeEvidenceAggregator {
+	return &storeEvidenceAggregator{
+		store:                store,
+		phenotypeFallback:    make(map[string]string),
+		strategyEvidenceKeys: make(map[string]string),
+	}
+}
+
+// RegisterStrategyKey registers a strategy ID with its computed evidence key
+// so that Aggregate can resolve the ID to a phenotype fallback when direct
+// query returns no results.
+func (a *storeEvidenceAggregator) RegisterStrategyKey(strategyID, evidenceKey string) {
+	if strategyID == "" || evidenceKey == "" {
+		return
+	}
+	a.strategyEvidenceKeys[strategyID] = evidenceKey
+}
+
+// RegisterPhenotypeFallback registers a phenotype evidence key to a profile
+// strategy ID that has data in the store. When a strategy with the same
+// evidence key produces 0 direct results, the fallback profile ID is used.
+func (a *storeEvidenceAggregator) RegisterPhenotypeFallback(evidenceKey, profileID string) {
+	if evidenceKey == "" || profileID == "" {
+		return
+	}
+	a.phenotypeFallback[evidenceKey] = profileID
+}
+
+func (a *storeEvidenceAggregator) Aggregate(ctx context.Context, strategyID string) (evolutionservice.Evidence, error) {
+	exps, err := a.store.Query(ctx, strategyID, time.Time{}, time.Now())
+	if err != nil {
+		return evolutionservice.Evidence{}, fmt.Errorf("query store: %w", err)
+	}
+	if len(exps) > 0 {
+		ev := exp.AggregateEvidenceCrossTask(exps)
+		return evolutionservice.Evidence{
+			StrategyID:  ev.StrategyID,
+			SuccessRate: ev.SuccessRate,
+			LatencyP50:  ev.LatencyP50,
+			ErrorRate:   ev.ErrorRate,
+			SampleCount: ev.SampleCount,
+			Confidence:  ev.Confidence,
+		}, nil
+	}
+
+	// Direct query returned 0 results. Try phenotype fallback: resolve the
+	// strategyID to an evidence key, then look up a registered profile ID.
+	evidenceKey, ok := a.strategyEvidenceKeys[strategyID]
+	if !ok {
+		return evolutionservice.Evidence{StrategyID: strategyID}, nil
+	}
+	profileID, ok := a.phenotypeFallback[evidenceKey]
+	if !ok {
+		return evolutionservice.Evidence{StrategyID: strategyID}, nil
+	}
+
+	exps, err = a.store.Query(ctx, profileID, time.Time{}, time.Now())
+	if err != nil {
+		return evolutionservice.Evidence{}, fmt.Errorf("query store fallback: %w", err)
+	}
+	if len(exps) == 0 {
+		return evolutionservice.Evidence{StrategyID: strategyID}, nil
+	}
+	ev := exp.AggregateEvidenceCrossTask(exps)
+	return evolutionservice.Evidence{
+		StrategyID:  strategyID,
+		SuccessRate: ev.SuccessRate,
+		LatencyP50:  ev.LatencyP50,
+		ErrorRate:   ev.ErrorRate,
+		SampleCount: ev.SampleCount,
+		Confidence:  ev.Confidence,
+	}, nil
+}
+
+// ── Real Promotion Logic ───────────────────────────────────────
+
+type promotionThresholds struct {
+	championSuccessRate float64
+	championConfidence  float64
+	championMinSamples  int64
+	shadowSuccessRate   float64
+	shadowMinSamples    int64
+}
+
+type dataDrivenPromotion struct {
+	thresholds promotionThresholds
+}
+
+func (p *dataDrivenPromotion) Evaluate(ctx context.Context, strategyID string, ev evolutionservice.Evidence) (string, string, error) {
+	if ev.SampleCount == 0 {
+		return "candidate", "no experience data available for evaluation", nil
+	}
+
+	if ev.Confidence >= p.thresholds.championConfidence &&
+		ev.SuccessRate >= p.thresholds.championSuccessRate &&
+		ev.SampleCount >= p.thresholds.championMinSamples {
+		return "champion",
+			fmt.Sprintf("confidence=%.0f%% success_rate=%.0f%% samples=%d p50_latency=%dms",
+				ev.Confidence*100, ev.SuccessRate*100, ev.SampleCount, ev.LatencyP50),
+			nil
+	}
+
+	if ev.SuccessRate >= p.thresholds.shadowSuccessRate &&
+		ev.SampleCount >= p.thresholds.shadowMinSamples {
+		return "shadow",
+			fmt.Sprintf("promising: success_rate=%.0f%% with %d samples, needs more data for champion",
+				ev.SuccessRate*100, ev.SampleCount),
+			nil
+	}
+
+	return "candidate",
+		fmt.Sprintf("insufficient: success_rate=%.0f%% samples=%d confidence=%.0f%%",
+			ev.SuccessRate*100, ev.SampleCount, ev.Confidence*100),
+		nil
 }
 
 // compareResults prints a side-by-side comparison of two evolution results.
@@ -648,7 +1077,16 @@ func compareResults(resultA, resultB *evolutionservice.EvolutionResult, labelA, 
 
 	fmt.Printf("  %-25s %25s\n", labelA, labelB)
 	fmt.Printf("  %-25s %25s\n", "─────────────────────────", "─────────────────────────")
+	evidenceA := ""
+	if bestA.EvidenceKey != "" {
+		evidenceA = bestA.EvidenceKey
+	}
+	evidenceB := ""
+	if bestB.EvidenceKey != "" {
+		evidenceB = bestB.EvidenceKey
+	}
 	fmt.Printf("  Best Score:    %8.2f         Best Score:    %8.2f\n", bestA.Score, bestB.Score)
+	fmt.Printf("  Evidence Key:  %-18s  Evidence Key:  %-18s\n", evidenceA, evidenceB)
 	fmt.Printf("  Generations:   %8d         Generations:   %8d\n", resultA.TotalGens, resultB.TotalGens)
 
 	// Parameter comparison.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
@@ -33,10 +34,22 @@ func (r *PgSummaryRepository) Save(ctx context.Context, summary *EventSummary) e
 		summary.CreatedAt = time.Now()
 	}
 
-	eventTypeCountsJSON, _ := json.Marshal(summary.EventTypeCounts)
-	tasksCreatedJSON, _ := json.Marshal(summary.TasksCreated)
-	toolsCalledJSON, _ := json.Marshal(summary.ToolsCalled)
-	errorsJSON, _ := json.Marshal(summary.Errors)
+	eventTypeCountsJSON, err := json.Marshal(summary.EventTypeCounts)
+	if err != nil {
+		return fmt.Errorf("marshal event_type_counts: %w", err)
+	}
+	tasksCreatedJSON, err := json.Marshal(summary.TasksCreated)
+	if err != nil {
+		return fmt.Errorf("marshal tasks_created: %w", err)
+	}
+	toolsCalledJSON, err := json.Marshal(summary.ToolsCalled)
+	if err != nil {
+		return fmt.Errorf("marshal tools_called: %w", err)
+	}
+	errorsJSON, err := json.Marshal(summary.Errors)
+	if err != nil {
+		return fmt.Errorf("marshal errors: %w", err)
+	}
 
 	query := `
 		INSERT INTO event_summaries (
@@ -59,7 +72,7 @@ func (r *PgSummaryRepository) Save(ctx context.Context, summary *EventSummary) e
 			metadata = EXCLUDED.metadata
 	`
 
-	_, err := r.pool.Exec(ctx, query,
+	_, err = r.pool.Exec(ctx, query,
 		summary.ID,
 		summary.StreamID,
 		summary.AgentID,
@@ -227,7 +240,7 @@ func (r *PgSummaryRepository) FindLatestByStreamID(ctx context.Context, streamID
 	s, err := scanSummary(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil
+			return nil, ErrSummaryNotFound
 		}
 		return nil, apperrors.Wrap(err, "scan event summary")
 	}

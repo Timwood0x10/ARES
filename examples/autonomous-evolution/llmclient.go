@@ -141,7 +141,11 @@ func (c *providerClient) generate(ctx context.Context, prompt string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("API request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("llm: close response body", "error", err)
+		}
+	}()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {

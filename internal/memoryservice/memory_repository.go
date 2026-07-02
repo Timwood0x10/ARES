@@ -64,7 +64,7 @@ func (r *MemoryRepository) GetSession(ctx context.Context, sessionID string) (*c
 
 	session, exists := r.sessions[sessionID]
 	if !exists {
-		return nil, nil
+		return nil, ErrSessionNotFound
 	}
 
 	// Return a copy to avoid mutation
@@ -224,7 +224,7 @@ func (r *MemoryRepository) GetDistilledTask(ctx context.Context, taskID string) 
 
 	task, exists := r.tasks[taskID]
 	if !exists {
-		return nil, nil
+		return nil, ErrTaskNotFound
 	}
 
 	// Return a copy to avoid mutation
