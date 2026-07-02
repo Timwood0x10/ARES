@@ -14,7 +14,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"strings"

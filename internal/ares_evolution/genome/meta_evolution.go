@@ -1,10 +1,10 @@
 package genome
 
 import (
- "fmt"
- "math"
+	"fmt"
+	"math"
 
- "github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // MetaParams are the evolution hyperparameters that the MetaController

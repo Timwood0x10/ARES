@@ -677,7 +677,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		}
 
 		if err := system.PopAdapter.Run(ctx); err != nil {
-			el.Warn(ctx, "RunIdleEvolution", "generation produced guardrail warning, continuing",				"generation", system.Population.Generation,
+			el.Warn(ctx, "RunIdleEvolution", "generation produced guardrail warning, continuing", "generation", system.Population.Generation,
 				"run_iteration", gen,
 				"error", err,
 			)
@@ -686,7 +686,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		if system.Genealogy != nil {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, parentSnapshot, gen)
 			if err != nil {
-				el.Warn(ctx, "RunIdleEvolution", "failed to record lineage",					"generation", system.Population.Generation,
+				el.Warn(ctx, "RunIdleEvolution", "failed to record lineage", "generation", system.Population.Generation,
 					"run_iteration", gen,
 					"error", err,
 				)
@@ -700,14 +700,14 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 				agents, _ := system.Population.Snapshot()
 				ref, err := system.Reflector.Reflect(ctx, history, agents)
 				if err != nil {
-					el.Warn(ctx, "RunIdleEvolution", "reflection failed, skipping",						"generation", system.Population.Generation,
+					el.Warn(ctx, "RunIdleEvolution", "reflection failed, skipping", "generation", system.Population.Generation,
 						"run_iteration", gen,
 						"error", err,
 					)
 				} else if ref != nil && len(ref.Recommendations) > 0 {
 					hyps := system.HypothesisGen.Generate(ctx, ref)
 					if len(hyps) > 0 {
-						el.Info(ctx, "RunIdleEvolution", "generated hypotheses from reflection",							"generation", system.Population.Generation,
+						el.Info(ctx, "RunIdleEvolution", "generated hypotheses from reflection", "generation", system.Population.Generation,
 							"run_iteration", gen,
 							"count", len(hyps),
 						)
@@ -724,7 +724,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// Run the post-generation hook (promotion, report, etc.).
 		if system.AfterGeneration != nil {
 			if err := system.AfterGeneration(ctx, gen, system); err != nil {
-				el.Warn(ctx, "RunIdleEvolution", "AfterGeneration hook failed",					"generation", system.Population.Generation,
+				el.Warn(ctx, "RunIdleEvolution", "AfterGeneration hook failed", "generation", system.Population.Generation,
 					"run_iteration", gen,
 					"error", err,
 				)
@@ -735,8 +735,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 	// Run the post-run hook for final report generation.
 	if system.AfterRun != nil {
 		if err := system.AfterRun(ctx, system); err != nil {
-			el.Warn(ctx, "RunIdleEvolution", "AfterRun hook failed",				"error", err,
-			)
+			el.Warn(ctx, "RunIdleEvolution", "AfterRun hook failed", "error", err)
 		}
 	}
 

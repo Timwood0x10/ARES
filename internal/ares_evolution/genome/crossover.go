@@ -5,11 +5,11 @@
 package genome
 
 import (
- "context"
- "fmt"
- "math/rand"
- "sort"
- "strings"
+	"context"
+	"fmt"
+	"math/rand"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 

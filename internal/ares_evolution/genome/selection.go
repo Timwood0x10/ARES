@@ -3,10 +3,10 @@
 package genome
 
 import (
- "context"
- "fmt"
- "math/rand"
- "sort"
+	"context"
+	"fmt"
+	"math/rand"
+	"sort"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )

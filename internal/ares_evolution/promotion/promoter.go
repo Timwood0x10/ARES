@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 var el = logger.New("promotion")

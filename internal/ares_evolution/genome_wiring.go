@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 var el = logger.New("adapter")
@@ -288,55 +288,55 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		// Pre-fill cache with batch-scored values before tiered scoring runs.
 		// This turns N per-agent LLM calls into ceil(N/batchSize) batched calls.
 		if a.batchScorer != nil && a.scoreCache != nil {
-		 agents, ver := a.pop.Snapshot()
-		 if len(agents) > 0 {
-		  scores := a.batchScorer(ctx, agents)
-		  n := min(len(scores), len(agents))
-		  for i := 0; i < n; i++ {
-		   hash, err := scoring.StrategyHash(agents[i])
-		   if err == nil {
-		    a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
-		   }
-		  }
-		  el.Debug(ctx, "Run", "pre-filled score cache via batch scorer",		   "count", n,
-		   "version", ver,
-		   "scored", len(scores),
-		  )
-		 }
+			agents, ver := a.pop.Snapshot()
+			if len(agents) > 0 {
+				scores := a.batchScorer(ctx, agents)
+				n := min(len(scores), len(agents))
+				for i := 0; i < n; i++ {
+					hash, err := scoring.StrategyHash(agents[i])
+					if err == nil {
+						a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
+					}
+				}
+				el.Debug(ctx, "Run", "pre-filled score cache via batch scorer", "count", n,
+					"version", ver,
+					"scored", len(scores),
+				)
+			}
 		}
 
 		scorer = func(s *mutation.Strategy) float64 {
-		 // When memory-aware scorer is set, delegate through it to get
-		 // evidence-based bonuses and cost/latency penalties.
-		 if a.memoryScorer != nil {
-		  score, _, err := a.memoryScorer.Score(ctx, s)
-		  if err != nil {
-		   el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic",		    "error", err,
-		    "strategy_id", s.ID,
-		   )
-		   return 50.0
-		  }
-		  return score
-		 }
-		 score, _, err := a.tieredScorer.Score(ctx, s)
-		 if err != nil {
-		  el.Warn(ctx, "Run", "tiered scorer failed, using baseline",		   "error", err,
-		   "strategy_id", s.ID,
-		  )
-		  return 50.0 // fallback baseline on error
-		 }
-		 return score
+			// When memory-aware scorer is set, delegate through it to get
+			// evidence-based bonuses and cost/latency penalties.
+			if a.memoryScorer != nil {
+				score, _, err := a.memoryScorer.Score(ctx, s)
+				if err != nil {
+					el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
+						"strategy_id", s.ID,
+					)
+					return 50.0
+				}
+				return score
+			}
+			score, _, err := a.tieredScorer.Score(ctx, s)
+			if err != nil {
+				el.Warn(ctx, "Run", "tiered scorer failed, using baseline", "error", err,
+					"strategy_id", s.ID,
+				)
+				return 50.0 // fallback baseline on error
+			}
+			return score
 		}
 		// Log scoring stats after evolution.
 		defer func() {
-		 stats := a.tieredScorer.Stats()
-		 used, max, cacheHits, fallbacks := a.budget.Usage()
-		 el.Info(ctx, "Run", "tiered scoring stats",		  "llm_used", used,
-		  "llm_max", max,
-		  "cache_hits", cacheHits,
-		  "fallbacks", fallbacks,
-		  "tier_stats", stats,
-		 )
+			stats := a.tieredScorer.Stats()
+			used, max, cacheHits, fallbacks := a.budget.Usage()
+			el.Info(ctx, "Run", "tiered scoring stats", "llm_used", used,
+				"llm_max", max,
+				"cache_hits", cacheHits,
+				"fallbacks", fallbacks,
+				"tier_stats", stats,
+			)
 		}()
 	} else {
 		scorer = buildScorer(a.scorer)
@@ -365,7 +365,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		// Log all pre-check events
 		for _, evt := range preResult.Events {
-			el.Warn(ctx, "Run", "pre-evolve guardrail triggered",				"rule", evt.Rule,
+			el.Warn(ctx, "Run", "pre-evolve guardrail triggered", "rule", evt.Rule,
 				"level", evt.Level,
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
@@ -406,7 +406,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		// Log all post-check events
 		for _, evt := range postResult.Events {
-			el.Warn(ctx, "Run", "post-evolve guardrail triggered",				"rule", evt.Rule,
+			el.Warn(ctx, "Run", "post-evolve guardrail triggered", "rule", evt.Rule,
 				"level", evt.Level,
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
@@ -418,7 +418,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		if postResult.ShouldStop {
 			// Evolution already completed; log warning but still return error.
-			el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed",				"generation", postStats.Generation,
+			el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed", "generation", postStats.Generation,
 				"event_count", len(postResult.Events),
 			)
 			return fmt.Errorf("adapter.Run: post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
@@ -427,7 +427,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	}
 
 	stats := a.pop.Stats()
-	el.Info(ctx, "Run", "evolution cycle completed",		"generation", stats.Generation,
+	el.Info(ctx, "Run", "evolution cycle completed", "generation", stats.Generation,
 		"population_size", stats.Size,
 		"best_score", stats.BestScore,
 		"avg_score", stats.AvgScore,
@@ -495,7 +495,7 @@ func (a *GenomePopulationAdapter) recordOutcomesLocked(
 				Score:      child.Score,
 			}
 			if err := a.feedbackRecorder.Register(ctx, outcome); err != nil {
-				el.Warn(ctx, "recordOutcomesLocked", "feedback recording failed",					"strategy_id", child.ID,
+				el.Warn(ctx, "recordOutcomesLocked", "feedback recording failed", "strategy_id", child.ID,
 					"error", err,
 				)
 			}
@@ -515,10 +515,10 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 		return scorer
 	}
 	scorerWarningOnce.Do(func() {
-	  el.Warn(nil, "buildScorer", "No scorer configured, using constant baseline (50.0). "+
-	   "Configure a real scorer for production use.",
-	  )
-	 })
+		el.Warn(nil, "buildScorer", "No scorer configured, using constant baseline (50.0). "+
+			"Configure a real scorer for production use.",
+		)
+	})
 	// Note: TieredScorer is now available via SystemConfig options (MaxLLMCallsPerGeneration,
 	// HeuristicScorer). When those are set, Run() uses the tiered pipeline instead of this
 	// fallback path. The ConstantScorer default is retained for backward compatibility.
@@ -729,7 +729,7 @@ func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage Strate
 		r.lineages = r.lineages[trimCount:]
 	}
 
-	el.Debug(ctx, "Record", "lineage recorded",		"parent_id", lineage.ParentID,
+	el.Debug(ctx, "Record", "lineage recorded", "parent_id", lineage.ParentID,
 		"child_id", lineage.ChildID,
 		"mutation_type", lineage.MutationType,
 	)
@@ -873,7 +873,7 @@ func RecordPopulationLineage(
 	}
 
 	if count > 0 {
-		el.Info(ctx, "RecordPopulationLineage", "recorded",			"new_records", count,
+		el.Info(ctx, "RecordPopulationLineage", "recorded", "new_records", count,
 			"generation", generation,
 		)
 	}

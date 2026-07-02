@@ -573,12 +573,12 @@ func (p *Population) handleStagnationLocked() {
 	resetCount := max(1, len(p.Agents)/3)
 	resetCount = min(resetCount, len(p.Agents)-p.cfg.EliteCount)
 	if resetCount <= 0 {
-	 p.stagnantGens = 0
-	 el.Warn(nil, "handleStagnationLocked", "stagnation but no agents to reset",
-	  "population_size", len(p.Agents),
-	  "elite_count", p.cfg.EliteCount,
-	 )
-	 return
+		p.stagnantGens = 0
+		el.Warn(nil, "handleStagnationLocked", "stagnation but no agents to reset",
+			"population_size", len(p.Agents),
+			"elite_count", p.cfg.EliteCount,
+		)
+		return
 	}
 
 	SortByScore(p.Agents)

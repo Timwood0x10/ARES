@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 // el is the package-level structured logger. Use el.Info/Warn/Debug/Error
@@ -304,7 +304,7 @@ func DefaultPopulationConfig() PopulationConfig {
 		SpatialIndexThreshold:       500,
 		DiversitySampleSize:         200, // Sample pairs for pop > 200 to avoid O(n²)
 		DisablePromptDiversityGuard: false,
-		PerLineageElites:            true,  // preserve top-1 per lineage by default
+		PerLineageElites:            true, // preserve top-1 per lineage by default
 		PerLineageEliteCount:        1,
 		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}
@@ -934,11 +934,11 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		// genetic material entered the pool, so diversity/stagnation signals
 		// would be misleading.
 		el.Info(ctx, "doEvolve", "evolution completed, no offspring produced",
-		 "generation", p.Generation,
-		 "population_size", len(p.Agents),
-		 "elite_count", len(elites),
-		 "mutation_rate", p.currentMutationRate,
-		 "note", "no offspring produced, skipped adaptive adjustments",
+			"generation", p.Generation,
+			"population_size", len(p.Agents),
+			"elite_count", len(elites),
+			"mutation_rate", p.currentMutationRate,
+			"note", "no offspring produced, skipped adaptive adjustments",
 		)
 		return nil
 	}
@@ -991,7 +991,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	// Check for diversity collapse and inject fresh mutants if needed.
 	report := p.measureDiversityReportLocked()
 	if report.Overall < p.cfg.DiversityThreshold || report.DominantLineageShare > 0.6 {
-	 p.injectFreshMutantsLocked(len(elites))
+		p.injectFreshMutantsLocked(len(elites))
 	}
 
 	// Consolidated recovery summary: single structured log line showing
@@ -1002,26 +1002,26 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	freshInjection := postActions["fresh_injection"] - preActions["fresh_injection"]
 
 	if mutationBoosted > 0 || stagnationReset > 0 || freshInjection > 0 {
-	 el.Warn(nil, "doEvolve", "recovery mechanisms triggered",
-	  "generation", p.Generation,
-	  "overall_diversity", report.Overall,
-	  "dominant_lineage_share", report.DominantLineageShare,
-	  "numeric_diversity", report.Numeric,
-	  "categorical_diversity", report.Categorical,
-	  "lineage_diversity", report.Lineage,
-	  "mutation_rate_before", preMutationRate,
-	  "mutation_rate_after", p.currentMutationRate,
-	  "mutation_rate_boosted", mutationBoosted > 0,
-	  "stagnation_reset", stagnationReset > 0,
-	  "fresh_injection", freshInjection > 0,
-	 )
+		el.Warn(nil, "doEvolve", "recovery mechanisms triggered",
+			"generation", p.Generation,
+			"overall_diversity", report.Overall,
+			"dominant_lineage_share", report.DominantLineageShare,
+			"numeric_diversity", report.Numeric,
+			"categorical_diversity", report.Categorical,
+			"lineage_diversity", report.Lineage,
+			"mutation_rate_before", preMutationRate,
+			"mutation_rate_after", p.currentMutationRate,
+			"mutation_rate_boosted", mutationBoosted > 0,
+			"stagnation_reset", stagnationReset > 0,
+			"fresh_injection", freshInjection > 0,
+		)
 	}
 
 	el.Info(ctx, "doEvolve", "evolution completed",
-	 "generation", p.Generation,
-	 "population_size", len(p.Agents),
-	 "elite_count", len(elites),
-	 "mutation_rate", p.currentMutationRate,
+		"generation", p.Generation,
+		"population_size", len(p.Agents),
+		"elite_count", len(elites),
+		"mutation_rate", p.currentMutationRate,
 	)
 
 	return nil
