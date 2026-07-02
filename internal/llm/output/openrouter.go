@@ -84,7 +84,11 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 	if err != nil {
 		return "", errors.Wrap(err, "send request")
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("openrouter: close response body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -142,7 +146,11 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 	if err != nil {
 		return nil, errors.Wrap(err, "send request")
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("openrouter: close response body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -205,7 +213,9 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("openrouter: close stream error response body", "error", err)
+		}
 		return nil, errors.Newf("openrouter stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 

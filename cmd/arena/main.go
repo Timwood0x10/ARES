@@ -155,7 +155,11 @@ func runRun(args []string) error {
 	if err != nil {
 		return fmt.Errorf("send request to %s: %w", url, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -257,7 +261,11 @@ func validateRemote(scenarioPath, addr string) error {
 	if err != nil {
 		return fmt.Errorf("send request to %s: %w", url, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	fmt.Println(string(respBody))
@@ -422,7 +430,11 @@ func runSurvival(args []string) error {
 	if err != nil {
 		return fmt.Errorf("start survival: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("server returned status %d", resp.StatusCode)
@@ -453,9 +465,11 @@ func pollSurvival(ctx context.Context, baseURL string) error {
 			stopReq, stopErr := http.NewRequestWithContext(ctx, http.MethodPost,
 				baseURL+"/arena/survival/stop", nil)
 			if stopErr == nil {
-				if stopResp, doErr := http.DefaultClient.Do(stopReq); doErr == nil {
-					_ = stopResp.Body.Close()
+			if stopResp, doErr := http.DefaultClient.Do(stopReq); doErr == nil {
+				if err := stopResp.Body.Close(); err != nil {
+					slog.Warn("arena: close stop response body", "error", err)
 				}
+			}
 			}
 			printFinalScore(baseURL)
 			return nil
@@ -515,7 +529,11 @@ func getSurvivalStatus(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	var status map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
@@ -539,7 +557,11 @@ func getScore(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	var score map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&score); err != nil {
@@ -563,7 +585,11 @@ func getMetrics(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	var metrics map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil {
@@ -712,7 +738,11 @@ func printInspectTimeline(baseURL string) {
 		fmt.Println("  ⚠ Timeline data unavailable")
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	var events []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil || len(events) == 0 {
@@ -760,7 +790,11 @@ func printInspectDiagnostics(baseURL string) {
 		fmt.Println("  ⚠ Diagnostics data unavailable")
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("arena: close response body", "error", err)
+		}
+	}()
 
 	var diags []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&diags); err != nil || len(diags) == 0 {

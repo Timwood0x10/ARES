@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // MemoryStatus represents the resolution status of a memory entry.
@@ -286,16 +288,11 @@ func formatSameTickerSummary(entries []*MemoryEntry) string {
 	for _, e := range entries {
 		summary += fmt.Sprintf("- %s: %s on %s", e.AnalysisDate.Format("2006-01-02"), e.Rating, e.Symbol)
 		if e.Reflection != "" {
-			summary += fmt.Sprintf(" (reflection: %s)", truncateStr(e.Reflection, 80))
+			summary += fmt.Sprintf(" (reflection: %s)", truncate.WithEllipsis(e.Reflection, 80))
 		}
 		summary += "\n"
 	}
 	return summary
 }
 
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
+

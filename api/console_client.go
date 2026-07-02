@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -78,7 +79,11 @@ func (c *ConsoleClient) doRequest(ctx context.Context, method, path string, body
 	if err != nil {
 		return fmt.Errorf("execute request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("api: close response body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode >= 400 {
 		var errResp struct {

@@ -159,7 +159,9 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("ollama: close stream error response body", "error", err)
+		}
 		return nil, gerr.Newf("ollama stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 

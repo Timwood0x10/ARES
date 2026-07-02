@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
+	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // Test helpers.

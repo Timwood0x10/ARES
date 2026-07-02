@@ -697,6 +697,23 @@ memory:
 
 See `examples/travel/config.yaml` for a complete example.
 
+## Performance
+
+Key benchmark results (Apple M3 Max, Go 1.26):
+
+| Operation | Throughput | Latency | Allocs |
+|-----------|-----------|---------|--------|
+| Tool Execution | 68M ops/s | 14.8 ns | 0 |
+| Result Creation | 3.7B ops/s | 0.27 ns | 0 |
+| Parameter Validation | 135M ops/s | 7.4 ns | 0 |
+| Event Append | 1.9M ops/s | 530 ns | 7 |
+| GA Evolve (1 gen) | 3.3M ops/s | 305 ns | 7 |
+| GA RealWorld (100 gen) | 98 runs/s | 10.2 ms | 57K |
+| CloneStrategy (5 params) | 4.5M ops/s | 220 ns | 3 |
+| Stream Handle | 260K ops/s | 3.9 μs | 69 |
+
+See [Full Benchmark Report](benchmarks/BENCHMARK_REPORT.md) for detailed results across all modules.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -726,7 +743,7 @@ See `examples/travel/config.yaml` for a complete example.
 - [Integration Testing](docs/en/development/integration-testing.md)
 - [CI/CD Pipeline](docs/en/development/ci-cd.md)
 - [Framework Comparison](docs/en/framework-comparison.md)
-- [Benchmark Report](benchmarks/benchmark_report.md)
+- [Benchmark Report](benchmarks/BENCHMARK_REPORT.md)
 - [Autonomous Evolution Guide](docs/en/features/autonomous-evolution.md)
 
 ## LICENSE

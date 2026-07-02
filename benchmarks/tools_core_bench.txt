@@ -1,0 +1,33 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/Timwood0x10/ares/internal/tools/resources/core
+cpu: Apple M3 Max
+BenchmarkToolRegistration-14           	  238166	      4530 ns/op	    9432 B/op	      12 allocs/op
+BenchmarkToolRegistration-14           	  267901	      4512 ns/op	    9432 B/op	      12 allocs/op
+BenchmarkToolRegistration-14           	  267648	      4483 ns/op	    9432 B/op	      12 allocs/op
+BenchmarkToolExecution-14              	81566528	        14.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolExecution-14              	82410274	        14.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolExecution-14              	80013334	        14.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCapabilityDetection-14        	  154779	      7756 ns/op	    1024 B/op	       8 allocs/op
+BenchmarkCapabilityDetection-14        	  157188	      7675 ns/op	    1024 B/op	       8 allocs/op
+BenchmarkCapabilityDetection-14        	  158071	      7619 ns/op	    1024 B/op	       8 allocs/op
+BenchmarkCapabilityMatching-14         	  276879	      4187 ns/op	     600 B/op	       9 allocs/op
+BenchmarkCapabilityMatching-14         	  286224	      4194 ns/op	     600 B/op	       9 allocs/op
+BenchmarkCapabilityMatching-14         	  285993	      4180 ns/op	     600 B/op	       9 allocs/op
+BenchmarkToolFiltering-14              	  500480	      2414 ns/op	    4536 B/op	      10 allocs/op
+BenchmarkToolFiltering-14              	  493898	      2410 ns/op	    4536 B/op	      10 allocs/op
+BenchmarkToolFiltering-14              	  478052	      2467 ns/op	    4536 B/op	      10 allocs/op
+BenchmarkResultCreation/Success-14     	1000000000	         0.2726 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResultCreation/Success-14     	1000000000	         0.2714 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResultCreation/Success-14     	1000000000	         0.2706 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResultCreation/Error-14       	1000000000	         0.2723 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResultCreation/Error-14       	1000000000	         0.2708 ns/op	       0 B/op	       0 allocs/op
+BenchmarkResultCreation/Error-14       	1000000000	         0.2713 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParameterValidation-14        	163629157	         7.355 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParameterValidation-14        	163174227	         7.374 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParameterValidation-14        	161612950	         7.401 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConcurrentToolExecution-14    	10010138	       132.7 ns/op	       8 B/op	       1 allocs/op
+BenchmarkConcurrentToolExecution-14    	 9288586	       130.0 ns/op	       8 B/op	       1 allocs/op
+BenchmarkConcurrentToolExecution-14    	10223884	       132.7 ns/op	       8 B/op	       1 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/tools/resources/core	30.833s

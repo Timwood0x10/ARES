@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // AgentTemplate defines a reusable agent configuration.
@@ -516,7 +517,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 
 	// Render template using TemplateEngine; fall back to simple replacement
 	// if the template syntax is malformed.
-	truncated := truncateStr(rawData, 8000)
+	truncated := truncate.WithEllipsis(rawData, 8000)
 	engine := output.NewTemplateEngine()
 	rendered, err := engine.Render(prompt, map[string]string{"raw_data": truncated})
 	if err != nil {
@@ -876,10 +877,4 @@ func BuildToolAliases(tools []MCPToolInfo) map[string]string {
 	return aliases
 }
 
-func truncateStr(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n]) + "..."
-}
+

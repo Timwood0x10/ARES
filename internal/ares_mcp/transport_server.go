@@ -294,7 +294,10 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 
 	// Send endpoint event with POST URL.
 	postURL := fmt.Sprintf("http://%s/mcp", t.addr)
-	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL)
+	if _, err := fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL); err != nil {
+		log.Warn("mcp-server: sse write endpoint error", "error", err)
+		return
+	}
 	flusher.Flush()
 
 	for {
@@ -308,7 +311,10 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 				log.Warn("mcp-server: sse marshal error", "error", err)
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(data))
+			if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(data)); err != nil {
+				log.Warn("mcp-server: sse write message error", "error", err)
+				return
+			}
 			flusher.Flush()
 		case <-r.Context().Done():
 			return
@@ -425,7 +431,9 @@ func (t *SSEServerTransport) Close() error {
 		}
 	}
 
-	_ = t.eg.Wait()
+	if err := t.eg.Wait(); err != nil {
+		log.Warn("mcp-server: sse transport goroutine error", "error", err)
+	}
 
 	close(t.requestCh)
 

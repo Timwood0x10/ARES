@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // EvolutionHint represents a distilled guidance hint derived from past
@@ -497,7 +499,7 @@ func (m *ExperienceGuidedMutator) guidedMutatePrompt(
 		snippet := guidance.promptSnippets[m.base.rng.Intn(len(guidance.promptSnippets))]
 		if snippet != "" {
 			child.PromptTemplate = snippet
-			child.MutationDesc = fmt.Sprintf("guided prompt from hint snippet: %q", truncate(snippet, 60))
+			child.MutationDesc = fmt.Sprintf("guided prompt from hint snippet: %q", truncate.WithEllipsis(snippet, 60))
 			child.StrategyMutationType = MutationPrompt
 			return child, nil
 		}
@@ -626,11 +628,4 @@ func parentTaskType(parent *Strategy) string {
 	return "default"
 }
 
-// truncate truncates a string to the given maximum length, appending "..." if
-// the string was shortened.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
+

@@ -541,7 +541,9 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 		if readErr != nil {
 			log.Warn("llm: failed to read anthropic stream error response body", "error", readErr)
 		}
-		_ = resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			log.Warn("llm: close anthropic stream error response body", "error", err)
+		}
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("anthropic stream error (status %d): %s", resp.StatusCode, string(body))}
 	}
 

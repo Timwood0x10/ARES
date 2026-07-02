@@ -1,0 +1,83 @@
+BenchmarkDreamCycle_SingleRun-14         	 5056423	       223.9 ns/op	     272 B/op	       4 allocs/op
+BenchmarkWiredSystem_Creation/pop_10-14  	2026/07/02 11:38:50 INFO population created size=10 generation=0
+BenchmarkWiredSystem_Creation/pop_20-14  	2026/07/02 11:38:51 INFO population created size=20 generation=0
+BenchmarkWiredSystem_Creation/pop_50-14  	2026/07/02 11:38:53 INFO population created size=50 generation=0
+BenchmarkWiredSystem_Creation/pop_100-14 	2026/07/02 11:38:55 INFO population created size=100 generation=0
+BenchmarkWiredSystem_IdleEvolution/10_generations-14         	2026/07/02 11:38:56 INFO population created size=20 generation=0
+BenchmarkWiredSystem_IdleEvolution/50_generations-14         	2026/07/02 11:38:57 INFO population created size=20 generation=0
+BenchmarkWiredSystem_IdleEvolution/100_generations-14        	2026/07/02 11:38:59 INFO population created size=20 generation=0
+BenchmarkFullPipeline-14                                     	2026/07/02 11:39:00 INFO population created size=20 generation=0
+BenchmarkAdaptiveMutation/fixed_rate-14                      	2026/07/02 11:39:02 INFO population created size=20 generation=0
+BenchmarkAdaptiveMutation/adaptive_rate-14                   	2026/07/02 11:39:03 INFO population created size=20 generation=0
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution	16.846s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/experience	0.274s
+BenchmarkCrossoverUniform-14                      	  477238	      2206 ns/op	    2869 B/op	      29 allocs/op
+BenchmarkCrossoverUniform_LargeParams-14          	   73987	     15628 ns/op	   20952 B/op	      36 allocs/op
+BenchmarkCrossoverParallel-14                     	  569383	      2287 ns/op	    2874 B/op	      29 allocs/op
+BenchmarkTruncationSelection/pop_10-14            	 6562647	       183.2 ns/op	     136 B/op	       3 allocs/op
+BenchmarkTruncationSelection/pop_100-14           	  222567	      5490 ns/op	     952 B/op	       3 allocs/op
+BenchmarkTruncationSelection/pop_500-14           	   26259	     46136 ns/op	    4152 B/op	       3 allocs/op
+BenchmarkTruncationSelection/pop_1000-14          	    9499	    129687 ns/op	    8248 B/op	       3 allocs/op
+BenchmarkTournamentSelection/pop_50/k=2-14        	  428737	      2822 ns/op	   10808 B/op	      51 allocs/op
+BenchmarkTournamentSelection/pop_50/k=3-14        	  396631	      2972 ns/op	   10808 B/op	      51 allocs/op
+BenchmarkTournamentSelection/pop_50/k=5-14        	  378745	      3188 ns/op	   10808 B/op	      51 allocs/op
+BenchmarkTournamentSelection/pop_50/k=10-14       	  303556	      3917 ns/op	   10808 B/op	      51 allocs/op
+BenchmarkTournamentSelection/pop_200/k=2-14       	   40080	     29651 ns/op	  180896 B/op	     201 allocs/op
+BenchmarkTournamentSelection/pop_200/k=3-14       	   39637	     30221 ns/op	  180897 B/op	     201 allocs/op
+BenchmarkTournamentSelection/pop_200/k=5-14       	   37676	     31300 ns/op	  180897 B/op	     201 allocs/op
+BenchmarkTournamentSelection/pop_200/k=10-14      	   35480	     33662 ns/op	  180897 B/op	     201 allocs/op
+BenchmarkRouletteWheelSelection/pop_10-14         	 6225492	       204.9 ns/op	     320 B/op	       4 allocs/op
+BenchmarkRouletteWheelSelection/pop_100-14        	  439591	      2760 ns/op	    3424 B/op	       7 allocs/op
+BenchmarkRouletteWheelSelection/pop_500-14        	   28393	     41703 ns/op	   15424 B/op	       9 allocs/op
+BenchmarkRouletteWheelSelection/pop_1000-14       	    7960	    151649 ns/op	   29760 B/op	      10 allocs/op
+BenchmarkSortByScore/pop_10-14                    	 5381882	       229.0 ns/op	     136 B/op	       3 allocs/op
+BenchmarkSortByScore/pop_100-14                   	  208208	      5765 ns/op	     952 B/op	       3 allocs/op
+BenchmarkSortByScore/pop_500-14                   	   27334	     44288 ns/op	    4152 B/op	       3 allocs/op
+BenchmarkSortByScore/pop_1000-14                  	    9780	    116356 ns/op	    8248 B/op	       3 allocs/op
+BenchmarkEvolve_OneGeneration/pop_10-14           	 4014175	       300.3 ns/op	     360 B/op	       7 allocs/op
+BenchmarkEvolve_OneGeneration/pop_20-14           	 4094671	       306.2 ns/op	     360 B/op	       7 allocs/op
+BenchmarkEvolve_OneGeneration/pop_50-14           	 3875251	       296.6 ns/op	     312 B/op	       7 allocs/op
+BenchmarkEvolve_OneGeneration/pop_100-14          	 3869632	       291.7 ns/op	     312 B/op	       7 allocs/op
+BenchmarkEvolveOnIdle_OneGeneration/pop_10-14     	 4009381	       300.5 ns/op	     376 B/op	       8 allocs/op
+BenchmarkEvolveOnIdle_OneGeneration/pop_20-14     	 3910478	       314.8 ns/op	     328 B/op	       8 allocs/op
+BenchmarkEvolveOnIdle_OneGeneration/pop_50-14     	 3866007	       310.8 ns/op	     376 B/op	       8 allocs/op
+BenchmarkEvolveOnIdle_OneGeneration/pop_100-14    	 3976179	       308.7 ns/op	     328 B/op	       8 allocs/op
+BenchmarkEvolve_MultipleGenerations/10_generations-14         	  405010	      2894 ns/op	        10.00 generations	    3602 B/op	      70 allocs/op
+BenchmarkEvolve_MultipleGenerations/50_generations-14         	   84126	     14480 ns/op	        50.00 generations	   18013 B/op	     350 allocs/op
+BenchmarkEvolve_MultipleGenerations/100_generations-14        	   40417	     29406 ns/op	       100.0 generations	   36026 B/op	     700 allocs/op
+BenchmarkEvolve_Scaling/pop_5-14                              	 4076281	       290.8 ns/op	     312 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_10-14                             	 4117386	       289.7 ns/op	     312 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_20-14                             	 3999150	       294.2 ns/op	     360 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_50-14                             	 4290457	       290.8 ns/op	     360 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_100-14                            	 4125318	       291.1 ns/op	     360 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_200-14                            	 4043436	       292.1 ns/op	     312 B/op	       7 allocs/op
+BenchmarkEvolve_Scaling/pop_500-14                            	 3623534	       308.8 ns/op	     360 B/op	       7 allocs/op
+BenchmarkPopulationCreation/size_10-14                        	   84222	     14351 ns/op	   12463 B/op	      64 allocs/op
+BenchmarkPopulationCreation/size_20-14                        	   65492	     18270 ns/op	   18956 B/op	     124 allocs/op
+BenchmarkPopulationCreation/size_50-14                        	   40954	     29412 ns/op	   38465 B/op	     304 allocs/op
+BenchmarkPopulationCreation/size_100-14                       	   25126	     48513 ns/op	   71083 B/op	     604 allocs/op
+BenchmarkBest/pop_100-14                                      	 5198132	       233.7 ns/op	     528 B/op	       3 allocs/op
+BenchmarkBest/pop_500-14                                      	 2740144	       447.8 ns/op	     528 B/op	       3 allocs/op
+BenchmarkBest/pop_1000-14                                     	 1245382	      1062 ns/op	     528 B/op	       3 allocs/op
+BenchmarkStats/pop_100-14                                     	    1711	    739677 ns/op	    4200 B/op	       9 allocs/op
+BenchmarkStats/pop_500-14                                     	      68	  17813828 ns/op	   28008 B/op	       9 allocs/op
+BenchmarkStats/pop_1000-14                                    	      15	  72756808 ns/op	   55312 B/op	      11 allocs/op
+BenchmarkCloneStrategy/params_5-14                            	 6328152	       204.2 ns/op	     528 B/op	       3 allocs/op
+BenchmarkCloneStrategy/params_20-14                           	 2099643	       583.7 ns/op	    1432 B/op	       5 allocs/op
+BenchmarkCloneStrategy/params_50-14                           	  981153	      1130 ns/op	    2584 B/op	       5 allocs/op
+BenchmarkCloneStrategy/params_100-14                          	  560352	      2189 ns/op	    5144 B/op	       5 allocs/op
+BenchmarkRealWorldEvolution-14                                	     120	   9969991 ns/op	       100.0 generations	 4105758 B/op	   57475 allocs/op
+BenchmarkApplyFitnessSharing/pop_10-14                        	   10000	    102391 ns/op	   55152 B/op	      16 allocs/op
+BenchmarkApplyFitnessSharing/pop_50-14                        	    1868	    642719 ns/op	  290448 B/op	      56 allocs/op
+BenchmarkApplyFitnessSharing/pop_100-14                       	     895	   1343967 ns/op	  611409 B/op	     185 allocs/op
+BenchmarkApplyFitnessSharing/pop_200-14                       	     429	   2782718 ns/op	 1365844 B/op	     365 allocs/op
+BenchmarkApplyFitnessSharing/pop_500-14                       	     153	   7868759 ns/op	 4334938 B/op	     905 allocs/op
+BenchmarkApplyFitnessSharing_CustomSampling/limit20_size10-14 	    1048	   1127827 ns/op	  611409 B/op	     185 allocs/op
+BenchmarkApplyFitnessSharing_CustomSampling/limit100_size20-14         	     464	   2572002 ns/op	 1365843 B/op	     365 allocs/op
+BenchmarkApplyFitnessSharing_CustomSampling/limit0_exact-14            	    1828	    652858 ns/op	  290448 B/op	      56 allocs/op
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/genome	92.569s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/mutation	0.182s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/promotion	0.136s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/scheduler	0.129s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/scoring	0.130s
+ok  	github.com/Timwood0x10/ares/internal/ares_evolution/service	0.190s

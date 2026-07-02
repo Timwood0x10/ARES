@@ -701,6 +701,23 @@ ares/
 └── benchmarks/          # 性能报告与日志
 ```
 
+## 性能基准
+
+关键性能数据（Apple M3 Max, Go 1.26）：
+
+| 操作 | 吞吐量 | 延迟 | 分配 |
+|-----------|---------|--------|---------|
+| 工具执行 | 68M ops/s | 14.8 ns | 0 |
+| 结果创建 | 3.7B ops/s | 0.27 ns | 0 |
+| 参数校验 | 135M ops/s | 7.4 ns | 0 |
+| 事件追加 | 1.9M ops/s | 530 ns | 7 |
+| GA 进化（1代） | 3.3M ops/s | 305 ns | 7 |
+| GA 真实场景（100代） | 98 runs/s | 10.2 ms | 57K |
+| 策略克隆（5参数） | 4.5M ops/s | 220 ns | 3 |
+| 流处理 | 260K ops/s | 3.9 μs | 69 |
+
+完整报告见 [性能报告](benchmarks/BENCHMARK_REPORT.md)。
+
 ## 文档
 
 - [更新日志](CHANGELOG.md)
@@ -719,7 +736,7 @@ ares/
 - [集成测试](docs/zh/development/integration-testing.md)
 - [CI/CD 管线](docs/zh/development/ci-cd.md)
 - [框架对比](docs/en/framework-comparison.md)
-- [性能报告](benchmarks/benchmark_report.md)
+- [性能报告](benchmarks/BENCHMARK_REPORT.md)
 - [自主进化指南](docs/zh/features/autonomous-evolution.md)
 
 ## LICENSE

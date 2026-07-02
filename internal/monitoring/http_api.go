@@ -357,19 +357,25 @@ func (s *HTTPServer) handleSubscribe(c *gin.Context) {
 func (s *HTTPServer) writeSSESnapshot(w gin.ResponseWriter, flusher http.Flusher) bool {
 	snap, err := s.plugin.Snapshot(context.Background())
 	if err != nil {
-		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
+		if _, err := fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error()); err != nil {
+			return false
+		}
 		flusher.Flush()
 		return true
 	}
 
 	data, err := json.Marshal(snap)
 	if err != nil {
-		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\":\"marshal failed\"}\n\n")
+		if _, err := fmt.Fprintf(w, "event: error\ndata: {\"error\":\"marshal failed\"}\n\n"); err != nil {
+			return false
+		}
 		flusher.Flush()
 		return true
 	}
 
-	_, _ = fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
+	if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data); err != nil {
+		return false
+	}
 	flusher.Flush()
 	return true
 }

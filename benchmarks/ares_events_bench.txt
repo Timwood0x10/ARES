@@ -255,4 +255,14 @@ BenchmarkMemoryStore_AppendBatch-14         	  286420	      4237 ns/op	    9356 
 BenchmarkMemoryStore_Read-14                	  168516	      6973 ns/op	   17528 B/op	      11 allocs/op
 BenchmarkMemoryStore_Read-14                	  173521	      7410 ns/op	   17528 B/op	      11 allocs/op
 BenchmarkMemoryStore_Read-14                	  166449	      7035 ns/op	   17528 B/op	      11 allocs/op
-BenchmarkMemoryStore_ReadAll-14             	
+BenchmarkMemoryStore_ReadAll-14             	   30277	     39386 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_ReadAll-14             	   30404	     40047 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_ReadAll-14             	   30375	     42146 ns/op	   81976 B/op	       3 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    117672 ns/op	  151814 B/op	     899 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    325753 ns/op	  151701 B/op	     899 allocs/op
+BenchmarkMemoryStore_Subscribe-14           	   10000	    118018 ns/op	  152367 B/op	     900 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1000000	      1406 ns/op	     627 B/op	       6 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1000000	      1773 ns/op	     626 B/op	       6 allocs/op
+BenchmarkMemoryStore_ConcurrentAppend-14    	 1640476	       712.1 ns/op	     626 B/op	       6 allocs/op
+PASS
+ok  	github.com/Timwood0x10/ares/internal/ares_events	58.387s

@@ -309,7 +309,7 @@ func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, 
 //
 // Recommended max population size for real-time evolution: ~200 agents. Beyond
 // this, consider enabling spatial indexing (grid-based KD-tree or similar) to
-// achieve sub-linear neighbor queries. See TODO below.
+// achieve sub-linear neighbor queries.
 //
 // ---------------------------------------------------------------------------
 

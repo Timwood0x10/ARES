@@ -1,0 +1,40 @@
+BenchmarkWrap-14                      	1000000000	         0.2711 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrap-14                      	1000000000	         0.2699 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrap-14                      	1000000000	         0.2710 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFmtErrorfW-14                	14092921	        88.96 ns/op	      64 B/op	       2 allocs/op
+BenchmarkFmtErrorfW-14                	14332179	        83.90 ns/op	      64 B/op	       2 allocs/op
+BenchmarkFmtErrorfW-14                	14197395	        84.46 ns/op	      64 B/op	       2 allocs/op
+BenchmarkWrapMultipleWraps-14         	1000000000	         0.5541 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrapMultipleWraps-14         	1000000000	         0.6185 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWrapMultipleWraps-14         	1000000000	         0.6039 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFmtErrorfMultipleWraps-14    	 4405611	       274.4 ns/op	     216 B/op	       6 allocs/op
+BenchmarkFmtErrorfMultipleWraps-14    	 4342627	       285.6 ns/op	     216 B/op	       6 allocs/op
+BenchmarkFmtErrorfMultipleWraps-14    	 4374052	       293.6 ns/op	     216 B/op	       6 allocs/op
+ok  	github.com/Timwood0x10/ares/internal/errors	11.609s
+BenchmarkStreamHandler_HandleStream-14      	  264025	      4083 ns/op	    9419 B/op	      69 allocs/op
+BenchmarkStreamHandler_HandleStream-14      	  311035	      3837 ns/op	    9419 B/op	      69 allocs/op
+BenchmarkStreamHandler_HandleStream-14      	  309026	      3974 ns/op	    9419 B/op	      69 allocs/op
+BenchmarkStreamHandler_ConvertEvent-14      	189784418	         6.538 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStreamHandler_ConvertEvent-14      	100000000	        12.29 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStreamHandler_ConvertEvent-14      	178187806	         5.760 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStreamHandler_MultipleEvents-14    	   21379	     55421 ns/op	   38297 B/op	     462 allocs/op
+BenchmarkStreamHandler_MultipleEvents-14    	   10000	    163275 ns/op	   38295 B/op	     462 allocs/op
+BenchmarkStreamHandler_MultipleEvents-14    	   15957	     65481 ns/op	   38299 B/op	     462 allocs/op
+ok  	github.com/Timwood0x10/ares/api/handler	14.147s
+BenchmarkExactMatchEvaluator_Evaluate-14        	384160526	         3.083 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExactMatchEvaluator_Evaluate-14        	388344644	         3.149 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExactMatchEvaluator_Evaluate-14        	390275790	         3.080 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolUsageEvaluator_Evaluate-14         	41579320	        28.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolUsageEvaluator_Evaluate-14         	41588806	        28.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolUsageEvaluator_Evaluate-14         	42664707	        28.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAgentTestRunner_RunSingle-14           	 3650499	       329.8 ns/op	     320 B/op	       5 allocs/op
+BenchmarkAgentTestRunner_RunSingle-14           	 3661971	       313.5 ns/op	     320 B/op	       5 allocs/op
+BenchmarkAgentTestRunner_RunSingle-14           	 3875470	       309.6 ns/op	     320 B/op	       5 allocs/op
+BenchmarkReportGenerator_GenerateMarkdown-14    	  340165	      3481 ns/op	    4258 B/op	      76 allocs/op
+BenchmarkReportGenerator_GenerateMarkdown-14    	  345601	      3505 ns/op	    4258 B/op	      76 allocs/op
+BenchmarkReportGenerator_GenerateMarkdown-14    	  336902	      3515 ns/op	    4258 B/op	      76 allocs/op
+BenchmarkLoader_Load-14                         	   25924	     46522 ns/op	   34062 B/op	     601 allocs/op
+BenchmarkLoader_Load-14                         	   25843	     46701 ns/op	   34062 B/op	     601 allocs/op
+BenchmarkLoader_Load-14                         	   25442	     48622 ns/op	   34062 B/op	     601 allocs/op
+ok  	github.com/Timwood0x10/ares/internal/ares_eval	24.520s
+ok  	github.com/Timwood0x10/ares/internal/ares_eval/service	0.296s

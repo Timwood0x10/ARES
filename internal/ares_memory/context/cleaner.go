@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/api/core"
-	truncpkg "github.com/Timwood0x10/ares/internal/ares_memory/internal/truncate"
+	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // CleanerStats, CleaningMode, CleanOptions are now defined in api/core.
