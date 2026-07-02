@@ -701,16 +701,19 @@ See `examples/travel/config.yaml` for a complete example.
 
 Key benchmark results (Apple M3 Max, Go 1.26):
 
-| Operation | Throughput | Latency | Allocs |
-|-----------|-----------|---------|--------|
-| Tool Execution | 68M ops/s | 14.8 ns | 0 |
-| Result Creation | 3.7B ops/s | 0.27 ns | 0 |
-| Parameter Validation | 135M ops/s | 7.4 ns | 0 |
-| Event Append | 1.9M ops/s | 530 ns | 7 |
-| GA Evolve (1 gen) | 3.3M ops/s | 305 ns | 7 |
-| GA RealWorld (100 gen) | 98 runs/s | 10.2 ms | 57K |
-| CloneStrategy (5 params) | 4.5M ops/s | 220 ns | 3 |
-| Stream Handle | 260K ops/s | 3.9 μs | 69 |
+| Operation | Throughput | Latency | Allocs | Note |
+|-----------|-----------|---------|--------|------|
+| Tool Execution | 68M ops/s | 14.8 ns | 0 | Interface dispatch |
+| Result Creation | 3.7B ops/s | 0.27 ns | 0 | Compiler inlined |
+| Parameter Validation | 135M ops/s | 7.4 ns | 0 | Struct comparison |
+| Event Append | 1.9M ops/s | 530 ns | 7 | |
+| Subscribe (100 subs) | 7.7K ops/s | 130 μs | **600** alloc | **↓33% allocs** |
+| GA Evolve (1 gen) | 3.3M ops/s | 305 ns | 7 | Population=20 |
+| GA Stats (pop=1000) | 23 runs/s | **43.3 ms** | 12 | **↓38%** via DiversitySampleSize sampling |
+| FitnessSharing (pop=500) | 136 runs/s | 7.4 ms | **506** alloc | **↓44% allocs** via Reservoir Sampling |
+| GA RealWorld (100 gen) | 98 runs/s | 10.2 ms | 57K | Population=20 |
+| CloneStrategy (5 params) | 4.5M ops/s | 220 ns | 3 | |
+| Stream Handle | 260K ops/s | 3.9 μs | 69 | |
 
 See [Full Benchmark Report](benchmarks/BENCHMARK_REPORT.md) for detailed results across all modules.
 

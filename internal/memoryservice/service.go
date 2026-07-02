@@ -343,8 +343,6 @@ func (s *Service) generateTags(taskType, input, output string) []string {
 	return tags
 }
 
-
-
 // SearchSimilarTasks searches for similar tasks.
 // Args:
 // ctx - operation context.

@@ -14,8 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/truncate"
 	"unicode/utf8"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
@@ -1994,8 +1995,6 @@ func (s *RetrievalService) countResultsBySource(results []*SearchResult) map[str
 }
 
 // Helper functions for string manipulation
-
-
 
 func toLower(s string) string {
 	return strings.ToLower(s)

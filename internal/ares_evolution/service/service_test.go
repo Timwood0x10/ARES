@@ -23,17 +23,17 @@ func newTestBaseStrategy() *Strategy {
 
 func newMinimalConfig() *SystemConfig {
 	return &SystemConfig{
-		BaseStrategy:       newTestBaseStrategy(),
-		PopulationSize:     10,
-		EliteCount:         2,
-		SurvivalRate:       0.6,
-		MutationRate:       0.2,
-		MinMutationRate:    0.05,
-		MaxMutationRate:    0.5,
-		BreedingPoolRatio:  0.6,
-		Generations:        5,
-		HistoryMaxSize:     10,
-		SelectionStrategy:  "tournament",
+		BaseStrategy:      newTestBaseStrategy(),
+		PopulationSize:    10,
+		EliteCount:        2,
+		SurvivalRate:      0.6,
+		MutationRate:      0.2,
+		MinMutationRate:   0.05,
+		MaxMutationRate:   0.5,
+		BreedingPoolRatio: 0.6,
+		Generations:       5,
+		HistoryMaxSize:    10,
+		SelectionStrategy: "tournament",
 	}
 }
 
@@ -234,22 +234,22 @@ func TestBestFromStrategies(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		agents   []*mutation.Strategy
-		wantID   string
-		wantNil  bool
+		name    string
+		agents  []*mutation.Strategy
+		wantID  string
+		wantNil bool
 	}{
 		{
-			name:     "empty_slice",
-			agents:   []*mutation.Strategy{},
-			wantNil:  true,
+			name:    "empty_slice",
+			agents:  []*mutation.Strategy{},
+			wantNil: true,
 		},
 		{
 			name: "single_agent",
 			agents: []*mutation.Strategy{
 				{ID: "only", Score: 50},
 			},
-			wantID:  "only",
+			wantID: "only",
 		},
 		{
 			name: "picks_highest_score",
@@ -258,7 +258,7 @@ func TestBestFromStrategies(t *testing.T) {
 				{ID: "high", Score: 90},
 				{ID: "mid", Score: 60},
 			},
-			wantID:  "high",
+			wantID: "high",
 		},
 		{
 			name: "picks_first_when_tied",
@@ -266,7 +266,7 @@ func TestBestFromStrategies(t *testing.T) {
 				{ID: "first", Score: 50},
 				{ID: "second", Score: 50},
 			},
-			wantID:  "first",
+			wantID: "first",
 		},
 	}
 

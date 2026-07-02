@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // Format renders the report as human-readable markdown text.
@@ -157,18 +159,11 @@ func (r *Report) writeRecommendations(sb *strings.Builder) {
 }
 
 // truncate shortens a string to maxLen characters, appending "..." if truncated.
-// Returns empty string when maxLen <= 0.
 func truncate(s string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-	if len(s) <= maxLen {
-		return s
-	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return truncpkg.Plain(s, maxLen)
 	}
-	return s[:maxLen-3] + "..."
+	return truncpkg.WithEllipsis(s, maxLen-3)
 }
 
 // sortedCategories returns category keys sorted alphabetically.

@@ -145,6 +145,10 @@ func (p *Population) measureDiversityLocked() float64 {
 
 // measureNumericDiversityLocked computes average pairwise normalized parameter distance.
 // Only numeric parameters participate. Returns [0, 1].
+//
+// PERF: When population exceeds DiversitySampleSize, estimates diversity by comparing
+// each agent against DiversitySampleSize random neighbors instead of all O(n²) pairs.
+// This bounds the cost to O(n × DiversitySampleSize) instead of O(n²).
 func (p *Population) measureNumericDiversityLocked() float64 {
 	n := len(p.Agents)
 	if n < 2 {
@@ -158,19 +162,65 @@ func (p *Population) measureNumericDiversityLocked() float64 {
 
 	ranges := computeParamRanges(p.Agents, allKeys)
 
+	sampleSize := p.cfg.DiversitySampleSize
+	if sampleSize <= 0 || n <= sampleSize {
+		// Exact mode: compute all O(n²/2) pairwise distances.
+		var totalDist float64
+		var pairCount int
+		for i := 0; i < n; i++ {
+			for j := i + 1; j < n; j++ {
+				dist := numericParamDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
+				totalDist += dist
+				pairCount++
+			}
+		}
+		if pairCount == 0 {
+			return 1.0
+		}
+		return totalDist / float64(pairCount)
+	}
+
+	// Sampled mode: each agent compares against sampleSize random neighbors.
+	// Uses rejection sampling with linear dedup scan over a small reusable slice.
+	// For sampleSize ≈ 200, scanning 200 ints per rejection is cheaper than
+	// allocating and GCing a map per agent. Total: O(n × DiversitySampleSize).
 	var totalDist float64
-	var pairCount int
+	var sampleCount int
+	neighbors := make([]int, 0, sampleSize)
+
 	for i := 0; i < n; i++ {
-		for j := i + 1; j < n; j++ {
+		neighbors = neighbors[:0]
+
+		for len(neighbors) < sampleSize {
+			j := p.rng.Intn(n)
+			if j == i {
+				continue
+			}
+			// Linear scan dedup over small slice — faster than map allocation.
+			dup := false
+			for _, nj := range neighbors {
+				if nj == j {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+			neighbors = append(neighbors, j)
+		}
+
+		for _, j := range neighbors {
 			dist := numericParamDistance(p.Agents[i], p.Agents[j], allKeys, ranges)
 			totalDist += dist
-			pairCount++
+			sampleCount++
 		}
 	}
-	if pairCount == 0 {
+
+	if sampleCount == 0 {
 		return 1.0
 	}
-	return totalDist / float64(pairCount)
+	return totalDist / float64(sampleCount)
 }
 
 // numericParamDistance computes normalized distance using only numeric parameters.

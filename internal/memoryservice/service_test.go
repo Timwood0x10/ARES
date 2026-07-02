@@ -6,12 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 type mockMemoryRepo struct {
@@ -433,8 +435,8 @@ func TestGenerateTags(t *testing.T) {
 }
 
 func TestTruncateString(t *testing.T) {
-	require.Equal(t, "short", truncateString("short", 10))
-	result := truncateString("this is a long string", 10)
+	require.Equal(t, "short", truncate.WithEllipsis("short", 10))
+	result := truncate.WithEllipsis("this is a long string", 10)
 	require.Equal(t, "this is a ...", result)
 	require.Len(t, result, 13)
 }

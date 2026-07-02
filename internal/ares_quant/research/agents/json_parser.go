@@ -122,8 +122,6 @@ func extractJSONObject(raw string) string {
 	return match
 }
 
-
-
 // genericTypeName returns a readable identifier for the generic type T without using reflect.
 func genericTypeName[T any]() string {
 	var t T

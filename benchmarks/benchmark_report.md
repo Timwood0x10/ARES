@@ -7,14 +7,14 @@ Count: 3 runs per benchmark (1 for long-running wired benchmarks)
 
 ## Event Store (`internal/ares_events`)
 
-| Benchmark | Iterations | ns/op | B/op | allocs/op |
-|---|---|---|---|---|
-| Append | 2,400,000 | 530 | 620 | 7 |
-| AppendBatch | 290,000 | 4,480 | 9,200 | 1 |
-| Read | 170,000 | 7,140 | 17,528 | 11 |
-| ReadAll | 30,300 | 40,500 | 81,976 | 3 |
-| Subscribe | 10,000 | 187,000 | 152,000 | 900 |
-| ConcurrentAppend | 1,200,000 | 1,300 | 626 | 6 |
+| Benchmark | Iterations | ns/op | B/op | allocs/op | Note |
+|---|---|---|---|---|---|
+| Append | 2,400,000 | 530 | 620 | 7 | |
+| AppendBatch | 290,000 | 4,480 | 9,200 | 1 | |
+| Read | 170,000 | 7,140 | 17,528 | 11 | |
+| ReadAll | 30,300 | 40,500 | 81,976 | 3 | |
+| Subscribe | 15,000 | **130,000** | 170,000 | **600** | **↓33% allocs**, 100 subscribers |
+| ConcurrentAppend | 1,200,000 | 1,300 | 626 | 6 | |
 
 ## GA Genome (`internal/ares_evolution/genome`)
 
@@ -57,24 +57,27 @@ Count: 3 runs per benchmark (1 for long-running wired benchmarks)
 
 ### Population
 
-| Benchmark | size | Iterations | ns/op |
-|---|---|---|---|
-| PopulationCreation | 10 | 78,000 | 15,500 |
-| PopulationCreation | 100 | 22,400 | 53,500 |
-| Best (pop=100) | — | 4,700,000 | 255 |
-| Best (pop=1000) | — | 1,300,000 | 960 |
-| Stats (pop=100) | — | 1,700 | 693,000 |
-| Stats (pop=1000) | — | 16 | 69,500,000 |
-| CloneStrategy (5 params) | — | 5,500,000 | 220 |
-| CloneStrategy (100 params) | — | 490,000 | 2,440 |
+| Benchmark | size | Iterations | ns/op | allocs/op | 注 |
+|---|---|---|---|---|---|
+| PopulationCreation | 10 | 78,000 | 15,500 | 64 | |
+| PopulationCreation | 100 | 22,400 | 53,500 | 604 | |
+| Best (pop=100) | — | 4,700,000 | 255 | 3 | |
+| Best (pop=1000) | — | 1,300,000 | 960 | 3 | |
+| Stats (pop=100) | — | 1,750 | **695,000** | 9 | Exact O(n²) mode |
+| Stats (pop=500) | — | 62 | **19,700,000** | 10 | Sampled mode (sampleSize=200) |
+| Stats (pop=1000) | — | 27 | **43,300,000** | 12 | Sampled mode, **↓38% vs old O(n²)** |
+| CloneStrategy (5 params) | — | 5,500,000 | 220 | 3 | |
+| CloneStrategy (100 params) | — | 490,000 | 2,440 | 5 | |
 
 ### Fitness Sharing
 
-| Benchmark | pop_size | Iterations | ns/op |
-|---|---|---|---|
-| ApplyFitnessSharing | 10 | 10,000 | 105,000 |
-| ApplyFitnessSharing | 100 | 870 | 1,380,000 |
-| ApplyFitnessSharing | 500 | 150 | 8,250,000 |
+| Benchmark | pop_size | Iterations | ns/op | B/op | allocs/op | 注 |
+|---|---|---|---|---|---|---|
+| ApplyFitnessSharing | 10 | 10,000 | 102,000 | 55K | 16 | Exact O(n²) |
+| ApplyFitnessSharing | 50 | 1,900 | 637,000 | 290K | 56 | Exact O(n²) |
+| ApplyFitnessSharing | 100 | 930 | **1,270,000** | 540K | **106** | Sampled, **↓43% allocs** |
+| ApplyFitnessSharing | 200 | 450 | **2,680,000** | 1.1M | **206** | Sampled, **↓44% allocs** |
+| ApplyFitnessSharing | 500 | 160 | **7,360,000** | 2.7M | **506** | Spatial, **↓44% allocs** |
 
 ## GA Evolution (`internal/ares_evolution`)
 
@@ -143,8 +146,10 @@ Count: 3 runs per benchmark (1 for long-running wired benchmarks)
 ## Key Observations
 
 1. **Tool execution is extremely fast** (14.8 ns, 0 allocs) — simple interface dispatch
-2. **Stats/pop=1000 is the slowest benchmark** (69.5 ms) — O(n²) distance matrix in fitness sharing
-3. **RealWorldEvolution** completes 100 generations in ~10ms — population of 20
-4. **ResultCreation** benchmarks at 0.27 ns — essentially free (compiler inlines)
-5. **Append is 7 allocs** — could be reduced with pooling (but fine for current scale)
-6. **ExperienceExtraction** is the heaviest single operation (154 μs, 267 allocs)
+2. **Stats/pop=1000 improved 38%** (69.5ms → 43.3ms) via `DiversitySampleSize` sampling — O(n²) → O(n×k)
+3. **FitnessSharing allocs reduced 44%** via Reservoir Sampling — critical for GC pressure in long evolution runs
+4. **RealWorldEvolution** completes 100 generations in ~10ms — population of 20, 57K allocs
+5. **ResultCreation** benchmarks at 0.27 ns — essentially free (compiler inlines)
+6. **Append is 7 allocs** — could be reduced with pooling (but fine for current scale)
+7. **ExperienceExtraction** is the heaviest single operation (154 μs, 267 allocs) — 50 messages, ~5 allocs/msg
+8. **Subscribe allocs reduced 33%** (900 → 600) via atomic counter + removed sync.Once + larger channel buffer

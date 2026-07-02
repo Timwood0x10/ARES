@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // mockHintProvider returns pre-configured hints for testing.
@@ -685,7 +687,7 @@ func TestTruncate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := truncate(tt.input, tt.maxLen)
+			result := truncate.WithEllipsis(tt.input, tt.maxLen)
 			if result != tt.expect {
 				t.Errorf("truncate(%q, %d) = %q, want %q",
 					tt.input, tt.maxLen, result, tt.expect)

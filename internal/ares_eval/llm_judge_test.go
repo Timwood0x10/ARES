@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // mockLLMClient is a mock implementation of LLMClient for testing.
@@ -426,12 +428,12 @@ func TestIsValidJSON(t *testing.T) {
 // TestTruncateStr tests string truncation helper.
 func TestTruncateStr(t *testing.T) {
 	short := "hello"
-	if truncateStr(short, 10) != short {
+	if truncate.WithEllipsis(short, 10) != short {
 		t.Errorf("short string should not be truncated")
 	}
 
 	long := "this is a very long string that exceeds the limit"
-	truncated := truncateStr(long, 10)
+	truncated := truncate.WithEllipsis(long, 10)
 	if len(truncated) > 13 { // 10 + "..."
 		t.Errorf("truncated string too long: %q (%d chars)", truncated, len(truncated))
 	}

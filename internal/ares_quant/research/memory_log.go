@@ -294,5 +294,3 @@ func formatSameTickerSummary(entries []*MemoryEntry) string {
 	}
 	return summary
 }
-
-

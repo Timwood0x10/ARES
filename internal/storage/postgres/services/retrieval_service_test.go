@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // TestDefaultRetrievalPlan tests the default retrieval plan configuration.
@@ -477,9 +478,9 @@ func TestTruncateForLog(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := truncateForLog(tt.input, tt.maxLen)
+			result := truncate.WithEllipsis(tt.input, tt.maxLen)
 			if result != tt.expected {
-				t.Errorf("truncateForLog(%q, %d) = %q, expected %q", tt.input, tt.maxLen, result, tt.expected)
+				t.Errorf("truncate.WithEllipsis(%q, %d) = %q, expected %q", tt.input, tt.maxLen, result, tt.expected)
 			}
 		})
 	}
@@ -681,29 +682,29 @@ func TestNewRetrievalService(t *testing.T) {
 // TestTruncateForLog_WithUnicode tests truncate with unicode characters.
 func TestTruncateForLog_WithUnicode(t *testing.T) {
 	// Test with mixed unicode characters
-	// Note: truncateForLog counts runes, not bytes
-	result := truncateForLog("Hello 世界 🌍", 10)
+	// Note: truncate.WithEllipsis counts runes, not bytes
+	result := truncate.WithEllipsis("Hello 世界 🌍", 10)
 	// "Hello 世界 🌍" has 9 runes: H-e-l-l-o-space-world-space-emoji
 	// With maxLen=10, it should return the full string without truncation
 	expected := "Hello 世界 🌍"
 	if result != expected {
-		t.Errorf("truncateForLog with unicode failed: got %q, expected %q", result, expected)
+		t.Errorf("truncate.WithEllipsis with unicode failed: got %q, expected %q", result, expected)
 	}
 }
 
 // TestTruncateForLog_WithExactLength tests truncate with exact length.
 func TestTruncateForLog_WithExactLength(t *testing.T) {
-	result := truncateForLog("Hello", 5)
+	result := truncate.WithEllipsis("Hello", 5)
 	if result != "Hello" {
-		t.Errorf("truncateForLog with exact length failed: got %q, expected 'Hello'", result)
+		t.Errorf("truncate.WithEllipsis with exact length failed: got %q, expected 'Hello'", result)
 	}
 }
 
 // TestTruncateForLog_WithZeroMaxLen tests truncate with zero max length.
 func TestTruncateForLog_WithZeroMaxLen(t *testing.T) {
-	result := truncateForLog("Hello", 0)
-	if result != "..." {
-		t.Errorf("truncateForLog with zero max length failed: got %q, expected '...'", result)
+	result := truncate.WithEllipsis("Hello", 0)
+	if result != "" {
+		t.Errorf("truncate.WithEllipsis with zero max length failed: got %q, expected ''", result)
 	}
 }
 
@@ -1566,20 +1567,20 @@ func TestRetrievalPlan_CustomWeights(t *testing.T) {
 
 // TestTruncateForLog_WithVeryShortMaxLen tests truncate with very short max length.
 func TestTruncateForLog_WithVeryShortMaxLen(t *testing.T) {
-	result := truncateForLog("Hello World", 1)
+	result := truncate.WithEllipsis("Hello World", 1)
 
 	// With maxLen=1, it truncates after 1 rune: "H..."
 	if result != "H..." {
-		t.Errorf("truncateForLog with maxLen=1 should return 'H...', got %q", result)
+		t.Errorf("truncate.WithEllipsis with maxLen=1 should return 'H...', got %q", result)
 	}
 }
 
 // TestTruncateForLog_WithSingleChar tests truncate with single character.
 func TestTruncateForLog_WithSingleChar(t *testing.T) {
-	result := truncateForLog("H", 1)
+	result := truncate.WithEllipsis("H", 1)
 
 	if result != "H" {
-		t.Errorf("truncateForLog with single char should return the char, got %q", result)
+		t.Errorf("truncate.WithEllipsis with single char should return the char, got %q", result)
 	}
 }
 
@@ -1886,9 +1887,9 @@ func TestTruncateForLog_WithSpecialCharacters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input+"/"+fmt.Sprintf("%d", tt.maxLen), func(t *testing.T) {
-			result := truncateForLog(tt.input, tt.maxLen)
+			result := truncate.WithEllipsis(tt.input, tt.maxLen)
 			if result != tt.expected {
-				t.Errorf("truncateForLog(%q, %d) = %q, expected %q", tt.input, tt.maxLen, result, tt.expected)
+				t.Errorf("truncate.WithEllipsis(%q, %d) = %q, expected %q", tt.input, tt.maxLen, result, tt.expected)
 			}
 		})
 	}

@@ -465,11 +465,11 @@ func pollSurvival(ctx context.Context, baseURL string) error {
 			stopReq, stopErr := http.NewRequestWithContext(ctx, http.MethodPost,
 				baseURL+"/arena/survival/stop", nil)
 			if stopErr == nil {
-			if stopResp, doErr := http.DefaultClient.Do(stopReq); doErr == nil {
-				if err := stopResp.Body.Close(); err != nil {
-					slog.Warn("arena: close stop response body", "error", err)
+				if stopResp, doErr := http.DefaultClient.Do(stopReq); doErr == nil {
+					if err := stopResp.Body.Close(); err != nil {
+						slog.Warn("arena: close stop response body", "error", err)
+					}
 				}
-			}
 			}
 			printFinalScore(baseURL)
 			return nil

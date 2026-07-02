@@ -216,6 +216,13 @@ type PopulationConfig struct {
 	// calibrated via ablation study for production use (see GA Hardening Plan v0.2.0).
 	DiversityWeights DiversityWeightConfig `json:"diversity_weights"`
 
+	// DiversitySampleSize sets the number of random pairwise comparisons used
+	// for numeric diversity estimation in large populations. When > 0 and the
+	// scored population exceeds FitnessSharingSampleLimit, diversity is estimated
+	// by comparing each agent against DiversitySampleSize random neighbors instead
+	// of all O(n²) pairs. Default 0 (exact O(n²) mode for all sizes).
+	DiversitySampleSize int `json:"diversity_sample_size"`
+
 	// FitnessSharingSampleLimit is the population size threshold above which
 	// fitness sharing switches from exact O(m²) pairwise comparison to sampled
 	// O(m*k) mode where k=FitnessSharingSampleSize neighbors per agent.
@@ -290,6 +297,7 @@ func DefaultPopulationConfig() PopulationConfig {
 		FitnessSharingSampleLimit:   50,
 		FitnessSharingSampleSize:    30,
 		SpatialIndexThreshold:       500,
+		DiversitySampleSize:         200, // Sample pairs for pop > 200 to avoid O(n²)
 		DisablePromptDiversityGuard: false,
 		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}

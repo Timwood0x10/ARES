@@ -431,9 +431,9 @@ func (p *Population) applyFitnessSharingExact(
 // agent checks against FitnessSharingSampleSize randomly chosen neighbors,
 // bounding total work to O(m × FitnessSharingSampleSize × k).
 //
-// PERF: Sampling introduces stochastic approximation — crowd counts are estimates
-// rather than exact values. The penalty formula and niche radius remain identical;
-// only the set of compared neighbors differs from the exact version.
+// PERF: Uses reservoir sampling instead of full Fisher-Yates permutation to
+// select random neighbors. Each agent picks sampleSize random distinct indices
+// in O(m) time with O(k) memory instead of O(m²) time with O(m) memory.
 func (p *Population) applyFitnessSharingSampled(
 	scoredIdx []int,
 	scored []*mutation.Strategy,
@@ -446,28 +446,32 @@ func (p *Population) applyFitnessSharingSampled(
 	m := len(scoredIdx)
 	sampleSize := min(p.cfg.FitnessSharingSampleSize, m-1)
 
+	// PERF: Pre-allocate reservoir once and reuse across agents to avoid
+	// per-agent allocation in the hot loop.
+	reservoir := make([]int, sampleSize)
+
 	for ki, i := range scoredIdx {
 		if i < eliteCount {
 			continue // skip elites
 		}
 
-		// PERF: Inline Fisher-Yates partial shuffle on a pre-allocated slice.
-		// Replaces rng.Perm(m) which allocates a new []int each call, causing
-		// GC pressure in large-population evolution loops. This pattern allocates
-		// once per agent and shuffles in-place for O(m) time, O(m) space.
-		indices := make([]int, m)
-		for idx := range indices {
-			indices[idx] = idx
+		// Reservoir sampling: select sampleSize random distinct indices from [0, m)
+		// in O(m) time with O(k) memory. The first sampleSize elements are seeded
+		// sequentially, then each subsequent element has a decreasing probability
+		// of replacing an existing reservoir element.
+		for idx := 0; idx < sampleSize; idx++ {
+			reservoir[idx] = idx
 		}
-		for idx := m - 1; idx > 0; idx-- {
+		for idx := sampleSize; idx < m; idx++ {
 			j := p.rng.Intn(idx + 1)
-			indices[idx], indices[j] = indices[j], indices[idx]
+			if j < sampleSize {
+				reservoir[j] = idx
+			}
 		}
 
 		crowdCount := 0
-		sampleEnd := min(sampleSize, len(indices))
-		for s := 0; s < sampleEnd; s++ {
-			kj := indices[s]
+		for s := 0; s < sampleSize; s++ {
+			kj := reservoir[s]
 			if kj == ki {
 				continue
 			}

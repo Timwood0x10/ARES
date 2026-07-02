@@ -43,7 +43,6 @@ type Service struct {
 	mu         sync.RWMutex
 	closed     bool
 	g          *errgroup.Group
-	slog       *slog.Logger
 }
 
 // StartService connects LLM, all MCP servers, creates orchestrator, starts

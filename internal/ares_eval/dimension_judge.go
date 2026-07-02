@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // DimensionJudgeResponse is the JSON response format when dimension averaging is enabled.
@@ -140,7 +142,7 @@ func (e *LLMJudgeEvaluator) parseDimensionResponse(raw string) (*dimensionAwareJ
 
 	jsonStr := extractJudgeJSON(trimmed)
 	if jsonStr == "" {
-		return nil, fmt.Errorf("%w: no valid JSON found in response: %q", ErrInvalidJudgeResponse, truncateStr(trimmed, 200))
+		return nil, fmt.Errorf("%w: no valid JSON found in response: %q", ErrInvalidJudgeResponse, truncate.WithEllipsis(trimmed, 200))
 	}
 
 	var dimResp DimensionJudgeResponse

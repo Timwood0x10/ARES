@@ -205,15 +205,15 @@ func (s *HTTPServer) handleGetAgent(c *gin.Context) {
 				} `json:"events"`
 			}
 			if json.Unmarshal(raw, &parsed) == nil {
-			eventTypes = make(map[string]int)
-			for _, e := range parsed.Events {
-				if e.ModuleName == id {
-					eventCount++
-					eventTypes[e.Type]++
+				eventTypes = make(map[string]int)
+				for _, e := range parsed.Events {
+					if e.ModuleName == id {
+						eventCount++
+						eventTypes[e.Type]++
+					}
 				}
 			}
 		}
-	}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

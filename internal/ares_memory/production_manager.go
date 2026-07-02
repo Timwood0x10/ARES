@@ -16,7 +16,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
@@ -24,6 +23,7 @@ import (
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/services"
+	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // ProductionMemoryManager implements MemoryManager interface with production-grade storage.

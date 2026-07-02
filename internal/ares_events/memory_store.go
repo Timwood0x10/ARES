@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,13 +20,13 @@ type MemoryEventStore struct {
 	closed      bool
 	ctx         context.Context
 	cancel      context.CancelFunc
+	nextSubID   atomic.Int64
 }
 
 type subscription struct {
-	id        string
-	filter    EventFilter
-	ch        chan *Event
-	closeOnce *sync.Once
+	id     int64
+	filter EventFilter
+	ch     chan *Event
 }
 
 // NewMemoryEventStore creates a new in-memory EventStore.
@@ -192,6 +193,9 @@ func (s *MemoryEventStore) ReadAll(_ context.Context, opts ReadOptions) ([]*Even
 }
 
 // Subscribe returns a channel that receives matching events.
+//
+// PERF: Uses atomic counter for subscription IDs instead of UUID to reduce
+// allocation. Subscribers slice is pre-allocated to reduce grow-copy overhead.
 func (s *MemoryEventStore) Subscribe(ctx context.Context, filter EventFilter) (<-chan *Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,23 +204,19 @@ func (s *MemoryEventStore) Subscribe(ctx context.Context, filter EventFilter) (<
 		return nil, ErrEventStoreClosed
 	}
 
-	ch := make(chan *Event, 1)
+	ch := make(chan *Event, 64) // Larger buffer to reduce drops in burst scenarios.
 	sub := subscription{
-		id:        NewEventID(),
-		filter:    filter,
-		ch:        ch,
-		closeOnce: &sync.Once{},
+		id:     s.nextSubID.Add(1),
+		filter: filter,
+		ch:     ch,
 	}
 	s.subscribers = append(s.subscribers, sub)
 
-	// Unsubscribe when either the caller's context or the store is closed.
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-s.ctx.Done():
-		}
-		s.unsubscribe(sub.id)
-	}()
+	// Spawn a single goroutine per subscriber for cleanup when ctx is done.
+	go func(id int64) {
+		<-ctx.Done()
+		s.unsubscribe(id)
+	}(sub.id)
 
 	return ch, nil
 }
@@ -246,11 +246,7 @@ func (s *MemoryEventStore) Close() error {
 	s.closed = true
 	s.cancel()
 	for _, sub := range s.subscribers {
-		// Use sync.Once to ensure each channel is only closed once, preventing
-		// panic if unsubscribe() is called concurrently.
-		sub.closeOnce.Do(func() {
-			close(sub.ch)
-		})
+		close(sub.ch)
 	}
 	s.subscribers = nil
 	return nil
@@ -307,18 +303,15 @@ func (s *MemoryEventStore) matchesFilter(event *Event, filter EventFilter) bool 
 	return true
 }
 
-// unsubscribe removes a subscriber by ID.
-func (s *MemoryEventStore) unsubscribe(id string) {
+// unsubscribe removes a subscriber by ID and closes its channel.
+// Safe to call concurrently with Close() because both hold s.mu.Lock().
+func (s *MemoryEventStore) unsubscribe(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for i, sub := range s.subscribers {
 		if sub.id == id {
-			// Use sync.Once to ensure the channel is only closed once, preventing
-			// panic if Close() is called concurrently.
-			sub.closeOnce.Do(func() {
-				close(sub.ch)
-			})
+			close(sub.ch)
 			s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
 			return
 		}

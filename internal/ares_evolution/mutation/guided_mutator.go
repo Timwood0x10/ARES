@@ -627,5 +627,3 @@ func parentTaskType(parent *Strategy) string {
 	}
 	return "default"
 }
-
-

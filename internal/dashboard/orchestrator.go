@@ -876,5 +876,3 @@ func BuildToolAliases(tools []MCPToolInfo) map[string]string {
 	}
 	return aliases
 }
-
-

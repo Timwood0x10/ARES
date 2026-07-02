@@ -375,7 +375,11 @@ func (t *SSEServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) erro
 
 	for _, ch := range clients {
 		func() {
-			defer func() { if r := recover(); r != nil { log.Warn("mcp-server: client broadcast panic", "recover", r) } }()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Warn("mcp-server: client broadcast panic", "recover", r)
+				}
+			}()
 			select {
 			case ch <- msg:
 			case <-ctx.Done():
