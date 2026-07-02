@@ -196,14 +196,15 @@ func (s *HTTPServer) handleGetAgent(c *gin.Context) {
 		tabSnap := tab.Snapshot()
 		// The snapshot is EventTabSnapshot{Events, Total}.
 		// We can't type-assert across packages, so marshal/unmarshal.
-		raw, _ := json.Marshal(tabSnap)
-		var parsed struct {
-			Events []struct {
-				ModuleName string `json:"module_name"`
-				Type       string `json:"type"`
-			} `json:"events"`
-		}
-		if json.Unmarshal(raw, &parsed) == nil {
+		raw, err := json.Marshal(tabSnap)
+		if err == nil {
+			var parsed struct {
+				Events []struct {
+					ModuleName string `json:"module_name"`
+					Type       string `json:"type"`
+				} `json:"events"`
+			}
+			if json.Unmarshal(raw, &parsed) == nil {
 			eventTypes = make(map[string]int)
 			for _, e := range parsed.Events {
 				if e.ModuleName == id {
@@ -212,6 +213,7 @@ func (s *HTTPServer) handleGetAgent(c *gin.Context) {
 				}
 			}
 		}
+	}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

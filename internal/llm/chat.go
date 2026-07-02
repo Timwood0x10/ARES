@@ -475,7 +475,11 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 		case "text":
 			respCore.Content += block.Text
 		case "tool_use":
-			argsJSON, _ := json.Marshal(block.Input)
+			argsJSON, err := json.Marshal(block.Input)
+			if err != nil {
+				log.Error("llm: marshal tool call input", "error", err)
+				continue
+			}
 			respCore.ToolCalls = append(respCore.ToolCalls, core.ToolCall{
 				ID:   block.ID,
 				Type: "function",

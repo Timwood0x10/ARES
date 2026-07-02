@@ -224,7 +224,7 @@ func (b *PluginBus) Emit(ctx context.Context, streamID string, eventType ares_ev
 		// cleanup goroutine closes the channel between our copy
 		// of the subscriber list and this send.
 		func() {
-			defer func() { _ = recover() }()
+			defer func() { if r := recover(); r != nil { slog.Warn("bus: subscriber panic", "recover", r) } }()
 			select {
 			case s.ch <- evt:
 			case <-ctx.Done():

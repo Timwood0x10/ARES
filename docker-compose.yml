@@ -88,8 +88,31 @@ services:
   #     start_period: 60s
   #     retries: 3
 
+  # ──────────────────────────────────────────────
+  # Ollama — local LLM for offline/fallback inference
+  # Used as default fallback when remote LLMs are unreachable.
+  # LLM endpoint: http://localhost:11434
+  # Pull a model after startup: docker exec goagent-ollama ollama pull llama3.2
+  # ──────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: goagent-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 volumes:
   pgdata:
     driver: local
   searxng-data:
+    driver: local
+  ollama-data:
     driver: local
