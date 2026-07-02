@@ -1,7 +1,6 @@
 package genome
 
 import (
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -509,7 +508,7 @@ func (p *Population) adjustMutationRateLocked() {
 
 	// Emergency mode: critically low diversity — force maximum exploration.
 	if div < ac.EmergencyDiversityThreshold {
-		slog.Warn("emergency mutation rate boost: critically low diversity",
+		el.Warn(nil, "adjustMutationRateLocked", "emergency mutation rate boost",
 			"diversity", div,
 			"generation", p.Generation,
 			"mutation_rate", p.cfg.MaxMutationRate,
@@ -543,7 +542,7 @@ func (p *Population) adjustMutationRateLocked() {
 	}
 	p.currentMutationRate = mutation.Clamp(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
 
-	slog.Debug("adaptive mutation rate adjusted",
+	el.Debug(nil, "adjustMutationRateLocked", "adjusted",
 		"diversity", div,
 		"mutation_rate", p.currentMutationRate,
 		"effective_min", effectiveMin,
@@ -575,12 +574,12 @@ func (p *Population) handleStagnationLocked() {
 	resetCount := max(1, len(p.Agents)/3)
 	resetCount = min(resetCount, len(p.Agents)-p.cfg.EliteCount)
 	if resetCount <= 0 {
-		p.stagnantGens = 0
-		slog.Warn("stagnation triggered but no agents to reset",
-			"population_size", len(p.Agents),
-			"elite_count", p.cfg.EliteCount,
-		)
-		return
+	 p.stagnantGens = 0
+	 el.Warn(nil, "handleStagnationLocked", "stagnation but no agents to reset",
+	  "population_size", len(p.Agents),
+	  "elite_count", p.cfg.EliteCount,
+	 )
+	 return
 	}
 
 	SortByScore(p.Agents)
@@ -614,7 +613,7 @@ func (p *Population) handleStagnationLocked() {
 	}
 
 	p.stagnantGens = 0
-	slog.Warn("stagnation detected, injected random mutants from elites",
+	el.Warn(nil, "handleStagnationLocked", "stagnation reset injected",
 		"reset_count", resetCount,
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,

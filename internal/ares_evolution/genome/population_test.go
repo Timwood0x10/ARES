@@ -1101,9 +1101,10 @@ func TestEvolveZeroOffspringPath(t *testing.T) {
 		ctx := context.Background()
 		scores := []float64{95.0, 75.0, 55.0}
 		pop := scoredPopulation(t, ctx, scores,
-			WithEliteCount(3),     // EliteCount == Size → no offspring slots
-			WithSurvivalRate(1.0), // All survive so EliteCount is not capped
+			WithEliteCount(3),         // EliteCount == Size → no offspring slots
+			WithSurvivalRate(1.0),     // All survive so EliteCount is not capped
 			WithMutationRate(0.3),
+			WithPerLineageElites(false), // Use global elite ordering for deterministic test
 		)
 		origRate := pop.currentMutationRate
 		origStagnant := pop.stagnantGens
@@ -1149,6 +1150,7 @@ func TestEvolveZeroOffspringPath(t *testing.T) {
 			WithEliteCount(3),
 			WithSurvivalRate(1.0),
 			WithMutationRate(0.2),
+			WithPerLineageElites(false),
 		)
 		origRate := pop.currentMutationRate
 		origStagnant := pop.stagnantGens

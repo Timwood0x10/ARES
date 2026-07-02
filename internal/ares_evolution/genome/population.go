@@ -11,8 +11,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/elog"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
+
+// el is the package-level structured logger. Use el.Info/Warn/Debug/Error
+// throughout the genome package — it automatically attaches module="genome"
+// and the method name to every log line.
+var el = elog.New("genome")
 
 // ErrNilBaseStrategy is returned when a nil base strategy is provided to NewPopulation.
 var ErrNilBaseStrategy = fmt.Errorf("base strategy must not be nil")
@@ -299,6 +305,8 @@ func DefaultPopulationConfig() PopulationConfig {
 		SpatialIndexThreshold:       500,
 		DiversitySampleSize:         200, // Sample pairs for pop > 200 to avoid O(n²)
 		DisablePromptDiversityGuard: false,
+		PerLineageElites:            true,  // preserve top-1 per lineage by default
+		PerLineageEliteCount:        1,
 		AgentMaxAge:                 0, // 0 = disabled (backward compatible)
 	}
 }
@@ -897,7 +905,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		}
 		sorted = keep
 		if len(sorted) == 0 {
-			return ErrSelectionEmptyPopulation
+			return fmt.Errorf("genome.doEvolve: all agents aged out (AgentMaxAge=%d)", p.cfg.AgentMaxAge)
 		}
 	}
 
@@ -926,23 +934,24 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		// Skip adaptive adjustments when no offspring were produced — no new
 		// genetic material entered the pool, so diversity/stagnation signals
 		// would be misleading.
-		slog.InfoContext(ctx, cfg.logLabel,
-			"generation", p.Generation,
-			"population_size", len(p.Agents),
-			"elite_count", len(elites),
-			"mutation_rate", p.currentMutationRate,
+		el.Info(ctx, "doEvolve", "evolution completed, no offspring produced",
+		 "generation", p.Generation,
+		 "population_size", len(p.Agents),
+		 "elite_count", len(elites),
+		 "mutation_rate", p.currentMutationRate,
+		 "note", "no offspring produced, skipped adaptive adjustments",
 		)
 		return nil
 	}
 
 	selector, err := p.buildSelector()
 	if err != nil {
-		return fmt.Errorf("build selector: %w", err)
+		return fmt.Errorf("genome.doEvolve: build selector: %w", err)
 	}
 
 	offspring, err := p.generateOffspring(ctx, parentPool, mutator, crosser, selector, remainingSlots)
 	if err != nil {
-		return fmt.Errorf("generate offspring: %w", err)
+		return fmt.Errorf("genome.doEvolve: generate offspring: %w", err)
 	}
 
 	// Step 4: Assemble next generation.
@@ -969,28 +978,51 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	// Elites are protected from penalty to preserve their scores.
 	p.applyFitnessSharing(len(elites))
 
+	// --- Recovery mechanisms ---
+	// Three mechanisms run in sequence: mutation rate boost, stagnation reset,
+	// and fresh mutant injection. All three respond to the same diversity
+	// signals, so we capture pre-state and log a consolidated summary afterward
+	// to make attribution transparent.
+	preMutationRate := p.currentMutationRate
+	preActions := copyRecoveryActions(p.recoveryActions)
+
 	p.adjustMutationRateLocked()
 	p.handleStagnationLocked()
 
 	// Check for diversity collapse and inject fresh mutants if needed.
 	report := p.measureDiversityReportLocked()
 	if report.Overall < p.cfg.DiversityThreshold || report.DominantLineageShare > 0.6 {
-		p.injectFreshMutantsLocked(len(elites))
-		slog.Warn("diversity collapse detected, injected fresh mutants",
-			"generation", p.Generation,
-			"overall_diversity", report.Overall,
-			"dominant_lineage_share", report.DominantLineageShare,
-			"numeric_diversity", report.Numeric,
-			"categorical_diversity", report.Categorical,
-			"lineage_diversity", report.Lineage,
-		)
+	 p.injectFreshMutantsLocked(len(elites))
 	}
 
-	slog.InfoContext(ctx, cfg.logLabel,
-		"generation", p.Generation,
-		"population_size", len(p.Agents),
-		"elite_count", len(elites),
-		"mutation_rate", p.currentMutationRate,
+	// Consolidated recovery summary: single structured log line showing
+	// which mechanism(s) fired and the diversity context that triggered them.
+	postActions := copyRecoveryActions(p.recoveryActions)
+	mutationBoosted := postActions["mutation_rate_boost"] - preActions["mutation_rate_boost"]
+	stagnationReset := postActions["stagnation_reset"] - preActions["stagnation_reset"]
+	freshInjection := postActions["fresh_injection"] - preActions["fresh_injection"]
+
+	if mutationBoosted > 0 || stagnationReset > 0 || freshInjection > 0 {
+	 el.Warn(nil, "doEvolve", "recovery mechanisms triggered",
+	  "generation", p.Generation,
+	  "overall_diversity", report.Overall,
+	  "dominant_lineage_share", report.DominantLineageShare,
+	  "numeric_diversity", report.Numeric,
+	  "categorical_diversity", report.Categorical,
+	  "lineage_diversity", report.Lineage,
+	  "mutation_rate_before", preMutationRate,
+	  "mutation_rate_after", p.currentMutationRate,
+	  "mutation_rate_boosted", mutationBoosted > 0,
+	  "stagnation_reset", stagnationReset > 0,
+	  "fresh_injection", freshInjection > 0,
+	 )
+	}
+
+	el.Info(ctx, "doEvolve", "evolution completed",
+	 "generation", p.Generation,
+	 "population_size", len(p.Agents),
+	 "elite_count", len(elites),
+	 "mutation_rate", p.currentMutationRate,
 	)
 
 	return nil
@@ -1535,6 +1567,19 @@ func (p *Population) RecoveryActions() map[string]int {
 		result[k] = v
 	}
 	return result
+}
+
+// copyRecoveryActions returns a shallow copy of the recovery actions map.
+// The caller must hold p.mu (or the map must not be mutated concurrently).
+func copyRecoveryActions(src map[string]int) map[string]int {
+	if src == nil {
+		return make(map[string]int)
+	}
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // PopulationStats holds statistical information about a population's state.

@@ -230,6 +230,7 @@ func TestTournamentReproducibilityWithSeed(t *testing.T) {
 		WithEliteCount(2),
 		WithMutationRate(0),
 		WithTournamentSelection(3),
+		WithPerLineageElites(false), // Global elite ordering for deterministic reproducibility
 	)
 	if err != nil {
 		t.Fatalf("NewPopulation (1) failed: %v", err)
@@ -242,6 +243,7 @@ func TestTournamentReproducibilityWithSeed(t *testing.T) {
 		WithEliteCount(2),
 		WithMutationRate(0),
 		WithTournamentSelection(3),
+		WithPerLineageElites(false), // Global elite ordering for deterministic reproducibility
 	)
 	if err != nil {
 		t.Fatalf("NewPopulation (2) failed: %v", err)

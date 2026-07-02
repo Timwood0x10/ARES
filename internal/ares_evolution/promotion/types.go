@@ -91,8 +91,8 @@ type PromotionCriteria struct {
 	// Default: 0.7.
 	MinConfidence float64 `json:"min_confidence"`
 
-	// ChampionHoldPeriod is the number of generations to hold champion status.
-	// Default: 5.
+	// ChampionHoldPeriod is the number of generations to hold champion status
+	// before evaluating rolling improvement for retention. Default: 5.
 	ChampionHoldPeriod int `json:"champion_hold_period"`
 
 	// DemotionThreshold is the score drop threshold for demotion.
@@ -116,6 +116,13 @@ type PromotionCriteria struct {
 	// ImprovementWindow is the number of generations to look back when computing
 	// the rolling average improvement. Default: 3.
 	ImprovementWindow int `json:"improvement_window"`
+
+	// MaxChampionTenure is the maximum number of generations a champion can hold
+	// its position without demonstrating improvement (rolling improvement >=
+	// MinRollingImprovement). When this limit is exceeded, the champion is demoted
+	// back to shadow to allow competing strategies a fair chance.
+	// Default: 20 (generations).
+	MaxChampionTenure int `json:"max_champion_tenure"`
 }
 
 // DefaultPromotionCriteria returns a PromotionCriteria with sensible defaults.
@@ -132,6 +139,7 @@ func DefaultPromotionCriteria() *PromotionCriteria {
 		MinAbsoluteImprovement: 0.5,
 		MinRollingImprovement:  0.1,
 		ImprovementWindow:      3,
+		MaxChampionTenure:      20,
 	}
 }
 

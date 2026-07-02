@@ -4,7 +4,6 @@ package genome
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -119,7 +118,7 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		p.Agents[i] = template
 	}
 
-	slog.Debug("fresh mutants injected for diversity recovery",
+	el.Debug(nil, "injectFreshMutantsLocked", "fresh mutants injected",
 		"generation", p.Generation,
 		"replace_count", replaceCount,
 		"start_index", startIdx,
@@ -205,7 +204,7 @@ func (p *Population) preservePerLineageElites(survivors []*mutation.Strategy) []
 		reserved[i] = true
 	}
 
-	slog.Debug("per-lineage elites preserved",
+	el.Debug(nil, "preservePerLineageElites", "per-lineage elites preserved",
 		"total_elites", len(elites),
 		"unique_lineages", len(lineageBest),
 		"elite_count_config", p.cfg.EliteCount,
@@ -269,14 +268,14 @@ func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, 
 				}
 				replacedID := elites[weakestIdx].ID
 				elites[weakestIdx] = clone
-				slog.Debug("prompt diversity seed replaced weakest elite",
+				el.Debug(nil, "preservePromptDiversityLocked", "seed replaced weakest elite",
 					"template", s.PromptTemplate,
 					"replaced_id", replacedID,
 					"agent_id", s.ID,
 				)
 			} else {
 				elites = append(elites, clone)
-				slog.Debug("prompt diversity seed force-retained",
+				el.Debug(nil, "preservePromptDiversityLocked", "diversity seed force-retained",
 					"template", s.PromptTemplate,
 					"score", s.Score,
 					"agent_id", s.ID,

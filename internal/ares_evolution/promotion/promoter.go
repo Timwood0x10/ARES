@@ -9,8 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/elog"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 )
+
+var el = elog.New("promotion")
 
 var (
 	// ErrStrategyNotFound indicates the strategy does not exist.
@@ -145,8 +148,16 @@ func (p *DefaultPromoter) Evaluate(
 		reason = "strategy is retired"
 
 	default:
-		return info.CurrentState, "unknown state", fmt.Errorf("unknown state: %s", info.CurrentState)
+		return info.CurrentState, "unknown state", fmt.Errorf("promotion.Evaluate: unknown state: %s", info.CurrentState)
 	}
+
+	el.Debug(ctx, "Evaluate", "evaluated strategy",
+		"strategy_id", strategyID,
+		"current_state", info.CurrentState,
+		"recommended_state", recommendedState,
+		"score", score,
+		"reason", reason,
+	)
 
 	return recommendedState, reason, nil
 }
@@ -236,6 +247,25 @@ func (p *DefaultPromoter) evaluateChampion(
 	// Check if champion hold period has passed but no significant improvement.
 	if info.GenerationCount >= p.criteria.ChampionHoldPeriod {
 		rollingImprovement := p.calculateRollingImprovement(info)
+
+		// Hard tenure limit: demote if champion has held the position for
+		// MaxChampionTenure generations without demonstrating improvement.
+		// This prevents safe-but-stagnant strategies from permanently occupying
+		// the champion slot — a system that never regresses also never evolves.
+		if p.criteria.MaxChampionTenure > 0 && info.GenerationCount >= p.criteria.MaxChampionTenure {
+			if rollingImprovement < p.criteria.MinRollingImprovement {
+				return StrategyStateShadow, fmt.Sprintf(
+					"demoted to shadow: tenure=%d exceeded max=%d, rolling_improvement=%.4f below min=%.2f",
+					info.GenerationCount, p.criteria.MaxChampionTenure,
+					rollingImprovement, p.criteria.MinRollingImprovement,
+				)
+			}
+			return StrategyStateChampion, fmt.Sprintf(
+				"champion tenure extended: rolling_improvement=%.4f meets min=%.2f",
+				rollingImprovement, p.criteria.MinRollingImprovement,
+			)
+		}
+
 		if rollingImprovement < p.criteria.MinRollingImprovement {
 			return StrategyStateChampion, fmt.Sprintf(
 				"champion flagged: rolling_improvement=%.4f below min=%.2f",
