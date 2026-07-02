@@ -3,7 +3,6 @@ package genome
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -67,7 +66,7 @@ func (hg *HypothesisGenerator) Generate(ctx context.Context, ref *Reflection) []
 		}
 	}
 
-	slog.Debug("generated mutation hypotheses from reflection",
+	el.DebugContext(ctx, "generated mutation hypotheses from reflection",
 		"total_recommendations", len(ref.Recommendations),
 		"accepted", len(hypotheses),
 		"min_confidence", hg.minConfidence,
@@ -150,7 +149,7 @@ func ApplyHypothesis(base *mutation.Strategy, hyp MutationHypothesis) *mutation.
 					clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v*0.7)
 				}
 			} else {
-				slog.Debug("ApplyHypothesis: skipping non-float64 param",
+				el.DebugContext(nil, "ApplyHypothesis: skipping non-float64 param",
 					"key", hyp.TargetKey, "direction", hyp.Direction,
 				)
 			}

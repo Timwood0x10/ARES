@@ -1,11 +1,10 @@
 package genome
 
 import (
-	"fmt"
-	"log/slog"
-	"math"
+ "fmt"
+ "math"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+ "github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // MetaParams are the evolution hyperparameters that the MetaController
@@ -189,7 +188,7 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 	}
 
 	if modified {
-		slog.Debug("meta-evolution: adjusted parameters",
+		el.DebugContext(nil, "meta-evolution: adjusted parameters",
 			"mutation_rate", popCfg.MutationRate,
 			"survival_rate", popCfg.SurvivalRate,
 			"elite_count", popCfg.EliteCount,

@@ -1,7 +1,6 @@
 package genome
 
 import (
-
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 

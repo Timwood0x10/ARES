@@ -5,20 +5,19 @@ package genome
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"math/rand"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/elog"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
 // el is the package-level structured logger. Use el.Info/Warn/Debug/Error
 // throughout the genome package — it automatically attaches module="genome"
 // and the method name to every log line.
-var el = elog.New("genome")
+var el = logger.New("genome")
 
 // ErrNilBaseStrategy is returned when a nil base strategy is provided to NewPopulation.
 var ErrNilBaseStrategy = fmt.Errorf("base strategy must not be nil")
@@ -794,7 +793,7 @@ func NewPopulation(ctx context.Context, base *mutation.Strategy, mutator Mutator
 		return nil, fmt.Errorf("initialize population: %w", err)
 	}
 
-	slog.InfoContext(ctx, "population created",
+	el.InfoContext(ctx, "population created",
 		"size", pop.Size,
 		"generation", pop.Generation,
 	)
@@ -1181,7 +1180,7 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("scorer panicked for agent, marking as unevaluated",
+					el.WarnContext(nil, "scorer panicked for agent, marking as unevaluated",
 						"generation", p.Generation,
 						"agent_index", i,
 						"agent_id", agent.ID,
@@ -1227,7 +1226,7 @@ func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("multi-objective scorer panicked for agent, marking as unevaluated",
+					el.WarnContext(nil, "multi-objective scorer panicked for agent, marking as unevaluated",
 						"generation", p.Generation,
 						"agent_index", i,
 						"agent_id", agent.ID,

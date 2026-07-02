@@ -13,14 +13,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/elog"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 )
 
-var el = elog.New("adapter")
+var el = logger.New("adapter")
 
 // BatchScorer scores multiple internal strategies in a single call.
 // Used to reduce LLM API calls by batching strategies together.

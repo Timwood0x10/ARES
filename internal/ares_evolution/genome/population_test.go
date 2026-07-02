@@ -736,12 +736,12 @@ func TestWithPopulationSeed(t *testing.T) {
 	}
 
 	seed := int64(42)
-	pop1, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	pop1, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed), WithPerLineageElites(false))
 	if err != nil {
 		t.Fatalf("NewPopulation (1) failed: %v", err)
 	}
 
-	pop2, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	pop2, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed), WithPerLineageElites(false))
 	if err != nil {
 		t.Fatalf("NewPopulation (2) failed: %v", err)
 	}

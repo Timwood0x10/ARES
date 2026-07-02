@@ -3,11 +3,10 @@
 package genome
 
 import (
-	"context"
-	"fmt"
-	"log/slog"
-	"math/rand"
-	"sort"
+ "context"
+ "fmt"
+ "math/rand"
+ "sort"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -205,7 +204,7 @@ func (ts *TournamentSelection) runTournament(population []*mutation.Strategy) (*
 		}
 	}
 
-	slog.Debug("runTournament completed",
+	el.DebugContext(nil, "runTournament completed",
 		"competitors", k,
 		"winner_score", population[bestIdx].Score)
 

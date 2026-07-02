@@ -5,12 +5,11 @@
 package genome
 
 import (
-	"context"
-	"fmt"
-	"log/slog"
-	"math/rand"
-	"sort"
-	"strings"
+ "context"
+ "fmt"
+ "math/rand"
+ "sort"
+ "strings"
 	"sync/atomic"
 	"time"
 
@@ -217,7 +216,7 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 		CreatedAt:            time.Now(),
 	}
 
-	slog.Debug("crossover completed",
+	el.DebugContext(ctx, "crossover completed",
 		"child_id", child.ID,
 		"parent_a", a.ID,
 		"parent_b", b.ID,
@@ -304,7 +303,7 @@ func (c *Crossover) halfSplitPromptCrossover(a, b *mutation.Strategy) string {
 
 	result := string(runesA[:mid]) + string(runesB[mid:])
 
-	slog.Debug("half-split prompt crossover",
+	el.DebugContext(nil, "half-split prompt crossover",
 		"parent_a_len", len(tmplA),
 		"parent_b_len", len(tmplB),
 		"mid_point", mid,

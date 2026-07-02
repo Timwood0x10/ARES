@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/elog"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 )
 
-var el = elog.New("promotion")
+var el = logger.New("promotion")
 
 var (
 	// ErrStrategyNotFound indicates the strategy does not exist.
