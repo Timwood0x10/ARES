@@ -5,8 +5,8 @@ import (
 	"context"
 	"time"
 
-	aresflight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	aresflight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,9 +39,11 @@ func New(cfg Config) *FlightRecorder {
 
 func (fr *FlightRecorder) Start(ctx context.Context) error { return fr.inner.Start(ctx) }
 func (fr *FlightRecorder) Stop()                           { fr.inner.Stop() }
-func (fr *FlightRecorder) Timeline() *Timeline            { return &Timeline{inner: fr.inner.Timeline()} }
-func (fr *FlightRecorder) Graph() *Graph                  { return &Graph{inner: fr.inner.Graph()} }
-func (fr *FlightRecorder) Diagnostics() *Diagnostics       { return &Diagnostics{inner: fr.inner.Diagnostics()} }
+func (fr *FlightRecorder) Timeline() *Timeline             { return &Timeline{inner: fr.inner.Timeline()} }
+func (fr *FlightRecorder) Graph() *Graph                   { return &Graph{inner: fr.inner.Graph()} }
+func (fr *FlightRecorder) Diagnostics() *Diagnostics {
+	return &Diagnostics{inner: fr.inner.Diagnostics()}
+}
 
 // ---------------------------------------------------------------------------
 // Timeline

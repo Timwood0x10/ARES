@@ -18,13 +18,13 @@ import (
 type EventType = base.EventType
 
 const (
-	EventPlanning     EventType = EventType(base.EventPlanning)
-	EventTaskStart    EventType = EventType(base.EventTaskStart)
-	EventTaskProgress EventType = EventType(base.EventTaskProgress)
-	EventTaskComplete EventType = EventType(base.EventTaskComplete)
-	EventAggregating  EventType = EventType(base.EventAggregating)
-	EventComplete     EventType = EventType(base.EventComplete)
-	EventError        EventType = EventType(base.EventError)
+	EventPlanning     = base.EventPlanning
+	EventTaskStart    = base.EventTaskStart
+	EventTaskProgress = base.EventTaskProgress
+	EventTaskComplete = base.EventTaskComplete
+	EventAggregating  = base.EventAggregating
+	EventComplete     = base.EventComplete
+	EventError        = base.EventError
 )
 
 // AgentEvent represents an event emitted during agent processing.

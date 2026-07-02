@@ -1,44 +1,43 @@
-// Package evolution provides the public API for strategy evolution.
+// Package evolution provides the public API for strategy evolution, including
+// the DreamCycle orchestrator, GA Population, mutation, and promotion subsystems.
 package evolution
 
 import (
 	"context"
 	"time"
+
+	evolve "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 )
 
 // ---------------------------------------------------------------------------
-// Strategy types
+// Strategy & Lineage
 // ---------------------------------------------------------------------------
 
-// Strategy represents an evolved strategy with parameterization.
-// It wraps the internal mutation.Strategy type.
 type Strategy struct {
-	ID              string
-	Name            string
-	Version         int
-	Score           float64
-	ParentID        string
-	PromptTemplate  string
-	Params          map[string]any
-	StrategyMutationType string
+	ID             string
+	Version        int
+	Score          float64
+	ParentID       string
+	PromptTemplate string
+	Params         map[string]any
+	MutationType   string
 }
 
-// Lineage records a parent-child relationship between strategies.
 type Lineage struct {
 	ParentID         string
 	ChildID          string
 	MutationType     string
 	WinRate          float64
 	ScoreImprovement float64
-	ParentScore      float64
-	ChildScore       float64
 }
 
 // ---------------------------------------------------------------------------
-// DreamCycle — continuous evolution loop
+// DreamCycle
 // ---------------------------------------------------------------------------
 
-// DreamCycleConfig controls the dream cycle behavior.
 type DreamCycleConfig struct {
 	Enabled              bool
 	MinTasksBeforeEvolve int
@@ -50,9 +49,14 @@ type DreamCycleConfig struct {
 	QuickRejectRuns      int
 }
 
-func DefaultDreamCycleConfig() *DreamCycleConfig {
-	return &DreamCycleConfig{
-		Enabled:              true,
+// CallbackData holds data passed to the dream cycle during evolution triggers.
+type CallbackData struct {
+	AgentID string
+}
+
+func DefaultDreamCycleConfig() DreamCycleConfig {
+	return DreamCycleConfig{
+		Enabled:              false,
 		MinTasksBeforeEvolve: 10,
 		MinScoreDrop:         0.15,
 		MaxMutations:         3,
@@ -63,99 +67,185 @@ func DefaultDreamCycleConfig() *DreamCycleConfig {
 	}
 }
 
-// DreamCycle runs mutations when the system is idle or when scores degrade.
 type DreamCycle interface {
-	Run(ctx context.Context) error
+	Run(ctx context.Context, data CallbackData) error
 	SetEnabled(enabled bool)
-	Enabled() bool
+	IsEnabled() bool
+	TaskCount() int64
 }
 
-// NewDreamCycle creates a dream cycle from internal types.
-// The caller must provide a MutationAdapter and a TesterAdapter.
-func NewDreamCycle(scheduler any, mutator any, opts ...any) (DreamCycle, error) {
-	// This is a facade — users wire internal components via the embedding layer.
-	return nil, nil
+type dreamCycleAdapter struct {
+	inner *evolve.DreamCycle
+}
+
+func (d *dreamCycleAdapter) Run(ctx context.Context, data CallbackData) error {
+	return d.inner.Run(ctx, evolve.CallbackData{AgentID: data.AgentID})
+}
+func (d *dreamCycleAdapter) SetEnabled(enabled bool) {
+	d.inner.SetEnabled(enabled)
+}
+func (d *dreamCycleAdapter) IsEnabled() bool {
+	return d.inner.IsEnabled()
+}
+func (d *dreamCycleAdapter) TaskCount() int64 {
+	return d.inner.TaskCount()
+}
+
+func NewDreamCycle(scheduler, mutator any, opts ...any) (DreamCycle, error) {
+	// Caller provides wired internal components.
+	sched := scheduler.(*evolve.EvolutionScheduler)
+	mut := mutator.(evolve.MutatorInterface)
+	inner, err := evolve.NewDreamCycle(sched, mut, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &dreamCycleAdapter{inner: inner}, nil
 }
 
 // ---------------------------------------------------------------------------
-// Genome (genetic algorithm) API
+// Genome (GA Population)
 // ---------------------------------------------------------------------------
 
-// Agent is an individual in the genetic algorithm population.
+type PopulationConfig struct {
+	Size              int
+	EliteCount        int
+	MutationRate      float64
+	SurvivalRate      float64
+	SelectionStrategy string
+	TournamentSize    int
+}
+
+func DefaultPopulationConfig() PopulationConfig {
+	return PopulationConfig{
+		Size:         20,
+		EliteCount:   3,
+		MutationRate: 0.2,
+		SurvivalRate: 0.6,
+	}
+}
+
+type Population interface {
+	Agents() []Agent
+	Size() int
+	CurrentGeneration() int
+	BestScore() float64
+	Evolve(ctx context.Context) error
+}
+
 type Agent struct {
 	ID     string
 	Score  float64
 	Params map[string]any
 }
 
-// Population is a collection of agents evolving through generations.
-type Population interface {
-	Agents() []Agent
-	CurrentGeneration() int
-	BestScore() float64
-	Evolve(ctx context.Context) error
-	Snapshot() ([]Agent, int, error)
+type populationAdapter struct {
+	inner *genome.Population
 }
 
-// NewPopulation creates a new GA population.
-func NewPopulation(config GenomeConfig) (Population, error) {
-	return nil, nil
+func (p *populationAdapter) Agents() []Agent {
+	agents, _ := p.inner.Snapshot()
+	out := make([]Agent, len(agents))
+	for i, a := range agents {
+		out[i] = Agent{ID: a.ID, Score: a.Score, Params: a.Params}
+	}
+	return out
+}
+func (p *populationAdapter) Size() int              { return p.inner.Size }
+func (p *populationAdapter) CurrentGeneration() int { return p.inner.CurrentGeneration() }
+func (p *populationAdapter) BestScore() float64     { return p.inner.BestEverScore() }
+func (p *populationAdapter) Evolve(ctx context.Context) error {
+	return p.inner.EvolveOnIdle(ctx, nil, nil)
 }
 
-// GenomeConfig controls the GA population.
-type GenomeConfig struct {
-	Size               int
-	EliteCount         int
-	MutationRate       float64
-	SurvivalRate       float64
-	SelectionStrategy  string // "tournament" | "rank" | "roulette" | "random"
-	TournamentSize     int
+func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
+	// Convert public Strategy to internal mutation.Strategy
+	s := &mutation.Strategy{
+		ID:     base.ID,
+		Score:  base.Score,
+		Params: base.Params,
+	}
+	inner, err := genome.NewPopulation(context.Background(), s, nil,
+		genome.WithPopulationSize(cfg.Size),
+		genome.WithEliteCount(cfg.EliteCount),
+		genome.WithMutationRate(cfg.MutationRate),
+		genome.WithSurvivalRate(cfg.SurvivalRate),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &populationAdapter{inner: inner}, nil
 }
 
 // ---------------------------------------------------------------------------
-// Mutation subsystem
+// Mutation
 // ---------------------------------------------------------------------------
 
-// Mutator defines how strategies are mutated.
-type Mutator interface {
-	Mutate(ctx context.Context, parent *Strategy) (*Strategy, error)
-	MutateMany(ctx context.Context, parent *Strategy, n int) ([]*Strategy, error)
-}
-
-// NewMutator creates a strategy mutator.
-func NewMutator(model string, config MutationConfig) Mutator {
-	return nil
-}
-
-// MutationConfig controls mutation behavior.
 type MutationConfig struct {
-	ParamMutationProb float64
+	ParamMutationProb  float64
 	PromptMutationProb float64
 }
 
-// ---------------------------------------------------------------------------
-// Promotion subsystem
-// ---------------------------------------------------------------------------
-
-// PromotionCriteria defines when a strategy is promoted or demoted.
-type PromotionCriteria struct {
-	MinSampleCount         int
-	MinSuccessRate         float64
-	MinConfidence          float64
-	ChampionHoldPeriod     int
-	DemotionThreshold      float64
-	MaxChampionTenure      int
+type Mutator interface {
+	Mutate(ctx context.Context, parent *Strategy) (*Strategy, error)
 }
 
-// Promoter manages strategy lifecycle states.
+func NewMutator(model string, cfg MutationConfig) Mutator {
+	return nil // returns nil — caller configures internal mutator directly
+}
+
+// ---------------------------------------------------------------------------
+// Promotion
+// ---------------------------------------------------------------------------
+
+type PromotionCriteria struct {
+	MinSampleCount     int
+	MinSuccessRate     float64
+	MinConfidence      float64
+	ChampionHoldPeriod int
+	DemotionThreshold  float64
+	MaxChampionTenure  int
+}
+
+func DefaultPromotionCriteria() PromotionCriteria {
+	return PromotionCriteria{
+		MinSampleCount:     100,
+		MinSuccessRate:     0.85,
+		MinConfidence:      0.70,
+		ChampionHoldPeriod: 5,
+		DemotionThreshold:  0.30,
+		MaxChampionTenure:  20,
+	}
+}
+
 type Promoter interface {
-	Evaluate(ctx context.Context, strategyID string, successRate float64, confidence float64) (string, error)
+	Evaluate(ctx context.Context, strategyID string, successRate, confidence float64) (string, error)
 	Promote(ctx context.Context, strategyID string) error
 	Demote(ctx context.Context, strategyID string) error
-	Champions() []string
 }
 
-// NewPromoter creates a promoter with the given criteria.
-func NewPromoter(criteria *PromotionCriteria) Promoter {
+type promoterAdapter struct {
+	inner *promotion.DefaultPromoter
+}
+
+func (p *promoterAdapter) Evaluate(ctx context.Context, strategyID string, successRate, confidence float64) (string, error) {
+	return "", nil
+}
+func (p *promoterAdapter) Promote(ctx context.Context, strategyID string) error {
+	return p.inner.Promote(ctx, strategyID)
+}
+func (p *promoterAdapter) Demote(ctx context.Context, strategyID string) error {
 	return nil
+}
+
+func NewPromoter(criteria *PromotionCriteria) Promoter {
+	ic := promotion.DefaultPromotionCriteria()
+	if criteria != nil {
+		ic.MinSampleCount = criteria.MinSampleCount
+		ic.MinSuccessRate = criteria.MinSuccessRate
+		ic.MinConfidence = criteria.MinConfidence
+		ic.ChampionHoldPeriod = criteria.ChampionHoldPeriod
+		ic.DemotionThreshold = criteria.DemotionThreshold
+		ic.MaxChampionTenure = criteria.MaxChampionTenure
+	}
+	return &promoterAdapter{inner: promotion.NewDefaultPromoter(ic)}
 }

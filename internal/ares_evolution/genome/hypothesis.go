@@ -149,7 +149,7 @@ func ApplyHypothesis(base *mutation.Strategy, hyp MutationHypothesis) *mutation.
 					clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v*0.7)
 				}
 			} else {
-				el.DebugContext(nil, "ApplyHypothesis: skipping non-float64 param",
+				el.DebugContext(context.TODO(), "ApplyHypothesis: skipping non-float64 param",
 					"key", hyp.TargetKey, "direction", hyp.Direction,
 				)
 			}

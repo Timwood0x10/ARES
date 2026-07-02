@@ -204,7 +204,7 @@ func (ts *TournamentSelection) runTournament(population []*mutation.Strategy) (*
 		}
 	}
 
-	el.DebugContext(nil, "runTournament completed",
+	el.DebugContext(context.TODO(), "runTournament completed",
 		"competitors", k,
 		"winner_score", population[bestIdx].Score)
 

@@ -515,7 +515,7 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 		return scorer
 	}
 	scorerWarningOnce.Do(func() {
-		el.Warn(nil, "buildScorer", "No scorer configured, using constant baseline (50.0). "+
+		el.Warn(context.TODO(), "buildScorer", "No scorer configured, using constant baseline (50.0). "+
 			"Configure a real scorer for production use.",
 		)
 	})

@@ -4,8 +4,8 @@ package distillation
 import (
 	"context"
 
-	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
@@ -33,13 +33,13 @@ type Memory struct {
 
 // Config controls the distillation pipeline.
 type Config struct {
-	MinImportance             float64
-	ConflictThreshold         float64
+	MinImportance              float64
+	ConflictThreshold          float64
 	MaxMemoriesPerDistillation int
-	MaxSolutionsPerTenant     int
-	EnableCodeFilter          bool
-	EnableCrossTurnExtraction bool
-	PrecisionOverRecall       bool
+	MaxSolutionsPerTenant      int
+	EnableCodeFilter           bool
+	EnableCrossTurnExtraction  bool
+	PrecisionOverRecall        bool
 }
 
 // DefaultConfig returns sensible defaults.
@@ -63,18 +63,18 @@ type Distiller interface {
 
 // Message represents a conversation message for distillation input.
 type Message struct {
-	Role       string      `json:"role"`
-	Content    string      `json:"content"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	TurnID     string      `json:"turn_id,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	TurnID     string     `json:"turn_id,omitempty"`
 }
 
 // ToolCall represents a tool invocation in a message.
 type ToolCall struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Function ToolCallFunction  `json:"function"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
 }
 
 // ToolCallFunction holds tool function details.
@@ -103,7 +103,7 @@ func New(config *Config, embedder embedding.EmbeddingService, repo distillation.
 		icfg.PrecisionOverRecall = config.PrecisionOverRecall
 	}
 	return &distillerAdapter{
-	 inner: distillation.NewDistiller(icfg, embedder, repo),
+		inner: distillation.NewDistiller(icfg, embedder, repo),
 	}
 }
 
@@ -122,9 +122,9 @@ func (d *distillerAdapter) DistillConversation(ctx context.Context, conversation
 	out := make([]Memory, len(mems))
 	for i, m := range mems {
 		out[i] = Memory{
-		 ID: m.ID, Type: MemoryType(m.Type), Content: m.Content,
-		 Importance: m.Importance, Source: m.Source,
-		 Vector: m.Vector, TTL: int64(m.TTL), Metadata: m.Metadata,
+			ID: m.ID, Type: MemoryType(m.Type), Content: m.Content,
+			Importance: m.Importance, Source: m.Source,
+			Vector: m.Vector, TTL: int64(m.TTL), Metadata: m.Metadata,
 		}
 	}
 	return out, nil

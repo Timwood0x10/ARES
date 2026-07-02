@@ -1002,7 +1002,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	freshInjection := postActions["fresh_injection"] - preActions["fresh_injection"]
 
 	if mutationBoosted > 0 || stagnationReset > 0 || freshInjection > 0 {
-		el.Warn(nil, "doEvolve", "recovery mechanisms triggered",
+		el.Warn(context.TODO(), "doEvolve", "recovery mechanisms triggered",
 			"generation", p.Generation,
 			"overall_diversity", report.Overall,
 			"dominant_lineage_share", report.DominantLineageShare,
@@ -1180,7 +1180,7 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					el.WarnContext(nil, "scorer panicked for agent, marking as unevaluated",
+					el.WarnContext(context.TODO(), "scorer panicked for agent, marking as unevaluated",
 						"generation", p.Generation,
 						"agent_index", i,
 						"agent_id", agent.ID,
@@ -1226,7 +1226,7 @@ func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					el.WarnContext(nil, "multi-objective scorer panicked for agent, marking as unevaluated",
+					el.WarnContext(context.TODO(), "multi-objective scorer panicked for agent, marking as unevaluated",
 						"generation", p.Generation,
 						"agent_index", i,
 						"agent_id", agent.ID,

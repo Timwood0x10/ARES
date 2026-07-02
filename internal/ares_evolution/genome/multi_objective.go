@@ -1,6 +1,7 @@
 package genome
 
 import (
+	"context"
 	"math"
 	"sort"
 
@@ -23,7 +24,7 @@ var DefaultDimensionWeights = map[string]float64{
 func ParetoDominance(a, b *mutation.Strategy) bool {
 	if a.DimensionScores == nil || b.DimensionScores == nil {
 		if (a.DimensionScores == nil) != (b.DimensionScores == nil) {
-			el.WarnContext(nil, "ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
+			el.WarnContext(context.TODO(), "ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
 				"a_dim", a.DimensionScores != nil, "b_dim", b.DimensionScores != nil,
 				"a_score", a.Score, "b_score", b.Score,
 			)

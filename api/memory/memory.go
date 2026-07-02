@@ -50,8 +50,8 @@ type Message struct {
 
 // Config holds memory manager configuration.
 type Config struct {
-	Storage     string        // "memory" | "postgres"
-	MaxHistory  int           // 0 = unlimited
+	Storage     string // "memory" | "postgres"
+	MaxHistory  int    // 0 = unlimited
 	MaxSessions int
 	SessionTTL  time.Duration
 	VectorDim   int
@@ -182,9 +182,9 @@ func NewManagerWithDistiller(cfg *Config, embedder embedding.EmbeddingService, r
 
 func toInternal(msg Message) memctx.Message {
 	return memctx.Message{
-		Role:    msg.Role, Content: msg.Content, Time: msg.Time,
+		Role: msg.Role, Content: msg.Content, Time: msg.Time,
 		TurnID: msg.TurnID, ToolCallID: msg.ToolCallID,
-		ToolCalls:    toInternalTCs(msg.ToolCalls),
+		ToolCalls: toInternalTCs(msg.ToolCalls),
 		EventKind: msg.EventKind, ParentID: msg.ParentID,
 		ArtifactRefs: msg.ArtifactRefs,
 	}
@@ -203,7 +203,7 @@ func fromInternal(msg memctx.Message) Message {
 	return Message{
 		Role: msg.Role, Content: msg.Content, Time: msg.Time,
 		TurnID: msg.TurnID, ToolCallID: msg.ToolCallID,
-		ToolCalls:    fromInternalTCs(msg.ToolCalls),
+		ToolCalls: fromInternalTCs(msg.ToolCalls),
 		EventKind: msg.EventKind, ParentID: msg.ParentID,
 		ArtifactRefs: msg.ArtifactRefs,
 	}
