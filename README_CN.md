@@ -9,9 +9,11 @@
                     
 ```
 
-ARES（自适应弹性进化系统）：一种用于自主agent的自愈进化运行时
+ARES（自适应弹性进化系统）—— 一种面向自主 Agent 的自愈、自进化运行时
 
-Go 语言多 Agent 框架，支持 DAG 工作流编排、记忆蒸馏、AHP 协议通信。
+基于 Go 的多 Agent 框架，支持 DAG 工作流编排、遗传算法自进化、记忆蒸馏、Agent 间通信协议（AHP）和混沌工程 —— 面向生产级 Agent 编排。
+
+与静态 Agent 框架不同，ARES 将 Agent 行为视为可进化的基因组：策略通过变异、交叉和选择跨代演化，基于真实的执行证据。系统通过检查点恢复实现自愈，淘汰过期策略，通过闭环进化持续改进。
 
 ## 架构
 
@@ -677,27 +679,47 @@ ares/
 │   ├── agents/           # Leader/Sub Agent 系统
 │   ├── ares_runtime/     # 运行时生命周期 + PluginBus（含 10 个内置插件）
 │   ├── ares_events/      # EventStore 接口、MemoryEventStore、事件类型
-│   ├── ares_memory/      # 记忆系统 + 蒸馏
-│   ├── ares_evolution/   # 遗传算法进化系统
-│   ├── ares_arena/       # 混沌工程测试平台
+│   ├── ares_memory/      # 记忆系统 + 蒸馏管线
+│   ├── ares_evolution/   # 遗传算法进化系统（genome、变异、评分）
+│   ├── ares_arena/       # 混沌工程 / 故障注入
 │   ├── ares_flight/      # Flight Recorder（时间线/谱系/诊断）
 │   ├── ares_mcp/         # MCP 客户端（stdio/SSE 传输）
-│   ├── ares_callbacks/   # 事件驱动回调系统
-│   ├── ares_observability/ # OpenTelemetry + Prometheus 指标
-│   ├── ares_eval/        # 评估框架
-│   ├── ares_quant/       # 量化交易工具
+│   ├── ares_callbacks/   # 事件驱动生命周期回调
+│   ├── ares_observability/ # OpenTelemetry + Prometheus
+│   ├── ares_eval/        # Agent 评估框架
+│   ├── ares_quant/       # 量化交易工具包
+│   ├── ares_config/      # 配置加载 + 校验
+│   ├── ares_ratelimit/   # 限流
+│   ├── ares_shutdown/    # 优雅关闭编排
+│   ├── ares_security/    # 输入清洗
+│   ├── ares_experience/  # 经验存储 + 反馈服务
+│   ├── ares_protocol/    # AHP Agent 间通信协议
+│   ├── ares_ctxutil/     # Context 工具
+│   ├── ares_bootstrap/   # 模块接线工厂
 │   ├── workflow/engine/  # DAG 工作流引擎（DynamicExecutor + PluginBus）
 │   ├── workflow/graph/   # 图执行器 + 检查点恢复
-│   ├── protocol/ahp/     # AHP Agent 间通信协议
-│   ├── storage/          # VectorStore 接口及实现
+│   ├── workflow/graphservice/ # RPC 图服务
+│   ├── storage/          # VectorStore 接口及实现（PG、内存、Qdrant、SQLite）
+│   ├── storage/postgres/ # PostgreSQL 适配器 + 迁移 + 仓库
+│   ├── storage/memory/   # 内存向量存储
 │   ├── llm/              # LLM 客户端 + 输出解析器
-│   ├── dashboard/        # Web 控制面板（WebSocket + REST API）
+│   ├── llmservice/       # LLM 服务抽象
+│   ├── memoryservice/    # 记忆服务抽象
+│   ├── retrievalservice/ # 检索服务抽象
+│   ├── llm/output/       # 输出适配器（OpenAI、Ollama、OpenRouter）
+│   ├── monitoring/       # Web 控制面板 + SSE + 指标
+│   ├── dashboard/        # Dashboard API + WebSocket Hub + 编排器
+│   ├── discovery/        # MCP 服务发现（文件、二进制）
 │   ├── logger/           # 模块级结构化日志
-│   └── config/           # 配置加载 + 校验
+│   ├── tools/            # 工具注册表（core、builtin、agent、resources）
+│   ├── plugins/          # 运行时插件（复活等）
+│   ├── errors/           # 统一错误类型
+│   └── config/           # 全局配置
 ├── services/embedding/  # Embedding 网关（FastAPI + Ollama）
 ├── examples/            # 示例项目：travel、knowledge-base、dashboard、quant、quickstart……
-├── api/                 # 服务接口与客户端
 ├── cmd/                 # CLI 工具（arena、flight、migration……）
+├── docs/                # 架构文档、功能文档、指南（中英文）
+├── scripts/             # Docker、CI、设置脚本
 └── benchmarks/          # 性能报告与日志
 ```
 

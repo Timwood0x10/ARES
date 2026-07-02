@@ -9,9 +9,13 @@
 
 ```
 
-ARES(Adaptive Resilient Evolution System)  A Self-Healing Evolutionary Runtime for Autonomous Agents
+ARES (Adaptive Resilient Evolution System) — A Self-Healing, Self-Evolving Runtime for Autonomous Agents
 
-Go-based multi-agent framework with DAG workflow orchestration, memory distillation, and AHP inter-agent protocol.
+Go-based multi-agent framework with DAG workflow orchestration, genetic algorithm self-evolution, memory distillation, inter-agent protocol (AHP), and chaos engineering — built for production-grade agent orchestration.
+
+Unlike static agent frameworks, ARES treats agent behavior as an evolvable genome: strategies are mutated, crossed over, and selected across generations based on real execution evidence. The system heals from failures via checkpoint recovery, ages out stale strategies, and continuously improves through closed-loop evolution.
+
+## Architecture
 
 ## Architecture
 
@@ -465,8 +469,6 @@ Platform: darwin/arm64, Apple M3 Max, Go 1.26.4
 | Evolution | 6 | 0 | 1 | 5 |
 | Evolution/Genome | 30+ | 0 | 20+ | 10+ |
 | **Total** | **116** | **10** | **43** | **20** |
-| Event Sourcing | 6 | 0 | 5 | 1 |
-| **Total** | **32** | **7** | **22** | **3** |
 
 Selected hot-path results:
 
@@ -633,28 +635,47 @@ ares/
 │   ├── agents/           # Leader/Sub agent system
 │   ├── ares_runtime/     # Runtime lifecycle + PluginBus (+ 10 built-in plugins)
 │   ├── ares_events/      # EventStore interface, MemoryEventStore, event types
-│   ├── ares_memory/      # Memory system + distillation
-│   ├── ares_evolution/   # Genetic algorithm evolution system
-│   ├── ares_arena/       # Chaos engineering arena
-│   ├── ares_flight/      # Flight recorder (timeline/genealogy/diagnostics)
-│   ├── ares_mcp/         # MCP client (stdio/SSE transport)
-│   ├── ares_callbacks/   # Event-driven callback system
-│   ├── ares_observability/ # OpenTelemetry + Prometheus metrics
-│   ├── ares_eval/        # Evaluation framework
-│   ├── ares_quant/       # Quantitative trading tools
+│   ├── ares_memory/      # Memory system + distillation pipeline
+│   ├── ares_evolution/   # Genetic algorithm evolution system (genome, mutation, scoring)
+│   ├── ares_arena/       # Chaos engineering / fault injection
+│   ├── ares_flight/      # Flight recorder (timeline / genealogy / diagnostics)
+│   ├── ares_mcp/         # MCP client (stdio / SSE transport)
+│   ├── ares_callbacks/   # Event-driven lifecycle callbacks
+│   ├── ares_observability/ # OpenTelemetry + Prometheus
+│   ├── ares_eval/        # Agent evaluation framework
+│   ├── ares_quant/       # Quantitative trading toolkit
+│   ├── ares_config/      # Configuration loading + validation
+│   ├── ares_ratelimit/   # Rate limiting
+│   ├── ares_shutdown/    # Graceful shutdown orchestration
+│   ├── ares_security/    # Input sanitization
+│   ├── ares_experience/  # Experience store + feedback service
+│   ├── ares_protocol/    # AHP inter-agent protocol
+│   ├── ares_ctxutil/     # Context utilities
+│   ├── ares_bootstrap/   # Module wiring factory
 │   ├── workflow/engine/  # DAG workflow engine (DynamicExecutor + PluginBus)
 │   ├── workflow/graph/   # Graph executor + checkpoint resume
-│   ├── protocol/ahp/     # AHP inter-agent protocol
-│   ├── storage/          # VectorStore interface + implementations
+│   ├── workflow/graphservice/ # RPC graph service
+│   ├── storage/          # VectorStore interface + implementations (PG, memory, Qdrant, SQLite)
+│   ├── storage/postgres/ # PostgreSQL adapter + migrations + repositories
+│   ├── storage/memory/   # In-memory vector store
 │   ├── llm/              # LLM client + output parsers
-│   ├── dashboard/        # Web dashboard (WebSocket + REST API)
+│   ├── llmservice/       # LLM service abstraction
+│   ├── memoryservice/    # Memory service abstraction
+│   ├── retrievalservice/ # Retrieval service abstraction
+│   ├── llm/output/       # Output adapters (OpenAI, Ollama, OpenRouter)
+│   ├── monitoring/       # Web dashboard + SSE + metrics
+│   ├── dashboard/        # Dashboard API + WebSocket hub + orchestrator
+│   ├── discovery/        # MCP server discovery (file, binary)
 │   ├── logger/           # Module-scoped structured logging
-│   └── config/           # Configuration loading + validation
-│   └── tools/           # Tool registry and invocation
+│   ├── tools/            # Tool registry (core, builtin, agent, resources)
+│   ├── plugins/          # Runtime plugins (resurrection, etc.)
+│   ├── errors/           # Unified error types
+│   └── config/           # Global config
 ├── services/embedding/  # Embedding gateway (FastAPI + Ollama)
 ├── examples/            # Travel, knowledge-base, dashboard, quant, quickstart, ...
-├── api/                 # Service interfaces and client
 ├── cmd/                 # CLI tools (arena, flight, migration, ...)
+├── docs/                # Architecture, features, guides (EN + ZH)
+├── scripts/             # Docker, CI, setup scripts
 └── benchmarks/          # Benchmark reports and logs
 ```
 
