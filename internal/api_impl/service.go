@@ -42,7 +42,8 @@ type Service struct {
 	cancel     context.CancelFunc
 	mu         sync.RWMutex
 	closed     bool
-	g          *errgroup.Group // FIX: structured concurrency group (replaces bare go)
+	g          *errgroup.Group
+	slog       *slog.Logger
 }
 
 // StartService connects LLM, all MCP servers, creates orchestrator, starts
@@ -133,10 +134,11 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 	slog.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
 
-	// FIX: replace bare go with errgroup for structured concurrency (code rule 4.5).
-	// All goroutines must be managed via errgroup to ensure error propagation
-	// and context cancellation support.
-	s.g, _ = errgroup.WithContext(ctx)
+	// Use errgroup for structured concurrency with error propagation.
+	// The derived ctx is cancelled automatically when any goroutine returns
+	// a non-nil error, ensuring sibling goroutines are notified.
+	s.g, s.ctx = errgroup.WithContext(ctx)
+	slog.Info("service context derived from errgroup error propagation")
 
 	// --- Hub + EventStore ---
 	hub := dashboard.NewWSHub()
@@ -288,9 +290,8 @@ func (s *Service) HTTPServer() *http.Server {
 }
 
 // SetHTTPHandler replaces the HTTP server's handler.
-// FIX: protected by mutex to prevent data race when called concurrently
-// with running requests (code rule 4.5). Must be called before Wait or Stop;
-// behavior after server start is undefined.
+// Protected by mutex to prevent data race when called concurrently.
+// Must be called before Wait or Stop; behavior after server start is undefined.
 func (s *Service) SetHTTPHandler(handler http.Handler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -303,7 +304,7 @@ func (s *Service) SetHTTPHandler(handler http.Handler) {
 func (s *Service) Wait() {
 	<-s.ctx.Done()
 	_ = s.httpServer.Shutdown(context.Background())
-	// FIX: wait for all errgroup-managed goroutines to finish (replaces bare go).
+	// Wait for all errgroup-managed goroutines to finish before returning.
 	if s.g != nil {
 		_ = s.g.Wait()
 	}

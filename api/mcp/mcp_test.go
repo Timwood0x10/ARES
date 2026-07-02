@@ -445,6 +445,23 @@ func TestClient_Close(t *testing.T) {
 	}
 }
 
+func TestClient_CallTool_BadResult(t *testing.T) {
+	mock := &mockTransport{
+		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+			return &jsonrpcResponse{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  json.RawMessage(`not valid json`),
+			}, nil
+		},
+	}
+	c := &Client{name: "test", transport: mock, idCounter: 1}
+	_, err := c.CallTool(context.Background(), "web_search", nil)
+	if err == nil {
+		t.Fatal("expected error for bad result JSON")
+	}
+}
+
 func TestClient_InitializeRequest(t *testing.T) {
 	var requests []jsonrpcRequest
 	mock := &mockTransport{

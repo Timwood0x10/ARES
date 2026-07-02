@@ -203,8 +203,7 @@ func (log *MemoryLog) GetCrossTickerLessons(ctx context.Context, excludeSymbol s
 	log.mu.RLock()
 	defer log.mu.RUnlock()
 
-	// FIX: implement cross-ticker lesson extraction from resolved store entries
-	// instead of returning empty placeholder.
+	// Extract cross-ticker lessons from resolved store entries.
 	resolved, err := log.store.GetAllResolvedEntries(ctx, limit*3)
 	if err != nil {
 		return nil, fmt.Errorf("cross ticker lessons get resolved: %w", err)

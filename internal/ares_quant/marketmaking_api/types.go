@@ -56,7 +56,6 @@ type QuoteDecision struct {
 }
 
 // Validate checks that all fields in the quote decision are within acceptable bounds.
-// FIX: add boundary validation for TTLMillis per code rule 9 (NEVER assume inputs are valid).
 //
 // Returns:
 //

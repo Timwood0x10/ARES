@@ -31,7 +31,7 @@ type Client struct {
 	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
-	mu               sync.RWMutex // FIX: protects closed field against data race (code rule 4.5)
+	mu               sync.RWMutex // Protects closed field against data race.
 	closed           bool
 }
 

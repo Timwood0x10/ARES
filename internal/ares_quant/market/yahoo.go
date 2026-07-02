@@ -21,7 +21,7 @@ const yahooDownloadURL = "https://query1.finance.yahoo.com/v7/finance/download/%
 // YahooFeed implements Feed using Yahoo Finance's CSV download API.
 type YahooFeed struct {
 	client    *http.Client
-	AllowMock bool // FIX: controls whether mock data fallback is allowed (default: false)
+	AllowMock bool // When false (default), failed fetches return ErrNoMarketData instead of mock data.
 }
 
 // NewYahooFeed creates a new Yahoo Finance data feed.
@@ -42,7 +42,7 @@ func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (
 		return TimeSeries{Ticker: ticker, Bars: bars}, nil
 	}
 
-	// FIX: only fall back to mock data when explicitly allowed; otherwise return sentinel error.
+	// Only fall back to mock data when explicitly allowed; otherwise return sentinel error.
 	if !f.AllowMock {
 		return TimeSeries{}, fmt.Errorf("%w: yahoo fetch failed for ticker %q", qerrors.ErrNoMarketData, ticker)
 	}

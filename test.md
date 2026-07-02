@@ -544,3 +544,75 @@ Additional fixes:
 - `go test -race -count=1 ./internal/tools/resources/builtin/planning/` — ✅ pass
 - `gofmt -w` — compliant
 - File size: **267 lines** (≤ 1000)
+
+---
+
+## Multi-Task Batch (2026-07-02, Rounds 3-5)
+
+### Scope
+7 workstreams: stale FIXME cleanup, service.go unit tests, task_planner_test.go improvement, api_impl errgroup fix, ares_quant FIXMEs, api/mcp coverage, api/client FIXMEs.
+
+### 1. Stale FIXME Comments — 15 Files Cleaned
+
+All were "already fixed but comment never updated" — real technical debt.
+
+| File | FIXME Topic | Status |
+|---|---|---|
+| `internal/ares_quant/research/memory_store.go` (×3) | rows.Err(), transactions | ✅ Already implemented |
+| `internal/ares_quant/research/reflection.go` | persist to store | ✅ Already implemented |
+| `internal/ares_quant/research/memory_log.go` | cross-ticker extraction | ✅ Already implemented |
+| `internal/ares_quant/research/graph.go` | explicit cancel | ✅ Already implemented |
+| `internal/ares_quant/research/agents/markdown_parser.go` | ordered slice matching | ✅ Already implemented |
+| `internal/ares_quant/market/yahoo.go` (×2) | mock data fallback control | ✅ Already implemented |
+| `internal/ares_quant/marketmaking_api/types.go` | TTLMillis validation | ✅ Already implemented |
+| `internal/ares_quant/marketmaking_api/config.go` | enum comparison | ✅ Already implemented |
+| `internal/api_impl/service.go` (×4) | errgroup, mutex, Wait | ✅ All already implemented |
+| `internal/storage/postgres/services/retrieval_service.go` | dbCancel leak | ✅ Already deferred |
+| `api/client/client.go` | race protection | ✅ Already protected |
+| `api/client/health.go` | zero-value slice | ✅ Already using var |
+
+### 2. service.go — Unit Tests (coverage 16.3% → 47.2%)
+
+Created `internal/ares_evolution/service/service_test.go` (383 lines):
+
+| Test | Coverage |
+|---|---|
+| `TestNewService_Validation` — 11 error cases in table-driven | `NewService` 93.3% |
+| `TestNewService_NonWiredSuccess` / `TestNewService_WiredSuccess` | |
+| `TestService_Evolve_NotInitialized` / `_ContextCancelled` / `_ZeroGenerationsUsesDefault` | `Evolve` 80.4% |
+| `TestService_BestStrategy/Stats/Lineages/SaveBestStrategy_NotInitialized` | Accessor error paths |
+| `TestBestFromStrategies` — max/empty/tie | 100% |
+| `TestToAPIStrategy` / `TestToInternalStrategy` — round-trip + nil + clone isolation | 100% |
+| `TestCloneDimensionScores` — nil/empty/populated + deep copy | 100% |
+| `TestService_Shutdown` / `TestLoadBestStrategy_EmptyPath` | |
+
+### 3. task_planner_test.go — Perfunctory Fix
+
+- 10 repetitive functions → **2 table-driven tests** with `result.Error` content assertions
+- `TestFormatToolsList` → table-driven
+- `TestSetLLMClient`: from `assert.NotNil` (always passes) → meaningful `tp.Name()` check
+- `map[string]interface{}` → `map[string]any`
+
+### 4. api_impl/service.go — errgroup Bug Fix
+
+`errgroup.WithContext(ctx)` returned a derived context that gets cancelled on sibling errors — but it was discarded with `_`. Fix: `s.g, s.ctx = errgroup.WithContext(ctx)` so the derived context is used for proper error propagation throughout the service.
+
+### 5. api/mcp — Coverage Patch
+
+Added `TestClient_CallTool_BadResult` for the unmarshal error path in `CallTool`.
+
+### 6. Remaining Gaps (not actionable without infrastructure)
+
+| Package | Coverage | Gap |
+|---|---|---|
+| `api/mcp/sse.go` | 0% | SSE transport — needs HTTP server |
+| `api/mcp/stdio.go` | 0% | Stdio transport — needs subprocess |
+| `api/handler/evolution.go` | 0% | Evolution handler — needs full service wiring |
+| `storage/postgres/repositories` | 0% | Integration tests only (build tag) |
+
+### Final Verification
+- `go vet ./internal/ares_evolution/... ./internal/ares_quant/... ./api/... ./internal/api_impl/...` — ✅ pass
+- `go build ./internal/ares_evolution/... ./internal/ares_quant/... ./api/... ./internal/api_impl/...` — ✅ pass
+- `go test -race -count=1` on all changed packages — ✅ pass
+- `golangci-lint run` on all changed packages — **0 issues**
+- `gofmt -w` on all changed files — compliant
