@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -279,7 +278,7 @@ func (c *EmbeddingClient) callEmbeddingService(ctx context.Context, text, prefix
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// nolint: errcheck // Response body close error is logged but not critical
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -329,7 +328,7 @@ func (c *EmbeddingClient) callEmbeddingBatchService(ctx context.Context, texts [
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Response body close error is logged but not critical
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -371,7 +370,7 @@ func (c *EmbeddingClient) HealthCheck(ctx context.Context) error {
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Response body close error is logged but not critical
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 

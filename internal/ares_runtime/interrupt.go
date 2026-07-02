@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 )
 
 // InterruptPlugin observes HITL lifecycle events and records them via the
@@ -88,7 +87,7 @@ func (p *InterruptPlugin) emitInterruptEvent(executionID, stepID, action, feedba
 		"action":              action,
 		"feedback":            feedback,
 	})
-	slog.Debug("interrupt plugin: recorded interrupt",
+	log.Debug("interrupt plugin: recorded interrupt",
 		"execution_id", executionID,
 		"step_id", stepID,
 		"action", action,

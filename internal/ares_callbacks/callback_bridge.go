@@ -2,7 +2,6 @@ package ares_callbacks
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
@@ -54,7 +53,7 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 	}
 
 	if !ares_events.Emit(context.Background(), b.store, b.agentID, eventType, "callbacks", payload) {
-		slog.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
+		log.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
 	}
 }
 
@@ -80,7 +79,7 @@ func (b *BridgeEventStore) mapEventType(ce Event) ares_events.EventType {
 	case EventAgentError:
 		return ares_events.EventAgentStopped
 	default:
-		slog.Debug("callback bridge: unmapped event", "event", ce)
+		log.Debug("callback bridge: unmapped event", "event", ce)
 		return ""
 	}
 }

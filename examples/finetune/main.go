@@ -164,7 +164,7 @@ func ExportStrategiesToJSONL(strategies []*mutation.Strategy, path string, topK 
 		}
 		count++
 	}
-	slog.Info("Strategies exported to JSONL",
+	log.Info("Strategies exported to JSONL",
 		"path", path,
 		"count", count,
 		"format", map[bool]string{true: "text", false: "chat"}[textFormat],
@@ -225,7 +225,7 @@ func ExportExperiencesToJSONL(experiences []*experience.Experience, path string,
 		}
 		count++
 	}
-	slog.Info("Experiences exported to JSONL",
+	log.Info("Experiences exported to JSONL",
 		"path", path,
 		"count", count,
 		"format", map[bool]string{true: "text", false: "chat"}[textFormat],
@@ -298,7 +298,7 @@ func (ls *LLMScoreClient) ScorerFunc() genome.ScorerFunc {
 
 		resp, err := ls.client.Generate(ctx, prompt)
 		if err != nil {
-			slog.Warn("LLM scorer failed, falling back to heuristic",
+			log.Warn("LLM scorer failed, falling back to heuristic",
 				"strategy_id", s.ID,
 				"error", err,
 			)
@@ -307,7 +307,7 @@ func (ls *LLMScoreClient) ScorerFunc() genome.ScorerFunc {
 
 		score, err := parseScore(resp)
 		if err != nil {
-			slog.Warn("LLM scorer parse error, falling back to heuristic",
+			log.Warn("LLM scorer parse error, falling back to heuristic",
 				"strategy_id", s.ID,
 				"response", truncate(resp, 100),
 				"error", err,
@@ -315,7 +315,7 @@ func (ls *LLMScoreClient) ScorerFunc() genome.ScorerFunc {
 			return ls.heuristic(s)
 		}
 
-		slog.Debug("LLM scored strategy",
+		log.Debug("LLM scored strategy",
 			"strategy_id", s.ID,
 			"score", score,
 		)
@@ -476,7 +476,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 		llmTimeout := appCfg.LLM.Timeout
 		if llmTimeout < 60 {
 			llmTimeout = 60
-			slog.Info("Increasing LLM client timeout for evolution workload",
+			log.Info("Increasing LLM client timeout for evolution workload",
 				"original_timeout", appCfg.LLM.Timeout,
 				"new_timeout", llmTimeout,
 			)
@@ -500,7 +500,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 		llmScorer, err := NewLLMScoreClient(llmCfg, RealScorer, scorerTimeout,
 			appCfg.LLM.ScorerAPIRate, appCfg.LLM.ScorerAPIBurst)
 		if err != nil {
-			slog.Warn("LLM scorer not available, falling back to heuristic only",
+			log.Warn("LLM scorer not available, falling back to heuristic only",
 				"error", err,
 			)
 			cfg.Scorer = RealScorer
@@ -509,16 +509,16 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 			cfg.HeuristicScorer = RealScorer
 			cfg.MaxLLMCallsPerGeneration = popSize * 2 // budget: up to 2x population per gen
 
-			slog.Info("Using tiered scoring pipeline",
+			log.Info("Using tiered scoring pipeline",
 				"llm_budget_per_gen", cfg.MaxLLMCallsPerGeneration,
 			)
 		}
 	} else {
-		slog.Info("No LLM ares_config provided, using heuristic scorer only")
+		log.Info("No LLM ares_config provided, using heuristic scorer only")
 		cfg.Scorer = RealScorer
 	}
 
-	slog.Info("Creating real evolution system",
+	log.Info("Creating real evolution system",
 		"population_size", popSize,
 		"generations", generations,
 		"base_params", paramSummary(base),
@@ -529,7 +529,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 		return nil, nil, fmt.Errorf("create wired system: %w", err)
 	}
 
-	slog.Info("Running real evolution...")
+	log.Info("Running real evolution...")
 	if err := evolution.RunIdleEvolution(ctx, system, generations); err != nil {
 		return nil, nil, fmt.Errorf("run evolution: %w", err)
 	}
@@ -538,7 +538,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 	strategies, gen := pop.Snapshot()
 	stats := pop.Stats()
 
-	slog.Info("Evolution complete",
+	log.Info("Evolution complete",
 		"generations_run", gen,
 		"population_size", len(strategies),
 		"best_score", fmt.Sprintf("%.3f", stats.BestScore),
@@ -547,7 +547,7 @@ func runRealEvolution(ctx context.Context, generations, popSize int, appCfg *are
 
 	// Log the best strategy.
 	if best := pop.BestStrategy(); best != nil {
-		slog.Info("Best evolved strategy",
+		log.Info("Best evolved strategy",
 			"id", best.ID,
 			"version", best.Version,
 			"score", fmt.Sprintf("%.3f", best.Score),
@@ -706,7 +706,7 @@ func distillExperience(tr *experience.TaskResult, idx int, now time.Time, rng *r
 // textFormat: true → {"text": "..."}, false → {"messages": [...]}
 func ExportPopulationToJSONL(pop *genome.Population, path string, topK int, textFormat bool) (int, error) {
 	strategies, gen := pop.Snapshot()
-	slog.Info("Exporting population snapshot",
+	log.Info("Exporting population snapshot",
 		"generation", gen,
 		"population_size", len(strategies),
 		"top_k", topK,
@@ -741,7 +741,7 @@ func main() {
 	}
 	cfg, err := ares_config.Load(cfgPath)
 	if err != nil {
-		slog.Warn("Failed to load ares_config, using defaults",
+		log.Warn("Failed to load ares_config, using defaults",
 			"path", cfgPath,
 			"error", err,
 		)
@@ -761,7 +761,7 @@ func main() {
 
 	pop, strategies, err := runRealEvolution(ctx, 5, 16, cfg)
 	if err != nil {
-		slog.Error("Evolution failed", "error", err)
+		log.Error("Evolution failed", "error", err)
 		os.Exit(1)
 	}
 	_ = pop // kept for use with ExportPopulationToJSONL
@@ -778,12 +778,12 @@ func main() {
 
 	count1, err := ExportStrategiesToJSONL(strategies, "./examples/finetune/train_data.jsonl", 0, true)
 	if err != nil {
-		slog.Error("Export strategies failed", "error", err)
+		log.Error("Export strategies failed", "error", err)
 		os.Exit(1)
 	}
 	count2, err := ExportStrategiesToJSONL(strategies, "./examples/finetune/train_data_chat.jsonl", 0, false)
 	if err != nil {
-		slog.Error("Export chat strategies failed", "error", err)
+		log.Error("Export chat strategies failed", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("  → %d text examples  (train_data.jsonl)\n", count1)
@@ -806,12 +806,12 @@ func main() {
 	fmt.Println("▶ Step 4: Exporting experiences to JSONL...")
 	count3, err := ExportExperiencesToJSONL(experiences, "./examples/finetune/experience_data.jsonl", false)
 	if err != nil {
-		slog.Error("Export experiences failed", "error", err)
+		log.Error("Export experiences failed", "error", err)
 		os.Exit(1)
 	}
 	count4, err := ExportExperiencesToJSONL(experiences, "./examples/finetune/experience_text_data.jsonl", true)
 	if err != nil {
-		slog.Error("Export experience text failed", "error", err)
+		log.Error("Export experience text failed", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("  → %d chat examples  (experience_data.jsonl)\n", count3)

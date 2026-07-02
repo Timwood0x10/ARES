@@ -115,7 +115,7 @@ func main() {
 	}
 
 	if simulate && !useResearchLayer {
-		slog.Warn("--simulate flag is only supported in research layer mode. Use --use-research-layer to enable simulation.")
+		log.Warn("--simulate flag is only supported in research layer mode. Use --use-research-layer to enable simulation.")
 	}
 
 	if err := runLegacyPipeline(ctx, cfgPath, agentsPath, modelName, ticker, dataDir, outDir, days); err != nil {
@@ -592,7 +592,7 @@ func writeEquityCurveCSV(outDir string, curve []marketmakingapi.EquityPoint) err
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			slog.Error("equity curve file close error", "err", err)
+			log.Error("equity curve file close error", "err", err)
 		}
 	}()
 
@@ -624,7 +624,7 @@ func writeTradesCSV(outDir string, trades []marketmakingapi.TradeRecord) error {
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			slog.Error("trades file close error", "err", err)
+			log.Error("trades file close error", "err", err)
 		}
 	}()
 

@@ -3,7 +3,6 @@ package ares_runtime
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
@@ -84,7 +83,7 @@ func (p *ObserverPlugin) loop(ctx context.Context, ch <-chan *ares_events.Event)
 				return
 			}
 			if err := p.store.Append(ctx, evt.StreamID, []*ares_events.Event{evt}, 0); err != nil {
-				slog.Warn("observer: append event failed",
+				log.Warn("observer: append event failed",
 					"stream_id", evt.StreamID,
 					"type", evt.Type,
 					"error", err,

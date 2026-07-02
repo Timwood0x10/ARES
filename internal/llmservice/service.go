@@ -4,7 +4,6 @@ package llmservice
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -165,7 +164,7 @@ func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (
 
 	if s.repo != nil {
 		if err := s.repo.LogGeneration(ctx, request, response); err != nil {
-			slog.Warn("failed to log generation", "error", err)
+			log.Warn("failed to log generation", "error", err)
 		}
 	}
 
@@ -202,7 +201,7 @@ func (s *Service) generateWithChat(ctx context.Context, request *core.GenerateRe
 
 	if s.repo != nil {
 		if err := s.repo.LogGeneration(ctx, request, resp); err != nil {
-			slog.Warn("failed to log generation", "error", err)
+			log.Warn("failed to log generation", "error", err)
 		}
 	}
 

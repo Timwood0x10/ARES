@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 )
 
@@ -103,7 +102,7 @@ func (r *MemoryRouter) Route(ctx context.Context, state RouteState) (*RouteDecis
 
 	if prefetched != nil && prefetchedStep == state.CurrentStepID {
 		if d := r.bestAdvice(prefetched); d != nil {
-			slog.Debug("memory router: using pre-fetched advice",
+			log.Debug("memory router: using pre-fetched advice",
 				"step", state.CurrentStepID,
 				"next_step", d.NextStepID,
 				"confidence", "prefetched",
@@ -140,7 +139,7 @@ func (r *MemoryRouter) queryMemory(ctx context.Context, state RouteState) []Rout
 	}
 	advice, err := mp.AdviseRoute(ctx, state)
 	if err != nil {
-		slog.Warn("memory router: AdviseRoute failed",
+		log.Warn("memory router: AdviseRoute failed",
 			"error", err,
 		)
 		return nil
@@ -167,7 +166,7 @@ func (r *MemoryRouter) bestAdvice(advice []RouteAdvice) *RouteDecision {
 		}
 	}
 	if best.Confidence < r.confidenceMin {
-		slog.Debug("memory router: best advice below confidence threshold, falling back",
+		log.Debug("memory router: best advice below confidence threshold, falling back",
 			"confidence", best.Confidence,
 			"threshold", r.confidenceMin,
 		)

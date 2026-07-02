@@ -4,7 +4,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"runtime"
 	"sync"
 	"time"
@@ -77,7 +76,7 @@ func (p *Pool) Release(conn *sql.Conn) {
 	}
 
 	if err := conn.Close(); err != nil {
-		slog.Warn("pool: close connection failed", "error", err)
+		log.Warn("pool: close connection failed", "error", err)
 	}
 }
 
@@ -201,7 +200,7 @@ func (p *Pool) Query(ctx context.Context, query string, args ...any) (*ManagedRo
 	// Set finalizer to release connection if caller forgets to call Close().
 	runtime.SetFinalizer(mr, func(m *ManagedRows) {
 		if m.conn != nil {
-			slog.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
+			log.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
 		}
@@ -252,7 +251,7 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 		if cancel != nil {
 			cancel()
 		}
-		slog.Error("Failed to acquire database connection for QueryRow", "error", err)
+		log.Error("Failed to acquire database connection for QueryRow", "error", err)
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
 		return &ManagedRow{Row: p.db.QueryRowContext(cancelCtx, "SELECT 1 WHERE 1=0"), conn: nil, pool: p}
@@ -263,7 +262,7 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 	// Set finalizer to release connection if caller never calls Scan().
 	runtime.SetFinalizer(mr, func(m *ManagedRow) {
 		if m.conn != nil {
-			slog.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
+			log.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
 		}

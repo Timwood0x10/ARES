@@ -2,7 +2,6 @@ package errors
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 	"time"
 )
@@ -55,7 +54,7 @@ func (h *Handler) HandleError(ctx context.Context, appErr *AppError, retryCount 
 			RetryCount: retryCount,
 		}
 		if err := h.dlq(ctx, dlqMsg); err != nil {
-			slog.Error("Failed to send to DLQ", "error_code", code, "error", err)
+			log.Error("Failed to send to DLQ", "error_code", code, "error", err)
 		}
 	}
 }

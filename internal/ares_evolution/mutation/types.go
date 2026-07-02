@@ -5,7 +5,6 @@ package mutation
 
 import (
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -72,7 +71,7 @@ func ParseMutationType(s string) MutationType {
 		// Empty string is treated as root (default for initial strategies).
 		return MutationRoot
 	default:
-		slog.Warn("unknown mutation type string, falling back to MutationRoot",
+		log.Warn("unknown mutation type string, falling back to MutationRoot",
 			"input", s,
 		)
 		return MutationRoot

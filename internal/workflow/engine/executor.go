@@ -4,7 +4,6 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -687,7 +686,7 @@ func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step
 	if store != nil {
 		if err := store.Delete(ctx, workflow.ID, step.ID); err != nil {
 			// Log but do not fail the step on cleanup error.
-			slog.Warn("failed to cleanup interrupt store", "error", err, "step_id", step.ID)
+			log.Warn("failed to cleanup interrupt store", "error", err, "step_id", step.ID)
 		}
 	}
 

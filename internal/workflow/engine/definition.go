@@ -6,7 +6,6 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -105,7 +104,7 @@ func (p *DefinitionParser) ParseFile(ctx context.Context, path string) (*AgentDe
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
-			slog.Warn("definition: close file failed", "error", err)
+			log.Warn("definition: close file failed", "error", err)
 		}
 	}()
 

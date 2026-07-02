@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -143,7 +142,7 @@ func (c *providerClient) generate(ctx context.Context, prompt string) (string, e
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("llm: close response body", "error", err)
+			log.Error("llm: close response body", "error", err)
 		}
 	}()
 
@@ -217,7 +216,7 @@ func newFailoverLLMClient(primary LLMProviderConfig, fallbacks []LLMProviderConf
 	for _, fb := range fallbacks {
 		providers = append(providers, newProviderClient(fb))
 	}
-	slog.Info("failover LLM client created",
+	log.Info("failover LLM client created",
 		"providers", len(providers),
 		"primary", providers[0].name,
 		"timeout", 20*time.Second,
@@ -269,7 +268,7 @@ func (fc *failoverLLMClient) Generate(ctx context.Context, prompt string) (strin
 	var lastErr error
 	for _, p := range fc.providers {
 		if fc.isCooledDown(p.name) {
-			slog.Debug("failover: skipping cooled-down provider", "provider", p.name)
+			log.Debug("failover: skipping cooled-down provider", "provider", p.name)
 			continue
 		}
 		// Apply per-provider timeout so we don't wait 30s for a dead provider.
@@ -286,12 +285,12 @@ func (fc *failoverLLMClient) Generate(ctx context.Context, prompt string) (strin
 		// instead of waiting for the same timeout/429 again.
 		cd := 30 * time.Second
 		if _, ok := err.(*rateLimitError); ok {
-			slog.Warn("failover: rate limited, cooling down",
+			log.Warn("failover: rate limited, cooling down",
 				"provider", p.name,
 				"cooldown", cd,
 			)
 		} else {
-			slog.Warn("failover: provider failed, cooling down",
+			log.Warn("failover: provider failed, cooling down",
 				"provider", p.name,
 				"cooldown", cd,
 				"error", err,

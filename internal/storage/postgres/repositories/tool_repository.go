@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -357,7 +356,7 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -415,7 +414,7 @@ func (r *ToolRepository) SearchByKeyword(ctx context.Context, query, tenantID st
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -469,7 +468,7 @@ func (r *ToolRepository) ListAll(ctx context.Context, tenantID string, limit int
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -524,7 +523,7 @@ func (r *ToolRepository) ListByAgentType(ctx context.Context, agentType, tenantI
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -648,7 +647,7 @@ func (r *ToolRepository) ListByTags(ctx context.Context, tags []string, tenantID
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 

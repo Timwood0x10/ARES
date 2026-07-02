@@ -2,7 +2,6 @@
 package ares_callbacks
 
 import (
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -111,7 +110,7 @@ func (r *Registry) Emit(ctx *Context) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("handler panicked", "event", ctx.Event, "recover", r)
+					log.Error("handler panicked", "event", ctx.Event, "recover", r)
 				}
 			}()
 			h(ctx)

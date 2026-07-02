@@ -15,7 +15,6 @@ package apiimpl
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -90,7 +89,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		cancel()
 		return nil, fmt.Errorf("llm not reachable: %w", err)
 	}
-	slog.Info("llm connected", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+	log.Info("llm connected", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- MCP (support multiple servers) ---
 	if len(cfg.MCP.Servers) == 0 {
@@ -116,7 +115,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		}
 		tools, listErr := mcpClient.ListTools(ctx)
 		if listErr != nil {
-			slog.Warn("ares_mcp list tools failed", "server", srv.Name, "error", listErr)
+			log.Warn("ares_mcp list tools failed", "server", srv.Name, "error", listErr)
 		}
 		for _, t := range tools {
 			if !seenTools[t.Name] {
@@ -129,15 +128,15 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 			name:   srv.Name,
 			tools:  tools,
 		})
-		slog.Info("ares_mcp server connected", "server", srv.Name, "tools", len(tools))
+		log.Info("ares_mcp server connected", "server", srv.Name, "tools", len(tools))
 	}
-	slog.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
+	log.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
 
 	// Use errgroup for structured concurrency with error propagation.
 	// The derived ctx is cancelled automatically when any goroutine returns
 	// a non-nil error, ensuring sibling goroutines are notified.
 	s.g, s.ctx = errgroup.WithContext(ctx)
-	slog.Info("service context derived from errgroup error propagation")
+	log.Info("service context derived from errgroup error propagation")
 
 	// --- Hub + EventStore ---
 	hub := dashboard.NewWSHub()
@@ -161,7 +160,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	s.eventStore = eventStore
 	bridge := dashboard.NewEventBridge(eventStore, hub)
 	if startErr := bridge.Start(ctx); startErr != nil {
-		slog.Warn("event bridge start failed", "error", startErr)
+		log.Warn("event bridge start failed", "error", startErr)
 	}
 
 	// --- Orchestrator ---
@@ -188,7 +187,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	// --- Flight Recorder ---
 	fr := flight.NewFlightRecorder(flight.FlightRecorderConfig{EventStore: eventStore})
 	if startErr := fr.Start(ctx); startErr != nil {
-		slog.Warn("flight recorder start failed", "error", startErr)
+		log.Warn("flight recorder start failed", "error", startErr)
 	}
 	orch.SetFlightRecorder(fr)
 
@@ -203,7 +202,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	dashAPI.SetSurvival(adapter)
 	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: dashAPI.Handler(), ReadHeaderTimeout: 30 * time.Second} //nosec G112
 	s.g.Go(func() error {
-		slog.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
+		log.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("dashboard http server: %w", err)
 		}
@@ -269,10 +268,10 @@ func (s *Service) RunReview() {
 		req := BuildAgentRequest(task)
 		id, err := s.orch.CreateAgent(req)
 		if err != nil {
-			slog.Error("create agent failed", "name", task.Name, "error", err)
+			log.Error("create agent failed", "name", task.Name, "error", err)
 			continue
 		}
-		slog.Info("agent launched", "id", id, "name", task.Name)
+		log.Info("agent launched", "id", id, "name", task.Name)
 	}
 }
 

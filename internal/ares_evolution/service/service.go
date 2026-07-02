@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -116,7 +115,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 		s.crosser = cross
 	}
 
-	slog.Info("evolution service created",
+	log.Info("evolution service created",
 		"population_size", cfg.PopulationSize,
 		"elite_count", cfg.EliteCount,
 		"wired_mode", cfg.EnableWiredMode,
@@ -279,7 +278,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				var err error
 				ev, err = evidenceAgg(ctx, best.ID)
 				if err != nil {
-					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
+					log.WarnContext(ctx, "post-generation: evidence aggregation failed",
 						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				}
 			}
@@ -290,10 +289,10 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				scoreCtx := context.WithValue(ctx, scoreContextKey{}, best.Score)
 				state, reason, err := promoter(scoreCtx, best.ID, ev)
 				if err != nil {
-					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
+					log.WarnContext(ctx, "post-generation: promotion evaluation failed",
 						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				} else {
-					slog.InfoContext(ctx, "post-generation promotion evaluation",
+					log.InfoContext(ctx, "post-generation promotion evaluation",
 						"generation", sys.Population.Generation,
 						"winner", best.ID,
 						"fitness", best.Score,
@@ -305,7 +304,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 					)
 				}
 			} else {
-				slog.InfoContext(ctx, "generation complete",
+				log.InfoContext(ctx, "generation complete",
 					"generation", sys.Population.Generation,
 					"winner", best.ID,
 					"fitness", best.Score,
@@ -496,7 +495,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 
 	best, err := s.BestStrategy()
 	if err != nil {
-		slog.WarnContext(ctx, "failed to get best strategy after evolution", "error", err)
+		log.WarnContext(ctx, "failed to get best strategy after evolution", "error", err)
 	} else {
 		result.BestStrategy = best
 	}
@@ -517,7 +516,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		}
 	}
 
-	slog.InfoContext(ctx, "evolution completed",
+	log.InfoContext(ctx, "evolution completed",
 		"total_generations", result.TotalGens,
 		"raw_improvements", rawCount,
 		"significant_improvements", sigCount,
@@ -600,7 +599,7 @@ func (s *Service) Shutdown() {
 	if s.wiredSystem != nil {
 		evolution.Shutdown(s.wiredSystem)
 	}
-	slog.Info("evolution service shut down")
+	log.Info("evolution service shut down")
 }
 
 // SaveBestStrategy persists the best strategy to a JSON file at the given path.
@@ -628,7 +627,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	slog.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)
+	log.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)
 	return nil
 }
 
@@ -1028,7 +1027,7 @@ func resolveEvidenceAggregator(v interface{}) func(ctx context.Context, strategy
 			}, nil
 		}
 	}
-	slog.Warn("evidence aggregator: unrecognised type, ignoring",
+	log.Warn("evidence aggregator: unrecognised type, ignoring",
 		"type", fmt.Sprintf("%T", v))
 	return nil
 }
@@ -1058,7 +1057,7 @@ func resolvePromotionLogic(v interface{}) func(ctx context.Context, strategyID s
 			return string(state), reason, nil
 		}
 	}
-	slog.Warn("promotion logic: unrecognised type, ignoring",
+	log.Warn("promotion logic: unrecognised type, ignoring",
 		"type", fmt.Sprintf("%T", v))
 	return nil
 }

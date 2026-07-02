@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -320,7 +319,7 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("web_search: response body close failed", "error", err)
+			log.Warn("web_search: response body close failed", "error", err)
 		}
 	}()
 

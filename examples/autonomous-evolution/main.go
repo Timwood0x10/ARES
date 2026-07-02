@@ -42,11 +42,11 @@ func main() {
 
 	projectCfg, err := loadProjectEvolutionConfig()
 	if err != nil {
-		slog.Info("evolution: no project config found, using defaults (OFF)")
+		log.Info("evolution: no project config found, using defaults (OFF)")
 	} else if projectCfg.Enabled {
 		evoEnabled = true
 		evoCfg = mergeGACfg(cfgGA, projectCfg)
-		slog.Info("evolution: enabled via project config")
+		log.Info("evolution: enabled via project config")
 	}
 
 	fmt.Printf("   %s  6: Multi-Gen GA Evolution\n", statusStr(evoEnabled))
@@ -54,7 +54,7 @@ func main() {
 
 	kit, err := NewDemoKit()
 	if err != nil {
-		slog.Error("Failed to initialize demo kit", "error", err)
+		log.Error("Failed to initialize demo kit", "error", err)
 		return
 	}
 

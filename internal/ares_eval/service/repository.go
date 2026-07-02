@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -157,7 +156,7 @@ func (r *pgEvalResultRepository) GetByRunID(ctx context.Context, runID string) (
 	for rows.Next() {
 		result, err := scanEvalResult(rows)
 		if err != nil {
-			slog.Warn("failed to scan eval result row", "error", err)
+			log.Warn("failed to scan eval result row", "error", err)
 			continue
 		}
 		results = append(results, result)
@@ -211,7 +210,7 @@ func (r *pgEvalResultRepository) GetLeaderboard(ctx context.Context, limit, offs
 			&entry.RunID, &entry.ConfigName, &entry.OverallScore,
 			&entry.PassRate, &entry.TotalTests, &entry.AvgDurationMs,
 		); err != nil {
-			slog.Warn("failed to scan leaderboard row", "error", err)
+			log.Warn("failed to scan leaderboard row", "error", err)
 			continue
 		}
 		entry.Rank = rank
@@ -265,7 +264,7 @@ func (r *pgEvalResultRepository) GetComparison(ctx context.Context, runIDs []str
 
 		if err := rows.Scan(&testCaseID, &testCaseName, &runID, &configName,
 			&score, &status, &durationMs); err != nil {
-			slog.Warn("failed to scan comparison row", "error", err)
+			log.Warn("failed to scan comparison row", "error", err)
 			continue
 		}
 

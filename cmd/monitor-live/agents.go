@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -240,13 +239,13 @@ func submitTasks(ctx context.Context, agent leader.Agent) {
 		}
 
 		task := tasks[i%len(tasks)]
-		slog.Info("submitting task", "num", i+1, "input", task)
+		lg.Info("submitting task", "num", i+1, "input", task)
 
 		result, err := agent.Process(ctx, task)
 		if err != nil {
-			slog.Error("task failed", "num", i+1, "error", err)
+			lg.Error("task failed", "num", i+1, "error", err)
 		} else if result != nil {
-			slog.Info("task completed", "num", i+1)
+			lg.Info("task completed", "num", i+1)
 		}
 
 		select {

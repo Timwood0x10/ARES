@@ -3,7 +3,6 @@ package mutation
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"sort"
 	"sync/atomic"
@@ -387,7 +386,7 @@ func deepCopyParamRanges(src map[string]ParamRange) map[string]ParamRange {
 	for k, v := range src {
 		clonedValues, ok := cloneValue(v.Values).([]any)
 		if !ok {
-			slog.Warn("deepCopyParamRanges: unexpected type from cloneValue, falling back to nil Values",
+			log.Warn("deepCopyParamRanges: unexpected type from cloneValue, falling back to nil Values",
 				"key", k,
 				"type", fmt.Sprintf("%T", v.Values))
 			clonedValues = nil

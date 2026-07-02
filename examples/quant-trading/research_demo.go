@@ -38,7 +38,7 @@ func main() {
 	defer cancel()
 
 	if err := runResearchDemo(ctx, ticker, outputPath); err != nil {
-		slog.Error("research demo failed", "err", err)
+		log.Error("research demo failed", "err", err)
 		os.Exit(1)
 	}
 }

@@ -2,7 +2,6 @@ package scoring
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 )
@@ -39,7 +38,7 @@ func (p *ExperienceStoreProvider) FindSimilar(ctx context.Context, taskType stri
 		return 0, 0, err
 	}
 	if len(exps) == 0 {
-		slog.Debug("ExperienceStoreProvider: no experiences found for task type",
+		log.Debug("ExperienceStoreProvider: no experiences found for task type",
 			"task_type", taskType)
 		return 0, 0, nil
 	}
@@ -53,7 +52,7 @@ func (p *ExperienceStoreProvider) FindSimilar(ctx context.Context, taskType stri
 		confidence = 1.0
 	}
 
-	slog.Debug("ExperienceStoreProvider: found similar experiences",
+	log.Debug("ExperienceStoreProvider: found similar experiences",
 		"task_type", taskType,
 		"count", len(exps),
 		"confidence", confidence,

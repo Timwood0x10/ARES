@@ -4,7 +4,6 @@ package memoryapi
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
@@ -197,7 +196,7 @@ func (s *DistillationServiceImpl) DistillConversation(ctx context.Context, conve
 		return nil, ErrInvalidTenantID
 	}
 
-	slog.Info("Starting memory distillation",
+	log.Info("Starting memory distillation",
 		"conversation_id", conversationID,
 		"tenant_id", tenantID,
 		"user_id", userID,
@@ -215,7 +214,7 @@ func (s *DistillationServiceImpl) DistillConversation(ctx context.Context, conve
 	// Execute distillation
 	internalMemories, err := s.distiller.DistillConversation(ctx, conversationID, internalMessages, tenantID, userID)
 	if err != nil {
-		slog.Error("Memory distillation failed",
+		log.Error("Memory distillation failed",
 			"conversation_id", conversationID,
 			"error", err)
 		return nil, errors.Wrap(err, "distill conversation")
@@ -227,7 +226,7 @@ func (s *DistillationServiceImpl) DistillConversation(ctx context.Context, conve
 		apiMemories[i] = convertToAPIDistilledMemory(&mem)
 	}
 
-	slog.Info("Memory distillation completed",
+	log.Info("Memory distillation completed",
 		"conversation_id", conversationID,
 		"memories_created", len(apiMemories))
 
@@ -286,7 +285,7 @@ func (s *DistillationServiceImpl) UpdateConfig(config *DistillationConfig) error
 	// For now, just update the API config
 	s.config = config
 
-	slog.Info("Distillation config updated",
+	log.Info("Distillation config updated",
 		"min_importance", config.MinImportance,
 		"max_memories", config.MaxMemoriesPerDistillation)
 
@@ -409,7 +408,7 @@ func (s *DistillationServiceImpl) UpdateMemory(ctx context.Context, memoryID str
 		return ErrMemoryUpdateFailed
 	}
 
-	slog.InfoContext(ctx, "Updating distilled memory", "memory_id", memoryID, "updates", updates)
+	log.InfoContext(ctx, "Updating distilled memory", "memory_id", memoryID, "updates", updates)
 
 	// Get the internal repository for advanced operations
 	internalRepo := s.repo.GetInternalRepository()
@@ -430,11 +429,11 @@ func (s *DistillationServiceImpl) UpdateMemory(ctx context.Context, memoryID str
 	if repo, ok := internalRepo.(internalMemoryRepo); ok {
 		err := repo.UpdateMemory(ctx, memoryID, updates)
 		if err != nil {
-			slog.ErrorContext(ctx, "Failed to update distilled memory", "memory_id", memoryID, "error", err)
+			log.ErrorContext(ctx, "Failed to update distilled memory", "memory_id", memoryID, "error", err)
 			return errors.Wrap(err, "update memory")
 		}
 
-		slog.InfoContext(ctx, "Distilled memory updated successfully", "memory_id", memoryID)
+		log.InfoContext(ctx, "Distilled memory updated successfully", "memory_id", memoryID)
 		return nil
 	}
 
@@ -456,15 +455,15 @@ func (s *DistillationServiceImpl) DeleteMemory(ctx context.Context, memoryID str
 		return ErrMemoryDeleteFailed
 	}
 
-	slog.InfoContext(ctx, "Deleting distilled memory", "memory_id", memoryID)
+	log.InfoContext(ctx, "Deleting distilled memory", "memory_id", memoryID)
 
 	err := s.repo.Delete(ctx, memoryID)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to delete distilled memory", "memory_id", memoryID, "error", err)
+		log.ErrorContext(ctx, "Failed to delete distilled memory", "memory_id", memoryID, "error", err)
 		return errors.Wrap(err, "delete memory")
 	}
 
-	slog.InfoContext(ctx, "Distilled memory deleted successfully", "memory_id", memoryID)
+	log.InfoContext(ctx, "Distilled memory deleted successfully", "memory_id", memoryID)
 	return nil
 }
 
@@ -488,19 +487,19 @@ func (s *DistillationServiceImpl) SearchMemories(ctx context.Context, query stri
 		return nil, ErrVectorSearchFailed
 	}
 
-	slog.InfoContext(ctx, "Searching memories", "query", query, "tenant_id", tenantID, "limit", limit)
+	log.InfoContext(ctx, "Searching memories", "query", query, "tenant_id", tenantID, "limit", limit)
 
 	// Generate embedding for the query
 	embedding, err := s.embedder.Embed(ctx, query)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to generate embedding for query", "query", query, "error", err)
+		log.ErrorContext(ctx, "Failed to generate embedding for query", "query", query, "error", err)
 		return nil, errors.Wrap(err, "generate embedding")
 	}
 
 	// Search for similar memories
 	experiences, err := s.repo.SearchByVector(ctx, embedding, tenantID, limit)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to search memories", "query", query, "error", err)
+		log.ErrorContext(ctx, "Failed to search memories", "query", query, "error", err)
 		return nil, errors.Wrap(err, "search memories")
 	}
 
@@ -522,6 +521,6 @@ func (s *DistillationServiceImpl) SearchMemories(ctx context.Context, query stri
 		memories = append(memories, memory)
 	}
 
-	slog.InfoContext(ctx, "Memory search completed", "query", query, "results_count", len(memories))
+	log.InfoContext(ctx, "Memory search completed", "query", query, "results_count", len(memories))
 	return memories, nil
 }

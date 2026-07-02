@@ -3,7 +3,6 @@ package ares_eval
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -115,7 +114,7 @@ func (r *ComparisonRunner) Run(ctx context.Context, configs []AgentConfig) (*Com
 
 		result, err := r.runSingleConfig(ctx, cfg)
 		if err != nil {
-			slog.Error("failed to run config",
+			log.Error("failed to run config",
 				"config", cfg.Name,
 				"error", err,
 			)

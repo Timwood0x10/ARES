@@ -4,7 +4,6 @@ package memoryapi
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -117,7 +116,7 @@ func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
 		return errors.Wrap(err, "delete session")
 	}
 
-	slog.Info("Session deleted successfully", "session_id", sessionID)
+	log.Info("Session deleted successfully", "session_id", sessionID)
 	return nil
 }
 

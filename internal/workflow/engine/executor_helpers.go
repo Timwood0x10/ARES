@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -34,7 +33,7 @@ func (e *DynamicExecutor) recomputeOrder(
 
 	newOrder, err := mutableDAG.GetExecutionOrder()
 	if err != nil {
-		slog.Warn("recomputeOrder failed, keeping existing order",
+		log.Warn("recomputeOrder failed, keeping existing order",
 			"error", err,
 			"version", currentVersion,
 		)
@@ -122,7 +121,7 @@ func (e *DynamicExecutor) handleStepRouting(
 
 	decision, err := router.Route(ctx, state)
 	if err != nil {
-		slog.Warn("router plugin returned error, ignoring",
+		log.Warn("router plugin returned error, ignoring",
 			"router", router.Name(),
 			"error", err,
 		)
@@ -214,7 +213,7 @@ func (e *DynamicExecutor) handleStepFailure(
 
 	decision, err := e.recoveryHandler.RecoverStep(ctx, failure, mutableDAG)
 	if err != nil {
-		slog.Warn("recovery handler returned error, failing workflow",
+		log.Warn("recovery handler returned error, failing workflow",
 			"step_id", result.StepID,
 			"error", err,
 		)
@@ -227,7 +226,7 @@ func (e *DynamicExecutor) handleStepFailure(
 	switch decision.Strategy {
 	case RecoveryReplaceNode:
 		if decision.NewStep == nil {
-			slog.Warn("replace_node decision missing NewStep, failing workflow",
+			log.Warn("replace_node decision missing NewStep, failing workflow",
 				"step_id", result.StepID,
 			)
 			return false
@@ -243,7 +242,7 @@ func (e *DynamicExecutor) handleStepFailure(
 		}
 
 		if err := mutableDAG.ReplaceNode(ctx, result.StepID, decision.NewStep); err != nil {
-			slog.Warn("ReplaceNode failed during recovery, failing workflow",
+			log.Warn("ReplaceNode failed during recovery, failing workflow",
 				"step_id", result.StepID,
 				"error", err,
 			)

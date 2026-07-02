@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
@@ -170,7 +169,7 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback fetch transaction", "error", rbErr)
+				log.Error("Failed to rollback fetch transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -193,7 +192,7 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	for rows.Next() {
 		task := &EmbeddingTask{}
 		if err := rows.Scan(&task.TaskID, &task.Table, &task.Content, &task.TenantID, &task.Model, &task.Version); err != nil {
-			slog.Error("Failed to scan embedding task row", "error", err)
+			log.Error("Failed to scan embedding task row", "error", err)
 			continue
 		}
 		tasks = append(tasks, task)
@@ -342,7 +341,7 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback reconcile transaction", "error", rbErr)
+				log.Error("Failed to rollback reconcile transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -368,7 +367,7 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 	for rows.Next() {
 		var chunk orphanedChunk
 		if err := rows.Scan(&chunk.ID, &chunk.Content, &chunk.TenantID); err != nil {
-			slog.Error("Failed to scan orphaned chunk row", "error", err)
+			log.Error("Failed to scan orphaned chunk row", "error", err)
 			continue
 		}
 		chunks = append(chunks, chunk)

@@ -15,7 +15,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -93,14 +92,14 @@ func main() {
 
 	// --- ToolBinder for agents (bridged from internal core.Registry for schema support) ---
 	toolBinder := newToolBinder(internalReg)
-	slog.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
+	lg.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
 
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
 		log.Fatalf("create chat client: %v", err)
 	}
-	slog.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Memory manager (required by leader) ---
 	memConfig := memory.DefaultMemoryConfig()
@@ -233,10 +232,10 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 
 	adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)
 	if err == nil {
-		slog.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+		lg.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 		return adapter
 	}
-	slog.Warn("primary LLM failed, trying fallbacks", "error", err)
+	lg.Warn("primary LLM failed, trying fallbacks", "error", err)
 
 	// Try fallbacks from config
 	for _, fb := range cfg.LLM.Fallbacks {
@@ -253,14 +252,14 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 		}
 		adapter, err = factory.Create(fbCfg.Provider, fbCfg)
 		if err == nil {
-			slog.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
+			lg.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
 			return adapter
 		}
-		slog.Warn("fallback LLM failed", "provider", fbCfg.Provider, "error", err)
+		lg.Warn("fallback LLM failed", "provider", fbCfg.Provider, "error", err)
 	}
 
 	// Last resort: ollama local
-	slog.Warn("all remote LLMs failed, falling back to local ollama")
+	lg.Warn("all remote LLMs failed, falling back to local ollama")
 	ollamaCfg := &output.Config{
 		Provider:  "ollama",
 		BaseURL:   "http://localhost:11434",
@@ -272,7 +271,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	if err != nil {
 		log.Fatalf("no LLM adapter available: %v", err)
 	}
-	slog.Info("LLM fallback to ollama", "model", "llama3.2")
+	lg.Info("LLM fallback to ollama", "model", "llama3.2")
 	return adapter
 }
 
@@ -282,17 +281,17 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 	internalReg := core.NewRegistry()
 
 	if len(cfg.MCP.Servers) == 0 {
-		slog.Info("no MCP servers configured")
+		lg.Info("no MCP servers configured")
 		return internalReg
 	}
 
 	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
 	if err != nil {
-		slog.Warn("MCP setup failed", "error", err)
+		lg.Warn("MCP setup failed", "error", err)
 		return internalReg
 	}
 	if mcpMgr != nil {
-		slog.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
+		lg.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
 	}
 
 	// Bridge: register MCP tools into the public api/tools registry

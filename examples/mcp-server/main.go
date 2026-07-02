@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -81,7 +80,7 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register calculator", "error", err)
+		log.Error("failed to register calculator", "error", err)
 		os.Exit(1)
 	}
 
@@ -104,7 +103,7 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register echo", "error", err)
+		log.Error("failed to register echo", "error", err)
 		os.Exit(1)
 	}
 
@@ -128,7 +127,7 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register get_weather", "error", err)
+		log.Error("failed to register get_weather", "error", err)
 		os.Exit(1)
 	}
 
@@ -146,7 +145,7 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register resource", "error", err)
+		log.Error("failed to register resource", "error", err)
 		os.Exit(1)
 	}
 
@@ -168,7 +167,7 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register prompt", "error", err)
+		log.Error("failed to register prompt", "error", err)
 		os.Exit(1)
 	}
 
@@ -183,7 +182,7 @@ func main() {
 	sigEg.Go(func() error {
 		select {
 		case <-sigCh:
-			slog.Info("ares_mcp-server: shutting down...")
+			log.Info("ares_mcp-server: shutting down...")
 			cancel()
 			return nil
 		case <-sigCtx.Done():
@@ -193,7 +192,7 @@ func main() {
 
 	// Start serving.
 	if err := server.Serve(ctx); err != nil {
-		slog.Error("ares_mcp-server: serve error", "error", err)
+		log.Error("ares_mcp-server: serve error", "error", err)
 		os.Exit(1)
 	}
 	_ = sigEg.Wait() // Clean up signal goroutine

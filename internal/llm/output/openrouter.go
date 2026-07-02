@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -86,7 +85,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close response body", "error", err)
+			log.Warn("openrouter: close response body", "error", err)
 		}
 	}()
 
@@ -148,7 +147,7 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close response body", "error", err)
+			log.Warn("openrouter: close response body", "error", err)
 		}
 	}()
 
@@ -214,7 +213,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close stream error response body", "error", err)
+			log.Warn("openrouter: close stream error response body", "error", err)
 		}
 		return nil, errors.Newf("openrouter stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -225,7 +224,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -253,7 +252,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 			var chunk OpenAIChatResponse
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				// Log and skip malformed chunks instead of aborting.
-				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				log.Warn("Failed to unmarshal stream chunk", "error", err)
 				continue
 			}
 

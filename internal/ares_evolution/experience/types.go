@@ -3,7 +3,6 @@
 package experience
 
 import (
-	"log/slog"
 	"sort"
 	"time"
 )
@@ -228,7 +227,7 @@ func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 			if strategyID == "" {
 				strategyID = exp.StrategyID
 			} else if strategyID != exp.StrategyID {
-				slog.Warn("AggregateEvidence: mixed strategy IDs in batch",
+				log.Warn("AggregateEvidence: mixed strategy IDs in batch",
 					"first", strategyID, "encountered", exp.StrategyID)
 			}
 		}
@@ -236,7 +235,7 @@ func AggregateEvidence(experiences []NormalizedExperience) Evidence {
 			if taskType == "" {
 				taskType = exp.TaskType
 			} else if taskType != exp.TaskType {
-				slog.Warn("AggregateEvidence: mixed task types in batch",
+				log.Warn("AggregateEvidence: mixed task types in batch",
 					"first", taskType, "encountered", exp.TaskType)
 			}
 		}

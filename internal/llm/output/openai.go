@@ -8,7 +8,6 @@ import (
 	stderrors "errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -89,7 +88,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("close response body failed", "err", err)
+			log.Error("close response body failed", "err", err)
 		}
 	}()
 
@@ -152,7 +151,7 @@ func (a *OpenAIAdapter) GenerateStructured(ctx context.Context, prompt string, s
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("close response body failed", "err", err)
+			log.Error("close response body failed", "err", err)
 		}
 	}()
 
@@ -219,7 +218,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	if resp.StatusCode != http.StatusOK {
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Warn("http: close response body failed", "error", closeErr)
+			log.Warn("http: close response body failed", "error", closeErr)
 		}
 		if readErr != nil {
 			return nil, fmt.Errorf("openai stream error (status %d): %w", resp.StatusCode, readErr)
@@ -233,7 +232,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -261,7 +260,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 			var chunk OpenAIChatResponse
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				// Log and skip malformed chunks instead of aborting.
-				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				log.Warn("Failed to unmarshal stream chunk", "error", err)
 				continue
 			}
 
@@ -388,7 +387,7 @@ func (a *OpenAIAdapter) sendToolRequest(ctx context.Context, messages []map[stri
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Error("close response body failed", "err", closeErr)
+			log.Error("close response body failed", "err", closeErr)
 		}
 	}()
 

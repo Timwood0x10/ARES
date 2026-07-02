@@ -3,7 +3,6 @@ package research
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 )
 
@@ -18,13 +17,13 @@ import (
 //
 // Returns:
 //   - nil always; errors are logged as warnings but never propagated.
-func PopulateMemoryContext(ctx context.Context, log *MemoryLog, state *ResearchState) {
-	if log == nil {
-		return
-	}
-	mc, err := log.GenerateContext(ctx, state.Symbol)
-	if err != nil {
-		slog.Warn("memory context generation skipped", "symbol", state.Symbol, "err", err)
+func PopulateMemoryContext(ctx context.Context, ml *MemoryLog, state *ResearchState) {
+  if ml == nil {
+   return
+  }
+  mc, err := ml.GenerateContext(ctx, state.Symbol)
+  if err != nil {
+   log.Warn("memory context generation skipped", "symbol", state.Symbol, "err", err)
 		return
 	}
 	state.MemoryContext = mc
@@ -42,30 +41,30 @@ func PopulateMemoryContext(ctx context.Context, log *MemoryLog, state *ResearchS
 //
 // Returns:
 //   - nil always; errors are logged as warnings but never propagated.
-func SaveDecisionToMemory(ctx context.Context, log *MemoryLog, state *ResearchState) {
-	if log == nil || state.PortfolioDecision == nil {
+func SaveDecisionToMemory(ctx context.Context, ml *MemoryLog, state *ResearchState) {
+  if ml == nil || state.PortfolioDecision == nil {
+   return
+  }
+  entry := &MemoryEntry{
+   Symbol:       state.Symbol,
+   AnalysisDate: state.AnalysisDate,
+   Rating:       state.PortfolioDecision.Rating,
+   FinalDecision: &PortfolioDecision{
+    Rating:           state.PortfolioDecision.Rating,
+    ExecutiveSummary: state.PortfolioDecision.ExecutiveSummary,
+    InvestmentThesis: state.PortfolioDecision.InvestmentThesis,
+    PriceTarget:      state.PortfolioDecision.PriceTarget,
+    TimeHorizon:      state.PortfolioDecision.TimeHorizon,
+   },
+   Benchmark:     "SPY",
+   SourceQuality: "research_layer",
+   Status:        MemoryStatusPending,
+  }
+  if err := ml.Append(ctx, entry); err != nil {
+   log.Warn("memory save skipped", "symbol", state.Symbol, "err", err)
 		return
 	}
-	entry := &MemoryEntry{
-		Symbol:       state.Symbol,
-		AnalysisDate: state.AnalysisDate,
-		Rating:       state.PortfolioDecision.Rating,
-		FinalDecision: &PortfolioDecision{
-			Rating:           state.PortfolioDecision.Rating,
-			ExecutiveSummary: state.PortfolioDecision.ExecutiveSummary,
-			InvestmentThesis: state.PortfolioDecision.InvestmentThesis,
-			PriceTarget:      state.PortfolioDecision.PriceTarget,
-			TimeHorizon:      state.PortfolioDecision.TimeHorizon,
-		},
-		Benchmark:     "SPY",
-		SourceQuality: "research_layer",
-		Status:        MemoryStatusPending,
-	}
-	if err := log.Append(ctx, entry); err != nil {
-		slog.Warn("memory save skipped", "symbol", state.Symbol, "err", err)
-		return
-	}
-	slog.Debug("decision saved to memory log", "symbol", state.Symbol,
+	log.Debug("decision saved to memory log", "symbol", state.Symbol,
 		"rating", state.PortfolioDecision.Rating, "entry_id", entry.ID)
 }
 

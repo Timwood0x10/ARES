@@ -5,12 +5,12 @@
 // Usage (recommended — includes method attribution):
 //
 //	var log = logger.New("genome")
-//	log.Info(ctx, "doEvolve", "evolution completed", "generation", 5)
+//	slog.Info(ctx, "doEvolve", "evolution completed", "generation", 5)
 //
 // Simple usage (backward compatible — module only):
 //
 //	var log = logger.Module("runtime")
-//	log.Info("starting", "port", 8080)
+//	slog.Info("starting", "port", 8080)
 package logger
 
 import (
@@ -28,7 +28,7 @@ import (
 // Example:
 //
 //	var log = logger.Module("runtime")
-//	log.Info("starting", "port", 8080)
+//	slog.Info("starting", "port", 8080)
 //	// Output: {"level":"INFO","msg":"starting","module":"runtime","port":8080}
 func Module(name string) *slog.Logger {
 	return slog.Default().With("module", name)

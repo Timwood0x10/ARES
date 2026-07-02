@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -267,7 +266,7 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 		cmd.Dir = workDir
 		defer func() {
 			if err := os.RemoveAll(workDir); err != nil {
-				slog.Error("failed to clean up temp dir", "path", workDir, "error", err)
+				log.Error("failed to clean up temp dir", "path", workDir, "error", err)
 			}
 		}()
 	}
@@ -331,7 +330,7 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 		cmd.Dir = workDir
 		defer func() {
 			if err := os.RemoveAll(workDir); err != nil {
-				slog.Error("failed to clean up temp dir", "path", workDir, "error", err)
+				log.Error("failed to clean up temp dir", "path", workDir, "error", err)
 			}
 		}()
 	}

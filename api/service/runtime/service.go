@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -158,7 +157,7 @@ func (s *Service) RegisterAgent(agent base.Agent, factory func() base.Agent) {
 	}
 	s.rt.RegisterAgent(agent, factory)
 	s.supervisor.Watch(agent, factory)
-	slog.Info("ares_runtime: agent registered", "agent_id", agent.ID(), "type", agent.Type())
+	log.Info("ares_runtime: agent registered", "agent_id", agent.ID(), "type", agent.Type())
 }
 
 // Start begins monitoring all registered agents.
@@ -169,24 +168,24 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.supervisor.Start(ctx); err != nil {
 		return fmt.Errorf("ares_runtime: start supervisor: %w", err)
 	}
-	slog.Info("ares_runtime: service started")
+	log.Info("ares_runtime: service started")
 	return nil
 }
 
 // Stop gracefully shuts down all agents and monitoring.
 func (s *Service) Stop() error {
 	if err := s.supervisor.Stop(); err != nil {
-		slog.Warn("ares_runtime: supervisor stop error", "error", err)
+		log.Warn("ares_runtime: supervisor stop error", "error", err)
 	}
 	if err := s.rt.Stop(); err != nil {
 		return fmt.Errorf("ares_runtime: stop manager: %w", err)
 	}
 	if c, ok := s.eventStore.(io.Closer); ok {
 		if err := c.Close(); err != nil {
-			slog.Warn("ares_runtime: event store close error", "error", err)
+			log.Warn("ares_runtime: event store close error", "error", err)
 		}
 	}
-	slog.Info("ares_runtime: service stopped")
+	log.Info("ares_runtime: service stopped")
 	return nil
 }
 

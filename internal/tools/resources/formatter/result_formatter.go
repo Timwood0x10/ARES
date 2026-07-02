@@ -3,7 +3,6 @@ package formatter
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -74,12 +73,12 @@ func getBoolParam(dataMap map[string]interface{}, key string, defaultValue bool)
 func (rf *ResultFormatter) Format(toolName string, params map[string]interface{}, result core.Result, duration time.Duration) string {
 	// Check if result is successful
 	if !result.Success {
-		slog.Warn("Tool execution failed", "tool", toolName, "error", result.Error, "duration", duration)
+		log.Warn("Tool execution failed", "tool", toolName, "error", result.Error, "duration", duration)
 		return fmt.Sprintf("调用工具 %s 时出错: %s", toolName, result.Error)
 	}
 
 	// Log successful execution
-	slog.Info("Tool executed successfully",
+	log.Info("Tool executed successfully",
 		"tool", toolName,
 		"duration", duration,
 		"params", params,
@@ -88,7 +87,7 @@ func (rf *ResultFormatter) Format(toolName string, params map[string]interface{}
 	// Format based on tool type
 	formatted := rf.formatByToolType(toolName, params, result)
 
-	slog.Info("Tool result formatted", "tool", toolName, "result", formatted)
+	log.Info("Tool result formatted", "tool", toolName, "result", formatted)
 
 	return formatted
 }
@@ -129,7 +128,7 @@ func (rf *ResultFormatter) formatByToolType(toolName string, params map[string]i
 func (rf *ResultFormatter) formatDateTime(params map[string]interface{}, data interface{}) string {
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		slog.Warn("Unexpected data type in formatDateTime",
+		log.Warn("Unexpected data type in formatDateTime",
 			"expected_type", "map[string]interface{}",
 			"actual_type", fmt.Sprintf("%T", data))
 		return fmt.Sprintf("datetime tool returned unexpected data format: %T", data)
@@ -146,7 +145,7 @@ func (rf *ResultFormatter) formatDateTime(params map[string]interface{}, data in
 func (rf *ResultFormatter) formatCalculator(params map[string]interface{}, data interface{}) string {
 	dataMap, ok := data.(map[string]interface{})
 	if !ok {
-		slog.Warn("Unexpected data type in formatCalculator",
+		log.Warn("Unexpected data type in formatCalculator",
 			"expected_type", "map[string]interface{}",
 			"actual_type", fmt.Sprintf("%T", data))
 		return fmt.Sprintf("calculator tool returned unexpected data format: %T", data)

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -68,14 +67,14 @@ func NewAgentTools(config *AgentToolConfig) *AgentTools {
 
 // Execute executes a tool by name with logging and result formatting.
 func (at *AgentTools) Execute(ctx context.Context, name string, params map[string]interface{}) (core.Result, error) {
-	slog.Debug("Tool executing", "tool", name)
+	log.Debug("Tool executing", "tool", name)
 
 	startTime := time.Now()
 	result, err := at.registry.Execute(ctx, name, params)
 	duration := time.Since(startTime)
 
 	if err != nil {
-		slog.Error("Tool failed", "tool", name, "error", err, "duration", duration)
+		log.Error("Tool failed", "tool", name, "error", err, "duration", duration)
 		return result, err
 	}
 
@@ -88,7 +87,7 @@ func (at *AgentTools) Execute(ctx context.Context, name string, params map[strin
 	}
 	result.Metadata["formatted"] = formattedResult
 
-	slog.Debug("Tool done", "tool", name, "duration", duration)
+	log.Debug("Tool done", "tool", name, "duration", duration)
 
 	return result, nil
 }
@@ -174,7 +173,7 @@ func (at *AgentTools) GenerateToolPrompt() string {
 
 // LogTools logs the loaded tools for debugging.
 func (at *AgentTools) LogTools(agentName string) {
-	slog.Info("Agent tools loaded",
+	log.Info("Agent tools loaded",
 		"agent", agentName,
 		"tool_count", len(at.schemas),
 		"tools", at.ListTools(),

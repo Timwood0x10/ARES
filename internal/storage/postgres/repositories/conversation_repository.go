@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 	"time"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
@@ -140,7 +139,7 @@ func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*stora
 	)
 	if metadataBytes != nil {
 		if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
-			slog.Warn("Failed to unmarshal metadata", "error", err)
+			log.Warn("Failed to unmarshal metadata", "error", err)
 		}
 	}
 
@@ -176,7 +175,7 @@ func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, te
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -189,19 +188,19 @@ func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, te
 			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
-			slog.Error("Failed to scan conversation row", "error", err)
+			log.Error("Failed to scan conversation row", "error", err)
 			continue
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
-				slog.Warn("Failed to unmarshal metadata", "error", err)
+				log.Warn("Failed to unmarshal metadata", "error", err)
 			}
 		}
 		conversations = append(conversations, conv)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate conversations", "error", err)
+		log.Error("Failed to iterate conversations", "error", err)
 		return nil, errors.Wrap(err, "iterate conversations")
 	}
 
@@ -264,7 +263,7 @@ func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -277,19 +276,19 @@ func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID
 			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
-			slog.Warn("Failed to scan conversation row", "error", err)
+			log.Warn("Failed to scan conversation row", "error", err)
 			continue
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
-				slog.Warn("Failed to unmarshal metadata", "error", err)
+				log.Warn("Failed to unmarshal metadata", "error", err)
 			}
 		}
 		conversations = append(conversations, conv)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate conversations", "error", err)
+		log.Error("Failed to iterate conversations", "error", err)
 		return nil, errors.Wrap(err, "iterate conversations")
 	}
 
@@ -318,7 +317,7 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -331,19 +330,19 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
-			slog.Error("Failed to scan conversation row", "error", err)
+			log.Error("Failed to scan conversation row", "error", err)
 			continue
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
-				slog.Warn("Failed to unmarshal metadata", "error", err)
+				log.Warn("Failed to unmarshal metadata", "error", err)
 			}
 		}
 		conversations = append(conversations, conv)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate conversations", "error", err)
+		log.Error("Failed to iterate conversations", "error", err)
 		return nil, errors.Wrap(err, "iterate conversations")
 	}
 
@@ -454,7 +453,7 @@ func (r *ConversationRepository) GetRecentSessions(ctx context.Context, tenantID
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate sessions", "error", err)
+		log.Error("Failed to iterate sessions", "error", err)
 		return nil, errors.Wrap(err, "iterate sessions")
 	}
 

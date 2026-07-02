@@ -3,7 +3,6 @@ package context
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -101,7 +100,7 @@ func (m *SessionMemory) StartCleanup() {
 				case <-ticker.C:
 					removed := m.Cleanup(context.Background())
 					if removed > 0 {
-						slog.Debug("Session memory cleanup completed", "removed_sessions", removed)
+						log.Debug("Session memory cleanup completed", "removed_sessions", removed)
 					}
 				case <-m.stopCleanup:
 					return

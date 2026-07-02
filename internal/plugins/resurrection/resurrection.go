@@ -12,7 +12,6 @@ package resurrection
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -187,7 +186,7 @@ func (s *Supervisor) Watch(agent base.Agent, factory AgentFactory) {
 		factory: factory,
 	}
 	s.health.RegisterAgent(id)
-	slog.Info("resurrection: agent watched", "agent_id", id, "type", agent.Type())
+	log.Info("resurrection: agent watched", "agent_id", id, "type", agent.Type())
 }
 
 // Unwatch stops monitoring an agent.
@@ -196,7 +195,7 @@ func (s *Supervisor) Unwatch(agentID string) {
 	defer s.mu.Unlock()
 	delete(s.agents, agentID)
 	s.health.UnregisterAgent(agentID)
-	slog.Info("resurrection: agent unwatched", "agent_id", agentID)
+	log.Info("resurrection: agent unwatched", "agent_id", agentID)
 }
 
 // Start begins the monitoring loop. The context controls the supervisor lifecycle.
@@ -246,7 +245,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		})
 	}
 
-	slog.Info("resurrection: supervisor started", "check_interval", s.config.CheckInterval)
+	log.Info("resurrection: supervisor started", "check_interval", s.config.CheckInterval)
 	return nil
 }
 
@@ -263,14 +262,14 @@ func (s *Supervisor) Stop() error {
 
 	if s.g != nil {
 		if err := s.g.Wait(); err != nil {
-			slog.Error("resurrection: background task failed", "error", err)
+			log.Error("resurrection: background task failed", "error", err)
 		}
 	}
 
 	s.mu.RLock()
 	total := s.resurrects
 	s.mu.RUnlock()
-	slog.Info("resurrection: supervisor stopped", "total_resurrects", total)
+	log.Info("resurrection: supervisor stopped", "total_resurrects", total)
 	return nil
 }
 
@@ -359,7 +358,7 @@ func (s *Supervisor) onFailure(agentID string) {
 	s.resurrecting[agentID] = true
 	s.mu.Unlock()
 
-	slog.Warn("resurrection: failure detected, starting resurrection", "agent_id", agentID)
+	log.Warn("resurrection: failure detected, starting resurrection", "agent_id", agentID)
 
 	s.g.Go(func() error {
 		s.resurrect(agentID)
@@ -405,7 +404,7 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 	}
 
 	if err := ares_events.VerifyStreamIntegrity(evts); err != nil {
-		slog.Error("resurrection: event stream integrity check failed",
+		log.Error("resurrection: event stream integrity check failed",
 			"agent_id", agentID,
 			"event_count", len(evts),
 			"error", err,
@@ -417,7 +416,7 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 	if streamVersion, svErr := s.eventStore.StreamVersion(ctx, agentID); svErr == nil {
 		lastVersion := evts[len(evts)-1].Version
 		if lastVersion != streamVersion {
-			slog.Error("resurrection: event stream truncated",
+			log.Error("resurrection: event stream truncated",
 				"agent_id", agentID,
 				"last_replayed", lastVersion,
 				"stream_version", streamVersion,
@@ -426,7 +425,7 @@ func (s *Supervisor) replayEvents(ctx context.Context, agentID string) map[strin
 			)
 		}
 	} else if svErr != ares_events.ErrStreamNotFound {
-		slog.Warn("resurrection: failed to check stream version",
+		log.Warn("resurrection: failed to check stream version",
 			"agent_id", agentID, "error", svErr,
 		)
 	}
@@ -507,7 +506,7 @@ func (s *Supervisor) resurrect(agentID string) {
 		if state != nil {
 			if sa, ok := newAgent.(base.StatefulAgent); ok {
 				if restoreErr := sa.RestoreState(state); restoreErr != nil {
-					slog.Warn("failed to restore state", "agent_id", agentID, "error", restoreErr)
+					log.Warn("failed to restore state", "agent_id", agentID, "error", restoreErr)
 				}
 			}
 		}
@@ -525,7 +524,7 @@ func (s *Supervisor) resurrect(agentID string) {
 	}
 
 	if lastErr != nil {
-		slog.Error("resurrection: all attempts exhausted",
+		log.Error("resurrection: all attempts exhausted",
 			"agent_id", agentID,
 			"max_attempts", s.config.MaxAttempts,
 			"last_error", lastErr,
@@ -544,7 +543,7 @@ func (s *Supervisor) resurrect(agentID string) {
 	if oldAgent != nil {
 		stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
 		if err := oldAgent.Stop(stopCtx); err != nil {
-			slog.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
+			log.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
 		}
 		stopCancel()
 	}
@@ -570,13 +569,13 @@ func (s *Supervisor) resurrect(agentID string) {
 	healthy := s.verifyResurrection(agentID, newAgent)
 
 	if healthy {
-		slog.Info("resurrection: agent resurrected",
+		log.Info("resurrection: agent resurrected",
 			"agent_id", agentID,
 			"type", newAgent.Type(),
 			"total_resurrects", total,
 		)
 	} else {
-		slog.Error("resurrection: revived agent unhealthy, re-triggering",
+		log.Error("resurrection: revived agent unhealthy, re-triggering",
 			"agent_id", agentID,
 			"total_resurrects", total,
 		)
@@ -591,21 +590,21 @@ func (s *Supervisor) verifyResurrection(agentID string, agent base.Agent) bool {
 	healthy := true
 	if hb, ok := agent.(base.Heartbeater); ok {
 		if !hb.IsAlive() {
-			slog.Error("resurrection: revived agent reports not alive",
+			log.Error("resurrection: revived agent reports not alive",
 				"agent_id", agentID,
 			)
 			healthy = false
 		}
 	}
 	if agent.Status() == models.AgentStatusOffline {
-		slog.Error("resurrection: revived agent is offline",
+		log.Error("resurrection: revived agent is offline",
 			"agent_id", agentID,
 		)
 		healthy = false
 	}
 
 	if !healthy {
-		slog.Warn("resurrection: re-triggering failure for unhealthy revived agent",
+		log.Warn("resurrection: re-triggering failure for unhealthy revived agent",
 			"agent_id", agentID,
 		)
 		s.health.RecordAlive(agentID)
@@ -651,7 +650,7 @@ func (s *Supervisor) takeSnapshots() {
 		}
 		snap, err := sa.Snapshot()
 		if err != nil {
-			slog.Warn("resurrection: snapshot capture failed",
+			log.Warn("resurrection: snapshot capture failed",
 				"agent_id", id, "error", err,
 			)
 			continue
@@ -660,7 +659,7 @@ func (s *Supervisor) takeSnapshots() {
 			continue
 		}
 		if err := store.Save(s.gctx, id, snap); err != nil {
-			slog.Warn("resurrection: snapshot save failed",
+			log.Warn("resurrection: snapshot save failed",
 				"agent_id", id, "error", err,
 			)
 		}

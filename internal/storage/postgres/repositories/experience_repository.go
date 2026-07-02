@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -287,7 +286,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -351,7 +350,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -408,7 +407,7 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -495,7 +494,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -593,7 +592,7 @@ func (r *ExperienceRepository) GetStatistics(ctx context.Context, tenantID strin
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experience statistics", "error", err)
+		log.Error("Failed to iterate experience statistics", "error", err)
 		return nil, errors.Wrap(err, "iterate experience statistics")
 	}
 

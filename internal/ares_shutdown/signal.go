@@ -2,7 +2,6 @@ package ares_shutdown
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -113,7 +112,7 @@ func (h *SignalHandler) handleSignal(sig os.Signal) {
 
 			if err := h.manager.StartShutdown(shutdownCtx); err != nil {
 				// Log error but continue with shutdown
-				slog.Warn("Shutdown initiated with error", "error", err)
+				log.Warn("Shutdown initiated with error", "error", err)
 			}
 		}
 	}

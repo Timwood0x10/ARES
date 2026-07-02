@@ -129,7 +129,7 @@ func (a *lifecycleAgent) Start(ctx context.Context) error {
 	// Create session in MemoryManager if available.
 	if a.memManager != nil {
 		if _, err := a.memManager.CreateSession(ctx, a.id); err != nil {
-			slog.Warn("failed to create memory session",
+			log.Warn("failed to create memory session",
 				"agent_id", a.id,
 				"error", err,
 			)
@@ -149,7 +149,7 @@ func (a *lifecycleAgent) Start(ctx context.Context) error {
 		"agent_id":   a.id,
 	})
 
-	slog.Info("agent started",
+	log.Info("agent started",
 		"agent_id", a.id,
 		"type", a.agentType,
 		"session_id", a.getSessionID(),
@@ -159,7 +159,7 @@ func (a *lifecycleAgent) Start(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("agent panic recovered",
+				log.Error("agent panic recovered",
 					"agent_id", a.id,
 					"type", a.agentType,
 					"session_id", a.getSessionID(),
@@ -176,7 +176,7 @@ func (a *lifecycleAgent) Start(ctx context.Context) error {
 // Stop gracefully stops the agent.
 func (a *lifecycleAgent) Stop(_ context.Context) error {
 	a.setStatus(models.AgentStatusOffline)
-	slog.Info("agent stopped", "agent_id", a.id, "type", a.agentType)
+	log.Info("agent stopped", "agent_id", a.id, "type", a.agentType)
 	return nil
 }
 
@@ -204,7 +204,7 @@ func (a *lifecycleAgent) RestoreState(state map[string]any) error {
 		a.taskCount.Store(count)
 	}
 
-	slog.Info("state restored",
+	log.Info("state restored",
 		"agent_id", a.id,
 		"session_id", a.sessionID,
 		"task_count", a.taskCount.Load(),
@@ -231,7 +231,7 @@ func (a *lifecycleAgent) ReplayEvents(evts []*ares_events.Event) error {
 		}
 	}
 
-	slog.Info("ares_events replayed",
+	log.Info("ares_events replayed",
 		"agent_id", a.id,
 		"total_events", len(evts),
 		"restored_task_count", a.taskCount.Load(),
@@ -280,7 +280,7 @@ func (a *lifecycleAgent) workLoop(ctx context.Context) {
 			if a.memManager != nil {
 				msg := fmt.Sprintf("completed %s", taskID)
 				if err := a.memManager.AddMessage(ctx, a.getSessionID(), "system", msg); err != nil {
-					slog.Debug("failed to add memory message",
+					log.Debug("failed to add memory message",
 						"agent_id", a.id,
 						"error", err,
 					)
@@ -298,7 +298,7 @@ func (a *lifecycleAgent) workLoop(ctx context.Context) {
 				"result":     fmt.Sprintf("completed by %s", a.id),
 			})
 
-			slog.Info("task completed",
+			log.Info("task completed",
 				"agent_id", a.id,
 				"task_id", taskID,
 				"session_id", a.getSessionID(),
@@ -319,7 +319,7 @@ func (a *lifecycleAgent) emitEvent(ctx context.Context, eventType ares_events.Ev
 		Payload:  payload,
 	}
 	if err := a.eventStore.Append(ctx, a.id, []*ares_events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event",
+		log.Warn("failed to emit event",
 			"agent_id", a.id,
 			"type", eventType,
 			"error", err,
@@ -382,11 +382,11 @@ func main() {
 	eventStore := ares_events.NewMemoryEventStore()
 	memManager, err := memory.NewMemoryManager(memory.DefaultMemoryConfig())
 	if err != nil {
-		slog.Error("failed to create memory manager", "error", err)
+		log.Error("failed to create memory manager", "error", err)
 		return
 	}
 	if err := memManager.Start(ctx); err != nil {
-		slog.Error("failed to start memory manager", "error", err)
+		log.Error("failed to start memory manager", "error", err)
 		return
 	}
 
@@ -413,19 +413,19 @@ func main() {
 	planner := newLifecycleAgent("planner-1", models.AgentTypeTop, eventStore, memManager)
 
 	rt.RegisterAgent(leader, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "leader-1")
+		log.Info("factory invoked", "agent_id", "leader-1")
 		return newLifecycleAgent("leader-1", models.AgentTypeLeader, eventStore, memManager)
 	})
 	rt.RegisterAgent(workerA, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "worker-a")
+		log.Info("factory invoked", "agent_id", "worker-a")
 		return newLifecycleAgent("worker-a", models.AgentTypeBottom, eventStore, memManager)
 	})
 	rt.RegisterAgent(workerB, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "worker-b")
+		log.Info("factory invoked", "agent_id", "worker-b")
 		return newLifecycleAgent("worker-b", models.AgentTypeBottom, eventStore, memManager)
 	})
 	rt.RegisterAgent(planner, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "planner-1")
+		log.Info("factory invoked", "agent_id", "planner-1")
 		return newLifecycleAgent("planner-1", models.AgentTypeTop, eventStore, memManager)
 	})
 
@@ -441,7 +441,7 @@ func main() {
 	phaseSeparator("Step 3: Start All Agents")
 
 	if err := rt.Start(ctx); err != nil {
-		slog.Error("failed to start ares_runtime", "error", err)
+		log.Error("failed to start ares_runtime", "error", err)
 		return
 	}
 
@@ -532,7 +532,7 @@ func main() {
 
 	wp, err := newWorkflowPlanner(initialSteps)
 	if err != nil {
-		slog.Error("failed to create workflow planner", "error", err)
+		log.Error("failed to create workflow planner", "error", err)
 		return
 	}
 
@@ -548,7 +548,7 @@ func main() {
 		DependsOn: []string{"analyze-data"},
 	})
 	if err != nil {
-		slog.Error("failed to add step", "error", err)
+		log.Error("failed to add step", "error", err)
 	} else {
 		order, _ = wp.GetCurrentOrder()
 		fmt.Printf("  Updated workflow: %v\n", order)
@@ -563,7 +563,7 @@ func main() {
 		DependsOn: []string{"validate-data"},
 	})
 	if err != nil {
-		slog.Error("failed to add step", "error", err)
+		log.Error("failed to add step", "error", err)
 	} else {
 		order, _ = wp.GetCurrentOrder()
 		fmt.Printf("  Updated workflow: %v\n", order)
@@ -611,12 +611,12 @@ func main() {
 
 	// Stop memory manager.
 	if err := memManager.Stop(ctx); err != nil {
-		slog.Warn("memory manager stop failed", "error", err)
+		log.Warn("memory manager stop failed", "error", err)
 	}
 
 	// Stop ares_runtime (stops all agents).
 	if err := rt.Stop(); err != nil {
-		slog.Error("ares_runtime stop failed", "error", err)
+		log.Error("ares_runtime stop failed", "error", err)
 	}
 
 	stats = rt.Stats()

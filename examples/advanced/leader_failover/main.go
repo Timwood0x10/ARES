@@ -121,7 +121,7 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 		"agent_id":   a.id,
 	})
 
-	slog.Info("leader started",
+	lg.Info("leader started",
 		"agent_id", a.id,
 		"session_id", sid,
 		"checkpoint", cp,
@@ -132,7 +132,7 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("leader panic recovered",
+				lg.Error("leader panic recovered",
 					"agent_id", a.id,
 					"session_id", sid,
 					"panic", r,
@@ -148,7 +148,7 @@ func (a *leaderAgent) Start(ctx context.Context) error {
 // Stop gracefully stops the leader agent.
 func (a *leaderAgent) Stop(_ context.Context) error {
 	a.setStatus(models.AgentStatusOffline)
-	slog.Info("leader stopped", "agent_id", a.id)
+	lg.Info("leader stopped", "agent_id", a.id)
 	return nil
 }
 
@@ -181,7 +181,7 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 		a.taskCount = count
 	}
 
-	slog.Info("leader state restored",
+	lg.Info("leader state restored",
 		"agent_id", a.id,
 		"session_id", a.sessionID,
 		"checkpoint", a.checkpoint,
@@ -212,7 +212,7 @@ func (a *leaderAgent) ReplayEvents(evts []*ares_events.Event) error {
 		}
 	}
 
-	slog.Info("leader ares_events replayed",
+	lg.Info("leader ares_events replayed",
 		"agent_id", a.id,
 		"total_events", len(evts),
 		"restored_checkpoint", a.checkpoint,
@@ -276,7 +276,7 @@ func (a *leaderAgent) workLoop(ctx context.Context) {
 				"checkpoint": cp,
 			})
 
-			slog.Info("checkpoint saved",
+			lg.Info("checkpoint saved",
 				"agent_id", a.id,
 				"task_id", taskID,
 				"checkpoint", cp,
@@ -297,7 +297,7 @@ func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.Event
 		Payload:  payload,
 	}
 	if err := a.eventStore.Append(ctx, a.id, []*ares_events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event",
+		lg.Warn("failed to emit event",
 			"agent_id", a.id,
 			"type", eventType,
 			"error", err,
@@ -401,7 +401,7 @@ func main() {
 	leader := newLeader("leader-1", eventStore)
 	svc.RegisterAgent(leader, func() base.Agent {
 		failoverTimer.Mark("factory")
-		slog.Info("factory invoked: creating new leader",
+		lg.Info("factory invoked: creating new leader",
 			"agent_id", "leader-1",
 			"reason", "failover",
 		)
@@ -409,7 +409,7 @@ func main() {
 	})
 
 	if err := svc.Start(ctx); err != nil {
-		slog.Error("failed to start runtime", "error", err)
+		lg.Error("failed to start runtime", "error", err)
 		return
 	}
 
@@ -521,7 +521,7 @@ func main() {
 	phaseSeparator("Phase 7: Graceful Shutdown")
 
 	if err := svc.Stop(); err != nil {
-		slog.Error("runtime stop failed", "error", err)
+		lg.Error("runtime stop failed", "error", err)
 	}
 
 	fmt.Println("\nLeader Failover example completed!")

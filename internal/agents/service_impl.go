@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -365,7 +364,7 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 		agent.Status = core.AgentStatusReady
 		agent.UpdatedAt = time.Now().Unix()
 		if updateErr := s.repo.Update(ctx, agent); updateErr != nil {
-			slog.Warn("failed to update agent status after error", "error", updateErr)
+			log.Warn("failed to update agent status after error", "error", updateErr)
 		}
 		return nil, apperrors.Wrap(err, "execute task logic")
 	}
@@ -375,7 +374,7 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 	agent.UpdatedAt = time.Now().Unix()
 	if err := s.repo.Update(ctx, agent); err != nil {
 		// Log error but don't fail the task
-		slog.Warn("failed to update agent status", "error", err)
+		log.Warn("failed to update agent status", "error", err)
 	}
 
 	return result, nil
@@ -409,7 +408,7 @@ func (s *Service) executeTaskLogic(ctx context.Context, task *core.Task, agent *
 	if s.memoryMgr != nil && agent.SessionID != "" {
 		ctxWithInput, err := s.memoryMgr.BuildContext(ctx, taskInput, agent.SessionID)
 		if err != nil {
-			slog.Warn("failed to build context from memory", "error", err)
+			log.Warn("failed to build context from memory", "error", err)
 			contextInput = taskInput
 		} else {
 			contextInput = ctxWithInput

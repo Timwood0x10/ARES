@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 )
 
 // AgentStepResolver maps a PreferredAgent name to a target step ID.
@@ -72,7 +71,7 @@ func (r *EvolutionRouter) evolutionAdvice(ctx context.Context, state RouteState)
 	}
 	rec, err := ep.Recommend(ctx, execState)
 	if err != nil {
-		slog.Warn("evolution router: Recommend failed, falling back to expression rules",
+		log.Warn("evolution router: Recommend failed, falling back to expression rules",
 			"error", err,
 		)
 		return nil

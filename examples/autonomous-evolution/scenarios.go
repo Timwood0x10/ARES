@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +23,7 @@ import (
 func runBandit(ctx context.Context, k *DemoKit) {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Bandit Feedback Loop",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -35,10 +34,10 @@ func runBandit(ctx context.Context, k *DemoKit) {
 	ids := []string{"exp-001", "exp-002", "exp-003"}
 	scores := map[string]float64{"exp-001": 0.9, "exp-002": 0.75, "exp-003": 0.6}
 
-	slog.InfoContext(ctx, "Initializing experiences")
+	log.InfoContext(ctx, "Initializing experiences")
 	for _, id := range ids {
 		_ = k.Repo.Create(ctx, &storageModels.Experience{ID: id, Input: "task:" + id, Score: scores[id]})
-		slog.InfoContext(ctx, "Experience created", "id", id, "score", scores[id])
+		log.InfoContext(ctx, "Experience created", "id", id, "score", scores[id])
 	}
 
 	tasks := [][3]string{
@@ -46,7 +45,7 @@ func runBandit(ctx context.Context, k *DemoKit) {
 		{"exp-002", "ok", "par"}, {"exp-003", "err", "to"}, {"exp-003", "err", "er"},
 		{"exp-002", "err", "fm"}, {"exp-001", "ok", "4t"},
 	}
-	slog.InfoContext(ctx, "Simulating task executions")
+	log.InfoContext(ctx, "Simulating task executions")
 	for i, t := range tasks {
 		mark := "✗"
 		if t[1] == "ok" {
@@ -55,7 +54,7 @@ func runBandit(ctx context.Context, k *DemoKit) {
 		} else {
 			_ = fb.RecordFailure(ctx, t[0])
 		}
-		slog.InfoContext(ctx, "Task executed",
+		log.InfoContext(ctx, "Task executed",
 			"index", i+1,
 			"mark", mark,
 			"task", t[2],
@@ -68,7 +67,7 @@ func runBandit(ctx context.Context, k *DemoKit) {
 		rows = append(rows, []string{id, fmt.Sprintf("%d", k.Repo.getUsageCount(id)), fmt.Sprintf("%.4f", k.Repo.getRank(id))})
 	}
 	tbl([]string{"Exp", "Usage", "Rank"}, rows)
-	slog.InfoContext(ctx, "Bandit feedback summary", "note", "usage reinforces reliability, failures decay rank")
+	log.InfoContext(ctx, "Bandit feedback summary", "note", "usage reinforces reliability, failures decay rank")
 
 	printInsight("Bandit Feedback", `
   🎯 Key Finding: Experience ranking system achieves adaptive sorting via usage counts and failure penalties
@@ -86,7 +85,7 @@ func runBandit(ctx context.Context, k *DemoKit) {
 func runCallbacks(ctx context.Context, _ *DemoKit) {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Callback Event System",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -122,7 +121,7 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 		{Event: ares_callbacks.EventLLMStart, Model: "c3"},
 	}
 	for i, evt := range evts {
-		slog.InfoContext(ctx, "Event emitted",
+		log.InfoContext(ctx, "Event emitted",
 			"index", i+1,
 			"event", evt.Event,
 		)
@@ -135,7 +134,7 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 	}
 	rows = append(rows, []string{"Total", fmt.Sprintf("%d", captured)})
 	tbl([]string{"Event", "Count"}, rows)
-	slog.InfoContext(ctx, "Callback summary", "note", "pub/sub panic-safe with rich metadata")
+	log.InfoContext(ctx, "Callback summary", "note", "pub/sub panic-safe with rich metadata")
 
 	printInsight("Callback Event System", `
   📡 Key Finding: Event-driven architecture implements a loosely-coupled observer pattern
@@ -153,7 +152,7 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 func runMutation(ctx context.Context, _ *DemoKit) {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Strategy Mutation Engine",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -168,9 +167,9 @@ func runMutation(ctx context.Context, _ *DemoKit) {
 	m, _ := mutation.NewMutator(mutation.WithPromptPool(pool), mutation.WithSeed(42))
 
 	children, _ := m.Mutate(ctx, parent, 5)
-	slog.InfoContext(ctx, "Mutation generated", "parent_id", parent.ID, "params", parent.Params, "children", len(children))
+	log.InfoContext(ctx, "Mutation generated", "parent_id", parent.ID, "params", parent.Params, "children", len(children))
 	for i, c := range children {
-		slog.InfoContext(ctx, "Child strategy",
+		log.InfoContext(ctx, "Child strategy",
 			"index", i+1,
 			"id", c.ID[:20],
 			"type", c.StrategyMutationType,
@@ -181,7 +180,7 @@ func runMutation(ctx context.Context, _ *DemoKit) {
 	m2, _ := mutation.NewMutator(mutation.WithPromptPool(pool), mutation.WithSeed(42))
 	ch2, _ := m2.Mutate(ctx, parent, 5)
 	same := children[0].Params["temperature"] == ch2[0].Params["temperature"]
-	slog.InfoContext(ctx, "Determinism check",
+	log.InfoContext(ctx, "Determinism check",
 		"same_seed_reproducible", same,
 		"note", "80% param mut, 20% prompt change, reproducible",
 	)
@@ -202,7 +201,7 @@ func runMutation(ctx context.Context, _ *DemoKit) {
 func runArena(ctx context.Context, _ *DemoKit) {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Arena Regression Test",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -217,7 +216,7 @@ func runArena(ctx context.Context, _ *DemoKit) {
 		OldStrategy: oldStrategy, NewStrategy: newStrategy,
 		BaselineRuns: 5, CompareRuns: 5, Confidence: 0.05, MinWinRate: 0.55,
 	})
-	slog.InfoContext(ctx, "Arena regression completed",
+	log.InfoContext(ctx, "Arena regression completed",
 		"baseline_avg", res.OldAvg,
 		"candidate_avg", res.NewAvg,
 		"win_rate", res.WinRate,
@@ -238,7 +237,7 @@ func runArena(ctx context.Context, _ *DemoKit) {
 		rows = append(rows, []string{fmt.Sprintf("%d", i+1), fmt.Sprintf("%.4f", res.OldScores[i]), fmt.Sprintf("%.4f", res.NewScores[i]), mark})
 	}
 	tbl([]string{"#", "Base", "Cand", ""}, rows)
-	slog.InfoContext(ctx, "Arena summary", "note", "Welch t-test data-driven adoption")
+	log.InfoContext(ctx, "Arena summary", "note", "Welch t-test data-driven adoption")
 
 	printInsight("Arena Regression Test", `
   ⚔️ Key Finding: Statistical significance testing prevents "lucky bias"
@@ -256,7 +255,7 @@ func runArena(ctx context.Context, _ *DemoKit) {
 func runDreamCycle(ctx context.Context, _ *DemoKit) {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Dream Cycle Orchestration",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -323,7 +322,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 			passed:      passed,
 		})
 
-		slog.InfoContext(ctx, "Candidate evaluated",
+		log.InfoContext(ctx, "Candidate evaluated",
 			"index", i+1,
 			"win_rate", result.WinRate,
 			"improvement", improvement,
@@ -392,7 +391,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 			fmt.Printf("    Insight: Prompt switch 'helpful'→'%s' improved output precision\n", winnerCR.prompt)
 		}
 
-		slog.InfoContext(ctx, "Best lineage recorded",
+		log.InfoContext(ctx, "Best lineage recorded",
 			"parent_id", baseline.ID,
 			"child_id", best.ID[:12],
 			"win_rate", bestWinRate,
@@ -401,7 +400,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 		fmt.Println("\n ⚠ No candidate passed the win_rate ≥ 0.55 threshold")
 	}
 
-	slog.InfoContext(ctx, "Dream cycle pipeline",
+	log.InfoContext(ctx, "Dream cycle pipeline",
 		"note", "Mutate -> ArenaTest -> SelectBest -> Genealogy",
 	)
 
@@ -454,7 +453,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", cfg.Title,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -475,12 +474,12 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 		newMockPromotionLogic(),
 	))
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
+		log.ErrorContext(ctx, "Failed to create evolution service", "error", err)
 		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "Pure autonomous evolution — no LLM",
+	log.InfoContext(ctx, "Pure autonomous evolution — no LLM",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
 		"scorer", "deterministic",
@@ -488,7 +487,7 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
 	if err != nil {
-		slog.ErrorContext(ctx, "Evolution failed", "error", err)
+		log.ErrorContext(ctx, "Evolution failed", "error", err)
 		return nil
 	}
 
@@ -518,7 +517,7 @@ func runScenario6(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", cfg.Title,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -547,19 +546,19 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 		newMockPromotionLogic(),
 	))
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
+		log.ErrorContext(ctx, "Failed to create wired evolution service", "error", err)
 		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "Wired evolution — deterministic only, LLM validates best strategy after",
+	log.InfoContext(ctx, "Wired evolution — deterministic only, LLM validates best strategy after",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
 	if err != nil {
-		slog.ErrorContext(ctx, "LLM evolution failed", "error", err)
+		log.ErrorContext(ctx, "LLM evolution failed", "error", err)
 		return nil
 	}
 
@@ -580,7 +579,7 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 			if err == nil {
 				start := time.Now()
 				llmScore := scorer.Score(best)
-				slog.InfoContext(ctx, "LLM validation of best strategy",
+				log.InfoContext(ctx, "LLM validation of best strategy",
 					"strategy_id", best.ID,
 					"deterministic_score", best.Score,
 					"llm_score", llmScore,
@@ -685,7 +684,7 @@ func printResult(result *evolutionservice.EvolutionResult) {
 	tbl(headers, rows)
 
 	if len(result.Lineages) > 0 {
-		slog.Info("Lineage records",
+		log.Info("Lineage records",
 			"count", len(result.Lineages),
 			"with_improvement", countWithImprovement(result.Lineages),
 		)
@@ -696,7 +695,7 @@ func printResult(result *evolutionservice.EvolutionResult) {
 		if len(bst.DimensionScores) > 0 {
 			attrs = append(attrs, "dims", fmt.Sprintf("%v", bst.DimensionScores))
 		}
-		slog.Info("Best strategy found", attrs...)
+		log.Info("Best strategy found", attrs...)
 	}
 }
 
@@ -732,7 +731,7 @@ func countWithImprovement(lineages []evolutionservice.StrategyLineage) int {
 func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evolutionservice.EvolutionResult {
 	start := time.Now()
 	defer func() {
-		slog.InfoContext(ctx, "Scenario completed",
+		log.InfoContext(ctx, "Scenario completed",
 			"scenario", "Real Data Evolution Pipeline",
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
@@ -783,14 +782,14 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 
 	collector, err := exp.NewToolCallExperienceCollector(normalizer, store)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create collector", "error", err)
+		log.ErrorContext(ctx, "Failed to create collector", "error", err)
 		return nil
 	}
 
 	// Step 3: Feed all records through the pipeline.
 	fmt.Println("     Feeding data through normalizer → store...")
 	if err := collector.CollectBatch(ctx, records); err != nil {
-		slog.ErrorContext(ctx, "Failed to collect records", "error", err)
+		log.ErrorContext(ctx, "Failed to collect records", "error", err)
 		return nil
 	}
 
@@ -899,19 +898,19 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 		gaPromoter,
 	))
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create evolution service", "error", err)
+		log.ErrorContext(ctx, "Failed to create evolution service", "error", err)
 		return nil
 	}
 	defer svc.Shutdown()
 
-	slog.InfoContext(ctx, "Running GA evolution with real data evidence pipeline",
+	log.InfoContext(ctx, "Running GA evolution with real data evidence pipeline",
 		"pop_size", cfg.PopSize,
 		"generations", cfg.NGen,
 	)
 
 	result, err := svc.Evolve(ctx, cfg.NGen)
 	if err != nil {
-		slog.ErrorContext(ctx, "Evolution failed", "error", err)
+		log.ErrorContext(ctx, "Evolution failed", "error", err)
 		return nil
 	}
 

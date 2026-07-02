@@ -3,7 +3,6 @@ package scoring
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
@@ -133,7 +132,7 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 		ts.budget.RecordCacheHit()
 		ts.cacheHits.Add(1)
 		ts.totalScored.Add(1)
-		slog.Debug("tiered_scorer: cache hit",
+		log.Debug("tiered_scorer: cache hit",
 			"hash", hash, "score", entry.Score, "scorer_type", entry.ScorerType)
 		return entry.Score, TierCache, nil
 	}
@@ -177,7 +176,7 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Warn("tiered_scorer: LLM scorer panicked",
+				log.Warn("tiered_scorer: LLM scorer panicked",
 					"hash", hash, "recovery", r)
 				ts.budget.RecordFallback()
 				ts.fallbacks.Add(1)
@@ -199,7 +198,7 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 	ts.llmCalls.Add(1)
 	ts.totalScored.Add(1)
 
-	slog.Debug("tiered_scorer: LLM scored",
+	log.Debug("tiered_scorer: LLM scored",
 		"hash", hash, "score", score)
 	return score, true
 }

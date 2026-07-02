@@ -4,7 +4,6 @@ package ares_bootstrap
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -93,7 +92,7 @@ func SetupMCP(ctx context.Context, cfg *ares_config.MCPConfig, registry *core.Re
 		return nil, fmt.Errorf("start ares_mcp manager: %w", err)
 	}
 
-	slog.Info("bootstrap: ares_mcp manager started", "servers", len(cfg.Servers))
+	log.Info("bootstrap: ares_mcp manager started", "servers", len(cfg.Servers))
 	return manager, nil
 }
 
@@ -136,7 +135,7 @@ func SetupDashboard(
 	if eventStore != nil {
 		bridge = dashboard.NewEventBridge(eventStore, hub)
 		if err := bridge.Start(ctx); err != nil {
-			slog.Warn("bootstrap: event bridge start failed", "error", err)
+			log.Warn("bootstrap: event bridge start failed", "error", err)
 		}
 	}
 
@@ -150,7 +149,7 @@ func SetupDashboard(
 		IdleTimeout:  60 * time.Second,
 	}
 
-	slog.Info("bootstrap: dashboard initialized", "addr", cfg.Addr)
+	log.Info("bootstrap: dashboard initialized", "addr", cfg.Addr)
 
 	return &MCPDashboard{
 		MCPManager: nil,
@@ -189,7 +188,7 @@ func StopDashboard(ctx context.Context, md *MCPDashboard) error {
 	// Wait for hub errgroup to finish before stopping the hub.
 	if md.hubEG != nil {
 		if err := md.hubEG.Wait(); err != nil && err != ctx.Err() {
-			slog.Warn("bootstrap: hub errgroup error", "error", err)
+			log.Warn("bootstrap: hub errgroup error", "error", err)
 		}
 	}
 
@@ -349,7 +348,7 @@ func SetupEvolution(
 	opts ...evolution.SchedulerOption,
 ) (*EvolutionComponents, error) {
 	if flightRecorder == nil || expRepo == nil || callbackReg == nil {
-		slog.InfoContext(ctx, "bootstrap: evolution skipped (missing dependencies)")
+		log.InfoContext(ctx, "bootstrap: evolution skipped (missing dependencies)")
 		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
 	}
 
@@ -365,7 +364,7 @@ func SetupEvolution(
 		if d, err := time.ParseDuration(cfg.MinInterval); err == nil {
 			schedulerOpts = append(schedulerOpts, evolution.WithMinInterval(d))
 		} else {
-			slog.WarnContext(ctx, "bootstrap: invalid min_interval format, using default", "value", cfg.MinInterval, "error", err)
+			log.WarnContext(ctx, "bootstrap: invalid min_interval format, using default", "value", cfg.MinInterval, "error", err)
 			schedulerOpts = append(schedulerOpts, evolution.WithMinInterval(5*time.Minute))
 		}
 	} else {
@@ -394,10 +393,10 @@ func SetupEvolution(
 		// Wire dreamCycle into scheduler as the evolution handler.
 		scheduler.SetDreamCycle(dreamCycle)
 
-		slog.InfoContext(ctx, "bootstrap: dream cycle initialized and attached to scheduler")
+		log.InfoContext(ctx, "bootstrap: dream cycle initialized and attached to scheduler")
 	}
 
-	slog.InfoContext(ctx, "bootstrap: evolution system initialized",
+	log.InfoContext(ctx, "bootstrap: evolution system initialized",
 		"min_interval", schedulerOpts[1], // 使用实际配置的值
 		"enabled", true,
 		"dream_cycle", dreamCycle != nil)
@@ -422,12 +421,12 @@ func SetupEvolution(
 //	*experience.FeedbackService - the configured feedback service, or nil if not configured.
 func SetupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *experience.FeedbackService {
 	if expRepo == nil {
-		slog.Info("bootstrap: feedback service skipped (no experience repo)")
+		log.Info("bootstrap: feedback service skipped (no experience repo)")
 		return nil
 	}
 
 	svc := experience.NewFeedbackService(expRepo)
-	slog.Info("bootstrap: feedback service initialized")
+	log.Info("bootstrap: feedback service initialized")
 	return svc
 }
 
@@ -446,7 +445,7 @@ func SetupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *e
 //	error - nil on success, or error if evaluator creation/registration fails.
 func SetupEvaluators(llmClient ares_eval.LLMClient, registry *ares_eval.EvaluatorRegistry) error {
 	if llmClient == nil || registry == nil {
-		slog.Info("bootstrap: evaluators skipped (missing dependencies)")
+		log.Info("bootstrap: evaluators skipped (missing dependencies)")
 		return nil
 	}
 
@@ -463,7 +462,7 @@ func SetupEvaluators(llmClient ares_eval.LLMClient, registry *ares_eval.Evaluato
 		return fmt.Errorf("register llm judge: %w", err)
 	}
 
-	slog.Info("bootstrap: evaluators initialized",
+	log.Info("bootstrap: evaluators initialized",
 		"evaluators", registry.Names(),
 	)
 	return nil
@@ -849,7 +848,7 @@ func (lc *locatorCache) lookup(ctx context.Context, inputText string) string {
 	// Generate embedding for the input text.
 	vector, err := lc.embedder.Embed(ctx, inputText)
 	if err != nil || len(vector) == 0 {
-		slog.DebugContext(ctx, "experience locator: embedding failed", "error", err)
+		log.DebugContext(ctx, "experience locator: embedding failed", "error", err)
 		return ""
 	}
 
@@ -940,7 +939,7 @@ func WireAllEvolutionComponents(
 			return nil, fmt.Errorf("setup evaluators: %w", err)
 		}
 	} else {
-		slog.InfoContext(ctx, "bootstrap: wire evaluators skipped (no llm client)")
+		log.InfoContext(ctx, "bootstrap: wire evaluators skipped (no llm client)")
 	}
 
 	// Step 4: Create ExperienceLocator for UsedExperienceID tracking.
@@ -963,7 +962,7 @@ func WireAllEvolutionComponents(
 	// Step 6: Create evolution system if explicitly enabled and dependencies available.
 	if cfg != nil && cfg.Enabled {
 		if deps.FlightRecorder == nil || deps.ExpRepo == nil {
-			slog.WarnContext(ctx, "bootstrap: evolution enabled but missing dependencies",
+			log.WarnContext(ctx, "bootstrap: evolution enabled but missing dependencies",
 				"flight_recorder", deps.FlightRecorder != nil,
 				"exp_repo", deps.ExpRepo != nil,
 			)
@@ -986,7 +985,7 @@ func WireAllEvolutionComponents(
 			return nil, fmt.Errorf("setup evolution: %w", err)
 		}
 		result.Evolution = evolutionComps
-		slog.InfoContext(ctx, "bootstrap: evolution system initialized (ares_config-enabled)",
+		log.InfoContext(ctx, "bootstrap: evolution system initialized (ares_config-enabled)",
 			"population_size", cfg.PopulationSize,
 			"generations", cfg.Generations,
 		)
@@ -995,13 +994,13 @@ func WireAllEvolutionComponents(
 		if cfg == nil {
 			reason = "no ares_config provided"
 		}
-		slog.InfoContext(ctx, "bootstrap: wire evolution skipped",
+		log.InfoContext(ctx, "bootstrap: wire evolution skipped",
 			"reason", reason,
 			"enabled", cfg != nil && cfg.Enabled,
 		)
 	}
 
-	slog.InfoContext(ctx, "bootstrap: WireAllEvolutionComponents completed",
+	log.InfoContext(ctx, "bootstrap: WireAllEvolutionComponents completed",
 		"callback_reg", result.CallbackReg != nil,
 		"feedback_svc", result.FeedbackSvc != nil,
 		"eval_registry", result.EvalRegistry != nil,

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -398,7 +397,7 @@ func extractPathID(path, prefix string) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		slog.Error("writeJSON: encode failed", "error", err, "status", status)
+		log.Error("writeJSON: encode failed", "error", err, "status", status)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal encoding error"}`))

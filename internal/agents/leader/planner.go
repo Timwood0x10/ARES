@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -74,7 +73,7 @@ type taskPlanner struct {
 //	planner - a new TaskPlanner instance.
 func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
-		slog.Warn("NewTaskPlanner: maxTasks <= 0, falling back to default",
+		log.Warn("NewTaskPlanner: maxTasks <= 0, falling back to default",
 			"provided", maxTasks, "default", DefaultMaxTasks)
 		maxTasks = DefaultMaxTasks
 	}
@@ -102,7 +101,7 @@ func NewTaskPlanner(maxTasks int, opts ...PlannerOption) TaskPlanner {
 //	planner - a new TaskPlanner instance.
 func NewTaskPlannerWithConfig(maxTasks int, subAgents []SubAgentConfig, opts ...PlannerOption) TaskPlanner {
 	if maxTasks <= 0 {
-		slog.Warn("NewTaskPlannerWithConfig: maxTasks <= 0, falling back to default",
+		log.Warn("NewTaskPlannerWithConfig: maxTasks <= 0, falling back to default",
 			"provided", maxTasks, "default", DefaultMaxTasks)
 		maxTasks = DefaultMaxTasks
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -402,7 +401,7 @@ func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, c
 			"execution_id":  executionID,
 			"state_version": ckpt.StateVersion,
 		})
-		slog.Debug("checkpoint saved",
+		log.Debug("checkpoint saved",
 			"execution_id", executionID,
 			"state_version", ckpt.StateVersion,
 		)

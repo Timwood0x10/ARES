@@ -161,14 +161,14 @@ func (w *workerAgent) Start(ctx context.Context) error {
 	})
 
 	if w.restoredFrom != "" {
-		slog.Info("agent started (restored)",
+		lg.Info("agent started (restored)",
 			"agent_id", w.id,
 			"session_id", w.getSessionID(),
 			"restored_from", w.restoredFrom,
 			"task_count", w.taskCount.Load(),
 		)
 	} else {
-		slog.Info("agent started (fresh)",
+		lg.Info("agent started (fresh)",
 			"agent_id", w.id,
 			"session_id", w.getSessionID(),
 		)
@@ -184,7 +184,7 @@ func (w *workerAgent) Start(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("agent panic recovered",
+				lg.Error("agent panic recovered",
 					"agent_id", w.id,
 					"session_id", w.getSessionID(),
 					"panic", r,
@@ -200,7 +200,7 @@ func (w *workerAgent) Start(ctx context.Context) error {
 // Stop gracefully stops the agent.
 func (w *workerAgent) Stop(_ context.Context) error {
 	w.setStatus(models.AgentStatusOffline)
-	slog.Info("agent stopped", "agent_id", w.id, "session_id", w.getSessionID())
+	lg.Info("agent stopped", "agent_id", w.id, "session_id", w.getSessionID())
 	return nil
 }
 
@@ -224,14 +224,14 @@ func (w *workerAgent) RestoreState(state map[string]any) error {
 
 	if sid, ok := state["session_id"].(string); ok && sid != "" {
 		w.sessionID = sid
-		slog.Info("state restored: session_id",
+		lg.Info("state restored: session_id",
 			"agent_id", w.id,
 			"session_id", sid,
 		)
 	}
 	if count, ok := state["task_count"].(int64); ok {
 		w.taskCount.Store(count)
-		slog.Info("state restored: task_count",
+		lg.Info("state restored: task_count",
 			"agent_id", w.id,
 			"task_count", count,
 		)
@@ -255,7 +255,7 @@ func (w *workerAgent) ReplayEvents(evts []*ares_events.Event) error {
 		case ares_events.EventTaskCompleted:
 			if taskID, ok := ev.Payload["task_id"].(string); ok {
 				replayed++
-				slog.Debug("replayed task event",
+				lg.Debug("replayed task event",
 					"agent_id", w.id,
 					"task_id", taskID,
 				)
@@ -270,7 +270,7 @@ func (w *workerAgent) ReplayEvents(evts []*ares_events.Event) error {
 	// Restore task count from replayed ares_events.
 	w.taskCount.Store(int64(replayed))
 
-	slog.Info("ares_events replayed",
+	lg.Info("ares_events replayed",
 		"agent_id", w.id,
 		"total_events", len(evts),
 		"replayed_tasks", replayed,
@@ -333,7 +333,7 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 				"result":     fmt.Sprintf("completed by %s", w.id),
 			})
 
-			slog.Info("task completed",
+			lg.Info("task completed",
 				"agent_id", w.id,
 				"task_id", taskID,
 				"session_id", w.getSessionID(),
@@ -354,7 +354,7 @@ func (w *workerAgent) emitEvent(ctx context.Context, eventType ares_events.Event
 		Payload:  payload,
 	}
 	if err := w.eventStore.Append(ctx, w.id, []*ares_events.Event{event}, 0); err != nil {
-		slog.Warn("failed to emit event",
+		lg.Warn("failed to emit event",
 			"agent_id", w.id,
 			"type", eventType,
 			"error", err,
@@ -367,7 +367,7 @@ func verifyRestoredState(agent *workerAgent, expectedMinTasks int64) bool {
 	count := agent.taskCount.Load()
 	session := agent.getSessionID()
 	ok := count >= expectedMinTasks && session != ""
-	slog.Info("restored state verification",
+	lg.Info("restored state verification",
 		"agent_id", agent.ID(),
 		"task_count", count,
 		"expected_min", expectedMinTasks,
@@ -413,15 +413,15 @@ func main() {
 	planner := newWorker("planner-1", eventStore, cogMemory)
 
 	svc.RegisterAgent(leader, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "leader-1", "reason", "resurrection")
+		lg.Info("factory invoked", "agent_id", "leader-1", "reason", "resurrection")
 		return newWorker("leader-1", eventStore, cogMemory)
 	})
 	svc.RegisterAgent(worker, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "worker-1", "reason", "resurrection")
+		lg.Info("factory invoked", "agent_id", "worker-1", "reason", "resurrection")
 		return newWorker("worker-1", eventStore, cogMemory)
 	})
 	svc.RegisterAgent(planner, func() base.Agent {
-		slog.Info("factory invoked", "agent_id", "planner-1", "reason", "resurrection")
+		lg.Info("factory invoked", "agent_id", "planner-1", "reason", "resurrection")
 		return newWorker("planner-1", eventStore, cogMemory)
 	})
 
@@ -431,7 +431,7 @@ func main() {
 	phaseSeparator("Phase 2: Normal Operation")
 
 	if err := svc.Start(ctx); err != nil {
-		slog.Error("failed to start runtime", "error", err)
+		lg.Error("failed to start runtime", "error", err)
 		return
 	}
 
@@ -551,7 +551,7 @@ func main() {
 	phaseSeparator("Phase 8: Graceful Shutdown")
 
 	if err := svc.Stop(); err != nil {
-		slog.Error("runtime stop failed", "error", err)
+		lg.Error("runtime stop failed", "error", err)
 	}
 
 	fmt.Println("\nRuntime Resurrection example completed!")

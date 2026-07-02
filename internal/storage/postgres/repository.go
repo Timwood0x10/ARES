@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -104,7 +103,7 @@ func (r *Repository) WithTransaction(ctx context.Context) (*Repository, error) {
 		close: func() {
 			if tx != nil {
 				if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-					slog.Warn("failed to rollback orphaned transaction", "error", err)
+					log.Warn("failed to rollback orphaned transaction", "error", err)
 				}
 			}
 		},

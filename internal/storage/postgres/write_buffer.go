@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,7 +92,7 @@ func (b *WriteBuffer) Start(ctx context.Context) error {
 	b.g.Go(func() error {
 		defer b.wg.Done()
 		if err := b.processLoop(b.gctx); err != nil {
-			slog.Error("Write buffer processing loop failed", "error", err)
+			log.Error("Write buffer processing loop failed", "error", err)
 			return err
 		}
 		return nil
@@ -121,7 +120,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 				err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
 				cancel()
 				if err != nil {
-					slog.Error("Failed to flush final batch", "error", err)
+					log.Error("Failed to flush final batch", "error", err)
 					return errors.Wrap(err, "flush final batch")
 				}
 			}
@@ -135,7 +134,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 					err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
 					cancel()
 					if err != nil {
-						slog.Error("Failed to flush remaining batch on channel close", "error", err)
+						log.Error("Failed to flush remaining batch on channel close", "error", err)
 						return errors.Wrap(err, "flush remaining batch on close")
 					}
 				}
@@ -146,13 +145,13 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 			}
 			// Skip new items while retrying to prevent unbounded batch growth.
 			if retryCount > 0 {
-				slog.Warn("Dropping write item during flush retry", "table", item.Table)
+				log.Warn("Dropping write item during flush retry", "table", item.Table)
 				continue
 			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					slog.Error("Failed to flush batch after retries", "error", err, "batch_size", len(batch))
+					log.Error("Failed to flush batch after retries", "error", err, "batch_size", len(batch))
 					retryCount++
 					batch = batch[:0]
 					continue
@@ -164,7 +163,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 		case <-ticker.C:
 			if len(batch) > 0 {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					slog.Error("Failed to flush batch on timer after retries", "error", err, "batch_size", len(batch))
+					log.Error("Failed to flush batch on timer after retries", "error", err, "batch_size", len(batch))
 					retryCount++
 					batch = batch[:0]
 					continue
@@ -191,12 +190,12 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 				return ctx.Err()
 			case <-wbTimer.C:
 			}
-			slog.Warn("Retrying batch flush", "attempt", attempt, "backoff", backoff)
+			log.Warn("Retrying batch flush", "attempt", attempt, "backoff", backoff)
 		}
 
 		if err := b.flushBatch(ctx, batch); err != nil {
 			lastErr = err
-			slog.Error("Flush attempt failed", "attempt", attempt, "error", err)
+			log.Error("Flush attempt failed", "attempt", attempt, "error", err)
 			continue
 		}
 		return nil
@@ -290,7 +289,7 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback transaction", "error", rbErr)
+				log.Error("Failed to rollback transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -366,10 +365,10 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 		if err := b.queue.EnqueueTx(ctx, tx, task); err != nil {
 			if stderrors.Is(err, ErrDuplicateTask) {
 				// Task already queued; proceed without rolling back.
-				slog.Debug("Duplicate embedding task, skipping", "table", item.Table)
+				log.Debug("Duplicate embedding task, skipping", "table", item.Table)
 				continue
 			}
-			slog.Error("Failed to enqueue embedding task, rolling back transaction", "table", item.Table, "error", err)
+			log.Error("Failed to enqueue embedding task, rolling back transaction", "table", item.Table, "error", err)
 			return errors.Wrapf(err, "enqueue embedding task for table %s", item.Table)
 		}
 	}

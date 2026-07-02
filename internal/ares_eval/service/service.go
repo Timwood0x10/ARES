@@ -3,7 +3,6 @@ package evalapi
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -81,7 +80,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	totalTestCases := len(suite.TestCases)
 
-	slog.Info("evaluation run started",
+	log.Info("evaluation run started",
 		"run_id", runID,
 		"suite", suite.Name,
 		"configs", len(req.AgentConfigs),
@@ -106,7 +105,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	// Wait for all configurations to finish.
 	if err := eg.Wait(); err != nil {
-		slog.Error("evaluation run encountered error",
+		log.Error("evaluation run encountered error",
 			"run_id", runID,
 			"error", err,
 		)
@@ -121,7 +120,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	if len(allResults) > 0 {
 		if storeErr := s.repo.StoreBatch(ctx, allResults); storeErr != nil {
-			slog.Error("failed to store ares_eval results",
+			log.Error("failed to store ares_eval results",
 				"run_id", runID,
 				"error", storeErr,
 			)
@@ -135,7 +134,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 		}
 	}
 
-	slog.Info("evaluation run completed",
+	log.Info("evaluation run completed",
 		"run_id", runID,
 		"results_stored", len(allResults),
 	)
@@ -244,7 +243,7 @@ func (s *Service) runSingleConfig(
 
 	results, err := runner.RunSuite(ctx, *suite)
 	if err != nil {
-		slog.Error("config run failed",
+		log.Error("config run failed",
 			"run_id", runID,
 			"config", cfgRef.Name,
 			"error", err,

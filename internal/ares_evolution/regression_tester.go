@@ -3,7 +3,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"time"
 
@@ -96,7 +95,7 @@ func (t *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Regr
 		winRate = 0
 	}
 
-	slog.Debug("[RegressionTester] Evaluation complete",
+	log.Debug("[RegressionTester] Evaluation complete",
 		"candidate_id", cfg.Candidate.ID,
 		"candidate_score", candidateTotal/n,
 		"baseline_score", baselineTotal/n,

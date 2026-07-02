@@ -3,7 +3,6 @@ package ares_observability
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -102,7 +101,7 @@ func (t *CostTracker) RecordCall(model string, inputTokens, outputTokens int) {
 
 	pricing, ok := t.pricing.Models[model]
 	if !ok {
-		slog.Warn("cost: unknown model, skipping cost tracking",
+		log.Warn("cost: unknown model, skipping cost tracking",
 			"model", model,
 		)
 		return
@@ -538,7 +537,7 @@ func writeJSONCost(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Warn("cost: encode response", "error", err)
+		log.Warn("cost: encode response", "error", err)
 	}
 }
 

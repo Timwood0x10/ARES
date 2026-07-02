@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,9 +62,9 @@ func (h *Handler) HandleRunEval(w http.ResponseWriter, r *http.Request) {
 		req.RunID = runID // Ensure run ID is set for the service to use
 		resp, err := h.svc.RunEval(evalCtx, &req)
 		if err != nil {
-			slog.Error("async eval run failed", "run_id", runID, "error", err)
+			log.Error("async eval run failed", "run_id", runID, "error", err)
 		} else {
-			slog.Info("async eval run completed", "run_id", runID, "status", resp.Status)
+			log.Info("async eval run completed", "run_id", runID, "status", resp.Status)
 		}
 	}()
 
@@ -161,7 +160,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error("failed to write JSON response", "error", err)
+		log.Error("failed to write JSON response", "error", err)
 	}
 }
 
@@ -173,7 +172,7 @@ type errorResponse struct {
 
 // writeError writes an error response in a standard format.
 func writeError(w http.ResponseWriter, status int, message string, err error) {
-	slog.Warn("eval api error",
+	log.Warn("eval api error",
 		"status", status,
 		"message", message,
 		"error", err,
@@ -185,7 +184,7 @@ func writeError(w http.ResponseWriter, status int, message string, err error) {
 		Error: message,
 		Code:  status,
 	}); err != nil {
-		slog.Warn("eval: encode error response", "error", err)
+		log.Warn("eval: encode error response", "error", err)
 	}
 }
 

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -47,9 +46,9 @@ func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) (*Fil
 	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		slog.Warn("FileWatcher: fsnotify not available, falling back to polling", "error", err)
+		log.Warn("FileWatcher: fsnotify not available, falling back to polling", "error", err)
 	} else {
-		slog.Info("FileWatcher: using fsnotify for real-time file monitoring")
+		log.Info("FileWatcher: using fsnotify for real-time file monitoring")
 	}
 
 	stopCtx, stopCancel := context.WithCancel(context.Background())
@@ -130,7 +129,7 @@ func (w *FileWatcher) fsnotifyLoop(dir string) {
 	defer func() {
 		if w.watcher != nil {
 			if err := w.watcher.Close(); err != nil {
-				slog.Warn("reloader: close watcher failed", "error", err)
+				log.Warn("reloader: close watcher failed", "error", err)
 			}
 		}
 	}()
@@ -160,7 +159,7 @@ func (w *FileWatcher) fsnotifyLoop(dir string) {
 			if !ok {
 				return
 			}
-			slog.Error("FileWatcher error", "error", err)
+			log.Error("FileWatcher error", "error", err)
 		}
 	}
 }
@@ -195,7 +194,7 @@ func (w *FileWatcher) Close() {
 	}
 	if w.watcher != nil {
 		if err := w.watcher.Close(); err != nil {
-			slog.Warn("reloader: close watcher failed", "error", err)
+			log.Warn("reloader: close watcher failed", "error", err)
 		}
 		w.watcher = nil
 	}

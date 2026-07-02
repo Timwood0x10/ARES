@@ -3,7 +3,6 @@ package leader
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
@@ -50,7 +49,7 @@ func (p *profileParser) WithEventStore(store ares_events.EventStore) {
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (p *profileParser) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	if ares_events.Emit(ctx, p.eventStore, "profile-parser", eventType, "leader", payload) {
-		slog.Debug("event emitted", "type", eventType)
+		log.Debug("event emitted", "type", eventType)
 	}
 }
 
@@ -61,22 +60,22 @@ func (p *profileParser) Parse(ctx context.Context, input string) (*models.UserPr
 		return p.getDefaultProfile(), nil
 	}
 
-	slog.Debug("Parsing profile with LLM", "input", input)
+	log.Debug("Parsing profile with LLM", "input", input)
 
 	for attempt := 0; attempt < p.maxRetries; attempt++ {
 		profile, err := p.parseOnce(ctx, input)
 		if err != nil {
-			slog.Debug("Parse attempt failed", "attempt", attempt+1, "error", err)
+			log.Debug("Parse attempt failed", "attempt", attempt+1, "error", err)
 			continue
 		}
 
 		// Validate result
 		if err := p.validateProfile(profile); err != nil {
-			slog.Debug("Validate attempt failed", "attempt", attempt+1, "error", err)
+			log.Debug("Validate attempt failed", "attempt", attempt+1, "error", err)
 			continue
 		}
 
-		slog.Debug("Profile parsed successfully", "user_id", profile.UserID, "style", profile.Style)
+		log.Debug("Profile parsed successfully", "user_id", profile.UserID, "style", profile.Style)
 		return profile, nil
 	}
 
@@ -129,7 +128,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 
 func (p *profileParser) parseResponse(response string) (*models.UserProfile, error) {
 	// Debug: print raw response
-	slog.Debug("Raw LLM response", "preview", response[:min(500, len(response))])
+	log.Debug("Raw LLM response", "preview", response[:min(500, len(response))])
 
 	// Try to parse as JSON
 	parser := output.NewParser()
@@ -143,7 +142,7 @@ func (p *profileParser) parseResponse(response string) (*models.UserProfile, err
 	for k := range data {
 		keys = append(keys, k)
 	}
-	slog.Debug("Parsed data keys", "keys", keys)
+	log.Debug("Parsed data keys", "keys", keys)
 
 	// Extract fields
 	profile := &models.UserProfile{}

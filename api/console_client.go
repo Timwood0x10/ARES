@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -81,7 +80,7 @@ func (c *ConsoleClient) doRequest(ctx context.Context, method, path string, body
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("api: close response body", "error", err)
+			log.Warn("api: close response body", "error", err)
 		}
 	}()
 

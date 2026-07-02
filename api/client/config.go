@@ -505,7 +505,7 @@ func LoadConfigFile(path string) (*ConfigFile, error) {
 //
 //	client, err := client.NewClientFromConfigPath("config.yaml")
 //	if err != nil {
-//	    slog.Error(err)
+//	    log.Error(err)
 //	}
 //	defer client.Close(ctx)
 func NewClientFromConfigPath(configPath string) (*Client, error) {

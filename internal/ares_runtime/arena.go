@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 )
 
@@ -91,7 +90,7 @@ func (a *ArenaPlugin) ScheduleFault(pluginName string, ft FaultType) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.faults[pluginName] = ft
-	slog.Info("arena: scheduled fault",
+	log.Info("arena: scheduled fault",
 		"plugin", pluginName,
 		"fault_type", ft,
 	)

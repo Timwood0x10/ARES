@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -264,7 +263,7 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 		}
 		defer func() {
 			if closeErr := file.Close(); closeErr != nil {
-				slog.Error("failed to close file: ", "error", closeErr)
+				log.Error("failed to close file: ", "error", closeErr)
 			}
 		}()
 

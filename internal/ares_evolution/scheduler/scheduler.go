@@ -6,7 +6,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -186,7 +185,7 @@ func (s *DefaultScheduler) Start(ctx context.Context) error {
 	}
 
 	if !s.config.Enabled {
-		slog.InfoContext(ctx, "[Scheduler] Scheduler is disabled, not starting")
+		log.InfoContext(ctx, "[Scheduler] Scheduler is disabled, not starting")
 		return nil
 	}
 
@@ -204,7 +203,7 @@ func (s *DefaultScheduler) Start(ctx context.Context) error {
 		return s.monitorLoop(egCtx)
 	})
 
-	slog.InfoContext(ctx, "[Scheduler] Started idle-time evolution scheduler",
+	log.InfoContext(ctx, "[Scheduler] Started idle-time evolution scheduler",
 		"idle_check_interval", s.config.IdleCheckInterval,
 		"min_cooldown", s.config.MinCooldownPeriod)
 
@@ -220,7 +219,7 @@ func (s *DefaultScheduler) monitorLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.InfoContext(ctx, "[Scheduler] Monitor loop stopped")
+			log.InfoContext(ctx, "[Scheduler] Monitor loop stopped")
 			// Mark scheduler as not running when context is cancelled.
 			s.mu.Lock()
 			s.running = false
@@ -245,7 +244,7 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 	s.mu.Lock()
 	if s.idleStartTime.IsZero() {
 		s.idleStartTime = time.Now()
-		slog.DebugContext(ctx, "[Scheduler] Idle period started",
+		log.DebugContext(ctx, "[Scheduler] Idle period started",
 			"idle_start", s.idleStartTime.Format(time.RFC3339))
 	}
 	idleStart := s.idleStartTime
@@ -254,7 +253,7 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 	// Check if we've been idle long enough.
 	idleDuration := time.Since(idleStart)
 	if idleDuration < s.config.MinIdleDuration {
-		slog.DebugContext(ctx, "[Scheduler] Idle duration not sufficient",
+		log.DebugContext(ctx, "[Scheduler] Idle duration not sufficient",
 			"current_idle", idleDuration,
 			"required_idle", s.config.MinIdleDuration)
 		return
@@ -268,7 +267,7 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 	if !lastEvolution.IsZero() {
 		cooldownElapsed := time.Since(lastEvolution)
 		if cooldownElapsed < s.config.MinCooldownPeriod {
-			slog.DebugContext(ctx, "[Scheduler] Cooldown period not elapsed",
+			log.DebugContext(ctx, "[Scheduler] Cooldown period not elapsed",
 				"cooldown_elapsed", cooldownElapsed,
 				"required_cooldown", s.config.MinCooldownPeriod)
 			return
@@ -279,7 +278,7 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 	if s.sampleCounter != nil {
 		newSamples := s.sampleCounter.GetNewSampleCount(ctx)
 		if newSamples < s.config.SampleThreshold {
-			slog.DebugContext(ctx, "[Scheduler] Sample threshold not met",
+			log.DebugContext(ctx, "[Scheduler] Sample threshold not met",
 				"new_samples", newSamples,
 				"required_samples", s.config.SampleThreshold)
 			return
@@ -287,12 +286,12 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 	}
 
 	// All conditions met, trigger evolution.
-	slog.InfoContext(ctx, "[Scheduler] Idle conditions met, triggering evolution",
+	log.InfoContext(ctx, "[Scheduler] Idle conditions met, triggering evolution",
 		"idle_duration", idleDuration,
 		"cooldown_elapsed", time.Since(lastEvolution))
 
 	if err := s.TriggerEvolution(ctx); err != nil {
-		slog.WarnContext(ctx, "[Scheduler] Failed to trigger evolution",
+		log.WarnContext(ctx, "[Scheduler] Failed to trigger evolution",
 			"error", err)
 	}
 }
@@ -309,7 +308,7 @@ func (s *DefaultScheduler) Stop() error {
 		return ErrSchedulerNotStarted
 	}
 
-	slog.Info("[Scheduler] Stopping scheduler")
+	log.Info("[Scheduler] Stopping scheduler")
 
 	eg := s.eg
 	egCancel := s.egCancel
@@ -338,7 +337,7 @@ func (s *DefaultScheduler) Stop() error {
 	s.idleStartTime = time.Time{}
 	s.mu.Unlock()
 
-	slog.Info("[Scheduler] Scheduler stopped")
+	log.Info("[Scheduler] Scheduler stopped")
 	return nil
 }
 
@@ -372,7 +371,7 @@ func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 	}
 
 	if s.runner == nil {
-		slog.WarnContext(ctx, "[Scheduler] No evolution runner configured")
+		log.WarnContext(ctx, "[Scheduler] No evolution runner configured")
 		return errors.New("no evolution runner configured")
 	}
 
@@ -388,7 +387,7 @@ func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 		defer evolutionCancel()
 		err := s.runner.RunEvolution(egCtx)
 		if err != nil {
-			slog.ErrorContext(ctx, "[Scheduler] Evolution run failed",
+			log.ErrorContext(ctx, "[Scheduler] Evolution run failed",
 				"error", err)
 			return err
 		}
@@ -400,10 +399,10 @@ func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 		defer s.evolutionWg.Done() // Mark evolution goroutine complete
 
 		if err := eg.Wait(); err != nil {
-			slog.ErrorContext(ctx, "[Scheduler] Evolution goroutine exited with error",
+			log.ErrorContext(ctx, "[Scheduler] Evolution goroutine exited with error",
 				"error", err)
 		} else {
-			slog.InfoContext(ctx, "[Scheduler] Evolution completed successfully")
+			log.InfoContext(ctx, "[Scheduler] Evolution completed successfully")
 		}
 
 		// Update state after evolution completes.
@@ -428,20 +427,20 @@ func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 //	bool - true if all idle conditions are met.
 func (s *DefaultScheduler) IsIdle(ctx context.Context) bool {
 	if s.idleChecker == nil {
-		slog.WarnContext(ctx, "[Scheduler] No idle checker configured, assuming not idle")
+		log.WarnContext(ctx, "[Scheduler] No idle checker configured, assuming not idle")
 		return false
 	}
 
 	// Check system load.
 	if !s.idleChecker.IsSystemIdle(ctx) {
-		slog.DebugContext(ctx, "[Scheduler] System not idle (load check)")
+		log.DebugContext(ctx, "[Scheduler] System not idle (load check)")
 		return false
 	}
 
 	// Check queue length (must be empty).
 	queueLen := s.idleChecker.GetQueueLength(ctx)
 	if queueLen > 0 {
-		slog.DebugContext(ctx, "[Scheduler] Queue not empty",
+		log.DebugContext(ctx, "[Scheduler] Queue not empty",
 			"queue_length", queueLen)
 		return false
 	}
@@ -453,7 +452,7 @@ func (s *DefaultScheduler) IsIdle(ctx context.Context) bool {
 		threshold = 0.5
 	}
 	if load > threshold {
-		slog.DebugContext(ctx, "[Scheduler] System load too high",
+		log.DebugContext(ctx, "[Scheduler] System load too high",
 			"load", load, "threshold", threshold)
 		return false
 	}

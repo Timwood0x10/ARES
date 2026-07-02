@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -187,7 +186,7 @@ func (r *RecommendRepository) ListByUserID(ctx context.Context, userID string, l
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate recommendations", "error", err)
+		log.Error("Failed to iterate recommendations", "error", err)
 		return nil, errors.Wrap(err, "iterate recommendations")
 	}
 

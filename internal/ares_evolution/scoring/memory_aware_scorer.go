@@ -6,7 +6,6 @@ package scoring
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
@@ -339,7 +338,7 @@ func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.
 	if s.ID != "" {
 		ev, err = ms.evidenceProvider.GetEvidence(ctx, s.ID)
 		if err != nil {
-			slog.Debug("memory-aware scorer: evidence lookup by strategy_id failed, trying task_type",
+			log.Debug("memory-aware scorer: evidence lookup by strategy_id failed, trying task_type",
 				"strategy_id", s.ID, "error", err)
 		}
 	}
@@ -348,7 +347,7 @@ func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.
 		taskType := taskTypeFromStrategy(s)
 		ev, err = ms.evidenceProvider.GetEvidenceByTaskType(ctx, taskType)
 		if err != nil {
-			slog.Warn("memory-aware scorer: evidence lookup failed",
+			log.Warn("memory-aware scorer: evidence lookup failed",
 				"strategy_id", s.ID, "task_type", taskType, "error", err)
 			detail.FinalScore = qualityScore
 			return qualityScore, detail, nil
@@ -393,7 +392,7 @@ func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.
 	ms.penaltyTotal += costPenalty + latencyPenalty + regressionPenalty
 	ms.mu.Unlock()
 
-	slog.Debug("memory-aware score computed (evidence mode)",
+	log.Debug("memory-aware score computed (evidence mode)",
 		"strategy_id", s.ID,
 		"quality", qualityScore,
 		"bonus", bonus,
@@ -432,7 +431,7 @@ func (ms *MemoryAwareScorer) scoreWithLegacyExperience(ctx context.Context, s *m
 	if err != nil {
 		// Experience lookup failure is non-fatal; log and continue with
 		// unadjusted score.
-		slog.Warn("memory-aware scorer: experience lookup failed",
+		log.Warn("memory-aware scorer: experience lookup failed",
 			"strategy_id", s.ID, "error", err)
 		detail.FinalScore = qualityScore
 		return qualityScore, detail, nil
@@ -470,7 +469,7 @@ func (ms *MemoryAwareScorer) scoreWithLegacyExperience(ctx context.Context, s *m
 	ms.penaltyTotal += costPenalty + latencyPenalty + regressionPenalty
 	ms.mu.Unlock()
 
-	slog.Debug("memory-aware score computed",
+	log.Debug("memory-aware score computed",
 		"strategy_id", s.ID,
 		"quality", qualityScore,
 		"bonus", bonus,
@@ -499,12 +498,12 @@ func (ms *MemoryAwareScorer) ScoreAsScorerFunc() genome.ScorerFunc {
 	return func(s *mutation.Strategy) float64 {
 		score, detail, err := ms.Score(context.Background(), s)
 		if err != nil {
-			slog.Warn("memory-aware scorer failed, using baseline",
+			log.Warn("memory-aware scorer failed, using baseline",
 				"strategy_id", s.ID, "error", err)
 			return 50.0
 		}
 		if detail != nil && ms.cfg.Enabled && ms.exp != nil {
-			slog.Debug("score detail",
+			log.Debug("score detail",
 				"strategy_id", s.ID,
 				"quality", detail.QualityScore,
 				"memory_bonus", detail.MemoryEvidenceBonus,

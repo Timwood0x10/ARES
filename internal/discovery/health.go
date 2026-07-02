@@ -3,7 +3,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -67,7 +66,7 @@ func probeMCP(ctx context.Context, name, endpoint string, args []string) *Health
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
-			slog.Warn("health: close mcp client failed", "name", name, "error", err)
+			log.Warn("health: close mcp client failed", "name", name, "error", err)
 		}
 	}()
 

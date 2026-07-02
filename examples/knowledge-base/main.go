@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -374,19 +373,19 @@ func main() {
 	// Load configuration
 	config, err := loadConfig(*configFlag)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
+		lg.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
 
 	// Create knowledge base
 	kb, err := NewKnowledgeBase(config)
 	if err != nil {
-		slog.Error("Failed to create knowledge base", "error", err)
+		lg.Error("Failed to create knowledge base", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := kb.Close(); err != nil {
-			slog.Error("Failed to close knowledge base", "error", err)
+			lg.Error("Failed to close knowledge base", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -404,10 +403,10 @@ func main() {
 
 		if err != nil {
 			if err == context.DeadlineExceeded {
-				slog.Error("Import timeout (5 minutes exceeded)")
+				lg.Error("Import timeout (5 minutes exceeded)")
 				os.Exit(1)
 			}
-			slog.Error("Failed to import document", "error", err)
+			lg.Error("Failed to import document", "error", err)
 			os.Exit(1)
 		}
 		log.Printf("Document imported successfully. Document ID: %s", docID)
@@ -425,10 +424,10 @@ func main() {
 
 		if err != nil {
 			if err == context.DeadlineExceeded {
-				slog.Error("List timeout")
+				lg.Error("List timeout")
 				os.Exit(1)
 			}
-			slog.Error("Failed to list documents", "error", err)
+			lg.Error("Failed to list documents", "error", err)
 			os.Exit(1)
 		}
 		if len(docs) == 0 {
@@ -447,10 +446,10 @@ func main() {
 		if err := kb.DeleteDocument(deleteCtx, *tenantFlag, *deleteFlag); err != nil {
 			cancel()
 			if err == context.DeadlineExceeded {
-				slog.Error("Delete timeout")
+				lg.Error("Delete timeout")
 				os.Exit(1)
 			}
-			slog.Error("Failed to delete document", "error", err)
+			lg.Error("Failed to delete document", "error", err)
 			os.Exit(1)
 		}
 		cancel()
@@ -542,10 +541,10 @@ func NewKnowledgeBase(config *Config) (*KnowledgeBase, error) {
 		var err error
 		memMgr, err = internalMemory.NewMemoryManager(memConfig)
 		if err != nil {
-			slog.Warn("Failed to create memory manager", "error", err)
+			lg.Warn("Failed to create memory manager", "error", err)
 			memMgr = nil
 		} else {
-			slog.Info("Memory manager created successfully")
+			lg.Info("Memory manager created successfully")
 		}
 	}
 
@@ -577,10 +576,10 @@ func NewKnowledgeBase(config *Config) (*KnowledgeBase, error) {
 		var err error
 		distillationSvc, err = memoryapi.NewDistillationServiceWithEmbedder(distillConfig, embeddingClient, expRepo)
 		if err != nil {
-			slog.Warn("Failed to create distillation service", "error", err)
+			lg.Warn("Failed to create distillation service", "error", err)
 			distillationSvc = nil
 		} else {
-			slog.Info("Distillation service created successfully")
+			lg.Info("Distillation service created successfully")
 		}
 	}
 
@@ -1232,20 +1231,20 @@ func (kb *KnowledgeBase) formatRawResults(results []*SearchResult) string {
 // It extracts key information from conversation history and stores it in the knowledge base.
 func (kb *KnowledgeBase) triggerMemoryDistillation(ctx context.Context, tenantID string) {
 	if kb.memMgr == nil || kb.sessionID == "" {
-		slog.Warn("Memory not available for distillation")
+		lg.Warn("Memory not available for distillation")
 		return
 	}
 
-	slog.Info("Starting memory distillation", "session_id", kb.sessionID)
+	lg.Info("Starting memory distillation", "session_id", kb.sessionID)
 
 	// Get conversation history
 	messages, err := kb.memMgr.GetMessages(ctx, kb.sessionID)
 	if err != nil || len(messages) == 0 {
-		slog.Warn("No messages to distill", "error", err, "session_id", kb.sessionID)
+		lg.Warn("No messages to distill", "error", err, "session_id", kb.sessionID)
 		return
 	}
 
-	slog.Info("Found messages to distill", "count", len(messages), "session_id", kb.sessionID)
+	lg.Info("Found messages to distill", "count", len(messages), "session_id", kb.sessionID)
 
 	// Use new distillation service API
 	kb.distillMemory(ctx, tenantID, messages)
@@ -1253,7 +1252,7 @@ func (kb *KnowledgeBase) triggerMemoryDistillation(ctx context.Context, tenantID
 
 // distillMemory uses the new distillation service API to extract and store distilled memories.
 func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, messages []internalMemory.Message) {
-	slog.Info("Using new distillation service API", "session_id", kb.sessionID)
+	lg.Info("Using new distillation service API", "session_id", kb.sessionID)
 
 	// Extract user ID from conversation history using unified logic
 	var userID string
@@ -1267,9 +1266,9 @@ func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, mes
 	}
 
 	if userID != "" {
-		slog.Info("Extracted user ID from conversation", "user_id", userID)
+		lg.Info("Extracted user ID from conversation", "user_id", userID)
 	} else {
-		slog.Info("No user ID extracted from conversation")
+		lg.Info("No user ID extracted from conversation")
 	}
 
 	// Convert internal messages to API messages
@@ -1291,20 +1290,20 @@ func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, mes
 	)
 
 	if err != nil {
-		slog.Error("New distillation failed", "error", err, "session_id", kb.sessionID)
+		lg.Error("New distillation failed", "error", err, "session_id", kb.sessionID)
 		return
 	}
 
 	if len(distilledMemories) == 0 {
-		slog.Info("No memories extracted from conversation", "session_id", kb.sessionID)
+		lg.Info("No memories extracted from conversation", "session_id", kb.sessionID)
 		return
 	}
 
-	slog.Info("New distillation completed", "memories_created", len(distilledMemories), "session_id", kb.sessionID)
+	lg.Info("New distillation completed", "memories_created", len(distilledMemories), "session_id", kb.sessionID)
 
 	// Store each distilled memory
 	for i, mem := range distilledMemories {
-		slog.Info("Storing distilled memory",
+		lg.Info("Storing distilled memory",
 			"index", i+1,
 			"type", mem.Type,
 			"importance", mem.Importance,
@@ -1315,12 +1314,12 @@ func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, mes
 		if kb.embedding != nil {
 			embedding, err = kb.embedding.EmbedWithPrefix(ctx, mem.Content, "memory:")
 			if err != nil {
-				slog.Error("Failed to generate embedding for memory", "index", i+1, "error", err)
+				lg.Error("Failed to generate embedding for memory", "index", i+1, "error", err)
 				embedding = make([]float64, 1024) // Fallback to zero vector
 			} else {
 				// Normalize embedding
 				embedding = postgres.NormalizeVector(embedding)
-				slog.Info("Generated embedding for memory", "index", i+1, "dimensions", len(embedding))
+				lg.Info("Generated embedding for memory", "index", i+1, "dimensions", len(embedding))
 			}
 		}
 
@@ -1348,16 +1347,16 @@ func (kb *KnowledgeBase) distillMemory(ctx context.Context, tenantID string, mes
 
 		if kb.distilledRepo != nil {
 			if err := kb.distilledRepo.Create(ctx, distilledMem); err != nil {
-				slog.Error("Failed to store distilled memory", "index", i+1, "error", err)
+				lg.Error("Failed to store distilled memory", "index", i+1, "error", err)
 				continue
 			}
-			slog.Info("Successfully stored distilled memory", "memory_id", mem.ID, "user_id", userID)
+			lg.Info("Successfully stored distilled memory", "memory_id", mem.ID, "user_id", userID)
 		}
 	}
 
 	// Log metrics
 	metrics := kb.distillationSvc.GetMetrics()
-	slog.Info("Distillation metrics",
+	lg.Info("Distillation metrics",
 		"total_attempts", metrics.AttemptTotal,
 		"total_success", metrics.SuccessTotal,
 		"total_memories", metrics.MemoriesCreated)
@@ -1391,7 +1390,7 @@ func (kb *KnowledgeBase) ListDocuments(ctx context.Context, tenantID string) ([]
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			lg.Error("Failed to close rows", "error", err)
 		}
 	}()
 

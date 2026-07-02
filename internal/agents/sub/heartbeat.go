@@ -2,7 +2,6 @@ package sub
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -25,7 +24,7 @@ func NewHeartbeatSender(agentID string, interval time.Duration, hbMon *ahp.Heart
 		interval = 30 * time.Second
 	}
 	if hbMon == nil {
-		slog.Warn("NewHeartbeatSender: nil heartbeat monitor")
+		log.Warn("NewHeartbeatSender: nil heartbeat monitor")
 	}
 	return &heartbeatSender{
 		agentID:      agentID,

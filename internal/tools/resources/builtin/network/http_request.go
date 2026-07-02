@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -128,7 +127,7 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("failed to close response body: ", "error", err)
+			log.Error("failed to close response body: ", "error", err)
 		}
 	}()
 

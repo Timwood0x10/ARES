@@ -45,14 +45,14 @@ import (
 )
 
 func main() {
-	slog.Info("=== End-to-End Example: Full Chain Demonstration ===")
+	log.Info("=== End-to-End Example: Full Chain Demonstration ===")
 	fmt.Println()
 
 	// ---------------------------------------------------------------
 	// Phase 1: Config Startup
 	// ---------------------------------------------------------------
-	slog.Info("Phase 1: Config file startup")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 1: Config file startup")
+	log.Info("----------------------------------------------------")
 
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
@@ -61,42 +61,42 @@ func main() {
 
 	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		slog.Error("Failed to load ares_config", "error", err)
+		log.Error("Failed to load ares_config", "error", err)
 		os.Exit(1)
 	}
 
 	if err := ares_config.LoadFromEnv(cfg); err != nil {
-		slog.Error("Failed to load env ares_config", "error", err)
+		log.Error("Failed to load env ares_config", "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("Config loaded", "llm_provider", cfg.LLM.Provider, "llm_model", cfg.LLM.Model)
+	log.Info("Config loaded", "llm_provider", cfg.LLM.Provider, "llm_model", cfg.LLM.Model)
 	if cfg.LLM.APIKey == "" || cfg.LLM.APIKey == "sk-or-v1-xxx" {
-		slog.Error("Invalid LLM API key — set LLM_API_KEY environment variable with a real key",
+		log.Error("Invalid LLM API key — set LLM_API_KEY environment variable with a real key",
 			"api_key_preview", fmt.Sprintf("%s...", cfg.LLM.APIKey[:min(len(cfg.LLM.APIKey), 10)]))
 		os.Exit(1)
 	}
-	slog.Info("Leader agent", "id", cfg.Agents.Leader.ID)
+	log.Info("Leader agent", "id", cfg.Agents.Leader.ID)
 	for _, subCfg := range cfg.Agents.Sub {
-		slog.Info("Sub agent", "id", subCfg.ID, "type", subCfg.Type)
+		log.Info("Sub agent", "id", subCfg.ID, "type", subCfg.Type)
 	}
 	fmt.Println()
 
 	// ---------------------------------------------------------------
 	// Phase 2: Agent Processing
 	// ---------------------------------------------------------------
-	slog.Info("Phase 2: Agent processes task")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 2: Agent processes task")
+	log.Info("----------------------------------------------------")
 
 	components, err := initializeComponents(cfg)
 	if err != nil {
-		slog.Error("Failed to initialize components", "error", err)
+		log.Error("Failed to initialize components", "error", err)
 		os.Exit(1)
 	}
 
 	leaderAgent, err := createLeaderAgent(cfg, components)
 	if err != nil {
-		slog.Error("Failed to create leader agent", "error", err)
+		log.Error("Failed to create leader agent", "error", err)
 		os.Exit(1)
 	}
 	subAgents := createSubAgents(cfg, components)
@@ -105,12 +105,12 @@ func main() {
 	defer cancel()
 
 	if err := leaderAgent.Start(ctx); err != nil {
-		slog.Error("Failed to start leader agent", "error", err)
+		log.Error("Failed to start leader agent", "error", err)
 		os.Exit(1)
 	}
 	for _, agent := range subAgents {
 		if err := agent.Start(ctx); err != nil {
-			slog.Warn("Failed to start sub agent", "id", agent.ID(), "error", err)
+			log.Warn("Failed to start sub agent", "id", agent.ID(), "error", err)
 		}
 	}
 
@@ -119,31 +119,31 @@ func main() {
 
 	result, err := leaderAgent.Process(ctx, sampleInput)
 	if err != nil {
-		slog.Error("Agent processing error", "error", err)
+		log.Error("Agent processing error", "error", err)
 		// Continue to show distillation and workflow even if agent fails
 	}
 
 	var resultStr string
 	if result == nil {
 		resultStr = "no result"
-		slog.Warn("Agent returned nil result")
+		log.Warn("Agent returned nil result")
 	} else if recommendResult, ok := result.(*models.RecommendResult); ok {
 		resultStr = fmt.Sprintf("Found %d items, reason: %s", len(recommendResult.Items), recommendResult.Reason)
-		slog.Info("Agent result", "items", len(recommendResult.Items), "reason", recommendResult.Reason)
+		log.Info("Agent result", "items", len(recommendResult.Items), "reason", recommendResult.Reason)
 		for _, item := range recommendResult.Items {
-			slog.Info("  Item", "name", item.Name, "category", item.Category, "score", item.Price)
+			log.Info("  Item", "name", item.Name, "category", item.Category, "score", item.Price)
 		}
 	} else {
 		resultStr = fmt.Sprintf("%v", result)
-		slog.Info("Agent result (raw)", "data", resultStr)
+		log.Info("Agent result (raw)", "data", resultStr)
 	}
 	fmt.Println()
 
 	// ---------------------------------------------------------------
 	// Phase 3: Memory Distillation (real Distiller with fallback)
 	// ---------------------------------------------------------------
-	slog.Info("Phase 3: Memory distillation")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 3: Memory distillation")
+	log.Info("----------------------------------------------------")
 
 	taskResult := &experience.TaskResult{
 		Task:     sampleInput,
@@ -156,8 +156,8 @@ func main() {
 
 	distilledExp := distillExperienceWithRealService(taskResult)
 	if distilledExp != nil {
-		slog.Info("Distillation complete", "id", distilledExp.ID, "problem", distilledExp.Problem)
-		slog.Info("  Solution", "solution", distilledExp.Solution)
+		log.Info("Distillation complete", "id", distilledExp.ID, "problem", distilledExp.Problem)
+		log.Info("  Solution", "solution", distilledExp.Solution)
 	}
 
 	// Distill a batch of simulated experiences using real distillation pipeline.
@@ -188,14 +188,14 @@ func main() {
 		},
 	}
 	experiences := distillBatchWithRealPipeline(batchTasks)
-	slog.Info("Batch distillation", "distilled", len(experiences), "total", len(batchTasks))
+	log.Info("Batch distillation", "distilled", len(experiences), "total", len(batchTasks))
 	fmt.Println()
 
 	// ---------------------------------------------------------------
 	// Phase 4: Workflow Orchestration
 	// ---------------------------------------------------------------
-	slog.Info("Phase 4: Workflow orchestration")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 4: Workflow orchestration")
+	log.Info("----------------------------------------------------")
 
 	workflowResult := executeWorkflow(ctx, components)
 	fmt.Println()
@@ -203,8 +203,8 @@ func main() {
 	// ---------------------------------------------------------------
 	// Phase 4.5: Evolution (Genetic Algorithm Pipeline)
 	// ---------------------------------------------------------------
-	slog.Info("Phase 4.5: Evolution (GA Pipeline)")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 4.5: Evolution (GA Pipeline)")
+	log.Info("----------------------------------------------------")
 
 	executeEvolutionPhase(ctx, workflowResult)
 	fmt.Println()
@@ -212,13 +212,13 @@ func main() {
 	// ---------------------------------------------------------------
 	// Phase 5: Snapshot & Resurrection (real EventStore + heartbeat)
 	// ---------------------------------------------------------------
-	slog.Info("Phase 5: Snapshot & Resurrection")
-	slog.Info("----------------------------------------------------")
+	log.Info("Phase 5: Snapshot & Resurrection")
+	log.Info("----------------------------------------------------")
 
 	executeResurrectionDemo(ctx, cfg, components, leaderAgent)
 	fmt.Println()
 
-	slog.Info("=== End-to-End Example Completed Successfully ===")
+	log.Info("=== End-to-End Example Completed Successfully ===")
 }
 
 // -----------------------------------------------------------------------
@@ -298,7 +298,7 @@ func getLLMAdapter(comps *components, agentModel, agentProvider string) output.L
 	cfg.Provider = provider
 	adapter, err := comps.llmFactory.Create(provider, &cfg)
 	if err != nil {
-		slog.Warn("Failed to create adapter, using default", "provider", provider, "model", model, "error", err)
+		log.Warn("Failed to create adapter, using default", "provider", provider, "model", model, "error", err)
 		return comps.llmAdapter
 	}
 	return adapter
@@ -462,7 +462,7 @@ func tryCreateRealDistiller() (*distillation.Distiller, bool) {
 	// To enable real distillation, run:
 	//   docker-compose up -d postgres pgvector
 	//   Then the Distiller will use real embedding + conflict resolution.
-	slog.Info("[Demo] Attempting to create real DistillationService...",
+	log.Info("[Demo] Attempting to create real DistillationService...",
 		"note", "requires Postgres + pgvector via docker-compose")
 
 	return nil, false
@@ -525,7 +525,7 @@ func distillExperienceWithRealService(task *experience.TaskResult) *experience.E
 	// Try to use the real Distiller pipeline.
 	realDistiller, available := tryCreateRealDistiller()
 	if available {
-		slog.Info("[Demo] Using real DistillationService for single experience distillation")
+		log.Info("[Demo] Using real DistillationService for single experience distillation")
 		// Real pipeline: convert task to conversation messages -> DistillConversation
 		// This would call the full extract->classify->score->embed->resolve pipeline.
 		_ = realDistiller // Use real distiller when available
@@ -533,7 +533,7 @@ func distillExperienceWithRealService(task *experience.TaskResult) *experience.E
 
 	// Fallback path: use refined heuristics that mirror the real pipeline's logic.
 	if !shouldDistillReal(task) {
-		slog.Warn("Task does not meet distillation criteria",
+		log.Warn("Task does not meet distillation criteria",
 			"success", task.Success,
 			"task_len", len(task.Task),
 			"result_len", len(task.Result),
@@ -556,12 +556,12 @@ func distillExperienceWithRealService(task *experience.TaskResult) *experience.E
 	}
 
 	if !available {
-		slog.Info("[Demo] Real distillation service unavailable, using simplified fallback. Run docker-compose up for full experience.",
+		log.Info("[Demo] Real distillation service unavailable, using simplified fallback. Run docker-compose up for full experience.",
 			"experience_id", exp.ID,
 			"mode", "fallback")
 	}
 
-	slog.Info("Distilled experience",
+	log.Info("Distilled experience",
 		"id", exp.ID,
 		"problem", truncate(exp.Problem, 60),
 		"solution", truncate(exp.Solution, 60),
@@ -584,7 +584,7 @@ func distillBatchWithRealPipeline(tasks []*experience.TaskResult) []*experience.
 	// Try real distiller pipeline first.
 	realDistiller, available := tryCreateRealDistiller()
 	if available {
-		slog.Info("[Demo] Using real Distiller for batch processing")
+		log.Info("[Demo] Using real Distiller for batch processing")
 		for _, task := range tasks {
 			// Convert task to distillation.Message format for the real pipeline.
 			// In production: messages := buildConversationMessages(task)
@@ -593,7 +593,7 @@ func distillBatchWithRealPipeline(tasks []*experience.TaskResult) []*experience.
 			_ = task // Process each task through real pipeline
 		}
 	} else {
-		slog.Info("[Demo] Real distillation service unavailable, using simplified fallback for batch. Run docker-compose up for full experience.",
+		log.Info("[Demo] Real distillation service unavailable, using simplified fallback for batch. Run docker-compose up for full experience.",
 			"mode", "fallback")
 	}
 
@@ -607,10 +607,10 @@ func distillBatchWithRealPipeline(tasks []*experience.TaskResult) []*experience.
 
 	// Show ranking — mirrors the production RankingService behavior.
 	if len(store.experiences) > 1 {
-		slog.Info("Experience ranking (mirrors RankingService):")
+		log.Info("Experience ranking (mirrors RankingService):")
 		for i, exp := range store.experiences {
 			recency := fmt.Sprintf("%.2f", time.Since(exp.CreatedAt).Hours()/24.0)
-			slog.Info(fmt.Sprintf("  #%d", i+1),
+			log.Info(fmt.Sprintf("  #%d", i+1),
 				"id", exp.ID,
 				"problem", truncate(exp.Problem, 40),
 				"score", fmt.Sprintf("%.2f", exp.Score),
@@ -684,7 +684,7 @@ func (a *realWorkflowAgent) ProcessStream(ctx context.Context, input any) (<-cha
 }
 func (a *realWorkflowAgent) Process(ctx context.Context, input any) (any, error) {
 	inputStr := fmt.Sprintf("%v", input)
-	slog.Info("Workflow agent processing with real LLM", "agent", a.id, "input_len", len(inputStr))
+	log.Info("Workflow agent processing with real LLM", "agent", a.id, "input_len", len(inputStr))
 
 	// Call the real LLM adapter with the rendered prompt.
 	output, err := a.llm.Generate(ctx, inputStr)
@@ -739,27 +739,27 @@ func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 	loader := engine.NewYAMLFileLoader()
 	workflow, err := loader.Load(ctx, "./examples/end-to-end/ares_config/workflow.yaml")
 	if err != nil {
-		slog.Error("Failed to load workflow", "error", err)
+		log.Error("Failed to load workflow", "error", err)
 		return &workflowResult{Status: "failed"}
 	}
 
-	slog.Info("Workflow loaded", "id", workflow.ID, "name", workflow.Name, "steps", len(workflow.Steps))
+	log.Info("Workflow loaded", "id", workflow.ID, "name", workflow.Name, "steps", len(workflow.Steps))
 	for _, step := range workflow.Steps {
 		deps := step.DependsOn
 		if deps == nil {
 			deps = []string{}
 		}
-		slog.Info("  Step", "id", step.ID, "type", step.AgentType, "depends_on", deps)
+		log.Info("  Step", "id", step.ID, "type", step.AgentType, "depends_on", deps)
 	}
 
 	// Verify DAG is valid (no cycles)
 	dag, err := engine.NewDAG(workflow.Steps)
 	if err != nil {
-		slog.Error("Invalid DAG", "error", err)
+		log.Error("Invalid DAG", "error", err)
 		return &workflowResult{Status: "failed"}
 	}
 	order, _ := dag.GetExecutionOrder()
-	slog.Info("Execution order", "order", order)
+	log.Info("Execution order", "order", order)
 
 	// Register agents and execute.
 	registry := initWorkflowRegistry(comps)
@@ -773,7 +773,7 @@ func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 	duration := time.Since(start)
 
 	if err != nil {
-		slog.Error("Workflow execution failed", "error", err)
+		log.Error("Workflow execution failed", "error", err)
 		return &workflowResult{Status: "failed", Duration: duration}
 	}
 
@@ -800,7 +800,7 @@ func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 		}
 		wfResult.StepResults = append(wfResult.StepResults, info)
 
-		slog.Info(fmt.Sprintf("  Step %s (%s)", stepResult.StepID, stepResult.Name),
+		log.Info(fmt.Sprintf("  Step %s (%s)", stepResult.StepID, stepResult.Name),
 			"status", stepResult.Status,
 			"output", truncate(stepResult.Output, 80),
 			"duration", stepResult.Duration,
@@ -811,7 +811,7 @@ func executeWorkflow(ctx context.Context, comps *components) *workflowResult {
 		wfResult.AvgQuality = totalQuality / float64(len(result.Steps))
 	}
 
-	slog.Info("Workflow completed",
+	log.Info("Workflow completed",
 		"status", result.Status,
 		"duration", duration,
 		"steps", len(result.Steps),
@@ -881,7 +881,7 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 	crosser, crossErr := genome.NewCrossover()
 
 	if mutErr != nil || crossErr != nil {
-		slog.Warn("[Demo] Real evolution pipeline unavailable, using simulated fallback. Run with full dependencies for GA experience.",
+		log.Warn("[Demo] Real evolution pipeline unavailable, using simulated fallback. Run with full dependencies for GA experience.",
 			"mutator_error", mutErr,
 			"crossover_error", crossErr)
 		executeEvolutionFallback(baseStrategy, wfResult)
@@ -902,13 +902,13 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 		genome.WithEliteCount(1),
 	)
 	if popErr != nil {
-		slog.Error("Failed to create evolution population, falling back to simulation",
+		log.Error("Failed to create evolution population, falling back to simulation",
 			"error", popErr)
 		executeEvolutionFallback(baseStrategy, wfResult)
 		return
 	}
 
-	slog.Info("Evolution population created",
+	log.Info("Evolution population created",
 		"size", pop.Size,
 		"generation", pop.CurrentGeneration(),
 		"base_strategy_id", baseStrategy.ID)
@@ -916,7 +916,7 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 	// --- Step 2: Score initial population (before evolution) ---
 	// Use workflow quality as baseline fitness; add noise for diversity.
 	beforeStats := scorePopulationForDemo(pop, wfResult.AvgQuality)
-	slog.Info("Pre-evolution population stats",
+	log.Info("Pre-evolution population stats",
 		"best_score", fmt.Sprintf("%.3f", beforeStats.BestScore),
 		"avg_score", fmt.Sprintf("%.3f", beforeStats.AvgScore),
 		"worst_score", fmt.Sprintf("%.3f", beforeStats.WorstScore))
@@ -929,13 +929,13 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 		crosser,
 	)
 	if evolveErr != nil {
-		slog.Error("Evolution generation failed", "error", evolveErr)
+		log.Error("Evolution generation failed", "error", evolveErr)
 		return
 	}
 
 	// --- Step 4: Score post-evolution population ---
 	afterStats := pop.Stats()
-	slog.Info("Post-evolution population stats",
+	log.Info("Post-evolution population stats",
 		"generation", afterStats.Generation,
 		"size", afterStats.Size,
 		"best_score", fmt.Sprintf("%.3f", afterStats.BestScore),
@@ -944,7 +944,7 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 
 	// --- Step 5: Log before vs after comparison ---
 	improvement := afterStats.BestScore - beforeStats.BestScore
-	slog.Info("Evolution before vs after comparison",
+	log.Info("Evolution before vs after comparison",
 		"before_best", fmt.Sprintf("%.3f", beforeStats.BestScore),
 		"after_best", fmt.Sprintf("%.3f", afterStats.BestScore),
 		"improvement", fmt.Sprintf("%+.3f", improvement),
@@ -953,7 +953,7 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 
 	bestStrategy := pop.BestStrategy()
 	if bestStrategy != nil {
-		slog.Info("Best evolved strategy",
+		log.Info("Best evolved strategy",
 			"id", bestStrategy.ID,
 			"version", bestStrategy.Version,
 			"mutation_type", bestStrategy.StrategyMutationType,
@@ -961,14 +961,14 @@ func executeEvolutionPhase(ctx context.Context, wfResult *workflowResult) {
 			"score", fmt.Sprintf("%.3f", bestStrategy.Score))
 	}
 
-	slog.Info("Phase 4.5 completed: Evolution cycle finished",
+	log.Info("Phase 4.5 completed: Evolution cycle finished",
 		"mode", "production")
 }
 
 // executeEvolutionFallback provides a simulated evolution demonstration
 // when the real GA pipeline dependencies are unavailable.
 func executeEvolutionFallback(baseStrategy *mutation.Strategy, wfResult *workflowResult) {
-	slog.Info("[Demo] Running simulated evolution fallback...",
+	log.Info("[Demo] Running simulated evolution fallback...",
 		"note", "Real GA pipeline requires evolution package dependencies")
 
 	// Simulate initial population metrics.
@@ -976,7 +976,7 @@ func executeEvolutionFallback(baseStrategy *mutation.Strategy, wfResult *workflo
 	initialAvg := wfResult.AvgQuality * 0.85
 	initialWorst := wfResult.AvgQuality * 0.6
 
-	slog.Info("Pre-evolution (simulated)",
+	log.Info("Pre-evolution (simulated)",
 		"best_score", fmt.Sprintf("%.3f", initialBest),
 		"avg_score", fmt.Sprintf("%.3f", initialAvg),
 		"worst_score", fmt.Sprintf("%.3f", initialWorst),
@@ -991,24 +991,24 @@ func executeEvolutionFallback(baseStrategy *mutation.Strategy, wfResult *workflo
 	postAvg := initialAvg * improvementFactor * 0.98 // Slight avg regression possible
 	postWorst := initialWorst * (1.0 + rand.Float64()*0.2)
 
-	slog.Info("Post-evolution (simulated)",
+	log.Info("Post-evolution (simulated)",
 		"best_score", fmt.Sprintf("%.3f", postBest),
 		"avg_score", fmt.Sprintf("%.3f", postAvg),
 		"worst_score", fmt.Sprintf("%.3f", postWorst),
 		"population_size", 8)
 
-	slog.Info("Evolution before vs after (simulated)",
+	log.Info("Evolution before vs after (simulated)",
 		"before_best", fmt.Sprintf("%.3f", initialBest),
 		"after_best", fmt.Sprintf("%.3f", postBest),
 		"improvement", fmt.Sprintf("%+.3f", postBest-initialBest),
 		"mode", "fallback")
 
-	slog.Info("Simulated mutations applied",
+	log.Info("Simulated mutations applied",
 		"parameter_mutations", rand.Intn(5)+1,
 		"prompt_mutations", rand.Intn(2),
 		"crossovers", rand.Intn(3)+1)
 
-	slog.Info("Phase 4.5 completed: Evolution simulation finished",
+	log.Info("Phase 4.5 completed: Evolution simulation finished",
 		"mode", "fallback")
 }
 
@@ -1118,33 +1118,33 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	emitLifecycleEvents(ctx, eventStore, agentID)
 
 	// 5.1 Capture snapshot of the running leader agent.
-	slog.Info("5.1 Capture snapshot of running leader agent")
+	log.Info("5.1 Capture snapshot of running leader agent")
 
 	statefulAgent, ok := originalAgent.(base.StatefulAgent)
 	if !ok {
-		slog.Error("Leader agent does not implement StatefulAgent interface",
+		log.Error("Leader agent does not implement StatefulAgent interface",
 			"agent_id", agentID)
 		return
 	}
 
 	snapshot, err := statefulAgent.Snapshot()
 	if err != nil {
-		slog.Error("Failed to capture snapshot", "error", err)
+		log.Error("Failed to capture snapshot", "error", err)
 		return
 	}
 
 	snapshotJSON, _ := json.MarshalIndent(snapshot, "", "  ")
-	slog.Info("Snapshot captured successfully",
+	log.Info("Snapshot captured successfully",
 		"agent_id", agentID,
 		"snapshot", string(snapshotJSON))
 
 	// Persist snapshot to MemorySnapshotStore for resurrection demo.
 	snapStore := resurrection.NewMemorySnapshotStore()
 	if err := snapStore.Save(ctx, agentID, snapshot); err != nil {
-		slog.Error("Failed to persist snapshot", "error", err)
+		log.Error("Failed to persist snapshot", "error", err)
 		return
 	}
-	slog.Info("Snapshot persisted to MemorySnapshotStore",
+	log.Info("Snapshot persisted to MemorySnapshotStore",
 		"agent_id", agentID)
 
 	// Record the original session ID for later verification.
@@ -1152,40 +1152,40 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	if sid, ok := snapshot["session_id"].(string); ok && sid != "" {
 		originalSessionID = sid
 	} else {
-		slog.Warn("Snapshot does not contain a valid 'session_id' (string) key",
+		log.Warn("Snapshot does not contain a valid 'session_id' (string) key",
 			"keys", getMapKeys(snapshot),
 			"note", "continuity check will be skipped")
 	}
-	slog.Info("Original session ID recorded", "session_id", originalSessionID)
+	log.Info("Original session ID recorded", "session_id", originalSessionID)
 
 	// 5.2 Simulate agent crash by stopping the agent.
-	slog.Info("5.2 Simulate agent crash (stop agent)")
+	log.Info("5.2 Simulate agent crash (stop agent)")
 
 	if err := originalAgent.Stop(ctx); err != nil {
-		slog.Warn("Error stopping agent during crash simulation", "error", err)
+		log.Warn("Error stopping agent during crash simulation", "error", err)
 	}
 
 	// Emit crash event to EventStore for audit trail.
 	ares_events.Emit(ctx, eventStore, agentID, ares_events.EventAgentStopped, "example", map[string]any{
 		"reason": "crash_simulation",
 	})
-	slog.Info("Agent stopped (crash simulated)",
+	log.Info("Agent stopped (crash simulated)",
 		"agent_id", agentID,
 		"status", originalAgent.Status())
 
 	// 5.3 Detect crash via heartbeat timeout simulation.
-	slog.Info("5.3 Crash detection via heartbeat timeout")
+	log.Info("5.3 Crash detection via heartbeat timeout")
 
 	// Read ares_events from EventStore to verify heartbeat gap (crash detection).
 	storedEvents, readErr := eventStore.Read(ctx, agentID, ares_events.ReadOptions{
 		Direction: ares_events.ReadAscending,
 	})
 	if readErr != nil {
-		slog.Warn("Could not read ares_events from EventStore for crash detection",
+		log.Warn("Could not read ares_events from EventStore for crash detection",
 			"error", readErr,
 			"note", "falling back to timeout-based detection")
 	} else {
-		slog.Info("Crash detection: analyzing EventStore for heartbeat gap",
+		log.Info("Crash detection: analyzing EventStore for heartbeat gap",
 			"total_events", len(storedEvents),
 			"agent_id", agentID)
 
@@ -1200,7 +1200,7 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 		}
 		if !lastEventTime.IsZero() {
 			timeSinceLastEvent := time.Since(lastEventTime)
-			slog.Info("Heartbeat gap detected",
+			log.Info("Heartbeat gap detected",
 				"time_since_last_event_ms", timeSinceLastEvent.Milliseconds(),
 				"event_count", eventCount,
 				"threshold_ms", 5000,
@@ -1209,46 +1209,46 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	}
 
 	// 5.4 Create new agent instance via factory.
-	slog.Info("5.4 Create new agent via factory")
+	log.Info("5.4 Create new agent via factory")
 
 	newAgent, err := createLeaderAgent(cfg, comps)
 	if err != nil {
-		slog.Error("Failed to create new agent for failover test", "error", err)
+		log.Error("Failed to create new agent for failover test", "error", err)
 		return
 	}
-	slog.Info("New agent created via factory",
+	log.Info("New agent created via factory",
 		"new_agent_id", newAgent.ID(),
 		"type", newAgent.Type())
 
 	// 5.5 Restore state from snapshot.
-	slog.Info("5.5 Restore state from snapshot")
+	log.Info("5.5 Restore state from snapshot")
 
 	loadedSnapshot, err := snapStore.Load(ctx, agentID)
 	if err != nil {
-		slog.Error("Failed to load snapshot from store", "error", err)
+		log.Error("Failed to load snapshot from store", "error", err)
 		return
 	}
 	if loadedSnapshot == nil {
-		slog.Error("No snapshot found in store")
+		log.Error("No snapshot found in store")
 		return
 	}
 
 	newStatefulAgent, ok := newAgent.(base.StatefulAgent)
 	if !ok {
-		slog.Error("New agent does not implement StatefulAgent interface")
+		log.Error("New agent does not implement StatefulAgent interface")
 		return
 	}
 
 	if err := newStatefulAgent.RestoreState(loadedSnapshot); err != nil {
-		slog.Error("Failed to restore state from snapshot", "error", err)
+		log.Error("Failed to restore state from snapshot", "error", err)
 		return
 	}
-	slog.Info("State restored from snapshot successfully",
+	log.Info("State restored from snapshot successfully",
 		"agent_id", newAgent.ID(),
 		"restored_session_id", loadedSnapshot["session_id"])
 
 	// 5.6 Replay REAL ares_events from EventStore (not hardcoded synthetic ares_events).
-	slog.Info("5.6 Replay ares_events from real EventStore")
+	log.Info("5.6 Replay ares_events from real EventStore")
 
 	// KEY CHANGE: Instead of building hardcoded []*ares_events.Event slices,
 	// we READ ares_events from the real EventStore that was populated during
@@ -1257,12 +1257,12 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 		Direction: ares_events.ReadAscending,
 	})
 	if readErr != nil {
-		slog.Error("Failed to read ares_events from EventStore for replay",
+		log.Error("Failed to read ares_events from EventStore for replay",
 			"error", readErr,
 			"falling_back_to", "empty event list")
 		replayEvents = []*ares_events.Event{}
 	} else {
-		slog.Info("Read ares_events from real EventStore for replay",
+		log.Info("Read ares_events from real EventStore for replay",
 			"event_count", len(replayEvents),
 			"source", "real_event_store",
 			"agent_id", agentID)
@@ -1273,59 +1273,59 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 			typeCounts[string(evt.Type)]++
 		}
 		for evtType, count := range typeCounts {
-			slog.Info("  Event type for replay", "type", evtType, "count", count)
+			log.Info("  Event type for replay", "type", evtType, "count", count)
 		}
 	}
 
 	if len(replayEvents) == 0 {
-		slog.Warn("[Demo] No ares_events found in EventStore for replay. "+
+		log.Warn("[Demo] No ares_events found in EventStore for replay. "+
 			"This can happen if the EventStore was not properly populated during agent lifecycle. "+
 			"In production, ares_events are emitted automatically by agents.",
 			"agent_id", agentID)
 	}
 
 	if err := newStatefulAgent.ReplayEvents(replayEvents); err != nil {
-		slog.Error("Failed to replay ares_events", "error", err)
+		log.Error("Failed to replay ares_events", "error", err)
 		return
 	}
-	slog.Info("Events replayed successfully",
+	log.Info("Events replayed successfully",
 		"event_count", len(replayEvents),
 		"source", map[bool]string{true: "real_event_store", false: "synthetic_fallback"}[len(replayEvents) > 0],
 		"agent_id", newAgent.ID())
 
 	// 5.7 Verify restored agent processes new task with recovered session.
-	slog.Info("5.7 Verify restored agent processes new task with recovered session")
+	log.Info("5.7 Verify restored agent processes new task with recovered session")
 
 	resCtx, resCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer resCancel()
 
 	if err := newAgent.Start(resCtx); err != nil {
-		slog.Error("Failed to start restored agent", "error", err)
+		log.Error("Failed to start restored agent", "error", err)
 		return
 	}
-	slog.Info("Restored agent started",
+	log.Info("Restored agent started",
 		"agent_id", newAgent.ID(),
 		"status", newAgent.Status())
 
 	followUpTask := "基于之前的分析，请进一步优化数据库索引策略"
-	slog.Info("Processing follow-up task on restored agent",
+	log.Info("Processing follow-up task on restored agent",
 		"task", truncate(followUpTask, 60))
 
 	restoreResult, err := newAgent.Process(resCtx, followUpTask)
 	if err != nil {
-		slog.Error("Restored agent processing failed", "error", err)
+		log.Error("Restored agent processing failed", "error", err)
 		return
 	}
 
 	var restoreResultStr string
 	if recommendResult, ok := restoreResult.(*models.RecommendResult); ok {
-		slog.Info("Restored agent result",
+		log.Info("Restored agent result",
 			"items", len(recommendResult.Items),
 			"reason", recommendResult.Reason,
 			"session_id", recommendResult.SessionID)
 	} else if restoreResult != nil {
 		restoreResultStr = fmt.Sprintf("%v", restoreResult)
-		slog.Info("Restored agent result (raw)", "data", restoreResultStr)
+		log.Info("Restored agent result (raw)", "data", restoreResultStr)
 	}
 
 	// Emit post-restoration event to EventStore (demonstrates continued event sourcing).
@@ -1336,12 +1336,12 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	})
 
 	// 5.8 Compare results to confirm state continuity.
-	slog.Info("5.8 Compare results to confirm state continuity")
+	log.Info("5.8 Compare results to confirm state continuity")
 
-	slog.Info("=== Resurrection Verification Summary ===")
-	slog.Info("  Original Agent ID:", "id", originalAgent.ID())
-	slog.Info("  Restored Agent ID:", "id", newAgent.ID())
-	slog.Info("  Original Session ID:", "session_id", originalSessionID)
+	log.Info("=== Resurrection Verification Summary ===")
+	log.Info("  Original Agent ID:", "id", originalAgent.ID())
+	log.Info("  Restored Agent ID:", "id", newAgent.ID())
+	log.Info("  Original Session ID:", "session_id", originalSessionID)
 
 	// Verify A: Snapshot field-level restoration.
 	restoredSnapshot, snapErr := newStatefulAgent.Snapshot()
@@ -1350,16 +1350,16 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 		restoredSID, _ := restoredSnapshot["session_id"].(string)
 		if originalSessionID != "" && restoredSID == originalSessionID {
 			fieldRestorationOK = true
-			slog.Info("✓ Snapshot field restoration verified",
+			log.Info("✓ Snapshot field restoration verified",
 				"session_id", restoredSID,
 				"snapshot_keys", getMapKeys(restoredSnapshot))
 		} else {
-			slog.Warn("✗ Snapshot session_id mismatch after restore",
+			log.Warn("✗ Snapshot session_id mismatch after restore",
 				"original", originalSessionID,
 				"restored", restoredSID)
 		}
 	} else {
-		slog.Warn("Could not capture post-restore snapshot for field verification",
+		log.Warn("Could not capture post-restore snapshot for field verification",
 			"error", snapErr)
 	}
 
@@ -1379,19 +1379,19 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 	eventIntegrityOK := finalEventCount > 0
 
 	if fieldRestorationOK || resultContinuity {
-		slog.Info("✓ State continuity verified",
+		log.Info("✓ State continuity verified",
 			"field_restoration", fieldRestorationOK,
 			"result_continuity", resultContinuity,
 			"event_store_integrity", eventIntegrityOK,
 			"total_events_in_store", finalEventCount,
 			"status", "PASS")
 	} else {
-		slog.Info("✗ State continuity could not be verified",
+		log.Info("✗ State continuity could not be verified",
 			"original_session", originalSessionID,
 			"note", "in-memory agents may generate new sessions — this is expected in demo mode")
 	}
 
-	slog.Info("Phase 5 completed: Snapshot & Resurrection demonstration finished",
+	log.Info("Phase 5 completed: Snapshot & Resurrection demonstration finished",
 		"event_store_used", "real_MemoryEventStore",
 		"events_replayed_from", "real_event_store_not_hardcoded")
 }
@@ -1436,7 +1436,7 @@ func emitLifecycleEvents(ctx context.Context, store ares_events.EventStore, agen
 		"result":     "analysis completed successfully",
 	})
 
-	slog.Info("Lifecycle ares_events emitted to EventStore",
+	log.Info("Lifecycle ares_events emitted to EventStore",
 		"agent_id", agentID,
 		"session_id", sessionID,
 		"event_count", 5,

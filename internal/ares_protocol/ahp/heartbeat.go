@@ -2,7 +2,6 @@ package ahp
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -154,7 +153,7 @@ func (m *HeartbeatMonitor) ListAgents() []string {
 //	fn - callback function, must be non-blocking.
 func (m *HeartbeatMonitor) RegisterCallback(fn TimeoutCallback) {
 	if fn == nil {
-		slog.Warn("RegisterCallback: nil callback")
+		log.Warn("RegisterCallback: nil callback")
 		return
 	}
 	m.mu.Lock()
@@ -196,7 +195,7 @@ func NewHeartbeatSender(agentID string, interval time.Duration, queue *MessageQu
 		interval = 5 * time.Second
 	}
 	if queue == nil {
-		slog.Warn("NewHeartbeatSender: nil queue", "agent_id", agentID)
+		log.Warn("NewHeartbeatSender: nil queue", "agent_id", agentID)
 	}
 	noOpCancel := func() {}
 	return &HeartbeatSender{
@@ -251,12 +250,12 @@ func (s *HeartbeatSender) run() {
 // sendHeartbeat sends a heartbeat message.
 func (s *HeartbeatSender) sendHeartbeat() {
 	if s.queue == nil {
-		slog.Error("heartbeat sender queue is nil", "agent_id", s.agentID)
+		log.Error("heartbeat sender queue is nil", "agent_id", s.agentID)
 		return
 	}
 	msg := NewHeartbeatMessage(s.agentID)
 	if err := s.queue.Enqueue(s.ctx, msg); err != nil {
-		slog.Warn("heartbeat send failed", "agent_id", s.agentID, "error", err)
+		log.Warn("heartbeat send failed", "agent_id", s.agentID, "error", err)
 	}
 }
 

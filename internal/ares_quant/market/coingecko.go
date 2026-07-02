@@ -3,7 +3,6 @@ package market
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -86,7 +85,7 @@ func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolut
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("http: close response body failed", "error", err)
+			log.Warn("http: close response body failed", "error", err)
 		}
 	}()
 

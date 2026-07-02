@@ -2,7 +2,6 @@ package leader
 
 import (
 	"context"
-	"log/slog"
 	"sort"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -77,7 +76,7 @@ func (a *resultAggregator) Aggregate(ctx context.Context, results []*models.Task
 				if item != nil {
 					priority, ok := priorityMap[result.TaskID]
 					if !ok && a.sortBy == SortByPriority {
-						slog.Warn("Task priority not found in priority map, using default 0", "task_id", result.TaskID)
+						log.Warn("Task priority not found in priority map, using default 0", "task_id", result.TaskID)
 					}
 					allItems = append(allItems, indexedItem{
 						item:     item,
@@ -156,7 +155,7 @@ func deduplicateIndexedItems(items []indexedItem) []indexedItem {
 			key = indexed.item.Name
 		}
 		if key == "" {
-			slog.Warn("dropping item during deduplication: both ItemID and Name are empty",
+			log.Warn("dropping item during deduplication: both ItemID and Name are empty",
 				"content", indexed.item.Content)
 			continue
 		}

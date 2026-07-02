@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -82,7 +81,7 @@ func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -160,7 +159,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("ollama: close stream error response body", "error", err)
+			log.Warn("ollama: close stream error response body", "error", err)
 		}
 		return nil, gerr.Newf("ollama stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -171,7 +170,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 

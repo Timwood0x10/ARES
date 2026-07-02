@@ -3,7 +3,6 @@ package apiimpl
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -177,7 +176,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		for _, ag := range a.Orch.ListAgents() {
 			if ag.Status != "completed" && ag.Status != "failed" {
 				success = a.Orch.CancelAgent(ag.ID)
-				slog.Info("arena: killed leader", "id", ag.ID, "success", success)
+				log.Info("arena: killed leader", "id", ag.ID, "success", success)
 				break
 			}
 		}
@@ -185,7 +184,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		// Cancel specific agent by ID.
 		if action.TargetID != "" {
 			success = a.Orch.CancelAgent(action.TargetID)
-			slog.Info("arena: killed agent", "id", action.TargetID, "success", success)
+			log.Info("arena: killed agent", "id", action.TargetID, "success", success)
 		}
 	case dashboard.ArenaActionPauseAgent:
 		// Pause agent: track paused state in map only.
@@ -200,13 +199,13 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			a.pausedAgents[action.TargetID] = true
 			a.mu.Unlock()
 			success = true
-			slog.Warn("arena: pause requested for agent (tracking-only, no native pause support)",
+			log.Warn("arena: pause requested for agent (tracking-only, no native pause support)",
 				"id", action.TargetID, "reason", "orchestrator_has_no_native_pause")
 		}
 	case dashboard.ArenaActionResumeAgent:
 		// Resume is a no-op under cancel model; auto-resurrection handles it.
 		success = true
-		slog.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
+		log.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
 	case dashboard.ArenaActionSlowAgent:
 		// Inject latency: track slowed state in map only.
 		// The orchestrator does not natively support slowdown, so this is a
@@ -220,7 +219,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			a.slowAgents[action.TargetID] = true
 			a.mu.Unlock()
 			success = true
-			slog.Warn("arena: slow agent injected (tracking-only, no native slowdown support)",
+			log.Warn("arena: slow agent injected (tracking-only, no native slowdown support)",
 				"id", action.TargetID, "note", "actual_slowdown_requires_proxy_or_middleware")
 		}
 	case dashboard.ArenaActionKillOrchestrator:
@@ -229,7 +228,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			if ag.Status != "completed" && ag.Status != "failed" {
 				if a.Orch.CancelAgent(ag.ID) {
 					success = true
-					slog.Info("arena: orchestrator failure — cancelled agent",
+					log.Info("arena: orchestrator failure — cancelled agent",
 						"id", ag.ID, "severity", "critical")
 				}
 			}
@@ -238,7 +237,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		// Simulate network isolation: cancel agent with higher severity logging.
 		if action.TargetID != "" {
 			success = a.Orch.CancelAgent(action.TargetID)
-			slog.Info("arena: network partition injected on agent",
+			log.Info("arena: network partition injected on agent",
 				"id", action.TargetID, "success", success,
 				"severity", "high", "fault_type", "network_isolation")
 		}
@@ -246,7 +245,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		// Simulate tool timeout: cancel with specific reason.
 		if action.TargetID != "" {
 			success = a.Orch.CancelAgent(action.TargetID)
-			slog.Info("arena: tool timeout simulated on agent",
+			log.Info("arena: tool timeout simulated on agent",
 				"id", action.TargetID, "success", success,
 				"reason", "tool_timeout")
 		}
@@ -254,7 +253,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 		// Simulate memory corruption: cancel with reason and severity.
 		if action.TargetID != "" {
 			success = a.Orch.CancelAgent(action.TargetID)
-			slog.Info("arena: memory corruption simulated on agent",
+			log.Info("arena: memory corruption simulated on agent",
 				"id", action.TargetID, "success", success,
 				"reason", "memory_corrupt", "severity", "critical")
 		}
@@ -265,12 +264,12 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			if a.mcpAdapter != nil && a.mcpAdapter.Client != nil {
 				// Adapter available but unsafe to null-out mid-operation.
 				success = a.Orch.CancelAgent(action.TargetID)
-				slog.Warn("arena: MCP disconnect simulated (adapter available, fell back to cancel)",
+				log.Warn("arena: MCP disconnect simulated (adapter available, fell back to cancel)",
 					"id", action.TargetID, "success", success,
 					"reason", "mcp_disconnect", "has_adapter", true)
 			} else {
 				success = a.Orch.CancelAgent(action.TargetID)
-				slog.Info("arena: MCP disconnect simulated (no adapter, fallback to cancel)",
+				log.Info("arena: MCP disconnect simulated (no adapter, fallback to cancel)",
 					"id", action.TargetID, "success", success,
 					"reason", "mcp_disconnect")
 			}
@@ -282,12 +281,12 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			if a.llmAdapter != nil && a.llmAdapter.Adapter != nil {
 				// Adapter available but unsafe to corrupt mid-operation.
 				success = a.Orch.CancelAgent(action.TargetID)
-				slog.Warn("arena: LLM failure simulated (adapter available, fell back to cancel)",
+				log.Warn("arena: LLM failure simulated (adapter available, fell back to cancel)",
 					"id", action.TargetID, "success", success,
 					"reason", "llm_failure", "has_adapter", true)
 			} else {
 				success = a.Orch.CancelAgent(action.TargetID)
-				slog.Info("arena: LLM failure simulated (no adapter, fallback to cancel)",
+				log.Info("arena: LLM failure simulated (no adapter, fallback to cancel)",
 					"id", action.TargetID, "success", success,
 					"reason", "llm_failure")
 			}
@@ -300,7 +299,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			Timestamp: time.Now(),
 		}
 		if err := a.Store.Append(context.Background(), "arena", []*ares_events.Event{evt}, 0); err != nil {
-			slog.Warn("arena: failed to record action event", "error", err)
+			log.Warn("arena: failed to record action event", "error", err)
 		}
 	}
 	result := dashboard.ArenaResult{Success: success, Action: action, Duration: time.Since(start)}
@@ -403,13 +402,13 @@ func (a *ArenaAdapter) ResilienceScore() map[string]any {
 
 // StartSurvival starts survival mode (demo mode).
 func (a *ArenaAdapter) StartSurvival(ctx context.Context) error {
-	slog.Info("arena: survival mode started (demo mode)")
+	log.Info("arena: survival mode started (demo mode)")
 	return nil
 }
 
 // StopSurvival stops survival mode.
 func (a *ArenaAdapter) StopSurvival() error {
-	slog.Info("arena: survival mode stopped")
+	log.Info("arena: survival mode stopped")
 	return nil
 }
 
