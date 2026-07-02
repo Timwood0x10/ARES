@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 // Package repositories provides comprehensive tests for TaskResultRepository.
 package repositories
 

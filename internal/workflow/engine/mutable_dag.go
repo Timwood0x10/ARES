@@ -388,9 +388,25 @@ func (m *MutableDAG) StepIndex() map[string]*Step {
 }
 
 // Subscribe returns a channel for graph change events.
+// The returned channel is never closed unless Unsubscribe is called with
+// the corresponding subscription ID. Prefer SubscribeWithID when the caller
+// needs to clean up the subscription.
 func (m *MutableDAG) Subscribe() <-chan GraphEvent {
 	_, ch := m.hub.Subscribe()
 	return ch
+}
+
+// SubscribeWithID returns a subscription ID and a channel for graph change
+// events. The caller must call Unsubscribe(id) to close the channel and
+// free resources when the subscription is no longer needed.
+func (m *MutableDAG) SubscribeWithID() (string, <-chan GraphEvent) {
+	return m.hub.Subscribe()
+}
+
+// Unsubscribe removes a subscriber and closes its channel, allowing any
+// goroutine blocked on range over the channel to exit.
+func (m *MutableDAG) Unsubscribe(id string) {
+	m.hub.Unsubscribe(id)
 }
 
 // NodeCount returns the number of nodes.

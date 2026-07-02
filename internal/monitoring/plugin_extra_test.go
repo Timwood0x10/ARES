@@ -100,16 +100,6 @@ func TestMonitorPlugin_WithTabMap(t *testing.T) {
 
 // --- Start with collector error ---
 
-type errorCollector struct {
-	startErr error
-}
-
-func (e *errorCollector) Start(ctx context.Context) error {
-	return e.startErr
-}
-
-func (e *errorCollector) Stop() {}
-
 func TestMonitorPlugin_Start_CollectorError_Propagates(t *testing.T) {
 	// Create a MonitorPlugin with a collector that errors on start.
 	mp := &MonitorPlugin{

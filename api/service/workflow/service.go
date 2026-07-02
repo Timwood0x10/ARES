@@ -212,7 +212,9 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		}
 
 		// Subscribe to graph mutation events for step tracking.
-		graphEvents := mutableDAG.Subscribe()
+		// Use SubscribeWithID so we can Unsubscribe (closing the channel)
+		// after execution completes, which unblocks the event-forwarding goroutine.
+		graphSubID, graphEvents := mutableDAG.SubscribeWithID()
 
 		// Run execution and event forwarding via errgroup.
 		type execResult struct {
@@ -253,6 +255,9 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 
 		// Wait for execution to complete.
 		res := <-resultCh
+		// Unsubscribe to close the graph event channel, which unblocks
+		// the event-forwarding goroutine and allows g.Wait() to return.
+		mutableDAG.Unsubscribe(graphSubID)
 		_ = g.Wait()
 
 		if res.err != nil || res.result == nil {

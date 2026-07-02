@@ -508,7 +508,11 @@ func TestHeartbeatAdapter_CheckHealth_NilToEmptySlice(t *testing.T) {
 
 func TestReplayEvents_WithAgentStartedEvent(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*ares_events.Event{
@@ -527,7 +531,11 @@ func TestReplayEvents_WithAgentStartedEvent(t *testing.T) {
 
 func TestReplayEvents_WithAgentStoppedEvent(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*ares_events.Event{
@@ -546,7 +554,11 @@ func TestReplayEvents_WithAgentStoppedEvent(t *testing.T) {
 
 func TestReplayEvents_AgentStatusSequence_LastWins(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*ares_events.Event{
@@ -567,7 +579,11 @@ func TestReplayEvents_AgentStatusSequence_LastWins(t *testing.T) {
 
 func TestReplayEvents_InvalidTaskIDType_SkipsField(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*ares_events.Event{
@@ -592,7 +608,11 @@ func TestReplayEvents_InvalidTaskIDType_SkipsField(t *testing.T) {
 
 func TestReplayEvents_EmptyTaskID_SkipsField(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	defer store.Close()
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	agentID := "agent-1"
 	err := store.Append(context.Background(), agentID, []*ares_events.Event{
@@ -617,7 +637,9 @@ func TestReplayEvents_EmptyTaskID_SkipsField(t *testing.T) {
 
 func TestReplayEvents_StoreReadError_ReturnsNil(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
-	store.Close()
+	if err := store.Close(); err != nil {
+		t.Logf("setup: close store to simulate read error: %v", err)
+	}
 
 	health := newMockHealthChecker()
 	sup, err := New(health, Config{CheckInterval: 1 * time.Second}, store)
@@ -693,7 +715,11 @@ func TestResurrection_WithSnapshotStore_FallbackToEvents(t *testing.T) {
 	store := NewMemorySnapshotStore()
 
 	eventStore := ares_events.NewMemoryEventStore()
-	defer eventStore.Close()
+	t.Cleanup(func() {
+		if err := eventStore.Close(); err != nil {
+			t.Logf("cleanup: close event store: %v", err)
+		}
+	})
 
 	err := eventStore.Append(context.Background(), "a1", []*ares_events.Event{
 		{

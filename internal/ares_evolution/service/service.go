@@ -765,6 +765,7 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 		ParentID:        s.ParentID,
 		PromptTemplate:  s.PromptTemplate,
 		MutationType:    s.StrategyMutationType.String(),
+		EvidenceKey:     s.ComputeEvidenceKey(),
 		Score:           s.Score,
 		DimensionScores: cloneDimensionScores(s.DimensionScores),
 		CreatedAt:       s.CreatedAt,

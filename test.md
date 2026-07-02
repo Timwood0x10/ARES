@@ -80,10 +80,10 @@ Weak spots:
 - Package logs make failures difficult to diagnose.
 
 Recommended tasks:
-- [ ] Extract deterministic weight/policy functions for lineage selection and test them directly.
+- [x] Extract deterministic weight/policy functions for lineage selection and test them directly.
 - [ ] Add integration tests for `Service.Evolve()` proving generation number, promotion score delta, and evidence binding are correct.
-- [ ] Add prompt diversity guard tests for config disabled, clone isolation, and expiry.
-- [ ] Suppress or capture slog output in GA package tests.
+- [x] Add prompt diversity guard tests for config disabled, clone isolation, and expiry.
+- [x] Suppress or capture slog output in GA package tests.
 
 ### `api/core`
 
@@ -118,8 +118,8 @@ Weak spots:
 - Concurrency test does not assert no races unless run with `-race`, and it ignores operation errors.
 
 Recommended tasks:
-- [ ] Add one successful `Execute()` test with a fake agent registered in `engine.AgentRegistry`.
-- [ ] Add one `ExecuteStream()` test that drains events and verifies terminal status.
+- [x] Add one successful `Execute()` test with a fake agent registered in `engine.AgentRegistry`.
+- [x] Add one `ExecuteStream()` test that drains events and verifies terminal status.
 - [ ] Make concurrency test collect unexpected errors and run under `go test -race` in CI.
 
 ### `internal/monitoring`
@@ -153,7 +153,7 @@ Value:
 - In normal local/CI runs without Postgres, they provide much less signal than their volume suggests.
 
 Recommended tasks:
-- [ ] Split integration tests behind a build tag such as `//go:build integration`.
+- [x] Split integration tests behind a build tag such as `//go:build integration`.
 - [ ] Add fast unit tests around SQL builders, validation, and repository error mapping using `pgxmock` or a narrow interface.
 - [ ] Delete or convert permanently skipped tests into tracked TODO issues. Skipped tests for "not yet implemented" are not tests.
 - [ ] Add a documented CI job that runs integration storage tests with `TEST_POSTGRES_DSN`.
@@ -309,3 +309,72 @@ A useful test should fail if the behavior users care about regresses. Prefer:
 - response body/side effects over status-code-only HTTP tests,
 - fake dependencies over skipped external-service tests,
 - one meaningful integration test over many structure tests.
+
+## Implementation Summary (2026-07-02)
+
+The following tasks from the audit were completed:
+
+### Task 1: Harden GA selection tests with deterministic weights
+
+- Extracted `computeLineageRankWeights` from `LineageRankSelection.Select` in
+  `internal/ares_evolution/genome/selection.go` to enable direct deterministic
+  testing of the weight formula.
+- Created `internal/ares_evolution/genome/selection_extra_test.go` with 10 test
+  functions covering: exact weight values, membership/determinism, dominant
+  share decrease vs baseline, underrepresented lineage boost, weight
+  proportionality (4σ bands), no-duplicate IDs, score ordering, roulette wheel
+  proportionality, bulk select membership, and nil population error.
+- Stochastic tests use fixed seeds, 4σ statistical bands, and conservative
+  thresholds verified across 5 repeated runs.
+
+### Task 2: Add prompt diversity guard tests
+
+- Created `internal/ares_evolution/genome/population_guard_extra_test.go` with
+  9 test functions covering: config disabled no-op, clone isolation (deep copy
+  of Params/Score/PromptTemplate/ParentID), max age expiry, seed replaces
+  weakest elite, score floor boundary, prompt template distribution, diversity
+  report updates, already-diverse no-op, no-alternative no-op, early return
+  conditions, and seed metadata inheritance.
+
+### Task 3: Suppress slog output in GA package tests
+
+- Created `internal/ares_evolution/genome/testutil_test.go` with a `TestMain`
+  that redirects slog to `io.Discard` unless `GENOME_TEST_VERBOSE=1` is set.
+  Exports a `silentLogger()` helper for individual test use.
+
+### Task 4: Add integration build tags to Postgres test files
+
+- Added `//go:build integration` build tags to 6 files in
+  `internal/storage/postgres/repositories/`:
+  `conversation_repository_test.go`, `task_result_repository_test.go`,
+  `tool_repository_test.go`, `knowledge_repository_test.go`,
+  `experience_repository_test.go`, and `repository_test_helper.go`.
+- All are pure integration tests that require a live Postgres instance.
+- Package compiles and passes `go vet` both with and without the tag.
+
+### Task 5: Add workflow Execute() and ExecuteStream() tests
+
+- Created `api/service/workflow/service_execute_test.go` with 5 test
+  functions: single-step success, multi-step sequential success, step failure
+  response, ExecuteStream event draining with terminal completed, and
+  ExecuteStream step failure with terminal failed.
+- Fixed a pre-existing bug in `ExecuteStream`: the graph event subscription
+  was never unsubscribed, causing `g.Wait()` to block forever. Added
+  `SubscribeWithID()` and `Unsubscribe()` methods to `MutableDAG` and updated
+  `ExecuteStream` to properly clean up the subscription after execution.
+
+### Verification
+
+- `go test -race -count=1 ./api/service/workflow/` — pass
+- `go test -race -count=1 ./internal/workflow/engine/` — pass
+- `go test -race -count=1` on all new genome test functions — pass (5 repeats)
+- `go test -short ./internal/storage/postgres/repositories/` — pass
+- `go vet` on all modified packages — pass
+- `golangci-lint run` on all modified packages — 0 issues
+- `gofmt` on all modified files — compliant
+
+### Known issue (pre-existing, out of scope)
+
+`internal/ares_memory/pipeline.go` has unused imports from concurrent work
+by another agent that require cleanup. This file is not in scope for this task
+and should be fixed by the owning agent.

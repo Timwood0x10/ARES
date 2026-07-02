@@ -208,6 +208,10 @@ type Strategy struct {
 	// MutationType records the mutation type that created this strategy.
 	MutationType string `json:"mutation_type"`
 
+	// EvidenceKey is the stable evidence key derived from strategy parameters,
+	// used to trace this strategy back to real execution evidence.
+	EvidenceKey string `json:"evidence_key,omitempty"`
+
 	// Score is the current evaluation score (-1 = unevaluated).
 	Score float64 `json:"score"`
 

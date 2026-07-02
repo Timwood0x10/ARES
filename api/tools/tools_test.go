@@ -800,7 +800,11 @@ func TestFileToolRead(t *testing.T) {
 	path := f.Name()
 	_, _ = f.WriteString("hello world")
 	_ = f.Close()
-	defer os.Remove(path)
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Logf("cleanup: remove %s: %v", path, err)
+		}
+	})
 
 	result, err := ft.Execute(context.Background(), map[string]any{
 		"operation": "read",
@@ -829,7 +833,11 @@ func TestFileToolWrite(t *testing.T) {
 	}
 	path := dst.Name()
 	_ = dst.Close()
-	defer os.Remove(path)
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Logf("cleanup: remove %s: %v", path, err)
+		}
+	})
 
 	result, err := ft.Execute(context.Background(), map[string]any{
 		"operation": "write",
@@ -855,7 +863,11 @@ func TestFileToolList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdir temp: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("cleanup: remove all %s: %v", dir, err)
+		}
+	})
 
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
@@ -884,7 +896,11 @@ func TestFileToolExists(t *testing.T) {
 	}
 	path := f.Name()
 	_ = f.Close()
-	defer os.Remove(path)
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Logf("cleanup: remove %s: %v", path, err)
+		}
+	})
 
 	result, err := ft.Execute(context.Background(), map[string]any{
 		"operation": "exists",
@@ -948,7 +964,11 @@ func TestFileToolMkdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdir temp: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("cleanup: remove all %s: %v", dir, err)
+		}
+	})
 
 	newDir := filepath.Join(dir, "nested", "subdir")
 

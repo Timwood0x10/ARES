@@ -4,7 +4,6 @@ import (
 	"context"
 	"math/rand"
 	"testing"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -618,8 +617,4 @@ type noopCrosser struct{}
 
 func (c *noopCrosser) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error) {
 	return a.Clone(), nil
-}
-
-func now() time.Time {
-	return time.Now()
 }

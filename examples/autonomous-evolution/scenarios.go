@@ -1103,7 +1103,16 @@ func compareResults(resultA, resultB *evolutionservice.EvolutionResult, labelA, 
 
 	fmt.Printf("  %-25s %25s\n", labelA, labelB)
 	fmt.Printf("  %-25s %25s\n", "─────────────────────────", "─────────────────────────")
+	evidenceA := ""
+	if bestA.EvidenceKey != "" {
+		evidenceA = bestA.EvidenceKey
+	}
+	evidenceB := ""
+	if bestB.EvidenceKey != "" {
+		evidenceB = bestB.EvidenceKey
+	}
 	fmt.Printf("  Best Score:    %8.2f         Best Score:    %8.2f\n", bestA.Score, bestB.Score)
+	fmt.Printf("  Evidence Key:  %-18s  Evidence Key:  %-18s\n", evidenceA, evidenceB)
 	fmt.Printf("  Generations:   %8d         Generations:   %8d\n", resultA.TotalGens, resultB.TotalGens)
 
 	// Parameter comparison.

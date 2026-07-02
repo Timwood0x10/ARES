@@ -258,7 +258,11 @@ func printBestStrategyDiff(best *evolutionservice.Strategy, parent *evolutionser
 		return
 	}
 
-	fmt.Printf("   ID: %s  v%d  score=%.2f\n", best.ID, best.Version, best.Score)
+	fmt.Printf("   ID: %s  v%d  score=%.2f", best.ID, best.Version, best.Score)
+	if best.EvidenceKey != "" {
+		fmt.Printf("  evidence_key=%s", best.EvidenceKey)
+	}
+	fmt.Println()
 	fmt.Println("   Param changes:")
 
 	hasChanges := false

@@ -542,38 +542,7 @@ func (ls *LineageRankSelection) Select(ctx context.Context, population []*mutati
 	copy(sorted, population)
 	SortByScore(sorted)
 
-	// Count lineage distribution across the sorted population.
-	lineageCount := make(map[string]int)
-	for _, s := range sorted {
-		pid := s.ParentID
-		if pid == "" {
-			pid = "(root)"
-		}
-		lineageCount[pid]++
-	}
-	total := float64(len(sorted))
-
-	// Compute effective weights with lineage penalty applied.
-	weights := make([]float64, len(sorted))
-	totalWeight := 0.0
-	for i, s := range sorted {
-		pid := s.ParentID
-		if pid == "" {
-			pid = "(root)"
-		}
-		share := float64(lineageCount[pid]) / total
-		// Rank weight: best (index 0) gets N, worst gets 1.
-		rankWeight := float64(len(sorted) - i)
-
-		if share > ls.penaltyThreshold {
-			// Apply lineage penalty proportional to overshoot.
-			excess := (share - ls.penaltyThreshold) / (1.0 - ls.penaltyThreshold)
-			penalty := ls.penaltyStrength * excess
-			rankWeight *= (1.0 - penalty)
-		}
-		weights[i] = rankWeight
-		totalWeight += rankWeight
-	}
+	weights, totalWeight := computeLineageRankWeights(sorted, ls.penaltyThreshold, ls.penaltyStrength)
 
 	if totalWeight < 1e-12 {
 		// All weights zero — pick uniformly.
@@ -603,6 +572,66 @@ func (ls *LineageRankSelection) Select(ctx context.Context, population []*mutati
 		}
 	}
 	return result, nil
+}
+
+// computeLineageRankWeights computes the effective selection weights for the
+// population after applying lineage diversity penalty. The input slice MUST
+// be pre-sorted by SortByScore (descending score). The returned weights slice
+// is parallel to the input slice: weights[i] is the effective weight for
+// sorted[i]. totalWeight is the sum of all weights for use in roulette-style
+// selection.
+//
+// Weight assignment:
+//   - Base rank weight: best (index 0) gets N, worst gets 1, where N = len(sorted).
+//   - For each individual, if its lineage share (count / total) exceeds the
+//     penalty threshold, the rank weight is reduced proportionally to the
+//     overshoot beyond the threshold.
+//   - Lineage is identified by ParentID; empty ParentID is treated as "(root)".
+//
+// Args:
+//
+//	sorted - population pre-sorted by SortByScore descending (must not be empty).
+//	penaltyThreshold - lineage share in [0, 1] above which penalty applies.
+//	penaltyStrength - penalty multiplier in [0, 1] (fraction of weight to remove).
+//
+// Returns:
+//
+//	weights - effective weight per individual (parallel to sorted).
+//	totalWeight - sum of weights (always >= 0; 0 only if all weights collapse).
+func computeLineageRankWeights(sorted []*mutation.Strategy, penaltyThreshold, penaltyStrength float64) (weights []float64, totalWeight float64) {
+	// Count lineage distribution across the sorted population.
+	lineageCount := make(map[string]int)
+	for _, s := range sorted {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		lineageCount[pid]++
+	}
+	total := float64(len(sorted))
+
+	// Compute effective weights with lineage penalty applied.
+	weights = make([]float64, len(sorted))
+	totalWeight = 0.0
+	for i, s := range sorted {
+		pid := s.ParentID
+		if pid == "" {
+			pid = "(root)"
+		}
+		share := float64(lineageCount[pid]) / total
+		// Rank weight: best (index 0) gets N, worst gets 1.
+		rankWeight := float64(len(sorted) - i)
+
+		if share > penaltyThreshold {
+			// Apply lineage penalty proportional to overshoot.
+			excess := (share - penaltyThreshold) / (1.0 - penaltyThreshold)
+			penalty := penaltyStrength * excess
+			rankWeight *= (1.0 - penalty)
+		}
+		weights[i] = rankWeight
+		totalWeight += rankWeight
+	}
+	return weights, totalWeight
 }
 
 // RouletteWheelSelection selects individuals with probability proportional to fitness.

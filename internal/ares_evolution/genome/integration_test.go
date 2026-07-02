@@ -824,20 +824,26 @@ func TestGenealogyTracking(t *testing.T) {
 			return 50.0
 		}
 
-		lineageVersions := map[int]int{}
+		// Check across generations: for agents with the same ID across generations,
+		// verify the version never decreases. Since cloning/padding can create multiple
+		// agents sharing the same ID but different versions within one generation, we
+		// track the version of each specific (ID, ParentID) combination.
+		type agentKey struct{ id, parent string }
+		agentVersions := map[agentKey]int{}
 		for _, a := range pop.Agents {
-			lineageVersions[hashID(a.ID)] = a.Version
+			agentVersions[agentKey{a.ID, a.ParentID}] = a.Version
 		}
 		for gen := 0; gen < 5; gen++ {
 			if err := pop.EvolveAfterScoring(ctx, testScorer, mutator, crosser); err != nil {
 				t.Fatalf("version tracking gen %d failed: %v", gen, err)
 			}
 			for _, a := range pop.Agents {
-				h := hashID(a.ID)
-				if prev, ok := lineageVersions[h]; ok && a.Version < prev {
-					t.Errorf("version decreased hash %d: was %d, now %d", h, prev, a.Version)
+				k := agentKey{a.ID, a.ParentID}
+				if prev, ok := agentVersions[k]; ok && a.Version < prev {
+					t.Errorf("version decreased for agent (id=%s parent=%s): was %d, now %d",
+						a.ID, a.ParentID, prev, a.Version)
 				}
-				lineageVersions[h] = a.Version
+				agentVersions[k] = a.Version
 			}
 		}
 	})
@@ -879,18 +885,6 @@ func TestGenealogyTracking(t *testing.T) {
 			t.Errorf("%d non-elite evolved agents have empty ParentID", nonEliteWithoutParent)
 		}
 	})
-}
-
-// hashID creates a simple numeric hash of an ID string for version tracking maps.
-func hashID(id string) int {
-	h := 0
-	for _, c := range id {
-		h = h*31 + int(c)
-	}
-	if h < 0 {
-		h = -h
-	}
-	return h
 }
 
 func TestConcurrentEvolutionSafety(t *testing.T) {
