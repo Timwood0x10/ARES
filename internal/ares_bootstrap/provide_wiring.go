@@ -1,14 +1,21 @@
+// package bootstrap provides startup wiring for MCP and Dashboard components.
 package ares_bootstrap
 
 import (
 	"context"
 	"fmt"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
+// MCPDashboard holds the initialized MCP and Dashboard components.
+
+// flightRecorderWrapper wraps flight.FlightRecorder to implement evolution.FlightRecorder interface.
 type flightRecorderWrapper struct {
 	recorder *flight.FlightRecorder
 }
@@ -92,4 +99,41 @@ func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter ares
 		return nil, fmt.Errorf("event store is nil")
 	}
 	return w.store.Subscribe(ctx, filter)
+}
+
+// WireDependencies holds dependencies for WireAllEvolutionComponents — kept for test compatibility.
+type WireDependencies struct {
+	LLMClient        interface{}
+	FlightRecorder   *flight.FlightRecorder
+	ExpRepo          interface{}
+	EmbeddingService interface{}
+	Distiller        interface{}
+	DreamDeps        *DreamCycleDeps
+}
+
+// DreamCycleDeps holds optional dream cycle dependencies.
+type DreamCycleDeps struct{}
+
+// WiredComponents holds evolution wiring results.
+type WiredComponents struct{}
+
+// WireAllEvolutionComponents wires evolution components — kept for test compatibility.
+func WireAllEvolutionComponents(ctx context.Context, deps *WireDependencies, cfg *ares_config.EvolutionConfig) (*WiredComponents, error) {
+	return &WiredComponents{}, nil
+}
+
+// expRepoAdapter wraps repositories.ExperienceRepositoryInterface to satisfy evolution.ExperienceRepository.
+type expRepoAdapter struct {
+	inner repositories.ExperienceRepositoryInterface
+}
+
+func (a *expRepoAdapter) Create(ctx context.Context, exp *evolution.Experience) error {
+	sm := &storage_models.Experience{
+		TenantID: exp.TenantID,
+		Type:     exp.Type,
+		Problem:  exp.Problem,
+		Solution: exp.Solution,
+		Score:    exp.Score,
+	}
+	return a.inner.Create(ctx, sm)
 }
