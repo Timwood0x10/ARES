@@ -14,8 +14,3 @@ type Registry struct {
 func New() *Registry {
 	return &Registry{inner: internal.NewRegistry()}
 }
-
-// Internal returns the underlying internal registry for compatibility.
-func (r *Registry) Internal() *internal.Registry {
-	return r.inner
-}

@@ -19,26 +19,87 @@ func New(injector *internal.Injector, store internal.EventStore) *Service {
 }
 
 // Execute runs a chaos engineering action.
-func (s *Service) Execute(ctx context.Context, action internal.Action) internal.Result {
-	return s.inner.Execute(ctx, action)
+func (s *Service) Execute(ctx context.Context, action Action) Result {
+	ia := internal.Action{
+		ID:        action.ID,
+		Type:      internal.ActionType(action.Type),
+		TargetID:  action.TargetID,
+		SourceID:  action.SourceID,
+		Metadata:  action.Metadata,
+		CreatedAt: action.CreatedAt,
+	}
+	r := s.inner.Execute(ctx, ia)
+	return Result{
+		Success:  r.Success,
+		Action:   toPublicAction(r.Action),
+		Error:    r.Error,
+		Duration: r.Duration,
+	}
 }
 
 // History returns the action history.
-func (s *Service) History() []internal.Result {
-	return s.inner.History()
+func (s *Service) History() []Result {
+	results := s.inner.History()
+	out := make([]Result, len(results))
+	for i, r := range results {
+		out[i] = Result{
+			Success:  r.Success,
+			Action:   toPublicAction(r.Action),
+			Error:    r.Error,
+			Duration: r.Duration,
+		}
+	}
+	return out
 }
 
 // Stats returns aggregate statistics.
-func (s *Service) Stats() internal.Stats {
-	return s.inner.Stats()
+func (s *Service) Stats() Stats {
+	st := s.inner.Stats()
+	return Stats{
+		TotalActions:      st.TotalActions,
+		SuccessfulActions: st.SuccessfulActions,
+		FailedActions:     st.FailedActions,
+		LastAction:        st.LastAction,
+	}
 }
 
 // Metrics returns snapshot metrics.
-func (s *Service) Metrics() internal.MetricsSnapshot {
-	return s.inner.Metrics()
+func (s *Service) Metrics() MetricsSnapshot {
+	m := s.inner.Metrics()
+	stats := make(map[string]ActionMetric, len(m.ActionStats))
+	for k, v := range m.ActionStats {
+		stats[k] = ActionMetric{
+			Total:       v.Total,
+			Success:     v.Success,
+			Failed:      v.Failed,
+			AvgDuration: v.AvgDuration,
+		}
+	}
+	return MetricsSnapshot{
+		AvgRecoveryTime:     m.AvgRecoveryTime,
+		MinRecoveryTime:     m.MinRecoveryTime,
+		MaxRecoveryTime:     m.MaxRecoveryTime,
+		LastRecoveryTime:    m.LastRecoveryTime,
+		FailoverCount:       m.FailoverCount,
+		TotalRecoveries:     m.TotalRecoveries,
+		FailedRecoveries:    m.FailedRecoveries,
+		DataConsistencyRate: m.DataConsistencyRate,
+		ActionStats:         stats,
+	}
 }
 
 // Reset clears all arena state.
 func (s *Service) Reset() {
 	s.inner.Reset()
+}
+
+func toPublicAction(a internal.Action) Action {
+	return Action{
+		ID:        a.ID,
+		Type:      ActionType(a.Type),
+		TargetID:  a.TargetID,
+		SourceID:  a.SourceID,
+		Metadata:  a.Metadata,
+		CreatedAt: a.CreatedAt,
+	}
 }

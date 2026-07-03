@@ -3,6 +3,7 @@ package evaluation
 
 import (
 	"context"
+	"fmt"
 
 	internal "github.com/Timwood0x10/ares/internal/ares_eval"
 )
@@ -17,9 +18,40 @@ func NewExactMatch() *ExactMatch {
 	return &ExactMatch{inner: internal.NewExactMatchEvaluator()}
 }
 
-// Evaluate checks exact string match and returns scores.
-func (e *ExactMatch) Evaluate(ctx context.Context, testCase internal.TestCase, result internal.TestResult) ([]internal.EvalScore, error) {
-	return e.inner.Evaluate(ctx, testCase, result)
+// Evaluate checks exact string match and returns scores using public types.
+func (e *ExactMatch) Evaluate(ctx context.Context, testCase TestCase, result TestResult) ([]EvalScore, error) {
+	itc := internal.TestCase{
+		ID:             testCase.ID,
+		Name:           testCase.Name,
+		Input:          testCase.Input,
+		ExpectedOutput: testCase.ExpectedOutput,
+		ExpectedTools:  testCase.ExpectedTools,
+		Metadata:       testCase.Metadata,
+		Tags:           testCase.Tags,
+	}
+	itr := internal.TestResult{
+		TestCaseID:   result.TestCaseID,
+		ActualOutput: result.ActualOutput,
+		ToolsUsed:    result.ToolsUsed,
+		Duration:     result.Duration,
+		TokensUsed:   result.TokensUsed,
+		Error:        result.Error,
+		Metrics:      result.Metrics,
+		Timestamp:    result.Timestamp,
+	}
+	scores, err := e.inner.Evaluate(ctx, itc, itr)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EvalScore, len(scores))
+	for i, s := range scores {
+		out[i] = EvalScore{
+			Metric:  s.Metric,
+			Score:   s.Score,
+			Details: s.Details,
+		}
+	}
+	return out, nil
 }
 
 // Registry wraps the internal evaluator registry.
@@ -41,7 +73,7 @@ type LLMJudge struct {
 func NewLLMJudge(client internal.LLMClient, opts ...internal.LLMJudgeOption) (*LLMJudge, error) {
 	judge, err := internal.NewLLMJudgeEvaluator(client, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("eval: create LLM judge: %w", err)
 	}
 	return &LLMJudge{inner: judge}, nil
 }

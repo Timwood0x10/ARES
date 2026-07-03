@@ -104,15 +104,8 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore)
 
-	var mcpMgr *ares_mcp.MCPManager
-	if cfg.MCP != nil {
-		mcpMgr, err = ares_mcp.NewMCPManager(cfg.MCP, nil)
-		if err != nil {
-			return nil, fmt.Errorf("bootstrap: create MCP manager: %w", err)
-		}
-	} else {
-		mcpMgr = comp.MCP
-	}
+	// MCP manager — always use from Bootstrap to avoid double instances.
+	mcpMgr := comp.MCP
 
 	var dash *dashsvc.Dashboard
 	if cfg.Dashboard != nil && cfg.Dashboard.Enabled {
@@ -191,9 +184,9 @@ func (a *ARES) LatestReport() (string, error) {
 }
 
 // ExecuteArenaAction executes a chaos engineering action.
-func (a *ARES) ExecuteArenaAction(ctx context.Context, action arena.Action) arena.Result {
+func (a *ARES) ExecuteArenaAction(ctx context.Context, action arenasvc.Action) arenasvc.Result {
 	if a.Arena == nil {
-		return arena.Result{Success: false, Error: "arena not initialized"}
+		return arenasvc.Result{Success: false, Error: "arena not initialized"}
 	}
 	return a.Arena.Execute(ctx, action)
 }
