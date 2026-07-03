@@ -21,6 +21,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var serveCmd = &cobra.Command{
@@ -84,11 +85,17 @@ func runServe() error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println("\nShutting down...")
-		cancel()
-	}()
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		select {
+		case <-sigCh:
+			fmt.Println("\nShutting down...")
+			cancel()
+		case <-ctx.Done():
+		}
+		return nil
+	})
 
 	// --- Bootstrap: infrastructure components via single wiring hub ---
 	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
@@ -205,7 +212,10 @@ func runServe() error {
 			parentID: cfg.Agents.Leader.ID,
 		}
 	}
-	go bridgeEvents(ctx, store, bus, meta)
+	g.Go(func() error {
+		bridgeEvents(ctx, store, bus, meta)
+		return nil
+	})
 
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
@@ -213,7 +223,10 @@ func runServe() error {
 	}
 
 	// --- Submit real tasks ---
-	go submitTasks(ctx, leaderAgent)
+	g.Go(func() error {
+		submitTasks(ctx, leaderAgent)
+		return nil
+	})
 
 	// --- HTTP server ---
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

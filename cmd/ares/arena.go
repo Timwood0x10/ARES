@@ -1,5 +1,7 @@
 package main
 
+//nolint: errcheck // ResponseWriter writes: not actionable
+
 import (
 	"bytes"
 	"context"

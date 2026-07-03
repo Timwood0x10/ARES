@@ -1,5 +1,7 @@
 package main
 
+//nolint: errcheck // ResponseWriter writes: errors are not actionable in HTTP handlers
+
 import (
 	"context"
 	"encoding/json"

@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var demoCmd = &cobra.Command{
@@ -60,7 +61,11 @@ func runDemo() error {
 		return fmt.Errorf("start plugin: %w", err)
 	}
 
-	go simulateWorkload(ctx, bus)
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		simulateWorkload(ctx, bus)
+		return nil
+	})
 
 	server := monitoring.NewHTTPServer(plugin)
 

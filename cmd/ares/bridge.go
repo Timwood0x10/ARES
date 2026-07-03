@@ -1,5 +1,7 @@
 package main
 
+//nolint: errcheck // fmt.Fprintf to errStdout: best-effort
+
 import (
 	"context"
 	"fmt"
