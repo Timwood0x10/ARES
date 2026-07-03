@@ -62,7 +62,7 @@ var arenaRunCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("send request: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -257,7 +257,7 @@ var arenaSurvivalCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("start survival: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("server returned status %d", resp.StatusCode)
@@ -336,16 +336,16 @@ var arenaInspectCmd = &cobra.Command{
 
 // Flags
 var (
-	arenaRunAddr             string
-	arenaValidateRemote      bool
-	arenaValidateAddr        string
-	arenaServeAddr           string
-	arenaSurvivalAddr        string
-	arenaSurvivalDuration    time.Duration
-	arenaSurvivalInterval    time.Duration
-	arenaInspectAddr         string
-	arenaInspectTimeline     bool
-	arenaInspectDiagnostics  bool
+	arenaRunAddr            string
+	arenaValidateRemote     bool
+	arenaValidateAddr       string
+	arenaServeAddr          string
+	arenaSurvivalAddr       string
+	arenaSurvivalDuration   time.Duration
+	arenaSurvivalInterval   time.Duration
+	arenaInspectAddr        string
+	arenaInspectTimeline    bool
+	arenaInspectDiagnostics bool
 )
 
 func init() {
@@ -401,7 +401,7 @@ func validateRemote(scenarioPath, addr string) error {
 	if err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -449,7 +449,7 @@ func getSurvivalStatus(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -463,7 +463,7 @@ func getScore(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -477,7 +477,7 @@ func getMetrics(baseURL string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -501,7 +501,7 @@ func printInspectTimeline(baseURL string) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var tlData map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&tlData); err != nil {
@@ -529,7 +529,7 @@ func printInspectDiagnostics(baseURL string) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var diagData map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&diagData); err != nil {

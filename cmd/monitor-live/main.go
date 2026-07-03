@@ -25,8 +25,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
@@ -78,7 +76,7 @@ func main() {
 	// --- Bootstrap: infrastructure components via single wiring hub ---
 	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 	if err != nil {
-	 log.Fatalf("bootstrap: %v", err)
+		log.Fatalf("bootstrap: %v", err)
 	}
 	store := comp.EventStore
 	memMgr := comp.Memory
@@ -110,19 +108,8 @@ func main() {
 	}
 	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
-	// --- Memory manager (required by leader) ---
-	memConfig := memory.DefaultMemoryConfig()
-	memMgr, err := memory.NewMemoryManager(memConfig)
-	if err != nil {
-		log.Fatalf("create memory manager: %v", err)
-	}
-	memMgr.SetEventStore(store, "memory")
-
 	// --- Create agents ---
 	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
-
-	// --- Runtime manager ---
-	mgr := ares_runtime.New(nil, store, nil)
 
 	// Register leader
 	leaderFactory := func() base.Agent {

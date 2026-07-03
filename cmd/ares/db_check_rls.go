@@ -49,7 +49,7 @@ func runDbCheckRLS() error {
 	}
 	defer func() {
 		if err := pool.Close(); err != nil {
-			fmt.Fprintf(errStdout, "warning: close pool: %v\n", err)
+			_, _ = fmt.Fprintf(errStdout, "warning: close pool: %v\n", err)
 		}
 	}()
 
@@ -64,7 +64,7 @@ func runDbCheckRLS() error {
 	if err != nil {
 		return fmt.Errorf("query RLS policies: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	hasPolicies := false
 	for rows.Next() {
@@ -72,7 +72,7 @@ func runDbCheckRLS() error {
 		var schema, table, policyName, roles, cmd, qual, withCheck string
 		var permissive bool
 		if err := rows.Scan(&schema, &table, &policyName, &permissive, &roles, &cmd, &qual, &withCheck); err != nil {
-			fmt.Fprintf(errStdout, "scan policy: %v\n", err)
+			_, _ = fmt.Fprintf(errStdout, "scan policy: %v\n", err)
 			continue
 		}
 		fmt.Printf("\nPolicy: %s\n", policyName)
@@ -99,12 +99,12 @@ func runDbCheckRLS() error {
 	if err != nil {
 		return fmt.Errorf("query table structure: %w", err)
 	}
-	defer rows2.Close()
+	defer func() { _ = rows2.Close() }()
 
 	for rows2.Next() {
 		var colName, dataType, nullable, defaultVal string
 		if err := rows2.Scan(&colName, &dataType, &nullable, &defaultVal); err != nil {
-			fmt.Fprintf(errStdout, "scan column: %v\n", err)
+			_, _ = fmt.Fprintf(errStdout, "scan column: %v\n", err)
 			continue
 		}
 		fmt.Printf("  %-20s %-20s %-8s %s\n", colName, dataType, nullable, defaultVal)

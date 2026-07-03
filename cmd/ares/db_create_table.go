@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/spf13/cobra"
 )
 
 var dbCreateTableCmd = &cobra.Command{

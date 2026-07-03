@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
-	"github.com/spf13/cobra"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/spf13/cobra"
 )
 
 var dbMigrateCmd = &cobra.Command{

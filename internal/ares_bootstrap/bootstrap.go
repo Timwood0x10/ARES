@@ -16,12 +16,12 @@ import (
 
 // Components holds all assembled system components.
 type Components struct {
-	MCP       *ares_mcp.MCPManager
-	Dashboard *DashboardComponents
-	LLM       *LLMComponents
-	Evolution *EvolutionComponents
-	Runtime   *ares_runtime.Manager
-	Memory    ares_memory.MemoryManager
+	MCP        *ares_mcp.MCPManager
+	Dashboard  *DashboardComponents
+	LLM        *LLMComponents
+	Evolution  *EvolutionComponents
+	Runtime    *ares_runtime.Manager
+	Memory     ares_memory.MemoryManager
 	EventStore ares_events.EventStore
 }
 

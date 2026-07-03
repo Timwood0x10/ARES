@@ -14,7 +14,6 @@ import (
 func bridgeEvents(ctx context.Context, store ares_events.EventStore, bus ares_runtime.EventBus, meta map[string]agentMeta) {
 	ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
-		fmt.Fprintf(errStdout, "bridge: failed to subscribe: %v\n", err)
 		return
 	}
 

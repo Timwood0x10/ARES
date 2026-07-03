@@ -1,6 +1,6 @@
 // Package bootstrap provides factory functions for creating ARES modules.
 // It delegates component wiring to internal/ares_bootstrap and extends with
-// api-specific components (Arena, Dashboard, Flight).
+// api/service/* wrappers to avoid direct internal imports.
 package bootstrap
 
 import (
@@ -8,55 +8,45 @@ import (
 	"fmt"
 	"os"
 
+	arenasvc "github.com/Timwood0x10/ares/api/service/arena"
+	dashsvc "github.com/Timwood0x10/ares/api/service/dashboard"
+	evosvc "github.com/Timwood0x10/ares/api/service/evolution"
+	flightsvc "github.com/Timwood0x10/ares/api/service/flight"
+	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution/service"
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/dashboard"
+	ares_mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // ARES is the top-level container for all ARES modules.
 type ARES struct {
-	// Runtime manages agent lifecycles.
-	Runtime *ares_runtime.Manager
-	// Memory provides memory management.
-	Memory memory.MemoryManager
-	// Evolution provides genetic algorithm evolution.
-	Evolution *evolution.Service
-	// Arena provides chaos engineering.
-	Arena *arena.Service
-	// MCP provides MCP client management.
-	MCP *mcp.MCPManager
-	// Dashboard provides web dashboard.
-	Dashboard *dashboard.Orchestrator
-	// Flight provides flight recording.
-	Flight *flight.FlightRecorder
-	// EventStore provides event sourcing.
+	Runtime    *ares_runtime.Manager
+	Memory     *memsvc.Service
+	Evolution  *evosvc.Service
+	Arena      *arenasvc.Service
+	MCP        *ares_mcp.MCPManager
+	Dashboard  *dashsvc.Dashboard
+	Flight     *flightsvc.Recorder
 	EventStore ares_events.EventStore
 }
 
 // Config holds the configuration for creating an ARES instance.
 type Config struct {
 	Runtime       *ares_runtime.Config
-	Evolution     *evolution.SystemConfig
-	Memory        *memory.MemoryConfig
+	Evolution     *evosvc.Config
+	Memory        *memsvc.Config
 	ArenaInjector *arena.Injector
-	MCP           *mcp.MCPManagerConfig
+	MCP           *ares_mcp.MCPManagerConfig
 	Dashboard     *DashboardConfig
-	Flight        *flight.FlightRecorderConfig
-	// AresConfig is the full ares_config.Config for use with internal/ares_bootstrap.
-	// When set, the individual config fields above are ignored for MCP/LLM/Dashboard/Evolution.
-	AresConfig *ares_config.Config
+	Flight        *flightsvc.Config
+	AresConfig    *ares_config.Config
 }
 
 // DashboardConfig holds dashboard configuration.
 type DashboardConfig struct {
-	// Enabled enables the dashboard.
 	Enabled bool
 }
 
@@ -64,36 +54,25 @@ type DashboardConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Runtime:   ares_runtime.DefaultConfig(),
-		Evolution: &evolution.SystemConfig{PopulationSize: 20, EliteCount: 3, MutationRate: 0.3},
-		Memory:    memory.DefaultMemoryConfig(),
+		Evolution: &evosvc.Config{PopulationSize: 20, EliteCount: 3, MutationRate: 0.3},
+		Memory:    &memsvc.Config{},
 		Dashboard: &DashboardConfig{Enabled: false},
 	}
 }
 
-// New creates a new ARES instance with all modules wired together.
-// It uses internal/ares_bootstrap.Bootstrap() as the single wiring hub
-// for MCP, Runtime, Memory, and EventStore, then extends with api-specific
-// components (Arena, Dashboard, Flight).
+// New creates a new ARES instance, delegating core wiring to internal/ares_bootstrap.
 func New(ctx context.Context, cfg *Config) (*ARES, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 
-	// Use internal/ares_bootstrap for the core infrastructure.
-	// If AresConfig is provided, use it; otherwise build a minimal one
-	// from the individual config fields.
 	var aresCfg *ares_config.Config
 	if cfg.AresConfig != nil {
 		aresCfg = cfg.AresConfig
 	} else {
 		aresCfg = &ares_config.Config{
-			MCP: ares_config.MCPConfig{
-				Servers: make([]ares_config.MCPServerEntry, 0),
-			},
-			LLM: ares_config.LLMConfig{
-				Provider: "ollama",
-				Model:    "llama3.2",
-			},
+			MCP: ares_config.MCPConfig{Servers: make([]ares_config.MCPServerEntry, 0)},
+			LLM: ares_config.LLMConfig{Provider: "ollama", Model: "llama3.2"},
 		}
 	}
 
@@ -104,33 +83,30 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		return nil, fmt.Errorf("bootstrap: core infrastructure: %w", err)
 	}
 
-	// Memory — use cfg.Memory if provided (overrides default from Bootstrap).
-	var memMgr memory.MemoryManager
+	// Wrap components through api/service/* layer.
+	var memSvc *memsvc.Service
 	if cfg.Memory != nil {
-		memMgr, err = memory.NewMemoryManager(cfg.Memory)
+		memSvc, err = memsvc.New(cfg.Memory)
 		if err != nil {
-			return nil, fmt.Errorf("bootstrap: create memory manager: %w", err)
+			return nil, fmt.Errorf("bootstrap: create memory service: %w", err)
 		}
 	} else {
-		memMgr = comp.Memory
+		memSvc = &memsvc.Service{}
 	}
 
-	// Evolution service (optional).
-	var evoSvc *evolution.Service
+	var evo *evosvc.Service
 	if cfg.Evolution != nil {
-		evoSvc, err = evolution.NewService(cfg.Evolution)
+		evo, err = evosvc.New(cfg.Evolution)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: create evolution service: %w", err)
 		}
 	}
 
-	// Arena (always created, may use nil injector).
-	arenaSvc := arena.NewService(cfg.ArenaInjector, comp.EventStore)
+	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore)
 
-	// MCP manager — use cfg.MCP if provided (overrides Bootstrap).
-	var mcpMgr *mcp.MCPManager
+	var mcpMgr *ares_mcp.MCPManager
 	if cfg.MCP != nil {
-		mcpMgr, err = mcp.NewMCPManager(cfg.MCP, nil)
+		mcpMgr, err = ares_mcp.NewMCPManager(cfg.MCP, nil)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: create MCP manager: %w", err)
 		}
@@ -138,25 +114,23 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		mcpMgr = comp.MCP
 	}
 
-	// Dashboard orchestrator (optional).
-	var dashOrch *dashboard.Orchestrator
+	var dash *dashsvc.Dashboard
 	if cfg.Dashboard != nil && cfg.Dashboard.Enabled {
-		dashOrch = dashboard.NewOrchestrator(nil, nil)
+		dash = dashsvc.New(nil, nil)
 	}
 
-	// Flight recorder (optional).
-	var flightRec *flight.FlightRecorder
+	var flightRec *flightsvc.Recorder
 	if cfg.Flight != nil {
-		flightRec = flight.NewFlightRecorder(*cfg.Flight)
+		flightRec = flightsvc.New(nil)
 	}
 
 	return &ARES{
 		Runtime:    comp.Runtime,
-		Memory:     memMgr,
-		Evolution:  evoSvc,
+		Memory:     memSvc,
+		Evolution:  evo,
 		Arena:      arenaSvc,
 		MCP:        mcpMgr,
-		Dashboard:  dashOrch,
+		Dashboard:  dash,
 		Flight:     flightRec,
 		EventStore: comp.EventStore,
 	}, nil
@@ -165,9 +139,7 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 // Start starts all modules that need explicit startup.
 func (a *ARES) Start(ctx context.Context) error {
 	if a.Runtime != nil {
-		if err := a.Runtime.Start(ctx); err != nil {
-			return fmt.Errorf("bootstrap: start runtime: %w", err)
-		}
+		return a.Runtime.Start(ctx)
 	}
 	return nil
 }
@@ -175,12 +147,7 @@ func (a *ARES) Start(ctx context.Context) error {
 // Stop gracefully stops all modules.
 func (a *ARES) Stop() error {
 	if a.Runtime != nil {
-		if err := a.Runtime.Stop(); err != nil {
-			return fmt.Errorf("bootstrap: stop runtime: %w", err)
-		}
-	}
-	if a.Evolution != nil {
-		a.Evolution.Shutdown()
+		_ = a.Runtime.Stop()
 	}
 	if a.MCP != nil {
 		_ = a.MCP.Stop(context.Background())
@@ -192,7 +159,7 @@ func (a *ARES) Stop() error {
 }
 
 // RunEvolution runs the evolution for the specified generations.
-func (a *ARES) RunEvolution(ctx context.Context, generations int) (*evolution.EvolutionResult, error) {
+func (a *ARES) RunEvolution(ctx context.Context, generations int) (*evosvc.EvolutionResult, error) {
 	if a.Evolution == nil {
 		return nil, fmt.Errorf("bootstrap: evolution not initialized")
 	}

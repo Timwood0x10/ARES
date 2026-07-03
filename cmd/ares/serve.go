@@ -94,7 +94,7 @@ func runServe() error {
 	// MCP setup is handled separately below for registry bridging.
 	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 	if err != nil {
-	 return fmt.Errorf("bootstrap: %w", err)
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 	store := comp.EventStore
 	memMgr := comp.Memory
@@ -109,13 +109,13 @@ func runServe() error {
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
 	if err != nil {
-	 return fmt.Errorf("create tool registry: %w", err)
+		return fmt.Errorf("create tool registry: %w", err)
 	}
 
 	// --- MCP servers via ares_bootstrap.SetupMCP (handles registry bridging) ---
 	internalReg, err := setupMCP(ctx, cfg, registry)
 	if err != nil {
-	 return fmt.Errorf("MCP setup: %w", err)
+		return fmt.Errorf("MCP setup: %w", err)
 	}
 
 	// --- ToolBinder for agents ---
@@ -125,7 +125,7 @@ func runServe() error {
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
-	 return fmt.Errorf("create chat client: %w", err)
+		return fmt.Errorf("create chat client: %w", err)
 	}
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
