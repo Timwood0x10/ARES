@@ -50,9 +50,9 @@ type Anomaly struct {
 	ID        string    `json:"id"`
 	AgentID   string    `json:"agent_id,omitempty"`
 	Severity  Severity  `json:"severity"`
-	Category  string    `json:"category"`   // "high_restarts", "slow_llm", "tool_failure", "memory_leak"
+	Category  string    `json:"category"` // "high_restarts", "slow_llm", "tool_failure", "memory_leak"
 	Message   string    `json:"message"`
-	Count     int       `json:"count"`      // how many times observed
+	Count     int       `json:"count"` // how many times observed
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 	Resolved  bool      `json:"resolved"`
@@ -62,15 +62,15 @@ type Anomaly struct {
 
 // Insight is an actionable observation derived from correlated events.
 type Insight struct {
-	ID          string    `json:"id"`
-	Type        string    `json:"type"`
-	Severity    Severity  `json:"severity"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	AgentIDs    []string  `json:"agent_ids,omitempty"`
-	SuggestedAction string `json:"suggested_action,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	Acknowledged bool     `json:"acknowledged"`
+	ID              string    `json:"id"`
+	Type            string    `json:"type"`
+	Severity        Severity  `json:"severity"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	AgentIDs        []string  `json:"agent_ids,omitempty"`
+	SuggestedAction string    `json:"suggested_action,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	Acknowledged    bool      `json:"acknowledged"`
 }
 
 // ── Intelligence Engine ──────────────────────────────────────
@@ -83,24 +83,24 @@ type Engine struct {
 	insights  []*Insight
 
 	// Configurable thresholds.
-	HealthWindow        time.Duration // sliding window for health computation
-	MaxRestartsPerMin   int           // above this → anomaly
-	MaxErrorRate        float64       // errors/min above this → degraded
-	LatencyThreshold    float64       // p99 ms above this → degraded
-	AnomalyCooldown     time.Duration // min time between same-type anomalies
-	InsightCooldown     time.Duration // min time between same-type insights
+	HealthWindow      time.Duration // sliding window for health computation
+	MaxRestartsPerMin int           // above this → anomaly
+	MaxErrorRate      float64       // errors/min above this → degraded
+	LatencyThreshold  float64       // p99 ms above this → degraded
+	AnomalyCooldown   time.Duration // min time between same-type anomalies
+	InsightCooldown   time.Duration // min time between same-type insights
 
 	onInsight func(*Insight) // optional callback (e.g., WebSocket broadcast)
 }
 
 // agentState tracks per-agent metrics for health computation.
 type agentState struct {
-	restarts    []time.Time
-	errors      []time.Time
-	latencies   []float64
-	lastEvent   time.Time
-	totalOps    int
-	successOps  int
+	restarts   []time.Time
+	errors     []time.Time
+	latencies  []float64
+	lastEvent  time.Time
+	totalOps   int
+	successOps int
 }
 
 // DefaultEngineConfig returns sensible defaults.
@@ -117,12 +117,12 @@ func DefaultEngineConfig() *EngineConfig {
 
 // EngineConfig holds thresholds for the intelligence engine.
 type EngineConfig struct {
-	HealthWindow        time.Duration
-	MaxRestartsPerMin   int
-	MaxErrorRate        float64
-	LatencyThreshold    float64
-	AnomalyCooldown     time.Duration
-	InsightCooldown     time.Duration
+	HealthWindow      time.Duration
+	MaxRestartsPerMin int
+	MaxErrorRate      float64
+	LatencyThreshold  float64
+	AnomalyCooldown   time.Duration
+	InsightCooldown   time.Duration
 }
 
 // NewEngine creates an intelligence engine with the given config.
@@ -407,13 +407,13 @@ func (e *Engine) detectLatencyAnomaly(agentID string, s *agentState, now time.Ti
 	p99 := percentile(s.latencies, 0.99)
 	if p99 > e.LatencyThreshold && !e.recentAnomaly(agentID, "high_latency") {
 		e.addAnomaly(&Anomaly{
-			ID:        fmt.Sprintf("anomaly-%d", now.UnixNano()),
-			AgentID:   agentID,
-			Severity:  SeverityWarning,
-			Category:  "high_latency",
-			Message:   fmt.Sprintf("Agent %s p99 latency %.0fms", agentID, p99),
-			Count:     len(s.latencies),
-			LastSeen:  now,
+			ID:       fmt.Sprintf("anomaly-%d", now.UnixNano()),
+			AgentID:  agentID,
+			Severity: SeverityWarning,
+			Category: "high_latency",
+			Message:  fmt.Sprintf("Agent %s p99 latency %.0fms", agentID, p99),
+			Count:    len(s.latencies),
+			LastSeen: now,
 		})
 	}
 }

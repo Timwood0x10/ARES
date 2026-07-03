@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
@@ -181,6 +182,16 @@ func runServe() error {
 	if err := plugin.Start(ctx, bus); err != nil {
 		return fmt.Errorf("start monitor plugin: %w", err)
 	}
+
+	// ── Intelligence engine: bridge dashboard.Engine → monitoring.IntelProvider ──
+	intelEngine := dashboard.NewEngine(nil)
+	plugin.SetIntel(adapter.NewIntelAdapter(intelEngine))
+	log.Printf("intelligence engine started: system=%s anomalies=%d",
+		intelEngine.SystemHealth().Level, len(intelEngine.Anomalies()))
+
+	// ── Evolution store: bridges flight genealogy → console AgentEvolution ──
+	evoStore := &monitoring.EvolutionStore{}
+	plugin.SetEvolutionStore(evoStore)
 
 	// --- Bridge: EventStore → PluginBus ---
 	meta := map[string]agentMeta{

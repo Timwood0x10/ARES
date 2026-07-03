@@ -25,6 +25,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
+	"github.com/Timwood0x10/ares/internal/monitoring"
 )
 
 // Service is the top-level application entry point. One call to StartService
@@ -158,7 +159,11 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		return nil, fmt.Errorf("create event store: %w", err)
 	}
 	s.eventStore = eventStore
-	bridge := dashboard.NewEventBridge(eventStore, hub, nil)
+
+	// ── Intelligence engine: powers anomaly detection + health scoring ──
+	intelEngine := dashboard.NewEngine(nil)
+
+	bridge := dashboard.NewEventBridge(eventStore, hub, intelEngine)
 	if startErr := bridge.Start(ctx); startErr != nil {
 		log.Warn("event bridge start failed", "error", startErr)
 	}
@@ -191,7 +196,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	}
 	orch.SetFlightRecorder(fr)
 
-	// --- Dashboard HTTP server ---
+	// --- Dashboard HTTP server (unified Gin engine) ---
 	statusServers := make([]MCPStatusServer, 0, len(clientEntries))
 	for _, e := range clientEntries {
 		statusServers = append(statusServers, MCPStatusServer{Name: e.name, Tools: e.tools})
@@ -200,7 +205,10 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 	adapter := &ArenaAdapter{Orch: orch, Store: eventStore}
 	dashAPI.SetArena(adapter)
 	dashAPI.SetSurvival(adapter)
-	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: dashAPI.Handler(), ReadHeaderTimeout: 30 * time.Second} //nosec G112
+
+	// Create unified Gin server with dashboard + monitoring routes.
+	monSrv := monitoring.NewHTTPServer(nil, monitoring.WithDashboardAPI(dashAPI))
+	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: monSrv, ReadHeaderTimeout: 30 * time.Second} //nosec G112
 	s.g.Go(func() error {
 		log.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

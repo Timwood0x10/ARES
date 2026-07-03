@@ -43,9 +43,9 @@ type AgentLister interface {
 // NewAgentWatcher creates a watcher that pushes health updates to the hub.
 func NewAgentWatcher(intel *Engine, hub *WSHub, lister AgentLister, cfg AgentWatcherConfig) *AgentWatcher {
 	return &AgentWatcher{
-		intel: intel,
-		hub:   hub,
-		cfg:   cfg,
+		intel:  intel,
+		hub:    hub,
+		cfg:    cfg,
 		lister: lister,
 	}
 }

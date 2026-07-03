@@ -66,11 +66,11 @@ func (b *ArenaBridge) Stats() map[string]any {
 	b.mu.Unlock()
 
 	return map[string]any{
-		"total_actions":       total,
-		"total_internal":      st.TotalActions,
-		"successful_actions":  st.SuccessfulActions,
-		"failed_actions":      st.FailedActions,
-		"last_action":         st.LastAction,
+		"total_actions":      total,
+		"total_internal":     st.TotalActions,
+		"successful_actions": st.SuccessfulActions,
+		"failed_actions":     st.FailedActions,
+		"last_action":        st.LastAction,
 	}
 }
 
@@ -97,12 +97,12 @@ func (b *ArenaBridge) GetSurvivalStatus() map[string]any {
 func (b *ArenaBridge) GetResilienceScore() map[string]any {
 	m := b.svc.Metrics()
 	return map[string]any{
-		"score":               b.computeResilienceScore(m),
-		"avg_recovery_time":   m.AvgRecoveryTime.String(),
-		"failover_count":      m.FailoverCount,
-		"total_recoveries":    m.TotalRecoveries,
-		"failed_recoveries":   m.FailedRecoveries,
-		"data_consistency":    m.DataConsistencyRate,
+		"score":             b.computeResilienceScore(m),
+		"avg_recovery_time": m.AvgRecoveryTime.String(),
+		"failover_count":    m.FailoverCount,
+		"total_recoveries":  m.TotalRecoveries,
+		"failed_recoveries": m.FailedRecoveries,
+		"data_consistency":  m.DataConsistencyRate,
 	}
 }
 

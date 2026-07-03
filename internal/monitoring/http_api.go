@@ -8,13 +8,24 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/dashboard"
+
 	"github.com/gin-gonic/gin"
 )
 
 // HTTPServer exposes the monitoring plugin over a Gin-based HTTP server.
+// It also mounts dashboard routes (arena, flight, ws, intel) for unified serving.
 type HTTPServer struct {
-	engine *gin.Engine
-	plugin *MonitorPlugin
+	engine    *gin.Engine
+	plugin    *MonitorPlugin
+	dashAPI   *dashboard.APIv2 // optional, mounts dashboard routes when set
+}
+
+// WithDashboardAPI attaches a dashboard API whose routes are mounted on /api.
+func WithDashboardAPI(api *dashboard.APIv2) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.dashAPI = api
+	}
 }
 
 // HTTPServerOption configures the HTTPServer.
@@ -29,16 +40,15 @@ func WithGinMode(mode string) HTTPServerOption {
 
 // NewHTTPServer creates an HTTPServer wrapping the given MonitorPlugin.
 func NewHTTPServer(plugin *MonitorPlugin, opts ...HTTPServerOption) *HTTPServer {
-	for _, opt := range opts {
-		opt(nil)
-	}
-
 	engine := gin.New()
 	engine.Use(gin.Recovery(), gin.Logger())
 
 	s := &HTTPServer{
 		engine: engine,
 		plugin: plugin,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.registerRoutes()
 	return s
@@ -107,6 +117,11 @@ func (s *HTTPServer) registerRoutes() {
 	api.GET("/health/agents", s.handleHealthAgents)
 	api.GET("/anomalies", s.handleAnomalies)
 	api.GET("/insights", s.handleInsights)
+
+	// Dashboard routes — arena, flight, MCP, agents, WebSocket
+	if s.dashAPI != nil {
+	 s.dashAPI.MountGinRoutes(api)
+	}
 }
 
 // handleConsole returns the full console snapshot.
@@ -404,7 +419,10 @@ func (s *HTTPServer) handleHealthAgents(c *gin.Context) {
 		c.JSON(http.StatusOK, []any{})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"count": 0})
+	c.JSON(http.StatusOK, gin.H{
+		"level": s.plugin.intel.SystemLevel(),
+		"anomalies": s.plugin.intel.AnomalyCount(),
+	})
 }
 
 func (s *HTTPServer) handleAnomalies(c *gin.Context) {

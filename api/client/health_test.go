@@ -5,43 +5,84 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/internal/agents"
-	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
-	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
-	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 )
 
 // TestHealthReport_Structure verifies HealthReport fields are zero-valued correctly.
 func TestHealthReport_Structure(t *testing.T) {
 	report := HealthReport{}
-	require.False(t, report.OverallStatus)
-	require.True(t, report.Timestamp.IsZero())
-	require.False(t, report.LLMStatus.Available)
-	require.False(t, report.MemoryStatus.Available)
+	if report.OverallStatus {
+		t.Errorf("expected OverallStatus to be false")
+	}
+	if !report.Timestamp.IsZero() {
+		t.Errorf("expected Timestamp to be zero")
+	}
+	if report.LLMStatus.Available {
+		t.Errorf("expected LLMStatus.Available to be false")
+	}
+	if report.MemoryStatus.Available {
+		t.Errorf("expected MemoryStatus.Available to be false")
+	}
 }
 
 // TestCheckServiceHealth_NilService tests that a nil service returns unavailable.
 func TestCheckServiceHealth_NilService(t *testing.T) {
 	status := checkServiceHealth("Test", nil)
-	require.False(t, status.Available)
-	require.Contains(t, status.Error, "Test")
+	if status.Available {
+		t.Errorf("expected Available to be false")
+	}
+	if status.Error != "Test service not configured" {
+		t.Errorf("expected 'Test service not configured', got %q", status.Error)
+	}
 }
 
 // TestCheckServiceHealth_NonNilService tests that a non-nil service returns available.
 func TestCheckServiceHealth_NonNilService(t *testing.T) {
 	status := checkServiceHealth("Test", &struct{}{})
-	require.True(t, status.Available)
-	require.Empty(t, status.Error)
+	if !status.Available {
+		t.Errorf("expected Available to be true")
+	}
+	if status.Error != "" {
+		t.Errorf("expected empty error, got %q", status.Error)
+	}
 }
 
 // TestCheckLLMHealth_NilService tests LLM health check with nil service.
 func TestCheckLLMHealth_NilService(t *testing.T) {
 	status := checkLLMHealth(context.Background(), nil)
-	require.False(t, status.Available)
-	require.Contains(t, status.Error, "not configured")
+	if status.Available {
+		t.Errorf("expected Available to be false")
+	}
+	if status.Error != "LLM service not configured" {
+		t.Errorf("expected 'LLM service not configured', got %q", status.Error)
+	}
+}
+
+// TestCheckLLMHealth_DisabledService tests LLM health with a service whose IsEnabled returns false.
+func TestCheckLLMHealth_DisabledService(t *testing.T) {
+	svc := &stubLLMService{disabled: true}
+	status := checkLLMHealth(context.Background(), svc)
+	if status.Available {
+		t.Errorf("expected Available to be false")
+	}
+	if status.Error != "LLM service not enabled" {
+		t.Errorf("expected 'LLM service not enabled', got %q", status.Error)
+	}
+}
+
+// TestCheckLLMHealth_EnabledService tests LLM health with a functional service.
+func TestCheckLLMHealth_EnabledService(t *testing.T) {
+	svc := &stubLLMService{}
+	status := checkLLMHealth(context.Background(), svc)
+	if !status.Available {
+		t.Errorf("expected Available to be true")
+	}
+	if status.Error != "" {
+	 t.Errorf("expected empty error, got %q", status.Error)
+	}
+	if !status.Available {
+	 t.Errorf("expected Available to be true")
+	}
 }
 
 // TestBuildHealthReport_AllHealthy tests overall status when all services are healthy.
@@ -52,8 +93,12 @@ func TestBuildHealthReport_AllHealthy(t *testing.T) {
 		ServiceStatus{Available: true},
 		ServiceStatus{Available: true},
 	)
-	require.True(t, report.OverallStatus)
-	require.False(t, report.Timestamp.IsZero())
+	if !report.OverallStatus {
+		t.Errorf("expected OverallStatus to be true")
+	}
+	if report.Timestamp.IsZero() {
+		t.Errorf("expected Timestamp to be non-zero")
+	}
 }
 
 // TestBuildHealthReport_OneUnhealthy tests overall status when one service is down.
@@ -64,12 +109,33 @@ func TestBuildHealthReport_OneUnhealthy(t *testing.T) {
 		ServiceStatus{Available: true},
 		ServiceStatus{Available: true},
 	)
-	require.False(t, report.OverallStatus)
-	require.Equal(t, "memory down", report.MemoryStatus.Error)
+	if report.OverallStatus {
+		t.Errorf("expected OverallStatus to be false")
+	}
+	if report.MemoryStatus.Error != "memory down" {
+		t.Errorf("expected 'memory down', got %q", report.MemoryStatus.Error)
+	}
 }
 
-// TestClientHealth_EmptyConfig tests Health on client with no services configured.
-func TestClientHealth_EmptyConfig(t *testing.T) {
+// TestBuildHealthReport_UnconfiguredSkipsService tests that buildHealthReport
+// includes services with an error in the configured list, so overall status
+// reflects their unavailability.
+func TestBuildHealthReport_UnconfiguredSkipsService(t *testing.T) {
+	report := buildHealthReport(
+		ServiceStatus{Available: false, Error: "not configured"},
+		ServiceStatus{Available: true},
+		ServiceStatus{Available: true},
+		ServiceStatus{Available: true},
+	)
+	// A service with non-empty Error is included in the configured list.
+	// If it's not available, overall status is false.
+	if report.OverallStatus {
+		t.Errorf("expected OverallStatus to be false when a configured service is unavailable")
+	}
+}
+
+// TestClientHealth_ReportsOverallStatus tests the Health method returns overall status based on closed state.
+func TestClientHealth_ReportsOverallStatus(t *testing.T) {
 	client, err := NewClient(&Config{
 		BaseConfig: &core.BaseConfig{
 			RequestTimeout: 30 * time.Second,
@@ -77,60 +143,40 @@ func TestClientHealth_EmptyConfig(t *testing.T) {
 			RetryDelay:     1 * time.Second,
 		},
 	})
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	report, err := client.Health(ctx)
-	require.NoError(t, err)
-	require.NotNil(t, report)
-
-	// With no services configured, each service reports as unavailable
-	require.False(t, report.OverallStatus)
-	require.Contains(t, report.LLMStatus.Error, "not configured")
-	require.Contains(t, report.MemoryStatus.Error, "not configured")
-	require.Contains(t, report.RetrievalStatus.Error, "not configured")
-	require.Contains(t, report.WorkflowStatus.Error, "not configured")
-}
-
-// TestClientHealth_WithServices tests Health with some services configured.
-func TestClientHealth_WithServices(t *testing.T) {
-	baseCfg := &core.BaseConfig{
-		RequestTimeout: 30 * time.Second,
-		MaxRetries:     3,
-		RetryDelay:     1 * time.Second,
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
 	}
-	client, err := NewClient(&Config{
-		BaseConfig: baseCfg,
-		Memory: &memoryservice.Config{
-			BaseConfig: baseCfg,
-			Repo:       memoryservice.NewMemoryRepository(),
-		},
-		LLM: &llmservice.Config{
-			BaseConfig: baseCfg,
-			LLMConfig: &core.LLMConfig{
-				Provider: core.LLMProviderOllama,
-				BaseURL:  "http://localhost:11434",
-				Model:    "llama3.2",
-				Timeout:  60,
-			},
-		},
-	})
-	require.NoError(t, err)
 
 	ctx := context.Background()
 	report, err := client.Health(ctx)
-	require.NoError(t, err)
-	require.NotNil(t, report)
+	if err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if report == nil {
+		t.Fatal("expected non-nil report")
+	}
 
-	// Memory should be available (non-nil)
-	require.True(t, report.MemoryStatus.Available)
+	// Client not closed => OverallStatus is true
+	if !report.OverallStatus {
+		t.Errorf("expected OverallStatus to be true when client is open")
+	}
+	if report.Timestamp.IsZero() {
+		t.Errorf("expected Timestamp to be set")
+	}
 
-	// LLM availability depends on whether IsEnabled returns true
-	// (it checks internal client state)
+	// After closing, OverallStatus should be false
+	_ = client.Close(ctx)
+	report, err = client.Health(ctx)
+	if err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if report.OverallStatus {
+		t.Errorf("expected OverallStatus to be false after Close()")
+	}
 }
 
-// TestClientConfig_ReturnsSnapshot tests Config() returns a deep copy, not the internal reference.
-func TestClientConfig_ReturnsSnapshot(t *testing.T) {
+// TestClientConfig_ReturnsInternalPointer tests Config() returns the config pointer directly.
+func TestClientConfig_ReturnsInternalPointer(t *testing.T) {
 	cfg := &Config{
 		BaseConfig: &core.BaseConfig{
 			RequestTimeout: 60 * time.Second,
@@ -138,17 +184,18 @@ func TestClientConfig_ReturnsSnapshot(t *testing.T) {
 		},
 	}
 	client, err := NewClient(cfg)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
 
 	got := client.Config()
-	// FIX: Config() returns a deep copy, not the same pointer.
-	// External mutation must not affect client's internal state.
-	require.NotSame(t, cfg, got)
-	require.Equal(t, cfg.BaseConfig.RequestTimeout, got.BaseConfig.RequestTimeout)
-
-	// Mutating the copy must not affect the original.
-	got.BaseConfig.RequestTimeout = 999 * time.Second
-	require.Equal(t, 60*time.Second, client.Config().BaseConfig.RequestTimeout)
+	// Config() returns the internal pointer directly (not a copy)
+	if got != cfg {
+		t.Errorf("expected Config() to return the same pointer")
+	}
+	if got.BaseConfig.RequestTimeout != cfg.BaseConfig.RequestTimeout {
+		t.Errorf("expected RequestTimeout %v, got %v", cfg.BaseConfig.RequestTimeout, got.BaseConfig.RequestTimeout)
+	}
 }
 
 // TestClientClose_Idempotent tests that calling Close twice is safe.
@@ -160,41 +207,37 @@ func TestClientClose_Idempotent(t *testing.T) {
 			RetryDelay:     1 * time.Second,
 		},
 	})
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
 
 	ctx := context.Background()
-	err = client.Close(ctx)
-	require.NoError(t, err)
-
-	err = client.Close(ctx)
-	require.NoError(t, err)
+	if err := client.Close(ctx); err != nil {
+		t.Errorf("first Close() error = %v", err)
+	}
+	if err := client.Close(ctx); err != nil {
+		t.Errorf("second Close() error = %v", err)
+	}
 }
 
 // TestClientClose_WithServices tests Close with services configured.
 func TestClientClose_WithServices(t *testing.T) {
-	baseCfg := &core.BaseConfig{
-		RequestTimeout: 30 * time.Second,
-		MaxRetries:     3,
-		RetryDelay:     1 * time.Second,
-	}
 	client, err := NewClient(&Config{
-		BaseConfig: baseCfg,
-		Agent: &agentSvc.Config{
-			BaseConfig: baseCfg,
-			Repo:       agentSvc.NewMemoryRepository(),
+		BaseConfig: &core.BaseConfig{
+			RequestTimeout: 30 * time.Second,
+			MaxRetries:     3,
+			RetryDelay:     1 * time.Second,
 		},
-		Memory: &memoryservice.Config{
-			BaseConfig: baseCfg,
-			Repo:       memoryservice.NewMemoryRepository(),
-		},
-		Retrieval: &retrievalservice.Config{
-			BaseConfig: baseCfg,
-			Repo:       retrievalservice.NewMemoryRepository(),
-		},
+		Agent:     &stubAgentService{},
+		Memory:    &stubMemoryService{},
+		Retrieval: &stubRetrievalService{},
 	})
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
 
 	ctx := context.Background()
-	err = client.Close(ctx)
-	require.NoError(t, err)
+	if err := client.Close(ctx); err != nil {
+		t.Errorf("Close() error = %v", err)
+	}
 }

@@ -55,6 +55,7 @@ type MonitorPlugin struct {
 	mcp         MCPManager
 	pruner      *Pruner
 	intel       IntelProvider
+	evoStore    *EvolutionStore
 
 	// Deferred options.
 	opts pluginOptions
@@ -67,13 +68,18 @@ type MonitorPlugin struct {
 type IntelProvider interface {
 	AnomalyCount() int
 	InsightCount() int
-	SystemLevel() string // "healthy" | "degraded" | "unhealthy"
+	SystemLevel() string
 	AgentLevel(agentID string) string
 }
 
-// SetIntel attaches an intelligence provider for console insights.
+// SetIntel attaches an intelligence provider.
 func (p *MonitorPlugin) SetIntel(intel IntelProvider) {
 	p.intel = intel
+}
+
+// SetEvolutionStore attaches an evolution store for genealogy data.
+func (p *MonitorPlugin) SetEvolutionStore(store *EvolutionStore) {
+	p.evoStore = store
 }
 
 // Option configures the MonitorPlugin.
@@ -398,13 +404,17 @@ func (p *MonitorPlugin) AgentMemory(_ context.Context, agentID string) (*AgentMe
 		return nil, fmt.Errorf("agent memory: %w", ErrNotImplemented)
 	}
 	return &AgentMemory{
-		AgentID:  agentID,
+		AgentID:   agentID,
 		UpdatedAt: time.Now(),
 	}, nil
 }
 
-// AgentEvolution returns the evolutionary history. No native evolution storage yet.
+// AgentEvolution returns the evolutionary history. Delegates to evolution store.
 func (p *MonitorPlugin) AgentEvolution(_ context.Context, agentID string) (*AgentEvolution, error) {
+	if p.evoStore != nil {
+		evo := p.evoStore.GetEvolution(agentID)
+		return evo, nil
+	}
 	return &AgentEvolution{
 		AgentID:   agentID,
 		Generation: 0,
