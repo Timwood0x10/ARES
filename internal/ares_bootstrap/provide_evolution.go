@@ -9,6 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
@@ -27,14 +28,19 @@ type EvolutionComponents struct {
 func ProvideEvolution(
 	ctx context.Context,
 	cfg *ares_config.EvolutionConfig,
-	flightRecorder *flight.FlightRecorder,
+	eventStore ares_events.EventStore,
 	expRepo repositories.ExperienceRepositoryInterface,
 	callbackReg *ares_callbacks.Registry,
 	llmClient ares_eval.LLMClient,
 ) (*EvolutionComponents, error) {
-	if flightRecorder == nil || expRepo == nil || callbackReg == nil {
+	if eventStore == nil || expRepo == nil || callbackReg == nil {
 		return nil, fmt.Errorf("bootstrap: evolution skipped (missing dependencies)")
 	}
+
+	// Create flight recorder from event store
+	flightRecorder := flight.NewFlightRecorder(flight.FlightRecorderConfig{
+		EventStore: eventStore,
+	})
 
 	// 1. Flight → Experience adapter
 	flightWrapper := &flightRecorderWrapper{recorder: flightRecorder}

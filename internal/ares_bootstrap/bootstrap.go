@@ -8,8 +8,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
+	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
@@ -19,6 +20,9 @@ type Components struct {
 	Dashboard *DashboardComponents
 	LLM       *LLMComponents
 	Evolution *EvolutionComponents
+	Runtime   *ares_runtime.Manager
+	Memory    ares_memory.MemoryManager
+	EventStore ares_events.EventStore
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -35,6 +39,7 @@ type BootstrapDeps struct {
 }
 
 // Bootstrap assembles all components from config and optional dependencies.
+// It is the single wiring hub — used by api/bootstrap, cmd/ares serve, and tests.
 func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps) (*Components, error) {
 	var comp Components
 
@@ -42,14 +47,35 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		deps = &BootstrapDeps{}
 	}
 
-	// 1. MCP
+	// 1. EventStore — from deps or create in-memory default
+	if deps.EventStore != nil {
+		comp.EventStore = deps.EventStore
+	} else {
+		comp.EventStore = ares_events.NewMemoryEventStore()
+	}
+
+	// 2. Runtime — always created (accepts nil eventStore)
+	rt, err := ProvideRuntime(comp.EventStore)
+	if err != nil {
+		return nil, err
+	}
+	comp.Runtime = rt
+
+	// 3. Memory
+	mem, err := ProvideMemory(nil)
+	if err != nil {
+		return nil, err
+	}
+	comp.Memory = mem
+
+	// 4. MCP
 	mcp, err := ProvideMCP(ctx, cfg.MCP)
 	if err != nil {
 		return nil, err
 	}
 	comp.MCP = mcp
 
-	// 2. LLM — from config (for backward compat) or from deps
+	// 5. LLM — from config (for backward compat) or from deps
 	if deps.LLMClient != nil {
 		comp.LLM = &LLMComponents{Client: deps.LLMClient}
 	} else {
@@ -60,22 +86,17 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		comp.LLM = llm
 	}
 
-	// 3. Dashboard
+	// 6. Dashboard
 	dash, err := ProvideDashboard(ctx, mcp)
 	if err != nil {
 		return nil, err
 	}
 	comp.Dashboard = dash
 
-	// 4. Evolution — only if all required deps are wired
+	// 7. Evolution — only if all required deps are wired
 	if deps.EventStore != nil && deps.ExpRepo != nil {
-		// Create flight recorder from event store
-		flightRecorder := flight.NewFlightRecorder(flight.FlightRecorderConfig{
-			EventStore: deps.EventStore,
-		})
-
 		evol, err := ProvideEvolution(ctx, &cfg.Evolution,
-			flightRecorder, deps.ExpRepo,
+			comp.EventStore, deps.ExpRepo,
 			comp.LLM.CallbackReg,
 			deps.LLMClient,
 		)

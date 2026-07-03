@@ -624,14 +624,14 @@ func (dc *DreamCycle) findWinner(ctx context.Context, candidates []Strategy, bas
 
 如果每个使用者都要自己了解 CallbackRegistry 怎么创建、FeedbackService 怎么注入、EvolutionScheduler 怎么注册、DreamCycle 怎么挂载……那这套系统的使用门槛太高了。99% 的人会在第一步就放弃。
 
-所以有了 `WireAllEvolutionComponents()` —— 一行调用，全部到位。
+所以有了 `ares_bootstrap.Bootstrap()` —— 一行调用，全部到位。
 
 ### 架构图
 
 ```mermaid
 graph TB
     subgraph "main() 调用"
-        MAIN["WireAllEvolutionComponents(ctx, deps)"]
+        MAIN["ares_bootstrap.Bootstrap(ctx, deps)"]
     end
 
     subgraph "Step 1: 事件骨架"
@@ -675,11 +675,11 @@ graph TB
 
 ```go
 // bootstrap.go
-func WireAllEvolutionComponents(
+func ares_bootstrap.Bootstrap(
     ctx context.Context,
-    deps *WireDependencies,
-) (*WiredComponents, error) {
-    result := &WiredComponents{}
+    deps *BootstrapDeps,
+) (*Components, error) {
+    result := &Components{}
 
     // Step 1: Callback Registry — 所有事件的总枢纽
     result.CallbackReg = NewCallbackRegistry()
@@ -707,10 +707,10 @@ func WireAllEvolutionComponents(
 }
 ```
 
-返回的 `WiredComponents` 结构体包含了所有需要注入到 Agent 中的组件：
+返回的 `Components` 结构体包含了所有需要注入到 Agent 中的组件：
 
 ```go
-type WiredComponents struct {
+type Components struct {
     CallbackReg    *callbacks.Registry           // → llm.WithCallbacks(reg)
     FeedbackSvc    *experience.FeedbackService    // → leader.WithFeedbackService(svc)
     EvalRegistry   *eval.EvaluatorRegistry        // → arena.NewRegressionTester(arena, scorer)
@@ -740,13 +740,13 @@ type WiredComponents struct {
 func main() {
     // ... 初始化基础依赖 ...
 
-    wired, err := bootstrap.WireAllEvolutionComponents(ctx, &bootstrap.WireDependencies{
+    wired, err := bootstrap.ares_bootstrap.Bootstrap(ctx, &bootstrap.BootstrapDeps{
         LLMClient:      llmClient,
         FlightRecorder: flightRecorder,
         ExpRepo:        expRepo,
         EmbeddingService: embedder,
         Distiller:      distiller,
-        DreamDeps: &bootstrap.DreamCycleDeps{
+        DreamDeps: &bootstrap.BootstrapDeps{
             Mutator:   mutator,
             Tester:    testerAdapter,
             Genealogy: genealogyDB,
@@ -765,7 +765,7 @@ func main() {
 }
 ```
 
-从调用方的视角看，进化系统是透明的——你不需要知道 Callback、Feedback、Arena、Mutator 这些概念的存在。`WireAllEvolutionComponents` 把复杂性封装在一处，返回的就是一组可以直接塞进 Agent 构造函数的选项。
+从调用方的视角看，进化系统是透明的——你不需要知道 Callback、Feedback、Arena、Mutator 这些概念的存在。`ares_bootstrap.Bootstrap` 把复杂性封装在一处，返回的就是一组可以直接塞进 Agent 构造函数的选项。
 
 ***
 
@@ -775,11 +775,11 @@ func main() {
 
 | 迭代                 | 目标        | 核心交付                                         | 风险等级 |
 | ------------------ | --------- | -------------------------------------------- | ---- |
-| **Iteration 1** ✅  | 闭环跑通      | WireAllEvolutionComponents + 参数变异 + Arena 验证 | 低    |
+| **Iteration 1** ✅  | 闭环跑通      | ares_bootstrap.Bootstrap + 参数变异 + Arena 验证 | 低    |
 | **Iteration 2** 🔄 | Prompt 进化 | Prompt 模板池管理 + A/B 测试 + 自动替换                 | 中    |
 | **Iteration 3** 🔮 | 工具自生成     | DevAgent 集成 + 安全沙箱 + 工具审核流程                  | 高    |
 
-当前状态：**Iteration 1 基本完成**，WireAllEvolutionComponents 已经可用，参数变异和 Arena 验证链路已打通。`getCurrentStrategy()` 已通过 EvolutionStore + StrategyStore 接口实现 DB 持久化（不再是 placeholder），序列化快照系统已就位（SaveEvolutionRun / LoadEvolutionRun 支持断点续跑和审计），可溯源谱系自动记录（RecordPopulationLineage）。剩余工作主要是 `shouldEvolve()` 接入实际分数数据和监控指标完善。
+当前状态：**Iteration 1 基本完成**，ares_bootstrap.Bootstrap 已经可用，参数变异和 Arena 验证链路已打通。`getCurrentStrategy()` 已通过 EvolutionStore + StrategyStore 接口实现 DB 持久化（不再是 placeholder），序列化快照系统已就位（SaveEvolutionRun / LoadEvolutionRun 支持断点续跑和审计），可溯源谱系自动记录（RecordPopulationLineage）。剩余工作主要是 `shouldEvolve()` 接入实际分数数据和监控指标完善。
 
 ### 风险表
 

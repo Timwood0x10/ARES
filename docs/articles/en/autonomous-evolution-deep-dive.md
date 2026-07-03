@@ -619,14 +619,14 @@ Components implemented, broken links fixed, but one ultimate question remains: *
 
 If every user needs to understand how to create CallbackRegistry, inject FeedbackService, register EvolutionScheduler, mount DreamCycle... the barrier to entry is too high. 99% of people would give up at step one.
 
-That's why `WireAllEvolutionComponents()` exists — one call, everything wired.
+That's why `ares_bootstrap.Bootstrap()` exists — one call, everything wired.
 
 ### Architecture Diagram
 
 ```mermaid
 graph TB
     subgraph "main() call"
-        MAIN["WireAllEvolutionComponents(ctx, deps)"]
+        MAIN["ares_bootstrap.Bootstrap(ctx, deps)"]
     end
 
     subgraph "Step 1: Event Skeleton"
@@ -670,11 +670,11 @@ graph TB
 
 ```go
 // bootstrap.go
-func WireAllEvolutionComponents(
+func ares_bootstrap.Bootstrap(
     ctx context.Context,
-    deps *WireDependencies,
-) (*WiredComponents, error) {
-    result := &WiredComponents{}
+    deps *BootstrapDeps,
+) (*Components, error) {
+    result := &Components{}
 
     // Step 1: Callback Registry — central hub for all event wiring
     result.CallbackReg = NewCallbackRegistry()
@@ -702,10 +702,10 @@ func WireAllEvolutionComponents(
 }
 ```
 
-Returned `WiredComponents` contains everything needed for injection:
+Returned `Components` contains everything needed for injection:
 
 ```go
-type WiredComponents struct {
+type Components struct {
     CallbackReg    *callbacks.Registry           // -> llm.WithCallbacks(reg)
     FeedbackSvc    *experience.FeedbackService    // -> leader.WithFeedbackService(svc)
     EvalRegistry   *eval.EvaluatorRegistry        // -> arena.NewRegressionTester(arena, scorer)
@@ -733,13 +733,13 @@ Link #5 is now fully closed: `getCurrentStrategy()` resolved via `PGStrategyStor
 func main() {
     // ... initialize basic dependencies ...
 
-    wired, err := bootstrap.WireAllEvolutionComponents(ctx, &bootstrap.WireDependencies{
+    wired, err := bootstrap.ares_bootstrap.Bootstrap(ctx, &bootstrap.BootstrapDeps{
         LLMClient:      llmClient,
         FlightRecorder: flightRecorder,
         ExpRepo:        expRepo,
         EmbeddingService: embedder,
         Distiller:      distiller,
-        DreamDeps: &bootstrap.DreamCycleDeps{
+        DreamDeps: &bootstrap.BootstrapDeps{
             Mutator:   mutator,
             Tester:    testerAdapter,
             Genealogy: genealogyDB,
@@ -758,7 +758,7 @@ func main() {
 }
 ```
 
-From the caller's perspective, the evolution system is transparent — you don't need to know about Callback, Feedback, Arena, or Mutator. `WireAllEvolutionComponents` encapsulates complexity in one place, returns constructor options ready to inject.
+From the caller's perspective, the evolution system is transparent — you don't need to know about Callback, Feedback, Arena, or Mutator. `ares_bootstrap.Bootstrap` encapsulates complexity in one place, returns constructor options ready to inject.
 
 ---
 
@@ -768,11 +768,11 @@ From the caller's perspective, the evolution system is transparent — you don't
 
 | Iteration | Goal | Core Deliverable | Risk Level |
 |-----------|------|------------------|------------|
-| **Iteration 1** | Pipeline closed | WireAllEvolutionComponents + parameter mutation + Arena validation | Low |
+| **Iteration 1** | Pipeline closed | ares_bootstrap.Bootstrap + parameter mutation + Arena validation | Low |
 | **Iteration 2** | Prompt evolution | Prompt template pool management + A/B testing + auto-replacement | Medium |
 | **Iteration 3** | Tool auto-generation | DevAgent integration + safety sandbox + tool approval workflow | High |
 
-Current status: **Iteration 1 complete**. WireAllEvolutionComponents available, parameter mutation and Arena validation chain connected. `getCurrentStrategy()` fully resolved via `PGStrategyStore` (DB-backed StrategyStore). Population improvements (Snapshot, BestStrategy, Stats, BreedingPoolRatio) deployed. Auto-lineage recording via RecordPopulationLineage. Remaining work: `shouldEvolve()` hooks into actual score data for adaptive triggering.
+Current status: **Iteration 1 complete**. ares_bootstrap.Bootstrap available, parameter mutation and Arena validation chain connected. `getCurrentStrategy()` fully resolved via `PGStrategyStore` (DB-backed StrategyStore). Population improvements (Snapshot, BestStrategy, Stats, BreedingPoolRatio) deployed. Auto-lineage recording via RecordPopulationLineage. Remaining work: `shouldEvolve()` hooks into actual score data for adaptive triggering.
 
 ### Risk Matrix
 

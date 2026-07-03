@@ -75,8 +75,17 @@ func main() {
 		cancel()
 	}()
 
-	// --- Shared event store ---
-	store := ares_events.NewMemoryEventStore()
+	// --- Bootstrap: infrastructure components via single wiring hub ---
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
+	if err != nil {
+	 log.Fatalf("bootstrap: %v", err)
+	}
+	store := comp.EventStore
+	memMgr := comp.Memory
+	mgr := comp.Runtime
+
+	// Attach event store to memory for event-driven memory operations
+	memMgr.SetEventStore(store, "memory")
 
 	// --- LLM adapter with fallback ---
 	llmAdapter := createLLMAdapterWithFallback(cfg)

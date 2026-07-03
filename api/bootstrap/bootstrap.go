@@ -1,5 +1,6 @@
 // Package bootstrap provides factory functions for creating ARES modules.
-// It wires internal implementations to the abstract interfaces defined in api/core/.
+// It delegates component wiring to internal/ares_bootstrap and extends with
+// api-specific components (Arena, Dashboard, Flight).
 package bootstrap
 
 import (
@@ -8,12 +9,14 @@ import (
 	"os"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 )
 
@@ -46,6 +49,9 @@ type Config struct {
 	MCP           *mcp.MCPManagerConfig
 	Dashboard     *DashboardConfig
 	Flight        *flight.FlightRecorderConfig
+	// AresConfig is the full ares_config.Config for use with internal/ares_bootstrap.
+	// When set, the individual config fields above are ignored for MCP/LLM/Dashboard/Evolution.
+	AresConfig *ares_config.Config
 }
 
 // DashboardConfig holds dashboard configuration.
@@ -65,19 +71,51 @@ func DefaultConfig() *Config {
 }
 
 // New creates a new ARES instance with all modules wired together.
+// It uses internal/ares_bootstrap.Bootstrap() as the single wiring hub
+// for MCP, Runtime, Memory, and EventStore, then extends with api-specific
+// components (Arena, Dashboard, Flight).
 func New(ctx context.Context, cfg *Config) (*ARES, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 
-	eventStore := ares_events.NewMemoryEventStore()
-	rt := ares_runtime.New(cfg.Runtime, eventStore, nil)
-
-	memMgr, err := memory.NewMemoryManager(cfg.Memory)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap: create memory manager: %w", err)
+	// Use internal/ares_bootstrap for the core infrastructure.
+	// If AresConfig is provided, use it; otherwise build a minimal one
+	// from the individual config fields.
+	var aresCfg *ares_config.Config
+	if cfg.AresConfig != nil {
+		aresCfg = cfg.AresConfig
+	} else {
+		aresCfg = &ares_config.Config{
+			MCP: ares_config.MCPConfig{
+				Servers: make([]ares_config.MCPServerEntry, 0),
+			},
+			LLM: ares_config.LLMConfig{
+				Provider: "ollama",
+				Model:    "llama3.2",
+			},
+		}
 	}
 
+	comp, err := ares_bootstrap.Bootstrap(ctx, aresCfg, &ares_bootstrap.BootstrapDeps{
+		EventStore: ares_events.NewMemoryEventStore(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: core infrastructure: %w", err)
+	}
+
+	// Memory — use cfg.Memory if provided (overrides default from Bootstrap).
+	var memMgr memory.MemoryManager
+	if cfg.Memory != nil {
+		memMgr, err = memory.NewMemoryManager(cfg.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create memory manager: %w", err)
+		}
+	} else {
+		memMgr = comp.Memory
+	}
+
+	// Evolution service (optional).
 	var evoSvc *evolution.Service
 	if cfg.Evolution != nil {
 		evoSvc, err = evolution.NewService(cfg.Evolution)
@@ -86,15 +124,18 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		}
 	}
 
-	arenaSvc := arena.NewService(cfg.ArenaInjector, eventStore)
+	// Arena (always created, may use nil injector).
+	arenaSvc := arena.NewService(cfg.ArenaInjector, comp.EventStore)
 
-	// MCP manager (optional).
+	// MCP manager — use cfg.MCP if provided (overrides Bootstrap).
 	var mcpMgr *mcp.MCPManager
 	if cfg.MCP != nil {
 		mcpMgr, err = mcp.NewMCPManager(cfg.MCP, nil)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: create MCP manager: %w", err)
 		}
+	} else {
+		mcpMgr = comp.MCP
 	}
 
 	// Dashboard orchestrator (optional).
@@ -110,14 +151,14 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 	}
 
 	return &ARES{
-		Runtime:    rt,
+		Runtime:    comp.Runtime,
 		Memory:     memMgr,
 		Evolution:  evoSvc,
 		Arena:      arenaSvc,
 		MCP:        mcpMgr,
 		Dashboard:  dashOrch,
 		Flight:     flightRec,
-		EventStore: eventStore,
+		EventStore: comp.EventStore,
 	}, nil
 }
 
@@ -159,7 +200,6 @@ func (a *ARES) RunEvolution(ctx context.Context, generations int) (*evolution.Ev
 }
 
 // RunIdleEvolution runs idle evolution with report generation.
-// When ReportPath is set on the evolution config, the report is saved to file.
 func (a *ARES) RunIdleEvolution(ctx context.Context, generations int) error {
 	if a.Evolution == nil {
 		return fmt.Errorf("bootstrap: evolution not initialized")
@@ -168,22 +208,18 @@ func (a *ARES) RunIdleEvolution(ctx context.Context, generations int) error {
 }
 
 // LatestReport reads and returns the content of the latest evolution report file.
-// Returns empty string if ReportPath was not configured or the file doesn't exist.
 func (a *ARES) LatestReport() (string, error) {
 	if a.Evolution == nil {
 		return "", fmt.Errorf("bootstrap: evolution not initialized")
 	}
-
 	path := a.Evolution.ReportPath()
 	if path == "" {
 		return "", nil
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap: read report: %w", err)
 	}
-
 	return string(data), nil
 }
 

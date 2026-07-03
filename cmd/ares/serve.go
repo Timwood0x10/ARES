@@ -11,9 +11,8 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
@@ -90,8 +89,19 @@ func runServe() error {
 		cancel()
 	}()
 
-	// --- Shared event store ---
-	store := ares_events.NewMemoryEventStore()
+	// --- Bootstrap: infrastructure components via single wiring hub ---
+	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
+	// MCP setup is handled separately below for registry bridging.
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
+	if err != nil {
+	 return fmt.Errorf("bootstrap: %w", err)
+	}
+	store := comp.EventStore
+	memMgr := comp.Memory
+	mgr := comp.Runtime
+
+	// Attach event store to memory for event-driven memory operations
+	memMgr.SetEventStore(store, "memory")
 
 	// --- LLM adapter with fallback ---
 	llmAdapter := createLLMAdapterWithFallback(cfg)
@@ -99,13 +109,13 @@ func runServe() error {
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
 	if err != nil {
-		return fmt.Errorf("create tool registry: %w", err)
+	 return fmt.Errorf("create tool registry: %w", err)
 	}
 
-	// --- MCP servers via bootstrap ---
+	// --- MCP servers via ares_bootstrap.SetupMCP (handles registry bridging) ---
 	internalReg, err := setupMCP(ctx, cfg, registry)
 	if err != nil {
-		return fmt.Errorf("MCP setup: %w", err)
+	 return fmt.Errorf("MCP setup: %w", err)
 	}
 
 	// --- ToolBinder for agents ---
@@ -115,24 +125,14 @@ func runServe() error {
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
-		return fmt.Errorf("create chat client: %w", err)
+	 return fmt.Errorf("create chat client: %w", err)
 	}
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
-
-	// --- Memory manager ---
-	memConfig := memory.DefaultMemoryConfig()
-	memMgr, err := memory.NewMemoryManager(memConfig)
-	if err != nil {
-		return fmt.Errorf("create memory manager: %w", err)
-	}
-	memMgr.SetEventStore(store, "memory")
 
 	// --- Create agents ---
 	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 
-	// --- Runtime manager ---
-	mgr := ares_runtime.New(nil, store, nil)
-
+	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
 		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 		return a

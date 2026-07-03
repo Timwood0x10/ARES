@@ -1,6 +1,6 @@
 // Package client provides a library-style entry point for embedding GoAgent
-// into other Go applications. It exposes modular service accessors, configuration
-// management, health checking, and resource lifecycle control.
+// into other Go applications. It exposes modular service accessors via api/core
+// interfaces, with internal implementations injected at construction time.
 package client
 
 import (
@@ -24,26 +24,26 @@ import (
 // Client provides a unified client interface for all GoAgent modules.
 // It is created via NewClient and owns the lifecycle of all child services.
 type Client struct {
-	agentService     *agentSvc.Service
-	memoryService    *memoryservice.Service
-	retrievalService *retrievalservice.Service
-	llmService       *llmservice.Service
+	agentService     core.AgentService
+	memoryService    core.MemoryService
+	retrievalService core.RetrievalService
+	llmService       core.LLMService
 	workflowService  *workflowSvc.Service
 	config           *Config
 	configFile       *ConfigFile
-	mu               sync.RWMutex // Protects closed field against data race.
+	mu               sync.RWMutex
 	closed           bool
 }
 
 // Config holds configuration for the GoAgent client.
 // Each field corresponds to a module that can be independently enabled.
 type Config struct {
-	BaseConfig *core.BaseConfig         // Base configuration (timeout, retries)
-	Agent      *agentSvc.Config         // Agent service configuration
-	Memory     *memoryservice.Config    // Memory service configuration
-	Retrieval  *retrievalservice.Config // Retrieval service configuration
-	LLM        *llmservice.Config       // LLM service configuration
-	Workflow   *workflowSvc.Config      // Workflow service configuration
+	BaseConfig *core.BaseConfig
+	Agent      *agentSvc.Config
+	Memory     *memoryservice.Config
+	Retrieval  *retrievalservice.Config
+	LLM        *llmservice.Config
+	Workflow   *workflowSvc.Config
 }
 
 // NewClient creates a new GoAgent client instance with the given configuration.
@@ -147,7 +147,7 @@ func NewClient(config *Config) (*Client, error) {
 //
 //	service - the agent service instance.
 //	err - ErrAgentNotConfigured if agent was not configured at client creation.
-func (c *Client) Agent() (*agentSvc.Service, error) {
+func (c *Client) Agent() (core.AgentService, error) {
 	if c.agentService == nil {
 		return nil, ErrAgentNotConfigured
 	}
@@ -160,7 +160,7 @@ func (c *Client) Agent() (*agentSvc.Service, error) {
 //
 //	service - the memory service instance.
 //	err - ErrMemoryNotConfigured if memory was not configured at client creation.
-func (c *Client) Memory() (*memoryservice.Service, error) {
+func (c *Client) Memory() (core.MemoryService, error) {
 	if c.memoryService == nil {
 		return nil, ErrMemoryNotConfigured
 	}
@@ -173,7 +173,7 @@ func (c *Client) Memory() (*memoryservice.Service, error) {
 //
 //	service - the retrieval service instance.
 //	err - ErrRetrievalNotConfigured if retrieval was not configured at client creation.
-func (c *Client) Retrieval() (*retrievalservice.Service, error) {
+func (c *Client) Retrieval() (core.RetrievalService, error) {
 	if c.retrievalService == nil {
 		return nil, ErrRetrievalNotConfigured
 	}
@@ -186,7 +186,7 @@ func (c *Client) Retrieval() (*retrievalservice.Service, error) {
 //
 //	service - the LLM service instance.
 //	err - ErrLLMNotConfigured if LLM was not configured at client creation.
-func (c *Client) LLM() (*llmservice.Service, error) {
+func (c *Client) LLM() (core.LLMService, error) {
 	if c.llmService == nil {
 		return nil, ErrLLMNotConfigured
 	}
@@ -362,7 +362,9 @@ func (c *Client) Close(ctx context.Context) error {
 	c.closed = true
 
 	if c.llmService != nil {
-		c.llmService.Close()
+		if closer, ok := c.llmService.(interface{ Close() }); ok {
+			closer.Close()
+		}
 	}
 
 	return nil
