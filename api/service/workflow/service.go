@@ -259,8 +259,8 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 		// the event-forwarding goroutine and allows g.Wait() to return.
 		mutableDAG.Unsubscribe(graphSubID)
 		if err := g.Wait(); err != nil {
-		fmt.Printf("workflow: executor wait: %v\n", err)
-	}
+			fmt.Printf("workflow: executor wait: %v\n", err)
+		}
 
 		if res.err != nil || res.result == nil {
 			errMsg := ""

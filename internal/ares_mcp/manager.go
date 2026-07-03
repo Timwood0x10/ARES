@@ -310,3 +310,100 @@ func (m *MCPManager) findServerConfig(name string) *MCPServerConfig {
 	}
 	return nil
 }
+
+// ApplyConfig diffs the new config against the current one and applies changes:
+//   - Connects newly added servers
+//   - Disconnects removed servers
+//   - Reconnects servers whose config changed
+//
+// It returns the list of changes applied.
+func (m *MCPManager) ApplyConfig(ctx context.Context, newCfg *MCPManagerConfig) []string {
+	var changes []string
+
+	m.mu.Lock()
+	m.config = newCfg
+	oldClients := make(map[string]*managedClient)
+	for k, v := range m.clients {
+		oldClients[k] = v
+	}
+	m.mu.Unlock()
+
+	// Build index of new servers.
+	newServers := make(map[string]MCPServerConfig)
+	if newCfg != nil {
+		for _, s := range newCfg.Servers {
+			newServers[s.Name] = s
+		}
+	}
+
+	// 1. Disconnect servers that were removed or disabled.
+	for name, mc := range oldClients {
+		newSrv, exists := newServers[name]
+		if !exists || (!newSrv.Enabled && mc.config.Enabled) {
+			if err := m.DisconnectServer(ctx, name); err != nil {
+				log.Warn("mcp: hot-reload disconnect", "server", name, "error", err)
+			}
+			changes = append(changes, fmt.Sprintf("disconnected: %s", name))
+			continue
+		}
+		// 2. Reconnect if server config changed (e.g., transport change).
+		if hasConfigChanged(&mc.config, &newSrv) {
+			if err := m.DisconnectServer(ctx, name); err != nil {
+				log.Warn("mcp: hot-reload reconnect disconnect", "server", name, "error", err)
+			}
+			if err := m.ConnectServer(ctx, name); err != nil {
+				log.Warn("mcp: hot-reload reconnect connect", "server", name, "error", err)
+			}
+			changes = append(changes, fmt.Sprintf("reconnected: %s", name))
+		}
+	}
+
+	// 3. Connect newly added servers.
+	if newCfg != nil {
+		for _, s := range newCfg.Servers {
+			if _, exists := oldClients[s.Name]; !exists && s.Enabled {
+				if err := m.ConnectServer(ctx, s.Name); err != nil {
+					log.Warn("mcp: hot-reload connect", "server", s.Name, "error", err)
+				} else {
+					changes = append(changes, fmt.Sprintf("connected: %s", s.Name))
+				}
+			}
+		}
+	}
+
+	return changes
+}
+
+// hasConfigChanged checks whether two server configs differ in a meaningful way.
+func hasConfigChanged(a, b *MCPServerConfig) bool {
+	if a.Transport.Type != b.Transport.Type {
+		return true
+	}
+	switch a.Transport.Type {
+	case "stdio":
+		if a.Transport.Stdio != nil && b.Transport.Stdio != nil {
+			return a.Transport.Stdio.Command != b.Transport.Stdio.Command ||
+				!stringSliceEqual(a.Transport.Stdio.Args, b.Transport.Stdio.Args)
+		}
+		return (a.Transport.Stdio == nil) != (b.Transport.Stdio == nil)
+	case "sse":
+		if a.Transport.SSE != nil && b.Transport.SSE != nil {
+			return a.Transport.SSE.URL != b.Transport.SSE.URL
+		}
+		return (a.Transport.SSE == nil) != (b.Transport.SSE == nil)
+	}
+	return false
+}
+
+// stringSliceEqual compares two string slices.
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

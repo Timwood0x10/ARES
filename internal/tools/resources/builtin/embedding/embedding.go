@@ -41,9 +41,9 @@ type BatchEmbeddingRequest struct {
 
 // BatchEmbeddingResponse matches the Python embedding service response.
 type BatchEmbeddingResponse struct {
-	Embeddings   [][]float64 `json:"embeddings"`
-	Dimension    int         `json:"dimension"`
-	CachedCount  int         `json:"cached_count"`
+	Embeddings  [][]float64 `json:"embeddings"`
+	Dimension   int         `json:"dimension"`
+	CachedCount int         `json:"cached_count"`
 }
 
 const defaultEmbeddingBaseURL = "http://localhost:8000"

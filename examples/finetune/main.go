@@ -803,9 +803,9 @@ func main() {
 	if len(experiences) > 0 {
 		b, err := json.MarshalIndent(experiences[0], "  ", "  ")
 		if err != nil {
-		 fmt.Printf("  Failed to marshal experience: %v\n\n", err)
+			fmt.Printf("  Failed to marshal experience: %v\n\n", err)
 		} else {
-		 fmt.Printf("  Sample experience:\n  %s\n\n", string(b))
+			fmt.Printf("  Sample experience:\n  %s\n\n", string(b))
 		}
 	}
 

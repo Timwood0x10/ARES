@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
