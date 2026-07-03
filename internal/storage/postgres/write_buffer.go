@@ -417,7 +417,9 @@ func (b *WriteBuffer) Stop(ctx context.Context) error {
 
 	// Wait for errgroup to complete (ignoring errors as we're shutting down)
 	if b.g != nil {
-		_ = b.g.Wait()
+		if err := b.g.Wait(); err != nil {
+			log.Warn("write buffer: flush wait", "error", err)
+		}
 	}
 
 	return nil

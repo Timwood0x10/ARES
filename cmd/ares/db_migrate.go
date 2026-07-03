@@ -67,7 +67,9 @@ func runDbMigrate() error {
 		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer func() {
-		_ = pool.Close()
+		if err := pool.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close pool: %v\n", err)
+		}
 	}()
 
 	ctx := context.Background()

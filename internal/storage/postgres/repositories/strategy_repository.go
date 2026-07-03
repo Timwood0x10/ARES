@@ -138,7 +138,9 @@ func (r *StrategyRepository) setActiveTx(ctx context.Context, db beginTxer, s St
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback()
+			if err := tx.Rollback(); err != nil {
+				log.Warn("strategy repo: rollback", "error", err)
+			}
 		}
 	}()
 
@@ -221,7 +223,9 @@ func (r *StrategyRepository) List(ctx context.Context, n int) ([]StrategyRow, er
 		return nil, errors.Wrap(err, "list strategies")
 	}
 	defer func() {
-		_ = rows.Close()
+		if err := rows.Close(); err != nil {
+			log.Warn("strategy repo: close rows", "error", err)
+		}
 	}()
 
 	var strategies []StrategyRow

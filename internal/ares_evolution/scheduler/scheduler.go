@@ -326,7 +326,9 @@ func (s *DefaultScheduler) Stop() error {
 
 	// Wait for errgroup to finish after releasing lock.
 	if eg != nil {
-		_ = eg.Wait()
+		if err := eg.Wait(); err != nil {
+			log.Warn("evolution scheduler: wait", "error", err)
+		}
 	}
 
 	// Wait for any evolution goroutines to complete.

@@ -67,7 +67,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	}
 
 	if err := c.initialize(ctx); err != nil {
-		_ = tr.close()
+		_ = tr.close() //nolint: errcheck
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 

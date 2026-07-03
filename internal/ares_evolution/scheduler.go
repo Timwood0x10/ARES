@@ -517,7 +517,9 @@ func (s *EvolutionScheduler) Shutdown() {
 		cancel()
 	}
 	if eg != nil {
-		_ = eg.Wait()
+		if err := eg.Wait(); err != nil {
+			log.Warn("evolution scheduler: wait", "error", err)
+		}
 	}
 }
 

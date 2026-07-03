@@ -45,7 +45,9 @@ func runDbCreateTable() error {
 	defer func() { _ = adminDB.Close() }()
 
 	ensureDatabase(adminDB, dbname)
-	_ = adminDB.Close()
+	if err := adminDB.Close(); err != nil {
+		return fmt.Errorf("close admin db: %w", err)
+	}
 
 	pool, err := sql.Open("pgx", dsn)
 	if err != nil {

@@ -71,8 +71,8 @@ var mcpNullServeCmd = &cobra.Command{
 			return fmt.Errorf("serve: %w", err)
 		}
 		if err := sigEg.Wait(); err != nil {
-		return fmt.Errorf("signal handler: %w", err)
-	}
+			return fmt.Errorf("signal handler: %w", err)
+		}
 		return nil
 	},
 }

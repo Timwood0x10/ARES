@@ -115,7 +115,9 @@ func (r *pgEvalResultRepository) StoreBatch(ctx context.Context, results []*Eval
 	txRepo := NewPGEvalResultRepository(tx, nil)
 	for _, result := range results {
 		if err := txRepo.Store(ctx, result); err != nil {
-			_ = tx.Rollback()
+			if err := tx.Rollback(); err != nil {
+				log.Warn("rollback experience", "error", err)
+			}
 			return fmt.Errorf("store batch (rolled back): %w", err)
 		}
 	}

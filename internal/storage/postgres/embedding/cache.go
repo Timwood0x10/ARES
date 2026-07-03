@@ -141,7 +141,9 @@ func (c *EmbeddingCache) Delete(ctx context.Context, key *CacheKey) error {
 
 	// Try to delete from Redis
 	if c.redis != nil {
-		_ = c.redis.Del(ctx, keyStr)
+		if err := c.redis.Del(ctx, keyStr); err != nil {
+			log.Warn("embedding cache: del key", "key", keyStr, "error", err)
+		}
 	}
 
 	// Delete from memory cache
@@ -162,7 +164,9 @@ func (c *EmbeddingCache) Clear(ctx context.Context) error {
 	if c.redis != nil {
 		keys, err := c.redis.Keys(ctx, "embed:*")
 		if err == nil && len(keys) > 0 {
-			_ = c.redis.Del(ctx, keys...)
+			if err := c.redis.Del(ctx, keys...); err != nil {
+				log.Warn("embedding cache: del keys", "error", err)
+			}
 		}
 	}
 

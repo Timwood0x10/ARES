@@ -82,7 +82,7 @@ func (c *Client) initialize(ctx context.Context) error {
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
 	}
-	_ = c.sendNotification(notif)
+	_ = c.sendNotification(notif) //nolint: errcheck
 
 	return nil
 }

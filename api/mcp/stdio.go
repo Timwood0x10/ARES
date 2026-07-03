@@ -49,7 +49,7 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	}
 
 	if err := c.initialize(ctx); err != nil {
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill() //nolint: errcheck
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 

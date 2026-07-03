@@ -96,7 +96,9 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 		// Start processing
 		eventCh, err := processor.ProcessStream(ctx, req.Query)
 		if err != nil {
-			_ = h.sendSSE(w, flusher, "error", map[string]string{"message": err.Error()})
+			if err := h.sendSSE(w, flusher, "error", map[string]string{"message": err.Error()}); err != nil {
+				fmt.Printf("stream: send SSE error: %v\n", err)
+			}
 			return
 		}
 

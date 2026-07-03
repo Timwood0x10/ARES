@@ -6,6 +6,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	arenasvc "github.com/Timwood0x10/ares/api/service/arena"
@@ -140,10 +141,14 @@ func (a *ARES) Start(ctx context.Context) error {
 // Stop gracefully stops all modules.
 func (a *ARES) Stop() error {
 	if a.Runtime != nil {
-		_ = a.Runtime.Stop()
+		if err := a.Runtime.Stop(); err != nil {
+			log.Printf("bootstrap: runtime stop: %v", err)
+		}
 	}
 	if a.MCP != nil {
-		_ = a.MCP.Stop(context.Background())
+		if err := a.MCP.Stop(context.Background()); err != nil {
+			log.Printf("bootstrap: mcp stop: %v", err)
+		}
 	}
 	if a.Flight != nil {
 		a.Flight.Stop()

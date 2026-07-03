@@ -78,7 +78,9 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 			return nil
 		})
 	}
-	_ = g.Wait() // Errors are logged, not propagated.
+	if err := g.Wait(); err != nil {
+		log.Warn("discovery: engine wait", "error", err)
+	}
 
 	var allRecords []DiscoveryRecord
 	for _, r := range results {
