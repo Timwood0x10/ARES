@@ -494,7 +494,6 @@ func SetupEvalSystem(llmClient ares_eval.LLMClient) (*ares_eval.EvaluatorRegistr
 
 // flightRecorderWrapper wraps flight.FlightRecorder to implement evolution.FlightRecorder interface.
 
-
 // ============================================================
 // Unified Wiring: WireAllEvolutionComponents
 // ============================================================

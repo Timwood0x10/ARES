@@ -79,13 +79,6 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	return enrichedInput, sessionID, taskID
 }
 
-func (a *leaderAgent) updateSnapshotState(taskID string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if taskID != "" {
-		a.lastTaskID = taskID
-	}
-}
 
 func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
 	if a.memoryManager == nil || result == nil || sessionID == "" {

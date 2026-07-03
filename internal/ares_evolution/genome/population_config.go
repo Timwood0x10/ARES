@@ -27,9 +27,9 @@ type GenerationHistoryEntry struct {
 
 // DiversityWeightConfig holds relative weights for diversity metric components.
 type DiversityWeightConfig struct {
-	Numeric    float64 `json:"numeric"`
+	Numeric     float64 `json:"numeric"`
 	Categorical float64 `json:"categorical"`
-	Lineage    float64 `json:"lineage"`
+	Lineage     float64 `json:"lineage"`
 }
 
 func (w DiversityWeightConfig) normalize() DiversityWeightConfig {
@@ -68,10 +68,10 @@ func approxEqual(a, b float64) bool {
 }
 
 const (
-	FitnessSharingSigma        = 0.3
-	FitnessNicheRadius         = 0.15
-	FitnessSharingSampleLimit  = 50
-	FitnessSharingSampleSize   = 30
+	FitnessSharingSigma       = 0.3
+	FitnessNicheRadius        = 0.15
+	FitnessSharingSampleLimit = 50
+	FitnessSharingSampleSize  = 30
 )
 
 // MutatorInterface wraps mutation.Strategy mutation for the genome package.
@@ -81,29 +81,29 @@ type MutatorInterface interface {
 
 // PopulationConfig holds configuration for creating a population.
 type PopulationConfig struct {
-	Size                        int     `json:"size"`
-	SurvivalRate                float64 `json:"survival_rate"`
-	MutationRate                float64 `json:"mutation_rate"`
-	EliteCount                  int     `json:"elite_count"`
-	BreedingPoolRatio           float64 `json:"breeding_pool_ratio"`
-	Seed                        int64   `json:"seed,omitempty"`
-	MinMutationRate             float64 `json:"min_mutation_rate"`
-	MaxMutationRate             float64 `json:"max_mutation_rate"`
-	MaxStagnantGenerations      int     `json:"max_stagnant_generations"`
-	DiversityThreshold          float64 `json:"diversity_threshold"`
-	SelectionStrategy           string  `json:"selection_strategy"`
-	TournamentSize              int     `json:"tournament_size"`
+	Size                        int                   `json:"size"`
+	SurvivalRate                float64               `json:"survival_rate"`
+	MutationRate                float64               `json:"mutation_rate"`
+	EliteCount                  int                   `json:"elite_count"`
+	BreedingPoolRatio           float64               `json:"breeding_pool_ratio"`
+	Seed                        int64                 `json:"seed,omitempty"`
+	MinMutationRate             float64               `json:"min_mutation_rate"`
+	MaxMutationRate             float64               `json:"max_mutation_rate"`
+	MaxStagnantGenerations      int                   `json:"max_stagnant_generations"`
+	DiversityThreshold          float64               `json:"diversity_threshold"`
+	SelectionStrategy           string                `json:"selection_strategy"`
+	TournamentSize              int                   `json:"tournament_size"`
 	DiversityWeights            DiversityWeightConfig `json:"diversity_weights"`
-	DiversitySampleSize         int     `json:"diversity_sample_size"`
-	FitnessSharingSampleLimit   int     `json:"fitness_sharing_sample_limit"`
-	FitnessSharingSampleSize    int     `json:"fitness_sharing_size"`
-	SpatialIndexThreshold       int     `json:"spatial_index_threshold"`
-	HistoryMaxSize              int     `json:"history_max_size"`
-	PerLineageElites            bool    `json:"per_lineage_elites"`
-	PerLineageEliteCount        int     `json:"per_lineage_elite_count"`
-	AdaptiveConfig              *AdaptiveConfig `json:"adaptive_config,omitempty"`
-	DisablePromptDiversityGuard bool    `json:"disable_prompt_diversity_guard,omitempty"`
-	AgentMaxAge                 int     `json:"agent_max_age"`
+	DiversitySampleSize         int                   `json:"diversity_sample_size"`
+	FitnessSharingSampleLimit   int                   `json:"fitness_sharing_sample_limit"`
+	FitnessSharingSampleSize    int                   `json:"fitness_sharing_size"`
+	SpatialIndexThreshold       int                   `json:"spatial_index_threshold"`
+	HistoryMaxSize              int                   `json:"history_max_size"`
+	PerLineageElites            bool                  `json:"per_lineage_elites"`
+	PerLineageEliteCount        int                   `json:"per_lineage_elite_count"`
+	AdaptiveConfig              *AdaptiveConfig       `json:"adaptive_config,omitempty"`
+	DisablePromptDiversityGuard bool                  `json:"disable_prompt_diversity_guard,omitempty"`
+	AgentMaxAge                 int                   `json:"agent_max_age"`
 }
 
 func DefaultPopulationConfig() PopulationConfig {
@@ -133,12 +133,12 @@ func DefaultPopulationConfig() PopulationConfig {
 
 // PopulationStats holds statistical information about a population's state.
 type PopulationStats struct {
-	Generation  int
-	Size        int
-	BestScore   float64
-	AvgScore    float64
-	WorstScore  float64
-	Diversity   DiversityReport
+	Generation int
+	Size       int
+	BestScore  float64
+	AvgScore   float64
+	WorstScore float64
+	Diversity  DiversityReport
 }
 
 // ScorerFunc is a function that assigns a fitness score to a strategy.

@@ -40,7 +40,7 @@ type DynamicExecutor struct {
 
 func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...ExecutorOption) *DynamicExecutor {
 	e := &Executor{
-		registry:   registry,
+		registry:    registry,
 		maxParallel: 1,
 	}
 	for _, opt := range opts {
@@ -50,23 +50,30 @@ func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...Ex
 }
 
 func (e *DynamicExecutor) WithHitlHandler(handler InterruptHandler) *DynamicExecutor {
-	e.hitlHandler = handler; return e
+	e.hitlHandler = handler
+	return e
 }
 func (e *DynamicExecutor) WithHitlStore(store InterruptStore) *DynamicExecutor {
-	e.hitlStore = store; return e
+	e.hitlStore = store
+	return e
 }
 func (e *DynamicExecutor) WithRecoveryHandler(handler StepRecoveryHandler) *DynamicExecutor {
-	e.recoveryHandler = handler; return e
+	e.recoveryHandler = handler
+	return e
 }
 func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)) *DynamicExecutor {
-	e.recoveryEventSink = sink; return e
+	e.recoveryEventSink = sink
+	return e
 }
 func (e *DynamicExecutor) WithPluginBus(bus *ares_runtime.PluginBus) *DynamicExecutor {
-	e.pluginBus = bus; return e
+	e.pluginBus = bus
+	return e
 }
 func (e *DynamicExecutor) WithCheckpointStore(store ares_runtime.CheckpointStore) *DynamicExecutor {
-	e.checkpointStore = store; return e
+	e.checkpointStore = store
+	return e
 }
 func (e *DynamicExecutor) WithExecutionCollector(c *ares_runtime.ExecutionCollector) *DynamicExecutor {
-	e.executionCollector = c; return e
+	e.executionCollector = c
+	return e
 }

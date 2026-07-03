@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/ares_flight"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
 type flightRecorderWrapper struct {

@@ -654,7 +654,6 @@ func LoadBestStrategy(path string) (*Strategy, error) {
 // evolution.GuidanceProvider so the wired system can use it for
 // experience-guided mutation.
 
-
 // genomeMutatorAdapter creates a genome-compatible mutator adapter from the raw mutator.
 //
 // Returns:

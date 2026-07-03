@@ -4,7 +4,7 @@ package evolution
 import (
 	"context"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
@@ -43,7 +43,9 @@ func (b *apiMemoryBridge) FindSimilar(ctx context.Context, taskType string, limi
 }
 
 type llmClientAdapter struct {
-	inner interface{ Generate(ctx context.Context, prompt string) (string, error) }
+	inner interface {
+		Generate(ctx context.Context, prompt string) (string, error)
+	}
 }
 
 func (a *llmClientAdapter) Generate(ctx context.Context, prompt string) (string, error) {
@@ -55,9 +57,12 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 		return nil
 	}
 	return &Strategy{
-		ID: s.ID, Version: s.Version, Score: s.Score,
+		ID: s.ID, Name: s.Name, Version: s.Version, Score: s.Score,
 		ParentID: s.ParentID, PromptTemplate: s.PromptTemplate,
-		MutationType: s.StrategyMutationType.String(),
+		MutationType:    s.StrategyMutationType.String(),
+		DimensionScores: cloneDimensionScores(s.DimensionScores),
+		Params:          cloneParams(s.Params),
+		CreatedAt:       s.CreatedAt,
 	}
 }
 
@@ -66,10 +71,24 @@ func toInternalStrategy(s *Strategy) *mutation.Strategy {
 		return nil
 	}
 	return &mutation.Strategy{
-		ID: s.ID, Version: s.Version, Score: s.Score,
+		ID: s.ID, Name: s.Name, Version: s.Version, Score: s.Score,
 		ParentID: s.ParentID, PromptTemplate: s.PromptTemplate,
 		StrategyMutationType: mutation.ParseMutationType(s.MutationType),
+		DimensionScores:      cloneDimensionScores(s.DimensionScores),
+		Params:               cloneParams(s.Params),
+		CreatedAt:            s.CreatedAt,
 	}
+}
+
+func cloneParams(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func cloneDimensionScores(src map[string]float64) map[string]float64 {

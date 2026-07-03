@@ -1,7 +1,6 @@
 // Package genome provides population management for genetic algorithm evolution.
 package genome
 
-
 func copyRecoveryActions(src map[string]int) map[string]int {
 	if src == nil {
 		return make(map[string]int)

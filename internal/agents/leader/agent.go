@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-//	err - validation error if required dependencies are nil.
+// err - validation error if required dependencies are nil.
 func New(
 	id string,
 	parser ProfileParser,

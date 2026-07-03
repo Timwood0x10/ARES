@@ -128,7 +128,7 @@ type LoopConfig struct {
 func DefaultLeaderAgentConfig() *LeaderAgentConfig {
 	return &LeaderAgentConfig{
 		Config:           *base.DefaultConfig(models.AgentTypeLeader),
-		MaxParallelTasks: 5,
+		MaxParallelTasks: 10,
 		MaxSteps:         20,
 		EnableCache:      true,
 		UserID:           "default_user",
