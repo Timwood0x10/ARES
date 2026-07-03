@@ -8,19 +8,22 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// EventBridge subscribes to the EventStore and forwards ares_events to the WebSocket hub.
+// EventBridge subscribes to the EventStore and forwards ares_events to the WebSocket hub
+// and the intelligence engine.
 type EventBridge struct {
 	eventStore ares_events.EventStore
 	hub        *WSHub
+	intel      *Engine
 	cancel     context.CancelFunc
 	eg         errgroup.Group
 }
 
 // NewEventBridge creates a new EventBridge.
-func NewEventBridge(eventStore ares_events.EventStore, hub *WSHub) *EventBridge {
+func NewEventBridge(eventStore ares_events.EventStore, hub *WSHub, intel *Engine) *EventBridge {
 	return &EventBridge{
 		eventStore: eventStore,
 		hub:        hub,
+		intel:      intel,
 	}
 }
 
@@ -66,7 +69,7 @@ func (b *EventBridge) forwardLoop(ctx context.Context, ch <-chan *ares_events.Ev
 	}
 }
 
-// handleEvent routes an event to the appropriate WebSocket channels.
+// handleEvent routes an event to the WebSocket channels and intelligence engine.
 func (b *EventBridge) handleEvent(evt *ares_events.Event) {
 	view := EventView{
 		ID:        evt.ID,
@@ -77,13 +80,30 @@ func (b *EventBridge) handleEvent(evt *ares_events.Event) {
 		Timestamp: evt.Timestamp,
 	}
 
-	// Always broadcast to the ares_events channel.
 	b.hub.BroadcastToChannel(WSChannelEvents, &WSMessage{
 		Type: WSTypeEvent,
 		Data: view,
 	})
 
-	// Route to specific channels based on event type.
+	// Feed intelligence engine.
+	agentID := evt.StreamID
+	latency := extractLatency(evt)
+	hasError := evt.Type == "error" || evt.Type == "task.failed" || evt.Type == "tool.error" || evt.Type == "llm.error"
+	isRestart := evt.Type == "agent.restarted" || evt.Type == "failover.completed"
+
+	if b.intel != nil {
+		switch {
+		case isRestart:
+			b.intel.ObserveAgentEvent(agentID, "restart", 0, false)
+		case hasError:
+			b.intel.ObserveAgentEvent(agentID, "error", 0, true)
+		case latency > 0:
+			b.intel.ObserveAgentEvent(agentID, "latency", latency, false)
+		default:
+			b.intel.ObserveAgentEvent(agentID, "tick", 0, false)
+		}
+	}
+
 	switch evt.Type {
 	case ares_events.EventAgentStarted, ares_events.EventAgentStopped,
 		ares_events.EventFailoverTriggered, ares_events.EventFailoverCompleted:
@@ -93,7 +113,6 @@ func (b *EventBridge) handleEvent(evt *ares_events.Event) {
 		})
 
 	case ares_events.EventTaskCreated, ares_events.EventTaskCompleted, ares_events.EventTaskFailed:
-		// Route to workflow channel if we can extract an execution ID.
 		if execID := extractExecutionID(evt); execID != "" {
 			channel := WSChannelPrefixWorkflow + execID
 			b.hub.BroadcastToChannel(channel, &WSMessage{
@@ -109,11 +128,24 @@ func extractExecutionID(evt *ares_events.Event) string {
 	if evt.Payload == nil {
 		return ""
 	}
-	// Try common payload keys.
 	for _, key := range []string{"execution_id", "workflow_id", "task_id"} {
 		if id, ok := evt.Payload[key].(string); ok && id != "" {
 			return id
 		}
 	}
 	return ""
+}
+
+// extractLatency attempts to extract a duration/ms from an event payload.
+func extractLatency(evt *ares_events.Event) float64 {
+	if evt.Payload == nil {
+		return 0
+	}
+	if d, ok := evt.Payload["duration"].(float64); ok {
+		return d
+	}
+	if d, ok := evt.Payload["duration_ms"].(float64); ok {
+		return d
+	}
+	return 0
 }

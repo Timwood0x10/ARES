@@ -12,7 +12,7 @@ func TestNewEventBridge(t *testing.T) {
 	store := &mockEventStore{}
 	hub := NewWSHub()
 
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 	if bridge == nil {
 		t.Fatal("NewEventBridge returned nil")
 	}
@@ -25,7 +25,7 @@ func TestEventBridgeStartNilStore(t *testing.T) {
 
 	// NewEventBridge with nil eventStore should not panic on construction.
 	// Start should fail because Subscribe will be called on nil.
-	bridge := NewEventBridge(nil, hub)
+	bridge := NewEventBridge(nil, hub, nil)
 
 	// Calling Start on a bridge with nil eventStore should panic or error.
 	// We test that it doesn't hang; a panic is acceptable here.
@@ -50,7 +50,7 @@ func TestEventBridgeHandleEventAgentStarted(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e1",
@@ -73,7 +73,7 @@ func TestEventBridgeHandleEventAgentStopped(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e2",
@@ -95,7 +95,7 @@ func TestEventBridgeHandleEventFailoverTriggered(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e3",
@@ -117,7 +117,7 @@ func TestEventBridgeHandleEventFailoverCompleted(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e4",
@@ -139,7 +139,7 @@ func TestEventBridgeHandleEventTaskCreated(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:       "e5",
@@ -164,7 +164,7 @@ func TestEventBridgeHandleEventTaskCompleted(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:       "e6",
@@ -188,7 +188,7 @@ func TestEventBridgeHandleEventTaskFailed(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:       "e7",
@@ -212,7 +212,7 @@ func TestEventBridgeHandleEventTaskWithoutExecutionID(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e8",
@@ -235,7 +235,7 @@ func TestEventBridgeHandleEventUnknownType(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	store := &mockEventStore{}
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	evt := &ares_events.Event{
 		ID:        "e9",
@@ -262,7 +262,7 @@ func TestEventBridgeStartStop(t *testing.T) {
 	go hub.Run()
 	defer hub.Stop()
 
-	bridge := NewEventBridge(store, hub)
+	bridge := NewEventBridge(store, hub, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

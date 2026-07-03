@@ -158,7 +158,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		return nil, fmt.Errorf("create event store: %w", err)
 	}
 	s.eventStore = eventStore
-	bridge := dashboard.NewEventBridge(eventStore, hub)
+	bridge := dashboard.NewEventBridge(eventStore, hub, nil)
 	if startErr := bridge.Start(ctx); startErr != nil {
 		log.Warn("event bridge start failed", "error", startErr)
 	}

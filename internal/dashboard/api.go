@@ -81,6 +81,7 @@ type APIv2 struct {
 	orch     *Orchestrator
 	mcp      MCPStatusProvider
 	hub      *WSHub
+	intel    *Engine
 	start    time.Time
 	arena    ArenaProvider
 	survival SurvivalProvider
@@ -117,6 +118,11 @@ func (a *APIv2) SetArena(arena ArenaProvider) {
 // SetSurvival attaches a survival provider for resilience testing.
 func (a *APIv2) SetSurvival(survival SurvivalProvider) {
 	a.survival = survival
+}
+
+// SetIntelligence attaches the intelligence engine for health/anomaly endpoints.
+func (a *APIv2) SetIntelligence(intel *Engine) {
+	a.intel = intel
 }
 
 // Handler returns the http.Handler with all routes mounted.
@@ -171,6 +177,20 @@ func (a *APIv2) Handler() http.Handler {
 	// ── System ──────────────────────────────────
 	// GET    /                → system overview
 	mux.HandleFunc("/", a.handleRoot)
+
+	// ── Intelligence ────────────────────────────
+	// GET    /health          → system health
+	// GET    /health/agents   → per-agent health
+	// GET    /anomalies       → active anomalies
+	// GET    /insights        → active insights
+	// POST   /anomalies/{id}/resolve
+	// POST   /insights/{id}/acknowledge
+	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/health/agents", a.handleHealthAgents)
+	mux.HandleFunc("/anomalies", a.handleAnomalies)
+	mux.HandleFunc("/anomalies/", a.handleAnomalyByID)
+	mux.HandleFunc("/insights", a.handleInsights)
+	mux.HandleFunc("/insights/", a.handleInsightByID)
 
 	// ── Prometheus metrics ─────────────────
 	ares_observability.RegisterMetricsRouter(mux)
@@ -881,6 +901,86 @@ func (a *APIv2) handleFlightGenealogy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"mermaid": fr.Genealogy().ExportMermaid()})
+}
+
+// ── Intelligence handlers ───────────────────────
+
+func (a *APIv2) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"level": "unknown", "score": 0})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.intel.SystemHealth())
+}
+
+func (a *APIv2) handleHealthAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.intel.AllHealth())
+}
+
+func (a *APIv2) handleAnomalies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.intel.Anomalies())
+}
+
+func (a *APIv2) handleAnomalyByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusNotFound, errResp("intelligence not available"))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/anomalies/")
+	id = strings.TrimSuffix(id, "/resolve")
+	a.intel.ResolveAnomaly(id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
+func (a *APIv2) handleInsights(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.intel.Insights())
+}
+
+func (a *APIv2) handleInsightByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
+		return
+	}
+	if a.intel == nil {
+		writeJSON(w, http.StatusNotFound, errResp("intelligence not available"))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/insights/")
+	id = strings.TrimSuffix(id, "/acknowledge")
+	a.intel.AcknowledgeInsight(id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "acknowledged"})
 }
 
 // ── Middleware ─────────────────────────────────
