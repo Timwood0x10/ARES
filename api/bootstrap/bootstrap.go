@@ -54,8 +54,8 @@ type DashboardConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Runtime:   ares_runtime.DefaultConfig(),
-		Evolution: &evosvc.Config{PopulationSize: 20, EliteCount: 3, MutationRate: 0.3},
-		Memory:    &memsvc.Config{},
+		Evolution: &evosvc.Config{PopulationSize: 20, EliteCount: 3, MutationRate: 0.3, BaseStrategy: &evosvc.Strategy{ID: "base", Params: map[string]any{"model": "llama3.2"}}},
+		Memory:    &memsvc.Config{MaxSessions: 100, MaxHistory: 10, MaxTasks: 500, MaxDistilledTasks: 100, SessionTTL: 24 * 60 * 60, TaskTTL: 7 * 24 * 60 * 60, DistilledTaskTTL: 24 * 60 * 60, VectorDim: 128},
 		Dashboard: &DashboardConfig{Enabled: false},
 	}
 }

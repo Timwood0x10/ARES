@@ -140,12 +140,14 @@ func toConfig(cfg *Config) *aresmem.MemoryConfig {
 		return nil
 	}
 	return &aresmem.MemoryConfig{
-		MaxSessions: cfg.MaxSessions,
-		SessionTTL:  cfg.SessionTTL,
-		MaxHistory:  cfg.MaxHistory,
-		VectorDim:   cfg.VectorDim,
-		MaxTasks:    cfg.MaxTasks,
-		TaskTTL:     cfg.TaskTTL,
+		MaxSessions:      cfg.MaxSessions,
+		SessionTTL:       cfg.SessionTTL,
+		MaxHistory:       cfg.MaxHistory,
+		VectorDim:        cfg.VectorDim,
+		MaxTasks:         cfg.MaxTasks,
+		TaskTTL:          cfg.TaskTTL,
+		MaxDistilledTasks: 100,
+		DistilledTaskTTL:   24 * 60 * 60,
 	}
 }
 
