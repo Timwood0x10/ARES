@@ -37,6 +37,11 @@ type CallbackRegistry interface {
 	// handler - the handler to invoke.
 	On(event CallbackEvent, handler CallbackHandler)
 
+	// Remove unregisters all handlers for a specific event.
+	// Args:
+	// event - the event to remove handlers for.
+	Remove(event CallbackEvent)
+
 	// Emit emits an event to all registered handlers.
 	// Args:
 	// ctx - operation context.

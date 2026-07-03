@@ -51,6 +51,9 @@ func (s *stubMemoryService) AddMessage(ctx context.Context, sessionID string, ro
 func (s *stubMemoryService) GetMessages(ctx context.Context, sessionID string, pagination *core.PaginationRequest) ([]*core.Message, error) {
 	return []*core.Message{}, nil
 }
+func (s *stubMemoryService) UpdateSession(ctx context.Context, session *core.Session) error {
+	return nil
+}
 func (s *stubMemoryService) DistillTask(ctx context.Context, taskID string) (*core.DistilledTask, error) {
 	return &core.DistilledTask{TaskID: taskID}, nil
 }
@@ -100,9 +103,9 @@ func (s *stubLLMService) GenerateEmbedding(ctx context.Context, request *core.Em
 func (s *stubLLMService) GetConfig() *core.LLMConfig {
 	return &core.LLMConfig{Provider: core.LLMProviderOllama, Model: "llama3.2"}
 }
-func (s *stubLLMService) IsEnabled() bool { return !s.disabled }
+func (s *stubLLMService) IsEnabled() bool               { return !s.disabled }
 func (s *stubLLMService) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
-func (s *stubLLMService) GetModel() string { return "llama3.2" }
+func (s *stubLLMService) GetModel() string              { return "llama3.2" }
 
 // TestNewClient tests the creation of a new client instance.
 func TestNewClient(t *testing.T) {

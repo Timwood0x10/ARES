@@ -231,7 +231,7 @@ func (e *Engine) SystemHealth() HealthScore {
 	var avgScore float64
 	var maxLatency float64
 	var totalErrorRate float64
-	var worstLevel HealthLevel = HealthHealthy
+	var worstLevel = HealthHealthy
 
 	for _, s := range scores {
 		avgScore += s.Score

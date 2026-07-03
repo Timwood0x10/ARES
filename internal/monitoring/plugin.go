@@ -416,7 +416,7 @@ func (p *MonitorPlugin) AgentEvolution(_ context.Context, agentID string) (*Agen
 		return evo, nil
 	}
 	return &AgentEvolution{
-		AgentID:   agentID,
+		AgentID:    agentID,
 		Generation: 0,
 		Mutations:  []MutationRecord{},
 	}, nil

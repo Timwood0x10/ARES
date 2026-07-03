@@ -79,7 +79,7 @@ func TestConfigFileSetDefaults(t *testing.T) {
 		{
 			name: "partial config gets defaults",
 			cfg: &ConfigFile{
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOpenAI,
 				},
 			},
@@ -146,7 +146,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -210,7 +210,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProvider("invalid"),
 				},
 			},
@@ -224,7 +224,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -244,7 +244,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -267,7 +267,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -396,7 +396,7 @@ func TestConfigFileToClientConfig(t *testing.T) {
 			MaxRetries:     3,
 			RetryDelay:     1,
 		},
-		LLM: core.LLMConfig{
+		LLM: &core.LLMConfig{
 			Provider: core.LLMProviderOllama,
 			BaseURL:  "http://localhost:11434",
 			Model:    "llama3.2",
@@ -514,7 +514,7 @@ func TestLLMProviderDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &ConfigFile{
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: tt.provider,
 				},
 			}

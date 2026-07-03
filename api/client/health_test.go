@@ -78,10 +78,10 @@ func TestCheckLLMHealth_EnabledService(t *testing.T) {
 		t.Errorf("expected Available to be true")
 	}
 	if status.Error != "" {
-	 t.Errorf("expected empty error, got %q", status.Error)
+		t.Errorf("expected empty error, got %q", status.Error)
 	}
 	if !status.Available {
-	 t.Errorf("expected Available to be true")
+		t.Errorf("expected Available to be true")
 	}
 }
 

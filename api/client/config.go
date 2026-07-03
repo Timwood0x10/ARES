@@ -44,7 +44,7 @@ type ConfigFile struct {
 
 	API APIConfig `yaml:"api"`
 
-	LLM core.LLMConfig `yaml:"llm"`
+	LLM *core.LLMConfig `yaml:"llm"`
 
 	Database DatabaseConfig `yaml:"database"`
 
@@ -212,51 +212,51 @@ func WithEnvPrefix(prefix string) ConfigLoaderOption {
 // path - optional path to the configuration file.
 // Returns loaded and validated configuration or error.
 func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
- // Determine config file path
- configPath, err := l.findConfigPath(path)
- if err != nil {
-  return nil, fmt.Errorf("find config: %w", err)
- }
+	// Determine config file path
+	configPath, err := l.findConfigPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("find config: %w", err)
+	}
 
- // Security: validate path is within allowed directory
- if dir := getAllowedConfigDir(); dir != "" {
-  absPath, err := filepath.Abs(configPath)
-  if err != nil {
-   return nil, fmt.Errorf("get absolute path: %w", err)
-  }
-  absDir, err := filepath.Abs(dir)
-  if err != nil {
-   return nil, fmt.Errorf("get absolute directory: %w", err)
-  }
-  if !strings.HasPrefix(absPath, absDir) {
-   return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, dir)
-  }
- }
+	// Security: validate path is within allowed directory
+	if dir := getAllowedConfigDir(); dir != "" {
+		absPath, err := filepath.Abs(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("get absolute path: %w", err)
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("get absolute directory: %w", err)
+		}
+		if !strings.HasPrefix(absPath, absDir) {
+			return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, dir)
+		}
+	}
 
- // Read file
- data, err := os.ReadFile(configPath) // #nosec G304
- if err != nil {
-  return nil, fmt.Errorf("read config file %s: %w", configPath, err)
- }
+	// Read file
+	data, err := os.ReadFile(configPath) // #nosec G304
+	if err != nil {
+		return nil, fmt.Errorf("read config file %s: %w", configPath, err)
+	}
 
- // Parse YAML
- var cfg ConfigFile
- if err := yaml.Unmarshal(data, &cfg); err != nil {
-  return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
- }
+	// Parse YAML
+	var cfg ConfigFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
+	}
 
- // Load environment variables
- cfg.loadFromEnv(l.envPrefix)
+	// Load environment variables
+	cfg.loadFromEnv(l.envPrefix)
 
- // Set defaults
- cfg.setDefaults()
+	// Set defaults
+	cfg.setDefaults()
 
- // Validate configuration
- if err := cfg.validate(); err != nil {
-  return nil, fmt.Errorf("validate config: %w", err)
- }
+	// Validate configuration
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
 
- return &cfg, nil
+	return &cfg, nil
 }
 
 // findConfigPath finds the configuration file path.
@@ -285,6 +285,9 @@ func (l *ConfigLoader) findConfigPath(path string) (string, error) {
 // loadFromEnv loads sensitive configuration from environment variables.
 // Priority: Environment variable > YAML file > Default
 func (c *ConfigFile) loadFromEnv(prefix string) {
+	if c.LLM == nil {
+		c.LLM = &core.LLMConfig{}
+	}
 	// LLM API Key
 	if key := os.Getenv(fmt.Sprintf("%s_LLM_API_KEY", prefix)); key != "" {
 		c.LLM.APIKey = key
@@ -342,6 +345,9 @@ func (c *ConfigFile) setDefaults() {
 	}
 
 	// LLM defaults
+	if c.LLM == nil {
+		c.LLM = &core.LLMConfig{}
+	}
 	if c.LLM.Timeout <= 0 {
 		c.LLM.Timeout = 60
 	}
@@ -401,6 +407,9 @@ func (c *ConfigFile) validate() error {
 	}
 
 	// Validate LLM configuration
+	if c.LLM == nil {
+		return fmt.Errorf("llm.provider is required")
+	}
 	if c.LLM.Provider == "" {
 		return fmt.Errorf("llm.provider is required")
 	}

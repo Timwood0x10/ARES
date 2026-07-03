@@ -23,7 +23,7 @@ type Client struct {
 	memoryService    core.MemoryService
 	retrievalService core.RetrievalService
 	llmService       core.LLMService
-	workflowService  *workflowSvc.Service
+	workflowService  core.WorkflowService
 	config           *Config
 	configFile       *ConfigFile
 	mu               sync.RWMutex
@@ -131,7 +131,7 @@ func (c *Client) LLM() (core.LLMService, error) {
 }
 
 // Workflow returns the workflow service.
-func (c *Client) Workflow() (*workflowSvc.Service, error) {
+func (c *Client) Workflow() (core.WorkflowService, error) {
 	if c.workflowService == nil {
 		return nil, ErrWorkflowNotConfigured
 	}

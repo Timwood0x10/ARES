@@ -196,60 +196,60 @@ func (a *APIv2) Handler() http.Handler {
 	// ── Prometheus metrics ─────────────────
 	ares_observability.RegisterMetricsRouter(mux)
 
-return withRecovery(withCORS(mux))
+	return withRecovery(withCORS(mux))
 }
 
 // MountGinRoutes registers dashboard routes onto a Gin router group.
 // This is the preferred way to serve dashboard endpoints — use instead of
 // the standalone Handler() for unified serving with the monitoring console.
 func (a *APIv2) MountGinRoutes(rg *gin.RouterGroup) {
-// ── Agents ──
-rg.GET("/agents", a.wrapGin(a.handleAgents))
-rg.POST("/agents", a.wrapGin(a.handleAgents))
-rg.GET("/agents/:id", a.wrapGin(a.handleAgentByID))
+	// ── Agents ──
+	rg.GET("/agents", a.wrapGin(a.handleAgents))
+	rg.POST("/agents", a.wrapGin(a.handleAgents))
+	rg.GET("/agents/:id", a.wrapGin(a.handleAgentByID))
 
-// ── MCP ──
-rg.GET("/mcp", a.wrapGin(a.handleMCP))
-rg.POST("/mcp", a.wrapGin(a.handleMCP))
-rg.GET("/mcp/:name", a.wrapGin(a.handleMCPByName))
+	// ── MCP ──
+	rg.GET("/mcp", a.wrapGin(a.handleMCP))
+	rg.POST("/mcp", a.wrapGin(a.handleMCP))
+	rg.GET("/mcp/:name", a.wrapGin(a.handleMCPByName))
 
-// ── WebSocket ──
-rg.GET("/ws", a.wrapGinWS)
+	// ── WebSocket ──
+	rg.GET("/ws", a.wrapGinWS)
 
-// ── Arena ──
-rg.POST("/arena/leader/kill", a.wrapGin(a.handleArenaKillLeader))
-rg.POST("/arena/agent/:id/:action", a.wrapGin(a.handleArenaAgentFault))
-rg.POST("/arena/node/:id", a.wrapGin(a.handleArenaRemoveNode))
-rg.POST("/arena/edge/remove", a.wrapGin(a.handleArenaRemoveEdge))
-rg.GET("/arena/stats", a.wrapGin(a.handleArenaStats))
-rg.GET("/arena/history", a.wrapGin(a.handleArenaHistory))
-rg.GET("/arena/score", a.wrapGin(a.handleArenaScore))
-rg.POST("/arena/survival", a.wrapGin(a.handleArenaSurvival))
-rg.GET("/arena/survival/status", a.wrapGin(a.handleArenaSurvivalStatus))
-rg.POST("/arena/orchestrator/kill", a.wrapGin(a.handleArenaKillOrchestrator))
-rg.POST("/arena/survival/stop", a.wrapGin(a.handleArenaSurvivalStop))
-rg.GET("/arena/metrics", a.wrapGin(a.handleArenaMetrics))
-rg.GET("/arena/stream", a.wrapGin(a.handleArenaStream))
+	// ── Arena ──
+	rg.POST("/arena/leader/kill", a.wrapGin(a.handleArenaKillLeader))
+	rg.POST("/arena/agent/:id/:action", a.wrapGin(a.handleArenaAgentFault))
+	rg.POST("/arena/node/:id", a.wrapGin(a.handleArenaRemoveNode))
+	rg.POST("/arena/edge/remove", a.wrapGin(a.handleArenaRemoveEdge))
+	rg.GET("/arena/stats", a.wrapGin(a.handleArenaStats))
+	rg.GET("/arena/history", a.wrapGin(a.handleArenaHistory))
+	rg.GET("/arena/score", a.wrapGin(a.handleArenaScore))
+	rg.POST("/arena/survival", a.wrapGin(a.handleArenaSurvival))
+	rg.GET("/arena/survival/status", a.wrapGin(a.handleArenaSurvivalStatus))
+	rg.POST("/arena/orchestrator/kill", a.wrapGin(a.handleArenaKillOrchestrator))
+	rg.POST("/arena/survival/stop", a.wrapGin(a.handleArenaSurvivalStop))
+	rg.GET("/arena/metrics", a.wrapGin(a.handleArenaMetrics))
+	rg.GET("/arena/stream", a.wrapGin(a.handleArenaStream))
 
-// ── Flight Recorder ──
-rg.GET("/flight/timeline", a.wrapGin(a.handleFlightTimeline))
-rg.GET("/flight/summary", a.wrapGin(a.handleFlightSummary))
-rg.GET("/flight/graph", a.wrapGin(a.handleFlightGraph))
-rg.GET("/flight/decisions", a.wrapGin(a.handleFlightDecisions))
-rg.GET("/flight/diagnostics", a.wrapGin(a.handleFlightDiagnostics))
-rg.GET("/flight/genealogy", a.wrapGin(a.handleFlightGenealogy))
+	// ── Flight Recorder ──
+	rg.GET("/flight/timeline", a.wrapGin(a.handleFlightTimeline))
+	rg.GET("/flight/summary", a.wrapGin(a.handleFlightSummary))
+	rg.GET("/flight/graph", a.wrapGin(a.handleFlightGraph))
+	rg.GET("/flight/decisions", a.wrapGin(a.handleFlightDecisions))
+	rg.GET("/flight/diagnostics", a.wrapGin(a.handleFlightDiagnostics))
+	rg.GET("/flight/genealogy", a.wrapGin(a.handleFlightGenealogy))
 }
 
 // wrapGin converts a standard http.HandlerFunc to a gin.HandlerFunc.
 func (a *APIv2) wrapGin(fn http.HandlerFunc) gin.HandlerFunc {
-return func(c *gin.Context) {
-	fn(c.Writer, c.Request)
-}
+	return func(c *gin.Context) {
+		fn(c.Writer, c.Request)
+	}
 }
 
 // wrapGinWS handles WebSocket upgrade via Gin.
 func (a *APIv2) wrapGinWS(c *gin.Context) {
-a.handleWS(c.Writer, c.Request)
+	a.handleWS(c.Writer, c.Request)
 }
 
 // ── Agent handlers ────────────────────────────

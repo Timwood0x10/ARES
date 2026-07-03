@@ -16,9 +16,9 @@ import (
 // HTTPServer exposes the monitoring plugin over a Gin-based HTTP server.
 // It also mounts dashboard routes (arena, flight, ws, intel) for unified serving.
 type HTTPServer struct {
-	engine    *gin.Engine
-	plugin    *MonitorPlugin
-	dashAPI   *dashboard.APIv2 // optional, mounts dashboard routes when set
+	engine  *gin.Engine
+	plugin  *MonitorPlugin
+	dashAPI *dashboard.APIv2 // optional, mounts dashboard routes when set
 }
 
 // WithDashboardAPI attaches a dashboard API whose routes are mounted on /api.
@@ -120,7 +120,7 @@ func (s *HTTPServer) registerRoutes() {
 
 	// Dashboard routes — arena, flight, MCP, agents, WebSocket
 	if s.dashAPI != nil {
-	 s.dashAPI.MountGinRoutes(api)
+		s.dashAPI.MountGinRoutes(api)
 	}
 }
 
@@ -420,7 +420,7 @@ func (s *HTTPServer) handleHealthAgents(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"level": s.plugin.intel.SystemLevel(),
+		"level":     s.plugin.intel.SystemLevel(),
 		"anomalies": s.plugin.intel.AnomalyCount(),
 	})
 }

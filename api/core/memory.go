@@ -210,6 +210,13 @@ type MemoryService interface {
 	// Returns the session or error if not found.
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 
+	// UpdateSession updates an existing session.
+	// Args:
+	// ctx - operation context.
+	// session - the session to update.
+	// Returns error if update fails.
+	UpdateSession(ctx context.Context, session *Session) error
+
 	// DeleteSession deletes a session and all its messages.
 	// Args:
 	// ctx - operation context.

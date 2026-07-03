@@ -502,6 +502,10 @@ func (m *mockMemoryService) GetMessages(ctx context.Context, sessionID string, p
 	return nil, nil
 }
 
+func (m *mockMemoryService) UpdateSession(ctx context.Context, session *Session) error {
+	return nil
+}
+
 func (m *mockMemoryService) DistillTask(ctx context.Context, taskID string) (*DistilledTask, error) {
 	return nil, nil
 }
