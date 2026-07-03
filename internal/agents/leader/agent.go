@@ -3,16 +3,13 @@ package leader
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
 	"time"
 
-	stderrors "errors" // stdlib errors.Join for collecting multiple errors
+	stderrors "errors"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
@@ -22,152 +19,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Agent represents the Leader Agent interface.
-type Agent interface {
-	base.Agent
-}
-
-// Compile-time check: leaderAgent must satisfy base.StatefulAgent.
-var _ base.StatefulAgent = (*leaderAgent)(nil)
-
-// ProfileParser parses user profile from input.
-type ProfileParser interface {
-	Parse(ctx context.Context, input string) (*models.UserProfile, error)
-}
-
-// TaskPlanner plans tasks based on user profile and input text.
-type TaskPlanner interface {
-	Plan(ctx context.Context, profile *models.UserProfile, inputText string) ([]*models.Task, error)
-	// Replan creates new tasks based on previous result and feedback.
-	// This is used for iterative refinement when the initial result is insufficient.
-	Replan(ctx context.Context, profile *models.UserProfile, inputText string, previousResult *models.RecommendResult, feedback string) ([]*models.Task, error)
-}
-
-// TaskDispatcher dispatches tasks to sub-agents.
-type TaskDispatcher interface {
-	Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error)
-	RegisterExecutor(agentType models.AgentType, fn func(ctx context.Context, task *models.Task) (*models.TaskResult, error))
-}
-
-// ResultAggregator aggregates results from sub-agents.
-type ResultAggregator interface {
-	Aggregate(ctx context.Context, results []*models.TaskResult, tasks []*models.Task) (*models.RecommendResult, error)
-}
-
-// LeaderOption configures a leaderAgent instance.
-type LeaderOption func(*leaderAgent)
-
-// WithCheckpoint sets the checkpoint repository for failover recovery.
-func WithCheckpoint(cp *CheckpointRepository) LeaderOption {
-	return func(a *leaderAgent) {
-		a.checkpoint = cp
-	}
-}
-
-// WithEventStore sets the event store for event sourcing.
-func WithEventStore(store ares_events.EventStore) LeaderOption {
-	return func(a *leaderAgent) {
-		a.eventStore = store
-		// Wire event store to profile parser for LLM call tracking.
-		if pp, ok := a.parser.(*profileParser); ok {
-			pp.WithEventStore(store)
-		}
-	}
-}
-
-// WithCallbacks sets the callback emitter for lifecycle event emission.
-func WithCallbacks(emitter ares_callbacks.Emitter) LeaderOption {
-	return func(a *leaderAgent) {
-		a.ares_callbacks = emitter
-	}
-}
-
-// WithFeedbackService sets the experience feedback service for bandit reinforcement.
-func WithFeedbackService(svc *experience.FeedbackService) LeaderOption {
-	return func(a *leaderAgent) {
-		a.feedbackSvc = svc
-	}
-}
-
-// leaderAgent implements the Leader Agent.
-type leaderAgent struct {
-	mu             sync.RWMutex
-	id             string
-	agentType      models.AgentType
-	status         models.AgentStatus
-	config         *LeaderAgentConfig
-	parser         ProfileParser
-	planner        TaskPlanner
-	dispatcher     TaskDispatcher
-	aggregator     ResultAggregator
-	messageQueue   *ahp.MessageQueue
-	heartbeatMon   *ahp.HeartbeatMonitor
-	memoryManager  memory.MemoryManager
-	feedbackSvc    *experience.FeedbackService
-	sessionID      string
-	checkpoint     *CheckpointRepository
-	eventStore     ares_events.EventStore
-	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle callback ares_events.
-
-	// Snapshot/restore state fields for resurrection support.
-	lastTaskID          string
-	lastCompletedTaskID string // ID of most recently completed task (differs from lastTaskID which is "created")
-	conversationSummary string
-	lastInteractionTime time.Time
-
-	// Lifecycle management
-	stopCh          chan struct{}   // Channel to signal shutdown
-	distillMu       sync.Mutex      // Protects stopCh-close vs distillWg.Add ordering
-	distillWg       sync.WaitGroup  // WaitGroup for distillation goroutines
-	distillEg       *errgroup.Group // Errgroup for distillation goroutines
-	streamEg        *errgroup.Group // Errgroup for streaming pipeline goroutines
-	processingMu    sync.Mutex      // Ensures mutual exclusion of Process/ProcessStream
-	cleanupOnce     sync.Once       // Ensure cleanup runs only once
-	sessionInitOnce sync.Once       // Ensure session initialization runs only once
-}
-
-// LeaderAgentConfig holds configuration for LeaderAgent.
-type LeaderAgentConfig struct {
-	base.Config
-	MaxParallelTasks int
-	MaxSteps         int
-	EnableCache      bool
-	UserID           string // UserID for session and task creation. Defaults to "default_user" if empty.
-	Loop             LoopConfig
-}
-
-// LoopConfig holds configuration for agent loop behavior.
-type LoopConfig struct {
-	// MaxIterations is the maximum number of loop iterations (default: 3).
-	MaxIterations int
-	// QualityThreshold is the minimum quality score to accept result (default: 0.7).
-	QualityThreshold float64
-	// EnableReflection enables reflection and re-planning (default: false).
-	EnableReflection bool
-	// MaxTotalLLMCalls is the maximum total LLM calls across all iterations (default: 50).
-	MaxTotalLLMCalls int
-	// MaxLoopDuration is the maximum duration for the entire loop (default: 10 minutes).
-	MaxLoopDuration time.Duration
-}
-
-// New creates a new LeaderAgent instance.
-//
-// Args:
-//
-//	id - unique agent identifier, must not be empty.
-//	parser - profile parser, must not be nil.
-//	planner - task planner, must not be nil.
-//	dispatcher - task dispatcher, must not be nil.
-//	aggregator - result aggregator, must not be nil.
-//	msgQueue - optional message queue for inter-agent communication.
-//	hbMon - optional heartbeat monitor.
-//	memMgr - memory manager, must not be nil.
-//	cfg - optional configuration; uses defaults when nil.
-//	opts - optional functional options.
-//
-// Returns:
-//
-//	agent - a new LeaderAgent instance.
 //	err - validation error if required dependencies are nil.
 func New(
 	id string,
@@ -227,21 +78,6 @@ func New(
 }
 
 // DefaultLeaderAgentConfig returns default configuration.
-func DefaultLeaderAgentConfig() *LeaderAgentConfig {
-	return &LeaderAgentConfig{
-		Config:           *base.DefaultConfig(models.AgentTypeLeader),
-		MaxParallelTasks: DefaultMaxParallelTasks,
-		MaxSteps:         DefaultMaxSteps,
-		EnableCache:      true,
-		Loop: LoopConfig{
-			MaxIterations:    DefaultMaxIterations,
-			QualityThreshold: DefaultQualityThreshold,
-			EnableReflection: false,
-			MaxTotalLLMCalls: DefaultMaxTotalLLMCalls,
-			MaxLoopDuration:  DefaultMaxLoopDuration,
-		},
-	}
-}
 
 // ID returns the unique identifier.
 func (a *leaderAgent) ID() string {
@@ -421,307 +257,6 @@ func parseInput(input any) (string, error) {
 
 // initMemoryContext initializes session, records user message, builds context with
 // similar tasks, and creates a task record. Returns the enriched input, sessionID, and taskID.
-func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (enrichedInput string, sessionID string, taskID string) {
-	if a.memoryManager == nil {
-		return strInput, "", ""
-	}
-
-	// Ensure session exists, attempting checkpoint recovery first.
-	// Read sessionID under read lock to avoid holding write lock during DB calls.
-	a.mu.RLock()
-	sessionID = a.sessionID
-	checkpoint := a.checkpoint
-	leaderID := a.id
-	a.mu.RUnlock()
-
-	if sessionID == "" {
-		// Use sync.Once to ensure session is initialized exactly once, preventing
-		// race conditions where concurrent RestoreState/ReplayEvents could overwrite
-		// the sessionID between the DB call and the write lock acquisition.
-		a.sessionInitOnce.Do(func() {
-			recovered := false
-			if checkpoint != nil {
-				cp, err := checkpoint.GetLatest(ctx, leaderID)
-				if err != nil {
-					log.Warn("Checkpoint recovery failed, creating new session", "error", err)
-				} else if cp != nil && cp.SessionID != "" {
-					sessionID = cp.SessionID
-					recovered = true
-					log.Info("Session recovered from checkpoint", "session_id", sessionID, "leader_id", leaderID)
-				}
-			}
-			if !recovered {
-				newSessionID, err := a.memoryManager.CreateSession(ctx, a.getUserID())
-				if err != nil {
-					log.Warn("Failed to create session", "error", err)
-				} else {
-					sessionID = newSessionID
-				}
-			}
-			// Persist the sessionID under write lock.
-			if sessionID != "" {
-				a.mu.Lock()
-				a.sessionID = sessionID
-				a.mu.Unlock()
-
-				if checkpoint != nil {
-					if err := checkpoint.Save(ctx, &LeaderCheckpoint{
-						LeaderID:  leaderID,
-						SessionID: sessionID,
-						Status:    "active",
-					}); err != nil {
-						log.Warn("Failed to save checkpoint", "error", err)
-					}
-				}
-
-				a.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
-					"session_id": sessionID,
-					"user_id":    a.getUserID(),
-				})
-			} // end if sessionID != ""
-		}) // end sessionInitOnce.Do
-	}
-
-	// Record user message.
-	if err := a.memoryManager.AddMessage(ctx, sessionID, "user", strInput); err != nil {
-		log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
-	}
-
-	if sessionID != "" {
-		a.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
-			"session_id": sessionID,
-			"role":       "user",
-		})
-	}
-
-	// Build input with conversation context.
-	enrichedInput = strInput
-	if inputWithContext, err := a.memoryManager.BuildContext(ctx, strInput, sessionID); err != nil {
-		log.Warn("memory operation failed, proceeding without", "operation", "BuildContext", "error", err)
-	} else {
-		enrichedInput = inputWithContext
-	}
-
-	// Search similar tasks in parallel with task creation:
-	// both depend on enrichedInput but are independent of each other.
-	var (
-		similarTasks []*models.Task
-		createTID    string
-		searchErr    error
-		createErr    error
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		similarTasks, searchErr = a.memoryManager.SearchSimilarTasks(ctx, enrichedInput, DefaultSimilarTasksLimit)
-	}()
-	go func() {
-		defer wg.Done()
-		createTID, createErr = a.memoryManager.CreateTask(ctx, sessionID, a.getUserID(), enrichedInput)
-	}()
-	wg.Wait()
-
-	if searchErr != nil {
-		log.Warn("memory operation failed, proceeding without", "operation", "SearchSimilarTasks", "error", searchErr)
-	} else if len(similarTasks) > 0 {
-		log.Debug("Found similar tasks", "count", len(similarTasks))
-		var sb strings.Builder
-		sb.WriteString("\n\nSimilar previous tasks:\n")
-		for _, task := range similarTasks {
-			if taskInput, ok := task.Payload["input"].(string); ok {
-				fmt.Fprintf(&sb, "- %s\n", taskInput)
-			}
-		}
-		enrichedInput += sb.String()
-	}
-
-	if createErr != nil {
-		log.Warn("Failed to create task - proceeding without task tracking",
-			"error", createErr, "session_id", sessionID,
-			"impact", "task will not be tracked for distillation")
-	} else {
-		taskID = createTID
-		a.updateSnapshotState(taskID)
-		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-			"task_id":    taskID,
-			"session_id": sessionID,
-		})
-	}
-
-	return enrichedInput, sessionID, taskID
-}
-
-// emitEvent appends a single event using the canonical ares_events.Emit.
-func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
-	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "leader", payload) {
-		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
-	}
-}
-
-// emitCallback emits a lifecycle callback event if the emitter is set.
-func (a *leaderAgent) emitCallback(ctx *ares_callbacks.Context) {
-	if a.ares_callbacks == nil {
-		return
-	}
-	a.ares_callbacks.Emit(ctx)
-}
-
-// updateSnapshotState updates the snapshot-tracking fields after state changes.
-// This ensures Snapshot() returns up-to-date data for resurrection.
-//
-// IMPORTANT: This method acquires a.mu.Lock internally. Callers MUST NOT hold
-// a.mu when invoking this method, or it will deadlock. All current call sites
-// have been verified to call this without holding a.mu.
-//
-// Args:
-//
-//	taskID - the task ID that was just created.
-func (a *leaderAgent) updateSnapshotState(taskID string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.lastTaskID = taskID
-	a.lastInteractionTime = time.Now()
-}
-
-// finalizeMemory updates task output, records assistant message, and triggers
-// background distillation. Must be called after aggregation succeeds.
-func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID string, result *models.RecommendResult) {
-	if a.memoryManager == nil || result == nil || sessionID == "" {
-		return
-	}
-
-	resultStr := fmt.Sprintf("Generated %d items", len(result.Items))
-
-	// Update task output.
-	if taskID != "" {
-		if err := a.memoryManager.UpdateTaskOutput(ctx, taskID, resultStr); err != nil {
-			log.Warn("memory operation failed, proceeding without", "operation", "UpdateTaskOutput", "error", err)
-		}
-	}
-
-	// Record assistant response.
-	if err := a.memoryManager.AddMessage(ctx, sessionID, "assistant", resultStr); err != nil {
-		log.Warn("memory operation failed, proceeding without", "operation", "AddMessage", "error", err)
-	}
-
-	if sessionID != "" {
-		a.emitEvent(ctx, ares_events.EventMessageAdded, map[string]any{
-			"session_id": sessionID,
-			"role":       "assistant",
-		})
-	}
-
-	// Emit task completed event for event sourcing.
-	if taskID != "" {
-		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-			"task_id": taskID,
-			"status":  "completed",
-		})
-	}
-
-	// Run distillation in background goroutine with proper lifecycle management.
-	// Context is created inside the goroutine to avoid race: defer cancel() in the
-	// parent function would cancel the context before the goroutine starts.
-	if taskID == "" {
-		return
-	}
-
-	// Check if agent is stopped BEFORE adding to WaitGroup.
-	// If agent is stopped, distillWg.Wait() may have already returned;
-	// calling Add(1) after Wait() returns causes a panic.
-	// Lock distillMu to make the stopCh check and Add(1) atomic.
-	a.distillMu.Lock()
-	select {
-	case <-a.stopCh:
-		a.distillMu.Unlock()
-		log.Debug("Distillation skipped: agent stopping", "task_id", taskID)
-		return
-	default:
-	}
-	a.distillWg.Add(1)
-	a.distillMu.Unlock()
-	a.distillEg.Go(func() error {
-		defer a.distillWg.Done()
-
-		// Detached context with own timeout — distillation continues
-		// even if the parent request is cancelled.
-		distillCtx, cancel := context.WithTimeout(context.Background(), DefaultDistillTimeout)
-		defer cancel()
-
-		distilled, err := a.memoryManager.DistillTask(distillCtx, taskID)
-		if err != nil {
-			log.Warn("Failed to distill task", "error", err, "task_id", taskID)
-			return nil
-		}
-		if err := a.memoryManager.StoreDistilledTask(distillCtx, taskID, distilled); err != nil {
-			log.Error("Failed to store distilled task", "error", err, "task_id", taskID)
-			return nil
-		}
-
-		// Emit memory distilled event for event sourcing.
-		a.mu.RLock()
-		es := a.eventStore
-		lid := a.id
-		a.mu.RUnlock()
-		if es != nil {
-			if emitErr := es.Append(distillCtx, lid, []*ares_events.Event{
-				{
-					Type: ares_events.EventMemoryDistilled,
-					Payload: map[string]any{
-						"task_id":    taskID,
-						"session_id": sessionID,
-					},
-				},
-			}, 0); emitErr != nil {
-				log.Warn("Failed to emit memory distilled event", "error", emitErr)
-			}
-		}
-		return nil
-	})
-}
-
-// recordExperienceFeedback records bandit feedback for experiences used in tasks.
-// For each task with a non-empty UsedExperienceID:
-// - If task succeeded: increment usage count (positive reinforcement).
-// - If task failed: decrement rank score (negative reinforcement).
-// No-op if feedbackSvc is nil or no tasks used experiences.
-//
-// Results are matched to tasks by TaskID rather than array index to handle
-// cases where the dispatcher may return results in a different order than tasks.
-func (a *leaderAgent) recordExperienceFeedback(ctx context.Context, tasks []*models.Task, results []*models.TaskResult) {
-	if a.feedbackSvc == nil {
-		return
-	}
-
-	// Build a TaskID-to-result index for O(1) lookup instead of fragile index matching.
-	resultByTaskID := make(map[string]*models.TaskResult, len(results))
-	for _, r := range results {
-		if r != nil {
-			resultByTaskID[r.TaskID] = r
-		}
-	}
-
-	for _, task := range tasks {
-		if task.UsedExperienceID == "" {
-			continue
-		}
-
-		var success bool
-		if result, ok := resultByTaskID[task.TaskID]; ok && result != nil {
-			success = result.Success
-		}
-
-		if err := a.feedbackSvc.RecordFeedback(ctx, task.UsedExperienceID, success); err != nil {
-			log.Warn("Failed to record experience feedback",
-				"task_id", task.TaskID,
-				"experience_id", task.UsedExperienceID,
-				"success", success,
-				"error", err,
-			)
-		}
-	}
-}
 
 // Process handles user input and orchestrates the recommendation workflow with automatic memory management.
 func (a *leaderAgent) fail(err error) (any, error) {
@@ -1261,4 +796,17 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	})
 
 	return ch, nil
+}
+
+func (a *leaderAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
+	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "leader", payload) {
+		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
+	}
+}
+
+func (a *leaderAgent) emitCallback(ctx *ares_callbacks.Context) {
+	if a.ares_callbacks == nil {
+		return
+	}
+	a.ares_callbacks.Emit(ctx)
 }
