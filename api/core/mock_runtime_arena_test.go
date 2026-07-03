@@ -17,49 +17,51 @@ var _ EventStore = (*mockEventStore)(nil)
 
 type mockRuntime struct{}
 
-func (m *mockRuntime) RegisterAgent(_ Agent, _ AgentFactory) {}
-func (m *mockRuntime) StartAgent(_ context.Context, _ Agent) error { return nil }
-func (m *mockRuntime) StopAgent(_ context.Context, _ string) error { return nil }
-func (m *mockRuntime) GetAgent(_ string) Agent { return Agent{} }
-func (m *mockRuntime) RestartAgent(_ context.Context, _ string) error { return nil }
+func (m *mockRuntime) RegisterAgent(_ Agent, _ AgentFactory)                          {}
+func (m *mockRuntime) StartAgent(_ context.Context, _ Agent) error                    { return nil }
+func (m *mockRuntime) StopAgent(_ context.Context, _ string) error                    { return nil }
+func (m *mockRuntime) GetAgent(_ string) Agent                                        { return Agent{} }
+func (m *mockRuntime) RestartAgent(_ context.Context, _ string) error                 { return nil }
 func (m *mockRuntime) RestoreAgent(_ context.Context, _ string, _ AgentFactory) error { return nil }
-func (m *mockRuntime) NotifyAgentDead(_ string, _ string) {}
-func (m *mockRuntime) Start(_ context.Context) error { return nil }
-func (m *mockRuntime) Stop() error { return nil }
-func (m *mockRuntime) Stats() RuntimeStats { return RuntimeStats{} }
+func (m *mockRuntime) NotifyAgentDead(_ string, _ string)                             {}
+func (m *mockRuntime) Start(_ context.Context) error                                  { return nil }
+func (m *mockRuntime) Stop() error                                                    { return nil }
+func (m *mockRuntime) Stats() RuntimeStats                                            { return RuntimeStats{} }
 
 // ── mockArena ──────────────────────────────────────
 
 type mockArena struct{}
 
-func (m *mockArena) InjectFault(_ context.Context, _ FaultType, _ string) error { return nil }
+func (m *mockArena) InjectFault(_ context.Context, _ FaultType, _ string) error    { return nil }
 func (m *mockArena) RunScenario(_ context.Context, _ string) (*ArenaReport, error) { return nil, nil }
-func (m *mockArena) RunRandom(_ context.Context, _ time.Duration) (*ArenaReport, error) { return nil, nil }
+func (m *mockArena) RunRandom(_ context.Context, _ time.Duration) (*ArenaReport, error) {
+	return nil, nil
+}
 func (m *mockArena) Score() *ResilienceScore { return nil }
-func (m *mockArena) ListAgents() []string { return nil }
-func (m *mockArena) Stop() error { return nil }
+func (m *mockArena) ListAgents() []string    { return nil }
+func (m *mockArena) Stop() error             { return nil }
 
 // ── mockEvolution ──────────────────────────────────
 
 type mockEvolution struct{}
 
 func (m *mockEvolution) Evolve(_ context.Context, _ int) (*EvolutionResult, error) { return nil, nil }
-func (m *mockEvolution) RunIdleEvolution(_ context.Context, _ int) error { return nil }
-func (m *mockEvolution) LatestReport() (string, error) { return "", nil }
-func (m *mockEvolution) BestStrategy() (*EvolutionStrategy, error) { return nil, nil }
-func (m *mockEvolution) Stats() (*EvolutionStats, error) { return nil, nil }
-func (m *mockEvolution) Lineages() ([]LineageRecord, error) { return nil, nil }
-func (m *mockEvolution) SaveBestStrategy(_ string) error { return nil }
-func (m *mockEvolution) Shutdown() {}
+func (m *mockEvolution) RunIdleEvolution(_ context.Context, _ int) error           { return nil }
+func (m *mockEvolution) LatestReport() (string, error)                             { return "", nil }
+func (m *mockEvolution) BestStrategy() (*EvolutionStrategy, error)                 { return nil, nil }
+func (m *mockEvolution) Stats() (*EvolutionStats, error)                           { return nil, nil }
+func (m *mockEvolution) Lineages() ([]LineageRecord, error)                        { return nil, nil }
+func (m *mockEvolution) SaveBestStrategy(_ string) error                           { return nil }
+func (m *mockEvolution) Shutdown()                                                 {}
 
 // ── mockDreamCycle ─────────────────────────────────
 
 type mockDreamCycle struct{}
 
-func (m *mockDreamCycle) Start(_ context.Context) error { return nil }
-func (m *mockDreamCycle) Stop() error { return nil }
+func (m *mockDreamCycle) Start(_ context.Context) error                       { return nil }
+func (m *mockDreamCycle) Stop() error                                         { return nil }
 func (m *mockDreamCycle) Trigger(_ context.Context) (*EvolutionResult, error) { return nil, nil }
-func (m *mockDreamCycle) Status() DreamCycleStatus { return DreamCycleStatus{} }
+func (m *mockDreamCycle) Status() DreamCycleStatus                            { return DreamCycleStatus{} }
 
 // ── mockWorkflowService ────────────────────────────
 
@@ -71,13 +73,21 @@ func (m *mockWorkflowService) Execute(_ context.Context, _ *WorkflowRequest) (*W
 func (m *mockWorkflowService) ExecuteStream(_ context.Context, _ *WorkflowRequest) (<-chan WorkflowEvent, error) {
 	return nil, nil
 }
-func (m *mockWorkflowService) ListWorkflows(_ context.Context) ([]*WorkflowSummary, error) { return nil, nil }
-func (m *mockWorkflowService) GetWorkflow(_ context.Context, _ string) (*WorkflowDefinition, error) { return nil, nil }
+func (m *mockWorkflowService) ListWorkflows(_ context.Context) ([]*WorkflowSummary, error) {
+	return nil, nil
+}
+func (m *mockWorkflowService) GetWorkflow(_ context.Context, _ string) (*WorkflowDefinition, error) {
+	return nil, nil
+}
 
 // ── mockEventStore ─────────────────────────────────
 
 type mockEventStore struct{}
 
-func (m *mockEventStore) Append(_ context.Context, _ string, _ []interface{}, _ int64) error { return nil }
-func (m *mockEventStore) Read(_ context.Context, _ string, _ int64, _ int) ([]interface{}, error) { return nil, nil }
+func (m *mockEventStore) Append(_ context.Context, _ string, _ []interface{}, _ int64) error {
+	return nil
+}
+func (m *mockEventStore) Read(_ context.Context, _ string, _ int64, _ int) ([]interface{}, error) {
+	return nil, nil
+}
 func (m *mockEventStore) Close() error { return nil }

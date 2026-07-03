@@ -21,10 +21,10 @@ func (s *stubLLM) GenerateSimple(_ context.Context, prompt string) (string, erro
 func (s *stubLLM) GenerateEmbedding(_ context.Context, _ *core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
 	return &core.EmbeddingResponse{Embedding: []float32{0.1, 0.2, 0.3}}, nil
 }
-func (s *stubLLM) GetConfig() *core.LLMConfig              { return &core.LLMConfig{Provider: "ollama"} }
-func (s *stubLLM) IsEnabled() bool                           { return true }
-func (s *stubLLM) GetProvider() core.LLMProvider              { return "ollama" }
-func (s *stubLLM) GetModel() string                          { return "llama3.2" }
+func (s *stubLLM) GetConfig() *core.LLMConfig    { return &core.LLMConfig{Provider: "ollama"} }
+func (s *stubLLM) IsEnabled() bool               { return true }
+func (s *stubLLM) GetProvider() core.LLMProvider { return "ollama" }
+func (s *stubLLM) GetModel() string              { return "llama3.2" }
 
 // Example_basic demonstrates creating a client with a pre-built LLM service.
 func Example_basic() {

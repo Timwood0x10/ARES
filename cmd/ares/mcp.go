@@ -33,7 +33,7 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 			continue
 		}
 		t := tool
-		_ = registry.Register(api_tools.ToolFunc{
+	if err := registry.Register(api_tools.ToolFunc{
 			ToolName: t.Name(),
 			ToolDesc: t.Description(),
 			Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -43,7 +43,9 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 				}
 				return res.Data, nil
 			},
-		})
+		}); err != nil {
+			fmt.Printf("MCP bridge: failed to register tool %s: %v\n", t.Name(), err)
+		}
 	}
 
 	return internalReg, nil

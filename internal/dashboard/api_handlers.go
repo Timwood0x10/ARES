@@ -15,8 +15,8 @@ import (
 	"time"
 
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-
 )
+
 // ── Agent handlers ────────────────────────────
 
 func (a *APIv2) handleAgents(w http.ResponseWriter, r *http.Request) {

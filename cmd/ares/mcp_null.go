@@ -70,7 +70,9 @@ var mcpNullServeCmd = &cobra.Command{
 		if err := server.Serve(ctx); err != nil {
 			return fmt.Errorf("serve: %w", err)
 		}
-		_ = sigEg.Wait()
+		if err := sigEg.Wait(); err != nil {
+		return fmt.Errorf("signal handler: %w", err)
+	}
 		return nil
 	},
 }

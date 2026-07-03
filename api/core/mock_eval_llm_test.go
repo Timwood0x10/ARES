@@ -20,7 +20,7 @@ func (m *mockEvaluator) Evaluate(_ context.Context, _, _, _ string) (float64, er
 type mockEvaluatorRegistry struct{}
 
 func (m *mockEvaluatorRegistry) Register(_ string, _ Evaluator) error { return nil }
-func (m *mockEvaluatorRegistry) Get(_ string) Evaluator { return nil }
+func (m *mockEvaluatorRegistry) Get(_ string) Evaluator               { return nil }
 
 // ── mockLLMClient ───────────────────────────────────
 

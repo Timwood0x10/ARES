@@ -24,16 +24,16 @@ func TestRuntimeStopAgent(t *testing.T) {
 	mgr := New(nil, nil, nil)
 	agent := newMockAgent("stop-test")
 	mgr.RegisterAgent(agent, func() base.Agent { return newMockAgent("stop-test") })
-	_ = mgr.Start(context.Background())
+	assert.NoError(t, mgr.Start(context.Background()))
 	assert.NoError(t, mgr.StopAgent(context.Background(), "stop-test"))
-	_ = mgr.Stop()
+	assert.NoError(t, mgr.Stop())
 }
 
 func TestRuntimeGetAgent(t *testing.T) {
 	mgr := New(nil, nil, nil)
 	agent := newMockAgent("get-test")
 	mgr.RegisterAgent(agent, func() base.Agent { return newMockAgent("get-test") })
-	mgr.Start(context.Background())
+	assert.NoError(t, mgr.Start(context.Background()))
 	defer func() { _ = mgr.Stop() }()
 
 	got := mgr.GetAgent("get-test")
@@ -55,8 +55,8 @@ func TestRuntimeStatsInitial(t *testing.T) {
 
 func TestRuntimeDoubleStart(t *testing.T) {
 	mgr := New(nil, nil, nil)
-	_ = mgr.Start(context.Background())
+	assert.NoError(t, mgr.Start(context.Background()))
 	err := mgr.Start(context.Background())
 	assert.Error(t, err)
-	_ = mgr.Stop()
+	assert.NoError(t, mgr.Stop())
 }

@@ -129,7 +129,11 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	if err := plugin.Start(ctx, nil); err != nil {
 		t.Fatalf("Start plugin: %v", err)
 	}
-	defer plugin.Stop(ctx)
+	t.Cleanup(func() {
+		if err := plugin.Stop(ctx); err != nil {
+			t.Logf("plugin stop: %v", err)
+		}
+	})
 
 	// Create HTTP server and test health endpoint.
 	srv := monitoring.NewHTTPServer(plugin)
@@ -141,7 +145,7 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint: errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -161,7 +165,7 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/anomalies: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
@@ -171,7 +175,7 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/insights: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp3.StatusCode)
 	}

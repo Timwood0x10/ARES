@@ -81,7 +81,7 @@ func TestAddAndGetMessages(t *testing.T) {
 		t.Fatalf("GetMessages: %v", err)
 	}
 	if len(msgs) < 3 {
-	 t.Fatalf("expected at least 3 messages, got %d", len(msgs))
+		t.Fatalf("expected at least 3 messages, got %d", len(msgs))
 	}
 	if msgs[1].Role != "user" || msgs[1].Content != "hello" {
 		t.Fatalf("unexpected first message: %+v", msgs[0])
@@ -102,10 +102,10 @@ func TestAddStructuredMessage(t *testing.T) {
 
 	msgs, _ := mgr.GetMessages(ctx, sid)
 	if len(msgs) != 2 {
-	 t.Fatalf("expected 2 messages, got %d", len(msgs))
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
 	if len(msgs[1].ToolCalls) != 1 {
-	 t.Fatalf("expected 1 tool call, got %d", len(msgs[1].ToolCalls))
+		t.Fatalf("expected 1 tool call, got %d", len(msgs[1].ToolCalls))
 	}
 }
 

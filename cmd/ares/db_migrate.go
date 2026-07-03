@@ -45,12 +45,9 @@ func runDbMigrate() error {
 	portStr := parsed.Port()
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() {
-		_ = adminDB.Close()
-	}()
-
-	ensureDatabase(adminDB, dbname)
-	_ = adminDB.Close()
+	if err := adminDB.Close(); err != nil {
+		return fmt.Errorf("close admin connection: %w", err)
+	}
 
 	cfg := &postgres.Config{
 		Host:            parsed.Hostname(),
