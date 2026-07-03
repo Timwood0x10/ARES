@@ -72,7 +72,10 @@ type ChatExample struct {
 // ──────────────────────────────────────────────
 
 func paramSummary(s *mutation.Strategy) string {
-	b, _ := json.Marshal(s.Params)
+	b, err := json.Marshal(s.Params)
+	if err != nil {
+		return "{}"
+	}
 	return string(b)
 }
 
@@ -798,8 +801,12 @@ func main() {
 
 	// Show a sample experience.
 	if len(experiences) > 0 {
-		b, _ := json.MarshalIndent(experiences[0], "  ", "  ")
-		fmt.Printf("  Sample experience:\n  %s\n\n", string(b))
+		b, err := json.MarshalIndent(experiences[0], "  ", "  ")
+		if err != nil {
+		 fmt.Printf("  Failed to marshal experience: %v\n\n", err)
+		} else {
+		 fmt.Printf("  Sample experience:\n  %s\n\n", string(b))
+		}
 	}
 
 	// ── Step 4: Export experience data to JSONL ──

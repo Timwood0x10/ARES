@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	builtin_embedding "github.com/Timwood0x10/ares/internal/tools/resources/builtin/embedding"
 	builtin_execution "github.com/Timwood0x10/ares/internal/tools/resources/builtin/execution"
 	builtin_file "github.com/Timwood0x10/ares/internal/tools/resources/builtin/file"
 	builtin_knowledge "github.com/Timwood0x10/ares/internal/tools/resources/builtin/knowledge"
@@ -59,6 +60,9 @@ func RegisterGeneralTools() error {
 
 		// Planning capability
 		builtin_planning.NewTaskPlanner(nil),
+
+		// Embedding capability
+		builtin_embedding.NewEmbeddingTool(""),
 
 		// Domain capability - removed: weather_check, style_recommend (not in 8 core capabilities)
 	}

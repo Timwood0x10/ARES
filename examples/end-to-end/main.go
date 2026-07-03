@@ -1133,7 +1133,11 @@ func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps
 		return
 	}
 
-	snapshotJSON, _ := json.MarshalIndent(snapshot, "", "  ")
+	snapshotJSON, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		log.Error("Failed to marshal snapshot", "error", err)
+		return
+	}
 	log.Info("Snapshot captured successfully",
 		"agent_id", agentID,
 		"snapshot", string(snapshotJSON))
