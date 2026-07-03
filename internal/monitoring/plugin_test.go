@@ -257,14 +257,17 @@ func TestMonitorPlugin_AgentMemory(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.AgentMemory(ctx, "a1")
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotImplemented)
 }
 
 func TestMonitorPlugin_AgentEvolution(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
-	_, err := p.AgentEvolution(ctx, "a1")
-	assert.Error(t, err)
+	ev, err := p.AgentEvolution(ctx, "a1")
+	assert.NoError(t, err)
+	assert.Equal(t, "a1", ev.AgentID)
+	assert.Equal(t, 0, ev.Generation)
+	assert.Empty(t, ev.Mutations)
 }
 
 func TestMonitorPlugin_MCPToolCalls(t *testing.T) {
@@ -278,7 +281,7 @@ func TestMonitorPlugin_LLMCalls(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
 	_, err := p.LLMCalls(ctx, "a1", 10)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	assert.ErrorIs(t, err, ErrAgentNotFound)
 }
 
 func TestMonitorPlugin_Recommendations(t *testing.T) {

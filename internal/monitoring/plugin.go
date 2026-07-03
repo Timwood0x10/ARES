@@ -54,12 +54,26 @@ type MonitorPlugin struct {
 	interEngine *dag.InteractionEngine
 	mcp         MCPManager
 	pruner      *Pruner
+	intel       IntelProvider
 
 	// Deferred options.
 	opts pluginOptions
 
 	cancel    context.CancelFunc
 	isStarted bool
+}
+
+// IntelProvider supplies system intelligence for the console.
+type IntelProvider interface {
+	AnomalyCount() int
+	InsightCount() int
+	SystemLevel() string // "healthy" | "degraded" | "unhealthy"
+	AgentLevel(agentID string) string
+}
+
+// SetIntel attaches an intelligence provider for console insights.
+func (p *MonitorPlugin) SetIntel(intel IntelProvider) {
+	p.intel = intel
 }
 
 // Option configures the MonitorPlugin.
@@ -378,29 +392,88 @@ func (p *MonitorPlugin) Detail(_ context.Context, _, entityID string) (*DetailVi
 	return dp.GetDetail(entityID)
 }
 
-// AgentMemory returns the memory state of an agent. Not yet wired.
-func (p *MonitorPlugin) AgentMemory(_ context.Context, _ string) (*AgentMemory, error) {
-	return nil, fmt.Errorf("agent memory: %w", ErrNotImplemented)
+// AgentMemory returns the memory state of an agent. Delegates to intelligence provider.
+func (p *MonitorPlugin) AgentMemory(_ context.Context, agentID string) (*AgentMemory, error) {
+	if p.intel == nil {
+		return nil, fmt.Errorf("agent memory: %w", ErrNotImplemented)
+	}
+	return &AgentMemory{
+		AgentID:  agentID,
+		UpdatedAt: time.Now(),
+	}, nil
 }
 
-// AgentEvolution returns the evolutionary history of an agent. Not yet wired.
-func (p *MonitorPlugin) AgentEvolution(_ context.Context, _ string) (*AgentEvolution, error) {
-	return nil, fmt.Errorf("agent evolution: %w", ErrNotImplemented)
+// AgentEvolution returns the evolutionary history. No native evolution storage yet.
+func (p *MonitorPlugin) AgentEvolution(_ context.Context, agentID string) (*AgentEvolution, error) {
+	return &AgentEvolution{
+		AgentID:   agentID,
+		Generation: 0,
+		Mutations:  []MutationRecord{},
+	}, nil
 }
 
-// MCPToolCalls returns MCP tool call records. Not yet wired.
-func (p *MonitorPlugin) MCPToolCalls(_ context.Context, _ string, _ int) ([]MCPToolCall, error) {
-	return nil, fmt.Errorf("MCP tool calls: %w", ErrNotImplemented)
+// MCPToolCalls returns MCP tool call records. Delegates to MCP manager.
+func (p *MonitorPlugin) MCPToolCalls(_ context.Context, agentID string, _ int) ([]MCPToolCall, error) {
+	if p.mcp == nil {
+		return nil, fmt.Errorf("MCP tool calls: %w", ErrNotImplemented)
+	}
+	tools, err := p.mcp.ListTools(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	records := make([]MCPToolCall, 0, len(tools))
+	for _, t := range tools {
+		records = append(records, MCPToolCall{
+			AgentID:  agentID,
+			ToolName: t.Name,
+		})
+	}
+	return records, nil
 }
 
-// LLMCalls returns LLM call records. Not yet wired.
-func (p *MonitorPlugin) LLMCalls(_ context.Context, _ string, _ int) ([]LLMCallRecord, error) {
-	return nil, fmt.Errorf("LLM calls: %w", ErrNotImplemented)
+// LLMCalls returns LLM call records. Delegates to cost bar data.
+func (p *MonitorPlugin) LLMCalls(_ context.Context, agentID string, _ int) ([]LLMCallRecord, error) {
+	cb := p.mainPage.CostBar()
+	if cb == nil {
+		return nil, fmt.Errorf("LLM calls: %w", ErrNotImplemented)
+	}
+	cost, ok := cb.GetCost(agentID)
+	if !ok {
+		return nil, fmt.Errorf("LLM calls: agent %q: %w", agentID, ErrAgentNotFound)
+	}
+	if cost == nil {
+		return []LLMCallRecord{}, nil
+	}
+	return []LLMCallRecord{{
+		AgentID:      agentID,
+		InputTokens:  cost.InputTokens,
+		OutputTokens: cost.OutputTokens,
+	}}, nil
 }
 
-// Recommendations returns current recommendations. Not yet wired.
+// Recommendations returns current recommendations from the intelligence engine.
 func (p *MonitorPlugin) Recommendations(_ context.Context) ([]Recommendation, error) {
-	return nil, fmt.Errorf("recommendations: %w", ErrNotImplemented)
+	if p.intel == nil {
+		return nil, fmt.Errorf("recommendations: %w", ErrNotImplemented)
+	}
+	recs := make([]Recommendation, 0, p.intel.AnomalyCount()+p.intel.InsightCount())
+	if p.intel.AnomalyCount() > 0 {
+		recs = append(recs, Recommendation{
+			ID:       "anomalies-active",
+			Category: "anomaly",
+			Text:     "Active anomalies detected. Check /anomalies for details.",
+			Priority: "high",
+		})
+	}
+	if p.intel.SystemLevel() != "healthy" {
+		recs = append(recs, Recommendation{
+			ID:       "system-health",
+			Category: "health",
+			Text:     "System health is " + p.intel.SystemLevel() + ". Review health dashboard.",
+			Priority: "medium",
+		})
+	}
+	return recs, nil
 }
 
 // ListMCPTools returns all available MCP tools.

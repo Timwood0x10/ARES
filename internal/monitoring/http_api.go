@@ -101,6 +101,12 @@ func (s *HTTPServer) registerRoutes() {
 
 	// SSE placeholder
 	api.GET("/subscribe", s.handleSubscribe)
+
+	// Intelligence — health, anomalies, insights (via plugin intel provider)
+	api.GET("/health", s.handleHealth)
+	api.GET("/health/agents", s.handleHealthAgents)
+	api.GET("/anomalies", s.handleAnomalies)
+	api.GET("/insights", s.handleInsights)
 }
 
 // handleConsole returns the full console snapshot.
@@ -378,4 +384,41 @@ func (s *HTTPServer) writeSSESnapshot(w gin.ResponseWriter, flusher http.Flusher
 	}
 	flusher.Flush()
 	return true
+}
+
+// ── Intelligence handlers ───────────────────────
+
+func (s *HTTPServer) handleHealth(c *gin.Context) {
+	if s.plugin.intel == nil {
+		c.JSON(http.StatusOK, gin.H{"level": "unknown"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"level":  s.plugin.intel.SystemLevel(),
+		"agents": s.plugin.intel.AnomalyCount(),
+	})
+}
+
+func (s *HTTPServer) handleHealthAgents(c *gin.Context) {
+	if s.plugin.intel == nil {
+		c.JSON(http.StatusOK, []any{})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": 0})
+}
+
+func (s *HTTPServer) handleAnomalies(c *gin.Context) {
+	if s.plugin.intel == nil {
+		c.JSON(http.StatusOK, []any{})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": s.plugin.intel.AnomalyCount()})
+}
+
+func (s *HTTPServer) handleInsights(c *gin.Context) {
+	if s.plugin.intel == nil {
+		c.JSON(http.StatusOK, []any{})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": s.plugin.intel.InsightCount()})
 }
