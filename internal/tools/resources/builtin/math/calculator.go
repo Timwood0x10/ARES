@@ -40,7 +40,10 @@ func NewCalculator() *Calculator {
 
 	return &Calculator{
 		BaseTool: base.NewBaseToolWithCapabilities("calculator",
-			"Evaluate mathematical expressions using the full expr engine.\n\n"+
+			"Evaluate mathematical expressions. Supports Gaussian sum formulas for fast 1..n summation.\n\n"+
+				"IMPORTANT FORMULAS:\n"+
+				"- Sum from 1 to n: n*(n+1)/2\n"+
+				"- Sum from a to b: (b-a+1)*(a+b)/2\n\n"+
 				"OPERATORS:\n"+
 				"- Arithmetic: +, -, *, /, % (modulo)\n"+
 				"- Power: ** (e.g., 2**10 = 1024)\n"+
@@ -53,7 +56,9 @@ func NewCalculator() *Calculator {
 				"CONSTANTS:\n"+
 				"- pi (3.14159...), e (2.71828...)\n\n"+
 				"EXAMPLES:\n"+
-				"- '{sqrt(2)}', '{3**4}', '{pi * 5**2}', '{sin(pi/2)}'",
+				"- Sum 1 to 100 → 100*(100+1)/2 = 5050\n"+
+				"- Sum 1 to 1000000 → 1000000*(1000000+1)/2\n"+
+				"- sqrt(2), 3**4, pi * 5**2, sin(pi/2)",
 			core.CategoryCore, []core.Capability{core.CapabilityMath}, params),
 		compiled: make(map[string]*vm.Program),
 	}
