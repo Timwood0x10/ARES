@@ -110,12 +110,20 @@ func TestToolExecutionBridge_ToolNotFoundWithFallback(t *testing.T) {
 
 // newTestPlanner creates a planner with all default components for testing.
 func newTestPlanner() *Planner {
-	return NewPlanner(
+	resolver, err := NewToolResolver(&mockToolProvider{})
+	if err != nil {
+		panic(err)
+	}
+	planner, err := NewPlanner(
 		NewRuleBasedAnalyzer(),
 		NewCapabilityPlanner(),
-		NewToolResolver(&mockToolProvider{}),
+		resolver,
 		NewToolScorer(),
 		NewExecutionPlanner(),
 		NewMemoryEvidenceStore(),
 	)
+	if err != nil {
+		panic(err)
+	}
+	return planner
 }

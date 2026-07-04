@@ -17,6 +17,9 @@ func NewCapabilityPlanner() CapabilityPlanner {
 // Plan decomposes the intent into capability requirements.
 // For simple intents this is a 1:1 mapping.
 // For complex intents it decomposes into multiple dependent requirements.
+// Deduplication: if a broader capability implies a narrower one (e.g.
+// Summation implies Arithmetic), the narrower one is skipped to avoid
+// redundant tool calls.
 func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]CapabilityRequirement, error) {
 	if intent == nil {
 		return nil, fmt.Errorf("planner: intent is nil")
@@ -28,12 +31,26 @@ func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]Capabilit
 	// Build requirements from the intent's capability list.
 	requirements := make([]CapabilityRequirement, 0, len(intent.RequiredCapabilities))
 	seen := make(map[string]bool)
+	// Subsumption map: if a capability is listed, these child capabilities
+	// are automatically satisfied and need not generate separate steps.
+	subsumes := map[string][]string{
+		"Summation":           {"Arithmetic"},
+		"TextExtraction":      {"PDFParsing"},
+		"ExpressionEvaluation": {"Arithmetic"},
+	}
 
 	for _, capa := range intent.RequiredCapabilities {
 		if seen[capa] {
 			continue
 		}
 		seen[capa] = true
+
+		// Mark subsumed capabilities as seen so they don't generate steps.
+		if children, ok := subsumes[capa]; ok {
+			for _, child := range children {
+				seen[child] = true
+			}
+		}
 
 		req := CapabilityRequirement{
 			Name:       capa,
@@ -54,8 +71,10 @@ func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]Capabilit
 // inputTypeFor returns the expected input type for a capability.
 func inputTypeFor(capability string) string {
 	switch capability {
-	case "Arithmetic", "Summation":
+	case "Arithmetic", "Summation", "DiscreteMath", "Probability", "NumberTheory":
 		return "Expression"
+	case "Statistics":
+		return "Values"
 	case "PDFParsing":
 		return "File"
 	case "Hashing", "Base64", "StringManipulation", "Regex":
@@ -80,7 +99,7 @@ func inputTypeFor(capability string) string {
 // outputTypeFor returns the output type for a capability.
 func outputTypeFor(capability string) string {
 	switch capability {
-	case "Arithmetic", "Summation":
+	case "Arithmetic", "Summation", "DiscreteMath", "Probability", "Statistics", "NumberTheory":
 		return "Number"
 	case "PDFParsing", "TextExtraction":
 		return "Text"

@@ -17,15 +17,17 @@ import (
 //
 // Planner does NOT execute tools. It only produces plans.
 type Planner struct {
-	analyzer SemanticAnalyzer
-	planner  CapabilityPlanner
-	resolver ToolResolver
-	scorer   ToolScorer
-	execPlan ExecutionPlanner
-	evidence EvidenceStore
+	analyzer  SemanticAnalyzer
+	planner   CapabilityPlanner
+	resolver  ToolResolver
+	scorer    ToolScorer
+	extractor *ParameterExtractor
+	execPlan  ExecutionPlanner
+	evidence  EvidenceStore
 }
 
 // NewPlanner creates a fully wired planner with all default components.
+// Returns error if any required dependency is nil.
 func NewPlanner(
 	analyzer SemanticAnalyzer,
 	plannerImpl CapabilityPlanner,
@@ -33,15 +35,34 @@ func NewPlanner(
 	scorer ToolScorer,
 	execPlan ExecutionPlanner,
 	evidence EvidenceStore,
-) *Planner {
+) (*Planner, error) {
+	if analyzer == nil {
+		return nil, fmt.Errorf("planner: SemanticAnalyzer is nil")
+	}
+	if plannerImpl == nil {
+		return nil, fmt.Errorf("planner: CapabilityPlanner is nil")
+	}
+	if resolver == nil {
+		return nil, fmt.Errorf("planner: ToolResolver is nil")
+	}
+	if scorer == nil {
+		return nil, fmt.Errorf("planner: ToolScorer is nil")
+	}
+	if execPlan == nil {
+		return nil, fmt.Errorf("planner: ExecutionPlanner is nil")
+	}
+	if evidence == nil {
+		return nil, fmt.Errorf("planner: EvidenceStore is nil")
+	}
 	return &Planner{
 		analyzer: analyzer,
 		planner:  plannerImpl,
 		resolver: resolver,
 		scorer:   scorer,
-		execPlan: execPlan,
+		extractor: NewParameterExtractor(),
+		execPlan:  execPlan,
 		evidence: evidence,
-	}
+	}, nil
 }
 
 // Plan runs the full pipeline: analyze → plan capabilities → resolve → score → execute plan.

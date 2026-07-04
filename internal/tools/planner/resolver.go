@@ -23,10 +23,14 @@ type ToolProvider interface {
 }
 
 // NewToolResolver creates a ToolResolver backed by the given ToolProvider.
-func NewToolResolver(provider ToolProvider) ToolResolver {
+// Returns error if provider is nil.
+func NewToolResolver(provider ToolProvider) (ToolResolver, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("planner: ToolProvider is nil")
+	}
 	return &toolResolver{
 		provider: provider,
-	}
+	}, nil
 }
 
 // capabilityMapping defines which tools provide which capabilities.
@@ -35,6 +39,10 @@ func NewToolResolver(provider ToolProvider) ToolResolver {
 var capabilityMapping = map[string][]string{
 	"Arithmetic":           {"calculator"},
 	"Summation":            {"calculator"},
+	"DiscreteMath":         {"calculator"},
+	"Probability":          {"calculator"},
+	"Statistics":           {"calculator"},
+	"NumberTheory":         {"calculator"},
 	"ExpressionEvaluation": {"calculator"},
 	"Hashing":              {"hash_tool"},
 	"Base64":               {"hash_tool"},
@@ -86,7 +94,9 @@ var toolMetadata = map[string]struct {
 }
 
 // Resolve finds all tools that can fulfill a capability requirement.
-// Filters results to only include tools actually registered in the provider.
+// It first checks the static capability mapping, then verifies each candidate
+// against the provider's GetToolCapabilities() for accurate capability matching.
+// Finally, it filters to only include tools actually registered in the provider.
 func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequirement) ([]ToolCandidate, error) {
 	if requirement == nil {
 		return nil, fmt.Errorf("planner: requirement is nil")
@@ -95,25 +105,60 @@ func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequire
 		return nil, fmt.Errorf("planner: requirement name is empty")
 	}
 
-	toolNames, exists := capabilityMapping[requirement.Name]
-	if !exists || len(toolNames) == 0 {
+	// Collect candidate tool names from two sources:
+	// 1. Static capability mapping (built-in knowledge)
+	// 2. Provider's GetToolCapabilities() (dynamic/driver-registered tools)
+	candidateSet := make(map[string]bool)
+	toolNames := capabilityMapping[requirement.Name]
+	for _, name := range toolNames {
+		candidateSet[name] = true
+	}
+
+	// Also discover tools from the provider that declare this capability.
+	for _, toolName := range r.provider.ListTools() {
+		caps, err := r.provider.GetToolCapabilities(toolName)
+		if err != nil {
+			continue
+		}
+		for _, capa := range caps {
+			if capa == requirement.Name {
+				candidateSet[toolName] = true
+				break
+			}
+		}
+	}
+
+	if len(candidateSet) == 0 {
 		return nil, fmt.Errorf("planner: no tools found for capability %q", requirement.Name)
 	}
 
-	// Only include tools that are actually registered in the provider.
+	// Build registered tool index for existence check.
 	registeredTools := make(map[string]bool)
 	for _, name := range r.provider.ListTools() {
 		registeredTools[name] = true
 	}
 
-	candidates := make([]ToolCandidate, 0, len(toolNames))
-	for _, name := range toolNames {
+	candidates := make([]ToolCandidate, 0, len(candidateSet))
+	for name := range candidateSet {
 		if !registeredTools[name] {
 			continue
 		}
+		// Use static metadata if available; otherwise use sensible defaults.
 		meta, ok := toolMetadata[name]
 		if !ok {
-			continue
+			meta = struct {
+				cost          int
+				latency       time.Duration
+				deterministic bool
+				composable    bool
+				sideEffects   bool
+			}{
+				cost:          5,
+				latency:       100 * time.Millisecond,
+				deterministic: false,
+				composable:    true,
+				sideEffects:   false,
+			}
 		}
 
 		candidates = append(candidates, ToolCandidate{

@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"sync"
 	"time"
 )
 
 // evidenceAggregator computes aggregate metrics from tool execution evidence.
 type evidenceAggregator struct {
 	store EvidenceStore
-	mu    sync.RWMutex
 }
 
 // NewEvidenceAggregator creates an evidence aggregator backed by the given store.

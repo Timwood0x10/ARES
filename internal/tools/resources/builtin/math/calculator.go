@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,17 +49,34 @@ func NewCalculator() *Calculator {
 				"- Arithmetic: +, -, *, /, % (modulo)\n"+
 				"- Power: ** (e.g., 2**10 = 1024)\n"+
 				"- Parentheses: ()\n\n"+
-				"FUNCTIONS:\n"+
+				"BASIC FUNCTIONS:\n"+
 				"- sqrt(x), abs(x), round(x, n), floor(x), ceil(x)\n"+
 				"- sin(x), cos(x), tan(x) — x in radians\n"+
 				"- log(x), ln(x) — log base 10 and natural log\n"+
 				"- pow(x, y), min(a, b), max(a, b)\n\n"+
+				"COMBINATORICS:\n"+
+				"- factorial(n) — n! for n >= 0\n"+
+				"- nPr(n, r) — permutations: n!/(n-r)!\n"+
+				"- nCr(n, r) — combinations: n!/(r!(n-r)!)\n\n"+
+				"NUMBER THEORY:\n"+
+				"- gcd(a, b), lcm(a, b) — greatest common divisor / least common multiple\n"+
+				"- isPrime(n) — returns 1 if prime, 0 otherwise\n\n"+
+				"STATISTICS:\n"+
+				"- mean(a, b, c, ...), median(a, b, c, ...)\n"+
+				"- variance(a, b, c, ...), stddev(a, b, c, ...)\n\n"+
+				"PROBABILITY:\n"+
+				"- binomial(n, k, p) — binomial probability P(X=k)\n"+
+				"- normalPdf(x, mu, sigma) — normal distribution PDF\n"+
+				"- poissonPdf(k, lambda) — Poisson probability P(X=k)\n\n"+
 				"CONSTANTS:\n"+
 				"- pi (3.14159...), e (2.71828...)\n\n"+
 				"EXAMPLES:\n"+
 				"- Sum 1 to 100 → 100*(100+1)/2 = 5050\n"+
 				"- Sum 1 to 1000000 → 1000000*(1000000+1)/2\n"+
-				"- sqrt(2), 3**4, pi * 5**2, sin(pi/2)",
+				"- sqrt(2), 3**4, pi * 5**2, sin(pi/2)\n"+
+				"- factorial(5), nCr(10, 3), gcd(12, 18)\n"+
+				"- mean(1,2,3,4,5), stddev(1,2,3,4,5)\n"+
+				"- binomial(10, 3, 0.5), normalPdf(0, 0, 1)",
 			core.CategoryCore, []core.Capability{core.CapabilityMath}, params),
 		compiled: make(map[string]*vm.Program),
 	}
@@ -123,6 +141,181 @@ func (t *Calculator) Execute(ctx context.Context, params map[string]interface{})
 			expr.Function("max", func(params ...interface{}) (interface{}, error) {
 				return math.Max(toFloat64(params[0]), toFloat64(params[1])), nil
 			}),
+			// ── Combinatorics ──
+			expr.Function("factorial", func(params ...interface{}) (interface{}, error) {
+				n := int(toFloat64(params[0]))
+				if n < 0 {
+					return nil, fmt.Errorf("factorial: n must be >= 0")
+				}
+				result := 1.0
+				for i := 2; i <= n; i++ {
+					result *= float64(i)
+				}
+				return result, nil
+			}),
+			expr.Function("nPr", func(params ...interface{}) (interface{}, error) {
+				n := int(toFloat64(params[0]))
+				r := int(toFloat64(params[1]))
+				if n < 0 || r < 0 || r > n {
+					return nil, fmt.Errorf("nPr: invalid arguments")
+				}
+				result := 1.0
+				for i := n; i > n-r; i-- {
+					result *= float64(i)
+				}
+				return result, nil
+			}),
+			expr.Function("nCr", func(params ...interface{}) (interface{}, error) {
+				n := int(toFloat64(params[0]))
+				r := int(toFloat64(params[1]))
+				if n < 0 || r < 0 || r > n {
+					return nil, fmt.Errorf("nCr: invalid arguments")
+				}
+				if r == 0 || r == n {
+					return 1.0, nil
+				}
+				r = minInt(r, n-r)
+				result := 1.0
+				for i := 1; i <= r; i++ {
+					result = result * float64(n-r+i) / float64(i)
+				}
+				return result, nil
+			}),
+			// ── Number Theory ──
+			expr.Function("gcd", func(params ...interface{}) (interface{}, error) {
+				a, b := int(toFloat64(params[0])), int(toFloat64(params[1]))
+				a, b = absInt(a), absInt(b)
+				for b != 0 {
+					a, b = b, a%b
+				}
+				return float64(a), nil
+			}),
+			expr.Function("lcm", func(params ...interface{}) (interface{}, error) {
+				a, b := int(toFloat64(params[0])), int(toFloat64(params[1]))
+				if a == 0 || b == 0 {
+					return 0.0, nil
+				}
+				g := a
+				for g != 0 {
+					a, b = b, a%b
+					g = a
+				}
+				// Now a is gcd
+				gcd := a
+				if gcd == 0 {
+					gcd = 1
+				}
+				return float64(absInt(int(toFloat64(params[0])) * int(toFloat64(params[1])) / gcd)), nil
+			}),
+			expr.Function("isPrime", func(params ...interface{}) (interface{}, error) {
+				n := int(toFloat64(params[0]))
+				if n < 2 {
+					return 0.0, nil
+				}
+				for i := 2; i*i <= n; i++ {
+					if n%i == 0 {
+						return 0.0, nil
+					}
+				}
+				return 1.0, nil
+			}),
+			// ── Statistics ──
+			expr.Function("mean", func(params ...interface{}) (interface{}, error) {
+				if len(params) == 0 {
+					return nil, fmt.Errorf("mean: no arguments")
+				}
+				sum := 0.0
+				for _, p := range params {
+					sum += toFloat64(p)
+				}
+				return sum / float64(len(params)), nil
+			}),
+			expr.Function("variance", func(params ...interface{}) (interface{}, error) {
+				if len(params) < 2 {
+					return nil, fmt.Errorf("variance: need at least 2 values")
+				}
+				avg := 0.0
+				for _, p := range params {
+					avg += toFloat64(p)
+				}
+				avg /= float64(len(params))
+				sumSq := 0.0
+				for _, p := range params {
+					d := toFloat64(p) - avg
+					sumSq += d * d
+				}
+				return sumSq / float64(len(params)), nil
+			}),
+			expr.Function("stddev", func(params ...interface{}) (interface{}, error) {
+				if len(params) < 2 {
+					return nil, fmt.Errorf("stddev: need at least 2 values")
+				}
+				avg := 0.0
+				for _, p := range params {
+					avg += toFloat64(p)
+				}
+				avg /= float64(len(params))
+				sumSq := 0.0
+				for _, p := range params {
+					d := toFloat64(p) - avg
+					sumSq += d * d
+				}
+				return math.Sqrt(sumSq / float64(len(params))), nil
+			}),
+			expr.Function("median", func(params ...interface{}) (interface{}, error) {
+				if len(params) == 0 {
+					return nil, fmt.Errorf("median: no arguments")
+				}
+				vals := make([]float64, len(params))
+				for i, p := range params {
+					vals[i] = toFloat64(p)
+				}
+				sort.Float64s(vals)
+				n := len(vals)
+				if n%2 == 0 {
+					return (vals[n/2-1] + vals[n/2]) / 2, nil
+				}
+				return vals[n/2], nil
+			}),
+			// ── Probability ──
+			expr.Function("binomial", func(params ...interface{}) (interface{}, error) {
+				n := int(toFloat64(params[0]))
+				k := int(toFloat64(params[1]))
+				p := toFloat64(params[2])
+				if n < 0 || k < 0 || k > n || p < 0 || p > 1 {
+					return nil, fmt.Errorf("binomial: invalid arguments")
+				}
+				// nCk * p^k * (1-p)^(n-k)
+				coeff := 1.0
+				kr := minInt(k, n-k)
+				for i := 1; i <= kr; i++ {
+					coeff = coeff * float64(n-kr+i) / float64(i)
+				}
+				return coeff * math.Pow(p, float64(k)) * math.Pow(1-p, float64(n-k)), nil
+			}),
+			expr.Function("normalPdf", func(params ...interface{}) (interface{}, error) {
+				x := toFloat64(params[0])
+				mu := toFloat64(params[1])
+				sigma := toFloat64(params[2])
+				if sigma <= 0 {
+					return nil, fmt.Errorf("normalPdf: sigma must be > 0")
+				}
+				return (1 / (sigma * math.Sqrt(2*math.Pi))) *
+					math.Exp(-((x-mu)*(x-mu))/(2*sigma*sigma)), nil
+			}),
+			expr.Function("poissonPdf", func(params ...interface{}) (interface{}, error) {
+				k := int(toFloat64(params[0]))
+				lambda := toFloat64(params[1])
+				if k < 0 || lambda <= 0 {
+					return nil, fmt.Errorf("poissonPdf: k >= 0, lambda > 0")
+				}
+				// λ^k * e^(-λ) / k!
+				logFact := 0.0
+				for i := 2; i <= k; i++ {
+					logFact += math.Log(float64(i))
+				}
+				return math.Exp(float64(k)*math.Log(lambda) - lambda - logFact), nil
+			}),
 		)
 		if err != nil {
 			return core.NewErrorResult(fmt.Sprintf("invalid expression: %v", err)), nil
@@ -175,6 +368,22 @@ func toFloat64Safe(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// absInt returns the absolute value of an integer.
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// minInt returns the smaller of two integers.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // DateTime provides date and time operations.

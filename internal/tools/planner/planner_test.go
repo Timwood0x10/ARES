@@ -131,7 +131,13 @@ func TestCapabilityPlanner_Deduplicates(t *testing.T) {
 type mockToolProvider struct{}
 
 func (m *mockToolProvider) ListTools() []string {
-	return []string{"calculator", "hash_tool", "pdf_tool"}
+	return []string{
+		"calculator", "hash_tool", "pdf_tool", "string_utils",
+		"regex_tool", "json_tools", "web_search", "http_request",
+		"id_generator", "code_runner", "embedding", "datetime",
+		"data_transform", "log_analyzer", "text_processor", "task_planner",
+		"web_scraper", "data_validation", "knowledge_search", "memory_search",
+	}
 }
 
 func (m *mockToolProvider) GetToolCapabilities(name string) ([]string, error) {
@@ -139,21 +145,24 @@ func (m *mockToolProvider) GetToolCapabilities(name string) ([]string, error) {
 }
 
 func TestToolResolver_NilRequirement(t *testing.T) {
-	r := NewToolResolver(&mockToolProvider{})
+	r, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
 	cands, err := r.Resolve(context.Background(), nil)
 	require.Error(t, err)
 	assert.Nil(t, cands)
 }
 
 func TestToolResolver_EmptyName(t *testing.T) {
-	r := NewToolResolver(&mockToolProvider{})
+	r, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
 	cands, err := r.Resolve(context.Background(), &CapabilityRequirement{Name: ""})
 	require.Error(t, err)
 	assert.Nil(t, cands)
 }
 
 func TestToolResolver_KnownCapability(t *testing.T) {
-	r := NewToolResolver(&mockToolProvider{})
+	r, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
 	cands, err := r.Resolve(context.Background(), &CapabilityRequirement{Name: "Arithmetic"})
 	require.NoError(t, err)
 	require.Len(t, cands, 1)
@@ -162,14 +171,16 @@ func TestToolResolver_KnownCapability(t *testing.T) {
 }
 
 func TestToolResolver_UnknownCapability(t *testing.T) {
-	r := NewToolResolver(&mockToolProvider{})
+	r, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
 	cands, err := r.Resolve(context.Background(), &CapabilityRequirement{Name: "UnknownCapa"})
 	require.Error(t, err)
 	assert.Nil(t, cands)
 }
 
 func TestToolResolver_MultipleCandidates(t *testing.T) {
-	r := NewToolResolver(&mockToolProvider{})
+	r, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
 	cands, err := r.Resolve(context.Background(), &CapabilityRequirement{Name: "WebFetch"})
 	require.NoError(t, err)
 	require.Len(t, cands, 2)
@@ -352,15 +363,24 @@ func TestMemoryEvidenceStore_Aggregate(t *testing.T) {
 
 // ── Planner Integration ──────────────────────────────────
 
-func TestPlanner_FullPipeline_Summation(t *testing.T) {
-	planner := NewPlanner(
+func testPlanner(t *testing.T) *Planner {
+	t.Helper()
+	resolver, err := NewToolResolver(&mockToolProvider{})
+	require.NoError(t, err)
+	planner, err := NewPlanner(
 		NewRuleBasedAnalyzer(),
 		NewCapabilityPlanner(),
-		NewToolResolver(&mockToolProvider{}),
+		resolver,
 		NewToolScorer(),
 		NewExecutionPlanner(),
 		NewMemoryEvidenceStore(),
 	)
+	require.NoError(t, err)
+	return planner
+}
+
+func TestPlanner_FullPipeline_Summation(t *testing.T) {
+	planner := testPlanner(t)
 
 	plan, err := planner.Plan(context.Background(), "计算1到一百万的和")
 	require.NoError(t, err)
@@ -371,14 +391,7 @@ func TestPlanner_FullPipeline_Summation(t *testing.T) {
 }
 
 func TestPlanner_EmptyRequest(t *testing.T) {
-	planner := NewPlanner(
-		NewRuleBasedAnalyzer(),
-		NewCapabilityPlanner(),
-		NewToolResolver(&mockToolProvider{}),
-		NewToolScorer(),
-		NewExecutionPlanner(),
-		NewMemoryEvidenceStore(),
-	)
+	planner := testPlanner(t)
 
 	plan, err := planner.Plan(context.Background(), "")
 	require.Error(t, err)
@@ -386,14 +399,7 @@ func TestPlanner_EmptyRequest(t *testing.T) {
 }
 
 func TestPlanner_UnknownRequest(t *testing.T) {
-	planner := NewPlanner(
-		NewRuleBasedAnalyzer(),
-		NewCapabilityPlanner(),
-		NewToolResolver(&mockToolProvider{}),
-		NewToolScorer(),
-		NewExecutionPlanner(),
-		NewMemoryEvidenceStore(),
-	)
+	planner := testPlanner(t)
 
 	plan, err := planner.Plan(context.Background(), "do something completely unknown")
 	require.Error(t, err)
@@ -401,14 +407,7 @@ func TestPlanner_UnknownRequest(t *testing.T) {
 }
 
 func TestPlanner_PDFRequest(t *testing.T) {
-	planner := NewPlanner(
-		NewRuleBasedAnalyzer(),
-		NewCapabilityPlanner(),
-		NewToolResolver(&mockToolProvider{}),
-		NewToolScorer(),
-		NewExecutionPlanner(),
-		NewMemoryEvidenceStore(),
-	)
+	planner := testPlanner(t)
 
 	plan, err := planner.Plan(context.Background(), "extract text from this pdf")
 	require.NoError(t, err)
