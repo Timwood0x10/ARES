@@ -171,12 +171,16 @@ func (r *Registry) GetSchemas() []ToolSchema {
 	if r.schemaDirty || r.schemaCache == nil {
 		schemas := make([]ToolSchema, 0, len(r.tools))
 		for _, tool := range r.tools {
-			schemas = append(schemas, ToolSchema{
+			schema := ToolSchema{
 				Name:        tool.Name(),
 				Description: tool.Description(),
 				Category:    tool.Category(),
 				Parameters:  tool.Parameters(),
-			})
+			}
+			if tt, ok := tool.(TaggableTool); ok {
+				schema.Tags = tt.Tags()
+			}
+			schemas = append(schemas, schema)
 		}
 
 		r.schemaCache = schemas
@@ -195,6 +199,43 @@ func (r *Registry) GetLLMTools() []llmcore.Tool {
 		tools = append(tools, ToolSchemaToLLMTool(schema))
 	}
 	return tools
+}
+
+// FindByTags returns tools whose tags match ALL specified key-value pairs.
+// Use "*" as value to match any tool that has the key regardless of value.
+//
+// Example:
+//
+//	r.FindByTags(map[string]string{"domain": "math", "side_effects": "false"})
+//	r.FindByTags(map[string]string{"domain": "*"}) // all tools with domain tag
+func (r *Registry) FindByTags(tags map[string]string) []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []Tool
+	for _, tool := range r.tools {
+		tt, ok := tool.(TaggableTool)
+		if !ok {
+			continue
+		}
+		toolTags := tt.Tags()
+		match := true
+		for key, val := range tags {
+			tagVal, exists := toolTags[key]
+			if !exists {
+				match = false
+				break
+			}
+			if val != "*" && tagVal != val {
+				match = false
+				break
+			}
+		}
+		if match {
+			result = append(result, tool)
+		}
+	}
+	return result
 }
 
 // ToolFilter defines filter criteria for tools.

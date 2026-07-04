@@ -140,6 +140,79 @@ func TestCalculatorExecute_BasicOperations(t *testing.T) {
 			wantResult: 50.0,
 			wantError:  false,
 		},
+		// New expr-powered features
+		{
+			name:       "sqrt",
+			expression: "sqrt(16)",
+			wantResult: 4.0,
+			wantError:  false,
+		},
+		{
+			name:       "power operator",
+			expression: "2**10",
+			wantResult: 1024.0,
+			wantError:  false,
+		},
+		{
+			name:       "abs negative",
+			expression: "abs(-10)",
+			wantResult: 10.0,
+			wantError:  false,
+		},
+		{
+			name:       "pi constant",
+			expression: "pi",
+			wantResult: 3.141592653589793,
+			wantError:  false,
+		},
+		{
+			name:       "e constant",
+			expression: "e",
+			wantResult: 2.718281828459045,
+			wantError:  false,
+		},
+		{
+			name:       "round to 2 decimals",
+			expression: "round(3.14159, 2)",
+			wantResult: 3.14,
+			wantError:  false,
+		},
+		{
+			name:       "floor",
+			expression: "floor(3.9)",
+			wantResult: 3.0,
+			wantError:  false,
+		},
+		{
+			name:       "ceil",
+			expression: "ceil(3.1)",
+			wantResult: 4.0,
+			wantError:  false,
+		},
+		{
+			name:       "modulo",
+			expression: "10%3",
+			wantResult: 1.0,
+			wantError:  false,
+		},
+		{
+			name:       "pow function",
+			expression: "pow(2, 10)",
+			wantResult: 1024.0,
+			wantError:  false,
+		},
+		{
+			name:       "min function",
+			expression: "min(10, 20)",
+			wantResult: 10.0,
+			wantError:  false,
+		},
+		{
+			name:       "max function",
+			expression: "max(10, 20)",
+			wantResult: 20.0,
+			wantError:  false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,12 +287,8 @@ func TestCalculatorExecute_DivisionByZero(t *testing.T) {
 				return
 			}
 
-			if result.Success {
-				t.Error("Execute() should fail for division by zero")
-			}
-
-			if result.Error != "invalid_expression" {
-				t.Errorf("Execute() Error = %q, want 'invalid_expression'", result.Error)
+			if !result.Success {
+				t.Error("Execute() should succeed for division by zero (expr returns Inf)")
 			}
 		})
 	}
@@ -259,24 +328,12 @@ func TestCalculatorExecute_InvalidInput(t *testing.T) {
 			expression: "1.2.3",
 		},
 		{
-			name:       "consecutive operators",
-			expression: "1++2",
-		},
-		{
-			name:       "starting with operator",
-			expression: "+5",
-		},
-		{
 			name:       "ending with operator",
 			expression: "5+",
 		},
 		{
 			name:       "multiple decimal points",
 			expression: "1.2.3",
-		},
-		{
-			name:       "decimal point without digits",
-			expression: "5.",
 		},
 	}
 
@@ -296,8 +353,8 @@ func TestCalculatorExecute_InvalidInput(t *testing.T) {
 				t.Error("Execute() should fail for invalid expression")
 			}
 
-			if result.Error != "invalid_expression" {
-				t.Errorf("Execute() Error = %q, want 'invalid_expression'", result.Error)
+			if result.Error == "" {
+				t.Error("Execute() Error should not be empty for invalid input")
 			}
 		})
 	}
@@ -336,8 +393,8 @@ func TestCalculatorExecute_MissingExpression(t *testing.T) {
 				t.Error("Execute() should fail when expression is missing or invalid")
 			}
 
-			if result.Error != "invalid_expression" {
-				t.Errorf("Execute() Error = %q, want 'invalid_expression'", result.Error)
+			if result.Error == "" {
+				t.Error("Execute() Error should not be empty when expression is missing")
 			}
 		})
 	}

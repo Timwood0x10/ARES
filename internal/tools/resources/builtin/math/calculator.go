@@ -3,27 +3,36 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"math"
 	"strings"
 	"time"
+
+	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/vm"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// Calculator performs mathematical calculations.
+// Calculator performs mathematical calculations using the expr library.
+// Supports: +, -, *, /, %, **, parentheses, and 15+ built-in functions.
 type Calculator struct {
 	*base.BaseTool
+	compiled map[string]*vm.Program
 }
 
-// NewCalculator creates a new Calculator tool.
+// NewCalculator creates a new Calculator tool backed by the expr evaluation engine.
+//
+// Supported operators: +, -, *, /, %, ** (power)
+// Supported functions: sqrt, abs, sin, cos, tan, log, ln, round, floor, ceil, pow, min, max
+// Supported constants: pi, e
 func NewCalculator() *Calculator {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
 			"expression": {
 				Type:        "string",
-				Description: "A mathematical expression to evaluate. Examples: '100*(100+1)/2', '1000000*(1000000+1)/2', '5*6', '10/2'",
+				Description: "A mathematical expression to evaluate. Examples: 'sqrt(2)', '3**4', 'pi * 5^2', 'abs(-10)', 'sin(pi/2)', 'round(3.14159, 2)'",
 			},
 		},
 		Required: []string{"expression"},
@@ -31,22 +40,99 @@ func NewCalculator() *Calculator {
 
 	return &Calculator{
 		BaseTool: base.NewBaseToolWithCapabilities("calculator",
-			"Evaluate mathematical expressions using standard arithmetic operations.\n\nIMPORTANT FORMULAS:\n- Sum from 1 to n: n*(n+1)/2\n- Sum from a to b: (b-a+1)*(a+b)/2\n\nSUPPORTED OPERATIONS:\n- Addition: +\n- Subtraction: -\n- Multiplication: *\n- Division: /\n- Parentheses: ()\n\nUSAGE RULES:\n- Always use mathematical expressions, not natural language\n- For '1 to 100 sum', use: 100*(100+1)/2\n- For '1 to 1000000 sum', use: 1000000*(1000000+1)/2\n\nExamples:\n- 1+2 → 1+2\n- 10*20 → 10*20\n- Sum 1 to 100 → 100*(100+1)/2\n- Sum 1 to 100000 → 100000*(100000+1)/2",
+			"Evaluate mathematical expressions using the full expr engine.\n\n"+
+				"OPERATORS:\n"+
+				"- Arithmetic: +, -, *, /, % (modulo)\n"+
+				"- Power: ** (e.g., 2**10 = 1024)\n"+
+				"- Parentheses: ()\n\n"+
+				"FUNCTIONS:\n"+
+				"- sqrt(x), abs(x), round(x, n), floor(x), ceil(x)\n"+
+				"- sin(x), cos(x), tan(x) — x in radians\n"+
+				"- log(x), ln(x) — log base 10 and natural log\n"+
+				"- pow(x, y), min(a, b), max(a, b)\n\n"+
+				"CONSTANTS:\n"+
+				"- pi (3.14159...), e (2.71828...)\n\n"+
+				"EXAMPLES:\n"+
+				"- '{sqrt(2)}', '{3**4}', '{pi * 5**2}', '{sin(pi/2)}'",
 			core.CategoryCore, []core.Capability{core.CapabilityMath}, params),
+		compiled: make(map[string]*vm.Program),
 	}
 }
 
-// Execute performs the calculation.
+// Execute evaluates the expression using the expr library.
 func (t *Calculator) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	expression, ok := params["expression"].(string)
 	if !ok || expression == "" {
-		return core.NewErrorResult("invalid_expression"), nil
+		return core.NewErrorResult("expression is required"), nil
 	}
 
-	// Evaluate the expression
-	result, err := evaluateExpression(expression)
+	env := map[string]interface{}{
+		"pi": math.Pi,
+		"e":  math.E,
+	}
+
+	// Use compiled program cache for repeated expressions.
+	program, ok := t.compiled[expression]
+	if !ok {
+		var err error
+		program, err = expr.Compile(expression, expr.Env(env),
+			expr.Function("sqrt", func(params ...interface{}) (interface{}, error) {
+				return math.Sqrt(toFloat64(params[0])), nil
+			}),
+			expr.Function("abs", func(params ...interface{}) (interface{}, error) {
+				return math.Abs(toFloat64(params[0])), nil
+			}),
+			expr.Function("sin", func(params ...interface{}) (interface{}, error) {
+				return math.Sin(toFloat64(params[0])), nil
+			}),
+			expr.Function("cos", func(params ...interface{}) (interface{}, error) {
+				return math.Cos(toFloat64(params[0])), nil
+			}),
+			expr.Function("tan", func(params ...interface{}) (interface{}, error) {
+				return math.Tan(toFloat64(params[0])), nil
+			}),
+			expr.Function("log", func(params ...interface{}) (interface{}, error) {
+				return math.Log10(toFloat64(params[0])), nil
+			}),
+			expr.Function("ln", func(params ...interface{}) (interface{}, error) {
+				return math.Log(toFloat64(params[0])), nil
+			}),
+			expr.Function("round", func(params ...interface{}) (interface{}, error) {
+				if len(params) == 2 {
+					return math.Round(toFloat64(params[0])*math.Pow10(int(toFloat64(params[1])))) / math.Pow10(int(toFloat64(params[1]))), nil
+				}
+				return math.Round(toFloat64(params[0])), nil
+			}),
+			expr.Function("floor", func(params ...interface{}) (interface{}, error) {
+				return math.Floor(toFloat64(params[0])), nil
+			}),
+			expr.Function("ceil", func(params ...interface{}) (interface{}, error) {
+				return math.Ceil(toFloat64(params[0])), nil
+			}),
+			expr.Function("pow", func(params ...interface{}) (interface{}, error) {
+				return math.Pow(toFloat64(params[0]), toFloat64(params[1])), nil
+			}),
+			expr.Function("min", func(params ...interface{}) (interface{}, error) {
+				return math.Min(toFloat64(params[0]), toFloat64(params[1])), nil
+			}),
+			expr.Function("max", func(params ...interface{}) (interface{}, error) {
+				return math.Max(toFloat64(params[0]), toFloat64(params[1])), nil
+			}),
+		)
+		if err != nil {
+			return core.NewErrorResult(fmt.Sprintf("invalid expression: %v", err)), nil
+		}
+		t.compiled[expression] = program
+	}
+
+	output, err := expr.Run(program, env)
 	if err != nil {
-		return core.NewErrorResult("invalid_expression"), nil
+		return core.NewErrorResult(fmt.Sprintf("evaluation error: %v", err)), nil
+	}
+
+	result, ok := toFloat64Safe(output)
+	if !ok {
+		return core.NewErrorResult("expression did not return a number"), nil
 	}
 
 	return core.NewResult(true, map[string]interface{}{
@@ -55,175 +141,36 @@ func (t *Calculator) Execute(ctx context.Context, params map[string]interface{})
 	}), nil
 }
 
-// evaluateExpression evaluates a simple mathematical expression.
-// Supports: +, -, *, /, (), and numbers (integers and floats)
-func evaluateExpression(expr string) (float64, error) {
-	// Remove whitespace
-	expr = strings.ReplaceAll(expr, " ", "")
-
-	if expr == "" {
-		return 0, fmt.Errorf("empty expression")
-	}
-
-	// Parse and evaluate the expression
-	return parseExpression(expr)
-}
-
-// parseExpression parses and evaluates an expression
-func parseExpression(expr string) (float64, error) {
-	return parseAddSub(expr)
-}
-
-// parseAddSub handles + and -
-func parseAddSub(expr string) (float64, error) {
-	left, remaining, err := parseMulDiv(expr)
-	if err != nil {
-		return 0, err
-	}
-
-	for len(remaining) > 0 {
-		switch remaining[0] {
-		case '+':
-			right, newRemaining, err := parseMulDiv(remaining[1:])
-			if err != nil {
-				return 0, err
-			}
-			left += right
-			remaining = newRemaining
-		case '-':
-			right, newRemaining, err := parseMulDiv(remaining[1:])
-			if err != nil {
-				return 0, err
-			}
-			left -= right
-			remaining = newRemaining
-		default:
-			// Invalid character encountered
-			return 0, fmt.Errorf("invalid character in expression: %c", remaining[0])
-		}
-	}
-
-	return left, nil
-}
-
-// parseMulDiv handles * and /
-func parseMulDiv(expr string) (float64, string, error) {
-	left, remaining, err := parseFactor(expr)
-	if err != nil {
-		return 0, "", err
-	}
-
-loop:
-	for len(remaining) > 0 {
-		switch remaining[0] {
-		case '*':
-			right, newRemaining, err := parseFactor(remaining[1:])
-			if err != nil {
-				return 0, "", err
-			}
-			left *= right
-			remaining = newRemaining
-		case '/':
-			right, newRemaining, err := parseFactor(remaining[1:])
-			if err != nil {
-				return 0, "", err
-			}
-			if right == 0 {
-				return 0, "", fmt.Errorf("division by zero")
-			}
-			left /= right
-			remaining = newRemaining
-		default:
-			break loop
-		}
-	}
-
-	return left, remaining, nil
-}
-
-// parseFactor handles numbers and parentheses
-func parseFactor(expr string) (float64, string, error) {
-	if len(expr) == 0 {
-		return 0, "", fmt.Errorf("unexpected end of expression")
-	}
-
-	// Handle parentheses
-	if expr[0] == '(' {
-		// Find matching closing parenthesis
-		parenCount := 1
-		end := 1
-		for end < len(expr) && parenCount > 0 {
-			switch expr[end] {
-			case '(':
-				parenCount++
-			case ')':
-				parenCount--
-			}
-			end++
-		}
-
-		if parenCount != 0 {
-			return 0, "", fmt.Errorf("unmatched parentheses")
-		}
-
-		// Evaluate expression inside parentheses
-		value, err := parseExpression(expr[1 : end-1])
-		if err != nil {
-			return 0, "", err
-		}
-
-		return value, expr[end:], nil
-	}
-
-	// Parse number
-	return parseNumber(expr)
-}
-
-// parseNumber parses a number from the expression
-func parseNumber(expr string) (float64, string, error) {
-	i := 0
-
-	// Handle optional negative sign
-	if len(expr) > 0 && expr[0] == '-' {
-		i++
-	}
-
-	// Parse digits and decimal point
-	dotSeen := false
-	for i < len(expr) {
-		if expr[i] == '.' {
-			if dotSeen {
-				break
-			}
-			dotSeen = true
-			i++
-		} else if expr[i] >= '0' && expr[i] <= '9' {
-			i++
-		} else {
-			break
-		}
-	}
-
-	if i == 0 || (i == 1 && expr[0] == '-') {
-		return 0, "", fmt.Errorf("expected number at position %d", i)
-	}
-
-	numStr := expr[:i]
-
-	// Check if number ends with decimal point
-	if numStr[len(numStr)-1] == '.' {
-		return 0, "", fmt.Errorf("invalid number format: ends with decimal point")
-	}
-
-	value, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0, "", fmt.Errorf("failed to parse number '%s': %v", numStr, err)
-	}
-
-	return value, expr[i:], nil
-}
-
+// IsIdempotent returns true since calculator has no side effects.
 func (t *Calculator) IsIdempotent() bool { return true }
+
+// toFloat64 converts any numeric value to float64.
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	default:
+		return 0
+	}
+}
+
+// toFloat64Safe safely converts a value to float64, returning false on failure.
+func toFloat64Safe(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	default:
+		return 0, false
+	}
+}
 
 // DateTime provides date and time operations.
 type DateTime struct {
