@@ -70,13 +70,6 @@ func (s *toolScorer) Score(_ context.Context, candidates []ToolCandidate, eviden
 	return scored, nil
 }
 
-// evidenceAgg holds aggregated evidence metrics for a tool.
-type evidenceAgg struct {
-	successRate float64
-	avgLatency  time.Duration
-	count       int
-}
-
 // aggregateEvidence groups evidence by tool name and computes aggregates.
 func aggregateEvidence(evidence []ToolEvidence) map[string]evidenceAgg {
 	result := make(map[string]evidenceAgg)

@@ -35,17 +35,17 @@ Implementation work must follow `plan/rules/code_rules.md`:
   - `ExecutionStep`
   - `ToolEvidence`
 - [x] Document that `Registry` remains the runtime catalog.
-- [ ] Decide package placement for the planner.
-  - Proposed path: `internal/tools/planner`.
-- [ ] Define narrow interfaces for:
+- [x] Decide package placement for the planner.
+  - Final path: `internal/tools/planner`.
+- [x] Define narrow interfaces for:
   - `SemanticAnalyzer`
   - `CapabilityPlanner`
   - `ToolResolver`
   - `ToolScorer`
   - `ExecutionPlanner`
   - `EvidenceStore`
-- [ ] Define constructor names and dependency injection boundaries.
-- [ ] Write interface-level tests or compile-time assertions for the package boundary.
+- [x] Define constructor names and dependency injection boundaries.
+- [x] Write interface-level tests or compile-time assertions for the package boundary.
 
 Acceptance criteria:
 
@@ -55,13 +55,13 @@ Acceptance criteria:
 
 ## Phase 2: Single-step Planning
 
-- [ ] Implement `Intent` and `CapabilityRequirement` models.
-- [ ] Implement a rule-based `SemanticAnalyzer`.
-- [ ] Implement a deterministic `CapabilityPlanner` for simple tasks.
-- [ ] Implement `ToolResolver` using the existing `Registry` and `CapabilityEngine`.
-- [ ] Implement `ToolScorer` with static metadata and neutral evidence defaults.
-- [ ] Implement `ExecutionPlanner` that returns a single-step `ExecutionPlan`.
-- [ ] Add tests for:
+- [x] Implement `Intent` and `CapabilityRequirement` models.
+- [x] Implement a rule-based `SemanticAnalyzer`.
+- [x] Implement a deterministic `CapabilityPlanner` for simple tasks.
+- [x] Implement `ToolResolver` using the existing `Registry` and `CapabilityEngine`.
+- [x] Implement `ToolScorer` with static metadata and neutral evidence defaults.
+- [x] Implement `ExecutionPlanner` that returns a single-step `ExecutionPlan`.
+- [x] Add tests for:
   - empty request
   - unknown capability
   - multiple candidate tools
@@ -77,14 +77,14 @@ Acceptance criteria:
 
 ## Phase 3: Agent Integration
 
-- [ ] Add a compatibility integration path before changing default execution behavior.
-- [ ] Keep direct LLM tool-name execution as the default path until planner tests are stable.
-- [ ] Add planner fallback for:
+- [x] Add a compatibility integration path before changing default execution behavior.
+- [x] Keep direct LLM tool-name execution as the default path until planner tests are stable.
+- [x] Add planner fallback for:
   - tool not found
   - low-confidence tool selection
   - requests with no LLM tool call
-- [ ] Add structured logs with trace identifiers where available.
-- [ ] Add integration tests around `executeToolCall` or the nearest safe boundary.
+- [x] Add structured logs with trace identifiers where available.
+- [x] Add integration tests around `executeToolCall` or the nearest safe boundary.
 
 Acceptance criteria:
 
@@ -94,12 +94,12 @@ Acceptance criteria:
 
 ## Phase 4: Evidence-aware Scoring
 
-- [ ] Define `ToolEvidence` model in Go.
-- [ ] Connect runtime results to the existing tool call experience collector where appropriate.
-- [ ] Add an evidence aggregation interface.
-- [ ] Compute success rate, latency, retry count, and failure class per tool and capability.
-- [ ] Feed aggregated evidence into `ToolScore`.
-- [ ] Add tests for:
+- [x] Define `ToolEvidence` model in Go.
+- [x] Connect runtime results to the existing tool call experience collector where appropriate.
+- [x] Add an evidence aggregation interface.
+- [x] Compute success rate, latency, retry count, and failure class per tool and capability.
+- [x] Feed aggregated evidence into `ToolScore`.
+- [x] Add tests for:
   - no evidence
   - successful evidence improves score
   - repeated failures reduce score
@@ -134,12 +134,12 @@ Acceptance criteria:
 
 ## Phase 6: Capability Model Evolution
 
-- [ ] Split broad capabilities into precise capabilities.
-- [ ] Add aliases for natural-language matching.
-- [ ] Add stable input and output type declarations.
-- [ ] Add capability versioning if needed.
-- [ ] Add migration path for existing tools.
-- [ ] Add tests to ensure every built-in tool exposes at least one capability.
+- [x] Split broad capabilities into precise capabilities.
+- [x] Add aliases for natural-language matching.
+- [x] Add stable input and output type declarations.
+- [x] Add capability versioning if needed.
+- [x] Add migration path for existing tools.
+- [x] Add tests to ensure every built-in tool exposes at least one capability.
 
 Acceptance criteria:
 
@@ -149,11 +149,11 @@ Acceptance criteria:
 
 ## Review Checklist
 
-- [ ] Every new public type and method has an English comment.
-- [ ] Every function that can fail returns an error.
-- [ ] Every error is wrapped with component context.
-- [ ] No planner component executes a tool.
-- [ ] No runtime component performs semantic planning.
-- [ ] No global mutable state is used to pass planner data.
-- [ ] Tests include failure paths and boundary cases.
-- [ ] Lint, vet, static analysis, and race tests are run before merge.
+- [x] Every new public type and method has an English comment.
+- [x] Every function that can fail returns an error.
+- [x] Every error is wrapped with component context.
+- [x] No planner component executes a tool.
+- [x] No runtime component performs semantic planning.
+- [x] No global mutable state is used to pass planner data.
+- [x] Tests include failure paths and boundary cases.
+- [x] Lint, vet, static analysis, and race tests are run before merge.
