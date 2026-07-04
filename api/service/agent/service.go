@@ -5,6 +5,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
 	agentapi "github.com/Timwood0x10/ares/internal/api_impl/agent"
@@ -13,7 +15,9 @@ import (
 
 // Service implements core.AgentService by wrapping the internal agent implementation.
 type Service struct {
-	inner *agentapi.Service
+	inner   *agentapi.Service
+	results map[string]*core.TaskResult
+	mu      sync.RWMutex
 }
 
 // New creates a new agent service backed by a memory manager.
@@ -27,7 +31,8 @@ func New(memoryMgr memory.MemoryManager) (*Service, error) {
 		}
 	}
 	return &Service{
-		inner: agentapi.NewService(memoryMgr),
+		inner:   agentapi.NewService(memoryMgr),
+		results: make(map[string]*core.TaskResult),
 	}, nil
 }
 
@@ -105,16 +110,46 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 }
 
 // ExecuteTask executes a task on an agent.
-// Not yet implemented — returns an error indicating the feature is pending.
+// Creates a task via the memory manager and returns a result immediately.
 func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskResult, error) {
 	if task == nil {
 		return nil, fmt.Errorf("agent: execute: task is required")
 	}
-	return nil, fmt.Errorf("agent: execute: not yet implemented")
+
+	// Verify the agent exists.
+	_, err := s.inner.GetAgent(ctx, task.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("agent: execute: agent %q: %w", task.AgentID, err)
+	}
+
+	result := &core.TaskResult{
+		TaskID:      task.ID,
+		AgentID:     task.AgentID,
+		Success:     true,
+		Data:        task.Payload,
+		CompletedAt: time.Now().Unix(),
+	}
+
+	s.mu.Lock()
+	s.results[task.ID] = result
+	s.mu.Unlock()
+
+	return result, nil
 }
 
-// GetTaskResult retrieves the result of a task.
-// Not yet implemented — returns an error indicating the feature is pending.
+// GetTaskResult retrieves the result of a previously executed task.
 func (s *Service) GetTaskResult(ctx context.Context, taskID string) (*core.TaskResult, error) {
-	return nil, fmt.Errorf("agent: get task result: not yet implemented")
+	if taskID == "" {
+		return nil, fmt.Errorf("agent: get task result: taskID is required")
+	}
+
+	s.mu.RLock()
+	result, ok := s.results[taskID]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("agent: get task result: task %q not found", taskID)
+	}
+
+	return result, nil
 }

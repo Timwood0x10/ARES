@@ -53,6 +53,44 @@ type Parameter struct {
 }
 ```
 
+### 2.4 Built-in Tools Auto-Registration (Important)
+
+Built-in tools (calculator, hash_tool, string_utils, pdf_tool, id_generator, etc.) are **auto-registered on agent startup**. You do NOT need to call any registration function manually.
+
+```go
+// ✅ Correct: tools are ready automatically
+registry := tools.NewRegistry()
+// All built-in tools are auto-registered in the constructor.
+// No manual RegisterBuiltinTools() call needed.
+
+result, _ := registry.Execute(ctx, "calculator", map[string]any{"expression": "1+1"})
+result, _ = registry.Execute(ctx, "hash_tool", map[string]any{"operation": "sha256", "input": "hello"})
+result, _ = registry.Execute(ctx, "pdf_tool", map[string]any{"operation": "extract_text", "file_path": "doc.pdf"})
+```
+
+If you need to **start from scratch** (no built-in tools):
+```go
+registry := tools.NewEmptyRegistry() // Empty, no tools at all
+registry.Register(myCustomTool)      // Register only your own tools
+```
+
+To reload built-in tools into an empty registry:
+```go
+tools.RegisterBuiltinTools(registry) // Manually add built-in tools
+```
+
+### 2.5 Custom Tool Extension
+
+```go
+registry.Register(tools.ToolFunc{
+    ToolName: "my_tool",
+    ToolDesc: "My custom tool",
+    Fn: func(ctx context.Context, params map[string]any) (any, error) {
+        return "result", nil
+    },
+})
+```
+
 ## 3. Tool Categories
 
 | Category | Description | Typical Tools |

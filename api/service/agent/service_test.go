@@ -109,18 +109,45 @@ func TestExecuteTask_NotImplemented(t *testing.T) {
 	s, err := New(nil)
 	require.NoError(t, err)
 
-	result, err := s.ExecuteTask(context.Background(), &core.Task{ID: "task-1"})
+	result, err := s.ExecuteTask(context.Background(), &core.Task{ID: "task-1", AgentID: "test-agent"})
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "not yet implemented")
+	assert.Contains(t, err.Error(), "agent not found")
 }
 
-func TestGetTaskResult_NotImplemented(t *testing.T) {
+func TestGetTaskResult_NotFound(t *testing.T) {
 	s, err := New(nil)
 	require.NoError(t, err)
 
 	result, err := s.GetTaskResult(context.Background(), "task-1")
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "not yet implemented")
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestExecuteAndGetTaskResult(t *testing.T) {
+	s, err := New(nil)
+	require.NoError(t, err)
+
+	// Create an agent first.
+	agent, err := s.CreateAgent(context.Background(), &core.AgentConfig{ID: "task-agent"})
+	require.NoError(t, err)
+
+	// Execute a task.
+	taskResult, err := s.ExecuteTask(context.Background(), &core.Task{
+		ID:      "my-task",
+		AgentID: agent.ID,
+		Payload: map[string]interface{}{"query": "test"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, taskResult)
+	assert.True(t, taskResult.Success)
+	assert.Equal(t, "my-task", taskResult.TaskID)
+
+	// Retrieve the result.
+	retrieved, err := s.GetTaskResult(context.Background(), "my-task")
+	require.NoError(t, err)
+	require.NotNil(t, retrieved)
+	assert.Equal(t, "my-task", retrieved.TaskID)
+	assert.True(t, retrieved.Success)
 }

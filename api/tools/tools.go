@@ -1,21 +1,20 @@
 // Package tools provides the public API for tool registration and execution.
 //
-// External projects can use this package to:
-//   - Register custom tools
-//   - Call built-in tools (web_search, http_request, etc.)
-//   - Create tool registries for agent systems
+// == Built-in tools (auto-registered) ==
 //
-// Usage:
+// NewRegistry() automatically registers all built-in tools. You do NOT need
+// to call RegisterBuiltinTools() manually — tools are ready on creation:
 //
-//	import "github.com/Timwood0x10/ares/api/tools"
-//
-//	// Create a registry
 //	registry := tools.NewRegistry()
+//	result, _ := registry.Execute(ctx, "calculator", map[string]any{"expression": "1+1"})
 //
-//	// Register built-in tools
-//	_ = tools.RegisterBuiltinTools(registry)
+// Built-in tools include: calculator, hash_tool, string_utils, pdf_tool,
+// id_generator, regex, json_tools, web_search, file_tools.
 //
-//	// Register custom tool
+// == Custom tools ==
+//
+// You can register additional tools using registry.Register():
+//
 //	registry.Register(tools.ToolFunc{
 //	    ToolName: "my_tool",
 //	    ToolDesc: "My custom tool",
@@ -24,8 +23,13 @@
 //	    },
 //	})
 //
-//	// Call a tool
-//	result, err := registry.Execute(ctx, "web_search", map[string]any{"query": "hello"})
+// == Starting from scratch ==
+//
+// If you want an empty registry without any built-in tools (e.g., for a
+// custom environment), use NewEmptyRegistry():
+//
+//	registry := tools.NewEmptyRegistry()
+//	registry.Register(myTool)
 package tools
 
 import (
@@ -73,8 +77,18 @@ type Registry struct {
 	tools map[string]Tool
 }
 
-// NewRegistry creates a new empty Registry.
+// NewRegistry creates a new Registry pre-populated with all built-in tools.
+// External callers get ALL built-in tools automatically — no manual registration needed.
 func NewRegistry() *Registry {
+	r := &Registry{tools: make(map[string]Tool)}
+	// Auto-populate with built-in tools on creation.
+	_ = RegisterBuiltinTools(r)
+	return r
+}
+
+// NewEmptyRegistry creates a new empty Registry with no built-in tools.
+// Use this if you want to start from scratch and only add custom tools.
+func NewEmptyRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
 

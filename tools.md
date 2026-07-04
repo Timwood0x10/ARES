@@ -454,7 +454,136 @@ Evidence aggregation should answer:
 - Validate input and output compatibility between steps.
 - Execute DAG plans through the workflow runtime.
 
-## 10. Non-goals
+## 12. Tool Dispatch Chain
+
+The system has two parallel tool dispatch paths. Understanding both is essential for debugging and extension.
+
+### 12.1 Primary Path: LLM-Selected Tool Call (Hot Path)
+
+This is the default path used when the LLM knows the tool name.
+
+```text
+LLM Response: {"tool_calls": [{"name": "calculator", "arguments": {"expression": "1+1"}}]
+    │
+    ▼
+internal/agents/sub/executor.go:452    ← executeToolCall()
+    │  Parse arguments JSON
+    ▼
+internal/agents/sub/tools.go:57       ← toolBinder.CallTool(name, args)
+    │  Look up tool in local binder table
+    ▼
+internal/agents/sub/tools.go:104      ← BridgeFromRegistry()
+    │  Not found locally → fallback to core.Registry
+    ▼
+internal/tools/resources/core/registry.go:92  ← Registry.Execute(name, params)
+    │  Look up tool by name → tool.Execute(ctx, params)
+    ▼
+builtin/calculator.go / hash/hash.go / ...    ← Real tool logic
+```
+
+**Key files:**
+
+| File | Line | Role |
+|---|---|---|
+| `internal/agents/sub/executor.go` | 452 | **Primary tool execution entry point** |
+| `internal/agents/sub/tools.go` | 57 | `toolBinder.CallTool()` — dispatch core |
+| `internal/agents/sub/tools.go` | 104 | `BridgeFromRegistry()` — connects binder to registry |
+| `internal/tools/resources/core/registry.go` | 92 | `Registry.Execute()` — tool lookup + execution |
+| `internal/llm/output/toolcall.go` | 25 | `ToolCall` struct definition |
+
+### 12.2 Secondary Path: Capability Planner Fallback
+
+This path activates when the LLM does not provide a tool name, the tool is not found, or the system explicitly uses the planner.
+
+```text
+User Request: "累加从1到100"
+    │
+    ▼
+internal/tools/planner/bridge.go:84   ← ToolExecutionBridge.Execute()
+    │  toolName == "" → trigger planner fallback
+    ▼
+internal/tools/planner/planner.go:79  ← Planner.Plan()
+    │  Step 1: Semantic Analysis (rule-based or LLM)
+    │  Step 2: Capability Planning (deterministic)
+    │  Step 3: Tool Resolution (capability → tool map)
+    │  Step 4: Parameter Extraction (NL → expression)
+    │  Step 5: Scoring (evidence-aware formula)
+    ▼
+internal/tools/planner/scorer.go:41   ← Scorer.Score()
+    │  BaseScore = (1/Cost)×10 + (Det?3:0) + (Comp?2:0)
+    │  EvidenceScore = SuccessRate×20 - latencyPenalty
+    │  Penalty = SideEffects?5:0
+    │  Final = BaseScore + EvidenceScore - Penalty
+    ▼
+internal/tools/planner/bridge.go:200  ← executeMultiStep() / executeSingleStep()
+    │  Execute in dependency order with per-step fallback
+    ▼
+internal/tools/planner/bridge.go:260  ← executeStepWithFallback()
+    │  Primary tool fails → fallback to next candidate
+```
+
+**Key files:**
+
+| File | Line | Role |
+|---|---|---|
+| `internal/tools/planner/bridge.go` | 84 | `ToolExecutionBridge.Execute()` — fallback entry |
+| `internal/tools/planner/planner.go` | 79 | `Planner.Plan()` — full pipeline orchestrator |
+| `internal/tools/planner/analyzer.go` | 37 | `RuleBasedAnalyzer.Analyze()` — intent detection |
+| `internal/tools/planner/resolver.go` | 100 | `ToolResolver.Resolve()` — capability→tool mapping |
+| `internal/tools/planner/scorer.go` | 41 | `ToolScorer.Score()` — evidence-aware scoring |
+| `internal/tools/planner/extractor.go` | 25 | `ParameterExtractor.ExtractParams()` — NL→params |
+| `internal/tools/planner/capdef.go` | 28 | `BuiltinCapabilities()` — 20+ capability definitions |
+
+### 12.3 MCP Tool Path
+
+For external tools connected via the Model Context Protocol:
+
+```text
+Registry.Execute("mcp.codegraph.search", args)
+    │  Tool is an MCPTool wrapper
+    ▼
+internal/ares_mcp/mcp_tool.go:53     ← MCPTool.Execute()
+    │  Converts arguments to MCP format
+    ▼
+internal/ares_mcp/client.go:159      ← MCPClient.CallTool()
+    │  Sends JSON-RPC request over stdio/SSE
+    ▼
+External MCP Server Process          ← e.g. codegraph, uvx, blender
+```
+
+**Key files:**
+
+| File | Line | Role |
+|---|---|---|
+| `internal/ares_mcp/mcp_tool.go` | 53 | `MCPTool.Execute()` — MCP tool wrapper |
+| `internal/ares_mcp/client.go` | 159 | `MCPClient.CallTool()` — JSON-RPC transport |
+| `internal/ares_mcp/manager.go` | 112 | `MCPManager.ConnectServer()` — connection lifecycle |
+
+### 12.4 Dispatch Decision Logic
+
+```text
+Bridge.Execute(toolName, params, userRequest):
+    │
+    ├── toolName != "" AND tool exists in Registry
+    │   └── Direct execution (Primary Path)
+    │
+    ├── toolName != "" AND tool NOT in Registry
+    │   └── Log warning → Planner fallback (Secondary Path)
+    │
+    ├── toolName == "" AND userRequest != ""
+    │   └── Planner fallback (Secondary Path)
+    │
+    └── toolName == "" AND userRequest == ""
+        └── Error: "no tool name and no user request"
+```
+
+### 12.5 Design Notes
+
+- **LLM优先**: 热路径始终走 LLM 选的工具名，这是最高优先级
+- **评分保底**: 当 LLM 不给名字或给错名字时，Planner 评分引擎自动接管
+- **双路径共存**: 两条路径共享同一个 `Registry`，互不干扰
+- **证据驱动**: Scoring 公式使用历史成功率和延迟数据，越用越准
+- **自动降级**: `executeStepWithFallback()` 在主工具失败后自动尝试次优候选
 
 - Do not replace `Registry` in the first implementation.
 - Do not require the LLM to rank tools.

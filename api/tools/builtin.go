@@ -13,25 +13,80 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	builtin_hash "github.com/Timwood0x10/ares/internal/tools/resources/builtin/hash"
+	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
+	builtin_pdf "github.com/Timwood0x10/ares/internal/tools/resources/builtin/pdf"
+	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
+	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
 )
 
 // RegisterBuiltinTools registers all built-in tools into the given registry.
-// These tools are self-contained with no dependency on internal/.
+//
+// You normally do NOT need to call this function manually. NewRegistry()
+// already calls it automatically, so built-in tools are ready on creation.
+//
+// This function exists for two scenarios:
+//  1. Re-registration after NewEmptyRegistry() — if you called
+//     NewEmptyRegistry() and later decide you want the built-in tools.
+//  2. Custom registry setup — if you're building your own registry
+//     instance and want to populate it with built-in tools.
+//
+// Registered built-in tools:
+//   - calculator, hash_tool, string_utils, pdf_tool, id_generator
+//   - regex, json_tools, web_search, file_tools
 func RegisterBuiltinTools(r *Registry) error {
-	tools := []Tool{
-		&calculatorTool{},
+	// First register the internal-powered tools.
+	internalTools := []core.Tool{
+		builtin_math.NewCalculator(),
+		builtin_hash.NewHashTool(),
+		builtin_stringutils.NewStringUtils(),
+		builtin_pdf.NewPDFTool(),
+		builtin_system.NewIDGenerator(),
+	}
+	for _, t := range internalTools {
+		if err := r.Register(fromCore(t)); err != nil {
+			return err
+		}
+	}
+	// Then register the self-contained legacy tools.
+	legacyTools := []Tool{
 		&regexTool{},
 		&jsonTool{},
 		&webSearchTool{client: &http.Client{Timeout: 10 * time.Second}},
 		&fileTool{},
 	}
-	for _, t := range tools {
+	for _, t := range legacyTools {
 		if err := r.Register(t); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+// fromCore adapts a core.Tool to the public tools.Tool interface.
+func fromCore(t core.Tool) Tool {
+	return &coreAdapter{inner: t}
+}
+
+// coreAdapter wraps a core.Tool so it implements tools.Tool.
+type coreAdapter struct {
+	inner core.Tool
+}
+
+func (a *coreAdapter) Name() string        { return a.inner.Name() }
+func (a *coreAdapter) Description() string { return a.inner.Description() }
+func (a *coreAdapter) Execute(ctx context.Context, params map[string]any) (Result, error) {
+	cr, err := a.inner.Execute(ctx, params)
+	if err != nil {
+		return Result{Success: false, Data: err.Error()}, nil
+	}
+	return Result{Success: cr.Success, Data: cr.Data}, nil
+}
+
+// Compile-time check.
+var _ Tool = (*coreAdapter)(nil)
 
 // ── Calculator ───────────────────────────────────────────
 

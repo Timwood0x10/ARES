@@ -195,17 +195,17 @@ func (t *Calculator) Execute(ctx context.Context, params map[string]interface{})
 				if a == 0 || b == 0 {
 					return 0.0, nil
 				}
-				g := a
-				for g != 0 {
-					a, b = b, a%b
-					g = a
+				// Compute gcd using Euclidean algorithm.
+				oa, ob := absInt(a), absInt(b)
+				x, y := oa, ob
+				for y != 0 {
+					x, y = y, x%y
 				}
-				// Now a is gcd
-				gcd := a
+				gcd := x
 				if gcd == 0 {
 					gcd = 1
 				}
-				return float64(absInt(int(toFloat64(params[0])) * int(toFloat64(params[1])) / gcd)), nil
+				return float64(oa / gcd * ob), nil
 			}),
 			expr.Function("isPrime", func(params ...interface{}) (interface{}, error) {
 				n := int(toFloat64(params[0]))

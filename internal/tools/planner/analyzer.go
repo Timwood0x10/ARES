@@ -71,6 +71,13 @@ func defaultRules() []intentRule {
 			complexity:   "simple",
 			capabilities: []string{"Summation", "Arithmetic"},
 		},
+		{
+			keywords:     []string{"到的和", "的和", "到.*和"},
+			goal:         "mathematical computation",
+			operation:    "summation",
+			complexity:   "simple",
+			capabilities: []string{"Summation", "Arithmetic"},
+		},
 		// Advanced math
 		{
 			keywords:     []string{"factorial", "permutation", "combination", "combinatorics",
