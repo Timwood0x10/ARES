@@ -80,6 +80,18 @@ type ExecutionPlanner interface {
 }
 
 // EvidenceStore persists and retrieves tool execution evidence for scoring.
+//
+// EvidenceStore is a plugin interface: external implementations can replace
+// the default in-memory store with any backend (Postgres, Redis, file, etc.)
+// by implementing this interface and passing it to NewPlanner.
+//
+// Built-in implementation: NewMemoryEvidenceStore().
+// Example plugin: see integration_test.go for a custom implementation.
+//
+// To use a custom store:
+//
+//	store := MyPostgresEvidenceStore{db: pool}
+//	planner, err := NewPlanner(analyzer, planner, resolver, scorer, execPlan, store)
 type EvidenceStore interface {
 	// Save records a tool execution result as evidence.
 	// Args:

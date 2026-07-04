@@ -22,20 +22,25 @@ import (
 type ToolExecutionBridge struct {
 	registry *core.Registry
 	planner  *Planner
+	evidence EvidenceStore
 }
 
 // NewToolExecutionBridge creates a bridge with planner fallback.
 // Returns error if registry or planner is nil.
-func NewToolExecutionBridge(registry *core.Registry, planner *Planner) (*ToolExecutionBridge, error) {
+func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence EvidenceStore) (*ToolExecutionBridge, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("tool_bridge: registry is nil")
 	}
 	if planner == nil {
 		return nil, fmt.Errorf("tool_bridge: planner is nil")
 	}
+	if evidence == nil {
+		evidence = NewMemoryEvidenceStore()
+	}
 	return &ToolExecutionBridge{
 		registry: registry,
 		planner:  planner,
+		evidence: evidence,
 	}, nil
 }
 
@@ -231,7 +236,7 @@ func (b *ToolExecutionBridge) executeMultiStep(
 	return lastResult, nil
 }
 
-// executeStep runs a single step with the given parameters.
+// executeStep runs a single step with the given parameters and saves evidence.
 func (b *ToolExecutionBridge) executeStep(
 	ctx context.Context,
 	step ExecutionStep,
@@ -246,6 +251,21 @@ func (b *ToolExecutionBridge) executeStep(
 	start := time.Now()
 	result, err := tool.Execute(ctx, params)
 	latency := time.Since(start)
+
+	// Save execution evidence for future scoring.
+	saveErr := b.evidence.Save(ctx, &ToolEvidence{
+		ToolName:       step.ToolName,
+		CapabilityName: step.CapabilityName,
+		Success:        err == nil && result.Success,
+		Latency:        latency,
+		Timestamp:      time.Now(),
+	})
+	if saveErr != nil {
+		log.Warn("tool_bridge: failed to save evidence",
+			"tool", step.ToolName,
+			"error", saveErr,
+		)
+	}
 
 	log.Info("tool_bridge: step execution",
 		"tool", step.ToolName,
@@ -335,9 +355,9 @@ func topoSort(steps []ExecutionStep) ([]string, error) {
 		}
 	}
 
-	// If not all steps were ordered, a cycle exists.
+	// If not all steps were ordered, a cycle or missing dependency exists.
 	if len(order) != len(steps) {
-		return order, fmt.Errorf("tool_bridge: cycle detected in step dependencies: ordered %d of %d steps",
+		return order, fmt.Errorf("tool_bridge: cycle or missing dependency in step dependencies: ordered %d of %d steps",
 			len(order), len(steps))
 	}
 

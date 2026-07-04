@@ -97,12 +97,12 @@ func main() {
 	evStore := planner.NewMemoryEvidenceStore()
 
 	p, err := planner.NewPlanner(
-		planner.NewRuleBasedAnalyzer(),
-		planner.NewCapabilityPlanner(),
-		resolver,
-		planner.NewToolScorer(),
-		planner.NewExecutionPlanner(),
-		evStore,
+	 planner.NewRuleBasedAnalyzer(),
+	 planner.NewCapabilityPlanner(),
+	 resolver,
+	 planner.NewEvidenceScorer(evStore),
+	 planner.NewExecutionPlanner(),
+	 evStore,
 	)
 	if err != nil {
 		fmt.Printf("  planner: %v\n", err)

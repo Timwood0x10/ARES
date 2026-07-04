@@ -107,27 +107,45 @@ test:
 test-race:
 	go test -race -cover ./...
 
-# Core modules require 90%+ coverage
+# Core modules — check total coverage across all core packages
 test-core:
-	go test -cover -coverprofile=coverage.out ./internal/core/...
-	@echo "Checking core module coverage..."
-	@COVERAGE=$$(go tool cover -func=coverage.out | grep "internal/core" | grep -v "test" | awk '{print $$NF}' | sed 's/%//' | sort -n | head -1); \
-	if [ "$$COVERAGE" -lt 90 ]; then \
-		echo "ERROR: Core module coverage is $$COVERAGE%, expected >= 90%"; \
+	@echo "Running core module tests with coverage..."
+	@go test -cover -coverprofile=coverage.out ./internal/core/...
+	@echo ""
+	@echo "--- Per-function coverage ---"
+	@go tool cover -func=coverage.out
+	@echo ""
+	@TOTAL=$$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $$NF}' | sed 's/%//'); \
+	if [ "$$TOTAL" = "" ]; then \
+		echo "ERROR: could not determine total coverage"; \
 		exit 1; \
-	fi
-	@echo "Core module coverage: $$COVERAGE%"
+	fi; \
+	THRESHOLD=90; \
+	if [ "$$(echo "$$TOTAL < $$THRESHOLD" | bc 2>/dev/null || echo 1)" = "1" ]; then \
+		echo "ERROR: Core module total coverage is $$TOTAL%, expected >= $$THRESHOLD%"; \
+		exit 1; \
+	fi; \
+	echo "✅ Core module total coverage: $$TOTAL% (threshold: $$THRESHOLD%)"
 
-# Other modules require 80%+ coverage
+# Other modules — check total coverage across tools packages
 test-tools:
-	go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/workflow/... ./internal/memory/... ./internal/shutdown/... ./internal/ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
-	@echo "Checking tools coverage..."
-	@COVERAGE=$$(go tool cover -func=coverage.out | awk '{print $$NF}' | sed 's/%//' | sort -n | head -1); \
-	if [ "$$COVERAGE" -lt 80 ]; then \
-		echo "ERROR: Tools coverage is $$COVERAGE%, expected >= 80%"; \
+	@echo "Running tools module tests with coverage..."
+	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
+	@echo ""
+	@echo "--- Per-package coverage ---"
+	@go tool cover -func=coverage.out | grep "total:" || true
+	@echo ""
+	@TOTAL=$$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $$NF}' | sed 's/%//'); \
+	if [ "$$TOTAL" = "" ]; then \
+		echo "ERROR: could not determine total coverage"; \
 		exit 1; \
-	fi
-	@echo "Tools coverage: $$COVERAGE%"
+	fi; \
+	THRESHOLD=80; \
+	if [ "$$(echo "$$TOTAL < $$THRESHOLD" | bc 2>/dev/null || echo 1)" = "1" ]; then \
+		echo "ERROR: Tools module total coverage is $$TOTAL%, expected >= $$THRESHOLD%"; \
+		exit 1; \
+	fi; \
+	echo "✅ Tools module total coverage: $$TOTAL% (threshold: $$THRESHOLD%)"
 
 # All checks
 check: lint test

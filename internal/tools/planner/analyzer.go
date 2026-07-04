@@ -190,13 +190,6 @@ func defaultRules() []intentRule {
 			capabilities: []string{"IDGeneration"},
 		},
 		{
-			keywords:     []string{"json", "parse", "format", "pretty"},
-			goal:         "data transformation",
-			operation:    "json_processing",
-			complexity:   "simple",
-			capabilities: []string{"JSONProcessing"},
-		},
-		{
 			keywords:     []string{"regex", "regular expression", "正则"},
 			goal:         "text processing",
 			operation:    "regex",
@@ -216,13 +209,6 @@ func defaultRules() []intentRule {
 			operation:    "planning",
 			complexity:   "complex",
 			capabilities: []string{"TaskPlanning"},
-		},
-		{
-			keywords:     []string{"embed", "vector", "embedding"},
-			goal:         "vector embedding",
-			operation:    "embedding",
-			complexity:   "moderate",
-			capabilities: []string{"Embedding"},
 		},
 	}
 }

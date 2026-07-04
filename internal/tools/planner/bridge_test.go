@@ -32,7 +32,7 @@ func TestToolExecutionBridge_DirectExecution(t *testing.T) {
 	require.NoError(t, reg.Register(&mockTool{name: "calculator"}))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	result, err := bridge.Execute(context.Background(), "calculator", map[string]interface{}{
@@ -45,7 +45,7 @@ func TestToolExecutionBridge_DirectExecution(t *testing.T) {
 func TestToolExecutionBridge_ToolNotFoundNoFallback(t *testing.T) {
 	reg := core.NewRegistry()
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	result, err := bridge.Execute(context.Background(), "nonexistent", nil, "")
@@ -59,7 +59,7 @@ func TestToolExecutionBridge_PlannerFallback(t *testing.T) {
 	require.NoError(t, reg.Register(&mockTool{name: "calculator"}))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	// Empty tool name + user request triggers planner fallback.
@@ -80,7 +80,7 @@ func TestToolExecutionBridge_PlannerFallbackMergesParams(t *testing.T) {
 	}))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	_, err = bridge.Execute(context.Background(), "", map[string]interface{}{
@@ -99,7 +99,7 @@ func TestToolExecutionBridge_ToolNotFoundWithFallback(t *testing.T) {
 	require.NoError(t, reg.Register(&mockTool{name: "calculator"}))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	// Named tool not found but planner fallback should still work.
@@ -114,13 +114,14 @@ func newTestPlanner() *Planner {
 	if err != nil {
 		panic(err)
 	}
+	store := NewMemoryEvidenceStore()
 	planner, err := NewPlanner(
 		NewRuleBasedAnalyzer(),
 		NewCapabilityPlanner(),
 		resolver,
-		NewToolScorer(),
+		NewEvidenceScorer(store),
 		NewExecutionPlanner(),
-		NewMemoryEvidenceStore(),
+		store,
 	)
 	if err != nil {
 		panic(err)

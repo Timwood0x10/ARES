@@ -112,6 +112,17 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 		return fmt.Sprintf("%s**%s", m[1], m[2])
 	}
 
+	// Pattern 9: "计算1+1" or "算1+1" — strip operator prefix and try as expression
+	cleaned := strings.TrimPrefix(request, "计算")
+	cleaned = strings.TrimPrefix(cleaned, "算")
+	cleaned = strings.TrimPrefix(cleaned, "运算")
+	if cleaned != request {
+		cleaned = strings.TrimSpace(cleaned)
+		if cleaned != "" {
+			return cleaned
+		}
+	}
+
 	return ""
 }
 

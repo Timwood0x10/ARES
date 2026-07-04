@@ -70,7 +70,7 @@ func TestToolExecutionBridge_SingleStepMergesPlanParams(t *testing.T) {
 	require.NoError(t, reg.Register(schemaTool))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	// Fallback: no LLM tool name, planner generates plan.
@@ -95,7 +95,7 @@ func TestToolExecutionBridge_PlannerFallbackUserParamsWin(t *testing.T) {
 	require.NoError(t, reg.Register(schemaTool))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	// User provides explicit params that override plan defaults.
@@ -124,7 +124,7 @@ func TestToolExecutionBridge_MultiStepBindsOutputToDownstreamSchema(t *testing.T
 	require.NoError(t, reg.Register(downstream))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	plan := &ExecutionPlan{
@@ -166,7 +166,7 @@ func TestToolExecutionBridge_MultiStepUserParamsOverrideDependencyBinding(t *tes
 	require.NoError(t, reg.Register(downstream))
 
 	planner := newTestPlanner()
-	bridge, err := NewToolExecutionBridge(reg, planner)
+	bridge, err := NewToolExecutionBridge(reg, planner, NewMemoryEvidenceStore())
 	require.NoError(t, err)
 
 	plan := &ExecutionPlan{

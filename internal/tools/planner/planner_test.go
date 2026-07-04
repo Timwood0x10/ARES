@@ -367,13 +367,14 @@ func testPlanner(t *testing.T) *Planner {
 	t.Helper()
 	resolver, err := NewToolResolver(&mockToolProvider{})
 	require.NoError(t, err)
+	store := NewMemoryEvidenceStore()
 	planner, err := NewPlanner(
 		NewRuleBasedAnalyzer(),
 		NewCapabilityPlanner(),
 		resolver,
-		NewToolScorer(),
+		NewEvidenceScorer(store),
 		NewExecutionPlanner(),
-		NewMemoryEvidenceStore(),
+		store,
 	)
 	require.NoError(t, err)
 	return planner
