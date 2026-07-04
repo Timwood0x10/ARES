@@ -127,8 +127,8 @@ func main() {
 			}
 
 			fmt.Printf("      → %s(%s) = %s [%dms]\n",
-			 toolName, truncate(formatArgs(tc2.Function.Arguments), 50),
-			 truncate(resultStr, 80), latency.Milliseconds())
+				toolName, truncate(formatArgs(tc2.Function.Arguments), 50),
+				truncate(resultStr, 80), latency.Milliseconds())
 		}
 		pass++
 	}

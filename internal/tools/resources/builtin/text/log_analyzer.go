@@ -48,7 +48,7 @@ func NewLogAnalyzer() *LogAnalyzer {
 	}
 
 	return &LogAnalyzer{
-		BaseTool: base.NewBaseToolWithCategory("log_analyzer", "Parse logs, find errors, and extract metrics", core.CategoryCore, params),
+		BaseTool: base.NewBaseToolWithCapabilities("log_analyzer", "Parse logs, find errors, and extract metrics", core.CategoryCore, []core.Capability{core.CapabilityText}, params),
 	}
 }
 

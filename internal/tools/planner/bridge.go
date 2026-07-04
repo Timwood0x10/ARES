@@ -77,6 +77,19 @@ func (b *ToolExecutionBridge) Execute(
 			result, err := tool.Execute(ctx, params)
 			latency := time.Since(start)
 
+			// Save execution evidence.
+			if saveErr := b.evidence.Save(ctx, &ToolEvidence{
+				ToolName:  toolName,
+				Success:   err == nil && result.Success,
+				Latency:   latency,
+				Timestamp: time.Now(),
+			}); saveErr != nil {
+				log.Warn("tool_bridge: failed to save evidence",
+					"tool", toolName,
+					"error", saveErr,
+				)
+			}
+
 			log.Info("tool_bridge: direct execution",
 				"tool", toolName,
 				"success", err == nil && result.Success,

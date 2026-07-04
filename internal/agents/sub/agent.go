@@ -41,6 +41,9 @@ type ToolBinder interface {
 	ListIdempotentTools() []string
 	GetToolSchemas() []resources.ToolSchema
 	BridgeFromRegistry(registry *resources.Registry)
+	WithPlannerBridge(bridge interface {
+		Execute(ctx context.Context, toolName string, params map[string]any, userRequest string) (resources.Result, error)
+	})
 }
 
 // Compile-time check: subAgent must satisfy base.StatefulAgent.

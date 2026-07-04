@@ -136,11 +136,16 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 	for i := range plan.Steps {
 		capability := plan.Steps[i].CapabilityName
 		extracted := p.extractor.ExtractParams(request, capability)
-		if extracted != nil {
-			for k, v := range extracted {
-				if v != "" {
-					plan.Steps[i].Parameters[k] = v
-				}
+		if extracted == nil {
+			continue
+		}
+		// Initialize Parameters map if nil to prevent panic.
+		if plan.Steps[i].Parameters == nil {
+			plan.Steps[i].Parameters = make(map[string]interface{})
+		}
+		for k, v := range extracted {
+			if v != "" {
+				plan.Steps[i].Parameters[k] = v
 			}
 		}
 	}

@@ -35,6 +35,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -52,6 +53,10 @@ type Tool interface {
 	Description() string
 	// Execute runs the tool with the given parameters.
 	Execute(ctx context.Context, params map[string]any) (Result, error)
+	// Capabilities returns the capabilities this tool provides.
+	// Return nil if the tool does not declare capabilities.
+	// The planner uses this for dynamic capability discovery.
+	Capabilities() []string
 }
 
 // ToolFunc is a convenience type for creating tools from functions.
@@ -61,8 +66,9 @@ type ToolFunc struct {
 	Fn       func(ctx context.Context, params map[string]any) (any, error)
 }
 
-func (f ToolFunc) Name() string        { return f.ToolName }
-func (f ToolFunc) Description() string { return f.ToolDesc }
+func (f ToolFunc) Name() string           { return f.ToolName }
+func (f ToolFunc) Description() string    { return f.ToolDesc }
+func (f ToolFunc) Capabilities() []string { return nil }
 func (f ToolFunc) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	data, err := f.Fn(ctx, params)
 	if err != nil {
@@ -149,8 +155,35 @@ func (r *Registry) ListTools() []ToolInfo {
 	return infos
 }
 
+// ListToolNames returns all registered tool names as strings.
+// This satisfies the planner.ToolProvider.ListTools() interface for
+// direct use with the capability planner:
+//
+//	resolver, err := planner.NewToolResolver(registry)
+func (r *Registry) ListToolNames() []string {
+	return r.List()
+}
+
 // ToolInfo is a summary of a tool.
 type ToolInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+}
+
+// GetToolCapabilities returns the capabilities declared by a tool.
+// This method, together with ListToolNames(), makes Registry compatible
+// with the planner.ToolProvider interface via a thin adapter:
+//
+//	type plannerAdapter struct{ *Registry }
+//	func (a *plannerAdapter) ListTools() []string { return a.ListToolNames() }
+//
+//	resolver, err := planner.NewToolResolver(&plannerAdapter{registry})
+func (r *Registry) GetToolCapabilities(name string) ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.tools[name]
+	if !ok {
+		return nil, fmt.Errorf("tool %q not found", name)
+	}
+	return tool.Capabilities(), nil
 }

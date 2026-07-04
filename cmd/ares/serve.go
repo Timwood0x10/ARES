@@ -130,6 +130,12 @@ func runServe() error {
 	toolBinder := newToolBinder(internalReg)
 	log.Printf("tools registered: %d", len(toolBinder.ListTools()))
 
+	// --- Capability Planner bridge for agent tool fallback ---
+	if bridge := newPlannerBridge(internalReg); bridge != nil {
+		toolBinder.WithPlannerBridge(bridge)
+		log.Println("planner bridge: attached")
+	}
+
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {

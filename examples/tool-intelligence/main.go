@@ -33,19 +33,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// registryProvider adapts core.Registry to planner.ToolProvider.
-type registryProvider struct {
-	reg *core.Registry
-}
-
-func (p *registryProvider) ListTools() []string {
-	return p.reg.List()
-}
-
-func (p *registryProvider) GetToolCapabilities(name string) ([]string, error) {
-	return nil, nil
-}
-
 func main() {
 	ctx := context.Background()
 
@@ -86,7 +73,7 @@ func main() {
 
 	// ── 2. Wire the Capability Planner ──────────────────────
 	fmt.Println("=== 2. Wiring Capability Planner ===")
-	provider := &registryProvider{reg: reg}
+	provider := planner.NewRegistryProvider(reg)
 
 	resolver, err := planner.NewToolResolver(provider)
 	if err != nil {
@@ -97,12 +84,12 @@ func main() {
 	evStore := planner.NewMemoryEvidenceStore()
 
 	p, err := planner.NewPlanner(
-	 planner.NewRuleBasedAnalyzer(),
-	 planner.NewCapabilityPlanner(),
-	 resolver,
-	 planner.NewEvidenceScorer(evStore),
-	 planner.NewExecutionPlanner(),
-	 evStore,
+		planner.NewRuleBasedAnalyzer(),
+		planner.NewCapabilityPlanner(),
+		resolver,
+		planner.NewEvidenceScorer(evStore),
+		planner.NewExecutionPlanner(),
+		evStore,
 	)
 	if err != nil {
 		fmt.Printf("  planner: %v\n", err)
@@ -186,7 +173,7 @@ func main() {
 
 	// ── 6. ToolExecutionBridge — Planner Fallback ───────────
 	fmt.Println("=== 6. ToolExecutionBridge: Planner Fallback ===")
-	bridge, err := planner.NewToolExecutionBridge(reg, p)
+	bridge, err := planner.NewToolExecutionBridge(reg, p, evStore)
 	if err != nil {
 		fmt.Printf("  bridge: %v\n", err)
 		return

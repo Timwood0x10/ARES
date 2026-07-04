@@ -77,6 +77,17 @@ type coreAdapter struct {
 
 func (a *coreAdapter) Name() string        { return a.inner.Name() }
 func (a *coreAdapter) Description() string { return a.inner.Description() }
+func (a *coreAdapter) Capabilities() []string {
+	caps := a.inner.Capabilities()
+	if len(caps) == 0 {
+		return nil
+	}
+	names := make([]string, len(caps))
+	for i, c := range caps {
+		names[i] = string(c)
+	}
+	return names
+}
 func (a *coreAdapter) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	cr, err := a.inner.Execute(ctx, params)
 	if err != nil {
@@ -96,6 +107,7 @@ func (t *calculatorTool) Name() string { return "calculator" }
 func (t *calculatorTool) Description() string {
 	return "Mathematical calculator with expression evaluation"
 }
+func (t *calculatorTool) Capabilities() []string { return nil }
 
 func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	expr, _ := params["expression"].(string)
@@ -238,8 +250,9 @@ func parsePrimary(tokens []string, pos int) (float64, int, error) {
 
 type regexTool struct{}
 
-func (t *regexTool) Name() string        { return "regex" }
-func (t *regexTool) Description() string { return "Regex matching, extraction, and replacement" }
+func (t *regexTool) Name() string           { return "regex" }
+func (t *regexTool) Description() string    { return "Regex matching, extraction, and replacement" }
+func (t *regexTool) Capabilities() []string { return nil }
 
 func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
@@ -287,8 +300,9 @@ func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, e
 
 type jsonTool struct{}
 
-func (t *jsonTool) Name() string        { return "json_tools" }
-func (t *jsonTool) Description() string { return "JSON parse, transform, and validation" }
+func (t *jsonTool) Name() string           { return "json_tools" }
+func (t *jsonTool) Description() string    { return "JSON parse, transform, and validation" }
+func (t *jsonTool) Capabilities() []string { return nil }
 
 func (t *jsonTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
@@ -339,6 +353,7 @@ func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
 	return "Search the web using SearXNG meta search engine"
 }
+func (t *webSearchTool) Capabilities() []string { return nil }
 
 func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	query, _ := params["query"].(string)
@@ -422,8 +437,9 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 
 type fileTool struct{}
 
-func (t *fileTool) Name() string        { return "file_tools" }
-func (t *fileTool) Description() string { return "File operations: read, write, list, exists, delete" }
+func (t *fileTool) Name() string           { return "file_tools" }
+func (t *fileTool) Description() string    { return "File operations: read, write, list, exists, delete" }
+func (t *fileTool) Capabilities() []string { return nil }
 
 func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
