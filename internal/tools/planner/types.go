@@ -45,6 +45,11 @@ type CapabilityRequirement struct {
 	// Example: "Arithmetic", "Summation", "PDFParsing"
 	Name string
 
+	// ResolvedTool is the tool name chosen by ToolResolver to fulfill this
+	// requirement. This is set during the resolution phase and is separate
+	// from Name, which always stays as the capability name.
+	ResolvedTool string
+
 	// InputType describes the expected input type.
 	// Example: "Expression", "File", "Text"
 	InputType string

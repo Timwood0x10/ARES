@@ -93,7 +93,7 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 
 		// Pick the best candidate for this requirement.
 		best := scored[0]
-		requirements[i].Name = best.ToolName
+		requirements[i].ResolvedTool = best.ToolName
 	}
 
 	// Step 5: Build execution plan
@@ -105,7 +105,7 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 	// Assign tool names to steps from resolved candidates.
 	for i := range plan.Steps {
 		if i < len(requirements) {
-			plan.Steps[i].ToolName = requirements[i].Name
+			plan.Steps[i].ToolName = requirements[i].ResolvedTool
 		}
 	}
 

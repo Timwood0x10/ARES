@@ -170,9 +170,69 @@ func (s *memoryEvidenceStore) Aggregate(_ context.Context, toolName string) (map
 	for _, e := range allEvidence {
 		key := e.ToolName + ":" + e.CapabilityName
 		ts := result[key]
-		// Incremental average update placeholder
+		// Accumulate for averaging.
+		// Store intermediate values using a custom type via the map.
+		// Fields are mapped: baseScore = success count, evidenceScore = latency sum,
+		// penalty = failure count, final = total count.
+		ts2 := toolScoreAccumulator{
+			ToolName:       e.ToolName,
+			CapabilityName: e.CapabilityName,
+			successCount:   result[key].Final,
+			latencySum:     result[key].EvidenceScore,
+			failureCount:   result[key].Penalty,
+			totalCount:     result[key].BaseScore,
+		}
+		ts2.totalCount++
+		if e.Success {
+			ts2.successCount++
+		} else {
+			ts2.failureCount++
+		}
+		ts2.latencySum += float64(e.Latency.Microseconds())
+
+		// Store intermediate values in the ToolScore fields.
+		ts.Final = ts2.successCount
+		ts.EvidenceScore = ts2.latencySum
+		ts.Penalty = ts2.failureCount
+		ts.BaseScore = ts2.totalCount
 		result[key] = ts
 	}
 
+	// Convert accumulators to final metrics.
+	for key, ts := range result {
+		total := int(ts.BaseScore)
+		if total == 0 {
+			continue
+		}
+		successCount := int(ts.Final)
+		failureCount := int(ts.Penalty)
+		latencySum := ts.EvidenceScore
+
+		// Compute final scores.
+		successRate := float64(successCount) / float64(total)
+		avgLatency := latencySum / float64(total) / 1000.0 // microseconds → milliseconds
+
+		baseScore := 10.0
+		evidenceScore := successRate*20.0 - avgLatency/100.0
+		penalty := float64(failureCount) / float64(total) * 10.0
+
+		result[key] = ToolScore{
+			BaseScore:     baseScore,
+			EvidenceScore: evidenceScore,
+			Penalty:       penalty,
+			Final:         baseScore + evidenceScore - penalty,
+		}
+	}
+
 	return result, nil
+}
+
+// toolScoreAccumulator holds intermediate values for aggregate computation.
+type toolScoreAccumulator struct {
+	ToolName       string
+	CapabilityName string
+	successCount   float64
+	failureCount   float64
+	latencySum     float64
+	totalCount     float64
 }

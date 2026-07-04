@@ -86,6 +86,7 @@ var toolMetadata = map[string]struct {
 }
 
 // Resolve finds all tools that can fulfill a capability requirement.
+// Filters results to only include tools actually registered in the provider.
 func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequirement) ([]ToolCandidate, error) {
 	if requirement == nil {
 		return nil, fmt.Errorf("planner: requirement is nil")
@@ -99,11 +100,20 @@ func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequire
 		return nil, fmt.Errorf("planner: no tools found for capability %q", requirement.Name)
 	}
 
+	// Only include tools that are actually registered in the provider.
+	registeredTools := make(map[string]bool)
+	for _, name := range r.provider.ListTools() {
+		registeredTools[name] = true
+	}
+
 	candidates := make([]ToolCandidate, 0, len(toolNames))
 	for _, name := range toolNames {
+		if !registeredTools[name] {
+			continue
+		}
 		meta, ok := toolMetadata[name]
 		if !ok {
-			meta = toolMetadata["calculator"]
+			continue
 		}
 
 		candidates = append(candidates, ToolCandidate{
@@ -117,6 +127,10 @@ func (r *toolResolver) Resolve(_ context.Context, requirement *CapabilityRequire
 			SideEffects:    meta.sideEffects,
 			SuccessRate:    0.95,
 		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("planner: no registered tools for capability %q", requirement.Name)
 	}
 
 	return candidates, nil
