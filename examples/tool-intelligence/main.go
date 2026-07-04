@@ -1,12 +1,7 @@
-// Command tool-intelligence demonstrates the full Capability Planner pipeline:
+// Command tool-intelligence demonstrates the full Capability Planner pipeline.
 //
-//  1. Semantic analysis — parse user request into Intent
-//  2. Capability planning — decompose Intent into requirements
-//  3. Tool resolution — map capabilities to registered tools
-//  4. Evidence-aware scoring — rank tools by metadata + history
-//  5. Execution planning — build single-step or multi-step DAG
-//  6. Planner fallback — auto-select tool when LLM provides no name
-//  7. Evidence feedback — record execution results for future scoring
+// Part 1 — Public API (api/tools): simple, no internal imports needed.
+// Part 2 — Internal details: tool registration, evidence, scoring, multi-step DAG.
 //
 // Run: go run ./examples/tool-intelligence
 package main
@@ -16,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/tools/planner"
 	builtin_embedding "github.com/Timwood0x10/ares/internal/tools/resources/builtin/embedding"
 	builtin_execution "github.com/Timwood0x10/ares/internal/tools/resources/builtin/execution"
@@ -36,11 +32,70 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Register all built-in tools ──────────────────────
-	fmt.Println("=== 1. Registering Built-in Tools ===")
+	// ═══════════════════════════════════════════════════════════════
+	// Part 1: Public API — no internal imports needed
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║  Part 1: Public API (api/tools)                ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
 
-	reg := core.NewRegistry()
-	tools := []core.Tool{
+	// ── 1a. Tools registry (builtins auto-loaded) ────────────
+	fmt.Println("1a. Creating tool registry...")
+	reg := tools.NewRegistry()
+	fmt.Printf("    %d built-in tools registered\n", len(reg.List()))
+	fmt.Println()
+
+	// ── 1b. Planner from public API ──────────────────────────
+	fmt.Println("1b. Creating planner (public API)...")
+	p, err := tools.NewPlanner(reg)
+	if err != nil {
+		fmt.Printf("    FAIL: %v\n", err)
+		return
+	}
+	fmt.Println("    ✓ Planner.Ready")
+	fmt.Println()
+
+	// ── 1c. Plan a request ───────────────────────────────────
+	fmt.Println("1c. Plan '计算1+1'...")
+	plan, err := p.Plan(ctx, "计算1+1")
+	if err != nil {
+		fmt.Printf("    FAIL: %v\n", err)
+		return
+	}
+	fmt.Printf("    goal: %s, tool: %s, params: %v\n",
+		plan.Intent.Goal, plan.Steps[0].ToolName, plan.Steps[0].Parameters)
+	fmt.Println()
+
+	// ── 1d. Bridge + Execute ─────────────────────────────────
+	fmt.Println("1d. Creating bridge and executing...")
+	bridge, err := tools.NewBridge(reg, p)
+	if err != nil {
+		fmt.Printf("    FAIL: %v\n", err)
+		return
+	}
+
+	result, err := bridge.Execute(ctx, "", nil, "计算1+1")
+	if err != nil {
+		fmt.Printf("    FAIL: %v\n", err)
+	} else {
+		fmt.Printf("    ✓ %v\n", result.Data)
+	}
+	fmt.Println()
+
+	// ═══════════════════════════════════════════════════════════════
+	// Part 2: Internal Details — full planner pipeline
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║  Part 2: Internal Details                      ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// ── 2a. Register all built-in tools ─────────────────────
+	fmt.Println("2a. Registering all built-in tools...")
+
+	coreReg := core.NewRegistry()
+	allTools := []core.Tool{
 		builtin_math.NewCalculator(),
 		builtin_math.NewDateTime(),
 		builtin_math.NewTextProcessor(),
@@ -62,19 +117,18 @@ func main() {
 		builtin_planning.NewTaskPlanner(nil),
 		builtin_embedding.NewEmbeddingTool(""),
 	}
-	for _, t := range tools {
-		if err := reg.Register(t); err != nil {
+	for _, t := range allTools {
+		if err := coreReg.Register(t); err != nil {
 			fmt.Printf("  register %s: %v\n", t.Name(), err)
 			return
 		}
 		fmt.Printf("  ✓ %s\n", t.Name())
 	}
-	fmt.Printf("  → %d tools registered\n\n", len(reg.List()))
+	fmt.Printf("  → %d tools registered\n\n", coreReg.Count())
 
-	// ── 2. Wire the Capability Planner ──────────────────────
-	fmt.Println("=== 2. Wiring Capability Planner ===")
-	provider := planner.NewRegistryProvider(reg)
-
+	// ── 2b. Wire planner manually ───────────────────────────
+	fmt.Println("2b. Wiring planner manually...")
+	provider := planner.NewRegistryProvider(coreReg)
 	resolver, err := planner.NewToolResolver(provider)
 	if err != nil {
 		fmt.Printf("  resolver: %v\n", err)
@@ -83,7 +137,7 @@ func main() {
 
 	evStore := planner.NewMemoryEvidenceStore()
 
-	p, err := planner.NewPlanner(
+	internalP, err := planner.NewPlanner(
 		planner.NewRuleBasedAnalyzer(),
 		planner.NewCapabilityPlanner(),
 		resolver,
@@ -98,8 +152,8 @@ func main() {
 	fmt.Println("  ✓ Planner ready")
 	fmt.Println()
 
-	// ── 3. Semantic Analysis — Chinese summation ────────────
-	fmt.Println("=== 3. Semantic Analysis ===")
+	// ── 2c. Semantic Analysis ───────────────────────────────
+	fmt.Println("2c. Semantic Analysis...")
 	analyzer := planner.NewRuleBasedAnalyzer()
 	requests := []string{
 		"计算1到一百万的和",
@@ -121,23 +175,23 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 4. Single-step Planning: Summation ──────────────────
-	fmt.Println("=== 4. Single-step Plan: Summation ===")
-	plan, err := p.Plan(ctx, "累加从1到100")
+	// ── 2d. Single-step Plan ────────────────────────────────
+	fmt.Println("2d. Single-step Plan: Summation...")
+	p2, err := internalP.Plan(ctx, "累加从1到100")
 	if err != nil {
 		fmt.Printf("  FAIL: %v\n", err)
 		return
 	}
-	fmt.Printf("  Intent:    %s / %s\n", plan.Intent.Goal, plan.Intent.Operation)
-	fmt.Printf("  MultiStep: %v\n", plan.IsMultiStep)
-	for _, step := range plan.Steps {
+	fmt.Printf("  Intent:    %s / %s\n", p2.Intent.Goal, p2.Intent.Operation)
+	fmt.Printf("  MultiStep: %v\n", p2.IsMultiStep)
+	for _, step := range p2.Steps {
 		fmt.Printf("  Step:      %s → %s (%s)\n", step.StepID, step.ToolName, step.CapabilityName)
 		fmt.Printf("  Params:    %v\n", step.Parameters)
 	}
 	fmt.Println()
 
-	// ── 5. Tool Scoring with Evidence ───────────────────────
-	fmt.Println("=== 5. Evidence-Aware Scoring ===")
+	// ── 2e. Evidence-Aware Scoring ──────────────────────────
+	fmt.Println("2e. Evidence-Aware Scoring...")
 	agg := planner.NewEvidenceAggregator(evStore)
 
 	// Record success evidence for calculator.
@@ -150,14 +204,13 @@ func main() {
 	}
 	_ = agg.Record(ctx, "web_search", "WebSearch", true, 300*time.Millisecond, 0, "")
 
-	// Query evidence to see aggregate.
 	calcEvidence, _ := evStore.Query(ctx, "calculator", "", 50)
 	searchEvidence, _ := evStore.Query(ctx, "web_search", "", 50)
 	fmt.Printf("  Calculator evidence: %d records\n", len(calcEvidence))
 	fmt.Printf("  Web search evidence: %d records (%d failures)\n\n", len(searchEvidence), 5)
 
 	// Score candidates with evidence.
-	scorer := planner.NewToolScorer()
+	scorer := planner.NewEvidenceScorer(evStore)
 	candidates := []planner.ToolCandidate{
 		{ToolName: "calculator", CapabilityName: "Arithmetic", Cost: 1,
 			Deterministic: true, Composable: true, SuccessRate: 0.95},
@@ -171,44 +224,42 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 6. ToolExecutionBridge — Planner Fallback ───────────
-	fmt.Println("=== 6. ToolExecutionBridge: Planner Fallback ===")
-	bridge, err := planner.NewToolExecutionBridge(reg, p, evStore)
+	// ── 2f. Bridge + Planner Fallback ───────────────────────
+	fmt.Println("2f. ToolExecutionBridge: Planner Fallback...")
+	internalBridge, err := planner.NewToolExecutionBridge(coreReg, internalP, evStore)
 	if err != nil {
 		fmt.Printf("  bridge: %v\n", err)
 		return
 	}
 
-	// Direct execution: LLM knows the tool name.
-	result, err := bridge.Execute(ctx, "calculator",
+	// Direct execution.
+	result, err = internalBridge.Execute(ctx, "calculator",
 		map[string]interface{}{"expression": "100*(100+1)/2"}, "")
 	if err != nil {
-		fmt.Printf("  direct execution FAIL: %v\n", err)
+		fmt.Printf("  direct FAIL: %v\n", err)
 	} else {
 		fmt.Printf("  ✓ Direct: calculator(100*(100+1)/2) = %v\n", result.Data)
 	}
 
-	// Planner fallback: no tool name, planner auto-resolves.
-	// User still provides params to fill the plan.
-	result, err = bridge.Execute(ctx, "",
+	// Planner fallback with user params.
+	result, err = internalBridge.Execute(ctx, "",
 		map[string]interface{}{"expression": "100*(100+1)/2"}, "累加从1到100")
 	if err != nil {
-		fmt.Printf("  planner fallback FAIL: %v\n", err)
+		fmt.Printf("  fallback FAIL: %v\n", err)
 	} else {
-		fmt.Printf("  ✓ Fallback: auto→calculator with user params: %v\n", result.Data)
+		fmt.Printf("  ✓ Fallback: auto→calculator = %v\n", result.Data)
 	}
 
-	// Planner fallback without user params: planner generates plan but
-	// params are empty (LLM is normally needed for param extraction).
-	result, err = bridge.Execute(ctx, "", nil, "计算1+1")
+	// Planner fallback without user params (extractor fills them).
+	result, err = internalBridge.Execute(ctx, "", nil, "计算1+1")
 	if err != nil {
-		fmt.Printf("  ✓ Fallback(no params): detected as expected: %v\n", err)
+		fmt.Printf("  fallback(no params) FAIL: %v\n", err)
 	} else {
 		fmt.Printf("  ✓ Fallback(no params): %v\n", result.Data)
 	}
 
-	// Unknown tool name → planner fallback with params.
-	result, err = bridge.Execute(ctx, "unknown_tool",
+	// Unknown tool → planner resolves.
+	result, err = internalBridge.Execute(ctx, "unknown_tool",
 		map[string]interface{}{"expression": "2+2"}, "计算")
 	if err != nil {
 		fmt.Printf("  unknown tool FAIL: %v\n", err)
@@ -217,9 +268,8 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 7. Multi-step DAG Plan ──────────────────────────────
-	fmt.Println("=== 7. Multi-step Plan (DAG) ===")
-	// Build a multi-step plan manually: PDF→text→embedding
+	// ── 2g. Multi-step DAG ──────────────────────────────────
+	fmt.Println("2g. Multi-step Plan (DAG)...")
 	plan2 := &planner.ExecutionPlan{
 		PlanID:      "demo-multi-step",
 		IsMultiStep: true,
@@ -245,8 +295,7 @@ func main() {
 			fmt.Printf("    %s\n", e.Error())
 		}
 	} else {
-		fmt.Printf("  ✓ DAG valid: %d steps, %s\n", len(plan2.Steps),
-			map[bool]string{true: "multi-step", false: "single-step"}[plan2.IsMultiStep])
+		fmt.Printf("  ✓ DAG valid: %d steps\n", len(plan2.Steps))
 		for _, step := range plan2.Steps {
 			deps := step.DependsOn
 			if len(deps) == 0 {
@@ -257,7 +306,12 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 8. Summary ─────────────────────────────────────────
-	fmt.Println("=== Done ===")
-	fmt.Println("The Capability Planner pipeline is fully operational.")
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║  Done                                           ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Println("Public API path:    api/tools.NewPlanner(reg)")
+	fmt.Println("Internal path:      planner.NewPlanner(...)")
+	fmt.Println("Both are wired and operational.")
 }

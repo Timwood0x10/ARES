@@ -17,7 +17,6 @@ import (
 func main() {
     // 1. Create registry and register built-in tools
     registry := tools.NewRegistry()
-    tools.RegisterBuiltinTools(registry)
 
     // 2. Call a built-in tool
     result, err := registry.Execute(context.Background(), "web_search", map[string]any{
@@ -59,6 +58,7 @@ func main() {
 type Tool interface {
     Name() string
     Description() string
+    Capabilities() []string    // Optional: declare capabilities for planner discovery
     Execute(ctx context.Context, params map[string]any) (Result, error)
 }
 
@@ -67,3 +67,38 @@ type Result struct {
     Data    any  `json:"data,omitempty"`
 }
 ```
+
+Custom tools can optionally declare capabilities via `Capabilities()`. When
+capabilities are declared, the planner can discover the tool dynamically
+without requiring a static capability mapping. Return nil if your tool
+does not participate in capability-based discovery.
+
+## Using with the Capability Planner
+
+The `Registry` satisfies the planner's `ToolProvider` interface via
+`ListToolNames()` and `GetToolCapabilities()`. Connect it with a thin adapter:
+
+```go
+import (
+    "github.com/Timwood0x10/ares/api/tools"
+    "github.com/Timwood0x10/ares/internal/tools/planner"
+)
+
+reg := tools.NewRegistry()
+
+// Adapter: api/tools.Registry → planner.ToolProvider
+adapter := &struct {
+    *tools.Registry
+    ListTools func() []string
+}{Registry: reg, ListTools: reg.ListToolNames}
+
+resolver, _ := planner.NewToolResolver(adapter)
+```
+
+The planner provides:
+- **Intent analysis** — parse user request into structured intent
+- **Capability decomposition** — break intent into capability requirements
+- **Tool resolution** — find tools matching each requirement
+- **Evidence-aware scoring** — rank tools by success rate + latency
+- **Execution planning** — single-step or multi-step DAG
+- **Planner fallback** — auto-select tool when LLM provides no name
