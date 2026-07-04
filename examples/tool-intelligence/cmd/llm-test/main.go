@@ -26,10 +26,10 @@ import (
 
 // OllamaChatRequest matches the Ollama chat API format.
 type OllamaChatRequest struct {
-	Model    string        `json:"model"`
-	Messages []OllamaMsg   `json:"messages"`
-	Tools   []OllamaTool   `json:"tools,omitempty"`
-	Stream  bool          `json:"stream"`
+	Model    string       `json:"model"`
+	Messages []OllamaMsg  `json:"messages"`
+	Tools    []OllamaTool `json:"tools,omitempty"`
+	Stream   bool         `json:"stream"`
 }
 
 type OllamaMsg struct {
@@ -114,8 +114,8 @@ func main() {
 
 	// ── 2. Test cases ──────────────────────────────────────
 	type testCase struct {
-		name    string
-		prompt  string
+		name         string
+		prompt       string
 		expectedTool string // substring match
 	}
 
@@ -155,7 +155,7 @@ func main() {
 			fail++
 			continue
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := io.ReadAll(resp.Body)
 		var ollamaResp OllamaChatResponse
@@ -181,7 +181,7 @@ func main() {
 		calledTool := toolCalls[0].Function.Name
 		args := formatArgs(toolCalls[0].Function.Arguments)
 		if strings.Contains(calledTool, tc.expectedTool) ||
-		   strings.Contains(tc.expectedTool, calledTool) {
+			strings.Contains(tc.expectedTool, calledTool) {
 			fmt.Printf("✅ → %s(%s)\n", calledTool, truncateStr(args, 60))
 			pass++
 		} else {
@@ -238,11 +238,11 @@ type simpleTool struct {
 	params string
 }
 
-func (t *simpleTool) Name() string                                   { return t.name }
-func (t *simpleTool) Description() string                            { return t.desc }
-func (t *simpleTool) Category() core.ToolCategory                    { return core.CategoryCore }
-func (t *simpleTool) Capabilities() []core.Capability                { return nil }
-func (t *simpleTool) Parameters() *core.ParameterSchema              { return parseParams(t.params) }
+func (t *simpleTool) Name() string                      { return t.name }
+func (t *simpleTool) Description() string               { return t.desc }
+func (t *simpleTool) Category() core.ToolCategory       { return core.CategoryCore }
+func (t *simpleTool) Capabilities() []core.Capability   { return nil }
+func (t *simpleTool) Parameters() *core.ParameterSchema { return parseParams(t.params) }
 func (t *simpleTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	return core.Result{Success: true, Data: map[string]interface{}{"result": "mock"}}, nil
 }

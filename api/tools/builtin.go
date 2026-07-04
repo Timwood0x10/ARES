@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	builtin_hash "github.com/Timwood0x10/ares/internal/tools/resources/builtin/hash"
 	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
 	builtin_pdf "github.com/Timwood0x10/ares/internal/tools/resources/builtin/pdf"
 	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
 	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // RegisterBuiltinTools registers all built-in tools into the given registry.

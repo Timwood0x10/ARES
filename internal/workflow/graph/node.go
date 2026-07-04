@@ -69,12 +69,17 @@ func (n *AgentNode) ID() string {
 
 // ToolNode wraps an existing tool to be used as a node.
 // It supports optional lifecycle hooks for structured message recording
-// and event emission during tool execution.
+// and event emission during tool execution. When a ToolExecutionBridge is
+// provided, it serves as a fallback if the tool is not found or fails.
 type ToolNode struct {
 	tool        core.Tool
 	nodeID      string
 	executionID string
 	eventSink   func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)
+	bridge      interface {
+		Execute(ctx context.Context, toolName string, params map[string]interface{}, userRequest string) (core.Result, error)
+	}
+	userRequest string
 }
 
 // WithNodeID sets the node identifier for event payload correlation.
@@ -106,6 +111,19 @@ func NewToolNode(tool core.Tool) (*ToolNode, error) {
 // and EventToolCallCompleted ares_events respectively.
 func (n *ToolNode) WithEventSink(sink func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)) *ToolNode {
 	n.eventSink = sink
+	return n
+}
+
+// WithBridge attaches a ToolExecutionBridge for planner fallback support.
+// When provided, if the tool execution fails with a registered-tool error,
+// the bridge attempts to resolve and execute via the Capability Planner.
+// The userRequest is the original natural-language request used for
+// planner-based intent resolution.
+func (n *ToolNode) WithBridge(bridge interface {
+	Execute(ctx context.Context, toolName string, params map[string]interface{}, userRequest string) (core.Result, error)
+}, userRequest string) *ToolNode {
+	n.bridge = bridge
+	n.userRequest = userRequest
 	return n
 }
 
@@ -144,6 +162,15 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 	}
 
 	result, err := n.tool.Execute(ctx, params)
+
+	// If the tool failed and we have a bridge fallback, try it.
+	if err != nil && n.bridge != nil {
+		br, bErr := n.bridge.Execute(ctx, toolName, params, n.userRequest)
+		if bErr == nil && br.Success {
+			result = br
+			err = nil
+		}
+	}
 
 	durationMs := time.Since(startTime).Milliseconds()
 

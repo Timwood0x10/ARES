@@ -219,10 +219,10 @@ func (s *memoryEvidenceStore) Aggregate(_ context.Context, toolName string) (map
 		penalty := a.failureCount / a.totalCount * 10.0
 
 		result[key] = ToolScore{
-			BaseScore:      baseScore,
-			EvidenceScore:  evidenceScore,
-			Penalty:        penalty,
-			Final:          baseScore + evidenceScore - penalty,
+			BaseScore:     baseScore,
+			EvidenceScore: evidenceScore,
+			Penalty:       penalty,
+			Final:         baseScore + evidenceScore - penalty,
 		}
 	}
 

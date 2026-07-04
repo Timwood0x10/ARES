@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    },
+    "codebase-memory-mcp": {
+      "command": "/Users/scc/.local/bin/codebase-memory-mcp",
+      "args": []
+    }
+  }
+}

@@ -278,11 +278,18 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 			return nil, fmt.Errorf("create mcp tool %s: %w", def.Name, err)
 		}
 
+		fullName := mcpTool.Name()
 		if err := m.registry.Register(mcpTool); err != nil {
-			return nil, fmt.Errorf("register tool %s: %w", mcpTool.Name(), err)
+			// Conflict detected — warn but continue.
+			log.Warn("mcp: tool name conflict, skipping",
+				"tool", fullName,
+				"server", mc.config.Name,
+				"error", err,
+			)
+			continue
 		}
 
-		names = append(names, mcpTool.Name())
+		names = append(names, fullName)
 	}
 
 	return names, nil

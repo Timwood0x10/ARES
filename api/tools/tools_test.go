@@ -18,13 +18,14 @@ func TestNewRegistry(t *testing.T) {
 	if r == nil {
 		t.Fatal("NewRegistry returned nil")
 	}
-	if len(r.List()) != 0 {
-		t.Fatal("New registry should be empty")
+	// Registry should have built-in tools pre-populated.
+	if len(r.List()) == 0 {
+		t.Fatal("New registry should have built-in tools pre-populated")
 	}
 }
 
 func TestRegisterNilTool(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	err := r.Register(nil)
 	if err == nil {
 		t.Fatal("expected error for nil tool")
@@ -32,7 +33,7 @@ func TestRegisterNilTool(t *testing.T) {
 }
 
 func TestRegistryRegisterGetListUnregister(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	ctx := context.Background()
 
 	t1 := ToolFunc{ToolName: "tool1", ToolDesc: "first", Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -89,7 +90,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 }
 
 func TestListTools(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	_ = r.Register(ToolFunc{ToolName: "alpha", ToolDesc: "a desc"})
 	_ = r.Register(ToolFunc{ToolName: "beta", ToolDesc: "b desc"})
 
@@ -1005,12 +1006,13 @@ func TestFileToolUnknownOperation(t *testing.T) {
 // ── RegisterBuiltinTools ─────────────────────────────────────
 
 func TestRegisterBuiltinTools(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	if err := RegisterBuiltinTools(r); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
 
-	expected := []string{"calculator", "regex", "json_tools", "web_search", "file_tools"}
+	expected := []string{"calculator", "hash_tool", "string_utils", "pdf_tool", "id_generator",
+		"regex", "json_tools", "web_search", "file_tools"}
 	names := r.List()
 	sort.Strings(names)
 

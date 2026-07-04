@@ -10,8 +10,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 func main() {
@@ -51,11 +51,11 @@ Call the calculator for EACH of the 5 points and tell me if z is increasing. Use
 		fmt.Printf("ERROR: %v\n", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 
 	var result map[string]interface{}
-	json.Unmarshal(data, &result)
+	_ = json.Unmarshal(data, &result)
 	msg, _ := result["message"].(map[string]interface{})
 
 	if toolCalls, ok := msg["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
@@ -68,7 +68,7 @@ Call the calculator for EACH of the 5 points and tell me if z is increasing. Use
 			argsStr, _ := fn["arguments"].(string)
 
 			var args map[string]interface{}
-			json.Unmarshal([]byte(argsStr), &args)
+			_ = json.Unmarshal([]byte(argsStr), &args)
 			expr, _ := args["expression"].(string)
 
 			tool, exists := reg.Get(toolName)

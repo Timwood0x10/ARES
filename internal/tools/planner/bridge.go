@@ -285,13 +285,13 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 		)
 
 		if err == nil && result.Success {
-		  return result, nil
-		 }
-		 if err != nil {
-		  lastErr = err
-		 } else if !result.Success && result.Error != "" {
-		  lastErr = fmt.Errorf("%s", result.Error)
-		 }
+			return result, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else if !result.Success && result.Error != "" {
+			lastErr = fmt.Errorf("%s", result.Error)
+		}
 	}
 
 	return core.Result{}, fmt.Errorf("tool_bridge: all tools failed for step %q: %w",

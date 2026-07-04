@@ -5,6 +5,7 @@
 
 .claude/
 .codegraph/
+.atomcode/
 
 plan/
 bin/

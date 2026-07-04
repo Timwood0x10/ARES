@@ -80,7 +80,7 @@ func defaultRules() []intentRule {
 		},
 		// Advanced math
 		{
-			keywords:     []string{"factorial", "permutation", "combination", "combinatorics",
+			keywords: []string{"factorial", "permutation", "combination", "combinatorics",
 				"nPr", "nCr", "阶乘", "排列", "组合", "离散"},
 			goal:         "mathematical computation",
 			operation:    "discrete_math",
@@ -88,7 +88,7 @@ func defaultRules() []intentRule {
 			capabilities: []string{"DiscreteMath", "Arithmetic"},
 		},
 		{
-			keywords:     []string{"probability", "binomial", "normal distribution", "poisson",
+			keywords: []string{"probability", "binomial", "normal distribution", "poisson",
 				"概率", "正态分布", "泊松", "贝叶斯"},
 			goal:         "mathematical computation",
 			operation:    "probability",
@@ -96,7 +96,7 @@ func defaultRules() []intentRule {
 			capabilities: []string{"Probability", "Arithmetic"},
 		},
 		{
-			keywords:     []string{"mean", "median", "stddev", "variance", "average",
+			keywords: []string{"mean", "median", "stddev", "variance", "average",
 				"平均", "标准差", "方差", "统计"},
 			goal:         "mathematical computation",
 			operation:    "statistics",
@@ -146,21 +146,21 @@ func defaultRules() []intentRule {
 			capabilities: []string{"PDFParsing", "TextExtraction"},
 		},
 		{
-		  keywords:     []string{"calculate", "compute", "evaluate", "计算", "运算", "math", "等于多少"},
-		  goal:         "mathematical computation",
-		  operation:    "arithmetic",
-		  complexity:   "simple",
-		  capabilities: []string{"Arithmetic"},
-		 },
-		 // General rules below
-		 {
-		  keywords: []string{"upper", "lower", "trim", "split", "join", "reverse",
-		   "大写", "小写", "截取", "替换", "去掉", "空格", "两端"},
-		  goal:         "text processing",
-		  operation:    "string_manipulation",
-		  complexity:   "simple",
-		  capabilities: []string{"StringManipulation"},
-		 },
+			keywords:     []string{"calculate", "compute", "evaluate", "计算", "运算", "math", "等于多少"},
+			goal:         "mathematical computation",
+			operation:    "arithmetic",
+			complexity:   "simple",
+			capabilities: []string{"Arithmetic"},
+		},
+		// General rules below
+		{
+			keywords: []string{"upper", "lower", "trim", "split", "join", "reverse",
+				"大写", "小写", "截取", "替换", "去掉", "空格", "两端"},
+			goal:         "text processing",
+			operation:    "string_manipulation",
+			complexity:   "simple",
+			capabilities: []string{"StringManipulation"},
+		},
 		{
 			keywords:     []string{"search", "find", "lookup", "查询", "搜索", "查找"},
 			goal:         "information retrieval",

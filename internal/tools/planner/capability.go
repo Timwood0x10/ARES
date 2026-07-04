@@ -34,8 +34,8 @@ func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]Capabilit
 	// Subsumption map: if a capability is listed, these child capabilities
 	// are automatically satisfied and need not generate separate steps.
 	subsumes := map[string][]string{
-		"Summation":           {"Arithmetic"},
-		"TextExtraction":      {"PDFParsing"},
+		"Summation":            {"Arithmetic"},
+		"TextExtraction":       {"PDFParsing"},
 		"ExpressionEvaluation": {"Arithmetic"},
 	}
 

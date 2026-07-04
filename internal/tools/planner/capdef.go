@@ -48,7 +48,7 @@ func BuiltinCapabilities() []CapabilityDef {
 		},
 		{
 			Name: "DiscreteMath", Version: 1,
-			Aliases:     []string{"combinatorics", "permutation", "combination", "factorial",
+			Aliases: []string{"combinatorics", "permutation", "combination", "factorial",
 				"组合", "排列", "阶乘", "离散"},
 			Description: "Discrete math: factorial, nPr, nCr, combinatorics",
 			InputType:   "Expression", OutputType: "Number",
@@ -56,7 +56,7 @@ func BuiltinCapabilities() []CapabilityDef {
 		},
 		{
 			Name: "Probability", Version: 1,
-			Aliases:     []string{"probability", "binomial", "normal", "poisson",
+			Aliases: []string{"probability", "binomial", "normal", "poisson",
 				"概率", "正态分布", "泊松"},
 			Description: "Probability: binomial, normal PDF, Poisson distributions",
 			InputType:   "Expression", OutputType: "Number",
@@ -64,7 +64,7 @@ func BuiltinCapabilities() []CapabilityDef {
 		},
 		{
 			Name: "Statistics", Version: 1,
-			Aliases:     []string{"mean", "median", "stddev", "variance",
+			Aliases: []string{"mean", "median", "stddev", "variance",
 				"平均", "标准差", "方差", "统计"},
 			Description: "Statistics: mean, median, stddev, variance",
 			InputType:   "Values", OutputType: "Number",
@@ -72,7 +72,7 @@ func BuiltinCapabilities() []CapabilityDef {
 		},
 		{
 			Name: "NumberTheory", Version: 1,
-			Aliases:     []string{"gcd", "lcm", "prime", "modulo",
+			Aliases: []string{"gcd", "lcm", "prime", "modulo",
 				"最大公约数", "最小公倍数", "素数", "质数", "数论"},
 			Description: "Number theory: gcd, lcm, isPrime",
 			InputType:   "Expression", OutputType: "Number",

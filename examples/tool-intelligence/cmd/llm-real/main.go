@@ -16,12 +16,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	builtin_hash "github.com/Timwood0x10/ares/internal/tools/resources/builtin/hash"
 	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
 	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
 	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
 	builtin_text "github.com/Timwood0x10/ares/internal/tools/resources/builtin/text"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 func main() {
@@ -96,7 +96,6 @@ func main() {
 		}
 
 		// Execute each tool call with REAL tools
-		finalContent := resp.Message.Content
 		for _, tc2 := range resp.Message.ToolCalls {
 			toolName := tc2.Function.Name
 			var args map[string]interface{}
@@ -128,10 +127,8 @@ func main() {
 			}
 
 			fmt.Printf("      → %s(%s) = %s [%dms]\n",
-				toolName, truncate(formatArgs(tc2.Function.Arguments), 50),
-				truncate(resultStr, 80), latency.Milliseconds())
-			finalContent = resultStr
-			_ = finalContent
+			 toolName, truncate(formatArgs(tc2.Function.Arguments), 50),
+			 truncate(resultStr, 80), latency.Milliseconds())
 		}
 		pass++
 	}
@@ -174,7 +171,7 @@ type ollamaResp struct {
 }
 
 type ollamaRespMsg struct {
-	Content   string          `json:"content"`
+	Content   string           `json:"content"`
 	ToolCalls []ollamaToolCall `json:"tool_calls"`
 }
 
@@ -194,7 +191,7 @@ func callLLM(client *http.Client, baseURL, model, prompt string, tools []ollamaT
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	var r ollamaResp
 	if err := json.Unmarshal(data, &r); err != nil {

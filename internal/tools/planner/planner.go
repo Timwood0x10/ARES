@@ -55,13 +55,13 @@ func NewPlanner(
 		return nil, fmt.Errorf("planner: EvidenceStore is nil")
 	}
 	return &Planner{
-		analyzer: analyzer,
-		planner:  plannerImpl,
-		resolver: resolver,
-		scorer:   scorer,
+		analyzer:  analyzer,
+		planner:   plannerImpl,
+		resolver:  resolver,
+		scorer:    scorer,
 		extractor: NewParameterExtractor(),
 		execPlan:  execPlan,
-		evidence: evidence,
+		evidence:  evidence,
 	}, nil
 }
 

@@ -107,12 +107,12 @@ func FuzzDAGValidator(f *testing.F) {
 
 	// Seed corpus: encoded step configurations.
 	seeds := []string{
-		"a>b,",           // a depends on b, b is missing
-		"a>b,b>",          // a->b, b no deps (valid)
-		"a>a,",            // self-cycle
-		"a>b,b>c,c>a,",   // 3-node cycle
-		"a>,b>,c>,",       // 3 independent nodes (valid)
-		"x>y,y>z,z>,",     // linear chain (valid)
+		"a>b,",         // a depends on b, b is missing
+		"a>b,b>",       // a->b, b no deps (valid)
+		"a>a,",         // self-cycle
+		"a>b,b>c,c>a,", // 3-node cycle
+		"a>,b>,c>,",    // 3 independent nodes (valid)
+		"x>y,y>z,z>,",  // linear chain (valid)
 	}
 
 	for _, seed := range seeds {
@@ -128,7 +128,7 @@ func FuzzDAGValidator(f *testing.F) {
 }
 
 // parseEncodedPlan converts a compact string notation to an ExecutionPlan.
-// Format: "stepID>dep1,dep2|stepID2>depA|" 
+// Format: "stepID>dep1,dep2|stepID2>depA|"
 // Example: "a>b,c|b>|c>" → a depends on b,c; b and c have no deps.
 func parseEncodedPlan(encoded string) *ExecutionPlan {
 	if encoded == "" {
@@ -175,13 +175,13 @@ func FuzzToolScorer(f *testing.F) {
 		candidates := make([]ToolCandidate, count%10)
 		for i := range candidates {
 			candidates[i] = ToolCandidate{
-				ToolName:      randomString(int(count)),
+				ToolName:       randomString(int(count)),
 				CapabilityName: randomString(int(count) % 5),
 				Cost:           int(count),
-				Deterministic: count%2 == 0,
-				Composable:    count%3 == 0,
-				SideEffects:   count%5 == 0,
-				SuccessRate:   float64(count) / 256.0,
+				Deterministic:  count%2 == 0,
+				Composable:     count%3 == 0,
+				SideEffects:    count%5 == 0,
+				SuccessRate:    float64(count) / 256.0,
 			}
 		}
 		// Must not panic for ANY candidate configuration.

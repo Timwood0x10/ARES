@@ -319,7 +319,7 @@ func TestRegistryExecute(t *testing.T) {
 
 	ctx := context.Background()
 	params := map[string]interface{}{
-		"key": "value",
+		"param": "value",
 	}
 
 	result, err := registry.Execute(ctx, "execute_test_tool", params)
@@ -663,7 +663,7 @@ func TestGlobalRegistry(t *testing.T) {
 
 	// Execute tool
 	ctx := context.Background()
-	result, err := Execute(ctx, "global_test_tool", map[string]interface{}{})
+	result, err := Execute(ctx, "global_test_tool", map[string]interface{}{"param": "test"})
 	if err != nil {
 		t.Fatalf("failed to execute tool: %v", err)
 	}
