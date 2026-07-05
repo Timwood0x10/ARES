@@ -84,7 +84,7 @@ func (m *mockMemoryService) DeleteSession(_ context.Context, sessionID string) e
 }
 
 func (m *mockMemoryService) AddMessage(_ context.Context, sessionID string, role core.MessageRole, content string) error {
-	msg := &core.Message{Role: role, Content: content, CreatedAt: time.Now()}
+	msg := &core.Message{Role: role, Content: content, Time: time.Now()}
 	m.messages[sessionID] = append(m.messages[sessionID], msg)
 	return nil
 }
@@ -131,11 +131,11 @@ type mockArena struct{ core.Arena }
 func (m *mockArena) InjectFault(_ context.Context, _ core.FaultType, _ string) error { return nil }
 
 func (m *mockArena) Score() *core.ResilienceScore {
-	return &core.ResilienceScore{Overall: 0.85, FaultTolerance: 0.9, RecoverySpeed: 0.8}
+	return &core.ResilienceScore{Overall: 0.85, Recovery: 0.9, Stability: 0.8}
 }
 
 func (m *mockArena) RunRandom(_ context.Context, _ time.Duration) (*core.ArenaReport, error) {
-	return &core.ArenaReport{Duration: 30, FaultsInjected: 5, SuccessRate: 0.8}, nil
+	return &core.ArenaReport{Duration: 30, FaultsInjected: 5}, nil
 }
 
 func (m *mockArena) ListAgents() []string { return []string{"agent-a", "agent-b"} }
@@ -154,7 +154,7 @@ func (m *mockRuntime) GetAgent(agentID string) core.Agent {
 }
 
 func (m *mockRuntime) Stats() core.RuntimeStats {
-	return core.RuntimeStats{ActiveAgents: 2, TotalExecutions: 100}
+	return core.RuntimeStats{ActiveAgents: 2, TotalRestarts: 100}
 }
 
 type mockRetrievalService struct {
@@ -241,12 +241,14 @@ func TestAgentHandler_CreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /agents: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
 	var created core.Agent
-	json.NewDecoder(resp.Body).Decode(&created)
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if created.ID != "test-agent" {
 		t.Fatalf("expected id=test-agent, got %s", created.ID)
 	}
@@ -256,7 +258,7 @@ func TestAgentHandler_CreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /agents/test-agent: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
@@ -266,8 +268,8 @@ func TestAgentHandler_List(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockAgentService()
-	mock.CreateAgent(nil, &core.AgentConfig{ID: "a1"})
-	mock.CreateAgent(nil, &core.AgentConfig{ID: "a2"})
+	_, _ = mock.CreateAgent(context.TODO(), &core.AgentConfig{ID: "a1"})
+	_, _ = mock.CreateAgent(context.TODO(), &core.AgentConfig{ID: "a2"})
 
 	h := NewAgentHandler(mock)
 	mux := http.NewServeMux()
@@ -279,12 +281,14 @@ func TestAgentHandler_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /agents: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var agents []*core.Agent
-	json.NewDecoder(resp.Body).Decode(&agents)
+	if err := json.NewDecoder(resp.Body).Decode(&agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(agents) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(agents))
 	}
@@ -304,7 +308,7 @@ func TestAgentHandler_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DELETE /agents: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -323,12 +327,14 @@ func TestMemoryHandler_CreateSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /sessions: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
 	var result map[string]string
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result["session_id"] == "" {
 		t.Fatal("expected non-empty session_id")
 	}
@@ -338,7 +344,7 @@ func TestMemoryHandler_AddGetMessages(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockMemoryService()
-	mock.CreateSession(nil, &core.SessionConfig{UserID: "u1"})
+	_, _ = mock.CreateSession(context.TODO(), &core.SessionConfig{UserID: "u1"})
 
 	h := NewMemoryHandler(mock)
 	mux := http.NewServeMux()
@@ -352,7 +358,7 @@ func TestMemoryHandler_AddGetMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /messages: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -362,12 +368,14 @@ func TestMemoryHandler_AddGetMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /messages: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
 	var msgs []*core.Message
-	json.NewDecoder(resp2.Body).Decode(&msgs)
+	if err := json.NewDecoder(resp2.Body).Decode(&msgs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
@@ -386,12 +394,14 @@ func TestWorkflowHandler_Execute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /workflows/execute: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var result core.WorkflowResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result.WorkflowID != "wf-1" {
 		t.Fatalf("expected workflow_id=wf-1, got %s", result.WorkflowID)
 	}
@@ -410,7 +420,7 @@ func TestWorkflowHandler_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /workflows: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -429,7 +439,7 @@ func TestArenaHandler_InjectFault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /arena/faults: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -448,12 +458,14 @@ func TestArenaHandler_Score(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /arena/score: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var score core.ResilienceScore
-	json.NewDecoder(resp.Body).Decode(&score)
+	if err := json.NewDecoder(resp.Body).Decode(&score); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if score.Overall != 0.85 {
 		t.Fatalf("expected overall=0.85, got %f", score.Overall)
 	}
@@ -474,7 +486,7 @@ func TestRuntimeHandler_StartStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /runtime/start: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -484,7 +496,7 @@ func TestRuntimeHandler_StartStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /runtime/stop: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
@@ -503,12 +515,14 @@ func TestRuntimeHandler_Stats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /runtime/stats: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var stats core.RuntimeStats
-	json.NewDecoder(resp.Body).Decode(&stats)
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if stats.ActiveAgents != 2 {
 		t.Fatalf("expected ActiveAgents=2, got %d", stats.ActiveAgents)
 	}
@@ -527,7 +541,7 @@ func TestRetrievalHandler_Search(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /knowledge/search: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -549,12 +563,14 @@ func TestRetrievalHandler_AddGetDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /knowledge: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
 	var created core.KnowledgeItem
-	json.NewDecoder(resp.Body).Decode(&created)
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if created.ID == "" {
 		t.Fatal("expected non-empty ID")
 	}
@@ -564,7 +580,7 @@ func TestRetrievalHandler_AddGetDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /knowledge: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp2.StatusCode)
 	}
@@ -575,7 +591,7 @@ func TestRetrievalHandler_AddGetDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DELETE /knowledge: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp3.StatusCode)
 	}
@@ -594,12 +610,14 @@ func TestEvalHandler_Evaluate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /eval/evaluate: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	var result map[string]float64
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if result["score"] != 1.0 {
 		t.Fatalf("expected score=1.0, got %f", result["score"])
 	}
@@ -618,7 +636,7 @@ func TestFlightHandler_Replay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /flight/replay: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -629,41 +647,106 @@ func TestHandler_ValidationErrors(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		method     string
+		setup      func() *httptest.Server
 		path       string
 		body       string
 		statusCode int
 	}{
-		{"agent: missing id", "POST", "/api/v1/agents", `{}`, http.StatusBadRequest},
-		{"agent: missing body", "POST", "/api/v1/agents", ``, http.StatusBadRequest},
-		{"workflow: missing workflow_id", "POST", "/api/v1/workflows/execute", `{}`, http.StatusBadRequest},
-		{"session: missing user_id", "POST", "/api/v1/sessions", `{}`, http.StatusBadRequest},
-		{"arena: missing fault_type", "POST", "/api/v1/arena/faults", `{}`, http.StatusBadRequest},
-		{"knowledge: missing query", "POST", "/api/v1/knowledge/search", `{"tenant_id":"t1"}`, http.StatusBadRequest},
-		{"eval: missing evaluator", "POST", "/api/v1/eval/evaluate", `{}`, http.StatusBadRequest},
-		{"unknown evaluator", "POST", "/api/v1/eval/evaluate", `{"evaluator":"bad"}`, http.StatusBadRequest},
+		{
+			name: "agent: missing id",
+			setup: func() *httptest.Server {
+				h := NewAgentHandler(newMockAgentService())
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/agents", h.HandleCreate)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/agents",
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "workflow: missing workflow_id",
+			setup: func() *httptest.Server {
+				h := NewWorkflowHandler(newMockWorkflowService())
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/workflows/execute", h.HandleExecute)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/workflows/execute",
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "session: missing user_id",
+			setup: func() *httptest.Server {
+				h := NewMemoryHandler(newMockMemoryService())
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/sessions", h.HandleCreateSession)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/sessions",
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "arena: missing fault_type",
+			setup: func() *httptest.Server {
+				h := NewArenaHandler(&mockArena{})
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/arena/faults", h.HandleInjectFault)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/arena/faults",
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "knowledge: missing query",
+			setup: func() *httptest.Server {
+				h := NewRetrievalHandler(newMockRetrievalService())
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/knowledge/search", h.HandleSearch)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/knowledge/search",
+			body:       `{"tenant_id":"t1"}`,
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "eval: missing evaluator",
+			setup: func() *httptest.Server {
+				h := NewEvalHandler(&mockEvaluatorRegistry{})
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/eval/evaluate", h.HandleEvaluate)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/eval/evaluate",
+			statusCode: http.StatusBadRequest,
+		},
+		{
+			name: "eval: unknown evaluator",
+			setup: func() *httptest.Server {
+				h := NewEvalHandler(&mockEvaluatorRegistry{})
+				mux := http.NewServeMux()
+				mux.HandleFunc("POST /api/v1/eval/evaluate", h.HandleEvaluate)
+				return httptest.NewServer(mux)
+			},
+			path:       "/api/v1/eval/evaluate",
+			body:       `{"evaluator":"bad"}`,
+			statusCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := setupHandlerForPath(tt.path)
-			mux := http.NewServeMux()
-			registerHandler(mux, tt.path, h)
-			srv := httptest.NewServer(mux)
+			srv := tt.setup()
 			defer srv.Close()
 
-			var resp *http.Response
-			var err error
-			if tt.body == "" {
-				req, _ := http.NewRequest(tt.method, srv.URL+tt.path, nil)
-				resp, err = http.DefaultClient.Do(req)
-			} else {
-				resp, err = http.Post(srv.URL+tt.path, "application/json", strBody(tt.body))
+			body := tt.body
+			if body == "" {
+				body = `{}`
 			}
+			resp, err := http.Post(srv.URL+tt.path, "application/json", strBody(body))
 			if err != nil {
 				t.Fatalf("request: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != tt.statusCode {
 				t.Fatalf("expected %d, got %d", tt.statusCode, resp.StatusCode)
 			}
@@ -678,66 +761,110 @@ func TestHandler_ServiceUnavailable(t *testing.T) {
 		name   string
 		method string
 		path   string
+		bodyFn func(srv *httptest.Server) (*http.Response, error)
 	}{
-		{"workflow", "POST", "/api/v1/workflows/execute"},
-		{"agent", "POST", "/api/v1/agents"},
-		{"memory", "POST", "/api/v1/sessions"},
-		{"arena", "POST", "/api/v1/arena/faults"},
-		{"runtime", "POST", "/api/v1/runtime/start"},
-		{"retrieval", "POST", "/api/v1/knowledge/search"},
-		{"eval", "POST", "/api/v1/eval/evaluate"},
-		{"flight", "GET", "/api/v1/flight/replay/x"},
+		{
+			name: "workflow", method: "POST", path: "/api/v1/workflows/execute",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/workflows/execute", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "agent", method: "POST", path: "/api/v1/agents",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/agents", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "memory", method: "POST", path: "/api/v1/sessions",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/sessions", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "arena", method: "POST", path: "/api/v1/arena/faults",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/arena/faults", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "runtime", method: "POST", path: "/api/v1/runtime/start",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/runtime/start", "application/json", nil)
+			},
+		},
+		{
+			name: "retrieval", method: "POST", path: "/api/v1/knowledge/search",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/knowledge/search", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "eval", method: "POST", path: "/api/v1/eval/evaluate",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Post(srv.URL+"/api/v1/eval/evaluate", "application/json", strBody(`{}`))
+			},
+		},
+		{
+			name: "flight", method: "GET", path: "/api/v1/flight/replay/x",
+			bodyFn: func(srv *httptest.Server) (*http.Response, error) {
+				return http.Get(srv.URL + "/api/v1/flight/replay/x")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create handler with nil service to trigger 503.
-			var h interface{ Handler(w http.ResponseWriter, r *http.Request) }
+			var srv *httptest.Server
 			switch tt.name {
 			case "workflow":
-				h = NewWorkflowHandler(nil)
-			case "agent":
-				h = NewAgentHandler(nil)
-			case "memory":
-				h = NewMemoryHandler(nil)
-			case "arena":
-				h = NewArenaHandler(nil)
-			case "runtime":
-				h = NewRuntimeHandler(nil)
-			case "retrieval":
-				h = NewRetrievalHandler(nil)
-			case "eval":
-				h = NewEvalHandler(nil)
-			case "flight":
-				h = NewFlightHandler(nil)
-			}
-			mux := http.NewServeMux()
-			switch h := h.(type) {
-			case *WorkflowHandler:
+				h := NewWorkflowHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/workflows/execute", h.HandleExecute)
-			case *AgentHandler:
+				srv = httptest.NewServer(mux)
+			case "agent":
+				h := NewAgentHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/agents", h.HandleCreate)
-			case *MemoryHandler:
+				srv = httptest.NewServer(mux)
+			case "memory":
+				h := NewMemoryHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/sessions", h.HandleCreateSession)
-			case *ArenaHandler:
+				srv = httptest.NewServer(mux)
+			case "arena":
+				h := NewArenaHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/arena/faults", h.HandleInjectFault)
-			case *RuntimeHandler:
+				srv = httptest.NewServer(mux)
+			case "runtime":
+				h := NewRuntimeHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/runtime/start", h.HandleStart)
-			case *RetrievalHandler:
+				srv = httptest.NewServer(mux)
+			case "retrieval":
+				h := NewRetrievalHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/knowledge/search", h.HandleSearch)
-			case *EvalHandler:
+				srv = httptest.NewServer(mux)
+			case "eval":
+				h := NewEvalHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("POST /api/v1/eval/evaluate", h.HandleEvaluate)
-			case *FlightHandler:
+				srv = httptest.NewServer(mux)
+			case "flight":
+				h := NewFlightHandler(nil)
+				mux := http.NewServeMux()
 				mux.HandleFunc("GET /api/v1/flight/replay/{id}", h.HandleReplay)
+				srv = httptest.NewServer(mux)
 			}
-			srv := httptest.NewServer(mux)
 			defer srv.Close()
 
-			resp, err := http.Post(srv.URL+tt.path, "application/json", strBody(`{}`))
+			resp, err := tt.bodyFn(srv)
 			if err != nil {
 				t.Fatalf("request: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusServiceUnavailable {
 				t.Fatalf("expected 503, got %d", resp.StatusCode)
 			}
@@ -760,51 +887,3 @@ func (b *bodyReader) Read(p []byte) (int, error) {
 }
 
 func (b *bodyReader) Close() error { return nil }
-
-func setupHandlerForPath(path string) interface{} {
-	// Return a handler with a real mock service for the given path.
-	switch {
-	case contains(path, "/agents"):
-		return NewAgentHandler(newMockAgentService())
-	case contains(path, "/sessions"):
-		return NewMemoryHandler(newMockMemoryService())
-	case contains(path, "/workflows"):
-		return NewWorkflowHandler(newMockWorkflowService())
-	case contains(path, "/arena"):
-		return NewArenaHandler(&mockArena{})
-	case contains(path, "/runtime"):
-		return NewRuntimeHandler(&mockRuntime{})
-	case contains(path, "/knowledge"):
-		return NewRetrievalHandler(newMockRetrievalService())
-	case contains(path, "/eval"):
-		return NewEvalHandler(&mockEvaluatorRegistry{})
-	case contains(path, "/flight"):
-		return NewFlightHandler(&mockFlightRecorder{})
-	}
-	return nil
-}
-
-func registerHandler(mux *http.ServeMux, path string, h interface{}) {
-	switch h := h.(type) {
-	case *WorkflowHandler:
-		mux.HandleFunc("POST /api/v1/workflows/execute", h.HandleExecute)
-	case *AgentHandler:
-		mux.HandleFunc("POST /api/v1/agents", h.HandleCreate)
-	case *MemoryHandler:
-		mux.HandleFunc("POST /api/v1/sessions", h.HandleCreateSession)
-	case *ArenaHandler:
-		mux.HandleFunc("POST /api/v1/arena/faults", h.HandleInjectFault)
-	case *RuntimeHandler:
-		mux.HandleFunc("POST /api/v1/runtime/start", h.HandleStart)
-	case *RetrievalHandler:
-		mux.HandleFunc("POST /api/v1/knowledge/search", h.HandleSearch)
-	case *EvalHandler:
-		mux.HandleFunc("POST /api/v1/eval/evaluate", h.HandleEvaluate)
-	case *FlightHandler:
-		mux.HandleFunc("GET /api/v1/flight/replay/{id}", h.HandleReplay)
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0)
-}

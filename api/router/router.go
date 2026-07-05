@@ -21,6 +21,7 @@ type Router struct {
 	retrievalH *handler.RetrievalHandler
 	evalH      *handler.EvalHandler
 	flightH    *handler.FlightHandler
+	llmH       *handler.LLMHandler
 }
 
 // NewRouter creates a new router.
@@ -114,6 +115,13 @@ func (r *Router) RegisterFlightEndpoints(flightHandler *handler.FlightHandler) {
 	r.flightH = flightHandler
 	r.mux.HandleFunc("GET /api/v1/flight/replay/{id}", r.flightH.HandleReplay)
 	r.mux.HandleFunc("POST /api/v1/flight/stop", r.flightH.HandleStop)
+}
+
+// RegisterLLMEndpoints registers LLM inference HTTP endpoints.
+func (r *Router) RegisterLLMEndpoints(llmHandler *handler.LLMHandler) {
+	r.llmH = llmHandler
+	r.mux.HandleFunc("POST /api/v1/llm/chat", r.llmH.HandleChat)
+	r.mux.HandleFunc("POST /api/v1/llm/generate", r.llmH.HandleGenerateSimple)
 }
 
 // ServeHTTP implements http.Handler.
