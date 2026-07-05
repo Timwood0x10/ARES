@@ -319,9 +319,9 @@ type toolAdapter struct {
 	name string
 }
 
-func (a *toolAdapter) Name() string                             { return a.name }
-func (a *toolAdapter) Description() string                      { return a.tool.Description() }
-func (a *toolAdapter) Category() core.ToolCategory              { return core.CategoryCore }
+func (a *toolAdapter) Name() string                { return a.name }
+func (a *toolAdapter) Description() string         { return a.tool.Description() }
+func (a *toolAdapter) Category() core.ToolCategory { return core.CategoryCore }
 func (a *toolAdapter) Capabilities() []core.Capability {
 	caps := a.tool.Capabilities()
 	if len(caps) == 0 {
@@ -333,7 +333,7 @@ func (a *toolAdapter) Capabilities() []core.Capability {
 	}
 	return result
 }
-func (a *toolAdapter) Parameters() *core.ParameterSchema        { return nil }
+func (a *toolAdapter) Parameters() *core.ParameterSchema { return nil }
 func (a *toolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	res, err := a.tool.Execute(ctx, params)
 	if err != nil {
