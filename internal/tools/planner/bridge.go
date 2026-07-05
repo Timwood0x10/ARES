@@ -145,6 +145,58 @@ func (b *ToolExecutionBridge) Execute(
 	return b.executeSingleStep(ctx, plan, params)
 }
 
+// ExecutePlan runs a pre-built execution plan without planner fallback.
+// This is useful for executing manually constructed plans, test fixtures,
+// or re-running previously planned DAGs.
+//
+// The plan is validated before execution. Invalid plans return errors without
+// executing any steps.
+//
+// Args:
+//
+//	ctx - cancellation and timeout context.
+//	plan - the pre-built execution plan (must be non-nil).
+//	params - user-provided parameters that override plan defaults.
+//
+// Returns:
+//
+//	result - the final step's result (for multi-step, the last step's result).
+//	err - error if execution fails.
+func (b *ToolExecutionBridge) ExecutePlan(
+	ctx context.Context,
+	plan *ExecutionPlan,
+	params map[string]interface{},
+) (core.Result, error) {
+	if plan == nil {
+		return core.Result{}, fmt.Errorf("tool_bridge: plan is nil")
+	}
+	if len(plan.Steps) == 0 {
+		return core.Result{}, fmt.Errorf("tool_bridge: plan has no steps")
+	}
+
+	log := logger.Module("tool_bridge")
+
+	// Validate the plan DAG before execution.
+	validator := NewDAGValidator()
+	if errs := validator.Validate(plan); len(errs) > 0 {
+		for _, e := range errs {
+			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
+				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %s", e.Error())
+			}
+			log.Warn("tool_bridge: plan DAG advisory",
+				"plan_id", plan.PlanID,
+				"code", e.Code,
+				"message", e.Message,
+			)
+		}
+	}
+
+	if plan.IsMultiStep {
+		return b.executeMultiStep(ctx, plan, params)
+	}
+	return b.executeSingleStep(ctx, plan, params)
+}
+
 // executeSingleStep runs a single-step plan with merged parameters.
 func (b *ToolExecutionBridge) executeSingleStep(
 	ctx context.Context,

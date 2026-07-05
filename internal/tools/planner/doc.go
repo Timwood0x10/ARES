@@ -89,4 +89,46 @@
 //
 // When an agent calls an unknown tool, the binder falls back to the planner
 // bridge which resolves the intent and auto-selects the best tool.
+//
+// # Multi-step DAG Execution
+//
+// The planner produces an ExecutionPlan with one or more ExecutionSteps.
+// When IsMultiStep is true, the steps form a dependency graph (DAG).
+//
+// Execution flow (implemented in ToolExecutionBridge.executeMultiStep):
+//
+//	Plan.Steps (with DependsOn edges)
+//	    │
+//	    ▼
+//	topoSort() — compute topological order (Kahn's algorithm)
+//	    │
+//	    ▼
+//	for each step in order:
+//	    ├─ mergeParams: plan defaults → dep output binding → user params
+//	    ├─ executeStepWithFallback:
+//	    │     ├─ try primary tool (step.ToolName)
+//	    │     ├─ on failure: try FallbackToolNames in order
+//	    │     └─ on all fail: return error for this step
+//	    ├─ evidence.Save() — record success/failure + latency
+//	    └─ store result for downstream dependency binding
+//
+// Dependency output binding (bindDependencyOutput):
+//
+//	Step A (PDFParsing) produces:  {"text": "...", "content": "..."}
+//	    │  outputValueForCapability("PDFParsing", data) → "text" field
+//	    ▼
+//	Step B (StringManipulation) needs:  {"input": "...", "text": "..."}
+//	    │  inputParamNamesForStep(B) → required params + capability defaults
+//	    │  bindDependencyOutput fills the first empty matching param
+//	    ▼
+//	Step B executes with A's output as input
+//
+// Fallback chain per step:
+//
+//	primary tool → FallbackToolNames[0] → FallbackToolNames[1] → error
+//
+// If a primary tool fails, the bridge tries each fallback in order. If all
+// fail, the step fails and executeMultiStep returns the last error.
+// Evidence is NOT saved for fallback attempts (only for the final attempt),
+// controlled by the executeStep helper which is called by executeStepWithFallback.
 package planner

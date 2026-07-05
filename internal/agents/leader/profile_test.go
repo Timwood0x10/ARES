@@ -3,8 +3,8 @@ package leader
 import (
 	"testing"
 
-	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 
 	"github.com/stretchr/testify/assert"

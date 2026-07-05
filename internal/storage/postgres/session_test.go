@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // TestSessionRepository_NewSessionRepository tests creating a new SessionRepository.

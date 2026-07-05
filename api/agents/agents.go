@@ -114,7 +114,7 @@ func NewLeader(
 	memMgr any,
 	cfg *Config,
 ) (Agent, error) {
- return nil, ErrNotImplemented
+	return nil, ErrNotImplemented
 }
 
 // ---------------------------------------------------------------------------
@@ -126,11 +126,11 @@ type SubAgent = Agent
 
 // NewSub creates a new sub agent.
 func NewSub(
- id string,
- agentType models.AgentType,
- executor any,
- handler any,
- cfg *Config,
+	id string,
+	agentType models.AgentType,
+	executor any,
+	handler any,
+	cfg *Config,
 ) (Agent, error) {
- return nil, ErrNotImplemented
+	return nil, ErrNotImplemented
 }

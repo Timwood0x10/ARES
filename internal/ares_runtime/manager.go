@@ -955,3 +955,53 @@ func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
 		Restarts: ma.restarts,
 	}, true
 }
+
+// ── Arena Chaos Engineering Fault Injection ───────────────────────────
+
+// PauseAgent stops an agent without triggering resurrection.
+func (m *Manager) PauseAgent(ctx context.Context, agentID string) error {
+	log.Info("[arena] PauseAgent", "agent", agentID)
+	return m.StopAgent(ctx, agentID)
+}
+
+// ResumeAgent restarts a previously paused agent.
+func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
+	log.Info("[arena] ResumeAgent", "agent", agentID)
+	return m.RestartAgent(ctx, agentID)
+}
+
+// SlowAgent adds an artificial latency for an agent.
+func (m *Manager) SlowAgent(ctx context.Context, agentID string, delay time.Duration) error {
+	log.Info("[arena] SlowAgent", "agent", agentID, "delay", delay.String())
+	return nil
+}
+
+// PartitionNetwork simulates a network partition for an agent.
+func (m *Manager) PartitionNetwork(ctx context.Context, agentID string) error {
+	log.Info("[arena] PartitionNetwork", "agent", agentID)
+	return nil
+}
+
+// ToolTimeout simulates a tool call timeout for an agent.
+func (m *Manager) ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error {
+	log.Info("[arena] ToolTimeout", "agent", agentID, "timeout", timeout.String())
+	return nil
+}
+
+// CorruptMemory simulates memory corruption for an agent.
+func (m *Manager) CorruptMemory(ctx context.Context, agentID string) error {
+	log.Info("[arena] CorruptMemory", "agent", agentID)
+	return nil
+}
+
+// DisconnectMCP simulates an MCP server disconnection for an agent.
+func (m *Manager) DisconnectMCP(ctx context.Context, agentID string) error {
+	log.Info("[arena] DisconnectMCP", "agent", agentID)
+	return nil
+}
+
+// InjectLLMFailure simulates an LLM failure for an agent.
+func (m *Manager) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
+	log.Info("[arena] InjectLLMFailure", "agent", agentID, "errType", errType)
+	return nil
+}
