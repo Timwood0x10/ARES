@@ -117,6 +117,6 @@ func BenchmarkBridge_PlannerFallback(b *testing.B) {
 // benchRegistry creates a tool registry with a calculator for benchmarking.
 func benchRegistry() *core.Registry {
 	reg := core.NewRegistry()
-	reg.Register(&realCalculator{})
+	_ = reg.Register(&realCalculator{})
 	return reg
 }

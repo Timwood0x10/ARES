@@ -126,7 +126,10 @@ func (r *Registry) Unregister(name string) {
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 	if r.coreReg != nil {
-		r.coreReg.Unregister(name)
+	 if err := r.coreReg.Unregister(name); err != nil {
+	  r.mu.Unlock()
+	  return
+	 }
 	}
 }
 

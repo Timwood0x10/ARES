@@ -102,7 +102,7 @@ func main() {
 
 	// ── 6. Custom tool with capabilities ───────────────────
 	fmt.Println("6. Registering a custom tool with capabilities...")
-	reg.Register(&customMathTool{})
+	_ = reg.Register(&customMathTool{})
 	fmt.Println("   ✓ custom_math registered (capabilities: math)")
 	fmt.Println()
 
