@@ -39,7 +39,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "open log: %v\n", err)
 		os.Exit(1)
 	}
-	defer func() { _ = logF.Close() }()
 	log := func(f string, a ...any) {
 		s := fmt.Sprintf(f, a...)
 		fmt.Println(s)
@@ -62,7 +61,8 @@ func main() {
 		slog.Error("service start failed", "err", err)
 		os.Exit(1)
 	}
-	defer cancel() // Moved after all error checks
+	defer func() { _ = logF.Close() }()
+	defer cancel()
 
 	go chaosDemo(ctx, svc, log)
 

@@ -292,12 +292,13 @@ func processFill(inv *Inventory, fill *Fill, commission, slippage float64) {
 		pos.Quantity -= fill.Quantity
 	}
 
-	if oldQty == 0 {
+	switch {
+	case oldQty == 0:
 		pos.AvgEntryPrice = fill.Price
-	} else if oldQty*pos.Quantity > 0 {
+	case oldQty*pos.Quantity > 0:
 		totalValue := math.Abs(oldQty)*pos.AvgEntryPrice + fill.Quantity*fill.Price
 		pos.AvgEntryPrice = totalValue / math.Abs(pos.Quantity)
-	} else {
+	default:
 		pos.AvgEntryPrice = fill.Price
 	}
 

@@ -379,8 +379,8 @@ func TestFullPipelineIntegration(t *testing.T) {
 		newTestStrategy("alpha"),   // duplicate of alpha → cache hit
 	}
 
-	var tiers []Tier
-	var scores []float64
+	tiers := make([]Tier, 0, len(strategies))
+	scores := make([]float64, 0, len(strategies))
 
 	for _, s := range strategies {
 		score, tier, err := ts.Score(ctx, s)

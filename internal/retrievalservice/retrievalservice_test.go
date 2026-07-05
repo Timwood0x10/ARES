@@ -74,10 +74,10 @@ func (m *mockRetrievalRepository) GetKnowledge(_ context.Context, tenantID, item
 	}
 	item, exists := m.items[itemID]
 	if !exists {
-		return nil, nil
+		return nil, errors.New("knowledge item not found")
 	}
 	if item.TenantID != tenantID {
-		return nil, nil
+		return nil, errors.New("knowledge item not found for tenant")
 	}
 	cp := *item
 	return &cp, nil

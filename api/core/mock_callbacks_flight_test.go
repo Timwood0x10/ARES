@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
 
@@ -33,7 +34,7 @@ type mockFlightRecorder struct{}
 
 func (m *mockFlightRecorder) Record(_ context.Context, _ interface{}) error { return nil }
 func (m *mockFlightRecorder) Replay(_ context.Context, _ string) (interface{}, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 func (m *mockFlightRecorder) Stop() {}
 

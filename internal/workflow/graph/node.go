@@ -185,13 +185,14 @@ func (n *ToolNode) Execute(ctx context.Context, state *State) error {
 			"duration_ms":  durationMs,
 			"timestamp":    time.Now(),
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			payload["status"] = "error"
 			payload["error"] = err.Error()
-		} else if !result.Success {
+		case !result.Success:
 			payload["status"] = "failed"
 			payload["summary"] = truncate.WithEllipsis(result.Error, 200)
-		} else {
+		default:
 			payload["status"] = "success"
 			payload["summary"] = truncate.WithEllipsis(fmt.Sprintf("%v", result.Data), 200)
 		}

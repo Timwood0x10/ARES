@@ -804,8 +804,7 @@ func buildStateFromEvents(evts []*ares_events.Event) map[string]any {
 		if ev == nil {
 			continue
 		}
-		switch ev.Type {
-		case ares_events.EventSessionCreated:
+		if ev.Type == ares_events.EventSessionCreated {
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				state["session_id"] = sid
 			}

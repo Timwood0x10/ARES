@@ -385,15 +385,15 @@ func TestSessionRepository_NewSessionRepositoryWithDB(t *testing.T) {
 type mockDBTX struct{}
 
 func (m *mockDBTX) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockDBTX) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockDBTX) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockDBTX) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {

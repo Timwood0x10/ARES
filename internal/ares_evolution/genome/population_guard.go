@@ -152,6 +152,7 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 
 	elites := make([]*mutation.Strategy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
+		//nolint:gosec // G602: Index bounds guaranteed by eliteCount <= len(survivors) from min() call
 		elites = append(elites, survivors[i].Clone())
 	}
 
@@ -263,6 +264,7 @@ func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, 
 				// Find the weakest (lowest score) elite to replace.
 				weakestIdx := 0
 				for i := 1; i < len(elites); i++ {
+					//nolint:gosec // G602: Bound check ensured by len(elites) >= p.Size > 0
 					if elites[i].Score < elites[weakestIdx].Score {
 						weakestIdx = i
 					}
@@ -368,11 +370,12 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 	if limit <= 0 {
 		limit = m + 1 // Disable sampling: always use exact mode
 	}
-	if spatial > 0 && m > spatial {
+	switch {
+	case spatial > 0 && m > spatial:
 		p.applyFitnessSharingSpatial(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
-	} else if m <= limit {
+	case m <= limit:
 		p.applyFitnessSharingExact(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
-	} else {
+	default:
 		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
 	}
 }

@@ -271,7 +271,5 @@ var CreateAgentToolConfigs = struct {
 			},
 		}
 	},
-	All: func() *AgentToolConfig {
-		return DefaultAgentToolConfig()
-	},
+	All: DefaultAgentToolConfig,
 }

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func (m *MockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output
 }
 
 func (m *MockMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *MockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
@@ -103,7 +104,7 @@ func (m *MockDistilledMemoryRepository) Create(ctx context.Context, mem *reposit
 }
 
 func (m *MockDistilledMemoryRepository) GetByID(ctx context.Context, id string) (*repositories.DistilledMemory, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *MockDistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, userID string, limit int) ([]*repositories.DistilledMemory, error) {

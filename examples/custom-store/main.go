@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,7 +90,7 @@ func (s *JSONFileStore) Get(_ context.Context, id string) (*discovery.Discovered
 			return svc, nil
 		}
 	}
-	return nil, nil
+	return nil, errors.New("service not found")
 }
 
 func (s *JSONFileStore) List(_ context.Context) ([]*discovery.DiscoveredService, error) {

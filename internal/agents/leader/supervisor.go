@@ -41,6 +41,7 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 }
 
 // LeaderSupervisor monitors leader health and triggers failover.
+//
 // Deprecated: production code should use Runtime-level supervision.
 // Retained for test compatibility until all test consumers are migrated.
 type LeaderSupervisor struct {

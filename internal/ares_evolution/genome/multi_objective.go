@@ -64,9 +64,10 @@ func ParetoFront(strategies []*mutation.Strategy) []*mutation.Strategy {
 			if dominated[j] {
 				continue
 			}
+			//nolint:gosec // G602: Index bounds are guaranteed by loop conditions i < n and j < n
 			if ParetoDominance(strategies[i], strategies[j]) {
 				dominated[j] = true
-			} else if ParetoDominance(strategies[j], strategies[i]) {
+			} else if ParetoDominance(strategies[j], strategies[i]) { //nolint:gosec // G602: bounds guaranteed
 				dominated[i] = true
 				break
 			}

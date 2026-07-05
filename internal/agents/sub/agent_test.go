@@ -3,6 +3,7 @@ package sub
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -13,6 +14,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+// Test constants
+const (
+	TestAgentID = "sub1"
+	TestTaskID  = "task-1"
 )
 
 func TestTaskExecutor_Execute_NilTask_ReturnsError(t *testing.T) {
@@ -173,12 +180,12 @@ func TestSubAgent_New(t *testing.T) {
 		output.NewValidator(),
 		3,
 	)
-	handler := NewMessageHandler("sub1")
+	handler := NewMessageHandler(TestAgentID)
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil)
 
-	if agent.ID() != "sub1" {
-		t.Errorf("expected sub1, got %s", agent.ID())
+	if agent.ID() != TestAgentID {
+		t.Errorf("expected %s, got %s", TestAgentID, agent.ID())
 	}
 	if agent.Type() != models.AgentTypeTop {
 		t.Errorf("expected AgentTypeTop")
@@ -202,9 +209,9 @@ func TestSubAgent_StartStop(t *testing.T) {
 		output.NewValidator(),
 		3,
 	)
-	handler := NewMessageHandler("sub1")
+	handler := NewMessageHandler(TestAgentID)
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil)
 
 	// Start
 	err := agent.Start(context.Background())
@@ -248,9 +255,9 @@ func TestSubAgent_Process(t *testing.T) {
 		output.NewValidator(),
 		3,
 	)
-	handler := NewMessageHandler("sub1")
+	handler := NewMessageHandler(TestAgentID)
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil)
 
 	// Process without starting should auto-start
 	task := models.NewTask("task_1", models.AgentTypeTop, &models.UserProfile{})
@@ -271,10 +278,10 @@ func TestSubAgent_SendReceiveMessage(t *testing.T) {
 		3,
 	)
 	handler := NewMessageHandler("sub1")
-	queue := ahp.NewMessageQueue("sub1", &ahp.QueueOptions{MaxSize: 10})
+	queue := ahp.NewMessageQueue(TestAgentID, &ahp.QueueOptions{MaxSize: 10})
 
 	sub := &subAgent{
-		id:           "sub1",
+		id:           TestAgentID,
 		agentType:    models.AgentTypeTop,
 		status:       models.AgentStatusReady,
 		executor:     executor,
@@ -284,7 +291,7 @@ func TestSubAgent_SendReceiveMessage(t *testing.T) {
 	}
 
 	// Test SendMessage
-	msg := ahp.NewMessage(ahp.AHPMethodResult, "sub1", "leader", "task1", "session1")
+	msg := ahp.NewMessage(ahp.AHPMethodResult, TestAgentID, "leader", "task1", "session1")
 	err := sub.SendMessage(context.Background(), msg)
 	if err != nil {
 		t.Errorf("SendMessage() error = %v", err)
@@ -310,7 +317,7 @@ func TestSubAgent_Heartbeat(t *testing.T) {
 	hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 
 	sub := &subAgent{
-		id:           "sub1",
+		id:           TestAgentID,
 		agentType:    models.AgentTypeTop,
 		status:       models.AgentStatusReady,
 		executor:     executor,
@@ -338,9 +345,9 @@ func TestSubAgent_Execute(t *testing.T) {
 		output.NewValidator(),
 		3,
 	)
-	handler := NewMessageHandler("sub1")
+	handler := NewMessageHandler(TestAgentID)
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil)
 
 	task := models.NewTask("task_1", models.AgentTypeTop, &models.UserProfile{})
 	result, err := agent.Execute(context.Background(), task)
@@ -356,10 +363,10 @@ func TestToolBinder_ListTools(t *testing.T) {
 	binder := NewToolBinder()
 
 	binder.BindTool("tool1", func(ctx context.Context, args map[string]any) (any, error) {
-		return nil, nil
+		return nil, errors.New("not implemented")
 	})
 	binder.BindTool("tool2", func(ctx context.Context, args map[string]any) (any, error) {
-		return nil, nil
+		return nil, errors.New("not implemented")
 	})
 
 	// ListTools is not implemented, so just test that tools can be bound and called
@@ -544,9 +551,9 @@ func TestSubAgent_ReplayEvents_TaskCompleted(t *testing.T) {
 		{
 			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
-				"task_id": "task-1",
-			},
-		},
+				KeyTaskID: TestTaskID,
+	}
+		}
 		{
 			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
@@ -575,7 +582,7 @@ func TestSubAgent_ReplayEvents_UnknownEventTypeIgnored(t *testing.T) {
 		{
 			Type: ares_events.EventTaskCreated,
 			Payload: map[string]any{
-				"task_id": "task-1",
+				KeyTaskID: TestTaskID,
 			},
 		},
 	}
@@ -594,8 +601,8 @@ func TestSubAgent_Snapshot_OfflineStatus(t *testing.T) {
 
 	snap, err := a.Snapshot()
 	require.NoError(t, err)
-	assert.Equal(t, "sub1", snap["agent_id"])
-	assert.Equal(t, string(models.AgentStatusOffline), snap["status"])
+	assert.Equal(t, TestAgentID, snap[KeyAgentID])
+	assert.Equal(t, string(models.AgentStatusOffline), snap[KeyStatus])
 }
 
 func TestSubAgent_Snapshot_ReadyStatus(t *testing.T) {
@@ -610,8 +617,8 @@ func TestSubAgent_Snapshot_ReadyStatus(t *testing.T) {
 
 	snap, err := a.Snapshot()
 	require.NoError(t, err)
-	assert.Equal(t, "sub1", snap["agent_id"])
-	assert.Equal(t, string(models.AgentStatusReady), snap["status"])
+	assert.Equal(t, TestAgentID, snap[KeyAgentID])
+	assert.Equal(t, string(models.AgentStatusReady), snap[KeyStatus])
 }
 
 func TestSubAgent_Snapshot_ReturnsCopy(t *testing.T) {
@@ -626,8 +633,8 @@ func TestSubAgent_Snapshot_ReturnsCopy(t *testing.T) {
 	snap2, _ := a.Snapshot()
 
 	// Mutate snap1 and verify snap2 is unaffected.
-	snap1["status"] = "mutated"
-	assert.NotEqual(t, snap1["status"], snap2["status"],
+	snap1[KeyStatus] = "mutated"
+	assert.NotEqual(t, snap1[KeyStatus], snap2[KeyStatus],
 		"Snapshot should return independent copies")
 }
 
@@ -637,7 +644,7 @@ func TestSubAgent_WithEventStore(t *testing.T) {
 		"{{.category}}", output.NewValidator(), 3)
 	handler := NewMessageHandler("sub1")
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil,
 		WithEventStore(store))
 	a := agent.(*subAgent)
 
@@ -650,21 +657,21 @@ func TestSubAgent_EmitEvent_WithStore(t *testing.T) {
 		"{{.category}}", output.NewValidator(), 3)
 	handler := NewMessageHandler("sub1")
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil,
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil,
 		WithEventStore(store))
 	a := agent.(*subAgent)
 
 	a.emitEvent(context.Background(), ares_events.EventTaskCompleted, map[string]any{
-		"task_id": "task-1",
+		KeyTaskID: TestTaskID,
 	})
 
 	// Verify the event was stored.
-	evts, err := store.Read(context.Background(), "sub1", ares_events.ReadOptions{})
+	evts, err := store.Read(context.Background(), TestAgentID, ares_events.ReadOptions{})
 	require.NoError(t, err)
 	require.Len(t, evts, 1)
 	assert.Equal(t, ares_events.EventTaskCompleted, evts[0].Type)
-	assert.Equal(t, "task-1", evts[0].Payload["task_id"])
-	assert.Equal(t, "sub1", evts[0].StreamID)
+	assert.Equal(t, TestTaskID, evts[0].Payload[KeyTaskID])
+	assert.Equal(t, TestAgentID, evts[0].StreamID)
 }
 
 func TestSubAgent_EmitEvent_NilStore(t *testing.T) {
@@ -672,12 +679,12 @@ func TestSubAgent_EmitEvent_NilStore(t *testing.T) {
 		"{{.category}}", output.NewValidator(), 3)
 	handler := NewMessageHandler("sub1")
 
-	agent := New("sub1", models.AgentTypeTop, executor, handler, nil, nil, nil)
+	agent := New(TestAgentID, models.AgentTypeTop, executor, handler, nil, nil, nil)
 	a := agent.(*subAgent)
 
 	// Should not panic when eventStore is nil.
 	a.emitEvent(context.Background(), ares_events.EventTaskCompleted, map[string]any{
-		"task_id": "task-1",
+		KeyTaskID: TestTaskID,
 	})
 }
 

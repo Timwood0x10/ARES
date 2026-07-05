@@ -319,6 +319,4 @@ func (s *MemoryEventStore) unsubscribe(id int64) {
 }
 
 // timeNow returns the current time. Extracted for testability.
-var timeNow = func() time.Time {
-	return time.Now()
-}
+var timeNow = time.Now

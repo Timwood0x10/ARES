@@ -38,20 +38,10 @@ func main() {
 	`)
 	if err != nil {
 		_ = db.Close()
+		_ = rows.Close()
 		lg.Error("Failed to query distilled memory:", "error", err)
 		os.Exit(1)
 	}
-
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Printf("Failed to close database connection: %v", err)
-		}
-	}()
-	defer func() {
-		if err := rows.Close(); err != nil {
-			lg.Error("Failed to close rows: ", "error", err)
-		}
-	}()
 
 	count := 0
 	for rows.Next() {
@@ -84,16 +74,11 @@ func main() {
 		ORDER BY count DESC
 	`)
 	if err != nil {
+		_ = rows.Close()
 		_ = db.Close()
 		lg.Error("Failed to query statistics:", "error", err)
 		os.Exit(1)
 	}
-
-	defer func() {
-		if err := statsRows.Close(); err != nil {
-			lg.Error("Failed to close stats rows", "error", err)
-		}
-	}()
 
 	for statsRows.Next() {
 		var sourceType string
@@ -103,6 +88,9 @@ func main() {
 		}
 		fmt.Printf("  %s: %d records\n", sourceType, count)
 	}
+	_ = statsRows.Close()
+	_ = rows.Close()
+	_ = db.Close()
 
 	fmt.Println("\n✅ Check completed")
 }

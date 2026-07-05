@@ -449,7 +449,8 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		default:
 		}
 
-		if s.wiredSystem != nil {
+		switch {
+		case s.wiredSystem != nil:
 			if err := evolution.RunIdleEvolution(ctx, s.wiredSystem, 1); err != nil {
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
@@ -462,7 +463,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 
 			lineages := s.collectLineages()
 			result.Lineages = append(result.Lineages, lineages...)
-		} else if s.population != nil && s.mutator != nil && s.crosser != nil {
+		case s.population != nil && s.mutator != nil && s.crosser != nil:
 			prevSnapshot, _ := s.population.Snapshot()
 			prevBest := bestFromStrategies(prevSnapshot)
 
@@ -486,7 +487,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
 			result.Lineages = append(result.Lineages, s.lineages...)
-		} else {
+		default:
 			return nil, ErrNotInitialized
 		}
 

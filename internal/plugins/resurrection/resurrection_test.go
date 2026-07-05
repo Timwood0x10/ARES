@@ -3,6 +3,7 @@ package resurrection
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func (m *mockAgent) Stop(_ context.Context) error {
 }
 
 func (m *mockAgent) Process(_ context.Context, _ any) (any, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *mockAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {

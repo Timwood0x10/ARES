@@ -211,25 +211,27 @@ func (s *DistillationService) parseExtractionResponse(response string) (*Extract
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
-		if strings.HasPrefix(strings.ToLower(trimmedLine), "problem:") {
+		lowerLine := strings.ToLower(trimmedLine)
+		switch {
+		case strings.HasPrefix(lowerLine, "problem:"):
 			currentSection = "problem"
 			content := strings.TrimSpace(trimmedLine[8:])
 			if content != "" {
 				problem.WriteString(content)
 			}
-		} else if strings.HasPrefix(strings.ToLower(trimmedLine), "solution:") {
+		case strings.HasPrefix(lowerLine, "solution:"):
 			currentSection = "solution"
 			content := strings.TrimSpace(trimmedLine[9:])
 			if content != "" {
 				solution.WriteString(content)
 			}
-		} else if strings.HasPrefix(strings.ToLower(trimmedLine), "constraints:") {
+		case strings.HasPrefix(lowerLine, "constraints:"):
 			currentSection = "constraints"
 			content := strings.TrimSpace(trimmedLine[12:])
 			if content != "" {
 				constraints.WriteString(content)
 			}
-		} else if trimmedLine != "" {
+		case trimmedLine != "":
 			switch currentSection {
 			case "problem":
 				if problem.Len() > 0 {

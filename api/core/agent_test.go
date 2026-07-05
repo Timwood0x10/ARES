@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -356,7 +357,7 @@ func (m *mockAgentRepository) Create(ctx context.Context, agent *Agent) error {
 }
 
 func (m *mockAgentRepository) Get(ctx context.Context, agentID string) (*Agent, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockAgentRepository) Update(ctx context.Context, agent *Agent) error {
@@ -368,7 +369,7 @@ func (m *mockAgentRepository) Delete(ctx context.Context, agentID string) error 
 }
 
 func (m *mockAgentRepository) List(ctx context.Context, filter *AgentFilter) ([]*Agent, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 // TestAgentService tests that AgentService interface is properly defined.
@@ -381,15 +382,15 @@ func TestAgentService(t *testing.T) {
 type mockAgentService struct{}
 
 func (m *mockAgentService) CreateAgent(ctx context.Context, config *AgentConfig) (*Agent, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockAgentService) GetAgent(ctx context.Context, agentID string) (*Agent, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockAgentService) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*Agent, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockAgentService) DeleteAgent(ctx context.Context, agentID string) error {
@@ -401,9 +402,9 @@ func (m *mockAgentService) ListAgents(ctx context.Context, filter *AgentFilter) 
 }
 
 func (m *mockAgentService) ExecuteTask(ctx context.Context, task *Task) (*TaskResult, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockAgentService) GetTaskResult(ctx context.Context, taskID string) (*TaskResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }

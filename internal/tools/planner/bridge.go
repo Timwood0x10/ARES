@@ -349,7 +349,8 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 ) (core.Result, error) {
 	log := logger.Module("tool_bridge")
 	// Try primary tool first.
-	tools := []string{step.ToolName}
+	tools := make([]string, 1, 1+len(step.FallbackToolNames))
+	tools[0] = step.ToolName
 	tools = append(tools, step.FallbackToolNames...)
 
 	var lastErr error

@@ -121,13 +121,14 @@ func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	hasTool := len(m.toolPool) > 0
 
 	var paramProb, promptProb, toolProb float64
-	if hasPrompt && hasTool {
+	switch {
+	case hasPrompt && hasTool:
 		paramProb, promptProb, toolProb = 0.70, 0.15, 0.15
-	} else if hasPrompt {
+	case hasPrompt:
 		paramProb, promptProb, toolProb = 0.80, 0.20, 0.00
-	} else if hasTool {
+	case hasTool:
 		paramProb, promptProb, toolProb = 0.80, 0.00, 0.20
-	} else {
+	default:
 		paramProb, promptProb, toolProb = 1.00, 0.00, 0.00
 	}
 
@@ -174,11 +175,12 @@ func (m *Mutator) mutateOneWithProbs(parent *Strategy, index int, paramProb, pro
 	} else {
 		r := m.rng.Float64() * (paramProb + promptProb + toolProb)
 
-		if r < paramProb {
+		switch {
+		case r < paramProb:
 			child, err = m.mutateParameter(parent)
-		} else if r < paramProb+promptProb {
+		case r < paramProb+promptProb:
 			child, err = m.mutatePrompt(parent)
-		} else {
+		default:
 			child, err = m.mutateTool(parent)
 		}
 

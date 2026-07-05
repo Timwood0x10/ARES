@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -55,7 +55,6 @@ func runDemo() error {
 	).(*monitoring.MonitorPlugin)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // Moved after all error checks
 
 	if err := plugin.Start(ctx, bus); err != nil {
 		cancel()
@@ -77,8 +76,10 @@ func runDemo() error {
 
 	if err := server.Run(demoAddr); err != nil {
 		cancel()
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
+	defer cancel()
 	return nil
 }
 

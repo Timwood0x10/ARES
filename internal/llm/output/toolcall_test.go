@@ -674,10 +674,10 @@ func TestOpenAIAdapter_SendToolResult(t *testing.T) {
 		}
 
 		// Build conversation messages for continuation.
-		messages := []map[string]interface{}{
-			{"role": "user", "content": "What is the weather in Seattle?"},
-		}
-		messages = append(messages, firstResp.buildAPIMessages()...)
+		firstRespMsgs := firstResp.buildAPIMessages()
+		messages := make([]map[string]interface{}, 0, 1+len(firstRespMsgs))
+		messages = append(messages, map[string]interface{}{"role": "user", "content": "What is the weather in Seattle?"})
+		messages = append(messages, firstRespMsgs...)
 
 		// Send tool result.
 		toolResults := []ToolResult{
@@ -816,10 +816,10 @@ func TestOpenAIAdapter_SendToolResult(t *testing.T) {
 			t.Fatal("expected Done=false after first call")
 		}
 
-		messages := []map[string]interface{}{
-			{"role": "user", "content": "test"},
-		}
-		messages = append(messages, resp.buildAPIMessages()...)
+		respMsgs := resp.buildAPIMessages()
+		messages := make([]map[string]interface{}, 0, 1+len(respMsgs)+len(respMsgs))
+		messages = append(messages, map[string]interface{}{"role": "user", "content": "test"})
+		messages = append(messages, respMsgs...)
 
 		// Second call (first tool result).
 		resp, err = adapter.SendToolResult(ctx, messages, []ToolResult{

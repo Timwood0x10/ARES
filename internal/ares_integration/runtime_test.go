@@ -3,6 +3,7 @@ package ares_integration
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,7 +67,7 @@ func (a *integrationAgent) Stop(_ context.Context) error {
 }
 
 func (a *integrationAgent) Process(_ context.Context, _ any) (any, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (a *integrationAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {

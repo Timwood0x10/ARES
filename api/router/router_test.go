@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,7 +47,7 @@ func TestRegisterEvolutionEndpoints(t *testing.T) {
 
 func TestAgentProcessorFuncType(t *testing.T) {
 	fn := AgentProcessorFunc(func(ctx any, input any) (<-chan base.AgentEvent, error) {
-		return nil, nil
+		return nil, errors.New("not implemented")
 	})
 	_ = fn
 }

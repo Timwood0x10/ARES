@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -443,7 +444,7 @@ func (m *mockMemoryRepository) CreateSession(ctx context.Context, session *Sessi
 }
 
 func (m *mockMemoryRepository) GetSession(ctx context.Context, sessionID string) (*Session, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryRepository) UpdateSession(ctx context.Context, session *Session) error {
@@ -459,7 +460,7 @@ func (m *mockMemoryRepository) AddMessage(ctx context.Context, message *Message)
 }
 
 func (m *mockMemoryRepository) GetMessages(ctx context.Context, sessionID string, pagination *PaginationRequest) ([]*Message, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryRepository) StoreDistilledTask(ctx context.Context, task *DistilledTask) error {
@@ -467,11 +468,11 @@ func (m *mockMemoryRepository) StoreDistilledTask(ctx context.Context, task *Dis
 }
 
 func (m *mockMemoryRepository) GetDistilledTask(ctx context.Context, taskID string) (*DistilledTask, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryRepository) SearchSimilarTasks(ctx context.Context, query *SearchQuery) ([]*SearchResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 // TestMemoryService tests that MemoryService interface is properly defined.
@@ -487,7 +488,7 @@ func (m *mockMemoryService) CreateSession(ctx context.Context, config *SessionCo
 }
 
 func (m *mockMemoryService) GetSession(ctx context.Context, sessionID string) (*Session, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryService) DeleteSession(ctx context.Context, sessionID string) error {
@@ -499,7 +500,7 @@ func (m *mockMemoryService) AddMessage(ctx context.Context, sessionID string, ro
 }
 
 func (m *mockMemoryService) GetMessages(ctx context.Context, sessionID string, pagination *PaginationRequest) ([]*Message, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryService) UpdateSession(ctx context.Context, session *Session) error {
@@ -507,9 +508,9 @@ func (m *mockMemoryService) UpdateSession(ctx context.Context, session *Session)
 }
 
 func (m *mockMemoryService) DistillTask(ctx context.Context, taskID string) (*DistilledTask, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryService) SearchSimilarTasks(ctx context.Context, query *SearchQuery) ([]*SearchResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }

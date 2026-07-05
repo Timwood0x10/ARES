@@ -273,12 +273,10 @@ func TestCodeRunnerExecute_CodeValidation(t *testing.T) {
 				if !strings.Contains(result.Error, "code validation failed") {
 					t.Errorf("Error message should mention code validation, got: %s", result.Error)
 				}
-			} else {
+			} else if !result.Success && strings.Contains(result.Error, "code validation failed") {
 				// Safe code might still fail if Python is not available, but that's OK
 				// Just check that validation didn't reject it
-				if !result.Success && strings.Contains(result.Error, "code validation failed") {
-					t.Errorf("Safe code should not be rejected by validation: %s", result.Error)
-				}
+				t.Errorf("Safe code should not be rejected by validation: %s", result.Error)
 			}
 		})
 	}

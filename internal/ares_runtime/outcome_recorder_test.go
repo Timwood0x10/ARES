@@ -62,11 +62,11 @@ func (m *mockOutcomeStore) QueryByTaskType(ctx context.Context, taskType string,
 }
 
 func (m *mockOutcomeStore) GetStatistics(ctx context.Context, strategyID string) (map[string]float64, error) {
-	return nil, nil
+	return map[string]float64{}, nil
 }
 
 func (m *mockOutcomeStore) GetTaskTypeStatistics(ctx context.Context, taskType string) (map[string]float64, error) {
-	return nil, nil
+	return map[string]float64{}, nil
 }
 
 func TestNewOutcomeExperienceRecorder_NilNormalizer(t *testing.T) {

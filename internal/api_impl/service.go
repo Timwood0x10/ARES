@@ -208,7 +208,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 
 	// Create unified Gin server with dashboard + monitoring routes.
 	monSrv := monitoring.NewHTTPServer(nil, monitoring.WithDashboardAPI(dashAPI))
-	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: monSrv, ReadHeaderTimeout: 30 * time.Second} //nosec G112
+	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: monSrv, ReadHeaderTimeout: 30 * time.Second} // nosec G112
 	s.g.Go(func() error {
 		log.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -57,7 +58,7 @@ func (a *simpleAgent) Start(ctx context.Context) error                     { ret
 func (a *simpleAgent) Stop(ctx context.Context) error                      { return nil }
 func (a *simpleAgent) Process(ctx context.Context, input any) (any, error) { return a.fn(ctx, input) }
 func (a *simpleAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	return nil, nil
+	return nil, errors.New("streaming not supported")
 }
 
 func makeResult(desc string) *models.RecommendResult {

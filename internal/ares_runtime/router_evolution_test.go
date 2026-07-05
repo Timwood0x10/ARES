@@ -2,6 +2,7 @@ package ares_runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,7 +22,7 @@ func (m *mockEvolutionPlugin) Recommend(ctx context.Context, state ExecutionStat
 	if m.recommendFn != nil {
 		return m.recommendFn(ctx, state)
 	}
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 func (m *mockEvolutionPlugin) RecordOutcome(_ context.Context, _ ExecutionOutcome) error { return nil }
 

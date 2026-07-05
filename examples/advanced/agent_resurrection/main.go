@@ -78,7 +78,6 @@ func main() {
 		cancel()
 		log.Fatalf("failed to create supervisor: %v", err)
 	}
-	defer cancel()
 
 	// Register 3 different agent types.
 	type agentDef struct {
@@ -110,6 +109,7 @@ func main() {
 		cancel()
 		log.Fatalf("failed to start supervisor: %v", err)
 	}
+	defer cancel()
 	fmt.Println()
 
 	// Phase 1: Normal operation.

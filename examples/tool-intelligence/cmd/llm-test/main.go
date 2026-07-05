@@ -155,9 +155,10 @@ func main() {
 			fail++
 			continue
 		}
-		defer func() { _ = resp.Body.Close() }()
 
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
 		var ollamaResp OllamaChatResponse
 		if err := json.Unmarshal(body, &ollamaResp); err != nil {
 			fmt.Printf("❌ parse error: %v\n", err)

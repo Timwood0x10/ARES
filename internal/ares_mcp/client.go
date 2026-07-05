@@ -333,8 +333,7 @@ func (c *MCPClient) dispatchResponse(msg *JSONRPCMessage) {
 
 // handleNotification processes server notifications.
 func (c *MCPClient) handleNotification(msg *JSONRPCMessage) {
-	switch msg.Method {
-	case NotificationToolsListChanged:
+	if msg.Method == NotificationToolsListChanged {
 		// Re-fetch tools list.
 		ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 		defer cancel()

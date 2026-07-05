@@ -582,11 +582,9 @@ func tokenize(s string) []string {
 	for _, ch := range s {
 		if isWordChar(ch) {
 			currentWord += string(ch)
-		} else {
-			if currentWord != "" {
-				words = append(words, currentWord)
-				currentWord = ""
-			}
+		} else if currentWord != "" {
+			words = append(words, currentWord)
+			currentWord = ""
 		}
 	}
 
@@ -720,18 +718,16 @@ func (s *RetrievalService) searchAllVectorSources(ctx context.Context, embedding
 // limit - maximum results per source.
 // Returns keyword search results from all sources.
 func (s *RetrievalService) searchAllKeywordSources(ctx context.Context, query, tenantID string, limit int) []*SearchResult {
-	var results []*SearchResult
-
 	// Search knowledge base
 	kbResults := s.bm25SearchKnowledge(ctx, query, tenantID, limit)
-	results = append(results, kbResults...)
-
 	// Search experiences
 	expResults := s.bm25SearchExperience(ctx, query, tenantID, limit)
-	results = append(results, expResults...)
-
 	// Search tools
 	toolResults := s.bm25SearchTools(ctx, query, tenantID, limit)
+
+	results := make([]*SearchResult, 0, len(kbResults)+len(expResults)+len(toolResults))
+	results = append(results, kbResults...)
+	results = append(results, expResults...)
 	results = append(results, toolResults...)
 
 	return results
@@ -1004,18 +1000,16 @@ func (s *RetrievalService) bm25Search(ctx context.Context, req *SearchRequest) [
 		return []*SearchResult{}
 	}
 
-	var results []*SearchResult
-
 	// Search knowledge base using BM25
 	knowledgeResults := s.bm25SearchKnowledge(ctx, req.Query, req.TenantID, req.Plan.TopK)
-	results = append(results, knowledgeResults...)
-
 	// Search experiences using BM25
 	experienceResults := s.bm25SearchExperience(ctx, req.Query, req.TenantID, req.Plan.TopK)
-	results = append(results, experienceResults...)
-
 	// Search tools using BM25
 	toolResults := s.bm25SearchTools(ctx, req.Query, req.TenantID, req.Plan.TopK)
+
+	results := make([]*SearchResult, 0, len(knowledgeResults)+len(experienceResults)+len(toolResults))
+	results = append(results, knowledgeResults...)
+	results = append(results, experienceResults...)
 	results = append(results, toolResults...)
 
 	return results
@@ -1305,11 +1299,12 @@ func (s *RetrievalService) applySourceSignals(baseScore float64, result *SearchR
 		// Execution time signal (faster experiences get preference)
 		if executionTime, ok := result.Metadata["execution_time"].(float64); ok {
 			// Normalize execution time: < 1s = 1.2x, 1-5s = 1.0x, > 5s = 0.8x
-			if executionTime < 1.0 {
+			switch {
+			case executionTime < 1.0:
 				baseScore *= 1.2 // Very fast experiences get boost
-			} else if executionTime < 5.0 {
+			case executionTime < 5.0:
 				baseScore *= 1.0 // Normal speed, no change
-			} else {
+			default:
 				baseScore *= 0.8 // Slow experiences get penalty
 			}
 		}

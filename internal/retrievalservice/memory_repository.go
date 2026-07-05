@@ -164,12 +164,13 @@ func (r *MemoryRepository) SearchKnowledge(ctx context.Context, request *core.Re
 		score := 0.0
 
 		// Exact match
-		if contentLower == queryLower {
+		switch {
+		case contentLower == queryLower:
 			score = 1.0
-		} else if strings.Contains(contentLower, queryLower) {
+		case strings.Contains(contentLower, queryLower):
 			// Partial match
 			score = 0.7 + (float64(len(queryLower))/float64(len(contentLower)))*0.2
-		} else {
+		default:
 			// Word-level matching
 			queryWords := strings.Fields(queryLower)
 			contentWords := strings.Fields(contentLower)

@@ -3,6 +3,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,7 +56,7 @@ func mapMCPServerConfig(cfg ares_config.MCPConfig) *ares_mcp.MCPManagerConfig {
 
 func ProvideMCP(ctx context.Context, cfg ares_config.MCPConfig) (*ares_mcp.MCPManager, error) {
 	if len(cfg.Servers) == 0 {
-		return nil, nil
+		return nil, errors.New("no MCP servers configured")
 	}
 	registry := core.NewRegistry()
 	mgrCfg := mapMCPServerConfig(cfg)

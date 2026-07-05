@@ -78,7 +78,6 @@ func main() {
 		cancel()
 		log.Fatalf("bootstrap: %v", err)
 	}
-	defer cancel()
 	store := comp.EventStore
 	memMgr := comp.Memory
 	mgr := comp.Runtime
@@ -106,6 +105,7 @@ func main() {
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
+		cancel()
 		log.Fatalf("create chat client: %v", err)
 	}
 	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
@@ -164,6 +164,7 @@ func main() {
 	).(*monitoring.MonitorPlugin)
 
 	if err := plugin.Start(ctx, bus); err != nil {
+		cancel()
 		log.Fatalf("start monitor plugin: %v", err)
 	}
 
@@ -183,6 +184,7 @@ func main() {
 
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
+		cancel()
 		log.Fatalf("start runtime: %v", err)
 	}
 
@@ -209,6 +211,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 	if err := httpSrv.ListenAndServe(); err != nil {
+		cancel()
 		log.Fatal(err)
 	}
 }

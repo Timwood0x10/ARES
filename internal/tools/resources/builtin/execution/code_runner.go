@@ -198,15 +198,17 @@ func stripPythonComments(code string) string {
 		inDoubleQuote := false
 		commentStart := -1
 		for i, c := range line {
-			if c == '\'' && !inDoubleQuote {
+			switch {
+			case c == '\'' && !inDoubleQuote:
 				inSingleQuote = !inSingleQuote
-			} else if c == '"' && !inSingleQuote {
+			case c == '"' && !inSingleQuote:
 				inDoubleQuote = !inDoubleQuote
-			} else if c == '#' && !inSingleQuote && !inDoubleQuote {
+			case c == '#' && !inSingleQuote && !inDoubleQuote:
 				commentStart = i
-				break
+				goto foundComment
 			}
 		}
+	foundComment:
 		if commentStart >= 0 {
 			line = line[:commentStart]
 		}

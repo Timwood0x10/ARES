@@ -4,6 +4,7 @@ package genome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -410,13 +411,14 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			if err != nil {
 				return nil, fmt.Errorf("select parents: %w", err)
 			}
-			if len(winners) >= 2 {
+			switch len(winners) {
+			case 2, 3, 4, 5, 6, 7, 8, 9, 10:
 				parentA = winners[0]
 				parentB = winners[1]
-			} else if len(winners) == 1 {
+			case 1:
 				parentA = winners[0]
 				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
-			} else {
+			default:
 				return nil, fmt.Errorf("selection returned no winners")
 			}
 		} else {
@@ -465,7 +467,7 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 func (p *Population) buildSelector() (Selection, error) {
 	switch p.cfg.SelectionStrategy {
 	case "", "random":
-		return nil, nil
+		return nil, errors.New("random selection: no selector needed")
 	case "tournament":
 		return NewTournamentSelection(
 			WithTournamentSize(p.cfg.TournamentSize),

@@ -861,7 +861,7 @@ func TestMemoryTrimStore_TrimBefore_AfterReadAllConsistency(t *testing.T) {
 	appendNEvents(t, store, ctx, "stream-y", 30)
 
 	// Trim stream-x partially.
-	trimStore.TrimBefore(ctx, "stream-x", 25)
+	_, _ = trimStore.TrimBefore(ctx, "stream-x", 25) // Ignore error for test setup
 
 	// ReadAll should still return only stream-y's events plus trimmed stream-x events.
 	all, err := store.ReadAll(ctx, ReadOptions{})

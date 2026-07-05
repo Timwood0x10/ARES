@@ -320,15 +320,16 @@ func (g *Graph) execute(ctx context.Context, state *State, initialExecuted map[s
 			if len(loopPlugins) > 0 {
 				if loop, ok := loopPlugins[0].(*ares_runtime.LoopPlugin); ok {
 					cfg := loop.Config()
-					if cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations {
+					switch {
+					case cfg.MaxIterations > 0 && iteration >= cfg.MaxIterations:
 						log.Debug("graph: loop max iterations reached",
 							"graph_id", g.id, "iteration", iteration, "max", cfg.MaxIterations,
 						)
-					} else if cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()) {
+					case cfg.UntilCondition != nil && cfg.UntilCondition(state.ToParams()):
 						log.Debug("graph: loop until condition met",
 							"graph_id", g.id, "iteration", iteration,
 						)
-					} else {
+					default:
 						log.Debug("graph: loop iteration completed, continuing",
 							"graph_id", g.id, "iteration", iteration,
 						)

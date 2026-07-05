@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func (m *mockDetailPanelReader) GetDetail(entityID string) (*DetailView, error) 
 	defer m.mu.Unlock()
 	v, ok := m.views[entityID]
 	if !ok {
-		return nil, nil
+		return nil, errors.New("detail not found")
 	}
 	return v, nil
 }

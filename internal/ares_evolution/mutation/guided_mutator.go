@@ -460,12 +460,13 @@ func (m *ExperienceGuidedMutator) chooseGuidedMutationType(
 		penalty := paramProb * 0.2
 		paramProb -= penalty
 		// Redistribute penalty to prompt and tool.
-		if promptProb > 0 && toolProb > 0 {
+		switch {
+		case promptProb > 0 && toolProb > 0:
 			promptProb += penalty * 0.5
 			toolProb += penalty * 0.5
-		} else if promptProb > 0 {
+		case promptProb > 0:
 			promptProb += penalty
-		} else if toolProb > 0 {
+		case toolProb > 0:
 			toolProb += penalty
 		}
 	}

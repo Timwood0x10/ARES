@@ -62,9 +62,9 @@ func runBandit(ctx context.Context, k *DemoKit) {
 		)
 	}
 
-	var rows [][]string
-	for _, id := range ids {
-		rows = append(rows, []string{id, fmt.Sprintf("%d", k.Repo.getUsageCount(id)), fmt.Sprintf("%.4f", k.Repo.getRank(id))})
+	rows := make([][]string, len(ids))
+	for i, id := range ids {
+		rows[i] = []string{id, fmt.Sprintf("%d", k.Repo.getUsageCount(id)), fmt.Sprintf("%.4f", k.Repo.getRank(id))}
 	}
 	tbl([]string{"Exp", "Usage", "Rank"}, rows)
 	log.InfoContext(ctx, "Bandit feedback summary", "note", "usage reinforces reliability, failures decay rank")
@@ -128,8 +128,9 @@ func runCallbacks(ctx context.Context, _ *DemoKit) {
 		reg.Emit(evt)
 	}
 
-	var rows [][]string
-	for _, evt := range []ares_callbacks.Event{ares_callbacks.EventLLMStart, ares_callbacks.EventLLMEnd, ares_callbacks.EventToolStart, ares_callbacks.EventAgentStart} {
+	eventList := []ares_callbacks.Event{ares_callbacks.EventLLMStart, ares_callbacks.EventLLMEnd, ares_callbacks.EventToolStart, ares_callbacks.EventAgentStart}
+	rows := make([][]string, 0, len(eventList)+1)
+	for _, evt := range eventList {
 		rows = append(rows, []string{fmt.Sprintf("%v", evt), fmt.Sprintf("%d", counts[evt])})
 	}
 	rows = append(rows, []string{"Total", fmt.Sprintf("%d", captured)})
@@ -292,7 +293,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 		improvement float64
 		passed      bool
 	}
-	var candResults []candidateResult
+	candResults := make([]candidateResult, 0, len(children))
 
 	for i, child := range children {
 		candidate := evolution.Strategy{ID: child.ID, Params: child.Params, ParentID: child.ParentID}
@@ -338,8 +339,8 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 	}
 
 	fmt.Println("\n 📋 Candidate Evaluation Results:")
-	var evalRows [][]string
-	for _, cr := range candResults {
+	evalRows := make([][]string, len(candResults))
+	for i, cr := range candResults {
 		mark := "✗"
 		if cr.passed {
 			mark = "✓"
@@ -348,7 +349,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 		if cr.index-1 == bestIdx && best != nil {
 			winner = " ★"
 		}
-		evalRows = append(evalRows, []string{
+		evalRows[i] = []string{
 			fmt.Sprintf("%d%s", cr.index, winner),
 			safeTruncate(cr.mutType, 20),
 			fmt.Sprintf("t=%.2f", cr.temp),
@@ -357,7 +358,7 @@ func runDreamCycle(ctx context.Context, _ *DemoKit) {
 			fmt.Sprintf("%.2f", cr.winRate),
 			fmt.Sprintf("%+.3f", cr.improvement),
 			mark,
-		})
+		}
 	}
 	tbl([]string{"#", "Mutation Type", "Temp", "TopK", "Prompt", "WinRate", "ΔScore", "OK"}, evalRows)
 
@@ -666,19 +667,19 @@ func defaultParent(id string) *evolutionservice.Strategy {
 
 // printResult prints the evolution stats table with diversity, lineages, and dimension scores.
 func printResult(result *evolutionservice.EvolutionResult) {
-	var rows [][]string
+	rows := make([][]string, len(result.Stats))
 	for i, st := range result.Stats {
 		div := ""
 		if st.Diversity != nil {
 			div = fmt.Sprintf("%.0f%%", st.Diversity.Overall*100)
 		}
-		rows = append(rows, []string{
+		rows[i] = []string{
 			fmt.Sprintf("%d", i+1),
 			fmt.Sprintf("%.2f", st.BestScore),
 			fmt.Sprintf("%.2f", st.AvgScore),
 			fmt.Sprintf("%.2f", st.WorstScore),
 			div,
-		})
+		}
 	}
 	headers := []string{"Gen", "Best", "Avg", "Worst", "Diversity"}
 	tbl(headers, rows)
@@ -756,16 +757,17 @@ func runRealDataEvolution(ctx context.Context, kit *DemoKit, cfg GACfg) *evoluti
 	}
 
 	fmt.Println("\n   Tool Call Distribution:")
-	var toolRows [][]string
-	for _, tool := range []string{"web_search", "calculator", "regex", "json_tools", "file_tools"} {
+	tools := []string{"web_search", "calculator", "regex", "json_tools", "file_tools"}
+	toolRows := make([][]string, len(tools))
+	for i, tool := range tools {
 		total := toolCounts[tool]
 		ok := toolSuccess[tool]
 		pct := float64(ok) / float64(total) * 100
-		toolRows = append(toolRows, []string{
+		toolRows[i] = []string{
 			tool,
 			fmt.Sprintf("%d", total),
 			fmt.Sprintf("%.0f%%", pct),
-		})
+		}
 	}
 	tbl([]string{"Tool", "Calls", "Success"}, toolRows)
 

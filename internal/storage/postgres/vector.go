@@ -46,6 +46,7 @@ func NewVectorSearcherWithDB(db DBTX, embeddingConfig *EmbeddingConfig) *VectorS
 }
 
 // SearchResult is an alias for storage.SearchResult.
+//
 // Deprecated: Use storage.SearchResult directly.
 type SearchResult = storage.SearchResult
 

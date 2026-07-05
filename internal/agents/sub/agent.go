@@ -12,6 +12,14 @@ import (
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// Event payload keys
+const (
+	KeyAgentID = "agent_id"
+	KeyTaskID  = "task_id"
+	KeyError   = "error"
+	KeyStatus  = "status"
+)
+
 // Agent represents the Sub Agent interface.
 type Agent interface {
 	base.Agent
@@ -174,7 +182,7 @@ func (a *subAgent) Start(ctx context.Context) error {
 	}
 
 	a.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
-		"agent_id": a.id,
+		KeyAgentID: a.id,
 		"type":     string(a.agentType),
 	})
 
@@ -199,7 +207,7 @@ func (a *subAgent) Stop(ctx context.Context) error {
 	a.streamWg.Wait()
 
 	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
-		"agent_id": a.id,
+		KeyAgentID: a.id,
 	})
 
 	a.setStatus(models.AgentStatusOffline)
@@ -274,23 +282,23 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 	}
 
 	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-		"task_id":  task.TaskID,
-		"agent_id": a.id,
+		KeyTaskID:  task.TaskID,
+		KeyAgentID: a.id,
 	})
 
 	result, err := a.executor.Execute(ctx, task)
 	if err != nil {
 		a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
-			"task_id":  task.TaskID,
-			"agent_id": a.id,
-			"error":    err.Error(),
+			KeyTaskID:  task.TaskID,
+			KeyAgentID: a.id,
+			KeyError:   err.Error(),
 		})
 		return nil, err
 	}
 
 	a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-		"task_id":  task.TaskID,
-		"agent_id": a.id,
+		KeyTaskID:  task.TaskID,
+		KeyAgentID: a.id,
 	})
 
 	return result, nil
@@ -341,17 +349,17 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		}
 
 		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-			"task_id":  task.TaskID,
-			"agent_id": a.id,
+			KeyTaskID:  task.TaskID,
+			KeyAgentID: a.id,
 		})
 
 		// Execute task
 		result, err := a.executor.Execute(ctx, task)
 		if err != nil {
 			a.emitEvent(ctx, ares_events.EventTaskFailed, map[string]any{
-				"task_id":  task.TaskID,
-				"agent_id": a.id,
-				"error":    err.Error(),
+				KeyTaskID:  task.TaskID,
+				KeyAgentID: a.id,
+				KeyError:   err.Error(),
 			})
 
 			select {
@@ -363,8 +371,8 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 		}
 
 		a.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
-			"task_id":  task.TaskID,
-			"agent_id": a.id,
+			KeyTaskID:  task.TaskID,
+			KeyAgentID: a.id,
 		})
 
 		// Send task complete event
@@ -415,8 +423,8 @@ func (a *subAgent) ReplayEvents(evts []*ares_events.Event) error {
 		}
 		if ev.Type == ares_events.EventTaskCompleted {
 			log.Debug("sub-agent replayed task completion",
-				"agent_id", a.id,
-				"task_id", ev.Payload["task_id"],
+				KeyAgentID, a.id,
+				KeyTaskID, ev.Payload[KeyTaskID],
 			)
 		}
 	}
@@ -429,14 +437,14 @@ func (a *subAgent) Snapshot() (map[string]any, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return map[string]any{
-		"agent_id": a.id,
-		"status":   string(a.status),
+		KeyAgentID: a.id,
+		KeyStatus:  string(a.status),
 	}, nil
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
 func (a *subAgent) emitEvent(ctx context.Context, eventType ares_events.EventType, payload map[string]any) {
 	if ares_events.Emit(ctx, a.eventStore, a.id, eventType, "sub", payload) {
-		log.Debug("event emitted", "agent_id", a.id, "type", eventType)
+		log.Debug("event emitted", KeyAgentID, a.id, "type", eventType)
 	}
 }

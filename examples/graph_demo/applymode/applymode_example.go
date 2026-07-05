@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -29,7 +30,7 @@ func (a *dynAgent) Start(ctx context.Context) error                     { return
 func (a *dynAgent) Stop(ctx context.Context) error                      { return nil }
 func (a *dynAgent) Process(ctx context.Context, input any) (any, error) { return a.fn(ctx, input) }
 func (a *dynAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	return nil, nil
+	return nil, errors.New("streaming not supported")
 }
 
 func makeResult(desc string) *models.RecommendResult {
@@ -77,7 +78,7 @@ func (a *agentWithDAG) Process(ctx context.Context, input any) (any, error) {
 	return makeResult("processed: " + fmt.Sprint(input)), nil
 }
 func (a *agentWithDAG) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	return nil, nil
+	return nil, errors.New("streaming not supported")
 }
 
 func main() {

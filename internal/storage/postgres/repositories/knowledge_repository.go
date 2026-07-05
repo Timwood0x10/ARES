@@ -261,6 +261,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 				createdAt, updatedAt)
 		}
 
+		//nolint:gosec // G201: Safe SQL formatting - columns hardcoded, values parameterized
 		query := fmt.Sprintf(`
 			INSERT INTO knowledge_chunks_1024
 			(%s)

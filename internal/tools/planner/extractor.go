@@ -229,13 +229,14 @@ func (pe *ParameterExtractor) extractNumberTheory(request string) map[string]int
 func (pe *ParameterExtractor) extractStringOp(request string) map[string]interface{} {
 	lower := strings.ToLower(request)
 	op := "upper"
-	if strings.Contains(lower, "lower") || strings.Contains(lower, "小写") {
+	switch {
+	case strings.Contains(lower, "lower") || strings.Contains(lower, "小写"):
 		op = "lower"
-	} else if strings.Contains(lower, "trim") || strings.Contains(lower, "去掉") {
+	case strings.Contains(lower, "trim") || strings.Contains(lower, "去掉"):
 		op = "trim"
-	} else if strings.Contains(lower, "reverse") || strings.Contains(lower, "反转") {
+	case strings.Contains(lower, "reverse") || strings.Contains(lower, "反转"):
 		op = "reverse"
-	} else if strings.Contains(lower, "length") || strings.Contains(lower, "长度") {
+	case strings.Contains(lower, "length") || strings.Contains(lower, "长度"):
 		op = "length"
 	}
 	return map[string]interface{}{"operation": op}

@@ -30,11 +30,6 @@ func main() {
 	dbname = strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() {
-		if err := adminDB.Close(); err != nil {
-			log.Warn("adminDB.Close", "error", err)
-		}
-	}()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
@@ -74,12 +69,6 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("distilled_memories table created successfully")
-
-	defer func() {
-		if err := pool.Close(); err != nil {
-			log.Warn("pool.Close", "error", err)
-		}
-	}()
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_tenant ON distilled_memories(tenant_id)`,

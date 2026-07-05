@@ -38,11 +38,6 @@ func main() {
 	dbname := strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() {
-		if err := adminDB.Close(); err != nil {
-			log.Warn("adminDB.Close", "error", err)
-		}
-	}()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
@@ -82,7 +77,6 @@ func main() {
 		log.Error("migration failed", "error", err)
 		os.Exit(1)
 	}
-
 	defer func() {
 		if err := pool.Close(); err != nil {
 			log.Warn("pool.Close", "error", err)

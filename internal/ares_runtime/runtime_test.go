@@ -2,6 +2,7 @@ package ares_runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -73,7 +74,7 @@ func (a *mockAgent) Stop(ctx context.Context) error {
 }
 
 func (a *mockAgent) Process(ctx context.Context, input any) (any, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (a *mockAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
@@ -195,7 +196,7 @@ func (m *mockMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) err
 }
 
 func (m *mockMemoryManager) DistillTask(_ context.Context, _ string) (*models.Task, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *mockMemoryManager) StoreDistilledTask(_ context.Context, _ string, _ *models.Task) error {
@@ -286,7 +287,7 @@ func (m *errMemoryManager) UpdateTaskOutput(_ context.Context, _, _ string) erro
 }
 
 func (m *errMemoryManager) DistillTask(_ context.Context, _ string) (*models.Task, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *errMemoryManager) StoreDistilledTask(_ context.Context, _ string, _ *models.Task) error {

@@ -384,12 +384,6 @@ func main() {
 		lg.Error("Failed to create knowledge base", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := kb.Close(); err != nil {
-			lg.Error("Failed to close knowledge base", "error", err)
-			os.Exit(1)
-		}
-	}()
 
 	ctx := context.Background()
 
@@ -405,9 +399,11 @@ func main() {
 		if err != nil {
 			if err == context.DeadlineExceeded {
 				lg.Error("Import timeout (5 minutes exceeded)")
+				_ = kb.Close()
 				os.Exit(1)
 			}
 			lg.Error("Failed to import document", "error", err)
+			_ = kb.Close()
 			os.Exit(1)
 		}
 		log.Printf("Document imported successfully. Document ID: %s", docID)
@@ -426,9 +422,11 @@ func main() {
 			cancel()
 			if err == context.DeadlineExceeded {
 				lg.Error("List timeout")
+				_ = kb.Close()
 				os.Exit(1)
 			}
 			lg.Error("Failed to list documents", "error", err)
+			_ = kb.Close()
 			os.Exit(1)
 		}
 		cancel()
@@ -449,9 +447,11 @@ func main() {
 			cancel()
 			if err == context.DeadlineExceeded {
 				lg.Error("Delete timeout")
+				_ = kb.Close()
 				os.Exit(1)
 			}
 			lg.Error("Failed to delete document", "error", err)
+			_ = kb.Close()
 			os.Exit(1)
 		}
 		cancel()
@@ -459,6 +459,10 @@ func main() {
 
 	default:
 		printUsage()
+	}
+
+	if err := kb.Close(); err != nil {
+		lg.Error("Failed to close knowledge base", "error", err)
 	}
 }
 

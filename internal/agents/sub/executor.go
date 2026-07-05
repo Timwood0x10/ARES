@@ -384,7 +384,7 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 
 	for round := 0; round < maxRounds; round++ {
 		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-			"agent_id":   e.agentID,
+			KeyAgentID:   e.agentID,
 			"round":      round + 1,
 			"max_rounds": maxRounds,
 			"tool_count": len(llmTools),
@@ -419,7 +419,7 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 		// Execute each tool call and append tool result messages.
 		for _, tc := range resp.ToolCalls {
 			e.emitEvent(ctx, ares_events.EventToolCallStarted, map[string]any{
-				"agent_id":     e.agentID,
+				KeyAgentID:     e.agentID,
 				"tool_name":    tc.Function.Name,
 				"tool_call_id": tc.ID,
 			})
@@ -431,7 +431,7 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 			}
 
 			e.emitEvent(ctx, ares_events.EventToolCallCompleted, map[string]any{
-				"agent_id":     e.agentID,
+				KeyAgentID:     e.agentID,
 				"tool_name":    tc.Function.Name,
 				"tool_call_id": tc.ID,
 			})
@@ -471,15 +471,15 @@ func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (s
 // executeWithLLMTextOnly performs a text-only LLM generation (original behavior).
 func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string) ([]*models.RecommendItem, error) {
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-		"agent_id": e.agentID,
+		KeyAgentID: e.agentID,
 		"prompt":   prompt[:min(200, len(prompt))],
 	})
 	response, err := e.llmAdapter.Generate(ctx, prompt)
 	if err != nil {
 		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
-			"agent_id": e.agentID,
-			"error":    err.Error(),
-			"status":   "failed",
+			KeyAgentID: e.agentID,
+			KeyError:   err.Error(),
+			KeyStatus:  "failed",
 		})
 		return nil, errors.Wrap(err, "LLM call failed")
 	}

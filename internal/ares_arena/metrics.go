@@ -75,6 +75,7 @@ func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bo
 }
 
 // RecordRecovery records a recovery duration sample.
+//
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
 	log.Warn("MetricsCollector.RecordRecovery is deprecated, use RecordActionResult instead")
@@ -84,6 +85,7 @@ func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
 }
 
 // RecordFailover records a failover event.
+//
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordFailover() {
 	log.Warn("MetricsCollector.RecordFailover is deprecated, use RecordActionResult instead")
@@ -93,6 +95,7 @@ func (mc *MetricsCollector) RecordFailover() {
 }
 
 // RecordConsistency records a data consistency rate sample (0-100).
+//
 // Deprecated: Use RecordActionResult instead. Kept for backward compatibility with tests.
 func (mc *MetricsCollector) RecordConsistency(rate float64) {
 	log.Warn("MetricsCollector.RecordConsistency is deprecated, use RecordActionResult instead")

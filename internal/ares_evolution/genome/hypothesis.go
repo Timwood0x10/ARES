@@ -84,17 +84,18 @@ func (hg *HypothesisGenerator) recommendationToHypothesis(rec Recommendation) *M
 
 	// Parse target to determine type and key.
 	target := rec.Target
-	if strings.HasPrefix(target, "param:") {
+	switch {
+	case strings.HasPrefix(target, "param:"):
 		hyp.TargetType = "param"
 		hyp.TargetKey = strings.TrimPrefix(target, "param:")
-	} else if target == "prompt" || target == "prompt_template" {
+	case target == "prompt" || target == "prompt_template":
 		hyp.TargetType = "prompt"
 		hyp.TargetKey = "prompt_template"
 		hyp.Direction = "restructure"
-	} else if strings.HasPrefix(target, "tool:") {
+	case strings.HasPrefix(target, "tool:"):
 		hyp.TargetType = "tool"
 		hyp.TargetKey = strings.TrimPrefix(target, "tool:")
-	} else {
+	default:
 		// Generic target: try to infer from action.
 		switch rec.Action {
 		case "increase", "decrease":

@@ -6,12 +6,12 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage"
 )
 
 // VectorSearcher defines the interface for vector storage operations.
 type VectorSearcher interface {
-	Search(ctx context.Context, table string, query []float64, limit int) ([]*postgres.SearchResult, error)
+	Search(ctx context.Context, table string, query []float64, limit int) ([]*storage.SearchResult, error)
 	AddEmbedding(ctx context.Context, table, id string, embedding []float64, metadata map[string]any) error
 	DeleteEmbedding(ctx context.Context, table, id string) error
 	CreateVectorTable(ctx context.Context, table string, metadataSchema string) error

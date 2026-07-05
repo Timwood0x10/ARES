@@ -366,15 +366,16 @@ func DefaultSummarizer(events []*Event) string {
 	}
 
 	// Determine outcome.
-	if typeCounts[string(EventTaskFailed)] > 0 || typeCounts[string(EventFailoverTriggered)] > 0 {
-		if typeCounts[string(EventTaskCompleted)] > 0 {
-			outcome = "partial"
-		} else {
-			outcome = "failed"
-		}
-	} else if typeCounts[string(EventTaskCompleted)] > 0 {
+	hasFailed := typeCounts[string(EventTaskFailed)] > 0 || typeCounts[string(EventFailoverTriggered)] > 0
+	hasCompleted := typeCounts[string(EventTaskCompleted)] > 0
+	switch {
+	case hasFailed && hasCompleted:
+		outcome = "partial"
+	case hasFailed:
+		outcome = "failed"
+	case hasCompleted:
 		outcome = "completed"
-	} else {
+	default:
 		outcome = "active"
 	}
 

@@ -39,7 +39,7 @@ func getSummaryTestPool(t *testing.T) *postgres.Pool {
 	if u, err := url.Parse(dsn); err == nil {
 		cfg.Host = u.Hostname()
 		if p := u.Port(); p != "" {
-			fmt.Sscanf(p, "%d", &cfg.Port)
+			_, _ = fmt.Sscanf(p, "%d", &cfg.Port) // Ignore error: port parsing is optional
 		}
 	}
 
@@ -849,7 +849,10 @@ func appendNEventsToPGStore(t *testing.T, store EventStore, ctx context.Context,
 // buildRealisticEventSequence creates a realistic multi-type event sequence for testing.
 func buildRealisticEventSequence(streamID string) []*Event {
 	base := time.Now().Truncate(time.Second).UTC()
-	var events []*Event
+	tools := []string{"search_flights", "search_hotels", "check_weather", "convert_currency"}
+	extraTypes := []EventType{EventLLMCall, EventMessageAdded, EventTaskCreated, EventTaskCompleted,
+		EventLLMCall, EventMessageAdded, EventTaskFailed, EventLLMCall}
+	events := make([]*Event, 0, 3+len(tools)+1+1+1+1+1+1+len(extraTypes))
 
 	// Session creation.
 	events = append(events, &Event{
@@ -868,7 +871,6 @@ func buildRealisticEventSequence(streamID string) []*Event {
 	})
 
 	// Tool calls.
-	tools := []string{"search_flights", "search_hotels", "check_weather", "convert_currency"}
 	for i, tool := range tools {
 		events = append(events, &Event{
 			Type: EventLLMCall, Version: int64(4 + i), Timestamp: base.Add(time.Duration(3+i) * time.Second),
@@ -907,8 +909,6 @@ func buildRealisticEventSequence(streamID string) []*Event {
 	})
 
 	// Fill remaining events to reach > threshold.
-	extraTypes := []EventType{EventLLMCall, EventMessageAdded, EventTaskCreated, EventTaskCompleted,
-		EventLLMCall, EventMessageAdded, EventTaskFailed, EventLLMCall}
 	for i, et := range extraTypes {
 		payload := map[string]any{}
 		if et == EventTaskCreated {

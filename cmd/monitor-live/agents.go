@@ -184,16 +184,15 @@ func createExecutor(
 // createChatClient creates a FailoverClient from the LLM config for Chat API support.
 // Both *llm.Client and *llm.FailoverClient satisfy the sub.ChatClient interface.
 func createChatClient(cfg *ares_config.Config) (sub.ChatClient, error) {
-	configs := []*llm.Config{
-		{
-			Provider:  cfg.LLM.Provider,
-			APIKey:    cfg.LLM.APIKey,
-			BaseURL:   cfg.LLM.BaseURL,
-			Model:     cfg.LLM.Model,
-			Timeout:   cfg.LLM.Timeout,
-			MaxTokens: cfg.LLM.MaxTokens,
-		},
-	}
+	configs := make([]*llm.Config, 0, 1+len(cfg.LLM.Fallbacks))
+	configs = append(configs, &llm.Config{
+		Provider:  cfg.LLM.Provider,
+		APIKey:    cfg.LLM.APIKey,
+		BaseURL:   cfg.LLM.BaseURL,
+		Model:     cfg.LLM.Model,
+		Timeout:   cfg.LLM.Timeout,
+		MaxTokens: cfg.LLM.MaxTokens,
+	})
 	for _, fb := range cfg.LLM.Fallbacks {
 		provider := fb.Provider
 		if provider == "" {

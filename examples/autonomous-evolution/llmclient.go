@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -212,7 +213,8 @@ type failoverLLMClient struct {
 // newFailoverLLMClient creates a failover client from primary + fallback configs.
 // Per-provider timeout defaults to 5s if not specified.
 func newFailoverLLMClient(primary LLMProviderConfig, fallbacks []LLMProviderConfig) *failoverLLMClient {
-	providers := []*providerClient{newProviderClient(primary)}
+	providers := make([]*providerClient, 0, 1+len(fallbacks))
+	providers = append(providers, newProviderClient(primary))
 	for _, fb := range fallbacks {
 		providers = append(providers, newProviderClient(fb))
 	}
@@ -339,5 +341,5 @@ func loadLLMConfig() (*LLMTopConfig, error) {
 		}
 	}
 
-	return nil, nil
+	return nil, errors.New("no valid LLM configuration found")
 }

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -25,7 +26,7 @@ func (a *execAgent) Start(ctx context.Context) error                     { retur
 func (a *execAgent) Stop(ctx context.Context) error                      { return nil }
 func (a *execAgent) Process(ctx context.Context, input any) (any, error) { return a.fn(ctx, input) }
 func (a *execAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	return nil, nil
+	return nil, errors.New("streaming not supported")
 }
 
 func makeResult(desc string) *models.RecommendResult {

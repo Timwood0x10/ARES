@@ -4,6 +4,7 @@ package ares_integration
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,7 +67,7 @@ func (m *resMockAgent) Stop(_ context.Context) error {
 }
 
 func (m *resMockAgent) Process(_ context.Context, _ any) (any, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *resMockAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {

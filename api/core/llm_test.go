@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -672,7 +673,7 @@ func TestLLMService(t *testing.T) {
 type mockLLMService struct{}
 
 func (m *mockLLMService) Generate(ctx context.Context, request *GenerateRequest) (*GenerateResponse, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockLLMService) GenerateSimple(ctx context.Context, prompt string) (string, error) {
@@ -680,7 +681,7 @@ func (m *mockLLMService) GenerateSimple(ctx context.Context, prompt string) (str
 }
 
 func (m *mockLLMService) GenerateEmbedding(ctx context.Context, request *EmbeddingRequest) (*EmbeddingResponse, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockLLMService) GetConfig() *LLMConfig {

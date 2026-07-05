@@ -88,7 +88,7 @@ func (g *ReportGenerator) GenerateMarkdown(suite TestSuite, results []TestResult
 	sb.WriteString("| Metric | Average | Min | Max |\n")
 	sb.WriteString("|--------|---------|-----|-----|\n")
 
-	var metrics []string
+	metrics := make([]string, 0, len(metricScores))
 	for metric := range metricScores {
 		metrics = append(metrics, metric)
 	}

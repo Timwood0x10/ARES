@@ -301,11 +301,14 @@ func buildTrendSection(items []KnowledgeItem, include bool) TrendSection {
 //   - Category with many low-confidence items -> "collect more evidence" recommendation.
 //   - Conflict-heavy categories -> "review conflicts" recommendation.
 func buildRecommendations(items []KnowledgeItem) RecommendationSection {
-	var recs []Recommendation
+	deployRecs := buildDeployRecommendations(items)
+	evidenceRecs := buildCollectEvidenceRecommendations(items)
+	conflictRecs := buildConflictReviewRecommendations(items)
 
-	recs = append(recs, buildDeployRecommendations(items)...)
-	recs = append(recs, buildCollectEvidenceRecommendations(items)...)
-	recs = append(recs, buildConflictReviewRecommendations(items)...)
+	recs := make([]Recommendation, 0, len(deployRecs)+len(evidenceRecs)+len(conflictRecs))
+	recs = append(recs, deployRecs...)
+	recs = append(recs, evidenceRecs...)
+	recs = append(recs, conflictRecs...)
 
 	priorityRank := map[string]int{"high": 0, "medium": 1, "low": 2}
 	sort.SliceStable(recs, func(i, j int) bool {
