@@ -123,7 +123,7 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 		}
 
 		// Send done event
-		if err = h.sendSSE(w, flusher, "done", map[string]string{"status": "complete"}); err != nil {
+		if err = h.sendSSE(w, flusher, "done", map[string]string{keyStatus: "complete"}); err != nil {
 			log.Warn("Failed to send done event", "error", err)
 			return
 		}
