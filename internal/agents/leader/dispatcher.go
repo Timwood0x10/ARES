@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 
@@ -81,7 +80,7 @@ func (d *taskDispatcher) RegisterExecutor(agentType models.AgentType, fn func(ct
 // Dispatch dispatches tasks to sub-agents in parallel.
 func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error) {
 	if len(tasks) == 0 {
-		return nil, apperrors.ErrInvalidInput
+		return nil, errors.ErrInvalidInput
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -133,7 +132,7 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 				results[i].SetError(ErrTaskNotStarted.Error())
 			}
 		}
-		return results, fmt.Errorf("%w: %v", apperrors.ErrDispatchFailed, err)
+		return results, fmt.Errorf("%w: %v", errors.ErrDispatchFailed, err)
 	}
 
 	return results, nil

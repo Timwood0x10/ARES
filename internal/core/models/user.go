@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // UserProfile represents user profile information.

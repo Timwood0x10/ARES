@@ -3,12 +3,15 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
+
+var ErrNotImplemented = errors.New("agents: not implemented")
 
 // ---------------------------------------------------------------------------
 // Agent interface
@@ -111,7 +114,7 @@ func NewLeader(
 	memMgr any,
 	cfg *Config,
 ) (Agent, error) {
-	return nil, nil
+ return nil, ErrNotImplemented
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +126,11 @@ type SubAgent = Agent
 
 // NewSub creates a new sub agent.
 func NewSub(
-	id string,
-	agentType models.AgentType,
-	executor any,
-	handler any,
-	cfg *Config,
+ id string,
+ agentType models.AgentType,
+ executor any,
+ handler any,
+ cfg *Config,
 ) (Agent, error) {
-	return nil, nil
+ return nil, ErrNotImplemented
 }

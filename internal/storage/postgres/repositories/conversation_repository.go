@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -122,7 +121,7 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 // Returns conversation or error if not found or invalid argument.
 func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*storage_models.Conversation, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -144,7 +143,7 @@ func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*stora
 	}
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get conversation by id")

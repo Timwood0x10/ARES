@@ -18,7 +18,6 @@ import (
 
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
@@ -360,13 +359,13 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 // validateRequest validates the search request.
 func (s *RetrievalService) validateRequest(req *SearchRequest) error {
 	if req == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 	if req.Query == "" {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 	if req.TenantID == "" {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 	if req.TopK <= 0 {
 		req.TopK = 10

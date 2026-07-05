@@ -18,7 +18,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -155,21 +154,21 @@ func (c *Client) SetTracer(t ares_observability.Tracer) {
 //
 // Returns:
 //   - *Client: the configured LLM client.
-//   - error: coreerrors.ErrInvalidArgument if config is nil or required fields
+//   - error: errors.ErrInvalidArgument if config is nil or required fields
 //     are missing, or an error describing which field is invalid.
 func NewClient(config *Config, opts ...Option) (*Client, error) {
 	if config == nil {
-		return nil, fmt.Errorf("%w: config must not be nil", coreerrors.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: config must not be nil", errors.ErrInvalidArgument)
 	}
 	if config.Model == "" {
-		return nil, fmt.Errorf("%w: model is required", coreerrors.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: model is required", errors.ErrInvalidArgument)
 	}
 	if config.Provider == "" {
-		return nil, fmt.Errorf("%w: provider is required", coreerrors.ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: provider is required", errors.ErrInvalidArgument)
 	}
 	// BaseURL is required for non-Ollama providers; Ollama has a default.
 	if config.BaseURL == "" && ProviderType(config.Provider) != ProviderOllama {
-		return nil, fmt.Errorf("%w: base_url is required for provider %s", coreerrors.ErrInvalidArgument, config.Provider)
+		return nil, fmt.Errorf("%w: base_url is required for provider %s", errors.ErrInvalidArgument, config.Provider)
 	}
 
 	if config.Timeout <= 0 {

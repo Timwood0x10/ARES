@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 

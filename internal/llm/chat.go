@@ -11,7 +11,6 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -37,7 +36,7 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 
 	// Validate input messages.
 	if len(messages) == 0 {
-		err := coreerrors.ErrInvalidArgument
+		err := errors.ErrInvalidArgument
 		c.emitCallback(&ares_callbacks.Context{
 			Event: ares_callbacks.EventLLMError,
 			Model: model,

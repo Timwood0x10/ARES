@@ -114,12 +114,12 @@ Acceptance criteria:
 
 ## Phase 5: Multi-step Planning
 
-- [ ] Extend `ExecutionPlan` with dependency edges.
-- [ ] Validate input and output compatibility between steps.
-- [ ] Add fallback handling per step.
-- [ ] Decide whether multi-step execution belongs in the agent executor or workflow engine.
-- [ ] Implement DAG validation before DAG execution.
-- [ ] Add tests for:
+- [x] Extend `ExecutionPlan` with dependency edges.
+- [x] Validate input and output compatibility between steps.
+- [x] Add fallback handling per step.
+- [x] Decide whether multi-step execution belongs in the agent executor or workflow engine.
+- [x] Implement DAG validation before DAG execution.
+- [x] Add tests for:
   - missing dependency
   - cycle detection
   - incompatible output/input types

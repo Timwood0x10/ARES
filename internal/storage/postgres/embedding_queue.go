@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -64,7 +63,7 @@ func NewEmbeddingQueue(pool *Pool, embeddingConfig *EmbeddingConfig) *EmbeddingQ
 // Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
 func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error {
 	if task == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	// Generate dedupe key for idempotency.
@@ -104,10 +103,10 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 // Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
 func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *EmbeddingTask) error {
 	if task == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 	if tx == nil {
-		return fmt.Errorf("transaction is nil: %w", coreerrors.ErrInvalidArgument)
+		return fmt.Errorf("transaction is nil: %w", errors.ErrInvalidArgument)
 	}
 
 	// Generate dedupe key for idempotency.
@@ -158,7 +157,7 @@ func (q *EmbeddingQueue) generateDedupeKey(task *EmbeddingTask) string {
 // Returns list of pending tasks or error if fetch fails.
 func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*EmbeddingTask, error) {
 	if limit <= 0 {
-		return nil, fmt.Errorf("limit must be positive: %w", coreerrors.ErrInvalidArgument)
+		return nil, fmt.Errorf("limit must be positive: %w", errors.ErrInvalidArgument)
 	}
 
 	tx, err := q.db.Begin(ctx)
@@ -321,7 +320,7 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 // Returns error if reconciliation fails.
 func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration) error {
 	if threshold <= 0 {
-		return fmt.Errorf("threshold must be positive: %w", coreerrors.ErrInvalidArgument)
+		return fmt.Errorf("threshold must be positive: %w", errors.ErrInvalidArgument)
 	}
 
 	// Use configured default model and version.

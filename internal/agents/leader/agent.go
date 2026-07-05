@@ -12,7 +12,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 
@@ -107,7 +106,7 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	a.mu.Lock()
 	if a.status != models.AgentStatusOffline {
 		a.mu.Unlock()
-		return coreerrors.ErrAgentAlreadyStarted
+		return errors.ErrAgentAlreadyStarted
 	}
 	a.status = models.AgentStatusStarting
 	a.mu.Unlock()
@@ -121,16 +120,16 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 
 	// Validate and initialize dependencies
 	if a.parser == nil {
-		return coreerrors.ErrProfileParserNotInitialized
+		return errors.ErrProfileParserNotInitialized
 	}
 	if a.planner == nil {
-		return coreerrors.ErrTaskPlannerNotInitialized
+		return errors.ErrTaskPlannerNotInitialized
 	}
 	if a.dispatcher == nil {
-		return coreerrors.ErrDispatchNotInitialized
+		return errors.ErrDispatchNotInitialized
 	}
 	if a.aggregator == nil {
-		return coreerrors.ErrResultAggNotInitialized
+		return errors.ErrResultAggNotInitialized
 	}
 
 	// Initialize lifecycle channels and errgroups.
@@ -184,7 +183,7 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
-		return coreerrors.ErrAgentNotRunning
+		return errors.ErrAgentNotRunning
 	}
 	a.status = models.AgentStatusStopping
 	a.mu.Unlock()
@@ -251,7 +250,7 @@ func parseInput(input any) (string, error) {
 	case fmt.Stringer:
 		return v.String(), nil
 	default:
-		return "", errors.Wrapf(coreerrors.ErrInvalidInput, "expected string, []byte, or fmt.Stringer, got %T", input)
+		return "", errors.Wrapf(errors.ErrInvalidInput, "expected string, []byte, or fmt.Stringer, got %T", input)
 	}
 }
 
@@ -270,7 +269,7 @@ func (a *leaderAgent) fail(err error) (any, error) {
 
 func (a *leaderAgent) checkStepLimit(stepCount, maxSteps int) error {
 	if stepCount > maxSteps {
-		return coreerrors.ErrMaxStepsExceeded
+		return errors.ErrMaxStepsExceeded
 	}
 	return nil
 }
@@ -278,7 +277,7 @@ func (a *leaderAgent) checkStepLimit(stepCount, maxSteps int) error {
 func (a *leaderAgent) checkAgentRunning() error {
 	select {
 	case <-a.stopCh:
-		return coreerrors.ErrAgentNotRunning
+		return errors.ErrAgentNotRunning
 	default:
 	}
 	return nil
@@ -300,7 +299,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	}
 	if a.status != models.AgentStatusReady {
 		a.mu.Unlock()
-		return nil, coreerrors.ErrAgentNotReady
+		return nil, errors.ErrAgentNotReady
 	}
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
@@ -412,7 +411,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 // SendMessage sends a message to another agent.
 func (a *leaderAgent) SendMessage(ctx context.Context, msg *ahp.AHPMessage) error {
 	if a.messageQueue == nil {
-		return coreerrors.ErrQueueNotInitialized
+		return errors.ErrQueueNotInitialized
 	}
 	return a.messageQueue.Enqueue(ctx, msg)
 }
@@ -420,7 +419,7 @@ func (a *leaderAgent) SendMessage(ctx context.Context, msg *ahp.AHPMessage) erro
 // ReceiveMessage receives a message from the message queue.
 func (a *leaderAgent) ReceiveMessage(ctx context.Context) (*ahp.AHPMessage, error) {
 	if a.messageQueue == nil {
-		return nil, coreerrors.ErrQueueNotInitialized
+		return nil, errors.ErrQueueNotInitialized
 	}
 	return a.messageQueue.Dequeue(ctx)
 }
@@ -620,7 +619,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	}
 	if a.status != models.AgentStatusReady {
 		a.mu.Unlock()
-		return nil, coreerrors.ErrAgentNotReady
+		return nil, errors.ErrAgentNotReady
 	}
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()

@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -269,7 +268,7 @@ func Migrate(ctx context.Context, pool *Pool) error {
 func RollbackLast(ctx context.Context, pool *Pool) error {
 	// Note: This is a simplified implementation
 	// In production, use a proper migration tool like golang-migrate
-	return coreerrors.ErrQueryFailed
+	return errors.ErrQueryFailed
 }
 
 // Seed creates seed data for testing.

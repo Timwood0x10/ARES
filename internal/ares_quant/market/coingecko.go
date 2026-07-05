@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	qerrors "github.com/Timwood0x10/ares/internal/ares_quant/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // coinGeckoOHLCURL is the CoinGecko OHLC endpoint returning [timestamp_ms, open, high, low, close].
@@ -68,7 +68,7 @@ func (f *CoinGeckoFeed) Name() string { return "coingecko" }
 func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolution) (TimeSeries, error) {
 	coinID, ok := coinGeckoSymbolMap[ticker]
 	if !ok {
-		return TimeSeries{}, fmt.Errorf("%w: unsupported crypto ticker %q", qerrors.ErrNoMarketData, ticker)
+		return TimeSeries{}, fmt.Errorf("%w: unsupported crypto ticker %q", errors.ErrNoMarketData, ticker)
 	}
 
 	days := coinGeckoDays(res)
@@ -90,7 +90,7 @@ func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolut
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return TimeSeries{}, fmt.Errorf("%w: coingecko returned status %d for %s", qerrors.ErrNoMarketData, resp.StatusCode, ticker)
+		return TimeSeries{}, fmt.Errorf("%w: coingecko returned status %d for %s", errors.ErrNoMarketData, resp.StatusCode, ticker)
 	}
 
 	var rawBars []coinGeckoOHLCBar
@@ -99,7 +99,7 @@ func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolut
 	}
 
 	if len(rawBars) == 0 {
-		return TimeSeries{}, fmt.Errorf("%w: no data returned from coingecko for %s", qerrors.ErrNoMarketData, ticker)
+		return TimeSeries{}, fmt.Errorf("%w: no data returned from coingecko for %s", errors.ErrNoMarketData, ticker)
 	}
 
 	bars := make([]Candle, 0, len(rawBars))
@@ -134,7 +134,7 @@ func (f *CoinGeckoFeed) Quote(ticker string) (Quote, error) {
 		return Quote{}, err
 	}
 	if len(ts.Bars) == 0 {
-		return Quote{}, fmt.Errorf("%w: no quote data for %s", qerrors.ErrNoMarketData, ticker)
+		return Quote{}, fmt.Errorf("%w: no quote data for %s", errors.ErrNoMarketData, ticker)
 	}
 
 	last := ts.Bars[len(ts.Bars)-1]

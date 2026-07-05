@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // messageHandler handles incoming AHP messages.

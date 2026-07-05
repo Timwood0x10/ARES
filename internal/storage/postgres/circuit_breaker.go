@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker.

@@ -19,8 +19,8 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestNewLeaderReturnsNil(t *testing.T) {
 	agent, err := NewLeader("test", nil, nil, nil, nil, nil, &Config{ID: "test"})
-	if err != nil {
-		t.Fatalf("NewLeader: %v", err)
+	if err == nil {
+		t.Fatal("expected ErrNotImplemented")
 	}
 	if agent != nil {
 		t.Fatal("expected nil agent (stub)")
@@ -29,8 +29,8 @@ func TestNewLeaderReturnsNil(t *testing.T) {
 
 func TestNewSubReturnsNil(t *testing.T) {
 	agent, err := NewSub("test", "worker", nil, nil, &Config{ID: "test"})
-	if err != nil {
-		t.Fatalf("NewSub: %v", err)
+	if err == nil {
+		t.Fatal("expected ErrNotImplemented")
 	}
 	if agent != nil {
 		t.Fatal("expected nil agent (stub)")

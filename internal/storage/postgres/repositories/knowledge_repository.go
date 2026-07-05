@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -182,7 +181,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 	}
 
 	if r.dbPool == nil {
-		return coreerrors.ErrNoTransaction
+		return errors.ErrNoTransaction
 	}
 
 	tx, err := r.dbPool.BeginTx(ctx, nil)
@@ -314,7 +313,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 // Returns knowledge chunk or error if not found or invalid argument.
 func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_models.KnowledgeChunk, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -337,7 +336,7 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge chunk by id")
@@ -404,7 +403,7 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -755,7 +754,7 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -786,7 +785,7 @@ func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, id, sta
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

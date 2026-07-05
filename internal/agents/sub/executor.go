@@ -10,7 +10,6 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm/output"
@@ -167,7 +166,7 @@ func (e *taskExecutor) emitEvent(ctx context.Context, eventType ares_events.Even
 func (e *taskExecutor) Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
 	result := models.NewTaskResult("", models.AgentTypeTop)
 	if task == nil {
-		result.SetError(apperrors.ErrInvalidInput.Error())
+		result.SetError(errors.ErrInvalidInput.Error())
 		return result, nil
 	}
 

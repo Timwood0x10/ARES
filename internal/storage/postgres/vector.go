@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage"
 )
@@ -109,7 +108,7 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 	}
 
 	if len(results) == 0 {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 
 	return results, nil

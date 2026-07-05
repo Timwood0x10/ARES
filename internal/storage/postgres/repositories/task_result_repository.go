@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -145,7 +144,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 // Returns task result or error if not found or invalid argument.
 func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage_models.TaskResult, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -167,7 +166,7 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get task result by id")
@@ -246,7 +245,7 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -564,7 +563,7 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -596,7 +595,7 @@ func (r *TaskResultRepository) UpdateStatus(ctx context.Context, id, status, err
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

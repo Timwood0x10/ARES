@@ -10,7 +10,6 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -306,4 +305,4 @@ func (p *Pool) Begin(ctx context.Context) (*sql.Tx, error) {
 // NOTE: This module uses the standard library's database/sql package
 // which already implements a connection pool. The Pool wrapper provides
 // additional statistics and the "get usage release" pattern.
-var _ = coreerrors.ErrDBConnectionFailed
+var _ = errors.ErrDBConnectionFailed

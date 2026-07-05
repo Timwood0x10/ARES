@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"

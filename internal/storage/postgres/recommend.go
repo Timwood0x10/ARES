@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -92,7 +91,7 @@ func (r *RecommendRepository) GetBySessionID(ctx context.Context, sessionID stri
 		&result.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "query recommendation")
@@ -130,7 +129,7 @@ func (r *RecommendRepository) UpdateFeedback(ctx context.Context, sessionID stri
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -207,7 +206,7 @@ func (r *RecommendRepository) Delete(ctx context.Context, sessionID string) erro
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

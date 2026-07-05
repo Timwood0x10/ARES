@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // TestClientGenerateEmitsCallbacks verifies that Generate() emits

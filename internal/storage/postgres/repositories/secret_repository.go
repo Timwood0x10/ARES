@@ -12,7 +12,6 @@ import (
 	"io"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/adapters"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -108,7 +107,7 @@ func (r *SecretRepository) Get(ctx context.Context, key, tenantID string) (strin
 	)
 
 	if err == sql.ErrNoRows {
-		return "", coreerrors.ErrRecordNotFound
+		return "", errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return "", errors.Wrap(err, "get secret")
@@ -116,7 +115,7 @@ func (r *SecretRepository) Get(ctx context.Context, key, tenantID string) (strin
 
 	// Check if secret has expired
 	if expiresAt != nil && time.Now().After(*expiresAt) {
-		return "", coreerrors.ErrSecretExpired
+		return "", errors.ErrSecretExpired
 	}
 
 	// Decrypt the value
@@ -148,7 +147,7 @@ func (r *SecretRepository) Delete(ctx context.Context, key, tenantID string) err
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -260,7 +259,7 @@ func (r *SecretRepository) UpdateMetadata(ctx context.Context, key, tenantID str
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -635,7 +634,7 @@ func (r *SecretRepository) GetKeyVersion(ctx context.Context, key, tenantID stri
 	var keyVersion int
 	err := r.db.QueryRowContext(ctx, query, key, tenantID).Scan(&keyVersion)
 	if err == sql.ErrNoRows {
-		return 0, coreerrors.ErrRecordNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return 0, errors.Wrap(err, "get key version")

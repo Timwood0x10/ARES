@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // MemoryStore implements Store with in-memory maps.

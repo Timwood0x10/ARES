@@ -4,17 +4,66 @@ run:
   timeout: 5m
   tests: true
 
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
 linters:
   default: none
   enable:
+    # 代码正确性
     - errcheck
     - govet
-    - ineffassign
     - staticcheck
     - unused
+    - ineffassign
+    # 代码风格
+    - whitespace
     - misspell
+    # 代码复杂度
+    - gocyclo
+    - gocritic
+    - goconst
     - unconvert
+    # 安全性
+    - gosec
+    - nilnil
+    # 性能
+    - prealloc
+    - noctx
+
+linters-settings:
+  gocyclo:
+    min-complexity: 40
+  goconst:
+    min-len: 3
+    min-occurrences: 5
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - ifElseChain
+      - unnamedResult
+      - whyNoLint
+      - commentFormatting
 
 issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  max-issues-per-linter: 100
+  max-same-issues: 50
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - goconst
+        - prealloc
+        - noctx
+        - gosec
+        - nilnil
+    - path: examples/
+      linters:
+        - goconst
+        - noctx
+        - gosec

@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -217,7 +216,7 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 // Returns error if buffer is stopped, item is invalid, or buffer is full.
 func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	if item == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	// Check stopped flag under lock to prevent race with Stop().
@@ -226,7 +225,7 @@ func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	b.mu.Unlock()
 
 	if stopped {
-		return coreerrors.ErrServiceUnavailable
+		return errors.ErrServiceUnavailable
 	}
 
 	// Channel send outside lock to prevent deadlock:
@@ -236,7 +235,7 @@ func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	if b.safeSend(item, ctx) {
 		return nil
 	}
-	return coreerrors.ErrServiceUnavailable
+	return errors.ErrServiceUnavailable
 }
 
 // safeSend attempts to send an item to the buffer channel, recovering from

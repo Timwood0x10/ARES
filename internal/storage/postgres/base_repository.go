@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -21,7 +20,7 @@ func GetByID[T any](ctx context.Context, db DBTX, table, id string, scan func(Sc
 	entity, err := scan(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, coreerrors.ErrRecordNotFound
+			return nil, errors.ErrRecordNotFound
 		}
 		return nil, errors.Wrap(err, "get by id")
 	}
@@ -41,7 +40,7 @@ func DeleteByID(ctx context.Context, db DBTX, table, id string) error {
 		return errors.Wrap(err, "get rows affected")
 	}
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 	return nil
 }

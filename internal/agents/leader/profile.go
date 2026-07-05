@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm/output"
@@ -95,7 +94,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 		"input": input,
 	})
 	if err != nil {
-		return nil, errors.WrapError(apperrors.ErrPromptRenderFailed, err)
+		return nil, errors.WrapError(errors.ErrPromptRenderFailed, err)
 	}
 
 	// Call LLM
@@ -107,7 +106,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 			"error":   err.Error(),
 			"status":  "failed",
 		})
-		return nil, errors.WrapError(apperrors.ErrLLMGenerateFailed, err)
+		return nil, errors.WrapError(errors.ErrLLMGenerateFailed, err)
 	}
 
 	p.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
@@ -120,7 +119,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 	// Parse response
 	profile, err := p.parseResponse(response)
 	if err != nil {
-		return nil, errors.WrapError(apperrors.ErrProfileParsingFailed, err)
+		return nil, errors.WrapError(errors.ErrProfileParsingFailed, err)
 	}
 
 	return profile, nil
@@ -134,7 +133,7 @@ func (p *profileParser) parseResponse(response string) (*models.UserProfile, err
 	parser := output.NewParser()
 	data, err := parser.ParseJSON(response)
 	if err != nil {
-		return nil, errors.WrapError(apperrors.ErrLLMParserFailed, err)
+		return nil, errors.WrapError(errors.ErrLLMParserFailed, err)
 	}
 
 	// Debug: print parsed data keys
@@ -217,10 +216,10 @@ func (p *profileParser) parseResponse(response string) (*models.UserProfile, err
 
 func (p *profileParser) validateProfile(profile *models.UserProfile) error {
 	if profile == nil {
-		return apperrors.ErrNilPointer
+		return errors.ErrNilPointer
 	}
 	if len(profile.Preferences) == 0 && len(profile.Style) == 0 {
-		return apperrors.ErrProfileValidationFailed
+		return errors.ErrProfileValidationFailed
 	}
 	return nil
 }

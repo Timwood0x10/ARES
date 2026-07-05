@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // SQLiteStore implements Store using SQLite (via modernc.org/sqlite, no CGO).
