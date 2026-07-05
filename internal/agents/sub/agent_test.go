@@ -370,9 +370,13 @@ func TestToolBinder_ListTools(t *testing.T) {
 	})
 
 	// ListTools is not implemented, so just test that tools can be bound and called
+	// The tool intentionally returns "not implemented" error, which is expected
 	result, err := binder.CallTool(context.Background(), "tool1", nil)
-	if err != nil {
-		t.Errorf("CallTool() error = %v", err)
+	if err == nil {
+		t.Error("CallTool() expected error 'not implemented', got nil")
+	}
+	if err != nil && err.Error() != "not implemented" {
+		t.Errorf("CallTool() error = %v, want 'not implemented'", err)
 	}
 	if result != nil {
 		t.Errorf("CallTool() got %v, want nil", result)
@@ -552,12 +556,12 @@ func TestSubAgent_ReplayEvents_TaskCompleted(t *testing.T) {
 			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
 				KeyTaskID: TestTaskID,
-	}
-		}
+			},
+		},
 		{
 			Type: ares_events.EventTaskCompleted,
 			Payload: map[string]any{
-				"task_id": "task-2",
+				KeyTaskID: "task-2",
 			},
 		},
 	}

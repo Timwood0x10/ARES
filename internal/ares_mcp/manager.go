@@ -387,13 +387,13 @@ func hasConfigChanged(a, b *MCPServerConfig) bool {
 		return true
 	}
 	switch a.Transport.Type {
-	case "stdio":
+	case TransportTypeStdio:
 		if a.Transport.Stdio != nil && b.Transport.Stdio != nil {
 			return a.Transport.Stdio.Command != b.Transport.Stdio.Command ||
 				!stringSliceEqual(a.Transport.Stdio.Args, b.Transport.Stdio.Args)
 		}
 		return (a.Transport.Stdio == nil) != (b.Transport.Stdio == nil)
-	case "sse":
+	case TransportTypeSSE:
 		if a.Transport.SSE != nil && b.Transport.SSE != nil {
 			return a.Transport.SSE.URL != b.Transport.SSE.URL
 		}

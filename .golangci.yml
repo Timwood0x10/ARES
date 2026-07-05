@@ -67,3 +67,16 @@ issues:
         - goconst
         - noctx
         - gosec
+    - path: cmd/
+      linters:
+        - noctx
+        - gosec
+    - path: internal/storage/postgres/write_buffer.go
+      linters:
+        - noctx
+    - path: internal/tools/resources/builtin/embedding/embedding.go
+      linters:
+        - noctx
+    - path: internal/ares_quant/
+      linters:
+        - noctx

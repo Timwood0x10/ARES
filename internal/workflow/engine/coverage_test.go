@@ -604,6 +604,7 @@ func TestStepStatusConstantsCoverage(t *testing.T) {
 // Workflow Types Coverage Tests
 // =====================================================
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestWorkflowTypesCoverage(t *testing.T) {
 	t.Run("create workflow with all fields", func(t *testing.T) {
 		workflow := &Workflow{

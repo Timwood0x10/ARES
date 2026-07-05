@@ -11,6 +11,7 @@ import (
 // DefinitionParser Coverage Tests
 // =====================================================
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestDefinitionParserCoverage(t *testing.T) {
 	t.Run("create definition parser", func(t *testing.T) {
 		parser := NewDefinitionParser()

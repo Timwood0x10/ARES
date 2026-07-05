@@ -292,14 +292,12 @@ type ReporterFunc func(state *research.ResearchState, log func(string, ...any), 
 func executeResearchGraph(ctx context.Context, graph *research.ResearchGraph,
 	state *research.ResearchState, ticker string, outDir string,
 	log func(string, ...any), reporter ReporterFunc) error {
-
 	return executeResearchGraphWithDate(ctx, graph, state, ticker, outDir, log, reporter, "")
 }
 
 func executeResearchGraphWithDate(ctx context.Context, graph *research.ResearchGraph,
 	state *research.ResearchState, ticker string, outDir string,
 	log func(string, ...any), reporter ReporterFunc, analysisDate string) error {
-
 	totalNodes := len(graph.Order())
 	log("\n═══ Research graph execution (%d nodes) ═══\n", totalNodes)
 

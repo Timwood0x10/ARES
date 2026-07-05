@@ -2,6 +2,31 @@ package output
 
 import "encoding/json"
 
+const (
+	schemaTypeObject  = "object"
+	schemaTypeString  = "string"
+	schemaTypeNumber  = "number"
+	schemaTypeArray   = "array"
+	schemaTypeInteger = "integer"
+
+	keySessionID   = "session_id"
+	keyUserID      = "user_id"
+	keyItems       = "items"
+	keyReason      = "reason"
+	keyMatchScore  = "match_score"
+	keyMetadata    = "metadata"
+	keyItemID      = "item_id"
+	keyCategory    = "category"
+	keyBrand       = "brand"
+	keyPrice       = "price"
+	keyImageURL    = "image_url"
+	keyStyle       = "style"
+	keyColors      = "colors"
+	keyDescription = "description"
+	keyMatchReason = "match_reason"
+	keyAge         = "age"
+)
+
 // Schema represents a JSON Schema.
 type Schema struct {
 	Type        string             `json:"type,omitempty"`
@@ -25,7 +50,7 @@ type Schema struct {
 // GetRecommendResultSchema returns the schema for RecommendResult.
 func GetRecommendResultSchema() *Schema {
 	return &Schema{
-		Type: "object",
+		Type: schemaTypeObject,
 		Properties: map[string]*Schema{
 			"session_id": {
 				Type:      "string",
@@ -41,48 +66,48 @@ func GetRecommendResultSchema() *Schema {
 				Items:    GetRecommendItemSchema(),
 			},
 			"reason": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"total_price": {
-				Type:    "number",
+				Type:    schemaTypeNumber,
 				Minimum: pointerToFloat64(0),
 			},
 			"match_score": {
-				Type:    "number",
+				Type:    schemaTypeNumber,
 				Minimum: pointerToFloat64(0),
 				Maximum: pointerToFloat64(1),
 			},
 			"occasion": {
-				Type: "string",
+				Type: schemaTypeString,
 				Enum: []interface{}{
 					"casual", "business", "formal", "party", "date", "sports", "outdoor",
 				},
 			},
 			"season": {
-				Type: "string",
+				Type: schemaTypeString,
 				Enum: []interface{}{
 					"spring", "summer", "autumn", "winter", "all_season",
 				},
 			},
 			"metadata": {
-				Type: "object",
+				Type: schemaTypeObject,
 			},
 		},
-		Required: []string{"session_id", "user_id", "items"},
+		Required: []string{keySessionID, keyUserID, keyItems},
 	}
 }
 
 // GetRecommendItemSchema returns the schema for RecommendItem.
 func GetRecommendItemSchema() *Schema {
 	return &Schema{
-		Type: "object",
+		Type: schemaTypeObject,
 		Properties: map[string]*Schema{
 			"item_id": {
 				Type:      "string",
 				MinLength: pointerToInt(1),
 			},
 			"category": {
-				Type: "string",
+				Type: schemaTypeString,
 				Enum: []interface{}{
 					"top", "bottom", "dress", "outerwear", "shoes", "accessory", "bag", "hat",
 				},
@@ -92,10 +117,10 @@ func GetRecommendItemSchema() *Schema {
 				MinLength: pointerToInt(1),
 			},
 			"brand": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"price": {
-				Type:    "number",
+				Type:    schemaTypeNumber,
 				Minimum: pointerToFloat64(0),
 			},
 			"url": {
@@ -107,91 +132,91 @@ func GetRecommendItemSchema() *Schema {
 				Format: "uri",
 			},
 			"style": {
-				Type: "array",
+				Type: schemaTypeArray,
 				Items: &Schema{
-					Type: "string",
+					Type: schemaTypeString,
 				},
 			},
 			"colors": {
-				Type: "array",
+				Type: schemaTypeArray,
 				Items: &Schema{
-					Type: "string",
+					Type: schemaTypeString,
 				},
 			},
 			"description": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"match_reason": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"metadata": {
-				Type: "object",
+				Type: schemaTypeObject,
 			},
 		},
-		Required: []string{"item_id", "category", "name", "price"},
+		Required: []string{keyItemID, keyCategory, keyName, keyPrice},
 	}
 }
 
 // GetUserProfileSchema returns the schema for UserProfile.
 func GetUserProfileSchema() *Schema {
 	return &Schema{
-		Type: "object",
+		Type: schemaTypeObject,
 		Properties: map[string]*Schema{
 			"user_id": {
 				Type:      "string",
 				MinLength: pointerToInt(1),
 			},
 			"gender": {
-				Type: "string",
+				Type: schemaTypeString,
 				Enum: []interface{}{"male", "female", "other"},
 			},
 			"age": {
-				Type:    "integer",
+				Type:    schemaTypeInteger,
 				Minimum: pointerToFloat64(0),
 				Maximum: pointerToFloat64(150),
 			},
 			"style_preferences": {
-				Type: "array",
+				Type: schemaTypeArray,
 				Items: &Schema{
-					Type: "string",
+					Type: schemaTypeString,
 				},
 			},
 			"budget_range": {
-				Type: "object",
+				Type: schemaTypeObject,
 				Properties: map[string]*Schema{
 					"min": {
-						Type:    "number",
+						Type:    schemaTypeNumber,
 						Minimum: pointerToFloat64(0),
 					},
 					"max": {
-						Type:    "number",
+						Type:    schemaTypeNumber,
 						Minimum: pointerToFloat64(0),
 					},
 				},
 			},
 			"favorite_colors": {
-				Type: "array",
+				Type: schemaTypeArray,
 				Items: &Schema{
-					Type: "string",
+					Type: schemaTypeString,
 				},
 			},
 			"favorite_brands": {
-				Type: "array",
+				Type: schemaTypeArray,
 				Items: &Schema{
-					Type: "string",
+					Type: schemaTypeString,
 				},
 			},
 			"body_type": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"occupation": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 			"location": {
-				Type: "string",
+				Type: schemaTypeString,
 			},
 		},
-		Required: []string{"user_id"},
+		Required: []string{keyUserID},
 	}
 }
 

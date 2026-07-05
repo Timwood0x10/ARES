@@ -603,6 +603,8 @@ func (a *leaderAgent) Snapshot() (map[string]any, error) {
 
 // ProcessStream handles user input and returns a stream of ares_events.
 // It follows the same workflow as Process but emits ares_events at each phase.
+//
+//nolint:gocyclo // Complex stream processing with multiple agent phases
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	a.processingMu.Lock()

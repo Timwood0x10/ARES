@@ -55,7 +55,7 @@ func (m *mockInventoryManager) GetPositions(_ context.Context) (*InventoryReport
 		CashBalance: 50000.0,
 		Positions: []Position{
 			{
-				Symbol:        "BTCUSDT",
+				Symbol:        SymbolBTCUSDT,
 				Quantity:      5.0,
 				AvgEntryPrice: 50000.0,
 			},
@@ -100,7 +100,7 @@ func TestClient_Quote_NoEngine(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	quote, err := client.Quote(ctx, "BTCUSDT")
+	quote, err := client.Quote(ctx, SymbolBTCUSDT)
 	require.ErrorIs(t, err, ErrNotInitialized)
 	require.Nil(t, quote)
 }
@@ -114,10 +114,10 @@ func TestClient_Quote_WithEngine(t *testing.T) {
 	client.SetQuoteEngine(&mockQuoteEngine{})
 
 	ctx := context.Background()
-	quote, err := client.Quote(ctx, "BTCUSDT")
+	quote, err := client.Quote(ctx, SymbolBTCUSDT)
 	require.NoError(t, err)
 	require.NotNil(t, quote)
-	require.Equal(t, "BTCUSDT", quote.Symbol)
+	require.Equal(t, SymbolBTCUSDT, quote.Symbol)
 	require.Equal(t, 50000.0, quote.BidPrice)
 }
 
@@ -130,7 +130,7 @@ func TestClient_Quote_EngineError(t *testing.T) {
 	client.SetQuoteEngine(&mockQuoteEngine{err: errors.New("data feed down")})
 
 	ctx := context.Background()
-	quote, err := client.Quote(ctx, "BTCUSDT")
+	quote, err := client.Quote(ctx, SymbolBTCUSDT)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "data feed down")
 	require.Nil(t, quote)
@@ -177,7 +177,7 @@ func TestClient_GetInventory_WithManager(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, report)
 	require.Len(t, report.Positions, 1)
-	require.Equal(t, "BTCUSDT", report.Positions[0].Symbol)
+	require.Equal(t, SymbolBTCUSDT, report.Positions[0].Symbol)
 }
 
 // TestClient_StartStop tests start and stop lifecycle.
@@ -219,7 +219,7 @@ func TestClient_Backtest_ValidRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	req := &BacktestRequest{
-		Symbols:        []string{"ETHUSDT"},
+		Symbols:        []string{SymbolETHUSDT},
 		StartTime:      time.Now().Add(-24 * time.Hour),
 		EndTime:        time.Now(),
 		InitialCapital: 50000.0,
@@ -248,7 +248,7 @@ func TestClient_PaperTrade_NoTrader(t *testing.T) {
 	require.NoError(t, err)
 
 	req := &PaperTradeRequest{
-		Symbols:        []string{"ETHUSDT"},
+		Symbols:        []string{SymbolETHUSDT},
 		InitialCapital: 50000.0,
 		Duration:       time.Hour,
 	}

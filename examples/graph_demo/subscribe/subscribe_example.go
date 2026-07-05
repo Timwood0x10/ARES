@@ -13,6 +13,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
+const agentTypeWorker = "worker"
+
 type execAgent struct {
 	id        string
 	agentType string
@@ -35,8 +37,8 @@ func makeResult(desc string) *models.RecommendResult {
 
 func main() {
 	registry := engine.NewAgentRegistry()
-	_ = registry.Register("worker", func(ctx context.Context, config interface{}) (base.Agent, error) {
-		return &execAgent{id: "w", agentType: "worker",
+	_ = registry.Register(agentTypeWorker, func(ctx context.Context, config interface{}) (base.Agent, error) {
+		return &execAgent{id: "w", agentType: agentTypeWorker,
 			fn: func(ctx context.Context, input any) (any, error) {
 				return makeResult("ok"), nil
 			},
@@ -79,13 +81,13 @@ func main() {
 	}()
 
 	// Perform mutations.
-	_ = dag.AddNode(ctx, &engine.Step{ID: "s1", Name: "Step 1", AgentType: "worker", Input: "a"})
+	_ = dag.AddNode(ctx, &engine.Step{ID: "s1", Name: "Step 1", AgentType: agentTypeWorker, Input: "a"})
 	fmt.Println("Added s1")
 
-	_ = dag.AddNode(ctx, &engine.Step{ID: "s2", Name: "Step 2", AgentType: "worker", Input: "b"})
+	_ = dag.AddNode(ctx, &engine.Step{ID: "s2", Name: "Step 2", AgentType: agentTypeWorker, Input: "b"})
 	fmt.Println("Added s2")
 
-	_ = dag.AddNode(ctx, &engine.Step{ID: "s3", Name: "Step 3", AgentType: "worker", Input: "c"})
+	_ = dag.AddNode(ctx, &engine.Step{ID: "s3", Name: "Step 3", AgentType: agentTypeWorker, Input: "c"})
 	fmt.Println("Added s3")
 
 	_ = dag.AddEdge(ctx, "s1", "s2")
@@ -97,7 +99,7 @@ func main() {
 	_ = dag.ReplaceNode(ctx, "s2", &engine.Step{
 		ID:        "s2_v2",
 		Name:      "Step 2 v2",
-		AgentType: "worker",
+		AgentType: agentTypeWorker,
 		Input:     "b_v2",
 		DependsOn: []string{"s1"},
 	})

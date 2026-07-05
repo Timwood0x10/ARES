@@ -13,6 +13,13 @@ import (
 	gerr "github.com/Timwood0x10/ares/internal/errors"
 )
 
+const (
+	ollamaDefaultURL     = "http://localhost:11434"
+	keyOllamaModel       = "model"
+	keyOllamaStream      = "stream"
+	keyOllamaTemperature = "temperature"
+)
+
 // Ollama errors.
 var (
 	ErrInvalidResponse = stderrors.New("invalid response")
@@ -31,7 +38,7 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 		config = &Config{}
 	}
 	if config.BaseURL == "" {
-		config.BaseURL = "http://localhost:11434"
+		config.BaseURL = ollamaDefaultURL
 	}
 	timeout := config.Timeout
 	if timeout <= 0 {
@@ -56,10 +63,10 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 // Generate generates text from prompt.
 func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"prompt":      prompt,
-		"stream":      false,
-		"temperature": a.config.Temperature,
+		keyOllamaModel:       a.config.Model,
+		"prompt":             prompt,
+		keyOllamaStream:      false,
+		keyOllamaTemperature: a.config.Temperature,
 	}
 
 	body, err := json.Marshal(reqBody)

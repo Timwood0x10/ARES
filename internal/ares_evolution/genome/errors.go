@@ -24,4 +24,5 @@ var (
 	ErrSelectionEmptyPopulation = fmt.Errorf("selection: population must not be empty")
 	ErrInvalidSelectionSize     = fmt.Errorf("selection size must be positive")
 	ErrInvalidTournamentSize    = fmt.Errorf("tournament size must be at least 2")
+	ErrNoSelectorNeeded         = fmt.Errorf("no selector needed for random selection")
 )

@@ -169,7 +169,7 @@ func TestMonitorPlugin_Timeline(t *testing.T) {
 		_ = mp.engine.AddNode(&dag.DAGNode{
 			ID:       "n1",
 			Name:     "test",
-			Type:     "agent",
+			Type:     entityTypeAgent,
 			Status:   dag.StatusPending,
 			Timeline: []dag.TimelineEvent{},
 		})

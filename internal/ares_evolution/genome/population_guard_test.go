@@ -432,7 +432,6 @@ func TestInjectFreshMutants(t *testing.T) {
 			t.Error("bottom agent should have ScoreUnevaluated after injection")
 		}
 	})
-
 }
 
 // --- ensureEvaluatedBeforeSelection tests ---

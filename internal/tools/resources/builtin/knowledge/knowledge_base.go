@@ -9,6 +9,29 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// Parameter key constants for knowledge tools
+const (
+	paramTenantID = "tenant_id"
+	paramQuery    = "query"
+	paramItemID   = "item_id"
+	paramContent  = "content"
+	paramCategory = "category"
+	paramTags     = "tags"
+	paramMetadata = "metadata"
+	descTenantID  = "Tenant identifier for multi-tenant isolation"
+)
+
+// Result field constants
+const (
+	resultFieldID       = "id"
+	resultFieldContent  = "content"
+	resultFieldSource   = "source"
+	resultFieldScore    = "score"
+	resultFieldMetadata = "metadata"
+	resultFieldResults  = "results"
+	resultFieldTotal    = "total"
+)
+
 // RetrievalResult represents a retrieval search result.
 // This is defined locally to avoid internal -> api dependency.
 type RetrievalResult struct {
@@ -60,11 +83,11 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			"tenant_id": {
+			paramTenantID: {
 				Type:        "string",
-				Description: "Tenant identifier for multi-tenant isolation",
+				Description: descTenantID,
 			},
-			"query": {
+			paramQuery: {
 				Type:        "string",
 				Description: "Search query text",
 			},
@@ -79,7 +102,7 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 				Default:     0.4,
 			},
 		},
-		Required: []string{"tenant_id", "query"},
+		Required: []string{paramTenantID, paramQuery},
 	}
 
 	ks := &KnowledgeSearch{
@@ -92,12 +115,12 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 
 // Execute performs the knowledge base search.
 func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	tenantID, ok := params["tenant_id"].(string)
+	tenantID, ok := params[paramTenantID].(string)
 	if !ok || tenantID == "" {
 		return core.NewErrorResult("tenant_id is required"), nil
 	}
 
-	query, ok := params["query"].(string)
+	query, ok := params[paramQuery].(string)
 	if !ok || query == "" {
 		return core.NewErrorResult("query is required"), nil
 	}
@@ -113,18 +136,18 @@ func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interfa
 	items := make([]map[string]interface{}, len(results))
 	for i, result := range results {
 		items[i] = map[string]interface{}{
-			"id":       result.ID,
-			"content":  result.Content,
-			"source":   result.Source,
-			"score":    result.Score,
-			"metadata": result.Metadata,
+			resultFieldID:       result.ID,
+			resultFieldContent:  result.Content,
+			resultFieldSource:   result.Source,
+			resultFieldScore:    result.Score,
+			resultFieldMetadata: result.Metadata,
 		}
 	}
 
 	return core.NewResult(true, map[string]interface{}{
-		"results": items,
-		"total":   len(results),
-		"query":   query,
+		resultFieldResults: items,
+		resultFieldTotal:   len(results),
+		paramQuery:         query,
 	}), nil
 }
 

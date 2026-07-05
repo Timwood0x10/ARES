@@ -153,6 +153,8 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 }
 
 // buildSummary constructs an EventSummary from a slice of events using rule-based aggregation.
+//
+//nolint:gocyclo // Complex event aggregation logic with multiple event types
 func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary {
 	if len(events) == 0 {
 		return nil
@@ -298,6 +300,8 @@ func collectTool(payload map[string]any, key string, seen map[string]bool, tools
 // Output format:
 // "Agent {id} ran {n} tasks [{task_ids}], called {m} tools [{tools}],
 // emitted {k} events over {duration}, bound to user request '{snippet}', result: {outcome}"
+//
+//nolint:gocyclo // Complex event summarization with multiple formats
 func DefaultSummarizer(events []*Event) string {
 	if len(events) == 0 {
 		return "(empty event window)"

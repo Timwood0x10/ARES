@@ -188,7 +188,6 @@ func TestMessageQueue(t *testing.T) {
 			t.Errorf("expected not empty")
 		}
 	})
-
 }
 
 func TestDLQ(t *testing.T) {

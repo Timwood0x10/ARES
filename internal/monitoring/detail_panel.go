@@ -8,6 +8,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
+const entityTypeAgent = "agent"
+
 // Sentinel errors for the detail panel.
 var (
 	ErrEmptyAgentID = errors.New("agent ID must not be empty")
@@ -91,7 +93,7 @@ func (dp *DetailPanel) GetDetail(agentID string) (*DetailView, error) {
 	}
 
 	view := &DetailView{
-		EntityType: "agent",
+		EntityType: entityTypeAgent,
 		EntityID:   agentID,
 		Tabs:       []string{"overview", "timeline", "cost", "interactions"},
 		Data: map[string]any{

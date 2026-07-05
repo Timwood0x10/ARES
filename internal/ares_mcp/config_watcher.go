@@ -204,7 +204,7 @@ func convertConfigFile(cfgFile *MCPConfigFile) *MCPManagerConfig {
 			},
 		}
 		switch s.Transport.Type {
-		case "stdio":
+		case TransportTypeStdio:
 			if s.Transport.Stdio != nil {
 				sc.Transport.Stdio = &StdioConfig{
 					Command: s.Transport.Stdio.Command,
@@ -213,7 +213,7 @@ func convertConfigFile(cfgFile *MCPConfigFile) *MCPManagerConfig {
 					WorkDir: s.Transport.Stdio.WorkDir,
 				}
 			}
-		case "sse":
+		case TransportTypeSSE:
 			if s.Transport.SSE != nil {
 				sc.Transport.SSE = &SSEConfig{
 					URL:     s.Transport.SSE.URL,

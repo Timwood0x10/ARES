@@ -8,6 +8,57 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// Target type constants
+const (
+	TargetTypeParam          = "param"
+	TargetTypePrompt         = "prompt"
+	TargetTypeTool           = "tool"
+	TargetTypePromptTemplate = "prompt_template"
+)
+
+// Direction constants
+const (
+	DirectionIncrease    = "increase"
+	DirectionDecrease    = "decrease"
+	DirectionSwap        = "swap"
+	DirectionRestructure = "restructure"
+)
+
+// Parameter key constants
+const (
+	ParamTemperature = "temperature"
+	ParamMaxTokens   = "max_tokens"
+	ParamMaxSteps    = "max_steps"
+	ParamTopK        = "top_k"
+)
+
+// Special values
+const (
+	RootLineageID          = "(root)"
+	HypothesisNoHypotheses = "no hypotheses"
+)
+
+// Metric constants
+const (
+	MetricSuccessRate = "success_rate"
+	MetricQuality     = "quality"
+	MetricCost        = "cost"
+	MetricLatency     = "latency"
+)
+
+// Selection method constants
+const (
+	SelectionRank        = "rank"
+	SelectionLineageRank = "lineage_rank"
+	SelectionSUS         = "sus"
+	SelectionRoulette    = "roulette"
+)
+
+// Diversity seed type
+const (
+	DiversitySeedPrompt = "prompt_diversity_seed"
+)
+
 // MutationHypothesis represents a testable hypothesis about what mutation
 // would improve strategy performance. It bridges LLM reflection into
 // concrete mutation guidance for the genetic algorithm.
@@ -86,29 +137,29 @@ func (hg *HypothesisGenerator) recommendationToHypothesis(rec Recommendation) *M
 	target := rec.Target
 	switch {
 	case strings.HasPrefix(target, "param:"):
-		hyp.TargetType = "param"
+		hyp.TargetType = TargetTypeParam
 		hyp.TargetKey = strings.TrimPrefix(target, "param:")
-	case target == "prompt" || target == "prompt_template":
-		hyp.TargetType = "prompt"
-		hyp.TargetKey = "prompt_template"
-		hyp.Direction = "restructure"
+	case target == "prompt" || target == TargetTypePromptTemplate:
+		hyp.TargetType = TargetTypePrompt
+		hyp.TargetKey = TargetTypePromptTemplate
+		hyp.Direction = DirectionRestructure
 	case strings.HasPrefix(target, "tool:"):
-		hyp.TargetType = "tool"
+		hyp.TargetType = TargetTypeTool
 		hyp.TargetKey = strings.TrimPrefix(target, "tool:")
 	default:
 		// Generic target: try to infer from action.
 		switch rec.Action {
-		case "increase", "decrease":
-			hyp.TargetType = "param"
+		case DirectionIncrease, DirectionDecrease:
+			hyp.TargetType = TargetTypeParam
 			hyp.TargetKey = target
 		case "swap":
-			hyp.TargetType = "tool"
+			hyp.TargetType = TargetTypeTool
 			hyp.TargetKey = target
-		case "restructure":
-			hyp.TargetType = "prompt"
-			hyp.TargetKey = "prompt_template"
+		case DirectionRestructure:
+			hyp.TargetType = TargetTypePrompt
+			hyp.TargetKey = TargetTypePromptTemplate
 		default:
-			hyp.TargetType = "param"
+			hyp.TargetType = TargetTypeParam
 			hyp.TargetKey = target
 		}
 	}

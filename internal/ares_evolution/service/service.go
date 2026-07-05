@@ -125,6 +125,8 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 }
 
 // createWiredSystem creates a fully wired evolution system from the API config.
+//
+//nolint:gocyclo // Complex wired system creation with multiple components
 func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 

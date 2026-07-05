@@ -440,6 +440,8 @@ func formatSummary(
 // Returns:
 //   - populated MultiAssetResult with combined metrics and per-symbol positions.
 //   - error if data loading or execution fails.
+//
+//nolint:gocyclo // Complex multi-asset simulation with portfolio management
 func (s *MultiAssetSimulator) RunMultiAssetSimulation(
 	ctx context.Context,
 	symbols []string,

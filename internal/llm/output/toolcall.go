@@ -80,18 +80,18 @@ type AssistantMsg struct {
 // toMap converts AssistantMsg to the OpenAI API message format.
 func (m *AssistantMsg) toMap() map[string]interface{} {
 	msg := map[string]interface{}{
-		"role":    m.Role,
-		"content": m.Content,
+		keyRole:    m.Role,
+		keyContent: m.Content,
 	}
 	if len(m.ToolCalls) > 0 {
 		calls := make([]map[string]interface{}, 0, len(m.ToolCalls))
 		for _, tc := range m.ToolCalls {
 			call := map[string]interface{}{
 				"id":   tc.ID,
-				"type": "function",
-				"function": map[string]interface{}{
-					"name":      tc.Function.Name,
-					"arguments": tc.Function.Arguments,
+				"type": keyFunction,
+				keyFunction: map[string]interface{}{
+					keyName:      tc.Function.Name,
+					keyArguments: tc.Function.Arguments,
 				},
 			}
 			calls = append(calls, call)

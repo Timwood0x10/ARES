@@ -22,6 +22,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+const (
+	toolCalculator = "calculator"
+	keyExpression  = "expression"
+	keyResult      = "result"
+)
+
 // RegisterBuiltinTools registers all built-in tools into the given registry.
 //
 // You normally do NOT need to call this function manually. NewRegistry()
@@ -103,14 +109,14 @@ var _ Tool = (*coreAdapter)(nil)
 
 type calculatorTool struct{}
 
-func (t *calculatorTool) Name() string { return "calculator" }
+func (t *calculatorTool) Name() string { return toolCalculator }
 func (t *calculatorTool) Description() string {
 	return "Mathematical calculator with expression evaluation"
 }
 func (t *calculatorTool) Capabilities() []string { return nil }
 
 func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Result, error) {
-	expr, _ := params["expression"].(string)
+	expr, _ := params[keyExpression].(string)
 	if expr == "" {
 		return Result{Success: false, Data: "expression is required"}, nil
 	}
@@ -119,8 +125,8 @@ func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Resu
 		return Result{Success: false, Data: err.Error()}, nil
 	}
 	return Result{Success: true, Data: map[string]any{
-		"expression": expr,
-		"result":     result,
+		keyExpression: expr,
+		keyResult:     result,
 	}}, nil
 }
 

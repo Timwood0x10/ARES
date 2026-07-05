@@ -77,13 +77,10 @@ type experienceRepositoryAdapter struct {
 // SearchByVector implements internal ExperienceRepository interface
 
 func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]distillation.Experience, error) {
-
 	apiExperiences, err := a.apiRepo.SearchByVector(ctx, vector, tenantID, limit)
 
 	if err != nil {
-
 		return nil, err
-
 	}
 
 	// Convert API experiences to internal experiences
@@ -91,7 +88,6 @@ func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector
 	internalExperiences := make([]distillation.Experience, len(apiExperiences))
 
 	for i, exp := range apiExperiences {
-
 		internalExperiences[i] = distillation.Experience{
 
 			Problem: exp.Problem,
@@ -102,11 +98,9 @@ func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector
 
 			ExtractionMethod: distillation.ExtractionMethod(exp.ExtractionMethod),
 		}
-
 	}
 
 	return internalExperiences, nil
-
 }
 
 // GetByMemoryType implements internal ExperienceRepository interface

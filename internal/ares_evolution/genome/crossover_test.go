@@ -49,6 +49,7 @@ func TestNewCrossover(t *testing.T) {
 	})
 }
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestCrossover(t *testing.T) {
 	tests := []struct {
 		name        string

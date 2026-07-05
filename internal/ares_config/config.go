@@ -328,6 +328,7 @@ func LoadFromEnv(cfg *Config) error {
 	return nil
 }
 
+//nolint:gocyclo // Complex default value initialization for multiple config sections
 func (c *Config) setDefaults() {
 	if c.Server.Host == "" {
 		c.Server.Host = "localhost"
@@ -450,23 +451,70 @@ func (c *Config) setDefaults() {
 
 // Validate validates the configuration values.
 func (c *Config) Validate() error {
-	// Validate server configuration
+	if err := c.validateServer(); err != nil {
+		return err
+	}
+
+	if err := c.validateLLM(); err != nil {
+		return err
+	}
+
+	if err := c.validateAgents(); err != nil {
+		return err
+	}
+
+	if err := c.validateOutput(); err != nil {
+		return err
+	}
+
+	if err := c.validateStorage(); err != nil {
+		return err
+	}
+
+	if err := c.validateMemory(); err != nil {
+		return err
+	}
+
+	if err := c.validateMCP(); err != nil {
+		return err
+	}
+
+	if err := c.validateDashboard(); err != nil {
+		return err
+	}
+
+	if err := c.validateEvolution(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateServer validates server configuration
+func (c *Config) validateServer() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server port: %d, must be between 1 and 65535", c.Server.Port)
 	}
+	return nil
+}
 
-	// Validate LLM configuration
+// validateLLM validates LLM configuration
+func (c *Config) validateLLM() error {
 	if c.LLM.Timeout < 1 {
 		return fmt.Errorf("invalid LLM timeout: %d, must be positive", c.LLM.Timeout)
 	}
 	if c.LLM.MaxTokens < 1 {
 		return fmt.Errorf("invalid LLM max tokens: %d, must be positive", c.LLM.MaxTokens)
 	}
-	if c.LLM.Provider != "openai" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openrouter" && c.LLM.Provider != "anthropic" {
+	validProviders := map[string]bool{"openai": true, "ollama": true, "openrouter": true, "anthropic": true}
+	if !validProviders[c.LLM.Provider] {
 		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', 'openrouter', or 'anthropic'", c.LLM.Provider)
 	}
+	return nil
+}
 
-	// Validate agents configuration
+// validateAgents validates agents configuration
+func (c *Config) validateAgents() error {
 	if c.Agents.Leader.MaxSteps < 1 {
 		return fmt.Errorf("invalid leader max steps: %d, must be positive", c.Agents.Leader.MaxSteps)
 	}
@@ -477,114 +525,161 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid leader max validation retry: %d, must be non-negative", c.Agents.Leader.MaxValidationRetry)
 	}
 
-	// Validate sub-agent configurations
 	for i, subAgent := range c.Agents.Sub {
-		if subAgent.ID == "" {
-			return fmt.Errorf("sub-agent %d: ID cannot be empty", i)
-		}
-		if subAgent.Type == "" {
-			return fmt.Errorf("sub-agent %d: Type cannot be empty", i)
-		}
-		if subAgent.Timeout < 1 {
-			return fmt.Errorf("sub-agent %d: timeout must be positive", i)
-		}
-		if subAgent.MaxRetries < 0 {
-			return fmt.Errorf("sub-agent %d: max retries must be non-negative", i)
+		if err := c.validateSubAgent(i, subAgent); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Validate output configuration
+// validateSubAgent validates a single sub-agent configuration
+func (c *Config) validateSubAgent(i int, subAgent SubAgentConfig) error {
+	if subAgent.ID == "" {
+		return fmt.Errorf("sub-agent %d: ID cannot be empty", i)
+	}
+	if subAgent.Type == "" {
+		return fmt.Errorf("sub-agent %d: Type cannot be empty", i)
+	}
+	if subAgent.Timeout < 1 {
+		return fmt.Errorf("sub-agent %d: timeout must be positive", i)
+	}
+	if subAgent.MaxRetries < 0 {
+		return fmt.Errorf("sub-agent %d: max retries must be non-negative", i)
+	}
+	return nil
+}
+
+// validateOutput validates output configuration
+func (c *Config) validateOutput() error {
 	validFormats := map[string]bool{"table": true, "json": true, "simple": true}
 	if !validFormats[c.Output.Format] {
 		return fmt.Errorf("invalid output format: %s, must be 'table', 'json', or 'simple'", c.Output.Format)
 	}
-
-	// Validate validation configuration
 	if c.Validation.MaxRetries < 0 {
 		return fmt.Errorf("invalid validation max retries: %d, must be non-negative", c.Validation.MaxRetries)
 	}
+	return nil
+}
 
-	// Validate storage configuration if enabled
-	if c.Storage.Enabled {
-		if c.Storage.Host == "" {
-			return fmt.Errorf("storage enabled but host is empty")
-		}
-		if c.Storage.Port < 1 || c.Storage.Port > 65535 {
-			return fmt.Errorf("invalid storage port: %d, must be between 1 and 65535", c.Storage.Port)
-		}
-		if c.Storage.Database == "" {
-			return fmt.Errorf("storage enabled but database name is empty")
-		}
+// validateStorage validates storage configuration
+func (c *Config) validateStorage() error {
+	if !c.Storage.Enabled {
+		return nil
 	}
 
-	// Validate memory configuration
+	if c.Storage.Host == "" {
+		return fmt.Errorf("storage enabled but host is empty")
+	}
+	if c.Storage.Port < 1 || c.Storage.Port > 65535 {
+		return fmt.Errorf("invalid storage port: %d, must be between 1 and 65535", c.Storage.Port)
+	}
+	if c.Storage.Database == "" {
+		return fmt.Errorf("storage enabled but database name is empty")
+	}
+	return nil
+}
+
+// validateMemory validates memory configuration
+func (c *Config) validateMemory() error {
 	if c.Memory.SessionMemory.MaxHistory < 0 {
 		return fmt.Errorf("invalid session memory max history: %d, must be non-negative", c.Memory.SessionMemory.MaxHistory)
 	}
+	return nil
+}
 
-	// Validate MCP configuration
+// validateMCP validates MCP configuration
+func (c *Config) validateMCP() error {
 	serverNames := make(map[string]bool)
 	for i, srv := range c.MCP.Servers {
-		if srv.Name == "" {
-			return fmt.Errorf("mcp server %d: name must not be empty", i)
-		}
-		if serverNames[srv.Name] {
-			return fmt.Errorf("mcp server %d: duplicate name %q", i, srv.Name)
+		if err := c.validateMCPServer(i, srv, serverNames); err != nil {
+			return err
 		}
 		serverNames[srv.Name] = true
-		if srv.Transport.Type != "stdio" && srv.Transport.Type != "sse" {
-			return fmt.Errorf("mcp server %q: transport type must be \"stdio\" or \"sse\", got %q", srv.Name, srv.Transport.Type)
+	}
+	return nil
+}
+
+// validateMCPServer validates a single MCP server configuration
+func (c *Config) validateMCPServer(i int, srv MCPServerEntry, serverNames map[string]bool) error {
+	if srv.Name == "" {
+		return fmt.Errorf("mcp server %d: name must not be empty", i)
+	}
+	if serverNames[srv.Name] {
+		return fmt.Errorf("mcp server %d: duplicate name %q", i, srv.Name)
+	}
+	if srv.Transport.Type != "stdio" && srv.Transport.Type != "sse" {
+		return fmt.Errorf("mcp server %q: transport type must be \"stdio\" or \"sse\", got %q", srv.Name, srv.Transport.Type)
+	}
+
+	if err := c.validateMCPTransport(srv); err != nil {
+		return err
+	}
+
+	if srv.Timeout < 0 {
+		return fmt.Errorf("mcp server %q: timeout must be non-negative, got %d", srv.Name, srv.Timeout)
+	}
+	return nil
+}
+
+// validateMCPTransport validates MCP transport configuration
+func (c *Config) validateMCPTransport(srv MCPServerEntry) error {
+	if srv.Transport.Type == "stdio" {
+		if srv.Transport.Stdio == nil {
+			return fmt.Errorf("mcp server %q: stdio transport config must not be nil", srv.Name)
 		}
-		if srv.Transport.Type == "stdio" {
-			if srv.Transport.Stdio == nil {
-				return fmt.Errorf("mcp server %q: stdio transport config must not be nil", srv.Name)
-			}
-			if srv.Transport.Stdio.Command == "" {
-				return fmt.Errorf("mcp server %q: stdio command must not be empty", srv.Name)
-			}
-		}
-		if srv.Transport.Type == "sse" {
-			if srv.Transport.SSE == nil {
-				return fmt.Errorf("mcp server %q: sse transport config must not be nil", srv.Name)
-			}
-			if srv.Transport.SSE.URL == "" {
-				return fmt.Errorf("mcp server %q: sse url must not be empty", srv.Name)
-			}
-		}
-		if srv.Timeout < 0 {
-			return fmt.Errorf("mcp server %q: timeout must be non-negative, got %d", srv.Name, srv.Timeout)
+		if srv.Transport.Stdio.Command == "" {
+			return fmt.Errorf("mcp server %q: stdio command must not be empty", srv.Name)
 		}
 	}
 
-	// Validate dashboard configuration (only if explicitly configured)
-	if c.Dashboard.Addr != "" {
-		if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
-			return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
+	if srv.Transport.Type == "sse" {
+		if srv.Transport.SSE == nil {
+			return fmt.Errorf("mcp server %q: sse transport config must not be nil", srv.Name)
 		}
-		if c.Dashboard.WSPingInterval < 1 {
-			return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
-		}
-	}
-
-	// Validate evolution configuration only when enabled
-	if c.Evolution.Enabled {
-		if c.Evolution.PopulationSize < 2 {
-			return fmt.Errorf("evolution: population_size must be >= 2, got %d", c.Evolution.PopulationSize)
-		}
-		if c.Evolution.EliteCount < 0 || c.Evolution.EliteCount >= c.Evolution.PopulationSize {
-			return fmt.Errorf("evolution: elite_count must be in [0, population_size), got %d", c.Evolution.EliteCount)
-		}
-		if c.Evolution.SurvivalRate <= 0 || c.Evolution.SurvivalRate > 1 {
-			return fmt.Errorf("evolution: survival_rate must be in (0, 1], got %f", c.Evolution.SurvivalRate)
-		}
-		if c.Evolution.MutationRate < 0 || c.Evolution.MutationRate > 1 {
-			return fmt.Errorf("evolution: mutation_rate must be in [0, 1], got %f", c.Evolution.MutationRate)
-		}
-		if c.Evolution.Generations < 1 {
-			return fmt.Errorf("evolution: generations must be >= 1, got %d", c.Evolution.Generations)
+		if srv.Transport.SSE.URL == "" {
+			return fmt.Errorf("mcp server %q: sse url must not be empty", srv.Name)
 		}
 	}
+	return nil
+}
 
+// validateDashboard validates dashboard configuration
+func (c *Config) validateDashboard() error {
+	if c.Dashboard.Addr == "" {
+		return nil
+	}
+
+	if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
+		return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
+	}
+	if c.Dashboard.WSPingInterval < 1 {
+		return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
+	}
+	return nil
+}
+
+// validateEvolution validates evolution configuration
+func (c *Config) validateEvolution() error {
+	if !c.Evolution.Enabled {
+		return nil
+	}
+
+	if c.Evolution.PopulationSize < 2 {
+		return fmt.Errorf("evolution: population_size must be >= 2, got %d", c.Evolution.PopulationSize)
+	}
+	if c.Evolution.EliteCount < 0 || c.Evolution.EliteCount >= c.Evolution.PopulationSize {
+		return fmt.Errorf("evolution: elite_count must be in [0, population_size), got %d", c.Evolution.EliteCount)
+	}
+	if c.Evolution.SurvivalRate <= 0 || c.Evolution.SurvivalRate > 1 {
+		return fmt.Errorf("evolution: survival_rate must be in (0, 1], got %f", c.Evolution.SurvivalRate)
+	}
+	if c.Evolution.MutationRate < 0 || c.Evolution.MutationRate > 1 {
+		return fmt.Errorf("evolution: mutation_rate must be in [0, 1], got %f", c.Evolution.MutationRate)
+	}
+	if c.Evolution.Generations < 1 {
+		return fmt.Errorf("evolution: generations must be >= 1, got %d", c.Evolution.Generations)
+	}
 	return nil
 }
 

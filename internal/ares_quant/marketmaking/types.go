@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// Quote status string constants
+const (
+	statusLive      = "live"
+	statusExpired   = "expired"
+	statusCancelled = "cancelled"
+	statusRejected  = "rejected"
+	statusUnknown   = "unknown"
+)
+
 // ─── Quote ──────────────────────────────────────────────
 
 // Quote represents a live two-sided quote issued by the market maker.
@@ -39,15 +48,15 @@ const (
 func (s QuoteStatus) String() string {
 	switch s {
 	case QuoteLive:
-		return "live"
+		return statusLive
 	case QuoteExpired:
-		return "expired"
+		return statusExpired
 	case QuoteCancelled:
-		return "cancelled"
+		return statusCancelled
 	case QuoteRejected:
-		return "rejected"
+		return statusRejected
 	default:
-		return "unknown"
+		return statusUnknown
 	}
 }
 
@@ -83,19 +92,19 @@ func (s OrderState) String() string {
 	case OrderAck:
 		return "ack"
 	case OrderLive:
-		return "live"
+		return statusLive
 	case OrderPartialFilled:
 		return "partial_filled"
 	case OrderFilled:
 		return "filled"
 	case OrderCancelled:
-		return "cancelled"
+		return statusCancelled
 	case OrderRejected:
-		return "rejected"
+		return statusRejected
 	case OrderExpired:
-		return "expired"
+		return statusExpired
 	default:
-		return "unknown"
+		return statusUnknown
 	}
 }
 

@@ -230,17 +230,13 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 // Returns list of agents and pagination info, or error.
 
 func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*core.Agent, *core.PaginationResponse, error) {
-
 	if filter == nil {
-
 		filter = &core.AgentFilter{}
-
 	}
 
 	// If repo is not configured, return empty list
 
 	if s.repo == nil {
-
 		pagination := &core.PaginationResponse{
 
 			Total: 0,
@@ -255,15 +251,12 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 		}
 
 		return []*core.Agent{}, pagination, nil
-
 	}
 
 	agents, err := s.repo.List(ctx, filter)
 
 	if err != nil {
-
 		return nil, nil, apperrors.Wrap(err, "list agents")
-
 	}
 
 	// Calculate pagination info
@@ -279,31 +272,23 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 	hasMore := false
 
 	if filter.Pagination != nil {
-
 		if filter.Pagination.Page > 0 {
-
 			page = filter.Pagination.Page
-
 		}
 
 		if filter.Pagination.PageSize > 0 {
-
 			pageSize = filter.Pagination.PageSize
-
 		}
 
 		// Calculate total pages based on total items and page size
 
 		if pageSize > 0 {
-
 			totalPages = int((total + int64(pageSize) - 1) / int64(pageSize))
-
 		}
 
 		// Check if there are more pages
 
 		hasMore = page < totalPages
-
 	}
 
 	pagination := &core.PaginationResponse{
@@ -320,7 +305,6 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 	}
 
 	return agents, pagination, nil
-
 }
 
 // ExecuteTask executes a task on an agent.

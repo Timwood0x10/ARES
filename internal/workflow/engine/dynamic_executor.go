@@ -271,6 +271,8 @@ func (e *DynamicExecutor) findLoopPlugin() *ares_runtime.LoopPlugin {
 // execLoop now wraps execution in an outer round loop for Controlled
 // Evolutionary Loop support. After the entire DAG executes once, the
 // loop plugin decides whether to start another round with a mutated DAG.
+//
+//nolint:gocyclo // Complex execution loop with multiple stages and error handling
 func (e *DynamicExecutor) execLoop(
 	ctx context.Context,
 	workflow *Workflow,
@@ -563,6 +565,8 @@ func (e *DynamicExecutor) execLoop(
 // runDynamicSteps runs workflow steps with support for dynamic reordering.
 // The outer recovery loop allows the scheduler to re-enter step dispatch after
 // recovery adds replacement nodes.
+//
+//nolint:gocyclo // Complex workflow execution logic with recovery and dynamic reordering
 func (e *DynamicExecutor) runDynamicSteps(
 	ctx context.Context,
 	execution *WorkflowExecution,

@@ -10,6 +10,12 @@ import (
 	"github.com/ledongthuc/pdf"
 )
 
+const (
+	paramOperation       = "operation"
+	paramFilePath        = "file_path"
+	operationExtractText = "extract_text"
+)
+
 // PDFTool provides PDF document processing operations.
 type PDFTool struct {
 	*base.BaseTool
@@ -20,17 +26,17 @@ func NewPDFTool() *PDFTool {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
-			"operation": {
+			paramOperation: {
 				Type:        "string",
 				Description: "Operation: extract_text (extract all text from PDF)",
-				Enum:        []interface{}{"extract_text"},
+				Enum:        []interface{}{operationExtractText},
 			},
-			"file_path": {
+			paramFilePath: {
 				Type:        "string",
 				Description: "Path to the PDF file",
 			},
 		},
-		Required: []string{"operation", "file_path"},
+		Required: []string{paramOperation, paramFilePath},
 	}
 
 	return &PDFTool{
@@ -42,18 +48,18 @@ func NewPDFTool() *PDFTool {
 
 // Execute performs the PDF operation.
 func (t *PDFTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	operation, ok := params["operation"].(string)
+	operation, ok := params[paramOperation].(string)
 	if !ok || operation == "" {
 		return core.NewErrorResult("operation is required"), nil
 	}
 
-	filePath, ok := params["file_path"].(string)
+	filePath, ok := params[paramFilePath].(string)
 	if !ok || filePath == "" {
 		return core.NewErrorResult("file_path is required"), nil
 	}
 
 	switch operation {
-	case "extract_text":
+	case operationExtractText:
 		return t.extractText(ctx, filePath)
 	default:
 		return core.NewErrorResult(fmt.Sprintf("unsupported operation: %s", operation)), nil
@@ -95,11 +101,11 @@ func (t *PDFTool) extractText(ctx context.Context, filePath string) (core.Result
 	}
 
 	return core.NewResult(true, map[string]interface{}{
-		"operation":  "extract_text",
-		"file_path":  filePath,
-		"pages":      r.NumPage(),
-		"text":       text,
-		"char_count": len([]rune(text)),
+		paramOperation: operationExtractText,
+		paramFilePath:  filePath,
+		"pages":        r.NumPage(),
+		"text":         text,
+		"char_count":   len([]rune(text)),
 	}), nil
 }
 

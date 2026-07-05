@@ -20,6 +20,16 @@ import (
 	"sync"
 )
 
+const (
+	jsonrpcVersion          = "2.0"
+	methodInitialize        = "initialize"
+	methodNotificationsInit = "notifications/initialized"
+	methodToolsList         = "tools/list"
+	methodToolsCall         = "tools/call"
+	protocolVersion         = "2024-11-05"
+	mcpClientName           = "ares-mcp-client"
+)
+
 // transport abstracts MCP transport (stdio, SSE, etc.).
 type transport interface {
 	roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)
@@ -57,14 +67,14 @@ type ContentBlock struct {
 
 func (c *Client) initialize(ctx context.Context) error {
 	req := jsonrpcRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonrpcVersion,
 		ID:      c.nextID(),
-		Method:  "initialize",
+		Method:  methodInitialize,
 		Params: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
-				"name":    "ares-mcp-client",
+				"name":    mcpClientName,
 				"version": "1.0.0",
 			},
 		},
@@ -79,8 +89,8 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 
 	notif := jsonrpcNotification{
-		JSONRPC: "2.0",
-		Method:  "notifications/initialized",
+		JSONRPC: jsonrpcVersion,
+		Method:  methodNotificationsInit,
 	}
 	_ = c.sendNotification(notif) //nolint: errcheck
 
@@ -90,9 +100,9 @@ func (c *Client) initialize(ctx context.Context) error {
 // ListTools returns all tools exposed by the MCP server.
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	req := jsonrpcRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonrpcVersion,
 		ID:      c.nextID(),
-		Method:  "tools/list",
+		Method:  methodToolsList,
 	}
 
 	resp, err := c.sendRequest(ctx, req)
@@ -117,9 +127,9 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 // CallTool invokes a tool on the MCP server.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*CallResult, error) {
 	req := jsonrpcRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonrpcVersion,
 		ID:      c.nextID(),
-		Method:  "tools/call",
+		Method:  methodToolsCall,
 		Params: map[string]any{
 			"name":      name,
 			"arguments": args,

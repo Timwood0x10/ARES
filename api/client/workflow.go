@@ -132,19 +132,13 @@ type WorkflowAgentExecutor struct {
 }
 
 // ID returns the agent ID.
-
 func (e *WorkflowAgentExecutor) ID() string {
-
 	return e.agentID
-
 }
 
 // Type returns the agent type.
-
 func (e *WorkflowAgentExecutor) Type() models.AgentType {
-
 	return models.AgentType(e.agentType)
-
 }
 
 // Status returns the agent status.

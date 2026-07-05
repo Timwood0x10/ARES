@@ -756,15 +756,37 @@ func (kb *KnowledgeBase) GenerateAnswer(ctx context.Context, tenantID, question 
 		_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "user", question)
 	}
 
-	// Step 0.5: Detect user intent
 	lowerQuestion := strings.ToLower(question)
-	isCorrection := strings.Contains(lowerQuestion, "纠正") ||
+	userID := kb.extractUserID(question)
+	log.Printf("🔍 User ID detection: extracted_user_id='%s' (from: '%s')", userID, question)
+
+	// Handle self-introduction
+	if answer, handled := kb.handleSelfIntroduction(ctx, tenantID, userID, question); handled {
+		return answer, nil
+	}
+
+	// Handle profile question
+	if answer, handled := kb.handleProfileQuestion(ctx, tenantID, question, lowerQuestion); handled {
+		return answer, nil
+	}
+
+	// Handle correction request
+	if answer, handled := kb.handleCorrectionRequest(ctx, tenantID, question, lowerQuestion); handled {
+		return answer, nil
+	}
+
+	// Handle normal question (RAG or general conversation)
+	return kb.handleNormalQuestion(ctx, tenantID, question)
+}
+
+// detectCorrectionIntent checks if the question contains correction keywords
+func (kb *KnowledgeBase) detectCorrectionIntent(lowerQuestion string) bool {
+	return strings.Contains(lowerQuestion, "纠正") ||
 		strings.Contains(lowerQuestion, "纠错") ||
 		strings.Contains(lowerQuestion, "改正") ||
 		strings.Contains(lowerQuestion, "修正") ||
 		strings.Contains(lowerQuestion, "不对") ||
 		strings.Contains(lowerQuestion, "不是") ||
-		// English correction keywords
 		strings.Contains(lowerQuestion, "correct") ||
 		strings.Contains(lowerQuestion, "fix") ||
 		strings.Contains(lowerQuestion, "wrong") ||
@@ -779,170 +801,196 @@ func (kb *KnowledgeBase) GenerateAnswer(ctx context.Context, tenantID, question 
 		strings.Contains(lowerQuestion, "no i am") ||
 		strings.Contains(lowerQuestion, "my actual") ||
 		strings.Contains(lowerQuestion, "i actually")
+}
 
-	// Detect self-introduction and extract user ID using unified logic
-	userID := kb.extractUserID(question)
-
-	log.Printf("🔍 User ID detection: extracted_user_id='%s' (from: '%s')", userID, question)
-
-	// Handle self-introduction - extract and store user profile
-	if userID != "" && kb.profileService != nil {
-		log.Printf("👤 Detected self-introduction: user_id=%s", userID)
-
-		// Extract profile from self-introduction
-		profile, err := kb.profileService.ExtractProfileFromSelfIntro(ctx, tenantID, userID, question)
-		if err != nil {
-			log.Printf("⚠️  [Profile] Failed to extract profile: %v", err)
-		} else {
-			// Store the extracted profile
-			if err := kb.profileService.StoreProfile(ctx, tenantID, profile); err != nil {
-				log.Printf("⚠️  [Profile] Failed to store profile: %v", err)
-			} else {
-				log.Printf("✅ [Profile] Profile extracted and stored for user: %s", userID)
-			}
-		}
-
-		// Load existing profile to provide personalized greeting
-		existingProfile, err := kb.profileService.GetProfile(ctx, tenantID, userID)
-		if err == nil && existingProfile != nil {
-			log.Printf("📊 Loaded existing profile for user %s", userID)
-
-			// Build personalized greeting based on profile
-			var greeting strings.Builder
-			fmt.Fprintf(&greeting, "Hello %s! Welcome back! 👋\n\n", cases.Title(language.English).String(userID))
-
-			if existingProfile.Profession != "" {
-				fmt.Fprintf(&greeting, "I remember you're a %s", existingProfile.Profession)
-				if len(existingProfile.Skills) > 0 {
-					fmt.Fprintf(&greeting, " with skills in %s", strings.Join(existingProfile.Skills, ", "))
-				}
-				greeting.WriteString(".\n\n")
-			}
-
-			greeting.WriteString("How can I help you today?")
-
-			// Inject profile context into conversation
-			if kb.memMgr != nil {
-				profileContext := fmt.Sprintf("User Profile: %s - %s | Skills: %s",
-					existingProfile.Name, existingProfile.Profession, strings.Join(existingProfile.Skills, ", "))
-				_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "system", profileContext)
-			}
-
-			return greeting.String(), nil
-		}
-
-		// Fallback: simple greeting if no profile found
-		log.Printf("ℹ️ No existing profile found for user %s", userID)
-		return fmt.Sprintf("Hello %s! Nice to meet you. I'll remember our conversation for future reference. Please tell me more about your background and technology stack.", cases.Title(language.English).String(userID)), nil
-	}
-
-	// Check for profile questions ("who am I", "what's my technology stack", etc.)
+// detectProfileQuestion checks if the question is asking about user profile
+func (kb *KnowledgeBase) detectProfileQuestion(lowerQuestion string) bool {
 	profileKeywords := []string{
 		"who am i", "what's my", "what is my", "my technology", "my stack", "my profile",
 		"我是谁", "我的技术栈", "我的技术", "我的简历",
-		// Extended keywords for better detection
 		"who is", "remember", "recall", "do you know", "do you remember",
 		"是谁", "记得", "回忆", "认识",
 	}
-	isProfileQuestion := false
 	for _, keyword := range profileKeywords {
 		if strings.Contains(lowerQuestion, keyword) {
-			isProfileQuestion = true
-			break
+			return true
+		}
+	}
+	return false
+}
+
+// handleSelfIntroduction handles user self-introduction and returns answer if handled
+func (kb *KnowledgeBase) handleSelfIntroduction(ctx context.Context, tenantID, userID, question string) (string, bool) {
+	if userID == "" || kb.profileService == nil {
+		return "", false
+	}
+
+	log.Printf("👤 Detected self-introduction: user_id=%s", userID)
+
+	profile, err := kb.profileService.ExtractProfileFromSelfIntro(ctx, tenantID, userID, question)
+	if err != nil {
+		log.Printf("⚠️  [Profile] Failed to extract profile: %v", err)
+	} else {
+		if err := kb.profileService.StoreProfile(ctx, tenantID, profile); err != nil {
+			log.Printf("⚠️  [Profile] Failed to store profile: %v", err)
+		} else {
+			log.Printf("✅ [Profile] Profile extracted and stored for user: %s", userID)
 		}
 	}
 
-	// Handle profile questions - search distilled memories for the specific user
-	if isProfileQuestion && kb.distilledRepo != nil {
-		log.Printf("👤 Detected profile question, searching user memories...")
+	existingProfile, err := kb.profileService.GetProfile(ctx, tenantID, userID)
+	if err == nil && existingProfile != nil {
+		return kb.buildPersonalizedGreeting(ctx, userID, existingProfile), true
+	}
 
-		// Extract user ID from the profile question
-		// For questions like "who is Ken?", we need to extract "Ken" as the user ID
-		questionUserID := ""
-		lowerQuestionForID := strings.ToLower(question)
+	log.Printf("ℹ️ No existing profile found for user %s", userID)
+	return fmt.Sprintf("Hello %s! Nice to meet you. I'll remember our conversation for future reference. Please tell me more about your background and technology stack.", cases.Title(language.English).String(userID)), true
+}
 
-		// Pattern matching for "who is [name]?"
-		if strings.HasPrefix(lowerQuestionForID, "who is ") {
-			namePart := strings.TrimSpace(lowerQuestionForID[len("who is "):])
-			namePart = strings.TrimSuffix(namePart, "?")
-			namePart = strings.TrimSpace(namePart)
-			questionUserID = namePart
-		} else if strings.Contains(lowerQuestionForID, "who am i") || strings.Contains(lowerQuestionForID, "我是谁") {
-			// Pattern matching for "你是谁" / "我是谁" - use current user
-			// Try to get user ID from session context
-			questionUserID = ""
+// buildPersonalizedGreeting creates a greeting based on user profile
+func (kb *KnowledgeBase) buildPersonalizedGreeting(ctx context.Context, userID string, profile *UserProfile) string {
+	log.Printf("📊 Loaded existing profile for user %s", userID)
+
+	var greeting strings.Builder
+	fmt.Fprintf(&greeting, "Hello %s! Welcome back! 👋\n\n", cases.Title(language.English).String(userID))
+
+	if profile.Profession != "" {
+		fmt.Fprintf(&greeting, "I remember you're a %s", profile.Profession)
+		if len(profile.Skills) > 0 {
+			fmt.Fprintf(&greeting, " with skills in %s", strings.Join(profile.Skills, ", "))
 		}
+		greeting.WriteString(".\n\n")
+	}
 
-		var memories []*repositories.DistilledMemory
-		var err error
+	greeting.WriteString("How can I help you today?")
 
-		// If we extracted a user ID from the question, query by user ID
-		if questionUserID != "" {
-			log.Printf("👤 Extracted user ID from profile question: '%s'", questionUserID)
-			memories, err = kb.distilledRepo.GetByUserID(ctx, tenantID, questionUserID, 10)
-			if err != nil {
-				log.Printf("Failed to get memories for user '%s': %v", questionUserID, err)
-			}
+	if kb.memMgr != nil {
+		profileContext := fmt.Sprintf("User Profile: %s - %s | Skills: %s",
+			profile.Name, profile.Profession, strings.Join(profile.Skills, ", "))
+		_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "system", profileContext)
+	}
+
+	return greeting.String()
+}
+
+// handleProfileQuestion handles profile-related questions
+func (kb *KnowledgeBase) handleProfileQuestion(ctx context.Context, tenantID, question, lowerQuestion string) (string, bool) {
+	if !kb.detectProfileQuestion(lowerQuestion) || kb.distilledRepo == nil {
+		return "", false
+	}
+
+	log.Printf("👤 Detected profile question, searching user memories...")
+
+	questionUserID := kb.extractUserIDFromQuestion(lowerQuestion)
+	memories := kb.searchProfileMemories(ctx, tenantID, questionUserID, question)
+
+	if len(memories) == 0 {
+		log.Printf("No user memories found")
+		return "", false
+	}
+
+	log.Printf("📊 Found %d user memories for profile question", len(memories))
+	uniqueMemories := deduplicateMemories(memories)
+	log.Printf("📊 Deduplicated to %d unique memories", len(uniqueMemories))
+
+	return kb.generateProfileAnswer(ctx, question, uniqueMemories), true
+}
+
+// extractUserIDFromQuestion extracts user ID from profile question
+func (kb *KnowledgeBase) extractUserIDFromQuestion(lowerQuestion string) string {
+	if strings.HasPrefix(lowerQuestion, "who is ") {
+		namePart := strings.TrimSpace(lowerQuestion[len("who is "):])
+		namePart = strings.TrimSuffix(namePart, "?")
+		return strings.TrimSpace(namePart)
+	}
+	return ""
+}
+
+// searchProfileMemories searches for profile memories
+func (kb *KnowledgeBase) searchProfileMemories(ctx context.Context, tenantID, questionUserID, question string) []*repositories.DistilledMemory {
+	var memories []*repositories.DistilledMemory
+	var err error
+
+	if questionUserID != "" {
+		log.Printf("👤 Extracted user ID from profile question: '%s'", questionUserID)
+		memories, err = kb.distilledRepo.GetByUserID(ctx, tenantID, questionUserID, 10)
+		if err != nil {
+			log.Printf("Failed to get memories for user '%s': %v", questionUserID, err)
 		}
+	}
 
-		// If no memories found with user ID, try vector search but filter for profile type
-		if len(memories) == 0 {
-			log.Printf("👤 No memories found for user '%s', trying vector search with profile filter...", questionUserID)
-			var queryEmbedding []float64
-			if kb.embedding != nil {
-				queryEmbedding, err = kb.embedding.EmbedWithPrefix(ctx, question, "query:")
-				if err != nil {
-					log.Printf("Failed to generate embedding for user memory search: %v", err)
-				}
-			}
+	if len(memories) > 0 {
+		return memories
+	}
 
-			if len(queryEmbedding) > 0 {
-				allMemories, err := kb.distilledRepo.SearchByVector(ctx, queryEmbedding, tenantID, 10)
-				if err != nil {
-					log.Printf("Vector search on user memories failed: %v", err)
-				} else {
-					// Filter for profile type memories only
-					for _, mem := range allMemories {
-						if mem.MemoryType == "profile" {
-							memories = append(memories, mem)
-						}
-					}
-					log.Printf("👤 Filtered %d profile memories from vector search", len(memories))
-				}
-			}
+	log.Printf("👤 No memories found for user '%s', trying vector search with profile filter...", questionUserID)
+	return kb.searchProfileMemoriesByVector(ctx, tenantID, question)
+}
+
+// searchProfileMemoriesByVector performs vector search for profile memories
+func (kb *KnowledgeBase) searchProfileMemoriesByVector(ctx context.Context, tenantID, question string) []*repositories.DistilledMemory {
+	if kb.embedding == nil {
+		return nil
+	}
+
+	queryEmbedding, err := kb.embedding.EmbedWithPrefix(ctx, question, "query:")
+	if err != nil {
+		log.Printf("Failed to generate embedding for user memory search: %v", err)
+		return nil
+	}
+
+	if len(queryEmbedding) == 0 {
+		return nil
+	}
+
+	allMemories, err := kb.distilledRepo.SearchByVector(ctx, queryEmbedding, tenantID, 10)
+	if err != nil {
+		log.Printf("Vector search on user memories failed: %v", err)
+		return nil
+	}
+
+	var profileMemories []*repositories.DistilledMemory
+	for _, mem := range allMemories {
+		if mem.MemoryType == "profile" {
+			profileMemories = append(profileMemories, mem)
 		}
+	}
+	log.Printf("👤 Filtered %d profile memories from vector search", len(profileMemories))
+	return profileMemories
+}
 
-		if len(memories) > 0 {
-			log.Printf("📊 Found %d user memories for profile question", len(memories))
+// deduplicateMemories removes duplicate memories based on content
+func deduplicateMemories(memories []*repositories.DistilledMemory) []*repositories.DistilledMemory {
+	seen := make(map[string]bool)
+	var uniqueMemories []*repositories.DistilledMemory
+	for _, mem := range memories {
+		if !seen[mem.Content] {
+			seen[mem.Content] = true
+			uniqueMemories = append(uniqueMemories, mem)
+		}
+	}
+	return uniqueMemories
+}
 
-			// Deduplicate memories based on content
-			seen := make(map[string]bool)
-			var uniqueMemories []*repositories.DistilledMemory
-			for _, mem := range memories {
-				if !seen[mem.Content] {
-					seen[mem.Content] = true
-					uniqueMemories = append(uniqueMemories, mem)
-				}
-			}
-			log.Printf("📊 Deduplicated to %d unique memories", len(uniqueMemories))
+// generateProfileAnswer generates answer for profile question
+func (kb *KnowledgeBase) generateProfileAnswer(ctx context.Context, question string, memories []*repositories.DistilledMemory) string {
+	var profileContext strings.Builder
+	profileContext.WriteString("User Profile Information from conversation history:\n")
+	profileContext.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-			// Build structured context for LLM
-			var profileContext strings.Builder
-			profileContext.WriteString("User Profile Information from conversation history:\n")
-			profileContext.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+	for i, mem := range memories {
+		fmt.Fprintf(&profileContext, "[%d] %s\n", i+1, mem.Content)
+	}
 
-			for i, mem := range uniqueMemories {
-				fmt.Fprintf(&profileContext, "[%d] %s\n", i+1, mem.Content)
-			}
+	if kb.memMgr != nil {
+		_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "system", profileContext.String())
+	}
 
-			// Add context to memory manager
-			if kb.memMgr != nil {
-				_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "system", profileContext.String())
-			}
+	if kb.llmClient == nil {
+		return buildFallbackProfileAnswer(memories)
+	}
 
-			// Use LLM to generate natural, polished answer
-			if kb.llmClient != nil {
-				prompt := fmt.Sprintf(`You are a helpful assistant. Answer the user's question based on the user profile information provided.
+	prompt := fmt.Sprintf(`You are a helpful assistant. Answer the user's question based on the user profile information provided.
 
 User Question: %s
 
@@ -959,91 +1007,115 @@ IMPORTANT INSTRUCTIONS:
 
 Answer:`, question, profileContext.String())
 
-				genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-				var genErr error
-				userMemoryAnswer, genErr := kb.llmClient.Generate(genCtx, prompt)
-				cancel()
+	genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	answer, err := kb.llmClient.Generate(genCtx, prompt)
+	cancel()
 
-				if genErr != nil {
-					log.Printf("LLM generation failed for profile answer: %v, using fallback", genErr)
-					// Fallback: simple formatted answer
-					userMemoryAnswer = "Based on our conversation history, here's what I know:\n\n"
-					for _, mem := range uniqueMemories {
-						userMemoryAnswer += fmt.Sprintf("• %s\n", mem.Content)
-					}
-				}
-				return userMemoryAnswer, nil
-			} else {
-				// Fallback if LLM not available
-				userMemoryAnswer := "Based on our conversation history, here's what I know:\n\n"
-				for _, mem := range uniqueMemories {
-					userMemoryAnswer += fmt.Sprintf("• %s\n", mem.Content)
-				}
-				return userMemoryAnswer, nil
-			}
-		} else {
-			log.Printf("No user memories found")
-		}
+	if err != nil {
+		log.Printf("LLM generation failed for profile answer: %v, using fallback", err)
+		return buildFallbackProfileAnswer(memories)
+	}
+	return answer
+}
+
+// buildFallbackProfileAnswer creates a simple formatted answer
+func buildFallbackProfileAnswer(memories []*repositories.DistilledMemory) string {
+	answer := "Based on our conversation history, here's what I know:\n\n"
+	for _, mem := range memories {
+		answer += fmt.Sprintf("• %s\n", mem.Content)
+	}
+	return answer
+}
+
+// handleCorrectionRequest handles correction requests from user
+func (kb *KnowledgeBase) handleCorrectionRequest(ctx context.Context, tenantID, question, lowerQuestion string) (string, bool) {
+	if !kb.detectCorrectionIntent(lowerQuestion) {
+		return "", false
 	}
 
-	// Handle correction request - search both knowledge base and distilled memories
-	if isCorrection {
-		log.Printf("🔧 Detected correction request")
+	log.Printf("🔧 Detected correction request")
 
-		// Search for relevant content in knowledge base
-		kbResults, err := kb.Search(ctx, tenantID, question)
-		if err != nil {
-			log.Printf("Knowledge base search failed: %v", err)
-		}
-		log.Printf("📝 Found %d knowledge base chunks for correction", len(kbResults))
+	kbResults, err := kb.Search(ctx, tenantID, question)
+	if err != nil {
+		log.Printf("Knowledge base search failed: %v", err)
+	}
+	log.Printf("📝 Found %d knowledge base chunks for correction", len(kbResults))
 
-		// Search for relevant distilled memories
-		var memoryResults []*repositories.DistilledMemory
-		if kb.distilledRepo != nil {
-			embedding, embedErr := kb.embedding.EmbedWithPrefix(ctx, question, "query:")
-			if embedErr == nil {
-				memories, searchErr := kb.distilledRepo.SearchByVector(ctx, embedding, tenantID, 10)
-				if searchErr == nil && len(memories) > 0 {
-					memoryResults = memories
-					log.Printf("👤 Found %d user distilled memories for correction", len(memories))
-				} else {
-					log.Printf("No user memories found or error: %v", searchErr)
-				}
+	memoryResults := kb.searchDistilledMemories(ctx, tenantID, question)
+
+	if len(kbResults) == 0 && len(memoryResults) == 0 {
+		return "No relevant information found for correction. Please provide more details about what needs to be corrected.", true
+	}
+
+	correctionContext := kb.buildCorrectionContext(question, kbResults, memoryResults)
+
+	llmResponse, llmErr := kb.llmClient.Generate(ctx, correctionContext)
+	if llmErr != nil {
+		log.Printf("LLM correction generation failed: %v, falling back to passive correction", llmErr)
+		return "I detected you want to correct information, but I'm having trouble processing it right now. Please try again.", true
+	}
+
+	log.Printf("📋 LLM correction response: %s", llmResponse)
+
+	updated, deleted, executed := kb.executeCorrectionCommands(ctx, tenantID, llmResponse, memoryResults)
+	if !executed {
+		return "Unable to process the correction. Please rephrase.", true
+	}
+
+	return kb.formatCorrectionResult(updated, deleted), true
+}
+
+// searchDistilledMemories searches for distilled memories
+func (kb *KnowledgeBase) searchDistilledMemories(ctx context.Context, tenantID, question string) []*repositories.DistilledMemory {
+	if kb.distilledRepo == nil {
+		return nil
+	}
+
+	embedding, err := kb.embedding.EmbedWithPrefix(ctx, question, "query:")
+	if err != nil {
+		return nil
+	}
+
+	memories, err := kb.distilledRepo.SearchByVector(ctx, embedding, tenantID, 10)
+	if err != nil {
+		log.Printf("No user memories found or error: %v", err)
+		return nil
+	}
+
+	log.Printf("👤 Found %d user distilled memories for correction", len(memories))
+	return memories
+}
+
+// buildCorrectionContext builds context for correction prompt
+func (kb *KnowledgeBase) buildCorrectionContext(question string, kbResults []*SearchResult, memoryResults []*repositories.DistilledMemory) string {
+	var correctionContext strings.Builder
+	correctionContext.WriteString("CORRECTION REQUEST: The user wants to correct or update information.\n\n")
+
+	if len(kbResults) > 0 {
+		correctionContext.WriteString("Current Knowledge Base Information:\n")
+		for idx, result := range kbResults {
+			idStr := result.ID
+			if idStr == "" {
+				idStr = fmt.Sprintf("KB:%d", idx+1)
+			} else {
+				idStr = fmt.Sprintf("KB:%s", idStr)
 			}
+			fmt.Fprintf(&correctionContext, "  [%s] %s (Score: %.3f)\n", idStr, result.Content, result.Score)
 		}
+		correctionContext.WriteString("\n")
+	}
 
-		if len(kbResults) == 0 && len(memoryResults) == 0 {
-			return "No relevant information found for correction. Please provide more details about what needs to be corrected.", nil
+	if len(memoryResults) > 0 {
+		correctionContext.WriteString("Current User Memory (to potentially update):\n")
+		for _, mem := range memoryResults {
+			label := fmt.Sprintf("MEM:%s", mem.ID)
+			fmt.Fprintf(&correctionContext, "  [%s] %s (Type: %s, Importance: %.2f)\n",
+				label, mem.Content, mem.MemoryType, mem.Importance)
 		}
+		correctionContext.WriteString("\n")
+	}
 
-		// Build correction context
-		var correctionContext strings.Builder
-		correctionContext.WriteString("CORRECTION REQUEST: The user wants to correct or update information.\n\n")
-
-		if len(kbResults) > 0 {
-			correctionContext.WriteString("Current Knowledge Base Information:\n")
-			for idx, result := range kbResults {
-				idStr := result.ID
-				if idStr == "" {
-					idStr = fmt.Sprintf("KB:%d", idx+1)
-				} else {
-					idStr = fmt.Sprintf("KB:%s", idStr)
-				}
-				fmt.Fprintf(&correctionContext, "  [%s] %s (Score: %.3f)\n", idStr, result.Content, result.Score)
-			}
-			correctionContext.WriteString("\n")
-		}
-		if len(memoryResults) > 0 {
-			correctionContext.WriteString("Current User Memory (to potentially update):\n")
-			for _, mem := range memoryResults {
-				label := fmt.Sprintf("MEM:%s", mem.ID)
-				fmt.Fprintf(&correctionContext, "  [%s] %s (Type: %s, Importance: %.2f)\n",
-					label, mem.Content, mem.MemoryType, mem.Importance)
-			}
-			correctionContext.WriteString("\n")
-		}
-
-		fmt.Fprintf(&correctionContext, `User correction: %s
+	fmt.Fprintf(&correctionContext, `User correction: %s
 
 Based on the user's correction, output ONLY the needed changes.
 CRITICAL RULES:
@@ -1064,87 +1136,86 @@ Enrich with relevant context so it serves as a comprehensive replacement.
 If no changes are needed, output only: NOCHANGE
 `, question)
 
-		llmResponse, llmErr := kb.llmClient.Generate(ctx, correctionContext.String())
-		if llmErr != nil {
-			log.Printf("LLM correction generation failed: %v, falling back to passive correction", llmErr)
-			return "I detected you want to correct information, but I'm having trouble processing it right now. Please try again.", nil
-		}
+	return correctionContext.String()
+}
 
-		log.Printf("📋 LLM correction response: %s", llmResponse)
-
-		// Parse and execute correction commands
-		updated, deleted, executed := kb.executeCorrectionCommands(ctx, tenantID, llmResponse, memoryResults)
-		if !executed {
-			return "Unable to process the correction. Please rephrase.", nil
-		}
-
-		var result strings.Builder
-		result.WriteString("✅ 知识库已更新：\n")
-		if updated > 0 {
-			fmt.Fprintf(&result, "  - 更新 %d 条记忆\n", updated)
-		}
-		if deleted > 0 {
-			fmt.Fprintf(&result, "  - 删除 %d 条记忆\n", deleted)
-		}
-		if updated == 0 && deleted == 0 {
-			result.WriteString("  (未执行修改，请检查输入)\n")
-		}
-		return result.String(), nil
+// formatCorrectionResult formats the correction result message
+func (kb *KnowledgeBase) formatCorrectionResult(updated, deleted int) string {
+	var result strings.Builder
+	result.WriteString("✅ 知识库已更新：\n")
+	if updated > 0 {
+		fmt.Fprintf(&result, "  - 更新 %d 条记忆\n", updated)
 	}
-	// Step 1: Determine if RAG is needed using LLM
-	needsRAG := true
-	if kb.llmClient != nil {
-		ragPrompt := fmt.Sprintf(`Question: %s
-
-Needs knowledge base search? Answer YES/NO only:`, question)
-
-		ragCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		ragResponse, err := kb.llmClient.Generate(ragCtx, ragPrompt)
-		cancel()
-
-		if err == nil {
-			needsRAG = strings.Contains(strings.ToUpper(ragResponse), "YES")
-			log.Printf("RAG check: %s -> needs RAG: %v", question, needsRAG)
-		}
+	if deleted > 0 {
+		fmt.Fprintf(&result, "  - 删除 %d 条记忆\n", deleted)
 	}
+	if updated == 0 && deleted == 0 {
+		result.WriteString("  (未执行修改，请检查输入)\n")
+	}
+	return result.String()
+}
+
+// handleNormalQuestion handles normal questions (RAG or general conversation)
+func (kb *KnowledgeBase) handleNormalQuestion(ctx context.Context, tenantID, question string) (string, error) {
+	needsRAG := kb.determineNeedsRAG(ctx, question)
 
 	var answer string
 	if needsRAG {
-		// Step 2: Retrieve relevant documents
-		results, err := kb.Search(ctx, tenantID, question)
+		var err error
+		answer, err = kb.handleRAGQuestion(ctx, tenantID, question)
 		if err != nil {
-			return "", fmt.Errorf("retrieve documents: %w", err)
+			return "", err
 		}
+	} else {
+		answer = kb.handleGeneralConversation(ctx, question)
+	}
 
-		// If no documents found, inform user
-		if len(results) == 0 {
-			answer = "No relevant information found in the knowledge base. Please try rephrasing your question."
-		} else {
-			// Step 3: Build context from retrieved documents
-			var contextBuilder strings.Builder
-			for i, result := range results {
-				fmt.Fprintf(&contextBuilder, "[Document %d - Score: %.3f]\n%s\n\n", i+1, result.Score, result.Content)
-			}
+	kb.updateMemoryAndDistill(ctx, tenantID, answer)
+	return answer, nil
+}
 
-			// Step 4: Build conversation history context
-			var historyContext strings.Builder
-			if kb.memMgr != nil && kb.sessionID != "" {
-				messages, err := kb.memMgr.GetMessages(ctx, kb.sessionID)
-				if err == nil && len(messages) > 0 {
-					// Get last 5 messages for context
-					start := len(messages) - 5
-					if start < 0 {
-						start = 0
-					}
-					for _, msg := range messages[start:] {
-						fmt.Fprintf(&historyContext, "%s: %s\n", msg.Role, msg.Content)
-					}
-				}
-			}
+// determineNeedsRAG determines if RAG is needed for the question
+func (kb *KnowledgeBase) determineNeedsRAG(ctx context.Context, question string) bool {
+	if kb.llmClient == nil {
+		return true
+	}
 
-			// Step 5: Generate answer with LLM
-			if kb.llmClient != nil {
-				prompt := fmt.Sprintf(`You are a helpful assistant that answers questions based on the provided knowledge base, conversation history, and corrected user memories.
+	ragPrompt := fmt.Sprintf(`Question: %s
+
+Needs knowledge base search? Answer YES/NO only:`, question)
+
+	ragCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ragResponse, err := kb.llmClient.Generate(ragCtx, ragPrompt)
+	cancel()
+
+	if err != nil {
+		return true
+	}
+
+	needsRAG := strings.Contains(strings.ToUpper(ragResponse), "YES")
+	log.Printf("RAG check: %s -> needs RAG: %v", question, needsRAG)
+	return needsRAG
+}
+
+// handleRAGQuestion handles RAG-based questions
+func (kb *KnowledgeBase) handleRAGQuestion(ctx context.Context, tenantID, question string) (string, error) {
+	results, err := kb.Search(ctx, tenantID, question)
+	if err != nil {
+		return "", fmt.Errorf("retrieve documents: %w", err)
+	}
+
+	if len(results) == 0 {
+		return "No relevant information found in the knowledge base. Please try rephrasing your question.", nil
+	}
+
+	contextBuilder := kb.buildSearchContext(results)
+	historyContext := kb.buildConversationHistory(ctx)
+
+	if kb.llmClient == nil {
+		return kb.formatRawResults(results), nil
+	}
+
+	prompt := fmt.Sprintf(`You are a helpful assistant that answers questions based on the provided knowledge base, conversation history, and corrected user memories.
 
 User Question: %s
 
@@ -1164,62 +1235,87 @@ CRITICAL INSTRUCTIONS:
 7. Be concise and direct.
 8. Cite the relevant document numbers (e.g., [Document 1]) when using information from specific documents.
 
-Answer:`, question, historyContext.String(), contextBuilder.String())
+Answer:`, question, historyContext, contextBuilder)
 
-				// Call LLM with timeout
-				genCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-				var genErr error
-				answer, genErr = kb.llmClient.Generate(genCtx, prompt)
-				cancel()
+	genCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	answer, err := kb.llmClient.Generate(genCtx, prompt)
+	cancel()
 
-				if genErr != nil {
-					log.Printf("LLM generation failed: %v, falling back to raw results", genErr)
-					// Fall back to showing raw results if LLM fails
-					answer = kb.formatRawResults(results)
-				}
-			} else {
-				// Step 6: If LLM client is not available, format raw results
-				answer = kb.formatRawResults(results)
-			}
-		}
-	} else {
-		// General conversation without RAG
-		if kb.llmClient != nil {
-			prompt := fmt.Sprintf(`You are a helpful assistant. Respond to the user's question naturally.
+	if err != nil {
+		log.Printf("LLM generation failed: %v, falling back to raw results", err)
+		return kb.formatRawResults(results), nil
+	}
+	return answer, nil
+}
+
+// buildSearchContext builds context from search results
+func (kb *KnowledgeBase) buildSearchContext(results []*SearchResult) string {
+	var contextBuilder strings.Builder
+	for i, result := range results {
+		fmt.Fprintf(&contextBuilder, "[Document %d - Score: %.3f]\n%s\n\n", i+1, result.Score, result.Content)
+	}
+	return contextBuilder.String()
+}
+
+// buildConversationHistory builds conversation history context
+func (kb *KnowledgeBase) buildConversationHistory(ctx context.Context) string {
+	if kb.memMgr == nil || kb.sessionID == "" {
+		return ""
+	}
+
+	messages, err := kb.memMgr.GetMessages(ctx, kb.sessionID)
+	if err != nil || len(messages) == 0 {
+		return ""
+	}
+
+	var historyContext strings.Builder
+	start := len(messages) - 5
+	if start < 0 {
+		start = 0
+	}
+	for _, msg := range messages[start:] {
+		fmt.Fprintf(&historyContext, "%s: %s\n", msg.Role, msg.Content)
+	}
+	return historyContext.String()
+}
+
+// handleGeneralConversation handles general conversation without RAG
+func (kb *KnowledgeBase) handleGeneralConversation(ctx context.Context, question string) string {
+	if kb.llmClient == nil {
+		return "LLM not configured. Please configure the llm section in config.yaml."
+	}
+
+	prompt := fmt.Sprintf(`You are a helpful assistant. Respond to the user's question naturally.
 
 User: %s
 
 Assistant:`, question)
 
-			genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			var genErr error
-			answer, genErr = kb.llmClient.Generate(genCtx, prompt)
-			cancel()
+	genCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	answer, err := kb.llmClient.Generate(genCtx, prompt)
+	cancel()
 
-			if genErr != nil {
-				answer = "I'm sorry, I'm having trouble generating a response right now. Please try again."
-			}
-		} else {
-			answer = "LLM not configured. Please configure the llm section in config.yaml."
-		}
+	if err != nil {
+		return "I'm sorry, I'm having trouble generating a response right now. Please try again."
+	}
+	return answer
+}
+
+// updateMemoryAndDistill updates memory and triggers distillation if needed
+func (kb *KnowledgeBase) updateMemoryAndDistill(ctx context.Context, tenantID, answer string) {
+	if kb.memMgr == nil || kb.sessionID == "" {
+		return
 	}
 
-	// Step 7: Add assistant answer to memory
-	if kb.memMgr != nil && kb.sessionID != "" {
-		_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "assistant", answer)
+	_ = kb.memMgr.AddMessage(ctx, kb.sessionID, "assistant", answer)
+	kb.messageCount++
 
-		// Step 8: Increment message count and check for distillation threshold
-		kb.messageCount++
-		// Trigger distillation at every threshold multiple (e.g., round 3, 6, 9, ...)
-		if kb.config.Memory.EnableDistillation && kb.messageCount%kb.config.Memory.DistillationThreshold == 0 {
-			log.Printf("🎯 [Memory Distillation] Conversation rounds reached threshold multiple (%d/%d), triggering memory distillation...",
-				kb.messageCount, kb.config.Memory.DistillationThreshold)
-			kb.triggerMemoryDistillation(ctx, tenantID)
-			kb.distilledRounds = kb.messageCount // Update to current round
-		}
+	if kb.config.Memory.EnableDistillation && kb.messageCount%kb.config.Memory.DistillationThreshold == 0 {
+		log.Printf("🎯 [Memory Distillation] Conversation rounds reached threshold multiple (%d/%d), triggering memory distillation...",
+			kb.messageCount, kb.config.Memory.DistillationThreshold)
+		kb.triggerMemoryDistillation(ctx, tenantID)
+		kb.distilledRounds = kb.messageCount
 	}
-
-	return answer, nil
 }
 
 // formatRawResults formats search results for display when LLM is not available.

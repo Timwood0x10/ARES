@@ -7,6 +7,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// JSON Schema type constants
+const (
+	jsonSchemaTypeObject = "object"
+	jsonSchemaTypeString = "string"
+)
+
 // jsonSchema represents a parsed JSON Schema object.
 type jsonSchema struct {
 	Type        string                `json:"type"`
@@ -24,7 +30,7 @@ type jsonSchema struct {
 func ConvertJSONSchema(raw json.RawMessage) (*core.ParameterSchema, error) {
 	if len(raw) == 0 {
 		return &core.ParameterSchema{
-			Type:       "object",
+			Type:       jsonSchemaTypeObject,
 			Properties: make(map[string]*core.Parameter),
 		}, nil
 	}
@@ -35,7 +41,7 @@ func ConvertJSONSchema(raw json.RawMessage) (*core.ParameterSchema, error) {
 	}
 
 	if schema.Type == "" {
-		schema.Type = "object"
+		schema.Type = jsonSchemaTypeObject
 	}
 
 	result := &core.ParameterSchema{
@@ -74,7 +80,7 @@ func convertProperty(schema jsonSchema) *core.Parameter {
 	}
 
 	if param.Type == "" {
-		param.Type = "string"
+		param.Type = jsonSchemaTypeString
 	}
 
 	return param

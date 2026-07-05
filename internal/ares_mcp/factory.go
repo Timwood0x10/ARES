@@ -39,7 +39,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 
 	transportType, _ := config["transport_type"].(string)
 	if transportType == "" {
-		transportType = "stdio"
+		transportType = TransportTypeStdio
 	}
 
 	// Build server config from the map.
@@ -49,7 +49,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 	}
 
 	switch transportType {
-	case "stdio":
+	case TransportTypeStdio:
 		command, _ := config["command"].(string)
 		if command == "" {
 			return nil, fmt.Errorf("command is required for stdio transport")
@@ -59,7 +59,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 		workDir, _ := config["work_dir"].(string)
 
 		sc.Transport = TransportConfig{
-			Type: "stdio",
+			Type: TransportTypeStdio,
 			Stdio: &StdioConfig{
 				Command: command,
 				Args:    args,
@@ -67,7 +67,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 				WorkDir: workDir,
 			},
 		}
-	case "sse":
+	case TransportTypeSSE:
 		url, _ := config["url"].(string)
 		if url == "" {
 			return nil, fmt.Errorf("url is required for sse transport")
@@ -75,7 +75,7 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 		headers := toStringMap(config["headers"])
 
 		sc.Transport = TransportConfig{
-			Type: "sse",
+			Type: TransportTypeSSE,
 			SSE: &SSEConfig{
 				URL:     url,
 				Headers: headers,
@@ -133,16 +133,16 @@ func (f *MCPToolFactory) ValidateConfig(config map[string]interface{}) error {
 
 	transportType, _ := config["transport_type"].(string)
 	if transportType == "" {
-		transportType = "stdio"
+		transportType = TransportTypeStdio
 	}
 
 	switch transportType {
-	case "stdio":
+	case TransportTypeStdio:
 		command, _ := config["command"].(string)
 		if command == "" {
 			return fmt.Errorf("command is required for stdio transport")
 		}
-	case "sse":
+	case TransportTypeSSE:
 		url, _ := config["url"].(string)
 		if url == "" {
 			return fmt.Errorf("url is required for sse transport")

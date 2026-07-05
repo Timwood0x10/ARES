@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const fieldAction = "action"
+
 // HTTPServer exposes the monitoring plugin over a Gin-based HTTP server.
 // It also mounts dashboard routes (arena, flight, ws, intel) for unified serving.
 type HTTPServer struct {
@@ -272,9 +274,9 @@ func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
 	result, err := s.plugin.ExecuteAction(c.Request.Context(), action)
 	if err != nil {
 		c.JSON(http.StatusNotImplemented, gin.H{
-			"action": action,
-			"error":  err.Error(),
-			"status": "error",
+			fieldAction: action,
+			"error":     err.Error(),
+			"status":    "error",
 		})
 		return
 	}

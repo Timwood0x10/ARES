@@ -167,6 +167,7 @@ type ArenaAdapter struct {
 	history []dashboard.ArenaResult
 }
 
+//nolint:gocyclo // Complex arena action execution with multiple action types
 func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResult {
 	start := time.Now()
 	success := false

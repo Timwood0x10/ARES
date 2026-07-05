@@ -16,6 +16,20 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
+const (
+	keyRole        = "role"
+	keyContent     = "content"
+	keyModel       = "model"
+	keyMessages    = "messages"
+	keyMaxTokens   = "max_tokens"
+	keyTemperature = "temperature"
+	keyStream      = "stream"
+	keyFunction    = "function"
+	keyArguments   = "arguments"
+	streamDataDone = "data: [DONE]"
+	keyName        = "name"
+)
+
 // OpenAIAdapter implements LLMAdapter for OpenAI.
 type OpenAIAdapter struct {
 	config       *Config
@@ -58,14 +72,14 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}
 
 	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+		{keyRole: "user", keyContent: prompt},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -116,16 +130,16 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 func (a *OpenAIAdapter) GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error) {
 	messages := []map[string]interface{}{
 		{
-			"role":    "user",
-			"content": prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
+			keyRole:    "user",
+			keyContent: prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
 		},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
@@ -188,11 +202,11 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
-		"stream":      true,
+		keyModel:       a.config.Model,
+		keyMessages:    []map[string]string{{keyRole: "user", keyContent: prompt}},
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
+		keyStream:      true,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -247,7 +261,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 			}
 
 			// Check for stream termination.
-			if line == "data: [DONE]" {
+			if line == streamDataDone {
 				return
 			}
 

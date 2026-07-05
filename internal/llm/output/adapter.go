@@ -6,6 +6,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
+const (
+	defaultModel = "gpt-3.5-turbo"
+)
+
 // LLMAdapter defines the interface for LLM providers.
 type LLMAdapter interface {
 	// Generate generates text from prompt.
@@ -44,7 +48,7 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Model:       "gpt-3.5-turbo",
+		Model:       defaultModel,
 		BaseURL:     "https://api.openai.com/v1",
 		MaxTokens:   2048,
 		Temperature: 0.7,

@@ -146,9 +146,10 @@ func main() {
 //
 // Returns:
 //   - error if any critical step fails.
+//
+//nolint:gocyclo // Legacy pipeline example with comprehensive trading workflow
 func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	modelName string, ticker string, dataDir string, outDir string, days int) error {
-
 	// Try local config.yml first, fall back to config.example.yml.
 	if _, statErr := os.Stat(cfgPath); statErr != nil {
 		alt := cfgPath[:len(cfgPath)-4] + ".example.yml"
@@ -483,7 +484,6 @@ func runWithResearchLayer(ctx context.Context, ticker string, outDir string, dat
 func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir string,
 	capital float64, symbols string, from string, to string, strategy string,
 	dataVendor string, date string, signalsPath string) error {
-
 	log := func(f string, a ...any) { fmt.Printf(f+"\n", a...) }
 
 	symList := []string{ticker}
@@ -680,7 +680,6 @@ func saveSimulationJSON(resp *marketmakingapi.BacktestResponse, outPath string) 
 // delegates to BacktestRunner for execution and reporting.
 func runSimulation(ctx context.Context, ticker string, dataDir string,
 	outDir string, state *research.ResearchState, log func(string, ...any)) {
-
 	log("\n═══ Investment Simulation (Backtest) ═══\n")
 
 	signals := GenerateSignalsFromResearch(state.PortfolioDecision)

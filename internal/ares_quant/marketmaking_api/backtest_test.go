@@ -40,7 +40,7 @@ func TestBacktestRunner_Run_NoSymbols(t *testing.T) {
 func TestBacktestRunner_Run_InvalidCapital(t *testing.T) {
 	runner := NewDefaultBacktestRunner()
 	resp, err := runner.Run(context.Background(), &BacktestRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		StartTime:      time.Now().Add(-24 * time.Hour),
 		EndTime:        time.Now(),
 		InitialCapital: 0,
@@ -55,7 +55,7 @@ func TestBacktestRunner_Run_InvalidCapital(t *testing.T) {
 func TestBacktestRunner_Run_ValidRequest(t *testing.T) {
 	runner := NewDefaultBacktestRunner()
 	req := &BacktestRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		StartTime:      time.Now().Add(-168 * time.Hour),
 		EndTime:        time.Now(),
 		InitialCapital: 100000.0,
@@ -75,7 +75,7 @@ func TestBacktestRunner_Run_CancelledContext(t *testing.T) {
 	cancel() // cancel immediately
 
 	req := &BacktestRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		StartTime:      time.Now().Add(-24 * time.Hour),
 		EndTime:        time.Now(),
 		InitialCapital: 10000.0,

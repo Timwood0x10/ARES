@@ -289,7 +289,7 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	}
 
 	selector, err := p.buildSelector()
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNoSelectorNeeded) {
 		return fmt.Errorf("genome.doEvolve: build selector: %w", err)
 	}
 
@@ -463,11 +463,11 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 }
 
 // buildSelector creates a Selection strategy based on the configured SelectionStrategy.
-// Returns nil for "random" or "" (backward compatible random parent selection).
+// Returns ErrNoSelectorNeeded for "random" or "" (backward compatible random parent selection).
 func (p *Population) buildSelector() (Selection, error) {
 	switch p.cfg.SelectionStrategy {
 	case "", "random":
-		return nil, errors.New("random selection: no selector needed")
+		return nil, ErrNoSelectorNeeded
 	case "tournament":
 		return NewTournamentSelection(
 			WithTournamentSize(p.cfg.TournamentSize),

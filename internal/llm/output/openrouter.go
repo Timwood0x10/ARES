@@ -53,14 +53,14 @@ func NewOpenRouterAdapter(config *Config) *OpenRouterAdapter {
 // Generate generates text from prompt.
 func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+		{keyRole: "user", keyContent: prompt},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -110,16 +110,16 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error) {
 	messages := []map[string]interface{}{
 		{
-			"role":    "user",
-			"content": prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
+			keyRole:    "user",
+			keyContent: prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
 		},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
@@ -181,11 +181,11 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
-		"stream":      true,
+		keyModel:       a.config.Model,
+		keyMessages:    []map[string]string{{keyRole: "user", keyContent: prompt}},
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
+		keyStream:      true,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -239,7 +239,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 			}
 
 			// Check for stream termination.
-			if line == "data: [DONE]" {
+			if line == streamDataDone {
 				return
 			}
 

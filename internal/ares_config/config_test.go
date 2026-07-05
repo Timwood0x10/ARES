@@ -150,6 +150,8 @@ server:
 }
 
 // TestLoadFromEnv tests loading configuration from environment variables.
+//
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestLoadFromEnv(t *testing.T) {
 	// Create minimal config
 	cfg := &Config{

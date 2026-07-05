@@ -32,17 +32,17 @@ func TestJSONRPCRequestSerialization(t *testing.T) {
 	}{
 		{
 			name:   "basic request",
-			req:    jsonrpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"},
+			req:    jsonrpcRequest{JSONRPC: jsonrpcVersion, ID: 1, Method: methodToolsList},
 			expect: `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
 		},
 		{
 			name:   "request with params",
-			req:    jsonrpcRequest{JSONRPC: "2.0", ID: 2, Method: "tools/call", Params: map[string]any{"name": "test-tool"}},
+			req:    jsonrpcRequest{JSONRPC: jsonrpcVersion, ID: 2, Method: methodToolsCall, Params: map[string]any{"name": "test-tool"}},
 			expect: `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"test-tool"}}`,
 		},
 		{
 			name:   "initialize request",
-			req:    jsonrpcRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "ares-mcp-client", "version": "1.0.0"}}},
+			req:    jsonrpcRequest{JSONRPC: jsonrpcVersion, ID: 1, Method: methodInitialize, Params: map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": mcpClientName, "version": "1.0.0"}}},
 			expect: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"ares-mcp-client","version":"1.0.0"},"protocolVersion":"2024-11-05"}}`,
 		},
 	}
@@ -76,12 +76,12 @@ func TestJSONRPCResponseSerialization(t *testing.T) {
 	}{
 		{
 			name:   "success response",
-			resp:   jsonrpcResponse{JSONRPC: "2.0", ID: 1, Result: json.RawMessage(`{"tools":[]}`)},
+			resp:   jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: 1, Result: json.RawMessage(`{"tools":[]}`)},
 			expect: `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`,
 		},
 		{
 			name:   "error response",
-			resp:   jsonrpcResponse{JSONRPC: "2.0", ID: 1, Error: &jsonrpcError{Code: -32601, Message: "Method not found"}},
+			resp:   jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: 1, Error: &jsonrpcError{Code: -32601, Message: "Method not found"}},
 			expect: `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`,
 		},
 	}
@@ -108,7 +108,7 @@ func TestJSONRPCResponseSerialization(t *testing.T) {
 }
 
 func TestJSONRPCNotificationSerialization(t *testing.T) {
-	n := jsonrpcNotification{JSONRPC: "2.0", Method: "notifications/initialized"}
+	n := jsonrpcNotification{JSONRPC: jsonrpcVersion, Method: methodNotificationsInit}
 	data, err := json.Marshal(n)
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
@@ -306,7 +306,7 @@ func TestClient_ListTools(t *testing.T) {
 				t.Errorf("method = %s, want tools/list", req.Method)
 			}
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`{"tools":[{"name":"web_search","description":"Search the web"},{"name":"calculator"}]}`),
 			}, nil
@@ -345,7 +345,7 @@ func TestClient_ListTools_RemoteError(t *testing.T) {
 	mock := &mockTransport{
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Error:   &jsonrpcError{Code: -32601, Message: "Method not found"},
 			}, nil
@@ -362,7 +362,7 @@ func TestClient_ListTools_BadResult(t *testing.T) {
 	mock := &mockTransport{
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`invalid json`),
 			}, nil
@@ -382,7 +382,7 @@ func TestClient_CallTool_Success(t *testing.T) {
 				t.Errorf("method = %s, want tools/call", req.Method)
 			}
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`{"content":[{"type":"text","text":"result data"}],"is_error":false}`),
 			}, nil
@@ -405,7 +405,7 @@ func TestClient_CallTool_ErrorMessage(t *testing.T) {
 	mock := &mockTransport{
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Error:   &jsonrpcError{Code: -32603, Message: "Internal error"},
 			}, nil
@@ -449,7 +449,7 @@ func TestClient_CallTool_BadResult(t *testing.T) {
 	mock := &mockTransport{
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`not valid json`),
 			}, nil
@@ -468,7 +468,7 @@ func TestClient_InitializeRequest(t *testing.T) {
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			requests = append(requests, req)
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`{}`),
 			}, nil
@@ -517,7 +517,7 @@ func TestClient_InitializeError(t *testing.T) {
 	mock := &mockTransport{
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Error:   &jsonrpcError{Code: -32000, Message: "Unsupported version"},
 			}, nil
@@ -540,7 +540,7 @@ func TestClient_SendNotification(t *testing.T) {
 	}
 	c := &Client{name: "test", transport: mock}
 	err := c.sendNotification(jsonrpcNotification{
-		JSONRPC: "2.0",
+		JSONRPC: jsonrpcVersion,
 		Method:  "notifications/initialized",
 	})
 	if err != nil {
@@ -782,7 +782,7 @@ func TestClient_MethodCallsUseNextID(t *testing.T) {
 		roundTripFn: func(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 			ids = append(ids, req.ID)
 			return &jsonrpcResponse{
-				JSONRPC: "2.0",
+				JSONRPC: jsonrpcVersion,
 				ID:      req.ID,
 				Result:  json.RawMessage(`{"tools":[]}`),
 			}, nil

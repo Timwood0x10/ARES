@@ -39,7 +39,7 @@ func TestPaperTrader_Start_NoSymbols(t *testing.T) {
 func TestPaperTrader_Start_InvalidCapital(t *testing.T) {
 	trader := NewDefaultPaperTrader()
 	resp, err := trader.Start(context.Background(), &PaperTradeRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		InitialCapital: 0,
 		Duration:       time.Hour,
 	})
@@ -52,7 +52,7 @@ func TestPaperTrader_Start_InvalidCapital(t *testing.T) {
 func TestPaperTrader_Start_ValidRequest(t *testing.T) {
 	trader := NewDefaultPaperTrader()
 	req := &PaperTradeRequest{
-		Symbols:        []string{"BTCUSDT", "ETHUSDT"},
+		Symbols:        []string{SymbolBTCUSDT, SymbolETHUSDT},
 		InitialCapital: 100000.0,
 		Duration:       2 * time.Hour,
 	}
@@ -76,7 +76,7 @@ func TestPaperTrader_Status_EmptySessionID(t *testing.T) {
 func TestPaperTrader_Status_ValidSessionID(t *testing.T) {
 	trader := NewDefaultPaperTrader()
 	req := &PaperTradeRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		InitialCapital: 50000.0,
 		Duration:       time.Hour,
 	}
@@ -102,7 +102,7 @@ func TestPaperTrader_Stop_EmptySessionID(t *testing.T) {
 func TestPaperTrader_Stop_ValidSessionID(t *testing.T) {
 	trader := NewDefaultPaperTrader()
 	req := &PaperTradeRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		InitialCapital: 50000.0,
 		Duration:       time.Hour,
 	}
@@ -127,7 +127,7 @@ func TestPaperTrader_CancelledContext(t *testing.T) {
 	cancel()
 
 	resp, err := trader.Start(ctx, &PaperTradeRequest{
-		Symbols:        []string{"BTCUSDT"},
+		Symbols:        []string{SymbolBTCUSDT},
 		InitialCapital: 10000.0,
 		Duration:       time.Minute,
 	})

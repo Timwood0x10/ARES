@@ -8,6 +8,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+const (
+	contentTypeText = "text"
+)
+
 // MCPTool wraps an MCP tool definition as a ares Tool.
 type MCPTool struct {
 	*base.BaseTool
@@ -85,14 +89,14 @@ func extractText(blocks []ContentBlock) string {
 
 	totalLen := 0
 	for _, b := range blocks {
-		if b.Type == "text" {
+		if b.Type == contentTypeText {
 			totalLen += len(b.Text)
 		}
 	}
 
 	buf := make([]byte, 0, totalLen)
 	for _, b := range blocks {
-		if b.Type == "text" {
+		if b.Type == contentTypeText {
 			buf = append(buf, b.Text...)
 		}
 	}

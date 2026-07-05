@@ -1109,6 +1109,8 @@ func demoScorer(baselineQuality float64) genome.ScorerFunc {
 
 // executeResurrectionDemo demonstrates the full snapshot/resurrection lifecycle
 // using real EventStore for event sourcing and heartbeat-based crash detection.
+//
+//nolint:gocyclo // Demo example with comprehensive workflow demonstration
 func executeResurrectionDemo(ctx context.Context, cfg *ares_config.Config, comps *components, originalAgent leader.Agent) {
 	// Get the real EventStore from components.
 	eventStore := comps.eventStore
