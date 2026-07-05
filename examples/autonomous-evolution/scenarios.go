@@ -574,7 +574,7 @@ func runScenario7(ctx context.Context, _ *DemoKit, cfg GACfg) *evolutionservice.
 			scorer, err := evolutionservice.NewLLMScorer(evolutionservice.LLMScorerConfig{
 				Client:   client,
 				Model:    llmCfg.Primary.Model,
-				Fallback: func(s *evolutionservice.Strategy) float64 { return evolutionservice.DeterministicScore(s) },
+				Fallback: evolutionservice.DeterministicScore,
 			})
 			if err == nil {
 				start := time.Now()
@@ -616,7 +616,7 @@ func fullGAConfig(
 	promotionLogic evolutionservice.PromotionLogic,
 ) *evolutionservice.SystemConfig {
 	if scorer == nil {
-		scorer = func(s *evolutionservice.Strategy) float64 { return evolutionservice.DeterministicScore(s) }
+		scorer = evolutionservice.DeterministicScore
 	}
 	return &evolutionservice.SystemConfig{
 		BaseStrategy:           parent,
@@ -1109,11 +1109,12 @@ func compareResults(resultA, resultB *evolutionservice.EvolutionResult, labelA, 
 
 	// Winner announcement.
 	fmt.Println()
-	if bestA.Score > bestB.Score {
+	switch {
+	case bestA.Score > bestB.Score:
 		fmt.Printf("  🏆 Winner: %s (+%.2f points)\n", labelA, bestA.Score-bestB.Score)
-	} else if bestB.Score > bestA.Score {
+	case bestB.Score > bestA.Score:
 		fmt.Printf("  🏆 Winner: %s (+%.2f points)\n", labelB, bestB.Score-bestA.Score)
-	} else {
+	default:
 		fmt.Println("  🤝 Tie — both approaches found equivalent strategies")
 	}
 

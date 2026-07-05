@@ -17,14 +17,10 @@ func main() {
 		lg.Error("Failed to connect to database:", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Printf("Failed to close database connection: %v", err)
-		}
-	}()
 
 	// test database connection
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		lg.Error("Failed to ping database:", "error", err)
 		os.Exit(1)
 	}
@@ -36,14 +32,21 @@ func main() {
 	rows, err := db.Query(`
 		SELECT id, content, source_type, source, created_at
 		FROM knowledge_chunks_1024
-		WHERE source_type = 'distilled' 
+		WHERE source_type = 'distilled'
 		ORDER BY created_at DESC
 		LIMIT 10
 	`)
 	if err != nil {
+		_ = db.Close()
 		lg.Error("Failed to query distilled memory:", "error", err)
 		os.Exit(1)
 	}
+
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("Failed to close database connection: %v", err)
+		}
+	}()
 	defer func() {
 		if err := rows.Close(); err != nil {
 			lg.Error("Failed to close rows: ", "error", err)
@@ -81,9 +84,11 @@ func main() {
 		ORDER BY count DESC
 	`)
 	if err != nil {
+		_ = db.Close()
 		lg.Error("Failed to query statistics:", "error", err)
 		os.Exit(1)
 	}
+
 	defer func() {
 		if err := statsRows.Close(); err != nil {
 			lg.Error("Failed to close stats rows", "error", err)

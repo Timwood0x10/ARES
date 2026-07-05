@@ -55,7 +55,6 @@ func main() {
 
 	// Set up signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -74,8 +73,10 @@ func main() {
 
 	// Start serving.
 	if err := server.Serve(ctx); err != nil {
+		cancel()
 		log.Error("ares_mcp-null: serve error", "error", err)
 		os.Exit(1)
 	}
+	defer cancel()
 	_ = sigEg.Wait() // Clean up signal goroutine
 }

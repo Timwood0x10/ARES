@@ -413,8 +413,7 @@ func (a *subAgent) ReplayEvents(evts []*ares_events.Event) error {
 		if ev == nil {
 			continue
 		}
-		switch ev.Type {
-		case ares_events.EventTaskCompleted:
+		if ev.Type == ares_events.EventTaskCompleted {
 			log.Debug("sub-agent replayed task completion",
 				"agent_id", a.id,
 				"task_id", ev.Payload["task_id"],

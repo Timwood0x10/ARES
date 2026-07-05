@@ -36,14 +36,14 @@ func TestArenaPlugin_ScheduleAndCancelFault(t *testing.T) {
 	a.ScheduleFault("plugin-1", FaultPluginError)
 	a.CancelFault("plugin-1")
 	// No fault should trigger
-	err := a.checkFault()
+	err := a.checkFault(context.Background())
 	require.NoError(t, err)
 }
 
 func TestArenaPlugin_InjectErrorFault(t *testing.T) {
 	a := NewArenaPlugin("test-arena")
 	a.ScheduleFault("plugin-1", FaultPluginError)
-	err := a.checkFault()
+	err := a.checkFault(context.Background())
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrFaultInjected)
 }

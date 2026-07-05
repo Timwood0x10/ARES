@@ -55,9 +55,10 @@ func runDemo() error {
 	).(*monitoring.MonitorPlugin)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer cancel() // Moved after all error checks
 
 	if err := plugin.Start(ctx, bus); err != nil {
+		cancel()
 		return fmt.Errorf("start plugin: %w", err)
 	}
 
@@ -75,6 +76,7 @@ func runDemo() error {
 	fmt.Println()
 
 	if err := server.Run(demoAddr); err != nil {
+		cancel()
 		log.Fatal(err)
 	}
 	return nil

@@ -49,18 +49,20 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	cfg, err := apiimpl.LoadServiceConfig(cfgPath)
 	if err != nil {
+		cancel()
 		slog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
 	svc, err := apiimpl.StartService(ctx, cfg)
 	if err != nil {
+		cancel()
 		slog.Error("service start failed", "err", err)
 		os.Exit(1)
 	}
+	defer cancel() // Moved after all error checks
 
 	go chaosDemo(ctx, svc, log)
 

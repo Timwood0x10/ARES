@@ -216,7 +216,6 @@ func main() {
 
 	// Set up signal handling.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -239,9 +238,11 @@ func main() {
 	}(), "embedding_url", *embeddingURL)
 
 	if err := server.Serve(ctx); err != nil {
+		cancel()
 		log.Error("embedding-mcp: serve error", "error", err)
 		os.Exit(1)
 	}
+	defer cancel()
 	_ = sigEg.Wait()
 }
 

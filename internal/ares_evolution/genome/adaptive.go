@@ -520,15 +520,16 @@ func (p *Population) adjustMutationRateLocked() {
 	}
 
 	// Low diversity: aggressive boost proportional to how far below threshold.
-	if div < p.cfg.DiversityThreshold {
+	switch {
+	case div < p.cfg.DiversityThreshold:
 		deficit := p.cfg.DiversityThreshold - div
 		boostFactor := ac.LowDiversityBoostFactor + (deficit/p.cfg.DiversityThreshold)*1.0 // range: 1.5x – 2.5x
 		p.currentMutationRate = minFloat(p.currentMutationRate*boostFactor, p.cfg.MaxMutationRate)
 		p.recordRecoveryActionLocked("mutation_rate_boost", 1)
-	} else if div > p.cfg.DiversityThreshold*3 {
+	case div > p.cfg.DiversityThreshold*3:
 		// Very high diversity: allow gentle decay toward floor.
 		p.currentMutationRate = maxFloat(p.currentMutationRate*ac.HighDecayRate, p.cfg.MinMutationRate)
-	} else {
+	default:
 		// Moderate diversity: maintain current rate — only drift down if
 		// significantly above base to avoid unnecessary reduction.
 		if p.currentMutationRate > p.cfg.MutationRate*2 {

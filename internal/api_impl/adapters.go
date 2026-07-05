@@ -365,29 +365,30 @@ func (a *ArenaAdapter) ResilienceScore() map[string]any {
 		score = float64(a.successfulActions) / float64(a.totalActions) * 100
 	}
 	grade := "F"
-	if score >= 97 {
+	switch {
+	case score >= 97:
 		grade = "A+"
-	} else if score >= 93 {
+	case score >= 93:
 		grade = "A"
-	} else if score >= 90 {
+	case score >= 90:
 		grade = "A-"
-	} else if score >= 87 {
+	case score >= 87:
 		grade = "B+"
-	} else if score >= 83 {
+	case score >= 83:
 		grade = "B"
-	} else if score >= 80 {
+	case score >= 80:
 		grade = "B-"
-	} else if score >= 77 {
+	case score >= 77:
 		grade = "C+"
-	} else if score >= 73 {
+	case score >= 73:
 		grade = "C"
-	} else if score >= 70 {
+	case score >= 70:
 		grade = "C-"
-	} else if score >= 67 {
+	case score >= 67:
 		grade = "D+"
-	} else if score >= 63 {
+	case score >= 63:
 		grade = "D"
-	} else if score >= 60 {
+	case score >= 60:
 		grade = "D-"
 	}
 	return map[string]any{

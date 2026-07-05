@@ -10,13 +10,15 @@ import (
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
+const StepID1 = "step1"
+
 func main() {
 	ctx := context.Background()
 
 	// Create initial DAG: step1 → step2 → step3.
 	initialSteps := []*engine.Step{
-		{ID: "step1", Name: "Print Hello"},
-		{ID: "step2", Name: "Print World", DependsOn: []string{"step1"}},
+		{ID: StepID1, Name: "Print Hello"},
+		{ID: "step2", Name: "Print World", DependsOn: []string{StepID1}},
 		{ID: "step3", Name: "Print Done", DependsOn: []string{"step2"}},
 	}
 
@@ -37,7 +39,7 @@ func main() {
 	err = dag.AddNode(ctx, &engine.Step{
 		ID:        "step4",
 		Name:      "Parallel Step",
-		DependsOn: []string{"step1"},
+		DependsOn: []string{StepID1},
 	})
 	if err != nil {
 		log.Fatalf("failed to add step4: %v", err)

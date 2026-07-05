@@ -62,24 +62,27 @@ func main() {
 		log.Error("failed to connect to database", "database", dbname, "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := pool.Close(); err != nil {
-			log.Warn("pool.Close", "error", err)
-		}
-	}()
 
 	ctx := context.Background()
 
 	if _, err := pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
+		_ = pool.Close()
 		log.Error("failed to enable pgvector", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("pgvector extension enabled")
 
 	if err := postgres.MigrateStorage(ctx, pool); err != nil {
+		_ = pool.Close()
 		log.Error("migration failed", "error", err)
 		os.Exit(1)
 	}
+
+	defer func() {
+		if err := pool.Close(); err != nil {
+			log.Warn("pool.Close", "error", err)
+		}
+	}()
 	fmt.Println("Production database migrations completed successfully")
 	fmt.Println()
 	fmt.Println("Tables created:")

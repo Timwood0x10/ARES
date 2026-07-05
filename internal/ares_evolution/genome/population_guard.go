@@ -112,7 +112,7 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		template.Score = ScoreUnevaluated
 		template.ID = fmt.Sprintf("fresh-mut-%d-gen%d", i, p.Generation)
 		template.ParentID = p.Agents[templateIdx].ID
-		template.Version = template.Version + 1
+		template.Version++
 		template.StrategyMutationType = mutation.MutationParameter
 		template.MutationDesc = "fresh mutant injection for diversity recovery"
 

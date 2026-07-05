@@ -96,21 +96,24 @@ func main() {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	if mode == "backtest" {
 		if err := runBacktestMode(ctx, ticker, dataDir, outDir, capital, symbols, from, to, strategy, dataVendor, date, signalsPath); err != nil {
+			cancel()
 			slog.Error("backtest execution failed", "err", err)
 			os.Exit(1)
 		}
+		cancel()
 		return
 	}
 
 	if useResearchLayer {
 		if err := runWithResearchLayer(ctx, ticker, outDir, dataDir, simulate, date, dataVendor, outputLang); err != nil {
+			cancel()
 			slog.Error("research layer execution failed", "err", err)
 			os.Exit(1)
 		}
+		cancel()
 		return
 	}
 
@@ -119,9 +122,11 @@ func main() {
 	}
 
 	if err := runLegacyPipeline(ctx, cfgPath, agentsPath, modelName, ticker, dataDir, outDir, days); err != nil {
+		cancel()
 		slog.Error("legacy pipeline execution failed", "err", err)
 		os.Exit(1)
 	}
+	defer cancel()
 }
 
 // ─── Legacy Pipeline Mode ──────────────────────────────────

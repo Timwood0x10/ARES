@@ -581,60 +581,34 @@ func TestUserProfileExecute_NoManagers(t *testing.T) {
 }
 
 // TestAddUniqueString tests adding unique strings to profile.
-
 func TestAddUniqueString(t *testing.T) {
-
 	tests := []struct {
-		name string
-
-		initialStack []string
-
-		value string
-
-		expectedLen int
-
+		name             string
+		initialStack     []string
+		value            string
+		expectedLen      int
 		expectedContains bool
 	}{
-
 		{
-
-			name: "add new string",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "Rust",
-
-			expectedLen: 3,
-
+			name:             "add new string",
+			initialStack:     []string{"Go", "Python"},
+			value:            "Rust",
+			expectedLen:      3,
 			expectedContains: true,
 		},
-
 		{
-
-			name: "add duplicate (case insensitive)",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "GO",
-
-			expectedLen: 2,
-
+			name:             "add duplicate (case insensitive)",
+			initialStack:     []string{"Go", "Python"},
+			value:            "GO",
+			expectedLen:      2,
 			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
-
 		},
-
 		{
-
-			name: "add duplicate (exact)",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "Go",
-
-			expectedLen: 2,
-
+			name:             "add duplicate (exact)",
+			initialStack:     []string{"Go", "Python"},
+			value:            "Go",
+			expectedLen:      2,
 			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
-
 		},
 	}
 

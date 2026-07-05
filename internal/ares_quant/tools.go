@@ -21,6 +21,36 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// Schema type constants.
+const (
+	SchemaTypeObject = "object"
+	SchemaTypeString = "string"
+	SchemaTypeNumber = "number"
+)
+
+// Sentiment label constants.
+const (
+	SentimentStronglyBullish = "strongly_bullish"
+	SentimentBullish         = "bullish"
+	SentimentNeutral         = "neutral"
+	SentimentBearish         = "bearish"
+	SentimentStronglyBearish = "strongly_bearish"
+)
+
+// Parameter name constants.
+const (
+	ParamTicker    = "ticker"
+	ParamIndicator = "indicator"
+	ParamPeriod    = "period"
+	ParamQuery     = "query"
+)
+
+// RSI signal constants.
+const (
+	RSIOverbought = "overbought"
+	RSIOversold   = "oversold"
+)
+
 // RegisterTools registers all ares_quant MCP tools into the given registry.
 // Call during application startup before creating any ares_quant agents.
 // Returns the first registration error, if any.
@@ -40,15 +70,15 @@ func financialDataTool() core.Tool {
 		"financial_data",
 		"Fetch stock financial data and recent prices from Yahoo Finance. Returns OHLCV data for the specified ticker and date range.",
 		&core.ParameterSchema{
-			Type: "object",
+			Type: SchemaTypeObject,
 			Properties: map[string]*core.Parameter{
-				"ticker": {Type: "string", Description: "Stock ticker symbol (e.g. AAPL, MSFT, 0700.HK)"},
-				"days":   {Type: "number", Description: "Number of historical days to fetch (default 365)"},
+				ParamTicker: {Type: SchemaTypeString, Description: "Stock ticker symbol (e.g. AAPL, MSFT, 0700.HK)"},
+				"days":      {Type: SchemaTypeNumber, Description: "Number of historical days to fetch (default 365)"},
 			},
-			Required: []string{"ticker"},
+			Required: []string{ParamTicker},
 		},
 		func(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-			ticker, ok := params["ticker"].(string)
+			ticker, ok := params[ParamTicker].(string)
 			if !ok || ticker == "" {
 				return core.NewErrorResult("financial_data: ticker is required"), nil
 			}
@@ -64,7 +94,7 @@ func financialDataTool() core.Tool {
 				return core.NewErrorResult(fmt.Sprintf("financial_data: %v", err)), nil
 			}
 			return core.NewResult(true, map[string]interface{}{
-				"ticker":    ticker,
+				ParamTicker: ticker,
 				"bars":      ts.Bars,
 				"bar_count": len(ts.Bars),
 				"start":     ts.Start.Format("2006-01-02"),
@@ -80,14 +110,14 @@ func polymarketTool() core.Tool {
 		"polymarket_sentiment",
 		"Fetch prediction market probabilities related to a stock or event. Returns YES/NO prices (0.0-1.0) representing market consensus probability.",
 		&core.ParameterSchema{
-			Type: "object",
+			Type: SchemaTypeObject,
 			Properties: map[string]*core.Parameter{
-				"query": {Type: "string", Description: "Search query (e.g. 'AAPL', 'Fed rate cut', 'inflation')"},
+				ParamQuery: {Type: SchemaTypeString, Description: "Search query (e.g. 'AAPL', 'Fed rate cut', 'inflation')"},
 			},
-			Required: []string{"query"},
+			Required: []string{ParamQuery},
 		},
 		func(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-			query, ok := params["query"].(string)
+			query, ok := params[ParamQuery].(string)
 			if !ok || query == "" {
 				return core.NewErrorResult("polymarket_sentiment: query is required"), nil
 			}
@@ -98,7 +128,7 @@ func polymarketTool() core.Tool {
 			}
 			signal := market.SentimentSignal(markets)
 			return core.NewResult(true, map[string]interface{}{
-				"query":           query,
+				ParamQuery:        query,
 				"markets":         markets,
 				"market_count":    len(markets),
 				"sentiment":       signal,
@@ -111,15 +141,15 @@ func polymarketTool() core.Tool {
 func sentimentLabel(v float64) string {
 	switch {
 	case v >= 0.7:
-		return "strongly_bullish"
+		return SentimentStronglyBullish
 	case v >= 0.6:
-		return "bullish"
+		return SentimentBullish
 	case v >= 0.4:
-		return "neutral"
+		return SentimentNeutral
 	case v >= 0.3:
-		return "bearish"
+		return SentimentBearish
 	default:
-		return "strongly_bearish"
+		return SentimentStronglyBearish
 	}
 }
 
@@ -129,17 +159,17 @@ func technicalIndicatorsTool() core.Tool {
 		"technical_indicators",
 		"Compute technical indicators (MACD, RSI, SMA, Bollinger Bands) for a ticker. Requires price data fetched first via financial_data.",
 		&core.ParameterSchema{
-			Type: "object",
+			Type: SchemaTypeObject,
 			Properties: map[string]*core.Parameter{
-				"ticker":    {Type: "string", Description: "Stock ticker symbol"},
-				"indicator": {Type: "string", Description: "Indicator type: 'MACD', 'RSI', 'SMA', 'BOLLINGER', or 'ALL'"},
-				"period":    {Type: "number", Description: "Lookback period (default 14 for RSI, 20 for SMA/Bollinger)"},
+				ParamTicker:    {Type: SchemaTypeString, Description: "Stock ticker symbol"},
+				ParamIndicator: {Type: SchemaTypeString, Description: "Indicator type: 'MACD', 'RSI', 'SMA', 'BOLLINGER', or 'ALL'"},
+				ParamPeriod:    {Type: SchemaTypeNumber, Description: "Lookback period (default 14 for RSI, 20 for SMA/Bollinger)"},
 			},
-			Required: []string{"ticker", "indicator"},
+			Required: []string{ParamTicker, ParamIndicator},
 		},
 		func(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-			ticker, _ := params["ticker"].(string)
-			indicatorType, _ := params["indicator"].(string)
+			ticker, _ := params[ParamTicker].(string)
+			indicatorType, _ := params[ParamIndicator].(string)
 			if ticker == "" || indicatorType == "" {
 				return core.NewErrorResult("technical_indicators: ticker and indicator are required"), nil
 			}
@@ -180,7 +210,7 @@ func extractCloses(bars []market.Candle) []float64 {
 }
 
 func indicatorPeriod(params map[string]interface{}) int {
-	if p, ok := params["period"].(float64); ok && p > 0 {
+	if p, ok := params[ParamPeriod].(float64); ok && p > 0 {
 		return int(p)
 	}
 	return 14
@@ -290,11 +320,11 @@ func lastN(f []float64, n int) []float64 {
 func rsiSignal(v float64) string {
 	switch {
 	case v >= 70:
-		return "overbought"
+		return RSIOverbought
 	case v <= 30:
-		return "oversold"
+		return RSIOversold
 	default:
-		return "neutral"
+		return SentimentNeutral
 	}
 }
 

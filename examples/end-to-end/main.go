@@ -102,12 +102,13 @@ func main() {
 	subAgents := createSubAgents(cfg, components)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 
 	if err := leaderAgent.Start(ctx); err != nil {
+		cancel()
 		log.Error("Failed to start leader agent", "error", err)
 		os.Exit(1)
 	}
+	defer cancel()
 	for _, agent := range subAgents {
 		if err := agent.Start(ctx); err != nil {
 			log.Warn("Failed to start sub agent", "id", agent.ID(), "error", err)

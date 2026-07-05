@@ -9,13 +9,15 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// Reuse testParamTemperature from cached_scorer_test.go (same package)
+
 // newTestStrategy creates a simple strategy for testing.
 func newTestStrategy(name string) *mutation.Strategy {
 	return &mutation.Strategy{
 		ID:             name,
 		Name:           name,
 		Version:        1,
-		Params:         map[string]any{"temperature": 0.7},
+		Params:         map[string]any{testParamTemperature: 0.7},
 		PromptTemplate: "test prompt for " + name,
 	}
 }
@@ -115,7 +117,7 @@ func TestScoreCacheHit(t *testing.T) {
 
 	// Pre-populate cache.
 	hash, _ := StrategyHash(s)
-	cache.Put(hash, MakeEntry(hash, 0.85, "llm", 1, 1.0))
+	cache.Put(hash, MakeEntry(hash, 0.85, ScorerTypeLLM, 1, 1.0))
 
 	ts, _ := NewTieredScorer(TieredScorerConfig{
 		Cache:           cache,

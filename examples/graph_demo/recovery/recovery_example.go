@@ -158,7 +158,6 @@ func main() {
 	if err := stack.bus.Start(ctx); err != nil {
 		log.Fatalf("start plugin bus: %v", err)
 	}
-	defer func() { _ = stack.bus.Stop(ctx) }()
 
 	// Build workflow: s1 uses a failing agent with a recovery policy.
 	dag, err := engine.NewMutableDAG([]*engine.Step{
@@ -175,6 +174,7 @@ func main() {
 		{ID: "s2", Name: "Process", AgentType: "ok", Input: "process", DependsOn: []string{"s1"}},
 	})
 	if err != nil {
+		_ = stack.bus.Stop(ctx)
 		log.Fatalf("NewMutableDAG: %v", err)
 	}
 
@@ -191,8 +191,11 @@ func main() {
 
 	result, err := executor.ExecuteDynamic(ctx, wf, "input", dag)
 	if err != nil {
+		_ = stack.bus.Stop(ctx)
 		log.Fatalf("ExecuteDynamic: %v", err)
 	}
+
+	defer func() { _ = stack.bus.Stop(ctx) }()
 
 	// Print execution results.
 	fmt.Printf("Workflow status: %s\n", result.Status)

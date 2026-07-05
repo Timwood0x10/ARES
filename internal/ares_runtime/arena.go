@@ -75,8 +75,8 @@ func (a *ArenaPlugin) Stop(_ context.Context) error {
 
 // BeforeStep is a WorkflowHook that injects faults before the step executes.
 // If a fault is pending for the plugin being invoked, it triggers the fault.
-func (a *ArenaPlugin) BeforeStep(_ context.Context, _ string, _ *Step) error {
-	return a.checkFault()
+func (a *ArenaPlugin) BeforeStep(ctx context.Context, _ string, _ *Step) error {
+	return a.checkFault(ctx)
 }
 
 // AfterStep is a WorkflowHook that checks for pending faults.
@@ -104,7 +104,7 @@ func (a *ArenaPlugin) CancelFault(pluginName string) {
 	delete(a.pending, pluginName)
 }
 
-func (a *ArenaPlugin) checkFault() error {
+func (a *ArenaPlugin) checkFault(ctx context.Context) error {
 	a.mu.Lock()
 	// snapshot pending state under lock
 	type faultEntry struct {
@@ -126,9 +126,10 @@ func (a *ArenaPlugin) checkFault() error {
 		case FaultPluginPanic:
 			panic(fmt.Sprintf("arena: injected panic for plugin %q", f.name))
 		case FaultPluginTimeout:
-			// Block indefinitely — the bus's invokeWithTimeout should
-			// interrupt this via context cancellation.
-			select {}
+			// Block until context is cancelled — the bus's invokeWithTimeout
+			// should interrupt this via context cancellation.
+			<-ctx.Done()
+			return ctx.Err()
 		case FaultPluginError:
 			return fmt.Errorf("%w: %s", ErrFaultInjected, f.name)
 		}

@@ -90,12 +90,12 @@ func main() {
 
 func runDemo(mode engine.ApplyMode) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	dag, err := engine.NewMutableDAG([]*engine.Step{
 		{ID: "s1", Name: "First", AgentType: "adder", Input: "first"},
 	})
 	if err != nil {
+		cancel()
 		log.Fatalf("NewMutableDAG: %v", err)
 	}
 
@@ -133,11 +133,14 @@ func runDemo(mode engine.ApplyMode) {
 
 	bus := ares_runtime.NewPluginBus()
 	if err := bus.Register(observer); err != nil {
+		cancel()
 		log.Fatalf("register observer: %v", err)
 	}
 	if err := bus.Start(ctx); err != nil {
+		cancel()
 		log.Fatalf("start plugin bus: %v", err)
 	}
+	defer cancel()
 	defer func() { _ = bus.Stop(ctx) }()
 
 	executor := engine.NewDynamicExecutor(registry, mode, engine.WithMaxParallel(1)).

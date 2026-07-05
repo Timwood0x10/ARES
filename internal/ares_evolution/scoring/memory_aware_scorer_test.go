@@ -10,6 +10,15 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+const (
+	testParamCost       = "cost"
+	testParamLatency    = "latency"
+	testParamRegression = "regression"
+	testPromptTest      = "test"
+	testTaskTypeTest    = "test"
+	testNameNilStrategy = "nil strategy"
+)
+
 // mockExperienceProvider implements ExperienceProvider for testing.
 type mockExperienceProvider struct {
 	count      int
@@ -110,7 +119,7 @@ func TestMemoryAwareScorer_Disabled_NoAdjustment(t *testing.T) {
 
 	strategy := &mutation.Strategy{
 		ID:             "test-1",
-		Params:         map[string]any{"temperature": 0.7},
+		Params:         map[string]any{testParamTemperature: 0.7},
 		PromptTemplate: "test prompt",
 	}
 
@@ -209,12 +218,12 @@ func TestMemoryAwareScorer_FullAdjustment(t *testing.T) {
 	strategy := &mutation.Strategy{
 		ID: "adjustment-test",
 		Params: map[string]any{
-			"temperature": 0.7,
-			"cost":        10.0,
-			"latency":     5.0,
-			"regression":  2.0,
+			testParamTemperature: 0.7,
+			testParamCost:        10.0,
+			testParamLatency:     5.0,
+			testParamRegression:  2.0,
 		},
-		PromptTemplate: "test",
+		PromptTemplate: testPromptTest,
 	}
 
 	score, detail, err := ms.Score(context.Background(), strategy)
@@ -369,11 +378,11 @@ func TestMemoryAwareScorer_ScoreDetailComponents(t *testing.T) {
 	strategy := &mutation.Strategy{
 		ID: "detail-test",
 		Params: map[string]any{
-			"temperature": 0.7,
-			"cost":        5.0,
-			"latency":     2.0,
+			testParamTemperature: 0.7,
+			testParamCost:        5.0,
+			testParamLatency:     2.0,
 		},
-		PromptTemplate: "test",
+		PromptTemplate: testPromptTest,
 	}
 
 	_, detail, err := ms.Score(context.Background(), strategy)
@@ -417,12 +426,12 @@ func TestTaskTypeFromStrategy(t *testing.T) {
 		{
 			name:     "nil strategy returns default",
 			strategy: nil,
-			expected: "default",
+			expected: DefaultTaskType,
 		},
 		{
 			name:     "empty strategy returns default",
 			strategy: &mutation.Strategy{},
-			expected: "default",
+			expected: DefaultTaskType,
 		},
 		{
 			name:     "strategy with name returns name",
@@ -460,11 +469,11 @@ func TestStrategyCostExtraction(t *testing.T) {
 		strategy *mutation.Strategy
 		expected float64
 	}{
-		{name: "nil strategy", strategy: nil, expected: 0},
+		{name: testNameNilStrategy, strategy: nil, expected: 0},
 		{name: "no params", strategy: &mutation.Strategy{}, expected: 0},
 		{name: "no cost key", strategy: &mutation.Strategy{Params: map[string]any{"t": 0.5}}, expected: 0},
-		{name: "has cost", strategy: &mutation.Strategy{Params: map[string]any{"cost": 10.0}}, expected: 10.0},
-		{name: "zero cost", strategy: &mutation.Strategy{Params: map[string]any{"cost": 0.0}}, expected: 0},
+		{name: "has cost", strategy: &mutation.Strategy{Params: map[string]any{testParamCost: 10.0}}, expected: 10.0},
+		{name: "zero cost", strategy: &mutation.Strategy{Params: map[string]any{testParamCost: 0.0}}, expected: 0},
 	}
 
 	for _, tt := range tests {
@@ -484,9 +493,9 @@ func TestStrategyLatencyExtraction(t *testing.T) {
 		strategy *mutation.Strategy
 		expected float64
 	}{
-		{name: "nil strategy", strategy: nil, expected: 0},
+		{name: testNameNilStrategy, strategy: nil, expected: 0},
 		{name: "no latency key", strategy: &mutation.Strategy{Params: map[string]any{"t": 0.5}}, expected: 0},
-		{name: "has latency", strategy: &mutation.Strategy{Params: map[string]any{"latency": 3.0}}, expected: 3.0},
+		{name: "has latency", strategy: &mutation.Strategy{Params: map[string]any{testParamLatency: 3.0}}, expected: 3.0},
 	}
 
 	for _, tt := range tests {
@@ -507,9 +516,9 @@ func TestStrategyRegressionExtraction(t *testing.T) {
 		strategy *mutation.Strategy
 		expected float64
 	}{
-		{name: "nil strategy", strategy: nil, expected: 0},
+		{name: testNameNilStrategy, strategy: nil, expected: 0},
 		{name: "no regression key", strategy: &mutation.Strategy{Params: map[string]any{"t": 0.5}}, expected: 0},
-		{name: "has regression", strategy: &mutation.Strategy{Params: map[string]any{"regression": 1.5}}, expected: 1.5},
+		{name: "has regression", strategy: &mutation.Strategy{Params: map[string]any{testParamRegression: 1.5}}, expected: 1.5},
 	}
 
 	for _, tt := range tests {
@@ -688,7 +697,7 @@ func TestMemoryAwareScorer_StatsPenaltyTracking(t *testing.T) {
 	strategy := &mutation.Strategy{
 		ID:     "penalty-stats-test",
 		Name:   "penalty-stats-test",
-		Params: map[string]any{"temperature": 0.7, "cost": 10.0, "latency": 4.0},
+		Params: map[string]any{testParamTemperature: 0.7, testParamCost: 10.0, testParamLatency: 4.0},
 	}
 	_, _, err = ms.Score(context.Background(), strategy)
 	if err != nil {
@@ -805,7 +814,7 @@ func TestMemoryAwareScorer_EvidenceMode_Success(t *testing.T) {
 
 	ev := experience.Evidence{
 		StrategyID:  "evidence-test",
-		TaskType:    "test",
+		TaskType:    testTaskTypeTest,
 		SuccessRate: 0.8,
 		LatencyP50:  1000, // 1 second
 		ErrorRate:   0.1,
@@ -823,7 +832,7 @@ func TestMemoryAwareScorer_EvidenceMode_Success(t *testing.T) {
 
 	strategy := &mutation.Strategy{
 		ID:             "evidence-test",
-		Params:         map[string]any{"temperature": 0.7},
+		Params:         map[string]any{testParamTemperature: 0.7},
 		PromptTemplate: "test prompt",
 	}
 
@@ -899,8 +908,8 @@ func TestMemoryAwareScorer_EvidenceMode_FallbackToTaskType(t *testing.T) {
 	strategy := &mutation.Strategy{
 		ID:             "unknown-strategy",
 		Name:           "fallback-task",
-		Params:         map[string]any{"temperature": 0.7},
-		PromptTemplate: "test",
+		Params:         map[string]any{testParamTemperature: 0.7},
+		PromptTemplate: testPromptTest,
 	}
 
 	score, detail, err := ms.Score(context.Background(), strategy)
@@ -1121,11 +1130,11 @@ func TestMemoryAwareScorer_EvidenceMode_WithCostAndLatency(t *testing.T) {
 	strategy := &mutation.Strategy{
 		ID: "combined-test",
 		Params: map[string]any{
-			"temperature": 0.7,
-			"cost":        5.0,
-			"latency":     2.0,
+			testParamTemperature: 0.7,
+			testParamCost:        5.0,
+			testParamLatency:     2.0,
 		},
-		PromptTemplate: "test",
+		PromptTemplate: testPromptTest,
 	}
 
 	score, detail, err := ms.Score(context.Background(), strategy)

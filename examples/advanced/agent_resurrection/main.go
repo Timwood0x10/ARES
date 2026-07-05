@@ -60,7 +60,6 @@ func (a *workerAgent) ProcessStream(_ context.Context, _ any) (<-chan base.Agent
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
 
 	// Create heartbeat monitor.
 	hbMon := ahp.NewHeartbeatMonitor(&ahp.HeartbeatConfig{
@@ -76,8 +75,10 @@ func main() {
 		HeartbeatInterval: 2 * time.Second,
 	}, nil)
 	if err != nil {
+		cancel()
 		log.Fatalf("failed to create supervisor: %v", err)
 	}
+	defer cancel()
 
 	// Register 3 different agent types.
 	type agentDef struct {
@@ -93,6 +94,7 @@ func main() {
 	for _, d := range defs {
 		agent := newWorker(d.id, d.agentType)
 		if err := agent.Start(ctx); err != nil {
+			cancel()
 			log.Fatalf("failed to start %s: %v", d.id, err)
 		}
 		id, at := d.id, d.agentType
@@ -105,6 +107,7 @@ func main() {
 
 	// Start monitoring.
 	if err := supervisor.Start(ctx); err != nil {
+		cancel()
 		log.Fatalf("failed to start supervisor: %v", err)
 	}
 	fmt.Println()

@@ -26,10 +26,22 @@ func main() {
 	// ── 1. Register tools ───────────────────────────────────
 	fmt.Println("1. Registering tools...")
 	reg := core.NewRegistry()
-	reg.Register(&echoTool{name: "fetcher"})
-	reg.Register(&echoTool{name: "extractor"})
-	reg.Register(&echoTool{name: "formatter"})
-	reg.Register(&failingTool{name: "bad_extractor"}) // will fail → tests fallback
+	if err := reg.Register(&echoTool{name: "fetcher"}); err != nil {
+		fmt.Printf("   ❌ Failed to register fetcher: %v\n", err)
+		return
+	}
+	if err := reg.Register(&echoTool{name: "extractor"}); err != nil {
+		fmt.Printf("   ❌ Failed to register extractor: %v\n", err)
+		return
+	}
+	if err := reg.Register(&echoTool{name: "formatter"}); err != nil {
+		fmt.Printf("   ❌ Failed to register formatter: %v\n", err)
+		return
+	}
+	if err := reg.Register(&failingTool{name: "bad_extractor"}); err != nil {
+		fmt.Printf("   ❌ Failed to register bad_extractor: %v\n", err)
+		return
+	}
 	fmt.Println("   4 tools registered (fetcher, extractor, formatter, bad_extractor)")
 	fmt.Println()
 

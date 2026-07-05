@@ -299,15 +299,16 @@ func printKeyLearnings(result *evolutionservice.EvolutionResult, parent *evoluti
 		firstB := result.Stats[0].BestScore
 		lastB := result.Stats[nGen-1].BestScore
 
-		if lastB > firstB {
+		switch {
+		case lastB > firstB:
 			learnings = append(learnings, fmt.Sprintf(
 				"  1. Fitness improved from %.2f → %.2f (+%.1f%%) — evolution is working",
 				firstB, lastB, ((lastB-firstB)/mathAbs(firstB))*100))
-		} else if lastB < firstB {
+		case lastB < firstB:
 			learnings = append(learnings, fmt.Sprintf(
 				"  1. Fitness declined from %.2f → %.2f — consider increasing mutation rate or population size",
 				firstB, lastB))
-		} else {
+		default:
 			learnings = append(learnings,
 				"  1. Score plateau detected — adaptive mutation rate may need tuning")
 		}

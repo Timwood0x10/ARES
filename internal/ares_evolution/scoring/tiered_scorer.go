@@ -9,6 +9,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// Scorer type constants for cache entries and tier names.
+const (
+	ScorerTypeLLM       = "llm"
+	ScorerTypeHeuristic = "heuristic"
+)
+
 // ErrNilCache is returned when a nil cache is passed to NewTieredScorer.
 // Errors are defined in errors.go.
 
@@ -36,9 +42,9 @@ func (t Tier) String() string {
 	case TierCache:
 		return "cache"
 	case TierHeuristic:
-		return "heuristic"
+		return ScorerTypeHeuristic
 	case TierLLM:
-		return "llm"
+		return ScorerTypeLLM
 	default:
 		return "unknown"
 	}
@@ -148,7 +154,7 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 
 	// Tier 3: Heuristic fallback (always available).
 	score := ts.heuristic(s)
-	entry := MakeEntry(hash, score, "heuristic", 1, 0.5)
+	entry := MakeEntry(hash, score, ScorerTypeHeuristic, 1, 0.5)
 	ts.cache.Put(hash, entry)
 
 	ts.heuristicCalls.Add(1)
@@ -192,7 +198,7 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 		return 0, false
 	}
 
-	entry := MakeEntry(hash, score, "llm", 1, 1.0)
+	entry := MakeEntry(hash, score, ScorerTypeLLM, 1, 1.0)
 	ts.cache.Put(hash, entry)
 
 	ts.llmCalls.Add(1)

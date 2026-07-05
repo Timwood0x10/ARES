@@ -16,7 +16,6 @@ import (
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	// Create ARES with default configuration.
 	cfg := bootstrap.DefaultConfig()
@@ -25,14 +24,18 @@ func main() {
 
 	ares, err := bootstrap.New(ctx, cfg)
 	if err != nil {
+		cancel()
 		log.Fatal(err)
 	}
-	defer func() { _ = ares.Stop() }()
 
 	// Start runtime (manages agent lifecycles).
 	if err := ares.Start(ctx); err != nil {
+		_ = ares.Stop()
+		cancel()
 		log.Fatal(err)
 	}
+	defer cancel()
+	defer func() { _ = ares.Stop() }()
 	fmt.Println("✅ ARES started")
 
 	// List runtime stats.

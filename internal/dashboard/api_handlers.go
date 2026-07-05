@@ -17,10 +17,20 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
+const (
+	PathAgents    = "/agents"
+	PathMCP       = "/mcp"
+	KeyDuration   = "duration"
+	KeyMermaid    = "mermaid"
+	KeyError      = "error"
+	KeyStatus     = "status"
+	StatusPending = "pending"
+)
+
 // ── Agent handlers ────────────────────────────
 
 func (a *APIv2) handleAgents(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/agents" {
+	if r.URL.Path != PathAgents {
 		http.NotFound(w, r)
 		return
 	}
@@ -75,7 +85,7 @@ func (a *APIv2) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "status": "pending"})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, KeyStatus: StatusPending})
 }
 
 func (a *APIv2) handleAgentByID(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +117,7 @@ func (a *APIv2) handleAgentByID(w http.ResponseWriter, r *http.Request) {
 // ── MCP handlers ──────────────────────────────
 
 func (a *APIv2) handleMCP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" {
+	if r.URL.Path != PathMCP {
 		http.NotFound(w, r)
 		return
 	}
@@ -129,7 +139,7 @@ func (a *APIv2) listMCPServers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *APIv2) handleMCPByName(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/mcp/")
+	name := strings.TrimPrefix(r.URL.Path, PathMCP+"/")
 	if name == "" {
 		a.listMCPServers(w, r)
 		return
@@ -342,7 +352,7 @@ func (a *APIv2) handleArenaSurvival(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{
-		"status":  "started",
+		KeyStatus: "started",
 		"message": "survival run started",
 	})
 }
@@ -411,8 +421,8 @@ func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 
 	action := ArenaAction{Type: actionType, TargetID: id}
 	// Extract metadata (e.g., duration for slow_agent action).
-	if d, ok := body["duration"].(string); ok {
-		action.Metadata = map[string]any{"duration": d}
+	if d, ok := body[KeyDuration].(string); ok {
+		action.Metadata = map[string]any{KeyDuration: d}
 	}
 	if et, ok := body["error_type"].(string); ok {
 		if action.Metadata == nil {
@@ -650,11 +660,11 @@ func (a *APIv2) handleFlightGraph(w http.ResponseWriter, r *http.Request) {
 
 	fr := a.getFlightRecorder()
 	if fr == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"mermaid": "graph LR\n    empty[No data]"})
+		writeJSON(w, http.StatusOK, map[string]string{KeyMermaid: "graph LR\n    empty[No data]"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"mermaid": fr.Graph().ExportMermaid()})
+	writeJSON(w, http.StatusOK, map[string]string{KeyMermaid: fr.Graph().ExportMermaid()})
 }
 
 func (a *APIv2) handleFlightDecisions(w http.ResponseWriter, r *http.Request) {
@@ -715,11 +725,11 @@ func (a *APIv2) handleFlightGenealogy(w http.ResponseWriter, r *http.Request) {
 
 	fr := a.getFlightRecorder()
 	if fr == nil || fr.Genealogy() == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"mermaid": "graph LR\n    empty[No agents]"})
+		writeJSON(w, http.StatusOK, map[string]string{KeyMermaid: "graph LR\n    empty[No agents]"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"mermaid": fr.Genealogy().ExportMermaid()})
+	writeJSON(w, http.StatusOK, map[string]string{KeyMermaid: fr.Genealogy().ExportMermaid()})
 }
 
 // ── Intelligence handlers ───────────────────────
@@ -772,7 +782,7 @@ func (a *APIv2) handleAnomalyByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/anomalies/")
 	id = strings.TrimSuffix(id, "/resolve")
 	a.intel.ResolveAnomaly(id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	writeJSON(w, http.StatusOK, map[string]string{KeyStatus: "resolved"})
 }
 
 func (a *APIv2) handleInsights(w http.ResponseWriter, r *http.Request) {
@@ -799,7 +809,7 @@ func (a *APIv2) handleInsightByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/insights/")
 	id = strings.TrimSuffix(id, "/acknowledge")
 	a.intel.AcknowledgeInsight(id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "acknowledged"})
+	writeJSON(w, http.StatusOK, map[string]string{KeyStatus: "acknowledged"})
 }
 
 // ── Middleware ─────────────────────────────────
@@ -832,5 +842,5 @@ func withRecovery(next http.Handler) http.Handler {
 // ── Helpers ───────────────────────────────────
 
 func errResp(msg string) map[string]string {
-	return map[string]string{"error": msg}
+	return map[string]string{KeyError: msg}
 }

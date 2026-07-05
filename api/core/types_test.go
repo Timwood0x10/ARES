@@ -310,10 +310,8 @@ func TestNewRequestContext(t *testing.T) {
 
 			if rc.Tenant == nil {
 				t.Error("NewRequestContext().Tenant should not be nil")
-			} else {
-				if rc.Tenant.TenantID != tt.tenantID {
-					t.Errorf("NewRequestContext().Tenant.TenantID = %q, want %q", rc.Tenant.TenantID, tt.tenantID)
-				}
+			} else if rc.Tenant.TenantID != tt.tenantID {
+				t.Errorf("NewRequestContext().Tenant.TenantID = %q, want %q", rc.Tenant.TenantID, tt.tenantID)
 			}
 
 			if rc.Metadata == nil {

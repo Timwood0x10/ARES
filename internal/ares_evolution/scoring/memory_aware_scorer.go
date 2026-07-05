@@ -13,6 +13,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// DefaultTaskType is the fallback task type when no task type information is found.
+const DefaultTaskType = "default"
+
 // ExperienceProvider defines the interface for retrieving similar past
 // experiences that can inform strategy scoring. Implementations may query
 // a vector database, keyword index, or other experience store.
@@ -631,7 +634,7 @@ func (ms *MemoryAwareScorer) computeEvidenceBasedBonus(ev experience.Evidence) f
 // metadata or params. Returns "default" if no task type information is found.
 func taskTypeFromStrategy(s *mutation.Strategy) string {
 	if s == nil {
-		return "default"
+		return DefaultTaskType
 	}
 	if s.Name != "" {
 		return s.Name
@@ -641,7 +644,7 @@ func taskTypeFromStrategy(s *mutation.Strategy) string {
 			return t
 		}
 	}
-	return "default"
+	return DefaultTaskType
 }
 
 // strategyCost extracts the cost value from a strategy's params.

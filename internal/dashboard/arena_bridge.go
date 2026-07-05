@@ -88,7 +88,7 @@ func (b *ArenaBridge) History() []ArenaResult {
 func (b *ArenaBridge) GetSurvivalStatus() map[string]any {
 	// Arena service does not expose survival status directly.
 	return map[string]any{
-		"status":   "unknown",
+		KeyStatus:  "unknown",
 		"progress": 0,
 	}
 }

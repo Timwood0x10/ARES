@@ -262,16 +262,16 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 	}
 
 	// Determine outcome.
-	if summary.EventTypeCounts[string(EventTaskFailed)] > 0 ||
-		summary.EventTypeCounts[string(EventFailoverTriggered)] > 0 {
+	switch {
+	case summary.EventTypeCounts[string(EventTaskFailed)] > 0 || summary.EventTypeCounts[string(EventFailoverTriggered)] > 0:
 		if summary.EventTypeCounts[string(EventTaskCompleted)] > 0 {
 			summary.Outcome = "partial"
 		} else {
 			summary.Outcome = "failed"
 		}
-	} else if summary.EventTypeCounts[string(EventTaskCompleted)] > 0 {
+	case summary.EventTypeCounts[string(EventTaskCompleted)] > 0:
 		summary.Outcome = "completed"
-	} else {
+	default:
 		summary.Outcome = "active"
 	}
 

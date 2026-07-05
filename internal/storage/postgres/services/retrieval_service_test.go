@@ -160,21 +160,14 @@ func TestMergeAndRank(t *testing.T) {
 	}
 
 	// Overlapping result (ID: 2) should have combined score
-
 	result2 := findResultByID(merged, "2")
-
 	require.NotNil(t, result2)
 
 	// Score should reflect combination from both sources
-
 	// Since it appears in both vector (position 1) and keyword (position 0) results
-
 	// the combined score should be: (0.8/2 * 0.3) + (0.6/1 * 0.3) = 0.12 + 0.18 = 0.30 (approx)
-
 	if result2.Score <= 0.1 {
-
 		t.Errorf("combined score should reflect combination from both sources, got %f", result2.Score)
-
 	}
 }
 
@@ -1298,39 +1291,25 @@ func TestBm25SearchKnowledge_WithKeywordScore(t *testing.T) {
 }
 
 // TestSearchExperienceVector tests experience vector search (empty implementation).
-
 func TestSearchExperienceVector_Empty(t *testing.T) {
-
 	service := &RetrievalService{
-
 		logger: slog.Default(),
 	}
 
 	embedding := []float64{0.1, 0.2, 0.3}
-
 	req := &SearchRequest{
-
-		Query: "test query",
-
+		Query:    "test query",
 		TenantID: "tenant-123",
-
-		TopK: 10,
+		TopK:     10,
 	}
 
 	results := service.searchExperienceVector(context.Background(), embedding, req)
-
 	if results == nil {
-
 		t.Error("results should not be nil")
-
 	}
-
 	if len(results) != 0 {
-
 		t.Errorf("experience search should return empty results, got %d", len(results))
-
 	}
-
 }
 
 // TestSearchToolsVector tests tools vector search (empty implementation).

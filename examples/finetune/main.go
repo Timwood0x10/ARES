@@ -434,8 +434,7 @@ func RealScorer(s *mutation.Strategy) float64 {
 		}
 	}
 	if topK, ok := s.Params["top_k"]; ok {
-		switch v := topK.(type) {
-		case float64:
+		if v, ok := topK.(float64); ok {
 			// moderate top_k is best: 20-40 range.
 			if v >= 20 && v <= 40 {
 				score += 15.0

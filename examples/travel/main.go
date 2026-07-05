@@ -70,12 +70,13 @@ func main() {
 
 	// Start all agents
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if err := leaderAgent.Start(ctx); err != nil {
+		cancel()
 		log.Error("Failed to start leader agent", "error", err)
 		os.Exit(1)
 	}
+	defer cancel()
 
 	for _, agent := range subAgents {
 		if err := agent.Start(ctx); err != nil {

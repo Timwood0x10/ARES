@@ -14,18 +14,18 @@ func TestSentimentLabel(t *testing.T) {
 		score float64
 		want  string
 	}{
-		{1.0, "strongly_bullish"},
-		{0.7, "strongly_bullish"},
-		{0.69, "bullish"},
-		{0.6, "bullish"},
-		{0.59, "neutral"},
-		{0.5, "neutral"},
-		{0.4, "neutral"},
-		{0.39, "bearish"},
-		{0.3, "bearish"},
-		{0.29, "strongly_bearish"},
-		{0.0, "strongly_bearish"},
-		{-1.0, "strongly_bearish"},
+		{1.0, SentimentStronglyBullish},
+		{0.7, SentimentStronglyBullish},
+		{0.69, SentimentBullish},
+		{0.6, SentimentBullish},
+		{0.59, SentimentNeutral},
+		{0.5, SentimentNeutral},
+		{0.4, SentimentNeutral},
+		{0.39, SentimentBearish},
+		{0.3, SentimentBearish},
+		{0.29, SentimentStronglyBearish},
+		{0.0, SentimentStronglyBearish},
+		{-1.0, SentimentStronglyBearish},
 	}
 	for _, tc := range tests {
 		got := sentimentLabel(tc.score)
@@ -38,13 +38,13 @@ func TestRSISignal(t *testing.T) {
 		rsi  float64
 		want string
 	}{
-		{100, "overbought"},
-		{70, "overbought"},
-		{69, "neutral"},
-		{50, "neutral"},
-		{31, "neutral"},
-		{30, "oversold"},
-		{0, "oversold"},
+		{100, RSIOverbought},
+		{70, RSIOverbought},
+		{69, SentimentNeutral},
+		{50, SentimentNeutral},
+		{31, SentimentNeutral},
+		{30, RSIOversold},
+		{0, RSIOversold},
 	}
 	for _, tc := range tests {
 		got := rsiSignal(tc.rsi)
@@ -100,14 +100,14 @@ func TestIndicatorPeriod_Default(t *testing.T) {
 }
 
 func TestIndicatorPeriod_WithPeriod(t *testing.T) {
-	got := indicatorPeriod(map[string]interface{}{"period": float64(21)})
+	got := indicatorPeriod(map[string]interface{}{ParamPeriod: float64(21)})
 	assert.Equal(t, 21, got)
 }
 
 func TestIndicatorPeriod_ZeroOrNegative(t *testing.T) {
-	got := indicatorPeriod(map[string]interface{}{"period": float64(0)})
+	got := indicatorPeriod(map[string]interface{}{ParamPeriod: float64(0)})
 	assert.Equal(t, 14, got)
-	got = indicatorPeriod(map[string]interface{}{"period": float64(-5)})
+	got = indicatorPeriod(map[string]interface{}{ParamPeriod: float64(-5)})
 	assert.Equal(t, 14, got)
 }
 
@@ -120,8 +120,8 @@ func TestComputeMACDResult(t *testing.T) {
 	assert.True(t, r.Success)
 	v, ok := r.Data.(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "TEST", v["ticker"])
-	assert.Equal(t, "MACD", v["indicator"])
+	assert.Equal(t, "TEST", v[ParamTicker])
+	assert.Equal(t, "MACD", v[ParamIndicator])
 }
 
 func TestComputeRSIResult(t *testing.T) {
@@ -133,8 +133,8 @@ func TestComputeRSIResult(t *testing.T) {
 	assert.True(t, r.Success)
 	v, ok := r.Data.(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "RSI", v["indicator"])
-	assert.Equal(t, "overbought", v["signal"])
+	assert.Equal(t, "RSI", v[ParamIndicator])
+	assert.Equal(t, RSIOverbought, v["signal"])
 }
 
 func TestComputeSMAResult(t *testing.T) {
@@ -143,8 +143,8 @@ func TestComputeSMAResult(t *testing.T) {
 	assert.True(t, r.Success)
 	v, ok := r.Data.(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "SMA", v["indicator"])
-	assert.Equal(t, 3, v["period"])
+	assert.Equal(t, "SMA", v[ParamIndicator])
+	assert.Equal(t, 3, v[ParamPeriod])
 	assert.Equal(t, "above", v["position"])
 }
 
@@ -154,8 +154,8 @@ func TestComputeBollingerResult(t *testing.T) {
 	assert.True(t, r.Success)
 	v, ok := r.Data.(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "BOLLINGER", v["indicator"])
-	assert.Equal(t, 3, v["period"])
+	assert.Equal(t, "BOLLINGER", v[ParamIndicator])
+	assert.Equal(t, 3, v[ParamPeriod])
 	width := v["width"].(float64)
 	assert.True(t, width >= 0, "bollinger width should be non-negative")
 }
@@ -193,11 +193,11 @@ func TestComputeAllResult(t *testing.T) {
 
 func TestSentimentLabel_EdgeBounds(t *testing.T) {
 	// Exact boundary values.
-	assert.Equal(t, "strongly_bullish", sentimentLabel(0.7))
-	assert.Equal(t, "bullish", sentimentLabel(0.6))
-	assert.Equal(t, "neutral", sentimentLabel(0.4))
-	assert.Equal(t, "bearish", sentimentLabel(0.3))
-	assert.Equal(t, "strongly_bearish", sentimentLabel(0.0))
+	assert.Equal(t, SentimentStronglyBullish, sentimentLabel(0.7))
+	assert.Equal(t, SentimentBullish, sentimentLabel(0.6))
+	assert.Equal(t, SentimentNeutral, sentimentLabel(0.4))
+	assert.Equal(t, SentimentBearish, sentimentLabel(0.3))
+	assert.Equal(t, SentimentStronglyBearish, sentimentLabel(0.0))
 }
 
 // ─── TimeSeries stub for calls that need market data ─────────
@@ -209,9 +209,9 @@ func TestFinancialDataTool_Config(t *testing.T) {
 
 	params := tool.Parameters()
 	require.NotNil(t, params)
-	_, hasTicker := params.Properties["ticker"]
+	_, hasTicker := params.Properties[ParamTicker]
 	assert.True(t, hasTicker, "financial_data tool must have 'ticker' parameter")
-	assert.Contains(t, params.Required, "ticker")
+	assert.Contains(t, params.Required, ParamTicker)
 }
 
 func TestPolymarketTool_Config(t *testing.T) {
@@ -220,9 +220,9 @@ func TestPolymarketTool_Config(t *testing.T) {
 
 	params := tool.Parameters()
 	require.NotNil(t, params)
-	_, hasQuery := params.Properties["query"]
+	_, hasQuery := params.Properties[ParamQuery]
 	assert.True(t, hasQuery, "polymarket_sentiment tool must have 'query' parameter")
-	assert.Contains(t, params.Required, "query")
+	assert.Contains(t, params.Required, ParamQuery)
 }
 
 func TestTechnicalIndicatorsTool_Config(t *testing.T) {
@@ -231,6 +231,6 @@ func TestTechnicalIndicatorsTool_Config(t *testing.T) {
 
 	params := tool.Parameters()
 	require.NotNil(t, params)
-	assert.Contains(t, params.Required, "ticker")
-	assert.Contains(t, params.Required, "indicator")
+	assert.Contains(t, params.Required, ParamTicker)
+	assert.Contains(t, params.Required, ParamIndicator)
 }

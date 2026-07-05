@@ -275,21 +275,22 @@ func (s *UserProfileService) GetProfile(ctx context.Context, tenantID, userID st
 	lines := strings.Split(latestProfileMem.Content, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Name:") {
+		switch {
+		case strings.HasPrefix(line, "Name:"):
 			profile.Name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-		} else if strings.HasPrefix(line, "Profession:") {
+		case strings.HasPrefix(line, "Profession:"):
 			profile.Profession = strings.TrimSpace(strings.TrimPrefix(line, "Profession:"))
-		} else if strings.HasPrefix(line, "Skills:") {
+		case strings.HasPrefix(line, "Skills:"):
 			skillsStr := strings.TrimSpace(strings.TrimPrefix(line, "Skills:"))
 			if skillsStr != "" {
 				profile.Skills = strings.Split(skillsStr, ", ")
 			}
-		} else if strings.HasPrefix(line, "Interests:") {
+		case strings.HasPrefix(line, "Interests:"):
 			interestsStr := strings.TrimSpace(strings.TrimPrefix(line, "Interests:"))
 			if interestsStr != "" {
 				profile.Interests = strings.Split(interestsStr, ", ")
 			}
-		} else if strings.HasPrefix(line, "Bio:") {
+		case strings.HasPrefix(line, "Bio:"):
 			profile.Bio = strings.TrimSpace(strings.TrimPrefix(line, "Bio:"))
 		}
 	}
@@ -420,9 +421,9 @@ func main() {
 		// List all documents - set 30 second timeout
 		listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		docs, err := kb.ListDocuments(listCtx, *tenantFlag)
-		cancel()
 
 		if err != nil {
+			cancel()
 			if err == context.DeadlineExceeded {
 				lg.Error("List timeout")
 				os.Exit(1)
@@ -430,6 +431,7 @@ func main() {
 			lg.Error("Failed to list documents", "error", err)
 			os.Exit(1)
 		}
+		cancel()
 		if len(docs) == 0 {
 			log.Println("No documents found")
 		} else {

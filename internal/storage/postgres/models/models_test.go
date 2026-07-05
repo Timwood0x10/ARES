@@ -177,50 +177,30 @@ func TestExperience_EmptyFields(t *testing.T) {
 }
 
 // TestExperience_IsExpired tests expiration logic.
-
 func TestExperience_IsExpired(t *testing.T) {
-
 	tests := []struct {
-		name string
-
-		decayAt time.Time
-
+		name     string
+		decayAt  time.Time
 		expected bool
 	}{
-
 		{
-
-			name: "expired experience",
-
-			decayAt: time.Now().Add(-1 * time.Hour),
-
+			name:     "expired experience",
+			decayAt:  time.Now().Add(-1 * time.Hour),
 			expected: true,
 		},
-
 		{
-
-			name: "not expired experience",
-
-			decayAt: time.Now().Add(1 * time.Hour),
-
+			name:     "not expired experience",
+			decayAt:  time.Now().Add(1 * time.Hour),
 			expected: false,
 		},
-
 		{
-
-			name: "zero decay time",
-
-			decayAt: time.Time{},
-
+			name:     "zero decay time",
+			decayAt:  time.Time{},
 			expected: false,
 		},
-
 		{
-
-			name: "exactly expired",
-
-			decayAt: time.Now(),
-
+			name:     "exactly expired",
+			decayAt:  time.Now(),
 			expected: true,
 		},
 	}

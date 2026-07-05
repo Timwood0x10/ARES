@@ -16,6 +16,25 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Test constants
+// ---------------------------------------------------------------------------
+
+const (
+	// TestAgentType is the agent type used for successful test agents.
+	TestAgentType = "test-agent"
+	// FailingAgentType is the agent type used for failing test agents.
+	FailingAgentType = "failing-agent"
+	// TestVersion is the workflow version used in tests.
+	TestVersion = "1.0"
+	// TestStepName is the step name used in tests.
+	TestStepName = "Step 1"
+	// TestStartInput is the input value used for workflow start.
+	TestStartInput = "start"
+	// TestDataInput is the input data value used in tests.
+	TestDataInput = "data"
+)
+
+// ---------------------------------------------------------------------------
 // Mock agent for end-to-end workflow tests
 // ---------------------------------------------------------------------------
 
@@ -59,7 +78,7 @@ func newSuccessAgentFactory(output string) engine.AgentFactory {
 	return func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return &mockWorkflowAgent{
 			id:        "mock-success",
-			agentType: "test-agent",
+			agentType: TestAgentType,
 			result: &models.RecommendResult{
 				Items: []*models.RecommendItem{
 					{ItemID: "item-1", Description: output},
@@ -75,7 +94,7 @@ func newFailingAgentFactory(err error) engine.AgentFactory {
 	return func(ctx context.Context, config interface{}) (base.Agent, error) {
 		return &mockWorkflowAgent{
 			id:        "mock-fail",
-			agentType: "failing-agent",
+			agentType: FailingAgentType,
 			err:       err,
 		}, nil
 	}
@@ -104,16 +123,16 @@ func newTestServiceWithRegistry(t *testing.T) (*Service, *engine.AgentRegistry) 
 // output matches the agent's result.
 func TestExecute_SingleStep_Success(t *testing.T) {
 	svc, reg := newTestServiceWithRegistry(t)
-	if err := reg.Register("test-agent", newSuccessAgentFactory("hello-from-agent")); err != nil {
+	if err := reg.Register(TestAgentType, newSuccessAgentFactory("hello-from-agent")); err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
 
 	def := &core.WorkflowDefinition{
 		ID:      "wf-single",
 		Name:    "Single Step Workflow",
-		Version: "1.0",
+		Version: TestVersion,
 		Steps: []*core.StepDef{
-			{ID: "step1", Name: "Step 1", AgentType: "test-agent", Input: "input-data"},
+			{ID: "step1", Name: TestStepName, AgentType: TestAgentType, Input: "input-data"},
 		},
 	}
 	require.NoError(t, svc.RegisterWorkflow(def))
@@ -156,7 +175,7 @@ func TestExecute_MultiStep_SequentialSuccess(t *testing.T) {
 	def := &core.WorkflowDefinition{
 		ID:      "wf-multi",
 		Name:    "Multi Step Workflow",
-		Version: "1.0",
+		Version: TestVersion,
 		Steps: []*core.StepDef{
 			{ID: "step1", Name: "First Step", AgentType: "agent-a", Input: "initial"},
 			{ID: "step2", Name: "Second Step", AgentType: "agent-b", DependsOn: []string{"step1"}},
@@ -166,7 +185,7 @@ func TestExecute_MultiStep_SequentialSuccess(t *testing.T) {
 
 	resp, err := svc.Execute(context.Background(), &core.WorkflowRequest{
 		WorkflowID: "wf-multi",
-		Input:      "start",
+		Input:      TestStartInput,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -197,23 +216,23 @@ func TestExecute_MultiStep_SequentialSuccess(t *testing.T) {
 func TestExecute_StepFailure_ReturnsFailedResponse(t *testing.T) {
 	svc, reg := newTestServiceWithRegistry(t)
 	agentErr := errors.New("agent processing failed")
-	if err := reg.Register("failing-agent", newFailingAgentFactory(agentErr)); err != nil {
+	if err := reg.Register(FailingAgentType, newFailingAgentFactory(agentErr)); err != nil {
 		t.Fatalf("register failing agent: %v", err)
 	}
 
 	def := &core.WorkflowDefinition{
 		ID:      "wf-fail",
 		Name:    "Failing Workflow",
-		Version: "1.0",
+		Version: TestVersion,
 		Steps: []*core.StepDef{
-			{ID: "step1", Name: "Step 1", AgentType: "failing-agent", Input: "data"},
+			{ID: "step1", Name: TestStepName, AgentType: FailingAgentType, Input: TestDataInput},
 		},
 	}
 	require.NoError(t, svc.RegisterWorkflow(def))
 
 	resp, err := svc.Execute(context.Background(), &core.WorkflowRequest{
 		WorkflowID: "wf-fail",
-		Input:      "start",
+		Input:      TestStartInput,
 	})
 	// Execute returns nil error even on step failure; the error is in the response.
 	require.NoError(t, err)
@@ -238,23 +257,23 @@ func TestExecute_StepFailure_ReturnsFailedResponse(t *testing.T) {
 // and the terminal event is WorkflowEventCompleted for a successful workflow.
 func TestExecuteStream_DrainsEvents_TerminalCompleted(t *testing.T) {
 	svc, reg := newTestServiceWithRegistry(t)
-	if err := reg.Register("test-agent", newSuccessAgentFactory("stream-output")); err != nil {
+	if err := reg.Register(TestAgentType, newSuccessAgentFactory("stream-output")); err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
 
 	def := &core.WorkflowDefinition{
 		ID:      "wf-stream-ok",
 		Name:    "Stream Success Workflow",
-		Version: "1.0",
+		Version: TestVersion,
 		Steps: []*core.StepDef{
-			{ID: "step1", Name: "Step 1", AgentType: "test-agent", Input: "data"},
+			{ID: "step1", Name: TestStepName, AgentType: TestAgentType, Input: TestDataInput},
 		},
 	}
 	require.NoError(t, svc.RegisterWorkflow(def))
 
 	ch, err := svc.ExecuteStream(context.Background(), &core.WorkflowRequest{
 		WorkflowID: "wf-stream-ok",
-		Input:      "start",
+		Input:      TestStartInput,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, ch)
@@ -306,23 +325,23 @@ eventLoop:
 func TestExecuteStream_StepFailure_TerminalFailed(t *testing.T) {
 	svc, reg := newTestServiceWithRegistry(t)
 	agentErr := errors.New("stream agent error")
-	if err := reg.Register("failing-agent", newFailingAgentFactory(agentErr)); err != nil {
+	if err := reg.Register(FailingAgentType, newFailingAgentFactory(agentErr)); err != nil {
 		t.Fatalf("register failing agent: %v", err)
 	}
 
 	def := &core.WorkflowDefinition{
 		ID:      "wf-stream-fail",
 		Name:    "Stream Fail Workflow",
-		Version: "1.0",
+		Version: TestVersion,
 		Steps: []*core.StepDef{
-			{ID: "step1", Name: "Step 1", AgentType: "failing-agent", Input: "data"},
+			{ID: "step1", Name: TestStepName, AgentType: FailingAgentType, Input: TestDataInput},
 		},
 	}
 	require.NoError(t, svc.RegisterWorkflow(def))
 
 	ch, err := svc.ExecuteStream(context.Background(), &core.WorkflowRequest{
 		WorkflowID: "wf-stream-fail",
-		Input:      "start",
+		Input:      TestStartInput,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, ch)

@@ -46,11 +46,6 @@ func main() {
 		log.Error("failed to connect", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := pool.Close(); err != nil {
-			log.Warn("pool.Close", "error", err)
-		}
-	}()
 
 	ctx := context.Background()
 
@@ -74,10 +69,17 @@ func main() {
 		)
 	`
 	if _, err := pool.ExecContext(ctx, createTableSQL); err != nil {
+		_ = pool.Close()
 		log.Error("failed to create distilled_memories table", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("distilled_memories table created successfully")
+
+	defer func() {
+		if err := pool.Close(); err != nil {
+			log.Warn("pool.Close", "error", err)
+		}
+	}()
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_distilled_memories_tenant ON distilled_memories(tenant_id)`,

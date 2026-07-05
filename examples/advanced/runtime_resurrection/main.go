@@ -33,6 +33,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
+const (
+	KeyAgentID   = "agent_id"
+	KeySessionID = "session_id"
+)
+
 // phaseSeparator prints a visual phase separator for readable output.
 func phaseSeparator(phase string) {
 	fmt.Printf("\n%s\n", "============================================================")
@@ -155,29 +160,29 @@ func (w *workerAgent) Start(ctx context.Context) error {
 
 	// Emit "agent started" event with session context.
 	w.emitEvent(ctx, ares_events.EventAgentStarted, map[string]any{
-		"agent_id":   w.id,
+		KeyAgentID:   w.id,
 		"agent_type": string(w.Type()),
-		"session_id": w.getSessionID(),
+		KeySessionID: w.getSessionID(),
 	})
 
 	if w.restoredFrom != "" {
 		lg.Info("agent started (restored)",
-			"agent_id", w.id,
-			"session_id", w.getSessionID(),
+			KeyAgentID, w.id,
+			KeySessionID, w.getSessionID(),
 			"restored_from", w.restoredFrom,
 			"task_count", w.taskCount.Load(),
 		)
 	} else {
 		lg.Info("agent started (fresh)",
-			"agent_id", w.id,
-			"session_id", w.getSessionID(),
+			KeyAgentID, w.id,
+			KeySessionID, w.getSessionID(),
 		)
 	}
 
 	// Emit session event for future restoration.
 	w.emitEvent(ctx, ares_events.EventSessionCreated, map[string]any{
-		"session_id": w.getSessionID(),
-		"agent_id":   w.id,
+		KeySessionID: w.getSessionID(),
+		KeyAgentID:   w.id,
 	})
 
 	// Launch work loop in a goroutine with panic recovery.
@@ -185,8 +190,8 @@ func (w *workerAgent) Start(ctx context.Context) error {
 		defer func() {
 			if r := recover(); r != nil {
 				lg.Error("agent panic recovered",
-					"agent_id", w.id,
-					"session_id", w.getSessionID(),
+					KeyAgentID, w.id,
+					KeySessionID, w.getSessionID(),
 					"panic", r,
 				)
 				w.setStatus(models.AgentStatusOffline)
@@ -200,7 +205,7 @@ func (w *workerAgent) Start(ctx context.Context) error {
 // Stop gracefully stops the agent.
 func (w *workerAgent) Stop(_ context.Context) error {
 	w.setStatus(models.AgentStatusOffline)
-	lg.Info("agent stopped", "agent_id", w.id, "session_id", w.getSessionID())
+	lg.Info("agent stopped", KeyAgentID, w.id, KeySessionID, w.getSessionID())
 	return nil
 }
 
@@ -222,17 +227,17 @@ func (w *workerAgent) RestoreState(state map[string]any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if sid, ok := state["session_id"].(string); ok && sid != "" {
+	if sid, ok := state[KeySessionID].(string); ok && sid != "" {
 		w.sessionID = sid
 		lg.Info("state restored: session_id",
-			"agent_id", w.id,
-			"session_id", sid,
+			KeyAgentID, w.id,
+			KeySessionID, sid,
 		)
 	}
 	if count, ok := state["task_count"].(int64); ok {
 		w.taskCount.Store(count)
 		lg.Info("state restored: task_count",
-			"agent_id", w.id,
+			KeyAgentID, w.id,
 			"task_count", count,
 		)
 	}
@@ -256,12 +261,12 @@ func (w *workerAgent) ReplayEvents(evts []*ares_events.Event) error {
 			if taskID, ok := ev.Payload["task_id"].(string); ok {
 				replayed++
 				lg.Debug("replayed task event",
-					"agent_id", w.id,
+					KeyAgentID, w.id,
 					"task_id", taskID,
 				)
 			}
 		case ares_events.EventSessionCreated:
-			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
+			if sid, ok := ev.Payload[KeySessionID].(string); ok && sid != "" {
 				w.sessionID = sid
 			}
 		}
@@ -271,7 +276,7 @@ func (w *workerAgent) ReplayEvents(evts []*ares_events.Event) error {
 	w.taskCount.Store(int64(replayed))
 
 	lg.Info("ares_events replayed",
-		"agent_id", w.id,
+		KeyAgentID, w.id,
 		"total_events", len(evts),
 		"replayed_tasks", replayed,
 	)
@@ -284,8 +289,8 @@ func (w *workerAgent) Snapshot() (map[string]any, error) {
 	defer w.mu.Unlock()
 
 	return map[string]any{
-		"agent_id":    w.id,
-		"session_id":  w.sessionID,
+		KeyAgentID:    w.id,
+		KeySessionID:  w.sessionID,
 		"task_count":  w.taskCount.Load(),
 		"status":      string(w.status),
 		"snapshot_at": time.Now().Format(time.RFC3339),
@@ -312,8 +317,8 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 			// Emit task created event.
 			w.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
 				"task_id":    taskID,
-				"agent_id":   w.id,
-				"session_id": w.getSessionID(),
+				KeyAgentID:   w.id,
+				KeySessionID: w.getSessionID(),
 			})
 
 			// Simulate work duration.
@@ -328,15 +333,15 @@ func (w *workerAgent) workLoop(ctx context.Context) {
 			// Emit task completed event.
 			w.emitEvent(ctx, ares_events.EventTaskCompleted, map[string]any{
 				"task_id":    taskID,
-				"agent_id":   w.id,
-				"session_id": w.getSessionID(),
+				KeyAgentID:   w.id,
+				KeySessionID: w.getSessionID(),
 				"result":     fmt.Sprintf("completed by %s", w.id),
 			})
 
 			lg.Info("task completed",
-				"agent_id", w.id,
+				KeyAgentID, w.id,
 				"task_id", taskID,
-				"session_id", w.getSessionID(),
+				KeySessionID, w.getSessionID(),
 				"total_tasks", w.taskCount.Load(),
 			)
 		}
@@ -355,7 +360,7 @@ func (w *workerAgent) emitEvent(ctx context.Context, eventType ares_events.Event
 	}
 	if err := w.eventStore.Append(ctx, w.id, []*ares_events.Event{event}, 0); err != nil {
 		lg.Warn("failed to emit event",
-			"agent_id", w.id,
+			KeyAgentID, w.id,
 			"type", eventType,
 			"error", err,
 		)
@@ -368,10 +373,10 @@ func verifyRestoredState(agent *workerAgent, expectedMinTasks int64) bool {
 	session := agent.getSessionID()
 	ok := count >= expectedMinTasks && session != ""
 	lg.Info("restored state verification",
-		"agent_id", agent.ID(),
+		KeyAgentID, agent.ID(),
 		"task_count", count,
 		"expected_min", expectedMinTasks,
-		"session_id", session,
+		KeySessionID, session,
 		"verified", ok,
 	)
 	return ok
@@ -384,7 +389,6 @@ func verifyRestoredState(agent *workerAgent, expectedMinTasks int64) bool {
 func main() {
 	setupLogger()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 
 	// Shared infrastructure.
 	cogMemory := NewCognitiveMemory()
@@ -399,8 +403,10 @@ func main() {
 		UseMemoryStore:      true,
 	}, nil)
 	if err != nil {
+		cancel()
 		log.Fatalf("failed to create runtime service: %v", err)
 	}
+	defer cancel()
 	eventStore := svc.EventStore()
 
 	// ----------------------------------------------------------
@@ -413,15 +419,15 @@ func main() {
 	planner := newWorker("planner-1", eventStore, cogMemory)
 
 	svc.RegisterAgent(leader, func() base.Agent {
-		lg.Info("factory invoked", "agent_id", "leader-1", "reason", "resurrection")
+		lg.Info("factory invoked", KeyAgentID, "leader-1", "reason", "resurrection")
 		return newWorker("leader-1", eventStore, cogMemory)
 	})
 	svc.RegisterAgent(worker, func() base.Agent {
-		lg.Info("factory invoked", "agent_id", "worker-1", "reason", "resurrection")
+		lg.Info("factory invoked", KeyAgentID, "worker-1", "reason", "resurrection")
 		return newWorker("worker-1", eventStore, cogMemory)
 	})
 	svc.RegisterAgent(planner, func() base.Agent {
-		lg.Info("factory invoked", "agent_id", "planner-1", "reason", "resurrection")
+		lg.Info("factory invoked", KeyAgentID, "planner-1", "reason", "resurrection")
 		return newWorker("planner-1", eventStore, cogMemory)
 	})
 
@@ -539,7 +545,7 @@ func main() {
 		if taskID, ok := ev.Payload["task_id"]; ok {
 			fmt.Printf(" task=%v", taskID)
 		}
-		if sid, ok := ev.Payload["session_id"]; ok {
+		if sid, ok := ev.Payload[KeySessionID]; ok {
 			fmt.Printf(" session=%v", sid)
 		}
 		fmt.Println()

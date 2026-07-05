@@ -375,7 +375,6 @@ func (ft *FailoverTimer) Report() {
 func main() {
 	setupLogger()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	failoverTimer := &FailoverTimer{}
 
@@ -389,8 +388,10 @@ func main() {
 		UseMemoryStore:      true,
 	}, nil)
 	if err != nil {
+		cancel()
 		log.Fatalf("failed to create runtime service: %v", err)
 	}
+	defer cancel()
 	eventStore := svc.EventStore()
 
 	// ----------------------------------------------------------

@@ -338,7 +338,7 @@ func (n *DefaultNormalizer) normalizeErrorRate(value interface{}) (float64, erro
 
 	// Convert percentage to fraction if > 1
 	if rate > 1.0 {
-		rate = rate / 100.0
+		rate /= 100.0
 	}
 
 	// Clamp to [0, 1]

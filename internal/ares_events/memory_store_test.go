@@ -133,7 +133,7 @@ func TestMemoryEventStore_ReadWithSince(t *testing.T) {
 	// Override timeNow for deterministic timestamps.
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	timeNow = func() time.Time { return base }
-	defer func() { timeNow = func() time.Time { return time.Now() } }()
+	defer func() { timeNow = time.Now }()
 
 	_ = store.Append(ctx, "s1", []*Event{{Type: EventAgentStarted}}, 0)
 

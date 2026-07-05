@@ -63,7 +63,6 @@ func main() {
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -76,8 +75,10 @@ func main() {
 	// --- Bootstrap: infrastructure components via single wiring hub ---
 	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
 	if err != nil {
+		cancel()
 		log.Fatalf("bootstrap: %v", err)
 	}
+	defer cancel()
 	store := comp.EventStore
 	memMgr := comp.Memory
 	mgr := comp.Runtime
@@ -91,6 +92,7 @@ func main() {
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
 	if err != nil {
+		cancel()
 		log.Fatalf("create tool registry: %v", err)
 	}
 

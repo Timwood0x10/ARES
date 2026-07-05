@@ -43,12 +43,13 @@ func main() {
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	dag, err := engine.NewMutableDAG(nil)
 	if err != nil {
+		cancel()
 		log.Fatalf("NewMutableDAG: %v", err)
 	}
+	defer cancel()
 
 	// Subscribe to all graph change events.
 	ch := dag.Subscribe()
