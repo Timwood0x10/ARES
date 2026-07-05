@@ -107,23 +107,16 @@ func (a *leaderAgent) finalizeMemory(ctx context.Context, sessionID, taskID stri
 	if taskID == "" {
 		return
 	}
-	a.distillMu.Lock()
-	select {
-	case <-a.stopCh:
-		a.distillMu.Unlock()
-		return
-	default:
-	}
-	a.distillWg.Add(1)
-	a.distillMu.Unlock()
-	go func() {
-		defer a.distillWg.Done()
-		distillCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Submit distillation to errgroup for lifecycle-managed execution.
+	// errgroup provides context propagation and error collection.
+	a.distillEg.Go(func() error {
+		distillCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if _, err := a.memoryManager.DistillTask(distillCtx, taskID); err != nil {
 			log.Warn("memory operation failed, proceeding without", "operation", "DistillTask", "error", err)
 		}
-	}()
+		return nil
+	})
 }
 
 func (a *leaderAgent) recordExperienceFeedback(ctx context.Context, tasks []*models.Task, results []*models.TaskResult) {

@@ -303,7 +303,7 @@ func (c *Crossover) halfSplitPromptCrossover(a, b *mutation.Strategy) string {
 
 	result := string(runesA[:mid]) + string(runesB[mid:])
 
-	el.DebugContext(context.TODO(), "half-split prompt crossover",
+	el.DebugContext(context.Background(), "half-split prompt crossover",
 		"parent_a_len", len(tmplA),
 		"parent_b_len", len(tmplB),
 		"mid_point", mid,

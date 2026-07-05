@@ -41,7 +41,7 @@ ci-vet:
 ci-lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=10m --out-format=github-actions; \
+		golangci-lint run --timeout=10m; \
 		echo "Linting: OK"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \

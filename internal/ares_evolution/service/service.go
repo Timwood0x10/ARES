@@ -615,7 +615,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 
 	dir := filepath.Dir(path)
 	if dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}
@@ -624,7 +624,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal strategy: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	log.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)

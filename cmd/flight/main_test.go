@@ -24,7 +24,7 @@ func writeTestEvents(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("marshal ares_events: %v", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatalf("write ares_events: %v", err)
 	}
 }

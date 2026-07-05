@@ -4,6 +4,7 @@ package ares_bootstrap
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/dashboard"
@@ -46,7 +47,10 @@ func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager) (*Dashbo
 		hub.Run()
 		return hubCtx.Err()
 	})
-	srv := &http.Server{Handler: api.Handler()}
+	srv := &http.Server{
+		Handler:           api.Handler(),
+		ReadHeaderTimeout: 30 * time.Second,
+	}
 	return &DashboardComponents{
 		Start: func(ctx context.Context) error { return srv.ListenAndServe() },
 		Stop:  func(ctx context.Context) error { return srv.Shutdown(ctx) },

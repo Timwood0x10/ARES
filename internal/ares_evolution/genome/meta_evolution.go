@@ -189,7 +189,7 @@ func (mc *MetaController) Tune(popCfg *PopulationConfig, report DiversityReport,
 	}
 
 	if modified {
-		el.DebugContext(context.TODO(), "meta-evolution: adjusted parameters",
+		el.DebugContext(context.Background(), "meta-evolution: adjusted parameters",
 			"mutation_rate", popCfg.MutationRate,
 			"survival_rate", popCfg.SurvivalRate,
 			"elite_count", popCfg.EliteCount,

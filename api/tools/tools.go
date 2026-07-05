@@ -112,7 +112,10 @@ func (r *Registry) Register(tool Tool) error {
 	r.tools[tool.Name()] = tool
 	// Sync to cached core.Registry if it exists.
 	if r.coreReg != nil {
-		r.coreReg.Register(&toolAdapter{tool: tool, name: tool.Name()})
+		if err := r.coreReg.Register(&toolAdapter{tool: tool, name: tool.Name()}); err != nil {
+			r.mu.Unlock()
+			return err
+		}
 	}
 	return nil
 }
@@ -308,7 +311,10 @@ func (r *Registry) coreRegistry() *core.Registry {
 	}
 	r.coreReg = core.NewRegistry()
 	for name, tool := range r.tools {
-		r.coreReg.Register(&toolAdapter{tool: tool, name: name})
+		if err := r.coreReg.Register(&toolAdapter{tool: tool, name: name}); err != nil {
+			r.mu.Unlock()
+			return r.coreReg
+		}
 	}
 	return r.coreReg
 }

@@ -2,8 +2,10 @@ package evolution
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
-	"math/rand"
+	mathrand "math/rand"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -13,7 +15,7 @@ import (
 // strategies using a provided scorer function.
 type RegressionTester struct {
 	scorer func(*mutation.Strategy) float64
-	rng    *rand.Rand
+	rng    *mathrand.Rand
 }
 
 // NewRegressionTester creates a regression tester for arena strategy comparison.
@@ -32,8 +34,17 @@ func NewRegressionTester(scorer func(*mutation.Strategy) float64) (*RegressionTe
 	}
 	return &RegressionTester{
 		scorer: scorer,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:    newCryptoRand(),
 	}, nil
+}
+
+// newCryptoRand creates a math/rand source seeded from crypto/rand.
+func newCryptoRand() *mathrand.Rand {
+	var seed int64
+	if err := binary.Read(rand.Reader, binary.LittleEndian, &seed); err != nil {
+		seed = time.Now().UnixNano()
+	}
+	return mathrand.New(mathrand.NewSource(seed))
 }
 
 // Run executes a regression test comparing a candidate strategy against a baseline.

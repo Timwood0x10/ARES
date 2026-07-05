@@ -509,7 +509,7 @@ func (p *Population) adjustMutationRateLocked() {
 
 	// Emergency mode: critically low diversity — force maximum exploration.
 	if div < ac.EmergencyDiversityThreshold {
-		el.Warn(context.TODO(), "adjustMutationRateLocked", "emergency mutation rate boost",
+		el.Warn(context.Background(), "adjustMutationRateLocked", "emergency mutation rate boost",
 			"diversity", div,
 			"generation", p.Generation,
 			"mutation_rate", p.cfg.MaxMutationRate,
@@ -543,7 +543,7 @@ func (p *Population) adjustMutationRateLocked() {
 	}
 	p.currentMutationRate = mutation.Clamp(p.currentMutationRate, effectiveMin, p.cfg.MaxMutationRate)
 
-	el.Debug(context.TODO(), "adjustMutationRateLocked", "adjusted",
+	el.Debug(context.Background(), "adjustMutationRateLocked", "adjusted",
 		"diversity", div,
 		"mutation_rate", p.currentMutationRate,
 		"effective_min", effectiveMin,
@@ -576,7 +576,7 @@ func (p *Population) handleStagnationLocked() {
 	resetCount = min(resetCount, len(p.Agents)-p.cfg.EliteCount)
 	if resetCount <= 0 {
 		p.stagnantGens = 0
-		el.Warn(context.TODO(), "handleStagnationLocked", "stagnation but no agents to reset",
+		el.Warn(context.Background(), "handleStagnationLocked", "stagnation but no agents to reset",
 			"population_size", len(p.Agents),
 			"elite_count", p.cfg.EliteCount,
 		)
@@ -614,7 +614,7 @@ func (p *Population) handleStagnationLocked() {
 	}
 
 	p.stagnantGens = 0
-	el.Warn(context.TODO(), "handleStagnationLocked", "stagnation reset injected",
+	el.Warn(context.Background(), "handleStagnationLocked", "stagnation reset injected",
 		"reset_count", resetCount,
 		"stagnant_generations", stagnantGens,
 		"generation", p.Generation,

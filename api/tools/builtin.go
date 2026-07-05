@@ -458,7 +458,7 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 		return Result{Success: true, Data: map[string]any{"path": path, "content": string(data), "size": len(data)}}, nil
 	case "write":
 		content, _ := params["content"].(string)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "bytes": len(content)}}, nil
@@ -482,7 +482,7 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil
 	case "mkdir":
-		if err := os.MkdirAll(path, 0o755); err != nil {
+		if err := os.MkdirAll(path, 0o750); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil

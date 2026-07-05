@@ -166,11 +166,11 @@ func buildMutator(cfg SystemConfig) (*mutatorResult, error) {
 	var genomeMut genome.MutatorInterface = rawMutator
 
 	if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
-		el.Info(context.TODO(), "buildMutator", "experience-guided mutation requested; provider wired",
+		el.Info(context.Background(), "buildMutator", "experience-guided mutation requested; provider wired",
 			"hint_provider", fmt.Sprintf("%T", cfg.GuidanceProvider))
 		genomeMut = wrapGuidanceProvider(cfg.GuidanceProvider, rawMutator)
 	} else if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider == nil {
-		el.Warn(context.TODO(), "buildMutator", "experience-guided mutation requested but no GuidanceProvider set")
+		el.Warn(context.Background(), "buildMutator", "experience-guided mutation requested but no GuidanceProvider set")
 	}
 
 	var adaptiveDist *mutation.AdaptiveDistribution
@@ -285,7 +285,7 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 		memScorer, err := scoring.NewMemoryAwareScorer(tiered, cfg.MemoryExperienceProvider,
 			cfg.MemoryAwareScoringConfig)
 		if err != nil {
-			el.Warn(context.TODO(), "buildAdapterOptions", "failed to create memory-aware scorer, skipping",
+			el.Warn(context.Background(), "buildAdapterOptions", "failed to create memory-aware scorer, skipping",
 				"error", err)
 		} else {
 			opts = append(opts, WithAdapterMemoryAwareScoring(memScorer))
@@ -559,7 +559,7 @@ func buildShadowEvaluator(cfg SystemConfig, baseStrategy *mutation.Strategy) *Sh
 			return scorer(s)
 		})
 	}
-	el.Info(context.TODO(), "buildShadowEvaluator", "shadow evaluation enabled",
+	el.Info(context.Background(), "buildShadowEvaluator", "shadow evaluation enabled",
 		"min_samples", cfg.ShadowEvalConfig.MinSamples,
 		"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
 		"active_strategy", baseStrategy.ID,
@@ -617,11 +617,11 @@ func wrapGuidanceProvider(provider GuidanceProvider, raw *mutation.Mutator) geno
 	adaptedProvider := &guidanceHintAdapter{inner: provider}
 	guided, err := mutation.NewExperienceGuidedMutator(raw, adaptedProvider)
 	if err != nil {
-		el.Warn(context.TODO(), "wrapGuidanceProvider", "failed to create ExperienceGuidedMutator, falling back to raw mutator",
+		el.Warn(context.Background(), "wrapGuidanceProvider", "failed to create ExperienceGuidedMutator, falling back to raw mutator",
 			"error", err)
 		return raw
 	}
-	el.Info(context.TODO(), "wrapGuidanceProvider", "experience-guided mutation enabled",
+	el.Info(context.Background(), "wrapGuidanceProvider", "experience-guided mutation enabled",
 		"provider", fmt.Sprintf("%T", provider),
 	)
 	return guided
