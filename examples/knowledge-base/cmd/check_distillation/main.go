@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -19,7 +20,7 @@ func main() {
 	}
 
 	// test database connection
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		lg.Error("Failed to ping database:", "error", err)
 		os.Exit(1)
@@ -29,7 +30,7 @@ func main() {
 
 	// query distilled memory
 	fmt.Println("=== Distilled Memory ===")
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, content, source_type, source, created_at
 		FROM knowledge_chunks_1024
 		WHERE source_type = 'distilled'
@@ -67,7 +68,7 @@ func main() {
 
 	// Content statistics
 	fmt.Println("\n=== Content Statistics ===")
-	statsRows, err := db.Query(`
+	statsRows, err := db.QueryContext(context.Background(), `
 		SELECT source_type, COUNT(*) as count
 		FROM knowledge_chunks_1024
 		GROUP BY source_type

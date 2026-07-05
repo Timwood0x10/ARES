@@ -570,7 +570,7 @@ func TestDiscoverServers_ProjectDirOnly(t *testing.T) {
 
 	dir := t.TempDir()
 	settingsDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+	if err := os.MkdirAll(settingsDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 	config := `{
@@ -581,7 +581,7 @@ func TestDiscoverServers_ProjectDirOnly(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(config), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -604,7 +604,7 @@ func TestDiscoverServers_GlobalAndProject(t *testing.T) {
 	dir := t.TempDir()
 	homeDir := filepath.Join(dir, "home")
 	projectDir := filepath.Join(dir, "project")
-	if err := os.MkdirAll(homeDir, 0755); err != nil {
+	if err := os.MkdirAll(homeDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(projectDir, ".claude"), 0755); err != nil {
@@ -620,7 +620,7 @@ func TestDiscoverServers_GlobalAndProject(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(globalCfg), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(globalCfg), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -633,7 +633,7 @@ func TestDiscoverServers_GlobalAndProject(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(projectDir, ".claude/settings.json"), []byte(projectCfg), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, ".claude/settings.json"), []byte(projectCfg), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -660,7 +660,7 @@ func TestDiscoverServers_Deduplication(t *testing.T) {
 	dir := t.TempDir()
 	homeDir := filepath.Join(dir, "home")
 	projectDir := filepath.Join(dir, "project")
-	if err := os.MkdirAll(homeDir, 0755); err != nil {
+	if err := os.MkdirAll(homeDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(projectDir, ".claude"), 0755); err != nil {
@@ -675,7 +675,7 @@ func TestDiscoverServers_Deduplication(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(globalCfg), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(globalCfg), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -687,7 +687,7 @@ func TestDiscoverServers_Deduplication(t *testing.T) {
 			}
 		}
 	}`
-	if err := os.WriteFile(filepath.Join(projectDir, ".claude/settings.json"), []byte(projectCfg), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, ".claude/settings.json"), []byte(projectCfg), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -713,7 +713,7 @@ func TestScanClaudeConfig_MissingFile(t *testing.T) {
 func TestScanClaudeConfig_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(path, []byte(`not json`), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(`not json`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	servers := scanClaudeConfig(path, make(map[string]bool))

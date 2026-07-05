@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestAPIRoot(t *testing.T) {
 	handler := api.Handler()
 
 	// Root with Accept: application/json returns JSON overview.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -71,7 +72,7 @@ func TestAPIRootHTML(t *testing.T) {
 	handler := api.Handler()
 
 	// Root without Accept header returns HTML.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -89,7 +90,7 @@ func TestAPIListAgentsEmpty(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, PathAgents, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -112,7 +113,7 @@ func TestAPICreateAgent(t *testing.T) {
 
 	// Create agent.
 	body := `{"template_id":"tpl-1"}`
-	req := httptest.NewRequest(http.MethodPost, PathAgents, bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -153,7 +154,7 @@ func TestAPICreateAgentInvalidBody(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodPost, PathAgents, bytes.NewBufferString("invalid"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString("invalid"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -169,7 +170,7 @@ func TestAPICreateAgentNoName(t *testing.T) {
 
 	// No template_id and no name.
 	body := `{"mcp_tool":"test"}`
-	req := httptest.NewRequest(http.MethodPost, PathAgents, bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -204,7 +205,7 @@ func TestAPIGetAgent(t *testing.T) {
 	}
 
 	// Get agent.
-	req := httptest.NewRequest(http.MethodGet, "/agents/"+id, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents/"+id, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -228,7 +229,7 @@ func TestAPIGetAgentNotFound(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/agents/nonexistent", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents/nonexistent", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -249,7 +250,7 @@ func TestAPIListAgents(t *testing.T) {
 		t.Fatalf("CreateAgent A2: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, PathAgents, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -270,7 +271,7 @@ func TestAPIListMCPServers(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, PathMCP, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathMCP, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -303,7 +304,7 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
@@ -322,7 +323,7 @@ func TestAPICORSHeaders(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodOptions, PathAgents, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -339,7 +340,7 @@ func TestAPIPanicRecovery(t *testing.T) {
 	api := NewAPIv2(nil, nil, nil)
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, PathAgents, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -379,7 +380,7 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 			if w.Code != tt.status {

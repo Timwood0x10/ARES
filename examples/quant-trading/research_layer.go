@@ -312,7 +312,7 @@ func executeResearchGraphWithDate(ctx context.Context, graph *research.ResearchG
 	}
 
 	if outDir != "" {
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
+		if err := os.MkdirAll(outDir, 0750); err != nil {
 			return fmt.Errorf("create output dir: %w", err)
 		}
 		data, err := state.ToJSON()
@@ -325,7 +325,7 @@ func executeResearchGraphWithDate(ctx context.Context, graph *research.ResearchG
 		}
 		outPath := filepath.Join(outDir, fmt.Sprintf("%s_%s_research.json",
 			ticker, dateStr))
-		if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		if err := os.WriteFile(outPath, data, 0600); err != nil {
 			return fmt.Errorf("save result: %w", err)
 		}
 		log("  Research results saved: %s", outPath)

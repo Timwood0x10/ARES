@@ -103,7 +103,7 @@ func main() {
 				return errorResult(fmt.Sprintf("marshal: %v", err)), nil
 			}
 
-			resp, err := client.Post(*embeddingURL+"/embed", "application/json", bytes.NewReader(reqBody))
+			resp, err := client.Post(*embeddingURL+"/embed", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
 			if err != nil {
 				return errorResult(fmt.Sprintf("embedding service unreachable: %v", err)), nil
 			}
@@ -162,7 +162,7 @@ func main() {
 				return errorResult(fmt.Sprintf("marshal: %v", err)), nil
 			}
 
-			resp, err := client.Post(*embeddingURL+"/embed_batch", "application/json", bytes.NewReader(reqBody))
+			resp, err := client.Post(*embeddingURL+"/embed_batch", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
 			if err != nil {
 				return errorResult(fmt.Sprintf("batch embedding service unreachable: %v", err)), nil
 			}
@@ -199,7 +199,7 @@ func main() {
 	}`)
 	if err := server.RegisterTool("health", "Check if the embedding service is healthy", healthSchema,
 		func(ctx context.Context, args map[string]any) (*ares_mcp.ToolCallResult, error) {
-			resp, err := client.Get(*embeddingURL + "/health")
+			resp, err := client.Get(*embeddingURL + "/health") //nolint:noctx
 			if err != nil {
 				return errorResult(fmt.Sprintf("embedding service unhealthy: %v", err)), nil
 			}

@@ -143,7 +143,7 @@ func ExportStrategiesToJSONL(strategies []*mutation.Strategy, path string, topK 
 	sorted = sorted[:topK]
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return 0, fmt.Errorf("create dir %s: %w", dir, err)
 	}
 	f, err := os.Create(path)
@@ -204,7 +204,7 @@ func experienceToTextExample(ex *experience.Experience) TextExample {
 // ExportExperiencesToJSONL writes experiences to JSONL.
 func ExportExperiencesToJSONL(experiences []*experience.Experience, path string, textFormat bool) (int, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return 0, fmt.Errorf("create dir %s: %w", dir, err)
 	}
 	f, err := os.Create(path)

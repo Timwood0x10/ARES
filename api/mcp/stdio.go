@@ -25,7 +25,7 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	if !filepath.IsAbs(command) {
 		return nil, fmt.Errorf("mcp: command must be an absolute path: %q", command)
 	}
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.CommandContext(ctx, command, args...) //nolint:gosec // guarded by IsAbs check
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

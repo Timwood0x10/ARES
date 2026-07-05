@@ -63,7 +63,7 @@ func migrate(db *sql.DB) error {
 		)`,
 	}
 	for _, q := range queries {
-		if _, err := db.Exec(q); err != nil {
+		if _, err := db.ExecContext(context.Background(), q); err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}

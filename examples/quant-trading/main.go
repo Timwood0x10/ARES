@@ -188,7 +188,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	log("  Model: %s (%s)", cfg.LLM.Model, cfg.LLM.Provider)
 
 	// ── Download market data ──
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
@@ -324,7 +324,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 	}
 
 	// FIX: Minor — check json.MarshalIndent and os.WriteFile errors.
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0750); err != nil {
 		slog.Error("create output dir failed", "err", err)
 		return nil // non-fatal: analysis already completed
 	}
@@ -341,7 +341,7 @@ func runLegacyPipeline(ctx context.Context, cfgPath string, agentsPath string,
 		return nil
 	}
 	outPath := filepath.Join(outDir, fmt.Sprintf("%s_%s.json", ticker, time.Now().Format("20060102_150405")))
-	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+	if err := os.WriteFile(outPath, data, 0600); err != nil {
 		slog.Error("save result file failed", "path", outPath, "err", err)
 		return nil
 	}
@@ -558,7 +558,7 @@ func runBacktestMode(ctx context.Context, ticker string, dataDir string, outDir 
 	log("  Total Trades:  %d", resp.TotalTrades)
 	log("  Summary:       %s", resp.Summary)
 
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0750); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -672,7 +672,7 @@ func saveSimulationJSON(resp *marketmakingapi.BacktestResponse, outPath string) 
 	if err != nil {
 		return fmt.Errorf("marshal simulation result: %w", err)
 	}
-	return os.WriteFile(outPath, data, 0o644)
+	return os.WriteFile(outPath, data, 0600)
 }
 
 // runSimulation executes the investment backtest using the public marketmaking API.

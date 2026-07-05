@@ -300,8 +300,8 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			// Generate content hash for real-time deduplication (per design standard)
 			contentHash := b.computeContentHash(item.Content)
 
-			_, err := tx.Exec(`
-				INSERT INTO knowledge_chunks_1024
+			_, err := tx.ExecContext(ctx, `
+			  INSERT INTO knowledge_chunks_1024
 				(tenant_id, content, content_hash, embedding, embedding_model, embedding_version, 
 				 embedding_status, embedding_queued_at, source_type, metadata, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW(), 'memory', $7, NOW(), NOW())
@@ -329,8 +329,8 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 					md["embedding_dim"] = item.SpecDim
 				}
 			}
-			_, err := tx.Exec(`
-				INSERT INTO experiences_1024
+			_, err := tx.ExecContext(ctx, `
+			  INSERT INTO experiences_1024
 				(tenant_id, type, input, output, embedding, embedding_model, embedding_version,
 				 embedding_status, embedding_queued_at, agent_id, metadata, score, success, decay_at, created_at)
 				VALUES ($1, 'solution', $2, $3, $4, $5, $6, 'pending', NOW(), 'style-agent', $7, 0.8, true, NOW() + INTERVAL '30 days', NOW())

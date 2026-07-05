@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ func TestNewRouter(t *testing.T) {
 
 func TestServeHTTPReturns404(t *testing.T) {
 	r := NewRouter()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/nonexistent", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/nonexistent", nil)
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)

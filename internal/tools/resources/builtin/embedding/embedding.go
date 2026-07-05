@@ -145,7 +145,12 @@ func (t *EmbeddingTool) embedText(ctx context.Context, params map[string]interfa
 		return core.NewErrorResult(fmt.Sprintf("marshal request: %v", err)), nil
 	}
 
-	resp, err := t.client.Post(t.baseURL+"/embed", "application/json", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/embed", bytes.NewReader(reqBody))
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("create request: %v", err)), nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("embedding service call failed: %v", err)), nil
 	}
@@ -192,7 +197,12 @@ func (t *EmbeddingTool) embedBatch(ctx context.Context, params map[string]interf
 		return core.NewErrorResult(fmt.Sprintf("marshal batch request: %v", err)), nil
 	}
 
-	resp, err := t.client.Post(t.baseURL+"/embed_batch", "application/json", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/embed_batch", bytes.NewReader(reqBody))
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("create request: %v", err)), nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("batch embedding service call failed: %v", err)), nil
 	}

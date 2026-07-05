@@ -44,7 +44,7 @@ func newCryptoRand() *mathrand.Rand {
 	if err := binary.Read(rand.Reader, binary.LittleEndian, &seed); err != nil {
 		seed = time.Now().UnixNano()
 	}
-	return mathrand.New(mathrand.NewSource(seed))
+	return mathrand.New(mathrand.NewSource(seed)) //nolint:gosec // seeded rand for test perturbation
 }
 
 // Run executes a regression test comparing a candidate strategy against a baseline.

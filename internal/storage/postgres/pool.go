@@ -38,7 +38,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		return nil, errors.Wrap(err, "failed to ping database")
 	}
 

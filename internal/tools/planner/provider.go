@@ -41,8 +41,8 @@ var broadToGranular = map[string][]string{
 	},
 	"text": {
 		"StringManipulation", "Regex", "Hashing", "Base64",
-		"JSONProcessing", "LogAnalysis", "TextProcessor",
-		"DataTransform", "DataValidation",
+		"JSONProcessing", CapabilityLogAnalysis, "TextProcessor",
+		CapabilityDataTransform, CapabilityDataValidation,
 	},
 	"network": {
 		"WebSearch", "HTTPRequest", "WebFetch",

@@ -283,7 +283,7 @@ func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
 				LastSeen:   time.Now(),
 			},
 		},
-		BestSource: "register",
+		BestSource: OperationRegister,
 		Healthy:    false,
 	}
 

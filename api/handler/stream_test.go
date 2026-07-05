@@ -76,7 +76,7 @@ func TestStreamHandler_HandleStream(t *testing.T) {
 			handler := NewStreamHandler()
 			processor := &MockAgentProcessor{events: tt.events}
 
-			req := httptest.NewRequest(tt.method, "/api/v1/stream", strings.NewReader(tt.body))
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, "/api/v1/stream", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 

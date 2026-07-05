@@ -123,5 +123,5 @@ func (s *JSONFileStore) save(services []*discovery.DiscoveredService) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o644)
+	return os.WriteFile(s.path, data, 0600)
 }

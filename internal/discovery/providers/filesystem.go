@@ -97,7 +97,7 @@ func (p *FilesystemProvider) Discover(_ context.Context) ([]discovery.DiscoveryR
 
 // scanConfigFile reads a config file and extracts MCP server definitions.
 func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery.DiscoveryRecord, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // reading MCP config files
 	if err != nil {
 		return nil, err
 	}

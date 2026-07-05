@@ -187,7 +187,7 @@ type ollamaCalledFunc struct {
 func callLLM(client *http.Client, baseURL, model, prompt string, tools []ollamaTool) ollamaResp {
 	msg := ollamaMsg{Role: "user", Content: prompt}
 	body, _ := json.Marshal(ollamaReq{Model: model, Messages: []ollamaMsg{msg}, Tools: tools, Stream: false})
-	resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(body)) //nolint:noctx
 	if err != nil {
 		panic(err)
 	}

@@ -48,7 +48,7 @@ func getSummaryTestPool(t *testing.T) *postgres.Pool {
 		t.Skipf("failed to open test database: %v", err)
 		return nil
 	}
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		t.Skipf("failed to ping test database: %v", err)
 		return nil
@@ -99,7 +99,7 @@ func createEventSummariesTable(t *testing.T, db *sql.DB) {
 		`CREATE INDEX IF NOT EXISTS idx_event_summaries_created ON event_summaries(created_at)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			t.Fatalf("failed to create event_summaries table: %v", err)
 		}
 	}

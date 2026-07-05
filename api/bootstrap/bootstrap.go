@@ -181,7 +181,7 @@ func (a *ARES) LatestReport() (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // reading evolution report from internal path
 	if err != nil {
 		return "", fmt.Errorf("bootstrap: read report: %w", err)
 	}

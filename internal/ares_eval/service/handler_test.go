@@ -135,7 +135,7 @@ func TestHandleRunEval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/eval/run", strings.NewReader(tt.body))
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/eval/run", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
@@ -178,7 +178,7 @@ func TestHandleGetResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 
 			h.HandleGetResults(w, req)
@@ -223,7 +223,7 @@ func TestHandleGetResultsWithData(t *testing.T) {
 	require.NoError(t, err)
 	h := NewHandler(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/eval/results/"+runID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/eval/results/"+runID, nil)
 	w := httptest.NewRecorder()
 	h.HandleGetResults(w, req)
 
@@ -279,7 +279,7 @@ func TestHandleGetLeaderboard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/eval/leaderboard"+tt.query, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/eval/leaderboard"+tt.query, nil)
 			w := httptest.NewRecorder()
 
 			h.HandleGetLeaderboard(w, req)
@@ -334,7 +334,7 @@ func TestHandleGetComparison(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/eval/comparison"+tt.query, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/eval/comparison"+tt.query, nil)
 			w := httptest.NewRecorder()
 
 			h.HandleGetComparison(w, req)
@@ -379,7 +379,7 @@ func TestHandleGetComparisonWithData(t *testing.T) {
 	require.NoError(t, err)
 	h := NewHandler(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/eval/comparison?run_ids="+runID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/eval/comparison?run_ids="+runID, nil)
 	w := httptest.NewRecorder()
 	h.HandleGetComparison(w, req)
 

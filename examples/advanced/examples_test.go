@@ -2,6 +2,7 @@
 package advanced_test
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestExamples_Compile(t *testing.T) {
 	for _, dir := range exampleDirs {
 		t.Run(dir, func(t *testing.T) {
 			t.Parallel()
-			cmd := exec.Command("go", "build", "-o", "/dev/null", "github.com/Timwood0x10/ares/examples/advanced/"+dir)
+			cmd := exec.CommandContext(context.Background(), "go", "build", "-o", "/dev/null", "github.com/Timwood0x10/ares/examples/advanced/"+dir)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("example %s failed to compile: %v\n%s", dir, err, output)

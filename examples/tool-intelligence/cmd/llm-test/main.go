@@ -149,7 +149,7 @@ func main() {
 			Stream:   false,
 		})
 
-		resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(reqBody))
+		resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
 		if err != nil {
 			fmt.Printf("❌ API error: %v\n", err)
 			fail++

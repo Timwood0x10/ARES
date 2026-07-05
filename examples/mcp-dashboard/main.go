@@ -30,7 +30,7 @@ func main() {
 	flag.StringVar(&logPath, "log", "./examples/mcp-dashboard/run.log", "")
 	flag.Parse()
 
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0750); err != nil {
 		fmt.Fprintf(os.Stderr, "mkdir: %v\n", err)
 		os.Exit(1)
 	}

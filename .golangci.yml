@@ -2,7 +2,6 @@ version: "2"
 
 run:
   timeout: 5m
-  tests: true
 
 formatters:
   enable:
@@ -32,6 +31,246 @@ linters:
     # 性能
     - prealloc
     - noctx
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - gocyclo
+          - goconst
+          - prealloc
+          - noctx
+          - gosec
+          - nilnil
+      - path: examples/
+        linters:
+          - goconst
+          - noctx
+          - gosec
+      - path: cmd/
+        linters:
+          - goconst
+          - noctx
+          - gosec
+      - path: internal/storage/postgres/write_buffer.go
+        linters:
+          - noctx
+      - path: internal/tools/resources/builtin/embedding/embedding.go
+        linters:
+          - noctx
+      - path: internal/ares_quant/
+        linters:
+          - noctx
+      # Tool parameter schema definitions: string map keys in schema definitions
+      # are idiomatic and extracting them to constants reduces readability.
+      - path: internal/tools/resources/builtin/math/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/network/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/file/
+        linters:
+          - goconst
+      # LLM request/response JSON field names must match external API formats;
+      # keeping them as string literals is clearer than indirection via constants.
+      - path: internal/llm/
+        linters:
+          - goconst
+      # Tool schema parameter definitions: map keys in schema definitions.
+      - path: internal/tools/resources/builtin/memory/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/knowledge/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/stringutils/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/hash/
+        linters:
+          - goconst
+      # Arena event/status field names.
+      - path: internal/ares_arena/
+        linters:
+          - goconst
+      # Eval service status strings.
+      - path: internal/ares_eval/service/
+        linters:
+          - goconst
+      # Workflow engine configuration strings.
+      - path: internal/workflow/engine/
+        linters:
+          - goconst
+      # Config defaults: paths, default values repeated for documentation.
+      - path: internal/ares_config/config.go
+        linters:
+          - goconst
+      - path: internal/storage/postgres/config.go
+        linters:
+          - goconst
+      - path: internal/llmservice/service.go
+        linters:
+          - goconst
+      - path: internal/ares_quant/dataflow/
+        linters:
+          - goconst
+      - path: api/client/config.go
+        linters:
+          - goconst
+      - path: api/handler/stream.go
+        linters:
+          - goconst
+      # Storage service query field names.
+      - path: internal/storage/postgres/services/
+        linters:
+          - goconst
+      # Planner capability/tool metadata map keys and schema strings.
+      - path: internal/tools/planner/
+        linters:
+          - goconst
+      # Tool result formatter format strings.
+      - path: internal/tools/resources/formatter/
+        linters:
+          - goconst
+      # Evolution guardrail/dream-cycle status strings.
+      - path: internal/ares_evolution/
+        linters:
+          - goconst
+      # Shutdown manager event/status strings.
+      - path: internal/ares_shutdown/
+        linters:
+          - goconst
+      # Runtime manager field names.
+      - path: internal/ares_runtime/manager.go
+        linters:
+          - goconst
+      # Quant tool/research parameter field names.
+      - path: internal/ares_quant/portfolio/
+        linters:
+          - goconst
+      - path: internal/ares_quant/tools.go
+        linters:
+          - goconst
+      # API implementation helper strings.
+      - path: internal/api_impl/
+        linters:
+          - goconst
+      # System tool parameter schema definitions.
+      - path: internal/tools/resources/builtin/system/
+        linters:
+          - goconst
+      # Eval LLM judge/report status strings.
+      - path: internal/ares_eval/llm_judge.go
+        linters:
+          - goconst
+      - path: internal/ares_eval/report.go
+        linters:
+          - goconst
+      # Tool schema definitions.
+      - path: internal/tools/resources/builtin/planning/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/builtin.go
+        linters:
+          - goconst
+      - path: internal/tools/resources/core/
+        linters:
+          - goconst
+      - path: internal/tools/resources/builtin/execution/
+        linters:
+          - goconst
+      # Distillation internal strings.
+      - path: internal/ares_memory/distillation/
+        linters:
+          - goconst
+      # Agent event payload field names.
+      - path: internal/agents/leader/
+        linters:
+          - goconst
+      # Observability metric label names.
+      - path: internal/ares_observability/
+        linters:
+          - goconst
+      # Monitoring tab/aggregator field names.
+      - path: internal/monitoring/
+        linters:
+          - goconst
+      # API tool schema parameter/result field names.
+      - path: api/tools/builtin.go
+        linters:
+          - goconst
+      # Memory manager event payload field names.
+      - path: internal/ares_memory/manager_impl.go
+        linters:
+          - goconst
+      - path: internal/ares_memory/production_manager.go
+        linters:
+          - goconst
+      - path: internal/ares_memory/embedding/spec.go
+        linters:
+          - goconst
+      # Text tool schema definitions.
+      - path: internal/tools/resources/builtin/text/
+        linters:
+          - goconst
+      # Quant research graph/schema field names.
+      - path: internal/ares_quant/research/
+        linters:
+          - goconst
+      # Dashboard orchestrator event field names.
+      - path: internal/dashboard/orchestrator.go
+        linters:
+          - goconst
+      - path: internal/dashboard/event_bridge.go
+        linters:
+          - goconst
+      # Discovery binary provider metadata field names.
+      - path: internal/discovery/providers/binary.go
+        linters:
+          - goconst
+      # Runtime router/outcome recorder field names.
+      - path: internal/ares_runtime/router.go
+        linters:
+          - goconst
+      - path: internal/ares_runtime/outcome_recorder.go
+        linters:
+          - goconst
+      # Security sanitizer pattern strings.
+      - path: internal/ares_security/sanitizer.go
+        linters:
+          - goconst
+      # API client health check strings.
+      - path: api/client/health.go
+        linters:
+          - goconst
+      # MCP server config map keys.
+      - path: api/mcp/mcp.go
+        linters:
+          - goconst
+      # Event compactor status strings.
+      - path: internal/ares_events/compactor.go
+        linters:
+          - goconst
+      # Memory pipeline config strings.
+      - path: internal/ares_memory/pipeline.go
+        linters:
+          - goconst
+      - path: internal/ares_memory/report/generator.go
+        linters:
+          - goconst
+      - path: internal/ares_memory/retrieval_api/service.go
+        linters:
+          - goconst
+      # Secret adapter meta-key strings.
+      - path: internal/storage/postgres/adapters/secret_adapter.go
+        linters:
+          - goconst
+      # Embedding tool schema parameter names.
+      - path: internal/tools/resources/builtin/embedding/embedding.go
+        linters:
+          - goconst
+    paths:
+      - third_party$
 
 linters-settings:
   gocyclo:
@@ -53,30 +292,3 @@ linters-settings:
 issues:
   max-issues-per-linter: 100
   max-same-issues: 50
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - goconst
-        - prealloc
-        - noctx
-        - gosec
-        - nilnil
-    - path: examples/
-      linters:
-        - goconst
-        - noctx
-        - gosec
-    - path: cmd/
-      linters:
-        - noctx
-        - gosec
-    - path: internal/storage/postgres/write_buffer.go
-      linters:
-        - noctx
-    - path: internal/tools/resources/builtin/embedding/embedding.go
-      linters:
-        - noctx
-    - path: internal/ares_quant/
-      linters:
-        - noctx

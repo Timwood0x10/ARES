@@ -13,7 +13,7 @@ import (
 func TestClaudeProvider_Discover(t *testing.T) {
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	if err := os.MkdirAll(claudeDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,7 +77,7 @@ func TestCursorProvider_Discover(t *testing.T) {
 func TestVSCodeProvider_Discover(t *testing.T) {
 	dir := t.TempDir()
 	vscodeDir := filepath.Join(dir, ".vscode")
-	if err := os.MkdirAll(vscodeDir, 0o755); err != nil {
+	if err := os.MkdirAll(vscodeDir, 0750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,7 +134,7 @@ func TestScanConfigFile_ClaudeFormat(t *testing.T) {
 	}
 	data, _ := json.Marshal(cfg)
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestScanConfigFile_ARESFormat(t *testing.T) {
 	}
 	data, _ := json.Marshal(cfg)
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
 

@@ -141,7 +141,11 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	defer httpSrv.Close()
 
 	// GET /api/health
-	resp, err := http.Get(httpSrv.URL + "/api/health")
+	reqHealth, err := http.NewRequestWithContext(context.Background(), http.MethodGet, httpSrv.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatalf("create /api/health request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(reqHealth)
 	if err != nil {
 		t.Fatalf("GET /api/health: %v", err)
 	}
@@ -161,7 +165,11 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	t.Logf("Health endpoint: level=%v agents=%v", body["level"], body["agents"])
 
 	// GET /api/anomalies
-	resp2, err := http.Get(httpSrv.URL + "/api/anomalies")
+	reqAnomalies, err := http.NewRequestWithContext(context.Background(), http.MethodGet, httpSrv.URL+"/api/anomalies", nil)
+	if err != nil {
+		t.Fatalf("create /api/anomalies request: %v", err)
+	}
+	resp2, err := http.DefaultClient.Do(reqAnomalies)
 	if err != nil {
 		t.Fatalf("GET /api/anomalies: %v", err)
 	}
@@ -171,7 +179,11 @@ func TestMonitoringHTTPHealthRoutes(t *testing.T) {
 	}
 
 	// GET /api/insights
-	resp3, err := http.Get(httpSrv.URL + "/api/insights")
+	reqInsights, err := http.NewRequestWithContext(context.Background(), http.MethodGet, httpSrv.URL+"/api/insights", nil)
+	if err != nil {
+		t.Fatalf("create /api/insights request: %v", err)
+	}
+	resp3, err := http.DefaultClient.Do(reqInsights)
 	if err != nil {
 		t.Fatalf("GET /api/insights: %v", err)
 	}

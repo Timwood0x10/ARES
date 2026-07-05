@@ -104,7 +104,7 @@ func connectAdmin(dsn string) *sql.DB {
 		fmt.Fprintf(os.Stderr, "failed to connect to postgres: %v\n", err)
 		os.Exit(1)
 	}
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to ping postgres: %v\n", err)
 		os.Exit(1)
 	}
@@ -113,12 +113,12 @@ func connectAdmin(dsn string) *sql.DB {
 
 func ensureDatabase(db *sql.DB, name string) {
 	var exists bool
-	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
+	if err := db.QueryRowContext(context.Background(), "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to check database existence: %v\n", err)
 		os.Exit(1)
 	}
 	if !exists {
-		if _, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to create database: %v\n", err)
 			os.Exit(1)
 		}

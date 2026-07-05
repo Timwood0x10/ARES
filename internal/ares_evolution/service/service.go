@@ -637,7 +637,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 // LoadBestStrategy loads a best strategy from a JSON file at the given path.
 // Returns the loaded strategy, or an error if the file cannot be read.
 func LoadBestStrategy(path string) (*Strategy, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // intentional file read for best strategy loading
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}

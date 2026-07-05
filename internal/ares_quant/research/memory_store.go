@@ -66,14 +66,14 @@ func NewMemoryStore(path string) (*MemoryStore, error) {
 	}
 
 	// Enable WAL mode for better concurrent read performance.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		if err := db.Close(); err != nil {
 			log.Warn("memory store: close after WAL mode error", "error", err)
 		}
 		return nil, fmt.Errorf("memory store set wal mode: %w", err)
 	}
 
-	if _, err := db.Exec(createMemoryTableSQL); err != nil {
+	if _, err := db.ExecContext(context.Background(), createMemoryTableSQL); err != nil {
 		if err := db.Close(); err != nil {
 			log.Warn("memory store: close after create table error", "error", err)
 		}

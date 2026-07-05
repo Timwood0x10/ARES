@@ -457,7 +457,7 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 
 	switch operation {
 	case "read":
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // intentional file read tool
 		if err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}

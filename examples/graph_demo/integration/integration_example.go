@@ -199,11 +199,12 @@ func buildRegistry(ticket *SupportTicket) *engine.AgentRegistry {
 		return &simpleAgent{id: "classifier", agentType: "classifier",
 			fn: func(_ context.Context, _ any) (any, error) {
 				ticket.Category = "general"
-				if contains(ticket.Message, []string{"payment", "billing", "invoice"}) {
+				switch {
+				case contains(ticket.Message, []string{"payment", "billing", "invoice"}):
 					ticket.Category = "billing"
-				} else if contains(ticket.Message, []string{"login", "password", "account"}) {
+				case contains(ticket.Message, []string{"login", "password", "account"}):
 					ticket.Category = "account"
-				} else if contains(ticket.Message, []string{"bug", "error", "crash"}) {
+				case contains(ticket.Message, []string{"bug", "error", "crash"}):
 					ticket.Category = "technical"
 				}
 				fmt.Printf("   ✓ Classified as %s\n", ticket.Category)

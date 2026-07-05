@@ -3,8 +3,8 @@ package builtin
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/sha1"
+	"crypto/md5"  //nolint:gosec // intentional hash tool supporting multiple algorithms
+	"crypto/sha1" //nolint:gosec // intentional hash tool supporting multiple algorithms
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -60,9 +60,9 @@ func (t *HashTool) Execute(ctx context.Context, params map[string]interface{}) (
 
 	switch operation {
 	case "md5":
-		return t.hashResult("md5", md5.New(), []byte(input)), nil
+		return t.hashResult("md5", md5.New(), []byte(input)), nil //nolint:gosec // intentional hash tool
 	case "sha1":
-		return t.hashResult("sha1", sha1.New(), []byte(input)), nil
+		return t.hashResult("sha1", sha1.New(), []byte(input)), nil //nolint:gosec // intentional hash tool
 	case "sha256":
 		return t.hashResult("sha256", sha256.New(), []byte(input)), nil
 	case "sha512":

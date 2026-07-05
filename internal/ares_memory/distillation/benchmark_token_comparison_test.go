@@ -554,7 +554,7 @@ func callLLM(t *testing.T, apiKey, baseURL, model, content string) *LLMResponse 
 		Stream: false,
 	}
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		t.Logf("request creation failed: %v", err)
 		return nil

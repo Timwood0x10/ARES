@@ -74,7 +74,7 @@ func (f *CoinGeckoFeed) Candles(ticker string, start, end time.Time, res Resolut
 	days := coinGeckoDays(res)
 	url := fmt.Sprintf(coinGeckoOHLCURL, coinID, days)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
 	if err != nil {
 		return TimeSeries{}, fmt.Errorf("coingecko request: %w", err)
 	}

@@ -46,7 +46,7 @@ Call the calculator for EACH of the 5 points and tell me if z is increasing. Use
 		"stream": false,
 	})
 
-	resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(baseURL+"/api/chat", "application/json", bytes.NewReader(body)) //nolint:noctx
 	if err != nil {
 		fmt.Printf("ERROR: %v\n", err)
 		os.Exit(1)

@@ -159,7 +159,7 @@ func runCommand(ctx context.Context, name string, args ...string) string {
 	if !strings.HasPrefix(name, "/") {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // guarded by HasPrefix("/") check
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

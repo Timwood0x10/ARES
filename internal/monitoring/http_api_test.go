@@ -24,7 +24,7 @@ func newTestHTTPServer(t *testing.T) *HTTPServer {
 func TestHTTPServer_Console(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/console", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/console", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -36,7 +36,7 @@ func TestHTTPServer_Console(t *testing.T) {
 func TestHTTPServer_DAG(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/console/dag", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/console/dag", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -45,7 +45,7 @@ func TestHTTPServer_DAG(t *testing.T) {
 func TestHTTPServer_CostBar(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/console/cost-bar", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/console/cost-bar", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -54,7 +54,7 @@ func TestHTTPServer_CostBar(t *testing.T) {
 func TestHTTPServer_Agents(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -66,7 +66,7 @@ func TestHTTPServer_GetAgent_NotFound(t *testing.T) {
 	srv := NewHTTPServer(p)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/agents/missing", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents/missing", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -75,7 +75,7 @@ func TestHTTPServer_GetAgent_NotFound(t *testing.T) {
 func TestHTTPServer_KillAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
 	srv.ServeHTTP(w, req)
 
 	// Without interaction engine, should return 501.
@@ -85,7 +85,7 @@ func TestHTTPServer_KillAgent(t *testing.T) {
 func TestHTTPServer_ResumeAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/resume", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -94,7 +94,7 @@ func TestHTTPServer_ResumeAgent(t *testing.T) {
 func TestHTTPServer_RetryAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/retry", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -103,7 +103,7 @@ func TestHTTPServer_RetryAgent(t *testing.T) {
 func TestHTTPServer_MCPTools_NoManager(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/mcp/tools", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/mcp/tools", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -119,7 +119,7 @@ func TestHTTPServer_MCPTools_WithManager(t *testing.T) {
 	srv := NewHTTPServer(p)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/mcp/tools", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/mcp/tools", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -138,7 +138,7 @@ func TestHTTPServer_CallMCPTool(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{"path": "/tmp/test"})
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/mcp/tools/tool1/call", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	srv.ServeHTTP(w, req)
 
@@ -156,7 +156,7 @@ func TestHTTPServer_CallMCPTool_EmptyBody(t *testing.T) {
 	srv := NewHTTPServer(p)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/mcp/tools/tool1/call", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -165,7 +165,7 @@ func TestHTTPServer_CallMCPTool_EmptyBody(t *testing.T) {
 func TestHTTPServer_Tab_NotFound(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/tabs/missing", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tabs/missing", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -174,7 +174,7 @@ func TestHTTPServer_Tab_NotFound(t *testing.T) {
 func TestHTTPServer_Cost(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/cost", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cost", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -183,7 +183,7 @@ func TestHTTPServer_Cost(t *testing.T) {
 func TestHTTPServer_Trace(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/trace/trace-1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/trace/trace-1", nil)
 	srv.ServeHTTP(w, req)
 
 	// Traces not yet implemented, returns 503.
@@ -195,7 +195,7 @@ func TestHTTPServer_Subscribe(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/subscribe", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/subscribe", nil).WithContext(ctx)
 
 	done := make(chan struct{})
 	go func() {
@@ -222,7 +222,7 @@ func TestHTTPServer_ServeHTTP(t *testing.T) {
 func TestHTTPServer_ConsolePage(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/console/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/console/", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -233,7 +233,7 @@ func TestHTTPServer_ConsolePage(t *testing.T) {
 func TestHTTPServer_ConsoleStatic(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/console/static/style.css", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/console/static/style.css", nil)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)

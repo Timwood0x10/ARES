@@ -253,7 +253,7 @@ func DiscoverServers(projectDir string) []ServerConfig {
 }
 
 func scanClaudeConfig(path string, seen map[string]bool) []ServerConfig {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // reading claude config file from standard path
 	if err != nil {
 		return nil
 	}

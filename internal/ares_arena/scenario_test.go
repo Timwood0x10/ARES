@@ -267,7 +267,7 @@ actions:
     action:
       type: kill_leader
 `)
-	require.NoError(t, os.WriteFile(filePath, content, 0644))
+	require.NoError(t, os.WriteFile(filePath, content, 0600))
 
 	s, err := LoadScenarioFile(filePath)
 	require.NoError(t, err)

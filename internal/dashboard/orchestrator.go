@@ -272,6 +272,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 	o.agentWg.Add(1)
 	go func() {
 		defer o.agentWg.Done()
+		defer agentCancel()
 		defer func() {
 			o.mu.Lock()
 			delete(o.cancels, id)

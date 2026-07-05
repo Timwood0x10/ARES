@@ -57,7 +57,7 @@ func (f *YahooFeed) Candles(ticker string, start, end time.Time, _ Resolution) (
 
 func (f *YahooFeed) fetchCSV(ticker string, start, end time.Time) ([]Candle, error) {
 	url := fmt.Sprintf(yahooDownloadURL, ticker, start.Unix(), end.Unix())
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
 	if err != nil {
 		return nil, err
 	}

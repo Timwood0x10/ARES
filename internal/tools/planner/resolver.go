@@ -12,6 +12,13 @@ type toolResolver struct {
 	provider ToolProvider
 }
 
+// Capability name constants — reused across resolver, capdef, and provider.
+const (
+	CapabilityDataTransform  = "DataTransform"
+	CapabilityDataValidation = "DataValidation"
+	CapabilityLogAnalysis    = "LogAnalysis"
+)
+
 // ToolProvider abstracts access to the tool registry for resolution.
 // This allows the planner to work with any registry implementation.
 type ToolProvider interface {
@@ -37,32 +44,32 @@ func NewToolResolver(provider ToolProvider) (ToolResolver, error) {
 // This is the static mapping between capabilities and tools.
 // In a future phase this will be replaced by tool self-declaration.
 var capabilityMapping = map[string][]string{
-	"Arithmetic":           {"calculator"},
-	"Summation":            {"calculator"},
-	"DiscreteMath":         {"calculator"},
-	"Probability":          {"calculator"},
-	"Statistics":           {"calculator"},
-	"NumberTheory":         {"calculator"},
-	"ExpressionEvaluation": {"calculator"},
-	"Hashing":              {"hash_tool"},
-	"Base64":               {"hash_tool"},
-	"StringManipulation":   {"string_utils"},
-	"Regex":                {"regex_tool"},
-	"JSONProcessing":       {"json_tools"},
-	"PDFParsing":           {"pdf_tool"},
-	"TextExtraction":       {"pdf_tool"},
-	"WebSearch":            {"web_search"},
-	"HTTPRequest":          {"http_request"},
-	"WebFetch":             {"web_search", "http_request"},
-	"IDGeneration":         {"id_generator"},
-	"CodeExecution":        {"code_runner"},
-	"TaskPlanning":         {"task_planner"},
-	"Embedding":            {"embedding"},
-	"DateTime":             {"datetime"},
-	"DataTransform":        {"data_transform"},
-	"DataValidation":       {"data_validation"},
-	"LogAnalysis":          {"log_analyzer"},
-	"TextProcessor":        {"text_processor"},
+	"Arithmetic":             {"calculator"},
+	"Summation":              {"calculator"},
+	"DiscreteMath":           {"calculator"},
+	"Probability":            {"calculator"},
+	"Statistics":             {"calculator"},
+	"NumberTheory":           {"calculator"},
+	"ExpressionEvaluation":   {"calculator"},
+	"Hashing":                {"hash_tool"},
+	"Base64":                 {"hash_tool"},
+	"StringManipulation":     {"string_utils"},
+	"Regex":                  {"regex_tool"},
+	"JSONProcessing":         {"json_tools"},
+	"PDFParsing":             {"pdf_tool"},
+	"TextExtraction":         {"pdf_tool"},
+	"WebSearch":              {"web_search"},
+	"HTTPRequest":            {"http_request"},
+	"WebFetch":               {"web_search", "http_request"},
+	"IDGeneration":           {"id_generator"},
+	"CodeExecution":          {"code_runner"},
+	"TaskPlanning":           {"task_planner"},
+	"Embedding":              {"embedding"},
+	"DateTime":               {"datetime"},
+	CapabilityDataTransform:  {"data_transform"},
+	CapabilityDataValidation: {"data_validation"},
+	CapabilityLogAnalysis:    {"log_analyzer"},
+	"TextProcessor":          {"text_processor"},
 }
 
 // toolMetadata holds static scoring metadata for each tool.

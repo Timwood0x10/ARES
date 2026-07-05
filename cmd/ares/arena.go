@@ -447,7 +447,7 @@ func printSurvivalStatus(baseURL string) {
 }
 
 func getSurvivalStatus(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/survival/status")
+	resp, err := http.Get(baseURL + "/arena/survival/status") //nolint:noctx
 	if err != nil {
 		return nil
 	}
@@ -461,7 +461,7 @@ func getSurvivalStatus(baseURL string) map[string]any {
 }
 
 func getScore(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/score")
+	resp, err := http.Get(baseURL + "/arena/score") //nolint:noctx
 	if err != nil {
 		return nil
 	}
@@ -475,7 +475,7 @@ func getScore(baseURL string) map[string]any {
 }
 
 func getMetrics(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/metrics")
+	resp, err := http.Get(baseURL + "/arena/metrics") //nolint:noctx
 	if err != nil {
 		return nil
 	}
@@ -499,7 +499,7 @@ func printFinalScore(baseURL string) {
 }
 
 func printInspectTimeline(baseURL string) {
-	resp, err := http.Get(baseURL + "/arena/flight/timeline")
+	resp, err := http.Get(baseURL + "/arena/flight/timeline") //nolint:noctx
 	if err != nil {
 		return
 	}
@@ -527,7 +527,7 @@ func printInspectTimeline(baseURL string) {
 }
 
 func printInspectDiagnostics(baseURL string) {
-	resp, err := http.Get(baseURL + "/arena/flight/diagnostics")
+	resp, err := http.Get(baseURL + "/arena/flight/diagnostics") //nolint:noctx
 	if err != nil {
 		return
 	}
