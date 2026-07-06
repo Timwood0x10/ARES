@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARES — Agent Runtime &amp; Evolution System</title>
+<style>
+  :root { --bg: #0a0e17; --card: #111827; --border: #1e293b; --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6; --accent2: #8b5cf6; --green: #22c55e; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 16px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+
+  /* Nav */
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; border-bottom: 1px solid var(--border); max-width: 1200px; margin: 0 auto; }
+  nav .logo { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  nav .logo span { color: var(--accent); }
+  nav .links { display: flex; gap: 24px; align-items: center; }
+  nav .links a { color: var(--muted); font-size: 14px; transition: color 0.2s; }
+  nav .links a:hover { color: var(--text); text-decoration: none; }
+  .lang-btn { background: none; border: 1px solid var(--border); color: var(--text); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+
+  /* Hero */
+  .hero { text-align: center; padding: 100px 20px 80px; max-width: 800px; margin: 0 auto; }
+  .hero h1 { font-size: 56px; font-weight: 800; letter-spacing: -1.5px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .hero p { font-size: 20px; color: var(--muted); margin-top: 20px; line-height: 1.6; }
+  .hero .btn-wrap { margin-top: 40px; display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+  .hero .btn { display: inline-block; padding: 12px 28px; border-radius: 8px; font-size: 16px; font-weight: 600; transition: all 0.2s; }
+  .hero .btn-primary { background: var(--accent); color: #fff; } .hero .btn-primary:hover { background: #2563eb; text-decoration: none; }
+  .hero .btn-secondary { border: 1px solid var(--border); color: var(--text); } .hero .btn-secondary:hover { border-color: var(--accent); text-decoration: none; }
+
+  /* Section */
+  section { max-width: 1100px; margin: 0 auto; padding: 60px 20px; }
+  section h2 { font-size: 28px; font-weight: 700; margin-bottom: 32px; color: #fff; }
+  section h2 small { font-size: 14px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+
+  /* Cards */
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  @media (max-width: 768px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; transition: border-color 0.2s, transform 0.2s; }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .icon { font-size: 28px; margin-bottom: 12px; }
+  .card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .card p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .card .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(59,130,246,0.15); color: var(--accent); margin-top: 12px; }
+
+  /* Article list */
+  .article-list { list-style: none; }
+  .article-list li { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .article-list li:last-child { border: none; }
+  .article-list .lang { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(34,197,94,0.15); color: var(--green); }
+  .article-list a { color: var(--text); } .article-list a:hover { color: var(--accent); }
+
+  /* Footer */
+  footer { text-align: center; padding: 40px 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; max-width: 1200px; margin: 0 auto; }
+
+  /* Data i18n: zh hidden by default */
+  .en { display: none; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo"><span>ARES</span> Framework</div>
+  <div class="links">
+    <a href="#features" data-i18n="nav_features">Features</a>
+    <a href="#docs" data-i18n="nav_docs">Docs</a>
+    <a href="#cookbook" data-i18n="nav_cookbook">Cookbook</a>
+    <a href="https://github.com/Timwood0x10/ares" target="_blank">GitHub</a>
+    <button class="lang-btn" onclick="toggleLang()">中 / EN</button>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>ARES</h1>
+  <p data-i18n="hero_desc">Agent Runtime &amp; Evolution System — Build resilient, self-evolving AI agents in Go.<br>智能体运行时与进化系统，用 Go 构建高韧性、自进化的 AI Agent。</p>
+  <div class="btn-wrap">
+    <a class="btn btn-primary" href="https://github.com/Timwood0x10/ares" data-i18n="hero_btn1">GitHub →</a>
+    <a class="btn btn-secondary" href="#docs" data-i18n="hero_btn2">Get Started</a>
+  </div>
+</div>
+
+<section id="features">
+  <h2 data-i18n="sect_features">Core Features <small>核心能力</small></h2>
+  <div class="grid grid-4">
+    <div class="card"><div class="icon">⚡</div><h3 data-i18n="f1_t">Unified Runtime</h3><p data-i18n="f1_d">One API. Any LLM. Zero boilerplate. <br>统一 API，任意 LLM，零模板代码。</p><span class="tag">Go</span></div>
+    <div class="card"><div class="icon">🧬</div><h3 data-i18n="f2_t">Self Evolution</h3><p data-i18n="f2_d">Strategies evolve automatically. Prompts improve over time. <br>策略自动进化，提示词随时间持续优化。</p><span class="tag">GA</span></div>
+    <div class="card"><div class="icon">🔀</div><h3 data-i18n="f3_t">DAG Workflow</h3><p data-i18n="f3_d">Dynamic graphs with conditional branching. <br>动态图编排，支持条件分支与重试。</p><span class="tag">Graph</span></div>
+    <div class="card"><div class="icon">🛡️</div><h3 data-i18n="f4_t">Chaos Resilient</h3><p data-i18n="f4_d">Fault injection, failover, self-healing. <br>故障注入、自动切换、自愈恢复。</p><span class="tag">Arena</span></div>
+    <div class="card"><div class="icon">🧠</div><h3 data-i18n="f5_t">Memory</h3><p data-i18n="f5_d">Session context, task distillation, vector search. <br>会话上下文、任务蒸馏、向量检索。</p><span class="tag">RAG</span></div>
+    <div class="card"><div class="icon">🔧</div><h3 data-i18n="f6_t">MCP Ready</h3><p data-i18n="f6_d">Connect any MCP server for tools &amp; data. <br>连接任意 MCP 服务器扩展工具与数据。</p><span class="tag">Stdio/SSE</span></div>
+    <div class="card"><div class="icon">👥</div><h3 data-i18n="f7_t">Multi-Agent</h3><p data-i18n="f7_d">Leader/sub orchestration with failover. <br>领导/成员编排，支持故障切换。</p><span class="tag">Team</span></div>
+    <div class="card"><div class="icon">📊</div><h3 data-i18n="f8_t">Observability</h3><p data-i18n="f8_d">OpenTelemetry traces, structured logs, metrics. <br>OpenTelemetry 追踪、结构化日志、指标。</p><span class="tag">O11y</span></div>
+  </div>
+</section>
+
+<section id="docs">
+  <h2 data-i18n="sect_docs">Documentation <small>文档</small></h2>
+  <div class="grid grid-2">
+    <div class="card"><h3>📖 <a href="articles/zh/" data-i18n="d_zh">中文文章</a></h3><p data-i18n="d_zh_desc">架构、进化、MCP、工作流等深入文章</p></div>
+    <div class="card"><h3>📖 <a href="articles/en/" data-i18n="d_en">English Articles</a></h3><p data-i18n="d_en_desc">Architecture, Evolution, MCP, Workflow deep dives</p></div>
+    <div class="card"><h3>📄 <a href="../README.md" data-i18n="d_readme">README</a></h3><p data-i18n="d_readme_desc">Project overview &amp; quick start in one page</p></div>
+    <div class="card"><h3>📄 <a href="../examples/README.md" data-i18n="d_examples">Examples</a></h3><p data-i18n="d_examples_desc">9 hands-on examples from quickstart to full-app</p></div>
+    <div class="card"><h3>📚 <a href="cookbook/" data-i18n="d_cookbook">Cookbook</a></h3><p data-i18n="d_cookbook_desc">7 recipes: Chat, Tool, Multi-Agent, Memory, Coding, Review, GitHub</p></div>
+    <div class="card"><h3>🧪 <a href="../api/ARCHITECTURE.md" data-i18n="d_api">API Reference</a></h3><p data-i18n="d_api_desc">Core interfaces, services, and SDK documentation</p></div>
+  </div>
+</section>
+
+<section id="articles">
+  <h2 data-i18n="sect_articles">Latest Articles <small>精选文章</small></h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>🧬 Autonomous Evolution</h3>
+        <span class="tag">ZH / EN</span>
+      </div>
+      <ul class="article-list">
+        <li><a href="articles/zh/autonomous-evolution-overview.md">自进化系统概述</a> <span class="lang">ZH</span></li>
+        <li><a href="articles/zh/autonomous-evolution-deep-dive.md">自进化深度解析</a> <span class="lang">ZH</span></li>
+        <li><a href="articles/en/autonomous-evolution-deep-dive.md">Evolution Deep Dive</a> <span class="lang">EN</span></li>
+      </ul>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>🏗️ Architecture</h3>
+        <span class="tag">ZH / EN</span>
+      </div>
+      <ul class="article-list">
+        <li><a href="articles/zh/architecture-overview-deep-dive.md">架构深度解析</a> <span class="lang">ZH</span></li>
+        <li><a href="articles/en/architecture-overview-deep-dive.md">Architecture Deep Dive</a> <span class="lang">EN</span></li>
+        <li><a href="articles/zh/runtime-lifecycle-deep-dive.md">运行时生命周期</a> <span class="lang">ZH</span></li>
+      </ul>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>🔧 MCP &amp; Tools</h3>
+        <span class="tag">ZH / EN</span>
+      </div>
+      <ul class="article-list">
+        <li><a href="articles/zh/mcp-integration-deep-dive.md">MCP 集成深度解析</a> <span class="lang">ZH</span></li>
+        <li><a href="articles/en/mcp-integration-deep-dive.md">MCP Integration</a> <span class="lang">EN</span></li>
+        <li><a href="articles/zh/tool-system-deep-dive.md">工具系统深度解析</a> <span class="lang">ZH</span></li>
+      </ul>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>🧪 Chaos &amp; Security</h3>
+        <span class="tag">ZH / EN</span>
+      </div>
+      <ul class="article-list">
+        <li><a href="articles/zh/arena-fault-injection-deep-dive.md">混沌注入深度解析</a> <span class="lang">ZH</span></li>
+        <li><a href="articles/en/arena-fault-injection-deep-dive.md">Fault Injection</a> <span class="lang">EN</span></li>
+        <li><a href="articles/zh/security-hardening-deep-dive.md">安全加固</a> <span class="lang">ZH</span></li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:20px;text-align:center;color:var(--muted);font-size:14px;" data-i18n="articles_more">View all articles in <a href="articles/zh/">中文</a> or <a href="articles/en/">English</a></p>
+</section>
+
+<section id="cookbook">
+  <h2 data-i18n="sect_cookbook">Cookbook <small>食谱</small></h2>
+  <div class="grid grid-3">
+    <div class="card"><h3><a href="cookbook/chat.md">💬 Chat</a></h3><p data-i18n="cb1">Build a conversational agent in 20 lines</p></div>
+    <div class="card"><h3><a href="cookbook/tool.md">🔧 Tool Calling</a></h3><p data-i18n="cb2">Register custom tools for LLM use</p></div>
+    <div class="card"><h3><a href="cookbook/multi-agent.md">👥 Multi-Agent</a></h3><p data-i18n="cb3">Orchestrate leader/member teams</p></div>
+    <div class="card"><h3><a href="cookbook/memory.md">🧠 Memory</a></h3><p data-i18n="cb4">Persist context across conversations</p></div>
+    <div class="card"><h3><a href="cookbook/coding.md">💻 Coding</a></h3><p data-i18n="cb5">Generate code with specialized instructions</p></div>
+    <div class="card"><h3><a href="cookbook/review.md">📝 Review</a></h3><p data-i18n="cb6">Automate code review with git diff</p></div>
+    <div class="card" style="grid-column: span 1;"><h3><a href="cookbook/github.md">🐙 GitHub</a></h3><p data-i18n="cb7">Interact with issues &amp; PRs via tools</p></div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2 data-i18n="sect_qs">Quick Start <small>快速开始</small></h2>
+  <div class="card" style="padding:32px;">
+    <pre style="background:#0d1117;border-radius:8px;padding:20px;overflow-x:auto;font-size:14px;line-height:1.5;"><code style="color:#e2e8f0;">// examples/quickstart/main.go
+<span style="color:#6b7280;">// go run examples/quickstart/main.go</span>
+<span style="color:#569cd6;">package</span> main
+
+<span style="color:#569cd6;">import</span> (
+    <span style="color:#ce9178;">"context"</span>
+    <span style="color:#ce9178;">"github.com/Timwood0x10/ares/sdk"</span>
+)
+
+<span style="color:#569cd6;">func</span> <span style="color:#dcdcaa;">main</span>() {
+    ctx <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">context</span>.<span style="color:#dcdcaa;">Background</span>()
+    rt <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">sdk</span>.<span style="color:#dcdcaa;">MustNew</span>(<span style="color:#dcdcaa;">sdk</span>.<span style="color:#dcdcaa;">WithOllama</span>(<span style="color:#ce9178;">"llama3.2"</span>))
+    <span style="color:#569cd6;">defer</span> rt.<span style="color:#dcdcaa;">Close</span>()
+    agent <span style="color:#d4d4d4;">:=</span> rt.<span style="color:#dcdcaa;">NewAgent</span>(<span style="color:#ce9178;">"chatbot"</span>)
+    result, _ <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">agent</span>.<span style="color:#dcdcaa;">Run</span>(ctx, <span style="color:#ce9178;">"Say hello"</span>)
+    <span style="color:#dcdcaa;">fmt</span>.<span style="color:#dcdcaa;">Println</span>(result.Output)
+}</code></pre>
+    <div class="btn-wrap" style="margin-top: 20px;">
+      <a class="btn btn-primary" href="https://github.com/Timwood0x10/ares" data-i18n="qs_btn">View on GitHub →</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>ARES — Agent Runtime &amp; Evolution System</p>
+  <p style="margin-top:8px;color:var(--muted);">Built with Go · Apache 2.0 License · 中英双语文档</p>
+</footer>
+
+<script>
+function toggleLang() {
+  const isZh = document.documentElement.lang === 'zh-CN';
+  document.documentElement.lang = isZh ? 'en' : 'zh-CN';
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = el.getAttribute('data-i18n-' + (isZh ? 'en' : 'zh')) || el.textContent;
+  });
+}
+</script>
+</body>
+</html>

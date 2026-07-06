@@ -1,0 +1,9 @@
+# GitHub Pages configuration for ARES documentation
+title: ARES
+description: Agent Runtime & Evolution System — 智能体运行时与进化系统
+theme: null
+markdown: kramdown
+include:
+  - _static
+  - zh
+  - en

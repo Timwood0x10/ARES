@@ -58,6 +58,9 @@ jobs:
       - name: Unit tests
         run: go test -race -count=1 -timeout=300s ./...
 
+      - name: Build all examples
+        run: make examples
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
