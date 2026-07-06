@@ -113,7 +113,6 @@ func (r *Registry) Register(tool Tool) error {
 	// Sync to cached core.Registry if it exists.
 	if r.coreReg != nil {
 		if err := r.coreReg.Register(&toolAdapter{tool: tool, name: tool.Name()}); err != nil {
-			r.mu.Unlock()
 			return err
 		}
 	}
@@ -121,16 +120,14 @@ func (r *Registry) Register(tool Tool) error {
 }
 
 // Unregister removes a tool from the registry and syncs to the internal cache.
-func (r *Registry) Unregister(name string) {
+func (r *Registry) Unregister(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 	if r.coreReg != nil {
-		if err := r.coreReg.Unregister(name); err != nil {
-			r.mu.Unlock()
-			return
-		}
+		return r.coreReg.Unregister(name)
 	}
+	return nil
 }
 
 // Get retrieves a tool by name.
@@ -297,7 +294,11 @@ func NewPlanner(r *Registry) (*Planner, error) {
 //	result, err := bridge.Execute(ctx, "", nil, "计算1+1")
 func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
 	store := planner.NewMemoryEvidenceStore()
-	bridge, err := planner.NewToolExecutionBridge(r.coreRegistry(), p, store)
+	coreReg, err := r.coreRegistry()
+	if err != nil {
+		return nil, fmt.Errorf("core registry: %w", err)
+	}
+	bridge, err := planner.NewToolExecutionBridge(coreReg, p, store)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: %w", err)
 	}
@@ -306,20 +307,19 @@ func NewBridge(r *Registry, p *Planner) (*Bridge, error) {
 
 // coreRegistry returns the cached core.Registry, lazily building it from
 // the public Registry's tools on first access.
-func (r *Registry) coreRegistry() *core.Registry {
+func (r *Registry) coreRegistry() (*core.Registry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.coreReg != nil {
-		return r.coreReg
+		return r.coreReg, nil
 	}
 	r.coreReg = core.NewRegistry()
 	for name, tool := range r.tools {
 		if err := r.coreReg.Register(&toolAdapter{tool: tool, name: name}); err != nil {
-			r.mu.Unlock()
-			return r.coreReg
+			return nil, err
 		}
 	}
-	return r.coreReg
+	return r.coreReg, nil
 }
 
 // toolAdapter wraps an api/tools.Tool so it implements core.Tool.

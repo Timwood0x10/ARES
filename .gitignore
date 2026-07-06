@@ -6,6 +6,10 @@
 .claude/
 .codegraph/
 .atomcode/
+.codebase-memory/
+.codescope/
+
+
 
 plan/
 bin/

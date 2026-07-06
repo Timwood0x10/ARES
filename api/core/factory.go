@@ -18,7 +18,7 @@ func DefaultEvolutionConfig() *EvolutionConfig {
 func DefaultArenaConfig() *ArenaConfig {
 	return &ArenaConfig{
 		Duration:   5 * time.Minute,
-		FaultTypes: []string{string(FaultKillAgent), string(FaultNetworkPartition), "latency_spike"},
+		FaultTypes: []string{"kill_agent", "network_partition", "latency_spike"},
 	}
 }
 

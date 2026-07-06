@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+// Test constants matching values used in production.
+const (
+	jsonrpcVersion          = "2.0"
+	methodToolsList         = "tools/list"
+	methodToolsCall         = "tools/call"
+	methodInitialize        = "initialize"
+	methodNotificationsInit = "notifications/initialized"
+	protocolVersion         = "2024-11-05"
+	mcpClientName           = "ares-mcp-client"
+)
+
 // mockTransport implements the transport interface for testing.
 type mockTransport struct {
 	roundTripFn func(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)

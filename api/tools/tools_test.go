@@ -64,7 +64,7 @@ func TestRegistryRegisterGetListUnregister(t *testing.T) {
 		t.Fatalf("unexpected list: %v", names)
 	}
 
-	r.Unregister("tool1")
+	_ = r.Unregister("tool1")
 	if _, ok := r.Get("tool1"); ok {
 		t.Fatal("tool1 should be unregistered")
 	}

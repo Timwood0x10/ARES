@@ -20,16 +20,6 @@ import (
 	"sync"
 )
 
-const (
-	jsonrpcVersion          = "2.0"
-	methodInitialize        = "initialize"
-	methodNotificationsInit = "notifications/initialized"
-	methodToolsList         = "tools/list"
-	methodToolsCall         = "tools/call"
-	protocolVersion         = "2024-11-05"
-	mcpClientName           = "ares-mcp-client"
-)
-
 // transport abstracts MCP transport (stdio, SSE, etc.).
 type transport interface {
 	roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error)
@@ -67,14 +57,14 @@ type ContentBlock struct {
 
 func (c *Client) initialize(ctx context.Context) error {
 	req := jsonrpcRequest{
-		JSONRPC: jsonrpcVersion,
+		JSONRPC: "2.0",
 		ID:      c.nextID(),
-		Method:  methodInitialize,
+		Method:  "initialize",
 		Params: map[string]any{
-			"protocolVersion": protocolVersion,
+			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
-				"name":    mcpClientName,
+				"name":    "ares-mcp-client",
 				"version": "1.0.0",
 			},
 		},
@@ -89,8 +79,8 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 
 	notif := jsonrpcNotification{
-		JSONRPC: jsonrpcVersion,
-		Method:  methodNotificationsInit,
+		JSONRPC: "2.0",
+		Method:  "notifications/initialized",
 	}
 	_ = c.sendNotification(notif) //nolint: errcheck
 
@@ -100,9 +90,9 @@ func (c *Client) initialize(ctx context.Context) error {
 // ListTools returns all tools exposed by the MCP server.
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	req := jsonrpcRequest{
-		JSONRPC: jsonrpcVersion,
+		JSONRPC: "2.0",
 		ID:      c.nextID(),
-		Method:  methodToolsList,
+		Method:  "tools/list",
 	}
 
 	resp, err := c.sendRequest(ctx, req)
@@ -127,9 +117,9 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 // CallTool invokes a tool on the MCP server.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*CallResult, error) {
 	req := jsonrpcRequest{
-		JSONRPC: jsonrpcVersion,
+		JSONRPC: "2.0",
 		ID:      c.nextID(),
-		Method:  methodToolsCall,
+		Method:  "tools/call",
 		Params: map[string]any{
 			"name":      name,
 			"arguments": args,
@@ -253,7 +243,7 @@ func DiscoverServers(projectDir string) []ServerConfig {
 }
 
 func scanClaudeConfig(path string, seen map[string]bool) []ServerConfig {
-	data, err := os.ReadFile(path) //nolint:gosec // reading claude config file from standard path
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}

@@ -10,8 +10,9 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/errors"
+	gerr "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -76,7 +77,7 @@ func (w *WorkflowClient) Execute(ctx context.Context, workflow *engine.Workflow,
 func (w *WorkflowClient) ExecuteFromFile(ctx context.Context, path, input string) (*engine.WorkflowResult, error) {
 	workflow, err := w.LoadWorkflow(ctx, path)
 	if err != nil {
-		return nil, errors.Wrap(err, "load workflow")
+		return nil, gerr.Wrap(err, "load workflow")
 	}
 
 	return w.Execute(ctx, workflow, input)
@@ -132,13 +133,19 @@ type WorkflowAgentExecutor struct {
 }
 
 // ID returns the agent ID.
+
 func (e *WorkflowAgentExecutor) ID() string {
+
 	return e.agentID
+
 }
 
 // Type returns the agent type.
+
 func (e *WorkflowAgentExecutor) Type() models.AgentType {
+
 	return models.AgentType(e.agentType)
+
 }
 
 // Status returns the agent status.
@@ -157,7 +164,7 @@ func (e *WorkflowAgentExecutor) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.started {
-		return errors.ErrAgentAlreadyStarted
+		return coreerrors.ErrAgentAlreadyStarted
 	}
 	if e.llmService == nil {
 		return fmt.Errorf("llmService is not configured for agent %s", e.agentID)
@@ -171,7 +178,7 @@ func (e *WorkflowAgentExecutor) Stop(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.started {
-		return errors.ErrAgentNotRunning
+		return coreerrors.ErrAgentNotRunning
 	}
 	e.started = false
 	return nil
@@ -241,7 +248,7 @@ func (e *WorkflowAgentExecutor) Process(ctx context.Context, input any) (any, er
 		lastErr = err
 	}
 
-	return nil, errors.Wrapf(lastErr, "execute agent %s after %d retries", e.agentID, retries)
+	return nil, gerr.Wrapf(lastErr, "execute agent %s after %d retries", e.agentID, retries)
 }
 
 // ProcessStream executes a workflow step and returns a stream of events.

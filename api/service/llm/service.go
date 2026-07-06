@@ -1,100 +1,66 @@
-// Package llm provides the public API bridge for LLM services.
-// It wraps internal/llm.Client and implements api/core.LLMService.
+// Package llm provides the public API for LLM operations.
 package llm
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/Timwood0x10/ares/api/core"
-	internal "github.com/Timwood0x10/ares/internal/llm"
+	internal "github.com/Timwood0x10/ares/internal/llmservice"
 )
 
-// Service wraps internal/llm.Client and implements core.LLMService.
+// Config re-exports internal's LLM service config.
+type Config = internal.Config
+
+// Service wraps internal/llmservice.Service for public consumption.
 type Service struct {
-	client *internal.Client
-	config *core.LLMConfig
+	inner *internal.Service
 }
 
-// New creates a new LLM service from an internal client.
-// Args:
-//
-//	client - the internal LLM client.
-//
-// Returns:
-//
-//	service - the initialized LLM service.
-//	err - error if client is nil.
-func New(client *internal.Client) (*Service, error) {
-	if client == nil {
-		return nil, fmt.Errorf("llm: client is nil")
+// NewService creates a new LLM service with the given config.
+func NewService(cfg *Config) (*Service, error) {
+	s, err := internal.NewService(cfg)
+	if err != nil {
+		return nil, err
 	}
-	return &Service{
-		client: client,
-		config: &core.LLMConfig{
-			Provider: core.LLMProvider(client.GetProvider()),
-			Model:    client.GetModel(),
-		},
-	}, nil
+	return &Service{inner: s}, nil
 }
 
-// Generate generates text from the given messages.
+// Generate delegates to the inner service.
 func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
-	if request == nil {
-		return nil, fmt.Errorf("llm: request is nil")
-	}
-
-	messages := make([]*core.LLMMessage, len(request.Messages))
-	copy(messages, request.Messages)
-
-	tools := request.Tools
-	if tools == nil {
-		tools = []core.Tool{}
-	}
-
-	resp, err := s.client.Chat(ctx, messages, tools)
-	if err != nil {
-		return nil, fmt.Errorf("llm: generate: %w", err)
-	}
-
-	return resp, nil
+	return s.inner.Generate(ctx, request)
 }
 
-// GenerateSimple generates text from a simple prompt string.
+// GenerateSimple delegates to the inner service.
 func (s *Service) GenerateSimple(ctx context.Context, prompt string) (string, error) {
-	if prompt == "" {
-		return "", fmt.Errorf("llm: prompt is empty")
-	}
-
-	resp, err := s.client.Generate(ctx, prompt)
-	if err != nil {
-		return "", fmt.Errorf("llm: generate simple: %w", err)
-	}
-
-	return resp, nil
+	return s.inner.GenerateSimple(ctx, prompt)
 }
 
-// GenerateEmbedding returns an error as embeddings are not supported via this service.
-func (s *Service) GenerateEmbedding(_ context.Context, _ *core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
-	return nil, fmt.Errorf("llm: embeddings not supported by this service")
+// GenerateEmbedding delegates to the inner service.
+func (s *Service) GenerateEmbedding(ctx context.Context, request *core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	return s.inner.GenerateEmbedding(ctx, request)
 }
 
 // GetConfig returns the current LLM configuration.
 func (s *Service) GetConfig() *core.LLMConfig {
-	return s.config
+	return s.inner.GetConfig()
 }
 
-// IsEnabled checks if the LLM client is configured and available.
+// IsEnabled checks if the LLM service is properly configured and available.
 func (s *Service) IsEnabled() bool {
-	return s.client.IsEnabled()
+	return s.inner.IsEnabled()
 }
 
 // GetProvider returns the current LLM provider.
 func (s *Service) GetProvider() core.LLMProvider {
-	return core.LLMProvider(s.client.GetProvider())
+	return s.inner.GetProvider()
 }
 
 // GetModel returns the current model name.
 func (s *Service) GetModel() string {
-	return s.client.GetModel()
+	return s.inner.GetModel()
+}
+
+// Close releases resources held by the LLM service.
+func (s *Service) Close() {
+	s.inner.Close()
 }
