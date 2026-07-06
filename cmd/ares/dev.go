@@ -139,6 +139,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
+	// Detect ARES module path for the replace directive.
+	aresMod := "github.com/Timwood0x10/ares"
+	aresRoot := findAresRoot()
+	replaceLine := ""
+	if aresRoot != "" {
+		replaceLine = fmt.Sprintf("replace %s => %s\n", aresMod, aresRoot)
+	}
+
+	// go.mod template.
+	goMod := fmt.Sprintf(`module myapp
+
+go 1.26
+
+require %s v0.0.0
+
+%s`, aresMod, replaceLine)
+
 	// main.go template.
 	mainGo := `package main
 
@@ -199,6 +216,9 @@ evolution:
   enabled: false
 `
 
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
+		return fmt.Errorf("write go.mod: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainGo), 0644); err != nil {
 		return fmt.Errorf("write main.go: %w", err)
 	}
@@ -207,9 +227,31 @@ evolution:
 	}
 
 	fmt.Printf("✅ Created ARES project in %s\n", dir)
-	fmt.Println("   Files: main.go, ares.yaml")
-	fmt.Println("   Run:   cd", dir, "&& go mod init myapp && go mod tidy && go run .")
+	fmt.Println("   Files: go.mod, main.go, ares.yaml")
+	fmt.Println("   Run:   cd", dir, "&& go run .")
 	return nil
+}
+
+// findAresRoot walks up from the current directory looking for go.mod
+// containing "github.com/Timwood0x10/ares".
+func findAresRoot() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := wd
+	for {
+		gm := filepath.Join(dir, "go.mod")
+		data, err := os.ReadFile(gm)
+		if err == nil && strings.Contains(string(data), "module github.com/Timwood0x10/ares") {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 // ── run ────────────────────────────────────────────────────────
@@ -217,36 +259,34 @@ evolution:
 func runRun(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
-	// Try loading config.
-	data, err := os.ReadFile(configPath)
+	// Load and parse config.
+	cfg, err := sdk.LoadConfigFile(configPath)
 	if err != nil {
-		return fmt.Errorf("read config %q: %w", configPath, err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	fmt.Printf("📋 Using config: %s\n", configPath)
-	fmt.Println(string(data))
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	opts = append(opts, sdk.WithTrace(true))
 
-	// Simple run with SDK defaults for now.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	rt := sdk.MustNew(sdk.WithTrace(true))
+	rt := sdk.MustNew(opts...)
 	defer rt.Close()
 
 	agent := rt.NewAgent("cli-agent",
 		sdk.WithInstruction("You are a helpful assistant."),
 	)
 
-	// Read input from args or stdin.
-	args := os.Args[2:] // skip "run"
-	input := strings.Join(args, " ")
+	// Read input from args (skip run subcommand and config flags).
+	input := strings.Join(parseRunArgs(), " ")
 	if input == "" {
 		fmt.Print("Enter prompt: ")
 		_, _ = fmt.Scanln(&input)
 		input = strings.TrimSpace(input)
-		if input == "" {
-			input = "Say hello"
-		}
 	}
 	if input == "" {
 		input = "Say hello"
@@ -261,6 +301,31 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("(tokens: %d, tools: %d, took: %v)\n",
 		result.TokenUsage.Total, result.ToolCalls, result.Duration)
 	return nil
+}
+
+// parseRunArgs returns os.Args with the "run" subcommand and --config flag
+// removed, so remaining words can be used as the input prompt.
+func parseRunArgs() []string {
+	var out []string
+	skipNext := false
+	for i, a := range os.Args {
+		if i == 0 {
+			continue // skip program name
+		}
+		if a == "run" {
+			continue
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "-c" || a == "--config" {
+			skipNext = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // ── bench ──────────────────────────────────────────────────────

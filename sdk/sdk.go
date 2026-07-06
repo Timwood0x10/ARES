@@ -123,7 +123,7 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 	llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
-		return nil, fmt.Errorf("llm: %w", err)
+		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
 	// ---- Tools ----
@@ -293,7 +293,7 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 			Tools:    coreTools,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("llm generate: %w", err)
+			return nil, friendlyErr("llm generate", a.runtime.llmSvc.GetProvider(), err)
 		}
 
 		totalInputTokens += resp.Usage.PromptTokens
@@ -484,4 +484,19 @@ func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (too
 		sb.WriteString(c.Text)
 	}
 	return tools.Result{Success: !result.IsError, Data: sb.String()}, nil
+}
+
+// friendlyErr wraps an LLM error with an actionable hint based on the provider.
+func friendlyErr(scope string, provider core.LLMProvider, origErr error) error {
+	hints := map[core.LLMProvider]string{
+		core.LLMProviderOpenAI:     "→ Set OPENAI_API_KEY or check https://platform.openai.com/account/api-keys",
+		core.LLMProviderAnthropic:  "→ Set ANTHROPIC_API_KEY or check https://console.anthropic.com/",
+		core.LLMProviderOpenRouter: "→ Set OPENROUTER_API_KEY or check https://openrouter.ai/keys",
+		core.LLMProviderOllama:     "→ Run: ollama run llama3.2  (Ollama may not be running)",
+	}
+	msg := fmt.Sprintf("%s: %v", scope, origErr)
+	if hint, ok := hints[provider]; ok {
+		msg += "\n  " + hint
+	}
+	return fmt.Errorf("%s", msg)
 }
