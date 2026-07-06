@@ -1,6 +1,8 @@
 package sdk
 
 import (
+	"fmt"
+
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
 )
@@ -12,13 +14,19 @@ type Option func(*config) error
 
 // config holds the internal configuration state while options are applied.
 type config struct {
-	llmCfg  *core.LLMConfig
-	baseCfg *core.BaseConfig
-	memCfg  memoryCfg
-	trace   bool
+	llmCfg   *core.LLMConfig
+	baseCfg  *core.BaseConfig
+	memCfg   memoryCfg
+	evoCfg   evolutionCfg
+	mcpConns []MCPConn
+	trace    bool
 }
 
 type memoryCfg struct {
+	Enabled bool
+}
+
+type evolutionCfg struct {
 	Enabled bool
 }
 
@@ -36,6 +44,7 @@ func defaultConfig() *config {
 			MaxRetries:     3,
 		},
 		memCfg: memoryCfg{Enabled: false},
+		evoCfg: evolutionCfg{Enabled: false},
 		trace:  true,
 	}
 }
@@ -131,10 +140,44 @@ func WithDefaultMemory() Option {
 	}
 }
 
-// WithTrace toggles per-step trace logging. Enabled by default.
-func WithTrace(enable bool) Option {
+// WithEvolution enables strategy evolution. When enabled, the Runtime tracks
+// agent performance and can evolve instructions to improve results over time.
+func WithEvolution() Option {
 	return func(c *config) error {
-		c.trace = enable
+		c.evoCfg.Enabled = true
+		return nil
+	}
+}
+
+// MCPConn configures an MCP server connection.
+type MCPConn struct {
+	// Name is a human-readable label for this MCP server.
+	Name string
+	// Command is the absolute path to the MCP server binary.
+	Command string
+	// Args are command-line arguments passed to the server.
+	Args []string
+}
+
+// WithMCP connects to an MCP server and registers its tools with the Runtime.
+// Call multiple times to connect to multiple servers.
+func WithMCP(conn MCPConn) Option {
+	return func(c *config) error {
+		if conn.Name == "" {
+			conn.Name = "mcp"
+		}
+		if conn.Command == "" {
+			return fmt.Errorf("mcp: command is required")
+		}
+		c.mcpConns = append(c.mcpConns, conn)
+		return nil
+	}
+}
+
+// WithTrace toggles per-step trace logging. Enabled by default.
+func WithTrace(isEnabled bool) Option {
+	return func(c *config) error {
+		c.trace = isEnabled
 		return nil
 	}
 }
@@ -147,6 +190,7 @@ type AgentOption func(*agentConfig)
 type agentConfig struct {
 	instruction string
 	tools       []tools.Tool
+	humanInput  HumanInputFunc
 }
 
 func defaultAgentConfig() *agentConfig {
@@ -168,5 +212,14 @@ func WithInstruction(instruction string) AgentOption {
 func WithTools(tt ...tools.Tool) AgentOption {
 	return func(c *agentConfig) {
 		c.tools = append(c.tools, tt...)
+	}
+}
+
+// WithHumanInput attaches a human-in-the-loop approval function. Before each
+// tool call, the function is invoked so a human can approve or reject it.
+// Return true to approve, false to skip the tool call.
+func WithHumanInput(fn HumanInputFunc) AgentOption {
+	return func(c *agentConfig) {
+		c.humanInput = fn
 	}
 }

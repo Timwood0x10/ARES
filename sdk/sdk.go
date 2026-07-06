@@ -27,11 +27,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
@@ -39,14 +41,24 @@ import (
 
 // ---- public types ----
 
+// Role constants for LLM messages.
+const (
+	roleSystem    = "system"
+	roleUser      = "user"
+	roleAssistant = "assistant"
+	roleTool      = "tool"
+)
+
 // Runtime is the top-level ARES container. It owns the LLM client, tool
-// registry, and — optionally — memory and MCP connections. Create one with
-// MustNew or New.
+// registry, and — optionally — memory, MCP connections, and evolution.
+// Create one with MustNew or New.
 type Runtime struct {
 	llmSvc     *llm.Service
 	toolReg    *tools.Registry
 	memSvc     *memsvc.Service
 	memEnabled bool
+	evoEnabled bool
+	mcpClients []*mcp.Client
 	trace      bool
 }
 
@@ -57,7 +69,13 @@ type Agent struct {
 	instruction string
 	tools       []tools.Tool
 	runtime     *Runtime
+	humanInput  HumanInputFunc
 }
+
+// HumanInputFunc is called when the agent needs human approval before executing
+// a tool call. Return true to approve, false to skip the tool call, or an
+// error to abort entirely.
+type HumanInputFunc func(ctx context.Context, toolName string, args map[string]any) (approved bool, err error)
 
 // Result captures the outcome of a single Run call.
 type Result struct {
@@ -121,11 +139,39 @@ func New(opts ...Option) (*Runtime, error) {
 		memSvc = s
 	}
 
+	// ---- MCP ----
+	var mcpClients []*mcp.Client
+	for _, conn := range cfg.mcpConns {
+		client, err := mcp.ConnectStdio(context.Background(), conn.Name, conn.Command, conn.Args)
+		if err != nil {
+			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
+		}
+		tools, listErr := client.ListTools(context.Background())
+		if listErr != nil {
+			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
+		}
+		for _, t := range tools {
+			toolName := t.Name
+			toolDesc := t.Description
+			mcpClient := client
+			if err := toolReg.Register(mcpToolAdapter{
+				name:   toolName,
+				desc:   toolDesc,
+				client: mcpClient,
+			}); err != nil {
+				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, toolName, err)
+			}
+		}
+		mcpClients = append(mcpClients, client)
+	}
+
 	return &Runtime{
 		llmSvc:     llmSvc,
 		toolReg:    toolReg,
 		memSvc:     memSvc,
 		memEnabled: cfg.memCfg.Enabled,
+		evoEnabled: cfg.evoCfg.Enabled,
+		mcpClients: mcpClients,
 		trace:      cfg.trace,
 	}, nil
 }
@@ -137,12 +183,56 @@ func (r *Runtime) Close() {
 	if r.memSvc != nil {
 		_ = r.memSvc.Stop(context.Background())
 	}
+	for _, c := range r.mcpClients {
+		_ = c.Close()
+	}
 }
 
 // ToolRegistry returns the internal tool registry. Use this to register custom
 // tools before creating agents.
 func (r *Runtime) ToolRegistry() *tools.Registry {
 	return r.toolReg
+}
+
+// Evolve runs an evolution cycle to improve an agent's instruction. It uses the
+// LLM to generate variations, evaluates them against the given task, and returns
+// the best-evolved instruction.
+func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string, error) {
+	if agent == nil {
+		return "", fmt.Errorf("evolve: agent is nil")
+	}
+	if !r.evoEnabled {
+		return "", fmt.Errorf("evolution not enabled (use WithEvolution())")
+	}
+
+	if r.trace {
+		log.Printf("[ares:evolve] evolving agent %q on task: %s", agent.name, task)
+	}
+
+	// Generate a variant of the instruction.
+	evolveMsg := []*core.LLMMessage{
+		{Role: roleSystem, Content: "You are an evolution engine. Improve the following agent instruction to get better results."},
+		{Role: roleUser, Content: fmt.Sprintf(
+			`Original instruction: %s
+
+Task to optimize for: %s
+
+Generate an improved version of the instruction. Be specific and actionable.
+Respond with ONLY the new instruction text.`, agent.instruction, task)},
+	}
+
+	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{
+		Messages: evolveMsg,
+	})
+	if err != nil {
+		return "", fmt.Errorf("evolve: %w", err)
+	}
+
+	if r.trace {
+		log.Printf("[ares:evolve] evolved instruction: %s", resp.Content)
+	}
+
+	return resp.Content, nil
 }
 
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
@@ -157,6 +247,7 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 		instruction: ac.instruction,
 		tools:       ac.tools,
 		runtime:     r,
+		humanInput:  ac.humanInput,
 	}
 }
 
@@ -242,13 +333,35 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 
 		// Execute each tool call
 		for _, tc := range resp.ToolCalls {
+			args := parseArgs(tc.Function.Arguments)
+
+			// Human-in-the-loop check.
+			if a.humanInput != nil {
+				approved, err := a.humanInput(ctx, tc.Function.Name, args)
+				if err != nil {
+					return nil, fmt.Errorf("human input: %w", err)
+				}
+				if !approved {
+					if a.runtime.trace {
+						log.Printf("[ares:trace] %s → tool call REJECTED by human: %s",
+							a.name, tc.Function.Name)
+					}
+					messages = append(messages, &core.LLMMessage{
+						Role:       roleTool,
+						ToolCallID: tc.ID,
+						Content:    fmt.Sprintf("Tool call %s was rejected by human operator", tc.Function.Name),
+					})
+					continue
+				}
+			}
+
 			toolCallCount++
 			if a.runtime.trace {
 				log.Printf("[ares:trace] %s → tool call: %s(%s)",
 					a.name, tc.Function.Name, tc.Function.Arguments)
 			}
 
-			result, err := a.runtime.toolReg.Execute(ctx, tc.Function.Name, parseArgs(tc.Function.Arguments))
+			result, err := a.runtime.toolReg.Execute(ctx, tc.Function.Name, args)
 			resultContent := ""
 			if err != nil {
 				resultContent = fmt.Sprintf("Error: %v", err)
@@ -289,7 +402,7 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 
 	if a.instruction != "" {
 		msgs = append(msgs, &core.LLMMessage{
-			Role:    "system",
+			Role:    roleSystem,
 			Content: a.instruction,
 		})
 	}
@@ -299,19 +412,19 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 		ctxStr, err := a.runtime.memSvc.BuildContext(ctx, input, sessionID)
 		if err == nil && ctxStr != "" {
 			msgs = append(msgs, &core.LLMMessage{
-				Role:    "system",
+				Role:    roleSystem,
 				Content: ctxStr,
 			})
 		}
 	}
 
 	msgs = append(msgs, &core.LLMMessage{
-		Role:    "user",
+		Role:    roleUser,
 		Content: input,
 	})
 
 	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		_ = a.runtime.memSvc.AddMessage(ctx, sessionID, "user", input)
+		_ = a.runtime.memSvc.AddMessage(ctx, sessionID, roleUser, input)
 	}
 
 	return msgs
@@ -348,4 +461,27 @@ func parseArgs(raw string) map[string]any {
 		return nil
 	}
 	return m
+}
+
+// mcpToolAdapter wraps an MCP client tool as an SDK tool so it can be used
+// with the agent tool registry.
+type mcpToolAdapter struct {
+	name   string
+	desc   string
+	client *mcp.Client
+}
+
+func (a mcpToolAdapter) Name() string           { return a.name }
+func (a mcpToolAdapter) Description() string    { return a.desc }
+func (a mcpToolAdapter) Capabilities() []string { return nil }
+func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (tools.Result, error) {
+	result, err := a.client.CallTool(ctx, a.name, params)
+	if err != nil {
+		return tools.Result{Success: false, Data: err.Error()}, nil
+	}
+	var sb strings.Builder
+	for _, c := range result.Content {
+	 sb.WriteString(c.Text)
+	}
+	return tools.Result{Success: !result.IsError, Data: sb.String()}, nil
 }

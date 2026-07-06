@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
@@ -49,7 +48,10 @@ func main() {
 	defer rt.Close()
 
 	// Register the calculator tool so the LLM can use it.
-	rt.ToolRegistry().Register(calculatorTool)
+	if err := rt.ToolRegistry().Register(calculatorTool); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ register tool: %v\n", err)
+		os.Exit(1)
+	}
 
 	// ── 2. Create Agent ─────────────────────────────────────────
 	agent := rt.NewAgent("assistant",
@@ -61,9 +63,11 @@ func main() {
 	if err != nil {
 		// Friendly hint for the most common mistake.
 		if strings.Contains(err.Error(), "API key") {
-			log.Fatalf("❌ %v\n   → Set OPENAI_API_KEY or install Ollama (ollama run llama3.2)", err)
+			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set OPENAI_API_KEY or install Ollama (ollama run llama3.2)\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "❌ agent run: %v\n", err)
 		}
-		log.Fatalf("❌ agent run: %v", err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("\n✅ %s\n", result.Output)

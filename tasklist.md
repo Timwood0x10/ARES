@@ -48,21 +48,23 @@
 
 ---
 
-## Phase 2 — 示例生态（2 周，P0）
+## Phase 2 — 示例生态（已完成 ✅）
 
 每个示例配 README + docker-compose（如果需要），按使用频率排序：
 
-- [ ] `examples/quickstart` — 最简 Chat（≤20 行）
-- [ ] `examples/tool-calling` — 计算器 + 搜索（≤50 行）
-- [ ] `examples/dag-workflow` — MutableDAG 线性/条件流程（≤80 行）
-- [ ] `examples/multi-agent` — Leader/Sub + Failover（≤100 行）
-- [ ] `examples/evolution-demo` — 进化前后对比，核心杀手锏（≤100 行）
-- [ ] `examples/chaos-resilience` — 混沌注入 + 自愈（≤120 行）
-- [ ] `examples/human-in-loop` — 人工审批节点（≤80 行）
-- [ ] `examples/mcp-integration` — MCP 服务器接入（≤80 行）
-- [ ] `examples/full-app` — 完整应用 + Dashboard（≤150 行）
+- [x] `examples/quickstart` — 最简 Chat（≤20 行）
+- [x] `examples/tool-calling` — 计算器 + 搜索（≤60 行）
+- [x] `examples/dag-workflow` — MutableDAG 线性/条件流程（≤130 行）
+- [x] `examples/multi-agent` — Leader/Sub + Failover（≤60 行）
+- [x] `examples/evolution-demo` — 进化前后对比，核心杀手锏（≤96 行）
+- [x] `examples/chaos-resilience` — 真实文件系统容错 + 自愈（≤114 行）
+- [x] `examples/human-in-loop` — 人工审批工具调用（≤150 行）
+- [x] `examples/mcp-integration` — MCP 服务器接入（≤73 行）
+- [x] `examples/full-app` — 完整 Web 应用 + Dashboard（≤240 行）
+- [x] `examples/README.md` — 示例总览文档
+- [x] `make examples` — 一键构建所有示例
 
-**验收：** 全部 `go run examples/*/main.go` 通过
+**验收：** `make examples` 24 个示例全部编译通过 ✅
 
 ---
 

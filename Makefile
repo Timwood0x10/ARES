@@ -1,6 +1,6 @@
 # Makefile for GO Agent Framework
 
-.PHONY: all lint test test-race check check-core check-tools help clean install ci benchmark
+.PHONY: all lint test test-race check check-core check-tools help clean install ci benchmark examples
 
 # Default target
 all: lint test
@@ -285,6 +285,18 @@ demo-smoke:
 quickstart:  ## 5 分钟快速开始
 	@echo "🚀 Running quickstart example..."
 	@go run examples/quickstart/main.go
+
+# ──────────────────────────────────────────────
+# Examples — build all examples
+# ──────────────────────────────────────────────
+examples:  ## Build all examples
+	@echo "Building all examples..."
+	@for d in examples/*/; do \
+		name=$$(basename $$d); \
+		echo "  building $$name..."; \
+		go build ./examples/$$name/... || exit 1; \
+	done
+	@echo "✅ All examples built successfully"
 
 # Help
 help:
