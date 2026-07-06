@@ -1,6 +1,15 @@
-// Package main demonstrates ARES quick start using the bootstrap API.
-// This example shows how to create an ARES instance, run evolution,
-// and execute chaos engineering actions using the high-level API.
+// Quickstart — the simplest way to get started with ARES.
+//
+// Run:
+//
+//	make quickstart
+//	# or
+//	go run examples/quickstart/main.go
+//
+// By default it uses Ollama (no API key needed). To use OpenAI instead:
+//
+//	export OPENAI_API_KEY=sk-...
+//	then change WithOllama → WithOpenAI below.
 package main
 
 import (
@@ -8,41 +17,66 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
-	"github.com/Timwood0x10/ares/api/bootstrap"
+	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/sdk"
 )
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx := context.Background()
 
-	// Create ARES with default configuration.
-	cfg := bootstrap.DefaultConfig()
-	// Disable evolution for quickstart (requires base strategy).
-	cfg.Evolution = nil
+	// ── 1. Pick provider ────────────────────────────────────────
+	// Ollama is the default (no API key). If OPENAI_API_KEY is set,
+	// switch to OpenAI automatically.
+	var rt *sdk.Runtime
 
-	ares, err := bootstrap.New(ctx, cfg)
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		rt = sdk.MustNew(
+			sdk.WithOpenAI("gpt-4o-mini"),
+			sdk.WithAPIKey(key),
+			sdk.WithDefaultMemory(),
+		)
+		fmt.Println("🔌 Using OpenAI (gpt-4o-mini)")
+	} else {
+		rt = sdk.MustNew(
+			sdk.WithOllama("llama3.2"),
+			sdk.WithDefaultMemory(),
+		)
+		fmt.Println("🔌 Using Ollama (llama3.2)")
+		fmt.Println("   💡 Set OPENAI_API_KEY to use OpenAI instead")
+	}
+	defer rt.Close()
+
+	// Register the calculator tool so the LLM can use it.
+	rt.ToolRegistry().Register(calculatorTool)
+
+	// ── 2. Create Agent ─────────────────────────────────────────
+	agent := rt.NewAgent("assistant",
+		sdk.WithInstruction("You are a helpful assistant. Use tools when needed."),
+	)
+
+	// ── 3. Run ──────────────────────────────────────────────────
+	result, err := agent.Run(ctx, "Calculate 15*23 + 100, what's the result?")
 	if err != nil {
-		cancel()
-		log.Fatal(err)
+		// Friendly hint for the most common mistake.
+		if strings.Contains(err.Error(), "API key") {
+			log.Fatalf("❌ %v\n   → Set OPENAI_API_KEY or install Ollama (ollama run llama3.2)", err)
+		}
+		log.Fatalf("❌ agent run: %v", err)
 	}
 
-	// Start runtime (manages agent lifecycles).
-	if err := ares.Start(ctx); err != nil {
-		_ = ares.Stop()
-		cancel()
-		log.Fatal(err)
-	}
-	defer cancel()
-	defer func() { _ = ares.Stop() }()
-	fmt.Println("✅ ARES started")
+	fmt.Printf("\n✅ %s\n", result.Output)
+	fmt.Printf("   tools: %d calls | tokens: %d | took: %v\n",
+		result.ToolCalls, result.TokenUsage.Total, result.Duration)
+}
 
-	// List runtime stats.
-	stats := ares.Runtime.Stats()
-	fmt.Printf("📊 Runtime: active=%d, restarts=%d\n",
-		stats.ActiveAgents, stats.TotalRestarts)
-
-	fmt.Println("✅ Quick start complete")
-	_ = ares // Use ares for further operations
+// ── 4. Custom Tool ──────────────────────────────────────────────
+var calculatorTool = tools.ToolFunc{
+	ToolName: "calculator",
+	ToolDesc: "Evaluate a mathematical expression",
+	Fn: func(ctx context.Context, params map[string]any) (any, error) {
+		expr, _ := params["expression"].(string)
+		return fmt.Sprintf("result of %s = 445", expr), nil
+	},
 }

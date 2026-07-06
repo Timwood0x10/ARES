@@ -279,6 +279,13 @@ demo-smoke:
 	@docker compose exec postgres psql -U postgres -c "\l goagent_test"
 	@docker compose exec postgres psql -U postgres -c "\l testdb"
 
+# ──────────────────────────────────────────────
+# Quickstart — one-command 5-minute demo
+# ──────────────────────────────────────────────
+quickstart:  ## 5 分钟快速开始
+	@echo "🚀 Running quickstart example..."
+	@go run examples/quickstart/main.go
+
 # Help
 help:
 	@echo "Available targets:"

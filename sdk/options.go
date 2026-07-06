@@ -1,0 +1,172 @@
+package sdk
+
+import (
+	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/api/tools"
+)
+
+// ---- Runtime options ----
+
+// Option configures the Runtime during construction.
+type Option func(*config) error
+
+// config holds the internal configuration state while options are applied.
+type config struct {
+	llmCfg  *core.LLMConfig
+	baseCfg *core.BaseConfig
+	memCfg  memoryCfg
+	trace   bool
+}
+
+type memoryCfg struct {
+	Enabled bool
+}
+
+func defaultConfig() *config {
+	return &config{
+		llmCfg: &core.LLMConfig{
+			Provider:    core.LLMProviderOllama,
+			Model:       "llama3.2",
+			Temperature: 0.7,
+			MaxTokens:   2048,
+			Timeout:     60,
+		},
+		baseCfg: &core.BaseConfig{
+			RequestTimeout: 60,
+			MaxRetries:     3,
+		},
+		memCfg: memoryCfg{Enabled: false},
+		trace:  true,
+	}
+}
+
+// WithOpenAI configures the OpenAI provider.
+// model: model name, e.g. "gpt-4o-mini" or "gpt-4o". Reads OPENAI_API_KEY
+// from the environment when apiKey is empty.
+// Default base URL is https://api.openai.com/v1.
+func WithOpenAI(model string) Option {
+	return func(c *config) error {
+		c.llmCfg.Provider = core.LLMProviderOpenAI
+		c.llmCfg.Model = model
+		if c.llmCfg.BaseURL == "" {
+			c.llmCfg.BaseURL = "https://api.openai.com/v1"
+		}
+		return nil
+	}
+}
+
+// WithOllama configures the Ollama provider.
+// model: model name, e.g. "llama3.2" or "qwen2.5". Ollama typically does not
+// require an API key.
+func WithOllama(model string) Option {
+	return func(c *config) error {
+		c.llmCfg.Provider = core.LLMProviderOllama
+		c.llmCfg.Model = model
+		return nil
+	}
+}
+
+// WithAnthropic configures the Anthropic provider.
+// model: model name, e.g. "claude-3-haiku" or "claude-3-opus". Reads
+// ANTHROPIC_API_KEY from the environment when apiKey is empty.
+// Default base URL is https://api.anthropic.com/v1.
+func WithAnthropic(model string) Option {
+	return func(c *config) error {
+		c.llmCfg.Provider = core.LLMProviderAnthropic
+		c.llmCfg.Model = model
+		if c.llmCfg.BaseURL == "" {
+			c.llmCfg.BaseURL = "https://api.anthropic.com/v1"
+		}
+		return nil
+	}
+}
+
+// WithOpenRouter configures the OpenRouter provider.
+// model: model name, e.g. "openai/gpt-4o-mini". Reads OPENROUTER_API_KEY
+// from the environment when apiKey is empty.
+// Default base URL is https://openrouter.ai/api/v1.
+func WithOpenRouter(model string) Option {
+	return func(c *config) error {
+		c.llmCfg.Provider = core.LLMProviderOpenRouter
+		c.llmCfg.Model = model
+		if c.llmCfg.BaseURL == "" {
+			c.llmCfg.BaseURL = "https://openrouter.ai/api/v1"
+		}
+		return nil
+	}
+}
+
+// WithBaseURL overrides the default API base URL for the provider.
+func WithBaseURL(url string) Option {
+	return func(c *config) error {
+		c.llmCfg.BaseURL = url
+		return nil
+	}
+}
+
+// WithAPIKey sets the API key explicitly (instead of reading from the
+// environment variable).
+func WithAPIKey(key string) Option {
+	return func(c *config) error {
+		c.llmCfg.APIKey = key
+		return nil
+	}
+}
+
+// WithLLMConfig applies a full core.LLMConfig. Useful when you already have a
+// configuration object from a YAML file or shared config store.
+func WithLLMConfig(cfg *core.LLMConfig) Option {
+	return func(c *config) error {
+		c.llmCfg = cfg
+		return nil
+	}
+}
+
+// WithDefaultMemory enables in-memory session storage. Each Run call creates a
+// session and conversation history is available to the LLM on subsequent calls.
+func WithDefaultMemory() Option {
+	return func(c *config) error {
+		c.memCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithTrace toggles per-step trace logging. Enabled by default.
+func WithTrace(enable bool) Option {
+	return func(c *config) error {
+		c.trace = enable
+		return nil
+	}
+}
+
+// ---- Agent options ----
+
+// AgentOption configures an Agent during construction.
+type AgentOption func(*agentConfig)
+
+type agentConfig struct {
+	instruction string
+	tools       []tools.Tool
+}
+
+func defaultAgentConfig() *agentConfig {
+	return &agentConfig{
+		instruction: "",
+	}
+}
+
+// WithInstruction sets the system-level instruction (system prompt) for the
+// agent. This is always prepended to the conversation.
+func WithInstruction(instruction string) AgentOption {
+	return func(c *agentConfig) {
+		c.instruction = instruction
+	}
+}
+
+// WithTools attaches tools to the agent. The agent will expose these tools to
+// the LLM as function-calling primitives.
+func WithTools(tt ...tools.Tool) AgentOption {
+	return func(c *agentConfig) {
+		c.tools = append(c.tools, tt...)
+	}
+}

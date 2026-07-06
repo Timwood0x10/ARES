@@ -1,159 +1,119 @@
-# Tool Intelligence Layer Task List
+# ARES 开发计划：极致降低上手门槛
 
-## Scope
+> 核心理念：冻结新 Feature，专注 Framework Maturity
+> 目标：5 分钟从零跑到 Hello World
 
-This task list tracks the work required to evolve the current tool system from name-based tool
-calling into a capability-driven planning layer.
+---
 
-Implementation work must follow `plan/rules/code_rules.md`:
+## Phase 0 — 基础设施（已完成 ✅）
 
-- Keep files under 1000 lines.
-- Keep functions under 100 lines.
-- Use constructor-based dependency injection.
-- Depend on interfaces for business components.
-- Avoid global state for data transfer.
-- Do not use `reflect` or `unsafe`.
-- Wrap and propagate errors with context.
-- Add meaningful tests for success, failure, and edge cases.
-- Run the required checks before merge:
-  - `goimports`
-  - `go vet ./...`
-  - `staticcheck ./...`
-  - `golangci-lint run`
-  - `go test -race -cover ./...`
-- Do not commit from the agent.
+- [x] 顶层 `ares` 包骨架 — `ares.go` + `options.go`
+- [x] LLM 多 Provider — OpenAI / Ollama / Anthropic / OpenRouter
+- [x] Tool 调用循环 — ReAct 循环实现
+- [x] Memory 集成 — `WithDefaultMemory()` 选项已有，`memsvc.New(nil)` 对接完成
+- [x] 编译验证 — `go build ./...` + `go vet ./...` + `go test -short ./...` 均无错
+- [x] Trace 日志 — `[ares:trace]` 每步打印
+- [x] 清理 `runner/` 临时目录 — 统一走顶层 `ares` 包
 
-## Phase 1: Design and Interfaces
+---
 
-- [x] Rewrite `tools.md` as an engineering design document.
-- [x] Define the core planning objects:
-  - `Intent`
-  - `CapabilityRequirement`
-  - `ToolCandidate`
-  - `ToolScore`
-  - `ExecutionPlan`
-  - `ExecutionStep`
-  - `ToolEvidence`
-- [x] Document that `Registry` remains the runtime catalog.
-- [x] Decide package placement for the planner.
-  - Final path: `internal/tools/planner`.
-- [x] Define narrow interfaces for:
-  - `SemanticAnalyzer`
-  - `CapabilityPlanner`
-  - `ToolResolver`
-  - `ToolScorer`
-  - `ExecutionPlanner`
-  - `EvidenceStore`
-- [x] Define constructor names and dependency injection boundaries.
-- [x] Write interface-level tests or compile-time assertions for the package boundary.
+## Phase 1 — 5 分钟上手闭环（本周，P0）
 
-Acceptance criteria:
+### 1.1 极简 Quickstart 示例
 
-- The design separates planning from execution.
-- The registry is not responsible for intent detection or scoring.
-- Every planned Go component has a clear input and output.
+- [x] 创建 `examples/quickstart/main.go`
+  - 配置 LLM（OpenAI / Ollama / DeepSeek 等）
+  - 简单 Tool（计算器）
+  - 运行 + 输出结果
+  - 开启 Memory
 
-## Phase 2: Single-step Planning
+**验收：** `go build ./examples/quickstart/...` 编译通过
 
-- [x] Implement `Intent` and `CapabilityRequirement` models.
-- [x] Implement a rule-based `SemanticAnalyzer`.
-- [x] Implement a deterministic `CapabilityPlanner` for simple tasks.
-- [x] Implement `ToolResolver` using the existing `Registry` and `CapabilityEngine`.
-- [x] Implement `ToolScorer` with static metadata and neutral evidence defaults.
-- [x] Implement `ExecutionPlanner` that returns a single-step `ExecutionPlan`.
-- [x] Add tests for:
-  - empty request
-  - unknown capability
-  - multiple candidate tools
-  - no candidate tools
-  - deterministic ranking
-  - unsafe side-effect penalty
+### 1.2 一键启动脚本
 
-Acceptance criteria:
+- [x] `Makefile` 添加 `make quickstart` 目标
+  ```makefile
+  quickstart:  ## 5 分钟快速开始
+      go run examples/quickstart/main.go
+  ```
 
-- A simple request can produce an explainable single-step execution plan.
-- Planner behavior is deterministic for identical inputs.
-- Existing direct registry execution remains unchanged.
+### 1.3 README 大重构 —— 暂缓
 
-## Phase 3: Agent Integration
+- [ ] 顶部 "🚀 5 分钟快速开始" 区块（复制粘贴代码）
+- [ ] "📊 特性对比" 表（LangGraph / AutoGen / trpc-agent-go）
+- [ ] 安装命令简化：`go install`
+- [ ] 清晰定位："谁适合使用 ARES"
+  - 需要长期运行、高容错、自我优化的 Agent 系统
+  - 喜欢 Go 原生、追求极致控制和韧性的开发者
 
-- [x] Add a compatibility integration path before changing default execution behavior.
-- [x] Keep direct LLM tool-name execution as the default path until planner tests are stable.
-- [x] Add planner fallback for:
-  - tool not found
-  - low-confidence tool selection
-  - requests with no LLM tool call
-- [x] Add structured logs with trace identifiers where available.
-- [x] Add integration tests around `executeToolCall` or the nearest safe boundary.
+---
 
-Acceptance criteria:
+## Phase 2 — 示例生态（2 周，P0）
 
-- Existing tool calls still work.
-- Planner fallback can select a tool without relying on a tool name from the LLM.
-- Errors include enough context to locate the failing component.
+每个示例配 README + docker-compose（如果需要），按使用频率排序：
 
-## Phase 4: Evidence-aware Scoring
+- [ ] `examples/quickstart` — 最简 Chat（≤20 行）
+- [ ] `examples/tool-calling` — 计算器 + 搜索（≤50 行）
+- [ ] `examples/dag-workflow` — MutableDAG 线性/条件流程（≤80 行）
+- [ ] `examples/multi-agent` — Leader/Sub + Failover（≤100 行）
+- [ ] `examples/evolution-demo` — 进化前后对比，核心杀手锏（≤100 行）
+- [ ] `examples/chaos-resilience` — 混沌注入 + 自愈（≤120 行）
+- [ ] `examples/human-in-loop` — 人工审批节点（≤80 行）
+- [ ] `examples/mcp-integration` — MCP 服务器接入（≤80 行）
+- [ ] `examples/full-app` — 完整应用 + Dashboard（≤150 行）
 
-- [x] Define `ToolEvidence` model in Go.
-- [x] Connect runtime results to the existing tool call experience collector where appropriate.
-- [x] Add an evidence aggregation interface.
-- [x] Compute success rate, latency, retry count, and failure class per tool and capability.
-- [x] Feed aggregated evidence into `ToolScore`.
-- [x] Add tests for:
-  - no evidence
-  - successful evidence improves score
-  - repeated failures reduce score
-  - high latency reduces score
-  - non-idempotent tool is not retried
+**验收：** 全部 `go run examples/*/main.go` 通过
 
-Acceptance criteria:
+---
 
-- Planner can rank tools with or without evidence.
-- Evidence affects ranking in a predictable and testable way.
-- Failed executions are recorded with normalized error classes.
+## Phase 3 — CLI 工具（1 周，P1）
 
-## Phase 5: Multi-step Planning
+在现有 `cmd/ares/` 基础上扩展：
 
-- [x] Extend `ExecutionPlan` with dependency edges.
-- [x] Validate input and output compatibility between steps.
-- [x] Add fallback handling per step.
-- [x] Decide whether multi-step execution belongs in the agent executor or workflow engine.
-- [x] Implement DAG validation before DAG execution.
-- [x] Add tests for:
-  - missing dependency
-  - cycle detection
-  - incompatible output/input types
-  - fallback selection
-  - partial failure evidence
+- [ ] `ares init` — 初始化新项目（生成 main.go + config.yaml）
+- [ ] `ares run` — 运行当前目录下的 agent
+- [ ] `ares bench` — 运行 benchmark
+- [ ] `ares doctor` — 诊断环境（检查 LLM key、依赖、端口）
+- [ ] `ares version` — 显示版本
 
-Acceptance criteria:
+---
 
-- Planner can produce a valid DAG without executing it.
-- Invalid DAGs fail before runtime execution.
-- Runtime evidence remains tied to `PlanID` and `StepID`.
+## Phase 4 — 开发者友好层（并行推进，P1）
 
-## Phase 6: Capability Model Evolution
+- [ ] config.yaml 支持 — `ares run -c config.yaml`，环境变量覆盖
+- [ ] 错误信息优化 — "LLM not configured → try `export OPENAI_API_KEY=...`"
+- [ ] 默认配置优化 — in-memory 开箱即用，log 默认 stdout
+- [ ] 脚手架模板 — `ares init` 一键生成项目骨架
 
-- [x] Split broad capabilities into precise capabilities.
-- [x] Add aliases for natural-language matching.
-- [x] Add stable input and output type declarations.
-- [x] Add capability versioning if needed.
-- [x] Add migration path for existing tools.
-- [x] Add tests to ensure every built-in tool exposes at least one capability.
+---
 
-Acceptance criteria:
+## Phase 5 — 文档 + 评估（P1-P2）
 
-- Capability matching no longer depends mainly on tool descriptions.
-- Tool capability metadata is specific enough for planning.
-- Existing built-in tools remain discoverable.
+- [ ] `docs/cookbook/` — 7 个 Cookbook（Chat / GitHub / Coding / Review / Memory / Multi-Agent / Tool）
+- [ ] 每篇 ≤100 行代码 + 3 页以内说明
+- [ ] `ares bench` — benchmark 输出 JSON / Markdown
+- [ ] CI 流水线 — golangci-lint + race + examples 全覆盖
 
-## Review Checklist
+---
 
-- [x] Every new public type and method has an English comment.
-- [x] Every function that can fail returns an error.
-- [x] Every error is wrapped with component context.
-- [x] No planner component executes a tool.
-- [x] No runtime component performs semantic planning.
-- [x] No global mutable state is used to pass planner data.
-- [x] Tests include failure paths and boundary cases.
-- [x] Lint, vet, static analysis, and race tests are run before merge.
+## 关键里程碑
+
+| M# | 目标 | 完成标准 | 时间 |
+|---|---|---|---|
+| M0 | 顶层 API 编译通过 | `go build ./...` 无错 | Day 1 |
+| M1 | Quickstart 跑通 | `go run examples/quickstart` 成功 | Day 1-2 |
+| M2 | 5 个示例可运行 | 全 examples 编译 + 运行 | Week 2 |
+| M3 | CLI + Config | `ares run config.yaml` | Week 3 |
+| M4 | Cookbook + Benchmark | 文档完整 + `ares bench` 可跑 | Week 4 |
+| M5 | CI 全自动验证 | PR 自动跑 examples + lint + test | Week 5 |
+
+---
+
+## 建议暂缓的内容（未来 3 个月不投入）
+
+- ❌ 更多 Memory 算法（现有设计已经足够）
+- ❌ 新的 Reflection Layer
+- ❌ 新的 Agent 类型
+- ❌ Multi-Agent 编排创新
+- ❌ 新概念命名（Civilization、Evolution 等已经够了）
+- ❌ Graph 可视化（除非是调试必需）
