@@ -243,7 +243,7 @@ func DiscoverServers(projectDir string) []ServerConfig {
 }
 
 func scanClaudeConfig(path string, seen map[string]bool) []ServerConfig {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 - path is constructed from known base dirs
 	if err != nil {
 		return nil
 	}

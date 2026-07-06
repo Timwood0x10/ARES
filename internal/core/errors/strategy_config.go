@@ -12,6 +12,18 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
+// Common constants used in error strategy configuration.
+const (
+	ConfigVersion    = "1.0"
+	ErrCode01_002    = "01-002"
+	ErrCode01_003    = "01-003"
+	AlertHeartbeat   = "Heartbeat missed"
+	AlertDBConnFail  = "DB connection failed"
+	AlertLLMReqFail  = "LLM request failed"
+	AlertLLMQuota    = "LLM quota exceeded"
+	AlertLLMValidate = "LLM validation failed"
+)
+
 // ConfigFile defines the structure for error strategy configuration file.
 type ConfigFile struct {
 	Version    string                   `json:"version"`
@@ -20,28 +32,28 @@ type ConfigFile struct {
 
 // DefaultErrorStrategiesConfig provides the default error strategies as a config file.
 var DefaultErrorStrategiesConfig = ConfigFile{
-	Version: "1.0",
+	Version: ConfigVersion,
 	Strategies: map[string]ErrorStrategy{
 		// Agent module strategies
-		"01-002": {Backoff: 5 * time.Second, MaxRetries: 3, DLQEnabled: true, AlertEnabled: false},
-		"01-003": {Backoff: 10 * time.Second, MaxRetries: 2, DLQEnabled: true, AlertEnabled: true, AlertMessage: "Agent panic detected"},
-		"01-004": {Backoff: 1 * time.Second, MaxRetries: 5, DLQEnabled: false, AlertEnabled: true, AlertMessage: "Task queue full"},
+		ErrCode01_002: {Backoff: 5 * time.Second, MaxRetries: 3, DLQEnabled: true, AlertEnabled: false},
+		ErrCode01_003: {Backoff: 10 * time.Second, MaxRetries: 2, DLQEnabled: true, AlertEnabled: true, AlertMessage: "Agent panic detected"},
+		"01-004":      {Backoff: 1 * time.Second, MaxRetries: 5, DLQEnabled: false, AlertEnabled: true, AlertMessage: "Task queue full"},
 
 		// Protocol module strategies
 		"02-002": {Backoff: 3 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: false},
-		"02-003": {Backoff: 5 * time.Second, MaxRetries: 5, DLQEnabled: true, AlertEnabled: true, AlertMessage: "Heartbeat missed"},
+		"02-003": {Backoff: 5 * time.Second, MaxRetries: 5, DLQEnabled: true, AlertEnabled: true, AlertMessage: AlertHeartbeat},
 
 		// Storage module strategies
-		"03-001": {Backoff: 2 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: true, AlertMessage: "DB connection failed"},
+		"03-001": {Backoff: 2 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: true, AlertMessage: AlertDBConnFail},
 		"03-002": {Backoff: 1 * time.Second, MaxRetries: 2, DLQEnabled: false, AlertEnabled: false},
 		"03-003": {Backoff: 2 * time.Second, MaxRetries: 2, DLQEnabled: false, AlertEnabled: false},
 
 		// LLM module strategies
-		"04-001": {Backoff: 3 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: true, AlertMessage: "LLM request failed"},
+		"04-001": {Backoff: 3 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: true, AlertMessage: AlertLLMReqFail},
 		"04-002": {Backoff: 5 * time.Second, MaxRetries: 2, DLQEnabled: false, AlertEnabled: false},
-		"04-003": {Backoff: 0, MaxRetries: 0, DLQEnabled: false, AlertEnabled: true, AlertMessage: "LLM quota exceeded"},
+		"04-003": {Backoff: 0, MaxRetries: 0, DLQEnabled: false, AlertEnabled: true, AlertMessage: AlertLLMQuota},
 		"04-005": {Backoff: 1 * time.Second, MaxRetries: 3, DLQEnabled: false, AlertEnabled: false},
-		"04-006": {Backoff: 0, MaxRetries: 0, DLQEnabled: false, AlertEnabled: true, AlertMessage: "LLM validation failed"},
+		"04-006": {Backoff: 0, MaxRetries: 0, DLQEnabled: false, AlertEnabled: true, AlertMessage: AlertLLMValidate},
 		"04-007": {Backoff: 0, MaxRetries: 0, DLQEnabled: false, AlertEnabled: true, AlertMessage: "LLM authentication failed (401) - check API key"},
 	},
 }
@@ -201,7 +213,7 @@ func (e *InvalidStrategyError) Error() string {
 // ExportStrategiesToConfig exports current strategies to a configuration file.
 func ExportStrategiesToConfig(configPath string) error {
 	config := ConfigFile{
-		Version:    "1.0",
+		Version:    ConfigVersion,
 		Strategies: GetAllStrategies(),
 	}
 

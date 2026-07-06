@@ -127,7 +127,6 @@ func TestStrategy(t *testing.T) {
 			t.Errorf("expected false for user not found")
 		}
 	})
-
 }
 
 func TestHandler(t *testing.T) {

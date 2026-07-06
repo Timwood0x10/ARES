@@ -273,12 +273,7 @@ func TestRealDatabaseConnectionFailure(t *testing.T) {
 		// Simulate retry logic without actual backoff calls
 		var result error
 		for attempt := 0; attempt <= strategy.MaxRetries; attempt++ {
-			if attempt > 0 && attemptCount <= strategy.MaxRetries {
-				// Simulate the logic without calling RetryWithBackoff
-				result = retryFunc()
-			} else {
-				result = retryFunc()
-			}
+			result = retryFunc()
 			if result == nil {
 				break // Success
 			}
