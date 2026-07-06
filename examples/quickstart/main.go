@@ -23,11 +23,16 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
 
 	// ── 1. Pick provider ────────────────────────────────────────
-	// Ollama is the default (no API key). If OPENAI_API_KEY is set,
-	// switch to OpenAI automatically.
 	var rt *sdk.Runtime
 
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
@@ -47,10 +52,9 @@ func main() {
 	}
 	defer rt.Close()
 
-	// Register the calculator tool so the LLM can use it.
+	// Register the calculator tool.
 	if err := rt.ToolRegistry().Register(calculatorTool); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ register tool: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("register tool: %w", err)
 	}
 
 	// ── 2. Create Agent ─────────────────────────────────────────
@@ -63,16 +67,15 @@ func main() {
 	if err != nil {
 		// Friendly hint for the most common mistake.
 		if strings.Contains(err.Error(), "API key") {
-			fmt.Fprintf(os.Stderr, "❌ %v\n   → Set OPENAI_API_KEY or install Ollama (ollama run llama3.2)\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "❌ agent run: %v\n", err)
+			return fmt.Errorf("%w\n   → Set OPENAI_API_KEY or install Ollama (ollama run llama3.2)", err)
 		}
-		os.Exit(1)
+		return fmt.Errorf("agent run: %w", err)
 	}
 
 	fmt.Printf("\n✅ %s\n", result.Output)
 	fmt.Printf("   tools: %d calls | tokens: %d | took: %v\n",
 		result.ToolCalls, result.TokenUsage.Total, result.Duration)
+	return nil
 }
 
 // ── 4. Custom Tool ──────────────────────────────────────────────

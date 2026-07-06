@@ -481,7 +481,7 @@ func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (too
 	}
 	var sb strings.Builder
 	for _, c := range result.Content {
-	 sb.WriteString(c.Text)
+		sb.WriteString(c.Text)
 	}
 	return tools.Result{Success: !result.IsError, Data: sb.String()}, nil
 }
