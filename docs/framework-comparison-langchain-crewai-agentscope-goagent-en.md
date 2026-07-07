@@ -215,10 +215,10 @@ flowchart TB
 | Capability | LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
 |-----------|-----------|--------|------------|----------------|---------------|
 | **DAG Support** | Native | Sequential/Hierarchical only | Pipeline mode | Native DAG | GraphAgent (Pregel-style graph, 6 node types) |
-| **Conditional Edges** | `add_conditional_edges` | None | Pipeline condition nodes | None (TODO) | `ConditionalFunc` / `MultiConditionalFunc` routing |
-| **Cycles/Loops** | Native | Not supported | Not supported | Forbidden (DAG cycle detection) | ChainAgent (sequential), CycleAgent (loop with EscalationFunc), ParallelAgent (concurrent) |
+| **Conditional Edges** | `add_conditional_edges` | None | Pipeline condition nodes | `Step.Condition` + `Step.Router` (runtime dynamic routing) | `ConditionalFunc` / `MultiConditionalFunc` routing |
+| **Cycles/Loops** | Native | Not supported | Not supported | `LoopConfig` (controlled loops with MaxIterations/UntilCondition) | ChainAgent (sequential), CycleAgent (loop with EscalationFunc), ParallelAgent (concurrent) |
 | **Parallel Execution** | Same super-step nodes | `async_execution=True` | Pipeline parallel | errgroup + semaphore | Concurrent with sync.WaitGroup + mutex |
-| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | Not supported (TODO) | Supported (agent-as-node in StateGraph) |
+| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | `Step.SubWorkflow` + `SubGraphNode` (isolated state, recursive execution) | Supported (agent-as-node in StateGraph) |
 | **Topological Sort** | Implicit (graph traversal) | Not needed | Implicit | Kahn's algorithm (explicit) | Implicit (graph traversal via Pregel channels) |
 | **Hot Reload** | Not supported | Not supported | Not supported | fsnotify file watcher + polling | Not documented |
 | **Cycle Detection** | Not needed (cycles allowed) | Not needed | Not needed | DFS + recursion stack | Not needed (GraphAgent supports cycles) |
@@ -310,7 +310,7 @@ LangGraph's state management is the most advanced among the four:
 - **Human-in-the-loop**: Pause via `interrupt_before`/`interrupt_after` for manual input
 - **3 durability modes**: `durable`, `recent`, `off`
 
-This is GoAgent's main gap—state is in-memory and lost on crash.
+This is GoAgent's main gap—state is in-memory and lost on crash. **Addressed in v0.2.6**: `saveCheckpoint` persist step results via pluggable `CheckpointStore` (PostgreSQL/SQLite/Redis) after each step. The graph package also saves state per-node via `saveGraphCheckpoint`.
 
 ### 4.4 Dynamic Executor & Step Recovery (GoAgent Exclusive)
 
@@ -791,9 +791,9 @@ flowchart TB
 
 **Weaknesses**:
 - **Early stage project**: v0.2.3, 2 contributors, ecosystem far from established
-- **No state checkpointing**: State is in-memory, lost on crash
-- **No cycle support**: DAG forbids cycles — no LangGraph-style agentic loops
-- **No conditional edges**: No dynamic routing in workflows
+- **State checkpointing**: Added in v0.2.6 (step-level + graph-level persistence) but still maturing — no checkpoint replay or resume-from-crash yet
+- **Controlled loops**: Added in v0.2.6 (`LoopConfig` with MaxIterations/UntilCondition) but only supports bounded iteration — no LangGraph-style arbitrary cycles
+- **Conditional edges**: Added in v0.2.6 (`Step.Condition` for pre-execution skip, `Step.Router` for post-execution dynamic routing) covering most branching needs
 - **Small community**: Few learning resources, third-party integrations, or plugin ecosystem
 - **GA/Evolution still early**: GA pipeline exists but needs more real-world validation and optimization
 
@@ -893,7 +893,7 @@ Leverage Go's concurrency advantages and play the **"production-grade reliabilit
 
 > **High-reliability, multi-tenant, protocol-level distributed Agent orchestration engine.**
 
-GoAgent's current gaps (state checkpointing, cycles, conditional edges, HITL) can be progressively filled by learning from other frameworks, while its **circuit breaker, heartbeat, DLQ, automated distillation, multi-tenant isolation, Chaos Engineering, Autonomous Evolution, and Mutable DAG** are characteristics that competitors cannot easily replicate.
+GoAgent's differentiation — **circuit breaker, heartbeat, DLQ, automated distillation, multi-tenant isolation, Chaos Engineering, Autonomous Evolution, Mutable DAG, Conditional Edges, Controlled Loops, Subgraph Nesting, and State Checkpointing** — are characteristics that competitors cannot easily replicate.
 
 ---
 

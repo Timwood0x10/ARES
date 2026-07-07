@@ -108,22 +108,22 @@ func (e *Executor) executeWithLoop(
 		return nil, ctx.Err()
 	}
 	if execution.Status == WorkflowStatusFailed {
-	 // Build a descriptive error that identifies the failing step.
-	 errMsg := execution.Error
-	 for _, sr := range stepResults {
-	  if sr.Status == StepStatusFailed {
-	   errMsg = fmt.Sprintf("step %s failed: %s", sr.StepID, sr.Error)
-	   break
-	  }
-	 }
-	 return &WorkflowResult{
-	  ExecutionID: execution.ID,
-	  WorkflowID:  workflow.ID,
-	  Status:      WorkflowStatusFailed,
-	  Error:       execution.Error,
-	  Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-	  Steps:       stepResults,
-	 }, stderrors.New(errMsg)
+		// Build a descriptive error that identifies the failing step.
+		errMsg := execution.Error
+		for _, sr := range stepResults {
+			if sr.Status == StepStatusFailed {
+				errMsg = fmt.Sprintf("step %s failed: %s", sr.StepID, sr.Error)
+				break
+			}
+		}
+		return &WorkflowResult{
+			ExecutionID: execution.ID,
+			WorkflowID:  workflow.ID,
+			Status:      WorkflowStatusFailed,
+			Error:       execution.Error,
+			Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+			Steps:       stepResults,
+		}, stderrors.New(errMsg)
 	}
 	if execution.Status == WorkflowStatusCancelled {
 		return nil, ctx.Err()
@@ -256,19 +256,19 @@ func (e *Executor) shouldContinueLoopRun(
 	}
 
 	loopStepCount := 0
-	 for _, sr := range stepResults {
-	  if loopStepSet[sr.StepID] {
-	   loopStepCount++
-	  }
-	 }
-	 loopRounds := loopStepCount / len(loopConfig.LoopSteps)
+	for _, sr := range stepResults {
+		if loopStepSet[sr.StepID] {
+			loopStepCount++
+		}
+	}
+	loopRounds := loopStepCount / len(loopConfig.LoopSteps)
 
-	 // MaxIterations == 0 means run once (no loop). Only continue when
-	 // MaxIterations > 0 and the loop hasn't reached the limit yet.
-	 if loopConfig.MaxIterations <= 0 {
-	  return false
-	 }
-	 if loopRounds >= loopConfig.MaxIterations {
+	// MaxIterations == 0 means run once (no loop). Only continue when
+	// MaxIterations > 0 and the loop hasn't reached the limit yet.
+	if loopConfig.MaxIterations <= 0 {
+		return false
+	}
+	if loopRounds >= loopConfig.MaxIterations {
 		return false
 	}
 
@@ -544,17 +544,17 @@ func (e *Executor) dispatchStepGoroutine(
 
 		result := e.executeStep(ctx, workflow, st, sid, initialInput, completed, outputStore, mu)
 
-		 mu.Lock()
-		 processed[sid] = true
-		 if result.Status == StepStatusCompleted {
-		  // Release the lock before calling handleStepRouter so that a
-		  // Router panic does not leave the mutex in an inconsistent state.
-		  mu.Unlock()
-		  e.handleStepRouter(ctx, st, sid, execution, result, stepsByID, routedSteps, routedMu)
-		  mu.Lock()
-		  completed[sid] = true
-		 }
-		 mu.Unlock()
+		mu.Lock()
+		processed[sid] = true
+		if result.Status == StepStatusCompleted {
+			// Release the lock before calling handleStepRouter so that a
+			// Router panic does not leave the mutex in an inconsistent state.
+			mu.Unlock()
+			e.handleStepRouter(ctx, st, sid, execution, result, stepsByID, routedSteps, routedMu)
+			mu.Lock()
+			completed[sid] = true
+		}
+		mu.Unlock()
 
 		select {
 		case resultChan <- result:
