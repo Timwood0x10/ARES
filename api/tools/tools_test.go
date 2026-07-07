@@ -18,13 +18,14 @@ func TestNewRegistry(t *testing.T) {
 	if r == nil {
 		t.Fatal("NewRegistry returned nil")
 	}
-	if len(r.List()) != 0 {
-		t.Fatal("New registry should be empty")
+	// Registry should have built-in tools pre-populated.
+	if len(r.List()) == 0 {
+		t.Fatal("New registry should have built-in tools pre-populated")
 	}
 }
 
 func TestRegisterNilTool(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	err := r.Register(nil)
 	if err == nil {
 		t.Fatal("expected error for nil tool")
@@ -32,7 +33,7 @@ func TestRegisterNilTool(t *testing.T) {
 }
 
 func TestRegistryRegisterGetListUnregister(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	ctx := context.Background()
 
 	t1 := ToolFunc{ToolName: "tool1", ToolDesc: "first", Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -63,7 +64,7 @@ func TestRegistryRegisterGetListUnregister(t *testing.T) {
 		t.Fatalf("unexpected list: %v", names)
 	}
 
-	r.Unregister("tool1")
+	_ = r.Unregister("tool1")
 	if _, ok := r.Get("tool1"); ok {
 		t.Fatal("tool1 should be unregistered")
 	}
@@ -89,7 +90,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 }
 
 func TestListTools(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	_ = r.Register(ToolFunc{ToolName: "alpha", ToolDesc: "a desc"})
 	_ = r.Register(ToolFunc{ToolName: "beta", ToolDesc: "b desc"})
 
@@ -1005,12 +1006,13 @@ func TestFileToolUnknownOperation(t *testing.T) {
 // ── RegisterBuiltinTools ─────────────────────────────────────
 
 func TestRegisterBuiltinTools(t *testing.T) {
-	r := NewRegistry()
+	r := NewEmptyRegistry()
 	if err := RegisterBuiltinTools(r); err != nil {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
 
-	expected := []string{"calculator", "regex", "json_tools", "web_search", "file_tools"}
+	expected := []string{"calculator", "hash_tool", "string_utils", "pdf_tool", "id_generator",
+		"regex", "json_tools", "web_search", "file_tools"}
 	names := r.List()
 	sort.Strings(names)
 
@@ -1029,5 +1031,120 @@ func TestRegisterBuiltinTools(t *testing.T) {
 		if tool.Description() == "" {
 			t.Fatalf("tool %q has empty description", exp)
 		}
+	}
+}
+
+// ── Planner Integration (public API) ─────────────────────────────────
+
+func TestNewPlannerFromRegistry(t *testing.T) {
+	r := NewRegistry()
+	p, err := NewPlanner(r)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
+	if p == nil {
+		t.Fatal("NewPlanner returned nil")
+	}
+
+	// Verify the planner can produce a plan.
+	plan, err := p.Plan(context.Background(), "计算1+1")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatal("expected at least one step")
+	}
+	if plan.Steps[0].ToolName == "" {
+		t.Fatal("expected tool name in step")
+	}
+}
+
+func TestNewPlanner_UnknownRequest(t *testing.T) {
+	r := NewRegistry()
+	p, err := NewPlanner(r)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
+
+	_, err = p.Plan(context.Background(), "xyznonexistent999")
+	if err == nil {
+		t.Fatal("expected error for unknown request")
+	}
+}
+
+func TestNewBridgeFromRegistry(t *testing.T) {
+	r := NewRegistry()
+	p, err := NewPlanner(r)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
+
+	bridge, err := NewBridge(r, p)
+	if err != nil {
+		t.Fatalf("NewBridge: %v", err)
+	}
+	if bridge == nil {
+		t.Fatal("NewBridge returned nil")
+	}
+
+	// Test planner fallback path.
+	result, err := bridge.Execute(context.Background(), "", nil, "计算1+1")
+	if err != nil {
+		t.Fatalf("Bridge.Execute (fallback): %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected successful execution")
+	}
+}
+
+func TestNewBridge_DirectToolCall(t *testing.T) {
+	r := NewRegistry()
+	p, err := NewPlanner(r)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
+
+	bridge, err := NewBridge(r, p)
+	if err != nil {
+		t.Fatalf("NewBridge: %v", err)
+	}
+
+	result, err := bridge.Execute(context.Background(), "calculator",
+		map[string]interface{}{"expression": "2+2"}, "")
+	if err != nil {
+		t.Fatalf("Bridge.Execute (direct): %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected successful direct execution")
+	}
+}
+
+func TestPlannerProvider(t *testing.T) {
+	r := NewRegistry()
+	provider := r.PlannerProvider()
+	if provider == nil {
+		t.Fatal("PlannerProvider returned nil")
+	}
+
+	tools := provider.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("expected tools from provider")
+	}
+
+	caps, err := provider.GetToolCapabilities("calculator")
+	if err != nil {
+		t.Fatalf("GetToolCapabilities: %v", err)
+	}
+	// calculator declares math capability, which expands to granular capabilities.
+	t.Logf("calculator capabilities: %v", caps)
+}
+
+func TestPlannerProvider_NotFound(t *testing.T) {
+	r := NewRegistry()
+	provider := r.PlannerProvider()
+
+	_, err := provider.GetToolCapabilities("nonexistent_tool")
+	if err == nil {
+		t.Fatal("expected error for nonexistent tool")
 	}
 }

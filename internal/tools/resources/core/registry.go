@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	llmcore "github.com/Timwood0x10/ares/api/core"
@@ -88,11 +89,15 @@ func (r *Registry) Count() int {
 	return len(r.tools)
 }
 
-// Execute executes a tool by name.
+// Execute executes a tool by name after validating parameters.
 func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (Result, error) {
 	tool, exists := r.Get(name)
 	if !exists {
 		return Result{}, gerr.Wrap(ErrToolNotFound, name)
+	}
+
+	if err := ValidateParams(tool.Parameters(), params); err != nil {
+		return NewErrorResult(err.Error()), nil
 	}
 
 	return tool.Execute(ctx, params)
@@ -171,12 +176,16 @@ func (r *Registry) GetSchemas() []ToolSchema {
 	if r.schemaDirty || r.schemaCache == nil {
 		schemas := make([]ToolSchema, 0, len(r.tools))
 		for _, tool := range r.tools {
-			schemas = append(schemas, ToolSchema{
+			schema := ToolSchema{
 				Name:        tool.Name(),
 				Description: tool.Description(),
 				Category:    tool.Category(),
 				Parameters:  tool.Parameters(),
-			})
+			}
+			if tt, ok := tool.(TaggableTool); ok {
+				schema.Tags = tt.Tags()
+			}
+			schemas = append(schemas, schema)
 		}
 
 		r.schemaCache = schemas
@@ -195,6 +204,43 @@ func (r *Registry) GetLLMTools() []llmcore.Tool {
 		tools = append(tools, ToolSchemaToLLMTool(schema))
 	}
 	return tools
+}
+
+// FindByTags returns tools whose tags match ALL specified key-value pairs.
+// Use "*" as value to match any tool that has the key regardless of value.
+//
+// Example:
+//
+//	r.FindByTags(map[string]string{"domain": "math", "side_effects": "false"})
+//	r.FindByTags(map[string]string{"domain": "*"}) // all tools with domain tag
+func (r *Registry) FindByTags(tags map[string]string) []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []Tool
+	for _, tool := range r.tools {
+		tt, ok := tool.(TaggableTool)
+		if !ok {
+			continue
+		}
+		toolTags := tt.Tags()
+		match := true
+		for key, val := range tags {
+			tagVal, exists := toolTags[key]
+			if !exists {
+				match = false
+				break
+			}
+			if val != "*" && tagVal != val {
+				match = false
+				break
+			}
+		}
+		if match {
+			result = append(result, tool)
+		}
+	}
+	return result
 }
 
 // ToolFilter defines filter criteria for tools.
@@ -293,4 +339,105 @@ func (g *ToolGroup) Name() string {
 // Description returns the group description.
 func (g *ToolGroup) Description() string {
 	return g.description
+}
+
+// ValidateParams checks params against a ParameterSchema before tool execution.
+// Returns nil if valid, or an error describing the first violation found.
+//
+// Checks:
+//   - Required params exist
+//   - Each param's Go type matches the schema type
+//   - If enum is defined, the value is one of the allowed values
+//
+// This prevents LLM-generated type mismatches (e.g., string vs number)
+// from causing panics inside tool Execute methods.
+func ValidateParams(schema *ParameterSchema, params map[string]interface{}) error {
+	if schema == nil {
+		return nil // no schema = no validation
+	}
+
+	// Check required params.
+	for _, required := range schema.Required {
+		if _, exists := params[required]; !exists {
+			return fmt.Errorf("validation: missing required parameter %q", required)
+		}
+		if params[required] == nil {
+			return fmt.Errorf("validation: required parameter %q is nil", required)
+		}
+	}
+
+	// Type-check and enum-check each param against the schema.
+	for key, value := range params {
+		paramDef, defined := schema.Properties[key]
+		if !defined {
+			continue // unknown param, skip (tool can ignore)
+		}
+
+		// Type check.
+		if err := checkType(paramDef.Type, value); err != nil {
+			return fmt.Errorf("validation: parameter %q: %w", key, err)
+		}
+
+		// Enum check.
+		if len(paramDef.Enum) > 0 {
+			if err := checkEnum(paramDef.Enum, value); err != nil {
+				return fmt.Errorf("validation: parameter %q: %w", key, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkType verifies a value matches the expected schema type.
+func checkType(expected string, value interface{}) error {
+	if value == nil {
+		return nil // nil is allowed for non-required params
+	}
+	switch expected {
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("expected string, got %T", value)
+		}
+	case "integer":
+		switch value.(type) {
+		case int, int64, float64:
+			// float64 from JSON unmarshal is accepted
+			return nil
+		default:
+			return fmt.Errorf("expected integer, got %T", value)
+		}
+	case "number":
+		switch value.(type) {
+		case float64, int, int64:
+			return nil
+		default:
+			return fmt.Errorf("expected number, got %T", value)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("expected boolean, got %T", value)
+		}
+	case "array":
+		if _, ok := value.([]interface{}); !ok {
+			return fmt.Errorf("expected array, got %T", value)
+		}
+	}
+	return nil
+}
+
+// checkEnum verifies a value is one of the allowed enum values.
+func checkEnum(allowed []interface{}, value interface{}) error {
+	for _, a := range allowed {
+		if a == value {
+			return nil
+		}
+		// String comparison for JSON-derived values.
+		vs, okS := value.(string)
+		as, okA := a.(string)
+		if okS && okA && vs == as {
+			return nil
+		}
+	}
+	return fmt.Errorf("value %v is not in allowed enum %v", value, allowed)
 }

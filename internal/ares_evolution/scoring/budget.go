@@ -6,7 +6,7 @@ import (
 )
 
 // ErrInvalidBudgetLimit is returned when maxLLMCalls is <= 0.
-var ErrInvalidBudgetLimit = fmt.Errorf("max LLM calls must be > 0")
+// Errors are defined in errors.go.
 
 // Budget holds LLM scoring resource limits and current usage for one evolution generation.
 type Budget struct {

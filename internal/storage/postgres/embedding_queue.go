@@ -9,10 +9,8 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
-	"log/slog"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -65,7 +63,7 @@ func NewEmbeddingQueue(pool *Pool, embeddingConfig *EmbeddingConfig) *EmbeddingQ
 // Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
 func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error {
 	if task == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	// Generate dedupe key for idempotency.
@@ -105,10 +103,10 @@ func (q *EmbeddingQueue) Enqueue(ctx context.Context, task *EmbeddingTask) error
 // Returns ErrDuplicateTask if duplicate, or other error if enqueue fails.
 func (q *EmbeddingQueue) EnqueueTx(ctx context.Context, tx *sql.Tx, task *EmbeddingTask) error {
 	if task == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 	if tx == nil {
-		return fmt.Errorf("transaction is nil: %w", coreerrors.ErrInvalidArgument)
+		return fmt.Errorf("transaction is nil: %w", errors.ErrInvalidArgument)
 	}
 
 	// Generate dedupe key for idempotency.
@@ -159,7 +157,7 @@ func (q *EmbeddingQueue) generateDedupeKey(task *EmbeddingTask) string {
 // Returns list of pending tasks or error if fetch fails.
 func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*EmbeddingTask, error) {
 	if limit <= 0 {
-		return nil, fmt.Errorf("limit must be positive: %w", coreerrors.ErrInvalidArgument)
+		return nil, fmt.Errorf("limit must be positive: %w", errors.ErrInvalidArgument)
 	}
 
 	tx, err := q.db.Begin(ctx)
@@ -170,7 +168,7 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback fetch transaction", "error", rbErr)
+				log.Error("Failed to rollback fetch transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -193,7 +191,7 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	for rows.Next() {
 		task := &EmbeddingTask{}
 		if err := rows.Scan(&task.TaskID, &task.Table, &task.Content, &task.TenantID, &task.Model, &task.Version); err != nil {
-			slog.Error("Failed to scan embedding task row", "error", err)
+			log.Error("Failed to scan embedding task row", "error", err)
 			continue
 		}
 		tasks = append(tasks, task)
@@ -322,7 +320,7 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessa
 // Returns error if reconciliation fails.
 func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration) error {
 	if threshold <= 0 {
-		return fmt.Errorf("threshold must be positive: %w", coreerrors.ErrInvalidArgument)
+		return fmt.Errorf("threshold must be positive: %w", errors.ErrInvalidArgument)
 	}
 
 	// Use configured default model and version.
@@ -342,7 +340,7 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback reconcile transaction", "error", rbErr)
+				log.Error("Failed to rollback reconcile transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -368,7 +366,7 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 	for rows.Next() {
 		var chunk orphanedChunk
 		if err := rows.Scan(&chunk.ID, &chunk.Content, &chunk.TenantID); err != nil {
-			slog.Error("Failed to scan orphaned chunk row", "error", err)
+			log.Error("Failed to scan orphaned chunk row", "error", err)
 			continue
 		}
 		chunks = append(chunks, chunk)

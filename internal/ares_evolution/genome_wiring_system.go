@@ -3,7 +3,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
@@ -167,11 +166,11 @@ func buildMutator(cfg SystemConfig) (*mutatorResult, error) {
 	var genomeMut genome.MutatorInterface = rawMutator
 
 	if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider != nil {
-		slog.Info("[WiredSystem] Experience-guided mutation requested; provider wired",
+		el.Info(context.Background(), "buildMutator", "experience-guided mutation requested; provider wired",
 			"hint_provider", fmt.Sprintf("%T", cfg.GuidanceProvider))
 		genomeMut = wrapGuidanceProvider(cfg.GuidanceProvider, rawMutator)
 	} else if cfg.EnableExperienceGuidedMutation && cfg.GuidanceProvider == nil {
-		slog.Warn("[WiredSystem] Experience-guided mutation requested but no GuidanceProvider set")
+		el.Warn(context.Background(), "buildMutator", "experience-guided mutation requested but no GuidanceProvider set")
 	}
 
 	var adaptiveDist *mutation.AdaptiveDistribution
@@ -286,7 +285,7 @@ func buildAdapterOptions(cfg SystemConfig) ([]GenomeAdapterOption, *scoring.Tier
 		memScorer, err := scoring.NewMemoryAwareScorer(tiered, cfg.MemoryExperienceProvider,
 			cfg.MemoryAwareScoringConfig)
 		if err != nil {
-			slog.Warn("[WiredSystem] Failed to create memory-aware scorer, skipping",
+			el.Warn(context.Background(), "buildAdapterOptions", "failed to create memory-aware scorer, skipping",
 				"error", err)
 		} else {
 			opts = append(opts, WithAdapterMemoryAwareScoring(memScorer))
@@ -560,7 +559,7 @@ func buildShadowEvaluator(cfg SystemConfig, baseStrategy *mutation.Strategy) *Sh
 			return scorer(s)
 		})
 	}
-	slog.Info("[WiredSystem] Shadow evaluation enabled",
+	el.Info(context.Background(), "buildShadowEvaluator", "shadow evaluation enabled",
 		"min_samples", cfg.ShadowEvalConfig.MinSamples,
 		"min_win_rate", cfg.ShadowEvalConfig.MinWinRate,
 		"active_strategy", baseStrategy.ID,
@@ -618,11 +617,11 @@ func wrapGuidanceProvider(provider GuidanceProvider, raw *mutation.Mutator) geno
 	adaptedProvider := &guidanceHintAdapter{inner: provider}
 	guided, err := mutation.NewExperienceGuidedMutator(raw, adaptedProvider)
 	if err != nil {
-		slog.Warn("[WiredSystem] Failed to create ExperienceGuidedMutator, falling back to raw mutator",
+		el.Warn(context.Background(), "wrapGuidanceProvider", "failed to create ExperienceGuidedMutator, falling back to raw mutator",
 			"error", err)
 		return raw
 	}
-	slog.Info("[WiredSystem] Experience-guided mutation enabled",
+	el.Info(context.Background(), "wrapGuidanceProvider", "experience-guided mutation enabled",
 		"provider", fmt.Sprintf("%T", provider),
 	)
 	return guided
@@ -678,15 +677,19 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		}
 
 		if err := system.PopAdapter.Run(ctx); err != nil {
-			slog.WarnContext(ctx, "[RunIdleEvolution] Generation produced guardrail warning, continuing",
-				"generation", system.Population.Generation, "run_iteration", gen, "error", err)
+			el.Warn(ctx, "RunIdleEvolution", "generation produced guardrail warning, continuing", "generation", system.Population.Generation,
+				"run_iteration", gen,
+				"error", err,
+			)
 		}
 
 		if system.Genealogy != nil {
 			_, err := RecordPopulationLineage(ctx, system.Population, system.Genealogy, parentSnapshot, gen)
 			if err != nil {
-				slog.WarnContext(ctx, "[RunIdleEvolution] Failed to record lineage",
-					"generation", system.Population.Generation, "run_iteration", gen, "error", err)
+				el.Warn(ctx, "RunIdleEvolution", "failed to record lineage", "generation", system.Population.Generation,
+					"run_iteration", gen,
+					"error", err,
+				)
 			}
 		}
 
@@ -697,13 +700,17 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 				agents, _ := system.Population.Snapshot()
 				ref, err := system.Reflector.Reflect(ctx, history, agents)
 				if err != nil {
-					slog.WarnContext(ctx, "[RunIdleEvolution] Reflection failed, skipping",
-						"generation", system.Population.Generation, "run_iteration", gen, "error", err)
+					el.Warn(ctx, "RunIdleEvolution", "reflection failed, skipping", "generation", system.Population.Generation,
+						"run_iteration", gen,
+						"error", err,
+					)
 				} else if ref != nil && len(ref.Recommendations) > 0 {
 					hyps := system.HypothesisGen.Generate(ctx, ref)
 					if len(hyps) > 0 {
-						slog.InfoContext(ctx, "[RunIdleEvolution] Generated hypotheses from reflection",
-							"generation", system.Population.Generation, "run_iteration", gen, "count", len(hyps))
+						el.Info(ctx, "RunIdleEvolution", "generated hypotheses from reflection", "generation", system.Population.Generation,
+							"run_iteration", gen,
+							"count", len(hyps),
+						)
 					}
 				}
 			}
@@ -717,8 +724,10 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// Run the post-generation hook (promotion, report, etc.).
 		if system.AfterGeneration != nil {
 			if err := system.AfterGeneration(ctx, gen, system); err != nil {
-				slog.WarnContext(ctx, "[RunIdleEvolution] AfterGeneration hook failed",
-					"generation", system.Population.Generation, "run_iteration", gen, "error", err)
+				el.Warn(ctx, "RunIdleEvolution", "AfterGeneration hook failed", "generation", system.Population.Generation,
+					"run_iteration", gen,
+					"error", err,
+				)
 			}
 		}
 	}
@@ -726,8 +735,7 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 	// Run the post-run hook for final report generation.
 	if system.AfterRun != nil {
 		if err := system.AfterRun(ctx, system); err != nil {
-			slog.WarnContext(ctx, "[RunIdleEvolution] AfterRun hook failed",
-				"error", err)
+			el.Warn(ctx, "RunIdleEvolution", "AfterRun hook failed", "error", err)
 		}
 	}
 

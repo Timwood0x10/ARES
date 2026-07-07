@@ -169,6 +169,7 @@ func countUniqueParams(pop *Population, paramName string) int {
 
 // --- Test Group 1: Full Evolution Lifecycle ---
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestFullEvolutionLifecycle(t *testing.T) {
 	t.Run("50_generations_score_improves", func(t *testing.T) {
 		ctx := context.Background()
@@ -481,9 +482,9 @@ func TestCrossoverSelectionIntegration(t *testing.T) {
 			t.Error("highest-scored agent should be selected more than lowest")
 		}
 	})
-
 }
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestEvolutionUnderStress(t *testing.T) {
 	t.Run("all_same_initial_scores", func(t *testing.T) {
 		ctx := context.Background()
@@ -730,6 +731,7 @@ func TestEvolutionUnderStress(t *testing.T) {
 	})
 }
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestGenealogyTracking(t *testing.T) {
 	t.Run("parent_child_relationship_traceable", func(t *testing.T) {
 		ctx := context.Background()

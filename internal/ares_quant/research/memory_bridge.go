@@ -3,7 +3,6 @@ package research
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 )
 
@@ -18,13 +17,13 @@ import (
 //
 // Returns:
 //   - nil always; errors are logged as warnings but never propagated.
-func PopulateMemoryContext(ctx context.Context, log *MemoryLog, state *ResearchState) {
-	if log == nil {
+func PopulateMemoryContext(ctx context.Context, ml *MemoryLog, state *ResearchState) {
+	if ml == nil {
 		return
 	}
-	mc, err := log.GenerateContext(ctx, state.Symbol)
+	mc, err := ml.GenerateContext(ctx, state.Symbol)
 	if err != nil {
-		slog.Warn("memory context generation skipped", "symbol", state.Symbol, "err", err)
+		log.Warn("memory context generation skipped", "symbol", state.Symbol, "err", err)
 		return
 	}
 	state.MemoryContext = mc
@@ -42,8 +41,8 @@ func PopulateMemoryContext(ctx context.Context, log *MemoryLog, state *ResearchS
 //
 // Returns:
 //   - nil always; errors are logged as warnings but never propagated.
-func SaveDecisionToMemory(ctx context.Context, log *MemoryLog, state *ResearchState) {
-	if log == nil || state.PortfolioDecision == nil {
+func SaveDecisionToMemory(ctx context.Context, ml *MemoryLog, state *ResearchState) {
+	if ml == nil || state.PortfolioDecision == nil {
 		return
 	}
 	entry := &MemoryEntry{
@@ -61,11 +60,11 @@ func SaveDecisionToMemory(ctx context.Context, log *MemoryLog, state *ResearchSt
 		SourceQuality: "research_layer",
 		Status:        MemoryStatusPending,
 	}
-	if err := log.Append(ctx, entry); err != nil {
-		slog.Warn("memory save skipped", "symbol", state.Symbol, "err", err)
+	if err := ml.Append(ctx, entry); err != nil {
+		log.Warn("memory save skipped", "symbol", state.Symbol, "err", err)
 		return
 	}
-	slog.Debug("decision saved to memory log", "symbol", state.Symbol,
+	log.Debug("decision saved to memory log", "symbol", state.Symbol,
 		"rating", state.PortfolioDecision.Rating, "entry_id", entry.ID)
 }
 

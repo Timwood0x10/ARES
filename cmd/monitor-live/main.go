@@ -15,7 +15,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,8 +25,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
@@ -66,7 +63,6 @@ func main() {
 
 	// --- Context with signal handling ---
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -76,8 +72,18 @@ func main() {
 		cancel()
 	}()
 
-	// --- Shared event store ---
-	store := ares_events.NewMemoryEventStore()
+	// --- Bootstrap: infrastructure components via single wiring hub ---
+	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, nil)
+	if err != nil {
+		cancel()
+		log.Fatalf("bootstrap: %v", err)
+	}
+	store := comp.EventStore
+	memMgr := comp.Memory
+	mgr := comp.Runtime
+
+	// Attach event store to memory for event-driven memory operations
+	memMgr.SetEventStore(store, "memory")
 
 	// --- LLM adapter with fallback ---
 	llmAdapter := createLLMAdapterWithFallback(cfg)
@@ -85,6 +91,7 @@ func main() {
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
 	if err != nil {
+		cancel()
 		log.Fatalf("create tool registry: %v", err)
 	}
 
@@ -93,28 +100,18 @@ func main() {
 
 	// --- ToolBinder for agents (bridged from internal core.Registry for schema support) ---
 	toolBinder := newToolBinder(internalReg)
-	slog.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
+	lg.Info("tools registered", "count", len(toolBinder.ListTools()), "tools", toolBinder.ListTools())
 
 	// --- ChatClient for native tool calling ---
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
+		cancel()
 		log.Fatalf("create chat client: %v", err)
 	}
-	slog.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
-
-	// --- Memory manager (required by leader) ---
-	memConfig := memory.DefaultMemoryConfig()
-	memMgr, err := memory.NewMemoryManager(memConfig)
-	if err != nil {
-		log.Fatalf("create memory manager: %v", err)
-	}
-	memMgr.SetEventStore(store, "memory")
+	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Create agents ---
 	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
-
-	// --- Runtime manager ---
-	mgr := ares_runtime.New(nil, store, nil)
 
 	// Register leader
 	leaderFactory := func() base.Agent {
@@ -167,6 +164,7 @@ func main() {
 	).(*monitoring.MonitorPlugin)
 
 	if err := plugin.Start(ctx, bus); err != nil {
+		cancel()
 		log.Fatalf("start monitor plugin: %v", err)
 	}
 
@@ -186,6 +184,7 @@ func main() {
 
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
+		cancel()
 		log.Fatalf("start runtime: %v", err)
 	}
 
@@ -212,6 +211,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 	if err := httpSrv.ListenAndServe(); err != nil {
+		cancel()
 		log.Fatal(err)
 	}
 }
@@ -233,10 +233,10 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 
 	adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)
 	if err == nil {
-		slog.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+		lg.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 		return adapter
 	}
-	slog.Warn("primary LLM failed, trying fallbacks", "error", err)
+	lg.Warn("primary LLM failed, trying fallbacks", "error", err)
 
 	// Try fallbacks from config
 	for _, fb := range cfg.LLM.Fallbacks {
@@ -253,14 +253,14 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 		}
 		adapter, err = factory.Create(fbCfg.Provider, fbCfg)
 		if err == nil {
-			slog.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
+			lg.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
 			return adapter
 		}
-		slog.Warn("fallback LLM failed", "provider", fbCfg.Provider, "error", err)
+		lg.Warn("fallback LLM failed", "provider", fbCfg.Provider, "error", err)
 	}
 
 	// Last resort: ollama local
-	slog.Warn("all remote LLMs failed, falling back to local ollama")
+	lg.Warn("all remote LLMs failed, falling back to local ollama")
 	ollamaCfg := &output.Config{
 		Provider:  "ollama",
 		BaseURL:   "http://localhost:11434",
@@ -272,7 +272,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	if err != nil {
 		log.Fatalf("no LLM adapter available: %v", err)
 	}
-	slog.Info("LLM fallback to ollama", "model", "llama3.2")
+	lg.Info("LLM fallback to ollama", "model", "llama3.2")
 	return adapter
 }
 
@@ -282,17 +282,17 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 	internalReg := core.NewRegistry()
 
 	if len(cfg.MCP.Servers) == 0 {
-		slog.Info("no MCP servers configured")
+		lg.Info("no MCP servers configured")
 		return internalReg
 	}
 
 	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
 	if err != nil {
-		slog.Warn("MCP setup failed", "error", err)
+		lg.Warn("MCP setup failed", "error", err)
 		return internalReg
 	}
 	if mcpMgr != nil {
-		slog.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
+		lg.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
 	}
 
 	// Bridge: register MCP tools into the public api/tools registry

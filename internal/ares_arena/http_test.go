@@ -30,7 +30,7 @@ func TestHandleKillLeader_Success(t *testing.T) {
 	}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("POST", "/arena/leader/kill", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/leader/kill", nil)
 	rec := httptest.NewRecorder()
 	h.handleKillLeader(rec, req)
 
@@ -49,7 +49,7 @@ func TestHandleKillLeader_NoLeader(t *testing.T) {
 	}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("POST", "/arena/leader/kill", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/leader/kill", nil)
 	rec := httptest.NewRecorder()
 	h.handleKillLeader(rec, req)
 
@@ -65,7 +65,7 @@ func TestHandleKillAgent_Success(t *testing.T) {
 	rt := &mockRuntime{}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/kill", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/kill", nil)
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleKillAgent(rec, req)
@@ -81,7 +81,7 @@ func TestHandleKillAgent_Success(t *testing.T) {
 func TestHandleKillAgent_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent//kill", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent//kill", nil)
 	// No path value set.
 	rec := httptest.NewRecorder()
 	h.handleKillAgent(rec, req)
@@ -93,7 +93,7 @@ func TestHandleRemoveNode_Success(t *testing.T) {
 	dag := &mockDAG{}
 	h, _ := setupHandler(nil, dag)
 
-	req := httptest.NewRequest("POST", "/arena/node/node-1/remove", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/node/node-1/remove", nil)
 	req.SetPathValue("id", "node-1")
 	rec := httptest.NewRecorder()
 	h.handleRemoveNode(rec, req)
@@ -108,7 +108,7 @@ func TestHandleRemoveNode_Success(t *testing.T) {
 func TestHandleRemoveNode_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/node//remove", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/node//remove", nil)
 	rec := httptest.NewRecorder()
 	h.handleRemoveNode(rec, req)
 
@@ -120,7 +120,7 @@ func TestHandleRemoveEdge_Success(t *testing.T) {
 	h, _ := setupHandler(nil, dag)
 
 	body := `{"from":"a","to":"b"}`
-	req := httptest.NewRequest("POST", "/arena/edge/remove", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/edge/remove", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	h.handleRemoveEdge(rec, req)
 
@@ -134,7 +134,7 @@ func TestHandleRemoveEdge_Success(t *testing.T) {
 func TestHandleRemoveEdge_InvalidJSON(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/edge/remove", bytes.NewBufferString("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/edge/remove", bytes.NewBufferString("not json"))
 	rec := httptest.NewRecorder()
 	h.handleRemoveEdge(rec, req)
 
@@ -145,7 +145,7 @@ func TestHandleRemoveEdge_MissingFields(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
 	body := `{"from":"a"}`
-	req := httptest.NewRequest("POST", "/arena/edge/remove", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/edge/remove", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	h.handleRemoveEdge(rec, req)
 
@@ -156,7 +156,7 @@ func TestHandleStats(t *testing.T) {
 	rt := &mockRuntime{}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("GET", "/arena/stats", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/arena/stats", nil)
 	rec := httptest.NewRecorder()
 	h.handleStats(rec, req)
 
@@ -170,7 +170,7 @@ func TestHandleStats(t *testing.T) {
 func TestHandleHistory_Empty(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("GET", "/arena/history", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/arena/history", nil)
 	rec := httptest.NewRecorder()
 	h.handleHistory(rec, req)
 
@@ -190,7 +190,7 @@ func TestHandleHistory_WithData(t *testing.T) {
 		ID: "hist-1", Type: ActionKillAgent, TargetID: "a-1",
 	})
 
-	req := httptest.NewRequest("GET", "/arena/history", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/arena/history", nil)
 	rec := httptest.NewRecorder()
 	h.handleHistory(rec, req)
 
@@ -293,7 +293,7 @@ func TestRecoverMiddleware_NoPanic(t *testing.T) {
 	})
 	handler := RecoverMiddleware(inner)
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -306,7 +306,7 @@ func TestRecoverMiddleware_WithPanic(t *testing.T) {
 	})
 	handler := RecoverMiddleware(inner)
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -329,7 +329,7 @@ func TestRegisterRoutes(t *testing.T) {
 	}
 
 	for _, r := range routes {
-		req := httptest.NewRequest(r.method, r.path, nil)
+		req := httptest.NewRequestWithContext(context.Background(), r.method, r.path, nil)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		// Should not be 404 (route exists).
@@ -342,7 +342,7 @@ func TestHandleToolTimeout_Success(t *testing.T) {
 	h, _ := setupHandler(rt, nil)
 
 	body := `{"duration":"5s"}`
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString(body))
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleToolTimeout(rec, req)
@@ -358,7 +358,7 @@ func TestHandleToolTimeout_Success(t *testing.T) {
 func TestHandleToolTimeout_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent//tool-timeout", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent//tool-timeout", nil)
 	rec := httptest.NewRecorder()
 	h.handleToolTimeout(rec, req)
 
@@ -368,7 +368,7 @@ func TestHandleToolTimeout_MissingID(t *testing.T) {
 func TestHandleToolTimeout_InvalidJSON(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/tool-timeout", bytes.NewBufferString("not json"))
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleToolTimeout(rec, req)
@@ -380,7 +380,7 @@ func TestHandleMemoryCorrupt_Success(t *testing.T) {
 	rt := &mockRuntime{}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/memory-corrupt", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/memory-corrupt", nil)
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleMemoryCorrupt(rec, req)
@@ -396,7 +396,7 @@ func TestHandleMemoryCorrupt_Success(t *testing.T) {
 func TestHandleMemoryCorrupt_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent//memory-corrupt", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent//memory-corrupt", nil)
 	rec := httptest.NewRecorder()
 	h.handleMemoryCorrupt(rec, req)
 
@@ -407,7 +407,7 @@ func TestHandleMCPDisconnect_Success(t *testing.T) {
 	rt := &mockRuntime{}
 	h, _ := setupHandler(rt, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/mcp-disconnect", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/mcp-disconnect", nil)
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleMCPDisconnect(rec, req)
@@ -423,7 +423,7 @@ func TestHandleMCPDisconnect_Success(t *testing.T) {
 func TestHandleMCPDisconnect_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent//mcp-disconnect", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent//mcp-disconnect", nil)
 	rec := httptest.NewRecorder()
 	h.handleMCPDisconnect(rec, req)
 
@@ -435,7 +435,7 @@ func TestHandleLLMFailure_Success(t *testing.T) {
 	h, _ := setupHandler(rt, nil)
 
 	body := `{"error_type":"rate_limit"}`
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString(body))
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleLLMFailure(rec, req)
@@ -451,7 +451,7 @@ func TestHandleLLMFailure_Success(t *testing.T) {
 func TestHandleLLMFailure_MissingID(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent//llm-failure", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent//llm-failure", nil)
 	rec := httptest.NewRecorder()
 	h.handleLLMFailure(rec, req)
 
@@ -461,7 +461,7 @@ func TestHandleLLMFailure_MissingID(t *testing.T) {
 func TestHandleLLMFailure_InvalidJSON(t *testing.T) {
 	h, _ := setupHandler(nil, nil)
 
-	req := httptest.NewRequest("POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/arena/agent/agent-1/llm-failure", bytes.NewBufferString("not json"))
 	req.SetPathValue("id", "agent-1")
 	rec := httptest.NewRecorder()
 	h.handleLLMFailure(rec, req)

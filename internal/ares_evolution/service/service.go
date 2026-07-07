@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -116,7 +115,7 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 		s.crosser = cross
 	}
 
-	slog.Info("evolution service created",
+	log.Info("evolution service created",
 		"population_size", cfg.PopulationSize,
 		"elite_count", cfg.EliteCount,
 		"wired_mode", cfg.EnableWiredMode,
@@ -126,6 +125,8 @@ func NewService(cfg *SystemConfig) (*Service, error) {
 }
 
 // createWiredSystem creates a fully wired evolution system from the API config.
+//
+//nolint:gocyclo // Complex wired system creation with multiple components
 func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutionSystem, error) {
 	baseStrategy := toInternalStrategy(cfg.BaseStrategy)
 
@@ -279,7 +280,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				var err error
 				ev, err = evidenceAgg(ctx, best.ID)
 				if err != nil {
-					slog.WarnContext(ctx, "post-generation: evidence aggregation failed",
+					log.WarnContext(ctx, "post-generation: evidence aggregation failed",
 						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				}
 			}
@@ -290,10 +291,10 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 				scoreCtx := context.WithValue(ctx, scoreContextKey{}, best.Score)
 				state, reason, err := promoter(scoreCtx, best.ID, ev)
 				if err != nil {
-					slog.WarnContext(ctx, "post-generation: promotion evaluation failed",
+					log.WarnContext(ctx, "post-generation: promotion evaluation failed",
 						"generation", sys.Population.Generation, "run_iteration", gen, "strategy_id", best.ID, "error", err)
 				} else {
-					slog.InfoContext(ctx, "post-generation promotion evaluation",
+					log.InfoContext(ctx, "post-generation promotion evaluation",
 						"generation", sys.Population.Generation,
 						"winner", best.ID,
 						"fitness", best.Score,
@@ -305,7 +306,7 @@ func (s *Service) CreateWiredSystem(cfg *SystemConfig) (*evolution.WiredEvolutio
 					)
 				}
 			} else {
-				slog.InfoContext(ctx, "generation complete",
+				log.InfoContext(ctx, "generation complete",
 					"generation", sys.Population.Generation,
 					"winner", best.ID,
 					"fitness", best.Score,
@@ -450,7 +451,8 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		default:
 		}
 
-		if s.wiredSystem != nil {
+		switch {
+		case s.wiredSystem != nil:
 			if err := evolution.RunIdleEvolution(ctx, s.wiredSystem, 1); err != nil {
 				return nil, fmt.Errorf("evolve generation %d: %w", i+1, err)
 			}
@@ -463,7 +465,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 
 			lineages := s.collectLineages()
 			result.Lineages = append(result.Lineages, lineages...)
-		} else if s.population != nil && s.mutator != nil && s.crosser != nil {
+		case s.population != nil && s.mutator != nil && s.crosser != nil:
 			prevSnapshot, _ := s.population.Snapshot()
 			prevBest := bestFromStrategies(prevSnapshot)
 
@@ -487,7 +489,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			stats := s.collectStats()
 			result.Stats = append(result.Stats, stats)
 			result.Lineages = append(result.Lineages, s.lineages...)
-		} else {
+		default:
 			return nil, ErrNotInitialized
 		}
 
@@ -496,7 +498,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 
 	best, err := s.BestStrategy()
 	if err != nil {
-		slog.WarnContext(ctx, "failed to get best strategy after evolution", "error", err)
+		log.WarnContext(ctx, "failed to get best strategy after evolution", "error", err)
 	} else {
 		result.BestStrategy = best
 	}
@@ -517,7 +519,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		}
 	}
 
-	slog.InfoContext(ctx, "evolution completed",
+	log.InfoContext(ctx, "evolution completed",
 		"total_generations", result.TotalGens,
 		"raw_improvements", rawCount,
 		"significant_improvements", sigCount,
@@ -600,7 +602,7 @@ func (s *Service) Shutdown() {
 	if s.wiredSystem != nil {
 		evolution.Shutdown(s.wiredSystem)
 	}
-	slog.Info("evolution service shut down")
+	log.Info("evolution service shut down")
 }
 
 // SaveBestStrategy persists the best strategy to a JSON file at the given path.
@@ -616,7 +618,7 @@ func (s *Service) SaveBestStrategy(path string) error {
 
 	dir := filepath.Dir(path)
 	if dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}
@@ -625,17 +627,17 @@ func (s *Service) SaveBestStrategy(path string) error {
 	if err != nil {
 		return fmt.Errorf("marshal strategy: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	slog.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)
+	log.Info("best strategy saved", "path", path, "id", best.ID, "score", best.Score)
 	return nil
 }
 
 // LoadBestStrategy loads a best strategy from a JSON file at the given path.
 // Returns the loaded strategy, or an error if the file cannot be read.
 func LoadBestStrategy(path string) (*Strategy, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // intentional file read for best strategy loading
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -654,168 +656,6 @@ func LoadBestStrategy(path string) (*Strategy, error) {
 // apiGuidanceBridge adapts an API GuidanceProvider into an internal
 // evolution.GuidanceProvider so the wired system can use it for
 // experience-guided mutation.
-type apiGuidanceBridge struct {
-	provider GuidanceProvider
-}
-
-// HintsForTask delegates to the API provider and converts EvolutionHint types.
-func (b *apiGuidanceBridge) HintsForTask(ctx context.Context, taskType string, limit int) ([]evolution.EvolutionHint, error) {
-	hints, err := b.provider.HintsForTask(ctx, taskType, limit)
-	if err != nil {
-		return nil, err
-	}
-	if hints == nil {
-		return []evolution.EvolutionHint{}, nil
-	}
-	result := make([]evolution.EvolutionHint, len(hints))
-	for i, h := range hints {
-		var paramHints map[string]float64
-		if h.ParamHints != nil {
-			paramHints = make(map[string]float64, len(h.ParamHints))
-			for k, v := range h.ParamHints {
-				paramHints[k] = v
-			}
-		}
-		constraints := make([]string, len(h.Constraints))
-		copy(constraints, h.Constraints)
-		failedPatterns := make([]string, len(h.FailedPatterns))
-		copy(failedPatterns, h.FailedPatterns)
-		preferredTools := make([]string, len(h.PreferredTools))
-		copy(preferredTools, h.PreferredTools)
-		promptSnippets := make([]string, len(h.PromptSnippets))
-		copy(promptSnippets, h.PromptSnippets)
-		sourceIDs := make([]string, len(h.SourceExperienceIDs))
-		copy(sourceIDs, h.SourceExperienceIDs)
-
-		result[i] = evolution.EvolutionHint{
-			ID:                  h.ID,
-			TaskType:            h.TaskType,
-			Problem:             h.Problem,
-			Solution:            h.Solution,
-			Constraints:         constraints,
-			FailedPatterns:      failedPatterns,
-			PreferredTools:      preferredTools,
-			PromptSnippets:      promptSnippets,
-			ParamHints:          paramHints,
-			Confidence:          h.Confidence,
-			SourceExperienceIDs: sourceIDs,
-		}
-	}
-	return result, nil
-}
-
-// RecordStrategyOutcome delegates to the API provider and converts types.
-func (b *apiGuidanceBridge) RecordStrategyOutcome(ctx context.Context, outcome evolution.StrategyOutcome) error {
-	apiOutcome := StrategyOutcome{
-		StrategyID:   outcome.StrategyID,
-		TaskType:     outcome.TaskType,
-		Success:      outcome.Success,
-		Score:        outcome.Score,
-		Cost:         outcome.Cost,
-		LatencyMs:    outcome.LatencyMs,
-		MutationType: outcome.MutationType,
-		Timestamp:    outcome.Timestamp,
-	}
-	if len(outcome.ExperienceIDs) > 0 {
-		apiOutcome.ExperienceIDs = make([]string, len(outcome.ExperienceIDs))
-		copy(apiOutcome.ExperienceIDs, outcome.ExperienceIDs)
-	}
-	return b.provider.RecordStrategyOutcome(ctx, apiOutcome)
-}
-
-// apiMemoryBridge adapts an API MemoryExperienceProvider into an internal
-// scoring.ExperienceProvider for memory-aware scoring.
-type apiMemoryBridge struct {
-	provider MemoryExperienceProvider
-}
-
-// FindSimilar delegates directly to the API provider (same signature).
-func (b *apiMemoryBridge) FindSimilar(ctx context.Context, taskType string, limit int) (int, float64, error) {
-	return b.provider.FindSimilar(ctx, taskType, limit)
-}
-
-// llmClientAdapter adapts the service-layer LLMClient (service package) to
-// the mutation package's LLMClient interface. Both interfaces are structurally
-// identical (Generate(ctx, prompt) -> (string, error)), but live in different
-// packages, so an explicit adapter is required.
-type llmClientAdapter struct {
-	inner LLMClient
-}
-
-// Generate delegates to the wrapped service-layer LLMClient.
-func (a *llmClientAdapter) Generate(ctx context.Context, prompt string) (string, error) {
-	return a.inner.Generate(ctx, prompt)
-}
-
-// ──────────────────────────────────────────────
-// Type conversion helpers
-// ──────────────────────────────────────────────
-
-// toAPIStrategy converts an internal mutation.Strategy to the public API Strategy type.
-func toAPIStrategy(s *mutation.Strategy) *Strategy {
-	if s == nil {
-		return nil
-	}
-	return &Strategy{
-		ID:              s.ID,
-		Name:            s.Name,
-		Version:         s.Version,
-		Params:          mutation.CloneParams(s.Params),
-		ParentID:        s.ParentID,
-		PromptTemplate:  s.PromptTemplate,
-		MutationType:    s.StrategyMutationType.String(),
-		EvidenceKey:     s.ComputeEvidenceKey(),
-		Score:           s.Score,
-		DimensionScores: cloneDimensionScores(s.DimensionScores),
-		CreatedAt:       s.CreatedAt,
-	}
-}
-
-// toInternalStrategy converts an API Strategy to an internal mutation.Strategy.
-func toInternalStrategy(s *Strategy) *mutation.Strategy {
-	if s == nil {
-		return nil
-	}
-	return &mutation.Strategy{
-		ID:                   s.ID,
-		Name:                 s.Name,
-		Version:              s.Version,
-		Params:               mutation.CloneParams(s.Params),
-		ParentID:             s.ParentID,
-		PromptTemplate:       s.PromptTemplate,
-		StrategyMutationType: mutation.ParseMutationType(s.MutationType),
-		Score:                s.Score,
-		DimensionScores:      cloneDimensionScores(s.DimensionScores),
-		CreatedAt:            s.CreatedAt,
-	}
-}
-
-// cloneDimensionScores returns a shallow copy of a dimension scores map.
-func cloneDimensionScores(src map[string]float64) map[string]float64 {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]float64, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-// toAPILineage converts an internal evolution.StrategyLineage to the public API type.
-func toAPILineage(l evolution.StrategyLineage) StrategyLineage {
-	return StrategyLineage{
-		ParentID:               l.ParentID,
-		ChildID:                l.ChildID,
-		MutationType:           l.MutationType,
-		WinRate:                l.WinRate,
-		ScoreDelta:             l.ScoreImprovement,
-		ParentScore:            l.ParentScore,
-		ChildScore:             l.ChildScore,
-		ImprovementSignificant: l.ImprovementSignificant,
-		Timestamp:              l.Timestamp,
-	}
-}
 
 // genomeMutatorAdapter creates a genome-compatible mutator adapter from the raw mutator.
 //
@@ -1028,7 +868,7 @@ func resolveEvidenceAggregator(v interface{}) func(ctx context.Context, strategy
 			}, nil
 		}
 	}
-	slog.Warn("evidence aggregator: unrecognised type, ignoring",
+	log.Warn("evidence aggregator: unrecognised type, ignoring",
 		"type", fmt.Sprintf("%T", v))
 	return nil
 }
@@ -1058,7 +898,7 @@ func resolvePromotionLogic(v interface{}) func(ctx context.Context, strategyID s
 			return string(state), reason, nil
 		}
 	}
-	slog.Warn("promotion logic: unrecognised type, ignoring",
+	log.Warn("promotion logic: unrecognised type, ignoring",
 		"type", fmt.Sprintf("%T", v))
 	return nil
 }

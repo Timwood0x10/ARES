@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -19,6 +19,9 @@ type toolBinder struct {
 	mu       sync.RWMutex
 	tools    map[string]toolEntry
 	registry *core.Registry
+	bridge   interface {
+		Execute(ctx context.Context, toolName string, params map[string]any, userRequest string) (core.Result, error)
+	}
 }
 
 // NewToolBinder creates a new ToolBinder.
@@ -52,18 +55,32 @@ func (b *toolBinder) BindIdempotentTool(name string, toolFunc func(ctx context.C
 }
 
 // CallTool calls a bound tool by name.
-// Returns ErrToolNotFound if the tool is not bound.
+// Returns ErrToolNotFound if the tool is not bound and no planner bridge is set.
+// If a planner bridge is configured, it falls back to intent-based resolution.
 // Use IsToolIdempotent to check whether the tool is safe to retry.
 func (b *toolBinder) CallTool(ctx context.Context, name string, args map[string]any) (any, error) {
 	b.mu.RLock()
 	entry, ok := b.tools[name]
+	bridge := b.bridge
 	b.mu.RUnlock()
 
-	if !ok {
-		return nil, errors.ErrToolNotFound
+	if ok {
+		return entry.fn(ctx, args)
 	}
 
-	return entry.fn(ctx, args)
+	// Planner fallback: resolve intent and auto-select tool.
+	if bridge != nil {
+		result, err := bridge.Execute(ctx, name, args, "")
+		if err != nil {
+			return nil, err
+		}
+		if !result.Success {
+			return nil, errors.ErrToolNotFound
+		}
+		return result.Data, nil
+	}
+
+	return nil, errors.ErrToolNotFound
 }
 
 // IsToolIdempotent reports whether a tool is safe to retry on failure.
@@ -129,6 +146,17 @@ func (b *toolBinder) BridgeFromRegistry(registry *core.Registry) {
 			idempotent: idempotent,
 		}
 	}
+}
+
+// WithPlannerBridge attaches a planner bridge for intent-based tool fallback.
+// When CallTool encounters ErrToolNotFound, the bridge attempts to resolve
+// the user's intent and auto-select a tool.
+func (b *toolBinder) WithPlannerBridge(bridge interface {
+	Execute(ctx context.Context, toolName string, params map[string]any, userRequest string) (core.Result, error)
+}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.bridge = bridge
 }
 
 // GetTool retrieves a tool function by name.

@@ -1,0 +1,16 @@
+# 07-human-in-loop configuration
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: false
+
+tools:
+  builtin: false
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false

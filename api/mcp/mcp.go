@@ -82,7 +82,7 @@ func (c *Client) initialize(ctx context.Context) error {
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
 	}
-	_ = c.sendNotification(notif)
+	_ = c.sendNotification(notif) //nolint: errcheck
 
 	return nil
 }
@@ -243,7 +243,7 @@ func DiscoverServers(projectDir string) []ServerConfig {
 }
 
 func scanClaudeConfig(path string, seen map[string]bool) []ServerConfig {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 - path is constructed from known base dirs
 	if err != nil {
 		return nil
 	}

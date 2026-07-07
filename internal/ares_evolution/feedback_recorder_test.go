@@ -24,7 +24,7 @@ func (m *mockRepoFR) Create(_ context.Context, _ *storageModels.Experience) erro
 }
 
 func (m *mockRepoFR) GetByID(_ context.Context, _ string) (*storageModels.Experience, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRepoFR) Update(_ context.Context, _ *storageModels.Experience) error {

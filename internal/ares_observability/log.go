@@ -3,7 +3,12 @@ package ares_observability
 import (
 	"context"
 	"log/slog"
+
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+// log is the package-level structured logger.
+var log = logger.Module("ares_observability")
 
 // LogTracer is a tracer that logs to standard output using slog.
 // It can be used for development and debugging.

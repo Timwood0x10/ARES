@@ -96,7 +96,9 @@ func (s *CompactableEventStore) Append(
 
 	// Fire-and-forget: wait for group in background so caller is not blocked.
 	go func() {
-		_ = g.Wait()
+		if err := g.Wait(); err != nil {
+			log.Warn("compactable store: wait", "error", err)
+		}
 		cancel()
 	}()
 

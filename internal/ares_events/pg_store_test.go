@@ -43,7 +43,7 @@ func getTestPool(t *testing.T) *postgres.Pool {
 		return nil
 	}
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		t.Skipf("failed to ping test database: %v", err)
 		return nil
@@ -85,7 +85,7 @@ func createEventsTable(t *testing.T, db *sql.DB) {
 		`ALTER TABLE events ADD CONSTRAINT uq_stream_version UNIQUE (stream_id, version)`, // ignore if exists
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			// Ignore "already exists" errors for idempotent DDL.
 			if !strings.Contains(err.Error(), "already exists") {
 				t.Fatalf("failed to create events table: %v", err)

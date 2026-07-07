@@ -201,12 +201,12 @@ func (c *ExecutionCollector) Export() map[string]any {
 	errs := make([]ErrorRecord, len(c.errorLog))
 	copy(errs, c.errorLog)
 	return map[string]any{
-		"execution_id":  c.executionID,
-		"route_history": route,
-		"tool_history":  tool,
-		"memory_hits":   mem,
-		"interrupt_log": interrupt,
-		"error_log":     errs,
+		PayloadKeyExecutionID: c.executionID,
+		"route_history":       route,
+		"tool_history":        tool,
+		"memory_hits":         mem,
+		"interrupt_log":       interrupt,
+		"error_log":           errs,
 	}
 }
 

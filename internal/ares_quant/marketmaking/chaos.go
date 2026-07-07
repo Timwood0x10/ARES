@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// Chaos type constants
+const (
+	chaosTypeMarketDataStale      = "market_data_stale"
+	chaosTypeOrderRejectSpike     = "order_reject_spike"
+	chaosTypeLatencySpike         = "latency_spike"
+	chaosTypeInventoryLimitBreach = "inventory_limit_breach"
+	testSymbol                    = "TEST"
+)
+
+// Order side constants
+const (
+	orderSideBuy  = "buy"
+	orderSideSell = "sell"
+)
+
 // ChaosAction defines a fault injection action for market-making testing.
 type ChaosAction struct {
 	Name        string                 `json:"name"`
@@ -137,19 +152,19 @@ func (e *ChaosExecutor) Execute(
 		e.logEvent(fmt.Sprintf("executing action: %s (type=%s)", action.Name, action.Type))
 
 		switch action.Type {
-		case "market_data_stale":
+		case chaosTypeMarketDataStale:
 			stoppedDangerousQuotes = e.executeStaleData(ctx, engine, inv, events)
 
-		case "order_reject_spike":
+		case chaosTypeOrderRejectSpike:
 			rejectedOrders = e.executeRejectSpike(action, &totalQuotes)
 
 		case "partial_fill_storm":
 			e.executePartialFillStorm(inv, action)
 
-		case "latency_spike":
+		case chaosTypeLatencySpike:
 			e.executeLatencySpike(ctx, engine, events, action)
 
-		case "inventory_limit_breach":
+		case chaosTypeInventoryLimitBreach:
 			breached := e.executeInventoryBreach(inv, action)
 			maintainedCapital = maintainedCapital && !breached
 
@@ -268,7 +283,7 @@ func (e *ChaosExecutor) executePartialFillStorm(inv *Inventory, action ChaosActi
 	}
 	for i := 0; i < count; i++ {
 		processFill(inv, &Fill{
-			Symbol: "TEST", Side: "buy",
+			Symbol: testSymbol, Side: orderSideBuy,
 			Price: 100.0 + float64(i)*0.1, Quantity: 0.1,
 			Timestamp: time.Now(),
 		}, 0.001, 0.0005)

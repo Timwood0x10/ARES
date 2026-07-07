@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -33,21 +32,16 @@ func main() {
 
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		slog.Error("invalid DSN", "dsn", dsn, "error", err)
+		log.Error("invalid DSN", "dsn", dsn, "error", err)
 		os.Exit(1)
 	}
 	dbname := strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() {
-		if err := adminDB.Close(); err != nil {
-			slog.Warn("adminDB.Close", "error", err)
-		}
-	}()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
-		slog.Warn("adminDB.Close", "error", err)
+		log.Warn("adminDB.Close", "error", err)
 	}
 
 	cfg := &postgres.Config{
@@ -65,38 +59,40 @@ func main() {
 
 	pool, err := postgres.NewPool(cfg)
 	if err != nil {
-		slog.Error("failed to connect to target database", "database", dbname, "error", err)
+		log.Error("failed to connect to target database", "database", dbname, "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := pool.Close(); err != nil {
-			slog.Warn("pool.Close", "error", err)
-		}
-	}()
 
 	ctx := context.Background()
 
 	if _, err := pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
-		slog.Error("failed to enable pgvector", "error", err)
+		_ = pool.Close()
+		log.Error("failed to enable pgvector", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("pgvector extension enabled")
 
 	if err := postgres.MigrateStorage(ctx, pool); err != nil {
-		slog.Error("migration failed", "error", err)
+		_ = pool.Close()
+		log.Error("migration failed", "error", err)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := pool.Close(); err != nil {
+			log.Warn("pool.Close", "error", err)
+		}
+	}()
 	fmt.Println("Test database migrations completed successfully")
 }
 
 func connectAdmin(dsn string) *sql.DB {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		slog.Error("failed to connect to postgres", "error", err)
+		log.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
-	if err := db.Ping(); err != nil {
-		slog.Error("failed to ping postgres", "error", err)
+	if err := db.PingContext(context.Background()); err != nil {
+		log.Error("failed to ping postgres", "error", err)
 		os.Exit(1)
 	}
 	return db
@@ -104,13 +100,13 @@ func connectAdmin(dsn string) *sql.DB {
 
 func ensureDatabase(db *sql.DB, name string) {
 	var exists bool
-	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
-		slog.Error("failed to check database existence", "database", name, "error", err)
+	if err := db.QueryRowContext(context.Background(), "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
+		log.Error("failed to check database existence", "database", name, "error", err)
 		os.Exit(1)
 	}
 	if !exists {
-		if _, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
-			slog.Error("failed to create database", "database", name, "error", err)
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
+			log.Error("failed to create database", "database", name, "error", err)
 			os.Exit(1)
 		}
 		fmt.Printf("Created database: %s\n", name)

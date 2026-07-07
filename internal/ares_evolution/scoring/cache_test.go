@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+const (
+	testScorerTypeLLM = "llm"
+)
+
 func TestNewScoreCache_UnlimitedSize(t *testing.T) {
 	c := NewScoreCache(0)
 	if c == nil {
@@ -25,7 +29,7 @@ func TestScoreCache_PutAndGet(t *testing.T) {
 	entry := CacheEntry{
 		Hash:        12345,
 		Score:       85.5,
-		ScorerType:  "llm",
+		ScorerType:  testScorerTypeLLM,
 		Timestamp:   time.Now().UnixNano(),
 		SampleCount: 10,
 		Confidence:  0.95,
@@ -40,7 +44,7 @@ func TestScoreCache_PutAndGet(t *testing.T) {
 	if got.Score != 85.5 {
 		t.Fatalf("score mismatch: want 85.5, got %f", got.Score)
 	}
-	if got.ScorerType != "llm" {
+	if got.ScorerType != testScorerTypeLLM {
 		t.Fatalf("scorerType mismatch: want llm, got %s", got.ScorerType)
 	}
 	if got.SampleCount != 10 {
@@ -217,7 +221,7 @@ func TestScoreCache_ConcurrentAccess(t *testing.T) {
 func TestMakeEntry(t *testing.T) {
 	before := time.Now().UnixNano()
 
-	entry := MakeEntry(123, 88.5, "llm", 5, 0.9)
+	entry := MakeEntry(123, 88.5, testScorerTypeLLM, 5, 0.9)
 
 	after := time.Now().UnixNano()
 

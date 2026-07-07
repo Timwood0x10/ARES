@@ -12,7 +12,7 @@ import (
 )
 
 // ErrNilStrategy is returned when a nil strategy is passed to StrategyHash.
-var ErrNilStrategy = fmt.Errorf("strategy must not be nil")
+// Errors are defined in errors.go.
 
 // StrategyHash computes a stable 64-bit hash for a strategy.
 // Two strategies with the same params, prompt template, tool config,

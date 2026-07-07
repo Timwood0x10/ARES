@@ -11,7 +11,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	require.NotNil(t, cfg)
 	require.NoError(t, cfg.Validate())
-	require.Equal(t, []string{"BTCUSDT"}, cfg.Symbols)
+	require.Equal(t, []string{SymbolBTCUSDT}, cfg.Symbols)
 	require.Equal(t, ModePaper, cfg.Mode)
 	require.Equal(t, 10.0, cfg.RiskLimits.MaxPosition)
 	require.Equal(t, "binance", cfg.DataSource.Vendor)
@@ -43,7 +43,7 @@ func TestValidate_NoSymbols(t *testing.T) {
 // TestValidate_InvalidMode tests validation with an invalid mode value.
 func TestValidate_InvalidMode(t *testing.T) {
 	cfg := &MarketMakingConfig{
-		Symbols: []string{"BTCUSDT"},
+		Symbols: []string{SymbolBTCUSDT},
 		Mode:    Mode(99),
 		RiskLimits: RiskLimitConfig{
 			MaxPosition:  10.0,
@@ -58,7 +58,7 @@ func TestValidate_InvalidMode(t *testing.T) {
 // TestValidate_ZeroMaxPosition tests validation with zero max position.
 func TestValidate_ZeroMaxPosition(t *testing.T) {
 	cfg := &MarketMakingConfig{
-		Symbols: []string{"BTCUSDT"},
+		Symbols: []string{SymbolBTCUSDT},
 		Mode:    ModePaper,
 		RiskLimits: RiskLimitConfig{
 			MaxPosition:  0,
@@ -73,14 +73,14 @@ func TestValidate_ZeroMaxPosition(t *testing.T) {
 // TestValidate_LiveModeNoEndpoint tests that live mode requires an endpoint.
 func TestValidate_LiveModeNoEndpoint(t *testing.T) {
 	cfg := &MarketMakingConfig{
-		Symbols: []string{"BTCUSDT"},
+		Symbols: []string{SymbolBTCUSDT},
 		Mode:    ModeLive,
 		RiskLimits: RiskLimitConfig{
 			MaxPosition:  10.0,
 			MaxOrderSize: 1.0,
 		},
 		ExecutionGateway: ExecutionGatewayConfig{
-			Type:     "rest",
+			Type:     ModeREST,
 			Endpoint: "",
 		},
 	}
@@ -92,7 +92,7 @@ func TestValidate_LiveModeNoEndpoint(t *testing.T) {
 // TestValidate_LiveModeWithEndpoint tests that live mode passes with endpoint.
 func TestValidate_LiveModeWithEndpoint(t *testing.T) {
 	cfg := &MarketMakingConfig{
-		Symbols: []string{"BTCUSDT"},
+		Symbols: []string{SymbolBTCUSDT},
 		Mode:    ModeLive,
 		RiskLimits: RiskLimitConfig{
 			MaxPosition:      10.0,
@@ -100,7 +100,7 @@ func TestValidate_LiveModeWithEndpoint(t *testing.T) {
 			MaxInventorySkew: 5.0,
 		},
 		ExecutionGateway: ExecutionGatewayConfig{
-			Type:     "rest",
+			Type:     ModeREST,
 			Endpoint: "https://api.example.com",
 		},
 	}

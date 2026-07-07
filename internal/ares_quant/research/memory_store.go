@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 //   - error if database connection or schema creation fails.
 func NewMemoryStore(path string) (*MemoryStore, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil { //nosec G301
+	if err := os.MkdirAll(dir, 0o750); err != nil { // nosec G301
 		return nil, fmt.Errorf("memory store create dir: %w", err)
 	}
 
@@ -66,13 +66,17 @@ func NewMemoryStore(path string) (*MemoryStore, error) {
 	}
 
 	// Enable WAL mode for better concurrent read performance.
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close() // best-effort cleanup; primary error already captured above
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+		if err := db.Close(); err != nil {
+			log.Warn("memory store: close after WAL mode error", "error", err)
+		}
 		return nil, fmt.Errorf("memory store set wal mode: %w", err)
 	}
 
-	if _, err := db.Exec(createMemoryTableSQL); err != nil {
-		_ = db.Close() // best-effort cleanup; primary error already captured above
+	if _, err := db.ExecContext(context.Background(), createMemoryTableSQL); err != nil {
+		if err := db.Close(); err != nil {
+			log.Warn("memory store: close after create table error", "error", err)
+		}
 		return nil, fmt.Errorf("memory store create table: %w", err)
 	}
 
@@ -214,7 +218,9 @@ func (s *MemoryStore) UpdateOutcome(ctx context.Context, id string, outcome *Out
 	}
 	defer func() {
 		if err != nil {
-			_ = tx.Rollback() // best-effort cleanup; primary error already captured above
+			if err := tx.Rollback(); err != nil {
+				log.Warn("memory store: write experience rollback", "error", err)
+			}
 		}
 	}()
 

@@ -3,21 +3,26 @@ package scoring
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync/atomic"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// Scorer type constants for cache entries and tier names.
+const (
+	ScorerTypeLLM       = "llm"
+	ScorerTypeHeuristic = "heuristic"
+)
+
 // ErrNilCache is returned when a nil cache is passed to NewTieredScorer.
-var ErrNilTieredCache = fmt.Errorf("cache must not be nil")
+// Errors are defined in errors.go.
 
 // ErrNilBudget is returned when a nil budget is passed to NewTieredScorer.
-var ErrNilBudget = fmt.Errorf("budget must not be nil")
+// Errors are defined in errors.go.
 
 // ErrNilHeuristicScorer is returned when a nil heuristic scorer is passed to NewTieredScorer.
-var ErrNilHeuristicScorer = fmt.Errorf("heuristic scorer must not be nil")
+// Errors are defined in errors.go.
 
 // Tier defines a scoring tier in the pipeline.
 type Tier int
@@ -37,9 +42,9 @@ func (t Tier) String() string {
 	case TierCache:
 		return "cache"
 	case TierHeuristic:
-		return "heuristic"
+		return ScorerTypeHeuristic
 	case TierLLM:
-		return "llm"
+		return ScorerTypeLLM
 	default:
 		return "unknown"
 	}
@@ -133,7 +138,7 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 		ts.budget.RecordCacheHit()
 		ts.cacheHits.Add(1)
 		ts.totalScored.Add(1)
-		slog.Debug("tiered_scorer: cache hit",
+		log.Debug("tiered_scorer: cache hit",
 			"hash", hash, "score", entry.Score, "scorer_type", entry.ScorerType)
 		return entry.Score, TierCache, nil
 	}
@@ -149,7 +154,7 @@ func (ts *TieredScorer) Score(ctx context.Context, s *mutation.Strategy) (float6
 
 	// Tier 3: Heuristic fallback (always available).
 	score := ts.heuristic(s)
-	entry := MakeEntry(hash, score, "heuristic", 1, 0.5)
+	entry := MakeEntry(hash, score, ScorerTypeHeuristic, 1, 0.5)
 	ts.cache.Put(hash, entry)
 
 	ts.heuristicCalls.Add(1)
@@ -177,7 +182,7 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Warn("tiered_scorer: LLM scorer panicked",
+				log.Warn("tiered_scorer: LLM scorer panicked",
 					"hash", hash, "recovery", r)
 				ts.budget.RecordFallback()
 				ts.fallbacks.Add(1)
@@ -193,13 +198,13 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 		return 0, false
 	}
 
-	entry := MakeEntry(hash, score, "llm", 1, 1.0)
+	entry := MakeEntry(hash, score, ScorerTypeLLM, 1, 1.0)
 	ts.cache.Put(hash, entry)
 
 	ts.llmCalls.Add(1)
 	ts.totalScored.Add(1)
 
-	slog.Debug("tiered_scorer: LLM scored",
+	log.Debug("tiered_scorer: LLM scored",
 		"hash", hash, "score", score)
 	return score, true
 }

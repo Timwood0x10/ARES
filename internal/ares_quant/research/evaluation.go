@@ -61,12 +61,12 @@ func (ev *Evaluator) AddDecision(d *HistoricalDecision) {
 //
 // Args:
 //
-//	Ndays - the look-ahead window used for FutureReturn (for documentation).
+//	ndays - the look-ahead window used for FutureReturn (for documentation).
 //
 // Returns:
 //
 //	computed EvaluationMetrics, or an error if no decisions were added.
-func (ev *Evaluator) Evaluate(Ndays int) (*EvaluationMetrics, error) {
+func (ev *Evaluator) Evaluate(ndays int) (*EvaluationMetrics, error) {
 	if len(ev.decisions) == 0 {
 		return nil, fmt.Errorf("no decisions to evaluate")
 	}

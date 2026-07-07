@@ -53,6 +53,43 @@ type Parameter struct {
 }
 ```
 
+### 2.4 内置工具自动注册（关键）
+
+内置工具（calculator、hash_tool、string_utils、pdf_tool、id_generator 等）**随 Agent 启动自动注册**，无需手动调用任何注册函数。
+
+```go
+// ✅ 正确用法：一行代码，工具自动就绪
+registry := tools.NewRegistry()
+// registry 创建时自动注册了所有内置工具，无需调用 RegisterBuiltinTools()
+
+result, _ := registry.Execute(ctx, "calculator", map[string]any{"expression": "1+1"})
+result, _ = registry.Execute(ctx, "hash_tool", map[string]any{"operation": "sha256", "input": "hello"})
+result, _ = registry.Execute(ctx, "pdf_tool", map[string]any{"operation": "extract_text", "file_path": "doc.pdf"})
+```
+
+如果你需要**从零开始**（不加载任何内置工具）：
+```go
+registry := tools.NewEmptyRegistry() // 空的，一个工具都没有
+registry.Register(myCustomTool)      // 只注册你自己的工具
+```
+
+如果清空后后悔了，想重新加载内置工具：
+```go
+tools.RegisterBuiltinTools(registry) // 手动补上内置工具
+```
+
+### 2.5 自定义工具扩展
+
+```go
+registry.Register(tools.ToolFunc{
+    ToolName: "my_tool",
+    ToolDesc: "我的自定义工具",
+    Fn: func(ctx context.Context, params map[string]any) (any, error) {
+        return "result", nil
+    },
+})
+```
+
 ## 3. 工具分类
 
 | 类别 | 说明 | 典型工具 |

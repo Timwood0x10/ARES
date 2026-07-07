@@ -43,7 +43,7 @@ func TestSessionMemory(t *testing.T) {
 	t.Run("add message", func(t *testing.T) {
 		memory := NewSessionMemory(100, time.Minute)
 		// Create session first
-		memory.Set(context.Background(), "sess1", "user1", nil)
+		_ = memory.Set(context.Background(), "sess1", "user1", nil) // Test setup, error ignored
 
 		err := memory.AddMessage(context.Background(), "sess1", Message{Role: "user", Content: "test"})
 		if err != nil {
@@ -54,7 +54,7 @@ func TestSessionMemory(t *testing.T) {
 	t.Run("delete session", func(t *testing.T) {
 		memory := NewSessionMemory(100, time.Minute)
 		// Create session first
-		memory.Set(context.Background(), "sess1", "user1", nil)
+		_ = memory.Set(context.Background(), "sess1", "user1", nil) // Test setup, error ignored
 
 		err := memory.Delete(context.Background(), "sess1")
 		if err != nil {
@@ -70,7 +70,7 @@ func TestSessionMemory(t *testing.T) {
 	t.Run("size", func(t *testing.T) {
 		memory := NewSessionMemory(100, time.Minute)
 		// Create session first
-		memory.Set(context.Background(), "sess1", "user1", nil)
+		_ = memory.Set(context.Background(), "sess1", "user1", nil) // Test setup, error ignored
 
 		if memory.Size() != 1 {
 			t.Errorf("expected size 1, got %d", memory.Size())
@@ -164,7 +164,7 @@ func TestCache(t *testing.T) {
 	t.Run("set and get", func(t *testing.T) {
 		cache := NewCache(100, time.Minute)
 
-		cache.Set(context.Background(), "key1", "value1")
+		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
 
 		val, exists := cache.Get(context.Background(), "key1")
 		if !exists {
@@ -177,9 +177,9 @@ func TestCache(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		cache := NewCache(100, time.Minute)
-		cache.Set(context.Background(), "key1", "value1")
+		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
 
-		cache.Delete(context.Background(), "key1")
+		_ = cache.Delete(context.Background(), "key1") // Test operation, error ignored
 
 		_, exists := cache.Get(context.Background(), "key1")
 		if exists {
@@ -199,7 +199,7 @@ func TestLRUCache(t *testing.T) {
 
 	t.Run("set and get", func(t *testing.T) {
 		cache := NewLRUCache(2)
-		cache.Set(context.Background(), "key1", "value1")
+		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
 
 		val, exists := cache.Get(context.Background(), "key1")
 		if !exists {
@@ -212,9 +212,9 @@ func TestLRUCache(t *testing.T) {
 
 	t.Run("size after eviction", func(t *testing.T) {
 		cache := NewLRUCache(2)
-		cache.Set(context.Background(), "key1", "value1")
-		cache.Set(context.Background(), "key2", "value2")
-		cache.Set(context.Background(), "key3", "value3")
+		_ = cache.Set(context.Background(), "key1", "value1") // Test setup, error ignored
+		_ = cache.Set(context.Background(), "key2", "value2") // Test setup, error ignored
+		_ = cache.Set(context.Background(), "key3", "value3") // Test setup, error ignored
 
 		// Size should be 2 after eviction
 		if cache.Size() != 2 {

@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +10,32 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+)
+
+// Parameter and schema constants
+const (
+	// Parameter names
+	paramOperation     = "operation"
+	paramFilePath      = "file_path"
+	paramDirectoryPath = "directory_path"
+	paramContent       = "content"
+	paramMode          = "mode"
+	paramOffset        = "offset"
+	paramLimit         = "limit"
+	paramRecursive     = "recursive"
+
+	// Types
+	typeString = "string"
+	typeObject = "object"
+
+	// Operations
+	operationRead  = "read"
+	operationWrite = "write"
+	operationList  = "list"
+
+	// Modes
+	modeWrite  = "write"
+	modeAppend = "append"
 )
 
 // FileTools provides file system operations.
@@ -32,40 +57,40 @@ func WithAllowedDir(dir string) FileToolsOption {
 // NewFileTools creates a new FileTools tool.
 func NewFileTools(opts ...FileToolsOption) *FileTools {
 	params := &core.ParameterSchema{
-		Type: "object",
+		Type: typeObject,
 		Properties: map[string]*core.Parameter{
-			"operation": {
-				Type:        "string",
+			paramOperation: {
+				Type:        typeString,
 				Description: "Operation to perform (read, write, list)",
-				Enum:        []interface{}{"read", "write", "list"},
+				Enum:        []interface{}{operationRead, operationWrite, operationList},
 			},
-			"file_path": {
-				Type:        "string",
+			paramFilePath: {
+				Type:        typeString,
 				Description: "Absolute path to the file",
 			},
-			"directory_path": {
-				Type:        "string",
+			paramDirectoryPath: {
+				Type:        typeString,
 				Description: "Absolute path to the directory (for list operation)",
 			},
-			"content": {
-				Type:        "string",
+			paramContent: {
+				Type:        typeString,
 				Description: "Content to write (for write operation)",
 			},
-			"mode": {
-				Type:        "string",
+			paramMode: {
+				Type:        typeString,
 				Description: "Write mode: 'write' (overwrite) or 'append'",
-				Default:     "write",
-				Enum:        []interface{}{"write", "append"},
+				Default:     modeWrite,
+				Enum:        []interface{}{modeWrite, modeAppend},
 			},
-			"offset": {
+			paramOffset: {
 				Type:        "integer",
 				Description: "Starting line number for read (0-based)",
 			},
-			"limit": {
+			paramLimit: {
 				Type:        "integer",
 				Description: "Maximum number of lines to read",
 			},
-			"recursive": {
+			paramRecursive: {
 				Type:        "boolean",
 				Description: "List directories recursively",
 				Default:     false,
@@ -76,11 +101,11 @@ func NewFileTools(opts ...FileToolsOption) *FileTools {
 				Default:     false,
 			},
 			"pattern": {
-				Type:        "string",
+				Type:        typeString,
 				Description: "Glob pattern to filter files (e.g., '*.go', 'test_*')",
 			},
 		},
-		Required: []string{"operation"},
+		Required: []string{paramOperation},
 	}
 
 	ft := &FileTools{
@@ -96,7 +121,7 @@ func NewFileTools(opts ...FileToolsOption) *FileTools {
 
 // Execute performs the file operation.
 func (t *FileTools) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	operation, ok := params["operation"].(string)
+	operation, ok := params[paramOperation].(string)
 	if !ok || operation == "" {
 		return core.NewErrorResult("operation is required"), nil
 	}
@@ -115,9 +140,9 @@ func (t *FileTools) Execute(ctx context.Context, params map[string]interface{}) 
 
 // readFile reads content from a file.
 func (t *FileTools) readFile(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	filePath, ok := params["file_path"].(string)
+	filePath, ok := params[paramFilePath].(string)
 	if !ok || filePath == "" {
-		return core.NewErrorResult("file_path is required for read operation"), nil
+		return core.NewErrorResult(paramFilePath + " is required for read operation"), nil
 	}
 
 	// Convert relative path to absolute path
@@ -168,8 +193,8 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 
 	// Process offset and limit if provided
 	lines := strings.Split(string(content), "\n")
-	offset := getInt(params, "offset", 0)
-	limit := getInt(params, "limit", len(lines))
+	offset := getInt(params, paramOffset, 0)
+	limit := getInt(params, paramLimit, len(lines))
 
 	// Validate offset
 	if offset < 0 {
@@ -207,14 +232,14 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 
 // writeFile writes content to a file.
 func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	filePath, ok := params["file_path"].(string)
+	filePath, ok := params[paramFilePath].(string)
 	if !ok || filePath == "" {
-		return core.NewErrorResult("file_path is required for write operation"), nil
+		return core.NewErrorResult(paramFilePath + " is required for write operation"), nil
 	}
 
-	content, ok := params["content"].(string)
+	content, ok := params[paramContent].(string)
 	if !ok {
-		return core.NewErrorResult("content is required for write operation"), nil
+		return core.NewErrorResult(paramContent + " is required for write operation"), nil
 	}
 
 	// Convert relative path to absolute path
@@ -244,9 +269,9 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 	}
 
 	// Get write mode
-	mode := getString(params, "mode")
+	mode := getString(params, paramMode)
 	if mode == "" {
-		mode = "write"
+		mode = modeWrite
 	}
 
 	// Ensure directory exists
@@ -256,7 +281,7 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 	}
 
 	var writeErr error
-	if mode == "append" {
+	if mode == modeAppend {
 		// Append mode
 		file, openErr := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) // #nosec G304
 		if openErr != nil {
@@ -264,7 +289,7 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 		}
 		defer func() {
 			if closeErr := file.Close(); closeErr != nil {
-				slog.Error("failed to close file: ", "error", closeErr)
+				log.Error("failed to close file: ", "error", closeErr)
 			}
 		}()
 
@@ -282,19 +307,21 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 	}
 
 	return core.NewResult(true, map[string]interface{}{
-		"operation":     "write",
-		"file_path":     filePath,
-		"mode":          mode,
+		paramOperation:  operationWrite,
+		paramFilePath:   filePath,
+		paramMode:       mode,
 		"bytes_written": len(content),
 		"success":       true,
 	}), nil
 }
 
 // listFiles lists files and directories in a directory.
+//
+//nolint:gocyclo // Complex file listing with multiple filter conditions
 func (t *FileTools) listFiles(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	dirPath, ok := params["directory_path"].(string)
+	dirPath, ok := params[paramDirectoryPath].(string)
 	if !ok || dirPath == "" {
-		return core.NewErrorResult("directory_path is required for list operation"), nil
+		return core.NewErrorResult(paramDirectoryPath + " is required for list operation"), nil
 	}
 
 	// Convert relative path to absolute path

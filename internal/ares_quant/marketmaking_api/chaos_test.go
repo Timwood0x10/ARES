@@ -18,8 +18,8 @@ func TestChaosExecutor_AvailableScenarios(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	scenarios := executor.AvailableScenarios()
 	require.NotEmpty(t, scenarios)
-	require.Contains(t, scenarios, "latency")
-	require.Contains(t, scenarios, "reject")
+	require.Contains(t, scenarios, FaultLatency)
+	require.Contains(t, scenarios, FaultReject)
 }
 
 // TestChaosExecute_NilScenario tests nil scenario handling.
@@ -35,7 +35,7 @@ func TestChaosExecute_InvalidProbability(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	result, err := executor.Execute(context.Background(), &ChaosScenario{
 		Name:           "bad-prob",
-		Type:           "reject",
+		Type:           FaultReject,
 		Probability:    1.5,
 		DurationMillis: 1000,
 	})
@@ -49,7 +49,7 @@ func TestChaosExecute_ZeroDuration(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	result, err := executor.Execute(context.Background(), &ChaosScenario{
 		Name:        "zero-dur",
-		Type:        "latency",
+		Type:        FaultLatency,
 		Probability: 0.5,
 	})
 	require.Error(t, err)
@@ -62,7 +62,7 @@ func TestChaosExecute_ValidScenario(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	scenario := &ChaosScenario{
 		Name:           "test-latency",
-		Type:           "latency",
+		Type:           FaultLatency,
 		Probability:    0.0, // no faults expected
 		DurationMillis: 100, // short duration for fast test
 	}
@@ -79,7 +79,7 @@ func TestChaosExecute_HighProbability(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	scenario := &ChaosScenario{
 		Name:           "high-reject",
-		Type:           "reject",
+		Type:           FaultReject,
 		Probability:    1.0, // all events should be faults
 		DurationMillis: 50,
 	}
@@ -98,7 +98,7 @@ func TestChaosExecute_CancelledContext(t *testing.T) {
 
 	scenario := &ChaosScenario{
 		Name:           "cancelled",
-		Type:           "stale_data",
+		Type:           FaultStaleData,
 		Probability:    0.5,
 		DurationMillis: 10000,
 	}
@@ -129,7 +129,7 @@ func TestChaosExecute_LatencyWithFlagEnabled(t *testing.T) {
 	})
 	scenario := &ChaosScenario{
 		Name:           "latency-enabled",
-		Type:           "latency",
+		Type:           FaultLatency,
 		Probability:    0.5,
 		DurationMillis: 1000,
 	}
@@ -153,7 +153,7 @@ func TestChaosExecute_RejectWithFlagEnabled(t *testing.T) {
 	})
 	scenario := &ChaosScenario{
 		Name:           "reject-enabled",
-		Type:           "reject",
+		Type:           FaultReject,
 		Probability:    0.5,
 		DurationMillis: 1000,
 	}
@@ -177,7 +177,7 @@ func TestChaosExecute_StaleDataWithFlagEnabled(t *testing.T) {
 	})
 	scenario := &ChaosScenario{
 		Name:           "stale-data-enabled",
-		Type:           "stale_data",
+		Type:           FaultStaleData,
 		Probability:    0.3,
 		DurationMillis: 1000,
 	}
@@ -197,7 +197,7 @@ func TestChaosExecute_NetworkPartitionAlwaysDegraded(t *testing.T) {
 	executor := NewDefaultChaosExecutor()
 	scenario := &ChaosScenario{
 		Name:           "partition-test",
-		Type:           "network_partition",
+		Type:           FaultNetworkPartition,
 		Probability:    0.1,
 		DurationMillis: 500,
 	}
@@ -223,7 +223,7 @@ func TestChaosExecute_RecoveryTimeZeroWhenNoFaults(t *testing.T) {
 	})
 	scenario := &ChaosScenario{
 		Name:           "no-faults",
-		Type:           "latency",
+		Type:           FaultLatency,
 		Probability:    0.0,
 		DurationMillis: 1000,
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage"
 )
@@ -47,6 +46,7 @@ func NewVectorSearcherWithDB(db DBTX, embeddingConfig *EmbeddingConfig) *VectorS
 }
 
 // SearchResult is an alias for storage.SearchResult.
+//
 // Deprecated: Use storage.SearchResult directly.
 type SearchResult = storage.SearchResult
 
@@ -109,7 +109,7 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 	}
 
 	if len(results) == 0 {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 
 	return results, nil

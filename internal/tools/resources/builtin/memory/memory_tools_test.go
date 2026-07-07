@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func (m *MockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output
 }
 
 func (m *MockMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *MockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {
@@ -103,7 +104,7 @@ func (m *MockDistilledMemoryRepository) Create(ctx context.Context, mem *reposit
 }
 
 func (m *MockDistilledMemoryRepository) GetByID(ctx context.Context, id string) (*repositories.DistilledMemory, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *MockDistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, userID string, limit int) ([]*repositories.DistilledMemory, error) {
@@ -581,60 +582,34 @@ func TestUserProfileExecute_NoManagers(t *testing.T) {
 }
 
 // TestAddUniqueString tests adding unique strings to profile.
-
 func TestAddUniqueString(t *testing.T) {
-
 	tests := []struct {
-		name string
-
-		initialStack []string
-
-		value string
-
-		expectedLen int
-
+		name             string
+		initialStack     []string
+		value            string
+		expectedLen      int
 		expectedContains bool
 	}{
-
 		{
-
-			name: "add new string",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "Rust",
-
-			expectedLen: 3,
-
+			name:             "add new string",
+			initialStack:     []string{"Go", "Python"},
+			value:            "Rust",
+			expectedLen:      3,
 			expectedContains: true,
 		},
-
 		{
-
-			name: "add duplicate (case insensitive)",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "GO",
-
-			expectedLen: 2,
-
+			name:             "add duplicate (case insensitive)",
+			initialStack:     []string{"Go", "Python"},
+			value:            "GO",
+			expectedLen:      2,
 			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
-
 		},
-
 		{
-
-			name: "add duplicate (exact)",
-
-			initialStack: []string{"Go", "Python"},
-
-			value: "Go",
-
-			expectedLen: 2,
-
+			name:             "add duplicate (exact)",
+			initialStack:     []string{"Go", "Python"},
+			value:            "Go",
+			expectedLen:      2,
 			expectedContains: true, // Bug: 实际行为是会添加，而不是检查重复
-
 		},
 	}
 

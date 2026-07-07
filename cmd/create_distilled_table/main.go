@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -31,27 +30,17 @@ func main() {
 	dbname = strings.TrimPrefix(parsed.Path, "/")
 
 	adminDB := connectAdmin(changeDB(dsn, "postgres"))
-	defer func() {
-		if err := adminDB.Close(); err != nil {
-			slog.Warn("adminDB.Close", "error", err)
-		}
-	}()
 
 	ensureDatabase(adminDB, dbname)
 	if err := adminDB.Close(); err != nil {
-		slog.Warn("adminDB.Close", "error", err)
+		log.Warn("adminDB.Close", "error", err)
 	}
 
 	pool, err := sql.Open("pgx", dsn)
 	if err != nil {
-		slog.Error("failed to connect", "error", err)
+		log.Error("failed to connect", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := pool.Close(); err != nil {
-			slog.Warn("pool.Close", "error", err)
-		}
-	}()
 
 	ctx := context.Background()
 
@@ -75,7 +64,8 @@ func main() {
 		)
 	`
 	if _, err := pool.ExecContext(ctx, createTableSQL); err != nil {
-		slog.Error("failed to create distilled_memories table", "error", err)
+		_ = pool.Close()
+		log.Error("failed to create distilled_memories table", "error", err)
 		os.Exit(1)
 	}
 	fmt.Println("distilled_memories table created successfully")
@@ -91,17 +81,17 @@ func main() {
 	}
 	for _, idx := range indexes {
 		if _, err := pool.ExecContext(ctx, idx); err != nil {
-			slog.Warn("failed to create index", "index", idx, "error", err)
+			log.Warn("failed to create index", "index", idx, "error", err)
 		}
 	}
 	fmt.Println("Indexes created successfully")
 
 	if _, err := pool.ExecContext(ctx, `ALTER TABLE distilled_memories ENABLE ROW LEVEL SECURITY`); err != nil {
-		slog.Warn("failed to enable RLS", "error", err)
+		log.Warn("failed to enable RLS", "error", err)
 	}
 	rlsSQL := `CREATE POLICY IF NOT EXISTS tenant_isolation_distilled_memories ON distilled_memories USING (tenant_id = current_setting('app.tenant_id', true))`
 	if _, err := pool.ExecContext(ctx, rlsSQL); err != nil {
-		slog.Warn("failed to create RLS policy", "error", err)
+		log.Warn("failed to create RLS policy", "error", err)
 	}
 	fmt.Println("Row Level Security enabled")
 }
@@ -109,11 +99,11 @@ func main() {
 func connectAdmin(dsn string) *sql.DB {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		slog.Error("failed to connect to postgres", "error", err)
+		log.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
-	if err := db.Ping(); err != nil {
-		slog.Error("failed to ping postgres", "error", err)
+	if err := db.PingContext(context.Background()); err != nil {
+		log.Error("failed to ping postgres", "error", err)
 		os.Exit(1)
 	}
 	return db
@@ -121,13 +111,13 @@ func connectAdmin(dsn string) *sql.DB {
 
 func ensureDatabase(db *sql.DB, name string) {
 	var exists bool
-	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
-		slog.Error("failed to check database existence", "database", name, "error", err)
+	if err := db.QueryRowContext(context.Background(), "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", name).Scan(&exists); err != nil {
+		log.Error("failed to check database existence", "database", name, "error", err)
 		os.Exit(1)
 	}
 	if !exists {
-		if _, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
-			slog.Error("failed to create database", "database", name, "error", err)
+		if _, err := db.ExecContext(context.Background(), fmt.Sprintf("CREATE DATABASE %s", pqQuoteIdent(name))); err != nil {
+			log.Error("failed to create database", "database", name, "error", err)
 			os.Exit(1)
 		}
 		fmt.Printf("Created database: %s\n", name)

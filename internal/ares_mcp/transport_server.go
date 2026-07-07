@@ -231,8 +231,9 @@ func (t *SSEServerTransport) Start(ctx context.Context) error {
 	mux.HandleFunc("/mcp", t.handleMCP)
 
 	t.server = &http.Server{
-		Addr:    t.addr,
-		Handler: mux,
+		Addr:              t.addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	t.eg.Go(func() error {

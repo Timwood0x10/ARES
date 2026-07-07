@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -94,7 +93,7 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, st *Strategy) error {
 	if err := s.repo.SetActive(ctx, row); err != nil {
 		return fmt.Errorf("pg set active: %w", err)
 	}
-	slog.Info("[PGStrategyStore] Strategy persisted",
+	log.Info("[PGStrategyStore] Strategy persisted",
 		"strategy_id", st.ID,
 		"version", st.Version,
 		"score", st.Score,

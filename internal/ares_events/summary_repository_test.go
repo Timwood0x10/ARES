@@ -39,7 +39,7 @@ func getSummaryTestPool(t *testing.T) *postgres.Pool {
 	if u, err := url.Parse(dsn); err == nil {
 		cfg.Host = u.Hostname()
 		if p := u.Port(); p != "" {
-			fmt.Sscanf(p, "%d", &cfg.Port)
+			_, _ = fmt.Sscanf(p, "%d", &cfg.Port) // Ignore error: port parsing is optional
 		}
 	}
 
@@ -48,7 +48,7 @@ func getSummaryTestPool(t *testing.T) *postgres.Pool {
 		t.Skipf("failed to open test database: %v", err)
 		return nil
 	}
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		t.Skipf("failed to ping test database: %v", err)
 		return nil
@@ -99,7 +99,7 @@ func createEventSummariesTable(t *testing.T, db *sql.DB) {
 		`CREATE INDEX IF NOT EXISTS idx_event_summaries_created ON event_summaries(created_at)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			t.Fatalf("failed to create event_summaries table: %v", err)
 		}
 	}
@@ -849,7 +849,10 @@ func appendNEventsToPGStore(t *testing.T, store EventStore, ctx context.Context,
 // buildRealisticEventSequence creates a realistic multi-type event sequence for testing.
 func buildRealisticEventSequence(streamID string) []*Event {
 	base := time.Now().Truncate(time.Second).UTC()
-	var events []*Event
+	tools := []string{"search_flights", "search_hotels", "check_weather", "convert_currency"}
+	extraTypes := []EventType{EventLLMCall, EventMessageAdded, EventTaskCreated, EventTaskCompleted,
+		EventLLMCall, EventMessageAdded, EventTaskFailed, EventLLMCall}
+	events := make([]*Event, 0, 3+len(tools)+1+1+1+1+1+1+len(extraTypes))
 
 	// Session creation.
 	events = append(events, &Event{
@@ -868,7 +871,6 @@ func buildRealisticEventSequence(streamID string) []*Event {
 	})
 
 	// Tool calls.
-	tools := []string{"search_flights", "search_hotels", "check_weather", "convert_currency"}
 	for i, tool := range tools {
 		events = append(events, &Event{
 			Type: EventLLMCall, Version: int64(4 + i), Timestamp: base.Add(time.Duration(3+i) * time.Second),
@@ -907,8 +909,6 @@ func buildRealisticEventSequence(streamID string) []*Event {
 	})
 
 	// Fill remaining events to reach > threshold.
-	extraTypes := []EventType{EventLLMCall, EventMessageAdded, EventTaskCreated, EventTaskCompleted,
-		EventLLMCall, EventMessageAdded, EventTaskFailed, EventLLMCall}
 	for i, et := range extraTypes {
 		payload := map[string]any{}
 		if et == EventTaskCreated {

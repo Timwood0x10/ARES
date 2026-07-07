@@ -3,7 +3,6 @@ package ares_eval
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -115,7 +114,7 @@ func (r *ComparisonRunner) Run(ctx context.Context, configs []AgentConfig) (*Com
 
 		result, err := r.runSingleConfig(ctx, cfg)
 		if err != nil {
-			slog.Error("failed to run config",
+			log.Error("failed to run config",
 				"config", cfg.Name,
 				"error", err,
 			)
@@ -390,11 +389,12 @@ func GenerateLeaderboard(results []ComparisonResult) []LeaderboardEntry {
 
 	// Assign ranks (ties get same rank).
 	for i := range entries {
-		if i == 0 {
+		switch {
+		case i == 0:
 			entries[i].Rank = 1
-		} else if entries[i].Overall == entries[i-1].Overall {
+		case entries[i].Overall == entries[i-1].Overall:
 			entries[i].Rank = entries[i-1].Rank
-		} else {
+		default:
 			entries[i].Rank = i + 1
 		}
 	}

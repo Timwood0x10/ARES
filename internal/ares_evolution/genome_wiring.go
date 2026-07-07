@@ -10,7 +10,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 
@@ -18,7 +17,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+var el = logger.New("adapter")
 
 // BatchScorer scores multiple internal strategies in a single call.
 // Used to reduce LLM API calls by batching strategies together.
@@ -296,8 +298,10 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 						a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
 					}
 				}
-				slog.DebugContext(ctx, "[GenomeAdapter] Pre-filled score cache via batch scorer",
-					"count", n, "version", ver, "scored", len(scores))
+				el.Debug(ctx, "Run", "pre-filled score cache via batch scorer", "count", n,
+					"version", ver,
+					"scored", len(scores),
+				)
 			}
 		}
 
@@ -307,16 +311,18 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 			if a.memoryScorer != nil {
 				score, _, err := a.memoryScorer.Score(ctx, s)
 				if err != nil {
-					slog.WarnContext(ctx, "[GenomeAdapter] memory-aware scorer failed, using heuristic",
-						"error", err, "strategy_id", s.ID)
+					el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
+						"strategy_id", s.ID,
+					)
 					return 50.0
 				}
 				return score
 			}
 			score, _, err := a.tieredScorer.Score(ctx, s)
 			if err != nil {
-				slog.WarnContext(ctx, "[GenomeAdapter] tiered scorer failed, using baseline",
-					"error", err, "strategy_id", s.ID)
+				el.Warn(ctx, "Run", "tiered scorer failed, using baseline", "error", err,
+					"strategy_id", s.ID,
+				)
 				return 50.0 // fallback baseline on error
 			}
 			return score
@@ -325,9 +331,10 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		defer func() {
 			stats := a.tieredScorer.Stats()
 			used, max, cacheHits, fallbacks := a.budget.Usage()
-			slog.InfoContext(ctx, "[GenomeAdapter] Tiered scoring stats",
-				"llm_used", used, "llm_max", max,
-				"cache_hits", cacheHits, "fallbacks", fallbacks,
+			el.Info(ctx, "Run", "tiered scoring stats", "llm_used", used,
+				"llm_max", max,
+				"cache_hits", cacheHits,
+				"fallbacks", fallbacks,
 				"tier_stats", stats,
 			)
 		}()
@@ -358,8 +365,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		// Log all pre-check events
 		for _, evt := range preResult.Events {
-			slog.WarnContext(ctx, "[GenomeAdapter] Pre-evolve guardrail triggered",
-				"rule", evt.Rule,
+			el.Warn(ctx, "Run", "pre-evolve guardrail triggered", "rule", evt.Rule,
 				"level", evt.Level,
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
@@ -370,13 +376,13 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		}
 
 		if preResult.ShouldStop {
-			return fmt.Errorf("[GenomeAdapter] pre-evolve guardrail check failed (generation %d): %d event(s), best_score=%.2f, unevaluated=%d/%d",
+			return fmt.Errorf("adapter.Run: pre-evolve guardrail check failed (generation %d): %d event(s), best_score=%.2f, unevaluated=%d/%d",
 				preStats.Generation, len(preResult.Events), preStats.BestScore, unevaluated, preStats.Size)
 		}
 	}
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
-		return fmt.Errorf("genome evolve on idle: %w", err)
+		return fmt.Errorf("adapter.Run: genome evolve on idle: %w", err)
 	}
 
 	// Record outcomes for adaptive distribution and feedback service.
@@ -400,8 +406,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		// Log all post-check events
 		for _, evt := range postResult.Events {
-			slog.WarnContext(ctx, "[GenomeAdapter] Post-evolve guardrail triggered",
-				"rule", evt.Rule,
+			el.Warn(ctx, "Run", "post-evolve guardrail triggered", "rule", evt.Rule,
 				"level", evt.Level,
 				"message", evt.Message,
 				"suggested_action", evt.SuggestedAction,
@@ -413,18 +418,16 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 
 		if postResult.ShouldStop {
 			// Evolution already completed; log warning but still return error.
-			slog.WarnContext(ctx, "[GenomeAdapter] post-evolve guardrail signals stop, but evolution already completed",
-				"generation", postStats.Generation,
+			el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed", "generation", postStats.Generation,
 				"event_count", len(postResult.Events),
 			)
-			return fmt.Errorf("[GenomeAdapter] post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
+			return fmt.Errorf("adapter.Run: post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
 				postStats.Generation, len(postResult.Events), postStats.BestScore)
 		}
 	}
 
 	stats := a.pop.Stats()
-	slog.InfoContext(ctx, "[GenomeAdapter] Evolution cycle completed",
-		"generation", stats.Generation,
+	el.Info(ctx, "Run", "evolution cycle completed", "generation", stats.Generation,
 		"population_size", stats.Size,
 		"best_score", stats.BestScore,
 		"avg_score", stats.AvgScore,
@@ -492,8 +495,7 @@ func (a *GenomePopulationAdapter) recordOutcomesLocked(
 				Score:      child.Score,
 			}
 			if err := a.feedbackRecorder.Register(ctx, outcome); err != nil {
-				slog.WarnContext(ctx, "[GenomeAdapter] feedback recording failed",
-					"strategy_id", child.ID,
+				el.Warn(ctx, "recordOutcomesLocked", "feedback recording failed", "strategy_id", child.ID,
 					"error", err,
 				)
 			}
@@ -513,8 +515,9 @@ func buildScorer(scorer func(*mutation.Strategy) float64) genome.ScorerFunc {
 		return scorer
 	}
 	scorerWarningOnce.Do(func() {
-		slog.Warn("[GenomeAdapter] No scorer configured, using constant baseline (50.0). " +
-			"Configure a real scorer for production use.")
+		el.Warn(context.Background(), "buildScorer", "No scorer configured, using constant baseline (50.0). "+
+			"Configure a real scorer for production use.",
+		)
 	})
 	// Note: TieredScorer is now available via SystemConfig options (MaxLLMCallsPerGeneration,
 	// HeuristicScorer). When those are set, Run() uses the tiered pipeline instead of this
@@ -613,6 +616,45 @@ func (a *GenomeMutatorAdapter) Mutate(
 	return children, nil
 }
 
+// ScoreRollingWindow maintains a sliding window of recent scores for an agent.
+// It provides a rolling mean that smooths out noise in fitness evaluations.
+type ScoreRollingWindow struct {
+	scores  []float64
+	maxSize int
+}
+
+// newScoreRollingWindow creates a rolling window with the given capacity.
+func newScoreRollingWindow(maxSize int) *ScoreRollingWindow {
+	return &ScoreRollingWindow{
+		scores:  make([]float64, 0, maxSize),
+		maxSize: maxSize,
+	}
+}
+
+// Add appends a score and evicts the oldest if at capacity.
+func (w *ScoreRollingWindow) Add(score float64) {
+	if w == nil {
+		return
+	}
+	w.scores = append(w.scores, score)
+	if len(w.scores) > w.maxSize {
+		w.scores = w.scores[1:]
+	}
+}
+
+// Mean returns the rolling average of all scores in the window.
+// Returns 0 if the window is empty.
+func (w *ScoreRollingWindow) Mean() float64 {
+	if w == nil || len(w.scores) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range w.scores {
+		sum += s
+	}
+	return sum / float64(len(w.scores))
+}
+
 // PopulationGenealogyRecorder records strategy lineage from genome evolution
 // into the evolution package's genealogy system. It implements GenealogyRecorder
 // by extracting lineage data from population state after each evolution cycle.
@@ -620,6 +662,10 @@ type PopulationGenealogyRecorder struct {
 	mu          sync.RWMutex
 	lineages    []StrategyLineage
 	maxLineages int // Maximum number of lineage records; 0 = unlimited (default 10000).
+
+	// scoreHistory tracks per-agent rolling windows for noise-robust
+	// improvement computation. Keyed by agent ID.
+	scoreHistory map[string]*ScoreRollingWindow
 }
 
 // NewPopulationGenealogyRecorder creates a new genealogy recorder.
@@ -629,9 +675,35 @@ type PopulationGenealogyRecorder struct {
 //	*PopulationGenealogyRecorder - the recorder instance.
 func NewPopulationGenealogyRecorder() *PopulationGenealogyRecorder {
 	return &PopulationGenealogyRecorder{
-		lineages:    make([]StrategyLineage, 0),
-		maxLineages: 10000,
+		lineages:     make([]StrategyLineage, 0),
+		maxLineages:  10000,
+		scoreHistory: make(map[string]*ScoreRollingWindow),
 	}
+}
+
+// RecordScore adds an agent's score to its rolling window for noise-robust
+// improvement computation. The window retains the most recent scores.
+func (r *PopulationGenealogyRecorder) RecordScore(agentID string, score float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	win, ok := r.scoreHistory[agentID]
+	if !ok {
+		win = newScoreRollingWindow(3) // window of 3 matches ImprovementWindow in promotion
+		r.scoreHistory[agentID] = win
+	}
+	win.Add(score)
+}
+
+// RollingMeanScore returns the rolling mean of the last N scores for an agent.
+// Returns 0 if no history exists for the given agent ID.
+func (r *PopulationGenealogyRecorder) RollingMeanScore(agentID string) float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	win, ok := r.scoreHistory[agentID]
+	if !ok {
+		return 0
+	}
+	return win.Mean()
 }
 
 // Record persists a strategy lineage entry from genome evolution results.
@@ -657,8 +729,7 @@ func (r *PopulationGenealogyRecorder) Record(ctx context.Context, lineage Strate
 		r.lineages = r.lineages[trimCount:]
 	}
 
-	slog.DebugContext(ctx, "[Genealogy] Lineage recorded",
-		"parent_id", lineage.ParentID,
+	el.Debug(ctx, "Record", "lineage recorded", "parent_id", lineage.ParentID,
 		"child_id", lineage.ChildID,
 		"mutation_type", lineage.MutationType,
 	)
@@ -726,6 +797,14 @@ func RecordPopulationLineage(
 		parentScores[p.ID] = p.Score
 	}
 
+	// Type-assert recorder to update rolling score history when possible.
+	historyRecorder, useRolling := recorder.(*PopulationGenealogyRecorder)
+	if useRolling {
+		for _, p := range parentSnapshot {
+			historyRecorder.RecordScore(p.ID, p.Score)
+		}
+	}
+
 	count := 0
 	seen := make(map[string]bool, len(agents))
 	for _, agent := range agents {
@@ -742,7 +821,10 @@ func RecordPopulationLineage(
 		}
 		seen[key] = true
 
-		// Compute score improvement: child score - parent score.
+		// Compute score improvement using rolling mean when available,
+		// falling back to single-point parent score for backward compatibility.
+		// A rolling mean smooths out noise variance and prevents transient
+		// fitness fluctuations from inflating the improvement rate.
 		parentScore, ok := parentScores[agent.ParentID]
 		if !ok {
 			// Handle crossover: ParentID may contain "\u00d7" separator.
@@ -756,10 +838,18 @@ func RecordPopulationLineage(
 			}
 		}
 
+		// Use rolling mean as the baseline if available.
+		baselineScore := parentScore
+		if useRolling {
+			if rolling := historyRecorder.RollingMeanScore(agent.ParentID); rolling > 0 {
+				baselineScore = rolling
+			}
+		}
+
 		scoreDelta := 0.0
 		winRate := 0.0
 		if ok {
-			scoreDelta = agent.Score - parentScore
+			scoreDelta = agent.Score - baselineScore
 			if scoreDelta > 0 {
 				winRate = 1.0
 			}
@@ -777,14 +867,13 @@ func RecordPopulationLineage(
 		}
 
 		if err := recorder.Record(ctx, lineage); err != nil {
-			return count, fmt.Errorf("record lineage for agent %s: %w", agent.ID, err)
+			return count, fmt.Errorf("genealogy.RecordPopulationLineage: record lineage for agent %s: %w", agent.ID, err)
 		}
 		count++
 	}
 
 	if count > 0 {
-		slog.InfoContext(ctx, "[Genealogy] Recorded population lineage",
-			"new_records", count,
+		el.Info(ctx, "RecordPopulationLineage", "recorded", "new_records", count,
 			"generation", generation,
 		)
 	}

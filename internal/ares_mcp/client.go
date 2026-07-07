@@ -10,6 +10,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Transport types
+const (
+	TransportTypeStdio = "stdio"
+	TransportTypeSSE   = "sse"
+)
+
 // Default timeout for MCP client operations when no config timeout is specified.
 const defaultClientTimeout = 30 * time.Second
 
@@ -333,8 +339,7 @@ func (c *MCPClient) dispatchResponse(msg *JSONRPCMessage) {
 
 // handleNotification processes server notifications.
 func (c *MCPClient) handleNotification(msg *JSONRPCMessage) {
-	switch msg.Method {
-	case NotificationToolsListChanged:
+	if msg.Method == NotificationToolsListChanged {
 		// Re-fetch tools list.
 		ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 		defer cancel()
@@ -348,12 +353,12 @@ func (c *MCPClient) handleNotification(msg *JSONRPCMessage) {
 // NewTransportFromConfig creates a Transport from a TransportConfig.
 func NewTransportFromConfig(config TransportConfig) (Transport, error) {
 	switch config.Type {
-	case "stdio":
+	case TransportTypeStdio:
 		if config.Stdio == nil {
 			return nil, fmt.Errorf("stdio config is required")
 		}
 		return NewStdioTransport(*config.Stdio), nil
-	case "sse":
+	case TransportTypeSSE:
 		if config.SSE == nil {
 			return nil, fmt.Errorf("sse config is required")
 		}

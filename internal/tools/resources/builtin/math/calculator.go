@@ -3,27 +3,37 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"math"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/vm"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// Calculator performs mathematical calculations.
+// Calculator performs mathematical calculations using the expr library.
+// Supports: +, -, *, /, %, **, parentheses, and 15+ built-in functions.
 type Calculator struct {
 	*base.BaseTool
+	compiled map[string]*vm.Program
 }
 
-// NewCalculator creates a new Calculator tool.
+// NewCalculator creates a new Calculator tool backed by the expr evaluation engine.
+//
+// Supported operators: +, -, *, /, %, ** (power)
+// Supported functions: sqrt, abs, sin, cos, tan, log, ln, round, floor, ceil, pow, min, max
+// Supported constants: pi, e
 func NewCalculator() *Calculator {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
 			"expression": {
 				Type:        "string",
-				Description: "A mathematical expression to evaluate. Examples: '100*(100+1)/2', '1000000*(1000000+1)/2', '5*6', '10/2'",
+				Description: "A mathematical expression to evaluate. Examples: 'sqrt(2)', '3**4', 'pi * 5^2', 'abs(-10)', 'sin(pi/2)', 'round(3.14159, 2)'",
 			},
 		},
 		Required: []string{"expression"},
@@ -31,22 +41,69 @@ func NewCalculator() *Calculator {
 
 	return &Calculator{
 		BaseTool: base.NewBaseToolWithCapabilities("calculator",
-			"Evaluate mathematical expressions using standard arithmetic operations.\n\nIMPORTANT FORMULAS:\n- Sum from 1 to n: n*(n+1)/2\n- Sum from a to b: (b-a+1)*(a+b)/2\n\nSUPPORTED OPERATIONS:\n- Addition: +\n- Subtraction: -\n- Multiplication: *\n- Division: /\n- Parentheses: ()\n\nUSAGE RULES:\n- Always use mathematical expressions, not natural language\n- For '1 to 100 sum', use: 100*(100+1)/2\n- For '1 to 1000000 sum', use: 1000000*(1000000+1)/2\n\nExamples:\n- 1+2 → 1+2\n- 10*20 → 10*20\n- Sum 1 to 100 → 100*(100+1)/2\n- Sum 1 to 100000 → 100000*(100000+1)/2",
+			"Evaluate mathematical expressions. Supports Gaussian sum formulas for fast 1..n summation.\n\n"+
+				"IMPORTANT FORMULAS:\n"+
+				"- Sum from 1 to n: n*(n+1)/2\n"+
+				"- Sum from a to b: (b-a+1)*(a+b)/2\n\n"+
+				"OPERATORS:\n"+
+				"- Arithmetic: +, -, *, /, % (modulo)\n"+
+				"- Power: ** (e.g., 2**10 = 1024)\n"+
+				"- Parentheses: ()\n\n"+
+				"BASIC FUNCTIONS:\n"+
+				"- sqrt(x), abs(x), round(x, n), floor(x), ceil(x)\n"+
+				"- sin(x), cos(x), tan(x) — x in radians\n"+
+				"- log(x), ln(x) — log base 10 and natural log\n"+
+				"- pow(x, y), min(a, b), max(a, b)\n\n"+
+				"COMBINATORICS:\n"+
+				"- factorial(n) — n! for n >= 0\n"+
+				"- nPr(n, r) — permutations: n!/(n-r)!\n"+
+				"- nCr(n, r) — combinations: n!/(r!(n-r)!)\n\n"+
+				"NUMBER THEORY:\n"+
+				"- gcd(a, b), lcm(a, b) — greatest common divisor / least common multiple\n"+
+				"- isPrime(n) — returns 1 if prime, 0 otherwise\n\n"+
+				"STATISTICS:\n"+
+				"- mean(a, b, c, ...), median(a, b, c, ...)\n"+
+				"- variance(a, b, c, ...), stddev(a, b, c, ...)\n\n"+
+				"PROBABILITY:\n"+
+				"- binomial(n, k, p) — binomial probability P(X=k)\n"+
+				"- normalPdf(x, mu, sigma) — normal distribution PDF\n"+
+				"- poissonPdf(k, lambda) — Poisson probability P(X=k)\n\n"+
+				"CONSTANTS:\n"+
+				"- pi (3.14159...), e (2.71828...)\n\n"+
+				"EXAMPLES:\n"+
+				"- Sum 1 to 100 → 100*(100+1)/2 = 5050\n"+
+				"- Sum 1 to 1000000 → 1000000*(1000000+1)/2\n"+
+				"- sqrt(2), 3**4, pi * 5**2, sin(pi/2)\n"+
+				"- factorial(5), nCr(10, 3), gcd(12, 18)\n"+
+				"- mean(1,2,3,4,5), stddev(1,2,3,4,5)\n"+
+				"- binomial(10, 3, 0.5), normalPdf(0, 0, 1)",
 			core.CategoryCore, []core.Capability{core.CapabilityMath}, params),
+		compiled: make(map[string]*vm.Program),
 	}
 }
 
-// Execute performs the calculation.
+// Execute evaluates the expression using the expr library.
 func (t *Calculator) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	expression, ok := params["expression"].(string)
 	if !ok || expression == "" {
-		return core.NewErrorResult("invalid_expression"), nil
+		return core.NewErrorResult("expression is required"), nil
 	}
 
-	// Evaluate the expression
-	result, err := evaluateExpression(expression)
+	env := t.buildEnvironment()
+
+	program, err := t.getOrCompileProgram(expression, env)
 	if err != nil {
-		return core.NewErrorResult("invalid_expression"), nil
+		return core.NewErrorResult(err.Error()), nil
+	}
+
+	output, err := expr.Run(program, env)
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("evaluation error: %v", err)), nil
+	}
+
+	result, ok := toFloat64Safe(output)
+	if !ok {
+		return core.NewErrorResult("expression did not return a number"), nil
 	}
 
 	return core.NewResult(true, map[string]interface{}{
@@ -55,175 +112,409 @@ func (t *Calculator) Execute(ctx context.Context, params map[string]interface{})
 	}), nil
 }
 
-// evaluateExpression evaluates a simple mathematical expression.
-// Supports: +, -, *, /, (), and numbers (integers and floats)
-func evaluateExpression(expr string) (float64, error) {
-	// Remove whitespace
-	expr = strings.ReplaceAll(expr, " ", "")
+// buildEnvironment creates the math environment with constants
+func (t *Calculator) buildEnvironment() map[string]interface{} {
+	return map[string]interface{}{
+		"pi": math.Pi,
+		"e":  math.E,
+	}
+}
 
-	if expr == "" {
-		return 0, fmt.Errorf("empty expression")
+// getOrCompileProgram gets cached program or compiles new one
+func (t *Calculator) getOrCompileProgram(expression string, env map[string]interface{}) (*vm.Program, error) {
+	program, ok := t.compiled[expression]
+	if ok {
+		return program, nil
 	}
 
-	// Parse and evaluate the expression
-	return parseExpression(expr)
-}
-
-// parseExpression parses and evaluates an expression
-func parseExpression(expr string) (float64, error) {
-	return parseAddSub(expr)
-}
-
-// parseAddSub handles + and -
-func parseAddSub(expr string) (float64, error) {
-	left, remaining, err := parseMulDiv(expr)
+	opts := make([]expr.Option, 0, 1+len(t.getAllFunctions()))
+	opts = append(opts, expr.Env(env))
+	opts = append(opts, t.getAllFunctions()...)
+	program, err := expr.Compile(expression, opts...)
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("invalid expression: %v", err)
 	}
 
-	for len(remaining) > 0 {
-		switch remaining[0] {
-		case '+':
-			right, newRemaining, err := parseMulDiv(remaining[1:])
-			if err != nil {
-				return 0, err
-			}
-			left += right
-			remaining = newRemaining
-		case '-':
-			right, newRemaining, err := parseMulDiv(remaining[1:])
-			if err != nil {
-				return 0, err
-			}
-			left -= right
-			remaining = newRemaining
-		default:
-			// Invalid character encountered
-			return 0, fmt.Errorf("invalid character in expression: %c", remaining[0])
-		}
-	}
-
-	return left, nil
+	t.compiled[expression] = program
+	return program, nil
 }
 
-// parseMulDiv handles * and /
-func parseMulDiv(expr string) (float64, string, error) {
-	left, remaining, err := parseFactor(expr)
-	if err != nil {
-		return 0, "", err
+// getAllFunctions returns all math function definitions
+func (t *Calculator) getAllFunctions() []expr.Option {
+	return []expr.Option{
+		// Basic math functions
+		expr.Function("sqrt", t.sqrtFunc()),
+		expr.Function("abs", t.absFunc()),
+		expr.Function("sin", t.sinFunc()),
+		expr.Function("cos", t.cosFunc()),
+		expr.Function("tan", t.tanFunc()),
+		expr.Function("log", t.logFunc()),
+		expr.Function("ln", t.lnFunc()),
+		expr.Function("round", t.roundFunc()),
+		expr.Function("floor", t.floorFunc()),
+		expr.Function("ceil", t.ceilFunc()),
+		expr.Function("pow", t.powFunc()),
+		expr.Function("min", t.minFunc()),
+		expr.Function("max", t.maxFunc()),
+		// Combinatorics
+		expr.Function("factorial", t.factorialFunc()),
+		expr.Function("nPr", t.nPrFunc()),
+		expr.Function("nCr", t.nCrFunc()),
+		// Number Theory
+		expr.Function("gcd", t.gcdFunc()),
+		expr.Function("lcm", t.lcmFunc()),
+		expr.Function("isPrime", t.isPrimeFunc()),
+		// Statistics
+		expr.Function("mean", t.meanFunc()),
+		expr.Function("variance", t.varianceFunc()),
+		expr.Function("stddev", t.stddevFunc()),
+		expr.Function("median", t.medianFunc()),
+		// Probability
+		expr.Function("binomial", t.binomialFunc()),
+		expr.Function("normalPdf", t.normalPdfFunc()),
+		expr.Function("poissonPdf", t.poissonPdfFunc()),
 	}
-
-loop:
-	for len(remaining) > 0 {
-		switch remaining[0] {
-		case '*':
-			right, newRemaining, err := parseFactor(remaining[1:])
-			if err != nil {
-				return 0, "", err
-			}
-			left *= right
-			remaining = newRemaining
-		case '/':
-			right, newRemaining, err := parseFactor(remaining[1:])
-			if err != nil {
-				return 0, "", err
-			}
-			if right == 0 {
-				return 0, "", fmt.Errorf("division by zero")
-			}
-			left /= right
-			remaining = newRemaining
-		default:
-			break loop
-		}
-	}
-
-	return left, remaining, nil
 }
 
-// parseFactor handles numbers and parentheses
-func parseFactor(expr string) (float64, string, error) {
-	if len(expr) == 0 {
-		return 0, "", fmt.Errorf("unexpected end of expression")
+// Basic math functions
+func (t *Calculator) sqrtFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Sqrt(toFloat64(params[0])), nil
 	}
-
-	// Handle parentheses
-	if expr[0] == '(' {
-		// Find matching closing parenthesis
-		parenCount := 1
-		end := 1
-		for end < len(expr) && parenCount > 0 {
-			switch expr[end] {
-			case '(':
-				parenCount++
-			case ')':
-				parenCount--
-			}
-			end++
-		}
-
-		if parenCount != 0 {
-			return 0, "", fmt.Errorf("unmatched parentheses")
-		}
-
-		// Evaluate expression inside parentheses
-		value, err := parseExpression(expr[1 : end-1])
-		if err != nil {
-			return 0, "", err
-		}
-
-		return value, expr[end:], nil
-	}
-
-	// Parse number
-	return parseNumber(expr)
 }
 
-// parseNumber parses a number from the expression
-func parseNumber(expr string) (float64, string, error) {
-	i := 0
-
-	// Handle optional negative sign
-	if len(expr) > 0 && expr[0] == '-' {
-		i++
+func (t *Calculator) absFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Abs(toFloat64(params[0])), nil
 	}
-
-	// Parse digits and decimal point
-	dotSeen := false
-	for i < len(expr) {
-		if expr[i] == '.' {
-			if dotSeen {
-				break
-			}
-			dotSeen = true
-			i++
-		} else if expr[i] >= '0' && expr[i] <= '9' {
-			i++
-		} else {
-			break
-		}
-	}
-
-	if i == 0 || (i == 1 && expr[0] == '-') {
-		return 0, "", fmt.Errorf("expected number at position %d", i)
-	}
-
-	numStr := expr[:i]
-
-	// Check if number ends with decimal point
-	if numStr[len(numStr)-1] == '.' {
-		return 0, "", fmt.Errorf("invalid number format: ends with decimal point")
-	}
-
-	value, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0, "", fmt.Errorf("failed to parse number '%s': %v", numStr, err)
-	}
-
-	return value, expr[i:], nil
 }
 
+func (t *Calculator) sinFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Sin(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) cosFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Cos(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) tanFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Tan(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) logFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Log10(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) lnFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Log(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) roundFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		if len(params) == 2 {
+			return math.Round(toFloat64(params[0])*math.Pow10(int(toFloat64(params[1])))) / math.Pow10(int(toFloat64(params[1]))), nil
+		}
+		return math.Round(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) floorFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Floor(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) ceilFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Ceil(toFloat64(params[0])), nil
+	}
+}
+
+func (t *Calculator) powFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Pow(toFloat64(params[0]), toFloat64(params[1])), nil
+	}
+}
+
+func (t *Calculator) minFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Min(toFloat64(params[0]), toFloat64(params[1])), nil
+	}
+}
+
+func (t *Calculator) maxFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		return math.Max(toFloat64(params[0]), toFloat64(params[1])), nil
+	}
+}
+
+// Combinatorics functions
+func (t *Calculator) factorialFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		n := int(toFloat64(params[0]))
+		if n < 0 {
+			return nil, fmt.Errorf("factorial: n must be >= 0")
+		}
+		result := 1.0
+		for i := 2; i <= n; i++ {
+			result *= float64(i)
+		}
+		return result, nil
+	}
+}
+
+func (t *Calculator) nPrFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		n := int(toFloat64(params[0]))
+		r := int(toFloat64(params[1]))
+		if n < 0 || r < 0 || r > n {
+			return nil, fmt.Errorf("nPr: invalid arguments")
+		}
+		result := 1.0
+		for i := n; i > n-r; i-- {
+			result *= float64(i)
+		}
+		return result, nil
+	}
+}
+
+func (t *Calculator) nCrFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		n := int(toFloat64(params[0]))
+		r := int(toFloat64(params[1]))
+		if n < 0 || r < 0 || r > n {
+			return nil, fmt.Errorf("nCr: invalid arguments")
+		}
+		if r == 0 || r == n {
+			return 1.0, nil
+		}
+		r = minInt(r, n-r)
+		result := 1.0
+		for i := 1; i <= r; i++ {
+			result = result * float64(n-r+i) / float64(i)
+		}
+		return result, nil
+	}
+}
+
+// Number Theory functions
+func (t *Calculator) gcdFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		a, b := int(toFloat64(params[0])), int(toFloat64(params[1]))
+		a, b = absInt(a), absInt(b)
+		for b != 0 {
+			a, b = b, a%b
+		}
+		return float64(a), nil
+	}
+}
+
+func (t *Calculator) lcmFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		a, b := int(toFloat64(params[0])), int(toFloat64(params[1]))
+		if a == 0 || b == 0 {
+			return 0.0, nil
+		}
+		oa, ob := absInt(a), absInt(b)
+		x, y := oa, ob
+		for y != 0 {
+			x, y = y, x%y
+		}
+		gcd := x
+		if gcd == 0 {
+			gcd = 1
+		}
+		return float64(oa / gcd * ob), nil
+	}
+}
+
+func (t *Calculator) isPrimeFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		n := int(toFloat64(params[0]))
+		if n < 2 {
+			return 0.0, nil
+		}
+		for i := 2; i*i <= n; i++ {
+			if n%i == 0 {
+				return 0.0, nil
+			}
+		}
+		return 1.0, nil
+	}
+}
+
+// Statistics functions
+func (t *Calculator) meanFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		if len(params) == 0 {
+			return nil, fmt.Errorf("mean: no arguments")
+		}
+		sum := 0.0
+		for _, p := range params {
+			sum += toFloat64(p)
+		}
+		return sum / float64(len(params)), nil
+	}
+}
+
+func (t *Calculator) varianceFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		if len(params) < 2 {
+			return nil, fmt.Errorf("variance: need at least 2 values")
+		}
+		avg := 0.0
+		for _, p := range params {
+			avg += toFloat64(p)
+		}
+		avg /= float64(len(params))
+		sumSq := 0.0
+		for _, p := range params {
+			d := toFloat64(p) - avg
+			sumSq += d * d
+		}
+		return sumSq / float64(len(params)), nil
+	}
+}
+
+func (t *Calculator) stddevFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		if len(params) < 2 {
+			return nil, fmt.Errorf("stddev: need at least 2 values")
+		}
+		avg := 0.0
+		for _, p := range params {
+			avg += toFloat64(p)
+		}
+		avg /= float64(len(params))
+		sumSq := 0.0
+		for _, p := range params {
+			d := toFloat64(p) - avg
+			sumSq += d * d
+		}
+		return math.Sqrt(sumSq / float64(len(params))), nil
+	}
+}
+
+func (t *Calculator) medianFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		if len(params) == 0 {
+			return nil, fmt.Errorf("median: no arguments")
+		}
+		vals := make([]float64, len(params))
+		for i, p := range params {
+			vals[i] = toFloat64(p)
+		}
+		sort.Float64s(vals)
+		n := len(vals)
+		if n%2 == 0 {
+			return (vals[n/2-1] + vals[n/2]) / 2, nil
+		}
+		return vals[n/2], nil
+	}
+}
+
+// Probability functions
+func (t *Calculator) binomialFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		n := int(toFloat64(params[0]))
+		k := int(toFloat64(params[1]))
+		p := toFloat64(params[2])
+		if n < 0 || k < 0 || k > n || p < 0 || p > 1 {
+			return nil, fmt.Errorf("binomial: invalid arguments")
+		}
+		coeff := 1.0
+		kr := minInt(k, n-k)
+		for i := 1; i <= kr; i++ {
+			coeff = coeff * float64(n-kr+i) / float64(i)
+		}
+		return coeff * math.Pow(p, float64(k)) * math.Pow(1-p, float64(n-k)), nil
+	}
+}
+
+func (t *Calculator) normalPdfFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		x := toFloat64(params[0])
+		mu := toFloat64(params[1])
+		sigma := toFloat64(params[2])
+		if sigma <= 0 {
+			return nil, fmt.Errorf("normalPdf: sigma must be > 0")
+		}
+		return (1 / (sigma * math.Sqrt(2*math.Pi))) *
+			math.Exp(-((x-mu)*(x-mu))/(2*sigma*sigma)), nil
+	}
+}
+
+func (t *Calculator) poissonPdfFunc() func(...interface{}) (interface{}, error) {
+	return func(params ...interface{}) (interface{}, error) {
+		k := int(toFloat64(params[0]))
+		lambda := toFloat64(params[1])
+		if k < 0 || lambda <= 0 {
+			return nil, fmt.Errorf("poissonPdf: k >= 0, lambda > 0")
+		}
+		logFact := 0.0
+		for i := 2; i <= k; i++ {
+			logFact += math.Log(float64(i))
+		}
+		return math.Exp(float64(k)*math.Log(lambda) - lambda - logFact), nil
+	}
+}
+
+// IsIdempotent returns true since calculator has no side effects.
 func (t *Calculator) IsIdempotent() bool { return true }
+
+// toFloat64 converts any numeric value to float64.
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	default:
+		return 0
+	}
+}
+
+// toFloat64Safe safely converts a value to float64, returning false on failure.
+func toFloat64Safe(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	default:
+		return 0, false
+	}
+}
+
+// absInt returns the absolute value of an integer.
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// minInt returns the smaller of two integers.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // DateTime provides date and time operations.
 type DateTime struct {

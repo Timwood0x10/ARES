@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // TestClient_GenerateStream_Ollama tests Ollama streaming through llm.Client.

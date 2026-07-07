@@ -22,7 +22,7 @@ func (m *mockRouter) Start(_ context.Context, _ EventBus) error { m.startCalled 
 func (m *mockRouter) Stop(_ context.Context) error              { m.stopCalled = true; return nil }
 func (m *mockRouter) Route(ctx context.Context, state RouteState) (*RouteDecision, error) {
 	if m.routeFn == nil {
-		return nil, nil
+		return nil, errors.New("not implemented in mock")
 	}
 	return m.routeFn(ctx, state)
 }

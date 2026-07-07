@@ -10,9 +10,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+const (
+	testParamTemperature = "temperature"
+)
+
 var testStrategy = &mutation.Strategy{
 	ID:             "cached-test-strategy",
-	Params:         map[string]any{"temperature": 0.7, "top_k": 40},
+	Params:         map[string]any{testParamTemperature: 0.7, "top_k": 40},
 	PromptTemplate: "think-prompt",
 }
 
@@ -42,14 +46,14 @@ func TestNewCachedScorer_Success(t *testing.T) {
 	cache := NewScoreCache(100)
 	underlying := genome.ConstantScorer(50.0)
 
-	cs, err := NewCachedScorer(cache, underlying, "llm")
+	cs, err := NewCachedScorer(cache, underlying, ScorerTypeLLM)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cs.cache == nil {
 		t.Fatal("cache field should be set")
 	}
-	if cs.scorerType != "llm" {
+	if cs.scorerType != ScorerTypeLLM {
 		t.Fatalf("scorerType mismatch: want llm, got %s", cs.scorerType)
 	}
 }
@@ -115,11 +119,11 @@ func TestCachedScorer_DifferentStrategiesIndependent(t *testing.T) {
 	cs, _ := NewCachedScorer(cache, underlying, "test")
 
 	stratA := &mutation.Strategy{
-		Params:         map[string]any{"temperature": 0.5},
+		Params:         map[string]any{testParamTemperature: 0.5},
 		PromptTemplate: "prompt-a",
 	}
 	stratB := &mutation.Strategy{
-		Params:         map[string]any{"temperature": 0.9},
+		Params:         map[string]any{testParamTemperature: 0.9},
 		PromptTemplate: "prompt-b",
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -14,25 +13,91 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	builtin_hash "github.com/Timwood0x10/ares/internal/tools/resources/builtin/hash"
+	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
+	builtin_pdf "github.com/Timwood0x10/ares/internal/tools/resources/builtin/pdf"
+	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
+	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // RegisterBuiltinTools registers all built-in tools into the given registry.
-// These tools are self-contained with no dependency on internal/.
+//
+// You normally do NOT need to call this function manually. NewRegistry()
+// already calls it automatically, so built-in tools are ready on creation.
+//
+// This function exists for two scenarios:
+//  1. Re-registration after NewEmptyRegistry() — if you called
+//     NewEmptyRegistry() and later decide you want the built-in tools.
+//  2. Custom registry setup — if you're building your own registry
+//     instance and want to populate it with built-in tools.
+//
+// Registered built-in tools:
+//   - calculator, hash_tool, string_utils, pdf_tool, id_generator
+//   - regex, json_tools, web_search, file_tools
 func RegisterBuiltinTools(r *Registry) error {
-	tools := []Tool{
-		&calculatorTool{},
+	// First register the internal-powered tools.
+	internalTools := []core.Tool{
+		builtin_math.NewCalculator(),
+		builtin_hash.NewHashTool(),
+		builtin_stringutils.NewStringUtils(),
+		builtin_pdf.NewPDFTool(),
+		builtin_system.NewIDGenerator(),
+	}
+	for _, t := range internalTools {
+		if err := r.Register(fromCore(t)); err != nil {
+			return err
+		}
+	}
+	// Then register the self-contained legacy tools.
+	legacyTools := []Tool{
 		&regexTool{},
 		&jsonTool{},
 		&webSearchTool{client: &http.Client{Timeout: 10 * time.Second}},
 		&fileTool{},
 	}
-	for _, t := range tools {
+	for _, t := range legacyTools {
 		if err := r.Register(t); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+// fromCore adapts a core.Tool to the public tools.Tool interface.
+func fromCore(t core.Tool) Tool {
+	return &coreAdapter{inner: t}
+}
+
+// coreAdapter wraps a core.Tool so it implements tools.Tool.
+type coreAdapter struct {
+	inner core.Tool
+}
+
+func (a *coreAdapter) Name() string        { return a.inner.Name() }
+func (a *coreAdapter) Description() string { return a.inner.Description() }
+func (a *coreAdapter) Capabilities() []string {
+	caps := a.inner.Capabilities()
+	if len(caps) == 0 {
+		return nil
+	}
+	names := make([]string, len(caps))
+	for i, c := range caps {
+		names[i] = string(c)
+	}
+	return names
+}
+func (a *coreAdapter) Execute(ctx context.Context, params map[string]any) (Result, error) {
+	cr, err := a.inner.Execute(ctx, params)
+	if err != nil {
+		return Result{Success: false, Data: err.Error()}, nil
+	}
+	return Result{Success: cr.Success, Data: cr.Data}, nil
+}
+
+// Compile-time check.
+var _ Tool = (*coreAdapter)(nil)
 
 // ── Calculator ───────────────────────────────────────────
 
@@ -42,6 +107,7 @@ func (t *calculatorTool) Name() string { return "calculator" }
 func (t *calculatorTool) Description() string {
 	return "Mathematical calculator with expression evaluation"
 }
+func (t *calculatorTool) Capabilities() []string { return nil }
 
 func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	expr, _ := params["expression"].(string)
@@ -184,8 +250,9 @@ func parsePrimary(tokens []string, pos int) (float64, int, error) {
 
 type regexTool struct{}
 
-func (t *regexTool) Name() string        { return "regex" }
-func (t *regexTool) Description() string { return "Regex matching, extraction, and replacement" }
+func (t *regexTool) Name() string           { return "regex" }
+func (t *regexTool) Description() string    { return "Regex matching, extraction, and replacement" }
+func (t *regexTool) Capabilities() []string { return nil }
 
 func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
@@ -233,8 +300,9 @@ func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, e
 
 type jsonTool struct{}
 
-func (t *jsonTool) Name() string        { return "json_tools" }
-func (t *jsonTool) Description() string { return "JSON parse, transform, and validation" }
+func (t *jsonTool) Name() string           { return "json_tools" }
+func (t *jsonTool) Description() string    { return "JSON parse, transform, and validation" }
+func (t *jsonTool) Capabilities() []string { return nil }
 
 func (t *jsonTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
@@ -285,6 +353,7 @@ func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
 	return "Search the web using SearXNG meta search engine"
 }
+func (t *webSearchTool) Capabilities() []string { return nil }
 
 func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	query, _ := params["query"].(string)
@@ -320,7 +389,7 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("web_search: response body close failed", "error", err)
+			log.Warn("web_search: response body close failed", "error", err)
 		}
 	}()
 
@@ -368,8 +437,9 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 
 type fileTool struct{}
 
-func (t *fileTool) Name() string        { return "file_tools" }
-func (t *fileTool) Description() string { return "File operations: read, write, list, exists, delete" }
+func (t *fileTool) Name() string           { return "file_tools" }
+func (t *fileTool) Description() string    { return "File operations: read, write, list, exists, delete" }
+func (t *fileTool) Capabilities() []string { return nil }
 
 func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
@@ -381,14 +451,14 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 
 	switch operation {
 	case "read":
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 - file tool is intentionally allowed to read user-specified paths
 		if err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "content": string(data), "size": len(data)}}, nil
 	case "write":
 		content, _ := params["content"].(string)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "bytes": len(content)}}, nil
@@ -412,7 +482,7 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil
 	case "mkdir":
-		if err := os.MkdirAll(path, 0o755); err != nil {
+		if err := os.MkdirAll(path, 0o750); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil

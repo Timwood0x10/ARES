@@ -74,6 +74,7 @@ func TestConfig(t *testing.T) {
 	})
 }
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestParser(t *testing.T) {
 	t.Run("create parser", func(t *testing.T) {
 		parser := NewParser()

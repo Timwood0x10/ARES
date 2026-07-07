@@ -6,7 +6,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -349,7 +348,7 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 		return fmt.Errorf("store set active: %w", err)
 	}
 
-	slog.Info("[ActiveStrategyManager] Strategy deployed",
+	log.Info("[ActiveStrategyManager] Strategy deployed",
 		"strategy_id", strategy.ID,
 		"version", strategy.Version,
 		"score", strategy.Score,
@@ -360,7 +359,7 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 	if m.guardrails != nil {
 		postResult := m.guardrails.PostEvolveCheck(ctx, strategy.Score, 0, nil)
 		if postResult.ShouldStop {
-			slog.Warn("[ActiveStrategyManager] Guardrail critical after deploy, auto-rolling back",
+			log.Warn("[ActiveStrategyManager] Guardrail critical after deploy, auto-rolling back",
 				"strategy_id", strategy.ID,
 				"score", strategy.Score,
 				"reason", "guardrail critical after deploy",
@@ -374,7 +373,7 @@ func (m *ActiveStrategyManager) Deploy(ctx context.Context, strategy *mutation.S
 				}
 				m.current = m.previous
 				m.previous = nil
-				slog.Info("[ActiveStrategyManager] Auto-rollback completed",
+				log.Info("[ActiveStrategyManager] Auto-rollback completed",
 					"strategy_id", m.current.ID,
 					"version", m.current.Version,
 					"score", m.current.Score,
@@ -418,7 +417,7 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 	m.previous = m.current
 	m.current = previousClone
 
-	slog.Info("[ActiveStrategyManager] Rollback completed",
+	log.Info("[ActiveStrategyManager] Rollback completed",
 		"strategy_id", previousClone.ID,
 		"version", previousClone.Version,
 		"score", previousClone.Score,

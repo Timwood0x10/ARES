@@ -3,7 +3,6 @@ package ares_ratelimit
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 )
 
@@ -51,7 +50,7 @@ func (l *SemaphoreLimiter) Release(key string) {
 		}
 		l.mu.Unlock()
 	default:
-		slog.Warn("SemaphoreLimiter.Release: no slot available to release",
+		log.Warn("SemaphoreLimiter.Release: no slot available to release",
 			"key", key,
 			"hint", "this indicates a bug: releasing more times than acquired")
 	}

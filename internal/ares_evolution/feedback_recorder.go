@@ -6,7 +6,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -113,7 +112,7 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 	if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
 		if time.Since(r.circuitBreakerOpenedAt) < r.circuitBreakerCooldown {
 			r.mu.Unlock()
-			slog.Warn("[FeedbackRecorder] Circuit breaker open, skipping feedback service",
+			log.Warn("[FeedbackRecorder] Circuit breaker open, skipping feedback service",
 				"consecutive_errors", r.circuitBreakerConsecutiveErrors,
 				"cooldown_remaining", r.circuitBreakerCooldown-time.Since(r.circuitBreakerOpenedAt))
 			return nil
@@ -145,7 +144,7 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 			r.circuitBreakerConsecutiveErrors++
 			if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
 				r.circuitBreakerOpenedAt = time.Now()
-				slog.Warn("[FeedbackRecorder] Circuit breaker opened",
+				log.Warn("[FeedbackRecorder] Circuit breaker opened",
 					"consecutive_errors", r.circuitBreakerConsecutiveErrors)
 			}
 		}

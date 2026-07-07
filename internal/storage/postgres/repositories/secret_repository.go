@@ -10,10 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/adapters"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -109,7 +107,7 @@ func (r *SecretRepository) Get(ctx context.Context, key, tenantID string) (strin
 	)
 
 	if err == sql.ErrNoRows {
-		return "", coreerrors.ErrRecordNotFound
+		return "", errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return "", errors.Wrap(err, "get secret")
@@ -117,7 +115,7 @@ func (r *SecretRepository) Get(ctx context.Context, key, tenantID string) (strin
 
 	// Check if secret has expired
 	if expiresAt != nil && time.Now().After(*expiresAt) {
-		return "", coreerrors.ErrSecretExpired
+		return "", errors.ErrSecretExpired
 	}
 
 	// Decrypt the value
@@ -149,7 +147,7 @@ func (r *SecretRepository) Delete(ctx context.Context, key, tenantID string) err
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -188,7 +186,7 @@ func (r *SecretRepository) List(ctx context.Context, tenantID string) ([]*storag
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate secrets", "error", err)
+		log.Error("Failed to iterate secrets", "error", err)
 		return nil, errors.Wrap(err, "iterate secrets")
 	}
 
@@ -261,7 +259,7 @@ func (r *SecretRepository) UpdateMetadata(ctx context.Context, key, tenantID str
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -359,7 +357,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 		if !committed {
 			if err := tx.Rollback(); err != nil {
 				// nolint: errcheck // Transaction rollback error is logged but not critical
-				slog.Error("Failed to rollback transaction", "error", err)
+				log.Error("Failed to rollback transaction", "error", err)
 			}
 		}
 	}()
@@ -379,7 +377,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -397,7 +395,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate secrets", "error", err)
+		log.Error("Failed to iterate secrets", "error", err)
 		return 0, errors.Wrap(err, "iterate secrets")
 	}
 
@@ -430,7 +428,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			slog.Warn("Failed to get rows affected", "error", err)
+			log.Warn("Failed to get rows affected", "error", err)
 		} else {
 			updatedCount += rowsAffected
 		}
@@ -443,7 +441,7 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 	committed = true
 
 	// Add audit logging for key rotation events (per design standard)
-	slog.Info("Secret key rotation completed", "updated_secrets", updatedCount, "timestamp", time.Now())
+	log.Info("Secret key rotation completed", "updated_secrets", updatedCount, "timestamp", time.Now())
 
 	return updatedCount, nil
 }
@@ -531,7 +529,7 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback transaction", "error", rbErr)
+				log.Error("Failed to rollback transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -558,7 +556,7 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		checkQuery := `SELECT key_version FROM secrets WHERE key = $1 AND tenant_id = $2`
 		err := tx.QueryRowContext(ctx, checkQuery, item.Key, tenantID).Scan(&existingKeyVersion)
 		if err == nil {
-			slog.Warn("Secret key already exists, skipping", "key", item.Key, "existing_version", existingKeyVersion)
+			log.Warn("Secret key already exists, skipping", "key", item.Key, "existing_version", existingKeyVersion)
 			continue
 		}
 
@@ -595,12 +593,12 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		}
 
 		importedCount++
-		slog.Info("Secret imported successfully", "key", item.Key, "tenant_id", tenantID, "secret_id", id)
+		log.Info("Secret imported successfully", "key", item.Key, "tenant_id", tenantID, "secret_id", id)
 	}
 
 	// Check if there were any import errors
 	if len(importErrors) > 0 {
-		slog.Warn("Secret import completed with errors", "imported_count", importedCount, "error_count", len(importErrors), "errors", importErrors)
+		log.Warn("Secret import completed with errors", "imported_count", importedCount, "error_count", len(importErrors), "errors", importErrors)
 	}
 
 	// Return error if no secrets were imported (atomicity: all-or-nothing)
@@ -615,7 +613,7 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	committed = true
 
 	// Add audit logging for import events (per design standard)
-	slog.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
+	log.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
 
 	return importedCount, nil
 }
@@ -636,7 +634,7 @@ func (r *SecretRepository) GetKeyVersion(ctx context.Context, key, tenantID stri
 	var keyVersion int
 	err := r.db.QueryRowContext(ctx, query, key, tenantID).Scan(&keyVersion)
 	if err == sql.ErrNoRows {
-		return 0, coreerrors.ErrRecordNotFound
+		return 0, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return 0, errors.Wrap(err, "get key version")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
@@ -32,7 +31,7 @@ func main() {
 	}
 	defer func() {
 		if err := pool.Close(); err != nil {
-			slog.Error("Failed to close database pool", "error", err)
+			lg.Error("Failed to close database pool", "error", err)
 		}
 	}()
 
@@ -51,7 +50,7 @@ func main() {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			lg.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -92,7 +91,7 @@ func main() {
 	}
 	defer func() {
 		if err := rows2.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			lg.Error("Failed to close rows", "error", err)
 		}
 	}()
 

@@ -235,7 +235,7 @@ func TestTruncationSelection(t *testing.T) {
 
 	t.Run("valid context succeeds", func(t *testing.T) {
 		pop := makePopulation(10.0, 20.0)
-		result, err := sel.Select(context.TODO(), pop, 1)
+		result, err := sel.Select(context.Background(), pop, 1)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -792,7 +792,7 @@ func TestSelectionInterface(t *testing.T) {
 
 func TestValidateSelectInputs(t *testing.T) {
 	t.Run("valid context passes validation", func(t *testing.T) {
-		err := validateSelectInputs(context.TODO(), makePopulation(1.0), 1)
+		err := validateSelectInputs(context.Background(), makePopulation(1.0), 1)
 		if err != nil {
 			t.Fatalf("unexpected error for valid context: %v", err)
 		}

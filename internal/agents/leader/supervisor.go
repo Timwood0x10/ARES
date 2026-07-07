@@ -9,7 +9,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_ctxutil"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 
@@ -42,6 +41,7 @@ func DefaultLeaderSupervisorConfig() *LeaderSupervisorConfig {
 }
 
 // LeaderSupervisor monitors leader health and triggers failover.
+//
 // Deprecated: production code should use Runtime-level supervision.
 // Retained for test compatibility until all test consumers are migrated.
 type LeaderSupervisor struct {
@@ -110,7 +110,7 @@ func (s *LeaderSupervisor) RegisterLeader(id string, agent base.Agent) {
 // Start begins the monitoring loop. Uses errgroup for goroutine management.
 func (s *LeaderSupervisor) Start(ctx context.Context) error {
 	if ctx == nil {
-		return coreerrors.ErrNilPointer
+		return errors.ErrNilPointer
 	}
 	s.mu.Lock()
 	if s.started {

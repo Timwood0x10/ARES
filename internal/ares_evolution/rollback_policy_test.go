@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -207,7 +208,7 @@ func (m *mockStrategyStore) GetActive(_ context.Context) (*Strategy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active == nil {
-		return nil, nil
+		return nil, errors.New("no active strategy")
 	}
 	clone := *m.active
 	return &clone, nil

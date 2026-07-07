@@ -74,10 +74,10 @@ func (m *mockRetrievalRepository) GetKnowledge(_ context.Context, tenantID, item
 	}
 	item, exists := m.items[itemID]
 	if !exists {
-		return nil, nil
+		return nil, retrievalservice.ErrKnowledgeNotFound
 	}
 	if item.TenantID != tenantID {
-		return nil, nil
+		return nil, retrievalservice.ErrKnowledgeNotFound
 	}
 	cp := *item
 	return &cp, nil
@@ -94,7 +94,7 @@ func (m *mockRetrievalRepository) UpdateKnowledge(_ context.Context, item *core.
 		return errors.New("item is nil")
 	}
 	if _, exists := m.items[item.ID]; !exists {
-		return errors.New("knowledge item not found")
+		return retrievalservice.ErrKnowledgeNotFound
 	}
 	cp := *item
 	m.items[item.ID] = &cp
@@ -112,7 +112,7 @@ func (m *mockRetrievalRepository) DeleteKnowledge(_ context.Context, itemID stri
 		return errors.New("item ID is empty")
 	}
 	if _, exists := m.items[itemID]; !exists {
-		return errors.New("knowledge item not found")
+		return retrievalservice.ErrKnowledgeNotFound
 	}
 	delete(m.items, itemID)
 	return nil

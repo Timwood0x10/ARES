@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -42,7 +41,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	}
 	if sseResp.StatusCode != http.StatusOK {
 		if err := sseResp.Body.Close(); err != nil {
-			slog.Warn("mcp: close sse body on bad status", "error", err)
+			log.Warn("mcp: close sse body on bad status", "error", err)
 		}
 		return nil, fmt.Errorf("sse connect: unexpected status %d", sseResp.StatusCode)
 	}
@@ -55,7 +54,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	if err != nil {
 		tr.sseCancel()
 		if err := sseResp.Body.Close(); err != nil {
-			slog.Warn("mcp: close sse body on read error", "error", err)
+			log.Warn("mcp: close sse body on read error", "error", err)
 		}
 		return nil, fmt.Errorf("read endpoint: %w", err)
 	}
@@ -68,7 +67,7 @@ func ConnectSSE(ctx context.Context, name, url string) (*Client, error) {
 	}
 
 	if err := c.initialize(ctx); err != nil {
-		_ = tr.close()
+		_ = tr.close() //nolint: errcheck
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
@@ -124,7 +123,7 @@ func (tr *sseTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jsonr
 	}
 	defer func() {
 		if err := httpResp.Body.Close(); err != nil {
-			slog.Warn("mcp: close http response body", "error", err)
+			log.Warn("mcp: close http response body", "error", err)
 		}
 	}()
 

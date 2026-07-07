@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
@@ -23,7 +22,7 @@ type agentMeta struct {
 func bridgeEvents(ctx context.Context, store ares_events.EventStore, bus ares_runtime.EventBus, meta map[string]agentMeta) {
 	ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
 	if err != nil {
-		slog.Error("bridge: failed to subscribe to event store", "error", err)
+		lg.Error("bridge: failed to subscribe to event store", "error", err)
 		return
 	}
 
@@ -32,16 +31,16 @@ func bridgeEvents(ctx context.Context, store ares_events.EventStore, bus ares_ru
 		agentIDs[id] = true
 	}
 
-	slog.Info("bridge: event store → plugin bus started")
+	lg.Info("bridge: event store → plugin bus started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("bridge: stopped")
+			lg.Info("bridge: stopped")
 			return
 		case evt, ok := <-ch:
 			if !ok {
-				slog.Info("bridge: event channel closed")
+				lg.Info("bridge: event channel closed")
 				return
 			}
 

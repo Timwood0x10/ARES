@@ -3,11 +3,9 @@ package leader
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
-	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 
@@ -66,7 +64,7 @@ func NewTaskDispatcher(agentRegistry map[models.AgentType]string, maxParallel in
 		maxParallel:   maxParallel,
 		timeout:       timeout,
 	}
-	slog.Debug("TaskDispatcher created",
+	log.Debug("TaskDispatcher created",
 		"max_parallel", maxParallel, "timeout", timeout,
 		"has_sender", sender != nil)
 	return d, nil
@@ -82,7 +80,7 @@ func (d *taskDispatcher) RegisterExecutor(agentType models.AgentType, fn func(ct
 // Dispatch dispatches tasks to sub-agents in parallel.
 func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error) {
 	if len(tasks) == 0 {
-		return nil, apperrors.ErrInvalidInput
+		return nil, errors.ErrInvalidInput
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -134,7 +132,7 @@ func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]
 				results[i].SetError(ErrTaskNotStarted.Error())
 			}
 		}
-		return results, fmt.Errorf("%w: %v", apperrors.ErrDispatchFailed, err)
+		return results, fmt.Errorf("%w: %v", errors.ErrDispatchFailed, err)
 	}
 
 	return results, nil
@@ -154,14 +152,14 @@ func (d *taskDispatcher) executeTask(ctx context.Context, task *models.Task) *mo
 		return result
 	}
 
-	slog.Debug("Executing task", "task_id", task.TaskID, "agent_type", task.AgentType, "agent_addr", agentAddr)
+	log.Debug("Executing task", "task_id", task.TaskID, "agent_type", task.AgentType, "agent_addr", agentAddr)
 
 	// Check if we have a direct executor registered
 	if hasExecutor {
-		slog.Debug("Calling executor", "agent_type", task.AgentType)
+		log.Debug("Calling executor", "agent_type", task.AgentType)
 		execResult, err := fn(ctx, task)
 		if err != nil {
-			slog.Error("Executor error", "agent_type", task.AgentType, "error", err)
+			log.Error("Executor error", "agent_type", task.AgentType, "error", err)
 			result.SetError(err.Error())
 			return result
 		}
@@ -169,7 +167,7 @@ func (d *taskDispatcher) executeTask(ctx context.Context, task *models.Task) *mo
 			result.SetError("executor returned nil result")
 			return result
 		}
-		slog.Debug("Executor returned", "agent_type", task.AgentType, "item_count", len(execResult.Items), "success", execResult.Success)
+		log.Debug("Executor returned", "agent_type", task.AgentType, "item_count", len(execResult.Items), "success", execResult.Success)
 		return execResult
 	}
 

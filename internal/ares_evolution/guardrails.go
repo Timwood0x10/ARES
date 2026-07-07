@@ -6,7 +6,6 @@ package evolution
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -214,7 +213,7 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 				Timestamp:       time.Now(),
 				SuggestedAction: "evaluate all individuals before proceeding",
 			}
-			slog.Warn("guardrail: critical - majority population unevaluated",
+			log.Warn("guardrail: critical - majority population unevaluated",
 				"code", ErrCodeUnevaluatedPopulation,
 				"score", currentBest,
 				"generation", generation,
@@ -240,7 +239,7 @@ func (g *EvolutionGuardrails) PreEvolveCheck(ctx context.Context, currentBest fl
 			Timestamp:       time.Now(),
 			SuggestedAction: "consider increasing mutation rate or introducing diversity",
 		}
-		slog.Warn("guardrail: warning - stagnation detected",
+		log.Warn("guardrail: warning - stagnation detected",
 			"code", ErrCodeStagnation,
 			"score", currentBest,
 			"generation", generation,
@@ -290,7 +289,7 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 			Timestamp:       time.Now(),
 			SuggestedAction: "review recent changes and consider reverting to previous best strategy",
 		}
-		slog.Warn("guardrail: critical - baseline regression",
+		log.Warn("guardrail: critical - baseline regression",
 			"code", ErrCodeBaselineRegression,
 			"score", newBest,
 			"generation", generation,
@@ -309,14 +308,14 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 		g.stagnantCount = 0
 		g.bestKnownScore = newBest
 		g.lastImprovementGen = generation
-		slog.Info("guardrail: improvement detected",
+		log.Info("guardrail: improvement detected",
 			"generation", generation,
 			"new_best", newBest,
 			"previous_best", previousBest,
 		)
 	} else {
 		g.stagnantCount++
-		slog.Info("guardrail: no improvement",
+		log.Info("guardrail: no improvement",
 			"generation", generation,
 			"new_best", newBest,
 			"best_known", g.bestKnownScore,
@@ -349,7 +348,7 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 					Timestamp:       time.Now(),
 					SuggestedAction: "increase selection pressure or introduce external diversity",
 				}
-				slog.Warn("guardrail: warning - lineage concentration",
+				log.Warn("guardrail: warning - lineage concentration",
 					"code", ErrCodeLineageConcentration,
 					"score", newBest,
 					"generation", generation,

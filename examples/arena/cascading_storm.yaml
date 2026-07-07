@@ -1,117 +1,47 @@
-# ============================================================================
-# Arena Scenario: Cascading Failure Storm
-# ============================================================================
-# What this tests:
-#   1. System behavior under simultaneous, multi-vector faults
-#   2. Whether partial network partition causes split-brain or graceful degradation
-#   3. Recovery speed after a "perfect storm" of combined failures
-#   4. Data consistency after mixed fault types (kill + partition + slow + corrupt)
-#
-# This is a STRESS test — not a smoke test. It pushes the system to its limits.
-# If your cluster survives this with Grade B+, it's production-ready.
-#
-# How to run:
-#   ares arena run examples/arena/cascading_storm.yaml --addr localhost:8080
-#
-# Expected outcome on a resilient system:
-#   - Some actions WILL fail (that's expected in a storm)
-#   - But overall score should still be C+ or better (partial degradation)
-#   - The system should NOT completely collapse (no Grade F)
-# ============================================================================
-
 name: cascading-failure-storm
-description: |
-  A multi-phase chaos storm that combines network partitions, agent kills,
-  memory corruption, MCP disconnection, and LLM failures in rapid succession.
-  Designed to find the breaking point of the system's resilience architecture.
-tags: [stress, network, cascading, advanced]
-
+description: "Simulate cascading failures across multiple agents"
 config:
-  stop_on_error: false          # Keep going even if individual actions fail
-                               # (we WANT to see how bad it can get)
-  timeout: 5m                   # Storms take longer than simple tests
+  stop_on_error: false
+  parallel_actions: true
+  max_concurrent: 3
   warmup: 2s
-  cooldown: 15s                # Extra cooldown for complex recovery
-
+  cooldown: 2s
 actions:
-  # ── Phase 1: Network Isolation ───────────────────────────────────────
-  # Cut off one agent from the rest. This simulates an AZ failure or
-  # switch misconfiguration. The isolated agent should detect this and
-  # enter a safe mode rather than serving stale data.
-  - delay: 0s
-    action:
-      type: network_partition
-      target_id: ""
-    label: p1-isolate-agent-network
-    expect_success: true
-
-  # ── Phase 2: Double Tap ──────────────────────────────────────────────
-  # While the network is degraded, kill a SECOND agent. Now the system
-  # has to handle both a partition AND a missing member simultaneously.
   - delay: 3s
     action:
       type: kill_agent
-      target_id: ""
-    label: p2-kill-during-partition
-    expect_success: true
-    depends_on: [p1-isolate-agent-network]
-
-  # ── Phase 3: Resource Exhaustion ─────────────────────────────────────
-  # Inject a tool timeout on another agent. This simulates an external
-  # service being slow (e.g., database query timeout, API rate limit).
+      target_id: agent-1
+    label: kill-agent-1
+  - delay: 5s
+    action:
+      type: slow_agent
+      target_id: agent-2
+      metadata:
+        delay: 10s
+    label: slow-agent-2
+  - delay: 7s
+    action:
+      type: kill_leader
+    label: kill-leader
+  - delay: 2s
+    action:
+      type: network_partition
+      target_id: agent-3
+    label: partition-agent-3
   - delay: 4s
     action:
       type: tool_timeout
-      target_id: ""
+      target_id: agent-1
       metadata:
-        duration: 10s          # Agent's tools will timeout for 10 seconds
-    label: p3-inject-tool-timeout
-    expect_success: true
-    depends_on: [p2-kill-during-partition]
-
-  # ── Phase 4: Memory Corruption ───────────────────────────────────────
-  # Corrupt an agent's in-memory state. This is the most dangerous fault
-  # type — it can cause silent data corruption if not caught by checksums.
+        duration: 30s
+    label: timeout-agent-1
   - delay: 6s
     action:
       type: memory_corrupt
-      target_id: ""
-    label: p4-corrupt-memory-state
-    expect_success: true
-    depends_on: [p3-inject-tool-timeout]
-
-  # ── Phase 5: External Dependency Loss ───────────────────────────────
-  # Disconnect the MCP (Model Context Protocol) server from an agent.
-  # The agent should fall back gracefully or queue requests.
+      target_id: agent-2
+    label: corrupt-agent-2
   - delay: 8s
     action:
-      type: mcp_disconnect
-      target_id: ""
-    label: p5-sever-mcp-connection
-    expect_success: true
-    depends_on: [p4-corrupt-memory-state]
-
-  # ── Phase 6: LLM Brain Failure ──────────────────────────────────────
-  # Make the LLM backend return errors. Tests whether the agent has
-  # retry logic, fallback models, or graceful degradation when AI fails.
-  - delay: 10s
-    action:
-      type: llm_failure
-      target_id: ""
-      metadata:
-        error_type: overloaded  # Could be: rate_limit | overloaded | timeout
-    label: p6-llm-overload-simulation
-    expect_success: true
-    depends_on: [p5-sever-mcp-connection]
-
-  # ── Phase 7: The Slowdown Cascade ───────────────────────────────────
-  # With multiple agents already compromised, slow down yet another.
-  # This tests whether the remaining healthy agents can pick up the slack.
-  - delay: 12s
-    action:
-      type: slow_agent
-      target_id: ""
-      metadata:
-        duration: 15s
-    label: p7-cascade-slowdown
-    depends_on: [p6-llm-overload-simulation]
+      type: kill_agent
+      target_id: agent-3
+    label: kill-agent-3

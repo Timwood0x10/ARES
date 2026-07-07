@@ -3,7 +3,6 @@ package genome
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -62,7 +61,7 @@ func (p *GuidedPipeline) RunReflectionCycle(ctx context.Context, pop *Population
 	// agent-level data or other context.
 	ref, err := p.reflector.Reflect(ctx, history, agents)
 	if err != nil {
-		slog.WarnContext(ctx, "[GuidedPipeline] reflection failed", "error", err)
+		el.WarnContext(ctx, "[GuidedPipeline] reflection failed", "error", err)
 		return nil
 	}
 
@@ -70,7 +69,7 @@ func (p *GuidedPipeline) RunReflectionCycle(ctx context.Context, pop *Population
 		return nil
 	}
 
-	slog.InfoContext(ctx, "[GuidedPipeline] reflection completed",
+	el.InfoContext(ctx, "[GuidedPipeline] reflection completed",
 		"summary", ref.Summary,
 		"patterns", len(ref.Patterns),
 		"recommendations", len(ref.Recommendations),
@@ -80,7 +79,7 @@ func (p *GuidedPipeline) RunReflectionCycle(ctx context.Context, pop *Population
 	// Step 2: Generate hypotheses.
 	hypotheses := p.hypothesisGen.Generate(ctx, ref)
 	if len(hypotheses) > 0 {
-		slog.InfoContext(ctx, "[GuidedPipeline] generated mutation hypotheses",
+		el.InfoContext(ctx, "[GuidedPipeline] generated mutation hypotheses",
 			"count", len(hypotheses),
 		)
 	}

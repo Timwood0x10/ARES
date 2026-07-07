@@ -272,6 +272,7 @@ func (o *Orchestrator) CreateAgent(req AgentRequest) (string, error) {
 	o.agentWg.Add(1)
 	go func() {
 		defer o.agentWg.Done()
+		defer agentCancel()
 		defer func() {
 			o.mu.Lock()
 			delete(o.cancels, id)
@@ -411,7 +412,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 	}
 
 	// Only gather new MCP data if we don't already have it from resume.
-	if rawData == "" && len(req.Steps) > 0 {
+	switch {
+	case rawData == "" && len(req.Steps) > 0:
 		// Multi-step: call each tool in sequence, accumulate results.
 		// Skip steps that were already completed by the previous agent.
 		var sb strings.Builder
@@ -458,7 +460,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 			}
 		}
 		rawData = sb.String()
-	} else if rawData == "" && req.MCPTool == "" {
+	case rawData == "" && req.MCPTool == "":
 		// List tools.
 		mcpStart := time.Now()
 		o.emitFlightTimeline(id, flight.EventToolCall, "mcp.list_tools", mcpStart, nil)
@@ -473,7 +475,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, id string, req AgentRequest
 		o.emitFlightTimelineEnd(id, flight.EventToolResult, "mcp.list_tools", mcpStart)
 		data, _ := json.MarshalIndent(tools, "", "  ")
 		rawData = string(data)
-	} else if rawData == "" {
+	case rawData == "":
 		// Single tool call.
 		mcpToolName := o.resolveToolName(req.MCPTool)
 		o.emitFlightDecision(id, mcpToolName, "template selection")

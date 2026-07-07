@@ -9,6 +9,12 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 )
 
+// Common response field names.
+const (
+	keyStatus  = "status"
+	keyDeleted = "deleted"
+)
+
 // EvolutionHandler handles HTTP requests for the evolution system.
 type EvolutionHandler struct {
 	evolution core.Evolution
@@ -73,7 +79,7 @@ func (h *EvolutionHandler) HandleIdleStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
+	writeJSON(w, http.StatusOK, map[string]string{keyStatus: "completed"})
 }
 
 // HandleReport returns the latest evolution report text.

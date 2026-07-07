@@ -5,14 +5,107 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/internal/agents"
-	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
-	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
-	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 )
+
+// stubAgentService implements core.AgentService for testing.
+type stubAgentService struct{}
+
+func (s *stubAgentService) CreateAgent(ctx context.Context, config *core.AgentConfig) (*core.Agent, error) {
+	return &core.Agent{ID: "stub", Name: "stub"}, nil
+}
+func (s *stubAgentService) GetAgent(ctx context.Context, agentID string) (*core.Agent, error) {
+	return &core.Agent{ID: agentID, Name: "stub"}, nil
+}
+func (s *stubAgentService) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*core.Agent, error) {
+	return &core.Agent{ID: agentID, Name: "stub"}, nil
+}
+func (s *stubAgentService) DeleteAgent(ctx context.Context, agentID string) error {
+	return nil
+}
+func (s *stubAgentService) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*core.Agent, *core.PaginationResponse, error) {
+	return []*core.Agent{{ID: "stub", Name: "stub"}}, &core.PaginationResponse{}, nil
+}
+func (s *stubAgentService) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskResult, error) {
+	return &core.TaskResult{TaskID: "task-1"}, nil
+}
+func (s *stubAgentService) GetTaskResult(ctx context.Context, taskID string) (*core.TaskResult, error) {
+	return &core.TaskResult{TaskID: taskID}, nil
+}
+
+// stubMemoryService implements core.MemoryService for testing.
+type stubMemoryService struct{}
+
+func (s *stubMemoryService) CreateSession(ctx context.Context, config *core.SessionConfig) (string, error) {
+	return "sess-1", nil
+}
+func (s *stubMemoryService) GetSession(ctx context.Context, sessionID string) (*core.Session, error) {
+	return &core.Session{ID: sessionID}, nil
+}
+func (s *stubMemoryService) DeleteSession(ctx context.Context, sessionID string) error {
+	return nil
+}
+func (s *stubMemoryService) AddMessage(ctx context.Context, sessionID string, role core.MessageRole, content string) error {
+	return nil
+}
+func (s *stubMemoryService) GetMessages(ctx context.Context, sessionID string, pagination *core.PaginationRequest) ([]*core.Message, error) {
+	return []*core.Message{}, nil
+}
+func (s *stubMemoryService) UpdateSession(ctx context.Context, session *core.Session) error {
+	return nil
+}
+func (s *stubMemoryService) DistillTask(ctx context.Context, taskID string) (*core.DistilledTask, error) {
+	return &core.DistilledTask{TaskID: taskID}, nil
+}
+func (s *stubMemoryService) SearchSimilarTasks(ctx context.Context, query *core.SearchQuery) ([]*core.SearchResult, error) {
+	return []*core.SearchResult{}, nil
+}
+
+// stubRetrievalService implements core.RetrievalService for testing.
+type stubRetrievalService struct{}
+
+func (s *stubRetrievalService) Search(ctx context.Context, tenantID, query string) ([]*core.RetrievalResult, error) {
+	return []*core.RetrievalResult{}, nil
+}
+func (s *stubRetrievalService) SearchWithConfig(ctx context.Context, request *core.RetrievalRequest) ([]*core.RetrievalResult, error) {
+	return []*core.RetrievalResult{}, nil
+}
+func (s *stubRetrievalService) AddKnowledge(ctx context.Context, item *core.KnowledgeItem) (*core.KnowledgeItem, error) {
+	return item, nil
+}
+func (s *stubRetrievalService) GetKnowledge(ctx context.Context, tenantID, itemID string) (*core.KnowledgeItem, error) {
+	return &core.KnowledgeItem{}, nil
+}
+func (s *stubRetrievalService) UpdateKnowledge(ctx context.Context, tenantID string, item *core.KnowledgeItem) (*core.KnowledgeItem, error) {
+	return item, nil
+}
+func (s *stubRetrievalService) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {
+	return nil
+}
+func (s *stubRetrievalService) ListKnowledge(ctx context.Context, tenantID string, filter *core.KnowledgeFilter) ([]*core.KnowledgeItem, *core.PaginationResponse, error) {
+	return []*core.KnowledgeItem{}, &core.PaginationResponse{}, nil
+}
+
+// stubLLMService implements core.LLMService for testing.
+type stubLLMService struct {
+	disabled bool
+}
+
+func (s *stubLLMService) Generate(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
+	return &core.GenerateResponse{Content: "hello"}, nil
+}
+func (s *stubLLMService) GenerateSimple(ctx context.Context, prompt string) (string, error) {
+	return "hello", nil
+}
+func (s *stubLLMService) GenerateEmbedding(ctx context.Context, request *core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+	return &core.EmbeddingResponse{}, nil
+}
+func (s *stubLLMService) GetConfig() *core.LLMConfig {
+	return &core.LLMConfig{Provider: core.LLMProviderOllama, Model: "llama3.2"}
+}
+func (s *stubLLMService) IsEnabled() bool               { return !s.disabled }
+func (s *stubLLMService) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
+func (s *stubLLMService) GetModel() string              { return "llama3.2" }
 
 // TestNewClient tests the creation of a new client instance.
 func TestNewClient(t *testing.T) {
@@ -111,10 +204,7 @@ func TestClientAgent(t *testing.T) {
 			}
 
 			if tt.agentConfig {
-				config.Agent = &agentSvc.Config{
-					BaseConfig: config.BaseConfig,
-					Repo:       agentSvc.NewMemoryRepository(),
-				}
+				config.Agent = &stubAgentService{}
 			}
 
 			client, err := NewClient(config)
@@ -171,10 +261,7 @@ func TestClientMemory(t *testing.T) {
 			}
 
 			if tt.memoryConfig {
-				config.Memory = &memoryservice.Config{
-					BaseConfig: config.BaseConfig,
-					Repo:       memoryservice.NewMemoryRepository(),
-				}
+				config.Memory = &stubMemoryService{}
 			}
 
 			client, err := NewClient(config)
@@ -231,10 +318,7 @@ func TestClientRetrieval(t *testing.T) {
 			}
 
 			if tt.retrievalConfig {
-				config.Retrieval = &retrievalservice.Config{
-					BaseConfig: config.BaseConfig,
-					Repo:       retrievalservice.NewMemoryRepository(),
-				}
+				config.Retrieval = &stubRetrievalService{}
 			}
 
 			client, err := NewClient(config)
@@ -291,15 +375,7 @@ func TestClientLLM(t *testing.T) {
 			}
 
 			if tt.llmConfig {
-				config.LLM = &llmservice.Config{
-					BaseConfig: config.BaseConfig,
-					LLMConfig: &core.LLMConfig{
-						Provider: core.LLMProviderOllama,
-						BaseURL:  "http://localhost:11434",
-						Model:    "llama3.2",
-						Timeout:  60,
-					},
-				}
+				config.LLM = &stubLLMService{}
 			}
 
 			client, err := NewClient(config)
@@ -346,206 +422,44 @@ func TestClientClose(t *testing.T) {
 	}
 }
 
-// TestClientGetConfig tests getting the config file.
-func TestClientGetConfig(t *testing.T) {
-	config := &Config{
-		BaseConfig: &core.BaseConfig{
-			RequestTimeout: 30 * time.Second,
-			MaxRetries:     3,
-			RetryDelay:     1 * time.Second,
-		},
-	}
-
-	configFile := &ConfigFile{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-	}
-
-	client, err := NewClientWithConfigFile(config, configFile)
-	if err != nil {
-		t.Fatalf("NewClientWithConfigFile() error = %v", err)
-	}
-
-	got := client.GetConfig()
-	if got == nil {
-		t.Errorf("expected config file to be non-nil")
-	}
-
-	if got != configFile {
-		t.Errorf("expected config file to be the same instance")
-	}
-}
-
-// TestNewClientWithConfigFile tests creating a client with config file.
-func TestNewClientWithConfigFile(t *testing.T) {
-	config := &Config{
-		BaseConfig: &core.BaseConfig{
-			RequestTimeout: 30 * time.Second,
-			MaxRetries:     3,
-			RetryDelay:     1 * time.Second,
-		},
-	}
-
-	configFile := &ConfigFile{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-	}
-
-	client, err := NewClientWithConfigFile(config, configFile)
-	if err != nil {
-		t.Fatalf("NewClientWithConfigFile() error = %v", err)
-	}
-
-	require.NotNil(t, client)
-
-	if client.configFile == nil {
-		t.Errorf("expected configFile to be set")
-	}
-}
-
-// TestClientPing tests the Ping method.
+// TestClientPing tests the Ping method returns true for open clients and false for closed clients.
 func TestClientPing(t *testing.T) {
-	tests := []struct {
-		name       string
-		config     *Config
-		wantResult bool
-	}{
-		{
-			name: "all services configured",
-			config: &Config{
-				BaseConfig: &core.BaseConfig{
-					RequestTimeout: 30 * time.Second,
-					MaxRetries:     3,
-					RetryDelay:     1 * time.Second,
-				},
-				Agent: &agentSvc.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: agentSvc.NewMemoryRepository(),
-				},
-				Memory: &memoryservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: memoryservice.NewMemoryRepository(),
-				},
-				Retrieval: &retrievalservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: retrievalservice.NewMemoryRepository(),
-				},
+	t.Run("open client returns true", func(t *testing.T) {
+		client, err := NewClient(&Config{
+			BaseConfig: &core.BaseConfig{
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryDelay:     1 * time.Second,
 			},
-			wantResult: true,
-		},
-		{
-			name: "agent service not configured",
-			config: &Config{
-				BaseConfig: &core.BaseConfig{
-					RequestTimeout: 30 * time.Second,
-					MaxRetries:     3,
-					RetryDelay:     1 * time.Second,
-				},
-				Memory: &memoryservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: memoryservice.NewMemoryRepository(),
-				},
-				Retrieval: &retrievalservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: retrievalservice.NewMemoryRepository(),
-				},
-			},
-			wantResult: false,
-		},
-		{
-			name: "memory service not configured",
-			config: &Config{
-				BaseConfig: &core.BaseConfig{
-					RequestTimeout: 30 * time.Second,
-					MaxRetries:     3,
-					RetryDelay:     1 * time.Second,
-				},
-				Agent: &agentSvc.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: agentSvc.NewMemoryRepository(),
-				},
-				Retrieval: &retrievalservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: retrievalservice.NewMemoryRepository(),
-				},
-			},
-			wantResult: false,
-		},
-		{
-			name: "retrieval service not configured",
-			config: &Config{
-				BaseConfig: &core.BaseConfig{
-					RequestTimeout: 30 * time.Second,
-					MaxRetries:     3,
-					RetryDelay:     1 * time.Second,
-				},
-				Agent: &agentSvc.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: agentSvc.NewMemoryRepository(),
-				},
-				Memory: &memoryservice.Config{
-					BaseConfig: &core.BaseConfig{
-						RequestTimeout: 30 * time.Second,
-						MaxRetries:     3,
-						RetryDelay:     1 * time.Second,
-					},
-					Repo: memoryservice.NewMemoryRepository(),
-				},
-			},
-			wantResult: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client, err := NewClient(tt.config)
-			if err != nil {
-				t.Fatalf("NewClient() error = %v", err)
-			}
-
-			ctx := context.Background()
-			result := client.Ping(ctx)
-			if result != tt.wantResult {
-				t.Errorf("Ping() = %v, want %v", result, tt.wantResult)
-			}
 		})
-	}
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+
+		ctx := context.Background()
+		if !client.Ping(ctx) {
+			t.Errorf("Ping() = false, want true for open client")
+		}
+	})
+
+	t.Run("closed client returns false", func(t *testing.T) {
+		client, err := NewClient(&Config{
+			BaseConfig: &core.BaseConfig{
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryDelay:     1 * time.Second,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewClient() error = %v", err)
+		}
+
+		ctx := context.Background()
+		_ = client.Close(ctx)
+		if client.Ping(ctx) {
+			t.Errorf("Ping() = true, want false for closed client")
+		}
+	})
 }
 
 // TestConfigStructure tests the Config structure.

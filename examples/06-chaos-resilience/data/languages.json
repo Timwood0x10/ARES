@@ -1,0 +1,7 @@
+[
+  {"id": 1, "name": "Go", "category": "backend", "repo_count": 1200000, "birth_year": 2009},
+  {"id": 2, "name": "Rust", "category": "backend", "repo_count": 350000, "birth_year": 2010},
+  {"id": 3, "name": "TypeScript", "category": "frontend", "repo_count": 2800000, "birth_year": 2012},
+  {"id": 4, "name": "Python", "category": "backend", "repo_count": 5200000, "birth_year": 1991},
+  {"id": 5, "name": "Kotlin", "category": "mobile", "repo_count": 180000, "birth_year": 2011}
+]

@@ -24,7 +24,7 @@ func TestHITLStepWithNoInterrupt(t *testing.T) {
 	registry := NewAgentRegistry()
 	executor := NewExecutor(registry).WithHitlHandler(func(ctx context.Context, point *InterruptPoint) (*InterruptResult, error) {
 		t.Fatal("handler should not be called for steps without interrupt config")
-		return nil, nil
+		return nil, errors.New("unexpected call")
 	})
 
 	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
@@ -286,7 +286,7 @@ func TestHITLNilResult(t *testing.T) {
 	// A handler returning nil result should fail the step.
 	registry := NewAgentRegistry()
 	executor := NewExecutor(registry).WithHitlHandler(func(ctx context.Context, point *InterruptPoint) (*InterruptResult, error) {
-		return nil, nil
+		return nil, errors.New("handler returned nil result")
 	})
 
 	registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {

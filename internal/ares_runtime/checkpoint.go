@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -399,10 +398,10 @@ func (p *CheckpointPlugin) saveLocked(ctx context.Context, executionID string, c
 	}
 	if p.bus != nil {
 		p.bus.Emit(context.Background(), executionID, EventCheckpointSaved, "runtime", map[string]any{
-			"execution_id":  executionID,
-			"state_version": ckpt.StateVersion,
+			PayloadKeyExecutionID: executionID,
+			"state_version":       ckpt.StateVersion,
 		})
-		slog.Debug("checkpoint saved",
+		log.Debug("checkpoint saved",
 			"execution_id", executionID,
 			"state_version", ckpt.StateVersion,
 		)

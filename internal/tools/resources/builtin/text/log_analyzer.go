@@ -48,7 +48,7 @@ func NewLogAnalyzer() *LogAnalyzer {
 	}
 
 	return &LogAnalyzer{
-		BaseTool: base.NewBaseToolWithCategory("log_analyzer", "Parse logs, find errors, and extract metrics", core.CategoryCore, params),
+		BaseTool: base.NewBaseToolWithCapabilities("log_analyzer", "Parse logs, find errors, and extract metrics", core.CategoryCore, []core.Capability{core.CapabilityText}, params),
 	}
 }
 
@@ -91,11 +91,12 @@ func (t *LogAnalyzer) parseLog(ctx context.Context, logContent, logFormat string
 
 	// Auto-detect format
 	if format == "auto" {
-		if strings.Contains(logContent, "\"timestamp\"") || strings.Contains(logContent, "{\"") {
+		switch {
+		case strings.Contains(logContent, "\"timestamp\"") || strings.Contains(logContent, "{\""):
 			format = "json"
-		} else if strings.Contains(logContent, " - - ") {
+		case strings.Contains(logContent, " - - "):
 			format = "common"
-		} else {
+		default:
 			format = "simple"
 		}
 	}

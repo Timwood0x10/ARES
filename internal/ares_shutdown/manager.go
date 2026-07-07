@@ -3,7 +3,6 @@ package ares_shutdown
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -198,7 +197,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 		panicCount := 0
 		for panicInfo := range panicChan {
 			panicCount++
-			slog.Error("Shutdown panic recovered",
+			log.Error("Shutdown panic recovered",
 				"phase", phase,
 				"panic", panicInfo)
 		}
@@ -228,7 +227,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 		case <-done:
 			timer.Stop()
 		case <-timer.C:
-			slog.Warn("Timeout waiting for callbacks to complete during shutdown",
+			log.Warn("Timeout waiting for callbacks to complete during shutdown",
 				"phase", phase)
 		}
 		close(errChan)

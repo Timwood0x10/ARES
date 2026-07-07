@@ -4,7 +4,6 @@ package agents
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_quant/research"
 )
@@ -54,7 +53,7 @@ type OutputParser interface {
 }
 
 // ErrNoResponse is returned when the LLM produces an empty response.
-var ErrNoResponse = fmt.Errorf("llm returned empty response")
+// Errors are defined in errors.go.
 
 // ErrParseFailed is returned when output parsing fails after all strategies.
-var ErrParseFailed = fmt.Errorf("output parsing failed")
+// Errors are defined in errors.go.

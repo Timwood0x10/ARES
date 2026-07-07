@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -54,14 +53,14 @@ func NewOpenRouterAdapter(config *Config) *OpenRouterAdapter {
 // Generate generates text from prompt.
 func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+		{keyRole: "user", keyContent: prompt},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -86,7 +85,7 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close response body", "error", err)
+			log.Warn("openrouter: close response body", "error", err)
 		}
 	}()
 
@@ -111,16 +110,16 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error) {
 	messages := []map[string]interface{}{
 		{
-			"role":    "user",
-			"content": prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
+			keyRole:    "user",
+			keyContent: prompt + "\n\nRespond with valid JSON only, matching this schema:\n" + schema,
 		},
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    messages,
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
+		keyModel:       a.config.Model,
+		keyMessages:    messages,
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
@@ -148,7 +147,7 @@ func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt strin
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close response body", "error", err)
+			log.Warn("openrouter: close response body", "error", err)
 		}
 	}()
 
@@ -182,11 +181,11 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens":  a.config.MaxTokens,
-		"temperature": a.config.Temperature,
-		"stream":      true,
+		keyModel:       a.config.Model,
+		keyMessages:    []map[string]string{{keyRole: "user", keyContent: prompt}},
+		keyMaxTokens:   a.config.MaxTokens,
+		keyTemperature: a.config.Temperature,
+		keyStream:      true,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -214,7 +213,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("openrouter: close stream error response body", "error", err)
+			log.Warn("openrouter: close stream error response body", "error", err)
 		}
 		return nil, errors.Newf("openrouter stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -225,7 +224,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 
@@ -240,7 +239,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 			}
 
 			// Check for stream termination.
-			if line == "data: [DONE]" {
+			if line == streamDataDone {
 				return
 			}
 
@@ -253,7 +252,7 @@ func (a *OpenRouterAdapter) GenerateStream(ctx context.Context, prompt string) (
 			var chunk OpenAIChatResponse
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				// Log and skip malformed chunks instead of aborting.
-				slog.Warn("Failed to unmarshal stream chunk", "error", err)
+				log.Warn("Failed to unmarshal stream chunk", "error", err)
 				continue
 			}
 

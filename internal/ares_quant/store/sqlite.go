@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
+	coreerrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // SQLiteStore implements Store using SQLite (via modernc.org/sqlite, no CGO).
@@ -63,7 +63,7 @@ func migrate(db *sql.DB) error {
 		)`,
 	}
 	for _, q := range queries {
-		if _, err := db.Exec(q); err != nil {
+		if _, err := db.ExecContext(context.Background(), q); err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}

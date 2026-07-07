@@ -5,9 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -93,7 +91,7 @@ func (r *RecommendRepository) GetBySessionID(ctx context.Context, sessionID stri
 		&result.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "query recommendation")
@@ -131,7 +129,7 @@ func (r *RecommendRepository) UpdateFeedback(ctx context.Context, sessionID stri
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -187,7 +185,7 @@ func (r *RecommendRepository) ListByUserID(ctx context.Context, userID string, l
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate recommendations", "error", err)
+		log.Error("Failed to iterate recommendations", "error", err)
 		return nil, errors.Wrap(err, "iterate recommendations")
 	}
 
@@ -208,7 +206,7 @@ func (r *RecommendRepository) Delete(ctx context.Context, sessionID string) erro
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

@@ -352,3 +352,115 @@ func TestNodeNilAgent(t *testing.T) {
 		t.Error("expected error for nil agent")
 	}
 }
+
+// ── ToolNode Bridge Fallback Tests ────────────────────────
+
+// mockBridgeSuccess returns a successful result on any call.
+type mockBridgeSuccess struct{}
+
+func (m *mockBridgeSuccess) Execute(_ context.Context, _ string, params map[string]interface{}, _ string) (core.Result, error) {
+	return core.Result{Success: true, Data: map[string]interface{}{"bridged": true, "input": params}}, nil
+}
+
+// mockBridgeError returns an error on any call.
+type mockBridgeError struct{}
+
+func (m *mockBridgeError) Execute(_ context.Context, _ string, _ map[string]interface{}, _ string) (core.Result, error) {
+	return core.Result{}, errors.New("bridge fallback also failed")
+}
+
+func TestToolNode_BridgeFallbackUsedOnToolFailure(t *testing.T) {
+	failingTool := &mockTool{
+		name:        "failing_tool",
+		description: "A tool that always fails",
+		executeFn: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+			return core.Result{}, errors.New("tool error")
+		},
+	}
+
+	node, err := NewToolNode(failingTool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+	node.WithBridge(&mockBridgeSuccess{}, "user request")
+
+	state := NewState()
+	err = node.Execute(context.Background(), state)
+	if err != nil {
+		t.Errorf("bridge should have handled the failure, got: %v", err)
+	}
+}
+
+func TestToolNode_BridgeNotUsedWhenToolSucceeds(t *testing.T) {
+	succeedingTool := &mockTool{
+		name:        "good_tool",
+		description: "A tool that always succeeds",
+		executeFn: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+			return core.Result{Success: true, Data: map[string]interface{}{"result": "ok"}}, nil
+		},
+	}
+
+	node, err := NewToolNode(succeedingTool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+	node.WithBridge(&mockBridgeSuccess{}, "user request")
+
+	state := NewState()
+	err = node.Execute(context.Background(), state)
+	if err != nil {
+		t.Errorf("tool should have succeeded without bridge, got: %v", err)
+	}
+}
+
+func TestToolNode_BridgeNotConfigured(t *testing.T) {
+	failingTool := &mockTool{
+		name:        "failing_tool",
+		description: "A tool that always fails",
+		executeFn: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+			return core.Result{}, errors.New("tool error")
+		},
+	}
+
+	node, err := NewToolNode(failingTool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+	// No bridge configured.
+
+	state := NewState()
+	err = node.Execute(context.Background(), state)
+	if err == nil {
+		t.Error("expected error when no bridge is configured and tool fails")
+	}
+}
+
+func TestToolNode_BridgeFallbackAlsoFails(t *testing.T) {
+	failingTool := &mockTool{
+		name:        "failing_tool",
+		description: "A tool that always fails",
+		executeFn: func(_ context.Context, _ map[string]interface{}) (core.Result, error) {
+			return core.Result{}, errors.New("tool error")
+		},
+	}
+
+	node, err := NewToolNode(failingTool)
+	if err != nil {
+		t.Fatalf("NewToolNode failed: %v", err)
+	}
+	node.WithBridge(&mockBridgeError{}, "user request")
+
+	state := NewState()
+	err = node.Execute(context.Background(), state)
+	if err == nil {
+		t.Error("expected error when both tool and bridge fail")
+	}
+}
+
+func TestToolNode_NilNodeExecute(t *testing.T) {
+	var node *ToolNode
+	err := node.Execute(context.Background(), NewState())
+	if err == nil {
+		t.Error("expected error from nil node Execute")
+	}
+}

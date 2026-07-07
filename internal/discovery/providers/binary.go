@@ -153,8 +153,13 @@ func probeBinary(ctx context.Context, path string) binaryMetadata {
 }
 
 // runCommand runs a command and returns stdout, or "" on error.
+// The command name is validated against a safe prefix to prevent arbitrary execution.
 func runCommand(ctx context.Context, name string, args ...string) string {
-	cmd := exec.CommandContext(ctx, name, args...)
+	// Only allow running commands from known system paths.
+	if !strings.HasPrefix(name, "/") {
+		return ""
+	}
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // guarded by HasPrefix("/") check
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

@@ -2,12 +2,11 @@
 package postgres
 
 import (
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/core/errors"
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker.
@@ -151,7 +150,7 @@ func (cb *CircuitBreaker) cleanupHalfOpenInflight() {
 
 	// Only reset if the last probe has been pending longer than openTimeout.
 	if time.Since(cb.lastProbeTime) > cb.openTimeout {
-		slog.Warn("Detected halfOpenInflight leak, resetting counter",
+		log.Warn("Detected halfOpenInflight leak, resetting counter",
 			"current_count", cb.halfOpenInflight.Load())
 		cb.halfOpenInflight.Store(0)
 	}

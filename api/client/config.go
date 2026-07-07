@@ -10,11 +10,6 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
-	agentSvc "github.com/Timwood0x10/ares/internal/agents"
-	"github.com/Timwood0x10/ares/internal/errors"
-	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
-	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
-	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,7 +44,7 @@ type ConfigFile struct {
 
 	API APIConfig `yaml:"api"`
 
-	LLM core.LLMConfig `yaml:"llm"`
+	LLM *core.LLMConfig `yaml:"llm"`
 
 	Database DatabaseConfig `yaml:"database"`
 
@@ -220,18 +215,18 @@ func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
 	// Determine config file path
 	configPath, err := l.findConfigPath(path)
 	if err != nil {
-		return nil, errors.Wrap(err, "find config")
+		return nil, fmt.Errorf("find config: %w", err)
 	}
 
 	// Security: validate path is within allowed directory
 	if dir := getAllowedConfigDir(); dir != "" {
 		absPath, err := filepath.Abs(configPath)
 		if err != nil {
-			return nil, errors.Wrap(err, "get absolute path")
+			return nil, fmt.Errorf("get absolute path: %w", err)
 		}
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
-			return nil, errors.Wrap(err, "get absolute directory")
+			return nil, fmt.Errorf("get absolute directory: %w", err)
 		}
 		if !strings.HasPrefix(absPath, absDir) {
 			return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, dir)
@@ -241,13 +236,13 @@ func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
 	// Read file
 	data, err := os.ReadFile(configPath) // #nosec G304
 	if err != nil {
-		return nil, errors.Wrapf(err, "read config file %s", configPath)
+		return nil, fmt.Errorf("read config file %s: %w", configPath, err)
 	}
 
 	// Parse YAML
 	var cfg ConfigFile
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, errors.Wrapf(err, "parse config file %s", configPath)
+		return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
 	}
 
 	// Load environment variables
@@ -258,7 +253,7 @@ func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
 
 	// Validate configuration
 	if err := cfg.validate(); err != nil {
-		return nil, errors.Wrap(err, "validate config")
+		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
 	return &cfg, nil
@@ -290,6 +285,9 @@ func (l *ConfigLoader) findConfigPath(path string) (string, error) {
 // loadFromEnv loads sensitive configuration from environment variables.
 // Priority: Environment variable > YAML file > Default
 func (c *ConfigFile) loadFromEnv(prefix string) {
+	if c.LLM == nil {
+		c.LLM = &core.LLMConfig{}
+	}
 	// LLM API Key
 	if key := os.Getenv(fmt.Sprintf("%s_LLM_API_KEY", prefix)); key != "" {
 		c.LLM.APIKey = key
@@ -347,6 +345,9 @@ func (c *ConfigFile) setDefaults() {
 	}
 
 	// LLM defaults
+	if c.LLM == nil {
+		c.LLM = &core.LLMConfig{}
+	}
 	if c.LLM.Timeout <= 0 {
 		c.LLM.Timeout = 60
 	}
@@ -406,6 +407,9 @@ func (c *ConfigFile) validate() error {
 	}
 
 	// Validate LLM configuration
+	if c.LLM == nil {
+		return fmt.Errorf("llm.provider is required")
+	}
 	if c.LLM.Provider == "" {
 		return fmt.Errorf("llm.provider is required")
 	}
@@ -454,7 +458,8 @@ func (c *ConfigFile) validate() error {
 }
 
 // ToClientConfig converts ConfigFile to client.Config.
-// Returns client configuration instance.
+// Service fields are left nil — use api/bootstrap to construct
+// concrete service implementations.
 func (c *ConfigFile) ToClientConfig() *Config {
 	baseConfig := &core.BaseConfig{
 		RequestTimeout: time.Duration(c.API.RequestTimeout) * time.Second,
@@ -464,22 +469,6 @@ func (c *ConfigFile) ToClientConfig() *Config {
 
 	return &Config{
 		BaseConfig: baseConfig,
-		Agent: &agentSvc.Config{
-			BaseConfig: baseConfig,
-			Repo:       agentSvc.NewMemoryRepository(),
-		},
-		Memory: &memoryservice.Config{
-			BaseConfig: baseConfig,
-			Repo:       memoryservice.NewMemoryRepository(),
-		},
-		Retrieval: &retrievalservice.Config{
-			BaseConfig: baseConfig,
-			Repo:       retrievalservice.NewMemoryRepository(),
-		},
-		LLM: &llmservice.Config{
-			BaseConfig: baseConfig,
-			LLMConfig:  &c.LLM,
-		},
 	}
 }
 
@@ -505,7 +494,7 @@ func LoadConfigFile(path string) (*ConfigFile, error) {
 //
 //	client, err := client.NewClientFromConfigPath("config.yaml")
 //	if err != nil {
-//	    slog.Error(err)
+//	    log.Error(err)
 //	}
 //	defer client.Close(ctx)
 func NewClientFromConfigPath(configPath string) (*Client, error) {
@@ -514,14 +503,22 @@ func NewClientFromConfigPath(configPath string) (*Client, error) {
 	// Load configuration
 	cfg, err := loader.Load(configPath)
 	if err != nil {
-		return nil, errors.Wrap(err, "load config")
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 
 	// Convert to client config
 	clientConfig := cfg.ToClientConfig()
 
 	// Create client
-	return NewClientWithConfigFile(clientConfig, cfg)
+	client, err := NewClient(clientConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store config file reference for later access
+	client.configFile = cfg
+
+	return client, nil
 }
 
 // NewClientFromDefaultPath creates a new GoAgent client from default configuration paths.

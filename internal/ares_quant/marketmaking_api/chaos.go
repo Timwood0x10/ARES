@@ -169,7 +169,7 @@ func (e *DefaultChaosExecutor) validateScenario(scenario *ChaosScenario) error {
 //	probability - the effective fault injection probability.
 func (e *DefaultChaosExecutor) effectiveProbability(scenario *ChaosScenario, flags ChaosFlagConfig) float64 {
 	baseProb := scenario.Probability
-	if flags.EnableReject && scenario.Type == "reject" {
+	if flags.EnableReject && scenario.Type == FaultReject {
 		// Increase probability by 20% when reject mode is active (capped at 1.0).
 		adjusted := baseProb * 1.2
 		if adjusted > 1.0 {
@@ -233,28 +233,28 @@ func (e *DefaultChaosExecutor) calculateRecoveryTime(scenario *ChaosScenario, in
 
 	duration := scenario.DurationMillis
 	switch scenario.Type {
-	case "latency":
+	case FaultLatency:
 		base := duration / 10
 		if flags.EnableLatency {
 			return base + duration/20 // +5% overhead
 		}
 		return base
 
-	case "reject":
+	case FaultReject:
 		base := duration / 5
 		if flags.EnableReject {
 			return base + duration/10 // +10% overhead
 		}
 		return base
 
-	case "stale_data":
+	case FaultStaleData:
 		base := (duration * 15) / 100 // 15% using integer math
 		if flags.EnableStaleData {
 			return base + duration/20 // +5% overhead
 		}
 		return base
 
-	case "network_partition":
+	case FaultNetworkPartition:
 		return duration / 3 // always significant recovery time
 
 	default:
@@ -286,14 +286,14 @@ func (e *DefaultChaosExecutor) isSystemDegraded(scenario *ChaosScenario, injecte
 	}
 
 	switch scenario.Type {
-	case "stale_data":
+	case FaultStaleData:
 		if flags.EnableStaleData {
 			// More aggressive degradation threshold: >25% instead of 50%.
 			return injectedFaults*4 > totalEvents
 		}
 		return injectedFaults > totalEvents/2
 
-	case "network_partition":
+	case FaultNetworkPartition:
 		// Any fault injection causes degradation in partition scenarios.
 		return injectedFaults > 0
 
@@ -308,5 +308,5 @@ func (e *DefaultChaosExecutor) isSystemDegraded(scenario *ChaosScenario, injecte
 //
 //	names - list of supported scenario type names.
 func (e *DefaultChaosExecutor) AvailableScenarios() []string {
-	return []string{"latency", "reject", "stale_data", "network_partition"}
+	return []string{FaultLatency, FaultReject, FaultStaleData, FaultNetworkPartition}
 }

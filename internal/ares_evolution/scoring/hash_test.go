@@ -6,6 +6,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+const (
+	testPromptThink    = "think"
+	testPromptTemplate = "test"
+)
+
 func makeStrategy(params map[string]any, prompt string) *mutation.Strategy {
 	return &mutation.Strategy{
 		ID:             "test-id",
@@ -32,8 +37,8 @@ func TestStrategyHash_NilStrategy(t *testing.T) {
 }
 
 func TestStrategyHash_SameContentSameHash(t *testing.T) {
-	s1 := makeStrategy(map[string]any{"temperature": 0.7, "top_k": 40}, "think")
-	s2 := makeStrategy(map[string]any{"temperature": 0.7, "top_k": 40}, "think")
+	s1 := makeStrategy(map[string]any{testParamTemperature: 0.7, "top_k": 40}, testPromptThink)
+	s2 := makeStrategy(map[string]any{testParamTemperature: 0.7, "top_k": 40}, testPromptThink)
 
 	h1, err := StrategyHash(s1)
 	if err != nil {
@@ -56,23 +61,23 @@ func TestStrategyHash_DifferentContentDifferentHash(t *testing.T) {
 	}{
 		{
 			name:  "different temperature",
-			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
-			giveB: makeStrategy(map[string]any{"temperature": 0.5}, "think"),
+			giveA: makeStrategy(map[string]any{testParamTemperature: 0.7}, testPromptThink),
+			giveB: makeStrategy(map[string]any{testParamTemperature: 0.5}, testPromptThink),
 		},
 		{
 			name:  "different param key",
-			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
-			giveB: makeStrategy(map[string]any{"top_k": 40}, "think"),
+			giveA: makeStrategy(map[string]any{testParamTemperature: 0.7}, testPromptThink),
+			giveB: makeStrategy(map[string]any{"top_k": 40}, testPromptThink),
 		},
 		{
 			name:  "different prompt",
-			giveA: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
-			giveB: makeStrategy(map[string]any{"temperature": 0.7}, "creative"),
+			giveA: makeStrategy(map[string]any{testParamTemperature: 0.7}, testPromptThink),
+			giveB: makeStrategy(map[string]any{testParamTemperature: 0.7}, "creative"),
 		},
 		{
 			name:  "empty vs non-empty params",
-			giveA: makeStrategy(map[string]any{}, "think"),
-			giveB: makeStrategy(map[string]any{"temperature": 0.7}, "think"),
+			giveA: makeStrategy(map[string]any{}, testPromptThink),
+			giveB: makeStrategy(map[string]any{testParamTemperature: 0.7}, testPromptThink),
 		},
 	}
 
@@ -94,8 +99,8 @@ func TestStrategyHash_MetadataIgnored(t *testing.T) {
 		ParentID:       "parent-111",
 		Version:        5,
 		Name:           "name-alpha",
-		Params:         map[string]any{"temperature": 0.7},
-		PromptTemplate: "think",
+		Params:         map[string]any{testParamTemperature: 0.7},
+		PromptTemplate: testPromptThink,
 		Score:          99.9,
 	}
 
@@ -105,8 +110,8 @@ func TestStrategyHash_MetadataIgnored(t *testing.T) {
 			ParentID:       "parent-222",
 			Version:        99,
 			Name:           "name-beta",
-			Params:         map[string]any{"temperature": 0.7},
-			PromptTemplate: "think",
+			Params:         map[string]any{testParamTemperature: 0.7},
+			PromptTemplate: testPromptThink,
 			Score:          -1,
 		},
 		{
@@ -114,8 +119,8 @@ func TestStrategyHash_MetadataIgnored(t *testing.T) {
 			ParentID:       "",
 			Version:        0,
 			Name:           "",
-			Params:         map[string]any{"temperature": 0.7},
-			PromptTemplate: "think",
+			Params:         map[string]any{testParamTemperature: 0.7},
+			PromptTemplate: testPromptThink,
 			Score:          0,
 		},
 	}
@@ -133,11 +138,11 @@ func TestStrategyHash_MetadataIgnored(t *testing.T) {
 func TestStrategyHash_ParamOrderIndependence(t *testing.T) {
 	s1 := &mutation.Strategy{
 		Params:         map[string]any{"z_param": 1, "a_param": 2, "m_param": 3},
-		PromptTemplate: "test",
+		PromptTemplate: testPromptTemplate,
 	}
 	s2 := &mutation.Strategy{
 		Params:         map[string]any{"a_param": 2, "m_param": 3, "z_param": 1},
-		PromptTemplate: "test",
+		PromptTemplate: testPromptTemplate,
 	}
 
 	h1, _ := StrategyHash(s1)

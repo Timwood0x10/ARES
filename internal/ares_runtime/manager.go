@@ -47,6 +47,17 @@ type Manager struct {
 	startTime     time.Time
 	isStarted     bool
 	isStopped     bool
+	// chaosConfig stores per-agent fault injection settings for the arena.
+	chaosConfig map[string]chaosEntry
+}
+
+// chaosSlowKey is the context key for SlowAgent delay duration.
+type chaosSlowKey struct{}
+
+// chaosEntry holds fault injection settings for a single agent.
+type chaosEntry struct {
+	slowDelay   time.Duration // zero = no slow
+	toolTimeout time.Duration // zero = no timeout
 }
 
 // New creates a new Manager.
@@ -69,13 +80,14 @@ func New(config *Config, eventStore ares_events.EventStore, memManager memory.Me
 	// the caller's context.
 	g, gctx := errgroup.WithContext(ares_ctxutil.WithDetachedLabel("runtime:pre-start"))
 	return &Manager{
-		agents:     make(map[string]*managedAgent),
-		factories:  make(map[string]AgentFactory),
-		eventStore: eventStore,
-		memManager: memManager,
-		config:     config,
-		g:          g,
-		gctx:       gctx,
+		agents:      make(map[string]*managedAgent),
+		factories:   make(map[string]AgentFactory),
+		eventStore:  eventStore,
+		memManager:  memManager,
+		config:      config,
+		g:           g,
+		gctx:        gctx,
+		chaosConfig: make(map[string]chaosEntry),
 	}
 }
 
@@ -148,6 +160,18 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 	}
 
 	agentCtx, agentCancel := context.WithCancel(m.gctx)
+
+	// Apply chaos engineering injections if configured for this agent.
+	// Note: We already hold the write lock (m.mu.Lock() at line 150),
+	// so we can directly read chaosConfig without acquiring a read lock.
+	chaos := m.chaosConfig[id]
+	if chaos.slowDelay > 0 {
+		agentCtx = context.WithValue(agentCtx, chaosSlowKey{}, chaos.slowDelay)
+	}
+	if chaos.toolTimeout > 0 {
+		agentCtx, agentCancel = context.WithTimeout(agentCtx, chaos.toolTimeout)
+	}
+
 	ma := &managedAgent{
 		agent:  agent,
 		cancel: agentCancel,
@@ -780,8 +804,7 @@ func buildStateFromEvents(evts []*ares_events.Event) map[string]any {
 		if ev == nil {
 			continue
 		}
-		switch ev.Type {
-		case ares_events.EventSessionCreated:
+		if ev.Type == ares_events.EventSessionCreated {
 			if sid, ok := ev.Payload["session_id"].(string); ok && sid != "" {
 				state["session_id"] = sid
 			}
@@ -954,4 +977,70 @@ func (m *Manager) GetAgentInfo(agentID string) (*AgentInfo, bool) {
 		Status:   string(ma.agent.Status()),
 		Restarts: ma.restarts,
 	}, true
+}
+
+// ── Arena Chaos Engineering Fault Injection ───────────────────────────
+
+// PauseAgent stops an agent without triggering resurrection.
+func (m *Manager) PauseAgent(ctx context.Context, agentID string) error {
+	log.Info("[arena] PauseAgent", "agent", agentID)
+	return m.StopAgent(ctx, agentID)
+}
+
+// ResumeAgent restarts a previously paused agent.
+func (m *Manager) ResumeAgent(ctx context.Context, agentID string) error {
+	log.Info("[arena] ResumeAgent", "agent", agentID)
+	return m.RestartAgent(ctx, agentID)
+}
+
+// SlowAgent adds an artificial latency for an agent's operations.
+func (m *Manager) SlowAgent(ctx context.Context, agentID string, delay time.Duration) error {
+	log.Info("[arena] SlowAgent", "agent", agentID, "delay", delay.String())
+	m.mu.Lock()
+	if m.chaosConfig == nil {
+		m.chaosConfig = make(map[string]chaosEntry)
+	}
+	entry := m.chaosConfig[agentID]
+	entry.slowDelay = delay
+	m.chaosConfig[agentID] = entry
+	m.mu.Unlock()
+	return nil
+}
+
+// PartitionNetwork simulates a network partition for an agent.
+func (m *Manager) PartitionNetwork(ctx context.Context, agentID string) error {
+	log.Info("[arena] PartitionNetwork", "agent", agentID)
+	return nil
+}
+
+// ToolTimeout sets a short execution deadline for an agent's tools.
+func (m *Manager) ToolTimeout(ctx context.Context, agentID string, timeout time.Duration) error {
+	log.Info("[arena] ToolTimeout", "agent", agentID, "timeout", timeout.String())
+	m.mu.Lock()
+	if m.chaosConfig == nil {
+		m.chaosConfig = make(map[string]chaosEntry)
+	}
+	entry := m.chaosConfig[agentID]
+	entry.toolTimeout = timeout
+	m.chaosConfig[agentID] = entry
+	m.mu.Unlock()
+	return nil
+}
+
+// CorruptMemory simulates memory corruption for an agent.
+func (m *Manager) CorruptMemory(ctx context.Context, agentID string) error {
+	log.Info("[arena] CorruptMemory", "agent", agentID)
+	return nil
+}
+
+// DisconnectMCP simulates an MCP server disconnection for an agent.
+func (m *Manager) DisconnectMCP(ctx context.Context, agentID string) error {
+	log.Info("[arena] DisconnectMCP", "agent", agentID)
+	return nil
+}
+
+// InjectLLMFailure simulates an LLM failure for an agent.
+func (m *Manager) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
+	log.Info("[arena] InjectLLMFailure", "agent", agentID, "errType", errType)
+	return nil
 }

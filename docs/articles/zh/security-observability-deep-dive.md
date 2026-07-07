@@ -26,7 +26,7 @@
 | 优雅关闭 | `internal/ares_shutdown/` 目录下四个源文件 |
 | 中间件模式 | `internal/dashboard/api.go`、`internal/arena/http.go` |
 | 端到端集成 | `internal/workflow/graph/graph.go`、`.../executor.go` |
-| API 层集成 | `api/service/graph/service.go` |
+| API 层集成 | `api/service/workflow/service.go` |
 
 ---
 
@@ -411,7 +411,7 @@ func (a *APIv2) Handler() http.Handler {
 
 ### 7.1 API 层的注入入口
 
-在 `api/service/graph/service.go` 的 `Service.Execute()` 中：
+在 `api/service/workflow/service.go` 的 `Service.Execute()` 中：
 
 ```go
 func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *ExecuteRequest) (*ExecuteResponse, error) {

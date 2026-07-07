@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,23 +10,28 @@ import (
 	"time"
 )
 
+const (
+	TestMCPToolName     = "search"
+	TestStatusCompleted = "completed"
+)
+
 type mockMCPStatusProvider struct{}
 
 func (m *mockMCPStatusProvider) ListServers() []MCPServerStatusView {
 	return []MCPServerStatusView{{
 		Name: "test-server", Connected: true, ToolCount: 1, Version: "1.0",
-		Tools: []MCPToolView{{Name: "search", Description: "Search tool", ServerName: "test"}},
+		Tools: []MCPToolView{{Name: TestMCPToolName, Description: "Search tool", ServerName: "test"}},
 	}}
 }
 
 func setupAPI() (*APIv2, *Orchestrator) {
 	mcp := &mockMCPExecutor{
-		tools: []MCPToolInfo{{Name: "search", Description: "Search tool"}},
+		tools: []MCPToolInfo{{Name: TestMCPToolName, Description: "Search tool"}},
 	}
 	llm := &mockLLMExecutor{response: "test analysis"}
 	orch := NewOrchestrator(mcp, llm)
 	orch.SetTemplates([]AgentTemplate{
-		{ID: "tpl-1", Name: "Test Template", MCPTool: "search", LLMPrompt: "{{.raw_data}}"},
+		{ID: "tpl-1", Name: "Test Template", MCPTool: TestMCPToolName, LLMPrompt: "{{.raw_data}}"},
 	})
 
 	hub := NewWSHub()
@@ -40,7 +46,7 @@ func TestAPIRoot(t *testing.T) {
 	handler := api.Handler()
 
 	// Root with Accept: application/json returns JSON overview.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -66,7 +72,7 @@ func TestAPIRootHTML(t *testing.T) {
 	handler := api.Handler()
 
 	// Root without Accept header returns HTML.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -84,7 +90,7 @@ func TestAPIListAgentsEmpty(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -107,7 +113,7 @@ func TestAPICreateAgent(t *testing.T) {
 
 	// Create agent.
 	body := `{"template_id":"tpl-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/agents", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -123,7 +129,7 @@ func TestAPICreateAgent(t *testing.T) {
 	if resp["id"] == "" {
 		t.Error("expected non-empty id")
 	}
-	if resp["status"] != "pending" {
+	if resp["status"] != StatusPending {
 		t.Errorf("expected pending, got %s", resp["status"])
 	}
 
@@ -137,7 +143,7 @@ func TestAPICreateAgent(t *testing.T) {
 		default:
 		}
 		result, ok := orch.GetAgent(resp["id"])
-		if ok && result.Status == "completed" {
+		if ok && result.Status == TestStatusCompleted {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -148,7 +154,7 @@ func TestAPICreateAgentInvalidBody(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodPost, "/agents", bytes.NewBufferString("invalid"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString("invalid"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -164,7 +170,7 @@ func TestAPICreateAgentNoName(t *testing.T) {
 
 	// No template_id and no name.
 	body := `{"mcp_tool":"test"}`
-	req := httptest.NewRequest(http.MethodPost, "/agents", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PathAgents, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -180,7 +186,7 @@ func TestAPIGetAgent(t *testing.T) {
 
 	// Create agent first.
 	id, _ := orch.CreateAgent(AgentRequest{
-		Name: "Test Agent", MCPTool: "search", LLMPrompt: "{{.raw_data}}",
+		Name: "Test Agent", MCPTool: TestMCPToolName, LLMPrompt: "{{.raw_data}}",
 	})
 
 	// Wait for completion.
@@ -192,14 +198,14 @@ func TestAPIGetAgent(t *testing.T) {
 		default:
 		}
 		result, ok := orch.GetAgent(id)
-		if ok && result.Status == "completed" {
+		if ok && result.Status == TestStatusCompleted {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Get agent.
-	req := httptest.NewRequest(http.MethodGet, "/agents/"+id, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents/"+id, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -223,7 +229,7 @@ func TestAPIGetAgentNotFound(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/agents/nonexistent", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents/nonexistent", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -237,14 +243,14 @@ func TestAPIListAgents(t *testing.T) {
 	handler := api.Handler()
 
 	// Create agents.
-	if _, err := orch.CreateAgent(AgentRequest{Name: "A1", MCPTool: "search", LLMPrompt: "{{.raw_data}}"}); err != nil {
+	if _, err := orch.CreateAgent(AgentRequest{Name: "A1", MCPTool: TestMCPToolName, LLMPrompt: "{{.raw_data}}"}); err != nil {
 		t.Fatalf("CreateAgent A1: %v", err)
 	}
-	if _, err := orch.CreateAgent(AgentRequest{Name: "A2", MCPTool: "search", LLMPrompt: "{{.raw_data}}"}); err != nil {
+	if _, err := orch.CreateAgent(AgentRequest{Name: "A2", MCPTool: TestMCPToolName, LLMPrompt: "{{.raw_data}}"}); err != nil {
 		t.Fatalf("CreateAgent A2: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -265,7 +271,7 @@ func TestAPIListMCPServers(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathMCP, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -290,15 +296,15 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodDelete, "/agents"},
-		{http.MethodPut, "/agents"},
-		{http.MethodDelete, "/mcp"},
-		{http.MethodPost, "/mcp"},
+		{http.MethodDelete, PathAgents},
+		{http.MethodPut, PathAgents},
+		{http.MethodDelete, PathMCP},
+		{http.MethodPost, PathMCP},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
@@ -317,7 +323,7 @@ func TestAPICORSHeaders(t *testing.T) {
 	api, _ := setupAPI()
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodOptions, "/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -334,7 +340,7 @@ func TestAPIPanicRecovery(t *testing.T) {
 	api := NewAPIv2(nil, nil, nil)
 	handler := api.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, PathAgents, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -349,7 +355,7 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 	handler := api.Handler()
 
 	// Create and wait for agent.
-	id, _ := orch.CreateAgent(AgentRequest{Name: "Test", MCPTool: "search", LLMPrompt: "{{.raw_data}}"})
+	id, _ := orch.CreateAgent(AgentRequest{Name: "Test", MCPTool: TestMCPToolName, LLMPrompt: "{{.raw_data}}"})
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
@@ -357,7 +363,7 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 			t.Fatal("timeout")
 		default:
 		}
-		if r, ok := orch.GetAgent(id); ok && r.Status == "completed" {
+		if r, ok := orch.GetAgent(id); ok && r.Status == TestStatusCompleted {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -374,7 +380,7 @@ func TestAPIAgentByIDPathParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.path, nil)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 			if w.Code != tt.status {

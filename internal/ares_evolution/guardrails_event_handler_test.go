@@ -1,15 +1,4 @@
-//go:build goagent_evolution_handler
-
 // This file contains tests for the GuardrailEventHandler callback feature.
-// These tests depend on WithGuardrailEventHandler option and eventHandler field
-// on EvolutionGuardrails. They are gated behind the build tag
-// "goagent_evolution_handler" so they do not block existing tests.
-//
-// To run these tests once the feature is merged:
-//
-//	go test -tags goagent_evolution_handler ./internal/ares_evolution/ -run TestGuardrailEventHandler
-//
-// TODO: Remove the build tag constraint once WithGuardrailEventHandler is merged.
 
 package evolution
 
@@ -157,26 +146,39 @@ func TestGuardrailEventHandler_MultipleEventsInOneCheck(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Build up stagnation state.
+	// Build stagnation state; each PostEvolveCheck with score < baseline also
+	// triggers a baseline_regression event (ShouldStop is set but we continue).
 	for i := 0; i < 4; i++ {
 		g.PostEvolveCheck(ctx, 75.0, i+1, nil)
 	}
 
-	// PreEvolveCheck can trigger both stagnation (warning) and unevaluated
-	// population (critical) when given a high unevaluated ratio.
+	// PreEvolveCheck with high unevaluated ratio triggers both stagnation
+	// (warning) and unevaluated population (critical).
 	result := g.PreEvolveCheck(ctx, 75.0, 5, 100, 60)
 
-	// Should have triggered at least one event.
-	assert.GreaterOrEqual(t, len(result.Events), 1)
-	assert.Equal(t, len(result.Events), rec.count(),
-		"handler call count must match result event count")
+	// Handler should have received: 4 PostEvolve + 2 PreEvolve = 6 total.
+	assert.Equal(t, 6, rec.count(),
+		"handler should have 4 baseline_regression + 2 PreEvolve events")
 
-	// Verify handler received the same events as the result.
+	// result.Events should have exactly 2 events (unevaluated_population + stagnation).
+	require.Len(t, result.Events, 2)
+
+	// Verify the latest events were delivered to the handler in order.
 	allEvents := rec.all()
+	handlerLatest := allEvents[len(allEvents)-2:]
 	for i, event := range result.Events {
-		assert.Equal(t, event.Rule, allEvents[i].Rule)
-		assert.Equal(t, event.ErrorCode, allEvents[i].ErrorCode)
+		assert.Equal(t, event.Rule, handlerLatest[i].Rule)
+		assert.Equal(t, event.ErrorCode, handlerLatest[i].ErrorCode)
 	}
+
+	// Verify earlier events were also delivered (baseline_regression from PostEvolveCheck).
+	baselineCount := 0
+	for _, e := range allEvents {
+		if e.Rule == "baseline_regression" {
+			baselineCount++
+		}
+	}
+	assert.Equal(t, 4, baselineCount, "should have 4 baseline_regression events from PostEvolveCheck")
 }
 
 func TestGuardrailEventHandler_StagnationWarningReachesHandler(t *testing.T) {

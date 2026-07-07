@@ -3,7 +3,6 @@ package agentapi
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -109,7 +108,7 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 		if err := s.memoryMgr.DeleteSession(ctx, agent.SessionID); err != nil {
 			// Log error but don't fail the agent deletion
 			// The session will eventually be cleaned up by TTL
-			slog.Warn("Failed to delete associated session", "session_id", agent.SessionID, "error", err)
+			log.Warn("Failed to delete associated session", "session_id", agent.SessionID, "error", err)
 		}
 	}
 

@@ -301,13 +301,16 @@ func buildTrendSection(items []KnowledgeItem, include bool) TrendSection {
 //   - Category with many low-confidence items -> "collect more evidence" recommendation.
 //   - Conflict-heavy categories -> "review conflicts" recommendation.
 func buildRecommendations(items []KnowledgeItem) RecommendationSection {
-	var recs []Recommendation
+	deployRecs := buildDeployRecommendations(items)
+	evidenceRecs := buildCollectEvidenceRecommendations(items)
+	conflictRecs := buildConflictReviewRecommendations(items)
 
-	recs = append(recs, buildDeployRecommendations(items)...)
-	recs = append(recs, buildCollectEvidenceRecommendations(items)...)
-	recs = append(recs, buildConflictReviewRecommendations(items)...)
+	recs := make([]Recommendation, 0, len(deployRecs)+len(evidenceRecs)+len(conflictRecs))
+	recs = append(recs, deployRecs...)
+	recs = append(recs, evidenceRecs...)
+	recs = append(recs, conflictRecs...)
 
-	priorityRank := map[string]int{"high": 0, "medium": 1, "low": 2}
+	priorityRank := map[string]int{string(ConfidenceHigh): 0, string(ConfidenceMedium): 1, string(ConfidenceLow): 2}
 	sort.SliceStable(recs, func(i, j int) bool {
 		ri, ok := priorityRank[recs[i].Priority]
 		if !ok {
@@ -345,7 +348,7 @@ func buildDeployRecommendations(items []KnowledgeItem) []Recommendation {
 			ID:               fmt.Sprintf("deploy-%s", item.StrategyID),
 			Title:            fmt.Sprintf("Deploy validated knowledge to strategy %s", item.StrategyID),
 			Rationale:        fmt.Sprintf("Knowledge item %q has confidence %.2f; consider promoting it as the strategy's default behavior.", item.ID, item.Score),
-			Priority:         "high",
+			Priority:         string(ConfidenceHigh),
 			TargetStrategyID: item.StrategyID,
 			TargetTaskType:   item.TaskType,
 			RelatedItemIDs:   []string{item.ID},

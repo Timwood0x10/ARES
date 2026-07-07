@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 )
@@ -82,7 +81,7 @@ func (f *WebFetcher) Get(ctx context.Context, url string) ([]byte, error) {
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			// Log error if needed
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 

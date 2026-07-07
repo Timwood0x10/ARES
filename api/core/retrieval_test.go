@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -377,7 +378,7 @@ func (m *mockRetrievalRepository) CreateKnowledge(ctx context.Context, item *Kno
 }
 
 func (m *mockRetrievalRepository) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalRepository) UpdateKnowledge(ctx context.Context, item *KnowledgeItem) error {
@@ -389,11 +390,11 @@ func (m *mockRetrievalRepository) DeleteKnowledge(ctx context.Context, itemID st
 }
 
 func (m *mockRetrievalRepository) SearchKnowledge(ctx context.Context, request *RetrievalRequest) ([]*RetrievalResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalRepository) ListKnowledge(ctx context.Context, tenantID string, filter *KnowledgeFilter) ([]*KnowledgeItem, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 // TestRetrievalService tests that RetrievalService interface is properly defined.
@@ -405,23 +406,23 @@ func TestRetrievalService(t *testing.T) {
 type mockRetrievalService struct{}
 
 func (m *mockRetrievalService) Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalService) SearchWithConfig(ctx context.Context, request *RetrievalRequest) ([]*RetrievalResult, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalService) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*KnowledgeItem, error) {
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 
 func (m *mockRetrievalService) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalService) UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockRetrievalService) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {

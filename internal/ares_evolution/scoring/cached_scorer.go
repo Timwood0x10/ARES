@@ -9,10 +9,10 @@ import (
 )
 
 // ErrNilCache is returned when a nil cache is passed to NewCachedScorer.
-var ErrNilCache = fmt.Errorf("cache must not be nil")
+// Errors are defined in errors.go.
 
 // ErrNilUnderlyingScorer is returned when a nil underlying scorer is passed to NewCachedScorer.
-var ErrNilUnderlyingScorer = fmt.Errorf("underlying scorer must not be nil")
+// Errors are defined in errors.go.
 
 // CachedScorer wraps a genome.ScorerFunc with a score cache.
 // Before calling the underlying scorer, it checks if an equivalent strategy

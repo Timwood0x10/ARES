@@ -1,7 +1,7 @@
 package genome
 
 import (
-	"log/slog"
+	"context"
 	"math"
 	"sort"
 
@@ -24,7 +24,7 @@ var DefaultDimensionWeights = map[string]float64{
 func ParetoDominance(a, b *mutation.Strategy) bool {
 	if a.DimensionScores == nil || b.DimensionScores == nil {
 		if (a.DimensionScores == nil) != (b.DimensionScores == nil) {
-			slog.Warn("ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
+			el.WarnContext(context.Background(), "ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
 				"a_dim", a.DimensionScores != nil, "b_dim", b.DimensionScores != nil,
 				"a_score", a.Score, "b_score", b.Score,
 			)
@@ -64,9 +64,10 @@ func ParetoFront(strategies []*mutation.Strategy) []*mutation.Strategy {
 			if dominated[j] {
 				continue
 			}
+			//nolint:gosec // G602: Index bounds are guaranteed by loop conditions i < n and j < n
 			if ParetoDominance(strategies[i], strategies[j]) {
 				dominated[j] = true
-			} else if ParetoDominance(strategies[j], strategies[i]) {
+			} else if ParetoDominance(strategies[j], strategies[i]) { //nolint:gosec // G602: bounds guaranteed
 				dominated[i] = true
 				break
 			}

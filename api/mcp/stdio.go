@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -20,7 +21,11 @@ type stdioTransport struct {
 
 // ConnectStdio connects to an MCP server via stdio transport.
 func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
-	cmd := exec.CommandContext(ctx, command, args...)
+	if !filepath.IsAbs(command) {
+		return nil, fmt.Errorf("command must be an absolute path, got: %s", command)
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...) //nolint:gosec // guarded by IsAbs check above
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
@@ -49,7 +54,7 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	}
 
 	if err := c.initialize(ctx); err != nil {
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Kill() //nolint: errcheck
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 

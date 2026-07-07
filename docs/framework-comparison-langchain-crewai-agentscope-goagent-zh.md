@@ -1,26 +1,26 @@
 # 多智能体框架深度对比
 
-> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES)
+> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES) vs tRPC-Agent-Go
 
 ***
 
 ## 1. 概述
 
-本文档对四个主流 AI Agent 框架进行真实、全面的技术对比：**LangChain（含 LangGraph）**、**CrewAI**、**AgentScope** 和 **GoAgent（ARES）**。对比维度涵盖技术栈、架构设计、工作流编排、多 Agent 协作、记忆系统、稳健性/生产就绪度、部署能力和社区成熟度。
+本文档对五个主流 AI Agent 框架进行真实、全面的技术对比：**LangChain（含 LangGraph）**、**CrewAI**、**AgentScope**、**GoAgent（ARES）** 和 **tRPC-Agent-Go**。对比维度涵盖技术栈、架构设计、工作流编排、多 Agent 协作、记忆系统、稳健性/生产就绪度、部署能力和社区成熟度。
 
 ***
 
 ## 2. 技术栈对比
 
-| 维度          | LangChain / LangGraph                                                       | CrewAI                                           | AgentScope                             | GoAgent (ARES)                                |
-| ----------- | --------------------------------------------------------------------------- | ------------------------------------------------ | -------------------------------------- | --------------------------------------------- |
-| **主要语言**    | Python（主）、JavaScript/TypeScript                                             | Python                                           | Python                                 | Go (1.26+)                                    |
-| **核心依赖**    | pydantic, langchain-core, langgraph, langserve                              | pydantic, crewaillm, langchain                   | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b |
-| **LLM 提供商** | 50+（OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock 等）         | OpenAI, Anthropic, Google, Ollama, Groq, Azure 等 | OpenAI, ModelScope, DashScope 等        | OpenAI, Ollama, OpenRouter 等（plugin 扩展）       |
-| **向量数据库**   | 30+（Pinecone, Chroma, Weaviate, Qdrant, FAISS, Milvus, PGVector 等）          | LanceDB, Chroma                                  | 内置向量数据库                                | PostgreSQL + pgvector (ivfflat 索引)            |
-| **文档加载器**   | 100+（PDF, HTML, LaTeX, Markdown, CSV, JSON, 数据库, S3, Web）                   | 少量内置                                             | 一般                                     | 无（面向代码/任务而非文档）                                |
-| **通信协议**    | REST (LangServe), SSE, gRPC 有限支持                                            | 进程内函数调用                                          | Service Hub 消息传递, gRPC                 | AHP 协议 (TASK/RESULT/PROGRESS/ACK/HEARTBEAT)   |
-| **依赖管理**    | 分层包: langchain-core, langchain-community, langchain, langchain-experimental | 单包: crewaillm, crewai                            | 单包 + 分布式依赖                             | 单模块 + Go modules                              |
+| 维度 | LangChain / LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| ----------- | --------------------------------------------------------------------------- | ------------------------------------------------ | -------------------------------------- | --------------------------------------------- | --------------------------------------------- |
+| **主要语言** | Python（主）、JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.23+) |
+| **核心依赖** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | tRPC 框架, otel, langfuse |
+| **LLM 提供商** | 50+（OpenAI, Anthropic, Google, Cohere 等） | OpenAI, Anthropic, Google, Ollama, Groq 等 | OpenAI, ModelScope, DashScope 等 | OpenAI, Ollama, OpenRouter 等（plugin 扩展） | OpenAI, Ollama 等 |
+| **向量数据库** | 30+（Pinecone, Chroma, Weaviate, Qdrant 等） | LanceDB, Chroma | 内置向量数据库 | PostgreSQL + pgvector (ivfflat 索引) | 内置存储、知识检索 |
+| **文档加载器** | 100+（PDF, HTML, Markdown, CSV, JSON 等） | 少量内置 | 一般 | 无（面向代码/任务） | 无 |
+| **通信协议** | REST (LangServe), SSE, gRPC 有限支持 | 进程内函数调用 | Service Hub 消息传递, gRPC | AHP 协议 | tRPC, A2A, AG-UI, MCP |
+| **依赖管理** | 分层包 | 单包 | 单包 + 分布式依赖 | 单模块 + Go modules | tRPC-Go 模块 |
 
 ### 2.1 关键技术栈差异
 
@@ -43,7 +43,8 @@
 | **LangGraph**  | StateGraph（有环有向图）            | 图计算模型，节点=函数，边=转换 | 有状态图执行引擎  |
 | **CrewAI**     | Crew + Agent + Task          | 团队协作隐喻，角色驱动      | 线性/层级管线   |
 | **AgentScope** | Agent + Service Hub          | 分布式消息传递，服务化      | 分布式消息驱动   |
-| **GoAgent**    | Leader-Sub Agent + DAG + AHP | 分布式任务编排，协议驱动     | 领导者-从属者架构 |
+| **GoAgent (ARES)** | Leader-Sub Agent + DAG + AHP | 分布式任务编排，协议驱动 | 领导者-从属者架构 |
+| **tRPC-Agent-Go** | GraphAgent + Runner + Agent | 服务友好，tRPC 原生 | Go 原生运行时 + 图工作流 |
 
 ### 3.2 架构示意图
 
@@ -154,19 +155,22 @@ GoAgent 采用领导者-从属者（Leader-Sub）架构，通过 AHP（Agent Hea
 
 ### 4.1 工作流能力对比
 
-| 能力              | LangGraph                | CrewAI                    | AgentScope    | GoAgent                                                                                  |
-| --------------- | ------------------------ | ------------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| **DAG 支持**      | 原生支持                     | 仅 Sequential/Hierarchical | Pipeline 模式   | 原生 DAG                                                                                   |
-| **条件分支**        | `add_conditional_edges`  | 无                         | Pipeline 条件节点 | 无（待实现）                                                                                   |
-| **循环/环路**       | 原生支持                     | 不支持                       | 不支持           | 不允许（DAG 循环检测）                                                                            |
-| **并行执行**        | 同一 super-step 内并行        | `async_execution=True`    | Pipeline 并行   | errgroup + semaphore                                                                     |
-| **子图嵌套**        | 支持（节点=子图）                | Flow 嵌套 Crew              | 不支持           | 不支持（待实现）                                                                                 |
-| **拓扑排序**        | 隐式（图遍历）                  | 不需要                       | 隐式            | Kahn 算法（显式）                                                                              |
-| **热更新**         | 不支持                      | 不支持                       | 不支持           | fsnotify 文件监听 + 轮询                                                                       |
-| **循环检测**        | 不检测（允许循环）                | 不检测                       | 不检测           | DFS + 递归栈                                                                                |
-| **运行中图突变**      | 不支持                      | 不支持                       | 不支持           | 5 种操作 (AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode)，BFS 循环检测，GraphEventHub pub/sub |
-| **人机交互 (HITL)** | `interrupt_before/after` | `human_input=True`        | 支持            | InterruptHandler + InterruptStore（持久化暂停恢复）                                               |
-| **步骤恢复策略**      | 不内置                      | 不内置                       | 不内置           | retry / replace\_node / fail\_fast 三种策略                                                  |
+| 能力              | LangGraph                | CrewAI                    | AgentScope    | GoAgent                                                                                  | tRPC-Agent-Go                         |
+| --------------- | ------------------------ | ------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------------------------------- |
+| **DAG 支持**      | 原生支持                     | 仅 Sequential/Hierarchical | Pipeline 模式   | 原生 DAG                                                                                   | GraphAgent（Pregel 风格图，6 种节点类型）     |
+| **条件分支**        | `add_conditional_edges`  | 无                         | Pipeline 条件节点 | 无（待实现）                                                                                   | `ConditionalFunc` / `MultiConditionalFunc` 路由 |
+| **循环/环路**       | 原生支持                     | 不支持                       | 不支持           | 不允许（DAG 循环检测）                                                                            | ChainAgent（顺序链）、CycleAgent（带逃逸函数的循环）、ParallelAgent（并行） |
+| **并行执行**        | 同一 super-step 内并行        | `async_execution=True`    | Pipeline 并行   | errgroup + semaphore                                                                     | sync.WaitGroup + mutex 并发                  |
+| **子图嵌套**        | 支持（节点=子图）                | Flow 嵌套 Crew              | 不支持           | 不支持（待实现）                                                                                 | 支持（StateGraph 中 Agent 作为节点）              |
+| **拓扑排序**        | 隐式（图遍历）                  | 不需要                       | 隐式            | Kahn 算法（显式）                                                                              | 隐式（Pregel 通道图遍历）                       |
+| **热更新**         | 不支持                      | 不支持                       | 不支持           | fsnotify 文件监听 + 轮询                                                                       | 未记录                                     |
+| **循环检测**        | 不检测（允许循环）                | 不检测                       | 不检测           | DFS + 递归栈                                                                                | 不需要（GraphAgent 支持循环）                    |
+| **运行中图突变**      | 不支持                      | 不支持                       | 不支持           | 5 种操作 (AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode)，BFS 循环检测，GraphEventHub pub/sub | 不支持                                     |
+| **人机交互 (HITL)** | `interrupt_before/after` | `human_input=True`        | 支持            | InterruptHandler + InterruptStore（持久化暂停恢复）                                               | 支持（基于会话的中断）                            |
+| **步骤恢复策略**      | 不内置                      | 不内置                       | 不内置           | retry / replace\_node / fail\_fast 三种策略                                                  | 未记录                                     |
+| **自进化**         | 不支持                      | 不支持                       | 不支持           | 完整 GA 流水线（6.4 节）                                                                          | Hermes 风格 SKILL.md 进化管线，5 个质量门控          |
+| **MCP 支持**       | 不支持（可通过自定义工具）          | 不支持（可通过自定义工具）           | 不支持           | 不内置                                                                                     | 原生 mcptool 集成                            |
+| **协议支持**        | REST（LangServe）, SSE       | 进程内函数调用                   | gRPC, Service Hub | AHP 协议                                                                                  | tRPC, A2A, AG-UI, MCP, OpenAI 兼容 API, Evaluation, PromptIter |
 
 ### 4.2 GoAgent DAG 特点
 
@@ -288,13 +292,13 @@ type InterruptResult struct {
 
 ### 5.1 协作模式对比
 
-| 模式          | LangGraph | CrewAI               | AgentScope     | GoAgent               |
-| ----------- | --------- | -------------------- | -------------- | --------------------- |
-| **监督者/协调者** | 子图组合      | Hierarchical Process | Service Hub    | Leader Agent          |
-| **点对点通信**   | 共享状态      | 任务输出链式传递             | 消息路由           | AHP 点对点               |
-| **任务分发**    | 图节点调度     | 经理 Agent 动态分配        | Pipeline 分发    | Dispatcher + errgroup |
-| **结果聚合**    | 状态合并      | 任务输出链式传递             | 消息聚合           | Aggregator（去重+排序）     |
-| **确定性**     | 高（图结构定义）  | 低（LLM 动态决策）          | 中（Pipeline 定义） | 高（关键词触发分发）            |
+| 模式          | LangGraph | CrewAI               | AgentScope     | GoAgent               | tRPC-Agent-Go                              |
+| ----------- | --------- | -------------------- | -------------- | --------------------- | ------------------------------------------ |
+| **监督者/协调者** | 子图组合      | Hierarchical Process | Service Hub    | Leader Agent          | Runner + 链/并行/循环 Agent 组合                  |
+| **点对点通信**   | 共享状态      | 任务输出链式传递             | 消息路由           | AHP 点对点               | 子 Agent 组合，A2A 远程 Agent 协议                  |
+| **任务分发**    | 图节点调度     | 经理 Agent 动态分配        | Pipeline 分发    | Dispatcher + errgroup | 链式/并行/循环执行模式                              |
+| **结果聚合**    | 状态合并      | 任务输出链式传递             | 消息聚合           | Aggregator（去重+排序）     | Runner 通过事件通道收集结果                          |
+| **确定性**     | 高（图结构定义）  | 低（LLM 动态决策）          | 中（Pipeline 定义） | 高（关键词触发分发）            | 高（类型安全图，确定性路由）                             |
 
 ### 5.2 协作确定性对比
 
@@ -335,15 +339,15 @@ GoAgent 的 AHP 协议是四个框架中**唯一提供协议级通信保障**的
 
 ### 6.1 记忆能力对比
 
-| 维度        | LangChain/LangGraph     | CrewAI                            | AgentScope | GoAgent                |
-| --------- | ----------------------- | --------------------------------- | ---------- | ---------------------- |
-| **短期记忆**  | 检查点状态                   | 当前运行上下文                           | 会话消息历史     | Session Memory（内存）     |
-| **长期记忆**  | Store (PostgresStore 等) | LanceDB 向量存储                      | 内置存储       | PostgreSQL + pgvector  |
-| **实体记忆**  | 不支持                     | Knowledge Graph                   | 不支持        | MemoryProfile 类型       |
-| **去重**    | 不支持                     | cosine > 0.85 LLM 决策              | 不支持        | cosine > 0.85 冲突检测     |
-| **重要性评分** | 不支持                     | `0.5*sim + 0.3*recency + 0.2*llm` | 不支持        | 关键词+类型+长度规则            |
-| **知识蒸馏**  | 不支持                     | 不支持                               | 不支持        | 6 步自动管线                |
-| **多租户隔离** | namespace 元组            | 不支持                               | 不支持        | PostgreSQL `SET LOCAL` |
+| 维度        | LangChain/LangGraph     | CrewAI                            | AgentScope | GoAgent                | tRPC-Agent-Go                        |
+| --------- | ----------------------- | --------------------------------- | ---------- | ---------------------- | ------------------------------------ |
+| **短期记忆**  | 检查点状态                   | 当前运行上下文                           | 会话消息历史     | Session Memory（内存）     | 会话状态（10+ 后端）                        |
+| **长期记忆**  | Store (PostgresStore 等) | LanceDB 向量存储                      | 内置存储       | PostgreSQL + pgvector  | 记忆服务，12 个后端                         |
+| **实体记忆**  | 不支持                     | Knowledge Graph                   | 不支持        | MemoryProfile 类型       | 制品系统，知识库                            |
+| **去重**    | 不支持                     | cosine > 0.85 LLM 决策              | 不支持        | cosine > 0.85 冲突检测     | 未记录                                  |
+| **重要性评分** | 不支持                     | `0.5*sim + 0.3*recency + 0.2*llm` | 不支持        | 关键词+类型+长度规则            | 未记录                                  |
+| **知识蒸馏**  | 不支持                     | 不支持                               | 不支持        | 6 步自动管线                | 未记录                                  |
+| **多租户隔离** | namespace 元组            | 不支持                               | 不支持        | PostgreSQL `SET LOCAL` | 会话隔离，按用户/应用分割                       |
 
 ### 6.2 GoAgent 记忆蒸馏管线
 
@@ -479,16 +483,16 @@ ParentID → ChildID → MutationType → WinRate → ScoreImprovement → Times
 
 ### 7.1 错误处理机制对比
 
-| 机制       | LangGraph      | CrewAI                         | AgentScope | GoAgent                                        |
-| -------- | -------------- | ------------------------------ | ---------- | ---------------------------------------------- |
-| **重试**   | `with_retry()` | `max_retry_limit=2`            | 基础重试       | 3 次指数退避                                        |
-| **超时**   | 不内置            | `max_execution_time`           | 不内置        | 分层超时 (LLM 120s, DB 30s, Vector 10s)            |
-| **输出验证** | 不内置            | `output_pydantic` + Guardrails | 不内置        | Schema Validator                               |
-| **降级策略** | `fallbacks`    | 不内置                            | 不内置        | FailoverClient (多供应商 + 限流冷却)                   |
-| **熔断器**  | 不支持            | 不支持                            | 不支持        | 3 状态机 (Closed/Open/HalfOpen)                   |
-| **死信队列** | 不支持            | 不支持                            | 不支持        | DLQ + DLQProcessor                             |
-| **人机交互** | `interrupt()`  | `human_input=True`             | 支持         | HITL（InterruptHandler + InterruptStore，崩溃后可恢复） |
-| **混沌工程** | 不支持            | 不支持                            | 不支持        | 13 种故障注入 + Survival 模式 + Scenario 模式 + 做市混沌    |
+| 机制       | LangGraph      | CrewAI                         | AgentScope | GoAgent                                        | tRPC-Agent-Go                            |
+| -------- | -------------- | ------------------------------ | ---------- | ---------------------------------------------- | ---------------------------------------- |
+| **重试**   | `with_retry()` | `max_retry_limit=2`            | 基础重试       | 3 次指数退避                                        | 通过进化管线支持                                 |
+| **超时**   | 不内置            | `max_execution_time`           | 不内置        | 分层超时 (LLM 120s, DB 30s, Vector 10s)            | 未记录                                      |
+| **输出验证** | 不内置            | `output_pydantic` + Guardrails | 不内置        | Schema Validator                               | 基于模式的输出验证                               |
+| **降级策略** | `fallbacks`    | 不内置                            | 不内置        | FailoverClient (多供应商 + 限流冷却)                   | 未记录                                      |
+| **熔断器**  | 不支持            | 不支持                            | 不支持        | 3 状态机 (Closed/Open/HalfOpen)                   | 未记录                                      |
+| **死信队列** | 不支持            | 不支持                            | 不支持        | DLQ + DLQProcessor                             | 支持（通过 Runner 事件路由）                        |
+| **人机交互** | `interrupt()`  | `human_input=True`             | 支持         | HITL（InterruptHandler + InterruptStore，崩溃后可恢复） | 支持                                       |
+| **混沌工程** | 不支持            | 不支持                            | 不支持        | 13 种故障注入 + Survival 模式 + Scenario 模式 + 做市混沌    | 未记录                                      |
 
 ### 7.2 GoAgent 熔断器实现
 
@@ -593,22 +597,22 @@ actions:
 
 ### 8.1 生产级特性对比
 
-| 特性            | LangChain/LangGraph | CrewAI  | AgentScope    | GoAgent                                            |
-| ------------- | ------------------- | ------- | ------------- | -------------------------------------------------- |
-| **语言**        | Python              | Python  | Python        | Go                                                 |
-| **并发模型**      | asyncio             | asyncio | asyncio + 多进程 | goroutine + channel                                |
-| **连接池**       | 通过 psycopg 等        | 不支持     | 内置连接管理        | 自定义池 (MaxOpen=25)                                  |
-| **熔断器**       | 不支持                 | 不支持     | 不支持           | 3 状态机                                              |
-| **限流**        | 不内置                 | 不支持     | 不内置           | TokenBucket/SlidingWindow/Semaphore                |
-| **多租户隔离**     | namespace           | 不支持     | 不支持           | PostgreSQL RLS + SET LOCAL                         |
-| **PII 脱敏**    | 不内置                 | 不内置     | 不内置           | 正则脱敏 (API key/email/phone/SSN)                     |
-| **SQL 注入防护**  | N/A                 | N/A     | N/A           | 表名正则 + 关键词检测                                       |
-| **可观测性**      | LangSmith（付费）       | 基础日志    | 基础日志          | Tracer + Metrics (Prometheus)                      |
-| **部署方式**      | LangGraph Platform  | 本地/容器   | Kubernetes 优先 | Docker 容器化                                         |
-| **启动开销**      | 高（加载LangChain生态）    | 中       | 中             | 低（原生 Go 编译）                                        |
-| **错误包装**      | 无专门机制               | 无专门机制   | 无专门机制         | 错误包装 (69ns/op, 0 alloc)                            |
-| **混沌工程**      | 不支持                 | 不支持     | 不支持           | ares\_arena: 13 种故障注入 + Survival + Scenario + 弹性评分 |
-| **自主进化 (GA)** | 不支持                 | 不支持     | 不支持           | 锦标赛选择 + 均匀交叉 + 5 种突变 + 三级评分 + Dream Cycle          |
+| 特性            | LangChain/LangGraph | CrewAI  | AgentScope    | GoAgent                                            | tRPC-Agent-Go                                    |
+| ------------- | ------------------- | ------- | ------------- | -------------------------------------------------- | ------------------------------------------------ |
+| **语言**        | Python              | Python  | Python        | Go                                                 | Go                                               |
+| **并发模型**      | asyncio             | asyncio | asyncio + 多进程 | goroutine + channel                                | goroutine + channel + 协程池 (ants/v2)            |
+| **连接池**       | 通过 psycopg 等        | 不支持     | 内置连接管理        | 自定义池 (MaxOpen=25)                                  | tRPC 连接池                                        |
+| **熔断器**       | 不支持                 | 不支持     | 不支持           | 3 状态机                                              | 未记录                                              |
+| **限流**        | 不内置                 | 不支持     | 不内置           | TokenBucket/SlidingWindow/Semaphore                | 未记录                                              |
+| **多租户隔离**     | namespace           | 不支持     | 不支持           | PostgreSQL RLS + SET LOCAL                         | 会话隔离，按用户分割                                     |
+| **PII 脱敏**    | 不内置                 | 不内置     | 不内置           | 正则脱敏 (API key/email/phone/SSN)                     | 未记录                                              |
+| **SQL 注入防护**  | N/A                 | N/A     | N/A           | 表名正则 + 关键词检测                                       | N/A                                               |
+| **可观测性**      | LangSmith（付费）       | 基础日志    | 基础日志          | Tracer + Metrics (Prometheus)                      | OpenTelemetry（链路+指标）+ Langfuse 追踪，7 个子包         |
+| **混沌工程**      | 不支持                 | 不支持     | 不支持           | ares\_arena: 13 种故障注入 + Survival + Scenario + 弹性评分 | 未记录                                              |
+| **自主进化 (GA)** | 不支持                 | 不支持     | 不支持           | 锦标赛选择 + 均匀交叉 + 5 种突变 + 三级评分 + Dream Cycle          | Hermes 风格 SKILL.md 进化管线，5 个质量门控                |
+| **部署方式**      | LangGraph Platform  | 本地/容器   | Kubernetes 优先 | Docker 容器化                                         | tRPC 服务部署，6 个协议服务器                              |
+| **启动开销**      | 高（加载LangChain生态）    | 中       | 中             | 低（原生 Go 编译）                                        | 低（原生 Go 编译）                                     |
+| **错误包装**      | 无专门机制               | 无专门机制   | 无专门机制         | 错误包装 (69ns/op, 0 alloc)                            | tRPC 错误处理约定                                     |
 
 ### 8.2 GoAgent 多层防护栈
 
@@ -662,18 +666,18 @@ flowchart TD
 
 ## 9. 社区与生态成熟度
 
-| 指标               | LangChain                         | CrewAI   | AgentScope | GoAgent    |
-| ---------------- | --------------------------------- | -------- | ---------- | ---------- |
-| **GitHub Stars** | \~100,000+                        | \~40,000 | \~4,000    | 早期         |
-| **主要贡献者**        | 1,200+                            | 300+     | \~50       | 1          |
-| **许可证**          | MIT                               | MIT      | Apache 2.0 | Apache 2.0 |
-| **首次发布**         | 2022年10月                          | 2023年    | 2024年      | 2026年      |
-| **当前版本**         | v0.3.x (Python)                   | v0.8x+   | v0.x       | v0.2.3     |
-| **集成生态**         | 1,000+ 官方+社区                      | 50+ 内置工具 | 有限         | 可扩展插件      |
-| **月下载量**         | >1500万                            | >500万    | 未知         | 未知         |
-| **融资背景**         | Benchmark A轮 $2500-3500万          | 独立开发     | 阿里巴巴集团     | 开源项目       |
-| **企业采用**         | JPMorgan, IBM, Salesforce, Airbnb | 中小团队为主   | 阿里内部+合作伙伴  | 待增长        |
-| **文档质量**         | 广泛但不一致（新旧API混用）                   | 清晰，入门友好  | 中文文档为主     | 中英文文档      |
+| 指标               | LangChain                         | CrewAI   | AgentScope | GoAgent    | tRPC-Agent-Go                            |
+| ---------------- | --------------------------------- | -------- | ---------- | ---------- | ---------------------------------------- |
+| **GitHub Stars** | \~100,000+                        | \~40,000 | \~4,000    | 早期         | \~1,500                                  |
+| **主要贡献者**        | 1,200+                            | 300+     | \~50       | 1          | \~20                                     |
+| **许可证**          | MIT                               | MIT      | Apache 2.0 | Apache 2.0 | Apache 2.0                               |
+| **首次发布**         | 2022年10月                          | 2023年    | 2024年      | 2026年      | 2025年                                   |
+| **当前版本**         | v0.3.x (Python)                   | v0.8x+   | v0.x       | v0.2.3     | v0.x                                     |
+| **集成生态**         | 1,000+ 官方+社区                      | 50+ 内置工具 | 有限         | 可扩展插件      | MCP 工具、函数工具、20+ 内置工具                   |
+| **月下载量**         | >1500万                            | >500万    | 未知         | 未知         | 未知                                      |
+| **融资背景**         | Benchmark A轮 $2500-3500万          | 独立开发     | 阿里巴巴集团     | 开源项目       | tRPC Group（腾讯）                           |
+| **企业采用**         | JPMorgan, IBM, Salesforce, Airbnb | 中小团队为主   | 阿里内部+合作伙伴  | 待增长        | tRPC 生态用户                               |
+| **文档质量**         | 广泛但不一致（新旧API混用）                   | 清晰，入门友好  | 中文文档为主     | 中英文文档      | 中英文文档                                  |
 
 ***
 
@@ -756,6 +760,30 @@ flowchart TD
 
 ***
 
+### 10.5 tRPC-Agent-Go
+
+**定位**: Go 原生生产级 Agent 框架，与 tRPC 微服务生态深度集成。
+
+**优势**:
+- **Go 原生**: 完整的 goroutine 并发模型，静态编译，无 GIL 限制
+- **tRPC 生态集成**: 原生 tRPC 协议支持，与 tRPC-Go 微服务无缝集成
+- **丰富的 Agent 类型**: 6 种内置类型（GraphAgent、LLMAgent、ChainAgent、ParallelAgent、CycleAgent、A2AAgent）覆盖所有主流多 Agent 模式
+- **Pregel 风格图引擎**: 6 种节点类型、SHA-256 屏障同步、条件路由、完整状态图（30+ 选项）
+- **生产级可观测性**: OpenTelemetry + Langfuse 追踪、Prometheus 指标，7 个可观测性子包
+- **完整工具系统**: 3 层接口（Tool/CallableTool/StreamableTool）、20+ 内置工具、MCP 原生集成
+- **12 个记忆后端**: inmemory、mysql/mysqlvec、pgvector/postgres、redis、sqlite/sqlitevec、tencentdb、mem0、extractor、tool
+- **6 个协议服务器**: A2A、AG-UI、OpenAI 兼容、Evaluation、PromptIter、tRPC——完整协议覆盖
+- **完整基础设施**: 评估框架（10 个子包）、会话管理（10+ 后端）、技能/进化系统
+
+**劣势**:
+- **早期阶段**: 2025 年首次发布，社区和生态远小于成熟框架
+- **LLM 提供商有限**: 主要为 OpenAI/Ollama，集成数量远少于 LangChain 的 50+
+- **无文档加载器**: 无内置文档处理能力（面向代码/任务）
+- **部分可靠性特性未记录**: 熔断器、限流、重试/超时等细节未充分文档化
+- **依赖 tRPC 生态**: 在 tRPC-Go 服务基础设施中才能发挥最大价值
+
+***
+
 ## 11. 选型建议
 
 ### 决策树
@@ -771,7 +799,9 @@ flowchart TD
     Q3 -->|是| AS[AgentScope]
     Q3 -->|否| Q4{高并发 / 多租户 / 生产可靠性 / 自进化 / 韧性验证？}
     Q4 -->|是| GA[GoAgent<br/>含 Chaos/GA/Mutable DAG]
-    Q4 -->|否| LC[LangChain/LangGraph]
+    Q4 -->|否| Q9{tRPC 生态 / 完整协议支持？}
+    Q9 -->|是| tRPC[GoAgent<br/>tRPC 生态集成]
+    Q9 -->|否| LC[LangChain/LangGraph]
 ```
 
 ### 一句话定位
@@ -781,6 +811,7 @@ flowchart TD
 | **LangChain/LangGraph** | 最大生态的图计算引擎     | 复杂有状态工作流、RAG 管线                | 轻量场景（太重）     |
 | **CrewAI**              | 团队协作模拟器        | 快速原型、角色扮演                      | 生产部署、高确定性    |
 | **AgentScope**          | 分布式 Agent 框架   | 阿里生态、多机部署                      | 非阿里环境、国际团队   |
+| **tRPC-Agent-Go**        | Go 原生生产级 Agent 框架   | tRPC 生态团队、A2A/MCP 协议需求 | 需要循环/状态回滚的场景 |
 | **GoAgent**             | 分布式 Agent 编排引擎 | 高并发、多租户、协议级通信、混沌工程、自主进化、可变 DAG | 需要循环/状态回滚的场景 |
 
 ***
@@ -806,6 +837,8 @@ GoAgent 拥有其他框架**完全不具有**的三个独特特性：**混沌工
 > **高可靠性 + 多租户隔离 + 协议级通信保障 + 运行时图突变 + 自主进化 + 混沌工程韧性验证**
 
 GoAgent 现在的差距（状态检查点、条件边）可以通过借鉴其他框架的经验逐步补齐，而其**混沌工程、自主进化、可变 DAG、熔断器、心跳、DLQ、自动蒸馏、多租户隔离**等特性是其他框架短期乃至长期内难以复制的。
+
+同样值得关注的是 **tRPC-Agent-Go**，作为 GoAgent 的 tRPC 生态版本，其 tRPC 生态集成优势使其在企业级采用中具有独特定位，特别是对于已经使用 tRPC-Go 微服务框架的团队。tRPC-Agent-Go 继承了 GoAgent 的核心 Agent 类型和 Pregel 图引擎，同时深度集成 tRPC 协议栈、连接池和服务治理能力，为腾讯云用户提供开箱即用的 Agent 开发体验。
 
 ***
 

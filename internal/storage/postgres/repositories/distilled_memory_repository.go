@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -77,7 +76,7 @@ func (r *DistilledMemoryRepository) withTenantTx(ctx context.Context, tenantID s
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback transaction", "error", rbErr)
+				log.Error("Failed to rollback transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -99,7 +98,7 @@ func (r *DistilledMemoryRepository) withTenantTx(ctx context.Context, tenantID s
 
 // Create creates a new distilled memory with content-hash deduplication.
 func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *DistilledMemory) error {
-	slog.InfoContext(ctx, "Starting distilled memory storage",
+	log.InfoContext(ctx, "Starting distilled memory storage",
 		"memory_id", memory.ID,
 		"tenant_id", memory.TenantID,
 		"user_id", memory.UserID,
@@ -141,14 +140,14 @@ func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *Distille
 		)
 
 		if err != nil {
-			slog.ErrorContext(ctx, "Failed to INSERT distilled memory",
+			log.ErrorContext(ctx, "Failed to INSERT distilled memory",
 				"memory_id", memory.ID,
 				"user_id", memory.UserID,
 				"error", err)
 			return errors.Wrap(err, "create distilled memory")
 		}
 
-		slog.InfoContext(ctx, "Successfully stored distilled memory",
+		log.InfoContext(ctx, "Successfully stored distilled memory",
 			"memory_id", memory.ID,
 			"user_id", memory.UserID,
 			"tenant_id", memory.TenantID)
@@ -158,7 +157,7 @@ func (r *DistilledMemoryRepository) Create(ctx context.Context, memory *Distille
 
 // SearchByVector searches for memories using vector similarity.
 func (r *DistilledMemoryRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*DistilledMemory, error) {
-	slog.InfoContext(ctx, "Starting vector search",
+	log.InfoContext(ctx, "Starting vector search",
 		"tenant_id", tenantID,
 		"embedding_dims", len(embedding),
 		"limit", limit)
@@ -197,19 +196,19 @@ func (r *DistilledMemoryRepository) SearchByVector(ctx context.Context, embeddin
 				&metadataStr, &memory.AccessCount, &memory.LastAccessedAt,
 				&memory.ExpiresAt, &memory.CreatedAt, &similarity,
 			); err != nil {
-				slog.WarnContext(ctx, "Failed to scan search result row", "error", err)
+				log.WarnContext(ctx, "Failed to scan search result row", "error", err)
 				continue
 			}
 
 			memory.Embedding, err = postgres.ParseVectorString(embeddingStr)
 			if err != nil {
-				slog.WarnContext(ctx, "Failed to parse embedding in search result", "memory_id", memory.ID, "error", err)
+				log.WarnContext(ctx, "Failed to parse embedding in search result", "memory_id", memory.ID, "error", err)
 				continue
 			}
 
 			if metadataStr != "" {
 				if err := json.Unmarshal([]byte(metadataStr), &memory.Metadata); err != nil {
-					slog.WarnContext(ctx, "Failed to parse metadata in search result", "memory_id", memory.ID, "error", err)
+					log.WarnContext(ctx, "Failed to parse metadata in search result", "memory_id", memory.ID, "error", err)
 				}
 			}
 
@@ -220,7 +219,7 @@ func (r *DistilledMemoryRepository) SearchByVector(ctx context.Context, embeddin
 			return errors.Wrap(err, "iterate search results")
 		}
 
-		slog.InfoContext(ctx, "SearchByVector query completed",
+		log.InfoContext(ctx, "SearchByVector query completed",
 			"tenant_id", tenantID,
 			"memories_found", len(memories))
 		return nil
@@ -265,13 +264,13 @@ func (r *DistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, u
 				&metadataStr, &memory.AccessCount, &memory.LastAccessedAt,
 				&memory.ExpiresAt, &memory.CreatedAt,
 			); err != nil {
-				slog.WarnContext(ctx, "Failed to scan memory row", "error", err)
+				log.WarnContext(ctx, "Failed to scan memory row", "error", err)
 				continue
 			}
 
 			if metadataStr != "" {
 				if err := json.Unmarshal([]byte(metadataStr), &memory.Metadata); err != nil {
-					slog.WarnContext(ctx, "Failed to parse metadata", "memory_id", memory.ID, "error", err)
+					log.WarnContext(ctx, "Failed to parse metadata", "memory_id", memory.ID, "error", err)
 				}
 			}
 
@@ -282,7 +281,7 @@ func (r *DistilledMemoryRepository) GetByUserID(ctx context.Context, tenantID, u
 			return errors.Wrap(err, "iterate memories")
 		}
 
-		slog.InfoContext(ctx, "GetByUserID query completed",
+		log.InfoContext(ctx, "GetByUserID query completed",
 			"tenant_id", tenantID,
 			"user_id", userID,
 			"memories_found", len(memories))

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -113,7 +112,7 @@ func (c *QueryCache) Set(ctx context.Context, req *SearchRequest, results []*Sea
 	if c.redis != nil {
 		if err := c.redis.Set(ctx, cacheKey, string(data), c.ttl); err != nil {
 			// Redis error is not fatal, continue with memory cache
-			slog.Debug("Failed to store in Redis cache", "error", err)
+			log.Debug("Failed to store in Redis cache", "error", err)
 		}
 	}
 
@@ -136,7 +135,7 @@ func (c *QueryCache) Delete(ctx context.Context, req *SearchRequest) error {
 	// Try to delete from Redis
 	if c.redis != nil {
 		if err := c.redis.Del(ctx, cacheKey); err != nil {
-			slog.Warn("cache invalidation failed", "key", cacheKey, "error", err)
+			log.Warn("cache invalidation failed", "key", cacheKey, "error", err)
 		}
 	}
 
@@ -159,7 +158,7 @@ func (c *QueryCache) Clear(ctx context.Context) error {
 		keys, err := c.redis.Keys(ctx, "query_cache:*")
 		if err == nil && len(keys) > 0 {
 			if err := c.redis.Del(ctx, keys...); err != nil {
-				slog.Warn("cache invalidation failed", "key", keys, "error", err)
+				log.Warn("cache invalidation failed", "key", keys, "error", err)
 			}
 		}
 	}

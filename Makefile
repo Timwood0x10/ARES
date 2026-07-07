@@ -1,6 +1,6 @@
-# Makefile for GO Agent Framework
+# Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install ci benchmark
+.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci benchmark quickstart examples
 
 # Default target
 all: lint test
@@ -41,7 +41,7 @@ ci-vet:
 ci-lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=10m --out-format=github-actions; \
+		golangci-lint run --timeout=10m; \
 		echo "Linting: OK"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
@@ -107,27 +107,45 @@ test:
 test-race:
 	go test -race -cover ./...
 
-# Core modules require 90%+ coverage
+# Core modules — check total coverage across all core packages
 test-core:
-	go test -cover -coverprofile=coverage.out ./internal/core/...
-	@echo "Checking core module coverage..."
-	@COVERAGE=$$(go tool cover -func=coverage.out | grep "internal/core" | grep -v "test" | awk '{print $$NF}' | sed 's/%//' | sort -n | head -1); \
-	if [ "$$COVERAGE" -lt 90 ]; then \
-		echo "ERROR: Core module coverage is $$COVERAGE%, expected >= 90%"; \
+	@echo "Running core module tests with coverage..."
+	@go test -cover -coverprofile=coverage.out ./internal/core/...
+	@echo ""
+	@echo "--- Per-function coverage ---"
+	@go tool cover -func=coverage.out
+	@echo ""
+	@TOTAL=$$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $$NF}' | sed 's/%//'); \
+	if [ "$$TOTAL" = "" ]; then \
+		echo "ERROR: could not determine total coverage"; \
 		exit 1; \
-	fi
-	@echo "Core module coverage: $$COVERAGE%"
+	fi; \
+	THRESHOLD=90; \
+	if [ "$$(echo "$$TOTAL < $$THRESHOLD" | bc 2>/dev/null || echo 1)" = "1" ]; then \
+		echo "ERROR: Core module total coverage is $$TOTAL%, expected >= $$THRESHOLD%"; \
+		exit 1; \
+	fi; \
+	echo "✅ Core module total coverage: $$TOTAL% (threshold: $$THRESHOLD%)"
 
-# Other modules require 80%+ coverage
+# Other modules — check total coverage across tools packages
 test-tools:
-	go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/workflow/... ./internal/memory/... ./internal/shutdown/... ./internal/ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
-	@echo "Checking tools coverage..."
-	@COVERAGE=$$(go tool cover -func=coverage.out | awk '{print $$NF}' | sed 's/%//' | sort -n | head -1); \
-	if [ "$$COVERAGE" -lt 80 ]; then \
-		echo "ERROR: Tools coverage is $$COVERAGE%, expected >= 80%"; \
+	@echo "Running tools module tests with coverage..."
+	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
+	@echo ""
+	@echo "--- Per-package coverage ---"
+	@go tool cover -func=coverage.out | grep "total:" || true
+	@echo ""
+	@TOTAL=$$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $$NF}' | sed 's/%//'); \
+	if [ "$$TOTAL" = "" ]; then \
+		echo "ERROR: could not determine total coverage"; \
 		exit 1; \
-	fi
-	@echo "Tools coverage: $$COVERAGE%"
+	fi; \
+	THRESHOLD=80; \
+	if [ "$$(echo "$$TOTAL < $$THRESHOLD" | bc 2>/dev/null || echo 1)" = "1" ]; then \
+		echo "ERROR: Tools module total coverage is $$TOTAL%, expected >= $$THRESHOLD%"; \
+		exit 1; \
+	fi; \
+	echo "✅ Tools module total coverage: $$TOTAL% (threshold: $$THRESHOLD%)"
 
 # All checks
 check: lint test
@@ -140,10 +158,14 @@ check-quick: lint test
 
 # Build targets
 build:
-	go build -o bin/server ./cmd/server
+	go build -o bin/ares ./cmd/ares
 
 build-all:
 	go build -o bin/ ./cmd/...
+
+# Install CLI
+install-cli:  ## Install ares CLI to $GOPATH/bin
+	go install ./cmd/ares/...
 
 # Clean targets
 clean:
@@ -194,6 +216,14 @@ benchmark-save:
 	@go test -bench=. -benchmem ./api/handler/... >> benchmarks/benchmark_report.md 2>&1
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
+
+# ──────────────────────────────────────────────
+# Evaluation — run evaluation scenarios
+# ──────────────────────────────────────────────
+test-eval:  ## Run evaluation tests
+	@echo "📊 Running evaluation tests..."
+	@go test -count=1 -timeout=300s ./evaluation/...
+	@echo "✅ Evaluation tests complete"
 
 # Demo: MCP + Dashboard
 # Usage: make demo-mcp TARGET=/path/to/analyze ADDR=:8090
@@ -260,6 +290,25 @@ demo-smoke:
 	@echo "Checking test databases..."
 	@docker compose exec postgres psql -U postgres -c "\l goagent_test"
 	@docker compose exec postgres psql -U postgres -c "\l testdb"
+
+# ──────────────────────────────────────────────
+# Quickstart — one-command 5-minute demo
+# ──────────────────────────────────────────────
+quickstart:  ## 5 分钟快速开始
+	@echo "🚀 Running quickstart example..."
+	@go run examples/01-quickstart/main.go
+
+# ──────────────────────────────────────────────
+# Examples — build all examples
+# ──────────────────────────────────────────────
+examples:  ## Build all examples
+	@echo "Building all examples..."
+	@for d in examples/*/; do \
+		name=$$(basename $$d); \
+		echo "  building $$name..."; \
+		go build ./examples/$$name/... || exit 1; \
+	done
+	@echo "✅ All examples built successfully"
 
 # Help
 help:

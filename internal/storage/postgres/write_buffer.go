@@ -7,14 +7,12 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -93,7 +91,7 @@ func (b *WriteBuffer) Start(ctx context.Context) error {
 	b.g.Go(func() error {
 		defer b.wg.Done()
 		if err := b.processLoop(b.gctx); err != nil {
-			slog.Error("Write buffer processing loop failed", "error", err)
+			log.Error("Write buffer processing loop failed", "error", err)
 			return err
 		}
 		return nil
@@ -121,7 +119,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 				err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
 				cancel()
 				if err != nil {
-					slog.Error("Failed to flush final batch", "error", err)
+					log.Error("Failed to flush final batch", "error", err)
 					return errors.Wrap(err, "flush final batch")
 				}
 			}
@@ -135,7 +133,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 					err := b.flushBatchWithRetry(flushCtx, batch, maxRetries)
 					cancel()
 					if err != nil {
-						slog.Error("Failed to flush remaining batch on channel close", "error", err)
+						log.Error("Failed to flush remaining batch on channel close", "error", err)
 						return errors.Wrap(err, "flush remaining batch on close")
 					}
 				}
@@ -146,13 +144,13 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 			}
 			// Skip new items while retrying to prevent unbounded batch growth.
 			if retryCount > 0 {
-				slog.Warn("Dropping write item during flush retry", "table", item.Table)
+				log.Warn("Dropping write item during flush retry", "table", item.Table)
 				continue
 			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					slog.Error("Failed to flush batch after retries", "error", err, "batch_size", len(batch))
+					log.Error("Failed to flush batch after retries", "error", err, "batch_size", len(batch))
 					retryCount++
 					batch = batch[:0]
 					continue
@@ -164,7 +162,7 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 		case <-ticker.C:
 			if len(batch) > 0 {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					slog.Error("Failed to flush batch on timer after retries", "error", err, "batch_size", len(batch))
+					log.Error("Failed to flush batch on timer after retries", "error", err, "batch_size", len(batch))
 					retryCount++
 					batch = batch[:0]
 					continue
@@ -191,12 +189,12 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 				return ctx.Err()
 			case <-wbTimer.C:
 			}
-			slog.Warn("Retrying batch flush", "attempt", attempt, "backoff", backoff)
+			log.Warn("Retrying batch flush", "attempt", attempt, "backoff", backoff)
 		}
 
 		if err := b.flushBatch(ctx, batch); err != nil {
 			lastErr = err
-			slog.Error("Flush attempt failed", "attempt", attempt, "error", err)
+			log.Error("Flush attempt failed", "attempt", attempt, "error", err)
 			continue
 		}
 		return nil
@@ -218,7 +216,7 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 // Returns error if buffer is stopped, item is invalid, or buffer is full.
 func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	if item == nil {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	// Check stopped flag under lock to prevent race with Stop().
@@ -227,7 +225,7 @@ func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	b.mu.Unlock()
 
 	if stopped {
-		return coreerrors.ErrServiceUnavailable
+		return errors.ErrServiceUnavailable
 	}
 
 	// Channel send outside lock to prevent deadlock:
@@ -237,7 +235,7 @@ func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 	if b.safeSend(item, ctx) {
 		return nil
 	}
-	return coreerrors.ErrServiceUnavailable
+	return errors.ErrServiceUnavailable
 }
 
 // safeSend attempts to send an item to the buffer channel, recovering from
@@ -290,7 +288,7 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 	defer func() {
 		if !committed {
 			if rbErr := tx.Rollback(); rbErr != nil {
-				slog.Error("Failed to rollback transaction", "error", rbErr)
+				log.Error("Failed to rollback transaction", "error", rbErr)
 			}
 		}
 	}()
@@ -302,8 +300,8 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 			// Generate content hash for real-time deduplication (per design standard)
 			contentHash := b.computeContentHash(item.Content)
 
-			_, err := tx.Exec(`
-				INSERT INTO knowledge_chunks_1024
+			_, err := tx.ExecContext(ctx, `
+			  INSERT INTO knowledge_chunks_1024
 				(tenant_id, content, content_hash, embedding, embedding_model, embedding_version, 
 				 embedding_status, embedding_queued_at, source_type, metadata, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW(), 'memory', $7, NOW(), NOW())
@@ -331,8 +329,8 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 					md["embedding_dim"] = item.SpecDim
 				}
 			}
-			_, err := tx.Exec(`
-				INSERT INTO experiences_1024
+			_, err := tx.ExecContext(ctx, `
+			  INSERT INTO experiences_1024
 				(tenant_id, type, input, output, embedding, embedding_model, embedding_version,
 				 embedding_status, embedding_queued_at, agent_id, metadata, score, success, decay_at, created_at)
 				VALUES ($1, 'solution', $2, $3, $4, $5, $6, 'pending', NOW(), 'style-agent', $7, 0.8, true, NOW() + INTERVAL '30 days', NOW())
@@ -366,10 +364,10 @@ func (b *WriteBuffer) flushBatch(ctx context.Context, batch []*WriteItem) error 
 		if err := b.queue.EnqueueTx(ctx, tx, task); err != nil {
 			if stderrors.Is(err, ErrDuplicateTask) {
 				// Task already queued; proceed without rolling back.
-				slog.Debug("Duplicate embedding task, skipping", "table", item.Table)
+				log.Debug("Duplicate embedding task, skipping", "table", item.Table)
 				continue
 			}
-			slog.Error("Failed to enqueue embedding task, rolling back transaction", "table", item.Table, "error", err)
+			log.Error("Failed to enqueue embedding task, rolling back transaction", "table", item.Table, "error", err)
 			return errors.Wrapf(err, "enqueue embedding task for table %s", item.Table)
 		}
 	}
@@ -418,7 +416,9 @@ func (b *WriteBuffer) Stop(ctx context.Context) error {
 
 	// Wait for errgroup to complete (ignoring errors as we're shutting down)
 	if b.g != nil {
-		_ = b.g.Wait()
+		if err := b.g.Wait(); err != nil {
+			log.Warn("write buffer: flush wait", "error", err)
+		}
 	}
 
 	return nil

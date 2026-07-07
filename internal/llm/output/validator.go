@@ -74,6 +74,7 @@ func (v *Validator) Validate(data interface{}, schema *Schema) error {
 	return v.validateValue(data, schema, "root")
 }
 
+//nolint:gocyclo // Recursive schema validation with multiple type checks
 func (v *Validator) validateValue(data interface{}, schema *Schema, path string) error {
 	// Handle null
 	if data == nil {
@@ -191,16 +192,16 @@ func (v *Validator) validateValue(data interface{}, schema *Schema, path string)
 
 func (v *Validator) validateType(data interface{}, expectedType string, path string) error {
 	switch expectedType {
-	case "string":
+	case schemaTypeString:
 		_, ok := data.(string)
 		if !ok {
 			return fmt.Errorf("%s: expected string, got %T", path, data)
 		}
-	case "number":
+	case schemaTypeNumber:
 		if _, ok := toFloat64(data); !ok {
 			return fmt.Errorf("%s: expected number, got %T", path, data)
 		}
-	case "integer":
+	case schemaTypeInteger:
 		if _, ok := toInt64(data); !ok {
 			return fmt.Errorf("%s: expected integer, got %T", path, data)
 		}
@@ -209,12 +210,12 @@ func (v *Validator) validateType(data interface{}, expectedType string, path str
 		if !ok {
 			return fmt.Errorf("%s: expected boolean, got %T", path, data)
 		}
-	case "array":
+	case schemaTypeArray:
 		_, ok := data.([]interface{})
 		if !ok {
 			return fmt.Errorf("%s: expected array, got %T", path, data)
 		}
-	case "object":
+	case schemaTypeObject:
 		_, ok := data.(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("%s: expected object, got %T", path, data)
@@ -304,32 +305,32 @@ func (v *Validator) ValidateRecommendResult(result *models.RecommendResult) erro
 		}
 
 		itemsInterface[i] = map[string]interface{}{
-			"item_id":           item.ItemID,
-			"name":              item.Name,
-			"category":          item.Category,
-			"description":       item.Description,
-			"price":             item.Price,
+			keyItemID:           item.ItemID,
+			keyName:             item.Name,
+			keyCategory:         item.Category,
+			keyDescription:      item.Description,
+			keyPrice:            item.Price,
 			"url":               item.URL,
-			"image_url":         item.ImageURL,
+			keyImageURL:         item.ImageURL,
 			"agent_preferences": agentPreferencesInterface,
-			"colors":            colorsInterface,
-			"match_reason":      item.MatchReason,
-			"brand":             item.Brand,
-			"metadata":          item.Metadata,
+			keyColors:           colorsInterface,
+			keyMatchReason:      item.MatchReason,
+			keyBrand:            item.Brand,
+			keyMetadata:         item.Metadata,
 		}
 	}
 
 	// Convert RecommendResult to map[string]interface{} for validation
 	resultMap := map[string]interface{}{
-		"session_id":  result.SessionID,
-		"user_id":     result.UserID,
-		"items":       itemsInterface,
-		"reason":      result.Reason,
+		keySessionID:  result.SessionID,
+		keyUserID:     result.UserID,
+		keyItems:      itemsInterface,
+		keyReason:     result.Reason,
 		"total_price": result.TotalPrice,
-		"match_score": result.MatchScore,
+		keyMatchScore: result.MatchScore,
 		"occasion":    result.Occasion,
 		"season":      result.Season,
-		"metadata":    result.Metadata,
+		keyMetadata:   result.Metadata,
 	}
 
 	schema := v.getSchema()

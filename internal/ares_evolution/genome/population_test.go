@@ -736,12 +736,12 @@ func TestWithPopulationSeed(t *testing.T) {
 	}
 
 	seed := int64(42)
-	pop1, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	pop1, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed), WithPerLineageElites(false))
 	if err != nil {
 		t.Fatalf("NewPopulation (1) failed: %v", err)
 	}
 
-	pop2, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed))
+	pop2, err := NewPopulation(ctx, base, detMut, WithPopulationSize(5), WithPopulationSeed(seed), WithPerLineageElites(false))
 	if err != nil {
 		t.Fatalf("NewPopulation (2) failed: %v", err)
 	}
@@ -849,6 +849,7 @@ func TestContextCancellation(t *testing.T) {
 	}
 }
 
+//nolint:gocyclo // Test function with comprehensive test cases
 func TestEvolveOnIdle(t *testing.T) {
 	t.Parallel()
 
@@ -1104,6 +1105,7 @@ func TestEvolveZeroOffspringPath(t *testing.T) {
 			WithEliteCount(3),     // EliteCount == Size → no offspring slots
 			WithSurvivalRate(1.0), // All survive so EliteCount is not capped
 			WithMutationRate(0.3),
+			WithPerLineageElites(false), // Use global elite ordering for deterministic test
 		)
 		origRate := pop.currentMutationRate
 		origStagnant := pop.stagnantGens
@@ -1149,6 +1151,7 @@ func TestEvolveZeroOffspringPath(t *testing.T) {
 			WithEliteCount(3),
 			WithSurvivalRate(1.0),
 			WithMutationRate(0.2),
+			WithPerLineageElites(false),
 		)
 		origRate := pop.currentMutationRate
 		origStagnant := pop.stagnantGens

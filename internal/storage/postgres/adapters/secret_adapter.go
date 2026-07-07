@@ -96,7 +96,8 @@ func (a *SecretAdapter) parseYAML(data []byte) ([]byte, error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "- key:") {
+		switch {
+		case strings.HasPrefix(line, "- key:"):
 			// Start new secret
 			if currentSecret.Key != "" {
 				importData.Secrets = append(importData.Secrets, *currentSecret)
@@ -104,9 +105,9 @@ func (a *SecretAdapter) parseYAML(data []byte) ([]byte, error) {
 			currentSecret = &SecretImportItem{
 				Key: strings.TrimSpace(strings.TrimPrefix(line, "- key:")),
 			}
-		} else if strings.HasPrefix(line, "value:") {
+		case strings.HasPrefix(line, "value:"):
 			currentSecret.Value = strings.TrimSpace(strings.TrimPrefix(line, "value:"))
-		} else if strings.HasPrefix(line, "expires_at:") {
+		case strings.HasPrefix(line, "expires_at:"):
 			currentSecret.ExpiresAt = strings.TrimSpace(strings.TrimPrefix(line, "expires_at:"))
 		}
 	}

@@ -1,0 +1,16 @@
+# 06-chaos-resilience configuration
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: true
+
+tools:
+  builtin: true
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false

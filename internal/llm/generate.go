@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -19,13 +18,13 @@ import (
 // Returns nil on success, or an error describing the first violated constraint.
 func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.Time) error {
 	if prompt == "" {
-		err := coreerrors.ErrInvalidArgument
+		err := errors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}
 	trimmed := bytes.TrimSpace([]byte(prompt))
 	if len(trimmed) == 0 {
-		err := coreerrors.ErrInvalidArgument
+		err := errors.ErrInvalidArgument
 		c.recordLLMCall(ctx, prompt, "", 0, start, err)
 		return err
 	}

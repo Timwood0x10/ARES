@@ -74,7 +74,7 @@ func (m *mockMemoryManager) UpdateTaskOutput(ctx context.Context, taskID, output
 }
 
 func (m *mockMemoryManager) DistillTask(ctx context.Context, taskID string) (*models.Task, error) {
-	return nil, nil
+	return nil, errors.New("not found")
 }
 
 func (m *mockMemoryManager) StoreDistilledTask(ctx context.Context, taskID string, distilled *models.Task) error {

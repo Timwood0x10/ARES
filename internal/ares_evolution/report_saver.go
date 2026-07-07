@@ -32,12 +32,12 @@ func SaveReport(ctx context.Context, r *EvolutionReport, path string) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("create report directory %s: %w", dir, err)
 	}
 
 	data := ReportString(r)
-	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		return fmt.Errorf("write report to %s: %w", path, err)
 	}
 

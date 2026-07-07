@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -106,7 +105,7 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*models
 		&profile.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "query profile")
@@ -190,7 +189,7 @@ func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProf
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -210,7 +209,7 @@ func (r *ProfileRepository) Delete(ctx context.Context, userID string) error {
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

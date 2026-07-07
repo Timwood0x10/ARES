@@ -2,6 +2,7 @@
 package ares_observability
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -258,7 +259,7 @@ func TestCostDashboard_HTTP_AllCostsEndpoint(t *testing.T) {
 
 	// GET /api/v1/observability/cost
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/observability/cost", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/observability/cost", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -290,7 +291,7 @@ func TestCostDashboard_HTTP_SessionDetailEndpoint(t *testing.T) {
 
 	// GET /api/v1/observability/cost/detail-session
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/observability/cost/detail-session", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/observability/cost/detail-session", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -320,7 +321,7 @@ func TestCostDashboard_HTTP_SessionNotFound(t *testing.T) {
 	dash.RegisterCostRoutes(mux)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/observability/cost/nonexistent", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/observability/cost/nonexistent", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
@@ -342,7 +343,7 @@ func TestCostDashboard_HTTP_MethodNotAllowed(t *testing.T) {
 
 	// POST /api/v1/observability/cost
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/observability/cost", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/v1/observability/cost", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -358,7 +359,7 @@ func TestCostDashboard_HTML_DashboardEndpoint(t *testing.T) {
 	dash.RegisterCostRoutes(mux)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/observability/dashboard", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/observability/dashboard", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {

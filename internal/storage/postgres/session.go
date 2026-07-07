@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -83,7 +82,7 @@ func (r *SessionRepository) GetByID(ctx context.Context, sessionID string) (*mod
 		&session.ExpiredAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "query session")
@@ -133,7 +132,7 @@ func (r *SessionRepository) Update(ctx context.Context, session *models.Session)
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -153,7 +152,7 @@ func (r *SessionRepository) Delete(ctx context.Context, sessionID string) error 
 		return errors.Wrap(err, "rows affected")
 	}
 	if rowsAffected == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

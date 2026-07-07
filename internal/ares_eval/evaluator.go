@@ -4,7 +4,6 @@ package ares_eval
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -116,10 +115,10 @@ func (e *ToolUsageEvaluator) Evaluate(ctx context.Context, testCase TestCase, re
 }
 
 // ErrEmptyName is returned when an empty name is passed to Register.
-var ErrEmptyName = errors.New("evaluator name must not be empty")
+// Errors are defined in errors.go.
 
 // ErrNilEvaluator is returned when a nil evaluator is passed to Register.
-var ErrNilEvaluator = errors.New("evaluator must not be nil")
+// Errors are defined in errors.go.
 
 // EvaluatorRegistry manages named evaluator instances.
 // It provides thread-safe registration and retrieval of evaluators by name,

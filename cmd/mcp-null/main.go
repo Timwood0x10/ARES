@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -50,13 +49,12 @@ func main() {
 			}, nil
 		})
 	if err != nil {
-		slog.Error("failed to register echo tool", "error", err)
+		log.Error("failed to register echo tool", "error", err)
 		os.Exit(1)
 	}
 
 	// Set up signal handling for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -65,7 +63,7 @@ func main() {
 	sigEg.Go(func() error {
 		select {
 		case <-sigCh:
-			slog.Info("ares_mcp-null: shutting down...")
+			log.Info("ares_mcp-null: shutting down...")
 			cancel()
 			return nil
 		case <-sigCtx.Done():
@@ -75,8 +73,10 @@ func main() {
 
 	// Start serving.
 	if err := server.Serve(ctx); err != nil {
-		slog.Error("ares_mcp-null: serve error", "error", err)
+		cancel()
+		log.Error("ares_mcp-null: serve error", "error", err)
 		os.Exit(1)
 	}
+	defer cancel()
 	_ = sigEg.Wait() // Clean up signal goroutine
 }

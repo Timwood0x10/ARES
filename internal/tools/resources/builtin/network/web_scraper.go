@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -106,17 +105,17 @@ func (t *WebScraper) Execute(ctx context.Context, params map[string]interface{})
 	}
 
 	// Fetch page content
-	slog.Info("Web scraping started", "url", url)
+	log.Info("Web scraping started", "url", url)
 	startTime := time.Now()
 
 	html, err := t.getter.Get(ctx, url)
 	if err != nil {
-		slog.Error("Failed to fetch page", "url", url, "error", err)
+		log.Error("Failed to fetch page", "url", url, "error", err)
 		return core.Result{}, errors.Wrap(err, "failed to fetch page")
 	}
 
 	duration := time.Since(startTime)
-	slog.Info("Page fetched", "url", url, "size_bytes", len(html), "duration", duration)
+	log.Info("Page fetched", "url", url, "size_bytes", len(html), "duration", duration)
 
 	// Parse HTML content
 	result := t.parseHTML(string(html), options)

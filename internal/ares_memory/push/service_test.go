@@ -13,6 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Test constants for repeated test data
+const (
+	testCategoryFact  = "fact"
+	testTemplateA     = "tpl-A"
+	testStrategyOther = "other"
+)
+
 // fakeProvider is a deterministic in-memory KnowledgeProvider for tests.
 type fakeProvider struct {
 	mu      sync.Mutex
@@ -72,10 +79,10 @@ func (t *recordingTarget) Items() []KnowledgeItem {
 func samplePushItems() []KnowledgeItem {
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	return []KnowledgeItem{
-		{ID: "i-1", Category: "fact", Score: 0.9, StrategyID: "s1", TaskType: "tt1", Problem: "p1", Solution: "s1", CreatedAt: base},
-		{ID: "i-2", Category: "fact", Score: 0.8, StrategyID: "s2", TaskType: "tt2", Problem: "p2", Solution: "s2", CreatedAt: base},
-		{ID: "i-3", Category: "fact", Score: 0.3, StrategyID: "s1", TaskType: "tt1", Problem: "p3", Solution: "s3", CreatedAt: base}, // below min score
-		{ID: "i-4", Category: "fact", Score: 0.7, StrategyID: "s3", TaskType: "tt1", PromptTemplate: "tpl-A", Problem: "p4", Solution: "s4", CreatedAt: base},
+		{ID: "i-1", Category: testCategoryFact, Score: 0.9, StrategyID: "s1", TaskType: "tt1", Problem: "p1", Solution: "s1", CreatedAt: base},
+		{ID: "i-2", Category: testCategoryFact, Score: 0.8, StrategyID: "s2", TaskType: "tt2", Problem: "p2", Solution: "s2", CreatedAt: base},
+		{ID: "i-3", Category: testCategoryFact, Score: 0.3, StrategyID: "s1", TaskType: "tt1", Problem: "p3", Solution: "s3", CreatedAt: base}, // below min score
+		{ID: "i-4", Category: testCategoryFact, Score: 0.7, StrategyID: "s3", TaskType: "tt1", PromptTemplate: testTemplateA, Problem: "p4", Solution: "s4", CreatedAt: base},
 	}
 }
 
@@ -125,18 +132,18 @@ func TestMatchesCriteria_EmptyCriteriaMatchesAll(t *testing.T) {
 func TestMatchesCriteria_StrategyID(t *testing.T) {
 	item := KnowledgeItem{ID: "x", StrategyID: "s1"}
 	assert.True(t, matchesCriteria(RelevanceCriteria{StrategyID: "s1"}, item))
-	assert.False(t, matchesCriteria(RelevanceCriteria{StrategyID: "other"}, item))
+	assert.False(t, matchesCriteria(RelevanceCriteria{StrategyID: testStrategyOther}, item))
 }
 
 func TestMatchesCriteria_TaskType(t *testing.T) {
 	item := KnowledgeItem{ID: "x", TaskType: "tt1"}
 	assert.True(t, matchesCriteria(RelevanceCriteria{TaskType: "tt1"}, item))
-	assert.False(t, matchesCriteria(RelevanceCriteria{TaskType: "other"}, item))
+	assert.False(t, matchesCriteria(RelevanceCriteria{TaskType: testStrategyOther}, item))
 }
 
 func TestMatchesCriteria_PromptTemplate(t *testing.T) {
-	item := KnowledgeItem{ID: "x", PromptTemplate: "tpl-A"}
-	assert.True(t, matchesCriteria(RelevanceCriteria{PromptTemplate: "tpl-A"}, item))
+	item := KnowledgeItem{ID: "x", PromptTemplate: testTemplateA}
+	assert.True(t, matchesCriteria(RelevanceCriteria{PromptTemplate: testTemplateA}, item))
 	assert.False(t, matchesCriteria(RelevanceCriteria{PromptTemplate: "tpl-B"}, item))
 }
 
@@ -151,7 +158,7 @@ func TestMatchesCriteria_MultipleFieldsAllMustMatch(t *testing.T) {
 	criteria := RelevanceCriteria{StrategyID: "s1", TaskType: "tt1"}
 	assert.True(t, matchesCriteria(criteria, item))
 
-	criteria = RelevanceCriteria{StrategyID: "s1", TaskType: "other"}
+	criteria = RelevanceCriteria{StrategyID: "s1", TaskType: testStrategyOther}
 	assert.False(t, matchesCriteria(criteria, item))
 }
 

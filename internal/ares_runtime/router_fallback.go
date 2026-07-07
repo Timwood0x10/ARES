@@ -3,7 +3,6 @@ package ares_runtime
 import (
 	"context"
 	"fmt"
-	"log/slog"
 )
 
 // FallbackRouter tries multiple RouterPlugin instances in order and returns
@@ -61,14 +60,14 @@ func (r *FallbackRouter) Route(ctx context.Context, state RouteState) (*RouteDec
 	for _, router := range r.routers {
 		decision, err := router.Route(ctx, state)
 		if err != nil {
-			slog.Warn("fallback router: sub-router errored, trying next",
+			log.Warn("fallback router: sub-router errored, trying next",
 				"router", router.Name(),
 				"error", err,
 			)
 			continue
 		}
 		if decision != nil {
-			slog.Debug("fallback router: selected",
+			log.Debug("fallback router: selected",
 				"router", router.Name(),
 				"next_step", decision.NextStepID,
 				"source", decision.Source,

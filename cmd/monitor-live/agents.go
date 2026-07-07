@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -185,16 +184,15 @@ func createExecutor(
 // createChatClient creates a FailoverClient from the LLM config for Chat API support.
 // Both *llm.Client and *llm.FailoverClient satisfy the sub.ChatClient interface.
 func createChatClient(cfg *ares_config.Config) (sub.ChatClient, error) {
-	configs := []*llm.Config{
-		{
-			Provider:  cfg.LLM.Provider,
-			APIKey:    cfg.LLM.APIKey,
-			BaseURL:   cfg.LLM.BaseURL,
-			Model:     cfg.LLM.Model,
-			Timeout:   cfg.LLM.Timeout,
-			MaxTokens: cfg.LLM.MaxTokens,
-		},
-	}
+	configs := make([]*llm.Config, 0, 1+len(cfg.LLM.Fallbacks))
+	configs = append(configs, &llm.Config{
+		Provider:  cfg.LLM.Provider,
+		APIKey:    cfg.LLM.APIKey,
+		BaseURL:   cfg.LLM.BaseURL,
+		Model:     cfg.LLM.Model,
+		Timeout:   cfg.LLM.Timeout,
+		MaxTokens: cfg.LLM.MaxTokens,
+	})
 	for _, fb := range cfg.LLM.Fallbacks {
 		provider := fb.Provider
 		if provider == "" {
@@ -240,13 +238,13 @@ func submitTasks(ctx context.Context, agent leader.Agent) {
 		}
 
 		task := tasks[i%len(tasks)]
-		slog.Info("submitting task", "num", i+1, "input", task)
+		lg.Info("submitting task", "num", i+1, "input", task)
 
 		result, err := agent.Process(ctx, task)
 		if err != nil {
-			slog.Error("task failed", "num", i+1, "error", err)
+			lg.Error("task failed", "num", i+1, "error", err)
 		} else if result != nil {
-			slog.Info("task completed", "num", i+1)
+			lg.Info("task completed", "num", i+1)
 		}
 
 		select {

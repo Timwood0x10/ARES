@@ -4,6 +4,8 @@ package client
 import (
 	"context"
 	"time"
+
+	"github.com/Timwood0x10/ares/api/core"
 )
 
 // ServiceStatus represents the health status of a single service.
@@ -42,7 +44,7 @@ type HealthReport struct {
 // Returns:
 //
 //	ServiceStatus with availability, latency, and error info.
-func checkLLMHealth(ctx context.Context, svc interface{ IsEnabled() bool }) ServiceStatus {
+func checkLLMHealth(ctx context.Context, svc core.LLMService) ServiceStatus {
 	if svc == nil {
 		return ServiceStatus{
 			Available: false,

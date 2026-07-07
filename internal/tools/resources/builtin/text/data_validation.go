@@ -88,11 +88,12 @@ func (t *DataValidation) validateJSON(ctx context.Context, data string) (core.Re
 	_, isArray := js.([]interface{})
 
 	var jsonType string
-	if isObject {
+	switch {
+	case isObject:
 		jsonType = "object"
-	} else if isArray {
+	case isArray:
 		jsonType = "array"
-	} else {
+	default:
 		jsonType = "primitive"
 	}
 

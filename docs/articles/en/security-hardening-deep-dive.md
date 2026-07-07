@@ -2925,7 +2925,7 @@ func WireSecurityComponents(ctx context.Context, deps *SecurityDeps) (*WiredSecu
 }
 ```
 
-One function call, nine components wired. Same philosophy as `WireAllEvolutionComponents()` from Article XI — hide complexity behind a clean interface, let callers get everything they need in one shot.
+One function call, nine components wired. Same philosophy as `ares_bootstrap.Bootstrap()` from Article XI — hide complexity behind a clean interface, let callers get everything they need in one shot.
 
 ### Usage in Application Code
 

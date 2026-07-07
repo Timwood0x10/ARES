@@ -177,15 +177,15 @@ func (r *MMBacktestRunner) Run(ctx context.Context, events []MarketDataEvent) (*
 			fillSpreadIncome := (qd.AskPrice - qd.BidPrice) * fill.Quantity / 2
 			spreadCapture += fillSpreadIncome
 
-			if prevMid > 0 && fill.Side == "buy" && mid < prevMid {
+			if prevMid > 0 && fill.Side == orderSideBuy && mid < prevMid {
 				adverseSelection += math.Abs(prevMid-mid) * fill.Quantity
-			} else if prevMid > 0 && fill.Side == "sell" && mid > prevMid {
+			} else if prevMid > 0 && fill.Side == orderSideSell && mid > prevMid {
 				adverseSelection += math.Abs(mid-prevMid) * fill.Quantity
 			}
 
 			tradeID++
 			tradePnL := 0.0
-			if fill.Side == "sell" {
+			if fill.Side == orderSideSell {
 				pos := inv.GetPosition(evt.Symbol)
 				if pos != nil && pos.AvgEntryPrice > 0 {
 					tradePnL = (fill.Price - pos.AvgEntryPrice) * fill.Quantity
@@ -250,13 +250,13 @@ func (r *MMBacktestRunner) simulateFill(qd *Quote, mid float64, ts time.Time) []
 
 	if mid <= qd.BidPrice {
 		fills = append(fills, &Fill{
-			Symbol: qd.Symbol, Side: "buy",
+			Symbol: qd.Symbol, Side: orderSideBuy,
 			Price: qd.BidPrice, Quantity: qd.BidSize, Timestamp: ts,
 		})
 	}
 	if mid >= qd.AskPrice {
 		fills = append(fills, &Fill{
-			Symbol: qd.Symbol, Side: "sell",
+			Symbol: qd.Symbol, Side: orderSideSell,
 			Price: qd.AskPrice, Quantity: qd.AskSize, Timestamp: ts,
 		})
 	}
@@ -273,7 +273,7 @@ func processFill(inv *Inventory, fill *Fill, commission, slippage float64) {
 	fee := fillValue * commission
 	slippageCost := fillValue * slippage
 
-	if fill.Side == "buy" {
+	if fill.Side == orderSideBuy {
 		inv.Cash -= (fillValue + fee + slippageCost)
 	} else {
 		inv.Cash += (fillValue - fee - slippageCost)
@@ -286,18 +286,19 @@ func processFill(inv *Inventory, fill *Fill, commission, slippage float64) {
 	}
 
 	oldQty := pos.Quantity
-	if fill.Side == "buy" {
+	if fill.Side == orderSideBuy {
 		pos.Quantity += fill.Quantity
 	} else {
 		pos.Quantity -= fill.Quantity
 	}
 
-	if oldQty == 0 {
+	switch {
+	case oldQty == 0:
 		pos.AvgEntryPrice = fill.Price
-	} else if oldQty*pos.Quantity > 0 {
+	case oldQty*pos.Quantity > 0:
 		totalValue := math.Abs(oldQty)*pos.AvgEntryPrice + fill.Quantity*fill.Price
 		pos.AvgEntryPrice = totalValue / math.Abs(pos.Quantity)
-	} else {
+	default:
 		pos.AvgEntryPrice = fill.Price
 	}
 

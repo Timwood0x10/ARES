@@ -7,7 +7,7 @@ package repositories
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	golog "log"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -44,7 +44,7 @@ func getTestDB(t *testing.T) *sql.DB {
 		return nil
 	}
 
-	log.Printf("Connected to test database: %s", dbname)
+	golog.Printf("Connected to test database: %s", dbname)
 
 	// Create required tables if they don't exist
 	if err := createTestTables(t, db); err != nil {

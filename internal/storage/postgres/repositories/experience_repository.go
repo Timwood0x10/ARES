@@ -5,9 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -132,7 +130,7 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 // Returns experience or error if not found or invalid argument.
 func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage_models.Experience, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -152,7 +150,7 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get experience by id")
@@ -206,7 +204,7 @@ func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.E
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -287,7 +285,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -351,7 +349,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -408,7 +406,7 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -439,7 +437,7 @@ func (r *ExperienceRepository) UpdateScore(ctx context.Context, id string, score
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -495,7 +493,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experiences", "error", err)
+		log.Error("Failed to iterate experiences", "error", err)
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
@@ -531,7 +529,7 @@ func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, e
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -593,7 +591,7 @@ func (r *ExperienceRepository) GetStatistics(ctx context.Context, tenantID strin
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate experience statistics", "error", err)
+		log.Error("Failed to iterate experience statistics", "error", err)
 		return nil, errors.Wrap(err, "iterate experience statistics")
 	}
 
@@ -608,7 +606,7 @@ func (r *ExperienceRepository) GetStatistics(ctx context.Context, tenantID strin
 // Returns error if update operation fails.
 func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id string) error {
 	if id == "" {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -629,7 +627,7 @@ func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id strin
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -644,7 +642,7 @@ func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id strin
 // Returns error if update operation fails.
 func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) error {
 	if id == "" {
-		return coreerrors.ErrInvalidArgument
+		return errors.ErrInvalidArgument
 	}
 
 	// Apply a 10% score penalty, with a floor of 0.
@@ -666,7 +664,7 @@ func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) err
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

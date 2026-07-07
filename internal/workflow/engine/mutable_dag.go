@@ -546,6 +546,8 @@ func (m *MutableDAG) recalculateDegrees() {
 // Cycle detection is performed on a simulated adjacency list of the post-replacement
 // graph before any mutation is applied, so the operation is atomic with respect to
 // consistency — no rollback logic is needed.
+//
+//nolint:gocyclo // Complex DAG node replacement with dependency updates
 func (m *MutableDAG) ReplaceNode(ctx context.Context, oldID string, newStep *Step) error {
 	if err := ctx.Err(); err != nil {
 		return err

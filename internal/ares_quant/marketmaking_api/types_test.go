@@ -15,8 +15,8 @@ func TestMode_String(t *testing.T) {
 		{ModeBacktest, "backtest"},
 		{ModePaper, "paper"},
 		{ModeLive, "live"},
-		{Mode(0), "unknown"},
-		{Mode(99), "unknown"},
+		{Mode(0), ModeUnknown},
+		{Mode(99), ModeUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -36,7 +36,7 @@ func TestMode_IotaStart(t *testing.T) {
 // TestQuoteDecision_JSONTags verifies QuoteDecision has proper JSON tags.
 func TestQuoteDecision_JSONTags(t *testing.T) {
 	q := &QuoteDecision{
-		Symbol:    "BTCUSDT",
+		Symbol:    SymbolBTCUSDT,
 		BidPrice:  50000.0,
 		AskPrice:  50010.0,
 		BidSize:   1.5,
@@ -45,7 +45,7 @@ func TestQuoteDecision_JSONTags(t *testing.T) {
 		RiskState: "normal",
 		Reason:    "spread 2 bps",
 	}
-	require.Equal(t, "BTCUSDT", q.Symbol)
+	require.Equal(t, SymbolBTCUSDT, q.Symbol)
 	require.Equal(t, 50000.0, q.BidPrice)
 	require.Equal(t, "normal", q.RiskState)
 }
@@ -54,7 +54,7 @@ func TestQuoteDecision_JSONTags(t *testing.T) {
 func TestTradeRecord_Structure(t *testing.T) {
 	trade := TradeRecord{
 		ID:       "trade-001",
-		Symbol:   "ETHUSDT",
+		Symbol:   SymbolETHUSDT,
 		Side:     "buy",
 		Price:    3000.0,
 		Quantity: 2.0,
@@ -69,7 +69,7 @@ func TestTradeRecord_Structure(t *testing.T) {
 func TestRiskBreach_Structure(t *testing.T) {
 	breach := RiskBreach{
 		LimitName:    "max_position",
-		Symbol:       "BTCUSDT",
+		Symbol:       SymbolBTCUSDT,
 		CurrentValue: 15.0,
 		LimitValue:   10.0,
 	}
@@ -80,12 +80,12 @@ func TestRiskBreach_Structure(t *testing.T) {
 // TestPosition_Structure verifies Position fields.
 func TestPosition_Structure(t *testing.T) {
 	pos := Position{
-		Symbol:        "BTCUSDT",
+		Symbol:        SymbolBTCUSDT,
 		Quantity:      5.0,
 		AvgEntryPrice: 50000.0,
 		UnrealizedPnL: 2500.0,
 		LastPrice:     50500.0,
 	}
-	require.Equal(t, "BTCUSDT", pos.Symbol)
+	require.Equal(t, SymbolBTCUSDT, pos.Symbol)
 	require.True(t, pos.Quantity > 0) // long position
 }

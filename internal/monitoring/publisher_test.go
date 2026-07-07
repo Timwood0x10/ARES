@@ -179,7 +179,7 @@ func TestPublisher_HandleConsole(t *testing.T) {
 	mp := NewMainPage()
 	p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/console", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/console", nil)
 	w := httptest.NewRecorder()
 	p.HandleConsole(w, req)
 
@@ -195,7 +195,7 @@ func TestPublisher_HandleDAG(t *testing.T) {
 	mp := NewMainPage()
 	p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/dag", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/dag", nil)
 	w := httptest.NewRecorder()
 	p.HandleDAG(w, req)
 
@@ -206,7 +206,7 @@ func TestPublisher_HandleCostBar(t *testing.T) {
 	mp := NewMainPage()
 	p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cost-bar", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cost-bar", nil)
 	w := httptest.NewRecorder()
 	p.HandleCostBar(w, req)
 
@@ -217,7 +217,7 @@ func TestPublisher_HandleAgents(t *testing.T) {
 	mp := NewMainPage()
 	p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents", nil)
 	w := httptest.NewRecorder()
 	p.HandleAgents(w, req)
 
@@ -229,7 +229,7 @@ func TestPublisher_HandleAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/agents/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents/", nil)
 		w := httptest.NewRecorder()
 		p.HandleAgent(w, req)
 
@@ -242,7 +242,7 @@ func TestPublisher_HandleAgent(t *testing.T) {
 		mp := NewMainPage(WithDetailPanel(dp))
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/agents/missing", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents/missing", nil)
 		w := httptest.NewRecorder()
 		// Override path for handler.
 		req.URL.Path = "/api/agents/missing"
@@ -255,7 +255,7 @@ func TestPublisher_HandleAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/agents/a1", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents/a1", nil)
 		w := httptest.NewRecorder()
 		p.HandleAgent(w, req)
 
@@ -268,7 +268,7 @@ func TestPublisher_HandleKillAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
 		w := httptest.NewRecorder()
 		p.HandleKillAgent(w, req)
 
@@ -284,7 +284,7 @@ func TestPublisher_HandleKillAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/agents/a1/kill", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/agents/a1/kill", nil)
 		w := httptest.NewRecorder()
 		p.HandleKillAgent(w, req)
 
@@ -303,7 +303,7 @@ func TestPublisher_HandleKillAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp, WithInteractionEngine(engine))
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
 		w := httptest.NewRecorder()
 		p.HandleKillAgent(w, req)
 
@@ -327,7 +327,7 @@ func TestPublisher_HandleKillAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp, WithInteractionEngine(engine))
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/kill", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
 		w := httptest.NewRecorder()
 		p.HandleKillAgent(w, req)
 
@@ -340,7 +340,7 @@ func TestPublisher_HandleResumeAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/resume", nil)
 		w := httptest.NewRecorder()
 		p.HandleResumeAgent(w, req)
 
@@ -359,7 +359,7 @@ func TestPublisher_HandleResumeAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp, WithInteractionEngine(engine))
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/resume", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/resume", nil)
 		w := httptest.NewRecorder()
 		p.HandleResumeAgent(w, req)
 
@@ -381,7 +381,7 @@ func TestPublisher_HandleRetryAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/retry", nil)
 		w := httptest.NewRecorder()
 		p.HandleRetryAgent(w, req)
 
@@ -400,7 +400,7 @@ func TestPublisher_HandleRetryAgent(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp, WithInteractionEngine(engine))
 
-		req := httptest.NewRequest(http.MethodPost, "/api/agents/a1/retry", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/retry", nil)
 		w := httptest.NewRecorder()
 		p.HandleRetryAgent(w, req)
 
@@ -424,7 +424,7 @@ func TestPublisher_HandleTab(t *testing.T) {
 		mp := NewMainPage(WithTabs(map[string]Tab{"events": tab}))
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/tabs/events", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tabs/events", nil)
 		w := httptest.NewRecorder()
 		p.HandleTab(w, req)
 
@@ -435,7 +435,7 @@ func TestPublisher_HandleTab(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/tabs/missing", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tabs/missing", nil)
 		w := httptest.NewRecorder()
 		p.HandleTab(w, req)
 
@@ -446,7 +446,7 @@ func TestPublisher_HandleTab(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/tabs/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/tabs/", nil)
 		w := httptest.NewRecorder()
 		p.HandleTab(w, req)
 
@@ -458,7 +458,7 @@ func TestPublisher_HandleCost(t *testing.T) {
 	mp := NewMainPage()
 	p := NewPublisher(mp)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cost", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cost", nil)
 	w := httptest.NewRecorder()
 	p.HandleCost(w, req)
 
@@ -470,7 +470,7 @@ func TestPublisher_HandleTrace(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/traces/trace-1", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/traces/trace-1", nil)
 		w := httptest.NewRecorder()
 		p.HandleTrace(w, req)
 
@@ -481,7 +481,7 @@ func TestPublisher_HandleTrace(t *testing.T) {
 		mp := NewMainPage()
 		p := NewPublisher(mp)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/traces/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/traces/", nil)
 		w := httptest.NewRecorder()
 		p.HandleTrace(w, req)
 
@@ -513,7 +513,7 @@ func TestPublisher_RegisterRoutes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)
 			assert.Equal(t, tt.want, w.Code)

@@ -115,7 +115,7 @@ func (c *MarketMakingConfig) Validate() error {
 //	config - a pre-populated configuration that passes Validate.
 func DefaultConfig() *MarketMakingConfig {
 	return &MarketMakingConfig{
-		Symbols: []string{"BTCUSDT"},
+		Symbols: []string{SymbolBTCUSDT},
 		Mode:    ModePaper,
 		RiskLimits: RiskLimitConfig{
 			MaxPosition:      10.0,
@@ -127,7 +127,7 @@ func DefaultConfig() *MarketMakingConfig {
 			SymbolFormat: "{BASE}{QUOTE}",
 		},
 		ExecutionGateway: ExecutionGatewayConfig{
-			Type:     "rest",
+			Type:     ModeREST,
 			Endpoint: "",
 			APIKey:   "",
 		},

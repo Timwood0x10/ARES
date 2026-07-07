@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 )
 
@@ -74,7 +73,7 @@ func (p *ToolPlugin) AfterStep(_ context.Context, executionID string, result *St
 			output = result.Error
 		}
 		p.collector.RecordTool(result.StepID, toolName, "", output, result.Duration, success)
-		slog.Debug("tool plugin: recorded tool call",
+		log.Debug("tool plugin: recorded tool call",
 			"execution_id", executionID,
 			"step_id", result.StepID,
 			"tool", toolName,

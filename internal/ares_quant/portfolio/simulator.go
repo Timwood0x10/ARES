@@ -440,6 +440,8 @@ func formatSummary(
 // Returns:
 //   - populated MultiAssetResult with combined metrics and per-symbol positions.
 //   - error if data loading or execution fails.
+//
+//nolint:gocyclo // Complex multi-asset simulation with portfolio management
 func (s *MultiAssetSimulator) RunMultiAssetSimulation(
 	ctx context.Context,
 	symbols []string,
@@ -741,14 +743,14 @@ func formatMultiSummary(
 //   - error if directory creation or file write fails.
 func SaveSimulationResult(result *SimulationResult, outPath string) error {
 	dir := filepath.Dir(outPath)
-	if err := os.MkdirAll(dir, 0o750); err != nil { //nosec G301
+	if err := os.MkdirAll(dir, 0o750); err != nil { // nosec G301
 		return fmt.Errorf("create output dir: %w", err)
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
-	if err := os.WriteFile(outPath, data, 0o600); err != nil { //nosec G306
+	if err := os.WriteFile(outPath, data, 0o600); err != nil { // nosec G306
 		return fmt.Errorf("write result: %w", err)
 	}
 	return nil

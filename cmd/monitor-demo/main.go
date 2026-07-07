@@ -14,6 +14,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 )
 
+const (
+	LeaderID        = "leader-1"
+	ModelGPT35Turbo = "openai/gpt-3.5-turbo"
+	KeyAgentID      = "agent_id"
+	KeyTaskID       = "task_id"
+)
+
 func main() {
 	bus := ares_runtime.NewPluginBus()
 	tracker := data.NewAgentTracker()
@@ -34,9 +41,9 @@ func main() {
 	).(*monitoring.MonitorPlugin)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if err := plugin.Start(ctx, bus); err != nil {
+		cancel()
 		log.Fatalf("start plugin: %v", err)
 	}
 
@@ -52,8 +59,10 @@ func main() {
 	fmt.Println()
 
 	if err := server.Run(addr); err != nil {
+		cancel()
 		log.Fatal(err)
 	}
+	defer cancel()
 }
 
 // simulateWorkload emits a stream of realistic events.
@@ -64,27 +73,27 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 		role  string
 		model string
 	}{
-		{"leader-1", "leader", "orchestrator", "llama3.2"},
-		{"coder-a", "coder-alpha", "coder", "openai/gpt-3.5-turbo"},
-		{"coder-b", "coder-beta", "coder", "openai/gpt-3.5-turbo"},
+		{LeaderID, "leader", "orchestrator", "llama3.2"},
+		{"coder-a", "coder-alpha", "coder", ModelGPT35Turbo},
+		{"coder-b", "coder-beta", "coder", ModelGPT35Turbo},
 		{"reviewer-1", "reviewer", "reviewer", "llama3.2"},
-		{"researcher-1", "researcher", "research", "openai/gpt-3.5-turbo"},
+		{"researcher-1", "researcher", "research", ModelGPT35Turbo},
 	}
 
 	// Start agents with staggered delays and parent relationships.
-	// leader-1 is the root; coder-a, coder-b, reviewer-1 are children of leader;
+	// LeaderID is the root; coder-a, coder-b, reviewer-1 are children of leader;
 	// researcher-1 is a peer of leader (no parent).
 	parents := map[string]string{
-		"leader-1":     "",
-		"coder-a":      "leader-1",
-		"coder-b":      "leader-1",
-		"reviewer-1":   "leader-1",
+		LeaderID:       "",
+		"coder-a":      LeaderID,
+		"coder-b":      LeaderID,
+		"reviewer-1":   LeaderID,
 		"researcher-1": "",
 	}
 	for i, a := range agents {
 		time.Sleep(time.Duration(500+i*300) * time.Millisecond)
 		payload := map[string]any{
-			"agent_id":   a.id,
+			KeyAgentID:   a.id,
 			"name":       a.name,
 			"role":       a.role,
 			"model_name": a.model,
@@ -113,7 +122,7 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 			outTokens := int64(50 + rand.Intn(800))
 			cost := float64(inTokens)*0.000003 + float64(outTokens)*0.000015
 			bus.Emit(ctx, agent.id, ares_events.EventLLMCall, agent.id, map[string]any{
-				"agent_id":       agent.id,
+				KeyAgentID:       agent.id,
 				"model":          agent.model,
 				"input_tokens":   inTokens,
 				"output_tokens":  outTokens,
@@ -125,12 +134,12 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 			tools := []string{"codegraph_files", "grep", "read_file", "write_file", "bash", "web_search"}
 			tool := tools[rand.Intn(len(tools))]
 			bus.Emit(ctx, agent.id, ares_events.EventToolCallStarted, agent.id, map[string]any{
-				"agent_id":  agent.id,
+				KeyAgentID:  agent.id,
 				"tool_name": tool,
 			})
 			time.Sleep(time.Duration(50+rand.Intn(500)) * time.Millisecond)
 			bus.Emit(ctx, agent.id, ares_events.EventToolCallCompleted, agent.id, map[string]any{
-				"agent_id":  agent.id,
+				KeyAgentID:  agent.id,
 				"tool_name": tool,
 				"duration":  time.Duration(50+rand.Intn(500)) * time.Millisecond,
 			})
@@ -141,29 +150,29 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 			taskNames := []string{"analyze code", "fix bug", "write tests", "refactor module", "review PR", "deploy service", "build graph", "run evaluation"}
 			taskName := taskNames[rand.Intn(len(taskNames))]
 			bus.Emit(ctx, agent.id, ares_events.EventTaskCreated, agent.id, map[string]any{
-				"task_id":  tid,
-				"agent_id": agent.id,
+				KeyTaskID:  tid,
+				KeyAgentID: agent.id,
 				"name":     taskName,
 			})
 			go func(aid, tid string, fail bool) {
 				time.Sleep(time.Duration(1+rand.Intn(5)) * time.Second)
 				if fail {
 					bus.Emit(ctx, aid, ares_events.EventTaskFailed, aid, map[string]any{
-						"task_id":  tid,
-						"agent_id": aid,
+						KeyTaskID:  tid,
+						KeyAgentID: aid,
 						"error":    "timeout exceeded",
 					})
 				} else {
 					bus.Emit(ctx, aid, ares_events.EventTaskCompleted, aid, map[string]any{
-						"task_id":  tid,
-						"agent_id": aid,
+						KeyTaskID:  tid,
+						KeyAgentID: aid,
 					})
 				}
 			}(agent.id, tid, rand.Float64() < 0.15)
 
 		case 3: // Memory distillation
 			bus.Emit(ctx, agent.id, ares_events.EventMemoryDistilled, agent.id, map[string]any{
-				"agent_id":  agent.id,
+				KeyAgentID:  agent.id,
 				"content":   fmt.Sprintf("Learned pattern: %s approach works best for %s tasks", agent.role, agent.name),
 				"relevance": 0.5 + rand.Float64()*0.5,
 			})
@@ -171,12 +180,12 @@ func simulateWorkload(ctx context.Context, bus ares_runtime.EventBus) {
 		case 4: // Failover (rare)
 			if rand.Float64() < 0.05 {
 				bus.Emit(ctx, agent.id, ares_events.EventFailoverTriggered, agent.id, map[string]any{
-					"agent_id":   agent.id,
+					KeyAgentID:   agent.id,
 					"fault_type": "crash",
 				})
 				time.Sleep(time.Duration(500+rand.Intn(1500)) * time.Millisecond)
 				bus.Emit(ctx, agent.id, ares_events.EventFailoverCompleted, agent.id, map[string]any{
-					"agent_id": agent.id,
+					KeyAgentID: agent.id,
 					"status":   "completed",
 				})
 			}

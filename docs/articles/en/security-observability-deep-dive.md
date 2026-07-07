@@ -26,7 +26,7 @@ Core file list:
 | Graceful Shutdown | `internal/ares_shutdown/` (four source files) |
 | Middleware Pattern | `internal/dashboard/api.go`, `internal/arena/http.go` |
 | End-to-End Integration | `internal/workflow/graph/graph.go`, `.../executor.go` |
-| API Layer Integration | `api/service/graph/service.go` |
+| API Layer Integration | `api/service/workflow/service.go` |
 
 ---
 
@@ -411,7 +411,7 @@ These four modules do not exist in isolation; they work closely together in the 
 
 ### 7.1 Injection Entry Point at the API Layer
 
-In `api/service/graph/service.go`'s `Service.Execute()`:
+In `api/service/workflow/service.go`'s `Service.Execute()`:
 
 ```go
 func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *ExecuteRequest) (*ExecuteResponse, error) {

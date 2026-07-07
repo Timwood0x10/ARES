@@ -593,12 +593,12 @@ func groupByTurnID(messages []Message) [][]Message {
 // Leading system messages are grouped with the first turn.
 func groupByUserBoundary(messages []Message) [][]Message {
 	var turns [][]Message
-	var current []Message
+	current := make([]Message, 0, len(messages))
 
 	for _, msg := range messages {
 		if msg.Role == RoleUser && len(current) > 0 && hasUserIn(current) {
 			turns = append(turns, current)
-			current = nil
+			current = make([]Message, 0, len(messages))
 		}
 		current = append(current, msg)
 	}

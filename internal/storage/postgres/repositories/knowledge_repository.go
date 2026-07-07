@@ -6,11 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -183,7 +181,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 	}
 
 	if r.dbPool == nil {
-		return coreerrors.ErrNoTransaction
+		return errors.ErrNoTransaction
 	}
 
 	tx, err := r.dbPool.BeginTx(ctx, nil)
@@ -194,7 +192,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 	defer func() {
 		if !committed {
 			if err := tx.Rollback(); err != nil {
-				slog.Error("Failed to rollback transaction", "error", err)
+				log.Error("Failed to rollback transaction", "error", err)
 			}
 		}
 	}()
@@ -263,6 +261,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 				createdAt, updatedAt)
 		}
 
+		//nolint:gosec // G201: Safe SQL formatting - columns hardcoded, values parameterized
 		query := fmt.Sprintf(`
 			INSERT INTO knowledge_chunks_1024
 			(%s)
@@ -315,7 +314,7 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 // Returns knowledge chunk or error if not found or invalid argument.
 func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_models.KnowledgeChunk, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -338,7 +337,7 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get knowledge chunk by id")
@@ -405,7 +404,7 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -428,7 +427,7 @@ func (r *KnowledgeRepository) Delete(ctx context.Context, id string) error {
 // limit - maximum number of results to return.
 // Returns list of similar knowledge chunks ordered by similarity.
 func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
-	slog.Info("SearchByVector called",
+	log.Info("SearchByVector called",
 		"embedding_length", len(embedding),
 		"tenant_id", tenantID,
 		"limit", limit)
@@ -451,15 +450,15 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	if previewLen > 100 {
 		previewLen = 100
 	}
-	slog.Info("Vector search query", "vector_length", len(vectorStr), "vector_preview", vectorStr[:previewLen])
+	log.Info("Vector search query", "vector_length", len(vectorStr), "vector_preview", vectorStr[:previewLen])
 
 	rows, err := r.db.QueryContext(ctx, query, vectorStr, tenantID, limit)
 	if err != nil {
-		slog.Error("Vector search query failed", "error", err)
+		log.Error("Vector search query failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
 	}
 
-	slog.Info("Vector search query succeeded")
+	log.Info("Vector search query succeeded")
 	defer func() { _ = rows.Close() }()
 
 	chunks := make([]*storage_models.KnowledgeChunk, 0)
@@ -479,21 +478,21 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 			&chunk.CreatedAt, &chunk.UpdatedAt, &similarity,
 		)
 		if err != nil {
-			slog.Warn("Failed to scan row", "row", rowCount, "error", err)
+			log.Warn("Failed to scan row", "row", rowCount, "error", err)
 			continue
 		}
 
 		// Parse embedding string to []float64
 		chunk.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
-			slog.Warn("Failed to parse embedding", "row", rowCount, "error", err)
+			log.Warn("Failed to parse embedding", "row", rowCount, "error", err)
 			continue
 		}
 
 		// Parse metadata JSON string to map
 		if metadataStr != "" {
 			if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
-				slog.Warn("Failed to parse metadata", "row", rowCount, "error", err)
+				log.Warn("Failed to parse metadata", "row", rowCount, "error", err)
 				chunk.Metadata = make(map[string]interface{})
 			}
 		}
@@ -514,11 +513,11 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate knowledge chunks", "error", err)
+		log.Error("Failed to iterate knowledge chunks", "error", err)
 		return nil, errors.Wrap(err, "iterate knowledge chunks")
 	}
 
-	slog.Info("Vector search completed", "rows_scanned", rowCount, "chunks_returned", len(chunks))
+	log.Info("Vector search completed", "rows_scanned", rowCount, "chunks_returned", len(chunks))
 
 	return chunks, nil
 }
@@ -585,7 +584,7 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate knowledge chunks", "error", err)
+		log.Error("Failed to iterate knowledge chunks", "error", err)
 		return nil, errors.Wrap(err, "iterate knowledge chunks")
 	}
 
@@ -644,7 +643,7 @@ func (r *KnowledgeRepository) ListByDocument(ctx context.Context, documentID, te
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate knowledge chunks", "error", err)
+		log.Error("Failed to iterate knowledge chunks", "error", err)
 		return nil, errors.Wrap(err, "iterate knowledge chunks")
 	}
 
@@ -719,7 +718,7 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate knowledge chunks", "error", err)
+		log.Error("Failed to iterate knowledge chunks", "error", err)
 		return nil, errors.Wrap(err, "iterate knowledge chunks")
 	}
 
@@ -756,7 +755,7 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -787,7 +786,7 @@ func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, id, sta
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil

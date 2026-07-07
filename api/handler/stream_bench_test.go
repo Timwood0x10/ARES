@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func BenchmarkStreamHandler_HandleStream(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("POST", "/api/v1/stream", strings.NewReader(`{"query": "test"}`))
+		req := httptest.NewRequestWithContext(context.Background(), "POST", "/api/v1/stream", strings.NewReader(`{"query": "test"}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
@@ -50,21 +51,21 @@ func BenchmarkStreamHandler_MultipleEvents(b *testing.B) {
 	handler := NewStreamHandler()
 
 	// Simulate a larger number of events
-	events := make([]base.AgentEvent, 100)
-	for i := range events {
+	events := make([]base.AgentEvent, 101)
+	for i := 0; i < 100; i++ {
 		events[i] = base.AgentEvent{
 			Type:   base.EventTaskProgress,
 			Source: "test",
 			Data:   "progress update",
 		}
 	}
-	events = append(events, base.AgentEvent{Type: base.EventComplete, Source: "test", Data: "done"})
+	events[100] = base.AgentEvent{Type: base.EventComplete, Source: "test", Data: "done"}
 
 	processor := &MockAgentProcessor{events: events}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest("POST", "/api/v1/stream", strings.NewReader(`{"query": "test"}`))
+		req := httptest.NewRequestWithContext(context.Background(), "POST", "/api/v1/stream", strings.NewReader(`{"query": "test"}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 

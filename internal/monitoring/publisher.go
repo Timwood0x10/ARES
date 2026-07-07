@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
+)
+
+const (
+	apiAgentsPath = "/api/agents/"
 )
 
 // Sentinel errors for the publisher.
@@ -184,7 +187,7 @@ func (p *Publisher) HandleAgents(w http.ResponseWriter, r *http.Request) {
 // HandleAgent returns a single agent's detail as JSON.
 // The agent ID is extracted from the URL path: /api/agents/{id}
 func (p *Publisher) HandleAgent(w http.ResponseWriter, r *http.Request) {
-	agentID := extractPathID(r.URL.Path, "/api/agents/")
+	agentID := extractPathID(r.URL.Path, apiAgentsPath)
 	if agentID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing agent ID"})
 		return
@@ -211,7 +214,7 @@ func (p *Publisher) executeNodeAction(w http.ResponseWriter, r *http.Request, ac
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
 		return
 	}
-	agentID := extractPathID(r.URL.Path, "/api/agents/")
+	agentID := extractPathID(r.URL.Path, apiAgentsPath)
 	if agentID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing agent ID"})
 		return
@@ -223,10 +226,10 @@ func (p *Publisher) executeNodeAction(w http.ResponseWriter, r *http.Request, ac
 
 	if engine == nil {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"action":   action,
-			"agent_id": agentID,
-			"status":   "not_implemented",
-			"error":    "interaction engine not wired to publisher",
+			fieldAction: action,
+			"agent_id":  agentID,
+			"status":    "not_implemented",
+			"error":     "interaction engine not wired to publisher",
 		})
 		return
 	}
@@ -234,10 +237,10 @@ func (p *Publisher) executeNodeAction(w http.ResponseWriter, r *http.Request, ac
 	result, err := engine.ExecuteAction(r.Context(), agentID, action)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"action":   action,
-			"agent_id": agentID,
-			"status":   "error",
-			"error":    err.Error(),
+			fieldAction: action,
+			"agent_id":  agentID,
+			"status":    "error",
+			"error":     err.Error(),
 		})
 		return
 	}
@@ -398,7 +401,7 @@ func extractPathID(path, prefix string) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		slog.Error("writeJSON: encode failed", "error", err, "status", status)
+		log.Error("writeJSON: encode failed", "error", err, "status", status)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal encoding error"}`))

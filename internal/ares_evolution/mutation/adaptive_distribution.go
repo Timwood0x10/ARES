@@ -3,7 +3,6 @@ package mutation
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"sync"
 )
@@ -415,7 +414,7 @@ func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	ad.promptProb = Clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
 	ad.toolProb = Clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
 
-	slog.Debug("adaptive distribution adjusted",
+	log.Debug("adaptive distribution adjusted",
 		"param_prob", ad.paramProb,
 		"prompt_prob", ad.promptProb,
 		"tool_prob", ad.toolProb,

@@ -6,12 +6,18 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	gerr "github.com/Timwood0x10/ares/internal/errors"
+)
+
+const (
+	ollamaDefaultURL     = "http://localhost:11434"
+	keyOllamaModel       = "model"
+	keyOllamaStream      = "stream"
+	keyOllamaTemperature = "temperature"
 )
 
 // Ollama errors.
@@ -32,7 +38,7 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 		config = &Config{}
 	}
 	if config.BaseURL == "" {
-		config.BaseURL = "http://localhost:11434"
+		config.BaseURL = ollamaDefaultURL
 	}
 	timeout := config.Timeout
 	if timeout <= 0 {
@@ -57,10 +63,10 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 // Generate generates text from prompt.
 func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"prompt":      prompt,
-		"stream":      false,
-		"temperature": a.config.Temperature,
+		keyOllamaModel:       a.config.Model,
+		"prompt":             prompt,
+		keyOllamaStream:      false,
+		keyOllamaTemperature: a.config.Temperature,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -82,7 +88,7 @@ func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, er
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			slog.Error("Failed to close response body", "error", err)
+			log.Error("Failed to close response body", "error", err)
 		}
 	}()
 
@@ -160,7 +166,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err := resp.Body.Close(); err != nil {
-			slog.Warn("ollama: close stream error response body", "error", err)
+			log.Warn("ollama: close stream error response body", "error", err)
 		}
 		return nil, gerr.Newf("ollama stream error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -171,7 +177,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 		defer close(ch)
 		defer func() {
 			if err := resp.Body.Close(); err != nil {
-				slog.Error("Failed to close stream response body", "error", err)
+				log.Error("Failed to close stream response body", "error", err)
 			}
 		}()
 

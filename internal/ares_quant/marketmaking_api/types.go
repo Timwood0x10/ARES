@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+// Common constants used across market-making API
+const (
+	// Symbol constants for test data
+	SymbolBTCUSDT = "BTCUSDT"
+	SymbolETHUSDT = "ETHUSDT"
+
+	// Mode type constants
+	ModeUnknown = "unknown"
+
+	// Chaos fault types
+	FaultReject           = "reject"
+	FaultLatency          = "latency"
+	FaultStaleData        = "stale_data"
+	FaultNetworkPartition = "network_partition"
+
+	// REST API mode
+	ModeREST = "rest"
+)
+
 // Mode represents the operating mode of the market-making system.
 type Mode int
 
@@ -31,7 +50,7 @@ func (m Mode) String() string {
 	case ModeLive:
 		return "live"
 	default:
-		return "unknown"
+		return ModeUnknown
 	}
 }
 

@@ -2,7 +2,6 @@ package evolution
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -219,7 +218,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	}
 
 	if s.adapter == nil {
-		slog.WarnContext(ctx, "[Evolution] Adapter is nil, skipping evolution")
+		log.WarnContext(ctx, "[Evolution] Adapter is nil, skipping evolution")
 		return
 	}
 
@@ -235,7 +234,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	triggerStr := s.trigger.String()
 	s.mu.Unlock()
 
-	slog.InfoContext(ctx, "[Evolution] Starting evolution cycle",
+	log.InfoContext(ctx, "[Evolution] Starting evolution cycle",
 		"agent_id", data.AgentID,
 		"trigger", triggerStr)
 
@@ -262,7 +261,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 
 	eg.Go(func() error {
 		if err := s.adapter.Run(egCtx); err != nil {
-			slog.ErrorContext(ctx, "[Evolution] Evolution cycle failed",
+			log.ErrorContext(ctx, "[Evolution] Evolution cycle failed",
 				"agent_id", data.AgentID,
 				"error", err)
 			return err
@@ -279,7 +278,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 	// in s.evolveEg so Shutdown() can wait for it.
 	go func() {
 		if err := eg.Wait(); err != nil {
-			slog.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
+			log.ErrorContext(ctx, "[Evolution] Evolution goroutine exited with error",
 				"error", err)
 		}
 	}()
@@ -289,7 +288,7 @@ func (s *EvolutionScheduler) OnAgentEnd(ctx context.Context, data CallbackData) 
 // It subscribes to EventAgentEnd events for triggering evolution cycles.
 func (s *EvolutionScheduler) Register() {
 	if s.ares_callbacks == nil {
-		slog.Warn("[Evolution] Callback registry is nil, cannot register")
+		log.Warn("[Evolution] Callback registry is nil, cannot register")
 		return
 	}
 
@@ -309,7 +308,7 @@ func (s *EvolutionScheduler) Register() {
 		s.OnAgentEnd(callbackCtx, data)
 	})
 
-	slog.Info("[Evolution] Scheduler registered for agent end events")
+	log.Info("[Evolution] Scheduler registered for agent end events")
 }
 
 // shouldEvolve determines if an evolution cycle should be triggered.
@@ -335,7 +334,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 	s.mu.Unlock()
 
 	if !lastRun.IsZero() && time.Since(lastRun) < minInterval {
-		slog.DebugContext(ctx, "[Evolution] Skipping: minimum interval not elapsed",
+		log.DebugContext(ctx, "[Evolution] Skipping: minimum interval not elapsed",
 			"last_run", lastRun.Format(time.RFC3339),
 			"min_interval", minInterval)
 		return false
@@ -355,7 +354,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		}
 		drop := (avg - recent) / avg
 		if drop >= degradationThreshold {
-			slog.InfoContext(ctx, "[Evolution] Score degradation detected",
+			log.InfoContext(ctx, "[Evolution] Score degradation detected",
 				"overall_avg", avg,
 				"recent_avg", recent,
 				"drop_pct", drop)
@@ -371,7 +370,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		if avg > 0 && recent > 0 {
 			drop := (avg - recent) / avg
 			if drop >= degradationThreshold {
-				slog.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",
+				log.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",
 					"overall_avg", avg,
 					"recent_avg", recent,
 					"drop_pct", drop)
@@ -380,7 +379,7 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 		}
 
 		if scoreCount >= periodicEvolutionScoreThreshold {
-			slog.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
+			log.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
 				"score_count", scoreCount)
 			return true
 		}
@@ -450,7 +449,7 @@ func (s *EvolutionScheduler) checkGuardrails(ctx context.Context) bool {
 	}
 	result := s.guardrails.PreEvolveCheck(ctx, avg, 0, totalPop, 0)
 	if result.ShouldStop {
-		slog.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
+		log.WarnContext(ctx, "[Evolution] Guardrails block evolution cycle",
 			"events", len(result.Events))
 		return false
 	}
@@ -518,7 +517,9 @@ func (s *EvolutionScheduler) Shutdown() {
 		cancel()
 	}
 	if eg != nil {
-		_ = eg.Wait()
+		if err := eg.Wait(); err != nil {
+			log.Warn("evolution scheduler: wait", "error", err)
+		}
 	}
 }
 

@@ -3,7 +3,6 @@ package mutation
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"sort"
 	"sync/atomic"
@@ -12,10 +11,10 @@ import (
 )
 
 // ErrNilParent is returned when a nil parent strategy is passed to Mutate.
-var ErrNilParent = fmt.Errorf("parent strategy must not be nil")
+// Errors are defined in errors.go.
 
 // ErrInvalidCount is returned when the requested mutation count is invalid.
-var ErrInvalidCount = fmt.Errorf("mutation count must be positive")
+// Errors are defined in errors.go.
 
 // Mutator generates mutated strategies from a parent strategy.
 // It supports parameter value mutations, prompt template mutations, and tool
@@ -122,13 +121,14 @@ func (m *Mutator) mutateOne(parent *Strategy, index int) (*Strategy, error) {
 	hasTool := len(m.toolPool) > 0
 
 	var paramProb, promptProb, toolProb float64
-	if hasPrompt && hasTool {
+	switch {
+	case hasPrompt && hasTool:
 		paramProb, promptProb, toolProb = 0.70, 0.15, 0.15
-	} else if hasPrompt {
+	case hasPrompt:
 		paramProb, promptProb, toolProb = 0.80, 0.20, 0.00
-	} else if hasTool {
+	case hasTool:
 		paramProb, promptProb, toolProb = 0.80, 0.00, 0.20
-	} else {
+	default:
 		paramProb, promptProb, toolProb = 1.00, 0.00, 0.00
 	}
 
@@ -175,11 +175,12 @@ func (m *Mutator) mutateOneWithProbs(parent *Strategy, index int, paramProb, pro
 	} else {
 		r := m.rng.Float64() * (paramProb + promptProb + toolProb)
 
-		if r < paramProb {
+		switch {
+		case r < paramProb:
 			child, err = m.mutateParameter(parent)
-		} else if r < paramProb+promptProb {
+		case r < paramProb+promptProb:
 			child, err = m.mutatePrompt(parent)
-		} else {
+		default:
 			child, err = m.mutateTool(parent)
 		}
 
@@ -387,7 +388,7 @@ func deepCopyParamRanges(src map[string]ParamRange) map[string]ParamRange {
 	for k, v := range src {
 		clonedValues, ok := cloneValue(v.Values).([]any)
 		if !ok {
-			slog.Warn("deepCopyParamRanges: unexpected type from cloneValue, falling back to nil Values",
+			log.Warn("deepCopyParamRanges: unexpected type from cloneValue, falling back to nil Values",
 				"key", k,
 				"type", fmt.Sprintf("%T", v.Values))
 			clonedValues = nil

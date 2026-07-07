@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -66,7 +65,7 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 		g.Go(func() error {
 			records, err := prov.Discover(gctx)
 			if err != nil {
-				slog.Warn("discovery: provider failed",
+				log.Warn("discovery: provider failed",
 					"provider", prov.Name(),
 					"error", err,
 				)
@@ -79,7 +78,9 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 			return nil
 		})
 	}
-	_ = g.Wait() // Errors are logged, not propagated.
+	if err := g.Wait(); err != nil {
+		log.Warn("discovery: engine wait", "error", err)
+	}
 
 	var allRecords []DiscoveryRecord
 	for _, r := range results {
@@ -105,7 +106,7 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 	for _, id := range added {
 		svc := newServices[id]
 		if err := e.store.Save(ctx, svc); err != nil {
-			slog.Warn("discovery: save failed", "id", id, "error", err)
+			log.Warn("discovery: save failed", "id", id, "error", err)
 			continue
 		}
 		e.emit(Event{
@@ -120,7 +121,7 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 	for _, id := range updated {
 		svc := newServices[id]
 		if err := e.store.Save(ctx, svc); err != nil {
-			slog.Warn("discovery: save failed", "id", id, "error", err)
+			log.Warn("discovery: save failed", "id", id, "error", err)
 			continue
 		}
 		e.emit(Event{
@@ -134,7 +135,7 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 
 	for _, id := range removed {
 		if err := e.store.Delete(ctx, id); err != nil {
-			slog.Warn("discovery: delete failed", "id", id, "error", err)
+			log.Warn("discovery: delete failed", "id", id, "error", err)
 			continue
 		}
 		e.emit(Event{
@@ -168,7 +169,7 @@ func (e *Engine) CheckHealth(ctx context.Context) error {
 	for _, svc := range services {
 		status, err := e.health.CheckHealth(ctx, svc)
 		if err != nil {
-			slog.Warn("discovery: health check error",
+			log.Warn("discovery: health check error",
 				"id", svc.Identity.ID,
 				"error", err,
 			)
@@ -182,7 +183,7 @@ func (e *Engine) CheckHealth(ctx context.Context) error {
 		svc.CheckedAt = &now
 
 		if err := e.store.Save(ctx, svc); err != nil {
-			slog.Warn("discovery: save health failed", "id", svc.Identity.ID, "error", err)
+			log.Warn("discovery: save health failed", "id", svc.Identity.ID, "error", err)
 			continue
 		}
 
@@ -208,7 +209,7 @@ func (e *Engine) StartAutoDiscovery(ctx context.Context, interval time.Duration)
 
 	go func() {
 		if err := e.DiscoverNow(ctx); err != nil {
-			slog.Warn("discovery: initial cycle failed", "error", err)
+			log.Warn("discovery: initial cycle failed", "error", err)
 		}
 
 		ticker := time.NewTicker(interval)
@@ -220,10 +221,10 @@ func (e *Engine) StartAutoDiscovery(ctx context.Context, interval time.Duration)
 				return
 			case <-ticker.C:
 				if err := e.DiscoverNow(ctx); err != nil {
-					slog.Warn("discovery: cycle failed", "error", err)
+					log.Warn("discovery: cycle failed", "error", err)
 				}
 				if err := e.CheckHealth(ctx); err != nil {
-					slog.Warn("discovery: health check failed", "error", err)
+					log.Warn("discovery: health check failed", "error", err)
 				}
 			}
 		}
@@ -282,7 +283,7 @@ func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
 				LastSeen:   time.Now(),
 			},
 		},
-		BestSource: "register",
+		BestSource: OperationRegister,
 		Healthy:    false,
 	}
 

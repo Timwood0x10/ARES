@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	gerr "github.com/Timwood0x10/ares/internal/errors"
-	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -118,7 +118,7 @@ type WorkflowAgentExecutor struct {
 
 	agentType string
 
-	llmService *llmservice.Service
+	llmService core.LLMService
 
 	prompts *PromptsConfig
 
@@ -133,19 +133,13 @@ type WorkflowAgentExecutor struct {
 }
 
 // ID returns the agent ID.
-
 func (e *WorkflowAgentExecutor) ID() string {
-
 	return e.agentID
-
 }
 
 // Type returns the agent type.
-
 func (e *WorkflowAgentExecutor) Type() models.AgentType {
-
 	return models.AgentType(e.agentType)
-
 }
 
 // Status returns the agent status.

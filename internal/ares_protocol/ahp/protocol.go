@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	apperrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // Protocol represents the AHP protocol manager.

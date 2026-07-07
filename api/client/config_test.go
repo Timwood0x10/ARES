@@ -79,7 +79,7 @@ func TestConfigFileSetDefaults(t *testing.T) {
 		{
 			name: "partial config gets defaults",
 			cfg: &ConfigFile{
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOpenAI,
 				},
 			},
@@ -146,7 +146,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -210,7 +210,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProvider("invalid"),
 				},
 			},
@@ -224,7 +224,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -244,7 +244,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -267,7 +267,7 @@ func TestConfigFileValidate(t *testing.T) {
 					MaxRetries:     3,
 					RetryDelay:     1,
 				},
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: core.LLMProviderOllama,
 					BaseURL:  "http://localhost:11434",
 					Model:    "llama3.2",
@@ -396,7 +396,7 @@ func TestConfigFileToClientConfig(t *testing.T) {
 			MaxRetries:     3,
 			RetryDelay:     1,
 		},
-		LLM: core.LLMConfig{
+		LLM: &core.LLMConfig{
 			Provider: core.LLMProviderOllama,
 			BaseURL:  "http://localhost:11434",
 			Model:    "llama3.2",
@@ -418,20 +418,11 @@ func TestConfigFileToClientConfig(t *testing.T) {
 		t.Errorf("expected MaxRetries to be 3, got %d", clientConfig.BaseConfig.MaxRetries)
 	}
 
-	if clientConfig.Agent == nil {
-		t.Error("expected Agent config to be non-nil")
-	}
-
-	if clientConfig.Memory == nil {
-		t.Error("expected Memory config to be non-nil")
-	}
-
-	if clientConfig.Retrieval == nil {
-		t.Error("expected Retrieval config to be non-nil")
-	}
-
-	if clientConfig.LLM == nil {
-		t.Error("expected LLM config to be non-nil")
+	// Service fields (Agent, Memory, Retrieval, LLM) are interface types
+	// left nil by ToClientConfig since it cannot construct implementations
+	// without importing internal/ packages.
+	if clientConfig.LLM != nil {
+		t.Error("expected LLM to be nil (ToClientConfig does not build service implementations)")
 	}
 }
 
@@ -523,7 +514,7 @@ func TestLLMProviderDefaults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &ConfigFile{
-				LLM: core.LLMConfig{
+				LLM: &core.LLMConfig{
 					Provider: tt.provider,
 				},
 			}

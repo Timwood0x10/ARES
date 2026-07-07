@@ -2,7 +2,6 @@ package ahp
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -222,7 +221,7 @@ func (p *DLQProcessor) StartAutoRetry(ctx context.Context, interval time.Duratio
 				return nil
 			case <-ticker.C:
 				if err := p.Process(gCtx); err != nil {
-					slog.Error("DLQ auto-retry tick failed", "error", err)
+					log.Error("DLQ auto-retry tick failed", "error", err)
 				}
 			}
 		}
@@ -231,7 +230,7 @@ func (p *DLQProcessor) StartAutoRetry(ctx context.Context, interval time.Duratio
 	// Block until context is cancelled; ignore the error since the
 	// goroutine returns nil on context cancellation.
 	if err := g.Wait(); err != nil {
-		slog.Error("dlq: background task failed", "error", err)
+		log.Error("dlq: background task failed", "error", err)
 	}
 }
 
@@ -251,7 +250,7 @@ func (p *DLQProcessor) processEntry(ctx context.Context, entry *DLQEntry) error 
 
 // defaultHandler is the default handler for DLQ entries.
 func (p *DLQProcessor) defaultHandler(ctx context.Context, entry *DLQEntry) error {
-	slog.Warn("DLQ entry processed by default handler",
+	log.Warn("DLQ entry processed by default handler",
 		"session_id", entry.Message.SessionID,
 		"reason", entry.Reason,
 		"retries", entry.Retries,

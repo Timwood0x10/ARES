@@ -3,9 +3,7 @@ package ares_eval
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"text/template"
 
@@ -13,10 +11,10 @@ import (
 )
 
 // ErrNilLLMClient is returned when a nil LLM client is provided to the judge evaluator.
-var ErrNilLLMClient = errors.New("llm client is nil")
+// Errors are defined in errors.go.
 
 // ErrInvalidJudgeResponse is returned when the LLM judge response cannot be parsed.
-var ErrInvalidJudgeResponse = errors.New("invalid judge response")
+// Errors are defined in errors.go.
 
 // LLMClient defines the interface for calling an LLM to generate text.
 // This abstraction allows the evaluator to work with any LLM implementation.
@@ -94,7 +92,7 @@ func WithPrompt(tmpl string) LLMJudgeOption {
 		if err == nil {
 			e.promptTmpl = parsed
 		} else {
-			slog.Warn("invalid judge prompt template, using default", "error", err)
+			log.Warn("invalid judge prompt template, using default", "error", err)
 		}
 	}
 }
@@ -111,7 +109,7 @@ func WithChinesePrompt() LLMJudgeOption {
 	return func(e *LLMJudgeEvaluator) {
 		parsed, err := template.New("judge_cn").Parse(DefaultJudgePromptCN)
 		if err != nil {
-			slog.Error("invalid Chinese judge prompt template", "error", err)
+			log.Error("invalid Chinese judge prompt template", "error", err)
 			return
 		}
 		e.promptTmpl = parsed
@@ -123,7 +121,7 @@ func WithEnglishPrompt() LLMJudgeOption {
 	return func(e *LLMJudgeEvaluator) {
 		parsed, err := template.New("judge_en").Parse(DefaultJudgePromptEN)
 		if err != nil {
-			slog.Error("invalid English judge prompt template", "error", err)
+			log.Error("invalid English judge prompt template", "error", err)
 			return
 		}
 		e.promptTmpl = parsed

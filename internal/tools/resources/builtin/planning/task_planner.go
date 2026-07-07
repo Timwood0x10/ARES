@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -97,7 +96,7 @@ func (t *TaskPlanner) Execute(ctx context.Context, params map[string]interface{}
 
 // planTasks creates a comprehensive task plan.
 func (t *TaskPlanner) planTasks(ctx context.Context, goal, context string, availableTools []string) (core.Result, error) {
-	slog.Info("Planning tasks", "goal", goal, "available_tools", len(availableTools))
+	log.Info("Planning tasks", "goal", goal, "available_tools", len(availableTools))
 
 	// Build planning prompt
 	prompt := t.buildPlanningPrompt(goal, context, availableTools)
@@ -115,7 +114,7 @@ func (t *TaskPlanner) planTasks(ctx context.Context, goal, context string, avail
 	// Parse the plan
 	plan, err := t.parsePlan(response)
 	if err != nil {
-		slog.Warn("Failed to parse plan, returning raw response", "error", err)
+		log.Warn("Failed to parse plan, returning raw response", "error", err)
 		return core.NewResult(true, map[string]interface{}{
 			"operation": "plan_tasks",
 			"goal":      goal,
@@ -136,7 +135,7 @@ func (t *TaskPlanner) planTasks(ctx context.Context, goal, context string, avail
 
 // decomposeTask breaks down a complex task into smaller subtasks.
 func (t *TaskPlanner) decomposeTask(ctx context.Context, task, complexity string) (core.Result, error) {
-	slog.Info("Decomposing task", "task", task, "complexity", complexity)
+	log.Info("Decomposing task", "task", task, "complexity", complexity)
 
 	// Build decomposition prompt
 	prompt := t.buildDecompositionPrompt(task, complexity)
@@ -154,7 +153,7 @@ func (t *TaskPlanner) decomposeTask(ctx context.Context, task, complexity string
 	// Parse the decomposition
 	subtasks, err := t.parseSubtasks(response)
 	if err != nil {
-		slog.Warn("Failed to parse subtasks, returning raw response", "error", err)
+		log.Warn("Failed to parse subtasks, returning raw response", "error", err)
 		return core.NewResult(true, map[string]interface{}{
 			"operation": "decompose_task",
 			"task":      task,
@@ -174,7 +173,7 @@ func (t *TaskPlanner) decomposeTask(ctx context.Context, task, complexity string
 
 // estimateTime estimates the time required to complete a task.
 func (t *TaskPlanner) estimateTime(ctx context.Context, goal string) (core.Result, error) {
-	slog.Info("Estimating time", "goal", goal)
+	log.Info("Estimating time", "goal", goal)
 
 	// Build estimation prompt
 	prompt := t.buildEstimationPrompt(goal)
@@ -202,7 +201,7 @@ func (t *TaskPlanner) estimateTime(ctx context.Context, goal string) (core.Resul
 	// Parse the estimation
 	estimate, err := t.parseEstimation(response)
 	if err != nil {
-		slog.Warn("Failed to parse estimation, returning raw response", "error", err)
+		log.Warn("Failed to parse estimation, returning raw response", "error", err)
 		return core.NewResult(true, map[string]interface{}{
 			"operation": "estimate_time",
 			"goal":      goal,

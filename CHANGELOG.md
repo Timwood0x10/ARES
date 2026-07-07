@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## \[0.2.6] - 2026-07-07
+
+### New Features
+
+- **Unified SDK Package** (`sdk/`): New top-level API `sdk.MustNew()` / `sdk.New()` with functional options (`WithOpenAI`, `WithOllama`, `WithAnthropic`, `WithDefaultMemory`, `WithEvolution`, `WithMCP`, `WithHumanInput`, etc.). Single entry point for LLM, tools, memory, evolution, and MCP.
+- **Agent Runtime**: `agent.Run(ctx, input)` ReAct loop with tool calling, memory context injection, token tracking, and result metadata.
+- **Streaming Support**: `agent.Stream(ctx, input)` returns `<-chan StreamChunk` for async response streaming.
+- **Multi-Agent Teams**: `rt.NewTeam(name, leader, members)` with `team.Run()` for leader/member orchestration.
+- **Human-in-the-Loop**: `WithHumanInput()` callback for tool call approval before execution.
+- **MCP Integration**: `WithMCP()` connects to MCP servers via stdio, auto-registers their tools.
+- **Strategy Evolution**: `rt.Evolve(ctx, agent, task)` evolves agent instructions via LLM. `WithEvolution()` enables the evolution system.
+- **CLI Tools** (`cmd/ares/`): `ares init` (scaffold project), `ares run` (run agent from config, auto-detects `ares.yaml`), `ares bench` (benchmark with JSON/Markdown output), `ares doctor` (diagnose environment), `ares version`.
+- **Config-Driven Setup**: `sdk.LoadConfigFile(path)` reads YAML config, `cfg.ToOptions()` converts to SDK options. `ares run` auto-discovers `ares.yaml` or `config/ares.yaml`.
+- **Evaluation Framework** (`evaluation/`): `evaluation.New()`, `Register()`, `RunScenario()`, `RunAll()` with structured `Metrics`, `Report`, `Aggregate`. Report output via `ToMarkdown()` / `ToJSON()`. Built-in scenarios: basic-chat, tool-calling, multi-agent, resilience, evolution.
+
+### Examples
+
+- **9 New SDK Examples**: Numbered `01-quickstart` through `09-full-app`, each with `ares.yaml` config.
+  - `01-quickstart`: Minimal agent in 20 lines
+  - `02-tool-calling`: Multi-tool registration
+  - `03-dag-workflow`: MutableDAG + conditional branching
+  - `04-multi-agent`: Leader/member team orchestration
+  - `05-evolution-demo`: Instruction evolution before/after comparison
+  - `06-chaos-resilience`: 9 failure modes (file, timeout, network, MCP, LLM, memory, graceful degradation)
+  - `07-human-in-loop`: Tool call approval with `WithHumanInput`
+  - `08-mcp-integration`: MCP server connection via `WithMCP`
+  - `09-full-app`: Web UI + Agent + Tools + Memory + Stats dashboard
+- **Evaluation Example** (`examples/eval/`): Runs all 5 capability scenarios with scoring.
+
+### Documentation
+
+- **README Rewrite**: Reduced from 774 to 214 lines. SDK Quick Start at the top. English (`README.md`) and Chinese (`README_CN.md`) versions.
+- **GitHub Pages Website**: `docs/index.html` with dark theme, marked.js inline Markdown rendering, all articles browsable.
+- **Architecture Diagram**: Mermaid diagram covering SDK, LLM providers, Tools, Memory, Evolution, CLI, Examples.
+- **7 Cookbook Recipes**: `docs/cookbook/` with Chat, Tool Calling, Multi-Agent, Memory, Coding Agent, Code Review, GitHub Agent.
+- **CI Docs Deployment**: GitHub Actions workflow (`docs.yml`) auto-deploys `docs/` to Pages.
+
+### Code Quality
+
+- **SDK Test Coverage**: 54%+ with 20+ tests covering Runtime, Agent, Team, Config, Evolution, Streaming, MCP, HumanInput, Benchmarks. All pass with `go test -short ./...`.
+- **Lint Clean**: `golangci-lint` 0 issues across SDK, CLI, evaluation, and examples.
+- **English Comments**: All code comments in English per `code_rules.md`.
+- **Binary Rename**: CLI binary `ARES` → `ares` (lowercase).
+
+### Infrastructure
+
+- **Docker Compose**: `docker-compose.yml` + `Dockerfile.demo` for one-command demo deployment (Ollama + full-app).
+- **Makefile**: Added `quickstart`, `examples`, `install-cli`, `test-eval` targets.
+- **Example Cleanup**: Removed 20+ stale/duplicate examples; kept 9 curated SDK examples + advanced ones in git history.
+- **Chaos Arena YAML**: Restored `examples/arena/leader_assassination.yaml` and `cascading_storm.yaml` with all built-in action types.
+
+### Performance
+
+- **GA Diversity Sampling**: Added `DiversitySampleSize` config (default 200) to estimate numeric diversity via random neighbor sampling instead of O(n²) exact computation. Stats(pop=1000) latency dropped **38%** (69.5ms → 43.3ms). Configurable per `PopulationConfig.DiversitySampleSize`.
+- **Fitness Sharing Optimization**: Replaced per-agent Fisher-Yates full permutation with Reservoir Sampling in `applyFitnessSharingSampled`. Allocation reduced **44%** for all population sizes (pop=100: 185→106 allocs, pop=500: 905→506 allocs). GC pressure halved in large evolution runs.
+- **Subscribe Allocation Reduction**: Replaced UUID subscription IDs with `atomic.Int64` counter and removed `*sync.Once` per subscriber. Allocs reduced **33%** (900→600 per 100 subscribers). Channel buffer increased from 1→64 to reduce burst drops.
+- **Benchmark Report**: Comprehensive benchmark report across all modules (events, GA genome/evaluation, memory distillation, tools core, handlers, errors) with full platform config (Apple M3 Max, Go 1.26, 3-run average).
+
+### New Features
+
+- **Memory Pipeline Complete**: End-to-end memory pipeline with `ReportGenerator`, `PushService`, and report formatting for human-readable evolution summaries. Full cycle: evaluation → distillation → report → push.
+- **Agent Age Eviction**: `AgentMaxAge` config limits strategy lifespan; `GenerationCreated` tracking ensures agents survive exactly `AgentMaxAge` generations. Legacy strategies (GenerationCreated==0) exempted.
+- **Confidence Calculation**: Added sample-based confidence to `AggregateEvidenceCrossTask`, enabling evidence quality scoring in cross-task aggregation.
+
+### Refactors
+
+- **Truncate Utility Consolidation**: Unified `internal/ares_memory/internal/truncate` package for reusable truncation logic across memory and LLM modules.
+- **Evidence Logic Cleanup**: `AggregateEvidence` refactored for clarity; cross-task evidence aggregation now filters mixed-task noise with `AggregateEvidenceCrossTask`.
+- **FIXME Cleanup (22 files)**: Removed stale FIXME comments in `internal/ares_quant/`, `internal/api_impl/`, `api/client/`, `internal/ares_events/`, `internal/storage/postgres/services/`. All had already been implemented but comments were not updated.
+- **Promotion Logic**: Tightened statistical bands (5-20x → 6-18x) in `selection_extra_test.go` and reduced low-scorer threshold (5% → 0.2%) for more deterministic selection verification.
+
+### Bug Fixes
+
+- **Ignored json.Marshal Errors**: Fixed 4 ignored `json.Marshal` calls in `internal/ares_events/summary_repository.go` — previously would silently produce `null` DB values on serialization failure. Now errors propagate with `fmt.Errorf("marshal %s: %w", ...)`.
+- **Errgroup Context Propagation**: In `internal/api_impl/service.go`, `errgroup.WithContext(ctx)` returned a derived context cancelled on sibling errors — but it was discarded with `_`. Fix: `s.g, s.ctx = errgroup.WithContext(ctx)` to enable proper error propagation.
+- **SSE Health Probe**: Implemented real SSE health check via `ConnectSSE` instead of hardcoded assumed healthy.
+- **Generation Logging**: Fixed generation=0 in logs by using absolute `Population.Generation` in callback\_gen.
+- **GenerationCreated Off-by-One**: Use Generation+1 so agents survive exactly `AgentMaxAge` generations.
+- **Guardrail Config Default**: Inverted `PromptDiversityGuardEnabled` → `DisablePromptDiversityGuard` (default enabled).
+
+### Code Quality
+
+- **Unit Test Coverage (service.go)**: Added `internal/ares_evolution/service/service_test.go` (383 lines, 23 test cases). Coverage of `service.go` increased **16.3% → 47.2%**. Key functions: `NewService` 93.3%, `Evolve` 80.4%, `toAPIStrategy`/`toInternalStrategy`/`cloneDimensionScores` all 100%.
+- **LLM Scorer Tests**: Added pure-logic tests for `extractScoreFromText`, `fallbackScore`, `buildPrompt`, `parseScore` (35 table-driven test cases). No LLM required.
+- **Task Planner Tests**: Consolidated 10 repetitive test functions into 2 table-driven tests with meaningful `result.Error` content assertions. `TestFormatToolsList` converted to table-driven.
+- **Test Weakness Assessment**: Sampled 20+ non-testify test files — confirmed they have meaningful multi-field assertions (not perfunctory). Postgres integration tests properly isolated behind `//go:build integration`.
+- **Docker Compose Update**: Added Ollama service for local LLM fallback in development stack. Updated benchmark links in both EN and CN README.
+
 ## [0.2.5] - 2026-07-02
 
 ### Performance
@@ -44,7 +132,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test Weakness Assessment**: Sampled 20+ non-testify test files — confirmed they have meaningful multi-field assertions (not perfunctory). Postgres integration tests properly isolated behind `//go:build integration`.
 - **Docker Compose Update**: Added Ollama service for local LLM fallback in development stack. Updated benchmark links in both EN and CN README.
 
-## [0.2.4] - 2026-06-28
+## \[0.2.4] - 2026-06-28
 
 ### New Features
 
@@ -78,7 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `api/ares_experience` → `internal/ares_experience/service/`
   - `api/eval` → `internal/ares_eval/service/`
   - `api/marketmaking` → `internal/ares_quant/marketmaking_api/`
-- **Evolution Genome Wiring**: Split genome_wiring into separate module, fix guardrails, wire dream cycle.
+- **Evolution Genome Wiring**: Split genome\_wiring into separate module, fix guardrails, wire dream cycle.
 - **HITL Feedback Plugin**: Moved from standalone to workflow engine integration.
 - **Graph Builder APIs**: Migrated all graph builder APIs to return errors instead of panicking.
 - **Scoring Cache**: Replaced `sync.RWMutex` with atomic counters for hit/miss tracking.
@@ -88,7 +176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes
 
 - Replaced `time.Sleep` with channel-based event test pattern in graph executor tests.
-- Fixed indentation in executor_test.go.
+- Fixed indentation in executor\_test.go.
 - Fixed data race in `DynamicExecutor` recovery path with proper timeout handling.
 - Fixed `MemoryEventStore.Close()` idempotency — second+ calls return `ErrEventStoreClosed`.
 - Fixed SSE transport double `resp.Body.Close()` causing panic on shutdown.
@@ -99,7 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `NewTaskPlanner`/`NewTaskPlannerWithConfig` silent fallback from invalid `maxTasks`.
 - Added nil validation in `leader.New`, `NewTaskDispatcher`, and `NewMCPManager`.
 
-## [0.2.3] - 2026-06-24
+## \[0.2.3] - 2026-06-24
 
 ### New Features
 
@@ -137,7 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed `NewTaskPlanner`/`NewTaskPlannerWithConfig` silent fallback from invalid `maxTasks`
 - Added nil validation in `leader.New`, `NewTaskDispatcher`, and `NewMCPManager`
 
-## [0.2.2] - 2026-06-19
+## \[0.2.2] - 2026-06-19
 
 ### New Features
 
@@ -151,10 +239,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Quant Trading Example**: Complete quantitative trading example with SQLite backend, demonstrating end-to-end quant trading workflow.
 - **Tool Lifecycle Events**: Emit lifecycle events for tool execution, enabling observability and monitoring of tool calls throughout their lifecycle.
 - **Memory Metadata Propagation**: Expanded metadata propagation across memory operations, enriching context with session and agent metadata.
-- **Concurrent Distillation Pipeline**: errgroup-based parallel embedding in distiller (concurrency limit 5), and concurrent experience storage in manager_impl.go, reducing end-to-end distillation latency.
+- **Concurrent Distillation Pipeline**: errgroup-based parallel embedding in distiller (concurrency limit 5), and concurrent experience storage in manager\_impl.go, reducing end-to-end distillation latency.
 - **Content Hash Dedup**: SHA-256 `content_hash` column on `distilled_memeries` with `ON CONFLICT (tenant_id, content_hash) WHERE content_hash IS NOT NULL DO NOTHING` for idempotent memory storage.
 - **Idempotent Migrations**: All DDL operations now safe to re-run — `DROP IF EXISTS` + `CREATE` for policies/triggers, `IF NOT EXISTS` for indexes, `ADD COLUMN IF NOT EXISTS` for schema evolution.
-- **Chinese Language Support**: Chinese keyword detection in `detector.go` (介绍/是什么/怎么/有哪些/区别/说说/推荐 etc.) and Chinese importance scoring in `scorer.go` (错误/修复/配置/框架/架构/优化 etc.), enabling experience extraction from Chinese Q&A.
+- **Chinese Language Support**: Chinese keyword detection in `detector.go` (介绍/是什么/怎么/有哪些/区别/说说/推荐 etc.) and Chinese importance scoring in `scorer.go` (错误/修复/配置/框架/架构/优化 etc.), enabling experience extraction from Chinese Q\&A.
 - **Knowledge Correction Flow**: End-to-end correction pipeline in knowledge-base example — detects correction intent, calls LLM for structured commands (`UPDATE:`/`DELETE:`/`CREATE:`), executes DB writes for both `distilled_memories` and `knowledge_chunks_1024`. Supports correction via "纠错" keyword.
 - **RAG Search Includes Corrected Memories**: `KnowledgeBase.Search()` now queries both `knowledge_chunks_1024` and `distilled_memories`, with corrected memories boosted in ranking.
 - **Restart Script Import**: `scripts/docker/restart.sh --save <path>` option to import a document immediately after DB migration.
@@ -174,14 +262,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed all errcheck issues (unchecked `Close()` calls) in `cmd/` migration tools.
 - Fixed De Morgan's law simplification in UUID validation.
 
-## [0.2.1] - 2026-06-16
+## \[0.2.1] - 2026-06-16
 
 ### New Features
 
 - **MCP Client**: Model Context Protocol client implementation with JSON-RPC 2.0 messaging, stdio and SSE transport support, tool schema management, and connection lifecycle management.
 - **Web Dashboard**: Real-time monitoring dashboard with WebSocket hub, REST API v2, orchestrator for multi-agent coordination, event bridge for system state streaming, and static asset serving.
 - **Flight Recorder**: Multi-agent runtime intelligence recording with timeline tracking, decision logging, diagnostics engine, agent genealogy graph, DOT/JSON export, and replay pipeline.
-- **Chaos Engineering Arena**: Fault injection framework with injector supporting process_kill, network_partition, latency_spike, and kill_orchestrator fault types; resilience scoring with configurable metrics; survival mode for continuous chaos testing; HTTP API and YAML scenario configuration.
+- **Chaos Engineering Arena**: Fault injection framework with injector supporting process\_kill, network\_partition, latency\_spike, and kill\_orchestrator fault types; resilience scoring with configurable metrics; survival mode for continuous chaos testing; HTTP API and YAML scenario configuration.
 - **Callbacks System**: Event-driven callback mechanism with typed event contexts, handler registry, and lifecycle hooks for agent/tool/runtime events.
 - **LLM Output Parsing**: Multi-provider output adapters (OpenAI, Ollama, OpenRouter), prompt template engine with Go template syntax, function calling extraction and validation, schema-based parameter validation, and streaming output parser.
 - **Function Calling**: LLM function calling support with tool schema generation, argument extraction, and result formatting.
@@ -227,6 +315,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes (46 fixes)
 
 **Storage (12 fixes)**
+
 - C1: Embedding queue dedup key mismatch causing duplicate embeddings
 - C2: Write buffer data loss on `Stop()` before flush completes
 - C3: Embedding enqueue outside transaction leading to orphaned records
@@ -241,6 +330,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - M8: Graph `Edge()` no validation of node endpoints
 
 **Workflow (8 fixes)**
+
 - C6: Panic recovery ordering in `executor.go` (recovery after cleanup)
 - C7: Graph executor in-degree tracking incorrect after node removal
 - H1: Deadlock false positive in `executor.go` (errgroup misuse)
@@ -251,6 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - M9: `recomputeOrder` version-check race on concurrent access
 
 **AHP Protocol (7 fixes)**
+
 - C8: Queue `send on closed channel` panic during shutdown
 - C9: `HeartbeatSender` Start/Stop race condition
 - H5: `getRandomSuffix` nil dereference on empty slice
@@ -259,7 +350,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - M10: `Peek()` non-atomic read (race under concurrent access)
 - M12: `DLQ.Remove` leaks trailing pointer after deletion
 
-## [0.1.0] - 2026-04-19
+## \[0.1.0] - 2026-04-19
 
 ### Added
 
@@ -269,3 +360,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workflow engine with DAG-based orchestration
 - PostgreSQL + pgvector integration
 - Support for multiple LLM providers (OpenAI, Ollama, OpenRouter)
+

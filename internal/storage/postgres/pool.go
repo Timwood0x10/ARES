@@ -4,14 +4,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"runtime"
 	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -40,7 +38,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		return nil, errors.Wrap(err, "failed to ping database")
 	}
 
@@ -77,7 +75,7 @@ func (p *Pool) Release(conn *sql.Conn) {
 	}
 
 	if err := conn.Close(); err != nil {
-		slog.Warn("pool: close connection failed", "error", err)
+		log.Warn("pool: close connection failed", "error", err)
 	}
 }
 
@@ -201,7 +199,7 @@ func (p *Pool) Query(ctx context.Context, query string, args ...any) (*ManagedRo
 	// Set finalizer to release connection if caller forgets to call Close().
 	runtime.SetFinalizer(mr, func(m *ManagedRows) {
 		if m.conn != nil {
-			slog.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
+			log.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
 		}
@@ -252,7 +250,7 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 		if cancel != nil {
 			cancel()
 		}
-		slog.Error("Failed to acquire database connection for QueryRow", "error", err)
+		log.Error("Failed to acquire database connection for QueryRow", "error", err)
 		cancelCtx, cancel := context.WithCancel(context.Background())
 		cancel()
 		return &ManagedRow{Row: p.db.QueryRowContext(cancelCtx, "SELECT 1 WHERE 1=0"), conn: nil, pool: p}
@@ -263,7 +261,7 @@ func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *Managed
 	// Set finalizer to release connection if caller never calls Scan().
 	runtime.SetFinalizer(mr, func(m *ManagedRow) {
 		if m.conn != nil {
-			slog.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
+			log.Warn("ManagedRow garbage collected without Scan() being called, releasing connection")
 			m.pool.Release(m.conn)
 			m.conn = nil
 		}
@@ -307,4 +305,4 @@ func (p *Pool) Begin(ctx context.Context) (*sql.Tx, error) {
 // NOTE: This module uses the standard library's database/sql package
 // which already implements a connection pool. The Pool wrapper provides
 // additional statistics and the "get usage release" pattern.
-var _ = coreerrors.ErrDBConnectionFailed
+var _ = errors.ErrDBConnectionFailed

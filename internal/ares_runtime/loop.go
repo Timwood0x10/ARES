@@ -2,7 +2,6 @@ package ares_runtime
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 )
 
@@ -97,11 +96,11 @@ func (p *LoopPlugin) ShouldExecuteRound(nextRound int, vars map[string]any) bool
 		return true
 	}
 	if p.config.MaxIterations > 0 && nextRound > p.config.MaxIterations {
-		slog.Debug("loop: max rounds reached", "round", nextRound, "max", p.config.MaxIterations)
+		log.Debug("loop: max rounds reached", "round", nextRound, "max", p.config.MaxIterations)
 		return false
 	}
 	if p.config.UntilCondition != nil && p.config.UntilCondition(vars) {
-		slog.Debug("loop: until condition met", "round", nextRound)
+		log.Debug("loop: until condition met", "round", nextRound)
 		return false
 	}
 	return true
@@ -119,7 +118,7 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 	p.iteration = round
 	p.mu.Unlock()
 
-	slog.Debug("loop: round end",
+	log.Debug("loop: round end",
 		"round", round,
 		"execution_id", executionID,
 	)
@@ -133,7 +132,7 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 	for _, cp := range pb.PluginsByCap(CapCheckpoint) {
 		if f, ok := cp.(Flusher); ok {
 			if err := f.Flush(ctx, executionID); err != nil {
-				slog.Warn("loop: checkpoint flush failed",
+				log.Warn("loop: checkpoint flush failed",
 					"round", round,
 					"execution_id", executionID,
 					"error", err,
@@ -151,7 +150,7 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 			if _, err := mem.AdviseRoute(ctx, RouteState{
 				ExecutionID: executionID,
 			}); err != nil {
-				slog.Warn("loop: memory advise failed",
+				log.Warn("loop: memory advise failed",
 					"round", round,
 					"execution_id", executionID,
 					"error", err,
@@ -168,7 +167,7 @@ func (p *LoopPlugin) OnRoundEnd(ctx context.Context, round int, executionID stri
 				ExecutionID: executionID,
 			}
 			if err := evo.RecordOutcome(ctx, outcome); err != nil {
-				slog.Warn("loop: evolution record failed",
+				log.Warn("loop: evolution record failed",
 					"round", round,
 					"execution_id", executionID,
 					"error", err,

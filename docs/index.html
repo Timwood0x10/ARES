@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARES — Agent Runtime &amp; Evolution System</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root { --bg: #0a0e17; --card: #111827; --border: #1e293b; --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6; --accent2: #8b5cf6; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 16px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; border-bottom: 1px solid var(--border); max-width: 1200px; margin: 0 auto; }
+  nav .logo { font-size: 22px; font-weight: 700; }
+  nav .logo span { color: var(--accent); }
+  nav .links { display: flex; gap: 24px; align-items: center; }
+  nav .links a { color: var(--muted); font-size: 14px; }
+  nav .links a:hover { color: var(--text); text-decoration: none; }
+
+  .hero { text-align: center; padding: 100px 20px 80px; max-width: 800px; margin: 0 auto; }
+  .hero h1 { font-size: 64px; font-weight: 800; letter-spacing: -2px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .hero p { font-size: 20px; color: var(--muted); margin-top: 20px; }
+  .hero .btn-wrap { margin-top: 36px; display: flex; gap: 16px; justify-content: center; }
+  .hero .btn { padding: 12px 28px; border-radius: 8px; font-size: 16px; font-weight: 600; display: inline-block; transition: all 0.2s; }
+  .hero .btn-primary { background: var(--accent); color: #fff; } .hero .btn-primary:hover { background: #2563eb; text-decoration: none; }
+  .hero .btn-secondary { border: 1px solid var(--border); color: var(--text); } .hero .btn-secondary:hover { border-color: var(--accent); text-decoration: none; }
+
+  section { max-width: 1100px; margin: 0 auto; padding: 60px 20px; }
+  section h2 { font-size: 28px; font-weight: 700; margin-bottom: 32px; color: #fff; }
+
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  @media (max-width: 768px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; transition: border-color 0.2s; cursor: pointer; }
+  .card:hover { border-color: var(--accent); }
+  .card .icon { font-size: 28px; margin-bottom: 12px; }
+  .card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .card p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .card .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(59,130,246,0.15); color: var(--accent); margin-top: 12px; }
+
+  footer { text-align: center; padding: 40px 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; max-width: 1200px; margin: 0 auto; }
+
+  /* Article viewer */
+  #article-view { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; overflow-y: auto; }
+  #article-view .content { max-width: 900px; margin: 40px auto; background: var(--card); border-radius: 12px; padding: 40px; position: relative; }
+  #article-view .close { position: absolute; top: 16px; right: 20px; font-size: 28px; cursor: pointer; color: var(--muted); background: none; border: none; }
+  #article-view .close:hover { color: var(--text); }
+  #article-body { line-height: 1.8; }
+  #article-body h1 { font-size: 28px; margin: 24px 0 16px; }
+  #article-body h2 { font-size: 22px; margin: 20px 0 12px; }
+  #article-body h3 { font-size: 18px; margin: 16px 0 8px; }
+  #article-body p { margin: 12px 0; }
+  #article-body code { background: #1a2332; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+  #article-body pre { background: #0d1117; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 16px 0; }
+  #article-body pre code { background: none; padding: 0; }
+  #article-body ul, #article-body ol { padding-left: 24px; margin: 12px 0; }
+  #article-body blockquote { border-left: 4px solid var(--accent); padding-left: 16px; color: var(--muted); margin: 16px 0; }
+  #loading { display: none; text-align: center; padding: 60px; color: var(--muted); }
+  .spin { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  /* Quick start code block */
+  pre.code-block { background: #0d1117; border-radius: 8px; padding: 20px; overflow-x: auto; font-size: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo"><span>ARES</span> Framework</div>
+  <div class="links">
+    <a href="#features">Features</a>
+    <a href="#articles">Articles</a>
+    <a href="#cookbook">Cookbook</a>
+    <a href="#quickstart">Quick Start</a>
+    <a href="https://github.com/Timwood0x10/ares" target="_blank">GitHub</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>ARES</h1>
+  <p>Agent Runtime &amp; Evolution System — Build resilient, self-evolving AI agents in Go with a unified SDK, DAG workflow, chaos engineering, and MCP support.</p>
+  <div class="btn-wrap">
+    <a class="btn btn-primary" href="https://github.com/Timwood0x10/ares" target="_blank">GitHub →</a>
+    <a class="btn btn-secondary" href="#quickstart">Quick Start</a>
+  </div>
+</div>
+
+<section id="features">
+  <h2>Core Features</h2>
+  <div class="grid grid-4">
+    <div class="card"><div class="icon">⚡</div><h3>Unified SDK</h3><p>One API for LLM, tools, memory, and evolution. Zero boilerplate.</p><span class="tag">Go</span></div>
+    <div class="card"><div class="icon">🧬</div><h3>Self Evolution</h3><p>Genetic algorithm optimizes prompts and strategies automatically.</p><span class="tag">GA</span></div>
+    <div class="card"><div class="icon">🔀</div><h3>DAG Workflow</h3><p>Dynamic graphs with conditional branching, retry, and recovery.</p><span class="tag">Graph</span></div>
+    <div class="card"><div class="icon">🛡️</div><h3>Chaos Resilient</h3><p>Fault injection, failover, survival testing, self-healing.</p><span class="tag">Arena</span></div>
+    <div class="card"><div class="icon">🧠</div><h3>Memory</h3><p>Session context, task distillation, vector similarity search.</p><span class="tag">RAG</span></div>
+    <div class="card"><div class="icon">🔧</div><h3>MCP Ready</h3><p>Connect any Model Context Protocol server for tools and data.</p><span class="tag">Stdio/SSE</span></div>
+    <div class="card"><div class="icon">👥</div><h3>Multi-Agent</h3><p>Leader/sub orchestration with automatic failover.</p><span class="tag">Team</span></div>
+    <div class="card"><div class="icon">📊</div><h3>Observability</h3><p>OpenTelemetry traces, structured logs, Prometheus metrics.</p><span class="tag">O11y</span></div>
+  </div>
+</section>
+
+<section id="articles">
+  <h2>Articles</h2>
+  <div class="grid grid-3">
+    <div class="card" onclick="loadArticle('articles/en/architecture-overview-deep-dive.md')"><h3>🏗️ Architecture</h3><p>Core architecture, runtime lifecycle, and component design</p></div>
+    <div class="card" onclick="loadArticle('articles/en/autonomous-evolution-deep-dive.md')"><h3>🧬 Evolution</h3><p>Genetic algorithms, dream cycle, and strategy optimization</p></div>
+    <div class="card" onclick="loadArticle('articles/en/mcp-integration-deep-dive.md')"><h3>🔌 MCP Integration</h3><p>Model Context Protocol server and client implementation</p></div>
+    <div class="card" onclick="loadArticle('articles/en/workflow-engine-deep-dive.md')"><h3>🔀 Workflow Engine</h3><p>DAG-based workflow with conditional execution</p></div>
+    <div class="card" onclick="loadArticle('articles/en/memory-distillation-deep-dive.md')"><h3>🧠 Memory &amp; Distillation</h3><p>Session management, task distillation, and vector search</p></div>
+    <div class="card" onclick="loadArticle('articles/en/arena-fault-injection-deep-dive.md')"><h3>🛡️ Chaos Arena</h3><p>Fault injection, survival testing, and resilience scoring</p></div>
+    <div class="card" onclick="loadArticle('articles/en/tool-system-deep-dive.md')"><h3>🔧 Tool System</h3><p>Tool registration, capability planner, and execution</p></div>
+    <div class="card" onclick="loadArticle('articles/en/event-system-deep-dive.md')"><h3>📡 Event System</h3><p>Event sourcing, replay, and cross-service communication</p></div>
+    <div class="card" onclick="loadArticle('articles/en/security-hardening-deep-dive.md')"><h3>🔒 Security</h3><p>RLS policies, tenant isolation, and audit logging</p></div>
+    <div class="card" onclick="loadArticle('articles/en/plugin-system-deep-dive.md')"><h3>🔌 Plugin System</h3><p>Pluggable resurrection, execution collection, and more</p></div>
+    <div class="card" onclick="loadArticle('articles/en/flight-recorder-deep-dive.md')"><h3>✈️ Flight Recorder</h3><p>Task recording, replay, and debugging</p></div>
+    <div class="card" onclick="loadArticle('articles/en/ga-in-the-trenches.md')"><h3>📈 GA in Practice</h3><p>Genetic algorithm learnings and production insights</p></div>
+  </div>
+  <p style="margin-top:20px;text-align:center;color:var(--muted);font-size:14px;">
+    <a href="articles/en/" onclick="event.preventDefault();loadArticle('articles/en/README.md')">Browse all articles →</a>
+  </p>
+</section>
+
+<section id="cookbook">
+  <h2>Cookbook</h2>
+  <div class="grid grid-3">
+    <div class="card" onclick="loadArticle('cookbook/chat.md')"><h3>💬 Chat Agent</h3><p>Build a conversational agent in 20 lines</p></div>
+    <div class="card" onclick="loadArticle('cookbook/tool.md')"><h3>🔧 Tool Calling</h3><p>Register custom tools for LLM function calling</p></div>
+    <div class="card" onclick="loadArticle('cookbook/multi-agent.md')"><h3>👥 Multi-Agent</h3><p>Orchestrate leader/member teams</p></div>
+    <div class="card" onclick="loadArticle('cookbook/memory.md')"><h3>🧠 Memory</h3><p>Persist context across conversations</p></div>
+    <div class="card" onclick="loadArticle('cookbook/coding.md')"><h3>💻 Coding Agent</h3><p>Generate code with specialized instructions</p></div>
+    <div class="card" onclick="loadArticle('cookbook/review.md')"><h3>📝 Code Review</h3><p>Automate PR review with git diff</p></div>
+    <div class="card" onclick="loadArticle('cookbook/github.md')"><h3>🐙 GitHub Agent</h3><p>Interact with issues and PRs via tools</p></div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>Quick Start</h2>
+  <div class="card" style="padding:32px;">
+    <pre class="code-block"><code><span style="color:#6b7280;">// Run: go run examples/quickstart/main.go</span>
+<span style="color:#569cd6;">package</span> main
+
+<span style="color:#569cd6;">import</span> (
+    <span style="color:#ce9178;">"context"</span>
+    <span style="color:#ce9178;">"github.com/Timwood0x10/ares/sdk"</span>
+)
+
+<span style="color:#569cd6;">func</span> <span style="color:#dcdcaa;">main</span>() {
+    ctx <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">context</span>.<span style="color:#dcdcaa;">Background</span>()
+    rt <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">sdk</span>.<span style="color:#dcdcaa;">MustNew</span>(<span style="color:#dcdcaa;">sdk</span>.<span style="color:#dcdcaa;">WithOllama</span>(<span style="color:#ce9178;">"llama3.2"</span>))
+    <span style="color:#569cd6;">defer</span> rt.<span style="color:#dcdcaa;">Close</span>()
+    agent <span style="color:#d4d4d4;">:=</span> rt.<span style="color:#dcdcaa;">NewAgent</span>(<span style="color:#ce9178;">"chatbot"</span>)
+    result, _ <span style="color:#d4d4d4;">:=</span> <span style="color:#dcdcaa;">agent</span>.<span style="color:#dcdcaa;">Run</span>(ctx, <span style="color:#ce9178;">"Say hello"</span>)
+    <span style="color:#dcdcaa;">fmt</span>.<span style="color:#dcdcaa;">Println</span>(result.Output)
+}</code></pre>
+    <div class="btn-wrap" style="margin-top:20px;">
+      <a class="btn btn-primary" href="https://github.com/Timwood0x10/ares" target="_blank">View on GitHub →</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>ARES — Agent Runtime &amp; Evolution System</p>
+  <p style="margin-top:8px;">Built with Go · Apache 2.0 License</p>
+</footer>
+
+<!-- Article viewer modal -->
+<div id="article-view">
+  <div class="content">
+    <button class="close" onclick="closeArticle()">&times;</button>
+    <div id="loading"><span class="spin">⟳</span> Loading...</div>
+    <div id="article-body"></div>
+  </div>
+</div>
+
+<script>
+async function loadArticle(path) {
+  const view = document.getElementById('article-view');
+  const body = document.getElementById('article-body');
+  const loading = document.getElementById('loading');
+  view.style.display = 'block';
+  body.innerHTML = '';
+  loading.style.display = 'block';
+
+  try {
+    const resp = await fetch(path);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const md = await resp.text();
+    loading.style.display = 'none';
+    body.innerHTML = marked.parse(md);
+    // Open external links in new tab.
+    body.querySelectorAll('a').forEach(a => {
+      if (a.hostname && a.hostname !== location.hostname) a.target = '_blank';
+    });
+  } catch (err) {
+    loading.style.display = 'none';
+    body.innerHTML = `<p style="color:#ef4444;">Failed to load ${path}: ${err.message}</p>`;
+  }
+
+  // Scroll to top of modal.
+  view.scrollTop = 0;
+}
+
+function closeArticle() {
+  document.getElementById('article-view').style.display = 'none';
+}
+
+// Close on Escape key.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeArticle();
+});
+</script>
+</body>
+</html>

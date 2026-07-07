@@ -106,9 +106,9 @@ func TestRegisterWorkflow_Success(t *testing.T) {
 		ID:          "wf-success",
 		Name:        "Success Workflow",
 		Description: "A test workflow",
-		Version:     "1.0",
+		Version:     TestVersion,
 		Steps: []*core.StepDef{
-			{ID: "step1", Name: "Step 1", AgentType: "test_agent", Input: "hello"},
+			{ID: "step1", Name: TestStepName, AgentType: "test_agent", Input: "hello"},
 		},
 		Variables: map[string]string{"key": "val"},
 		Metadata:  map[string]string{"env": "test"},

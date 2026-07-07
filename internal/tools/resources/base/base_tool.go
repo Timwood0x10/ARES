@@ -17,6 +17,24 @@ type BaseTool struct {
 	capabilities []core.Capability
 	parameters   *core.ParameterSchema
 	metadata     *core.ToolMetadata
+	tags         map[string]string
+}
+
+// Tags returns the tool's semantic metadata tags for LLM routing.
+func (t *BaseTool) Tags() map[string]string {
+	if t.tags == nil {
+		return map[string]string{}
+	}
+	cp := make(map[string]string, len(t.tags))
+	for k, v := range t.tags {
+		cp[k] = v
+	}
+	return cp
+}
+
+// SetTags sets the tool's semantic metadata tags.
+func (t *BaseTool) SetTags(tags map[string]string) {
+	t.tags = tags
 }
 
 // Init is a no-op lifecycle hook. Override in embedding types as needed.
@@ -131,3 +149,48 @@ type metadataTool struct {
 	core.Tool
 	Metadata core.ToolMetadata
 }
+
+// WithToolTags adds semantic tags to a tool for LLM-based routing.
+// Tags are key-value pairs describing the tool's domain, input/output types,
+// side effects, and other metadata. Standard tag keys:
+//
+//	domain: math, text, network, file, system, knowledge, memory, data, pdf
+//	input_type: text, json, number, file, url, array
+//	output_type: text, json, number, boolean, file
+//	side_effects: true, false (does the tool change external state)
+//	requires_network: true, false
+//	mutates_state: true, false (does the tool change internal app state)
+//
+// Usage:
+//
+//	tool := base.WithToolTags(
+//	    builtin_math.NewCalculator(),
+//	    map[string]string{"domain": "math", "input_type": "text", "output_type": "number"},
+//	)
+func WithToolTags(tool core.Tool, tags map[string]string) core.Tool {
+	return &taggedTool{
+		Tool: tool,
+		tags: tags,
+	}
+}
+
+// taggedTool wraps a tool with semantic tags.
+type taggedTool struct {
+	core.Tool
+	tags map[string]string
+}
+
+// Tags returns the tool's semantic metadata tags.
+func (t *taggedTool) Tags() map[string]string {
+	if t.tags == nil {
+		return map[string]string{}
+	}
+	cp := make(map[string]string, len(t.tags))
+	for k, v := range t.tags {
+		cp[k] = v
+	}
+	return cp
+}
+
+// Compile-time check: taggedTool satisfies core.TaggableTool.
+var _ core.TaggableTool = (*taggedTool)(nil)

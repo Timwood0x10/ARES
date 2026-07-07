@@ -81,8 +81,7 @@ func (at *AgentTracker) Snapshot() monitoring.ConsoleStats {
 
 	var totalCost float64
 	for _, a := range at.agents {
-		switch a.Status {
-		case dag.StatusRunning:
+		if a.Status == dag.StatusRunning {
 			stats.ActiveAgents++
 			stats.RunningTasks++
 		}

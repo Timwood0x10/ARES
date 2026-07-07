@@ -96,10 +96,31 @@ type IdempotentTool interface {
 	IsIdempotent() bool
 }
 
+// TaggableTool is an optional interface for tools that provide semantic tags
+// for LLM-based routing and discovery.
+//
+// Tags are key-value string pairs that describe the tool's domain, input/output
+// types, side effects, and other metadata. The LLM uses these tags to determine
+// which tool to call for a given task.
+//
+// Standard tag keys:
+//
+//	domain: math, text, network, file, system, knowledge, memory, data, pdf
+//	input_type: text, json, number, file, url, array
+//	output_type: text, json, number, boolean, file
+//	side_effects: true, false
+//	requires_network: true, false
+//	mutates_state: true, false
+type TaggableTool interface {
+	// Tags returns semantic metadata tags for LLM routing.
+	Tags() map[string]string
+}
+
 // ToolSchema represents the schema of a tool for capability export.
 type ToolSchema struct {
-	Name        string           `json:"name"`
-	Description string           `json:"description"`
-	Category    ToolCategory     `json:"category"`
-	Parameters  *ParameterSchema `json:"parameters"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Category    ToolCategory      `json:"category"`
+	Parameters  *ParameterSchema  `json:"parameters"`
+	Tags        map[string]string `json:"tags,omitempty"`
 }

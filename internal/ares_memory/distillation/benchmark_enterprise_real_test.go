@@ -69,7 +69,7 @@ func callLLMFull(t *testing.T, cfg enterpriseConfig, contextName, content string
 	t.Logf("Request Body (%d bytes):\n%s", len(reqBody), string(reqBody))
 	t.Logf("=== END LLM REQUEST [%s] ===\n", contextName)
 
-	httpReq, err := http.NewRequest("POST", cfg.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", cfg.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Logf("request creation failed: %v", err)
 		return nil

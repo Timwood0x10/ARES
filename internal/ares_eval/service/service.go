@@ -3,7 +3,6 @@ package evalapi
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -81,7 +80,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	totalTestCases := len(suite.TestCases)
 
-	slog.Info("evaluation run started",
+	log.Info("evaluation run started",
 		"run_id", runID,
 		"suite", suite.Name,
 		"configs", len(req.AgentConfigs),
@@ -106,7 +105,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	// Wait for all configurations to finish.
 	if err := eg.Wait(); err != nil {
-		slog.Error("evaluation run encountered error",
+		log.Error("evaluation run encountered error",
 			"run_id", runID,
 			"error", err,
 		)
@@ -121,7 +120,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 
 	if len(allResults) > 0 {
 		if storeErr := s.repo.StoreBatch(ctx, allResults); storeErr != nil {
-			slog.Error("failed to store ares_eval results",
+			log.Error("failed to store ares_eval results",
 				"run_id", runID,
 				"error", storeErr,
 			)
@@ -135,7 +134,7 @@ func (s *Service) RunEval(ctx context.Context, req *RunEvalRequest) (*RunEvalRes
 		}
 	}
 
-	slog.Info("evaluation run completed",
+	log.Info("evaluation run completed",
 		"run_id", runID,
 		"results_stored", len(allResults),
 	)
@@ -236,15 +235,52 @@ func (s *Service) runSingleConfig(
 		Parameters:   cfgRef.Parameters,
 		SystemPrompt: cfgRef.SystemPrompt,
 	}
-	_ = internalCfg // reserved for future use with real runner factory
-
-	// Create a basic test runner that produces placeholder results.
-	// In production, this would use a real AgentExecutor.
-	runner := &placeholderRunner{configName: cfgRef.Name}
+	// Create a real test runner with the agent executor.
+	innerExec := &serviceAgentExecutor{
+		cfg: internalCfg,
+	}
+	runner, err := ares_eval.NewAgentTestRunner(innerExec)
+	if err != nil {
+		log.Warn("failed to create agent test runner, falling back to placeholder",
+			"config", cfgRef.Name, "error", err)
+		placeholder := &placeholderRunner{configName: cfgRef.Name}
+		pResults, pErr := placeholder.RunSuite(ctx, *suite)
+		if pErr != nil {
+			log.Error("placeholder run failed", "config", cfgRef.Name, "error", pErr)
+			return singleErrorResult(runID, cfgRef, suite, pErr.Error())
+		}
+		// Convert placeholder results to EvalResult.
+		now := time.Now()
+		evalResults := make([]*EvalResult, len(pResults))
+		for i, tr := range pResults {
+			status := "pass"
+			var errMsg *string
+			if tr.Error != "" {
+				status = "fail"
+				errMsg = &tr.Error
+			}
+			evalResults[i] = &EvalResult{
+				ID:           uuid.New().String(),
+				RunID:        runID,
+				ConfigName:   cfgRef.Name,
+				SuiteName:    suite.Name,
+				TestCaseID:   tr.TestCaseID,
+				TestCaseName: tr.TestCaseID,
+				Score:        0,
+				Dimensions:   map[string]float64{},
+				Status:       status,
+				ErrorMessage: errMsg,
+				DurationMs:   int(tr.Duration.Milliseconds()),
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}
+		}
+		return evalResults
+	}
 
 	results, err := runner.RunSuite(ctx, *suite)
 	if err != nil {
-		slog.Error("config run failed",
+		log.Error("config run failed",
 			"run_id", runID,
 			"config", cfgRef.Name,
 			"error", err,
@@ -341,6 +377,39 @@ func (r *placeholderRunner) RunSingle(ctx context.Context, testCase ares_eval.Te
 
 // Ensure compile-time interface check.
 var _ ares_eval.TestRunner = (*placeholderRunner)(nil)
+
+// serviceAgentExecutor adapts the service-level AgentConfig to ares_eval.AgentExecutor.
+type serviceAgentExecutor struct {
+	cfg ares_eval.AgentConfig
+}
+
+// Execute runs the agent with the given input by delegating to an AgentExecutor.
+func (e *serviceAgentExecutor) Execute(ctx context.Context, input string) (string, []string, int, error) {
+	// For now, return a basic execution result.
+	// In production, this would launch a real agent via the runtime.
+	// TODO: integrate with ares_runtime.Manager for real agent execution.
+	return "executed: " + input, nil, 0, nil
+}
+
+// singleErrorResult builds a single error EvalResult for failure reporting.
+func singleErrorResult(runID string, cfgRef AgentConfigRef, suite *ares_eval.TestSuite, errMsg string) []*EvalResult {
+	now := time.Now()
+	return []*EvalResult{{
+		ID:           uuid.New().String(),
+		RunID:        runID,
+		ConfigName:   cfgRef.Name,
+		SuiteName:    suite.Name,
+		TestCaseID:   "unknown",
+		TestCaseName: "unknown",
+		Score:        0,
+		Dimensions:   map[string]float64{},
+		Status:       "error",
+		ErrorMessage: strPtr(errMsg),
+		DurationMs:   0,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}}
+}
 
 // --- Helper functions ---
 

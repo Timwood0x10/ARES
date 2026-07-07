@@ -3,8 +3,8 @@
 package genome
 
 import (
+	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
@@ -112,14 +112,14 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 		template.Score = ScoreUnevaluated
 		template.ID = fmt.Sprintf("fresh-mut-%d-gen%d", i, p.Generation)
 		template.ParentID = p.Agents[templateIdx].ID
-		template.Version = template.Version + 1
+		template.Version++
 		template.StrategyMutationType = mutation.MutationParameter
 		template.MutationDesc = "fresh mutant injection for diversity recovery"
 
 		p.Agents[i] = template
 	}
 
-	slog.Debug("fresh mutants injected for diversity recovery",
+	el.Debug(context.Background(), "injectFreshMutantsLocked", "fresh mutants injected",
 		"generation", p.Generation,
 		"replace_count", replaceCount,
 		"start_index", startIdx,
@@ -152,6 +152,7 @@ func (p *Population) preserveElites(survivors []*mutation.Strategy) []*mutation.
 
 	elites := make([]*mutation.Strategy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
+		//nolint:gosec // G602: Index bounds guaranteed by eliteCount <= len(survivors) from min() call
 		elites = append(elites, survivors[i].Clone())
 	}
 
@@ -205,7 +206,7 @@ func (p *Population) preservePerLineageElites(survivors []*mutation.Strategy) []
 		reserved[i] = true
 	}
 
-	slog.Debug("per-lineage elites preserved",
+	el.Debug(context.Background(), "preservePerLineageElites", "per-lineage elites preserved",
 		"total_elites", len(elites),
 		"unique_lineages", len(lineageBest),
 		"elite_count_config", p.cfg.EliteCount,
@@ -263,20 +264,21 @@ func (p *Population) preservePromptDiversityLocked(elites []*mutation.Strategy, 
 				// Find the weakest (lowest score) elite to replace.
 				weakestIdx := 0
 				for i := 1; i < len(elites); i++ {
+					//nolint:gosec // G602: Bound check ensured by len(elites) >= p.Size > 0
 					if elites[i].Score < elites[weakestIdx].Score {
 						weakestIdx = i
 					}
 				}
 				replacedID := elites[weakestIdx].ID
 				elites[weakestIdx] = clone
-				slog.Debug("prompt diversity seed replaced weakest elite",
+				el.Debug(context.Background(), "preservePromptDiversityLocked", "seed replaced weakest elite",
 					"template", s.PromptTemplate,
 					"replaced_id", replacedID,
 					"agent_id", s.ID,
 				)
 			} else {
 				elites = append(elites, clone)
-				slog.Debug("prompt diversity seed force-retained",
+				el.Debug(context.Background(), "preservePromptDiversityLocked", "diversity seed force-retained",
 					"template", s.PromptTemplate,
 					"score", s.Score,
 					"agent_id", s.ID,
@@ -368,11 +370,12 @@ func (p *Population) applyFitnessSharing(eliteCount int) {
 	if limit <= 0 {
 		limit = m + 1 // Disable sampling: always use exact mode
 	}
-	if spatial > 0 && m > spatial {
+	switch {
+	case spatial > 0 && m > spatial:
 		p.applyFitnessSharingSpatial(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
-	} else if m <= limit {
+	case m <= limit:
 		p.applyFitnessSharingExact(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
-	} else {
+	default:
 		p.applyFitnessSharingSampled(scoredIdx, scored, keys, ranges, eliteCount, nicheRadius, shareSigma)
 	}
 }

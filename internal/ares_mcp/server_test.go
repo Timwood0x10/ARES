@@ -3,6 +3,7 @@ package ares_mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestResourceTemplate(t *testing.T) {
 	server := NewMCPServer(Implementation{Name: "test", Version: "1.0.0"}, transport)
 
 	handler := func(ctx context.Context, uri string) (*ReadResourceResult, error) {
-		return nil, nil
+		return nil, errors.New("not found")
 	}
 
 	err := server.ResourceTemplate("weather://{city}", "Weather data", "application/json", handler)
@@ -162,7 +163,7 @@ func TestHandleToolsList(t *testing.T) {
 
 	schema := json.RawMessage(`{"type": "object"}`)
 	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
-		return nil, nil
+		return &ToolCallResult{Content: []ContentBlock{}}, nil
 	}
 
 	_ = server.RegisterTool("tool1", "First tool", schema, handler)
@@ -266,7 +267,7 @@ func TestHandleResourcesList(t *testing.T) {
 	server := NewMCPServer(Implementation{Name: "test", Version: "1.0.0"}, transport)
 
 	handler := func(ctx context.Context, uri string) (*ReadResourceResult, error) {
-		return nil, nil
+		return nil, errors.New("not found")
 	}
 	_ = server.RegisterResource("test://res", "Test Resource", "text/plain", handler)
 
@@ -318,7 +319,7 @@ func TestHandlePromptsList(t *testing.T) {
 	server := NewMCPServer(Implementation{Name: "test", Version: "1.0.0"}, transport)
 
 	handler := func(ctx context.Context, args map[string]string) (*GetPromptResult, error) {
-		return nil, nil
+		return &GetPromptResult{Messages: []PromptMessage{}}, nil
 	}
 	_ = server.RegisterPrompt("summarize", "Summarize topic", nil, handler)
 

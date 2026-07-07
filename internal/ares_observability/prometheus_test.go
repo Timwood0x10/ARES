@@ -2,6 +2,7 @@
 package ares_observability
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -103,7 +104,7 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 func collectMetrics(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -299,7 +300,7 @@ func TestMetricsHTTPHandler(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -322,7 +323,7 @@ func TestRegisterMetricsRouter(t *testing.T) {
 	RegisterMetricsRouter(mux)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -330,7 +331,7 @@ func TestRegisterMetricsRouter(t *testing.T) {
 	}
 
 	recPost := httptest.NewRecorder()
-	reqPost := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	reqPost := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/metrics", nil)
 	mux.ServeHTTP(recPost, reqPost)
 
 	if recPost.Code != http.StatusMethodNotAllowed && recPost.Code != http.StatusNotFound {
@@ -343,7 +344,7 @@ func TestMetricsHTTPHandler_ContentType(t *testing.T) {
 	handler := MetricsHTTPHandler()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 	handler.ServeHTTP(rec, req)
 
 	bodyBytes, _ := io.ReadAll(rec.Body)

@@ -6,9 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -146,7 +144,7 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 // Returns task result or error if not found or invalid argument.
 func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage_models.TaskResult, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -168,7 +166,7 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get task result by id")
@@ -247,7 +245,7 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -296,7 +294,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -315,7 +313,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt, &similarity,
 		)
 		if err != nil {
-			slog.Error("Failed to scan task result row", "error", err)
+			log.Error("Failed to scan task result row", "error", err)
 			skippedCount++
 			continue
 		}
@@ -323,14 +321,14 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 		// Parse embedding string to float64 array
 		result.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
-			slog.Error("Failed to parse embedding vector", "task_id", result.ID, "error", err)
+			log.Error("Failed to parse embedding vector", "task_id", result.ID, "error", err)
 			skippedCount++
 			continue
 		}
 
 		// Parse input JSON
 		if err := json.Unmarshal(inputJSON, &result.Input); err != nil {
-			slog.Error("Failed to parse input JSON", "task_id", result.ID, "error", err)
+			log.Error("Failed to parse input JSON", "task_id", result.ID, "error", err)
 			skippedCount++
 			continue
 		}
@@ -338,7 +336,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 		// Parse output JSON
 		if outputJSON != nil {
 			if err := json.Unmarshal(outputJSON, &result.Output); err != nil {
-				slog.Error("Failed to parse output JSON", "task_id", result.ID, "error", err)
+				log.Error("Failed to parse output JSON", "task_id", result.ID, "error", err)
 				skippedCount++
 				continue
 			}
@@ -364,11 +362,11 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 	}
 
 	if skippedCount > 0 {
-		slog.Warn("Skipped task results due to errors", "skipped_count", skippedCount, "total_count", len(results)+skippedCount)
+		log.Warn("Skipped task results due to errors", "skipped_count", skippedCount, "total_count", len(results)+skippedCount)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate task results", "error", err)
+		log.Error("Failed to iterate task results", "error", err)
 		return nil, errors.Wrap(err, "iterate task results")
 	}
 
@@ -398,7 +396,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -416,14 +414,14 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 		)
 		if err != nil {
-			slog.Error("Failed to scan task result row", "error", err)
+			log.Error("Failed to scan task result row", "error", err)
 			skippedCount++
 			continue
 		}
 
 		// Parse input JSON
 		if err := json.Unmarshal(inputJSON, &result.Input); err != nil {
-			slog.Error("Failed to parse input JSON", "task_id", result.ID, "error", err)
+			log.Error("Failed to parse input JSON", "task_id", result.ID, "error", err)
 			skippedCount++
 			continue
 		}
@@ -431,7 +429,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 		// Parse output JSON
 		if outputJSON != nil {
 			if err := json.Unmarshal(outputJSON, &result.Output); err != nil {
-				slog.Error("Failed to parse output JSON", "task_id", result.ID, "error", err)
+				log.Error("Failed to parse output JSON", "task_id", result.ID, "error", err)
 				skippedCount++
 				continue
 			}
@@ -450,11 +448,11 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 	}
 
 	if skippedCount > 0 {
-		slog.Warn("Skipped task results due to errors", "skipped_count", skippedCount, "total_count", len(results)+skippedCount)
+		log.Warn("Skipped task results due to errors", "skipped_count", skippedCount, "total_count", len(results)+skippedCount)
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate task results", "error", err)
+		log.Error("Failed to iterate task results", "error", err)
 		return nil, errors.Wrap(err, "iterate task results")
 	}
 
@@ -484,7 +482,7 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error("Failed to close rows", "error", err)
+			log.Error("Failed to close rows", "error", err)
 		}
 	}()
 
@@ -529,7 +527,7 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate task results", "error", err)
+		log.Error("Failed to iterate task results", "error", err)
 		return nil, errors.Wrap(err, "iterate task results")
 	}
 
@@ -565,7 +563,7 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -597,7 +595,7 @@ func (r *TaskResultRepository) UpdateStatus(ctx context.Context, id, status, err
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -637,7 +635,7 @@ func (r *TaskResultRepository) GetStatistics(ctx context.Context, tenantID strin
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate task result stats", "error", err)
+		log.Error("Failed to iterate task result stats", "error", err)
 		return nil, errors.Wrap(err, "iterate task result stats")
 	}
 

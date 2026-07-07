@@ -120,29 +120,30 @@ func (s *ImportanceScorer) ScoreMemory(memoryType MemoryType, problem, solution 
 	}
 
 	// Length penalty for very short content without strong keywords
-	if totalLength < 15 {
+	switch {
+	case totalLength < 15:
 		// Extremely short content - severe penalty
 		if !hasKeywords {
 			score = 0.2 // Very low score for very short content without keywords
 		} else {
 			// Even with keywords, extremely short content is not useful
-			score = score * 0.4
+			score *= 0.4
 		}
-	} else if totalLength < 30 {
+	case totalLength < 30:
 		if !hasKeywords {
 			score = 0.25 // Very low score for very short content without keywords
 		} else {
 			// Apply moderate penalty for short content even with keywords
 			// But don't penalize preference and fact types as heavily
 			if memoryType == MemoryPreference || memoryType == MemoryKnowledge {
-				score = score * 0.9
+				score *= 0.9
 			} else {
-				score = score * 0.7
+				score *= 0.7
 			}
 		}
-	} else if totalLength < 60 {
+	case totalLength < 60:
 		// Mild penalty for moderately short content
-		score = score * 0.9
+		score *= 0.9
 	}
 
 	// Cap the score at 1.0

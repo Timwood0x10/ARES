@@ -5,9 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -165,7 +163,7 @@ func (r *ToolRepository) Create(ctx context.Context, tool *storage_models.Tool) 
 // Returns tool or error if not found or invalid argument.
 func (r *ToolRepository) GetByID(ctx context.Context, id string) (*storage_models.Tool, error) {
 	if id == "" {
-		return nil, coreerrors.ErrInvalidArgument
+		return nil, errors.ErrInvalidArgument
 	}
 
 	query := `
@@ -185,7 +183,7 @@ func (r *ToolRepository) GetByID(ctx context.Context, id string) (*storage_model
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get tool by id")
@@ -225,7 +223,7 @@ func (r *ToolRepository) GetByName(ctx context.Context, name, tenantID string) (
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, coreerrors.ErrRecordNotFound
+		return nil, errors.ErrRecordNotFound
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get tool by name")
@@ -278,7 +276,7 @@ func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) 
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -357,7 +355,7 @@ func (r *ToolRepository) SearchByVector(ctx context.Context, embedding []float64
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -415,7 +413,7 @@ func (r *ToolRepository) SearchByKeyword(ctx context.Context, query, tenantID st
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -469,7 +467,7 @@ func (r *ToolRepository) ListAll(ctx context.Context, tenantID string, limit int
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -524,7 +522,7 @@ func (r *ToolRepository) ListByAgentType(ctx context.Context, agentType, tenantI
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 
@@ -560,7 +558,7 @@ func (r *ToolRepository) UpdateUsage(ctx context.Context, id string, success boo
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -593,7 +591,7 @@ func (r *ToolRepository) UpdateEmbedding(ctx context.Context, id string, embeddi
 	}
 
 	if rows == 0 {
-		return coreerrors.ErrRecordNotFound
+		return errors.ErrRecordNotFound
 	}
 
 	return nil
@@ -648,7 +646,7 @@ func (r *ToolRepository) ListByTags(ctx context.Context, tags []string, tenantID
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("Failed to iterate tools", "error", err)
+		log.Error("Failed to iterate tools", "error", err)
 		return nil, errors.Wrap(err, "iterate tools")
 	}
 

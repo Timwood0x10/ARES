@@ -83,10 +83,10 @@ type registeredPrompt struct {
 // --- Errors ---
 
 // ErrDuplicateRegistration indicates a tool/resource/prompt with the same name already exists.
-var ErrDuplicateRegistration = fmt.Errorf("duplicate registration")
+// Errors are defined in errors.go.
 
 // ErrEmptyName indicates that a name parameter was empty.
-var ErrEmptyName = fmt.Errorf("name must not be empty")
+// Errors are defined in errors.go.
 
 // --- MCPServer ---
 

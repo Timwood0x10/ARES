@@ -21,7 +21,7 @@ func (m *mockExperienceRepo) Create(ctx context.Context, exp *storage_models.Exp
 }
 
 func (m *mockExperienceRepo) GetByID(ctx context.Context, id string) (*storage_models.Experience, error) {
-	return nil, nil
+	return nil, errors.New("not implemented in mock")
 }
 
 func (m *mockExperienceRepo) Update(ctx context.Context, exp *storage_models.Experience) error {

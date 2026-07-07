@@ -11,7 +11,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
@@ -115,104 +114,6 @@ func (e *DynamicExecutor) flushCheckpoint(ctx context.Context, executionID strin
 }
 
 // ApplyMode controls when graph mutations take effect during execution.
-type ApplyMode int
-
-const (
-	// ApplyAtCheckpoint recomputes execution order after each step completes.
-	ApplyAtCheckpoint ApplyMode = iota
-	// ApplyImmediate recomputes execution order before each step starts.
-	ApplyImmediate
-)
-
-// ExecutorOption configures the underlying Executor.
-type ExecutorOption func(*Executor)
-
-// WithMaxParallel sets the max parallel steps.
-func WithMaxParallel(n int) ExecutorOption {
-	return func(e *Executor) {
-		e.maxParallel = n
-	}
-}
-
-// WithStepTimeout sets the step timeout.
-func WithStepTimeout(d time.Duration) ExecutorOption {
-	return func(e *Executor) {
-		e.stepTimeout = d
-	}
-}
-
-// DynamicExecutor extends Executor to support mid-execution graph mutations.
-type DynamicExecutor struct {
-	*Executor
-	applyMode          ApplyMode
-	hitlHandler        InterruptHandler
-	hitlStore          InterruptStore
-	recoveryHandler    StepRecoveryHandler
-	recoveryEventSink  func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)
-	pluginBus          *ares_runtime.PluginBus
-	checkpointStore    ares_runtime.CheckpointStore
-	executionCollector *ares_runtime.ExecutionCollector
-}
-
-// NewDynamicExecutor creates a DynamicExecutor with the given registry and options.
-func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...ExecutorOption) *DynamicExecutor {
-	executor := &Executor{
-		registry:    registry,
-		maxParallel: DefaultMaxParallel,
-		stepTimeout: DefaultExecutorStepTimeout,
-	}
-	for _, opt := range opts {
-		opt(executor)
-	}
-	return &DynamicExecutor{
-		Executor:  executor,
-		applyMode: applyMode,
-	}
-}
-
-// WithHitlHandler sets the interrupt handler for human-in-the-loop support.
-func (e *DynamicExecutor) WithHitlHandler(handler InterruptHandler) *DynamicExecutor {
-	e.hitlHandler = handler
-	return e
-}
-
-// WithHitlStore sets the interrupt store for crash recovery.
-func (e *DynamicExecutor) WithHitlStore(store InterruptStore) *DynamicExecutor {
-	e.hitlStore = store
-	return e
-}
-
-// WithRecoveryHandler sets the step recovery handler for failed steps.
-func (e *DynamicExecutor) WithRecoveryHandler(handler StepRecoveryHandler) *DynamicExecutor {
-	e.recoveryHandler = handler
-	return e
-}
-
-// WithRecoveryEventSink sets a sink for step recovery ares_events.
-func (e *DynamicExecutor) WithRecoveryEventSink(sink func(ctx context.Context, eventType ares_events.EventType, payload map[string]any)) *DynamicExecutor {
-	e.recoveryEventSink = sink
-	return e
-}
-
-// WithPluginBus sets the plugin bus for BeforeStep/AfterStep hook invocation
-// and workflow lifecycle event emission.
-func (e *DynamicExecutor) WithPluginBus(bus *ares_runtime.PluginBus) *DynamicExecutor {
-	e.pluginBus = bus
-	return e
-}
-
-// WithCheckpointStore sets the checkpoint store for execution resume.
-func (e *DynamicExecutor) WithCheckpointStore(store ares_runtime.CheckpointStore) *DynamicExecutor {
-	e.checkpointStore = store
-	return e
-}
-
-// WithExecutionCollector sets the execution collector for route recording
-// and execution history tracking.
-func (e *DynamicExecutor) WithExecutionCollector(c *ares_runtime.ExecutionCollector) *DynamicExecutor {
-	e.executionCollector = c
-	return e
-}
 
 var dynamicExecIDCounter uint64
 
@@ -370,6 +271,8 @@ func (e *DynamicExecutor) findLoopPlugin() *ares_runtime.LoopPlugin {
 // execLoop now wraps execution in an outer round loop for Controlled
 // Evolutionary Loop support. After the entire DAG executes once, the
 // loop plugin decides whether to start another round with a mutated DAG.
+//
+//nolint:gocyclo // Complex execution loop with multiple stages and error handling
 func (e *DynamicExecutor) execLoop(
 	ctx context.Context,
 	workflow *Workflow,
@@ -662,6 +565,8 @@ func (e *DynamicExecutor) execLoop(
 // runDynamicSteps runs workflow steps with support for dynamic reordering.
 // The outer recovery loop allows the scheduler to re-enter step dispatch after
 // recovery adds replacement nodes.
+//
+//nolint:gocyclo // Complex workflow execution logic with recovery and dynamic reordering
 func (e *DynamicExecutor) runDynamicSteps(
 	ctx context.Context,
 	execution *WorkflowExecution,
@@ -896,7 +801,6 @@ func (e *DynamicExecutor) runDynamicSteps(
 				mu.Unlock()
 
 				if e.pluginBus != nil {
-					// Call AfterStep before emitting ares_events so plugins can
 					// record/modify state before observers see the result.
 					if err := e.pluginBus.AfterStep(ctx, execution.ID, toRuntimeStepResult(result)); err != nil {
 						log.Warn("after step hook failed (continuing)",

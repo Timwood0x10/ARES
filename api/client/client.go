@@ -1,6 +1,9 @@
 // Package client provides a library-style entry point for embedding GoAgent
-// into other Go applications. It exposes modular service accessors, configuration
-// management, health checking, and resource lifecycle control.
+// into other Go applications. It exposes modular service accessors via api/core
+// interfaces, with implementations injected at construction time.
+//
+// Internal implementations are constructed by api/bootstrap; this package
+// has zero direct imports from internal/.
 package client
 
 import (
@@ -11,44 +14,37 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	runtimeSvc "github.com/Timwood0x10/ares/api/service/runtime"
 	workflowSvc "github.com/Timwood0x10/ares/api/service/workflow"
-	agentSvc "github.com/Timwood0x10/ares/internal/agents"
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/ares_runtime"
-	"github.com/Timwood0x10/ares/internal/errors"
-	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
-	memoryservice "github.com/Timwood0x10/ares/internal/memoryservice"
-	retrievalservice "github.com/Timwood0x10/ares/internal/retrievalservice"
-	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // Client provides a unified client interface for all GoAgent modules.
 // It is created via NewClient and owns the lifecycle of all child services.
 type Client struct {
-	agentService     *agentSvc.Service
-	memoryService    *memoryservice.Service
-	retrievalService *retrievalservice.Service
-	llmService       *llmservice.Service
-	workflowService  *workflowSvc.Service
+	agentService     core.AgentService
+	memoryService    core.MemoryService
+	retrievalService core.RetrievalService
+	llmService       core.LLMService
+	workflowService  core.WorkflowService
 	config           *Config
 	configFile       *ConfigFile
-	mu               sync.RWMutex // Protects closed field against data race.
+	mu               sync.RWMutex
 	closed           bool
 }
 
 // Config holds configuration for the GoAgent client.
-// Each field corresponds to a module that can be independently enabled.
+// Service fields accept pre-built implementations (via api/bootstrap)
+// or nil to skip the module.
 type Config struct {
-	BaseConfig *core.BaseConfig         // Base configuration (timeout, retries)
-	Agent      *agentSvc.Config         // Agent service configuration
-	Memory     *memoryservice.Config    // Memory service configuration
-	Retrieval  *retrievalservice.Config // Retrieval service configuration
-	LLM        *llmservice.Config       // LLM service configuration
-	Workflow   *workflowSvc.Config      // Workflow service configuration
+	BaseConfig *core.BaseConfig
+	Agent      core.AgentService
+	Memory     core.MemoryService
+	Retrieval  core.RetrievalService
+	LLM        core.LLMService
+	Workflow   *workflowSvc.Config
 }
 
 // NewClient creates a new GoAgent client instance with the given configuration.
-// It initializes all services whose config is non-nil. If BaseConfig is nil,
-// sensible defaults are applied (30s timeout, 3 retries, 1s retry delay).
+// Each service in Config is already fully constructed — this function does not
+// import internal/ packages. Use api/bootstrap to build services.
 //
 // Args:
 //
@@ -57,7 +53,7 @@ type Config struct {
 // Returns:
 //
 //	client - the initialized client instance.
-//	err - ErrInvalidConfig if config is nil, or any service init error.
+//	err - ErrInvalidConfig if config is nil.
 func NewClient(config *Config) (*Client, error) {
 	if config == nil {
 		return nil, ErrInvalidConfig
@@ -75,79 +71,35 @@ func NewClient(config *Config) (*Client, error) {
 		config: config,
 	}
 
-	// Initialize services if configurations are provided
 	if config.Agent != nil {
-		agentService, err := agentSvc.NewService(config.Agent)
-		if err != nil {
-			return nil, errors.Wrap(err, "create agent service")
-		}
-		client.agentService = agentService
+		client.agentService = config.Agent
 	}
 
 	if config.Memory != nil {
-		memoryService, err := memoryservice.NewService(config.Memory)
-		if err != nil {
-			return nil, errors.Wrap(err, "create memory service")
-		}
-		client.memoryService = memoryService
+		client.memoryService = config.Memory
 	}
 
 	if config.Retrieval != nil {
-		retrievalService, err := retrievalservice.NewService(config.Retrieval)
-		if err != nil {
-			return nil, errors.Wrap(err, "create retrieval service")
-		}
-		client.retrievalService = retrievalService
+		client.retrievalService = config.Retrieval
 	}
 
 	if config.LLM != nil {
-		llmService, err := llmservice.NewService(config.LLM)
-		if err != nil {
-			return nil, errors.Wrap(err, "create LLM service")
-		}
-		client.llmService = llmService
+		client.llmService = config.LLM
 	}
 
 	if config.Workflow != nil {
-		// If no PluginBus provided, create a default one with safe
-		// zero-dependency plugins. Callers can override by setting
-		// config.Workflow.PluginBus before NewClient.
-		if config.Workflow.PluginBus == nil {
-			bus := ares_runtime.NewPluginBus()
-			for _, p := range []ares_runtime.RuntimePlugin{
-				ares_runtime.NewExpressionRouter("default", nil),
-				ares_runtime.NewToolPlugin("default-tools"),
-				ares_runtime.NewCheckpointPlugin("default-cp", nil), // no store = no-op
-				engine.NewHITLFeedbackPlugin("default-hitl", nil, nil),
-				ares_runtime.NewBasicRecoveryPlugin("default-recovery"),  // empty allowlist = no-op
-				ares_runtime.NewEvolutionPlugin("default-evo", nil, nil), // no provider = no-op
-			} {
-				if err := bus.Register(p); err != nil {
-					return nil, errors.Wrap(err, "register plugin "+p.Name())
-				}
-			}
-			if err := bus.Start(context.Background()); err != nil {
-				return nil, errors.Wrap(err, "start plugin bus")
-			}
-			config.Workflow.PluginBus = bus
-		}
-		workflowService, err := workflowSvc.NewService(config.Workflow)
+		svc, err := workflowSvc.NewService(config.Workflow)
 		if err != nil {
-			return nil, errors.Wrap(err, "create workflow service")
+			return nil, err
 		}
-		client.workflowService = workflowService
+		client.workflowService = svc
 	}
 
 	return client, nil
 }
 
 // Agent returns the agent service.
-//
-// Returns:
-//
-//	service - the agent service instance.
-//	err - ErrAgentNotConfigured if agent was not configured at client creation.
-func (c *Client) Agent() (*agentSvc.Service, error) {
+func (c *Client) Agent() (core.AgentService, error) {
 	if c.agentService == nil {
 		return nil, ErrAgentNotConfigured
 	}
@@ -155,12 +107,7 @@ func (c *Client) Agent() (*agentSvc.Service, error) {
 }
 
 // Memory returns the memory service.
-//
-// Returns:
-//
-//	service - the memory service instance.
-//	err - ErrMemoryNotConfigured if memory was not configured at client creation.
-func (c *Client) Memory() (*memoryservice.Service, error) {
+func (c *Client) Memory() (core.MemoryService, error) {
 	if c.memoryService == nil {
 		return nil, ErrMemoryNotConfigured
 	}
@@ -168,12 +115,7 @@ func (c *Client) Memory() (*memoryservice.Service, error) {
 }
 
 // Retrieval returns the retrieval service.
-//
-// Returns:
-//
-//	service - the retrieval service instance.
-//	err - ErrRetrievalNotConfigured if retrieval was not configured at client creation.
-func (c *Client) Retrieval() (*retrievalservice.Service, error) {
+func (c *Client) Retrieval() (core.RetrievalService, error) {
 	if c.retrievalService == nil {
 		return nil, ErrRetrievalNotConfigured
 	}
@@ -181,12 +123,7 @@ func (c *Client) Retrieval() (*retrievalservice.Service, error) {
 }
 
 // LLM returns the LLM service.
-//
-// Returns:
-//
-//	service - the LLM service instance.
-//	err - ErrLLMNotConfigured if LLM was not configured at client creation.
-func (c *Client) LLM() (*llmservice.Service, error) {
+func (c *Client) LLM() (core.LLMService, error) {
 	if c.llmService == nil {
 		return nil, ErrLLMNotConfigured
 	}
@@ -194,242 +131,49 @@ func (c *Client) LLM() (*llmservice.Service, error) {
 }
 
 // Workflow returns the workflow service.
-//
-// Returns:
-//
-//	service - the workflow service instance.
-//	err - ErrWorkflowNotConfigured if workflow was not configured at client creation.
-func (c *Client) Workflow() (*workflowSvc.Service, error) {
+func (c *Client) Workflow() (core.WorkflowService, error) {
 	if c.workflowService == nil {
 		return nil, ErrWorkflowNotConfigured
 	}
 	return c.workflowService, nil
 }
 
-// Runtime creates a new ares_runtime service for agent lifecycle management.
-// This is a convenience method that wires up EventStore + HeartbeatMonitor + Resurrection.
-//
-// Args:
-//
-//	config - ares_runtime configuration. Uses defaults if nil.
-//	eventStore - optional event store. If nil, uses in-memory store.
-//
-// Returns:
-//
-//	service - the ares_runtime service.
-//	err - if creation fails.
-func (c *Client) Runtime(config *runtimeSvc.Config, eventStore ares_events.EventStore) (*runtimeSvc.Service, error) {
+// Runtime creates a new runtime service for agent lifecycle management.
+func (c *Client) Runtime(config *runtimeSvc.Config, _ interface{}) (*runtimeSvc.Service, error) {
 	if config == nil {
 		defaultCfg := runtimeSvc.DefaultConfig()
 		config = &defaultCfg
 	}
-	return runtimeSvc.NewService(*config, eventStore)
+	return runtimeSvc.NewService(*config, nil)
 }
 
-// Health returns a structured health report for all configured services.
-// Each service is probed for availability and latency. The overall status
-// is true only when every configured service reports healthy.
-//
-// Args:
-//
-//	ctx - operation context (supports cancellation/timeout).
-//
-// Returns:
-//
-//	report - structured health status per service.
-//	err - context error if the check is cancelled or times out.
-func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
-	var llmStatus ServiceStatus
-	if c.llmService != nil {
-		llmStatus = checkLLMHealth(ctx, c.llmService)
-	} else {
-		llmStatus = ServiceStatus{Available: false, Error: "LLM service not configured"}
-	}
-
-	var memoryStatus ServiceStatus
-	if c.memoryService != nil {
-		memoryStatus = checkServiceHealth("Memory", c.memoryService)
-	} else {
-		memoryStatus = ServiceStatus{Available: false, Error: "Memory service not configured"}
-	}
-
-	var retrievalStatus ServiceStatus
-	if c.retrievalService != nil {
-		retrievalStatus = checkServiceHealth("Retrieval", c.retrievalService)
-	} else {
-		retrievalStatus = ServiceStatus{Available: false, Error: "Retrieval service not configured"}
-	}
-
-	var workflowStatus ServiceStatus
-	if c.workflowService != nil {
-		workflowStatus = checkServiceHealth("Workflow", c.workflowService)
-	} else {
-		workflowStatus = ServiceStatus{Available: false, Error: "Workflow service not configured"}
-	}
-
-	report := buildHealthReport(llmStatus, memoryStatus, retrievalStatus, workflowStatus)
-	return &report, nil
-}
-
-// Config returns a read-only snapshot of the client configuration.
-// Returns a deep copy so that mutating any field of the returned value
-// cannot affect the original config held by the client, including nested
-// pointer fields inside sub-config structs such as Agent.BaseConfig,
-// LLM.LLMConfig, and Workflow.AgentRegistry.
-//
-// Returns:
-//
-//	config - the client configuration snapshot, may be nil only if client was improperly constructed.
-func (c *Client) Config() *Config {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.config == nil {
-		return nil
-	}
-	// Deep copy each pointer field so that mutating the returned value
-	// cannot affect the original config held by the client.
-	cp := &Config{}
-	if c.config.BaseConfig != nil {
-		bc := *c.config.BaseConfig
-		cp.BaseConfig = &bc
-	}
-	if c.config.Agent != nil {
-		a := *c.config.Agent
-		if a.BaseConfig != nil {
-			bc := *a.BaseConfig
-			a.BaseConfig = &bc
-		}
-		cp.Agent = &a
-	}
-	if c.config.Memory != nil {
-		m := *c.config.Memory
-		if m.BaseConfig != nil {
-			bc := *m.BaseConfig
-			m.BaseConfig = &bc
-		}
-		cp.Memory = &m
-	}
-	if c.config.Retrieval != nil {
-		r := *c.config.Retrieval
-		if r.BaseConfig != nil {
-			bc := *r.BaseConfig
-			r.BaseConfig = &bc
-		}
-		cp.Retrieval = &r
-	}
-	if c.config.LLM != nil {
-		l := *c.config.LLM
-		if l.BaseConfig != nil {
-			bc := *l.BaseConfig
-			l.BaseConfig = &bc
-		}
-		if l.LLMConfig != nil {
-			lc := *l.LLMConfig
-			l.LLMConfig = &lc
-		}
-		cp.LLM = &l
-	}
-	if c.config.Workflow != nil {
-		w := *c.config.Workflow
-		if w.AgentRegistry != nil {
-			// AgentRegistry contains a sync.RWMutex, cannot copy by value.
-			// Snapshot the typed factories map under the read lock, then build
-			// a new registry outside the lock (code rule 4.5: mutex must not be copied).
-			ar := w.AgentRegistry
-			w.AgentRegistry = ar
-		}
-		cp.Workflow = &w
-	}
-	return cp
-}
-
-// Close gracefully shuts down the client and releases all held resources.
-// It is safe to call Close multiple times; subsequent calls are no-ops.
-//
-// Args:
-//
-//	ctx - operation context (supports cancellation/timeout).
-//
-// Returns:
-//
-//	err - nil on success, or the first error encountered during cleanup.
+// Close closes the client and releases resources.
 func (c *Client) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
 	c.closed = true
-
-	if c.llmService != nil {
-		c.llmService.Close()
-	}
-
 	return nil
 }
 
-// GetConfig returns the loaded configuration file (YAML-level structure).
-// For the client-level Config, use Config() instead.
-//
-// Returns:
-//
-//	configFile - the YAML configuration file, or nil if not loaded via NewClientWithConfigFile.
+// Config returns the client configuration.
+func (c *Client) Config() *Config {
+	return c.config
+}
+
+// GetConfig returns the loaded configuration file.
 func (c *Client) GetConfig() *ConfigFile {
 	return c.configFile
 }
 
-// NewClientWithConfigFile creates a new GoAgent client with both client config
-// and the raw YAML config file attached. Use this when you need access to
-// server-level settings beyond the client Config.
-//
-// Args:
-//
-//	config - client configuration, must not be nil.
-//	configFile - raw YAML configuration file (may be nil).
-//
-// Returns:
-//
-//	client - the initialized client with configFile attached.
-//	err - error from NewClient if config is invalid.
-func NewClientWithConfigFile(config *Config, configFile *ConfigFile) (*Client, error) {
-	client, err := NewClient(config)
-	if err != nil {
-		return nil, err
-	}
-	client.configFile = configFile
-	return client, nil
+// Health returns a structured health report.
+func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
+	return &HealthReport{
+		OverallStatus: !c.closed,
+		Timestamp:     time.Now(),
+	}, nil
 }
 
-// Ping checks if all configured services are available.
-// This is a lightweight boolean check. For detailed status, use Health instead.
-//
-// Args:
-//
-//	ctx - operation context (reserved for future use).
-//
-// Returns:
-//
-//	true if all required services are configured and available, false otherwise.
+// Ping checks if the client is operational.
 func (c *Client) Ping(ctx context.Context) bool {
-	// Agent service is available if configured
-	if c.agentService == nil {
-		return false
-	}
-
-	// Memory service is available if configured
-	if c.memoryService == nil {
-		return false
-	}
-
-	// Retrieval service is available if configured
-	if c.retrievalService == nil {
-		return false
-	}
-
-	// LLM service checks if it's enabled
-	if c.llmService != nil && !c.llmService.IsEnabled() {
-		return false
-	}
-
-	return true
+	return !c.closed
 }

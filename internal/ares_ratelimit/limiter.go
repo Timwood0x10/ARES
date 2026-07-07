@@ -65,9 +65,7 @@ func NewFactory() *Factory {
 		return NewTokenBucketLimiter(config)
 	})
 
-	f.Register(LimiterTypeSlidingWindow, func(config *LimiterConfig) Limiter {
-		return NewSlidingWindowLimiter(config)
-	})
+	f.Register(LimiterTypeSlidingWindow, NewSlidingWindowLimiter)
 
 	f.Register(LimiterTypeSemaphore, func(config *LimiterConfig) Limiter {
 		return NewSemaphoreLimiter(config)

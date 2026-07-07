@@ -153,6 +153,8 @@ func (c *Compactor) compactStream(ctx context.Context, streamID string) (bool, e
 }
 
 // buildSummary constructs an EventSummary from a slice of events using rule-based aggregation.
+//
+//nolint:gocyclo // Complex event aggregation logic with multiple event types
 func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary {
 	if len(events) == 0 {
 		return nil
@@ -262,16 +264,16 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 	}
 
 	// Determine outcome.
-	if summary.EventTypeCounts[string(EventTaskFailed)] > 0 ||
-		summary.EventTypeCounts[string(EventFailoverTriggered)] > 0 {
+	switch {
+	case summary.EventTypeCounts[string(EventTaskFailed)] > 0 || summary.EventTypeCounts[string(EventFailoverTriggered)] > 0:
 		if summary.EventTypeCounts[string(EventTaskCompleted)] > 0 {
 			summary.Outcome = "partial"
 		} else {
 			summary.Outcome = "failed"
 		}
-	} else if summary.EventTypeCounts[string(EventTaskCompleted)] > 0 {
+	case summary.EventTypeCounts[string(EventTaskCompleted)] > 0:
 		summary.Outcome = "completed"
-	} else {
+	default:
 		summary.Outcome = "active"
 	}
 
@@ -298,6 +300,8 @@ func collectTool(payload map[string]any, key string, seen map[string]bool, tools
 // Output format:
 // "Agent {id} ran {n} tasks [{task_ids}], called {m} tools [{tools}],
 // emitted {k} events over {duration}, bound to user request '{snippet}', result: {outcome}"
+//
+//nolint:gocyclo // Complex event summarization with multiple formats
 func DefaultSummarizer(events []*Event) string {
 	if len(events) == 0 {
 		return "(empty event window)"
@@ -366,15 +370,16 @@ func DefaultSummarizer(events []*Event) string {
 	}
 
 	// Determine outcome.
-	if typeCounts[string(EventTaskFailed)] > 0 || typeCounts[string(EventFailoverTriggered)] > 0 {
-		if typeCounts[string(EventTaskCompleted)] > 0 {
-			outcome = "partial"
-		} else {
-			outcome = "failed"
-		}
-	} else if typeCounts[string(EventTaskCompleted)] > 0 {
+	hasFailed := typeCounts[string(EventTaskFailed)] > 0 || typeCounts[string(EventFailoverTriggered)] > 0
+	hasCompleted := typeCounts[string(EventTaskCompleted)] > 0
+	switch {
+	case hasFailed && hasCompleted:
+		outcome = "partial"
+	case hasFailed:
+		outcome = "failed"
+	case hasCompleted:
 		outcome = "completed"
-	} else {
+	default:
 		outcome = "active"
 	}
 

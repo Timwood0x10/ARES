@@ -3,9 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 
-	coreerrors "github.com/Timwood0x10/ares/internal/core/errors"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/storage"
@@ -104,7 +102,7 @@ func (r *Repository) WithTransaction(ctx context.Context) (*Repository, error) {
 		close: func() {
 			if tx != nil {
 				if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-					slog.Warn("failed to rollback orphaned transaction", "error", err)
+					log.Warn("failed to rollback orphaned transaction", "error", err)
 				}
 			}
 		},
@@ -116,7 +114,7 @@ func (r *Repository) WithTransaction(ctx context.Context) (*Repository, error) {
 // Commit commits the transaction.
 func (r *Repository) Commit() error {
 	if r.tx == nil {
-		return coreerrors.ErrNoTransaction
+		return errors.ErrNoTransaction
 	}
 	err := r.tx.Commit()
 	if err == nil || err == sql.ErrTxDone {
@@ -164,7 +162,7 @@ func (r *Repository) GetSessionWithResult(ctx context.Context, sessionID string)
 	}
 
 	result, err := r.Recommend.GetBySessionID(ctx, sessionID)
-	if err != nil && err != coreerrors.ErrRecordNotFound {
+	if err != nil && err != errors.ErrRecordNotFound {
 		return nil, nil, err
 	}
 

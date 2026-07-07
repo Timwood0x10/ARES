@@ -28,7 +28,7 @@ func NewTemplateEngine() *TemplateEngine {
 		funcs: map[string]interface{}{
 			"upper":   strings.ToUpper,
 			"lower":   strings.ToLower,
-			"title":   func(s string) string { return titleCase.String(s) },
+			"title":   titleCase.String,
 			"trim":    strings.TrimSpace,
 			"join":    strings.Join,
 			"json":    toJSON,

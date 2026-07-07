@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -397,7 +398,7 @@ func TestWorkflowReloaderCoverage(t *testing.T) {
 type mockInvalidLoader struct{}
 
 func (m *mockInvalidLoader) Load(ctx context.Context, source string) (*Workflow, error) {
-	return nil, nil
+	return nil, errors.New("invalid loader: returns nil without error")
 }
 
 // =====================================================

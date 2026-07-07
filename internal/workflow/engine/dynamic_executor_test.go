@@ -1145,7 +1145,7 @@ func (m *mockEvolutionPluginForTest) Recommend(ctx context.Context, state ares_r
 	if m.recommendFn != nil {
 		return m.recommendFn(ctx, state)
 	}
-	return nil, nil
+	return nil, errors.New("not implemented")
 }
 func (m *mockEvolutionPluginForTest) RecordOutcome(ctx context.Context, outcome ares_runtime.ExecutionOutcome) error {
 	return nil

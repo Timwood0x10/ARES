@@ -167,6 +167,8 @@ func NewDreamCycle(
 // Returns:
 //
 //	error - non-nil if a critical error occurs during orchestration.
+//
+//nolint:gocyclo // Complex evolutionary cycle orchestration with multiple phases
 func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	// Enforce a max duration for the entire cycle to prevent hangs.
 	cycleCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)

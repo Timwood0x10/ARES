@@ -3,7 +3,6 @@ package ares_runtime
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -134,7 +133,7 @@ func (p *defaultEvolutionPlugin) Recommend(ctx context.Context, _ ExecutionState
 	p.mu.Unlock()
 
 	if rec != nil {
-		slog.Debug("evolution: recommendation updated",
+		log.Debug("evolution: recommendation updated",
 			"plugin", p.name,
 			"agent", rec.PreferredAgent,
 			"confidence", rec.Confidence,

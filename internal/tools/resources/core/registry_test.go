@@ -85,10 +85,8 @@ func TestRegistryRegister(t *testing.T) {
 				if tt.errType != nil && !errors.Is(err, tt.errType) {
 					t.Errorf("expected error %v, got %v", tt.errType, err)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -170,10 +168,8 @@ func TestRegistryGet(t *testing.T) {
 				if retrieved.Name() != tt.toolName {
 					t.Errorf("retrieved tool name = %q, want %q", retrieved.Name(), tt.toolName)
 				}
-			} else {
-				if retrieved != nil {
-					t.Error("retrieved tool should be nil for non-existing tool")
-				}
+			} else if retrieved != nil {
+				t.Error("retrieved tool should be nil for non-existing tool")
 			}
 		})
 	}
@@ -319,7 +315,7 @@ func TestRegistryExecute(t *testing.T) {
 
 	ctx := context.Background()
 	params := map[string]interface{}{
-		"key": "value",
+		"param": "value",
 	}
 
 	result, err := registry.Execute(ctx, "execute_test_tool", params)
@@ -663,7 +659,7 @@ func TestGlobalRegistry(t *testing.T) {
 
 	// Execute tool
 	ctx := context.Background()
-	result, err := Execute(ctx, "global_test_tool", map[string]interface{}{})
+	result, err := Execute(ctx, "global_test_tool", map[string]interface{}{"param": "test"})
 	if err != nil {
 		t.Fatalf("failed to execute tool: %v", err)
 	}

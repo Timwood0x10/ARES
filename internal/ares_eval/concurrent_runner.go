@@ -2,9 +2,7 @@ package ares_eval
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -31,7 +29,7 @@ func DefaultConcurrentRunnerConfig() ConcurrentRunnerConfig {
 }
 
 // ErrInvalidMaxParallel is returned when MaxParallel is less than 1.
-var ErrInvalidMaxParallel = errors.New("max_parallel must be >= 1")
+// Errors are defined in errors.go.
 
 // ConcurrentRunner wraps a TestRunner with parallel test execution support.
 // It distributes test cases across goroutines using errgroup with a configurable
@@ -112,7 +110,7 @@ func (r *ConcurrentRunner) RunSuite(ctx context.Context, suite TestSuite) ([]Tes
 
 			result, err := r.inner.RunSingle(testCtx, tc)
 			if err != nil {
-				slog.Error("test case failed",
+				log.Error("test case failed",
 					"test_case_id", tc.ID,
 					"error", err,
 				)

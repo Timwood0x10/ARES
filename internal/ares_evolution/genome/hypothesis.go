@@ -3,10 +3,60 @@ package genome
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+)
+
+// Target type constants
+const (
+	TargetTypeParam          = "param"
+	TargetTypePrompt         = "prompt"
+	TargetTypeTool           = "tool"
+	TargetTypePromptTemplate = "prompt_template"
+)
+
+// Direction constants
+const (
+	DirectionIncrease    = "increase"
+	DirectionDecrease    = "decrease"
+	DirectionSwap        = "swap"
+	DirectionRestructure = "restructure"
+)
+
+// Parameter key constants
+const (
+	ParamTemperature = "temperature"
+	ParamMaxTokens   = "max_tokens"
+	ParamMaxSteps    = "max_steps"
+	ParamTopK        = "top_k"
+)
+
+// Special values
+const (
+	RootLineageID          = "(root)"
+	HypothesisNoHypotheses = "no hypotheses"
+)
+
+// Metric constants
+const (
+	MetricSuccessRate = "success_rate"
+	MetricQuality     = "quality"
+	MetricCost        = "cost"
+	MetricLatency     = "latency"
+)
+
+// Selection method constants
+const (
+	SelectionRank        = "rank"
+	SelectionLineageRank = "lineage_rank"
+	SelectionSUS         = "sus"
+	SelectionRoulette    = "roulette"
+)
+
+// Diversity seed type
+const (
+	DiversitySeedPrompt = "prompt_diversity_seed"
 )
 
 // MutationHypothesis represents a testable hypothesis about what mutation
@@ -67,7 +117,7 @@ func (hg *HypothesisGenerator) Generate(ctx context.Context, ref *Reflection) []
 		}
 	}
 
-	slog.Debug("generated mutation hypotheses from reflection",
+	el.DebugContext(ctx, "generated mutation hypotheses from reflection",
 		"total_recommendations", len(ref.Recommendations),
 		"accepted", len(hypotheses),
 		"min_confidence", hg.minConfidence,
@@ -85,30 +135,31 @@ func (hg *HypothesisGenerator) recommendationToHypothesis(rec Recommendation) *M
 
 	// Parse target to determine type and key.
 	target := rec.Target
-	if strings.HasPrefix(target, "param:") {
-		hyp.TargetType = "param"
+	switch {
+	case strings.HasPrefix(target, "param:"):
+		hyp.TargetType = TargetTypeParam
 		hyp.TargetKey = strings.TrimPrefix(target, "param:")
-	} else if target == "prompt" || target == "prompt_template" {
-		hyp.TargetType = "prompt"
-		hyp.TargetKey = "prompt_template"
-		hyp.Direction = "restructure"
-	} else if strings.HasPrefix(target, "tool:") {
-		hyp.TargetType = "tool"
+	case target == "prompt" || target == TargetTypePromptTemplate:
+		hyp.TargetType = TargetTypePrompt
+		hyp.TargetKey = TargetTypePromptTemplate
+		hyp.Direction = DirectionRestructure
+	case strings.HasPrefix(target, "tool:"):
+		hyp.TargetType = TargetTypeTool
 		hyp.TargetKey = strings.TrimPrefix(target, "tool:")
-	} else {
+	default:
 		// Generic target: try to infer from action.
 		switch rec.Action {
-		case "increase", "decrease":
-			hyp.TargetType = "param"
+		case DirectionIncrease, DirectionDecrease:
+			hyp.TargetType = TargetTypeParam
 			hyp.TargetKey = target
 		case "swap":
-			hyp.TargetType = "tool"
+			hyp.TargetType = TargetTypeTool
 			hyp.TargetKey = target
-		case "restructure":
-			hyp.TargetType = "prompt"
-			hyp.TargetKey = "prompt_template"
+		case DirectionRestructure:
+			hyp.TargetType = TargetTypePrompt
+			hyp.TargetKey = TargetTypePromptTemplate
 		default:
-			hyp.TargetType = "param"
+			hyp.TargetType = TargetTypeParam
 			hyp.TargetKey = target
 		}
 	}
@@ -150,7 +201,7 @@ func ApplyHypothesis(base *mutation.Strategy, hyp MutationHypothesis) *mutation.
 					clone.Params[hyp.TargetKey] = clampParam(hyp.TargetKey, v*0.7)
 				}
 			} else {
-				slog.Debug("ApplyHypothesis: skipping non-float64 param",
+				el.DebugContext(context.Background(), "ApplyHypothesis: skipping non-float64 param",
 					"key", hyp.TargetKey, "direction", hyp.Direction,
 				)
 			}
