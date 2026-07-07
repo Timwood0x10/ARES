@@ -8,7 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	golog "log"
 	"log/slog"
 	"testing"
 	"time"
@@ -46,7 +46,7 @@ func getTestDB(t *testing.T) *sql.DB {
 		return nil
 	}
 
-	log.Printf("Connected to test database: %s", dbname)
+	golog.Printf("Connected to test database: %s", dbname)
 
 	return db
 }
