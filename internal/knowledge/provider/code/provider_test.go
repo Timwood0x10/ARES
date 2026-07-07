@@ -254,7 +254,7 @@ func TestStreamMaxResults(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a file with many functions.
-	var src string = "package many\n"
+	src := "package many\n"
 	for i := 0; i < 20; i++ {
 		src += fmt.Sprintf("func F%d() {}\n", i)
 	}
@@ -284,7 +284,7 @@ func TestStreamMaxResults(t *testing.T) {
 func TestStreamCancelContext(t *testing.T) {
 	dir := t.TempDir()
 
-	var src string = "package many\n"
+	var src = "package many\n"
 	for i := 0; i < 100; i++ {
 		src += fmt.Sprintf("func F%d() {}\n", i)
 	}

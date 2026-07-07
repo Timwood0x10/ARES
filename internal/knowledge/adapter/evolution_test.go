@@ -17,11 +17,11 @@ func TestFromStrategyNil(t *testing.T) {
 func TestFromStrategy(t *testing.T) {
 	now := time.Now()
 	s := &ares_evolution.Strategy{
-		ID:                   "strat-123",
+		ID:                   "strat-123", // nolint:misspell // strategy abbreviation
 		Name:                 "Optimized Redis Strategy",
 		Version:              3,
 		Score:                4.5,
-		ParentID:             "strat-122",
+		ParentID:             "strat-122", // nolint:misspell // strategy abbreviation
 		StrategyMutationType: "param_tweak",
 		MutationDesc:         "Increased timeout from 30s to 60s",
 		PromptTemplate:       "You are an agent that...",
@@ -59,7 +59,7 @@ func TestFromStrategy(t *testing.T) {
 	if obj.Metadata == nil {
 		t.Fatal("expected non-nil metadata")
 	}
-	if obj.Metadata["strategy_id"] != "strat-123" {
+	if obj.Metadata["strategy_id"] != "strat-123" { // nolint:misspell // strategy abbreviation
 		t.Errorf("expected strategy_id 'strat-123', got %v", obj.Metadata["strategy_id"])
 	}
 	if obj.Metadata["version"] != 3 {

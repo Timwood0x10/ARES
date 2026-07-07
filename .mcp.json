@@ -7,6 +7,14 @@
     "codebase-memory-mcp": {
       "command": "/Users/scc/.local/bin/codebase-memory-mcp",
       "args": []
+    },
+    "codescope": {
+      "command": "/Users/scc/.local/bin/codescope",
+      "args": [],
+      "env": {
+        "GRAMMARS_DIR": "/Users/scc/.local/share/codescope/grammars",
+        "CODESCOPE_DB_PATH": "/tmp/codescope.db"
+      }
     }
   }
 }

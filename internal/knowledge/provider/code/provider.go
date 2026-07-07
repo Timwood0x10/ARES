@@ -18,6 +18,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
+// Object type constants used by CodeProvider.
+const (
+	typeStruct    knowledge.ObjectType = "struct"
+	typeInterface knowledge.ObjectType = "interface"
+	tagFunction                        = "function"
+)
+
 // CodeProvider scans a Go source directory and streams its symbols
 // (functions, structs, interfaces) as KnowledgeObjects.
 type CodeProvider struct {
@@ -103,7 +110,7 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 				return nil
 			}
 
-			src, rErr := os.ReadFile(path)
+			src, rErr := os.ReadFile(path) //nolint:gosec // bounded by WalkDir, own source tree
 			if rErr != nil {
 				return nil
 			}
@@ -164,14 +171,14 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 		}
 
 		typeName := ts.Name.Name
-		objType := knowledge.ObjectCode
 		summary := fmt.Sprintf("type %s defined in %s.%s", typeName, file.Name.Name, relPath)
 
+		var objType knowledge.ObjectType
 		switch ts.Type.(type) {
 		case *ast.StructType:
-			objType = "struct"
+			objType = typeStruct
 		case *ast.InterfaceType:
-			objType = "interface"
+			objType = typeInterface
 		default:
 			objType = knowledge.ObjectCode
 		}
@@ -213,6 +220,6 @@ func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath
 		Confidence: 0.9,
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
-		Tags:       []string{"function", file.Name.Name},
+		Tags:       []string{tagFunction, file.Name.Name},
 	}
 }

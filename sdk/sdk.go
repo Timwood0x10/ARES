@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,12 +38,14 @@ import (
 	"github.com/Timwood0x10/ares/api/service/llm"
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
+	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 )
@@ -69,6 +72,7 @@ type Runtime struct {
 	evoEnabled       bool
 	knowledgeEnabled bool
 	knowledgeRT      *khruntime.KnowledgeRuntime
+	evolutionStore   *memStrategyStore
 	mcpClients       []*mcp.Client
 	trace            bool
 }
@@ -100,6 +104,43 @@ func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limi
 		})
 	}
 	return out, nil
+}
+
+// memStrategyStore is an in-memory store that records evolved strategies
+// and implements evoprovider.StrategyStore so the AKF knowledge fabric can
+// consume them as decision-type KnowledgeObjects.
+type memStrategyStore struct {
+	mu      sync.Mutex
+	active  *ares_evolution.Strategy
+	history []*ares_evolution.Strategy
+}
+
+func newMemStrategyStore() *memStrategyStore {
+	return &memStrategyStore{}
+}
+
+func (s *memStrategyStore) GetActive(_ context.Context) (*ares_evolution.Strategy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active, nil
+}
+
+func (s *memStrategyStore) GetHistory(_ context.Context, _ string, n int) ([]*ares_evolution.Strategy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n > len(s.history) {
+		n = len(s.history)
+	}
+	return s.history[:n], nil
+}
+
+// save records a new evolved strategy as both the active strategy and appends
+// it to the history for lineage tracking.
+func (s *memStrategyStore) save(strategy *ares_evolution.Strategy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active = strategy
+	s.history = append(s.history, strategy)
 }
 
 // Agent is a named agent with a fixed instruction and tool set, bound to a
@@ -265,6 +306,7 @@ func New(opts ...Option) (*Runtime, error) {
 
 	// ---- AKF Knowledge Fabric ----
 	var knowledgeRT *khruntime.KnowledgeRuntime
+	var evoStore *memStrategyStore
 	if cfg.knlCfg.Enabled {
 		reg := provider.NewProviderRegistry()
 
@@ -276,7 +318,13 @@ func New(opts ...Option) (*Runtime, error) {
 			}
 		}
 
-		// TODO: register evolution provider when StrategyStore is accessible from the SDK.
+		// Auto-register evolution provider when evolution is also enabled.
+		if cfg.evoCfg.Enabled {
+			evoStore = newMemStrategyStore()
+			if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
+				return nil, fmt.Errorf("knowledge: register evolution provider: %w", err)
+			}
+		}
 
 		knowledgeRT = khruntime.New(
 			planner.NewKnowledgePlanner(),
@@ -302,6 +350,7 @@ func New(opts ...Option) (*Runtime, error) {
 		evoEnabled:       cfg.evoCfg.Enabled,
 		knowledgeEnabled: cfg.knlCfg.Enabled,
 		knowledgeRT:      knowledgeRT,
+		evolutionStore:   evoStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
 	}, nil
@@ -371,6 +420,20 @@ Respond with ONLY the new instruction text.`, agent.instruction, task)},
 
 	if r.trace {
 		log.Printf("[ares:evolve] evolved instruction: %s", resp.Content)
+	}
+
+	// Save evolved strategy to the AKF evolution store if available.
+	if r.evolutionStore != nil {
+		r.evolutionStore.save(&ares_evolution.Strategy{
+			ID:                   fmt.Sprintf("sdk-%s", agent.name),
+			Name:                 fmt.Sprintf("Evolved instruction for %s on %q", agent.name, task),
+			Version:              1,
+			PromptTemplate:       resp.Content,
+			Score:                -1, // unevaluated
+			StrategyMutationType: "llm_evolve",
+			MutationDesc:         fmt.Sprintf("LLM-evolved from %q on task %q", agent.instruction, task),
+			CreatedAt:            time.Now(),
+		})
 	}
 
 	return resp.Content, nil
