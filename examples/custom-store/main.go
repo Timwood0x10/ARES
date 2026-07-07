@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,8 @@ type JSONFileStore struct {
 	path string
 }
 
+var ErrServiceNotFound = errors.New("service not found")
+
 func NewJSONFileStore(path string) *JSONFileStore {
 	return &JSONFileStore{path: path}
 }
@@ -89,7 +92,7 @@ func (s *JSONFileStore) Get(_ context.Context, id string) (*discovery.Discovered
 			return svc, nil
 		}
 	}
-	return nil, nil
+	return nil, ErrServiceNotFound
 }
 
 func (s *JSONFileStore) List(_ context.Context) ([]*discovery.DiscoveredService, error) {
