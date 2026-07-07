@@ -197,7 +197,7 @@ func (e *Executor) collectStepResults(
 				execution.Status = WorkflowStatusFailed
 				execution.Error = result.Error
 				execution.FinishedAt = time.Now()
-				e.waitForDone(done, ctx)
+				_ = e.waitForDone(done, ctx)
 				return stepResults
 			}
 
@@ -205,7 +205,7 @@ func (e *Executor) collectStepResults(
 			execution.Status = WorkflowStatusFailed
 			execution.FinishedAt = time.Now()
 			execution.Error = err.Error()
-			e.waitForDone(done, ctx)
+			_ = e.waitForDone(done, ctx)
 			return stepResults
 
 		case <-ctx.Done():

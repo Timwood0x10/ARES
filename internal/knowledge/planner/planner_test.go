@@ -1,0 +1,222 @@
+package planner
+
+import (
+	"context"
+	"testing"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+)
+
+// testQueryPlanner returns predictable query plans.
+type testQueryPlanner struct{}
+
+func (q *testQueryPlanner) PlanQuery(_ context.Context, req KnowledgeRequirement, providerName string, providerType string) (*QueryPlan, error) {
+	return &QueryPlan{
+		Query:      "SELECT * FROM " + providerType + " WHERE need='" + string(req.Need) + "'",
+		QueryType:  QuerySQL,
+		MaxResults: req.MaxResults,
+	}, nil
+}
+
+func TestKnowledgePlannerPlan(t *testing.T) {
+	planner := NewKnowledgePlanner()
+	budget := knowledge.TokenBudget{MaxTokens: 2000, Reserved: 1000, ForGraph: 1000}
+
+	plan, err := planner.Plan(context.Background(), "Why Redis?", budget)
+	if err != nil {
+		t.Fatalf("Plan error: %v", err)
+	}
+
+	if plan == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	if plan.TokenBudget.ForGraph != 1000 {
+		t.Errorf("expected ForGraph=1000, got %d", plan.TokenBudget.ForGraph)
+	}
+	if len(plan.Requirements) == 0 {
+		t.Error("expected at least one requirement")
+	}
+}
+
+func TestKnowledgePlannerEmptyGoal(t *testing.T) {
+	planner := NewKnowledgePlanner()
+	_, err := planner.Plan(context.Background(), "", knowledge.TokenBudget{})
+	if err == nil {
+		t.Error("expected error for empty goal")
+	}
+}
+
+func TestKnowledgePlannerRequirements(t *testing.T) {
+	planner := NewKnowledgePlanner()
+	plan, _ := planner.Plan(context.Background(), "test", knowledge.TokenBudget{})
+
+	needs := make(map[NeedType]bool)
+	for _, req := range plan.Requirements {
+		needs[req.Need] = true
+	}
+
+	if !needs[NeedDecision] {
+		t.Error("expected NeedDecision requirement")
+	}
+	if !needs[NeedHistory] {
+		t.Error("expected NeedHistory requirement")
+	}
+	if !needs[NeedArchitecture] {
+		t.Error("expected NeedArchitecture requirement")
+	}
+}
+
+func TestSourceDiscoveryNoProviders(t *testing.T) {
+	reg := provider.NewProviderRegistry()
+	qp := &testQueryPlanner{}
+	sd := NewSourceDiscovery(reg, qp)
+
+	sources, err := sd.Discover(context.Background(), []KnowledgeRequirement{
+		{Need: NeedDecision, MaxResults: 10},
+	}, knowledge.TokenBudget{})
+
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Errorf("expected 0 sources with no providers, got %d", len(sources))
+	}
+}
+
+func TestSourceDiscoveryWithProvider(t *testing.T) {
+	reg := provider.NewProviderRegistry()
+	_ = reg.Register(&testGraphProvider{
+		name:  "memory",
+		score: 0.8,
+	})
+
+	qp := &testQueryPlanner{}
+	sd := NewSourceDiscovery(reg, qp)
+
+	sources, err := sd.Discover(context.Background(), []KnowledgeRequirement{
+		{Need: NeedDecision, Description: "test decision", MaxResults: 10},
+	}, knowledge.TokenBudget{})
+
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if len(sources) == 0 {
+		t.Fatal("expected at least 1 source")
+	}
+	if sources[0].ProviderName != "memory" {
+		t.Errorf("expected 'memory' provider, got '%s'", sources[0].ProviderName)
+	}
+	if sources[0].Query == nil {
+		t.Fatal("expected non-nil query plan")
+	}
+	if sources[0].Query.QueryType != QuerySQL {
+		t.Errorf("expected QuerySQL, got '%s'", sources[0].Query.QueryType)
+	}
+}
+
+func TestSourceDiscoveryEmptyRequirements(t *testing.T) {
+	reg := provider.NewProviderRegistry()
+	qp := &testQueryPlanner{}
+	sd := NewSourceDiscovery(reg, qp)
+
+	sources, err := sd.Discover(context.Background(), nil, knowledge.TokenBudget{})
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Errorf("expected 0 sources for empty requirements, got %d", len(sources))
+	}
+}
+
+func TestSourceDiscoveryPriorities(t *testing.T) {
+	reg := provider.NewProviderRegistry()
+	_ = reg.Register(&testGraphProvider{name: "provider-a", score: 0.9})
+	_ = reg.Register(&testGraphProvider{name: "provider-b", score: 0.7})
+
+	qp := &testQueryPlanner{}
+	sd := NewSourceDiscovery(reg, qp)
+
+	sources, _ := sd.Discover(context.Background(), []KnowledgeRequirement{
+		{Need: NeedDecision, Priority: 2, MaxResults: 10},
+		{Need: NeedHistory, Priority: 1, MaxResults: 10},
+	}, knowledge.TokenBudget{})
+
+	// Sources should be sorted by priority ascending.
+	if len(sources) < 2 {
+		t.Fatalf("expected at least 2 sources, got %d", len(sources))
+	}
+}
+
+func TestQueryPlanCreation(t *testing.T) {
+	qp := &testQueryPlanner{}
+	plan, err := qp.PlanQuery(context.Background(),
+		KnowledgeRequirement{Need: NeedArchitecture, MaxResults: 15},
+		"pg_provider", "postgres",
+	)
+	if err != nil {
+		t.Fatalf("PlanQuery error: %v", err)
+	}
+	if plan.QueryType != QuerySQL {
+		t.Errorf("expected QuerySQL, got '%s'", plan.QueryType)
+	}
+	if plan.MaxResults != 15 {
+		t.Errorf("expected MaxResults=15, got %d", plan.MaxResults)
+	}
+}
+
+func TestNeedTypeConstants(t *testing.T) {
+	types := []NeedType{NeedArchitecture, NeedDecision, NeedHistory, NeedCode, NeedIssue, NeedPerformance}
+	for _, nt := range types {
+		if nt == "" {
+			t.Error("NeedType constant should not be empty")
+		}
+	}
+}
+
+func TestQueryTypeConstants(t *testing.T) {
+	types := []QueryType{QuerySQL, QueryCypher, QueryVector, QueryMemory, QueryKeyword}
+	for _, qt := range types {
+		if qt == "" {
+			t.Error("QueryType constant should not be empty")
+		}
+	}
+}
+
+// testGraphProvider implements provider.GraphProvider for testing.
+type testGraphProvider struct {
+	name  string
+	score float64
+}
+
+func (p *testGraphProvider) Name() string { return p.name }
+
+func (p *testGraphProvider) IntentMatch(_ knowledge.Intent) float64 { return p.score }
+
+func (p *testGraphProvider) Stream(_ context.Context, _ knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error) {
+	ch := make(chan *knowledge.KnowledgeObject)
+	errCh := make(chan error)
+	close(ch)
+	close(errCh)
+	return ch, errCh
+}
+
+func TestDetectProviderType(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+	}{
+		{"postgres", "postgres"},
+		{"mysql", "mysql"},
+		{"memory", "memory"},
+		{"git-provider", "git-provider"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		got := detectProviderType(tt.name)
+		if got != tt.expected {
+			t.Errorf("detectProviderType(%q) = %q, want %q", tt.name, got, tt.expected)
+		}
+	}
+}

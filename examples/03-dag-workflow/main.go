@@ -38,7 +38,7 @@ func (a *demoAgent) Process(ctx context.Context, input any) (any, error) {
 	return a.process(ctx, input)
 }
 func (a *demoAgent) ProcessStream(_ context.Context, _ any) (<-chan base.AgentEvent, error) {
-	return nil, nil
+	return nil, nil // nolint: nilnil // stream not supported for demo agent
 }
 
 func main() {
@@ -162,7 +162,7 @@ func engineDemo(ctx context.Context) {
 	executor := wfengine.NewExecutor(registry)
 
 	// Register a simple agent that returns its input as-is.
-	registry.Register("echo-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	_ = registry.Register("echo-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &demoAgent{
 			id:        "echo",
 			agentType: "echo-agent",
@@ -259,7 +259,7 @@ func loopDemo(ctx context.Context) {
 	registry := wfengine.NewAgentRegistry()
 	executor := wfengine.NewExecutor(registry)
 
-	registry.Register("loop-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	_ = registry.Register("loop-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &demoAgent{
 			id:        "loop",
 			agentType: "loop-agent",
@@ -303,7 +303,7 @@ func subgraphDemo(ctx context.Context) {
 	registry := wfengine.NewAgentRegistry()
 	executor := wfengine.NewExecutor(registry)
 
-	registry.Register("sub-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
+	_ = registry.Register("sub-agent", func(_ context.Context, _ interface{}) (base.Agent, error) {
 		return &demoAgent{
 			id:        "sub",
 			agentType: "sub-agent",
