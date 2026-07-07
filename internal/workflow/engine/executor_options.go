@@ -26,6 +26,10 @@ func WithStepTimeout(d time.Duration) ExecutorOption {
 	return func(e *Executor) { e.stepTimeout = d }
 }
 
+func WithCheckpointStore(store ares_runtime.CheckpointStore) ExecutorOption {
+	return func(e *Executor) { e.checkpointStore = store }
+}
+
 type DynamicExecutor struct {
 	*Executor
 	applyMode          ApplyMode

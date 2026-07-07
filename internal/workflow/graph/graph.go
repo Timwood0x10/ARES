@@ -41,17 +41,18 @@ type NodeRouter func(ctx context.Context, currentNodeID string, state *State) st
 // mutation (Node, Edge, Start, RemoveEdge, RemoveNode, Clear, etc.)
 // from multiple goroutines requires external synchronization.
 type Graph struct {
-	mu        sync.RWMutex
-	id        string
-	nodes     map[string]Node
-	edges     map[string][]*Edge
-	start     string
-	scheduler Scheduler
-	tracer    ares_observability.Tracer        // ares_observability tracer for execution tracking
-	limiter   ares_ratelimit.Limiter           // rate limiter for execution throttling
-	pluginBus *ares_runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
-	router    NodeRouter                       // optional dynamic routing callback
-	collector *ares_runtime.ExecutionCollector // optional collector for route recording
+	mu              sync.RWMutex
+	id              string
+	nodes           map[string]Node
+	edges           map[string][]*Edge
+	start           string
+	scheduler       Scheduler
+	tracer          ares_observability.Tracer        // ares_observability tracer for execution tracking
+	limiter         ares_ratelimit.Limiter           // rate limiter for execution throttling
+	pluginBus       *ares_runtime.PluginBus          // optional plugin bus for BeforeStep/AfterStep hooks
+	router          NodeRouter                       // optional dynamic routing callback
+	collector       *ares_runtime.ExecutionCollector // optional collector for route recording
+	checkpointStore ares_runtime.CheckpointStore     // optional checkpoint store for state persistence
 }
 
 // NewGraph creates a new graph with the given ID.
@@ -378,6 +379,18 @@ func (g *Graph) SetLimiter(limiter ares_ratelimit.Limiter) (*Graph, error) {
 	defer g.mu.Unlock()
 
 	g.limiter = limiter
+	return g, nil
+}
+
+// SetCheckpointStore attaches a checkpoint store for state persistence.
+// When set, the graph saves a checkpoint after each node execution.
+func (g *Graph) SetCheckpointStore(store ares_runtime.CheckpointStore) (*Graph, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkpointStore = store
 	return g, nil
 }
 

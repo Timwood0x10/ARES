@@ -42,6 +42,13 @@ const (
 // access step outputs via closure. A nil condition means unconditional.
 type ConditionFunc func(variables map[string]any) bool
 
+// NodeRouter is a callback invoked after a step completes to dynamically
+// select the next step to execute. It receives the current context, the
+// completed step ID, the workflow variables, and the step's output.
+// Return a step ID to enqueue that step next, or "" to let the normal
+// dependency-based topological order decide.
+type NodeRouter func(ctx context.Context, stepID string, variables map[string]any, stepOutput string) string
+
 // StepStatus represents the execution status of a workflow step.
 type StepStatus string
 
@@ -64,7 +71,9 @@ type Step struct {
 	RetryPolicy    *RetryPolicy      `json:"retry_policy,omitempty"`
 	RecoveryPolicy *RecoveryPolicy   `json:"recovery_policy,omitempty"`
 	Interrupt      *InterruptConfig  `json:"interrupt,omitempty"`
-	Condition      ConditionFunc     `json:"-"` // evaluated at runtime; nil means unconditional
+	Condition      ConditionFunc     `json:"-"`                      // evaluated at runtime; nil means unconditional
+	Router         NodeRouter        `json:"-"`                      // dynamic routing callback; nil means no routing
+	SubWorkflow    *Workflow         `json:"sub_workflow,omitempty"` // nested sub-workflow
 	Status         StepStatus        `json:"status"`
 	Output         string            `json:"output,omitempty"`
 	Error          string            `json:"error,omitempty"`
@@ -125,6 +134,22 @@ type RetryPolicy struct {
 	BackoffMultiplier float64       `json:"backoff_multiplier"`
 }
 
+// LoopConfig defines controlled loop behavior for a workflow.
+// A workflow with LoopConfig will repeat its loop steps until the
+// condition is met or max iterations is reached.
+type LoopConfig struct {
+	// MaxIterations is the maximum number of loop iterations.
+	// 0 means run once (no loop).
+	MaxIterations int `json:"max_iterations"`
+	// UntilCondition, when set, causes the loop to exit when it returns true.
+	// It receives workflow variables and the current iteration (1-based).
+	// If nil, the loop runs exactly MaxIterations times.
+	UntilCondition func(variables map[string]any, iteration int) bool `json:"-"`
+	// LoopSteps lists the step IDs that form the loop body, in execution order.
+	// After the last loop step completes, the loop condition is checked.
+	LoopSteps []string `json:"loop_steps"`
+}
+
 // Workflow represents a workflow definition.
 type Workflow struct {
 	ID          string            `json:"id"`
@@ -133,6 +158,7 @@ type Workflow struct {
 	Description string            `json:"description"`
 	Steps       []*Step           `json:"steps"`
 	Variables   map[string]string `json:"variables,omitempty"`
+	LoopConfig  *LoopConfig       `json:"loop_config,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`

@@ -269,3 +269,67 @@ func hashInput(params map[string]any) string {
 	h := sha256.Sum256([]byte(data))
 	return fmt.Sprintf("%x", h[:8])
 }
+
+// SubGraphNode wraps a sub-Graph as a single executable node.
+// When executed, the sub-graph runs with its own state, and the
+// sub-graph's result is stored in the parent state under the node ID.
+type SubGraphNode struct {
+	id    string
+	graph *Graph
+}
+
+// NewSubGraphNode creates a new SubGraphNode.
+// Args:
+// id - unique node identifier, must not be empty.
+// graph - sub-graph to execute, must not be nil.
+// Returns new sub-graph node or error.
+func NewSubGraphNode(id string, graph *Graph) (*SubGraphNode, error) {
+	if id == "" {
+		return nil, fmt.Errorf("sub-graph node id cannot be empty")
+	}
+	if graph == nil {
+		return nil, fmt.Errorf("sub-graph cannot be nil")
+	}
+	return &SubGraphNode{id: id, graph: graph}, nil
+}
+
+// Execute runs the sub-graph with the current state as both input and output.
+func (n *SubGraphNode) Execute(ctx context.Context, state *State) error {
+	if n == nil || n.graph == nil {
+		return fmt.Errorf("sub-graph node is not initialized")
+	}
+
+	// Create a sub-state that shares the parent state's values.
+	subState := NewState()
+	if state != nil {
+		for k, v := range state.values {
+			subState.Set(k, v)
+		}
+	}
+
+	result, err := n.graph.Execute(ctx, subState)
+	if err != nil {
+		return fmt.Errorf("sub-graph %s execution failed: %w", n.id, err)
+	}
+
+	// Merge sub-graph outputs back into the parent state.
+	if result != nil && result.State != nil {
+		for k, v := range result.State.values {
+			if k != "input" { // don't overwrite parent's input
+				state.Set(k, v)
+			}
+		}
+	}
+
+	// Also propagate any values the sub-graph set on its state.
+	state.Set("node."+n.id, subState.ToParams())
+	return nil
+}
+
+// ID returns the sub-graph node identifier.
+func (n *SubGraphNode) ID() string {
+	if n == nil {
+		return ""
+	}
+	return n.id
+}

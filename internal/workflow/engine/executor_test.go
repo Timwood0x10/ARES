@@ -840,4 +840,553 @@ func TestConcurrentExecution(t *testing.T) {
 	})
 }
 
-// nolint: errcheck // Test code may ignore return values
+// ──────────────────────────────────────────────
+// Phase 1: Conditional Edges + Dynamic Routing
+// ──────────────────────────────────────────────
+
+func TestConditionalEdges(t *testing.T) {
+	t.Run("skip step when condition is false", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-cond",
+			Name: "Conditional Skip Test",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "First Step",
+					AgentType: "test-agent",
+					Input:     "input1",
+				},
+				{
+					ID:        "step2",
+					Name:      "Skipped Step",
+					AgentType: "test-agent",
+					DependsOn: []string{"step1"},
+					Input:     "input2",
+					Condition: func(vars map[string]any) bool {
+						return false // always skip
+					},
+				},
+				{
+					ID:        "step3",
+					Name:      "Third Step",
+					AgentType: "test-agent",
+					DependsOn: []string{"step2"},
+					Input:     "input3",
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "initial")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		if len(result.Steps) != 3 {
+			t.Fatalf("Expected 3 step results, got %d", len(result.Steps))
+		}
+
+		for _, s := range result.Steps {
+			if s.StepID == "step2" && s.Status != StepStatusSkipped {
+				t.Errorf("Expected step2 skipped, got %s", s.Status)
+			}
+		}
+	})
+
+	t.Run("execute step when condition is true", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-cond-true",
+			Name: "Condition True Test",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "First Step",
+					AgentType: "test-agent",
+					Input:     "input1",
+				},
+				{
+					ID:        "step2",
+					Name:      "Executed Step",
+					AgentType: "test-agent",
+					DependsOn: []string{"step1"},
+					Input:     "input2",
+					Condition: func(vars map[string]any) bool {
+						return true
+					},
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "initial")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		for _, s := range result.Steps {
+			if s.StepID == "step2" && s.Status != StepStatusCompleted {
+				t.Errorf("Expected step2 completed, got %s", s.Status)
+			}
+		}
+	})
+
+	t.Run("condition uses mode variable", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		mode := "advanced"
+
+		workflow := &Workflow{
+			ID:   "wf-cond-var",
+			Name: "Condition Variable Test",
+			Steps: []*Step{
+				{
+					ID:        "setup",
+					Name:      "Setup",
+					AgentType: "test-agent",
+				},
+				{
+					ID:        "basic",
+					Name:      "Basic Mode",
+					AgentType: "test-agent",
+					DependsOn: []string{"setup"},
+					Condition: func(vars map[string]any) bool {
+						return mode == "basic"
+					},
+				},
+				{
+					ID:        "adv",
+					Name:      "Advanced Mode",
+					AgentType: "test-agent",
+					DependsOn: []string{"setup"},
+					Condition: func(vars map[string]any) bool {
+						return mode == "advanced"
+					},
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "initial")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		for _, s := range result.Steps {
+			switch s.StepID {
+			case "basic":
+				if s.Status != StepStatusSkipped {
+					t.Errorf("Expected basic skipped, got %s", s.Status)
+				}
+			case "adv":
+				if s.Status != StepStatusCompleted {
+					t.Errorf("Expected adv completed, got %s", s.Status)
+				}
+			}
+		}
+	})
+}
+
+func TestDynamicRouting(t *testing.T) {
+	t.Run("router dispatches to target step", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		routerCalled := false
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-router",
+			Name: "Router Test",
+			Steps: []*Step{
+				{
+					ID:        "decide",
+					Name:      "Decision Step",
+					AgentType: "test-agent",
+					Input:     "decide input",
+					Router: func(ctx context.Context, stepID string, vars map[string]any, output string) string {
+						routerCalled = true
+						return "path_b"
+					},
+				},
+				{
+					ID:        "path_a",
+					Name:      "Path A",
+					AgentType: "test-agent",
+					DependsOn: []string{"decide"},
+				},
+				{
+					ID:        "path_b",
+					Name:      "Path B",
+					AgentType: "test-agent",
+					DependsOn: []string{"decide"},
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "initial")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		if !routerCalled {
+			t.Error("Router was not called")
+		}
+	})
+
+	t.Run("router empty string means no routing", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-no-route",
+			Name: "No Route Test",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "Step 1",
+					AgentType: "test-agent",
+					Router: func(ctx context.Context, stepID string, vars map[string]any, output string) string {
+						return ""
+					},
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+	})
+}
+
+// ──────────────────────────────────────────────
+// Phase 2: Controlled Loops
+// ──────────────────────────────────────────────
+
+func TestControlledLoops(t *testing.T) {
+	t.Run("max iterations loop", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("loop-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "loop-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Loop", Description: "iteration", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-loop",
+			Name: "Loop Test",
+			Steps: []*Step{
+				{
+					ID:        "init",
+					Name:      "Init",
+					AgentType: "loop-agent",
+				},
+				{
+					ID:        "process",
+					Name:      "Process",
+					AgentType: "loop-agent",
+					DependsOn: []string{"init"},
+				},
+			},
+			LoopConfig: &LoopConfig{
+				MaxIterations: 3,
+				LoopSteps:     []string{"init", "process"},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		// 3 iterations * 2 steps = 6 step results.
+		if len(result.Steps) != 6 {
+			t.Errorf("Expected 6 step results (3 iterations * 2 steps), got %d", len(result.Steps))
+		}
+	})
+
+	t.Run("until condition loop", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		iterationCount := 0
+
+		registry.Register("loop-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "loop-agent", func(ctx context.Context, input any) (any, error) {
+				iterationCount++
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Loop", Description: "iteration", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-loop-cond",
+			Name: "Loop Until Condition",
+			Steps: []*Step{
+				{
+					ID:        "step1",
+					Name:      "Step 1",
+					AgentType: "loop-agent",
+				},
+			},
+			LoopConfig: &LoopConfig{
+				MaxIterations: 10,
+				LoopSteps:     []string{"step1"},
+				UntilCondition: func(vars map[string]any, iteration int) bool {
+					return iteration >= 4 // stop after 4 iterations
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		// Should have run exactly 4 iterations.
+		if len(result.Steps) != 4 {
+			t.Errorf("Expected 4 step results, got %d", len(result.Steps))
+		}
+	})
+
+	t.Run("single iteration when no loop config", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("test-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "test-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "item1", Name: "Test", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		workflow := &Workflow{
+			ID:   "wf-no-loop",
+			Name: "No Loop",
+			Steps: []*Step{
+				{ID: "s1", Name: "S1", AgentType: "test-agent"},
+				{ID: "s2", Name: "S2", AgentType: "test-agent", DependsOn: []string{"s1"}},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if len(result.Steps) != 2 {
+			t.Errorf("Expected 2 step results, got %d", len(result.Steps))
+		}
+	})
+}
+
+// ──────────────────────────────────────────────
+// Phase 3: Subgraph Nesting
+// ──────────────────────────────────────────────
+
+func TestSubgraphNesting(t *testing.T) {
+	t.Run("step with sub-workflow", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("sub-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "sub-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "sub1", Name: "Sub", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		subWorkflow := &Workflow{
+			ID:   "sub-wf",
+			Name: "Sub Workflow",
+			Steps: []*Step{
+				{
+					ID:        "sub_step1",
+					Name:      "Sub Step 1",
+					AgentType: "sub-agent",
+					Input:     "sub input",
+				},
+				{
+					ID:        "sub_step2",
+					Name:      "Sub Step 2",
+					AgentType: "sub-agent",
+					DependsOn: []string{"sub_step1"},
+				},
+			},
+		}
+
+		workflow := &Workflow{
+			ID:   "wf-parent",
+			Name: "Parent with Sub-workflow",
+			Steps: []*Step{
+				{
+					ID:          "parent_step",
+					Name:        "Parent Step",
+					SubWorkflow: subWorkflow,
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "parent input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+
+		if len(result.Steps) != 1 {
+			t.Errorf("Expected 1 parent step result, got %d", len(result.Steps))
+		}
+
+		if result.Steps[0].Status != StepStatusCompleted {
+			t.Errorf("Expected parent step completed, got %s", result.Steps[0].Status)
+		}
+	})
+
+	t.Run("sub-workflow ignores agent type when set", func(t *testing.T) {
+		registry := NewAgentRegistry()
+		executor := NewExecutor(registry)
+
+		registry.Register("sub-agent", func(ctx context.Context, config interface{}) (base.Agent, error) {
+			return NewMockAgent("test", "sub-agent", func(ctx context.Context, input any) (any, error) {
+				return &models.RecommendResult{
+					Items: []*models.RecommendItem{
+						{ItemID: "sub1", Name: "Sub", Description: "result", Price: 100.0},
+					},
+				}, nil
+			}), nil
+		})
+
+		subWorkflow := &Workflow{
+			ID:   "sub-wf2",
+			Name: "Sub Workflow 2",
+			Steps: []*Step{
+				{
+					ID:        "inner",
+					Name:      "Inner Step",
+					AgentType: "sub-agent",
+				},
+			},
+		}
+
+		workflow := &Workflow{
+			ID:   "wf-parent2",
+			Name: "Parent with Sub (agent ignored)",
+			Steps: []*Step{
+				{
+					ID:          "parent",
+					Name:        "Parent",
+					AgentType:   "non-existent-agent",
+					SubWorkflow: subWorkflow,
+				},
+			},
+		}
+
+		result, err := executor.Execute(context.Background(), workflow, "input")
+		if err != nil {
+			t.Fatalf("Execute error: %v", err)
+		}
+
+		if result.Status != WorkflowStatusCompleted {
+			t.Errorf("Expected completed, got %s", result.Status)
+		}
+	})
+}

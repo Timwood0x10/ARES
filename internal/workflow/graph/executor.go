@@ -4,6 +4,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -222,6 +223,14 @@ func (g *Graph) executeReadyQueue(ctx context.Context, state *State, startTime t
 		}
 
 		executed[nodeID] = true
+
+		// Save checkpoint after each completed node for crash recovery.
+		if g.checkpointStore != nil {
+			if err := g.saveGraphCheckpoint(ctx, state, executed, startTime); err != nil {
+				log.Warn("checkpoint save failed (continuing)",
+					"graph_id", g.id, "node_id", nodeID, "error", err)
+			}
+		}
 
 		readyQueue = g.handleDynamicRouting(ctx, state, nodeID, readyQueue, readySet, executed)
 
@@ -532,4 +541,32 @@ func hasAnySatisfiedEdge(g *Graph, targetID string, state *State) bool {
 	}
 	// No incoming edges at all, or all conditions are false.
 	return false
+}
+
+// saveGraphCheckpoint persists the current graph execution state for crash recovery.
+func (g *Graph) saveGraphCheckpoint(ctx context.Context, state *State, executed map[string]bool, startTime time.Time) error {
+	if g.checkpointStore == nil {
+		return nil
+	}
+
+	executedList := make([]string, 0, len(executed))
+	for id := range executed {
+		executedList = append(executedList, id)
+	}
+
+	data := map[string]any{
+		"graph_id":   g.id,
+		"executed":   executedList,
+		"state":      state.ToParams(),
+		"started_at": startTime,
+		"saved_at":   time.Now(),
+	}
+
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal graph checkpoint: %w", err)
+	}
+
+	key := fmt.Sprintf("graph-checkpoint/%s", g.id)
+	return g.checkpointStore.Save(ctx, key, payload)
 }

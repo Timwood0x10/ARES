@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"strings"
@@ -9,8 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -20,12 +20,13 @@ import (
 // executor-scoped, ensuring thread-safety and preventing data races
 // when multiple workflows execute concurrently.
 type Executor struct {
-	mu          sync.RWMutex // protects hitlHandler and hitlStore during concurrent access
-	registry    *AgentRegistry
-	maxParallel int
-	stepTimeout time.Duration
-	hitlHandler InterruptHandler
-	hitlStore   InterruptStore
+	mu              sync.RWMutex // protects hitlHandler and hitlStore during concurrent access
+	registry        *AgentRegistry
+	maxParallel     int
+	stepTimeout     time.Duration
+	hitlHandler     InterruptHandler
+	hitlStore       InterruptStore
+	checkpointStore ares_runtime.CheckpointStore // optional, for state persistence
 }
 
 // NewExecutor creates a new Executor.
@@ -55,6 +56,17 @@ func (e *Executor) WithHitlStore(store InterruptStore) *Executor {
 
 // Execute executes a workflow.
 func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput string) (*WorkflowResult, error) {
+	return e.executeWithLoop(ctx, workflow, initialInput, nil)
+}
+
+// executeWithLoop runs the workflow with optional loop support.
+// iteration records are appended across loop iterations for accumulating step results.
+func (e *Executor) executeWithLoop(
+	ctx context.Context,
+	workflow *Workflow,
+	initialInput string,
+	existingResults []*StepResult,
+) (*WorkflowResult, error) {
 	dag, err := NewDAG(workflow.Steps)
 	if err != nil {
 		return nil, errors.Wrap(err, "create DAG")
@@ -79,114 +91,47 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 		execution.Variables[k] = v
 	}
 
-	// Create independent OutputStore for this execution to prevent concurrent data corruption
 	localOutputStore := NewOutputStore()
 	defer localOutputStore.Close()
 
 	resultChan := make(chan *StepResult, len(workflow.Steps)*2)
 	errChan := make(chan error, 1)
 
-	// Use errgroup to manage the runSteps goroutine
-	g, gctx := errgroup.WithContext(ctx)
 	done := make(chan struct{})
-	g.Go(func() error {
+	go func() {
 		defer close(done)
-		e.runSteps(gctx, execution, workflow, executionOrder, initialInput, resultChan, errChan, localOutputStore)
-		return nil
-	})
+		e.runSteps(ctx, execution, workflow, executionOrder, initialInput, resultChan, errChan, localOutputStore)
+	}()
 
-	// waitForDone waits for the runSteps goroutine to finish with a safety timeout
-	// to prevent indefinite blocking if runSteps gets stuck.
-	waitForDone := func() error {
-		timeout := time.NewTimer(DefaultWorkflowTimeout)
-		defer timeout.Stop()
-		select {
-		case <-done:
-			return nil
-		case <-timeout.C:
-			return fmt.Errorf("workflow execution timed out after %v", DefaultWorkflowTimeout)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	stepResults := e.collectStepResults(ctx, execution, workflow, resultChan, errChan, done, existingResults)
+	if stepResults == nil {
+		return nil, ctx.Err()
+	}
+	if execution.Status == WorkflowStatusFailed {
+	 // Build a descriptive error that identifies the failing step.
+	 errMsg := execution.Error
+	 for _, sr := range stepResults {
+	  if sr.Status == StepStatusFailed {
+	   errMsg = fmt.Sprintf("step %s failed: %s", sr.StepID, sr.Error)
+	   break
+	  }
+	 }
+	 return &WorkflowResult{
+	  ExecutionID: execution.ID,
+	  WorkflowID:  workflow.ID,
+	  Status:      WorkflowStatusFailed,
+	  Error:       execution.Error,
+	  Duration:    execution.FinishedAt.Sub(execution.StartedAt),
+	  Steps:       stepResults,
+	 }, stderrors.New(errMsg)
+	}
+	if execution.Status == WorkflowStatusCancelled {
+		return nil, ctx.Err()
 	}
 
-	var stepResults []*StepResult
-	for i := 0; i < len(workflow.Steps); i++ {
-		select {
-		case result := <-resultChan:
-			if result == nil {
-				continue
-			}
-			stepResults = append(stepResults, result)
-			execution.StepStates[result.StepID] = &StepState{
-				StepID:     result.StepID,
-				Status:     result.Status,
-				Output:     result.Output,
-				Error:      result.Error,
-				FinishedAt: time.Now(),
-			}
-			if result.Status == StepStatusFailed {
-				execution.Status = WorkflowStatusFailed
-				execution.Error = result.Error
-				execution.FinishedAt = time.Now()
-				if err := waitForDone(); err != nil {
-					return &WorkflowResult{
-						ExecutionID: execution.ID,
-						WorkflowID:  workflow.ID,
-						Status:      WorkflowStatusFailed,
-						Error:       result.Error,
-						Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-						Steps:       stepResults,
-					}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
-				}
-				return &WorkflowResult{
-					ExecutionID: execution.ID,
-					WorkflowID:  workflow.ID,
-					Status:      WorkflowStatusFailed,
-					Error:       result.Error,
-					Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-					Steps:       stepResults,
-				}, fmt.Errorf("step %s failed: %s", result.StepID, result.Error)
-			}
-		case err := <-errChan:
-			execution.Status = WorkflowStatusFailed
-			execution.FinishedAt = time.Now()
-			if waitErr := waitForDone(); waitErr != nil {
-				return &WorkflowResult{
-					ExecutionID: execution.ID,
-					WorkflowID:  workflow.ID,
-					Status:      WorkflowStatusFailed,
-					Error:       err.Error(),
-					Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-				}, err
-			}
-			return &WorkflowResult{
-				ExecutionID: execution.ID,
-				WorkflowID:  workflow.ID,
-				Status:      WorkflowStatusFailed,
-				Error:       err.Error(),
-				Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-			}, err
-		case <-ctx.Done():
-			execution.Status = WorkflowStatusCancelled
-			execution.FinishedAt = time.Now()
-			_ = waitForDone()
-			return nil, ctx.Err()
-		}
-	}
-
-	// Wait for runSteps to finish
-	if err := waitForDone(); err != nil {
-		execution.Status = WorkflowStatusFailed
-		execution.FinishedAt = time.Now()
-		return &WorkflowResult{
-			ExecutionID: execution.ID,
-			WorkflowID:  workflow.ID,
-			Status:      WorkflowStatusFailed,
-			Error:       err.Error(),
-			Duration:    execution.FinishedAt.Sub(execution.StartedAt),
-			Steps:       stepResults,
-		}, err
+	// ── Loop handling ──
+	if e.shouldContinueLoopRun(workflow.LoopConfig, execution, stepResults) {
+		return e.executeWithLoop(ctx, workflow, initialInput, stepResults)
 	}
 
 	execution.Status = WorkflowStatusCompleted
@@ -207,6 +152,139 @@ func (e *Executor) Execute(ctx context.Context, workflow *Workflow, initialInput
 	}, nil
 }
 
+// collectStepResults reads step results from resultChan and errChan,
+// updating execution state and saving checkpoints. Returns nil on context
+// cancellation so the caller can detect early exit.
+func (e *Executor) collectStepResults(
+	ctx context.Context,
+	execution *WorkflowExecution,
+	workflow *Workflow,
+	resultChan chan *StepResult,
+	errChan chan error,
+	done chan struct{},
+	existingResults []*StepResult,
+) []*StepResult {
+	var stepResults []*StepResult
+	if existingResults != nil {
+		stepResults = existingResults
+	}
+
+	for i := 0; i < len(workflow.Steps); i++ {
+		select {
+		case result := <-resultChan:
+			if result == nil {
+				continue
+			}
+			stepResults = append(stepResults, result)
+			execution.StepStates[result.StepID] = &StepState{
+				StepID:     result.StepID,
+				Status:     result.Status,
+				Output:     result.Output,
+				Error:      result.Error,
+				FinishedAt: time.Now(),
+			}
+
+			if e.checkpointStore != nil {
+				if err := e.saveCheckpoint(ctx, execution, stepResults, workflow.LoopConfig); err != nil {
+					log.Warn("checkpoint save failed (continuing)",
+						"execution_id", execution.ID,
+						"error", err,
+					)
+				}
+			}
+
+			if result.Status == StepStatusFailed {
+				execution.Status = WorkflowStatusFailed
+				execution.Error = result.Error
+				execution.FinishedAt = time.Now()
+				e.waitForDone(done, ctx)
+				return stepResults
+			}
+
+		case err := <-errChan:
+			execution.Status = WorkflowStatusFailed
+			execution.FinishedAt = time.Now()
+			execution.Error = err.Error()
+			e.waitForDone(done, ctx)
+			return stepResults
+
+		case <-ctx.Done():
+			execution.Status = WorkflowStatusCancelled
+			execution.FinishedAt = time.Now()
+			_ = e.waitForDone(done, ctx)
+			return nil
+		}
+	}
+
+	// Wait for runSteps goroutine to finish.
+	if err := e.waitForDone(done, ctx); err != nil {
+		execution.Status = WorkflowStatusFailed
+		execution.FinishedAt = time.Now()
+		execution.Error = err.Error()
+	}
+	return stepResults
+}
+
+// waitForDone waits for the runSteps goroutine to finish with a safety timeout.
+func (e *Executor) waitForDone(done chan struct{}, ctx context.Context) error {
+	timeout := time.NewTimer(DefaultWorkflowTimeout)
+	defer timeout.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timeout.C:
+		return fmt.Errorf("workflow execution timed out after %v", DefaultWorkflowTimeout)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// shouldContinueLoopRun checks whether the loop should continue based on
+// MaxIterations and UntilCondition. Returns true if another iteration is needed.
+func (e *Executor) shouldContinueLoopRun(
+	loopConfig *LoopConfig,
+	execution *WorkflowExecution,
+	stepResults []*StepResult,
+) bool {
+	if loopConfig == nil || len(loopConfig.LoopSteps) == 0 {
+		return false
+	}
+
+	loopStepSet := make(map[string]bool, len(loopConfig.LoopSteps))
+	for _, ls := range loopConfig.LoopSteps {
+		loopStepSet[ls] = true
+	}
+
+	loopStepCount := 0
+	 for _, sr := range stepResults {
+	  if loopStepSet[sr.StepID] {
+	   loopStepCount++
+	  }
+	 }
+	 loopRounds := loopStepCount / len(loopConfig.LoopSteps)
+
+	 // MaxIterations == 0 means run once (no loop). Only continue when
+	 // MaxIterations > 0 and the loop hasn't reached the limit yet.
+	 if loopConfig.MaxIterations <= 0 {
+	  return false
+	 }
+	 if loopRounds >= loopConfig.MaxIterations {
+		return false
+	}
+
+	if loopConfig.UntilCondition != nil {
+		varsCopy := make(map[string]any, len(execution.Variables))
+		for k, v := range execution.Variables {
+			varsCopy[k] = v
+		}
+		if loopConfig.UntilCondition(varsCopy, loopRounds) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // runSteps runs workflow steps in parallel where possible.
 func (e *Executor) runSteps(
 	ctx context.Context,
@@ -218,7 +296,6 @@ func (e *Executor) runSteps(
 	errChan chan error,
 	outputStore *OutputStore,
 ) {
-	stepIndex := 0
 	completed := make(map[string]bool)
 	processed := make(map[string]bool)
 	var mu sync.Mutex
@@ -232,6 +309,11 @@ func (e *Executor) runSteps(
 
 	stepsByID := buildStepIndex(workflow.Steps)
 
+	// routedSteps holds step IDs that a Router decided to execute.
+	routedSteps := make(map[string]bool)
+	var routedMu sync.Mutex
+
+	stepIndex := 0
 	for stepIndex < len(executionOrder) {
 		select {
 		case <-ctx.Done():
@@ -258,96 +340,35 @@ func (e *Executor) runSteps(
 		alreadyProcessed := processed[stepID]
 		mu.Unlock()
 
-		if !canExec {
+		routedMu.Lock()
+		wasRouted := routedSteps[stepID]
+		routedMu.Unlock()
+
+		if !canExec && !wasRouted {
 			if alreadyProcessed {
 				stepIndex++
 				continue
 			}
 
-			// Wait for any step goroutine to complete via stepDone channel,
-			// instead of wg.Wait() which blocks until ALL goroutines finish.
-			deadlockTimer := time.NewTimer(DefaultDeadlockTimeout)
-			select {
-			case <-stepDone:
-				deadlockTimer.Stop()
-				// Some goroutine completed, re-check dependencies.
+			if e.waitForStepDependency(ctx, stepID, stepDone, errChan, &wg, resultChan) {
 				continue
-			case <-deadlockTimer.C:
-				// Timeout: potential deadlock detected, abort workflow.
-				select {
-				case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies that may never complete", stepID):
-				default:
-				}
-				wg.Wait()
-				close(resultChan)
-				return
-			case <-ctx.Done():
-				deadlockTimer.Stop()
-				wg.Wait()
-				close(resultChan)
-				return
 			}
+			return
+		}
+
+		// Evaluate condition before dispatching.
+		if e.evaluateAndSkipStep(ctx, step, stepID, execution, resultChan, &mu, completed, &stepIndex) {
+			continue
 		}
 
 		sem <- struct{}{}
-
 		stepIndex++
 
-		// Capture current step and stepID for goroutine.
-		sid := stepID
-		st := step
-
-		wg.Add(1)
-		go func() {
-			defer func() {
-				<-sem
-
-				// C6 fix: recover BEFORE wg.Done() so the main goroutine
-				// cannot close resultChan before recovery sends on it.
-				if r := recover(); r != nil {
-					mu.Lock()
-					processed[sid] = true
-					mu.Unlock()
-
-					result := &StepResult{
-						StepID: sid,
-						Status: StepStatusFailed,
-						Error:  fmt.Sprintf("panic: %v", r),
-					}
-					select {
-					case resultChan <- result:
-					case <-ctx.Done():
-					}
-				}
-
-				wg.Done()
-
-				// Signal stepDone so the scheduler can re-check dependencies.
-				select {
-				case stepDone <- struct{}{}:
-				default:
-				}
-			}()
-
-			result := e.executeStep(ctx, workflow, st, sid, initialInput, completed, outputStore, &mu)
-
-			mu.Lock()
-			processed[sid] = true
-			if result.Status == StepStatusCompleted {
-				completed[sid] = true
-			}
-			mu.Unlock()
-
-			select {
-			case resultChan <- result:
-			case <-ctx.Done():
-			}
-		}()
-
-		// Don't wait for individual step, continue to next step.
+		e.dispatchStepGoroutine(ctx, step, stepID, execution, workflow, initialInput,
+			completed, processed, outputStore, resultChan,
+			stepsByID, routedSteps, &routedMu, &mu, &wg, sem, stepDone)
 	}
 
-	// Wait for all step goroutines to complete.
 	wg.Wait()
 
 	select {
@@ -388,6 +409,191 @@ func (e *Executor) runSteps(
 		}
 	}
 	close(resultChan)
+}
+
+// waitForStepDependency blocks until a step's dependencies are met or the
+// context is cancelled. Returns true if the caller should continue the loop
+// (i.e., re-check dependencies), false if the workflow should abort.
+func (e *Executor) waitForStepDependency(
+	ctx context.Context,
+	stepID string,
+	stepDone chan struct{},
+	errChan chan error,
+	wg *sync.WaitGroup,
+	resultChan chan *StepResult,
+) (shouldContinue bool) {
+	deadlockTimer := time.NewTimer(DefaultDeadlockTimeout)
+	defer deadlockTimer.Stop()
+
+	select {
+	case <-stepDone:
+		return true
+	case <-deadlockTimer.C:
+		select {
+		case errChan <- fmt.Errorf("workflow deadlock detected: step %s waiting for dependencies that may never complete", stepID):
+		default:
+		}
+		wg.Wait()
+		close(resultChan)
+		return false
+	case <-ctx.Done():
+		wg.Wait()
+		close(resultChan)
+		return false
+	}
+}
+
+// evaluateAndSkipStep checks the step's Condition and skips it if not met.
+// Returns true if the step was skipped (caller should continue to next step).
+func (e *Executor) evaluateAndSkipStep(
+	ctx context.Context,
+	step *Step,
+	stepID string,
+	execution *WorkflowExecution,
+	resultChan chan *StepResult,
+	mu *sync.Mutex,
+	completed map[string]bool,
+	stepIndex *int,
+) bool {
+	if step.Condition == nil {
+		return false
+	}
+
+	mu.Lock()
+	varsCopy := make(map[string]any, len(execution.Variables))
+	for k, v := range execution.Variables {
+		varsCopy[k] = v
+	}
+	mu.Unlock()
+
+	if step.Condition(varsCopy) {
+		return false
+	}
+
+	// Mark as completed for dependency resolution so downstream steps can proceed.
+	mu.Lock()
+	completed[stepID] = true
+	mu.Unlock()
+
+	stepResult := &StepResult{
+		StepID: stepID,
+		Name:   step.Name,
+		Status: StepStatusSkipped,
+		Error:  "skipped: condition not met",
+	}
+	select {
+	case resultChan <- stepResult:
+	case <-ctx.Done():
+	}
+	*stepIndex++
+	return true
+}
+
+// dispatchStepGoroutine starts a goroutine that executes a single workflow step.
+// It handles panic recovery, step execution, dynamic routing, and result sending.
+func (e *Executor) dispatchStepGoroutine(
+	ctx context.Context,
+	step *Step,
+	stepID string,
+	execution *WorkflowExecution,
+	workflow *Workflow,
+	initialInput string,
+	completed map[string]bool,
+	processed map[string]bool,
+	outputStore *OutputStore,
+	resultChan chan *StepResult,
+	stepsByID map[string]*Step,
+	routedSteps map[string]bool,
+	routedMu *sync.Mutex,
+	mu *sync.Mutex,
+	wg *sync.WaitGroup,
+	sem chan struct{},
+	stepDone chan struct{},
+) {
+	sid := stepID
+	st := step
+
+	wg.Add(1)
+	go func() {
+		defer func() {
+			<-sem
+
+			if r := recover(); r != nil {
+				mu.Lock()
+				processed[sid] = true
+				mu.Unlock()
+
+				result := &StepResult{
+					StepID: sid,
+					Status: StepStatusFailed,
+					Error:  fmt.Sprintf("panic: %v", r),
+				}
+				select {
+				case resultChan <- result:
+				case <-ctx.Done():
+				}
+			}
+
+			wg.Done()
+
+			select {
+			case stepDone <- struct{}{}:
+			default:
+			}
+		}()
+
+		result := e.executeStep(ctx, workflow, st, sid, initialInput, completed, outputStore, mu)
+
+		 mu.Lock()
+		 processed[sid] = true
+		 if result.Status == StepStatusCompleted {
+		  // Release the lock before calling handleStepRouter so that a
+		  // Router panic does not leave the mutex in an inconsistent state.
+		  mu.Unlock()
+		  e.handleStepRouter(ctx, st, sid, execution, result, stepsByID, routedSteps, routedMu)
+		  mu.Lock()
+		  completed[sid] = true
+		 }
+		 mu.Unlock()
+
+		select {
+		case resultChan <- result:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// handleStepRouter calls the step's Router callback if set, recording the
+// routed target in the routedSteps set for the main loop to pick up.
+// The caller must NOT hold mu when calling this; if the Router panics it
+// must not leave any mutex in an inconsistent state.
+func (e *Executor) handleStepRouter(
+	ctx context.Context,
+	step *Step,
+	stepID string,
+	execution *WorkflowExecution,
+	result *StepResult,
+	stepsByID map[string]*Step,
+	routedSteps map[string]bool,
+	routedMu *sync.Mutex,
+) {
+	if step.Router == nil {
+		return
+	}
+
+	varsCopy := make(map[string]any, len(execution.Variables))
+	for k, v := range execution.Variables {
+		varsCopy[k] = v
+	}
+	routedID := step.Router(ctx, stepID, varsCopy, result.Output)
+
+	if routedID != "" {
+		if _, ok := stepsByID[routedID]; ok && !routedSteps[routedID] {
+			routedMu.Lock()
+			routedSteps[routedID] = true
+			routedMu.Unlock()
+		}
+	}
 }
 
 // canExecute checks if a step can be executed.
@@ -622,6 +828,32 @@ func (e *Executor) executeWithRetry(ctx context.Context, step *Step, input strin
 
 // executeSingle executes a step once.
 func (e *Executor) executeSingle(ctx context.Context, step *Step, input string) (string, error) {
+	// If the step has a sub-workflow, execute it recursively instead of calling an agent.
+	if step.SubWorkflow != nil {
+		timeout := step.Timeout
+		if timeout == 0 {
+			timeout = DefaultStepTimeout
+		}
+		subCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		subResult, err := e.executeWithLoop(subCtx, step.SubWorkflow, input, nil)
+		if err != nil {
+			return "", err
+		}
+		if subResult.Status != WorkflowStatusCompleted {
+			return "", fmt.Errorf("sub-workflow %s failed: %s", step.SubWorkflow.ID, subResult.Error)
+		}
+		// Aggregate outputs into a single JSON-like string for the parent step.
+		var outputs []string
+		for _, sr := range subResult.Steps {
+			if sr.Output != "" {
+				outputs = append(outputs, sr.StepID+": "+sr.Output)
+			}
+		}
+		return strings.Join(outputs, "\n"), nil
+	}
+
 	timeout := step.Timeout
 	if timeout == 0 {
 		timeout = DefaultStepTimeout
@@ -691,4 +923,45 @@ func (e *Executor) handleInterrupt(ctx context.Context, workflow *Workflow, step
 	}
 
 	return nil
+}
+
+// saveCheckpoint persists the current workflow execution state for crash recovery.
+// The checkpoint stores accumulated step results so the workflow can be resumed
+// from the last completed step if the process restarts.
+func (e *Executor) saveCheckpoint(
+	ctx context.Context,
+	execution *WorkflowExecution,
+	stepResults []*StepResult,
+	loopConfig *LoopConfig,
+) error {
+	if e.checkpointStore == nil {
+		return nil
+	}
+
+	ckpt := ares_runtime.ExperienceCheckpoint{
+		SchemaVersion: 1,
+		ExecutionID:   execution.ID,
+		WorkflowID:    execution.WorkflowID,
+		Status:        string(execution.Status),
+		Variables:     execution.Variables,
+		CreatedAt:     execution.StartedAt,
+	}
+
+	// Serialize step results into the checkpoint.
+	for _, sr := range stepResults {
+		ckpt.StepStates = append(ckpt.StepStates, ares_runtime.StepStateSnapshot{
+			StepID: sr.StepID,
+			Status: ares_runtime.StepStatus(sr.Status),
+			Output: sr.Output,
+			Error:  sr.Error,
+		})
+	}
+
+	data, err := json.Marshal(ckpt)
+	if err != nil {
+		return fmt.Errorf("marshal checkpoint: %w", err)
+	}
+
+	key := ares_runtime.CheckpointKey(execution.ID)
+	return e.checkpointStore.Save(ctx, key, data)
 }

@@ -93,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test Weakness Assessment**: Sampled 20+ non-testify test files — confirmed they have meaningful multi-field assertions (not perfunctory). Postgres integration tests properly isolated behind `//go:build integration`.
 - **Docker Compose Update**: Added Ollama service for local LLM fallback in development stack. Updated benchmark links in both EN and CN README.
 
+
 ## [0.2.5] - 2026-07-02
 
 ### Performance
