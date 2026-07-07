@@ -7,7 +7,7 @@
 //
 // Run:
 //
-//	go run examples/human-in-loop/main.go
+//	go run examples/07-human-in-loop/main.go
 package main
 
 import (

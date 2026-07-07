@@ -2,7 +2,7 @@
 //
 // Run:
 //
-//	go run examples/multi-agent/main.go
+//	go run examples/04-multi-agent/main.go
 package main
 
 import (

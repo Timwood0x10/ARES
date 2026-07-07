@@ -2,7 +2,7 @@
 //
 // Run:
 //
-//	go run examples/dag-workflow/main.go
+//	go run examples/03-dag-workflow/main.go
 package main
 
 import (

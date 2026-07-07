@@ -1,0 +1,29 @@
+name: leader-assassination-and-recovery
+description: "Kill the leader agent and verify the system recovers"
+config:
+  stop_on_error: false
+  parallel_actions: false
+  warmup: 1s
+  cooldown: 1s
+actions:
+  - delay: 2s
+    action:
+      type: kill_leader
+    label: kill-leader
+  - delay: 1s
+    action:
+      type: kill_agent
+      target_id: agent-1
+    label: kill-agent-1
+  - delay: 3s
+    action:
+      type: network_partition
+      target_id: agent-2
+    label: partition-agent-2
+  - delay: 1s
+    action:
+      type: slow_agent
+      target_id: agent-3
+      metadata:
+        delay: 10s
+    label: slow-agent-3

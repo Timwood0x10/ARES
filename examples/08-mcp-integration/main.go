@@ -5,7 +5,7 @@
 //
 // Run:
 //
-//	go run examples/mcp-integration/main.go
+//	go run examples/08-mcp-integration/main.go
 package main
 
 import (

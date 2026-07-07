@@ -8,7 +8,7 @@
 //
 // Run:
 //
-//	go run examples/evolution-demo/main.go
+//	go run examples/05-evolution-demo/main.go
 package main
 
 import (

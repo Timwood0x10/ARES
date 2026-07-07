@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,9 +65,10 @@ func init() {
 	// bench
 	benchCmd := &cobra.Command{
 		Use:   "bench",
-		Short: "Run quick benchmark",
+		Short: "Run benchmark",
 		RunE:  runBench,
 	}
+	benchCmd.Flags().StringP("format", "f", "markdown", "Output format: markdown | json")
 	rootCmd.AddCommand(benchCmd)
 }
 
@@ -343,24 +345,24 @@ func parseRunArgs() []string {
 // ── bench ──────────────────────────────────────────────────────
 
 type benchResult struct {
-	Task       string        `json:"task"`
-	Success    bool          `json:"success"`
-	Output     string        `json:"output"`
-	ToolCalls  int           `json:"tool_calls"`
-	Tokens     int           `json:"tokens"`
-	Latency    time.Duration `json:"latency_ms"`
-	MemoryHit  bool          `json:"memory_hit"`
+	Task      string        `json:"task"`
+	Success   bool          `json:"success"`
+	Output    string        `json:"output"`
+	ToolCalls int           `json:"tool_calls"`
+	Tokens    int           `json:"tokens"`
+	Latency   time.Duration `json:"latency_ms"`
+	MemoryHit bool          `json:"memory_hit"`
 }
 
 type benchReport struct {
-	Date       string         `json:"date"`
-	Model      string         `json:"model"`
-	Provider   string         `json:"provider"`
-	Results    []benchResult  `json:"results"`
-	AvgLatency time.Duration  `json:"avg_latency_ms"`
+	Date        string        `json:"date"`
+	Model       string        `json:"model"`
+	Provider    string        `json:"provider"`
+	Results     []benchResult `json:"results"`
+	AvgLatency  time.Duration `json:"avg_latency_ms"`
 	TotalTokens int           `json:"total_tokens"`
 	TotalTools  int           `json:"total_tool_calls"`
-	PassRate   float64        `json:"pass_rate"`
+	PassRate    float64       `json:"pass_rate"`
 }
 
 func runBench(cmd *cobra.Command, _ []string) error {
@@ -386,7 +388,7 @@ func runBench(cmd *cobra.Command, _ []string) error {
 		"List the planets in order from the sun",
 	}
 
-	var results []benchResult
+	var results = make([]benchResult, 0, len(tasks))
 	var totalDuration time.Duration
 	var totalTokens, totalTools int
 	passed := 0
@@ -397,9 +399,9 @@ func runBench(cmd *cobra.Command, _ []string) error {
 		d := time.Since(start)
 
 		br := benchResult{
-			Task:      task,
-			Success:   err == nil,
-			Latency:   d,
+			Task:    task,
+			Success: err == nil,
+			Latency: d,
 		}
 		if err == nil {
 			br.Output = truncateStr(result.Output, 60)

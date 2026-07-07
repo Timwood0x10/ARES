@@ -217,6 +217,14 @@ benchmark-save:
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 
+# ──────────────────────────────────────────────
+# Evaluation — run evaluation scenarios
+# ──────────────────────────────────────────────
+test-eval:  ## Run evaluation tests
+	@echo "📊 Running evaluation tests..."
+	@go test -count=1 -timeout=300s ./evaluation/...
+	@echo "✅ Evaluation tests complete"
+
 # Demo: MCP + Dashboard
 # Usage: make demo-mcp TARGET=/path/to/analyze ADDR=:8090
 demo-mcp: TARGET ?= .

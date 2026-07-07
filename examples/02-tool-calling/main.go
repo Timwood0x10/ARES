@@ -2,7 +2,7 @@
 //
 // Run:
 //
-//	go run examples/tool-calling/main.go
+//	go run examples/02-tool-calling/main.go
 package main
 
 import (

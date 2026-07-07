@@ -8,7 +8,7 @@
 //
 // Run:
 //
-//	go run examples/full-app/main.go
+//	go run examples/09-full-app/main.go
 //	then open http://localhost:8080
 package main
 

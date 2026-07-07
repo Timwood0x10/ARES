@@ -1,0 +1,47 @@
+name: cascading-failure-storm
+description: "Simulate cascading failures across multiple agents"
+config:
+  stop_on_error: false
+  parallel_actions: true
+  max_concurrent: 3
+  warmup: 2s
+  cooldown: 2s
+actions:
+  - delay: 3s
+    action:
+      type: kill_agent
+      target_id: agent-1
+    label: kill-agent-1
+  - delay: 5s
+    action:
+      type: slow_agent
+      target_id: agent-2
+      metadata:
+        delay: 10s
+    label: slow-agent-2
+  - delay: 7s
+    action:
+      type: kill_leader
+    label: kill-leader
+  - delay: 2s
+    action:
+      type: network_partition
+      target_id: agent-3
+    label: partition-agent-3
+  - delay: 4s
+    action:
+      type: tool_timeout
+      target_id: agent-1
+      metadata:
+        duration: 30s
+    label: timeout-agent-1
+  - delay: 6s
+    action:
+      type: memory_corrupt
+      target_id: agent-2
+    label: corrupt-agent-2
+  - delay: 8s
+    action:
+      type: kill_agent
+      target_id: agent-3
+    label: kill-agent-3

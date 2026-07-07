@@ -4,7 +4,7 @@
 //
 //	make quickstart
 //	# or
-//	go run examples/quickstart/main.go
+//	go run examples/01-quickstart/main.go
 //
 // By default it uses Ollama (no API key needed). To use OpenAI instead:
 //

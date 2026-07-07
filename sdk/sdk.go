@@ -252,6 +252,16 @@ func (r *Runtime) ToolRegistry() *tools.Registry {
 	return r.toolReg
 }
 
+// GetModel returns the LLM model name used by this Runtime.
+func (r *Runtime) GetModel() string {
+	return r.llmSvc.GetModel()
+}
+
+// GetProvider returns the LLM provider name used by this Runtime.
+func (r *Runtime) GetProvider() string {
+	return string(r.llmSvc.GetProvider())
+}
+
 // Evolve runs an evolution cycle to improve an agent's instruction. It uses the
 // LLM to generate variations, evaluates them against the given task, and returns
 // the best-evolved instruction.
