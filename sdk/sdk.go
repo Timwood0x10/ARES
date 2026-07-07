@@ -40,6 +40,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
@@ -275,12 +276,20 @@ func New(opts ...Option) (*Runtime, error) {
 			}
 		}
 
+		// TODO: register evolution provider when StrategyStore is accessible from the SDK.
+
 		knowledgeRT = khruntime.New(
 			planner.NewKnowledgePlanner(),
 			planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
 			reg,
 			nil, // pipeline: use defaults
-			[]khruntime.Linker{&khruntime.DefaultLinker{}},
+			[]khruntime.Linker{
+				&khruntime.DefaultLinker{},
+				&linker.DecisionLinker{},
+				&linker.ArchitectureLinker{},
+				&linker.TimelineLinker{},
+				&linker.SimilarityLinker{},
+			},
 			[]khruntime.Reducer{&khruntime.DefaultReducer{}},
 		)
 	}
