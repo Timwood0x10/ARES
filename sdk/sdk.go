@@ -37,6 +37,13 @@ import (
 	"github.com/Timwood0x10/ares/api/service/llm"
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	"github.com/Timwood0x10/ares/internal/knowledge/planner"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
+	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 )
 
 // ---- public types ----
@@ -50,16 +57,48 @@ const (
 )
 
 // Runtime is the top-level ARES container. It owns the LLM client, tool
-// registry, and — optionally — memory, MCP connections, and evolution.
+// registry, and — optionally — memory, AKF knowledge fabric, MCP
+// connections, and evolution.
 // Create one with MustNew or New.
 type Runtime struct {
-	llmSvc     *llm.Service
-	toolReg    *tools.Registry
-	memSvc     *memsvc.Service
-	memEnabled bool
-	evoEnabled bool
-	mcpClients []*mcp.Client
-	trace      bool
+	llmSvc           *llm.Service
+	toolReg          *tools.Registry
+	memSvc           *memsvc.Service
+	memEnabled       bool
+	evoEnabled       bool
+	knowledgeEnabled bool
+	knowledgeRT      *khruntime.KnowledgeRuntime
+	mcpClients       []*mcp.Client
+	trace            bool
+}
+
+// memSearcher adapts memsvc.Service to the memory.TaskSearcher interface.
+type memSearcher struct {
+	svc *memsvc.Service
+}
+
+func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]memprovider.SearchResult, error) {
+	results, err := s.svc.SearchSimilarTasks(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]memprovider.SearchResult, 0, len(results))
+	for _, r := range results {
+		summary := r.TaskID
+		if r.Payload != nil {
+			if sVal, ok := r.Payload["input"]; ok {
+				if str, ok := sVal.(string); ok {
+					summary = str
+				}
+			}
+		}
+		out = append(out, memprovider.SearchResult{
+			ID:        r.TaskID,
+			Summary:   summary,
+			Timestamp: r.CreatedAt,
+		})
+	}
+	return out, nil
 }
 
 // Agent is a named agent with a fixed instruction and tool set, bound to a
@@ -223,14 +262,39 @@ func New(opts ...Option) (*Runtime, error) {
 		mcpClients = append(mcpClients, client)
 	}
 
+	// ---- AKF Knowledge Fabric ----
+	var knowledgeRT *khruntime.KnowledgeRuntime
+	if cfg.knlCfg.Enabled {
+		reg := provider.NewProviderRegistry()
+
+		// Auto-register memory provider when memory is also enabled.
+		if memSvc != nil {
+			searcher := &memSearcher{svc: memSvc}
+			if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
+				return nil, fmt.Errorf("knowledge: register memory provider: %w", err)
+			}
+		}
+
+		knowledgeRT = khruntime.New(
+			planner.NewKnowledgePlanner(),
+			planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
+			reg,
+			nil, // pipeline: use defaults
+			[]khruntime.Linker{&khruntime.DefaultLinker{}},
+			[]khruntime.Reducer{&khruntime.DefaultReducer{}},
+		)
+	}
+
 	return &Runtime{
-		llmSvc:     llmSvc,
-		toolReg:    toolReg,
-		memSvc:     memSvc,
-		memEnabled: cfg.memCfg.Enabled,
-		evoEnabled: cfg.evoCfg.Enabled,
-		mcpClients: mcpClients,
-		trace:      cfg.trace,
+		llmSvc:           llmSvc,
+		toolReg:          toolReg,
+		memSvc:           memSvc,
+		memEnabled:       cfg.memCfg.Enabled,
+		evoEnabled:       cfg.evoCfg.Enabled,
+		knowledgeEnabled: cfg.knlCfg.Enabled,
+		knowledgeRT:      knowledgeRT,
+		mcpClients:       mcpClients,
+		trace:            cfg.trace,
 	}, nil
 }
 
@@ -483,6 +547,32 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 				Role:    roleSystem,
 				Content: ctxStr,
 			})
+		}
+	}
+
+	// Inject AKF knowledge context if available.
+	if a.runtime.knowledgeEnabled && a.runtime.knowledgeRT != nil {
+		budget := knowledge.TokenBudget{
+			MaxTokens: 3000,
+			Reserved:  1000,
+			ForGraph:  2000,
+		}
+		graph, err := a.runtime.knowledgeRT.Execute(ctx, input, budget, nil)
+		if err == nil && graph != nil && len(graph.Nodes) > 0 {
+			c := compiler.NewDefaultCompiler()
+			compiled, cErr := c.Compile(ctx, graph, compiler.CompileConfig{
+				Formats:  []compiler.Format{compiler.FormatPrompt},
+				MaxNodes: 50,
+				MaxEdges: 50,
+			})
+			if cErr == nil && compiled != nil {
+				if ctxStr, ok := compiled.Formats[compiler.FormatPrompt]; ok && ctxStr != "" {
+					msgs = append(msgs, &core.LLMMessage{
+						Role:    roleSystem,
+						Content: ctxStr,
+					})
+				}
+			}
 		}
 	}
 

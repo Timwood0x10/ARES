@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -138,6 +139,61 @@ func TestBuildMessages(t *testing.T) {
 	msgs := agent.buildMessages(context.Background(), "hello", "sess")
 	if len(msgs) < 2 {
 		t.Fatal("expected system+user messages")
+	}
+}
+
+func TestWithKnowledgeEnabled(t *testing.T) {
+	rt, err := New(
+		WithOllama("llama3.2"),
+		WithDefaultMemory(),
+		WithKnowledge(),
+		WithTrace(false),
+	)
+	if err != nil {
+		t.Fatalf("New() with knowledge error: %v", err)
+	}
+	defer rt.Close()
+
+	if !rt.knowledgeEnabled {
+		t.Fatal("expected knowledgeEnabled to be true")
+	}
+	if rt.knowledgeRT == nil {
+		t.Fatal("expected knowledgeRT to be non-nil")
+	}
+}
+
+func TestBuildMessagesWithKnowledge(t *testing.T) {
+	rt, err := New(
+		WithOllama("llama3.2"),
+		WithDefaultMemory(),
+		WithKnowledge(),
+		WithTrace(false),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer rt.Close()
+
+	agent := rt.NewAgent("test", WithInstruction("help"))
+	msgs := agent.buildMessages(context.Background(), "hello", "sess")
+	// Should have at least system (instruction) + user messages.
+	// Knowledge context may be empty if no memory data exists, which is fine.
+	if len(msgs) < 2 {
+		t.Fatal("expected at least system+user messages")
+	}
+	_ = rt.Close
+}
+
+func TestBuildMessagesWithoutKnowledge(t *testing.T) {
+	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	defer rt.Close()
+	agent := rt.NewAgent("test", WithInstruction("help"))
+	msgs := agent.buildMessages(context.Background(), "hello", "sess")
+	// Without knowledge, no AKF context should be injected.
+	for _, m := range msgs {
+		if m.Role == roleSystem && strings.Contains(m.Content, "Nodes") {
+			t.Fatal("knowledge context should not appear without WithKnowledge()")
+		}
 	}
 }
 

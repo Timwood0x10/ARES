@@ -24,10 +24,10 @@ func FromMemory(m *distillation.Memory, ns string) *knowledge.KnowledgeObject {
 	}
 
 	return &knowledge.KnowledgeObject{
-		ID:      fmt.Sprintf("mem_%s", m.ID),
-		Type:    objType,
-		Namespace: ns,
-		Summary: summary,
+		ID:         fmt.Sprintf("mem_%s", m.ID),
+		Type:       objType,
+		Namespace:  ns,
+		Summary:    summary,
 		Confidence: float64(m.Importance) / 100.0,
 		CreatedAt:  m.CreatedAt,
 		UpdatedAt:  time.Now(),

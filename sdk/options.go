@@ -18,6 +18,7 @@ type config struct {
 	baseCfg  *core.BaseConfig
 	memCfg   memoryCfg
 	evoCfg   evolutionCfg
+	knlCfg   knowledgeCfg
 	mcpConns []MCPConn
 	trace    bool
 }
@@ -27,6 +28,10 @@ type memoryCfg struct {
 }
 
 type evolutionCfg struct {
+	Enabled bool
+}
+
+type knowledgeCfg struct {
 	Enabled bool
 }
 
@@ -145,6 +150,20 @@ func WithDefaultMemory() Option {
 func WithEvolution() Option {
 	return func(c *config) error {
 		c.evoCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithKnowledge enables the AKF Knowledge Fabric pipeline.
+// When enabled, each Agent.Run call automatically builds a knowledge graph
+// from registered providers (e.g. Memory) and injects relevant context
+// into the LLM's system prompt.
+//
+// If WithDefaultMemory is also enabled, historical tasks are automatically
+// registered as a knowledge source.
+func WithKnowledge() Option {
+	return func(c *config) error {
+		c.knlCfg.Enabled = true
 		return nil
 	}
 }

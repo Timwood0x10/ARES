@@ -81,7 +81,7 @@ func (p *PGProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-cha
 			errCh <- fmt.Errorf("postgres query: %w", err)
 			return
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 
 		for rows.Next() {
 			obj, err := p.scanRow(rows)

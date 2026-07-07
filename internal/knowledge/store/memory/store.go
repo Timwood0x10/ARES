@@ -11,12 +11,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
+var (
+	// ErrObjectNotFound is returned when a Get call finds no matching object.
+	ErrObjectNotFound = fmt.Errorf("object not found")
+)
+
 // Store is an in-memory implementation of KnowledgeStore.
 // Thread-safe, suitable for testing and single-node deployments.
 type Store struct {
-	mu       sync.RWMutex
-	objects  map[string]*knowledge.KnowledgeObject
-	reps     map[string]*knowledge.Representation // key: objectID:model
+	mu      sync.RWMutex
+	objects map[string]*knowledge.KnowledgeObject
+	reps    map[string]*knowledge.Representation // key: objectID:model
 }
 
 // New creates a new in-memory KnowledgeStore.
@@ -44,7 +49,7 @@ func (s *Store) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, e
 	defer s.mu.RUnlock()
 	obj, ok := s.objects[id]
 	if !ok {
-		return nil, nil
+		return nil, ErrObjectNotFound
 	}
 	return obj, nil
 }
@@ -162,7 +167,7 @@ func (s *Store) GetRepresentation(_ context.Context, objectID string, model stri
 	key := objectID + ":" + model
 	rep, ok := s.reps[key]
 	if !ok {
-		return nil, nil
+		return nil, ErrObjectNotFound
 	}
 	return rep, nil
 }

@@ -128,3 +128,28 @@ func detectProviderType(name string) string {
 	// Real implementations would register their type explicitly.
 	return name
 }
+
+// defaultQueryPlanner is a simple QueryPlanner that generates keyword-based
+// query descriptions for each requirement-provider pair.
+type defaultQueryPlanner struct{}
+
+// NewQueryPlanner creates a default query planner.
+func NewQueryPlanner() QueryPlanner {
+	return &defaultQueryPlanner{}
+}
+
+func (q *defaultQueryPlanner) PlanQuery(_ context.Context, req KnowledgeRequirement, providerName, providerType string) (*QueryPlan, error) {
+	if req.Description == "" {
+		return nil, fmt.Errorf("requirement description cannot be empty")
+	}
+	return &QueryPlan{
+		Query:      req.Description,
+		QueryType:  QueryKeyword,
+		MaxResults: req.MaxResults,
+		Parameters: map[string]any{
+			"need":          string(req.Need),
+			"provider_name": providerName,
+			"provider_type": providerType,
+		},
+	}, nil
+}

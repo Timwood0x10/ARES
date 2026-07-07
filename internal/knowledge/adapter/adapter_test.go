@@ -10,11 +10,11 @@ import (
 
 func TestFromMemory(t *testing.T) {
 	m := &distillation.Memory{
-		ID:          "mem_abc",
-		Type:        distillation.MemoryKnowledge,
-		Content:     "Key insight about caching strategies",
-		Importance:  85,
-		CreatedAt:   time.Now(),
+		ID:         "mem_abc",
+		Type:       distillation.MemoryKnowledge,
+		Content:    "Key insight about caching strategies",
+		Importance: 85,
+		CreatedAt:  time.Now(),
 	}
 
 	obj := FromMemory(m, "default")
