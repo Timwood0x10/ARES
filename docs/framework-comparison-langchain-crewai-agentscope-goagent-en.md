@@ -238,6 +238,81 @@ GoAgent's DAG engine has unique characteristics:
 - **Deadlock detection**: 5-second timeout with automatic rollback
 - **Hot reload**: fsnotify file watcher auto-reloads workflow config without restart
 
+#### Conditional Edges & Dynamic Routing (v0.2.6+)
+
+GoAgent supports two mechanisms for conditional execution:
+
+| Mechanism | When Evaluated | Behavior on false |
+|-----------|---------------|-------------------|
+| `Step.Condition` | Before step execution | Step is **skipped** (marked `StepStatusSkipped`), downstream deps see it as completed |
+| `Step.Router` | After step completes | Dynamically enqueues **any** step ID for next execution based on step output |
+
+`Step.Router` is a `NodeRouter` callback `func(ctx, stepID, vars, output) string` that receives the step's output at runtime and returns the next step to execute. This enables LLM-driven branching without pre-declaring all conditional paths.
+
+```go
+step := &Step{
+    ID: "classify", AgentType: "router-agent",
+    Router: func(ctx context.Context, stepID string, vars map[string]any, output string) string {
+        if strings.Contains(output, "urgent") {
+            return "fast_path"   // route to fast_path
+        }
+        return "standard_path"  // default route
+    },
+}
+```
+
+#### Controlled Loops (v0.2.6+)
+
+`LoopConfig` provides bounded, safe iteration — unlike LangGraph's arbitrary cycles:
+
+```go
+workflow := &Workflow{
+    LoopConfig: &LoopConfig{
+        MaxIterations:  5,
+        UntilCondition: func(vars map[string]any, iter int) bool { return done },
+        LoopSteps:      []string{"collect", "process"},
+    },
+}
+```
+
+Key safety guarantees:
+- **Hard upper bound**: `MaxIterations` prevents infinite loops
+- **Conditional exit**: `UntilCondition` receives current iteration count
+- **State preservation**: Results accumulate across iterations; loop state persists in checkpoint
+- **DAG integrity**: Loop body is declared explicitly; no arbitrary back-edges
+
+#### Subgraph Nesting (v0.2.6+)
+
+Steps can embed a complete sub-workflow via `Step.SubWorkflow` (engine package) or `SubGraphNode` (graph package):
+
+```go
+// Engine package
+step := &Step{
+    ID: "validate", SubWorkflow: &Workflow{
+        Steps: []*Step{
+            {ID: "check", AgentType: "validator"},
+            {ID: "enrich", AgentType: "enricher", DependsOn: []string{"check"}},
+        },
+    },
+}
+
+// Graph package
+subGraph, _ := wfgraph.NewGraph("sub")
+subGraph.Node("a", fnA).Node("b", fnB).Edge("a", "b")
+subNode, _ := wfgraph.NewSubGraphNode("sub", subGraph)
+parent.Node("sub", subNode)
+```
+
+Sub-graphs have **isolated state space** — execution results merge back to parent only after completion, preventing accidental state pollution.
+
+#### State Checkpointing (v0.2.6+)
+
+Both engines support pluggable checkpoint persistence:
+
+- **Engine**: `WithCheckpointStore(store)` on executor → auto-saves `StepResult` list after each step via `saveCheckpoint`
+- **Graph**: `SetCheckpointStore(store)` on graph → auto-saves executed node IDs + state snapshot after each node via `saveGraphCheckpoint`
+- **Non-blocking**: Checkpoint failures are logged as warnings and do not interrupt execution
+
 ```go
 // DFS cycle detection
 func (d *DAG) hasCycle() bool {

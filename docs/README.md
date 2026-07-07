@@ -27,6 +27,14 @@ Welcome to the ARES framework documentation center.
 | Testing | [测试指南](./zh/development/testing-guide.md) | [Testing Guide](./en/development/testing-guide.md) |
 | API Reference | — | [API Reference](./en/api-reference.md) |
 
+## Coding Standards / 编码规范
+
+| Document | 说明 | 强制 |
+|----------|------|------|
+| [Code Rules](../plan/rules/code_rules.md) | Go 编码规范：命名、格式、错误处理、并发、禁止模式 | ✅ CI 拦截 |
+| [Skills](../plan/rules/skills.md) | 开发技能要求与最佳实践 | 推荐 |
+| [Uber Go Style](../plan/rules/uber_go_style.md) | Uber Go 风格指南参考 | 推荐 |
+
 ---
 
 ## Core Features
