@@ -1,26 +1,26 @@
 # Multi-Agent Framework Deep Comparison
 
-> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES)
+> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES) vs tRPC-Agent-Go
 
 ---
 
 ## 1. Overview
 
-This document provides a thorough, honest technical comparison of four mainstream AI Agent frameworks: **LangChain (incl. LangGraph)**, **CrewAI**, **AgentScope**, and **GoAgent (ARES)**. The comparison covers tech stack, architecture, workflow orchestration, multi-agent collaboration, memory systems, production reliability, deployment, and community maturity.
+This document provides a thorough, honest technical comparison of five mainstream AI Agent frameworks: **LangChain (incl. LangGraph)**, **CrewAI**, **AgentScope**, **GoAgent (ARES)**, and **tRPC-Agent-Go**. The comparison covers tech stack, architecture, workflow orchestration, multi-agent collaboration, memory systems, production reliability, deployment, and community maturity.
 
 ---
 
 ## 2. Tech Stack Comparison
 
-| Dimension | LangChain / LangGraph | CrewAI | AgentScope | GoAgent (ARES) |
-|-----------|----------------------|--------|------------|-----------------|
-| **Primary Language** | Python, JavaScript/TypeScript | Python | Python | Go (1.26+) |
-| **Core Dependencies** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b |
-| **LLM Providers** | 50+ (OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock, etc.) | OpenAI, Anthropic, Google, Ollama, Groq, Azure, etc. | OpenAI, ModelScope, DashScope, etc. | OpenAI, Ollama, OpenRouter, etc. (plugin-based) |
-| **Vector DB** | 30+ (Pinecone, Chroma, Weaviate, Qdrant, FAISS, Milvus, PGVector, etc.) | LanceDB, Chroma | Built-in | PostgreSQL + pgvector (ivfflat index) |
-| **Document Loaders** | 100+ (PDF, HTML, LaTeX, Markdown, CSV, JSON, DB, S3, Web) | Few built-in | Moderate | None (code/task focused, not document) |
-| **Communication Protocol** | REST (LangServe), SSE, limited gRPC | In-process function calls | Service Hub messaging, gRPC | AHP Protocol (TASK/RESULT/PROGRESS/ACK/HEARTBEAT) |
-| **Dependency Mgmt** | Layered: langchain-core, -community, -langchain, -experimental | Single: crewaillm, crewai | Single + distributed deps | Single module + Go modules |
+| Dimension | LangChain / LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|-----------|----------------------|--------|------------|----------------|---------------|
+| **Primary Language** | Python, JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.21+) |
+| **Core Dependencies** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | openai-go v1.12.0, otel v1.29.0, trpc-a2a-go, trpc-mcp-go, ants/v2, zap |
+| **LLM Providers** | 50+ (OpenAI, Anthropic, Google, Cohere, Hugging Face, AWS Bedrock, etc.) | OpenAI, Anthropic, Google, Ollama, Groq, Azure, etc. | OpenAI, ModelScope, DashScope, etc. | OpenAI, Ollama, OpenRouter, etc. (plugin-based) | OpenAI, Ollama, etc. |
+| **Vector DB** | 30+ (Pinecone, Chroma, Weaviate, Qdrant, FAISS, Milvus, PGVector, etc.) | LanceDB, Chroma | Built-in | PostgreSQL + pgvector (ivfflat index) | Built-in memory store, knowledge retrieval, SQLite with vector extension |
+| **Document Loaders** | 100+ (PDF, HTML, LaTeX, Markdown, CSV, JSON, DB, S3, Web) | Few built-in | Moderate | None (code/task focused, not document) | None |
+| **Communication Protocol** | REST (LangServe), SSE, limited gRPC | In-process function calls | Service Hub messaging, gRPC | AHP Protocol (TASK/RESULT/PROGRESS/ACK/HEARTBEAT) | tRPC (native), A2A Agent-to-Agent, AG-UI, MCP, OpenAI-compatible API |
+| **Dependency Mgmt** | Layered: langchain-core, -community, -langchain, -experimental | Single: crewaillm, crewai | Single + distributed deps | Single module + Go modules | tRPC-Go service modules |
 
 ### 2.1 Key Tech Stack Differences
 
@@ -43,7 +43,8 @@ This document provides a thorough, honest technical comparison of four mainstrea
 | **LangGraph** | StateGraph (cyclic directed graph) | Graph computation model, node=function, edge=transition | Stateful graph execution engine |
 | **CrewAI** | Crew + Agent + Task | Team collaboration metaphor, role-driven | Linear/hierarchical pipeline |
 | **AgentScope** | Agent + Service Hub | Distributed message passing, service-oriented | Distributed message-driven |
-| **GoAgent** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Leader-subordinate architecture |
+| **GoAgent (ARES)** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Leader-subordinate architecture |
+| **tRPC-Agent-Go** | GraphAgent + Runner + Agent | Service-friendly, tRPC-native agent architecture | Go-native agent runtime with Pregel-style graph workflows |
 
 ### 3.2 Architecture Diagrams
 
@@ -146,6 +147,53 @@ flowchart TB
 
 GoAgent uses a Leader-Sub architecture communicating via the AHP (Agent Heartbeat Protocol). The Leader handles planning, dispatching, and aggregation; Sub-Agents execute tasks in parallel.
 
+### tRPC-Agent-Go — Go-Native Agent Runtime + Graph Workflows
+
+```mermaid
+flowchart TB
+    User[User Input] --> Runner[Runner]
+    Runner --> AgentSelection{Agent Selection}
+    AgentSelection -->|GraphAgent| Graph[Pregel-style Graph]
+    AgentSelection -->|LLMAgent| LLM[LLM Pipeline]
+    AgentSelection -->|ChainAgent| Chain[Sequential Chain]
+    AgentSelection -->|ParallelAgent| Parallel[Concurrent Fan-out]
+    AgentSelection -->|CycleAgent| Cycle[Loop with Escalation]
+    AgentSelection -->|A2AAgent| A2A[Remote A2A Protocol]
+
+    Graph --> GNodes{6 Node Types}
+    GNodes --> Function[Function Node]
+    GNodes --> LLMNode[LLM Node]
+    GNodes --> ToolNode[Tool Node]
+    GNodes --> AgentNode[Agent Node]
+    GNodes --> JoinNode[Join Node<br/>SHA-256 Barrier]
+    GNodes --> RouterNode[Router Node<br/>Conditional/MultiConditional]
+
+    Runner --> Memory[Memory Service<br/>12 Backends]
+    Runner --> Session[Session Service<br/>10+ Backends]
+    Runner --> Telemetry[OpenTelemetry + Langfuse]
+    Runner --> Evolution[SKILL.md Evolution<br/>5 Quality Gates]
+    Runner --> Eval[Evaluation Framework<br/>10 Sub-packages]
+
+    subgraph ProtocolServers[6 Protocol Servers]
+        S1[A2A Server]
+        S2[AG-UI Server]
+        S3[OpenAI API Server]
+        S4[Evaluation Server]
+        S5[PromptIter Server]
+        S6[tRPC Agent Server]
+    end
+
+    subgraph Tools[20+ Built-in Tools]
+        T1[MCP Tool]
+        T2[Function Tool]
+        T3[WebFetch]
+        T4[CodeExec]
+        T5[HostExec]
+        T6[OpenAPI]
+        T7[... 14 more]
+    end
+```
+
 ### 3.3 Architecture Key Differences
 
 **LangGraph**'s graph model is the most flexible, supporting complex state machines, cycles, and conditional routing. The cost is a steep learning curve.
@@ -156,25 +204,30 @@ GoAgent uses a Leader-Sub architecture communicating via the AHP (Agent Heartbea
 
 **GoAgent**'s Leader-Sub pattern is best for deterministic task distribution. The AHP protocol provides **protocol-level reliability guarantees** (heartbeat + dead letter queue) absent from all three other frameworks.
 
+**tRPC-Agent-Go**'s Runner + GraphAgent architecture is the most service-friendly, integrating natively with tRPC-Go microservices. The Pregel-style graph engine with 6 node types offers full workflow coverage while remaining type-safe and deterministic.
+
 ---
 
 ## 4. Workflow Orchestration
 
 ### 4.1 Workflow Capabilities
 
-| Capability | LangGraph | CrewAI | AgentScope | GoAgent |
-|-----------|-----------|--------|------------|---------|
-| **DAG Support** | Native | Sequential/Hierarchical only | Pipeline mode | Native DAG |
-| **Conditional Edges** | `add_conditional_edges` | None | Pipeline condition nodes | None (TODO) |
-| **Cycles/Loops** | Native | Not supported | Not supported | Forbidden (DAG cycle detection) |
-| **Parallel Execution** | Same super-step nodes | `async_execution=True` | Pipeline parallel | errgroup + semaphore |
-| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | Not supported (TODO) |
-| **Topological Sort** | Implicit (graph traversal) | Not needed | Implicit | Kahn's algorithm (explicit) |
-| **Hot Reload** | Not supported | Not supported | Not supported | fsnotify file watcher + polling |
-| **Cycle Detection** | Not needed (cycles allowed) | Not needed | Not needed | DFS + recursion stack |
-| **Live Graph Mutation** | Not supported | Not supported | Not supported | 5 ops (AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode) |
-| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore (crash-resilient) |
-| **Step Recovery** | Checkpoint replay | Not supported | Not supported | 3 strategies (retry/replace_node/fail_fast) |
+| Capability | LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|-----------|-----------|--------|------------|----------------|---------------|
+| **DAG Support** | Native | Sequential/Hierarchical only | Pipeline mode | Native DAG | GraphAgent (Pregel-style graph, 6 node types) |
+| **Conditional Edges** | `add_conditional_edges` | None | Pipeline condition nodes | None (TODO) | `ConditionalFunc` / `MultiConditionalFunc` routing |
+| **Cycles/Loops** | Native | Not supported | Not supported | Forbidden (DAG cycle detection) | ChainAgent (sequential), CycleAgent (loop with EscalationFunc), ParallelAgent (concurrent) |
+| **Parallel Execution** | Same super-step nodes | `async_execution=True` | Pipeline parallel | errgroup + semaphore | Concurrent with sync.WaitGroup + mutex |
+| **Subgraph Nesting** | Supported (node=subgraph) | Flow wraps Crews | Not supported | Not supported (TODO) | Supported (agent-as-node in StateGraph) |
+| **Topological Sort** | Implicit (graph traversal) | Not needed | Implicit | Kahn's algorithm (explicit) | Implicit (graph traversal via Pregel channels) |
+| **Hot Reload** | Not supported | Not supported | Not supported | fsnotify file watcher + polling | Not documented |
+| **Cycle Detection** | Not needed (cycles allowed) | Not needed | Not needed | DFS + recursion stack | Not needed (GraphAgent supports cycles) |
+| **Live Graph Mutation** | Not supported | Not supported | Not supported | 5 ops | Not supported |
+| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore | Supported (session-based interrupts) |
+| **Step Recovery** | Checkpoint replay | Not supported | Not supported | 3 strategies | Not documented |
+| **Self Evolution** | Not native | Not supported | Not supported | GA-based strategy evolution | Hermes-style SKILL.md evolution pipeline with 5 quality gates |
+| **MCP Support** | Via LangChain MCP | Not native | Not native | Native WithMCP | Native mcptool integration |
+| **Protocol Support** | LangServe | None | gRPC | AHP | tRPC, A2A, AG-UI, MCP, OpenAI-compatible, Evaluation, PromptIter |
 
 ### 4.2 GoAgent DAG Features
 
@@ -303,13 +356,13 @@ type InterruptPoint struct {
 
 ### 5.1 Collaboration Patterns
 
-| Pattern | LangGraph | CrewAI | AgentScope | GoAgent |
-|---------|-----------|--------|------------|---------|
-| **Supervisor/Orchestrator** | Subgraph composition | Hierarchical Process | Service Hub | Leader Agent |
-| **Peer-to-peer** | Shared state nodes | Task output chaining | Message routing | AHP point-to-point |
-| **Task Distribution** | Graph node scheduling | Manager Agent dynamic assignment | Pipeline dispatch | Dispatcher + errgroup |
-| **Result Aggregation** | State merge | Task output chaining | Message aggregation | Aggregator (dedup + sort) |
-| **Determinism** | High (graph-defined) | Low (LLM-driven) | Medium (Pipeline-defined) | High (keyword-triggered dispatch) |
+| Pattern | LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|---------|-----------|--------|------------|----------------|---------------|
+| **Supervisor/Orchestrator** | Subgraph composition | Hierarchical Process | Service Hub | Leader Agent | Runner + chain/parallel/cycle agent composition |
+| **Peer-to-peer** | Shared state nodes | Task output chaining | Message routing | AHP point-to-point | Sub-agent composition, A2A remote agent protocol |
+| **Task Distribution** | Graph node scheduling | Manager Agent dynamic assignment | Pipeline dispatch | Dispatcher + errgroup | Chain/parallel/cycle execution patterns |
+| **Result Aggregation** | State merge | Task output chaining | Message aggregation | Aggregator (dedup + sort) | Runner result collection via event channels |
+| **Determinism** | High (graph-defined) | Low (LLM-driven) | Medium (Pipeline-defined) | High (keyword-triggered dispatch) | High (type-safe graph, deterministic routing) |
 
 ### 5.2 Collaboration Determinism
 
@@ -348,15 +401,15 @@ GoAgent's AHP protocol is the **only protocol-level communication guarantee** am
 
 ### 6.1 Memory Capabilities
 
-| Dimension | LangChain/LangGraph | CrewAI | AgentScope | GoAgent |
-|-----------|-------------------|--------|------------|---------|
-| **Short-term** | Checkpointed state | Current run context | Session message history | Session Memory (in-memory) |
-| **Long-term** | Store (PostgresStore, etc.) | LanceDB vector store | Built-in storage | PostgreSQL + pgvector |
-| **Entity Memory** | Not supported | Knowledge Graph | Not supported | MemoryProfile type |
-| **Deduplication** | Not supported | cosine > 0.85 + LLM decision | Not supported | cosine > 0.85 conflict detection |
-| **Importance Scoring** | Not supported | `0.5*sim + 0.3*recency + 0.2*llm` | Not supported | Keyword + type + length rules |
-| **Distillation** | Not supported | Not supported | Not supported | 6-step automated pipeline |
-| **Multi-tenancy** | namespace tuple | Not supported | Not supported | PostgreSQL `SET LOCAL` |
+| Dimension | LangChain/LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|-----------|-------------------|--------|------------|----------------|---------------|
+| **Short-term** | Checkpointed state | Current run context | Session message history | Session Memory (in-memory) | Session state (10+ backends) |
+| **Long-term** | Store (PostgresStore, etc.) | LanceDB vector store | Built-in storage | PostgreSQL + pgvector | Memory service with 12 backends |
+| **Entity Memory** | Not supported | Knowledge Graph | Not supported | MemoryProfile type | Artifact system, knowledge base |
+| **Deduplication** | Not supported | cosine > 0.85 + LLM decision | Not supported | cosine > 0.85 conflict detection | Not documented |
+| **Importance Scoring** | Not supported | `0.5*sim + 0.3*recency + 0.2*llm` | Not supported | Keyword + type + length rules | Not documented |
+| **Distillation** | Not supported | Not supported | Not supported | 6-step automated pipeline | Not documented |
+| **Multi-tenancy** | namespace tuple | Not supported | Not supported | PostgreSQL `SET LOCAL` | Session isolation, per-user/per-app segmentation |
 
 ### 6.2 GoAgent Memory Distillation Pipeline
 
@@ -490,16 +543,16 @@ flowchart LR
 
 ### 7.1 Error Handling Mechanisms
 
-| Mechanism | LangGraph | CrewAI | AgentScope | GoAgent |
-|-----------|-----------|--------|------------|---------|
-| **Retry** | None built-in | `max_retry_limit=2` | Basic retry | 3x exponential backoff |
-| **Timeout** | None built-in | `max_execution_time` | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) |
-| **Output Validation** | None built-in | `output_pydantic` + Guardrails | None built-in | Schema Validator |
-| **Fallback** | Fallbacks param | None built-in | None built-in | FailoverClient (multi-provider + rate-limit cooldown) |
-| **Circuit Breaker** | Not supported | Not supported | Not supported | 3-state FSM (Closed/Open/HalfOpen) |
-| **Dead Letter Queue** | Not supported | Not supported | Not supported | DLQ + DLQProcessor |
-| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore (crash-resilient) |
-| **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes |
+| Mechanism | LangGraph | CrewAI | AgentScope | GoAgent | tRPC-Agent-Go |
+|-----------|-----------|--------|------------|---------|---------------|
+| **Retry** | None built-in | `max_retry_limit=2` | Basic retry | 3x exponential backoff | Supported via evolution pipeline |
+| **Timeout** | None built-in | `max_execution_time` | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) | Not documented |
+| **Output Validation** | None built-in | `output_pydantic` + Guardrails | None built-in | Schema Validator | Schema-based output validation |
+| **Fallback** | Fallbacks param | None built-in | None built-in | FailoverClient (multi-provider + rate-limit cooldown) | Not documented |
+| **Circuit Breaker** | Not supported | Not supported | Not supported | 3-state FSM (Closed/Open/HalfOpen) | Not documented |
+| **Dead Letter Queue** | Not supported | Not supported | Not supported | DLQ + DLQProcessor | Supported (via Runner event routing) |
+| **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore (crash-resilient) | Supported |
+| **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes | Not documented |
 
 ### 7.2 GoAgent Circuit Breaker
 
@@ -594,22 +647,22 @@ scenario:
 
 ### 8.1 Production-Grade Features
 
-| Feature | LangChain/LangGraph | CrewAI | AgentScope | GoAgent |
-|---------|--------------------|--------|------------|---------|
-| **Language** | Python | Python | Python | Go |
-| **Concurrency** | asyncio | asyncio | asyncio + multi-process | goroutine + channel |
-| **Connection Pool** | Via psycopg, etc. | Not supported | Built-in | Custom Pool (MaxOpen=25) |
-| **Circuit Breaker** | Not supported | Not supported | Not supported | 3-state FSM |
-| **Rate Limiting** | None built-in | Not supported | None built-in | TokenBucket/SlidingWindow/Semaphore |
-| **Multi-tenancy** | namespace | Not supported | Not supported | PostgreSQL RLS + SET LOCAL |
-| **PII Redaction** | None built-in | None built-in | None built-in | Regex masking (API key/email/phone/SSN) |
-| **SQL Injection Prevention** | N/A | N/A | N/A | Table name regex + keyword detection |
-| **Observability** | LangSmith (paid) | Basic logging | Basic logging | Tracer + Metrics (Prometheus) |
-| **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes, ResilienceScore |
-| **Autonomous Evolution (GA)** | Not supported | Not supported | Not supported | TournamentSelection, UniformCrossover, 5 mutations, TieredScorer, DreamCycle |
-| **Deployment** | LangGraph Platform | Local/container | Kubernetes-first | Docker containerized |
-| **Startup Overhead** | High (LangChain ecosystem load) | Medium | Medium | Low (native Go binary) |
-| **Error Wrapping** | None specific | None specific | None specific | Error wrapping (69ns/op, 0 alloc) |
+| Feature | LangChain/LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|---------|--------------------|--------|------------|----------------|---------------|
+| **Language** | Python | Python | Python | Go | Go |
+| **Concurrency** | asyncio | asyncio | asyncio + multi-process | goroutine + channel | goroutine + channel + goroutine pool (ants/v2) |
+| **Connection Pool** | Via psycopg, etc. | Not supported | Built-in | Custom Pool (MaxOpen=25) | tRPC connection pool |
+| **Circuit Breaker** | Not supported | Not supported | Not supported | 3-state FSM | Not documented |
+| **Rate Limiting** | None built-in | Not supported | None built-in | TokenBucket/SlidingWindow/Semaphore | Not documented |
+| **Multi-tenancy** | namespace | Not supported | Not supported | PostgreSQL RLS + SET LOCAL | Session isolation, per-user segmentation |
+| **PII Redaction** | None built-in | None built-in | None built-in | Regex masking | Not documented |
+| **SQL Injection Prevention** | N/A | N/A | N/A | Table name regex + keyword detection | N/A |
+| **Observability** | LangSmith (paid) | Basic logging | Basic logging | Tracer + Metrics (Prometheus) | OpenTelemetry (trace+metric) + Langfuse tracing, 7 sub-packages |
+| **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes, ResilienceScore | Not documented |
+| **Autonomous Evolution (GA)** | Not supported | Not supported | Not supported | TournamentSelection, UniformCrossover, 5 mutations, TieredScorer, DreamCycle | Hermes-style SKILL.md evolution pipeline with 5 quality gates |
+| **Deployment** | LangGraph Platform | Local/container | Kubernetes-first | Docker containerized | tRPC service deployment, 6 protocol servers |
+| **Startup Overhead** | High (LangChain ecosystem load) | Medium | Medium | Low (native Go binary) | Low (native Go binary) |
+| **Error Wrapping** | None specific | None specific | None specific | Error wrapping (69ns/op, 0 alloc) | tRPC error handling conventions |
 
 ### 8.2 GoAgent Protection Stack
 
@@ -660,18 +713,18 @@ flowchart TB
 
 ## 9. Community & Ecosystem Maturity
 
-| Metric | LangChain | CrewAI | AgentScope | GoAgent |
-|--------|----------|--------|------------|---------|
-| **GitHub Stars** | ~100,000+ | ~40,000 | ~4,000 | Private/early |
-| **Main Contributors** | 1,200+ | 300+ | ~50 | 2 |
-| **License** | MIT | MIT | Apache 2.0 | Apache 2.0 |
-| **First Release** | Oct 2022 | 2023 | 2024 | 2025 |
-| **Current Version** | v0.3.x (Python) | v0.8x+ | v0.x | v0.2.3 |
-| **Integration Ecosystem** | 1,000+ official + community | 50+ built-in tools | Limited | Extensible plugin |
-| **Monthly Downloads** | >15M | >5M | Unknown | Unknown |
-| **Funding** | Benchmark A $25-35M | Independent development | Alibaba Group | Open source project |
-| **Enterprise Adoption** | JPMorgan, IBM, Salesforce, Airbnb | SMBs primarily | Alibaba internal + partners | Growing |
-| **Documentation** | Broad but inconsistent (old/new API) | Clear, beginner-friendly | Chinese primarily | Improving |
+| Metric | LangChain | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+|--------|----------|--------|------------|----------------|---------------|
+| **GitHub Stars** | ~100,000+ | ~40,000 | ~4,000 | Private/early | ~1,500 |
+| **Main Contributors** | 1,200+ | 300+ | ~50 | 2 | ~20 |
+| **License** | MIT | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
+| **First Release** | Oct 2022 | 2023 | 2024 | 2025 | 2025 |
+| **Current Version** | v0.3.x (Python) | v0.8x+ | v0.x | v0.2.6 | v0.x |
+| **Integration Ecosystem** | 1,000+ official + community | 50+ built-in tools | Limited | Extensible plugin | MCP tools, function tools, 20+ built-in tools |
+| **Monthly Downloads** | >15M | >5M | Unknown | Unknown | Unknown |
+| **Funding** | Benchmark A $25-35M | Independent development | Alibaba Group | Open source project | tRPC Group (Tencent) |
+| **Enterprise Adoption** | JPMorgan, IBM, Salesforce, Airbnb | SMBs primarily | Alibaba internal + partners | Growing | tRPC ecosystem users |
+| **Documentation** | Broad but inconsistent (old/new API) | Clear, beginner-friendly | Chinese primarily | Improving (EN + CN) | EN + CN |
 
 ---
 
@@ -744,6 +797,28 @@ flowchart TB
 - **Small community**: Few learning resources, third-party integrations, or plugin ecosystem
 - **GA/Evolution still early**: GA pipeline exists but needs more real-world validation and optimization
 
+### 10.5 tRPC-Agent-Go
+
+tRPC-Agent-Go is positioned as a **Go-native production-grade agent framework integrated with the tRPC ecosystem**.
+
+**Strengths**:
+- **Go-native**: Full goroutine concurrency model, static compilation, no GIL
+- **tRPC ecosystem integration**: Native tRPC protocol support, seamless integration with tRPC-Go microservices
+- **Rich agent types**: 6 built-in types (GraphAgent, LLMAgent, ChainAgent, ParallelAgent, CycleAgent, A2AAgent) covering all major multi-agent patterns
+- **Pregel-style graph engine**: 6 node types, SHA-256 barrier synchronization, conditional routing, full state graph with 30+ options
+- **Production observability**: OpenTelemetry + Langfuse tracing, Prometheus metrics, all 7 telemetry sub-packages
+- **Complete tool system**: 3-tier interfaces (Tool/CallableTool/StreamableTool), 20+ built-in tools, MCP-native
+- **12 memory backends**: inmemory, mysql/mysqlvec, pgvector/postgres, redis, sqlite/sqlitevec, tencentdb, mem0, extractor, tool
+- **6 protocol servers**: A2A, AG-UI, OpenAI-compatible, Evaluation, PromptIter, tRPC — full protocol coverage
+- **Complete infrastructure**: Evaluation framework (10 sub-packages), Session management (10+ backends), Skill/Evolution system
+
+**Weaknesses**:
+- **Early stage**: First released 2025, smaller community and ecosystem compared to established frameworks
+- **Limited LLM providers**: Primarily OpenAI/Ollama, fewer integrations than LangChain's 50+
+- **No document loaders**: No built-in document processing (code/task focused)
+- **Some reliability features undocumented**: Circuit breaker, rate limiting, retry/timeout details not fully documented
+- **Dependency on tRPC ecosystem**: Best value realized within tRPC-Go service infrastructure
+
 ---
 
 ## 11. Selection Guide
@@ -776,10 +851,14 @@ flowchart TD
     Start --> Q8{Maximum ecosystem / and flexibility?}
     Q8 -->|Yes| LangChain[LangChain/LangGraph]
 
+    Start --> Q9{tRPC ecosystem / full protocol support?}
+    Q9 -->|Yes| TRPC[tRPC-Agent-Go]
+
     style GoAgent1 fill:#e1f5fe
     style GoAgent2 fill:#e1f5fe
     style GoAgent3 fill:#e1f5fe
     style GoAgent4 fill:#e1f5fe
+    style TRPC fill:#e8f5e9
 ```
 
 ### One-Line Positioning
@@ -790,6 +869,7 @@ flowchart TD
 | **CrewAI** | Team collaboration simulator | Rapid prototyping, role-play scenarios | Production, high determinism |
 | **AgentScope** | Distributed agent framework | Alibaba ecosystem, multi-node deployment | Non-Alibaba environments, international teams |
 | **GoAgent** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication, Chaos Engineering, Autonomous Evolution, Mutable DAG | Scenarios needing cycles/state rollback |
+| **tRPC-Agent-Go** | tRPC-native Go agent framework with full protocol support | tRPC ecosystem teams, Go-native graph workflows, A2A/MCP protocol bridging | Non-tRPC environments, document-heavy scenarios |
 
 ---
 
