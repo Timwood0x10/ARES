@@ -259,6 +259,18 @@ func findAresRoot() string {
 func runRun(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
+	// Auto-detect config if -c not provided.
+	if configPath == "" || configPath == "ares.yaml" {
+		if _, err := os.Stat("ares.yaml"); err == nil {
+			configPath = "ares.yaml"
+		} else if _, err := os.Stat("config/ares.yaml"); err == nil {
+			configPath = "config/ares.yaml"
+		}
+	}
+	if configPath == "" {
+		return fmt.Errorf("no ares.yaml found; use -c to specify, or create one with 'ares init'")
+	}
+
 	// Load and parse config.
 	cfg, err := sdk.LoadConfigFile(configPath)
 	if err != nil {
@@ -330,9 +342,32 @@ func parseRunArgs() []string {
 
 // ── bench ──────────────────────────────────────────────────────
 
-func runBench(_ *cobra.Command, _ []string) error {
-	fmt.Println("📊 ARES Quick Benchmark")
-	fmt.Println()
+type benchResult struct {
+	Task       string        `json:"task"`
+	Success    bool          `json:"success"`
+	Output     string        `json:"output"`
+	ToolCalls  int           `json:"tool_calls"`
+	Tokens     int           `json:"tokens"`
+	Latency    time.Duration `json:"latency_ms"`
+	MemoryHit  bool          `json:"memory_hit"`
+}
+
+type benchReport struct {
+	Date       string         `json:"date"`
+	Model      string         `json:"model"`
+	Provider   string         `json:"provider"`
+	Results    []benchResult  `json:"results"`
+	AvgLatency time.Duration  `json:"avg_latency_ms"`
+	TotalTokens int           `json:"total_tokens"`
+	TotalTools  int           `json:"total_tool_calls"`
+	PassRate   float64        `json:"pass_rate"`
+}
+
+func runBench(cmd *cobra.Command, _ []string) error {
+	format, _ := cmd.Flags().GetString("format")
+	if format == "" {
+		format = "markdown"
+	}
 
 	ctx := context.Background()
 
@@ -340,38 +375,83 @@ func runBench(_ *cobra.Command, _ []string) error {
 	defer rt.Close()
 
 	agent := rt.NewAgent("bench-agent",
-		sdk.WithInstruction("Respond concisely."),
+		sdk.WithInstruction("Respond concisely in under 20 words."),
 	)
 
 	tasks := []string{
-		"Say hello",
+		"Say hello in English",
 		"What is 2+2?",
-		"Name three colors",
+		"Name three primary colors",
+		"Convert 100 Celsius to Fahrenheit",
+		"List the planets in order from the sun",
 	}
 
+	var results []benchResult
 	var totalDuration time.Duration
-	var totalTokens int
+	var totalTokens, totalTools int
+	passed := 0
 
 	for i, task := range tasks {
 		start := time.Now()
 		result, err := agent.Run(ctx, task)
 		d := time.Since(start)
-		if err != nil {
-			fmt.Printf("  %d. %-30s ❌ %v\n", i+1, task, err)
-			continue
+
+		br := benchResult{
+			Task:      task,
+			Success:   err == nil,
+			Latency:   d,
 		}
-		totalDuration += d
-		totalTokens += result.TokenUsage.Total
-		fmt.Printf("  %d. %-30s ✅ %s (%d tokens, %v)\n",
-			i+1, task, truncateStr(result.Output, 40), result.TokenUsage.Total, d.Round(time.Millisecond))
+		if err == nil {
+			br.Output = truncateStr(result.Output, 60)
+			br.ToolCalls = result.ToolCalls
+			br.Tokens = result.TokenUsage.Total
+			br.MemoryHit = result.MemoryUsed
+			totalDuration += d
+			totalTokens += result.TokenUsage.Total
+			totalTools += result.ToolCalls
+			passed++
+		} else {
+			br.Output = err.Error()
+		}
+		results = append(results, br)
+
+		if format == "markdown" {
+			status := "✅"
+			if !br.Success {
+				status = "❌"
+			}
+			fmt.Printf("| %d | %-40s | %s %s | %d tok | %v |\n",
+				i+1, br.Task, status, truncateStr(br.Output, 30), br.Tokens, br.Latency.Round(time.Millisecond))
+		}
 	}
 
-	fmt.Println()
-	if len(tasks) > 0 {
-		avg := totalDuration / time.Duration(len(tasks))
-		fmt.Printf("  Average: %v | Total tokens: %d\n", avg.Round(time.Millisecond), totalTokens)
+	report := benchReport{
+		Date:        time.Now().Format(time.RFC3339),
+		Model:       rt.GetModel(),
+		Provider:    rt.GetProvider(),
+		Results:     results,
+		AvgLatency:  totalDuration / time.Duration(len(tasks)),
+		TotalTokens: totalTokens,
+		TotalTools:  totalTools,
+		PassRate:    float64(passed) / float64(len(tasks)) * 100,
 	}
-	fmt.Println("✅ Benchmark complete")
+
+	switch format {
+	case "json":
+		data, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(data))
+	default:
+		fmt.Println()
+		fmt.Printf("**Summary** | **Value**\n")
+		fmt.Printf("---|---\n")
+		fmt.Printf("Model | %s\n", report.Model)
+		fmt.Printf("Provider | %s\n", report.Provider)
+		fmt.Printf("Tasks | %d/%d passed\n", passed, len(tasks))
+		fmt.Printf("Pass Rate | %.0f%%\n", report.PassRate)
+		fmt.Printf("Avg Latency | %v\n", report.AvgLatency.Round(time.Millisecond))
+		fmt.Printf("Total Tokens | %d\n", report.TotalTokens)
+		fmt.Printf("Total Tool Calls | %d\n", report.TotalTools)
+	}
 	return nil
 }
 

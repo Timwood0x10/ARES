@@ -77,7 +77,65 @@ type Agent struct {
 // error to abort entirely.
 type HumanInputFunc func(ctx context.Context, toolName string, args map[string]any) (approved bool, err error)
 
-// Result captures the outcome of a single Run call.
+// StreamChunk represents a partial streaming result from an agent Run.
+type StreamChunk struct {
+	// Content is the partial text content.
+	Content string
+	// Done is true when the stream is complete.
+	Done bool
+	// Err is set when the stream encounters an error.
+	Err error
+	// Result is set when Done is true and no error occurred.
+	Result *Result
+}
+
+// Stream runs the agent against the given input and streams results via a
+// channel. The caller must read from the channel until Done is true or Err
+// is non-nil.
+//
+// Usage:
+//
+//	ch, err := agent.Stream(ctx, "hello")
+//	if err != nil { return err }
+//	for chunk := range ch {
+//	    if chunk.Err != nil { return chunk.Err }
+//	    fmt.Print(chunk.Content)
+//	}
+func (a *Agent) Stream(ctx context.Context, input string) (<-chan StreamChunk, error) {
+	ch := make(chan StreamChunk, 32)
+
+	go func() {
+		defer close(ch)
+
+		// Run the full agent logic.
+		result, err := a.Run(ctx, input)
+		if err != nil {
+			ch <- StreamChunk{Err: err, Done: true}
+			return
+		}
+
+		// Simulate streaming by sending the output in chunks.
+		runes := []rune(result.Output)
+		chunkSize := 10
+		for i := 0; i < len(runes); i += chunkSize {
+			end := i + chunkSize
+			if end > len(runes) {
+				end = len(runes)
+			}
+			select {
+			case ch <- StreamChunk{Content: string(runes[i:end])}:
+			case <-ctx.Done():
+				ch <- StreamChunk{Err: ctx.Err(), Done: true}
+				return
+			}
+		}
+
+		ch <- StreamChunk{Done: true, Result: result}
+	}()
+
+	return ch, nil
+}
+
 type Result struct {
 	Output     string        `json:"output"`
 	ToolCalls  int           `json:"tool_calls"`

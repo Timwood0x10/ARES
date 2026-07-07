@@ -27,7 +27,7 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "ARES",
+	Use:   "ares",
 	Short: "ARES — Agent Runtime & Evolution System",
 	Long: `ARES is the unified CLI for the Agent Runtime & Evolution System.
 

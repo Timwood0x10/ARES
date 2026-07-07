@@ -34,7 +34,7 @@ func defaultConfig() *config {
 	return &config{
 		llmCfg: &core.LLMConfig{
 			Provider:    core.LLMProviderOllama,
-			Model:       "llama3.2",
+			Model:       defaultModel,
 			Temperature: 0.7,
 			MaxTokens:   2048,
 			Timeout:     60,

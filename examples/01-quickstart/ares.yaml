@@ -1,0 +1,16 @@
+# 01-quickstart configuration
+llm:
+  provider: ollama       # openai | anthropic | openrouter
+  model: llama3.2
+
+memory:
+  enabled: false
+
+tools:
+  builtin: true
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false

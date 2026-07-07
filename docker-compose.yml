@@ -1,118 +1,33 @@
-# GoAgent Demo Stack — Start with:
-#   docker compose up -d
-#
-# Then run integration tests:
-#   export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/goagent_test?sslmode=disable"
-#   go test -v ./internal/integration/...
-#
-# Tear down:
-#   docker compose down -v
-#
-# For interview demo startup:
-#   ./scripts/start_interview_demo.sh
+version: "3.8"
 
 services:
-  # ──────────────────────────────────────────────
-  # SearXNG — self-hosted meta search engine
-  # Used by the web_search tool for autonomous search
-  # API: GET /search?q=<query>&format=json
-  # ──────────────────────────────────────────────
-  searxng:
-    image: searxng/searxng:latest
-    container_name: goagent-searxng
-    restart: unless-stopped
-    ports:
-      - "5605:8080"
-    volumes:
-      - searxng-data:/etc/searxng:rw
-      - ./scripts/docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      - SEARXNG_BASE_URL=http://localhost:5605
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-      - DAC_OVERRIDE
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/search?q=healthcheck&format=json"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-  # ──────────────────────────────────────────────
-  # PostgreSQL + pgvector — required for all tests
-  # ──────────────────────────────────────────────
-  postgres:
-    image: pgvector/pgvector:pg15
-    container_name: goagent-pg
-    restart: unless-stopped
-    ports:
-      - "5433:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: goagent_test
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/docker/init:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # ──────────────────────────────────────────────
-  # Embedding service (optional)
-  # Build requires model files; see services/embedding/README.md
-  # Uncomment to enable:
-  # ──────────────────────────────────────────────
-  # embedding:
-  #   build:
-  #     context: ./services/embedding
-  #     dockerfile: Dockerfile
-  #   container_name: goagent-embedding
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8000:8000"
-  #   environment:
-  #     - MODEL_NAME=qwen3-embedding:0.6b
-  #     - HOST=0.0.0.0
-  #     - PORT=8000
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     start_period: 60s
-  #     retries: 3
-
-  # ──────────────────────────────────────────────
-  # Ollama — local LLM for offline/fallback inference
-  # Used as default fallback when remote LLMs are unreachable.
-  # LLM endpoint: http://localhost:11434
-  # Pull a model after startup: docker exec goagent-ollama ollama pull llama3.2
-  # ──────────────────────────────────────────────
+  # ── Ollama (local LLM) ─────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
-    container_name: goagent-ollama
-    restart: unless-stopped
     ports:
       - "11434:11434"
     volumes:
-      - ollama-data:/root/.ollama
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "ollama", "list"]
+      test: ["CMD", "ollama", "--version"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 3
+
+  # ── ARES full-app demo ─────────────────────────────────────
+  ares-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    ports:
+      - "8080:8080"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
-  pgdata:
-    driver: local
-  searxng-data:
-    driver: local
-  ollama-data:
-    driver: local
+  ollama_data:

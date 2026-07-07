@@ -1,0 +1,16 @@
+# 04-multi-agent configuration
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: false
+
+tools:
+  builtin: true
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false

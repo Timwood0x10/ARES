@@ -1,6 +1,6 @@
-# Makefile for GO Agent Framework
+# Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install ci benchmark examples
+.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci benchmark quickstart examples
 
 # Default target
 all: lint test
@@ -158,10 +158,14 @@ check-quick: lint test
 
 # Build targets
 build:
-	go build -o bin/server ./cmd/server
+	go build -o bin/ares ./cmd/ares
 
 build-all:
 	go build -o bin/ ./cmd/...
+
+# Install CLI
+install-cli:  ## Install ares CLI to $GOPATH/bin
+	go install ./cmd/ares/...
 
 # Clean targets
 clean:
@@ -284,7 +288,7 @@ demo-smoke:
 # ──────────────────────────────────────────────
 quickstart:  ## 5 分钟快速开始
 	@echo "🚀 Running quickstart example..."
-	@go run examples/quickstart/main.go
+	@go run examples/01-quickstart/main.go
 
 # ──────────────────────────────────────────────
 # Examples — build all examples

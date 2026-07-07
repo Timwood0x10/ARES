@@ -7,6 +7,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Provider constants used in config file parsing.
+const (
+	providerOllama     = "ollama"
+	providerOpenAI     = "openai"
+	providerAnthropic  = "anthropic"
+	providerOpenRouter = "openrouter"
+	defaultModel       = "llama3.2"
+)
+
 // ConfigFile mirrors ares.yaml structure for config-driven Runtime creation.
 // Use LoadConfigFile to read from disk, then pass to New.
 type ConfigFile struct {
@@ -57,13 +66,13 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 
 	// LLM provider.
 	switch c.LLM.Provider {
-	case "", "ollama":
+	case "", providerOllama:
 		model := c.LLM.Model
 		if model == "" {
-			model = "llama3.2"
+			model = defaultModel
 		}
 		opts = append(opts, WithOllama(model))
-	case "openai":
+	case providerOpenAI:
 		model := c.LLM.Model
 		if model == "" {
 			model = "gpt-4o-mini"
@@ -72,7 +81,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		if c.LLM.APIKey != "" {
 			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
-	case "anthropic":
+	case providerAnthropic:
 		model := c.LLM.Model
 		if model == "" {
 			model = "claude-3-haiku"
@@ -81,7 +90,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		if c.LLM.APIKey != "" {
 			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
-	case "openrouter":
+	case providerOpenRouter:
 		model := c.LLM.Model
 		if model == "" {
 			model = "openai/gpt-4o-mini"

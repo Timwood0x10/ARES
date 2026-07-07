@@ -1,74 +1,49 @@
 # Examples
 
-ARES SDK 示例集合。按复杂度从低到高排列。
+ARES SDK examples, ordered by complexity (01 → 09).
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 需要 Ollama (默认) 或设置 OPENAI_API_KEY
 make quickstart
-```
-
-或直接运行：
-
-```bash
-go run examples/quickstart/main.go
+# or directly:
+go run examples/01-quickstart/main.go
 ```
 
 ---
 
-## 示例列表
+## Official SDK Examples
 
-### 🟢 入门级（P0）
-
-| 示例 | 文件 | 核心看点 | 行数 |
+| # | Example | Core Concept | Lines |
 |---|---|---|---|
-| **[quickstart](quickstart/main.go)** | 20 行 | 最简 Agent：创建 Runtime → Agent → Run | ≤20 |
-| **[tool-calling](tool-calling/main.go)** | 60 行 | 多工具注册、ReAct 循环执行 | ≤60 |
+| 01 | **[01-quickstart](01-quickstart/main.go)** | Minimal agent: Runtime → Agent → Run | ≤20 |
+| 02 | **[02-tool-calling](02-tool-calling/main.go)** | Multi-tool registration, ReAct loop | ≤60 |
+| 03 | **[03-dag-workflow](03-dag-workflow/main.go)** | `NewGraph` + `FuncNode` + conditional `Edge` | ≤130 |
+| 04 | **[04-multi-agent](04-multi-agent/main.go)** | `NewTeam` leader/member orchestration | ≤60 |
+| 05 | **[05-evolution-demo](05-evolution-demo/main.go)** | `Evolve()` instruction evolution before/after | ≤96 |
+| 06 | **[06-chaos-resilience](06-chaos-resilience/main.go)** | Real filesystem fault tolerance + self-healing | ≤114 |
+| 07 | **[07-human-in-loop](07-human-in-loop/main.go)** | `WithHumanInput` human approval for tool calls | ≤150 |
+| 08 | **[08-mcp-integration](08-mcp-integration/main.go)** | `WithMCP` connect to MCP server | ≤73 |
+| 09 | **[09-full-app](09-full-app/main.go)** | Web UI + Agent + Tools + Memory + Stats | ≤240 |
 
-### 🟡 进阶级（P1）
+## Other Examples
 
-| 示例 | 文件 | 核心看点 | 行数 |
-|---|---|---|---|
-| **[dag-workflow](dag-workflow/main.go)** | 130 行 | `NewGraph` + `FuncNode` + `Edge` 条件分支 | ≤130 |
-| **[multi-agent](multi-agent/main.go)** | 60 行 | `NewTeam` 领导/成员编排 | ≤60 |
-| **[evolution-demo](evolution-demo/main.go)** | 96 行 | `Evolve()` 指令进化前后对比 | ≤96 |
-| **[chaos-resilience](chaos-resilience/main.go)** | 114 行 | 真实文件系统容错 + 自愈 | ≤114 |
-| **[human-in-loop](human-in-loop/main.go)** | 150 行 | `WithHumanInput` 人工审批工具调用 | ≤150 |
-| **[mcp-integration](mcp-integration/main.go)** | 73 行 | `WithMCP` 连接 MCP 服务器 | ≤73 |
-
-### 🔵 综合应用（P2）
-
-| 示例 | 文件 | 核心看点 | 行数 |
-|---|---|---|---|
-| **[full-app](full-app/main.go)** | 240 行 | Web UI + Agent + Tools + Memory + Stats | ≤240 |
-
-### 📦 其他示例（原有）
-
-| 示例 | 说明 |
+| Example | Description |
 |---|---|
-| [autonomous-evolution](autonomous-evolution/) | 自进化 Dream Cycle 完整演示 |
-| [quant-trading](quant-trading/) | 量化交易多 Agent 系统 |
-| [graph_demo](graph_demo/) | MutableDAG 图编排各种场景 |
-| [knowledge-base](knowledge-base/) | 知识库 + 蒸馏 |
-| [mcp-server](mcp-server/) | MCP 服务器端实现 |
-| [mcp-dashboard](mcp-dashboard/) | MCP + Dashboard 监控 |
-| [travel](travel/) | 旅行规划 DAG 工作流 |
-| [end-to-end](end-to-end/) | 端到端工作流 |
-| [tool-intelligence](tool-intelligence/) | 工具智能编排 |
+| [autonomous-evolution](autonomous-evolution/) | Self-evolving Dream Cycle demo |
+| [quant-trading](quant-trading/) | Quantitative trading multi-agent system |
+| [graph_demo](graph_demo/) | MutableDAG graph orchestration scenarios |
+| [knowledge-base](knowledge-base/) | Knowledge base + distillation |
+| [mcp-server](mcp-server/) | MCP server implementation |
+| [mcp-dashboard](mcp-dashboard/) | MCP + Dashboard monitoring |
+| [travel](travel/) | Travel planning DAG workflow |
+| [end-to-end](end-to-end/) | End-to-end workflow |
+| [tool-intelligence](tool-intelligence/) | Tool intelligence orchestration |
 
 ---
 
-## 一键运行所有示例
+## Build All
 
 ```bash
 make examples
-```
-
-或单独运行：
-
-```bash
-go run examples/quickstart/main.go
-go run examples/tool-calling/main.go
-go run examples/dag-workflow/main.go
 ```
