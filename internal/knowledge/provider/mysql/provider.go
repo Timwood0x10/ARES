@@ -37,11 +37,20 @@ func NewMySQLProvider(db *sql.DB, cfg provider.ProviderConfig, mapping provider.
 	if cfg.Table == "" {
 		return nil, fmt.Errorf("table name is required")
 	}
+	if err := validateIdentifier(cfg.Table); err != nil {
+		return nil, fmt.Errorf("invalid table name %q: %w", cfg.Table, err)
+	}
 	if mapping.IDColumn == "" {
 		return nil, fmt.Errorf("id_column mapping is required")
 	}
+	if err := validateIdentifier(mapping.IDColumn); err != nil {
+		return nil, fmt.Errorf("invalid id_column %q: %w", mapping.IDColumn, err)
+	}
 	if mapping.SummaryColumn == "" {
 		return nil, fmt.Errorf("summary_column mapping is required")
+	}
+	if err := validateIdentifier(mapping.SummaryColumn); err != nil {
+		return nil, fmt.Errorf("invalid summary_column %q: %w", mapping.SummaryColumn, err)
 	}
 
 	return &MySQLProvider{
@@ -87,12 +96,12 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 		query := p.buildQuery()
 		rows, err := p.db.QueryContext(ctx, query)
 		if err != nil {
-			errCh <- fmt.Errorf("mysql query %q: %w", query, err)
+			errCh <- fmt.Errorf("mysql provider %s query %q: %w", p.config.Name, query, err)
 			return
 		}
 		defer func() {
 			if err := rows.Close(); err != nil {
-				fmt.Printf("mysql rows close error: %v\n", err)
+				errCh <- fmt.Errorf("mysql provider %s rows close: %w", p.config.Name, err)
 			}
 		}()
 
@@ -103,7 +112,7 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 
 			obj, err := p.scanRow(rows)
 			if err != nil {
-				errCh <- fmt.Errorf("mysql scan row: %w", err)
+				errCh <- fmt.Errorf("mysql provider %s scan row: %w", p.config.Name, err)
 				continue
 			}
 			if obj != nil {
@@ -116,7 +125,7 @@ func (p *MySQLProvider) Stream(ctx context.Context, _ knowledge.Intent) (<-chan 
 		}
 
 		if err := rows.Err(); err != nil {
-			errCh <- fmt.Errorf("mysql rows iteration: %w", err)
+			errCh <- fmt.Errorf("mysql provider %s rows iteration: %w", p.config.Name, err)
 		}
 	}()
 
@@ -128,23 +137,26 @@ func (p *MySQLProvider) Close() error {
 	return p.db.Close()
 }
 
-// buildQuery constructs the SELECT query from the column mapping and config.
+// buildQuery constructs a parameterized SELECT query from the column mapping.
+// All identifiers are quoted to prevent SQL injection.
 func (p *MySQLProvider) buildQuery() string {
 	cols := []string{
-		p.mapping.IDColumn,
-		p.mapping.SummaryColumn,
+		quoteIdentifier(p.mapping.IDColumn),
+		quoteIdentifier(p.mapping.SummaryColumn),
 	}
 	if p.mapping.ContentColumn != "" {
-		cols = append(cols, p.mapping.ContentColumn)
+		cols = append(cols, quoteIdentifier(p.mapping.ContentColumn))
 	}
 	if p.mapping.TagColumn != "" {
-		cols = append(cols, p.mapping.TagColumn)
+		cols = append(cols, quoteIdentifier(p.mapping.TagColumn))
 	}
 	if p.mapping.TimeColumn != "" {
-		cols = append(cols, p.mapping.TimeColumn)
+		cols = append(cols, quoteIdentifier(p.mapping.TimeColumn))
 	}
 
-	return fmt.Sprintf("SELECT %s FROM %s", strings.Join(cols, ", "), p.config.Table)
+	return fmt.Sprintf("SELECT %s FROM %s LIMIT 10000",
+		strings.Join(cols, ", "),
+		quoteIdentifier(p.config.Table))
 }
 
 // scanRow scans a database row into a KnowledgeObject.
@@ -171,8 +183,14 @@ func (p *MySQLProvider) scanRow(scanner interface {
 		return nil, err
 	}
 
+	// Prefix ID with namespace to avoid collisions across tables.
+	objectID := id
+	if p.config.Namespace != "" {
+		objectID = p.config.Namespace + ":" + id
+	}
+
 	obj := &knowledge.KnowledgeObject{
-		ID:         id,
+		ID:         objectID,
 		Summary:    summary,
 		Namespace:  p.config.Namespace,
 		Confidence: 1.0,
@@ -195,4 +213,30 @@ func (p *MySQLProvider) scanRow(scanner interface {
 	}
 
 	return obj, nil
+}
+
+// validateIdentifier checks that a MySQL identifier is safe for use in queries.
+func validateIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("identifier too long: %d bytes (max 64)", len(name))
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c < 'a' || c > 'z') &&
+			(c < 'A' || c > 'Z') &&
+			(c < '0' || c > '9') &&
+			c != '_' {
+			return fmt.Errorf("identifier %q contains illegal character %q", name, c)
+		}
+	}
+	return nil
+}
+
+// quoteIdentifier wraps a MySQL identifier in backticks for safe SQL interpolation.
+func quoteIdentifier(name string) string {
+	escaped := strings.ReplaceAll(name, "`", "``")
+	return "`" + escaped + "`"
 }

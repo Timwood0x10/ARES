@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
@@ -24,6 +25,8 @@ type KnowledgeRuntime struct {
 }
 
 // New creates a KnowledgeRuntime with the given components.
+// If pipe is nil, a default KnowledgePipeline with DefaultNormalizer,
+// DefaultEntityMatcher, DefaultValidator, and DefaultSummarizer is created.
 func New(
 	p planner.KnowledgePlanner,
 	d planner.SourceDiscovery,
@@ -32,6 +35,14 @@ func New(
 	linkers []Linker,
 	reducers []Reducer,
 ) *KnowledgeRuntime {
+	if pipe == nil {
+		pipe = knowledge.NewKnowledgePipeline(
+			[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
+			[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
+			[]knowledge.Validator{&pipeline.DefaultValidator{}},
+			[]knowledge.Summarizer{&pipeline.DefaultSummarizer{MaxSummaryLen: 200}},
+		)
+	}
 	return &KnowledgeRuntime{
 		planner:   p,
 		discovery: d,
@@ -94,6 +105,15 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("reduce: %w", err)
 	}
 
+	// If lazy loading is requested, log guidance. Full lazy graph support
+	// requires API changes (returns LazyGraph instead of WorkingGraph).
+	// TODO: implement lazy graph execution path (expected 2026-08).
+	if cfg.LazyLoading {
+		log.Info("lazy loading requested but not yet implemented; returning full graph",
+			"nodes", len(graph.Nodes),
+			"budget", budget.ForGraph)
+	}
+
 	return graph, nil
 }
 
@@ -141,6 +161,9 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				Scope: knowledge.Scope{
 					MaxObjects: src.MaxResults,
 				},
+			}
+			if src.Query != nil && src.Query.Query != "" {
+				intent.Goal = src.Query.Query
 			}
 
 			objCh, streamErrCh := prov.Stream(ctx, intent)

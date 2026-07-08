@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
@@ -34,29 +35,70 @@ func (p *defaultPlanner) Plan(_ context.Context, goal string, budget knowledge.T
 // This is a simple keyword-based implementation; a production version could use
 // LLM-based intent analysis for more accurate requirement generation.
 func generateRequirements(goal string) []KnowledgeRequirement {
-	reqs := make([]KnowledgeRequirement, 0, 3)
+	goalLower := strings.ToLower(goal)
+	reqs := make([]KnowledgeRequirement, 0, 5)
 
-	// Default: always include decision and history.
+	// Always include decision relevance.
 	reqs = append(reqs, KnowledgeRequirement{
 		Need:        NeedDecision,
 		Description: fmt.Sprintf("Decisions related to: %s", goal),
 		Priority:    1,
 		MaxResults:  20,
 	})
+
+	// Match keywords to need types.
+	if containsAny(goalLower, []string{"architect", "design", "stack", "infrastructure", "deploy"}) {
+		reqs = append(reqs, KnowledgeRequirement{
+			Need:        NeedArchitecture,
+			Description: fmt.Sprintf("Architecture decisions for: %s", goal),
+			Priority:    2,
+			MaxResults:  15,
+		})
+	}
+	if containsAny(goalLower, []string{"code", "implement", "function", "api", "class", "method"}) {
+		reqs = append(reqs, KnowledgeRequirement{
+			Need:        NeedCode,
+			Description: fmt.Sprintf("Code implementation for: %s", goal),
+			Priority:    2,
+			MaxResults:  25,
+		})
+	}
+	if containsAny(goalLower, []string{"bug", "fix", "issue", "problem", "error"}) {
+		reqs = append(reqs, KnowledgeRequirement{
+			Need:        NeedIssue,
+			Description: fmt.Sprintf("Issues and fixes for: %s", goal),
+			Priority:    2,
+			MaxResults:  20,
+		})
+	}
+	if containsAny(goalLower, []string{"performance", "slow", "latency", "benchmark", "optimize"}) {
+		reqs = append(reqs, KnowledgeRequirement{
+			Need:        NeedPerformance,
+			Description: fmt.Sprintf("Performance data for: %s", goal),
+			Priority:    3,
+			MaxResults:  15,
+		})
+	}
+
+	// Always include history as fallback.
 	reqs = append(reqs, KnowledgeRequirement{
 		Need:        NeedHistory,
 		Description: fmt.Sprintf("History related to: %s", goal),
-		Priority:    3,
+		Priority:    4,
 		MaxResults:  30,
-	})
-	reqs = append(reqs, KnowledgeRequirement{
-		Need:        NeedArchitecture,
-		Description: fmt.Sprintf("Architecture decisions for: %s", goal),
-		Priority:    2,
-		MaxResults:  15,
 	})
 
 	return reqs
+}
+
+// containsAny reports whether s contains any of the substrings.
+func containsAny(s string, substrs []string) bool {
+	for _, sub := range substrs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultSourceDiscovery maps KnowledgeRequirements to providers by

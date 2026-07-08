@@ -37,9 +37,24 @@ func New(name string, searcher TaskSearcher) *MemoryProvider {
 // Name returns the provider identifier.
 func (p *MemoryProvider) Name() string { return p.name }
 
-// IntentMatch returns 0.8 (high relevance for any knowledge intent).
-func (p *MemoryProvider) IntentMatch(_ knowledge.Intent) float64 {
-	return 0.8
+// IntentMatch scores relevance based on intent type overlap.
+// Returns a moderated score [0.1, 0.8] — high for memory/decision types, low for
+// code/architecture types where memory is less useful.
+func (p *MemoryProvider) IntentMatch(intent knowledge.Intent) float64 {
+	if len(intent.Scope.Types) == 0 {
+		return 0.5
+	}
+	for _, t := range intent.Scope.Types {
+		switch t {
+		case knowledge.ObjectMemory, knowledge.ObjectDecision:
+			return 0.8
+		case knowledge.ObjectIssue, knowledge.ObjectCommit:
+			return 0.6
+		case knowledge.ObjectCode, knowledge.ObjectArchitecture:
+			return 0.3
+		}
+	}
+	return 0.4
 }
 
 // Stream searches similar tasks and emits them as KnowledgeObjects.

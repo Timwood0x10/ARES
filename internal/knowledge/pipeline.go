@@ -1,6 +1,9 @@
 package knowledge
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Normalizer converts Raw bytes into Normalized text.
 // Stage 1 of the Resolver pipeline: standardize input format.
@@ -65,12 +68,17 @@ type Summarizer interface {
 
 // KnowledgePipeline orchestrates processing of KnowledgeObjects through
 // Normalizer → EntityMatcher → Validator → Summarizer stages.
-// It accepts a stream of raw KnowledgeObjects and returns processed ones.
+// It accepts KnowledgeObjects and returns processed ones with entity
+// resolution (alias matching, conflict detection) applied.
 type KnowledgePipeline struct {
 	normalizers []Normalizer
 	matchers    []EntityMatcher
 	validators  []Validator
 	summarizers []Summarizer
+
+	// resolvedObjects accumulates objects that have been fully processed,
+	// used as candidates for entity matching in subsequent calls.
+	resolvedObjects map[string]*KnowledgeObject
 }
 
 // NewKnowledgePipeline creates a KnowledgePipeline with the given processors.
@@ -81,10 +89,11 @@ func NewKnowledgePipeline(
 	summarizers []Summarizer,
 ) *KnowledgePipeline {
 	return &KnowledgePipeline{
-		normalizers: normalizers,
-		matchers:    matchers,
-		validators:  validators,
-		summarizers: summarizers,
+		normalizers:     normalizers,
+		matchers:        matchers,
+		validators:      validators,
+		summarizers:     summarizers,
+		resolvedObjects: make(map[string]*KnowledgeObject),
 	}
 }
 
@@ -92,50 +101,78 @@ func NewKnowledgePipeline(
 func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (*KnowledgeObject, error) {
 	var err error
 
+	// Early nil guard — prevent panic from nil input or nil returns from
+	// upstream pipeline stages.
+	if obj == nil {
+		return nil, fmt.Errorf("pipeline: received nil object")
+	}
+
 	// Stage 1: Normalize (Raw → Normalized).
 	for _, norm := range p.normalizers {
 		if obj == nil {
-			break
+			return nil, fmt.Errorf("pipeline: normalizer %s returned nil object", norm.Name())
 		}
 		normalized, nErr := norm.Normalize(ctx, obj)
 		if nErr != nil {
 			log.Warn("normalizer failed (skipping)", "normalizer", norm.Name(), "error", nErr)
 			continue
 		}
-		if normalized != nil {
-			obj = normalized
+		if normalized == nil {
+			log.Warn("normalizer returned nil (skipping)", "normalizer", norm.Name())
+			continue
 		}
+		obj = normalized
+	}
+	if obj == nil {
+		return nil, fmt.Errorf("pipeline: all normalizers returned nil")
 	}
 
 	// Stage 2: Resolve (Normalized → Matched → Validated).
-	for _, matcher := range p.matchers {
-		result, mErr := matcher.Match(ctx, obj, nil)
-		if mErr != nil {
-			log.Warn("entity matcher failed (skipping)", "matcher", matcher.Name(), "error", mErr)
-			continue
+	// Accumulate resolved objects as candidates for future matching.
+	if len(p.matchers) > 0 {
+		candidates := make([]*KnowledgeObject, 0, len(p.resolvedObjects))
+		for _, o := range p.resolvedObjects {
+			candidates = append(candidates, o)
 		}
-		if result != nil && !result.IsNew {
-			// Merged with existing entity; run validators.
-			for _, val := range p.validators {
-				vResult, vErr := val.Validate(ctx, obj, nil)
-				if vErr != nil {
-					log.Warn("validator failed (skipping)", "validator", val.Name(), "error", vErr)
-					continue
-				}
-				if vResult != nil {
-					obj.Confidence = vResult.Confidence
+
+		for _, matcher := range p.matchers {
+			result, mErr := matcher.Match(ctx, obj, candidates)
+			if mErr != nil {
+				log.Warn("entity matcher failed (skipping)", "matcher", matcher.Name(), "error", mErr)
+				continue
+			}
+			if result != nil && !result.IsNew {
+				obj.Confidence = mergeConfidence(obj.Confidence, result.Confidence)
+				// Run validators on merged object.
+				for _, val := range p.validators {
+					vResult, vErr := val.Validate(ctx, obj, candidates)
+					if vErr != nil {
+						log.Warn("validator failed (skipping)", "validator", val.Name(), "error", vErr)
+						continue
+					}
+					if vResult != nil {
+						obj.Confidence = vResult.Confidence
+					}
 				}
 			}
 		}
-		break // Only first match wins.
+
+		// Add to resolved candidates for future calls.
+		p.resolvedObjects[obj.ID] = obj
 	}
 
 	// Stage 3: Summarize (Normalized → Summary).
 	for _, sum := range p.summarizers {
+		if obj == nil {
+			return nil, fmt.Errorf("pipeline: summarizer %s received nil", sum.Name())
+		}
 		obj, err = sum.Summarize(ctx, obj)
 		if err != nil {
 			log.Warn("summarizer failed (skipping)", "summarizer", sum.Name(), "error", err)
 			continue
+		}
+		if obj == nil {
+			return nil, fmt.Errorf("pipeline: summarizer %s returned nil", sum.Name())
 		}
 	}
 
@@ -148,13 +185,28 @@ func (p *KnowledgePipeline) ProcessStream(ctx context.Context, in <-chan *Knowle
 	go func() {
 		defer close(out)
 		for obj := range in {
+			if obj == nil {
+				log.Warn("pipeline: skipping nil object in stream")
+				continue
+			}
 			processed, err := p.Process(ctx, obj)
 			if err != nil {
 				log.Warn("pipeline: skipping object", "id", obj.ID, "error", err)
 				continue
 			}
-			out <- processed
+			if processed != nil {
+				out <- processed
+			}
 		}
 	}()
 	return out
+}
+
+// mergeConfidence combines two confidence scores, preferring higher values
+// and boosting when both sources agree.
+func mergeConfidence(a, b float64) float64 {
+	if a > b {
+		return a + (b * 0.1)
+	}
+	return b + (a * 0.1)
 }

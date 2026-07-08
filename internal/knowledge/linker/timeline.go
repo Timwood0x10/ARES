@@ -59,8 +59,10 @@ func (l *TimelineLinker) Link(_ context.Context, objects []*knowledge.KnowledgeO
 				})
 			}
 
-			// Objects created far apart: newer supersedes older.
-			if diff > weeksBetween {
+			// Objects created far apart AND of the same type: newer may supersede older.
+			// Skipping cross-type pairs to avoid misleading edges (e.g., an issue
+			// should not "supersede" an architecture decision just because it's newer).
+			if diff > weeksBetween && curr.Type == prev.Type {
 				edges = append(edges, knowledge.Relation{
 					From:  curr.ID,
 					To:    prev.ID,

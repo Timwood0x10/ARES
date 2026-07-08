@@ -193,8 +193,8 @@ func Join(parts []string, sep string) string {
 	}{
 		{"util.Add", knowledge.ObjectCode, []string{"function", "util"}},
 		{"util.Join", knowledge.ObjectCode, []string{"function", "util"}},
-		{"util.Point", "struct", []string{"struct", "util"}},
-		{"util.Shaper", "interface", []string{"interface", "util"}},
+		{"util.Point", knowledge.ObjectCode, []string{"struct", "util"}},
+		{"util.Shaper", knowledge.ObjectCode, []string{"interface", "util"}},
 	}
 
 	for i, tt := range tests {

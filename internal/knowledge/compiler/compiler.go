@@ -101,9 +101,24 @@ func (c *DefaultCompiler) Compile(_ context.Context, graph *knowledge.WorkingGra
 	}
 
 	return &CompiledContext{
+		Intent:  goalFromGraph(graph),
 		Formats: formats,
 		Metrics: metrics,
 	}, nil
+}
+
+// goalFromGraph derives a readable intent description from the graph.
+func goalFromGraph(graph *knowledge.WorkingGraph) string {
+	if graph == nil || len(graph.Nodes) == 0 {
+		return ""
+	}
+	// Use the first non-empty summary as the intent.
+	for _, obj := range graph.Nodes {
+		if obj.Summary != "" {
+			return obj.Summary
+		}
+	}
+	return "knowledge context"
 }
 
 // formatPrompt generates a structured prompt for LLM chat completion.

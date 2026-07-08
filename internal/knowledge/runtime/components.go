@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"sort"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -82,17 +83,13 @@ func (r *DefaultReducer) Reduce(_ context.Context, graph *knowledge.WorkingGraph
 	}
 	s := make([]scored, 0, len(graph.Nodes))
 	for id, obj := range graph.Nodes {
-		s = append(s, scored{id, obj.Confidence})
+		s = append(s, scored{id: id, conf: obj.Confidence})
 	}
 
-	// Sort by confidence descending (simple bubble sort for small sets).
-	for i := 0; i < len(s); i++ {
-		for j := i + 1; j < len(s); j++ {
-			if s[j].conf > s[i].conf {
-				s[i], s[j] = s[j], s[i]
-			}
-		}
-	}
+	// Sort by confidence descending.
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].conf > s[j].conf
+	})
 
 	kept := make(map[string]bool, maxNodes)
 	for i := 0; i < maxNodes && i < len(s); i++ {

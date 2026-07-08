@@ -28,7 +28,7 @@ func FromMemory(m *distillation.Memory, ns string) *knowledge.KnowledgeObject {
 		Type:       objType,
 		Namespace:  ns,
 		Summary:    summary,
-		Confidence: float64(m.Importance) / 100.0,
+		Confidence: clampConfidence(float64(m.Importance) / 100.0),
 		CreatedAt:  m.CreatedAt,
 		UpdatedAt:  time.Now(),
 	}
@@ -58,4 +58,15 @@ func memoryTypeToObjectType(mt distillation.MemoryType) knowledge.ObjectType {
 	default:
 		return knowledge.ObjectMemory
 	}
+}
+
+// clampConfidence clamps a confidence score to the [0, 1] range.
+func clampConfidence(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }

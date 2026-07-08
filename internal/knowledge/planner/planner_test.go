@@ -49,7 +49,7 @@ func TestKnowledgePlannerEmptyGoal(t *testing.T) {
 
 func TestKnowledgePlannerRequirements(t *testing.T) {
 	planner := NewKnowledgePlanner()
-	plan, _ := planner.Plan(context.Background(), "test", knowledge.TokenBudget{})
+	plan, _ := planner.Plan(context.Background(), "architecture design for the new stack", knowledge.TokenBudget{})
 
 	needs := make(map[NeedType]bool)
 	for _, req := range plan.Requirements {

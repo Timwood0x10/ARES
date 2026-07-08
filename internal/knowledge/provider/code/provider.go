@@ -19,10 +19,12 @@ import (
 )
 
 // Object type constants used by CodeProvider.
+// Using ObjectCode to represent all code elements (structs, interfaces, functions)
+// since AKF only distinguishes "code" at the object level — finer-grained
+// classification is done via Tags.
 const (
-	typeStruct    knowledge.ObjectType = "struct"
-	typeInterface knowledge.ObjectType = "interface"
-	tagFunction                        = "function"
+	typeCode    knowledge.ObjectType = knowledge.ObjectCode
+	tagFunction                      = "function"
 )
 
 // CodeProvider scans a Go source directory and streams its symbols
@@ -184,9 +186,9 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 		var objType knowledge.ObjectType
 		switch ts.Type.(type) {
 		case *ast.StructType:
-			objType = typeStruct
+			objType = typeCode
 		case *ast.InterfaceType:
-			objType = typeInterface
+			objType = typeCode
 		default:
 			objType = knowledge.ObjectCode
 		}

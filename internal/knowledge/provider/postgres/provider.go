@@ -177,17 +177,26 @@ func (p *PGProvider) buildQuery(intent knowledge.Intent) (string, []any, error) 
 	}
 
 	table := quoteIdentifier(p.config.Table)
-	orderCol := quoteIdentifier(p.mapping.TimeColumn)
 
-	// LIMIT is parameterized as a placeholder to keep the query safe and
-	// to let the driver handle type coercion.
-	query := fmt.Sprintf(
-		"SELECT %s FROM %s ORDER BY %s DESC NULLS LAST LIMIT $1",
-		strings.Join(columns, ", "),
-		table,
-		orderCol,
-	)
-	return query, []any{maxResults}, nil
+	var query string
+	var args []any
+	if p.mapping.TimeColumn != "" {
+		orderCol := quoteIdentifier(p.mapping.TimeColumn)
+		query = fmt.Sprintf(
+			"SELECT %s FROM %s ORDER BY %s DESC NULLS LAST LIMIT $1",
+			strings.Join(columns, ", "),
+			table,
+			orderCol,
+		)
+	} else {
+		query = fmt.Sprintf(
+			"SELECT %s FROM %s LIMIT $1",
+			strings.Join(columns, ", "),
+			table,
+		)
+	}
+	args = []any{maxResults}
+	return query, args, nil
 }
 
 // quoteIdentifier wraps a PostgreSQL identifier in double quotes and escapes

@@ -24,7 +24,7 @@ func newTestStore(t *testing.T) *Store {
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-	 t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
