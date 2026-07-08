@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"golang.org/x/sync/errgroup"
 )
 
 // KnowledgeRuntime is the central execution engine of AKF.
@@ -119,16 +120,15 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 
 // loadAndProcess streams objects from all selected providers concurrently,
 // runs the KnowledgePipeline on each object, and collects results.
+// Uses errgroup for goroutine lifecycle management (§4.5: no bare goroutines).
 func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner.PlannedSource, cfg *Config) (map[string]*knowledge.KnowledgeObject, error) {
 	objects := make(map[string]*knowledge.KnowledgeObject)
 	var mu sync.Mutex
 
-	sem := make(chan struct{}, cfg.MaxConcurrentProviders)
-	var wg sync.WaitGroup
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cfg.MaxConcurrentProviders)
 
 	for _, src := range sources {
-		// Check context before acquiring the semaphore to avoid launching
-		// new providers after cancellation.
 		if ctx.Err() != nil {
 			break
 		}
@@ -139,23 +139,8 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 			continue
 		}
 
-		// Acquire semaphore with cancellation support to avoid blocking
-		// forever when the context is cancelled while waiting for a slot.
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			// Context cancelled; stop launching new providers. The select
-			// break only exits the select, so re-check ctx below to exit
-			// the for loop.
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-
-		go func(src planner.PlannedSource, prov provider.GraphProvider) {
-			defer func() { <-sem; wg.Done() }()
-
+		src, prov := src, prov // capture loop vars
+		g.Go(func() error {
 			intent := knowledge.Intent{
 				Goal: src.Requirement.Description,
 				Scope: knowledge.Scope{
@@ -203,10 +188,13 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				}
 			default:
 			}
-		}(src, prov)
+			return nil
+		})
 	}
 
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("load: %w", err)
+	}
 
 	if len(objects) == 0 {
 		return nil, fmt.Errorf("load: no objects loaded from any provider")
