@@ -216,21 +216,26 @@ func (a *subAgent) Stop(ctx context.Context) error {
 
 // Process handles input and returns result.
 func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
-	a.mu.RLock()
+	// Check status under lock to avoid TOCTOU between read and auto-Start.
+	a.mu.Lock()
 	status := a.status
-	a.mu.RUnlock()
-
-	if status != models.AgentStatusReady && status != models.AgentStatusOffline {
-		return nil, errors.ErrAgentNotReady
-	}
-
 	if status == models.AgentStatusOffline {
-		if err := a.Start(ctx); err != nil {
+		// Temporarily release lock for Start (which acquires its own lock).
+		// If Start fails or another goroutine already started us, handle gracefully.
+		a.mu.Unlock()
+		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
 			return nil, err
 		}
+		a.mu.Lock()
+		status = a.status
 	}
+	if status != models.AgentStatusReady {
+		a.mu.Unlock()
+		return nil, errors.ErrAgentNotReady
+	}
+	a.status = models.AgentStatusBusy
+	a.mu.Unlock()
 
-	a.setStatus(models.AgentStatusBusy)
 	defer a.setStatus(models.AgentStatusReady)
 
 	task, ok := input.(*models.Task)
@@ -306,15 +311,25 @@ func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.Task
 
 // ProcessStream handles input and returns a stream of ares_events.
 func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
-	if a.Status() != models.AgentStatusReady && a.Status() != models.AgentStatusOffline {
-		return nil, errors.ErrAgentNotReady
-	}
-
-	if a.Status() == models.AgentStatusOffline {
-		if err := a.Start(ctx); err != nil {
+	// Atomically check status under lock to avoid TOCTOU with auto-Start.
+	a.mu.Lock()
+	status := a.status
+	if status == models.AgentStatusOffline {
+		a.mu.Unlock()
+		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
 			return nil, err
 		}
+		a.mu.Lock()
+		status = a.status
 	}
+	if status != models.AgentStatusReady {
+		a.mu.Unlock()
+		return nil, errors.ErrAgentNotReady
+	}
+	a.status = models.AgentStatusBusy
+	a.mu.Unlock()
+
+	defer a.setStatus(models.AgentStatusReady)
 
 	task, ok := input.(*models.Task)
 	if !ok {

@@ -34,6 +34,10 @@ type Context struct {
 	Duration   time.Duration
 	TokenCount int
 	Extra      map[string]any
+	// GoCtx is the standard Go context for trace propagation. When set, the
+	// BridgeEventStore uses it instead of context.Background() so that event
+	// emission participates in the caller's trace and cancellation chain.
+	GoCtx context.Context
 }
 
 // Handler processes a lifecycle event.

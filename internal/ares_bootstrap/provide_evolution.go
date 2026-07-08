@@ -50,6 +50,7 @@ func ProvideEvolution(
 	adapter := evolution.NewFlightToExperienceAdapter(flightWrapper, expAdapter)
 
 	// 2. Scheduler
+	var err error
 	opts := []evolution.SchedulerOption{evolution.WithEnabled(true)}
 	if cfg != nil && cfg.MinInterval != "" {
 		if d, err := time.ParseDuration(cfg.MinInterval); err == nil {
@@ -66,10 +67,13 @@ func ProvideEvolution(
 	// 3. Dream cycle (optional — requires mutator + tester wired externally)
 	var dreamCycle *evolution.DreamCycle
 
-	// 4. Evaluators
-	evalRegistry, err := setupEvaluators(llmClient)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap: setup evaluators: %w", err)
+	// 4. Evaluators (optional — requires LLM client).
+	var evalRegistry *ares_eval.EvaluatorRegistry
+	if llmClient != nil {
+		evalRegistry, err = setupEvaluators(llmClient)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: setup evaluators: %w", err)
+		}
 	}
 
 	// 5. Feedback service (best-effort)
@@ -85,9 +89,6 @@ func ProvideEvolution(
 }
 
 func setupEvaluators(llmClient ares_eval.LLMClient) (*ares_eval.EvaluatorRegistry, error) {
-	if llmClient == nil {
-		return nil, nil
-	}
 	judge, err := ares_eval.NewLLMJudgeEvaluator(llmClient,
 		ares_eval.WithChinesePrompt(),
 		ares_eval.WithScale(ares_eval.ScaleOneToTen),

@@ -73,16 +73,25 @@ type strategyRegistry struct {
 	allowedDir string
 }
 
-var globalRegistry = &strategyRegistry{
-	strategies: make(map[string]ErrorStrategy),
-}
-
-// init initializes the registry with default strategies.
-func init() {
-	// Load default strategies
-	for code, strategy := range DefaultErrorStrategiesConfig.Strategies {
-		globalRegistry.strategies[code] = strategy
+var (
+	globalRegistry = &strategyRegistry{
+		strategies: make(map[string]ErrorStrategy),
 	}
+	initOnce sync.Once
+)
+
+// InitDefaultStrategies populates the global registry with built-in error
+// strategies. Safe to call multiple times — subsequent calls are no-ops.
+// Called automatically on first access via GetStrategy, LoadStrategiesFromConfig,
+// RegisterStrategy, or GetAllStrategies.
+func InitDefaultStrategies() {
+	initOnce.Do(func() {
+		globalRegistry.mu.Lock()
+		defer globalRegistry.mu.Unlock()
+		for code, strategy := range DefaultErrorStrategiesConfig.Strategies {
+			globalRegistry.strategies[code] = strategy
+		}
+	})
 }
 
 // SetAllowedDir sets the allowed directory for config file loading.
@@ -96,6 +105,8 @@ func SetAllowedDir(dir string) {
 // LoadStrategiesFromConfig loads error strategies from a configuration file.
 // Supported formats: JSON
 func LoadStrategiesFromConfig(configPath string) error {
+	InitDefaultStrategies()
+
 	// Security: validate path is within allowed directory using filepath.Rel
 	// to correctly reject path-traversal attempts (e.g. "/allowed/../secret").
 	globalRegistry.mu.RLock()
@@ -178,6 +189,7 @@ func validateStrategy(strategy *ErrorStrategy) error {
 // strategy - error strategy configuration.
 // Returns error if strategy validation fails.
 func SetStrategy(code string, strategy ErrorStrategy) error {
+	InitDefaultStrategies()
 	if err := validateStrategy(&strategy); err != nil {
 		return errors.Wrapf(err, "invalid strategy for code %s", code)
 	}
@@ -191,6 +203,7 @@ func SetStrategy(code string, strategy ErrorStrategy) error {
 // GetStrategy returns the error strategy for the given error code.
 // Returns default strategy if code not found.
 func GetStrategy(code string) ErrorStrategy {
+	InitDefaultStrategies()
 	globalRegistry.mu.RLock()
 	defer globalRegistry.mu.RUnlock()
 
@@ -202,6 +215,7 @@ func GetStrategy(code string) ErrorStrategy {
 
 // GetAllStrategies returns a copy of all strategies.
 func GetAllStrategies() map[string]ErrorStrategy {
+	InitDefaultStrategies()
 	globalRegistry.mu.RLock()
 	defer globalRegistry.mu.RUnlock()
 

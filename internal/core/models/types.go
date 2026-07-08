@@ -127,8 +127,8 @@ func (p *PriceRange) Contains(price float64) bool {
 	return price >= p.Min && price <= p.Max
 }
 
-// Time fields for tracking.
-var (
+// Default TTL durations for session and task lifecycle.
+const (
 	DefaultSessionTTL = 24 * time.Hour
 	DefaultTaskTTL    = 1 * time.Hour
 )

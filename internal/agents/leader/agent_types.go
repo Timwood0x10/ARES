@@ -96,14 +96,13 @@ type leaderAgent struct {
 	conversationSummary string
 	lastInteractionTime time.Time
 
-	stopCh          chan struct{}
-	distillMu       sync.Mutex
-	distillWg       sync.WaitGroup
-	distillEg       *errgroup.Group
-	streamEg        *errgroup.Group
-	processingMu    sync.Mutex
-	cleanupOnce     sync.Once
-	sessionInitOnce sync.Once
+	stopCh       chan struct{}
+	distillMu    sync.Mutex
+	distillWg    sync.WaitGroup
+	distillEg    *errgroup.Group
+	streamEg     *errgroup.Group
+	processingMu sync.Mutex
+	cleanupOnce  sync.Once
 }
 
 // LeaderAgentConfig holds configuration for LeaderAgent.

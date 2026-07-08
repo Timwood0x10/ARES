@@ -21,12 +21,17 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	a.mu.RUnlock()
 
 	if sessionID == "" {
-		a.sessionInitOnce.Do(func() {
+		// Acquire write lock to check and create session atomically.
+		// Unlike sync.Once, this retries on failure — if CreateSession fails
+		// (e.g. transient DB error), the next call will try again (P0-5).
+		a.mu.Lock()
+		sessionID = a.sessionID
+		if sessionID == "" {
 			recovered := false
 			if checkpoint != nil {
-				cp, err := checkpoint.GetLatest(ctx, leaderID)
-				if err != nil {
-					log.Warn("Checkpoint recovery failed, creating new session", "error", err)
+				cp, cpErr := checkpoint.GetLatest(ctx, leaderID)
+				if cpErr != nil {
+					log.Warn("Checkpoint recovery failed, creating new session", "error", cpErr)
 				} else if cp != nil && cp.SessionID != "" {
 					sessionID = cp.SessionID
 					recovered = true
@@ -34,20 +39,17 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 				}
 			}
 			if !recovered {
-				sid, err := a.memoryManager.CreateSession(ctx, a.getUserID())
-				if err != nil {
-					log.Warn("Failed to create session", "error", err)
-					return
+				sid, createErr := a.memoryManager.CreateSession(ctx, a.getUserID())
+				if createErr != nil {
+					log.Warn("Failed to create session", "error", createErr)
+					a.mu.Unlock()
+					return strInput, "", ""
 				}
 				sessionID = sid
 			}
-			a.mu.Lock()
 			a.sessionID = sessionID
-			a.mu.Unlock()
-		})
-		a.mu.RLock()
-		sessionID = a.sessionID
-		a.mu.RUnlock()
+		}
+		a.mu.Unlock()
 	}
 	if sessionID == "" {
 		return strInput, "", ""
