@@ -111,6 +111,14 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 		return nil, fmt.Errorf("pipeline: received nil object")
 	}
 
+	// Work on a shallow copy so concurrent Process calls never mutate the
+	// caller's KnowledgeObject in place. The normalizer and summarizer write
+	// Normalized/Summary, so sharing the original object across parallel
+	// provider streams would be a data race. Shallow copy is sufficient
+	// because the pipeline stages only read (never mutate) slice/map fields.
+	cp := *obj
+	obj = &cp
+
 	// Stage 1: Normalize (Raw → Normalized).
 	for _, norm := range p.normalizers {
 		if obj == nil {
