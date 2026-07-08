@@ -147,8 +147,11 @@ func (r *RecommendRepository) ListByUserID(ctx context.Context, userID string, l
 	if err != nil {
 		return nil, errors.Wrap(err, "query recommendations")
 	}
-	defer rows.Close()
-	// nolint: errcheck // Rows are closed by defer
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Warn("failed to close recommendation rows", "error", err)
+		}
+	}()
 	var results []*models.RecommendResult
 	for rows.Next() {
 		var result models.RecommendResult

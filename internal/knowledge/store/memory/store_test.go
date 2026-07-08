@@ -2,6 +2,7 @@ package memorystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -40,9 +41,8 @@ func TestSaveEmptyID(t *testing.T) {
 func TestGetNotFound(t *testing.T) {
 	s := New()
 	obj, err := s.Get(context.Background(), "nonexistent")
-	// Per the KnowledgeStore contract, Get returns nil, nil when not found.
-	if err != nil {
-		t.Fatalf("expected nil error for not found, got %v", err)
+	if !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
 	if obj != nil {
 		t.Error("expected nil object for not found")

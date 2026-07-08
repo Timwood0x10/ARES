@@ -287,7 +287,7 @@ func hashInput(params map[string]any) string {
 		for _, k := range keys {
 			sb.WriteString(k)
 			sb.WriteString("=")
-			sb.WriteString(fmt.Sprintf("%v", params[k]))
+			fmt.Fprintf(&sb, "%v", params[k])
 			sb.WriteString(";")
 		}
 		data = []byte(sb.String())

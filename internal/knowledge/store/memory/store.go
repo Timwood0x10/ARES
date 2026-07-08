@@ -49,9 +49,7 @@ func (s *Store) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, e
 	defer s.mu.RUnlock()
 	obj, ok := s.objects[id]
 	if !ok {
-		// Follow the KnowledgeStore contract: return nil, nil when not found.
-		// Callers distinguish "not found" from "error" by checking obj == nil.
-		return nil, nil
+		return nil, ErrObjectNotFound
 	}
 	return obj, nil
 }

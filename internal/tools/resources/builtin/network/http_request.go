@@ -73,7 +73,7 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 	}
 
 	// SSRF defense: validate scheme and block private/loopback/link-local IPs.
-	if err := ValidateURL(url); err != nil {
+	if err := ValidateURL(ctx, url); err != nil {
 		return core.NewErrorResult(fmt.Sprintf("url rejected by SSRF filter: %v", err)), nil
 	}
 

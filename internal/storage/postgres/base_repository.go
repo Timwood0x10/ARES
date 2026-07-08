@@ -18,13 +18,18 @@ type Scannable interface {
 // dynamic SQL. Adding a table here is required before passing it to
 // GetByID/DeleteByID/CountByTenant. This prevents SQL injection through
 // attacker-controlled table names.
+var (
+	// userProfilesTable is the canonical name for the user_profiles table.
+	userProfilesTable = "user_profiles"
+)
+
 var allowedTables = map[string]struct{}{
 	"knowledge_chunks_1024": {},
 	"experiences_1024":      {},
 	"embeddings":            {},
 	"recommendations":       {},
 	"sessions":              {},
-	"user_profiles":         {},
+	userProfilesTable:       {},
 	"secrets":               {},
 	"embedding_queue":       {},
 	"embedding_dead_letter": {},

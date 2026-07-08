@@ -184,7 +184,11 @@ func (q *EmbeddingQueue) FetchPendingTasks(ctx context.Context, limit int) ([]*E
 	if err != nil {
 		return nil, errors.Wrap(err, "fetch pending tasks")
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Warn("failed to close rows", "error", err)
+		}
+	}()
 
 	tasks := make([]*EmbeddingTask, 0)
 	for rows.Next() {
@@ -382,7 +386,11 @@ func (q *EmbeddingQueue) Reconcile(ctx context.Context, threshold time.Duration)
 	if err != nil {
 		return errors.Wrap(err, "query orphaned embeddings")
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Warn("failed to close rows", "error", err)
+		}
+	}()
 
 	type orphanedChunk struct {
 		ID       string

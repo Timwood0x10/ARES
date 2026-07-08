@@ -34,10 +34,10 @@ func validateIdentifier(name string) error {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !((c >= 'a' && c <= 'z') ||
-			(c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') ||
-			c == '_') {
+		if (c < 'a' || c > 'z') &&
+			(c < 'A' || c > 'Z') &&
+			(c < '0' || c > '9') &&
+			c != '_' {
 			return fmt.Errorf("identifier %q contains illegal character %q", name, c)
 		}
 	}

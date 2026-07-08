@@ -14,6 +14,8 @@ import (
 )
 
 // apiKeyHeader is the HTTP header used to pass the API key.
+//
+//nolint:gosec // G101: not a credential, just the header name
 const apiKeyHeader = "X-API-Key"
 
 // StreamHandler handles SSE streaming requests.

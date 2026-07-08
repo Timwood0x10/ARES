@@ -294,7 +294,7 @@ func (a *APIv2) requireAPIKeyHTTP(fn http.HandlerFunc) http.HandlerFunc {
 func (a *APIv2) requireAPIKeyGin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !a.checkAPIKey(c.Request) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing API key"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{KeyError: "invalid or missing API key"})
 			return
 		}
 		c.Next()

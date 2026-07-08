@@ -17,6 +17,8 @@ import (
 )
 
 // apiKeyHeader is the HTTP header used to pass the arena API key.
+//
+//nolint:gosec // G101: not a credential, just the header name
 const apiKeyHeader = "X-API-Key"
 
 // Handler provides HTTP endpoints for the arena.

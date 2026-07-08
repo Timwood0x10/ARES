@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,7 +26,7 @@ var ErrUnsupportedScheme = fmt.Errorf("only http and https schemes are allowed")
 // ValidateURL checks that a URL string uses an allowed scheme and does not
 // resolve to a private, loopback, or link-local address. It defends against
 // SSRF attacks targeting cloud metadata endpoints and internal services.
-func ValidateURL(rawURL string) error {
+func ValidateURL(ctx context.Context, rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("url is required")
 	}
@@ -45,12 +46,12 @@ func ValidateURL(rawURL string) error {
 		return fmt.Errorf("url has no host")
 	}
 
-	return checkHost(host)
+	return checkHost(ctx, host)
 }
 
 // checkHost resolves the host and rejects private, loopback, or link-local IPs.
 // Hostnames that resolve to multiple IPs are rejected if any IP is blocked.
-func checkHost(host string) error {
+func checkHost(ctx context.Context, host string) error {
 	// Handle bracketed IPv6 form.
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		host = host[1 : len(host)-1]
@@ -65,13 +66,13 @@ func checkHost(host string) error {
 	}
 
 	// Resolve the hostname and reject if any resolved address is blocked.
-	ips, err := net.LookupIP(host)
+	ipAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return fmt.Errorf("resolve host %q: %w", host, err)
 	}
-	for _, ip := range ips {
-		if isBlockedIP(ip) {
-			return fmt.Errorf("%w: %s resolves to %s", ErrSSRFBlocked, host, ip)
+	for _, ipAddr := range ipAddrs {
+		if isBlockedIP(ipAddr.IP) {
+			return fmt.Errorf("%w: %s resolves to %s", ErrSSRFBlocked, host, ipAddr.IP)
 		}
 	}
 	return nil
@@ -99,5 +100,5 @@ func SSRFCheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= MaxHTTPRedirects {
 		return fmt.Errorf("stopped after %d redirects", MaxHTTPRedirects)
 	}
-	return ValidateURL(req.URL.String())
+	return ValidateURL(req.Context(), req.URL.String())
 }

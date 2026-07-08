@@ -73,7 +73,7 @@ func (f *WebFetcher) SetUserAgent(userAgent string) {
 // sent, blocking file:// and private/loopback/link-local destinations. Response
 // bodies are capped at MaxHTTPResponseBytes to prevent memory exhaustion.
 func (f *WebFetcher) Get(ctx context.Context, url string) ([]byte, error) {
-	if err := ValidateURL(url); err != nil {
+	if err := ValidateURL(ctx, url); err != nil {
 		return nil, fmt.Errorf("url rejected by SSRF filter: %w", err)
 	}
 
