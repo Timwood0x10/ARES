@@ -56,6 +56,7 @@ func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager, addr str
 		Start: func(ctx context.Context) error { return srv.ListenAndServe() },
 		Stop: func(ctx context.Context) error {
 			err := srv.Shutdown(ctx)
+			hub.Stop()
 			// Wait for the hub goroutine to exit so it is not leaked.
 			_ = hubGrp.Wait()
 			_ = hubCtx

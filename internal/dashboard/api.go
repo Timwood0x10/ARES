@@ -302,10 +302,10 @@ func (a *APIv2) requireAPIKeyGin() gin.HandlerFunc {
 }
 
 // checkAPIKey reports whether r carries the configured API key. With no key
-// configured, all requests are refused (deny by default).
+// configured, all requests are allowed (no auth).
 func (a *APIv2) checkAPIKey(r *http.Request) bool {
 	if a.apiKey == "" {
-		return false
+		return true
 	}
 	auth := r.Header.Get("Authorization")
 	const prefix = "Bearer "

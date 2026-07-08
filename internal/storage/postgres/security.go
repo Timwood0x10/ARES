@@ -10,11 +10,18 @@ import (
 var (
 	// validIdentifierPattern matches valid SQL identifiers (table names, column
 	// names, IDs, etc.). Allows: letters, digits, underscores, and hyphens.
-	// Hyphens are permitted because UUIDs and many tenant/IDs use them; the
-	// output is always quoted via quoteIdentifier before interpolation, so a
-	// hyphen cannot break out of the identifier context. Schema-qualified
-	// names (containing '.') are still rejected.
+	// Identifiers must start with a letter or underscore (per PostgreSQL unquoted
+	// identifier rules). Hyphens are permitted because UUIDs and many tenant/IDs
+	// use them; the output is always quoted via quoteIdentifier before
+	// interpolation, so a hyphen cannot break out of the identifier context.
+	// Schema-qualified names (containing '.') are still rejected. The identifier
+	// must not contain consecutive hyphens (`--`), which is a SQL comment marker.
 	validIdentifierPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
+	// uuidPattern matches standard UUID format (8-4-4-4-12 hex digits).
+	// These may start with a digit and are allowed as identifiers (tenant IDs,
+	// entity keys, etc.) because they are always quoted in SQL.
+	uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
 // validateSQLIdentifier validates that an identifier is safe for use in SQL queries.
@@ -36,12 +43,18 @@ func validateSQLIdentifier(identifier string) error {
 
 	// Reject schema-qualified names (e.g. "public.users") to prevent bypassing
 	// the table allowlist. Quoting handles embedded double quotes, but a dot
-	// would let an attacker reference arbitrary schemas.
-	if strings.ContainsAny(identifier, ".;'\"`(){}\\") {
+	// would let an attacker reference arbitrary schemas. Also reject `--`
+	// (SQL comment marker) to prevent comment injection.
+	if strings.ContainsAny(identifier, ".;'\"`(){}\\") || strings.Contains(identifier, "--") {
 		return &SecurityError{
 			Type:    SecurityErrorInvalidIdentifier,
 			Message: fmt.Sprintf("identifier contains forbidden character: %s", identifier),
 		}
+	}
+
+	// UUIDs are allowed even though they may start with a digit.
+	if uuidPattern.MatchString(identifier) {
+		return nil
 	}
 
 	// Check against pattern

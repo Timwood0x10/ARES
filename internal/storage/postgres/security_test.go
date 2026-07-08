@@ -70,7 +70,7 @@ func TestValidateUserInput(t *testing.T) {
 		{"Empty input", "", 100, true},
 		{"Too long", strings.Repeat("a", 101), 100, true},
 		{"SQL injection OR", "test OR 1=1", 100, true},
-		{"SQL injection AND", "test AND 1=1", 100, false},
+		{"SQL injection AND", "test AND 1=1", 100, true},
 		{"SQL injection semicolon", "test; DROP TABLE", 100, true},
 		{"SQL injection comment", "test -- comment", 100, true},
 		{"SQL injection UNION", "test UNION SELECT", 100, true},

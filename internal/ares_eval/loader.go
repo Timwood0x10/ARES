@@ -39,10 +39,11 @@ func validateSuitePath(path string) error {
 	if !hasTraversal && !isAbsolute {
 		return nil
 	}
+	cleanedLower := strings.ToLower(cleaned)
 	for _, dir := range sensitiveSystemDirs {
-		if strings.Contains(cleaned, "/"+dir+"/") ||
-			strings.HasSuffix(cleaned, "/"+dir) ||
-			cleaned == "/"+dir {
+		if strings.Contains(cleanedLower, "/"+dir+"/") ||
+			strings.HasSuffix(cleanedLower, "/"+dir) ||
+			cleanedLower == "/"+dir {
 			return fmt.Errorf("invalid path: system directory access not allowed")
 		}
 	}

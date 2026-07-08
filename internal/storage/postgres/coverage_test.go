@@ -3,6 +3,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -424,7 +425,7 @@ func TestConfig_Coverage(t *testing.T) {
 		if dsn == "" {
 			t.Error("DSN should not be empty")
 		}
-		if !contains(dsn, "p%40ssw0rd%21%23%24") {
+		if !strings.Contains(dsn, "p%40ssw0rd%21%23%24") {
 			t.Errorf("DSN should contain URL-encoded password, got: %s", dsn)
 		}
 	})

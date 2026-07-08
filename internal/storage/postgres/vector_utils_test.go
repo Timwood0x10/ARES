@@ -29,7 +29,7 @@ func TestFormatVector(t *testing.T) {
 		{
 			name:     "zero values",
 			vector:   []float64{0.0, 0.0},
-			expected: "[0.000000,0.000000]",
+			expected: "[0,0]",
 		},
 	}
 

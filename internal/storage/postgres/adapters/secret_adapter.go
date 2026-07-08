@@ -78,13 +78,23 @@ func (a *SecretAdapter) parseJSON(data []byte) ([]byte, error) {
 // parseYAML parses YAML input format and converts to JSON using gopkg.in/yaml.v3.
 // This properly handles YAML syntax (nested structures, quoted strings, multi-line
 // values, etc.) instead of the fragile line-by-line approach.
+// Supports two formats:
+//   - Object format: {"secrets": [{"key": "...", "value": "...", ...}]}
+//   - Sequence format: [{"key": "...", "value": "...", ...}]  (direct list)
 func (a *SecretAdapter) parseYAML(data []byte) ([]byte, error) {
+	// Try object format first ({"secrets": [...]})
 	var importData ImportData
-	if err := yaml.Unmarshal(data, &importData); err != nil {
+	if err := yaml.Unmarshal(data, &importData); err == nil && len(importData.Secrets) > 0 {
+		return json.Marshal(importData)
+	}
+
+	// Try sequence format (direct list of items)
+	var items []SecretImportItem
+	if err := yaml.Unmarshal(data, &items); err != nil {
 		return nil, errors.Wrap(err, "invalid YAML format")
 	}
 
-	// Convert to JSON
+	importData = ImportData{Secrets: items}
 	return json.Marshal(importData)
 }
 

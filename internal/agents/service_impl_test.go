@@ -434,7 +434,7 @@ func TestUpdateAgent_Success(t *testing.T) {
 	svc := newTestService(repo)
 	updated, err := svc.UpdateAgent(ctx, "a1", map[string]interface{}{
 		"name":       "Alpha v2",
-		"status":     core.AgentStatusRunning,
+		"status":     "running",
 		"type":       "sub",
 		"session_id": "sess2",
 		"config":     map[string]interface{}{"model": "gpt-4"},
