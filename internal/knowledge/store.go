@@ -18,7 +18,8 @@ type KnowledgeStore interface {
 	// Save persists one or more KnowledgeObjects. Creates or updates.
 	Save(ctx context.Context, objects ...*KnowledgeObject) error
 
-	// Get retrieves a KnowledgeObject by ID. Returns nil, nil if not found.
+	// Get retrieves a KnowledgeObject by ID.
+	// Returns ErrObjectNotFound if not found.
 	Get(ctx context.Context, id string) (*KnowledgeObject, error)
 
 	// Query retrieves KnowledgeObjects matching the given criteria.

@@ -10,6 +10,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
 
+// providerSelectThreshold is the minimum IntentMatch score a provider must
+// reach to be selected for a requirement. It sits above MemoryProvider's
+// weak scores (0.3 for code/architecture, where memory is least useful) so
+// that memory is not injected into code queries, while still including its
+// strong scores (0.6–0.8 for memory/decision/issue).
+const providerSelectThreshold = 0.35
+
 // NewKnowledgePlanner creates a default planner that generates requirements
 // based on keyword matching against the task goal.
 func NewKnowledgePlanner() KnowledgePlanner {
@@ -101,6 +108,30 @@ func containsAny(s string, substrs []string) bool {
 	return false
 }
 
+// needToObjectTypes maps a knowledge Need to the ObjectTypes it is most
+// relevant to, so that type-aware providers (e.g. MemoryProvider) can score
+// the requirement correctly. Without this mapping the intent carries no
+// types and every provider collapses to its generic "no type" score, which
+// previously caused MemoryProvider to be selected for all queries.
+func needToObjectTypes(need NeedType) []knowledge.ObjectType {
+	switch need {
+	case NeedDecision:
+		return []knowledge.ObjectType{knowledge.ObjectDecision}
+	case NeedArchitecture:
+		return []knowledge.ObjectType{knowledge.ObjectArchitecture}
+	case NeedCode:
+		return []knowledge.ObjectType{knowledge.ObjectCode}
+	case NeedIssue:
+		return []knowledge.ObjectType{knowledge.ObjectIssue}
+	case NeedPerformance:
+		return []knowledge.ObjectType{knowledge.ObjectCommit}
+	case NeedHistory:
+		return []knowledge.ObjectType{knowledge.ObjectMemory}
+	default:
+		return nil
+	}
+}
+
 // defaultSourceDiscovery maps KnowledgeRequirements to providers by
 // scoring each provider's IntentMatch against generated intents.
 type defaultSourceDiscovery struct {
@@ -128,13 +159,14 @@ func (d *defaultSourceDiscovery) Discover(ctx context.Context, reqs []KnowledgeR
 		intent := knowledge.Intent{
 			Goal: req.Description,
 			Scope: knowledge.Scope{
+				Types:      needToObjectTypes(req.Need),
 				MaxObjects: req.MaxResults,
 			},
 			Budget: budget,
 		}
 
 		// Find matching providers.
-		providers := d.registry.Select(intent, 0.1)
+		providers := d.registry.Select(intent, providerSelectThreshold)
 		if len(providers) == 0 {
 			continue
 		}

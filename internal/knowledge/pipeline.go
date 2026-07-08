@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Normalizer converts Raw bytes into Normalized text.
@@ -76,6 +77,9 @@ type KnowledgePipeline struct {
 	validators  []Validator
 	summarizers []Summarizer
 
+	// mu protects resolvedObjects, which is shared across concurrent Process
+	// calls when the runtime loads from multiple providers in parallel.
+	mu sync.Mutex
 	// resolvedObjects accumulates objects that have been fully processed,
 	// used as candidates for entity matching in subsequent calls.
 	resolvedObjects map[string]*KnowledgeObject
@@ -130,10 +134,16 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 	// Stage 2: Resolve (Normalized → Matched → Validated).
 	// Accumulate resolved objects as candidates for future matching.
 	if len(p.matchers) > 0 {
+		// Snapshot the current candidate pool under the lock. The matcher
+		// and validator passes run outside the lock to avoid holding it
+		// during potentially slow work, which also removes the data race
+		// that occurred when multiple providers called Process in parallel.
+		p.mu.Lock()
 		candidates := make([]*KnowledgeObject, 0, len(p.resolvedObjects))
 		for _, o := range p.resolvedObjects {
 			candidates = append(candidates, o)
 		}
+		p.mu.Unlock()
 
 		for _, matcher := range p.matchers {
 			result, mErr := matcher.Match(ctx, obj, candidates)
@@ -157,8 +167,10 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 			}
 		}
 
-		// Add to resolved candidates for future calls.
+		// Record this object as a candidate for future resolution passes.
+		p.mu.Lock()
 		p.resolvedObjects[obj.ID] = obj
+		p.mu.Unlock()
 	}
 
 	// Stage 3: Summarize (Normalized → Summary).

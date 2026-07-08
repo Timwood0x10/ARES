@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 )
 
 // testQueryPlanner returns predictable query plans.
@@ -112,6 +113,55 @@ func TestSourceDiscoveryWithProvider(t *testing.T) {
 	}
 	if sources[0].Query.QueryType != QuerySQL {
 		t.Errorf("expected QuerySQL, got '%s'", sources[0].Query.QueryType)
+	}
+}
+
+// fakeTaskSearcher is a no-op TaskSearcher for MemoryProvider in tests.
+// Discover only calls IntentMatch/PlanQuery, never Stream, so it is sufficient.
+type fakeTaskSearcher struct{}
+
+func (f *fakeTaskSearcher) SearchSimilarTasks(_ context.Context, _ string, _ int) ([]memory.SearchResult, error) {
+	return nil, nil
+}
+
+// TestSourceDiscoveryExcludesMemoryForCode verifies the B10 root-cause fix:
+// the intent now carries Scope.Types derived from the requirement Need, so
+// MemoryProvider's type-aware score (0.3 for code/architecture) falls below
+// providerSelectThreshold (0.35) and the provider is excluded from code
+// queries, while remaining selected for decision queries (score 0.8).
+func TestSourceDiscoveryExcludesMemoryForCode(t *testing.T) {
+	reg := provider.NewProviderRegistry()
+	_ = reg.Register(memory.New("memory", &fakeTaskSearcher{}))
+
+	qp := &testQueryPlanner{}
+	sd := NewSourceDiscovery(reg, qp)
+
+	codeSources, err := sd.Discover(context.Background(), []KnowledgeRequirement{
+		{Need: NeedCode, Description: "implement the cache layer", MaxResults: 10},
+	}, knowledge.TokenBudget{})
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	for _, s := range codeSources {
+		if s.ProviderName == "memory" {
+			t.Errorf("MemoryProvider must NOT be selected for a code need (threshold %.2f excludes its 0.3 score)", providerSelectThreshold)
+		}
+	}
+
+	decisionSources, err := sd.Discover(context.Background(), []KnowledgeRequirement{
+		{Need: NeedDecision, Description: "decide on caching strategy", MaxResults: 10},
+	}, knowledge.TokenBudget{})
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	found := false
+	for _, s := range decisionSources {
+		if s.ProviderName == "memory" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("MemoryProvider must be selected for a decision need (score 0.8 >= threshold)")
 	}
 }
 

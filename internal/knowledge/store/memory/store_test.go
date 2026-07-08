@@ -102,6 +102,43 @@ func TestQueryWithLimit(t *testing.T) {
 	}
 }
 
+// TestQueryOffsetBeyondEnd verifies B17: when the offset is at or beyond the
+// end of the result set, the store must return an empty page, not silently
+// ignore the offset and return the full result.
+func TestQueryOffsetBeyondEnd(t *testing.T) {
+	s := New()
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("o%d", i)
+		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: id, Confidence: float64(i) / 10})
+	}
+
+	results, err := s.Query(context.Background(), knowledge.Query{Offset: 10})
+	if err != nil {
+		t.Fatalf("Query error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty page for out-of-range offset, got %d", len(results))
+	}
+}
+
+// TestQueryLimitThenOffset verifies that limit and offset compose correctly:
+// a limit of 3 then an offset of 1 yields the 2nd and 3rd (by confidence).
+func TestQueryLimitThenOffset(t *testing.T) {
+	s := New()
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("o%d", i)
+		_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: id, Confidence: float64(i) / 10})
+	}
+
+	results, err := s.Query(context.Background(), knowledge.Query{Limit: 3, Offset: 1})
+	if err != nil {
+		t.Fatalf("Query error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results (limit 3, offset 1), got %d", len(results))
+	}
+}
+
 func TestDelete(t *testing.T) {
 	s := New()
 	_ = s.Save(context.Background(), &knowledge.KnowledgeObject{ID: "o1"})

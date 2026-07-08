@@ -2,6 +2,8 @@ package knowledge
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -229,4 +231,60 @@ func (n *testNormalizer) Name() string { return "test-normalizer" }
 func (n *testNormalizer) Normalize(_ context.Context, obj *KnowledgeObject) (*KnowledgeObject, error) {
 	obj.Summary = n.prefix + obj.Summary
 	return obj, nil
+}
+
+// The following minimal implementations exercise KnowledgePipeline.Process
+// with a configured matcher/validator so that the shared resolvedObjects map
+// is read and written. Running this test under `go test -race` proves the
+// B22 data race is fixed.
+
+type raceMatcher struct{}
+
+func (raceMatcher) Name() string { return "race-matcher" }
+func (raceMatcher) Match(_ context.Context, _ *KnowledgeObject, _ []*KnowledgeObject) (*ResolveResult, error) {
+	return &ResolveResult{IsNew: true, Confidence: 0.5}, nil
+}
+
+type raceValidator struct{}
+
+func (raceValidator) Name() string { return "race-validator" }
+func (raceValidator) Validate(_ context.Context, _ *KnowledgeObject, _ []*KnowledgeObject) (*ValidationResult, error) {
+	return &ValidationResult{Confidence: 0.5}, nil
+}
+
+type raceSummarizer struct{}
+
+func (raceSummarizer) Name() string { return "race-summarizer" }
+func (raceSummarizer) Summarize(_ context.Context, obj *KnowledgeObject) (*KnowledgeObject, error) {
+	return obj, nil
+}
+
+// TestKnowledgePipelineProcessConcurrent verifies that Process is safe for
+// concurrent use (B22). The pipeline is invoked from many goroutines so the
+// shared resolvedObjects candidate pool is read and written in parallel; the
+// race detector fails the test if the access is not serialized by a mutex.
+func TestKnowledgePipelineProcessConcurrent(t *testing.T) {
+	pipeline := NewKnowledgePipeline(
+		[]Normalizer{&testNormalizer{prefix: "n:"}},
+		[]EntityMatcher{raceMatcher{}},
+		[]Validator{raceValidator{}},
+		[]Summarizer{raceSummarizer{}},
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			obj := &KnowledgeObject{ID: fmt.Sprintf("obj-%d", i), Summary: "body"}
+			if _, err := pipeline.Process(context.Background(), obj); err != nil {
+				t.Errorf("Process error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := len(pipeline.resolvedObjects); got != 32 {
+		t.Errorf("expected 32 resolved objects, got %d", got)
+	}
 }

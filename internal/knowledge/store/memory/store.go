@@ -104,9 +104,15 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 		result = result[:q.Limit]
 	}
 
-	// Apply offset.
-	if q.Offset > 0 && q.Offset < len(result) {
-		result = result[q.Offset:]
+	// Apply offset. When the offset falls at or beyond the end of the
+	// result set, return an empty page rather than silently ignoring the
+	// offset and returning the full result.
+	if q.Offset > 0 {
+		if q.Offset >= len(result) {
+			result = nil
+		} else {
+			result = result[q.Offset:]
+		}
 	}
 
 	return result, nil

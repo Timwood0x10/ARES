@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -60,6 +61,13 @@ type queryKnowledgeParams struct {
 	MaxTokens int      `json:"max_tokens,omitempty"`
 }
 
+// distillMemoryParams is the JSON input for the DistillMemory tool.
+type distillMemoryParams struct {
+	Content string   `json:"content"`
+	Tags    []string `json:"tags,omitempty"`
+	Type    string   `json:"type,omitempty"`
+}
+
 // Tools returns all AKF MCP tools.
 func (s *AKFService) Tools() []Tool {
 	return []Tool{
@@ -77,6 +85,11 @@ func (s *AKFService) Tools() []Tool {
 			Name:        "query_knowledge",
 			Description: "Query knowledge objects by type, tag, or text search through all providers.",
 			Execute:     s.handleQueryKnowledge,
+		},
+		{
+			Name:        "distill_memory",
+			Description: "Convert a text memory into KnowledgeObjects via the pipeline.",
+			Execute:     s.handleDistillMemory,
 		},
 	}
 }
@@ -169,6 +182,41 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 	return string(data), nil
 }
 
+// handleDistillMemory converts a text memory into a KnowledgeObject via the pipeline.
+func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (string, error) {
+	var params distillMemoryParams
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return "", fmt.Errorf("invalid params: %w", err)
+	}
+	if params.Content == "" {
+		return "", fmt.Errorf("content is required")
+	}
+
+	objType := knowledge.ObjectMemory
+	if params.Type != "" {
+		objType = knowledge.ObjectType(params.Type)
+	}
+
+	obj := &knowledge.KnowledgeObject{
+		ID:         fmt.Sprintf("mem_%d", time.Now().UnixNano()),
+		Type:       objType,
+		Summary:    params.Content,
+		Normalized: params.Content,
+		Tags:       params.Tags,
+		Confidence: 1.0,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	result := map[string]any{
+		"object_id": obj.ID,
+		"type":      obj.Type,
+		"summary":   obj.Summary,
+	}
+	data, _ := json.Marshal(result)
+	return string(data), nil
+}
+
 // nodeIDs extracts node IDs from a graph.
 func nodeIDs(g *knowledge.WorkingGraph) []string {
 	ids := make([]string, 0, len(g.Nodes))
@@ -179,6 +227,8 @@ func nodeIDs(g *knowledge.WorkingGraph) []string {
 }
 
 // handleQueryKnowledge performs a text/type/tag query via the runtime.
+// TODO: when a KnowledgeStore is available, query it directly instead of
+// rebuilding the graph (expected 2026-08).
 func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (string, error) {
 	var params queryKnowledgeParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {

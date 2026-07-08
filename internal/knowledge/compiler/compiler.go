@@ -178,8 +178,63 @@ func (c *DefaultCompiler) formatPrompt(graph *knowledge.WorkingGraph, cfg Compil
 }
 
 // formatMarkdown generates a human-readable markdown document.
+// Unlike formatPrompt which targets LLM consumption, this format is optimized
+// for human reading with full headers, bullet lists, and structured sections.
 func (c *DefaultCompiler) formatMarkdown(graph *knowledge.WorkingGraph, cfg CompileConfig) (string, error) {
-	return c.formatPrompt(graph, cfg) // Same content for now, just semantic difference
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "# Knowledge Context\n\n")
+
+	// Nodes section.
+	nodeCount := len(graph.Nodes)
+	if cfg.MaxNodes > 0 && cfg.MaxNodes < nodeCount {
+		nodeCount = cfg.MaxNodes
+	}
+
+	fmt.Fprintf(&b, "## Nodes (%d)\n\n", nodeCount)
+	count := 0
+	for _, obj := range graph.Nodes {
+		if cfg.MaxNodes > 0 && count >= cfg.MaxNodes {
+			break
+		}
+		fmt.Fprintf(&b, "- **`%s`**", obj.ID)
+		if obj.Type != "" {
+			fmt.Fprintf(&b, " `[%s]`", obj.Type)
+		}
+		if obj.Namespace != "" {
+			fmt.Fprintf(&b, " `[%s]`", obj.Namespace)
+		}
+		b.WriteString("\n")
+		if obj.Summary != "" {
+			fmt.Fprintf(&b, "  - Summary: %s\n", obj.Summary)
+		}
+		if obj.Confidence > 0 {
+			fmt.Fprintf(&b, "  - Confidence: %.2f\n", obj.Confidence)
+		}
+		if len(obj.Tags) > 0 {
+			fmt.Fprintf(&b, "  - Tags: `%s`\n", strings.Join(obj.Tags, "`, `"))
+		}
+		count++
+	}
+
+	// Edges section.
+	if len(graph.Edges) > 0 {
+		edgeCount := len(graph.Edges)
+		if cfg.MaxEdges > 0 && cfg.MaxEdges < edgeCount {
+			edgeCount = cfg.MaxEdges
+		}
+		fmt.Fprintf(&b, "\n## Relations (%d)\n\n", edgeCount)
+		b.WriteString("| From | Relation | To | Score |\n")
+		b.WriteString("|------|----------|----|-------|\n")
+		for i, e := range graph.Edges {
+			if cfg.MaxEdges > 0 && i >= cfg.MaxEdges {
+				break
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %.2f |\n", e.From, e.Name, e.To, e.Score)
+		}
+	}
+
+	return b.String(), nil
 }
 
 // formatJSON generates a JSON-serializable representation.

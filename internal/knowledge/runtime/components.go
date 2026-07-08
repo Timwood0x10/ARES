@@ -68,7 +68,11 @@ func (r *DefaultReducer) Reduce(_ context.Context, graph *knowledge.WorkingGraph
 	// Estimate: each node Summary consumes ~50 tokens.
 	estTokensPerNode := 50
 	maxNodes := budget.ForGraph / estTokensPerNode
-	if maxNodes <= 0 {
+	if budget.ForGraph <= 0 {
+		// Budget unset: do not aggressively prune; keep all nodes.
+		maxNodes = len(graph.Nodes)
+	} else if maxNodes <= 0 {
+		// Budget too small for a single node: keep at least one.
 		maxNodes = 1
 	}
 

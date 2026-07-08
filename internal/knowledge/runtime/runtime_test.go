@@ -77,6 +77,27 @@ func TestDefaultReducer(t *testing.T) {
 	}
 }
 
+func TestDefaultReducerZeroBudgetKeepsAll(t *testing.T) {
+	reducer := &DefaultReducer{}
+	graph := &knowledge.WorkingGraph{
+		Nodes: map[string]*knowledge.KnowledgeObject{
+			"a": {ID: "a", Summary: "node a", Confidence: 0.8},
+			"b": {ID: "b", Summary: "node b", Confidence: 0.6},
+			"c": {ID: "c", Summary: "node c", Confidence: 0.4},
+		},
+	}
+
+	// Budget unset (ForGraph == 0): the reducer must not collapse the graph
+	// to a single node (B16 regression). All nodes must be retained.
+	reduced, err := reducer.Reduce(context.Background(), graph, knowledge.TokenBudget{})
+	if err != nil {
+		t.Fatalf("Reduce error: %v", err)
+	}
+	if len(reduced.Nodes) != 3 {
+		t.Errorf("expected all 3 nodes retained when budget is unset, got %d", len(reduced.Nodes))
+	}
+}
+
 func TestDefaultReducerWithinBudget(t *testing.T) {
 	reducer := &DefaultReducer{}
 	graph := &knowledge.WorkingGraph{
