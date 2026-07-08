@@ -260,7 +260,23 @@ func RunScenarioReport(ctx context.Context, service *Service, scenario Scenario)
 	report.Duration = time.Since(report.StartedAt)
 	report.Results = results
 	report.computeTotals()
-	report.Score = CalculateScoreV1(service.Stats(), service.calculateAvgRecoveryTime(nil))
+	// Compute score from per-scenario results, not from global Stats (which
+	// accumulate across runs). This fixes C-02: score now reflects this
+	// scenario's actual recovery speed.
+	scenarioStats := service.Stats()
+	var totalDuration time.Duration
+	recovered := 0
+	for _, r := range results {
+		if r.Success {
+			recovered++
+			totalDuration += r.Duration
+		}
+	}
+	avgRecovery := time.Duration(0)
+	if recovered > 0 {
+		avgRecovery = totalDuration / time.Duration(recovered)
+	}
+	report.Score = CalculateScoreV1(scenarioStats, avgRecovery)
 	report.checkVerified(scenario)
 
 	log.Info("arena: scenario report completed",

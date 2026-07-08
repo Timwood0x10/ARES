@@ -480,6 +480,27 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 	return embedded
 }
 
+// embedOneMemory generates an embedding for a single Memory.
+// Returns the embedding vector or an error. The caller should fall back to
+// an existing vector if this fails (embedding is a best-effort augmentation).
+func (d *Distiller) embedOneMemory(ctx context.Context, memory *Memory) ([]float64, error) {
+	if d.pipeline != nil {
+		problem, _ := memory.Metadata["problem"].(string)
+		solution, _ := memory.Metadata["solution"].(string)
+		spec, err := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+			MemoryType: memory.Type.String(),
+			Problem:    problem,
+			Solution:   solution,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build spec: %w", err)
+		}
+		return d.pipeline.Embed(ctx, spec)
+	}
+	embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+	return d.embedder.EmbedWithPrefix(ctx, embeddingText, "memory:")
+}
+
 // resolveConflictsPhase detects and resolves conflicts among embedded memories.
 //
 // Args:
@@ -532,20 +553,23 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 			case ReplaceOld:
 				finalMemories = append(finalMemories, memory)
 			case KeepBoth:
-				// NOTE: oldMemory reuses the existing Vector from the conflict
-				// record without re-embedding. A full fix should run it through
-				// embedPhase again to detect secondary conflicts, but that
-				// requires refactoring the resolve → embed → resolve loop.
-				// TODO: re-embed oldMemory and verify it doesn't create new
-				// conflicts with existing memories (expected 2026-09).
 				oldMemory := Memory{
 					ID:         uuid.New().String(),
 					Content:    conflict.Problem,
 					Metadata:   map[string]interface{}{"solution": conflict.Solution},
 					Type:       memory.Type,
 					Importance: conflict.Confidence,
-					Vector:     conflict.Vector,
+					Vector:     conflict.Vector, // fallback if re-embed fails
 					CreatedAt:  time.Now(),
+				}
+				// Re-embed oldMemory with a fresh vector so it can participate
+				// in subsequent conflict detection properly, rather than relying
+				// on a potentially stale vector from a prior conflicting memory.
+				if vec, err := d.embedOneMemory(ctx, &oldMemory); err == nil {
+					oldMemory.Vector = vec
+				} else {
+					log.WarnContext(ctx, "[Memory Distillation] KeepBoth re-embed failed, using existing vector",
+						"conversation_id", conversationID, "memory_index", idx, "error", err)
 				}
 				finalMemories = append(finalMemories, oldMemory)
 				finalMemories = append(finalMemories, memory)

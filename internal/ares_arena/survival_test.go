@@ -192,7 +192,11 @@ func TestRandomChaosAction_WithAgents(t *testing.T) {
 			}
 		},
 	}
-	svc := newTestService(rt, nil, nil)
+	dag := &mockDAG{
+		nodes: []string{"dag-node-1", "dag-node-2"},
+		edges: [][2]string{{"dag-node-1", "dag-node-2"}},
+	}
+	svc := newTestService(rt, dag, nil)
 
 	// Run multiple times to exercise randomness.
 	actionTypes := make(map[ActionType]bool)

@@ -215,13 +215,11 @@ func TestComputeScore_EdgeCases(t *testing.T) {
 
 	perfect := executor.computeScore(ScoreInputs{
 		StoppedDangerous: true, MaintainedCapital: true,
-		AuditLogComplete: true, RecoveredControlled: true,
 	})
 	require.Equal(t, 100.0, perfect)
 
 	worst := executor.computeScore(ScoreInputs{
 		StoppedDangerous: false, MaintainedCapital: false,
-		AuditLogComplete: false, RecoveredControlled: false,
 		TotalQuotes: 100, RejectedOrders: 100,
 	})
 	require.GreaterOrEqual(t, worst, 0.0)

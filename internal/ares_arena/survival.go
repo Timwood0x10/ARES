@@ -250,20 +250,16 @@ func (s *Service) randomChaosAction() Action {
 			action.TargetID = ids[rand.Intn(len(ids))] // #nosec G404
 		}
 	case ActionRemoveNode:
-		ids := s.injector.AvailableAgentIDs()
-		if len(ids) > 0 {
-			action.TargetID = ids[rand.Intn(len(ids))] // #nosec G404
+		nodes := s.injector.DAGNodes(context.Background())
+		if len(nodes) > 0 {
+			action.TargetID = nodes[rand.Intn(len(nodes))] // #nosec G404
 		}
 	case ActionRemoveEdge:
-		ids := s.injector.AvailableAgentIDs()
-		if len(ids) >= 2 {
-			fromIdx := rand.Intn(len(ids))   // #nosec G404
-			toIdx := rand.Intn(len(ids) - 1) // #nosec G404
-			if toIdx >= fromIdx {
-				toIdx++
-			}
-			action.SourceID = ids[fromIdx]
-			action.TargetID = ids[toIdx]
+		edges := s.injector.DAGEdges(context.Background())
+		if len(edges) > 0 {
+			chosen := edges[rand.Intn(len(edges))] // #nosec G404
+			action.SourceID = chosen[0]
+			action.TargetID = chosen[1]
 		}
 	case ActionKillLeader:
 	case ActionKillOrchestrator:

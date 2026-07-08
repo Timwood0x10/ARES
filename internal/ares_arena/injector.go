@@ -36,6 +36,8 @@ type RuntimeProvider interface {
 
 // DAGProvider is the subset of DAG mutation capabilities needed by the arena.
 type DAGProvider interface {
+	ListNodes(ctx context.Context) []string
+	ListEdges(ctx context.Context) [][2]string
 	RemoveNode(ctx context.Context, id string) error
 	RemoveEdge(ctx context.Context, from, to string) error
 }
@@ -136,6 +138,22 @@ func (in *Injector) RemoveNode(ctx context.Context, id string) error {
 		return fmt.Errorf("arena: remove node %s: %w", id, err)
 	}
 	return nil
+}
+
+// DAGNodes returns the list of current DAG node IDs.
+func (in *Injector) DAGNodes(ctx context.Context) []string {
+	if in.dag == nil {
+		return nil
+	}
+	return in.dag.ListNodes(ctx)
+}
+
+// DAGEdges returns the list of current DAG edges as from/to pairs.
+func (in *Injector) DAGEdges(ctx context.Context) [][2]string {
+	if in.dag == nil {
+		return nil
+	}
+	return in.dag.ListEdges(ctx)
 }
 
 // RemoveEdge removes a directed edge from the DAG.

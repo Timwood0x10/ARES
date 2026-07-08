@@ -188,10 +188,35 @@ func (m *mockRuntime) getLLMFailed() []struct {
 // mockDAG implements DAGProvider for testing.
 type mockDAG struct {
 	mu           sync.Mutex
+	listNodesFn  func(ctx context.Context) []string
+	listEdgesFn  func(ctx context.Context) [][2]string
 	removeNodeFn func(ctx context.Context, id string) error
 	removeEdgeFn func(ctx context.Context, from, to string) error
 	removedNodes []string
 	removedEdges [][2]string
+	nodes        []string
+	edges        [][2]string
+}
+
+func (m *mockDAG) ListNodes(ctx context.Context) []string {
+	if m.listNodesFn != nil {
+		return m.listNodesFn(ctx)
+	}
+	if len(m.nodes) > 0 {
+		return m.nodes
+	}
+	// Default: return node IDs matching agent IDs from the runtime mock.
+	return []string{"node-1", "node-2"}
+}
+
+func (m *mockDAG) ListEdges(ctx context.Context) [][2]string {
+	if m.listEdgesFn != nil {
+		return m.listEdgesFn(ctx)
+	}
+	if len(m.edges) > 0 {
+		return m.edges
+	}
+	return [][2]string{{"node-1", "node-2"}}
 }
 
 func (m *mockDAG) RemoveNode(ctx context.Context, id string) error {

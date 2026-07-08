@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,7 +74,7 @@ type ChaosExecutor struct {
 	actions      []ChaosAction
 	eventsLog    []string
 	mu           sync.Mutex
-	disconnected bool // Tracks simulated exchange connection state.
+	disconnected atomic.Bool // Tracks simulated exchange connection state.
 }
 
 // NewChaosExecutor creates a new chaos executor with the given actions.
@@ -136,8 +137,6 @@ func (e *ChaosExecutor) Execute(
 	var (
 		stoppedDangerousQuotes = true
 		maintainedCapital      = true
-		auditLogComplete       = true
-		recoveredControlled    = true
 		totalQuotes            int
 		rejectedOrders         int
 	)
@@ -174,19 +173,15 @@ func (e *ChaosExecutor) Execute(
 	}
 
 	score := e.computeScore(ScoreInputs{
-		StoppedDangerous:    stoppedDangerousQuotes,
-		MaintainedCapital:   maintainedCapital,
-		AuditLogComplete:    auditLogComplete,
-		RecoveredControlled: recoveredControlled,
-		TotalQuotes:         totalQuotes,
-		RejectedOrders:      rejectedOrders,
+		StoppedDangerous:  stoppedDangerousQuotes,
+		MaintainedCapital: maintainedCapital,
+		TotalQuotes:       totalQuotes,
+		RejectedOrders:    rejectedOrders,
 	})
 
 	report.Score.Overall = score
 	report.Score.StoppedDangerousQuotes = stoppedDangerousQuotes
 	report.Score.MaintainedCapitalConstraint = maintainedCapital
-	report.Score.CompleteAuditLog = auditLogComplete
-	report.Score.RecoveredControlledState = recoveredControlled
 	report.EventsLog = e.eventsLog
 
 	return report, nil
@@ -194,12 +189,10 @@ func (e *ChaosExecutor) Execute(
 
 // ScoreInputs holds intermediate values for score computation.
 type ScoreInputs struct {
-	StoppedDangerous    bool
-	MaintainedCapital   bool
-	AuditLogComplete    bool
-	RecoveredControlled bool
-	TotalQuotes         int
-	RejectedOrders      int
+	StoppedDangerous  bool
+	MaintainedCapital bool
+	TotalQuotes       int
+	RejectedOrders    int
 }
 
 // computeScore calculates the overall survival score (0–100).
@@ -210,12 +203,6 @@ func (e *ChaosExecutor) computeScore(in ScoreInputs) float64 {
 	}
 	if !in.MaintainedCapital {
 		score -= 25
-	}
-	if !in.AuditLogComplete {
-		score -= 15
-	}
-	if !in.RecoveredControlled {
-		score -= 20
 	}
 	if in.TotalQuotes > 0 {
 		rejectRate := float64(in.RejectedOrders) / float64(in.TotalQuotes)
@@ -337,30 +324,30 @@ func (e *ChaosExecutor) executeExchangeDisconnect(action ChaosAction) {
 		duration = time.Duration(v) * time.Millisecond
 	}
 
-	// Note: Execute already holds e.mu, so access e.disconnected directly.
-	e.disconnected = true
+	// Set atomic flag before sleeping so IsDisconnected can observe it
+	// without needing e.mu (which Execute holds during the entire call).
+	e.disconnected.Store(true)
 
 	e.logEvent(fmt.Sprintf("exchange_disconnect: simulated disconnect for %v", duration))
 
 	// Block for the configured duration to simulate network unavailability.
-	// This allows callers to observe the disconnected state during the window.
 	time.Sleep(duration)
 
-	e.disconnected = false
+	e.disconnected.Store(false)
 
 	e.logEvent("exchange_disconnect: connection restored")
 }
 
 // IsDisconnected returns whether the executor is currently simulating an
-// exchange disconnection. Thread-safe.
+// exchange disconnection. Thread-safe — uses atomic load instead of e.mu
+// so callers can observe the state even during an active disconnect window
+// (fix C-04: previous mu-locked access blocked until the sleep finished).
 //
 // Returns:
 //
 //	bool - true if the simulated exchange is disconnected, false otherwise.
 func (e *ChaosExecutor) IsDisconnected() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.disconnected
+	return e.disconnected.Load()
 }
 
 func (e *ChaosExecutor) logEvent(msg string) {

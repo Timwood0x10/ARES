@@ -5,6 +5,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"log/slog"
 )
 
 // Planner is the top-level orchestrator that runs the full planning pipeline:
@@ -16,6 +17,9 @@ import (
 //  5. ExecutionPlanner  — build ExecutionPlan (single-step or DAG)
 //
 // Planner does NOT execute tools. It only produces plans.
+
+var plog = slog.Default()
+
 type Planner struct {
 	analyzer  SemanticAnalyzer
 	planner   CapabilityPlanner
@@ -93,7 +97,12 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 	for i, req := range requirements {
 		candidates, err := p.resolver.Resolve(ctx, &req)
 		if err != nil {
-			return nil, fmt.Errorf("planner: resolve %q: %w", req.Name, err)
+			// Non-fatal: skip this requirement and continue with the rest.
+			// A single unrecognized capability should not abort the entire plan
+			// (T-02 fix).
+			plog.Warn("planner: skipping unresolvable capability", "capability", req.Name, "error", err)
+			requirements[i].ResolvedTool = ""
+			continue
 		}
 
 		// Step 4: Score candidates with evidence
@@ -105,11 +114,16 @@ func (p *Planner) Plan(ctx context.Context, request string) (*ExecutionPlan, err
 
 		scored, sErr := p.scorer.Score(ctx, candidates, evidence)
 		if sErr != nil {
-			return nil, fmt.Errorf("planner: score %q: %w", req.Name, sErr)
+			// Non-fatal: skip requirements that could not be scored.
+			plog.Warn("planner: skipping unscored capability", "capability", req.Name, "error", sErr)
+			requirements[i].ResolvedTool = ""
+			continue
 		}
 
 		if len(scored) == 0 {
-			return nil, fmt.Errorf("planner: no scored candidates for capability %q", req.Name)
+			plog.Warn("planner: no scored candidates for capability", "capability", req.Name)
+			requirements[i].ResolvedTool = ""
+			continue
 		}
 
 		// Pick the best candidate for this requirement.

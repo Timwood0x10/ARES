@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -78,10 +79,18 @@ func (d *taskDispatcher) RegisterExecutor(agentType models.AgentType, fn func(ct
 }
 
 // Dispatch dispatches tasks to sub-agents in parallel.
+// The caller's context is wrapped with the configured timeout so that
+// no single dispatch runs indefinitely (the stored timeout field is
+// not a dead parameter — it now limits per-call execution).
 func (d *taskDispatcher) Dispatch(ctx context.Context, tasks []*models.Task) ([]*models.TaskResult, error) {
 	if len(tasks) == 0 {
 		return nil, errors.ErrInvalidInput
 	}
+
+	// Apply the per-call timeout to prevent tasks from running indefinitely.
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, time.Duration(d.timeout)*time.Second)
+	defer cancel()
 
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, d.maxParallel)
