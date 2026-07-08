@@ -15,9 +15,9 @@ import (
 // Service orchestrates evaluation runs: loading suites, running tests via
 // internal/ares_eval runners, and persisting results through the repository.
 type Service struct {
-	repo           EvalResultRepository
-	loader         *ares_eval.Loader
-	agentExecutor  ares_eval.AgentExecutor
+	repo          EvalResultRepository
+	loader        *ares_eval.Loader
+	agentExecutor ares_eval.AgentExecutor
 }
 
 // Option configures a Service at construction time.

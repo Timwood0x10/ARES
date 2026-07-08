@@ -12,6 +12,43 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// Precompiled regex patterns for log parsing.
+// Compiled once at package initialization to avoid
+// recompilation on every log line processed.
+var (
+	reCommonLog   = regexp.MustCompile(`^(\S+) (\S+) (\S+) \[([^\]]+)\] "(\S+) (\S+) (\S+)" (\d+) (\d+)$`)
+	reCombinedLog = regexp.MustCompile(`^(\S+) (\S+) (\S+) \[([^\]]+)\] "(\S+) (\S+) (\S+)" (\d+) (\d+) "([^"]*)" "([^"]*)"$`)
+
+	reTimePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`),
+		regexp.MustCompile(`\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}`),
+		regexp.MustCompile(`\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}`),
+	}
+
+	reDefaultErrorPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)error`),
+		regexp.MustCompile(`(?i)exception`),
+		regexp.MustCompile(`(?i)failed`),
+		regexp.MustCompile(`(?i)fatal`),
+		regexp.MustCompile(`(?i)panic`),
+		regexp.MustCompile(`(?i)stack trace`),
+		regexp.MustCompile(`(?i)timeout`),
+		regexp.MustCompile(`(?i)denied`),
+	}
+
+	reMetricPatterns = []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{"response_time_ms", regexp.MustCompile(`(\d+(?:\.\d+)?)\s*ms`)},
+		{"latency_seconds", regexp.MustCompile(`(\d+(?:\.\d+)?)\s*s`)},
+		{"request_count", regexp.MustCompile(`(\d+)\s*requests`)},
+		{"memory_mb", regexp.MustCompile(`(\d+(?:\.\d+)?)\s*MB`)},
+		{"cpu_percent", regexp.MustCompile(`(\d+(?:\.\d+)?)%`)},
+		{"throughput_rps", regexp.MustCompile(`(\d+(?:\.\d+)?)\s*rps`)},
+	}
+)
+
 // LogAnalyzer provides log parsing and analysis capabilities.
 type LogAnalyzer struct {
 	*base.BaseTool
@@ -157,9 +194,7 @@ func (t *LogAnalyzer) parseJSONLog(line string) map[string]interface{} {
 // parseCommonLog parses Common Log Format (CLF).
 func (t *LogAnalyzer) parseCommonLog(line string) map[string]interface{} {
 	// Example: 127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326
-	pattern := `^(\S+) (\S+) (\S+) \[([^\]]+)\] "(\S+) (\S+) (\S+)" (\d+) (\d+)$`
-	re := regexp.MustCompile(pattern)
-	matches := re.FindStringSubmatch(line)
+	matches := reCommonLog.FindStringSubmatch(line)
 
 	if len(matches) < 10 {
 		return map[string]interface{}{
@@ -185,9 +220,7 @@ func (t *LogAnalyzer) parseCommonLog(line string) map[string]interface{} {
 // parseCombinedLog parses Combined Log Format.
 func (t *LogAnalyzer) parseCombinedLog(line string) map[string]interface{} {
 	// Example: 127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/5.0"
-	pattern := `^(\S+) (\S+) (\S+) \[([^\]]+)\] "(\S+) (\S+) (\S+)" (\d+) (\d+) "([^"]*)" "([^"]*)"$`
-	re := regexp.MustCompile(pattern)
-	matches := re.FindStringSubmatch(line)
+	matches := reCombinedLog.FindStringSubmatch(line)
 
 	if len(matches) < 12 {
 		return map[string]interface{}{
@@ -219,15 +252,8 @@ func (t *LogAnalyzer) parseSimpleLog(line string) map[string]interface{} {
 	level := "INFO"
 	message := line
 
-	// Common timestamp patterns
-	timePatterns := []string{
-		`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`,
-		`\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}`,
-		`\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}`,
-	}
-
-	for _, pattern := range timePatterns {
-		re := regexp.MustCompile(pattern)
+	// Common timestamp patterns (precompiled)
+	for _, re := range reTimePatterns {
 		if match := re.FindString(line); match != "" {
 			timestamp = match
 			message = strings.Replace(line, match, "", 1)
@@ -264,32 +290,24 @@ func (t *LogAnalyzer) parseSimpleLog(line string) map[string]interface{} {
 
 // findErrors finds error lines in log content.
 func (t *LogAnalyzer) findErrors(ctx context.Context, logContent string, customPatterns []string) (core.Result, error) {
-	// Default error patterns
-	defaultPatterns := []string{
-		`(?i)error`,
-		`(?i)exception`,
-		`(?i)failed`,
-		`(?i)fatal`,
-		`(?i)panic`,
-		`(?i)stack trace`,
-		`(?i)timeout`,
-		`(?i)denied`,
+	// Default error patterns (precompiled)
+	regexes := reDefaultErrorPatterns
+	patterns := []string{
+		`(?i)error`, `(?i)exception`, `(?i)failed`, `(?i)fatal`,
+		`(?i)panic`, `(?i)stack trace`, `(?i)timeout`, `(?i)denied`,
 	}
 
 	// Use custom patterns if provided
-	patterns := defaultPatterns
 	if len(customPatterns) > 0 {
 		patterns = customPatterns
-	}
-
-	// Compile regex patterns
-	regexes := make([]*regexp.Regexp, 0, len(patterns))
-	for _, pattern := range patterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue
+		regexes = make([]*regexp.Regexp, 0, len(patterns))
+		for _, pattern := range patterns {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				continue
+			}
+			regexes = append(regexes, re)
 		}
-		regexes = append(regexes, re)
 	}
 
 	// Find error lines
@@ -322,36 +340,28 @@ func (t *LogAnalyzer) findErrors(ctx context.Context, logContent string, customP
 
 // extractMetrics extracts metrics from log content.
 func (t *LogAnalyzer) extractMetrics(ctx context.Context, logContent string, customPatterns []string) (core.Result, error) {
-	// Default metric patterns
-	defaultPatterns := []struct {
+	// Use precompiled default patterns or compile custom ones.
+	type metricPattern struct {
 		name    string
-		pattern string
-	}{
-		{"response_time_ms", `(\d+(?:\.\d+)?)\s*ms`},
-		{"latency_seconds", `(\d+(?:\.\d+)?)\s*s`},
-		{"request_count", `(\d+)\s*requests`},
-		{"memory_mb", `(\d+(?:\.\d+)?)\s*MB`},
-		{"cpu_percent", `(\d+(?:\.\d+)?)%`},
-		{"throughput_rps", `(\d+(?:\.\d+)?)\s*rps`},
+		pattern *regexp.Regexp
 	}
-
-	// Parse custom patterns if provided
-	patterns := defaultPatterns
+	var patterns []metricPattern
 	if len(customPatterns) > 0 {
-		patterns = make([]struct {
-			name    string
-			pattern string
-		}, 0, len(customPatterns))
-
+		patterns = make([]metricPattern, 0, len(customPatterns))
 		for _, cp := range customPatterns {
-			// Parse custom pattern: "name:pattern"
 			parts := strings.SplitN(cp, ":", 2)
 			if len(parts) == 2 {
-				patterns = append(patterns, struct {
-					name    string
-					pattern string
-				}{name: parts[0], pattern: parts[1]})
+				re, err := regexp.Compile(parts[1])
+				if err != nil {
+					continue
+				}
+				patterns = append(patterns, metricPattern{name: parts[0], pattern: re})
 			}
+		}
+	} else {
+		patterns = make([]metricPattern, 0, len(reMetricPatterns))
+		for _, mp := range reMetricPatterns {
+			patterns = append(patterns, metricPattern{name: mp.name, pattern: mp.pattern})
 		}
 	}
 
@@ -359,12 +369,7 @@ func (t *LogAnalyzer) extractMetrics(ctx context.Context, logContent string, cus
 	metrics := make(map[string][]float64)
 
 	for _, mp := range patterns {
-		re, err := regexp.Compile(mp.pattern)
-		if err != nil {
-			continue
-		}
-
-		matches := re.FindAllStringSubmatch(logContent, -1)
+		matches := mp.pattern.FindAllStringSubmatch(logContent, -1)
 		for _, match := range matches {
 			if len(match) > 1 {
 				var value float64

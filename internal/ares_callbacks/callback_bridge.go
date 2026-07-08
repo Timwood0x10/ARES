@@ -2,6 +2,7 @@ package ares_callbacks
 
 import (
 	"context"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
@@ -22,6 +23,8 @@ func NewBridge(store ares_events.EventStore, agentID string) *BridgeEventStore {
 }
 
 // Emit converts a callback Context to an ares_events.Event and appends it.
+// Uses a background context with timeout to avoid blocking the caller's
+// request context while ensuring the event emission does not hang indefinitely.
 func (b *BridgeEventStore) Emit(ctx *Context) {
 	if ctx == nil || b.store == nil {
 		return
@@ -52,7 +55,12 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	if !ares_events.Emit(context.Background(), b.store, b.agentID, eventType, "callbacks", payload) {
+	// Use a short-lived background context so that event emission is not
+	// tied to (or blocked by) the caller's request lifecycle, while still
+	// having a timeout to prevent indefinite blocking.
+	emitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !ares_events.Emit(emitCtx, b.store, b.agentID, eventType, "callbacks", payload) {
 		log.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)
 	}
 }

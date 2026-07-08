@@ -42,8 +42,8 @@ type SearXNGResponse struct {
 // SetAllowedBaseURLs to permit additional trusted instances.
 type WebSearch struct {
 	*base.BaseTool
-	client           *http.Client
-	allowedBaseURLs  map[string]bool
+	client          *http.Client
+	allowedBaseURLs map[string]bool
 }
 
 // defaultSearXNGBaseURL is the default allowed SearXNG instance.

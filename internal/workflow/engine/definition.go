@@ -19,6 +19,13 @@ var (
 	ErrDuplicateAgentDefinition = stderrors.New("duplicate agent definition")
 )
 
+// Precompiled regex patterns for definition parsing.
+var (
+	rePromptSection = regexp.MustCompile(`(?i)^##\s*Prompt\s*:\s*(\w+)\s*$`)
+	reToolsSection  = regexp.MustCompile(`(?i)^##\s*Tools\s*$`)
+	reToolItem      = regexp.MustCompile(`^\s*-\s*(.+?)$`)
+)
+
 // AgentDefinition represents an agent definition from markdown.
 type AgentDefinition struct {
 	Name        string            `json:"name"`
@@ -150,7 +157,7 @@ func (p *DefinitionParser) extractPrompts(content string) map[string]string {
 			inPromptSection = false
 
 			// Check if this is a Prompt section
-			promptMatch := regexp.MustCompile(`(?i)^##\s*Prompt\s*:\s*(\w+)\s*$`).FindStringSubmatch(line)
+			promptMatch := rePromptSection.FindStringSubmatch(line)
 			if len(promptMatch) > 1 {
 				currentPrompt = strings.TrimSpace(promptMatch[1])
 				inPromptSection = true
@@ -181,12 +188,12 @@ func (p *DefinitionParser) extractTools(content string) []string {
 			inToolsSection = false
 
 			// Check if this is a Tools section
-			if regexp.MustCompile(`(?i)^##\s*Tools\s*$`).MatchString(strings.TrimSpace(line)) {
+			if reToolsSection.MatchString(strings.TrimSpace(line)) {
 				inToolsSection = true
 			}
 		} else if inToolsSection {
 			// Look for tool list items
-			toolMatch := regexp.MustCompile(`^\s*-\s*(.+?)$`).FindStringSubmatch(line)
+			toolMatch := reToolItem.FindStringSubmatch(line)
 			if len(toolMatch) > 1 {
 				toolName := strings.TrimSpace(toolMatch[1])
 				if toolName != "" {

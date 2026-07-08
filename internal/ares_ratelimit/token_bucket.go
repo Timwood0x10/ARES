@@ -49,6 +49,9 @@ func (l *TokenBucketLimiter) Allow(ctx context.Context) (bool, error) {
 }
 
 // Wait blocks until a request can be processed.
+// Calculates the precise wait time based on the fractional token deficit,
+// avoiding the thundering herd problem where all waiters sleep for the
+// full token period and wake up simultaneously.
 func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 	for {
 		l.mu.Lock()
@@ -57,19 +60,25 @@ func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 		if l.tokens >= 1 {
 			l.tokens--
 			l.mu.Unlock()
-
 			return nil
 		}
 
+		// Calculate precise wait time for the fractional token needed.
+		// deficit is the fraction of a token we need to wait for.
 		rate := l.rate
+		deficit := 1.0 - l.tokens // tokens needed to reach 1.0
 		l.mu.Unlock()
 
-		// Check for zero or very small rate to avoid division by zero
+		// Check for zero or very small rate to avoid division by zero.
 		if rate <= 0 {
 			return fmt.Errorf("rate must be positive, got %f", rate)
 		}
 
-		waitTime := time.Duration(float64(time.Second) / rate)
+		// Wait only long enough for the deficit to be refilled.
+		waitTime := time.Duration((deficit / rate) * float64(time.Second))
+		if waitTime <= 0 {
+			waitTime = time.Millisecond // Minimum sleep to avoid busy-loop.
+		}
 
 		tbTimer := time.NewTimer(waitTime)
 		select {

@@ -14,11 +14,11 @@ const DefaultSSLMode = "require"
 
 // Config represents the database configuration.
 type Config struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Database        string
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
 	// SSLMode controls the PostgreSQL sslmode connection parameter.
 	// Defaults to "require" via Validate(); use "disable" only for local dev.
 	SSLMode         string

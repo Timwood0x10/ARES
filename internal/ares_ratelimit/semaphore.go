@@ -56,14 +56,24 @@ func (l *SemaphoreLimiter) Release(key string) {
 	}
 }
 
-// Allow checks if a request is allowed without blocking or acquiring a slot.
+// Allow checks if a request is allowed and acquires a slot if so.
+// This is a non-blocking try-acquire: if a slot is available, it is acquired
+// and the caller MUST call Release to free it.
 func (l *SemaphoreLimiter) Allow(ctx context.Context) (bool, error) {
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
 	default:
 	}
-	return len(l.sem) < cap(l.sem), nil
+	select {
+	case l.sem <- struct{}{}:
+		l.mu.Lock()
+		l.acquired["default"]++
+		l.mu.Unlock()
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // Wait blocks until a request can be processed.

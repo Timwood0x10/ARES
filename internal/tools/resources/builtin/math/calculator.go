@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/expr-lang/expr"
@@ -20,6 +21,7 @@ import (
 type Calculator struct {
 	*base.BaseTool
 	compiled map[string]*vm.Program
+	mu       sync.RWMutex // Protects compiled map for concurrent access.
 }
 
 // NewCalculator creates a new Calculator tool backed by the expr evaluation engine.
@@ -120,9 +122,13 @@ func (t *Calculator) buildEnvironment() map[string]interface{} {
 	}
 }
 
-// getOrCompileProgram gets cached program or compiles new one
+// getOrCompileProgram gets cached program or compiles new one.
+// Thread-safe: uses RWMutex to allow concurrent reads while serializing writes.
 func (t *Calculator) getOrCompileProgram(expression string, env map[string]interface{}) (*vm.Program, error) {
+	// Fast path: read from cache under RLock.
+	t.mu.RLock()
 	program, ok := t.compiled[expression]
+	t.mu.RUnlock()
 	if ok {
 		return program, nil
 	}
@@ -135,7 +141,10 @@ func (t *Calculator) getOrCompileProgram(expression string, env map[string]inter
 		return nil, fmt.Errorf("invalid expression: %v", err)
 	}
 
+	// Write to cache under Lock.
+	t.mu.Lock()
 	t.compiled[expression] = program
+	t.mu.Unlock()
 	return program, nil
 }
 

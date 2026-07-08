@@ -53,6 +53,10 @@ func NewRegexTool() *RegexTool {
 	}
 }
 
+// maxRegexInputSize limits the input text size for regex operations to prevent
+// ReDoS attacks via catastrophic backtracking on very large inputs.
+const maxRegexInputSize = 10 * 1024 * 1024 // 10MB
+
 // Execute performs the regex operation.
 func (t *RegexTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	operation, ok := params["operation"].(string)
@@ -65,9 +69,19 @@ func (t *RegexTool) Execute(ctx context.Context, params map[string]interface{}) 
 		return core.NewErrorResult("text is required"), nil
 	}
 
+	// Limit input size to prevent ReDoS via catastrophic backtracking.
+	if len(text) > maxRegexInputSize {
+		return core.NewErrorResult(fmt.Sprintf("input text exceeds maximum size of %d bytes", maxRegexInputSize)), nil
+	}
+
 	pattern, ok := params["pattern"].(string)
 	if !ok || pattern == "" {
 		return core.NewErrorResult("pattern is required"), nil
+	}
+
+	// Limit pattern complexity to prevent ReDoS.
+	if len(pattern) > 1000 {
+		return core.NewErrorResult("regex pattern exceeds maximum length of 1000 characters"), nil
 	}
 
 	// Parse flags

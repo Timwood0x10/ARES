@@ -192,8 +192,8 @@ type WorkflowConfig struct {
 
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
-	Enabled  bool           `yaml:"enabled"`       // Enable storage
-	Type     string         `yaml:"type"`           // "postgres", "sqlite"
+	Enabled  bool           `yaml:"enabled"` // Enable storage
+	Type     string         `yaml:"type"`    // "postgres", "sqlite"
 	Host     string         `yaml:"host"`
 	Port     int            `yaml:"port"`
 	Username string         `yaml:"username"`

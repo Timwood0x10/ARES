@@ -256,30 +256,42 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 
 		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
 		ch, err := client.GenerateStream(cctx, prompt)
-		cancel()
-		if err == nil {
-			fc.clearCooldown(key)
-			return ch, nil
+		if err != nil {
+			cancel()
+			lastErr = err
+			cd := fc.cooldownForError(err)
+			fc.markCooldown(key)
+
+			if isRateLimitError(err) {
+				log.Warn("FailoverClient: rate limited on stream, cooling down",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+					"cooldown", cd,
+				)
+			} else {
+				log.Warn("FailoverClient: provider failed on stream, cooling down",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+					"cooldown", cd,
+					"error", err,
+				)
+			}
+			continue
 		}
 
-		lastErr = err
-		cd := fc.cooldownForError(err)
-		fc.markCooldown(key)
-
-		if isRateLimitError(err) {
-			log.Warn("FailoverClient: rate limited on stream, cooling down",
-				"provider", client.GetProvider(),
-				"model", client.GetModel(),
-				"cooldown", cd,
-			)
-		} else {
-			log.Warn("FailoverClient: provider failed on stream, cooling down",
-				"provider", client.GetProvider(),
-				"model", client.GetModel(),
-				"cooldown", cd,
-				"error", err,
-			)
-		}
+		// On success, wrap the channel so cancel() is called when the
+		// stream completes. We cannot call cancel() immediately because
+		// the streaming goroutine needs the context to remain active.
+		fc.clearCooldown(key)
+		wrappedCh := make(chan StreamChunk, defaultStreamBuffer)
+		go func() {
+			defer close(wrappedCh)
+			defer cancel()
+			for chunk := range ch {
+				wrappedCh <- chunk
+			}
+		}()
+		return wrappedCh, nil
 	}
 
 	return nil, fmt.Errorf("FailoverClient: all %d stream clients failed; last error: %w",

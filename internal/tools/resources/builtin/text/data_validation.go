@@ -11,6 +11,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// Precompiled email validation regex.
+var reEmail = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
 // DataValidation provides data validation operations.
 type DataValidation struct {
 	*base.BaseTool
@@ -107,10 +110,7 @@ func (t *DataValidation) validateJSON(ctx context.Context, data string) (core.Re
 
 // validateEmail validates if a string is a valid email address.
 func (t *DataValidation) validateEmail(ctx context.Context, data string) (core.Result, error) {
-	// RFC 5322 compliant email regex (simplified)
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
-
-	if !emailRegex.MatchString(data) {
+	if !reEmail.MatchString(data) {
 		return core.NewResult(false, map[string]interface{}{
 			"valid":  false,
 			"reason": "email format is invalid",
