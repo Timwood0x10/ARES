@@ -51,6 +51,15 @@ type compileContextParams struct {
 	ForGraph  int      `json:"for_graph"`
 }
 
+// queryKnowledgeParams is the JSON input for the QueryKnowledge tool.
+type queryKnowledgeParams struct {
+	Text      string   `json:"text"`
+	Types     []string `json:"types,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	Limit     int      `json:"limit"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
+}
+
 // Tools returns all AKF MCP tools.
 func (s *AKFService) Tools() []Tool {
 	return []Tool{
@@ -63,6 +72,11 @@ func (s *AKFService) Tools() []Tool {
 			Name:        "compile_context",
 			Description: "Build and compile knowledge context into Prompt/JSON for LLM consumption.",
 			Execute:     s.handleCompileContext,
+		},
+		{
+			Name:        "query_knowledge",
+			Description: "Query knowledge objects by type, tag, or text search through all providers.",
+			Execute:     s.handleQueryKnowledge,
 		},
 	}
 }
@@ -162,4 +176,44 @@ func nodeIDs(g *knowledge.WorkingGraph) []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// handleQueryKnowledge performs a text/type/tag query via the runtime.
+func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (string, error) {
+	var params queryKnowledgeParams
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return "", fmt.Errorf("invalid params: %w", err)
+	}
+	if params.Limit <= 0 {
+		params.Limit = 20
+	}
+
+	budget := knowledge.TokenBudget{
+		MaxTokens: params.MaxTokens,
+		ForGraph:  params.Limit * 100,
+	}
+	if params.MaxTokens <= 0 {
+		budget.MaxTokens = 5000
+		budget.ForGraph = 3000
+	}
+	budget.Reserved = budget.MaxTokens - budget.ForGraph
+
+	goal := params.Text
+	if goal == "" {
+		goal = "query"
+	}
+
+	graph, err := s.Runtime.Execute(ctx, goal, budget, nil)
+	if err != nil {
+		return "", fmt.Errorf("query: %w", err)
+	}
+
+	result := map[string]any{
+		"nodes":      len(graph.Nodes),
+		"edges":      len(graph.Edges),
+		"node_ids":   nodeIDs(graph),
+		"edge_count": len(graph.Edges),
+	}
+	data, _ := json.Marshal(result)
+	return string(data), nil
 }

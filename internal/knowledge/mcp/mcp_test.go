@@ -23,8 +23,8 @@ func TestMCPToolsRegistration(t *testing.T) {
 	svc := NewAKFService(rt, comp)
 	tools := svc.Tools()
 
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
 	}
 
 	toolNames := make(map[string]bool)
@@ -37,6 +37,9 @@ func TestMCPToolsRegistration(t *testing.T) {
 	}
 	if !toolNames["compile_context"] {
 		t.Error("expected compile_context tool")
+	}
+	if !toolNames["query_knowledge"] {
+		t.Error("expected query_knowledge tool")
 	}
 }
 

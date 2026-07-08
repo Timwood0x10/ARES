@@ -192,6 +192,75 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
+func TestDefaultCompilerXMLFormat(t *testing.T) {
+	c := NewDefaultCompiler()
+	graph := testGraph()
+
+	cfg := CompileConfig{Formats: []Format{FormatXML}}
+	ctx, err := c.Compile(context.Background(), graph, cfg)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+
+	xmlOut, ok := ctx.Formats[FormatXML]
+	if !ok {
+		t.Fatal("expected xml format")
+	}
+	if !strings.Contains(xmlOut, "<knowledge_context>") {
+		t.Error("expected <knowledge_context> in XML output")
+	}
+	if !strings.Contains(xmlOut, "<nodes") {
+		t.Error("expected <nodes> in XML output")
+	}
+	if !strings.Contains(xmlOut, "<relations") {
+		t.Error("expected <relations> in XML output")
+	}
+}
+
+func TestDefaultCompilerToolSchemaFormat(t *testing.T) {
+	c := NewDefaultCompiler()
+	graph := testGraph()
+
+	cfg := CompileConfig{Formats: []Format{FormatToolSchema}}
+	ctx, err := c.Compile(context.Background(), graph, cfg)
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+
+	schema, ok := ctx.Formats[FormatToolSchema]
+	if !ok {
+		t.Fatal("expected tool_schema format")
+	}
+	if !strings.Contains(schema, "$schema") {
+		t.Error("expected $schema in tool_schema output")
+	}
+	if !strings.Contains(schema, "nodes") {
+		t.Error("expected 'nodes' property in tool_schema")
+	}
+	if !strings.Contains(schema, "relations") {
+		t.Error("expected 'relations' property in tool_schema")
+	}
+}
+
+func TestEscapeXML(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"hello", "hello"},
+		{"a&b", "a&amp;b"},
+		{"<tag>", "&lt;tag&gt;"},
+		{"\"quoted\"", "&quot;quoted&quot;"},
+		{"'single'", "&apos;single&apos;"},
+	}
+	for _, tt := range tests {
+		got := escapeXML(tt.input)
+		if got != tt.expected {
+			t.Errorf("escapeXML(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 // testGraph creates a simple graph for testing.
 func testGraph() *knowledge.WorkingGraph {
 	return &knowledge.WorkingGraph{

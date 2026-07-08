@@ -14,9 +14,11 @@ import (
 type Format string
 
 const (
-	FormatPrompt   Format = "prompt"
-	FormatMarkdown Format = "markdown"
-	FormatJSON     Format = "json"
+	FormatPrompt     Format = "prompt"
+	FormatMarkdown   Format = "markdown"
+	FormatJSON       Format = "json"
+	FormatXML        Format = "xml"
+	FormatToolSchema Format = "tool_schema"
 )
 
 // CompileConfig controls the compilation process.
@@ -80,6 +82,10 @@ func (c *DefaultCompiler) Compile(_ context.Context, graph *knowledge.WorkingGra
 			content, err = c.formatMarkdown(graph, cfg)
 		case FormatJSON:
 			content, err = c.formatJSON(graph, cfg)
+		case FormatXML:
+			content, err = c.formatXML(graph, cfg)
+		case FormatToolSchema:
+			content, err = c.formatToolSchema(graph, cfg)
 		default:
 			continue
 		}
@@ -197,6 +203,104 @@ func (c *DefaultCompiler) formatJSON(graph *knowledge.WorkingGraph, cfg CompileC
 
 	b.WriteString("\n  ]\n}\n")
 	return b.String(), nil
+}
+
+// formatXML generates an XML representation of the graph.
+func (c *DefaultCompiler) formatXML(graph *knowledge.WorkingGraph, cfg CompileConfig) (string, error) {
+	var b strings.Builder
+	b.WriteString("<knowledge_context>\n")
+
+	// Nodes section.
+	nodeCount := len(graph.Nodes)
+	if cfg.MaxNodes > 0 && cfg.MaxNodes < nodeCount {
+		nodeCount = cfg.MaxNodes
+	}
+	fmt.Fprintf(&b, "  <nodes count=\"%d\">\n", nodeCount)
+	count := 0
+	for _, obj := range graph.Nodes {
+		if cfg.MaxNodes > 0 && count >= cfg.MaxNodes {
+			break
+		}
+		fmt.Fprintf(&b, "    <node id=%q type=%q confidence=\"%.2f\">\n",
+			obj.ID, obj.Type, obj.Confidence)
+		if obj.Summary != "" {
+			fmt.Fprintf(&b, "      <summary>%s</summary>\n", escapeXML(obj.Summary))
+		}
+		b.WriteString("    </node>\n")
+		count++
+	}
+	b.WriteString("  </nodes>\n")
+
+	// Edges section.
+	if len(graph.Edges) > 0 {
+		edgeCount := len(graph.Edges)
+		if cfg.MaxEdges > 0 && cfg.MaxEdges < edgeCount {
+			edgeCount = cfg.MaxEdges
+		}
+		fmt.Fprintf(&b, "  <relations count=\"%d\">\n", edgeCount)
+		for i, e := range graph.Edges {
+			if cfg.MaxEdges > 0 && i >= cfg.MaxEdges {
+				break
+			}
+			fmt.Fprintf(&b, "    <relation from=%q to=%q name=%q score=\"%.2f\"/>\n",
+				e.From, e.To, e.Name, e.Score)
+		}
+		b.WriteString("  </relations>\n")
+	}
+
+	b.WriteString("</knowledge_context>\n")
+	return b.String(), nil
+}
+
+// formatToolSchema generates a JSON Schema representation for tool calling.
+func (c *DefaultCompiler) formatToolSchema(graph *knowledge.WorkingGraph, cfg CompileConfig) (string, error) {
+	var b strings.Builder
+	b.WriteString("{\n")
+	b.WriteString("  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n")
+	b.WriteString("  \"type\": \"object\",\n")
+	b.WriteString("  \"properties\": {\n")
+	b.WriteString("    \"nodes\": {\n")
+	b.WriteString("      \"type\": \"array\",\n")
+	b.WriteString("      \"description\": \"Knowledge nodes relevant to the task\",\n")
+	b.WriteString("      \"items\": {\n")
+	b.WriteString("        \"type\": \"object\",\n")
+	b.WriteString("        \"properties\": {\n")
+	b.WriteString("          \"id\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"type\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"summary\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"confidence\": {\"type\": \"number\"}\n")
+	b.WriteString("        },\n")
+	b.WriteString("        \"required\": [\"id\", \"summary\"]\n")
+	b.WriteString("      }\n")
+	b.WriteString("    },\n")
+	b.WriteString("    \"relations\": {\n")
+	b.WriteString("      \"type\": \"array\",\n")
+	b.WriteString("      \"description\": \"Relations between knowledge nodes\",\n")
+	b.WriteString("      \"items\": {\n")
+	b.WriteString("        \"type\": \"object\",\n")
+	b.WriteString("        \"properties\": {\n")
+	b.WriteString("          \"from\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"to\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"name\": {\"type\": \"string\"},\n")
+	b.WriteString("          \"score\": {\"type\": \"number\"}\n")
+	b.WriteString("        },\n")
+	b.WriteString("        \"required\": [\"from\", \"to\", \"name\"]\n")
+	b.WriteString("      }\n")
+	b.WriteString("    }\n")
+	b.WriteString("  },\n")
+	b.WriteString("  \"required\": [\"nodes\"]\n")
+	b.WriteString("}\n")
+	return b.String(), nil
+}
+
+// escapeXML escapes special XML characters in a string.
+func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }
 
 // estimateTokens provides a rough estimate of token count.
