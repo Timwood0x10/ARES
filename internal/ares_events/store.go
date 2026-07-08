@@ -11,7 +11,7 @@ import (
 type EventStore interface {
 	// Append persists events to the given stream.
 	// expectedVersion is used for optimistic concurrency control:
-	//   - 0 means the stream must be empty or not exist.
+	//   - 0 means auto-detect: append after the current stream version (no OCC check).
 	//   - Any positive value must match the stream's current version.
 	// Returns ErrVersionConflict on mismatch.
 	Append(ctx context.Context, streamID string, events []*Event, expectedVersion int64) error

@@ -191,6 +191,15 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 		ma.factory = f
 	}
 	m.agents[id] = ma
+
+	// If runtime hasn't started yet, skip launching — Start() will re-launch
+	// all agents with the real errgroup context (m.gctx). Launching now would
+	// attach the goroutine to the pre-start errgroup which gets discarded,
+	// creating an orphan agent whose context is never cancelled (R-01).
+	if !m.isStarted {
+		m.mu.Unlock()
+		return nil
+	}
 	m.mu.Unlock()
 
 	m.launchAgentGoroutine(agentCtx, id, agent)
@@ -1020,7 +1029,7 @@ func (m *Manager) SlowAgent(ctx context.Context, agentID string, delay time.Dura
 
 // PartitionNetwork simulates a network partition for an agent.
 func (m *Manager) PartitionNetwork(ctx context.Context, agentID string) error {
-	log.Info("[arena] PartitionNetwork", "agent", agentID)
+	log.Warn("[arena] PartitionNetwork — SIMULATION: no actual network partition applied (R-02)", "agent", agentID)
 	return nil
 }
 
@@ -1040,18 +1049,18 @@ func (m *Manager) ToolTimeout(ctx context.Context, agentID string, timeout time.
 
 // CorruptMemory simulates memory corruption for an agent.
 func (m *Manager) CorruptMemory(ctx context.Context, agentID string) error {
-	log.Info("[arena] CorruptMemory", "agent", agentID)
+	log.Warn("[arena] CorruptMemory — SIMULATION: no actual memory corruption applied (R-02)", "agent", agentID)
 	return nil
 }
 
 // DisconnectMCP simulates an MCP server disconnection for an agent.
 func (m *Manager) DisconnectMCP(ctx context.Context, agentID string) error {
-	log.Info("[arena] DisconnectMCP", "agent", agentID)
+	log.Warn("[arena] DisconnectMCP — SIMULATION: no actual MCP disconnection applied (R-02)", "agent", agentID)
 	return nil
 }
 
 // InjectLLMFailure simulates an LLM failure for an agent.
 func (m *Manager) InjectLLMFailure(ctx context.Context, agentID string, errType string) error {
-	log.Info("[arena] InjectLLMFailure", "agent", agentID, "errType", errType)
+	log.Warn("[arena] InjectLLMFailure — SIMULATION: no actual LLM failure injected (R-02)", "agent", agentID, "errType", errType)
 	return nil
 }

@@ -48,6 +48,11 @@ type memoryManager struct {
 
 	// ContextCleaner: strips tool call noise and repetitive content before LLM calls.
 	ctxCleaner *memctx.ContextCleaner
+
+	// defaultTenantID is the tenant ID used for search operations when none is
+	// explicitly provided. Must match the tenant used during write (StoreDistilledTask).
+	// Default: "default". Override via SetDefaultTenantID.
+	defaultTenantID string
 }
 
 // NewMemoryManager creates a new MemoryManager with the given configuration.
@@ -71,10 +76,11 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 	)
 
 	return &memoryManager{
-		sessionMemory: sessionMemory,
-		taskMemory:    taskMemory,
-		config:        config,
-		ctxCleaner:    memctx.NewContextCleaner(),
+		sessionMemory:   sessionMemory,
+		taskMemory:      taskMemory,
+		config:          config,
+		ctxCleaner:      memctx.NewContextCleaner(),
+		defaultTenantID: "default",
 	}, nil
 }
 
@@ -120,14 +126,15 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.Embe
 	distiller.SetEmbeddingPipeline(pipeline)
 
 	return &memoryManager{
-		sessionMemory: sessionMemory,
-		taskMemory:    taskMemory,
-		config:        config,
-		distiller:     distiller,
-		embedder:      embedder,
-		pipeline:      pipeline,
-		expRepo:       expRepo,
-		ctxCleaner:    memctx.NewContextCleaner(),
+		sessionMemory:   sessionMemory,
+		taskMemory:      taskMemory,
+		config:          config,
+		distiller:       distiller,
+		embedder:        embedder,
+		pipeline:        pipeline,
+		expRepo:         expRepo,
+		ctxCleaner:      memctx.NewContextCleaner(),
+		defaultTenantID: "default",
 	}, nil
 }
 
@@ -554,7 +561,7 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
 
-	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, "default", limit)
+	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, m.defaultTenantID, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "search experiences")
 	}
@@ -588,6 +595,17 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 // Session recovery requires persistent storage; use ProductionMemoryManager for that.
 func (m *memoryManager) GetLatestSessionForLeader(_ context.Context, _ string) (string, error) {
 	return "", nil
+}
+
+// SetDefaultTenantID overrides the default tenant ID used for search operations.
+// Must match the tenant used during write (StoreDistilledTask) for correct multi-tenant isolation.
+func (m *memoryManager) SetDefaultTenantID(tenantID string) {
+	if tenantID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.defaultTenantID = tenantID
+	m.mu.Unlock()
 }
 
 // cosineSimilarity calculates cosine similarity between two vectors.

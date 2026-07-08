@@ -225,6 +225,22 @@ func (c *Compactor) buildSummary(streamID string, events []*Event) *EventSummary
 			}
 		}
 
+		// Extract tool names from tool.call.* events too (E-02).
+		if evt.Type == EventToolCallStarted || evt.Type == EventToolCallCompleted {
+			if toolName, ok := evt.Payload["tool"].(string); ok && toolName != "" {
+				if !toolSet[toolName] {
+					toolSet[toolName] = true
+					summary.ToolsCalled = append(summary.ToolsCalled, toolName)
+				}
+			}
+			if toolName, ok := evt.Payload["tool_name"].(string); ok && toolName != "" {
+				if !toolSet[toolName] {
+					toolSet[toolName] = true
+					summary.ToolsCalled = append(summary.ToolsCalled, toolName)
+				}
+			}
+		}
+
 		// Extract session/user info from session.created events.
 		if evt.Type == EventSessionCreated {
 			if sid, ok := evt.Payload["session_id"].(string); ok {

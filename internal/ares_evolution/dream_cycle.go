@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -12,6 +13,11 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
+
+// ErrAllCandidatesRejected is returned by findWinner when no candidate
+// passes the win-rate threshold during quick-reject or full evaluation.
+// Callers should treat this as "no winner" rather than a hard error.
+var ErrAllCandidatesRejected = errors.New("dream cycle: all candidates rejected")
 
 // DreamCycleConfig holds configuration for the dream cycle orchestrator.
 type DreamCycleConfig struct {
@@ -93,6 +99,7 @@ type DreamCycle struct {
 	population      *genome.Population
 	config          DreamCycleConfig
 	mu              sync.Mutex
+	runMu           sync.Mutex // serializes Run() to prevent double-evolution (EV-01)
 	taskCount       int64
 	lastCycle       time.Time
 }
@@ -170,6 +177,10 @@ func NewDreamCycle(
 //
 //nolint:gocyclo // Complex evolutionary cycle orchestration with multiple phases
 func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
+	// Serialize Run to prevent double-evolution (EV-01).
+	dc.runMu.Lock()
+	defer dc.runMu.Unlock()
+
 	// Enforce a max duration for the entire cycle to prevent hangs.
 	cycleCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
@@ -243,16 +254,18 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 	if dc.guardrails != nil {
 		gen := 0
 		unevaluatedCount := 0
+		popSize := 0
 		if dc.population != nil {
 			gen = dc.population.CurrentGeneration()
 			agents, _ := dc.population.Snapshot()
+			popSize = len(agents)
 			for _, a := range agents {
 				if !genome.IsScoreEvaluated(a.Score) {
 					unevaluatedCount++
 				}
 			}
 		}
-		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, gen, int(taskCount), unevaluatedCount)
+		preResult := dc.guardrails.PreEvolveCheck(ctx, currentBest, gen, popSize, unevaluatedCount)
 		if preResult.ShouldStop {
 			slog.WarnContext(ctx, "[DreamCycle] Pre-evolution guardrails prevent cycle",
 				"events", len(preResult.Events))
@@ -283,6 +296,12 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 
 	// Step 3: Test each candidate in arena and find best winner.
 	winner, err := dc.findWinner(ctx, candidates, parent)
+	if errors.Is(err, ErrAllCandidatesRejected) {
+		slog.InfoContext(ctx, "[DreamCycle] No candidate passed win rate threshold",
+			"min_win_rate", dc.config.MinWinRate)
+		dc.recordFailure(ctx, parent)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("arena regression: %w", err)
 	}
@@ -680,7 +699,7 @@ func (dc *DreamCycle) findWinner(
 	}
 
 	if len(survivors) == 0 {
-		return nil, fmt.Errorf("dream cycle: all candidates rejected in quick pass")
+		return nil, ErrAllCandidatesRejected // all candidates rejected in quick pass (nilnil)
 	}
 
 	// Stage 2: Full evaluation — run survivors in parallel with full N.
@@ -720,7 +739,7 @@ func (dc *DreamCycle) findWinner(
 		return nil, err
 	}
 
-	// Pick the best among survivors above threshold.
+	// Pick the best among survivors above threshold — by winRate (evolution semantics).
 	var best *candidateResult
 	for _, er := range evalResults {
 		if er == nil || er.err != nil {
@@ -729,7 +748,7 @@ func (dc *DreamCycle) findWinner(
 		if er.winRate < dc.config.MinWinRate {
 			continue
 		}
-		if best == nil || er.scoreImprovement > best.scoreImprovement {
+		if best == nil || er.winRate > best.winRate {
 			cr := er.candidateResult
 			best = &cr
 		}

@@ -278,7 +278,13 @@ func (g *EvolutionGuardrails) PostEvolveCheck(ctx context.Context, newBest float
 	defer g.mu.Unlock()
 
 	// Check 1: Baseline regression guardrail
-	if newBest < g.BaselineScore && g.BaselineScore > 0 {
+	// Uses BaselineScore (if explicitly set) or bestKnownScore as the threshold.
+	// This ensures the guard is active by default after the first improvement (EV-02).
+	baseline := g.BaselineScore
+	if baseline <= 0 {
+		baseline = g.bestKnownScore
+	}
+	if newBest < baseline && baseline > 0 {
 		event := GuardrailEvent{
 			Level:           GuardrailCritical,
 			Rule:            "baseline_regression",

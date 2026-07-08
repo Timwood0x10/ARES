@@ -95,6 +95,10 @@ func NewCapabilityEngine(registry *Registry) *CapabilityEngine {
 		capMap:   make(map[Capability][]Tool),
 	}
 	engine.buildCapabilityMap()
+	// Auto-rebuild when the registry changes after construction (T-04).
+	registry.OnChange(func() {
+		engine.Rebuild()
+	})
 	return engine
 }
 

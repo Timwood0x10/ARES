@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	llmcore "github.com/Timwood0x10/ares/api/core"
@@ -16,6 +17,7 @@ type Registry struct {
 	mu          sync.RWMutex
 	schemaCache []ToolSchema
 	schemaDirty bool
+	onChange    []func() // callbacks invoked after Register/Unregister
 }
 
 // NewRegistry creates a new Registry.
@@ -26,36 +28,61 @@ func NewRegistry() *Registry {
 	}
 }
 
+// OnChange registers a callback that is invoked after every Register/Unregister.
+// The callback is called while the write lock is held — keep it fast.
+func (r *Registry) OnChange(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onChange = append(r.onChange, fn)
+}
+
 // Register registers a tool.
 func (r *Registry) Register(tool Tool) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if tool == nil {
+		r.mu.Unlock()
 		return ErrNilTool
 	}
 
 	name := tool.Name()
 	if _, exists := r.tools[name]; exists {
+		r.mu.Unlock()
 		return gerr.Wrap(ErrToolAlreadyRegistered, name)
 	}
 
 	r.tools[name] = tool
 	r.schemaDirty = true
+	// Collect onChange callbacks before releasing the lock to avoid
+	// deadlock when a callback itself needs to read from the registry (T-04).
+	callbacks := make([]func(), len(r.onChange))
+	copy(callbacks, r.onChange)
+	r.mu.Unlock()
+
+	for _, fn := range callbacks {
+		fn()
+	}
 	return nil
 }
 
 // Unregister removes a tool from the registry.
 func (r *Registry) Unregister(name string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if _, exists := r.tools[name]; !exists {
+		r.mu.Unlock()
 		return gerr.Wrap(ErrToolNotFound, name)
 	}
 
 	delete(r.tools, name)
 	r.schemaDirty = true
+	callbacks := make([]func(), len(r.onChange))
+	copy(callbacks, r.onChange)
+	r.mu.Unlock()
+
+	for _, fn := range callbacks {
+		fn()
+	}
 	return nil
 }
 
@@ -401,9 +428,14 @@ func checkType(expected string, value interface{}) error {
 			return fmt.Errorf("expected string, got %T", value)
 		}
 	case "integer":
-		switch value.(type) {
-		case int, int64, float64:
-			// float64 from JSON unmarshal is accepted
+		switch v := value.(type) {
+		case int, int64:
+			return nil
+		case float64:
+			// JSON unmarshal decodes numbers as float64. Accept only whole numbers.
+			if v != math.Trunc(v) {
+				return fmt.Errorf("expected integer, got float %v", v)
+			}
 			return nil
 		default:
 			return fmt.Errorf("expected integer, got %T", value)
