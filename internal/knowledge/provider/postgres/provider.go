@@ -21,6 +21,29 @@ type PGProvider struct {
 	mapping provider.ColumnMapping
 }
 
+// validateIdentifier returns an error if name is empty, longer than the
+// PostgreSQL identifier limit (63 bytes), or contains characters outside the
+// safe set [a-zA-Z0-9_]. Schema-qualified names (containing '.') are rejected
+// to prevent bypassing the table allowlist via "evil.public_table" style names.
+func validateIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("identifier too long: %d bytes (max 63)", len(name))
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_') {
+			return fmt.Errorf("identifier %q contains illegal character %q", name, c)
+		}
+	}
+	return nil
+}
+
 // NewPGProvider creates a PostgreSQL provider with the given DSN and config.
 func NewPGProvider(dsn string, cfg provider.ProviderConfig, mapping provider.ColumnMapping) (*PGProvider, error) {
 	if cfg.Name == "" {
@@ -28,6 +51,12 @@ func NewPGProvider(dsn string, cfg provider.ProviderConfig, mapping provider.Col
 	}
 	if dsn == "" {
 		return nil, fmt.Errorf("DSN is required")
+	}
+	if cfg.Table == "" {
+		return nil, fmt.Errorf("provider config Table is required")
+	}
+	if err := validateIdentifier(cfg.Table); err != nil {
+		return nil, fmt.Errorf("invalid table name %q: %w", cfg.Table, err)
 	}
 
 	db, err := sql.Open("postgres", dsn)
@@ -75,8 +104,12 @@ func (p *PGProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-cha
 		defer close(objCh)
 		defer close(errCh)
 
-		query := p.buildQuery(intent)
-		rows, err := p.db.QueryContext(ctx, query)
+		query, args, err := p.buildQuery(intent)
+		if err != nil {
+			errCh <- fmt.Errorf("build postgres query: %w", err)
+			return
+		}
+		rows, err := p.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			errCh <- fmt.Errorf("postgres query: %w", err)
 			return
@@ -116,30 +149,53 @@ func (p *PGProvider) Close() error {
 	return nil
 }
 
-func (p *PGProvider) buildQuery(intent knowledge.Intent) string {
+func (p *PGProvider) buildQuery(intent knowledge.Intent) (string, []any, error) {
 	maxResults := intent.Scope.MaxObjects
 	if maxResults <= 0 {
 		maxResults = 100
 	}
 
-	columns := []string{p.mapping.IDColumn, p.mapping.SummaryColumn}
-	if p.mapping.ContentColumn != "" {
-		columns = append(columns, p.mapping.ContentColumn)
+	if p.config.Table == "" {
+		return "", nil, fmt.Errorf("postgres provider %s: config.Table is required", p.config.Name)
 	}
-	if p.mapping.TagColumn != "" {
-		columns = append(columns, p.mapping.TagColumn)
-	}
-	if p.mapping.TimeColumn != "" {
-		columns = append(columns, p.mapping.TimeColumn)
+	if p.mapping.IDColumn == "" || p.mapping.SummaryColumn == "" {
+		return "", nil, fmt.Errorf("postgres provider %s: id_column and summary_column are required", p.config.Name)
 	}
 
-	return fmt.Sprintf(
-		"SELECT %s FROM %s ORDER BY %s DESC NULLS LAST LIMIT %d",
+	// Quote every identifier to prevent SQL injection via configured column
+	// or table names. Identifier quoting follows the PostgreSQL rule: wrap
+	// in double quotes and double any embedded double quotes.
+	columns := []string{quoteIdentifier(p.mapping.IDColumn), quoteIdentifier(p.mapping.SummaryColumn)}
+	if p.mapping.ContentColumn != "" {
+		columns = append(columns, quoteIdentifier(p.mapping.ContentColumn))
+	}
+	if p.mapping.TagColumn != "" {
+		columns = append(columns, quoteIdentifier(p.mapping.TagColumn))
+	}
+	if p.mapping.TimeColumn != "" {
+		columns = append(columns, quoteIdentifier(p.mapping.TimeColumn))
+	}
+
+	table := quoteIdentifier(p.config.Table)
+	orderCol := quoteIdentifier(p.mapping.TimeColumn)
+
+	// LIMIT is parameterized as a placeholder to keep the query safe and
+	// to let the driver handle type coercion.
+	query := fmt.Sprintf(
+		"SELECT %s FROM %s ORDER BY %s DESC NULLS LAST LIMIT $1",
 		strings.Join(columns, ", "),
-		p.config.Mapping.IDColumn,
-		p.mapping.TimeColumn,
-		maxResults,
+		table,
+		orderCol,
 	)
+	return query, []any{maxResults}, nil
+}
+
+// quoteIdentifier wraps a PostgreSQL identifier in double quotes and escapes
+// any embedded double quotes by doubling them, per the SQL standard. This
+// prevents identifier injection when configured column or table names are
+// substituted into a query.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func (p *PGProvider) scanRow(rows *sql.Rows) (*knowledge.KnowledgeObject, error) {

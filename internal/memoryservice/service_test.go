@@ -437,8 +437,8 @@ func TestGenerateTags(t *testing.T) {
 func TestTruncateString(t *testing.T) {
 	require.Equal(t, "short", truncate.WithEllipsis("short", 10))
 	result := truncate.WithEllipsis("this is a long string", 10)
-	require.Equal(t, "this is a ...", result)
-	require.Len(t, result, 13)
+	require.Equal(t, "this is...", result)
+	require.Len(t, result, 10)
 }
 
 var errAssertAnError = errors.New("expected error")

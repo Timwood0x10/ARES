@@ -76,7 +76,7 @@ func run(ctx context.Context) error {
 			if result.ToolCalls > 0 {
 				score = 0.5
 			}
-			if strings.Contains(result.Output, "445") || strings.Contains(result.Output, "345") {
+			if strings.Contains(result.Output, "445") {
 				score = 1.0
 			}
 			return &evaluation.Metrics{

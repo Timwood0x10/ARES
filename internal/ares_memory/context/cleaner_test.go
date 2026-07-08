@@ -297,8 +297,8 @@ func TestTruncateContent(t *testing.T) {
 	})
 
 	t.Run("exceeds limit", func(t *testing.T) {
-		if got := truncpkg.WithEllipsis("hello world", 5); got != "hello..." {
-			t.Errorf("expected 'hello...', got %q", got)
+		if got := truncpkg.WithEllipsis("hello world", 5); got != "he..." {
+			t.Errorf("expected 'he...', got %q", got)
 		}
 	})
 
@@ -315,14 +315,15 @@ func TestTruncateContent(t *testing.T) {
 	})
 
 	t.Run("multi-byte UTF-8", func(t *testing.T) {
-		// 5 runes: 日本語です
+		// 5 runes: 日本語です. maxLen=3 equals ellipsis length, so the string
+		// is truncated to 3 runes without an ellipsis suffix.
 		s := "日本語です"
 		got := truncpkg.WithEllipsis(s, 3)
-		if got != "日本語..." {
-			t.Errorf("expected '日本語...', got %q", got)
+		if got != "日本語" {
+			t.Errorf("expected '日本語', got %q", got)
 		}
-		if utf8.RuneCountInString(got) != 6 { // 3 runes + "..."
-			t.Errorf("expected 6 runes, got %d", utf8.RuneCountInString(got))
+		if utf8.RuneCountInString(got) != 3 {
+			t.Errorf("expected 3 runes, got %d", utf8.RuneCountInString(got))
 		}
 	})
 }

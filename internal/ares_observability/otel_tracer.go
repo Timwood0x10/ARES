@@ -256,15 +256,18 @@ func (t *OTelTracer) GetTraceID(ctx context.Context) string {
 	return spanCtx.TraceID().String()
 }
 
-// WithTrace returns a new context with an active root span.
+// WithTrace returns a new context with an active root span. The span is ended
+// immediately so it is flushed/exported without leaking, but the span context
+// (trace ID) remains embedded in the returned context for GetTraceID.
 //
 // Args:
 //   - ctx: the parent context.
 //
 // Returns:
-//   - context.Context: a new context with an active root span.
+//   - context.Context: a new context with a trace ID.
 func (t *OTelTracer) WithTrace(ctx context.Context) context.Context {
-	ctx, _ = t.tracer.Start(ctx, "root")
+	ctx, span := t.tracer.Start(ctx, "root")
+	span.End()
 	return ctx
 }
 

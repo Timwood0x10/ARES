@@ -26,7 +26,9 @@ func NewCostBar() *CostBar {
 }
 
 // HandleEvent processes an LLM call event and updates cost accumulators.
-// Non-LLM events are silently ignored.
+// Non-LLM events are silently ignored. Costs in different currencies are
+// tracked separately — only same-currency amounts are summed into totals to
+// avoid mixing units (e.g. adding USD to EUR).
 func (cb *CostBar) HandleEvent(evt *ares_events.Event) {
 	if evt == nil || evt.Type != ares_events.EventLLMCall {
 		return
@@ -48,15 +50,20 @@ func (cb *CostBar) HandleEvent(evt *ares_events.Event) {
 		currency = "USD"
 	}
 
-	// Update total.
+	// Update total. Token counts are currency-agnostic; cost is only summed
+	// when the currency matches the primary (first-seen) currency.
 	cb.total.InputTokens += inputTokens
 	cb.total.OutputTokens += outputTokens
 	cb.total.TotalTokens += inputTokens + outputTokens
-	cb.total.EstimatedCost += estimatedCost
 	cb.total.CallCount++
-	cb.total.Currency = currency
+	if cb.total.Currency == "" {
+		cb.total.Currency = currency
+	}
+	if cb.total.Currency == currency {
+		cb.total.EstimatedCost += estimatedCost
+	}
 
-	// Update per-agent.
+	// Update per-agent. Same currency guard as above.
 	cost, ok := cb.byAgent[agentID]
 	if !ok {
 		cost = &AgentCost{
@@ -68,9 +75,10 @@ func (cb *CostBar) HandleEvent(evt *ares_events.Event) {
 	cost.InputTokens += inputTokens
 	cost.OutputTokens += outputTokens
 	cost.TotalTokens += inputTokens + outputTokens
-	cost.EstimatedCost += estimatedCost
 	cost.CallCount++
-	cost.Currency = currency
+	if cost.Currency == currency {
+		cost.EstimatedCost += estimatedCost
+	}
 }
 
 // Snapshot returns the current cost bar state with entries sorted by

@@ -230,7 +230,9 @@ func (e *Engine) Nodes() map[string]NodeStatus {
 	return result
 }
 
-// Children returns all direct child nodes (nodes with an edge FROM the given node).
+// Children returns copies of all direct child nodes (nodes with an edge FROM
+// the given node). The returned pointers are safe to read without holding the
+// engine lock; mutations to returned nodes do not affect the engine's state.
 func (e *Engine) Children(id string) []*DAGNode {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -238,14 +240,16 @@ func (e *Engine) Children(id string) []*DAGNode {
 	for _, edge := range e.edges {
 		if edge.FromID == id {
 			if child, ok := e.nodes[edge.ToID]; ok {
-				result = append(result, child)
+				result = append(result, copyNode(child))
 			}
 		}
 	}
 	return result
 }
 
-// Parents returns all direct parent nodes (nodes with an edge TO the given node).
+// Parents returns copies of all direct parent nodes (nodes with an edge TO
+// the given node). The returned pointers are safe to read without holding the
+// engine lock; mutations to returned nodes do not affect the engine's state.
 func (e *Engine) Parents(id string) []*DAGNode {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -253,7 +257,7 @@ func (e *Engine) Parents(id string) []*DAGNode {
 	for _, edge := range e.edges {
 		if edge.ToID == id {
 			if parent, ok := e.nodes[edge.FromID]; ok {
-				result = append(result, parent)
+				result = append(result, copyNode(parent))
 			}
 		}
 	}

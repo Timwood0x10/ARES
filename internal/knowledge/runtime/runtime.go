@@ -105,16 +105,32 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 
 	sem := make(chan struct{}, cfg.MaxConcurrentProviders)
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(sources))
 
 	for _, src := range sources {
+		// Check context before acquiring the semaphore to avoid launching
+		// new providers after cancellation.
+		if ctx.Err() != nil {
+			break
+		}
+
 		prov := r.registry.Get(src.ProviderName)
 		if prov == nil {
 			log.Warn("provider not found (skipping)", "provider", src.ProviderName)
 			continue
 		}
 
-		sem <- struct{}{}
+		// Acquire semaphore with cancellation support to avoid blocking
+		// forever when the context is cancelled while waiting for a slot.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			// Context cancelled; stop launching new providers. The select
+			// break only exits the select, so re-check ctx below to exit
+			// the for loop.
+		}
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 
 		go func(src planner.PlannedSource, prov provider.GraphProvider) {
@@ -127,29 +143,38 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				},
 			}
 
-			objCh, errCh := prov.Stream(ctx, intent)
-			for obj := range objCh {
-				if ctx.Err() != nil {
-					return
-				}
-
-				// Run through pipeline.
-				if r.pipeline != nil {
-					var pErr error
-					obj, pErr = r.pipeline.Process(ctx, obj)
-					if pErr != nil {
-						continue
+			objCh, streamErrCh := prov.Stream(ctx, intent)
+		loop:
+			for {
+				select {
+				case obj, ok := <-objCh:
+					if !ok {
+						break loop
 					}
+					// Run through pipeline.
+					if r.pipeline != nil {
+						var pErr error
+						obj, pErr = r.pipeline.Process(ctx, obj)
+						if pErr != nil {
+							continue
+						}
+					}
+					mu.Lock()
+					objects[obj.ID] = obj
+					mu.Unlock()
+				case <-ctx.Done():
+					// Context cancelled; drain remaining objects so the
+					// producer goroutine can exit instead of blocking on
+					// the send forever (goroutine leak fix).
+					for range objCh {
+					}
+					break loop
 				}
-
-				mu.Lock()
-				objects[obj.ID] = obj
-				mu.Unlock()
 			}
 
 			// Check stream error.
 			select {
-			case sErr := <-errCh:
+			case sErr := <-streamErrCh:
 				if sErr != nil {
 					log.Warn("provider stream error (partial data may remain)", "provider", src.ProviderName, "error", sErr)
 				}
@@ -159,7 +184,6 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 	}
 
 	wg.Wait()
-	close(errCh)
 
 	if len(objects) == 0 {
 		return nil, fmt.Errorf("load: no objects loaded from any provider")

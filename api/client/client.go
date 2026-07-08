@@ -8,6 +8,8 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -147,12 +149,36 @@ func (c *Client) Runtime(config *runtimeSvc.Config, _ interface{}) (*runtimeSvc.
 	return runtimeSvc.NewService(*config, nil)
 }
 
-// Close closes the client and releases resources.
+// Close closes the client and releases resources held by child services.
+// Services that implement optional Close() or Stop(context.Context) methods
+// are gracefully shut down. Idempotent — calling Close multiple times is safe.
 func (c *Client) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
 	c.closed = true
-	return nil
+
+	var errs []error
+
+	// Shut down services that expose lifecycle methods. The core interfaces
+	// don't include Close/Stop, so use type assertions to detect optional
+	// implementations.
+	if c.memoryService != nil {
+		if svc, ok := c.memoryService.(interface{ Stop(context.Context) error }); ok {
+			if err := svc.Stop(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("memory stop: %w", err))
+			}
+		}
+	}
+	if c.llmService != nil {
+		if svc, ok := c.llmService.(interface{ Close() }); ok {
+			svc.Close()
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // Config returns the client configuration.

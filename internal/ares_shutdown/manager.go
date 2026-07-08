@@ -139,33 +139,39 @@ func (m *Manager) StartShutdown(ctx context.Context) error {
 
 // executePhase executes all callbacks for a phase.
 func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
+	// Snapshot callbacks under the read lock to avoid racing with AddCallback.
 	m.mu.RLock()
 	handler, exists := m.phases[phase]
+	if !exists {
+		m.mu.RUnlock()
+		return nil
+	}
+	callbacks := make([]Callback, len(handler.callbacks))
+	copy(callbacks, handler.callbacks)
+	onTimeout := handler.onTimeout
+	onPanic := handler.onPanic
+	phaseTimeout := handler.timeout
 	m.mu.RUnlock()
 
-	if !exists {
+	if len(callbacks) == 0 {
 		return nil
 	}
 
-	if len(handler.callbacks) == 0 {
-		return nil
-	}
-
-	phaseCtx, cancel := context.WithTimeout(ctx, handler.timeout)
+	phaseCtx, cancel := context.WithTimeout(ctx, phaseTimeout)
 	defer cancel()
 
-	errChan := make(chan error, len(handler.callbacks))
-	panicChan := make(chan interface{}, len(handler.callbacks))
+	errChan := make(chan error, len(callbacks))
+	panicChan := make(chan interface{}, len(callbacks))
 
-	for _, callback := range handler.callbacks {
+	for _, callback := range callbacks {
 		m.wg.Add(1)
 		go func(cb Callback) {
 			defer m.wg.Done()
 
 			defer func() {
 				if r := recover(); r != nil {
-					if handler.onPanic != nil {
-						handler.onPanic(r)
+					if onPanic != nil {
+						onPanic(r)
 					}
 					select {
 					case panicChan <- r:
@@ -191,6 +197,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 
 	select {
 	case <-done:
+		// All goroutines finished; safe to close and drain.
 		close(errChan)
 		close(panicChan)
 
@@ -219,8 +226,8 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 
 		return nil
 	case <-phaseCtx.Done():
-		if handler.onTimeout != nil {
-			handler.onTimeout()
+		if onTimeout != nil {
+			onTimeout()
 		}
 		timer := time.NewTimer(5 * time.Second)
 		select {
@@ -230,8 +237,40 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 			log.Warn("Timeout waiting for callbacks to complete during shutdown",
 				"phase", phase)
 		}
-		close(errChan)
-		close(panicChan)
+		// Do NOT close errChan/panicChan here: goroutines may still be running
+		// and sending on a closed channel panics. Drain non-blockingly instead.
+		panicCount := 0
+	DrainPanic:
+		for {
+			select {
+			case panicInfo := <-panicChan:
+				panicCount++
+				log.Error("Shutdown panic recovered",
+					"phase", phase,
+					"panic", panicInfo)
+			default:
+				break DrainPanic
+			}
+		}
+		var errs []error
+	DrainErr:
+		for {
+			select {
+			case err := <-errChan:
+				if err != nil {
+					errs = append(errs, err)
+				}
+			default:
+				break DrainErr
+			}
+		}
+
+		if panicCount > 0 {
+			return fmt.Errorf("%d callback(s) panicked during shutdown phase %s", panicCount, phase)
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("%d callback(s) failed during shutdown phase %s: %v", len(errs), phase, errs)
+		}
 		return phaseCtx.Err()
 	}
 }

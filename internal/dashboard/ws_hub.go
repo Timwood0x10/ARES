@@ -26,6 +26,9 @@ type WSHub struct {
 	broadcast  chan broadcastMsg
 	mu         sync.RWMutex
 	done       chan struct{}
+	runDone    chan struct{} // closed when Run exits
+	runStarted chan struct{} // closed once Run begins
+	runOnce    sync.Once
 	stopOnce   sync.Once
 }
 
@@ -44,15 +47,30 @@ func NewWSHub() *WSHub {
 	return &WSHub{
 		clients:    make(map[*WSClient]struct{}),
 		channels:   make(map[string]map[*WSClient]struct{}),
-		register:   make(chan *WSClient),
-		unregister: make(chan *WSClient),
+		register:   make(chan *WSClient, 64),
+		unregister: make(chan *WSClient, 64),
 		broadcast:  make(chan broadcastMsg, 256),
 		done:       make(chan struct{}),
+		runDone:    make(chan struct{}),
+		runStarted: make(chan struct{}),
 	}
 }
 
-// Run starts the hub's main event loop. Call this in a goroutine.
+// Run starts the hub's main event loop. Call this in a goroutine. Calling Run
+// more than once is a no-op — only the first invocation starts the loop.
 func (h *WSHub) Run() {
+	// Use a closure-local flag so that only the first caller proceeds; later
+	// callers return immediately to avoid double-closing runDone.
+	started := false
+	h.runOnce.Do(func() {
+		close(h.runStarted)
+		started = true
+	})
+	if !started {
+		return
+	}
+	defer close(h.runDone)
+
 	for {
 		select {
 		case client := <-h.register:
@@ -88,11 +106,19 @@ func (h *WSHub) Run() {
 	}
 }
 
-// Stop shuts down the hub. Safe to call multiple times.
+// Stop shuts down the hub and waits for Run to exit. Safe to call multiple
+// times. If Run was never started, Stop returns without blocking.
 func (h *WSHub) Stop() {
 	h.stopOnce.Do(func() {
 		close(h.done)
 	})
+	// Wait for Run to exit if it was started.
+	select {
+	case <-h.runStarted:
+		<-h.runDone
+	default:
+		// Run was never started; nothing to wait for.
+	}
 }
 
 // BroadcastToChannel sends a message to all subscribers of a channel.

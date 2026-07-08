@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 
@@ -136,16 +137,28 @@ func extractExecutionID(evt *ares_events.Event) string {
 	return ""
 }
 
-// extractLatency attempts to extract a duration/ms from an event payload.
+// extractLatency attempts to extract a latency value in milliseconds from an
+// event payload. The "duration_ms" key is already in milliseconds. The
+// "duration" key stores nanoseconds (as float64, int64, or time.Duration) and
+// is converted to milliseconds to avoid unit confusion that would cause
+// 5ms to appear as 5,000,000ms.
 func extractLatency(evt *ares_events.Event) float64 {
 	if evt.Payload == nil {
 		return 0
 	}
-	if d, ok := evt.Payload["duration"].(float64); ok {
-		return d
-	}
+	// duration_ms is already in milliseconds.
 	if d, ok := evt.Payload["duration_ms"].(float64); ok {
 		return d
+	}
+	// duration is stored as nanoseconds; convert to ms.
+	if d, ok := evt.Payload["duration"].(float64); ok {
+		return d / 1e6
+	}
+	if d, ok := evt.Payload["duration"].(time.Duration); ok {
+		return float64(d.Milliseconds())
+	}
+	if d, ok := evt.Payload["duration"].(int64); ok {
+		return float64(d) / 1e6
 	}
 	return 0
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,10 @@ import (
 
 // knownMCPBinaries is a list of well-known MCP server binary names.
 // These are probed with --help to verify they are MCP servers.
+//
+// SECURITY: This list also serves as an allowlist — only binaries whose base
+// name appears here may be executed by runCommand. This prevents arbitrary
+// binary execution even if a caller constructs a path to an untrusted binary.
 var knownMCPBinaries = []string{
 	"codegraph",
 	"codebase-memory-mcp",
@@ -23,6 +28,21 @@ var knownMCPBinaries = []string{
 	"mcp-server-sqlite",
 	"mcp-server-fetch",
 	"mcp-server-memory",
+}
+
+// knownMCPBinariesSet is the O(1) lookup set derived from knownMCPBinaries.
+var knownMCPBinariesSet = func() map[string]bool {
+	set := make(map[string]bool, len(knownMCPBinaries))
+	for _, b := range knownMCPBinaries {
+		set[b] = true
+	}
+	return set
+}()
+
+// isAllowedBinary reports whether the base name of the given path is in the
+// knownMCPBinaries allowlist.
+func isAllowedBinary(path string) bool {
+	return knownMCPBinariesSet[filepath.Base(path)]
 }
 
 // BinaryProbeProvider discovers MCP servers by probing binaries in PATH.
@@ -106,8 +126,13 @@ type binaryMetadata struct {
 }
 
 // probeBinary runs --help and --version to extract metadata.
+// The path must resolve to one of the knownMCPBinaries entries; anything else
+// is refused to prevent arbitrary command execution from untrusted inputs.
 func probeBinary(ctx context.Context, path string) binaryMetadata {
 	meta := binaryMetadata{}
+	if !isAllowedBinary(path) {
+		return meta
+	}
 
 	// Try --help first.
 	helpText := runCommand(ctx, path, "--help")
@@ -153,13 +178,13 @@ func probeBinary(ctx context.Context, path string) binaryMetadata {
 }
 
 // runCommand runs a command and returns stdout, or "" on error.
-// The command name is validated against a safe prefix to prevent arbitrary execution.
+// The command name is validated against the knownMCPBinaries allowlist to
+// prevent arbitrary execution.
 func runCommand(ctx context.Context, name string, args ...string) string {
-	// Only allow running commands from known system paths.
-	if !strings.HasPrefix(name, "/") {
+	if !isAllowedBinary(name) {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // guarded by HasPrefix("/") check
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // guarded by allowlist check
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

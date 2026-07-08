@@ -40,11 +40,9 @@ func TestSaveEmptyID(t *testing.T) {
 func TestGetNotFound(t *testing.T) {
 	s := New()
 	obj, err := s.Get(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("expected error for not found")
-	}
-	if err != ErrObjectNotFound {
-		t.Errorf("expected ErrObjectNotFound, got %v", err)
+	// Per the KnowledgeStore contract, Get returns nil, nil when not found.
+	if err != nil {
+		t.Fatalf("expected nil error for not found, got %v", err)
 	}
 	if obj != nil {
 		t.Error("expected nil object for not found")

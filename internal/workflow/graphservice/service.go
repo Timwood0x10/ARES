@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_observability"
@@ -13,11 +14,24 @@ import (
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
+// graphConfig tracks per-graph configuration state so that the service-level
+// tracer and limiter are applied at most once per graph. This avoids calling
+// SetTracer/SetLimiter (which acquire the graph's write lock) on every
+// Execute call, which would race with Execute's read lock when multiple
+// Execute calls run concurrently on the same graph.
+type graphConfig struct {
+	once sync.Once
+	err  error
+}
+
 // Service provides graph orchestration operations.
 type Service struct {
 	config  *Config
 	tracer  ares_observability.Tracer
 	limiter ares_ratelimit.Limiter
+	// graphCfgs tracks per-graph configuration state so SetTracer/SetLimiter
+	// are applied at most once per graph instance.
+	graphCfgs sync.Map
 }
 
 // Config represents service configuration.
@@ -116,16 +130,29 @@ func (s *Service) Execute(ctx context.Context, g *wfgraph.Graph, request *Execut
 		defer cancel()
 	}
 
-	// Apply service-level tracer and limiter if not set on graph
-	if s.tracer != nil {
-		if _, err := g.SetTracer(s.tracer); err != nil {
-			return nil, fmt.Errorf("set tracer: %w", err)
+	// Apply service-level tracer and limiter at most once per graph.
+	// SetTracer/SetLimiter acquire the graph's write lock, which races with
+	// Execute's read lock when multiple Execute calls run concurrently on
+	// the same graph. sync.Once ensures the write-lock acquisition happens
+	// exactly once and completes before any concurrent Execute proceeds.
+	cfg, _ := s.graphCfgs.LoadOrStore(g, &graphConfig{})
+	gc := cfg.(*graphConfig)
+	gc.once.Do(func() {
+		if s.tracer != nil {
+			if _, err := g.SetTracer(s.tracer); err != nil {
+				gc.err = fmt.Errorf("set tracer: %w", err)
+				return
+			}
 		}
-	}
-	if s.limiter != nil {
-		if _, err := g.SetLimiter(s.limiter); err != nil {
-			return nil, fmt.Errorf("set limiter: %w", err)
+		if s.limiter != nil {
+			if _, err := g.SetLimiter(s.limiter); err != nil {
+				gc.err = fmt.Errorf("set limiter: %w", err)
+				return
+			}
 		}
+	})
+	if gc.err != nil {
+		return nil, gc.err
 	}
 
 	// Create initial state

@@ -3,11 +3,14 @@ package postgres
 import (
 	"fmt"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
+
+// DefaultSSLMode is the safe default SSL mode for new connections.
+// Production deployments should always use SSL.
+const DefaultSSLMode = "require"
 
 // Config represents the database configuration.
 type Config struct {
@@ -16,6 +19,9 @@ type Config struct {
 	User            string
 	Password        string
 	Database        string
+	// SSLMode controls the PostgreSQL sslmode connection parameter.
+	// Defaults to "require" via Validate(); use "disable" only for local dev.
+	SSLMode         string
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
@@ -87,13 +93,17 @@ func (e *EmbeddingConfig) Validate() error {
 }
 
 // DefaultConfig returns the default database configuration.
+// Password is intentionally empty: callers must provide credentials explicitly
+// (e.g. via environment variables or config files) rather than relying on a
+// hardcoded default that could leak into production.
 func DefaultConfig() *Config {
 	return &Config{
 		Host:            "localhost",
 		Port:            5432,
 		User:            "postgres",
-		Password:        "postgres",
+		Password:        "",
 		Database:        "goagent",
+		SSLMode:         DefaultSSLMode,
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -106,12 +116,18 @@ func DefaultConfig() *Config {
 // DSN returns the connection string in PostgreSQL URI format.
 // URI format with URL encoding handles all special characters safely.
 func (c *Config) DSN() string {
-	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=disable&client_encoding=UTF8",
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = DefaultSSLMode
+	}
+	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=%s&client_encoding=UTF8",
 		url.QueryEscape(c.User),
 		url.QueryEscape(c.Password),
 		url.QueryEscape(c.Host),
 		c.Port,
-		c.Database)
+		c.Database,
+		sslMode,
+	)
 }
 
 // Validate validates the configuration.
@@ -121,6 +137,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Port <= 0 || c.Port > 65535 {
 		c.Port = 5432
+	}
+	if c.SSLMode == "" {
+		c.SSLMode = DefaultSSLMode
 	}
 	if c.MaxOpenConns <= 0 {
 		c.MaxOpenConns = 25
@@ -145,6 +164,3 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
-
-// NOTE: strconv import is kept for future use
-var _ = strconv.IntSize

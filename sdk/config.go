@@ -14,6 +14,8 @@ const (
 	providerAnthropic  = "anthropic"
 	providerOpenRouter = "openrouter"
 	defaultModel       = "llama3.2"
+	// defaultMaxIterations is the default cap on the ReAct tool-calling loop.
+	defaultMaxIterations = 10
 )
 
 // ConfigFile mirrors ares.yaml structure for config-driven Runtime creation.
@@ -59,6 +61,15 @@ func LoadConfigFile(path string) (*ConfigFile, error) {
 	return &cfg, nil
 }
 
+// resolveAPIKey returns the config-provided key when non-empty, otherwise falls
+// back to the named environment variable. This avoids storing secrets in YAML.
+func resolveAPIKey(configKey, envVar string) string {
+	if configKey != "" {
+		return configKey
+	}
+	return os.Getenv(envVar)
+}
+
 // ToOptions converts a ConfigFile into a slice of Option values that can be
 // passed to New or MustNew.
 func (c *ConfigFile) ToOptions() ([]Option, error) {
@@ -78,8 +89,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "gpt-4o-mini"
 		}
 		opts = append(opts, WithOpenAI(model))
-		if c.LLM.APIKey != "" {
-			opts = append(opts, WithAPIKey(c.LLM.APIKey))
+		if key := resolveAPIKey(c.LLM.APIKey, "OPENAI_API_KEY"); key != "" {
+			opts = append(opts, WithAPIKey(key))
 		}
 	case providerAnthropic:
 		model := c.LLM.Model
@@ -87,8 +98,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "claude-3-haiku"
 		}
 		opts = append(opts, WithAnthropic(model))
-		if c.LLM.APIKey != "" {
-			opts = append(opts, WithAPIKey(c.LLM.APIKey))
+		if key := resolveAPIKey(c.LLM.APIKey, "ANTHROPIC_API_KEY"); key != "" {
+			opts = append(opts, WithAPIKey(key))
 		}
 	case providerOpenRouter:
 		model := c.LLM.Model
@@ -96,8 +107,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "openai/gpt-4o-mini"
 		}
 		opts = append(opts, WithOpenRouter(model))
-		if c.LLM.APIKey != "" {
-			opts = append(opts, WithAPIKey(c.LLM.APIKey))
+		if key := resolveAPIKey(c.LLM.APIKey, "OPENROUTER_API_KEY"); key != "" {
+			opts = append(opts, WithAPIKey(key))
 		}
 	default:
 		return nil, fmt.Errorf("unknown LLM provider: %s", c.LLM.Provider)

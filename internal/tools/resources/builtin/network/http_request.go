@@ -21,6 +21,10 @@ type HTTPRequest struct {
 }
 
 // NewHTTPRequest creates a new HTTPRequest tool.
+//
+// The client is configured with SSRF defenses: private/loopback IPs are
+// blocked, redirects are capped at MaxHTTPRedirects with each destination
+// re-validated, and response bodies are capped at MaxHTTPResponseBytes.
 func NewHTTPRequest() *HTTPRequest {
 	params := &core.ParameterSchema{
 		Type: "object",
@@ -55,7 +59,8 @@ func NewHTTPRequest() *HTTPRequest {
 	return &HTTPRequest{
 		BaseTool: base.NewBaseToolWithCapabilities("http_request", "Perform HTTP requests to external APIs", core.CategoryCore, []core.Capability{core.CapabilityNetwork}, params),
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: SSRFCheckRedirect,
 		},
 	}
 }
@@ -65,6 +70,11 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 	url, ok := params["url"].(string)
 	if !ok || url == "" {
 		return core.NewErrorResult("url is required"), nil
+	}
+
+	// SSRF defense: validate scheme and block private/loopback/link-local IPs.
+	if err := ValidateURL(url); err != nil {
+		return core.NewErrorResult(fmt.Sprintf("url rejected by SSRF filter: %v", err)), nil
 	}
 
 	method := getString(params, "method")
@@ -133,8 +143,8 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 
 	duration := time.Since(startTime)
 
-	// Read response
-	respBody, err := io.ReadAll(resp.Body)
+	// Cap response body reads to prevent memory exhaustion from oversized responses.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, MaxHTTPResponseBytes))
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to read response: %v", err)), nil
 	}

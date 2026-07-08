@@ -170,12 +170,13 @@ func TestFileToolsRead_MissingFilePath(t *testing.T) {
 
 // TestFileToolsRead_FileNotFound tests reading a non-existent file.
 func TestFileToolsRead_FileNotFound(t *testing.T) {
-	tools := NewFileTools()
+	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	ctx := context.Background()
 
 	params := map[string]interface{}{
 		"operation": "read",
-		"file_path": "/non/existent/path/file.txt",
+		"file_path": filepath.Join(tmpDir, "nonexistent", "file.txt"),
 	}
 
 	result, err := tools.Execute(ctx, params)
@@ -195,11 +196,11 @@ func TestFileToolsRead_FileNotFound(t *testing.T) {
 
 // TestFileToolsRead_Success tests successful file reading.
 func TestFileToolsRead_Success(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary file
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 	content := "line1\nline2\nline3\nline4\nline5"
 
@@ -255,11 +256,11 @@ func TestFileToolsRead_Success(t *testing.T) {
 
 // TestFileToolsRead_WithOffsetAndLimit tests reading with offset and limit.
 func TestFileToolsRead_WithOffsetAndLimit(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary file with multiple lines
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 	content := strings.Join([]string{
 		"line1",
@@ -361,11 +362,11 @@ func TestFileToolsRead_WithOffsetAndLimit(t *testing.T) {
 
 // TestFileToolsRead_InvalidOffset tests invalid offset values.
 func TestFileToolsRead_InvalidOffset(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary file
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 	content := "line1\nline2\nline3"
 
@@ -425,7 +426,8 @@ func TestFileToolsRead_InvalidOffset(t *testing.T) {
 
 // TestFileToolsWrite_MissingParameters tests write operation without required parameters.
 func TestFileToolsWrite_MissingParameters(t *testing.T) {
-	tools := NewFileTools()
+	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	ctx := context.Background()
 
 	tests := []struct {
@@ -443,14 +445,14 @@ func TestFileToolsWrite_MissingParameters(t *testing.T) {
 			name: "no content",
 			params: map[string]interface{}{
 				"operation": "write",
-				"file_path": "/tmp/test.txt",
+				"file_path": filepath.Join(tmpDir, "test.txt"),
 			},
 		},
 		{
 			name: "content is not string",
 			params: map[string]interface{}{
 				"operation": "write",
-				"file_path": "/tmp/test.txt",
+				"file_path": filepath.Join(tmpDir, "test.txt"),
 				"content":   12345,
 			},
 		},
@@ -472,10 +474,10 @@ func TestFileToolsWrite_MissingParameters(t *testing.T) {
 
 // TestFileToolsWrite_WriteMode tests write mode (overwrite).
 func TestFileToolsWrite_WriteMode(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 
 	// Write initial content
@@ -527,10 +529,10 @@ func TestFileToolsWrite_WriteMode(t *testing.T) {
 
 // TestFileToolsWrite_AppendMode tests append mode.
 func TestFileToolsWrite_AppendMode(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 
 	// Write initial content
@@ -583,10 +585,10 @@ func TestFileToolsWrite_AppendMode(t *testing.T) {
 
 // TestFileToolsWrite_CreateDirectory tests creating directory if it doesn't exist.
 func TestFileToolsWrite_CreateDirectory(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "subdir", "nested", "test.txt")
 
 	params := map[string]interface{}{
@@ -655,12 +657,13 @@ func TestFileToolsList_MissingDirectoryPath(t *testing.T) {
 
 // TestFileToolsList_DirectoryNotFound tests listing a non-existent directory.
 func TestFileToolsList_DirectoryNotFound(t *testing.T) {
-	tools := NewFileTools()
+	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	ctx := context.Background()
 
 	params := map[string]interface{}{
 		"operation":      "list",
-		"directory_path": "/non/existent/directory",
+		"directory_path": filepath.Join(tmpDir, "nonexistent"),
 	}
 
 	result, err := tools.Execute(ctx, params)
@@ -680,11 +683,11 @@ func TestFileToolsList_DirectoryNotFound(t *testing.T) {
 
 // TestFileToolsList_NotADirectory tests listing a file instead of directory.
 func TestFileToolsList_NotADirectory(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary file
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 	testFile := filepath.Join(tmpDir, "test.txt")
 	err := os.WriteFile(testFile, []byte("test"), 0644)
 	if err != nil {
@@ -713,11 +716,11 @@ func TestFileToolsList_NotADirectory(t *testing.T) {
 
 // TestFileToolsList_Success tests successful directory listing.
 func TestFileToolsList_Success(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary directory with files
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 
 	// Create some files
 	_ = os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("content1"), 0644)
@@ -770,11 +773,11 @@ func TestFileToolsList_Success(t *testing.T) {
 
 // TestFileToolsList_WithPattern tests listing with pattern filter.
 func TestFileToolsList_WithPattern(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary directory with files
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 
 	_ = os.WriteFile(filepath.Join(tmpDir, "test_1.txt"), []byte("content1"), 0644)
 	_ = os.WriteFile(filepath.Join(tmpDir, "test_2.txt"), []byte("content2"), 0644)
@@ -846,11 +849,11 @@ func TestFileToolsList_WithPattern(t *testing.T) {
 
 // TestFileToolsList_IncludeHidden tests including hidden files.
 func TestFileToolsList_IncludeHidden(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary directory with hidden files
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 
 	if err := os.WriteFile(filepath.Join(tmpDir, "normal.txt"), []byte("content1"), 0644); err != nil {
 		t.Fatalf("Failed to create normal.txt: %v", err)
@@ -917,11 +920,11 @@ func TestFileToolsList_IncludeHidden(t *testing.T) {
 
 // TestFileToolsList_Recursive tests recursive directory listing.
 func TestFileToolsList_Recursive(t *testing.T) {
-	tools := NewFileTools()
 	ctx := context.Background()
 
 	// Create a temporary directory structure
 	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
 
 	// Create files in root
 	_ = os.WriteFile(filepath.Join(tmpDir, "root1.txt"), []byte("content1"), 0644)

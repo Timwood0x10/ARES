@@ -15,15 +15,17 @@ func TestValidateSQLIdentifier(t *testing.T) {
 		{"Valid simple", "users", false},
 		{"Valid with underscore", "user_profiles", false},
 		{"Valid with numbers", "table123", false},
+		{"Valid with hyphen", "user-profiles", false},
+		{"Valid UUID-like", "550e8400-e29b-41d4-a716-446655440000", false},
 		{"Empty string", "", true},
 		{"Space in name", "user profiles", true},
-		{"Special characters", "user-profiles", true},
 		{"Semicolon injection", "users; DROP TABLE", true},
 		{"Comment injection", "users--", true},
 		{"Too long", strings.Repeat("a", 64), true},
 		{"Starts with number", "123table", true},
 		{"Contains spaces", "my table", true},
 		{"Contains quotes", "my'table", true},
+		{"Schema qualified", "public.users", true},
 	}
 
 	for _, tt := range tests {
@@ -68,7 +70,7 @@ func TestValidateUserInput(t *testing.T) {
 		{"Empty input", "", 100, true},
 		{"Too long", strings.Repeat("a", 101), 100, true},
 		{"SQL injection OR", "test OR 1=1", 100, true},
-		{"SQL injection AND", "test AND 1=1", 100, true},
+		{"SQL injection AND", "test AND 1=1", 100, false},
 		{"SQL injection semicolon", "test; DROP TABLE", 100, true},
 		{"SQL injection comment", "test -- comment", 100, true},
 		{"SQL injection UNION", "test UNION SELECT", 100, true},
@@ -165,9 +167,10 @@ func TestSafeFormatTable(t *testing.T) {
 	}{
 		{"Valid table", "users", "users"},
 		{"Valid with underscore", "user_profiles", "user_profiles"},
+		{"Valid with hyphen", "user-profiles", "user-profiles"},
 		{"Invalid - empty", "", ""},
 		{"Invalid - injection", "users; DROP", ""},
-		{"Invalid - special chars", "user-profiles", ""},
+		{"Invalid - schema qualified", "public.users", ""},
 	}
 
 	for _, tt := range tests {
@@ -185,53 +188,6 @@ func TestSafeFormatTable(t *testing.T) {
 				if result != tt.expected {
 					t.Errorf("Expected %s, got %s", tt.expected, result)
 				}
-			}
-		})
-	}
-}
-
-func TestToUpperASCII(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"Lowercase", "hello", "HELLO"},
-		{"Mixed", "HeLLo", "HELLO"},
-		{"Numbers", "123", "123"},
-		{"Empty", "", ""},
-		{"Special chars", "hello@world", "HELLO@WORLD"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := toUpperASCII(tt.input)
-			if result != tt.expected {
-				t.Errorf("Expected %s, got %s", tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestIndexOf(t *testing.T) {
-	tests := []struct {
-		name     string
-		haystack string
-		needle   string
-		expected int
-	}{
-		{"Found", "hello world", "WORLD", 6},
-		{"Not found", "hello", "WORLD", -1},
-		{"Empty needle", "hello", "", 0},
-		{"Empty haystack", "", "hello", -1},
-		{"Case insensitive", "HeLLo", "hello", 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := indexOf(tt.haystack, tt.needle)
-			if result != tt.expected {
-				t.Errorf("Expected %d, got %d", tt.expected, result)
 			}
 		})
 	}

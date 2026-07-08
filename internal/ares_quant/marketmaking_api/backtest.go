@@ -161,10 +161,18 @@ func mergeResponses(a, b *BacktestResponse) *BacktestResponse {
 	if b == nil {
 		return a
 	}
+	mergedPnL := a.TotalPnL + b.TotalPnL
+	// Recompute TotalReturn from the merged PnL and the original capital so
+	// the aggregate reflects the true percentage return rather than a naive
+	// average of per-symbol percentages.
+	mergedReturn := 0.0
+	if a.Request != nil && a.Request.InitialCapital > 0 {
+		mergedReturn = mergedPnL / a.Request.InitialCapital * 100
+	}
 	return &BacktestResponse{
 		Request:       a.Request,
-		TotalPnL:      a.TotalPnL + b.TotalPnL,
-		TotalReturn:   (a.TotalReturn + b.TotalReturn) / 2,
+		TotalPnL:      mergedPnL,
+		TotalReturn:   mergedReturn,
 		SharpeRatio:   (a.SharpeRatio + b.SharpeRatio) / 2,
 		MaxDrawdown:   max(a.MaxDrawdown, b.MaxDrawdown),
 		TotalTrades:   a.TotalTrades + b.TotalTrades,

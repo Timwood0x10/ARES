@@ -106,51 +106,59 @@ func (r *FeedbackRecorder) Register(ctx context.Context, outcome StrategyOutcome
 		return nil
 	}
 
-	// Single critical section: check circuit breaker state atomically,
-	// then record errors or reset inside the same lock scope.
+	// Single critical section: check circuit breaker state atomically.
 	r.mu.Lock()
 	if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
 		if time.Since(r.circuitBreakerOpenedAt) < r.circuitBreakerCooldown {
+			consecutive := r.circuitBreakerConsecutiveErrors
+			remaining := r.circuitBreakerCooldown - time.Since(r.circuitBreakerOpenedAt)
 			r.mu.Unlock()
 			log.Warn("[FeedbackRecorder] Circuit breaker open, skipping feedback service",
-				"consecutive_errors", r.circuitBreakerConsecutiveErrors,
-				"cooldown_remaining", r.circuitBreakerCooldown-time.Since(r.circuitBreakerOpenedAt))
+				"consecutive_errors", consecutive,
+				"cooldown_remaining", remaining)
 			return nil
 		}
 		r.circuitBreakerConsecutiveErrors = 0
 	}
-
-	var (
-		hasAnyFailure bool
-		lastErr       error
-	)
+	// Collect non-empty experience IDs while still holding the lock so the
+	// subsequent service calls can run without the mutex held.
+	expIDs := make([]string, 0, len(outcome.ExperienceIDs))
 	for _, expID := range outcome.ExperienceIDs {
-		if expID == "" {
-			continue
+		if expID != "" {
+			expIDs = append(expIDs, expID)
 		}
+	}
+	r.mu.Unlock()
+
+	// Make service calls outside the lock to avoid blocking other callers.
+	// Circuit breaker state is updated atomically after all calls complete.
+	var (
+		failCount int
+		lastErr   error
+	)
+	for _, expID := range expIDs {
 		var err error
 		if outcome.Success {
-			r.mu.Unlock()
 			err = r.feedbackService.RecordSuccess(ctx, expID)
-			r.mu.Lock()
 		} else {
-			r.mu.Unlock()
 			err = r.feedbackService.RecordFailure(ctx, expID)
-			r.mu.Lock()
 		}
 		if err != nil {
-			hasAnyFailure = true
+			failCount++
 			lastErr = err
-			r.circuitBreakerConsecutiveErrors++
-			if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
-				r.circuitBreakerOpenedAt = time.Now()
-				log.Warn("[FeedbackRecorder] Circuit breaker opened",
-					"consecutive_errors", r.circuitBreakerConsecutiveErrors)
-			}
 		}
 	}
 
-	if !hasAnyFailure {
+	// Re-acquire lock and update circuit breaker state atomically.
+	r.mu.Lock()
+	if failCount > 0 {
+		r.circuitBreakerConsecutiveErrors += failCount
+		if r.circuitBreakerConsecutiveErrors >= r.circuitBreakerMaxErrors {
+			r.circuitBreakerOpenedAt = time.Now()
+			log.Warn("[FeedbackRecorder] Circuit breaker opened",
+				"consecutive_errors", r.circuitBreakerConsecutiveErrors)
+		}
+	} else {
 		r.circuitBreakerConsecutiveErrors = 0
 	}
 	r.mu.Unlock()

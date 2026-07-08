@@ -40,6 +40,7 @@ const (
 
 // Experience represents a problem-solution pair extracted from conversation.
 type Experience struct {
+	ID               string
 	Problem          string
 	Solution         string
 	Confidence       float64

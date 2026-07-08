@@ -14,11 +14,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testAPIKey is the API key used by newTestHTTPServer; tests that hit
+// protected endpoints must send it as `Authorization: Bearer <testAPIKey>`.
+const testAPIKey = "test-api-key"
+
 func newTestHTTPServer(t *testing.T) *HTTPServer {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	p := NewConsole().(*MonitorPlugin)
-	return NewHTTPServer(p)
+	return NewHTTPServer(p, WithAPIKey(testAPIKey))
+}
+
+// withTestAuth sets the Authorization header expected by newTestHTTPServer.
+func withTestAuth(req *http.Request) *http.Request {
+	req.Header.Set("Authorization", bearerPrefix+testAPIKey)
+	return req
 }
 
 func TestHTTPServer_Console(t *testing.T) {
@@ -75,7 +85,7 @@ func TestHTTPServer_GetAgent_NotFound(t *testing.T) {
 func TestHTTPServer_KillAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil)
+	req := withTestAuth(httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/kill", nil))
 	srv.ServeHTTP(w, req)
 
 	// Without interaction engine, should return 501.
@@ -85,7 +95,7 @@ func TestHTTPServer_KillAgent(t *testing.T) {
 func TestHTTPServer_ResumeAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/resume", nil)
+	req := withTestAuth(httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/resume", nil))
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -94,7 +104,7 @@ func TestHTTPServer_ResumeAgent(t *testing.T) {
 func TestHTTPServer_RetryAgent(t *testing.T) {
 	srv := newTestHTTPServer(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/retry", nil)
+	req := withTestAuth(httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/agents/a1/retry", nil))
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
@@ -134,12 +144,13 @@ func TestHTTPServer_CallMCPTool(t *testing.T) {
 	p := NewConsole(WithMCP(&mockMCPManager{
 		result: &MCPToolResult{ToolName: "tool1", Output: map[string]any{"ok": true}},
 	})).(*MonitorPlugin)
-	srv := NewHTTPServer(p)
+	srv := NewHTTPServer(p, WithAPIKey(testAPIKey))
 
 	body, _ := json.Marshal(map[string]any{"path": "/tmp/test"})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	withTestAuth(req)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -153,10 +164,11 @@ func TestHTTPServer_CallMCPTool_EmptyBody(t *testing.T) {
 	p := NewConsole(WithMCP(&mockMCPManager{
 		result: &MCPToolResult{ToolName: "tool1"},
 	})).(*MonitorPlugin)
-	srv := NewHTTPServer(p)
+	srv := NewHTTPServer(p, WithAPIKey(testAPIKey))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/mcp/tools/tool1/call", nil)
+	withTestAuth(req)
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)

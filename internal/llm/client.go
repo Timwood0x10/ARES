@@ -184,7 +184,11 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 		// entirely via context so that the goroutine reading the body is
 		// properly cancelled when the context expires.
 		streamClient: &http.Client{
-			Transport: http.DefaultTransport,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 

@@ -39,6 +39,10 @@ const (
 )
 
 // FileTools provides file system operations.
+//
+// SECURITY: All paths are validated against allowedDir. If allowedDir is empty
+// the tool refuses to operate — operators MUST configure WithAllowedDir, either
+// per-instance or via RegisterGeneralTools.
 type FileTools struct {
 	*base.BaseTool
 	allowedDir string
@@ -47,10 +51,105 @@ type FileTools struct {
 // FileToolsOption is a functional option for FileTools.
 type FileToolsOption func(*FileTools)
 
-// WithAllowedDir sets the allowed directory for security checks.
+// WithAllowedDir sets the allowed directory for security checks. The directory
+// is resolved to an absolute path with symlinks evaluated at construction time.
 func WithAllowedDir(dir string) FileToolsOption {
 	return func(ft *FileTools) {
-		ft.allowedDir = dir
+		resolved, err := resolveSecurePath(dir)
+		if err != nil {
+			// Fall back to the cleaned absolute path so that misconfiguration
+			// is still visible instead of silently allowing all paths.
+			abs, absErr := filepath.Abs(dir)
+			if absErr != nil {
+				ft.allowedDir = filepath.Clean(dir)
+				return
+			}
+			ft.allowedDir = filepath.Clean(abs)
+			return
+		}
+		ft.allowedDir = resolved
+	}
+}
+
+// resolveSecurePath returns the absolute path with symlinks evaluated.
+func resolveSecurePath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute path %q: %w", path, err)
+		}
+		path = abs
+	}
+	path = filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("evaluate symlinks for %q: %w", path, err)
+	}
+	return resolved, nil
+}
+
+// isPathAllowed reports whether targetPath is contained within allowedDir.
+//
+// Both paths are resolved to their absolute, symlink-evaluated forms before
+// the check. A relative path that escapes the allowed directory (via ".." or
+// a symlink) is rejected.
+func (t *FileTools) isPathAllowed(targetPath string) error {
+	if t.allowedDir == "" {
+		return fmt.Errorf("file tools have no allowedDir configured; refusing to operate")
+	}
+
+	resolvedTarget, err := resolveSecurePath(targetPath)
+	if err != nil {
+		// For paths that do not yet exist (e.g., a file being created),
+		// EvalSymlinks fails. Fall back to evaluating the existing prefix.
+		resolvedTarget, err = resolveSecurePathPrefix(targetPath)
+		if err != nil {
+			return fmt.Errorf("resolve target path %q: %w", targetPath, err)
+		}
+	}
+
+	rel, err := filepath.Rel(t.allowedDir, resolvedTarget)
+	if err != nil {
+		return fmt.Errorf("compute relative path from %q to %q: %w", t.allowedDir, resolvedTarget, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("access denied: path %s is outside allowed directory %s", targetPath, t.allowedDir)
+	}
+	return nil
+}
+
+// resolveSecurePathPrefix evaluates symlinks for the longest existing prefix
+// of path, then rejoins the remaining non-existent tail. This supports
+// validating paths for files that have not been created yet.
+func resolveSecurePathPrefix(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute path %q: %w", path, err)
+		}
+		path = abs
+	}
+	path = filepath.Clean(path)
+
+	// Walk up the path until we find a component that exists.
+	existing := path
+	tail := ""
+	for {
+		resolved, err := filepath.EvalSymlinks(existing)
+		if err == nil {
+			if tail == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, tail), nil
+		}
+		// Step up one directory.
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			// Reached root without finding an existing component.
+			return path, nil
+		}
+		tail = filepath.Join(filepath.Base(existing), tail)
+		existing = parent
 	}
 }
 
@@ -145,6 +244,11 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		return core.NewErrorResult(paramFilePath + " is required for read operation"), nil
 	}
 
+	// Security: validate path is within allowed directory BEFORE any filesystem access.
+	if err := t.isPathAllowed(filePath); err != nil {
+		return core.NewErrorResult(err.Error()), nil
+	}
+
 	// Convert relative path to absolute path
 	if !filepath.IsAbs(filePath) {
 		absPath, err := filepath.Abs(filePath)
@@ -168,21 +272,6 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		}
 
 		return core.NewErrorResult(fmt.Sprintf("file not found: %s", filePath)), nil
-	}
-
-	// Security: validate path is within allowed directory
-	if t.allowedDir != "" {
-		absPath, err := filepath.Abs(filePath)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
-		}
-		absDir, err := filepath.Abs(t.allowedDir)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve allowed directory: %v", err)), nil
-		}
-		if !strings.HasPrefix(absPath, absDir) {
-			return core.NewErrorResult(fmt.Sprintf("access denied: path %s is outside allowed directory %s", filePath, t.allowedDir)), nil
-		}
 	}
 
 	// Read file
@@ -242,6 +331,11 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 		return core.NewErrorResult(paramContent + " is required for write operation"), nil
 	}
 
+	// Security: validate path is within allowed directory BEFORE any filesystem access.
+	if err := t.isPathAllowed(filePath); err != nil {
+		return core.NewErrorResult(err.Error()), nil
+	}
+
 	// Convert relative path to absolute path
 	if !filepath.IsAbs(filePath) {
 		absPath, err := filepath.Abs(filePath)
@@ -252,21 +346,6 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 	}
 
 	filePath = filepath.Clean(filePath)
-
-	// Security: validate path is within allowed directory
-	if t.allowedDir != "" {
-		absPath, err := filepath.Abs(filePath)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
-		}
-		absDir, err := filepath.Abs(t.allowedDir)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve allowed directory: %v", err)), nil
-		}
-		if !strings.HasPrefix(absPath, absDir) {
-			return core.NewErrorResult(fmt.Sprintf("access denied: path %s is outside allowed directory %s", filePath, t.allowedDir)), nil
-		}
-	}
 
 	// Get write mode
 	mode := getString(params, paramMode)
@@ -335,19 +414,9 @@ func (t *FileTools) listFiles(ctx context.Context, params map[string]interface{}
 
 	dirPath = filepath.Clean(dirPath)
 
-	// Security: validate path is within allowed directory
-	if t.allowedDir != "" {
-		absDir, err := filepath.Abs(dirPath)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve absolute path: %v", err)), nil
-		}
-		allowedAbs, err := filepath.Abs(t.allowedDir)
-		if err != nil {
-			return core.NewErrorResult(fmt.Sprintf("failed to resolve allowed directory: %v", err)), nil
-		}
-		if !strings.HasPrefix(absDir, allowedAbs) {
-			return core.NewErrorResult(fmt.Sprintf("access denied: path %s is outside allowed directory %s", dirPath, t.allowedDir)), nil
-		}
+	// Security: validate path is within allowed directory BEFORE any filesystem access.
+	if err := t.isPathAllowed(dirPath); err != nil {
+		return core.NewErrorResult(err.Error()), nil
 	}
 
 	// Check if directory exists

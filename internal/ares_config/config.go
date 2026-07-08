@@ -192,12 +192,12 @@ type WorkflowConfig struct {
 
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
-	Enabled  bool           `yaml:"enabled"` // Enable storage
-	Type     string         `yaml:"type"`    // "postgres", "sqlite"
+	Enabled  bool           `yaml:"enabled"`       // Enable storage
+	Type     string         `yaml:"type"`           // "postgres", "sqlite"
 	Host     string         `yaml:"host"`
 	Port     int            `yaml:"port"`
 	Username string         `yaml:"username"`
-	Password string         `yaml:"password"`
+	Password string         `yaml:"password" json:"-"` // json:"-" prevents accidental leak via JSON serialization
 	Database string         `yaml:"database"`
 	SSLMode  string         `yaml:"ssl_mode"`
 	PGVector PGVectorConfig `yaml:"pgvector"`
@@ -241,7 +241,8 @@ type DistillConfig struct {
 
 // Load reads configuration from a YAML file.
 func Load(path string) (*Config, error) {
-	// Security: validate path is within allowed directory
+	// Security: validate path is within allowed directory using filepath.Rel
+	// to correctly reject path-traversal attempts (e.g. "/allowed/../secret").
 	if allowedConfigDir != "" {
 		absPath, err := filepath.Abs(path)
 		if err != nil {
@@ -251,7 +252,12 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get absolute directory: %w", err)
 		}
-		if !strings.HasPrefix(absPath, absDir) {
+		rel, err := filepath.Rel(absDir, absPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute relative path: %w", err)
+		}
+		// Reject paths that escape the allowed directory via ".." prefix.
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("config path %s is outside allowed directory %s", path, allowedConfigDir)
 		}
 	}

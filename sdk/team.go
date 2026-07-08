@@ -100,6 +100,7 @@ Your task (#%d): Focus on what you can contribute based on the plan above.`,
 
 		resp, err := t.runtime.llmSvc.Generate(ctx, &core.GenerateRequest{
 			Messages: taskMsg,
+			Tools:    member.toCoreTools(member.tools),
 		})
 		if err != nil {
 			subResults = append(subResults, fmt.Sprintf("[%s] error: %v", member.name, err))

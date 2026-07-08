@@ -228,7 +228,13 @@ func (l *ConfigLoader) Load(path string) (*ConfigFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("get absolute directory: %w", err)
 		}
-		if !strings.HasPrefix(absPath, absDir) {
+		// Use filepath.Rel for a robust containment check. strings.HasPrefix
+		// is vulnerable to sibling-directory attacks (e.g. /config-evil vs /config).
+		rel, err := filepath.Rel(absDir, absPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve relative path: %w", err)
+		}
+		if strings.HasPrefix(rel, "..") {
 			return nil, fmt.Errorf("config path %s is outside allowed directory %s", configPath, dir)
 		}
 	}

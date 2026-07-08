@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -20,6 +21,9 @@ type DefaultHTTPClient struct {
 }
 
 // NewDefaultHTTPClient creates a new default HTTP client with reasonable defaults.
+//
+// The client caps redirects at MaxHTTPRedirects and re-validates each
+// destination against the SSRF filter to prevent redirect-based SSRF attacks.
 func NewDefaultHTTPClient(timeout time.Duration) *DefaultHTTPClient {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -27,7 +31,8 @@ func NewDefaultHTTPClient(timeout time.Duration) *DefaultHTTPClient {
 
 	return &DefaultHTTPClient{
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:       timeout,
+			CheckRedirect: SSRFCheckRedirect,
 		},
 	}
 }
@@ -63,7 +68,15 @@ func (f *WebFetcher) SetUserAgent(userAgent string) {
 }
 
 // Get fetches content from a URL.
+//
+// SSRF defenses: the URL scheme and host are validated before the request is
+// sent, blocking file:// and private/loopback/link-local destinations. Response
+// bodies are capped at MaxHTTPResponseBytes to prevent memory exhaustion.
 func (f *WebFetcher) Get(ctx context.Context, url string) ([]byte, error) {
+	if err := ValidateURL(url); err != nil {
+		return nil, fmt.Errorf("url rejected by SSRF filter: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil) // #nosec G704
 	if err != nil {
 		return nil, err
@@ -92,7 +105,7 @@ func (f *WebFetcher) Get(ctx context.Context, url string) ([]byte, error) {
 		}
 	}
 
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, MaxHTTPResponseBytes))
 }
 
 // HTTPError represents an HTTP request error.

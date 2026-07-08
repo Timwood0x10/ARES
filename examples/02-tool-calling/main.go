@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Timwood0x10/ares/api/tools"
@@ -163,23 +164,122 @@ func tokenize(expr string) []string {
 	return tokens
 }
 
-// parseExpr parses a list of tokens into a result.
+// parseExpr parses a list of tokens into a result using recursive descent.
+// Supports +, -, *, /, parentheses, and unary minus.
 func parseExpr(tokens []string) (float64, error) {
-	// Simple precedence parser: only supports +, -, *, /, parentheses.
-	// This is intentionally basic for the demo.
-	return parseAddSub(tokens, 0)
-}
-
-func parseAddSub(tokens []string, pos int) (float64, error) {
-	left, err := parseMulDiv(tokens, pos)
+	p := &tokenParser{tokens: tokens}
+	result, err := p.parseAddSub()
 	if err != nil {
 		return 0, err
+	}
+	if p.pos < len(p.tokens) {
+		return 0, fmt.Errorf("unexpected token: %s", p.tokens[p.pos])
+	}
+	return result, nil
+}
+
+// tokenParser is a simple recursive descent parser for arithmetic expressions.
+type tokenParser struct {
+	tokens []string
+	pos    int
+}
+
+func (p *tokenParser) peek() string {
+	if p.pos < len(p.tokens) {
+		return p.tokens[p.pos]
+	}
+	return ""
+}
+
+func (p *tokenParser) consume() string {
+	tok := p.peek()
+	p.pos++
+	return tok
+}
+
+// parseAddSub handles addition and subtraction (lowest precedence).
+func (p *tokenParser) parseAddSub() (float64, error) {
+	left, err := p.parseMulDiv()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		op := p.peek()
+		if op != "+" && op != "-" {
+			break
+		}
+		p.consume()
+		right, err := p.parseMulDiv()
+		if err != nil {
+			return 0, err
+		}
+		if op == "+" {
+			left += right
+		} else {
+			left -= right
+		}
 	}
 	return left, nil
 }
 
-func parseMulDiv(tokens []string, pos int) (float64, error) {
-	_ = pos
-	// Simplified: just return a mock result for the demo.
-	return 0, fmt.Errorf("full parser not implemented in demo, use simple expressions")
+// parseMulDiv handles multiplication and division (higher precedence).
+func (p *tokenParser) parseMulDiv() (float64, error) {
+	left, err := p.parsePrimary()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		op := p.peek()
+		if op != "*" && op != "/" {
+			break
+		}
+		p.consume()
+		right, err := p.parsePrimary()
+		if err != nil {
+			return 0, err
+		}
+		if op == "*" {
+			left *= right
+		} else {
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			left /= right
+		}
+	}
+	return left, nil
+}
+
+// parsePrimary handles numbers, parenthesized expressions, and unary minus.
+func (p *tokenParser) parsePrimary() (float64, error) {
+	tok := p.peek()
+	if tok == "" {
+		return 0, fmt.Errorf("unexpected end of expression")
+	}
+	if tok == "(" {
+		p.consume()
+		val, err := p.parseAddSub()
+		if err != nil {
+			return 0, err
+		}
+		if p.peek() != ")" {
+			return 0, fmt.Errorf("expected closing parenthesis")
+		}
+		p.consume()
+		return val, nil
+	}
+	if tok == "-" {
+		p.consume()
+		val, err := p.parsePrimary()
+		if err != nil {
+			return 0, err
+		}
+		return -val, nil
+	}
+	p.consume()
+	val, err := strconv.ParseFloat(tok, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid number %q: %w", tok, err)
+	}
+	return val, nil
 }

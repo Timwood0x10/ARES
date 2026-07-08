@@ -124,15 +124,10 @@ func (w *FileWatcher) watchDirectory(ctx context.Context, dir string) {
 }
 
 // fsnotifyLoop watches for file change events.
+// The watcher is closed by Close() after this goroutine exits, so no
+// deferred close is needed here (fixing a double-close bug).
 func (w *FileWatcher) fsnotifyLoop(dir string) {
 	defer w.wg.Done()
-	defer func() {
-		if w.watcher != nil {
-			if err := w.watcher.Close(); err != nil {
-				log.Warn("reloader: close watcher failed", "error", err)
-			}
-		}
-	}()
 
 	for {
 		select {

@@ -3,14 +3,18 @@ package postgres
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // security patterns for validating SQL identifiers
 var (
-	// validIdentifierPattern matches valid SQL identifiers (table names, column names, etc.)
-	// Allows: letters, numbers, underscores
-	// Rejects: spaces, special characters, SQL keywords, semicolons, comments
-	validIdentifierPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	// validIdentifierPattern matches valid SQL identifiers (table names, column
+	// names, IDs, etc.). Allows: letters, digits, underscores, and hyphens.
+	// Hyphens are permitted because UUIDs and many tenant/IDs use them; the
+	// output is always quoted via quoteIdentifier before interpolation, so a
+	// hyphen cannot break out of the identifier context. Schema-qualified
+	// names (containing '.') are still rejected.
+	validIdentifierPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
 )
 
 // validateSQLIdentifier validates that an identifier is safe for use in SQL queries.
@@ -27,6 +31,16 @@ func validateSQLIdentifier(identifier string) error {
 		return &SecurityError{
 			Type:    SecurityErrorInvalidIdentifier,
 			Message: fmt.Sprintf("identifier too long: %d characters (max 63)", len(identifier)),
+		}
+	}
+
+	// Reject schema-qualified names (e.g. "public.users") to prevent bypassing
+	// the table allowlist. Quoting handles embedded double quotes, but a dot
+	// would let an attacker reference arbitrary schemas.
+	if strings.ContainsAny(identifier, ".;'\"`(){}\\") {
+		return &SecurityError{
+			Type:    SecurityErrorInvalidIdentifier,
+			Message: fmt.Sprintf("identifier contains forbidden character: %s", identifier),
 		}
 	}
 
@@ -105,66 +119,31 @@ func validateUserInput(input string, maxLength int) error {
 }
 
 // containsSQLInjectionPatterns checks for common SQL injection patterns.
+// This is a defense-in-depth check; primary protection comes from using
+// parameterized queries and quoteIdentifier for identifiers. The check uses
+// case-insensitive substring matching against a curated pattern list.
 func containsSQLInjectionPatterns(input string) bool {
 	dangerousPatterns := []string{
-		" OR ",
 		"--",
 		";",
 		"/*",
 		"*/",
-		"DROP ",
-		"EXEC ",
-		"UNION ",
+		"drop ",
+		"exec ",
+		"union ",
+		" or ",
 		"1=1",
 		"1=2",
 	}
 
-	inputUpper := toUpperASCII(input)
+	inputUpper := strings.ToUpper(input)
 	for _, pattern := range dangerousPatterns {
-		if contains(inputUpper, toUpperASCII(pattern)) {
+		if strings.Contains(inputUpper, strings.ToUpper(pattern)) {
 			return true
 		}
 	}
 
 	return false
-}
-
-// toUpperASCII converts a string to uppercase (ASCII only).
-func toUpperASCII(s string) string {
-	result := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' {
-			c -= ('a' - 'A')
-		}
-		result[i] = c
-	}
-	return string(result)
-}
-
-// contains checks if a string contains another string (case-insensitive).
-func contains(s, substr string) bool {
-	return indexOf(s, substr) >= 0
-}
-
-// indexOf finds the index of substr in s (case-insensitive).
-func indexOf(s, substr string) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	if len(s) < len(substr) {
-		return -1
-	}
-
-	s = toUpperASCII(s)
-	substr = toUpperASCII(substr)
-
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 // safeFormatTable safely formats a table name into SQL.

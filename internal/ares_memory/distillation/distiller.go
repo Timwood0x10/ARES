@@ -122,6 +122,7 @@ func (m *DistillationMetrics) String() string {
 // Distiller is the unified distillation engine that orchestrates all components.
 type Distiller struct {
 	config      *DistillationConfig
+	configMu    sync.RWMutex
 	extractor   *ExperienceExtractor
 	classifier  *MemoryClassifier
 	scorer      *ImportanceScorer
@@ -184,6 +185,25 @@ func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingServic
 // instead of calling the raw embedder directly.
 func (d *Distiller) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
 	d.pipeline = pipeline
+}
+
+// UpdateConfig atomically replaces the distiller's configuration.
+// This allows runtime reconfiguration of thresholds (MinImportance, MaxMemories, etc.)
+// without recreating the distiller.
+func (d *Distiller) UpdateConfig(config *DistillationConfig) {
+	if config == nil {
+		return
+	}
+	d.configMu.Lock()
+	defer d.configMu.Unlock()
+	d.config = config
+}
+
+// getConfig returns the current configuration in a thread-safe manner.
+func (d *Distiller) getConfig() *DistillationConfig {
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	return d.config
 }
 
 // WithExperienceStore configures the optional experience store for syncing memories.
@@ -347,42 +367,36 @@ func (d *Distiller) classifyAndScorePhase(ctx context.Context, conversationID st
 //
 //	[]Memory - filtered memories.
 func (d *Distiller) topNBeforeConflictPhase(ctx context.Context, conversationID string, memories []Memory) []Memory {
-	if !d.config.TopNBeforeConflict || len(memories) <= d.config.MaxMemoriesPerDistillation {
+	config := d.getConfig()
+	if !config.TopNBeforeConflict || len(memories) <= config.MaxMemoriesPerDistillation {
 		return memories
 	}
 
-	// Convert to experiences for scoring.
-	var exps []Experience
+	// Filter by minimum importance and sort by importance (descending), then
+	// take the top N. This replicates ImportanceScorer.TopNFilter behavior
+	// directly on memories to avoid a stale-data bug: the previous code used
+	// memories[:len(filtered)] which selected the first N memories instead of
+	// the highest-scoring N.
+	filtered := make([]Memory, 0, len(memories))
 	for _, mem := range memories {
-		problem, problemOk := mem.Metadata["problem"].(string)
-		if !problemOk {
-			log.WarnContext(ctx, "[Memory Distillation] Problem metadata is not a string", "conversation_id", conversationID)
-			problem = ""
+		if mem.Importance >= config.MinImportance {
+			filtered = append(filtered, mem)
 		}
-
-		solution, solutionOk := mem.Metadata["solution"].(string)
-		if !solutionOk {
-			log.WarnContext(ctx, "[Memory Distillation] Solution metadata is not a string", "conversation_id", conversationID)
-			solution = ""
-		}
-
-		exps = append(exps, Experience{
-			Problem:    problem,
-			Solution:   solution,
-			Confidence: mem.Importance,
-		})
 	}
 
-	filtered := d.scorer.TopNFilter(exps, d.config.MaxMemoriesPerDistillation)
-
-	// Rebuild memories from filtered experiences.
-	memories = memories[:len(filtered)]
-	for i, exp := range filtered {
-		memories[i].Importance = exp.Confidence
-		memories[i].Metadata["confidence"] = exp.Confidence
+	if len(filtered) == 0 {
+		return filtered
 	}
 
-	return memories
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Importance > filtered[j].Importance
+	})
+
+	if len(filtered) > config.MaxMemoriesPerDistillation {
+		filtered = filtered[:config.MaxMemoriesPerDistillation]
+	}
+
+	return filtered
 }
 
 // embedPhase generates embeddings for all memories concurrently using errgroup.
@@ -671,13 +685,15 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 		return nil
 	}
 
+	config := d.getConfig()
+
 	// Count first to avoid loading all solutions when under cap.
 	count, err := d.repo.CountByMemoryType(ctx, tenantID, MemoryKnowledge)
 	if err != nil {
 		return errors.Wrap(err, "failed to get solution count")
 	}
 
-	if count <= d.config.MaxSolutionsPerTenant {
+	if count <= config.MaxSolutionsPerTenant {
 		return nil
 	}
 
@@ -692,20 +708,20 @@ func (d *Distiller) enforceSolutionCap(ctx context.Context, tenantID string) err
 		return solutions[i].Confidence < solutions[j].Confidence
 	})
 
-	deleteCount := count - d.config.MaxSolutionsPerTenant
+	deleteCount := count - config.MaxSolutionsPerTenant
 	if deleteCount > len(solutions) {
 		deleteCount = len(solutions)
 	}
 
 	ids := make([]string, deleteCount)
 	for i := 0; i < deleteCount; i++ {
-		ids[i] = solutions[i].Problem
+		ids[i] = solutions[i].ID
 	}
 
 	log.WarnContext(ctx, "solution count exceeds cap, pruning lowest importance memories",
 		"tenant_id", tenantID,
 		"current_count", count,
-		"max_count", d.config.MaxSolutionsPerTenant,
+		"max_count", config.MaxSolutionsPerTenant,
 		"delete_count", deleteCount,
 	)
 

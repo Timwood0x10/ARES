@@ -75,28 +75,22 @@ type experienceRepositoryAdapter struct {
 }
 
 // SearchByVector implements internal ExperienceRepository interface
-
 func (a *experienceRepositoryAdapter) SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]distillation.Experience, error) {
 	apiExperiences, err := a.apiRepo.SearchByVector(ctx, vector, tenantID, limit)
-
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert API experiences to internal experiences
-
+	// Convert API experiences to internal experiences, preserving ID and Vector.
 	internalExperiences := make([]distillation.Experience, len(apiExperiences))
-
 	for i, exp := range apiExperiences {
 		internalExperiences[i] = distillation.Experience{
-
-			Problem: exp.Problem,
-
-			Solution: exp.Solution,
-
-			Confidence: exp.Confidence,
-
+			ID:               exp.ID,
+			Problem:          exp.Problem,
+			Solution:         exp.Solution,
+			Confidence:       exp.Confidence,
 			ExtractionMethod: distillation.ExtractionMethod(exp.ExtractionMethod),
+			Vector:           exp.Vector,
 		}
 	}
 
@@ -110,10 +104,11 @@ func (a *experienceRepositoryAdapter) GetByMemoryType(ctx context.Context, tenan
 		return nil, err
 	}
 
-	// Convert API experiences to internal experiences
+	// Convert API experiences to internal experiences, preserving ID.
 	internalExperiences := make([]distillation.Experience, len(apiExperiences))
 	for i, exp := range apiExperiences {
 		internalExperiences[i] = distillation.Experience{
+			ID:               exp.ID,
 			Problem:          exp.Problem,
 			Solution:         exp.Solution,
 			Confidence:       exp.Confidence,
@@ -132,10 +127,12 @@ func (a *experienceRepositoryAdapter) CountByMemoryType(ctx context.Context, ten
 // Update implements internal ExperienceRepository interface
 func (a *experienceRepositoryAdapter) Update(ctx context.Context, experience *distillation.Experience) error {
 	apiExperience := &Experience{
+		ID:               experience.ID,
 		Problem:          experience.Problem,
 		Solution:         experience.Solution,
 		Confidence:       experience.Confidence,
 		ExtractionMethod: ExtractionMethod(experience.ExtractionMethod),
+		Vector:           experience.Vector,
 	}
 
 	return a.apiRepo.Update(ctx, apiExperience)
@@ -275,8 +272,11 @@ func (s *DistillationServiceImpl) UpdateConfig(config *DistillationConfig) error
 		return nil
 	}
 
-	// Note: The internal distiller doesn't support runtime config updates yet
-	// For now, just update the API config
+	// Propagate the configuration change to the internal distiller so that
+	// runtime adjustments to thresholds (MinImportance, MaxMemories, etc.)
+	// take effect immediately.
+	internalConfig := convertFromAPIDistillationConfig(config)
+	s.distiller.UpdateConfig(internalConfig)
 	s.config = config
 
 	log.Info("Distillation config updated",

@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"os"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -22,7 +23,31 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// fileToolsAllowedDirEnv is the environment variable used to configure the
+// FileTools allowed directory at registration time. Operators MUST set this to
+// a directory the agent is permitted to read and write.
+const fileToolsAllowedDirEnv = "ARES_FILE_TOOLS_ALLOWED_DIR"
+
+// resolveFileToolsAllowedDir returns the directory that FileTools may operate
+// within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment variable,
+// falling back to the current working directory if unset.
+func resolveFileToolsAllowedDir() string {
+	if dir := os.Getenv(fileToolsAllowedDirEnv); dir != "" {
+		return dir
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "/tmp"
+	}
+	return dir
+}
+
 // RegisterGeneralTools registers all general-purpose tools.
+//
+// SECURITY: FileTools is registered with WithAllowedDir so that path traversal
+// is blocked by default. CodeRunner is registered with Python DISABLED by
+// default — operators must opt in via EnablePython(true). HTTPRequest and
+// WebScraper enforce SSRF filtering at the HTTP client layer.
 func RegisterGeneralTools() error {
 	tools := []core.Tool{
 		// Math capability
@@ -54,8 +79,8 @@ func RegisterGeneralTools() error {
 			"side_effects": "false", "requires_network": "true",
 		}),
 
-		// File capability
-		base.WithToolTags(builtin_file.NewFileTools(), map[string]string{
+		// File capability — restricted to the configured allowed directory.
+		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(resolveFileToolsAllowedDir())), map[string]string{
 			"domain": "file", "input_type": "text", "output_type": "text",
 			"side_effects": "true", "mutates_state": "true",
 		}),

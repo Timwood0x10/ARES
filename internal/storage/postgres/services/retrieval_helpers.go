@@ -320,12 +320,12 @@ func loadSynonymRules() map[string][]string {
 	}
 
 	// Security: validate path is within allowed directory
-	if allowedSynonymDir != "" {
+	if dir := getAllowedSynonymDir(); dir != "" {
 		absPath, err := filepath.Abs(configPath)
 		if err != nil {
 			return defaultRules
 		}
-		absDir, err := filepath.Abs(allowedSynonymDir)
+		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			return defaultRules
 		}

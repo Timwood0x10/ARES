@@ -8,6 +8,29 @@ import (
 	"strings"
 )
 
+// Precompiled regex patterns for parameter extraction.
+// These are compiled once at package initialization to avoid
+// recompilation on every ExtractParams call.
+var (
+	reArithmeticRange = regexp.MustCompile(`(?:从|from)\s*(\d+(?:\.\d+)?)\s*(?:到|to)\s*(\d+(?:\.\d+)?)`)
+	rePower           = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*(\d+(?:\.\d+)?)\s*次方`)
+	reSqrt            = regexp.MustCompile(`根号\s*(\d+(?:\.\d+)?)`)
+	reSquare          = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*平方`)
+	reCube            = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*立方`)
+	reExprCheck       = regexp.MustCompile(`^[\d+\-*/().%\^,\s]+$`)
+	reEquals          = regexp.MustCompile(`^(.+?)等于`)
+	rePower2          = regexp.MustCompile(`(\d+)\s*的\s*(\d+)\s*次方`)
+
+	reNPr        = regexp.MustCompile(`(\d+).*?(\d+).*?(?:排列|perm|nPr)`)
+	reNCr        = regexp.MustCompile(`(\d+).*?(\d+).*?(?:组合|选|comb|nCr)`)
+	reFactorial  = regexp.MustCompile(`(\d+)\s*(?:的阶乘|!|factorial)`)
+	reBinomial   = regexp.MustCompile(`(\d+).*?(\d+).*?(\d+\.?\d*)`)
+	reBinomialFn = regexp.MustCompile(`binomial\((\d+),(\d+),([\d.]+)\)`)
+	reStatValues = regexp.MustCompile(`([\d.,\s]+)`)
+	reTwoNums    = regexp.MustCompile(`(\d+).*?(\d+)`)
+	reOneNum     = regexp.MustCompile(`(\d+)`)
+)
+
 // ParameterExtractor extracts structured parameters from natural language
 // requests based on the detected capability. This enables the planner to
 // fill in tool parameters without requiring an LLM.
@@ -50,8 +73,7 @@ func (pe *ParameterExtractor) extractArithmetic(request string) map[string]inter
 // tryExtractMathExpr tries to convert natural language to an expression.
 func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 	// Pattern 1: "从1累加到100" or "sum from 1 to 100"
-	re := regexp.MustCompile(`(?:从|from)\s*(\d+(?:\.\d+)?)\s*(?:到|to)\s*(\d+(?:\.\d+)?)`)
-	if m := re.FindStringSubmatch(request); len(m) == 3 {
+	if m := reArithmeticRange.FindStringSubmatch(request); len(m) == 3 {
 		a, _ := strconv.ParseFloat(m[1], 64)
 		b, _ := strconv.ParseFloat(m[2], 64)
 		if a > 0 && b > a {
@@ -60,26 +82,22 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 	}
 
 	// Pattern 2: "2的10次方" or "x的y次方"
-	re = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*(\d+(?:\.\d+)?)\s*次方`)
-	if m := re.FindStringSubmatch(request); len(m) == 3 {
+	if m := rePower.FindStringSubmatch(request); len(m) == 3 {
 		return fmt.Sprintf("%s**%s", m[1], m[2])
 	}
 
 	// Pattern 3: "根号16" or "sqrt 16"
-	re = regexp.MustCompile(`根号\s*(\d+(?:\.\d+)?)`)
-	if m := re.FindStringSubmatch(request); len(m) == 2 {
+	if m := reSqrt.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("sqrt(%s)", m[1])
 	}
 
 	// Pattern 4: "3的平方" (square)
-	re = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*平方`)
-	if m := re.FindStringSubmatch(request); len(m) == 2 {
+	if m := reSquare.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("%s**2", m[1])
 	}
 
 	// Pattern 5: "3的立方" (cube)
-	re = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*的\s*立方`)
-	if m := re.FindStringSubmatch(request); len(m) == 2 {
+	if m := reCube.FindStringSubmatch(request); len(m) == 2 {
 		return fmt.Sprintf("%s**3", m[1])
 	}
 
@@ -91,7 +109,7 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 	clean = strings.TrimSpace(clean)
 
 	// Check if already looks like an expression
-	if matched, _ := regexp.MatchString(`^[\d+\-*/().%\^,\s]+$`, clean); matched {
+	if reExprCheck.MatchString(clean) {
 		// Replace ^ with **
 		clean = strings.ReplaceAll(clean, "^", "**")
 		if clean != "" {
@@ -100,15 +118,13 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 	}
 
 	// Pattern 7: "1+1等于多少" or "sqrt(16)等于多少"
-	re = regexp.MustCompile(`^(.+?)等于`)
-	if m := re.FindStringSubmatch(request); len(m) == 2 {
+	if m := reEquals.FindStringSubmatch(request); len(m) == 2 {
 		expr := strings.TrimSpace(m[1])
 		return expr
 	}
 
 	// Pattern 8: "计算2的10次方" — extract number and power
-	re = regexp.MustCompile(`(\d+)\s*的\s*(\d+)\s*次方`)
-	if m := re.FindStringSubmatch(request); len(m) == 3 {
+	if m := rePower2.FindStringSubmatch(request); len(m) == 3 {
 		return fmt.Sprintf("%s**%s", m[1], m[2])
 	}
 
@@ -129,20 +145,17 @@ func (pe *ParameterExtractor) tryExtractMathExpr(request string) string {
 // extractDiscreteMath extracts combinatorics parameters.
 func (pe *ParameterExtractor) extractDiscreteMath(request string) map[string]interface{} {
 	// nPr pattern: "从5个中选3个排列" or "permutation of 5 take 3"
-	re := regexp.MustCompile(`(\d+).*?(\d+).*?(?:排列|perm|nPr)`)
-	if m := re.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
+	if m := reNPr.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
 		return map[string]interface{}{"expression": fmt.Sprintf("nPr(%s,%s)", m[1], m[2])}
 	}
 
 	// nCr pattern: "从10个中选3个组合" or "combination of 10 take 3"
-	re = regexp.MustCompile(`(\d+).*?(\d+).*?(?:组合|选|comb|nCr)`)
-	if m := re.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
+	if m := reNCr.FindStringSubmatch(strings.ToLower(request)); len(m) == 3 {
 		return map[string]interface{}{"expression": fmt.Sprintf("nCr(%s,%s)", m[1], m[2])}
 	}
 
 	// factorial: "10的阶乘" or "factorial of 10"
-	re = regexp.MustCompile(`(\d+)\s*(?:的阶乘|!|factorial)`)
-	if m := re.FindStringSubmatch(strings.ToLower(request)); len(m) == 2 {
+	if m := reFactorial.FindStringSubmatch(strings.ToLower(request)); len(m) == 2 {
 		return map[string]interface{}{"expression": fmt.Sprintf("factorial(%s)", m[1])}
 	}
 
@@ -152,13 +165,11 @@ func (pe *ParameterExtractor) extractDiscreteMath(request string) map[string]int
 // extractProbability extracts probability parameters.
 func (pe *ParameterExtractor) extractProbability(request string) map[string]interface{} {
 	// binomial: "10次试验成功3次概率0.5" or "binomial(10,3,0.5)"
-	re := regexp.MustCompile(`(\d+).*?(\d+).*?(\d+\.?\d*)`)
-	if m := re.FindStringSubmatch(request); len(m) == 4 {
+	if m := reBinomial.FindStringSubmatch(request); len(m) == 4 {
 		return map[string]interface{}{"expression": fmt.Sprintf("binomial(%s,%s,%s)", m[1], m[2], m[3])}
 	}
 
-	re = regexp.MustCompile(`binomial\((\d+),(\d+),([\d.]+)\)`)
-	if m := re.FindStringSubmatch(request); len(m) == 4 {
+	if m := reBinomialFn.FindStringSubmatch(request); len(m) == 4 {
 		return map[string]interface{}{"expression": m[0]}
 	}
 
@@ -168,8 +179,7 @@ func (pe *ParameterExtractor) extractProbability(request string) map[string]inte
 // extractStatistics extracts stats parameters (comma-separated values).
 func (pe *ParameterExtractor) extractStatistics(request string) map[string]interface{} {
 	// Extract comma-separated numbers from request.
-	re := regexp.MustCompile(`([\d.,\s]+)`)
-	if m := re.FindStringSubmatch(request); len(m) > 1 {
+	if m := reStatValues.FindStringSubmatch(request); len(m) > 1 {
 		parts := strings.FieldsFunc(m[1], func(r rune) bool {
 			return r == ',' || r == '，'
 		})
@@ -208,8 +218,7 @@ func (pe *ParameterExtractor) detectStatOp(request string) string {
 
 // extractNumberTheory extracts number theory parameters.
 func (pe *ParameterExtractor) extractNumberTheory(request string) map[string]interface{} {
-	re := regexp.MustCompile(`(\d+).*?(\d+)`)
-	if m := re.FindStringSubmatch(request); len(m) == 3 {
+	if m := reTwoNums.FindStringSubmatch(request); len(m) == 3 {
 		lower := strings.ToLower(request)
 		op := "gcd"
 		if strings.Contains(lower, "lcm") || strings.Contains(lower, "公倍数") {
@@ -218,8 +227,7 @@ func (pe *ParameterExtractor) extractNumberTheory(request string) map[string]int
 		return map[string]interface{}{"expression": fmt.Sprintf("%s(%s,%s)", op, m[1], m[2])}
 	}
 	// isPrime
-	re = regexp.MustCompile(`(\d+)`)
-	if m := re.FindStringSubmatch(request); len(m) == 2 {
+	if m := reOneNum.FindStringSubmatch(request); len(m) == 2 {
 		return map[string]interface{}{"expression": fmt.Sprintf("isPrime(%s)", m[1])}
 	}
 	return nil

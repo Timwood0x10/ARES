@@ -167,7 +167,8 @@ func Wrap(err error, message string) error {
 }
 
 // WrapError wraps an error with another error (for %w: %w pattern).
-// This is used when you want to chain two errors together.
+// This is used when you want to chain two errors together. Both baseErr and
+// wrapErr remain in the unwrap chain so errors.Is / errors.As can match either.
 func WrapError(baseErr, wrapErr error) error {
 	if wrapErr == nil {
 		return baseErr
@@ -175,10 +176,28 @@ func WrapError(baseErr, wrapErr error) error {
 	if baseErr == nil {
 		return wrapErr
 	}
-	return &wrappedError{
-		msg: baseErr.Error(),
-		err: wrapErr,
+	return &chainedError{
+		base: baseErr,
+		wrap: wrapErr,
 	}
+}
+
+// chainedError holds two errors so that both remain reachable via errors.Is
+// and errors.As. It implements the Unwrap() []error interface (Go 1.20+) so
+// the standard errors package traverses both branches.
+type chainedError struct {
+	base error
+	wrap error
+}
+
+func (c *chainedError) Error() string {
+	return c.base.Error() + ": " + c.wrap.Error()
+}
+
+// Unwrap returns both underlying errors so errors.Is and errors.As can match
+// either the base or the wrapping error.
+func (c *chainedError) Unwrap() []error {
+	return []error{c.base, c.wrap}
 }
 
 // Wrapf wraps an error with a formatted message (use sparingly).

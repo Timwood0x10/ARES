@@ -406,7 +406,7 @@ func (a *OpenAIAdapter) sendToolRequest(ctx context.Context, messages []map[stri
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if readErr != nil {
 			return nil, fmt.Errorf("tool API request failed with status %d: %w", resp.StatusCode, readErr)
 		}
@@ -414,7 +414,7 @@ func (a *OpenAIAdapter) sendToolRequest(ctx context.Context, messages []map[stri
 	}
 
 	var result OpenAIChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&result); err != nil {
 		return nil, errors.Wrap(err, "decode tool response")
 	}
 

@@ -191,9 +191,11 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 	}
 
-	// Start quote loop in Paper or Live mode
+	// Start quote loop in Paper or Live mode. Derive the quote context from
+	// the caller's ctx so cancellation propagates and avoids leaking the
+	// goroutine when the caller's context expires.
 	if c.config.Mode == ModePaper || c.config.Mode == ModeLive {
-		c.quoteCtx, c.stopQuote = context.WithCancel(context.Background())
+		c.quoteCtx, c.stopQuote = context.WithCancel(ctx)
 		go c.quoteLoop(c.quoteCtx)
 	}
 

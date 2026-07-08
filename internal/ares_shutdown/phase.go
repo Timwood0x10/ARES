@@ -85,14 +85,17 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 		if err := fn(ctx); err != nil {
 			lastErr = err
 
+			// Snapshot onFailure under the lock; call it outside to avoid
+			// deadlock if the callback re-enters PhaseExecutor methods.
 			e.mu.RLock()
-			if e.onFailure != nil {
-				rollbackErr := e.onFailure(err)
+			onFailure := e.onFailure
+			e.mu.RUnlock()
+			if onFailure != nil {
+				rollbackErr := onFailure(err)
 				if rollbackErr != nil {
 					lastErr = rollbackErr
 				}
 			}
-			e.mu.RUnlock()
 
 			if attempt < e.maxRetries {
 				// Exponential backoff with overflow protection
@@ -125,11 +128,14 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 	e.setState(PhaseStateCompleted)
 	e.endTime = time.Now()
 
+	// Snapshot onComplete under the lock; call it outside to avoid holding the
+	// read lock during user-provided callbacks (which may re-enter this struct).
 	e.mu.RLock()
-	if e.onComplete != nil {
-		return e.onComplete()
-	}
+	onComplete := e.onComplete
 	e.mu.RUnlock()
+	if onComplete != nil {
+		return onComplete()
+	}
 
 	return nil
 }

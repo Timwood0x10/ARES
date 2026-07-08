@@ -2,6 +2,7 @@ package arena
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,10 +16,14 @@ import (
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 )
 
+// apiKeyHeader is the HTTP header used to pass the arena API key.
+const apiKeyHeader = "X-API-Key"
+
 // Handler provides HTTP endpoints for the arena.
 type Handler struct {
 	service  *Service
 	recorder *flight.FlightRecorder
+	apiKey   string // when non-empty, all routes require this key
 }
 
 // NewHandler creates a Handler backed by the given Service.
@@ -29,6 +34,32 @@ func NewHandler(service *Service) *Handler {
 // SetFlightRecorder attaches a flight recorder for arena-flight data endpoints.
 func (h *Handler) SetFlightRecorder(recorder *flight.FlightRecorder) {
 	h.recorder = recorder
+}
+
+// SetAPIKey enables API key authentication on all arena routes. When key is
+// non-empty, every request must include the X-API-Key header with a matching
+// value. When key is empty, authentication is disabled (useful for local
+// development but not recommended for production deployments).
+func (h *Handler) SetAPIKey(key string) {
+	h.apiKey = key
+}
+
+// APIKeyAuthMiddleware enforces that incoming requests carry the configured
+// X-API-Key header. When no key is configured (h.apiKey == ""), the middleware
+// is a no-op to preserve backward compatibility for local-only deployments.
+func (h *Handler) APIKeyAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.apiKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := r.Header.Get(apiKeyHeader)
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(h.apiKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "missing or invalid API key")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RegisterRoutes registers arena routes on the given mux.

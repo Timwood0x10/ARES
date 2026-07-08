@@ -1,4 +1,3 @@
-// nolint: errcheck // Operations may ignore return values
 package postgres
 
 import (

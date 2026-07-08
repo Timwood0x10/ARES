@@ -542,13 +542,10 @@ func (s *Supervisor) resurrect(agentID string) {
 	}
 
 	// Stop old agent to release resources.
-	s.mu.RLock()
-	oldEntry := s.agents[agentID]
-	s.mu.RUnlock()
-	if oldEntry == nil {
-		return
-	}
-	oldAgent := oldEntry.agent
+	// Use the agent reference captured at the start of resurrection (w.agent)
+	// instead of re-reading s.agents[agentID], which may have changed between
+	// the first read and here, causing a double-stop or resource leak.
+	oldAgent := w.agent
 	if oldAgent != nil {
 		stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
 		if err := oldAgent.Stop(stopCtx); err != nil {

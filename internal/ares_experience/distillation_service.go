@@ -38,12 +38,12 @@ func NewDistillationService(
 	}
 }
 
-// ShouldDistill checks if a task result should be distilled.
+// ShouldDistill checks if a task result should be distilled. Both successful
+// and failed tasks are eligible: successful tasks yield success experiences,
+// while failed tasks yield failure experiences. Only the content-length guards
+// disqualify a task.
 func (s *DistillationService) ShouldDistill(ctx context.Context, task *TaskResult) bool {
 	if task == nil {
-		return false
-	}
-	if !task.Success {
 		return false
 	}
 	if len(task.Task) < 10 {

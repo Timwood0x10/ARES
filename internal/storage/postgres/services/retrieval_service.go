@@ -25,12 +25,25 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
-var allowedSynonymDir string
+// allowedSynonymDirMu protects allowedSynonymDir from concurrent access.
+var (
+	allowedSynonymDirMu sync.RWMutex
+	allowedSynonymDir   string
+)
 
 // SetAllowedSynonymDir sets the allowed directory for synonym config files.
 // This is a security measure to prevent path traversal attacks.
 func SetAllowedSynonymDir(dir string) {
+	allowedSynonymDirMu.Lock()
+	defer allowedSynonymDirMu.Unlock()
 	allowedSynonymDir = dir
+}
+
+// getAllowedSynonymDir returns the configured synonym directory safely.
+func getAllowedSynonymDir() string {
+	allowedSynonymDirMu.RLock()
+	defer allowedSynonymDirMu.RUnlock()
+	return allowedSynonymDir
 }
 
 // SearchRequest represents a search request with configuration.
@@ -313,7 +326,11 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 			return nil
 		})
 	}
-	_ = eg.Wait()
+	if err := eg.Wait(); err != nil {
+		// searchSingleQuery does not return errors, but errgroup cancels
+		// the context on panic. Log any unexpected error for observability.
+		s.logger.Error("Parallel query search encountered an error", "error", err)
+	}
 
 	s.logger.Debug("Collected results from all queries", "total", len(allResults))
 

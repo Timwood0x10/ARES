@@ -679,7 +679,7 @@ func TestTruncate(t *testing.T) {
 	}{
 		{name: "short string unchanged", input: "hello", maxLen: 10, expect: "hello"},
 		{name: "exact length unchanged", input: "hello", maxLen: 5, expect: "hello"},
-		{name: "long string truncated", input: "hello world this is long", maxLen: 10, expect: "hello worl..."},
+		{name: "long string truncated", input: "hello world this is long", maxLen: 10, expect: "hello w..."},
 	}
 
 	for _, tt := range tests {

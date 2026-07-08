@@ -3,6 +3,7 @@ package ares_mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -96,8 +97,12 @@ func (f *MCPToolFactory) Create(config map[string]interface{}) (core.Tool, error
 		Transport:  sc.Transport,
 	})
 
-	ctx := context.Background()
-	if err := client.Connect(ctx, transport); err != nil {
+	// Use a bounded context for the initial connection so a hanging server
+	// does not block forever. The client lifecycle extends beyond this context
+	// via its own internal context derived from the one passed to Connect.
+	connectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := client.Connect(connectCtx, transport); err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 

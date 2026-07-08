@@ -196,7 +196,7 @@ func (s *PostgresEventStore) Subscribe(
 		return nil, ErrEventStoreClosed
 	}
 
-	ch := make(chan *Event, 1)
+	ch := make(chan *Event, 64) // Match memory store buffer to absorb bursts and avoid blocking the poller.
 
 	go s.pollEvents(ctx, filter, ch)
 

@@ -1,105 +1,132 @@
+// Package errors provides structured application error types and error
+// strategy configuration. Sentinel error variables are re-exported from
+// internal/errors so that errors.Is works across both packages.
 package errors
 
 import (
-	"errors"
-	"fmt"
-
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
+)
+
+// Sentinel errors re-exported from internal/errors. Both packages share the
+// same error identity so errors.Is(core_errors.X, internal_errors.X) is true.
+// Do NOT redeclare these as new errors.New values — that breaks cross-package
+// matching.
+var (
+	// ErrNotFound indicates the requested entity does not exist.
+	ErrNotFound = apperrors.ErrNotFound
+
+	// ErrInvalidConfig is returned when config is nil or invalid.
+	ErrInvalidConfig = apperrors.ErrInvalidConfig
+
+	// ErrAlreadyExists is returned when a resource already exists.
+	ErrAlreadyExists = apperrors.ErrAlreadyExists
+
+	// ErrAccessDenied is returned when access to a resource is denied.
+	ErrAccessDenied = apperrors.ErrAccessDenied
+
+	// ErrTimeout is returned when an operation times out.
+	ErrTimeout = apperrors.ErrTimeout
+
+	// ErrInternal is returned for internal server errors.
+	ErrInternal = apperrors.ErrInternal
+
+	// ErrNoMarketData indicates no market data is available for the requested symbol.
+	ErrNoMarketData = apperrors.ErrNoMarketData
 )
 
 // Sentinel errors for Agent module.
 var (
-	ErrAgentNotFound       = fmt.Errorf("agent not found: %w", apperrors.ErrNotFound)
-	ErrAgentTimeout        = errors.New("agent execution timeout")
-	ErrAgentPanic          = errors.New("agent internal panic")
-	ErrTaskQueueFull       = errors.New("task queue is full")
-	ErrDependencyCycle     = errors.New("task dependency cycle detected")
-	ErrAgentNotReady       = errors.New("agent not ready")
-	ErrAgentBusy           = errors.New("agent is busy")
-	ErrAgentAlreadyStarted = errors.New("agent already started")
-	ErrAgentNotRunning     = errors.New("agent not running")
-	ErrQueueNotInitialized = errors.New("message queue not initialized")
-	ErrToolNotFound        = fmt.Errorf("tool not found: %w", apperrors.ErrNotFound)
-	ErrMaxStepsExceeded    = errors.New("agent max steps exceeded")
+	ErrAgentNotFound       = apperrors.ErrAgentNotFound
+	ErrAgentTimeout        = apperrors.ErrAgentTimeout
+	ErrAgentPanic          = apperrors.ErrAgentPanic
+	ErrTaskQueueFull       = apperrors.ErrTaskQueueFull
+	ErrDependencyCycle     = apperrors.ErrDependencyCycle
+	ErrAgentNotReady       = apperrors.ErrAgentNotReady
+	ErrAgentBusy           = apperrors.ErrAgentBusy
+	ErrAgentAlreadyStarted = apperrors.ErrAgentAlreadyStarted
+	ErrAgentNotRunning     = apperrors.ErrAgentNotRunning
+	ErrQueueNotInitialized = apperrors.ErrQueueNotInitialized
+	ErrToolNotFound        = apperrors.ErrToolNotFound
+	ErrMaxStepsExceeded    = apperrors.ErrMaxStepsExceeded
 )
 
 // Sentinel errors for Protocol module.
 var (
-	ErrInvalidMessage  = errors.New("invalid message format")
-	ErrMessageTimeout  = errors.New("message send timeout")
-	ErrHeartbeatMissed = errors.New("heartbeat missed")
-	ErrQueueFull       = errors.New("message queue is full")
-	ErrQueueEmpty      = errors.New("message queue is empty")
-	ErrQueueClosed     = errors.New("message queue is closed")
+	ErrInvalidMessage  = apperrors.ErrInvalidMessage
+	ErrMessageTimeout  = apperrors.ErrMessageTimeout
+	ErrHeartbeatMissed = apperrors.ErrHeartbeatMissed
+	ErrQueueFull       = apperrors.ErrQueueFull
+	ErrQueueEmpty      = apperrors.ErrQueueEmpty
+	ErrQueueClosed     = apperrors.ErrQueueClosed
 )
 
 // Sentinel errors for Storage module.
 var (
-	ErrDBConnectionFailed = errors.New("database connection failed")
-	ErrQueryFailed        = errors.New("query execution failed")
-	ErrVectorSearchFailed = errors.New("vector search failed")
-	ErrRecordNotFound     = fmt.Errorf("record not found: %w", apperrors.ErrNotFound)
-	ErrTransactionFailed  = errors.New("transaction failed")
-	ErrNoTransaction      = errors.New("no active transaction")
-	ErrInvalidArgument    = errors.New("invalid argument provided")
-	ErrCircuitBreakerOpen = errors.New("circuit breaker is open")
-	ErrServiceUnavailable = errors.New("service is temporarily unavailable")
-	ErrInvalidState       = errors.New("invalid state")
-	ErrSecretExpired      = errors.New("secret has expired")
-	ErrNotImplemented     = errors.New("feature not implemented yet")
-	ErrBufferFull         = errors.New("write buffer is full")
+	ErrDBConnectionFailed = apperrors.ErrDBConnectionFailed
+	ErrQueryFailed        = apperrors.ErrQueryFailed
+	ErrVectorSearchFailed = apperrors.ErrVectorSearchFailed
+	ErrRecordNotFound     = apperrors.ErrRecordNotFound
+	ErrTransactionFailed  = apperrors.ErrTransactionFailed
+	ErrNoTransaction      = apperrors.ErrNoTransaction
+	ErrInvalidArgument    = apperrors.ErrInvalidArgument
+	ErrCircuitBreakerOpen = apperrors.ErrCircuitBreakerOpen
+	ErrServiceUnavailable = apperrors.ErrServiceUnavailable
+	ErrInvalidState       = apperrors.ErrInvalidState
+	ErrSecretExpired      = apperrors.ErrSecretExpired
+	ErrNotImplemented     = apperrors.ErrNotImplemented
+	ErrBufferFull         = apperrors.ErrBufferFull
 )
 
 // Sentinel errors for LLM module.
 var (
-	ErrLLMRequestFailed    = errors.New("LLM request failed")
-	ErrLLMTimeout          = errors.New("LLM response timeout")
-	ErrLLMQuotaExceeded    = errors.New("LLM quota exceeded")
-	ErrLLMInvalidResponse  = errors.New("LLM invalid response")
-	ErrLLMParserFailed     = errors.New("LLM output parsing failed")
-	ErrLLMValidationFailed = errors.New("LLM output validation failed")
+	ErrLLMRequestFailed    = apperrors.ErrLLMRequestFailed
+	ErrLLMTimeout          = apperrors.ErrLLMTimeout
+	ErrLLMQuotaExceeded    = apperrors.ErrLLMQuotaExceeded
+	ErrLLMInvalidResponse  = apperrors.ErrLLMInvalidResponse
+	ErrLLMParserFailed     = apperrors.ErrLLMParserFailed
+	ErrLLMValidationFailed = apperrors.ErrLLMValidationFailed
 )
 
 // Sentinel errors for Rate Limiting module.
 var (
-	ErrRateLimitExceeded = errors.New("rate limit exceeded")
-	ErrDBTimeout         = errors.New("database operation timeout")
+	ErrRateLimitExceeded = apperrors.ErrRateLimitExceeded
+	ErrDBTimeout         = apperrors.ErrDBTimeout
 )
 
 // Sentinel errors for Parameter validation.
 var (
-	ErrInvalidUserID = errors.New("invalid user ID")
-	ErrInvalidAge    = errors.New("invalid age")
-	ErrInvalidBudget = errors.New("invalid budget range")
-	ErrInvalidInput  = errors.New("invalid input parameter")
-	ErrNilPointer    = errors.New("nil pointer error")
+	ErrInvalidUserID = apperrors.ErrInvalidUserID
+	ErrInvalidAge    = apperrors.ErrInvalidAge
+	ErrInvalidBudget = apperrors.ErrInvalidBudget
+	ErrInvalidInput  = apperrors.ErrInvalidInput
+	ErrNilPointer    = apperrors.ErrNilPointer
 )
 
 // Sentinel errors for parsing and retry.
 var (
-	ErrProfileParsingFailed        = errors.New("profile parsing failed")
-	ErrProfileValidationFailed     = errors.New("profile validation failed")
-	ErrMaxRetriesExceeded          = errors.New("max retries exceeded")
-	ErrTaskExecutionFailed         = errors.New("task execution failed")
-	ErrPromptRenderFailed          = errors.New("prompt render failed")
-	ErrLLMGenerateFailed           = errors.New("LLM generate failed")
-	ErrTaskPlannerNotInitialized   = errors.New("task planner not initialized")
-	ErrProfileParserNotInitialized = errors.New("profile parser not initialized")
-	ErrDispatchNotInitialized      = errors.New("task dispatcher not initialized")
-	ErrResultAggNotInitialized     = errors.New("result aggregator not initialized")
-	ErrDispatchFailed              = errors.New("task dispatch failed")
+	ErrProfileParsingFailed        = apperrors.ErrProfileParsingFailed
+	ErrProfileValidationFailed     = apperrors.ErrProfileValidationFailed
+	ErrMaxRetriesExceeded          = apperrors.ErrMaxRetriesExceeded
+	ErrTaskExecutionFailed         = apperrors.ErrTaskExecutionFailed
+	ErrPromptRenderFailed          = apperrors.ErrPromptRenderFailed
+	ErrLLMGenerateFailed           = apperrors.ErrLLMGenerateFailed
+	ErrTaskPlannerNotInitialized   = apperrors.ErrTaskPlannerNotInitialized
+	ErrProfileParserNotInitialized = apperrors.ErrProfileParserNotInitialized
+	ErrDispatchNotInitialized      = apperrors.ErrDispatchNotInitialized
+	ErrResultAggNotInitialized     = apperrors.ErrResultAggNotInitialized
+	ErrDispatchFailed              = apperrors.ErrDispatchFailed
 )
 
 // Sentinel errors for Workflow module.
 var (
-	ErrWorkflowNotFound     = fmt.Errorf("workflow not found: %w", apperrors.ErrNotFound)
-	ErrWorkflowLoadFailed   = errors.New("workflow load failed")
-	ErrWorkflowCyclicDAG    = errors.New("workflow has cyclic dependency")
-	ErrWorkflowInvalidPhase = errors.New("invalid workflow phase")
+	ErrWorkflowNotFound     = apperrors.ErrWorkflowNotFound
+	ErrWorkflowLoadFailed   = apperrors.ErrWorkflowLoadFailed
+	ErrWorkflowCyclicDAG    = apperrors.ErrWorkflowCyclicDAG
+	ErrWorkflowInvalidPhase = apperrors.ErrWorkflowInvalidPhase
 )
 
 // Sentinel errors for Rate Limiter.
 var (
-	ErrBackpressureTriggered = errors.New("backpressure triggered")
-	ErrTokenBucketExhausted  = errors.New("token bucket exhausted")
+	ErrBackpressureTriggered = apperrors.ErrBackpressureTriggered
+	ErrTokenBucketExhausted  = apperrors.ErrTokenBucketExhausted
 )

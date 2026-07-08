@@ -169,7 +169,17 @@ func (m *Manager) StartAgent(ctx context.Context, agent base.Agent) error {
 		agentCtx = context.WithValue(agentCtx, chaosSlowKey{}, chaos.slowDelay)
 	}
 	if chaos.toolTimeout > 0 {
-		agentCtx, agentCancel = context.WithTimeout(agentCtx, chaos.toolTimeout)
+		// Derive a timeout context from the cancellable parent. Keep both
+		// cancel functions: the timeout cancel stops the timer, and the parent
+		// cancel frees the WithCancel resources. Overwriting agentCancel with
+		// only the timeout cancel leaks the parent context.
+		timeoutCtx, timeoutCancel := context.WithTimeout(agentCtx, chaos.toolTimeout)
+		agentCtx = timeoutCtx
+		parentCancel := agentCancel
+		agentCancel = func() {
+			timeoutCancel()
+			parentCancel()
+		}
 	}
 
 	ma := &managedAgent{
@@ -589,14 +599,15 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.memManager.SetEventStore(m.eventStore, "memory-manager")
 	}
 
-	// Collect agent launch info under read lock, then launch outside lock
-	// to avoid blocking concurrent agent registration during goroutine creation.
+	// Collect agent launch info under write lock because we mutate ma.cancel
+	// for each agent. Launching goroutines is done outside the lock to avoid
+	// blocking concurrent agent registration during goroutine creation.
 	type agentLaunch struct {
 		id    string
 		agent base.Agent
 		ctx   context.Context
 	}
-	m.mu.RLock()
+	m.mu.Lock()
 	launches := make([]agentLaunch, 0, len(m.agents))
 	for id, ma := range m.agents {
 		if ma.agent != nil {
@@ -605,7 +616,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			launches = append(launches, agentLaunch{id: id, agent: ma.agent, ctx: agentCtx})
 		}
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	for _, l := range launches {
 		m.launchAgentGoroutine(l.ctx, l.id, l.agent)

@@ -107,7 +107,6 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 	defer ticker.Stop()
 
 	batch := make([]*WriteItem, 0, b.batchSize)
-	retryCount := 0
 	const maxRetries = 3
 
 	for {
@@ -142,35 +141,61 @@ func (b *WriteBuffer) processLoop(ctx context.Context) error {
 			if item == nil {
 				return nil
 			}
-			// Skip new items while retrying to prevent unbounded batch growth.
-			if retryCount > 0 {
-				log.Warn("Dropping write item during flush retry", "table", item.Table)
-				continue
-			}
 			batch = append(batch, item)
 			if len(batch) >= b.batchSize {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					log.Error("Failed to flush batch after retries", "error", err, "batch_size", len(batch))
-					retryCount++
+					// CRITICAL: do not discard the failed batch. Re-queue its
+					// items so they are retried on the next flush instead of
+					// being silently dropped (which caused data loss).
+					log.Error("Failed to flush batch after retries, re-queuing items",
+						"error", err, "batch_size", len(batch))
+					b.requeueItems(batch)
 					batch = batch[:0]
 					continue
 				}
 				batch = batch[:0]
-				retryCount = 0
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
 				if err := b.flushBatchWithRetry(ctx, batch, maxRetries); err != nil {
-					log.Error("Failed to flush batch on timer after retries", "error", err, "batch_size", len(batch))
-					retryCount++
+					// Re-queue items rather than dropping them.
+					log.Error("Failed to flush batch on timer after retries, re-queuing items",
+						"error", err, "batch_size", len(batch))
+					b.requeueItems(batch)
 					batch = batch[:0]
 					continue
 				}
 				batch = batch[:0]
-				retryCount = 0
 			}
 		}
+	}
+}
+
+// requeueItems re-queues items that failed to flush. It attempts a non-blocking
+// send back into the buffer channel; if the channel is full or closed, the
+// items are logged and dropped as a last resort to avoid blocking the
+// processing loop. The stopped flag is checked first so we don't accidentally
+// send on a closed channel.
+func (b *WriteBuffer) requeueItems(items []*WriteItem) {
+	if b.stopped.Load() {
+		log.Warn("Write buffer stopped, cannot re-queue items", "count", len(items))
+		return
+	}
+	var dropped int
+	for _, item := range items {
+		select {
+		case b.buffer <- item:
+		default:
+			// Channel is full; drop the item to avoid blocking. This is a
+			// last resort and should be rare because the channel is sized to
+			// batchSize*2.
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		log.Warn("Re-queue dropped items because buffer is full",
+			"dropped", dropped, "total", len(items))
 	}
 }
 
@@ -206,9 +231,10 @@ func (b *WriteBuffer) flushBatchWithRetry(ctx context.Context, batch []*WriteIte
 // This is non-blocking and returns immediately if the buffer has capacity.
 // If the buffer is full, it returns an error instead of spawning a goroutine.
 //
-// Thread-safety: The stopped flag is checked and set atomically under mutex.
-// Channel send is performed outside the lock to prevent deadlock when the
-// buffer is full and Stop() is called concurrently.
+// Thread-safety: The stopped flag is checked atomically. The send is guarded
+// by b.mu to prevent a race with Stop() closing the channel: Stop() also
+// acquires b.mu before closing, so a Write holding (or waiting for) the mutex
+// either observes stopped=true before sending, or sends before Stop() closes.
 //
 // Args:
 // ctx - context for cancellation.
@@ -219,53 +245,35 @@ func (b *WriteBuffer) Write(ctx context.Context, item *WriteItem) error {
 		return errors.ErrInvalidArgument
 	}
 
-	// Check stopped flag under lock to prevent race with Stop().
+	// Acquire the mutex to serialize with Stop(). This avoids the previous
+	// recover()-based panic handling for send-on-closed-channel, which is an
+	// anti-pattern. Stop() holds the same mutex while closing the channel, so
+	// we cannot race with the close.
 	b.mu.Lock()
-	stopped := b.stopped.Load()
-	b.mu.Unlock()
+	defer b.mu.Unlock()
 
-	if stopped {
+	if b.stopped.Load() {
 		return errors.ErrServiceUnavailable
 	}
 
-	// Channel send outside lock to prevent deadlock:
-	// If buffer is full and Stop() is called, Stop() can acquire b.mu
-	// to set stopped=true and close the channel, unblocking this send.
-	// Recover from send-on-closed-channel panic (race between check and send).
-	if b.safeSend(item, ctx) {
-		return nil
-	}
-	return errors.ErrServiceUnavailable
-}
-
-// safeSend attempts to send an item to the buffer channel, recovering from
-// panic caused by send on a closed channel (race between stopped check and Stop).
-func (b *WriteBuffer) safeSend(item *WriteItem, ctx context.Context) (sent bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			// Channel was closed between stopped check and send.
-			sent = false
-		}
-	}()
-
 	select {
 	case b.buffer <- item:
-		return true
+		return nil
 	case <-ctx.Done():
-		return false
+		return errors.ErrServiceUnavailable
 	default:
-		// Buffer is full, retry once with brief wait.
+		// Buffer is full. Retry briefly to absorb transient bursts without
+		// dropping the item immediately.
 		flushTimer := time.NewTimer(100 * time.Millisecond)
+		defer flushTimer.Stop()
 		select {
 		case <-flushTimer.C:
+			return errors.ErrServiceUnavailable
 		case b.buffer <- item:
-			flushTimer.Stop()
-			return true
+			return nil
 		case <-ctx.Done():
-			flushTimer.Stop()
-			return false
+			return errors.ErrServiceUnavailable
 		}
-		return false
 	}
 }
 

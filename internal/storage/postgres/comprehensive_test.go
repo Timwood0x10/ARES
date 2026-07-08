@@ -60,39 +60,4 @@ func createMockPool() *Pool {
 	return pool
 }
 
-// TestProfileRepository_Mock provides tests for ProfileRepository without real database.
-func TestProfileRepository_Mock(t *testing.T) {
-	// These tests are disabled because NewProfileRepository with nil pool causes panic
-	// Real database connection is needed for proper testing
-	t.Skip("Skipping ProfileRepository tests - requires real database connection")
-}
-
-// TestRecommendRepository_Mock provides tests for RecommendRepository without real database.
-func TestRecommendRepository_Mock(t *testing.T) {
-	// These tests are disabled because NewRecommendRepository with nil pool causes panic
-	// Real database connection is needed for proper testing
-	t.Skip("Skipping RecommendRepository tests - requires real database connection")
-}
-
-// TestSessionRepository_Mock provides tests for SessionRepository without real database.
-func TestSessionRepository_Mock(t *testing.T) {
-	// These tests are disabled because NewSessionRepository with nil pool causes panic
-	// Real database connection is needed for proper testing
-	t.Skip("Skipping SessionRepository tests - requires real database connection")
-}
-
-// TestRepository_Mock provides tests for Repository without real database.
-func TestRepository_Mock(t *testing.T) {
-	// These tests are disabled because NewRepository with nil pool causes panic
-	// Real database connection is needed for proper testing
-	t.Skip("Skipping Repository tests - requires real database connection")
-}
-
-// TestVectorSearcher_Mock provides tests for VectorSearcher without real database.
-func TestVectorSearcher_Mock(t *testing.T) {
-	// These tests are disabled because VectorSearcher operations with nil pool cause panic
-	// Real database connection is needed for proper testing
-	t.Skip("Skipping VectorSearcher tests - requires real database connection")
-}
-
 // nolint: errcheck // Test code may ignore return values

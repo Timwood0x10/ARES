@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,14 +13,39 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
+// apiKeyHeader is the HTTP header used to pass the API key.
+const apiKeyHeader = "X-API-Key"
+
 // StreamHandler handles SSE streaming requests.
 type StreamHandler struct {
-	counter atomic.Uint64
+	counter        atomic.Uint64
+	apiKey         string   // when non-empty, requests must carry X-API-Key header
+	allowedOrigins []string // when non-empty, only these origins receive CORS headers
+}
+
+// StreamOption configures a StreamHandler.
+type StreamOption func(*StreamHandler)
+
+// WithAPIKey enables API key authentication on the stream endpoint.
+// When key is empty, authentication is disabled.
+func WithAPIKey(key string) StreamOption {
+	return func(h *StreamHandler) { h.apiKey = key }
+}
+
+// WithAllowedOrigins restricts CORS to the given origins. When empty (default),
+// no CORS headers are sent, preventing cross-origin browser requests.
+// Passing "*" restores the legacy permissive behavior (not recommended for production).
+func WithAllowedOrigins(origins ...string) StreamOption {
+	return func(h *StreamHandler) { h.allowedOrigins = origins }
 }
 
 // NewStreamHandler creates a new stream handler.
-func NewStreamHandler() *StreamHandler {
-	return &StreamHandler{}
+func NewStreamHandler(opts ...StreamOption) *StreamHandler {
+	h := &StreamHandler{}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // StreamRequest represents a streaming request.
@@ -57,6 +83,22 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 			return
 		}
 
+		// API key authentication (when configured).
+		if h.apiKey != "" {
+			provided := r.Header.Get(apiKeyHeader)
+			if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(h.apiKey)) != 1 {
+				http.Error(w, "missing or invalid API key", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		// CORS: only echo back explicitly allowed origins (never wildcard by default).
+		if origin := r.Header.Get("Origin"); origin != "" && h.isOriginAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+apiKeyHeader)
+			w.Header().Set("Vary", "Origin")
+		}
+
 		// Parse request body (limit to 1MB to prevent OOM).
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req StreamRequest
@@ -79,8 +121,6 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
 		// Flush helper
 		flusher, ok := w.(http.Flusher)
@@ -158,6 +198,18 @@ func (h *StreamHandler) convertEvent(event base.AgentEvent) StreamResponse {
 	}
 
 	return resp
+}
+
+// isOriginAllowed reports whether the given Origin header value is in the
+// configured allow list. When the list is empty, no origin is allowed (the
+// default secure posture). An explicit "*" entry allows all origins.
+func (h *StreamHandler) isOriginAllowed(origin string) bool {
+	for _, allowed := range h.allowedOrigins {
+		if allowed == "*" || allowed == origin {
+			return true
+		}
+	}
+	return false
 }
 
 // sendSSE sends a single SSE event.

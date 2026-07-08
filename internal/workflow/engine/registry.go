@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -109,12 +110,28 @@ func (e *AgentExecutor) Execute(ctx context.Context, step *Step, input string, t
 		return "", ErrAgentResultNil
 	}
 
-	recResult, ok := result.(*models.RecommendResult)
-	if !ok || len(recResult.Items) == 0 {
-		return "", ErrAgentResultNil
-	}
+	return agentResultToString(result), nil
+}
 
-	return recResult.Items[0].Description, nil
+// agentResultToString converts an agent.Process result to a string.
+// Previously this method hardcoded a *models.RecommendResult type
+// assertion, which made the registry unusable for any other result type.
+// The conversion now handles common types explicitly and falls back to
+// a best-effort string representation for everything else.
+func agentResultToString(result any) string {
+	switch v := result.(type) {
+	case string:
+		return v
+	case *models.RecommendResult:
+		if v != nil && len(v.Items) > 0 {
+			return v.Items[0].Description
+		}
+		return ""
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // StepOutput stores the output of a step for dependency resolution.

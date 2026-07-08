@@ -125,7 +125,8 @@ func (r *Registry) Filter(filter *ToolFilter) *Registry {
 			toolsCopy[k] = v
 		}
 		return &Registry{
-			tools: toolsCopy,
+			tools:       toolsCopy,
+			schemaDirty: true,
 		}
 	}
 

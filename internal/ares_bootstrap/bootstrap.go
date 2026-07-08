@@ -40,11 +40,24 @@ type BootstrapDeps struct {
 
 // Bootstrap assembles all components from config and optional dependencies.
 // It is the single wiring hub — used by api/bootstrap, cmd/ares serve, and tests.
+// On partial failure, already-created components are cleaned up in reverse
+// order before returning the error.
 func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps) (*Components, error) {
 	var comp Components
 
 	if deps == nil {
 		deps = &BootstrapDeps{}
+	}
+
+	// Track cleanup functions for components created during bootstrap.
+	// On error, they are executed in reverse order of creation.
+	var cleanups []func()
+
+	// runCleanups executes all cleanup functions in reverse order.
+	runCleanups := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
 	}
 
 	// 1. EventStore — from deps or create in-memory default
@@ -57,6 +70,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 2. Runtime — always created (accepts nil eventStore)
 	rt, err := ProvideRuntime(comp.EventStore)
 	if err != nil {
+		runCleanups()
 		return nil, err
 	}
 	comp.Runtime = rt
@@ -64,6 +78,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 3. Memory
 	mem, err := ProvideMemory(nil)
 	if err != nil {
+		runCleanups()
 		return nil, err
 	}
 	comp.Memory = mem
@@ -71,9 +86,15 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 4. MCP
 	mcp, err := ProvideMCP(ctx, cfg.MCP)
 	if err != nil {
+		runCleanups()
 		return nil, err
 	}
 	comp.MCP = mcp
+	cleanups = append(cleanups, func() {
+		if err := mcp.Stop(ctx); err != nil {
+			log.Warn("bootstrap: cleanup MCP stop error", "error", err)
+		}
+	})
 
 	// 5. LLM — from config (for backward compat) or from deps
 	if deps.LLMClient != nil {
@@ -81,17 +102,24 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	} else {
 		llm, err := ProvideLLM(cfg.LLM)
 		if err != nil {
+			runCleanups()
 			return nil, err
 		}
 		comp.LLM = llm
 	}
 
 	// 6. Dashboard
-	dash, err := ProvideDashboard(ctx, mcp)
+	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr)
 	if err != nil {
+		runCleanups()
 		return nil, err
 	}
 	comp.Dashboard = dash
+	cleanups = append(cleanups, func() {
+		if err := dash.Stop(ctx); err != nil {
+			log.Warn("bootstrap: cleanup dashboard stop error", "error", err)
+		}
+	})
 
 	// 7. Evolution — only if all required deps are wired
 	if deps.EventStore != nil && deps.ExpRepo != nil {
@@ -101,6 +129,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 			deps.LLMClient,
 		)
 		if err != nil {
+			runCleanups()
 			return nil, err
 		}
 		comp.Evolution = evol

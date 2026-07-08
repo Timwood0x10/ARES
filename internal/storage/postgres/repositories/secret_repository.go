@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -21,6 +22,7 @@ import (
 // This implements secure storage and retrieval of secrets with encryption.
 type SecretRepository struct {
 	db            *sql.DB
+	mu            sync.RWMutex
 	encryptionKey []byte
 	gcm           cipher.AEAD
 }
@@ -293,11 +295,15 @@ func (r *SecretRepository) CleanupExpired(ctx context.Context) (int64, error) {
 // plaintext - data to encrypt.
 // Returns encrypted data or error if encryption fails.
 func (r *SecretRepository) encrypt(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, r.gcm.NonceSize())
+	r.mu.RLock()
+	gcm := r.gcm
+	r.mu.RUnlock()
+
+	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, errors.Wrap(err, "generate nonce")
 	}
-	ciphertext := r.gcm.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
 	return ciphertext, nil
 }
 
@@ -306,13 +312,17 @@ func (r *SecretRepository) encrypt(plaintext []byte) ([]byte, error) {
 // ciphertext - data to decrypt.
 // Returns decrypted data or error if decryption fails.
 func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
-	nonceSize := r.gcm.NonceSize()
+	r.mu.RLock()
+	gcm := r.gcm
+	r.mu.RUnlock()
+
+	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := r.gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "decrypt")
 	}
@@ -439,6 +449,22 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 		return 0, errors.Wrap(err, "commit transaction")
 	}
 	committed = true
+
+	// Update in-memory encryption key and GCM so subsequent encrypt/decrypt
+	// operations use the new key. Without this, Get/Set would still use the
+	// old key, causing decryption failures for the rotated secrets.
+	newBlock, err := aes.NewCipher(newKey)
+	if err != nil {
+		return 0, errors.Wrap(err, "create cipher from new key")
+	}
+	newGCM, err := cipher.NewGCM(newBlock)
+	if err != nil {
+		return 0, errors.Wrap(err, "create GCM from new key")
+	}
+	r.mu.Lock()
+	r.encryptionKey = newKey
+	r.gcm = newGCM
+	r.mu.Unlock()
 
 	// Add audit logging for key rotation events (per design standard)
 	log.Info("Secret key rotation completed", "updated_secrets", updatedCount, "timestamp", time.Now())
@@ -593,7 +619,8 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		}
 
 		importedCount++
-		log.Info("Secret imported successfully", "key", item.Key, "tenant_id", tenantID, "secret_id", id)
+		// Log at Debug level to avoid leaking secret key names in production logs.
+		log.Debug("Secret imported successfully", "tenant_id", tenantID, "secret_id", id)
 	}
 
 	// Check if there were any import errors
@@ -673,7 +700,11 @@ func (r *SecretRepository) encryptSecret(plaintext []byte, key []byte) ([]byte, 
 // ciphertext - data to decrypt.
 // Returns decrypted data or error if decryption fails.
 func (r *SecretRepository) decryptSecret(ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(r.encryptionKey)
+	r.mu.RLock()
+	key := r.encryptionKey
+	r.mu.RUnlock()
+
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, errors.Wrap(err, "create cipher")
 	}

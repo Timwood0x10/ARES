@@ -123,7 +123,9 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
+		// Header is already committed — cannot send an HTTP error.
+		// Log so the encoding failure is at least observable.
+		log.Error("encode json response", "error", err, "status", status)
 	}
 }
 

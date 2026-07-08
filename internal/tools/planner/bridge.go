@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/logger"
@@ -23,6 +24,7 @@ type ToolExecutionBridge struct {
 	registry *core.Registry
 	planner  *Planner
 	evidence EvidenceStore
+	log      *slog.Logger // Cached module logger to avoid per-invocation allocation.
 }
 
 // NewToolExecutionBridge creates a bridge with planner fallback.
@@ -41,6 +43,7 @@ func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence 
 		registry: registry,
 		planner:  planner,
 		evidence: evidence,
+		log:      logger.Module("tool_bridge"),
 	}, nil
 }
 
@@ -67,7 +70,7 @@ func (b *ToolExecutionBridge) Execute(
 	params map[string]interface{},
 	userRequest string,
 ) (core.Result, error) {
-	log := logger.Module("tool_bridge")
+	log := b.log
 
 	// Path 1: Try the explicitly named tool.
 	if toolName != "" {
@@ -174,7 +177,7 @@ func (b *ToolExecutionBridge) ExecutePlan(
 		return core.Result{}, fmt.Errorf("tool_bridge: plan has no steps")
 	}
 
-	log := logger.Module("tool_bridge")
+	log := b.log
 
 	// Validate the plan DAG before execution.
 	validator := NewDAGValidator()
@@ -225,7 +228,7 @@ func (b *ToolExecutionBridge) executeMultiStep(
 	plan *ExecutionPlan,
 	params map[string]interface{},
 ) (core.Result, error) {
-	log := logger.Module("tool_bridge")
+	log := b.log
 
 	// Topological sort: compute execution order from dependencies.
 	order, err := topoSort(plan.Steps)
@@ -307,7 +310,7 @@ func (b *ToolExecutionBridge) executeStep(
 	step ExecutionStep,
 	params map[string]interface{},
 ) (core.Result, error) {
-	log := logger.Module("tool_bridge")
+	log := b.log
 	tool, exists := b.registry.Get(step.ToolName)
 	if !exists {
 		return core.Result{}, fmt.Errorf("tool_bridge: tool %q not registered", step.ToolName)
@@ -347,7 +350,7 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 	step *ExecutionStep,
 	params map[string]interface{},
 ) (core.Result, error) {
-	log := logger.Module("tool_bridge")
+	log := b.log
 	// Try primary tool first.
 	tools := make([]string, 1, 1+len(step.FallbackToolNames))
 	tools[0] = step.ToolName

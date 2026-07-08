@@ -86,7 +86,11 @@ func main() {
 	memMgr.SetEventStore(store, "memory")
 
 	// --- LLM adapter with fallback ---
-	llmAdapter := createLLMAdapterWithFallback(cfg)
+	llmAdapter, err := createLLMAdapterWithFallback(cfg)
+	if err != nil {
+		cancel()
+		log.Fatalf("create llm adapter: %v", err)
+	}
 
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
@@ -111,7 +115,11 @@ func main() {
 	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Create agents ---
-	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	if err != nil {
+		cancel()
+		log.Fatalf("create agents: %v", err)
+	}
 
 	// Register leader
 	leaderFactory := func() base.Agent {
@@ -124,7 +132,7 @@ func main() {
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s
@@ -218,7 +226,7 @@ func main() {
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.
 // Tries primary → fallbacks → ollama (local).
-func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
+func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, error) {
 	factory := output.NewFactory()
 
 	// Try primary
@@ -234,7 +242,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)
 	if err == nil {
 		lg.Info("LLM adapter created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
-		return adapter
+		return adapter, nil
 	}
 	lg.Warn("primary LLM failed, trying fallbacks", "error", err)
 
@@ -254,7 +262,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 		adapter, err = factory.Create(fbCfg.Provider, fbCfg)
 		if err == nil {
 			lg.Info("LLM fallback adapter created", "provider", fbCfg.Provider, "model", fbCfg.Model)
-			return adapter
+			return adapter, nil
 		}
 		lg.Warn("fallback LLM failed", "provider", fbCfg.Provider, "error", err)
 	}
@@ -270,10 +278,10 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	}
 	adapter, err = factory.Create("ollama", ollamaCfg)
 	if err != nil {
-		log.Fatalf("no LLM adapter available: %v", err)
+		return nil, fmt.Errorf("no LLM adapter available: %w", err)
 	}
 	lg.Info("LLM fallback to ollama", "model", "llama3.2")
-	return adapter
+	return adapter, nil
 }
 
 // setupMCP connects to MCP servers and registers their tools in the public registry.

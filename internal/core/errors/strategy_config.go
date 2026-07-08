@@ -88,24 +88,36 @@ func init() {
 // SetAllowedDir sets the allowed directory for config file loading.
 // This is a security measure to prevent path traversal attacks.
 func SetAllowedDir(dir string) {
+	globalRegistry.mu.Lock()
+	defer globalRegistry.mu.Unlock()
 	globalRegistry.allowedDir = dir
 }
 
 // LoadStrategiesFromConfig loads error strategies from a configuration file.
 // Supported formats: JSON
 func LoadStrategiesFromConfig(configPath string) error {
-	// Security: validate path is within allowed directory
-	if globalRegistry.allowedDir != "" {
+	// Security: validate path is within allowed directory using filepath.Rel
+	// to correctly reject path-traversal attempts (e.g. "/allowed/../secret").
+	globalRegistry.mu.RLock()
+	allowedDir := globalRegistry.allowedDir
+	globalRegistry.mu.RUnlock()
+
+	if allowedDir != "" {
 		absPath, err := filepath.Abs(configPath)
 		if err != nil {
 			return fmt.Errorf("failed to get absolute path: %w", err)
 		}
-		absDir, err := filepath.Abs(globalRegistry.allowedDir)
+		absDir, err := filepath.Abs(allowedDir)
 		if err != nil {
 			return fmt.Errorf("failed to get absolute directory: %w", err)
 		}
-		if !strings.HasPrefix(absPath, absDir) {
-			return fmt.Errorf("config path %s is outside allowed directory %s", configPath, globalRegistry.allowedDir)
+		rel, err := filepath.Rel(absDir, absPath)
+		if err != nil {
+			return fmt.Errorf("failed to compute relative path: %w", err)
+		}
+		// Reject paths that escape the allowed directory via ".." prefix.
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("config path %s is outside allowed directory %s", configPath, allowedDir)
 		}
 	}
 

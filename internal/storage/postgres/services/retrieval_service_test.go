@@ -452,13 +452,13 @@ func TestTruncateForLog(t *testing.T) {
 			name:     "truncate needed",
 			input:    "hello world this is a long string",
 			maxLen:   10,
-			expected: "hello worl...",
+			expected: "hello w...",
 		},
 		{
 			name:     "unicode string",
 			input:    "你好世界",
 			maxLen:   2,
-			expected: "你好...",
+			expected: "你好",
 		},
 		{
 			name:     "empty string",
@@ -1537,9 +1537,9 @@ func TestRetrievalPlan_CustomWeights(t *testing.T) {
 func TestTruncateForLog_WithVeryShortMaxLen(t *testing.T) {
 	result := truncate.WithEllipsis("Hello World", 1)
 
-	// With maxLen=1, it truncates after 1 rune: "H..."
-	if result != "H..." {
-		t.Errorf("truncate.WithEllipsis with maxLen=1 should return 'H...', got %q", result)
+	// With maxLen=1 (<= ellipsis length), it truncates to 1 rune without ellipsis: "H"
+	if result != "H" {
+		t.Errorf("truncate.WithEllipsis with maxLen=1 should return 'H', got %q", result)
 	}
 }
 
@@ -1846,10 +1846,10 @@ func TestTruncateForLog_WithSpecialCharacters(t *testing.T) {
 		maxLen   int
 		expected string
 	}{
-		{"Hello@World!", 5, "Hello..."},
+		{"Hello@World!", 5, "He..."},
 		{"Test#123$%", 10, "Test#123$%"}, // 10 characters, no truncation
-		{"Test#123$%", 8, "Test#123..."}, // First 8 chars: "Test#123"
-		{"&*()%$#@!", 3, "&*(..."},
+		{"Test#123$%", 8, "Test#..."},    // 8-3=5 chars: "Test#" + "..."
+		{"&*()%$#@!", 3, "&*("},          // maxLen=3 equals ellipsis length, no ellipsis
 	}
 
 	for _, tt := range tests {

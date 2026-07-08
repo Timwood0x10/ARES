@@ -38,7 +38,7 @@ func (a *mcpStatusAdapter) ListServers() []dashboard.MCPServerStatusView {
 	return views
 }
 
-func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager) (*DashboardComponents, error) {
+func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager, addr string) (*DashboardComponents, error) {
 	hub := dashboard.NewWSHub()
 	statusProvider := &mcpStatusAdapter{mcp: mcpMgr}
 	api := dashboard.NewAPIv2(nil, statusProvider, hub)
@@ -48,11 +48,18 @@ func ProvideDashboard(ctx context.Context, mcpMgr *ares_mcp.MCPManager) (*Dashbo
 		return hubCtx.Err()
 	})
 	srv := &http.Server{
+		Addr:              addr,
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	return &DashboardComponents{
 		Start: func(ctx context.Context) error { return srv.ListenAndServe() },
-		Stop:  func(ctx context.Context) error { return srv.Shutdown(ctx) },
+		Stop: func(ctx context.Context) error {
+			err := srv.Shutdown(ctx)
+			// Wait for the hub goroutine to exit so it is not leaked.
+			_ = hubGrp.Wait()
+			_ = hubCtx
+			return err
+		},
 	}, nil
 }

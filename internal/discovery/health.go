@@ -3,11 +3,23 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	api_mcp "github.com/Timwood0x10/ares/api/mcp"
 )
+
+// allowedMCPBinaryDirs lists directories whose binaries are trusted to be
+// probed as MCP stdio servers. Binaries discovered outside these roots are
+// refused to prevent arbitrary command execution from untrusted sources.
+var allowedMCPBinaryDirs = []string{
+	"/usr/local/bin",
+	"/usr/bin",
+	"/opt/homebrew/bin",
+}
 
 // MCPHealthChecker checks MCP servers by connecting and listing tools.
 type MCPHealthChecker struct {
@@ -49,13 +61,28 @@ func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredServi
 }
 
 // probeMCP connects to an MCP server, does initialize → list_tools → close.
+// Only http/https endpoints and binaries located under allowedMCPBinaryDirs
+// are accepted; anything else is refused to prevent SSRF and arbitrary
+// command execution from untrusted discovery records.
 func probeMCP(ctx context.Context, name, endpoint string, args []string) *HealthStatus {
 	var client *api_mcp.Client
 	var err error
 
 	if isURL(endpoint) {
+		if !isAllowedMCPURL(endpoint) {
+			return &HealthStatus{
+				Healthy: false,
+				Message: fmt.Sprintf("refused endpoint %q: only http/https URLs are allowed", endpoint),
+			}
+		}
 		client, err = api_mcp.ConnectSSE(ctx, name, endpoint)
 	} else {
+		if !isAllowedMCPBinary(endpoint) {
+			return &HealthStatus{
+				Healthy: false,
+				Message: fmt.Sprintf("refused binary %q: not in allowlist", endpoint),
+			}
+		}
 		client, err = api_mcp.ConnectStdio(ctx, name, endpoint, args)
 	}
 	if err != nil {
@@ -83,6 +110,53 @@ func probeMCP(ctx context.Context, name, endpoint string, args []string) *Health
 		Healthy: true,
 		Message: fmt.Sprintf("ok, %d tools", len(tools)),
 	}
+}
+
+// isAllowedMCPURL reports whether endpoint is an http or https URL.
+// Other schemes (file://, gopher://, etc.) are refused to prevent SSRF.
+func isAllowedMCPURL(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u == nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
+}
+
+// isAllowedMCPBinary reports whether endpoint is a binary path that lives
+// under one of the trusted binary directories. Symlinks are resolved before
+// comparison to prevent traversal tricks.
+func isAllowedMCPBinary(endpoint string) bool {
+	if endpoint == "" {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(endpoint)
+	if err != nil {
+		// Fall back to the raw path; the stat check below will still apply.
+		resolved = endpoint
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(abs)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	for _, dir := range allowedMCPBinaryDirs {
+		root, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			root = dir
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // bestEndpoint extracts the highest-confidence endpoint from a service.

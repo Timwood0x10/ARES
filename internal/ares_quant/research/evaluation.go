@@ -190,7 +190,7 @@ func drawdownAwareReturn(returns []float64) float64 {
 		variancePenalty = avgNeg * avgNeg // square of avg negative return
 	}
 
-	return avgReturn + variancePenalty
+	return avgReturn - variancePenalty
 }
 
 // round4 rounds a float64 to 4 decimal places.

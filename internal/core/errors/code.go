@@ -1,6 +1,9 @@
 package errors
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // ErrorCode represents a structured error code.
 type ErrorCode struct {
@@ -31,6 +34,10 @@ type AppError struct {
 	Code    *ErrorCode
 	Err     error
 	Context map[string]any
+	// mu protects concurrent access to the Context map. AppError instances are
+	// frequently shared across goroutines (e.g. passed through channels), so
+	// WithContext must be safe for concurrent use.
+	mu sync.Mutex
 }
 
 // Error returns the error message.
@@ -52,8 +59,10 @@ func (e *AppError) Unwrap() error {
 	return e.Err
 }
 
-// WithContext adds context to the error.
+// WithContext adds context to the error. Safe for concurrent use.
 func (e *AppError) WithContext(key string, value any) *AppError {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.Context == nil {
 		e.Context = make(map[string]any)
 	}

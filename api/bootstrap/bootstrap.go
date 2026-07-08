@@ -145,6 +145,17 @@ func (a *ARES) Stop() error {
 			log.Printf("bootstrap: runtime stop: %v", err)
 		}
 	}
+	if a.Evolution != nil {
+		a.Evolution.Shutdown()
+	}
+	if a.Dashboard != nil {
+		a.Dashboard.Stop()
+	}
+	if a.Memory != nil {
+		if err := a.Memory.Stop(context.Background()); err != nil {
+			log.Printf("bootstrap: memory stop: %v", err)
+		}
+	}
 	if a.MCP != nil {
 		if err := a.MCP.Stop(context.Background()); err != nil {
 			log.Printf("bootstrap: mcp stop: %v", err)

@@ -109,6 +109,12 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 		return errors.ErrAgentAlreadyStarted
 	}
 	a.status = models.AgentStatusStarting
+	// Initialize lifecycle channels and errgroups inside the lock so that a
+	// concurrent Stop() observes a non-nil stopCh. Creating stopCh after the
+	// lock is released lets Stop close a nil channel and panic.
+	a.stopCh = make(chan struct{})
+	a.distillEg = &errgroup.Group{}
+	a.streamEg = &errgroup.Group{}
 	a.mu.Unlock()
 
 	// Reset status to Offline if startup fails for any reason.
@@ -131,11 +137,6 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	if a.aggregator == nil {
 		return errors.ErrResultAggNotInitialized
 	}
-
-	// Initialize lifecycle channels and errgroups.
-	a.stopCh = make(chan struct{})
-	a.distillEg = &errgroup.Group{}
-	a.streamEg = &errgroup.Group{}
 
 	// Initialize heartbeat monitor if provided
 	if a.heartbeatMon != nil {
@@ -607,20 +608,25 @@ func (a *leaderAgent) Snapshot() (map[string]any, error) {
 //nolint:gocyclo // Complex stream processing with multiple agent phases
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
+	// The lock is held for the lifetime of the streaming goroutine to prevent
+	// concurrent Process/ProcessStream calls from racing on status/memory/feedback.
+	// It is released by a deferred unlock inside the goroutine. Early-return
+	// paths below unlock explicitly before returning.
 	a.processingMu.Lock()
-	defer a.processingMu.Unlock()
 
 	// Atomically check status and transition to Busy.
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil {
+			a.processingMu.Unlock()
 			return nil, err
 		}
 		a.mu.Lock()
 	}
 	if a.status != models.AgentStatusReady {
 		a.mu.Unlock()
+		a.processingMu.Unlock()
 		return nil, errors.ErrAgentNotReady
 	}
 	a.status = models.AgentStatusBusy
@@ -636,6 +642,7 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 			AgentID: a.id,
 			Error:   err,
 		})
+		a.processingMu.Unlock()
 		return nil, err
 	}
 
@@ -645,6 +652,10 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 	ch := make(chan base.AgentEvent, DefaultEventChanSize)
 
 	a.streamEg.Go(func() error {
+		// Release the processing lock when the stream goroutine exits so that
+		// mutual exclusion covers the full streaming lifetime.
+		defer a.processingMu.Unlock()
+
 		// Emit start event inside the goroutine so it's always paired with end.
 		a.emitCallback(&ares_callbacks.Context{
 			Event:   ares_callbacks.EventAgentStart,

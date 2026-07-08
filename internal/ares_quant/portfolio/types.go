@@ -33,6 +33,10 @@ type TradeSignal struct {
 	Action     string    `json:"action"` // "BUY", "SELL", or "HOLD"
 	Reason     string    `json:"reason,omitempty"`
 	Confidence float64   `json:"confidence,omitempty"` // 0–1
+	// Symbol targets a specific instrument in multi-asset simulations. When
+	// empty, the signal is broadcast to every symbol that has a valid price on
+	// the signal's date.
+	Symbol string `json:"symbol,omitempty"`
 }
 
 // SimulationResult holds the complete output of a backtest run, including

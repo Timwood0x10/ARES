@@ -37,6 +37,9 @@ func NewUserProfile(userID, name string) *UserProfile {
 
 // Validate validates the user profile.
 func (p *UserProfile) Validate() error {
+	if p == nil {
+		return errors.ErrInvalidUserID
+	}
 	if p.UserID == "" {
 		return errors.ErrInvalidUserID
 	}
@@ -51,6 +54,9 @@ func (p *UserProfile) Validate() error {
 
 // HasStyle checks if user has the specified style tag.
 func (p *UserProfile) HasStyle(tag StyleTag) bool {
+	if p == nil {
+		return false
+	}
 	for _, s := range p.Style {
 		if s == tag {
 			return true
@@ -61,6 +67,9 @@ func (p *UserProfile) HasStyle(tag StyleTag) bool {
 
 // HasOccasion checks if user has the specified occasion.
 func (p *UserProfile) HasOccasion(occ Occasion) bool {
+	if p == nil {
+		return false
+	}
 	for _, o := range p.Occasions {
 		if o == occ {
 			return true
@@ -83,6 +92,9 @@ func (f *UserFeedback) IsValid() bool {
 
 // SetRating sets the rating with validation.
 func (f *UserFeedback) SetRating(rating int) bool {
+	if f == nil {
+		return false
+	}
 	if rating < 1 || rating > 5 {
 		return false
 	}

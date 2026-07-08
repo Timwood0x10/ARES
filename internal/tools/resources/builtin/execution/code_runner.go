@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,18 +19,38 @@ import (
 )
 
 // CodeRunner provides code execution capabilities with sandbox constraints.
-// WARNING: This tool executes code on the host system. Use with caution and ensure proper sandboxing.
+//
+// SECURITY: This tool executes code on the host system. Python is disabled by
+// default. Operators must explicitly enable it via EnablePython(true) after
+// reviewing the sandbox constraints. The allowlist mode is the primary defense
+// — only the modules listed in allowedImports are permitted.
 type CodeRunner struct {
 	*base.BaseTool
-	enablePython        bool
-	enableJS            bool
-	timeout             time.Duration
-	maxOutputSize       int
-	dangerousPatterns   []string
-	obfuscationPatterns []string
+	mu                sync.RWMutex
+	enablePython      bool
+	enableJS          bool
+	timeout           time.Duration
+	maxOutputSize     int
+	dangerousPatterns []string
+	allowedImports    map[string]bool
+	strictAllowlist   bool
+}
+
+// allowedPythonImports is the default allowlist of modules that may be imported
+// in executed Python code. Operators can extend this via AddAllowedImport.
+var allowedPythonImports = []string{
+	"math", "random", "statistics", "itertools", "functools",
+	"collections", "decimal", "fractions", "re", "string",
+	"datetime", "time", "calendar",
+	"json", "csv",
 }
 
 // NewCodeRunner creates a new CodeRunner tool.
+//
+// By default both Python and JavaScript execution are DISABLED. Operators must
+// call EnablePython(true) or EnableJS(true) after evaluating the security
+// implications. The strict allowlist mode is enabled by default so that only
+// the modules in allowedImports can be used.
 func NewCodeRunner() *CodeRunner {
 	params := &core.ParameterSchema{
 		Type: "object",
@@ -57,28 +79,25 @@ func NewCodeRunner() *CodeRunner {
 	}
 
 	return &CodeRunner{
-		BaseTool:      base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
-		enablePython:  true,
-		enableJS:      false,
-		timeout:       30 * time.Second,
-		maxOutputSize: 10240,
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		enablePython:    false,
+		enableJS:        false,
+		timeout:         30 * time.Second,
+		maxOutputSize:   10240,
+		strictAllowlist: true,
+		allowedImports:  buildAllowedImportsSet(allowedPythonImports),
 		dangerousPatterns: []string{
-			"import os", "import subprocess", "import shutil",
-			"import sys", "import socket", "import pickle",
-			"import marshal", "import ctypes", "import multiprocessing",
-			"import importlib", "import urllib", "import requests",
-			"import http", "import ftplib", "import telnetlib",
-			"eval(", "exec(", "open(", "system(", "popen", "fork(",
 			"__import__", "__builtins__", "compile(",
-		},
-		obfuscationPatterns: []string{
-			"chr(", "ord(", "\\x", "base64.",
-			"getattr", "setattr",
+			"eval(", "exec(", "globals(", "locals(",
+			"open(", "system(", "popen", "fork(",
 		},
 	}
 }
 
 // NewCodeRunnerWithOptions creates a new CodeRunner with custom options.
+//
+// Operators are strongly encouraged to keep enablePython=false unless they
+// understand the risks. The strict allowlist remains enabled.
 func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration, maxOutputSize int) *CodeRunner {
 	params := &core.ParameterSchema{
 		Type: "object",
@@ -107,25 +126,28 @@ func NewCodeRunnerWithOptions(enablePython, enableJS bool, timeout time.Duration
 	}
 
 	return &CodeRunner{
-		BaseTool:      base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
-		enablePython:  enablePython,
-		enableJS:      enableJS,
-		timeout:       timeout,
-		maxOutputSize: maxOutputSize,
+		BaseTool:        base.NewBaseToolWithCapabilities("code_runner", "Execute Python and JavaScript code with sandbox constraints", core.CategorySystem, []core.Capability{core.CapabilityExternal}, params),
+		enablePython:    enablePython,
+		enableJS:        enableJS,
+		timeout:         timeout,
+		maxOutputSize:   maxOutputSize,
+		strictAllowlist: true,
+		allowedImports:  buildAllowedImportsSet(allowedPythonImports),
 		dangerousPatterns: []string{
-			"import os", "import subprocess", "import shutil",
-			"import sys", "import socket", "import pickle",
-			"import marshal", "import ctypes", "import multiprocessing",
-			"import importlib", "import urllib", "import requests",
-			"import http", "import ftplib", "import telnetlib",
-			"eval(", "exec(", "open(", "system(", "popen", "fork(",
 			"__import__", "__builtins__", "compile(",
-		},
-		obfuscationPatterns: []string{
-			"chr(", "ord(", "\\x", "base64.",
-			"getattr", "setattr",
+			"eval(", "exec(", "globals(", "locals(",
+			"open(", "system(", "popen", "fork(",
 		},
 	}
+}
+
+// buildAllowedImportsSet converts a slice of module names into a set for O(1) lookup.
+func buildAllowedImportsSet(modules []string) map[string]bool {
+	set := make(map[string]bool, len(modules))
+	for _, m := range modules {
+		set[m] = true
+	}
+	return set
 }
 
 // Execute performs the code execution operation.
@@ -144,12 +166,12 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 		return core.NewErrorResult("code exceeds maximum length of 10000 characters"), nil
 	}
 
-	// Validate code for potential security issues
+	// Validate code for potential security issues.
 	if err := t.validateCode(code); err != nil {
 		return core.NewErrorResult(fmt.Sprintf("code validation failed: %v", err)), nil
 	}
 
-	// Get execution parameters
+	// Get execution parameters.
 	timeoutSeconds := getInt(params, "timeout_seconds", 30)
 	if timeoutSeconds > 60 {
 		timeoutSeconds = 60
@@ -165,18 +187,18 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 		maxOutputSize = 1024
 	}
 
-	// Create context with timeout
+	// Create context with timeout.
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	switch operation {
 	case "run_python":
-		if !t.enablePython {
+		if !t.IsPythonEnabled() {
 			return core.NewErrorResult("Python execution is disabled"), nil
 		}
 		return t.runPython(execCtx, code, maxOutputSize)
 	case "run_js":
-		if !t.enableJS {
+		if !t.IsJSEnabled() {
 			return core.NewErrorResult("JavaScript execution is disabled"), nil
 		}
 		return t.runJavaScript(execCtx, code, maxOutputSize)
@@ -188,12 +210,15 @@ func (t *CodeRunner) Execute(ctx context.Context, params map[string]interface{})
 // importPattern matches import statements with word boundaries.
 var importPattern = regexp.MustCompile(`\bimport\s+\w+`)
 
+// fromImportPattern matches `from X import Y` statements.
+var fromImportPattern = regexp.MustCompile(`\bfrom\s+(\w+)\s+import`)
+
 // stripPythonComments removes single-line comments from Python code.
 func stripPythonComments(code string) string {
 	lines := strings.Split(code, "\n")
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		// Find the first unquoted '#' character
+		// Find the first unquoted '#' character.
 		inSingleQuote := false
 		inDoubleQuote := false
 		commentStart := -1
@@ -221,41 +246,91 @@ func stripPythonComments(code string) string {
 }
 
 // validateCode checks code for potential security issues.
+//
+// When strictAllowlist is true (the default), only the modules listed in
+// allowedImports may be imported. The dangerous-pattern denylist is retained
+// as defense-in-depth but is not relied upon as the primary control.
 func (t *CodeRunner) validateCode(code string) error {
-	// Strip comments to prevent bypass via comment-based splitting
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	stripped := stripPythonComments(code)
 	lowerCode := strings.ToLower(stripped)
 
-	// Check dangerous patterns (substring match)
+	// Defense-in-depth: reject known dangerous builtins.
 	for _, pattern := range t.dangerousPatterns {
-		if strings.Contains(lowerCode, pattern) {
+		if strings.Contains(lowerCode, strings.ToLower(pattern)) {
 			return fmt.Errorf("potentially dangerous pattern detected: %s", pattern)
 		}
 	}
 
-	// Check import statements with word boundaries using regex
-	matches := importPattern.FindAllString(lowerCode, -1)
-	for _, match := range matches {
-		parts := strings.Fields(match)
-		if len(parts) >= 2 {
-			moduleName := parts[1]
-			// Check if the imported module is in the dangerous patterns list
-			for _, pattern := range t.dangerousPatterns {
-				if pattern == "import "+moduleName {
-					return fmt.Errorf("potentially dangerous import detected: %s", match)
+	if t.strictAllowlist {
+		// Validate `import X` statements. Use lowercased code so that
+		// case-insensitive variants like "IMPORT OS" are also caught.
+		matches := importPattern.FindAllString(lowerCode, -1)
+		for _, match := range matches {
+			parts := strings.Fields(match)
+			if len(parts) >= 2 {
+				moduleName := parts[1]
+				if !t.allowedImports[moduleName] {
+					return fmt.Errorf("import not in allowlist: %s", moduleName)
 				}
+			}
+		}
+
+		// Validate `from X import Y` statements.
+		fromMatches := fromImportPattern.FindAllStringSubmatch(lowerCode, -1)
+		for _, m := range fromMatches {
+			if len(m) >= 2 && !t.allowedImports[m[1]] {
+				return fmt.Errorf("import not in allowlist: %s", m[1])
 			}
 		}
 	}
 
-	// Check obfuscation patterns
-	for _, pattern := range t.obfuscationPatterns {
-		if strings.Contains(lowerCode, pattern) {
-			return fmt.Errorf("potential code obfuscation detected: %s", pattern)
-		}
-	}
-
 	return nil
+}
+
+// limitedWriter wraps a bytes.Buffer and stops writing once maxBytes has been
+// reached, preventing unbounded memory growth from malicious output.
+type limitedWriter struct {
+	buf       *bytes.Buffer
+	maxBytes  int
+	truncated bool
+}
+
+// newLimitedWriter creates a writer that caps output at maxBytes.
+func newLimitedWriter(maxBytes int) *limitedWriter {
+	return &limitedWriter{
+		buf:      &bytes.Buffer{},
+		maxBytes: maxBytes,
+	}
+}
+
+// Write writes bytes to the buffer, stopping once maxBytes is exceeded.
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.truncated {
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > w.maxBytes {
+		remaining := w.maxBytes - w.buf.Len()
+		if remaining > 0 {
+			if _, err := w.buf.Write(p[:remaining]); err != nil {
+				return 0, err
+			}
+		}
+		w.truncated = true
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
+// String returns the captured output, with a truncation marker if needed.
+func (w *limitedWriter) String() string {
+	out := w.buf.String()
+	if w.truncated {
+		out += "\n... (output truncated)"
+	}
+	return out
 }
 
 // runPython executes Python code.
@@ -263,43 +338,33 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 	cmd := exec.CommandContext(ctx, "python3", "-c", code) // #nosec G204
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-	workDir, _ := os.MkdirTemp("", "code-runner-*")
-	if workDir != "" {
-		cmd.Dir = workDir
-		defer func() {
-			if err := os.RemoveAll(workDir); err != nil {
-				log.Error("failed to clean up temp dir", "path", workDir, "error", err)
-			}
-		}()
+	workDir, err := os.MkdirTemp("", "code-runner-*")
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("failed to create temp dir: %v", err)), nil
 	}
+	cmd.Dir = workDir
+	defer func() {
+		if rmErr := os.RemoveAll(workDir); rmErr != nil {
+			log.Error("failed to clean up temp dir", "path", workDir, "error", rmErr)
+		}
+	}()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedWriter(maxOutputSize)
+	stderr := newLimitedWriter(maxOutputSize)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startTime := time.Now()
-	err := cmd.Run()
+	runErr := cmd.Run()
 	executionTime := time.Since(startTime)
 
-	// Truncate output if necessary
-	output := stdout.String()
-	if len(output) > maxOutputSize {
-		output = output[:maxOutputSize] + "\n... (output truncated)"
-	}
-
-	errorOutput := stderr.String()
-	if len(errorOutput) > maxOutputSize {
-		errorOutput = errorOutput[:maxOutputSize] + "\n... (error truncated)"
-	}
-
-	if err != nil {
-		// Check if it was a timeout
+	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_python",
 				"success":        false,
 				"error":          "execution timeout",
-				"stderr":         errorOutput,
+				"stderr":         stderr.String(),
 				"execution_time": executionTime.Milliseconds(),
 			}), nil
 		}
@@ -307,8 +372,8 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 		return core.NewResult(false, map[string]interface{}{
 			"operation":      "run_python",
 			"success":        false,
-			"error":          err.Error(),
-			"stderr":         errorOutput,
+			"error":          runErr.Error(),
+			"stderr":         stderr.String(),
 			"execution_time": executionTime.Milliseconds(),
 		}), nil
 	}
@@ -316,8 +381,8 @@ func (t *CodeRunner) runPython(ctx context.Context, code string, maxOutputSize i
 	return core.NewResult(true, map[string]interface{}{
 		"operation":      "run_python",
 		"success":        true,
-		"output":         output,
-		"stderr":         errorOutput,
+		"output":         stdout.String(),
+		"stderr":         stderr.String(),
 		"execution_time": executionTime.Milliseconds(),
 	}), nil
 }
@@ -327,43 +392,33 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 	cmd := exec.CommandContext(ctx, "node", "-e", code) // #nosec G204
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-	workDir, _ := os.MkdirTemp("", "code-runner-*")
-	if workDir != "" {
-		cmd.Dir = workDir
-		defer func() {
-			if err := os.RemoveAll(workDir); err != nil {
-				log.Error("failed to clean up temp dir", "path", workDir, "error", err)
-			}
-		}()
+	workDir, err := os.MkdirTemp("", "code-runner-*")
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("failed to create temp dir: %v", err)), nil
 	}
+	cmd.Dir = workDir
+	defer func() {
+		if rmErr := os.RemoveAll(workDir); rmErr != nil {
+			log.Error("failed to clean up temp dir", "path", workDir, "error", rmErr)
+		}
+	}()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newLimitedWriter(maxOutputSize)
+	stderr := newLimitedWriter(maxOutputSize)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startTime := time.Now()
-	err := cmd.Run()
+	runErr := cmd.Run()
 	executionTime := time.Since(startTime)
 
-	// Truncate output if necessary
-	output := stdout.String()
-	if len(output) > maxOutputSize {
-		output = output[:maxOutputSize] + "\n... (output truncated)"
-	}
-
-	errorOutput := stderr.String()
-	if len(errorOutput) > maxOutputSize {
-		errorOutput = errorOutput[:maxOutputSize] + "\n... (error truncated)"
-	}
-
-	if err != nil {
-		// Check if it was a timeout
+	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return core.NewResult(false, map[string]interface{}{
 				"operation":      "run_js",
 				"success":        false,
 				"error":          "execution timeout",
-				"stderr":         errorOutput,
+				"stderr":         stderr.String(),
 				"execution_time": executionTime.Milliseconds(),
 			}), nil
 		}
@@ -371,8 +426,8 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 		return core.NewResult(false, map[string]interface{}{
 			"operation":      "run_js",
 			"success":        false,
-			"error":          err.Error(),
-			"stderr":         errorOutput,
+			"error":          runErr.Error(),
+			"stderr":         stderr.String(),
 			"execution_time": executionTime.Milliseconds(),
 		}), nil
 	}
@@ -380,49 +435,72 @@ func (t *CodeRunner) runJavaScript(ctx context.Context, code string, maxOutputSi
 	return core.NewResult(true, map[string]interface{}{
 		"operation":      "run_js",
 		"success":        true,
-		"output":         output,
-		"stderr":         errorOutput,
+		"output":         stdout.String(),
+		"stderr":         stderr.String(),
 		"execution_time": executionTime.Milliseconds(),
 	}), nil
 }
 
 // EnablePython enables or disables Python execution.
 func (t *CodeRunner) EnablePython(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.enablePython = enabled
 }
 
 // EnableJS enables or disables JavaScript execution.
 func (t *CodeRunner) EnableJS(enabled bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.enableJS = enabled
 }
 
 // SetTimeout sets the execution timeout.
 func (t *CodeRunner) SetTimeout(timeout time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.timeout = timeout
 }
 
 // SetMaxOutputSize sets the maximum output size.
 func (t *CodeRunner) SetMaxOutputSize(size int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.maxOutputSize = size
 }
 
 // IsPythonEnabled returns whether Python execution is enabled.
 func (t *CodeRunner) IsPythonEnabled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.enablePython
 }
 
 // IsJSEnabled returns whether JavaScript execution is enabled.
 func (t *CodeRunner) IsJSEnabled() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.enableJS
+}
+
+// AddAllowedImport adds a module name to the Python import allowlist.
+func (t *CodeRunner) AddAllowedImport(module string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.allowedImports[module] = true
 }
 
 // AddDangerousPattern adds a custom dangerous pattern to validate against.
 func (t *CodeRunner) AddDangerousPattern(pattern string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.dangerousPatterns = append(t.dangerousPatterns, pattern)
 }
 
 // GetSupportedLanguages returns the list of supported languages.
 func (t *CodeRunner) GetSupportedLanguages() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	languages := []string{}
 	if t.enablePython {
 		languages = append(languages, "python")
@@ -447,3 +525,6 @@ func getInt(params map[string]interface{}, key string, defaultVal int) int {
 	}
 	return defaultVal
 }
+
+// io is imported to ensure the limitedWriter satisfies io.Writer at compile time.
+var _ io.Writer = (*limitedWriter)(nil)

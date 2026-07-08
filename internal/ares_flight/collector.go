@@ -157,8 +157,11 @@ func (c *Collector) handleAgentStart(evt *ares_events.Event) {
 		Metadata: evt.Payload,
 	})
 
+	// Use agentID (evt.StreamID) as the graph node ID so handleAgentEnd can
+	// look up the node by the same agentID. Using evt.ID here caused the
+	// lookup in handleAgentEnd to always miss.
 	c.graph.AddNode(&GraphNode{
-		ID:       evt.ID,
+		ID:       agentID,
 		Type:     NodeAgent,
 		Name:     agentID,
 		Status:   StatusRunning,

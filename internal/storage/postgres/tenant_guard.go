@@ -3,8 +3,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 )
@@ -23,10 +21,11 @@ func NewTenantGuard(pool *Pool) *TenantGuard {
 // SetTenantContext sets the tenant context for the current database session.
 // This MUST be called for every tenant-specific operation to ensure physical isolation.
 //
-// NOTE: Uses SET LOCAL to set tenant context within the current transaction only.
-// This ensures tenant isolation works correctly with connection pooling, as SET LOCAL
-// only affects the current transaction and is reset when the transaction ends.
-// This prevents tenant context leakage across different connections in the pool.
+// Uses set_config('app.tenant_id', $1, true) with the third argument `true` to
+// apply SET LOCAL semantics: the setting is scoped to the current transaction
+// and reverts when the transaction ends. This prevents tenant context leakage
+// across pooled connections. The value is passed as a parameterized argument,
+// avoiding manual string escaping.
 //
 // Args:
 // ctx - database operation context.
@@ -37,12 +36,10 @@ func (g *TenantGuard) SetTenantContext(ctx context.Context, tenantID string) err
 		return err
 	}
 
-	// Manually escape single quotes for SQL literal
-	quotedID := "'" + strings.ReplaceAll(tenantID, "'", "''") + "'"
-	// Use SET LOCAL to ensure tenant context only affects current transaction
-	// This prevents cross-tenant data access in connection pool scenarios
-	query := fmt.Sprintf("SET LOCAL app.tenant_id TO %s", quotedID)
-	_, err := g.db.Exec(ctx, query)
+	// set_config(name, value, is_local) with is_local=true is equivalent to
+	// SET LOCAL but accepts the value as a parameter, eliminating the need
+	// for manual single-quote escaping.
+	_, err := g.db.Exec(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID)
 	if err != nil {
 		return errors.Wrap(err, "set tenant context")
 	}
@@ -80,12 +77,16 @@ func (g *TenantGuard) WithTenant(ctx context.Context, tenantID string, fn func(c
 }
 
 // ClearTenantContext clears the tenant context.
-// This is primarily used for cleanup and testing purposes.
+// Uses SET LOCAL (via set_config with is_local=true) so the reset only applies
+// to the current transaction. The previous SET (session-level) variant would
+// persist on pooled connections and could break RLS for subsequent requests
+// that reuse the same connection without setting their own tenant context.
+//
 // Args:
 // ctx - database operation context.
 // Returns error if clearing tenant context fails.
 func (g *TenantGuard) ClearTenantContext(ctx context.Context) error {
-	_, err := g.db.Exec(ctx, "SET app.tenant_id TO DEFAULT")
+	_, err := g.db.Exec(ctx, "SELECT set_config('app.tenant_id', '', true)")
 	if err != nil {
 		return errors.Wrap(err, "clear tenant context")
 	}

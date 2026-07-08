@@ -665,12 +665,19 @@ func (o *Orchestrator) updateRawDataLen(id string, n int) {
 }
 
 func (o *Orchestrator) failAgent(id string, err error) {
+	// Guard against nil err: callers may pass nil on context cancellation or
+	// other paths. Calling err.Error() on a nil error panics the process.
+	errMsg := "unknown error"
+	if err != nil {
+		errMsg = err.Error()
+	}
+
 	o.mu.Lock()
 	var cp *AgentResult
 	var duration time.Duration
 	if a, ok := o.agents[id]; ok {
 		a.Status = "failed"
-		a.Error = err.Error()
+		a.Error = errMsg
 		a.FinishedAt = time.Now()
 		a.Duration = a.FinishedAt.Sub(a.StartedAt).Round(time.Second).String()
 		duration = a.FinishedAt.Sub(a.StartedAt)
@@ -685,7 +692,7 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 
 	log.Error("orchestrator: agent failed", "id", id, "error", err)
-	o.emitEvent(id, "agent.failed", map[string]any{"error": err.Error()})
+	o.emitEvent(id, "agent.failed", map[string]any{"error": errMsg})
 
 	hub := o.getHub()
 	if hub != nil && cp != nil {
@@ -696,13 +703,14 @@ func (o *Orchestrator) failAgent(id string, err error) {
 	}
 }
 
-// emitEvent stores an event using the canonical ares_events.Emit.
+// emitEvent stores an event using the canonical ares_events.Emit. The
+// orchestrator's baseCtx is used so events are not emitted after shutdown.
 func (o *Orchestrator) emitEvent(streamID, eventType string, payload map[string]any) {
 	store := o.getStore()
 	if store == nil {
 		return
 	}
-	if !ares_events.Emit(context.Background(), store, streamID, ares_events.EventType(eventType), "dashboard", payload) {
+	if !ares_events.Emit(o.baseCtx, store, streamID, ares_events.EventType(eventType), "dashboard", payload) {
 		log.Warn("failed to emit event", "event_type", eventType, "stream_id", streamID)
 	}
 }

@@ -82,7 +82,7 @@ func (c *Client) initialize(ctx context.Context) error {
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
 	}
-	_ = c.sendNotification(notif) //nolint: errcheck
+	_ = c.sendNotification(ctx, notif) //nolint: errcheck
 
 	return nil
 }
@@ -159,7 +159,7 @@ func (c *Client) sendRequest(ctx context.Context, req jsonrpcRequest) (*jsonrpcR
 	return c.transport.roundTrip(ctx, req)
 }
 
-func (c *Client) sendNotification(notif jsonrpcNotification) error {
+func (c *Client) sendNotification(ctx context.Context, notif jsonrpcNotification) error {
 	// Notifications don't expect a response; for SSE transport they're
 	// sent as POST requests that we intentionally ignore the response.
 	// For stdio transport, notifications are fire-and-forget writes.
@@ -169,7 +169,7 @@ func (c *Client) sendNotification(notif jsonrpcNotification) error {
 		Method:  notif.Method,
 		Params:  notif.Params,
 	}
-	_, _ = c.transport.roundTrip(context.Background(), req)
+	_, _ = c.transport.roundTrip(ctx, req)
 	return nil
 }
 

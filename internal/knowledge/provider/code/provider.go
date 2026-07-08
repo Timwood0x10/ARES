@@ -127,16 +127,17 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 					return filepath.SkipAll
 				}
 
-				obj := p.declToObject(decl, file, relPath, fset)
-				if obj == nil {
-					continue
-				}
-				count++
-
-				select {
-				case objCh <- obj:
-				case <-ctx.Done():
-					return ctx.Err()
+				objs := p.declToObject(decl, file, relPath, fset)
+				for _, obj := range objs {
+					if count >= maxResults {
+						return filepath.SkipAll
+					}
+					count++
+					select {
+					case objCh <- obj:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
 				}
 			}
 
@@ -151,19 +152,26 @@ func (p *CodeProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-c
 	return objCh, errCh
 }
 
-// declToObject converts a Go AST declaration to a KnowledgeObject.
-func (p *CodeProvider) declToObject(decl ast.Decl, file *ast.File, relPath string, fset *token.FileSet) *knowledge.KnowledgeObject {
+// declToObject converts a Go AST declaration to one or more KnowledgeObjects.
+// A single GenDecl may declare multiple types (e.g. `type ( A int; B string )`),
+// so the return type is a slice to ensure every TypeSpec is emitted.
+func (p *CodeProvider) declToObject(decl ast.Decl, file *ast.File, relPath string, fset *token.FileSet) []*knowledge.KnowledgeObject {
 	switch d := decl.(type) {
 	case *ast.GenDecl:
 		return p.genDeclToObject(d, file, relPath)
 	case *ast.FuncDecl:
-		return p.funcDeclToObject(d, file, relPath, fset)
+		obj := p.funcDeclToObject(d, file, relPath, fset)
+		if obj == nil {
+			return nil
+		}
+		return []*knowledge.KnowledgeObject{obj}
 	default:
 		return nil
 	}
 }
 
-func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath string) *knowledge.KnowledgeObject {
+func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath string) []*knowledge.KnowledgeObject {
+	var objs []*knowledge.KnowledgeObject
 	for _, spec := range d.Specs {
 		ts, ok := spec.(*ast.TypeSpec)
 		if !ok {
@@ -183,7 +191,7 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 			objType = knowledge.ObjectCode
 		}
 
-		return &knowledge.KnowledgeObject{
+		objs = append(objs, &knowledge.KnowledgeObject{
 			ID:         fmt.Sprintf("%s:%s.%s", p.name, file.Name.Name, typeName),
 			Type:       objType,
 			Namespace:  p.name,
@@ -192,9 +200,9 @@ func (p *CodeProvider) genDeclToObject(d *ast.GenDecl, file *ast.File, relPath s
 			CreatedAt:  time.Now(),
 			UpdatedAt:  time.Now(),
 			Tags:       []string{string(objType), file.Name.Name},
-		}
+		})
 	}
-	return nil
+	return objs
 }
 
 func (p *CodeProvider) funcDeclToObject(d *ast.FuncDecl, file *ast.File, relPath string, fset *token.FileSet) *knowledge.KnowledgeObject {

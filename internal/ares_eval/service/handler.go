@@ -30,10 +30,15 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// maxEvalRequestBodyBytes caps the size of eval request bodies to prevent
+// memory-exhaustion denial of service via oversized payloads.
+const maxEvalRequestBodyBytes int64 = 10 << 20 // 10 MiB
+
 // HandleRunEval handles POST /api/v1/eval/run.
 // It validates the request, generates a run ID, starts the evaluation
 // asynchronously in a background goroutine, and returns 202 Accepted immediately.
 func (h *Handler) HandleRunEval(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxEvalRequestBodyBytes)
 	var req RunEvalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err)

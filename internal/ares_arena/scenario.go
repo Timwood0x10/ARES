@@ -34,6 +34,7 @@ type ScheduledAction struct {
 	Action        Action        `yaml:"action" json:"action"`                                     // the action to execute
 	Label         string        `yaml:"label,omitempty" json:"label,omitempty"`                   // human-readable label
 	ExpectSuccess bool          `yaml:"expect_success,omitempty" json:"expect_success,omitempty"` // expected result for verification
+	ExpectFailure bool          `yaml:"expect_failure,omitempty" json:"expect_failure,omitempty"` // expect the action to fail (verification)
 	DependsOn     []string      `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`         // labels of actions this depends on
 }
 
@@ -284,22 +285,28 @@ func (r *ScenarioReport) computeTotals() {
 	}
 }
 
-// checkVerified compares ExpectSuccess against actual results.
+// checkVerified compares ExpectSuccess and ExpectFailure against actual results.
+// Actions with ExpectSuccess=true must succeed; actions with ExpectFailure=true
+// must fail. Actions with neither set are not verified.
 func (r *ScenarioReport) checkVerified(scenario Scenario) {
 	allMatch := true
-	for i, res := range r.Results {
-		if i < len(scenario.Actions) && scenario.Actions[i].ExpectSuccess {
-			if res.Success != scenario.Actions[i].ExpectSuccess {
-				allMatch = false
-			}
-		}
-	}
-	// If no actions have expect_success set, consider it verified by default.
 	hasExpectations := false
-	for _, sa := range scenario.Actions {
-		if sa.ExpectSuccess {
-			hasExpectations = true
-			break
+	for i, res := range r.Results {
+		if i >= len(scenario.Actions) {
+			continue
+		}
+		sa := scenario.Actions[i]
+		if !sa.ExpectSuccess && !sa.ExpectFailure {
+			continue
+		}
+		hasExpectations = true
+		// ExpectSuccess=true wants res.Success=true.
+		// ExpectFailure=true wants res.Success=false.
+		if sa.ExpectSuccess != res.Success {
+			allMatch = false
+		}
+		if sa.ExpectFailure && res.Success {
+			allMatch = false
 		}
 	}
 	r.Verified = !hasExpectations || allMatch

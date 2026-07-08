@@ -481,14 +481,10 @@ func (s *MultiAssetSimulator) RunMultiAssetSimulation(
 	}
 
 	// Track per-symbol state and last-known prices.
-	type symState struct {
-		shares    float64
-		costBasis float64
-	}
-	states := make(map[string]*symState, len(symbols))
+	states := make(map[string]*multiAssetSymState, len(symbols))
 	lastPrices := make(map[string]float64, len(symbols))
 	for _, sym := range symbols {
-		states[sym] = &symState{}
+		states[sym] = &multiAssetSymState{}
 	}
 
 	cash := s.InitialCapital
@@ -542,73 +538,42 @@ func (s *MultiAssetSimulator) RunMultiAssetSimulation(
 		// Execute matching signals.
 		if sigs, ok := signalIndex[dateKey]; ok {
 			for _, sig := range sigs {
-				targetSym := symbols[0] // default: first symbol
-				if len(symbols) == 1 {
-					targetSym = symbols[0]
-				}
-				// Use signal's symbol if available and valid.
-				// For simplicity, apply to the first symbol that has a valid price.
-				price := currentPrices[targetSym]
-				if price <= 0 {
-					continue
-				}
-				ss := states[targetSym]
-
-				switch sig.Action {
-				case "BUY":
-					investment := cash * s.PositionSize
-					if investment <= 0 {
+				// Resolve the target symbol(s) for this signal. A non-empty
+				// Symbol routes to that instrument only; an empty Symbol
+				// broadcasts the signal to every symbol with a valid price.
+				targets := resolveSignalTargets(sig.Symbol, symbols, currentPrices)
+				for _, targetSym := range targets {
+					price := currentPrices[targetSym]
+					if price <= 0 {
 						continue
 					}
-					costPerShare := price * (1 + s.Commission)
-					buyShares := math.Floor(investment / costPerShare)
-					if buyShares <= 0 {
+					ss := states[targetSym]
+					exec, ok := s.executeMultiAssetSignal(sig, ss, price, cash)
+					if !ok {
 						continue
 					}
-					cost := buyShares * costPerShare
-					totalCost := ss.costBasis*ss.shares + cost
-					cash -= cost
-					ss.shares += buyShares
-					if ss.shares > 0 {
-						ss.costBasis = totalCost / ss.shares
+					cash = exec.cash
+					if exec.side != "" {
+						tradeID++
+						rec := TradeRecord{
+							ID:        fmt.Sprintf("T%d", tradeID),
+							Symbol:    targetSym,
+							Side:      exec.side,
+							Price:     price,
+							Quantity:  exec.quantity,
+							Timestamp: dt,
+						}
+						if exec.side == "sell" {
+							rec.PnL = exec.pnl
+							if exec.pnl >= 0 {
+								winningTrades++
+							} else {
+								losingTrades++
+							}
+							totalClosed++
+						}
+						tradeLog = append(tradeLog, rec)
 					}
-					tradeID++
-					tradeLog = append(tradeLog, TradeRecord{
-						ID:        fmt.Sprintf("T%d", tradeID),
-						Symbol:    targetSym,
-						Side:      "buy",
-						Price:     price,
-						Quantity:  buyShares,
-						Timestamp: dt,
-					})
-				case "SELL":
-					if ss.shares <= 0 {
-						continue
-					}
-					sellPrice := price * (1 - s.Commission)
-					proceeds := ss.shares * sellPrice
-					pnl := proceeds - (ss.shares * ss.costBasis)
-					cash += proceeds
-					tradeID++
-					tradeLog = append(tradeLog, TradeRecord{
-						ID:        fmt.Sprintf("T%d", tradeID),
-						Symbol:    targetSym,
-						Side:      "sell",
-						Price:     price,
-						Quantity:  ss.shares,
-						Timestamp: dt,
-						PnL:       pnl,
-					})
-					if pnl >= 0 {
-						winningTrades++
-					} else {
-						losingTrades++
-					}
-					totalClosed++
-					ss.shares = 0
-					ss.costBasis = 0
-				case "HOLD":
-					// No action.
 				}
 			}
 		}
@@ -717,6 +682,94 @@ func (s *MultiAssetSimulator) RunMultiAssetSimulation(
 		Summary:     formatMultiSummary(symbols, finalEquity, totalPnL, totalReturn, sharpe, maxDrawdown, winRate, tradeID, winningTrades, losingTrades),
 		Warnings:    warnings,
 	}, nil
+}
+
+// signalExecResult captures the side effects of executing one signal against a
+// single symbol's position state.
+type signalExecResult struct {
+	side     string // "buy", "sell", or "" for no trade
+	quantity float64
+	pnl      float64
+	cash     float64
+}
+
+// multiAssetSymState tracks per-symbol holdings during a multi-asset backtest.
+type multiAssetSymState struct {
+	shares    float64
+	costBasis float64
+}
+
+// resolveSignalTargets returns the ordered list of symbols a signal should be
+// applied to. When sym is non-empty and matches a known symbol, only that
+// symbol is returned. When sym is empty, the signal broadcasts to every symbol
+// that currently has a positive price, preserving the input symbols order.
+func resolveSignalTargets(sym string, symbols []string, currentPrices map[string]float64) []string {
+	if sym != "" {
+		for _, s := range symbols {
+			if s == sym {
+				return []string{s}
+			}
+		}
+		return nil
+	}
+	out := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		if currentPrices[s] > 0 {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// executeMultiAssetSignal applies one trade signal to a single symbol's state,
+// returning the updated cash balance and trade-record details. Returns ok=false
+// when the signal produces no trade (e.g. insufficient cash or shares).
+func (s *MultiAssetSimulator) executeMultiAssetSignal(
+	sig TradeSignal,
+	ss *multiAssetSymState,
+	price, cash float64,
+) (signalExecResult, bool) {
+	res := signalExecResult{cash: cash}
+	switch sig.Action {
+	case "BUY":
+		investment := cash * s.PositionSize
+		if investment <= 0 {
+			return res, false
+		}
+		costPerShare := price * (1 + s.Commission)
+		buyShares := math.Floor(investment / costPerShare)
+		if buyShares <= 0 {
+			return res, false
+		}
+		cost := buyShares * costPerShare
+		totalCost := ss.costBasis*ss.shares + cost
+		res.cash = cash - cost
+		res.side = "buy"
+		res.quantity = buyShares
+		ss.shares += buyShares
+		if ss.shares > 0 {
+			ss.costBasis = totalCost / ss.shares
+		}
+		return res, true
+	case "SELL":
+		if ss.shares <= 0 {
+			return res, false
+		}
+		sellPrice := price * (1 - s.Commission)
+		proceeds := ss.shares * sellPrice
+		res.pnl = proceeds - (ss.shares * ss.costBasis)
+		res.cash = cash + proceeds
+		res.side = "sell"
+		res.quantity = ss.shares
+		ss.shares = 0
+		ss.costBasis = 0
+		return res, true
+	case "HOLD":
+		// No action.
+		return res, true
+	default:
+		return res, false
+	}
 }
 
 // formatMultiSummary builds a human-readable summary string for multi-asset results.

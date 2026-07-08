@@ -7,6 +7,7 @@ package dashboard
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -103,6 +104,10 @@ type agentState struct {
 	successOps int
 }
 
+// maxLatencySamples caps the number of latency samples retained per agent to
+// bound memory usage. Older samples are discarded first.
+const maxLatencySamples = 1000
+
 // DefaultEngineConfig returns sensible defaults.
 func DefaultEngineConfig() *EngineConfig {
 	return &EngineConfig{
@@ -163,6 +168,9 @@ func (e *Engine) ObserveAgentEvent(agentID, eventType string, latencyMs float64,
 		state.successOps++
 	}
 
+	// Prune stale entries to bound memory and keep per-observation cost low.
+	e.trimState(state)
+
 	switch {
 	case eventType == "restart" || eventType == "resurrection":
 		state.restarts = append(state.restarts, now)
@@ -174,8 +182,33 @@ func (e *Engine) ObserveAgentEvent(agentID, eventType string, latencyMs float64,
 
 	case latencyMs > 0:
 		state.latencies = append(state.latencies, latencyMs)
+		if len(state.latencies) > maxLatencySamples {
+			// Drop oldest sample to keep the slice bounded.
+			state.latencies = state.latencies[len(state.latencies)-maxLatencySamples:]
+		}
 		e.detectLatencyAnomaly(agentID, state, now)
 	}
+}
+
+// trimState prunes entries older than the health window from the restarts and
+// errors slices. Latencies are bounded by maxLatencySamples instead.
+func (e *Engine) trimState(s *agentState) {
+	cutoff := time.Now().Add(-e.HealthWindow)
+	s.restarts = trimTimes(s.restarts, cutoff)
+	s.errors = trimTimes(s.errors, cutoff)
+}
+
+// trimTimes drops all entries at or before cutoff. The slice is assumed to be
+// in ascending chronological order (append-ordered).
+func trimTimes(times []time.Time, cutoff time.Time) []time.Time {
+	idx := sort.Search(len(times), func(i int) bool {
+		return times[i].After(cutoff)
+	})
+	if idx == 0 {
+		return times
+	}
+	// Shift to the front to allow the old backing array to be GC'd.
+	return append(times[:0], times[idx:]...)
 }
 
 // ── Health Queries ───────────────────────────────────────────
@@ -451,23 +484,30 @@ func ratePerMin(events []time.Time, window time.Duration) float64 {
 	return float64(count) / window.Minutes()
 }
 
+// percentile returns the p-th percentile (0.0 ≤ p ≤ 1.0) of values using
+// the nearest-rank method. An empty input returns 0. p outside [0,1] is
+// clamped. The input slice is not mutated; a copy is sorted internally.
 func percentile(values []float64, p float64) float64 {
 	if len(values) == 0 {
 		return 0
 	}
-	// Simple running P99 — uses windowed values, sorts approximate.
-	var max float64
-	var count int
-	for _, v := range values {
-		if v > max {
-			max = v
-		}
-		count++
+	if p < 0 {
+		p = 0
+	} else if p > 1 {
+		p = 1
 	}
-	if count == 0 {
-		return 0
+	cp := make([]float64, len(values))
+	copy(cp, values)
+	sort.Float64s(cp)
+	// Nearest-rank: rank = ceil(p * n), clamped to [1, n].
+	rank := int(p*float64(len(cp)) + 0.9999999)
+	if rank < 1 {
+		rank = 1
 	}
-	return max
+	if rank > len(cp) {
+		rank = len(cp)
+	}
+	return cp[rank-1]
 }
 
 func uptimePct(success, total int) float64 {

@@ -288,7 +288,7 @@ func (r *ToolRepository) Update(ctx context.Context, tool *storage_models.Tool) 
 // id - tool identifier.
 // Returns error if delete operation fails.
 func (r *ToolRepository) Delete(ctx context.Context, id string) error {
-	return postgres.DeleteByID(ctx, r.db, "tools", id)
+	return postgres.DeleteByID(ctx, r.db, "tools", id, "")
 }
 
 // SearchByVector performs semantic search for tools using vector embedding.

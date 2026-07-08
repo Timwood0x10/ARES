@@ -163,12 +163,14 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[s
 		return nil, apperrors.Wrap(err, "get agent")
 	}
 
-	// Apply updates
+	// Apply updates. Note: status is asserted as string because JSON-sourced
+	// maps (e.g. from HTTP requests) store enum values as strings, not as
+	// core.AgentStatus. Asserting directly to core.AgentStatus always fails.
 	if name, ok := updates["name"].(string); ok {
 		agent.Name = name
 	}
-	if status, ok := updates["status"].(core.AgentStatus); ok {
-		agent.Status = status
+	if statusStr, ok := updates["status"].(string); ok {
+		agent.Status = core.AgentStatus(statusStr)
 	}
 	if agentType, ok := updates["type"].(string); ok {
 		agent.Type = agentType

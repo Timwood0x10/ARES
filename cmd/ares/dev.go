@@ -100,9 +100,9 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	for _, p := range providers {
 		if v := os.Getenv(p.env); v != "" {
 			fmt.Printf("  %-10s ✅ (%s...)\n", p.name, v[:min(8, len(v))]+"...")
-			ok = true
 		} else {
 			fmt.Printf("  %-10s ❌ set %s\n", p.name, p.env)
+			ok = false
 		}
 	}
 

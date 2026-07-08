@@ -21,6 +21,10 @@ type RedisClient interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
 	Del(ctx context.Context, keys ...string) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
+	// Scan performs a cursor-based SCAN iteration, which is non-blocking
+	// unlike Keys. Returns the next cursor (0 means iteration complete),
+	// the keys found in this batch, and any error.
+	Scan(ctx context.Context, cursor uint64, match string, count int64) (uint64, []string, error)
 }
 
 // CacheKey represents a cache key for embeddings.
@@ -160,13 +164,24 @@ func (c *EmbeddingCache) Clear(ctx context.Context) error {
 		return nil
 	}
 
-	// Try to clear Redis
+	// Use SCAN instead of KEYS to avoid blocking Redis on large keyspaces.
 	if c.redis != nil {
-		keys, err := c.redis.Keys(ctx, "embed:*")
-		if err == nil && len(keys) > 0 {
-			if err := c.redis.Del(ctx, keys...); err != nil {
-				log.Warn("embedding cache: del keys", "error", err)
+		var cursor uint64
+		for {
+			next, keys, err := c.redis.Scan(ctx, cursor, "embed:*", 100)
+			if err != nil {
+				log.Warn("embedding cache: scan keys", "error", err)
+				break
 			}
+			if len(keys) > 0 {
+				if err := c.redis.Del(ctx, keys...); err != nil {
+					log.Warn("embedding cache: del keys", "error", err)
+				}
+			}
+			if next == 0 {
+				break
+			}
+			cursor = next
 		}
 	}
 
@@ -195,11 +210,21 @@ func (c *EmbeddingCache) GetStats(ctx context.Context) (*CacheStats, error) {
 		return &CacheStats{Enabled: false}, nil
 	}
 
+	// Use SCAN instead of KEYS to avoid blocking Redis on large keyspaces.
 	var redisKeys int
 	if c.redis != nil {
-		keys, err := c.redis.Keys(ctx, "embed:*")
-		if err == nil {
-			redisKeys = len(keys)
+		var cursor uint64
+		for {
+			next, keys, err := c.redis.Scan(ctx, cursor, "embed:*", 100)
+			if err != nil {
+				log.Warn("embedding cache: scan keys for stats", "error", err)
+				break
+			}
+			redisKeys += len(keys)
+			if next == 0 {
+				break
+			}
+			cursor = next
 		}
 	}
 

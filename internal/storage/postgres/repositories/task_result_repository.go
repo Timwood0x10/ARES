@@ -257,7 +257,8 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 // id - task result identifier.
 // Returns error if delete operation fails.
 func (r *TaskResultRepository) Delete(ctx context.Context, id string) error {
-	return postgres.DeleteByID(ctx, r.db, "task_results_1024", id)
+	// TODO: enforce tenant scoping by accepting tenantID in Delete (tracked as HIGH finding).
+	return postgres.DeleteByID(ctx, r.db, "task_results_1024", id, "")
 }
 
 // SearchByVector performs vector similarity search for task results.

@@ -1,4 +1,3 @@
-// nolint: errcheck // Operations may ignore return values
 package embedding
 
 import (
@@ -167,7 +166,7 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 	uncachedTexts := []string{}
 
 	for i, text := range normalizedTexts {
-		cacheKey := c.getCacheKey(text, "query")
+		cacheKey := c.getCacheKey(text, "query:")
 
 		if c.redis != nil {
 			cached, err := c.redis.Get(ctx, cacheKey)
@@ -183,7 +182,7 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 
 	// Batch call for uncached texts
 	if len(uncachedTexts) > 0 {
-		batchEmbeddings, err := c.callEmbeddingBatchService(ctx, uncachedTexts, "query")
+		batchEmbeddings, err := c.callEmbeddingBatchService(ctx, uncachedTexts, "query:")
 		if err != nil {
 			return nil, err
 		}
@@ -193,7 +192,7 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 			embeddings[idx] = batchEmbeddings[i]
 
 			if c.redis != nil {
-				cacheKey := c.getCacheKey(uncachedTexts[i], "query")
+				cacheKey := c.getCacheKey(uncachedTexts[i], "query:")
 				if data, err := json.Marshal(batchEmbeddings[i]); err == nil {
 					if err := c.redis.Set(ctx, cacheKey, data, c.cacheTTL); err != nil {
 						log.Warn("embedding client: set embedding cache", "key", cacheKey, "error", err)

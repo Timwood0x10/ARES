@@ -252,7 +252,20 @@ func (rt *RegressionTester) runAdaptive(ctx context.Context, cfg RegressionConfi
 		}
 
 		// Both strategies score the same test case slice (paired by index).
-		batchTestCases := testCases[offset : offset+thisBatch]
+		// Keep the slice in bounds: when offset exceeds the test case count,
+		// wrap around so runs can cycle through a suite shorter than maxRuns.
+		if len(testCases) == 0 {
+			break
+		}
+		caseOffset := offset % len(testCases)
+		avail := len(testCases) - caseOffset
+		if thisBatch > avail {
+			thisBatch = avail
+		}
+		if thisBatch <= 0 {
+			break
+		}
+		batchTestCases := testCases[caseOffset : caseOffset+thisBatch]
 
 		// Run one batch for both strategies in parallel.
 		var batchOld, batchNew []float64

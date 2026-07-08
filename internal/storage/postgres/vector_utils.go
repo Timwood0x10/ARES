@@ -11,23 +11,25 @@ import (
 
 // FormatVector converts []float64 to pgvector format string.
 // This properly formats the embedding array to avoid double brackets.
-// Uses %.6f format to limit decimal places to 6 for compact representation.
+// Uses precision -1 (shortest round-trip representation) to avoid precision
+// loss that would occur with a fixed decimal count like %.6f.
 func FormatVector(embedding []float64) string {
 	if len(embedding) == 0 {
 		return "[]"
 	}
 
-	// Pre-allocate capacity: ~8 chars per number + commas + brackets
+	// Pre-allocate capacity: ~24 chars per number + commas + brackets
 	var builder strings.Builder
-	builder.Grow(len(embedding)*8 + 2)
+	builder.Grow(len(embedding)*24 + 2)
 	builder.WriteString("[")
 
 	for i, v := range embedding {
 		if i > 0 {
 			builder.WriteString(",")
 		}
-		// Optimization: Use strconv directly instead of fmt.Fprintf for better performance
-		builder.WriteString(strconv.FormatFloat(v, 'f', 6, 64))
+		// Precision -1 produces the shortest string that round-trips to the
+		// same float64, preserving full precision without excessive length.
+		builder.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
 	}
 
 	builder.WriteString("]")

@@ -509,14 +509,17 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 			if err := m.expRepo.Create(storeCtx, exp); err != nil {
 				log.Error("[Memory Distillation] Failed to store experience",
 					"task_id", taskID, "error", err)
-				return nil
+				return errors.Wrap(err, "store experience")
 			}
 			atomic.AddInt64(&storedCount, 1)
 			return nil
 		})
 	}
 	if err := g.Wait(); err != nil {
+		// errgroup returns the first error from the goroutines.
+		// Log it for observability and propagate to the caller.
 		log.Error("memory manager: background task failed", "error", err)
+		return errors.Wrap(err, "store distilled experiences")
 	}
 
 	if len(memories) > 0 && atomic.LoadInt64(&storedCount) == 0 {

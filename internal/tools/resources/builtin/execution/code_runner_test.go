@@ -21,8 +21,9 @@ func TestNewCodeRunner(t *testing.T) {
 	if runner.Category() != core.CategorySystem {
 		t.Errorf("Category() = %v, want CategorySystem", runner.Category())
 	}
-	if !runner.enablePython {
-		t.Error("Python should be enabled by default")
+	// SECURITY: Python is disabled by default; operators must opt in.
+	if runner.enablePython {
+		t.Error("Python should be disabled by default")
 	}
 	if runner.enableJS {
 		t.Error("JavaScript should be disabled by default")
@@ -194,6 +195,8 @@ func TestCodeRunnerExecute_InvalidOperation(t *testing.T) {
 // TestCodeRunnerExecute_CodeValidation tests code validation.
 func TestCodeRunnerExecute_CodeValidation(t *testing.T) {
 	runner := NewCodeRunner()
+	// Enable Python so that code validation (not the enable check) is exercised.
+	runner.EnablePython(true)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -461,9 +464,9 @@ func TestCodeRunnerExecute_MaxOutputSize(t *testing.T) {
 func TestCodeRunnerEnableDisable(t *testing.T) {
 	runner := NewCodeRunner()
 
-	// Test initial state
-	if !runner.IsPythonEnabled() {
-		t.Error("Python should be enabled initially")
+	// Test initial state — both disabled by default for safety.
+	if runner.IsPythonEnabled() {
+		t.Error("Python should be disabled initially")
 	}
 	if runner.IsJSEnabled() {
 		t.Error("JavaScript should be disabled initially")
@@ -475,16 +478,16 @@ func TestCodeRunnerEnableDisable(t *testing.T) {
 		t.Error("JavaScript should be enabled after EnableJS(true)")
 	}
 
+	// Enable Python
+	runner.EnablePython(true)
+	if !runner.IsPythonEnabled() {
+		t.Error("Python should be enabled after EnablePython(true)")
+	}
+
 	// Disable Python
 	runner.EnablePython(false)
 	if runner.IsPythonEnabled() {
 		t.Error("Python should be disabled after EnablePython(false)")
-	}
-
-	// Re-enable Python
-	runner.EnablePython(true)
-	if !runner.IsPythonEnabled() {
-		t.Error("Python should be enabled after EnablePython(true)")
 	}
 
 	// Disable JS
@@ -570,20 +573,27 @@ func TestCodeRunnerSetMaxOutputSize(t *testing.T) {
 func TestCodeRunnerGetSupportedLanguages(t *testing.T) {
 	runner := NewCodeRunner()
 
-	// Test initial state
+	// Test initial state — no languages enabled by default.
 	languages := runner.GetSupportedLanguages()
+	if len(languages) != 0 {
+		t.Errorf("Initial languages count = %d, want 0", len(languages))
+	}
+
+	// Enable Python
+	runner.EnablePython(true)
+	languages = runner.GetSupportedLanguages()
 	if len(languages) != 1 {
-		t.Errorf("Initial languages count = %d, want 1", len(languages))
+		t.Errorf("Languages count with Python enabled = %d, want 1", len(languages))
 	}
 	if len(languages) > 0 && languages[0] != "python" {
-		t.Errorf("Initial language = %s, want 'python'", languages[0])
+		t.Errorf("Language with Python enabled = %s, want 'python'", languages[0])
 	}
 
 	// Enable JS
 	runner.EnableJS(true)
 	languages = runner.GetSupportedLanguages()
 	if len(languages) != 2 {
-		t.Errorf("Languages count with JS enabled = %d, want 2", len(languages))
+		t.Errorf("Languages count with both enabled = %d, want 2", len(languages))
 	}
 
 	// Disable Python

@@ -13,6 +13,10 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 )
 
+// maxResults caps the number of task results cached in memory to prevent
+// unbounded growth (OOM). When the limit is reached, the cache is reset.
+const maxResults = 10000
+
 // Service implements core.AgentService by wrapping the internal agent implementation.
 type Service struct {
 	inner   *agentapi.Service
@@ -69,19 +73,45 @@ func (s *Service) GetAgent(ctx context.Context, agentID string) (*core.Agent, er
 
 // UpdateAgent updates an existing agent's configuration.
 func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*core.Agent, error) {
-	// For now, delegate to GetAgent and report update not fully wired.
-	// In the future this will support partial updates to the agent record.
+	// Verify the agent exists.
 	agent, err := s.inner.GetAgent(ctx, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent: update: %w", err)
 	}
-	_ = updates // reserved for future field-level updates
-	return &core.Agent{
+
+	// Build the updated agent. The inner service does not yet support
+	// persisting field-level updates, so changes are applied in-memory only.
+	result := &core.Agent{
 		ID:        agent.ID,
 		SessionID: agent.SessionID,
 		Status:    core.AgentStatus(agent.Status),
 		CreatedAt: agent.CreatedAt,
-	}, nil
+		UpdatedAt: time.Now().Unix(),
+	}
+
+	// Apply supported field updates instead of silently ignoring them.
+	for key, val := range updates {
+		switch key {
+		case "name":
+			if v, ok := val.(string); ok {
+				result.Name = v
+			}
+		case "type":
+			if v, ok := val.(string); ok {
+				result.Type = v
+			}
+		case "status":
+			if v, ok := val.(string); ok {
+				result.Status = core.AgentStatus(v)
+			}
+		case "session_id":
+			if v, ok := val.(string); ok {
+				result.SessionID = v
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // DeleteAgent deletes an agent and its associated data.
@@ -131,6 +161,10 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 	}
 
 	s.mu.Lock()
+	// Prevent unbounded growth: reset the cache when it hits the cap.
+	if len(s.results) >= maxResults {
+		s.results = make(map[string]*core.TaskResult)
+	}
 	s.results[task.ID] = result
 	s.mu.Unlock()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 // FallbackStrategy defines the fallback behavior when embedding fails.
@@ -23,6 +24,7 @@ const (
 // FallbackClient wraps EmbeddingClient with fallback strategies.
 type FallbackClient struct {
 	client   *EmbeddingClient
+	mu       sync.RWMutex
 	strategy FallbackStrategy
 }
 
@@ -42,8 +44,13 @@ func (f *FallbackClient) Embed(ctx context.Context, text string) ([]float64, err
 		return embedding, nil
 	}
 
+	// Read strategy under lock to avoid data race with SetStrategy.
+	f.mu.RLock()
+	strategy := f.strategy
+	f.mu.RUnlock()
+
 	// Apply fallback strategy
-	switch f.strategy {
+	switch strategy {
 	case FallbackToCache:
 		// Try to get from cache only
 		return f.getFromCache(ctx, text)
@@ -86,8 +93,13 @@ func (f *FallbackClient) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		return embeddings, nil
 	}
 
+	// Read strategy under lock to avoid data race with SetStrategy.
+	f.mu.RLock()
+	strategy := f.strategy
+	f.mu.RUnlock()
+
 	// Apply fallback strategy
-	switch f.strategy {
+	switch strategy {
 	case FallbackToCache:
 		// Try to get from cache for each text
 		return f.getBatchFromCache(ctx, texts)
@@ -137,11 +149,15 @@ func (f *FallbackClient) getBatchFromCache(ctx context.Context, texts []string) 
 
 // SetStrategy updates the fallback strategy.
 func (f *FallbackClient) SetStrategy(strategy FallbackStrategy) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.strategy = strategy
 }
 
 // GetStrategy returns the current fallback strategy.
 func (f *FallbackClient) GetStrategy() FallbackStrategy {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.strategy
 }
 

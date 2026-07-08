@@ -308,7 +308,15 @@ func (c *MCPClient) receiveLoop() error {
 		case IsResponse(msg) || IsError(msg):
 			c.dispatchResponse(msg)
 		case IsNotification(msg):
-			c.handleNotification(msg)
+			// Run handleNotification in its own goroutine so receiveLoop can
+			// continue processing responses. handleNotification may issue a
+			// ListTools request whose response arrives on this loop; blocking
+			// here would deadlock.
+			msg := msg
+			c.eg.Go(func() error {
+				c.handleNotification(msg)
+				return nil
+			})
 		}
 	}
 }
@@ -319,28 +327,30 @@ func (c *MCPClient) dispatchResponse(msg *JSONRPCMessage) {
 		return
 	}
 
+	// Hold pendingMu during the send to prevent a race with Close() which
+	// closes pending channels under the same lock. If Close() runs first it
+	// deletes the entry, so we won't send on a closed channel.
 	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
 	ch, ok := c.pending[*msg.ID]
-	if ok {
-		// Remove from pending map; we now own the response delivery.
-		delete(c.pending, *msg.ID)
+	if !ok {
+		return
 	}
-	c.pendingMu.Unlock()
-
-	if ok {
-		select {
-		case ch <- msg:
-		default:
-			// Channel full means caller already stopped waiting (timeout/cancel).
-			// Discard the stale response.
-		}
+	// Remove from pending map; we now own the response delivery.
+	delete(c.pending, *msg.ID)
+	select {
+	case ch <- msg:
+	default:
+		// Channel full means caller already stopped waiting (timeout/cancel).
+		// Discard the stale response.
 	}
 }
 
 // handleNotification processes server notifications.
 func (c *MCPClient) handleNotification(msg *JSONRPCMessage) {
 	if msg.Method == NotificationToolsListChanged {
-		// Re-fetch tools list.
+		// Re-fetch tools list. Use a fresh context derived from the client
+		// context so the request is cancelled when the client shuts down.
 		ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 		defer cancel()
 

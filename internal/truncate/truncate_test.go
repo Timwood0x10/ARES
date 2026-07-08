@@ -10,10 +10,12 @@ func TestWithEllipsis(t *testing.T) {
 	}{
 		{"", 10, ""},
 		{"hello", 10, "hello"},
-		{"hello world", 5, "hello..."},
+		{"hello world", 5, "he..."},
 		{"hello", 0, ""},
 		{"hello", -1, ""},
-		{"你好世界", 2, "你好..."},
+		{"你好世界", 2, "你好"},
+		{"你好世界你好世界", 5, "你好..."},
+		{"hello world", 8, "hello..."},
 	}
 	for _, tt := range tests {
 		got := WithEllipsis(tt.input, tt.maxLen)

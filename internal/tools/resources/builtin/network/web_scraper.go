@@ -92,7 +92,8 @@ func (t *WebScraper) Execute(ctx context.Context, params map[string]interface{})
 		Timeout:      time.Duration(getIntParam(params, "timeout", 30)) * time.Second,
 	}
 
-	// Validate URL
+	// Validate URL format and scheme. SSRF protection (private IP blocking)
+	// is enforced at the HTTP client layer (see WebFetcher.Get).
 	if !isValidURL(url) {
 		return core.Result{}, fmt.Errorf("invalid URL format")
 	}

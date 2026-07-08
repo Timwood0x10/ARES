@@ -122,15 +122,25 @@ func TestSSETransportSendBeforeStart(t *testing.T) {
 
 func TestSSETransportDefaultTimeout(t *testing.T) {
 	tr := NewSSETransport(SSEConfig{URL: "http://localhost:0"})
-	if tr.httpClient.Timeout == 0 {
-		t.Error("expected default timeout to be set")
+	// SSE connections are long-lived: http.Client.Timeout must be zero so the
+	// stream is not killed. A custom Transport with DialContext provides the
+	// connection-establishment timeout instead.
+	if tr.httpClient.Timeout != 0 {
+		t.Error("expected no client timeout for SSE (long-lived stream)")
+	}
+	if tr.httpClient.Transport == nil {
+		t.Error("expected transport with dial timeout to be set")
 	}
 }
 
 func TestSSETransportCustomTimeout(t *testing.T) {
 	tr := NewSSETransport(SSEConfig{URL: "http://localhost:0", Timeout: 5000000000}) // 5s
-	if tr.httpClient.Timeout != 5000000000 {
-		t.Errorf("timeout = %v, want 5s", tr.httpClient.Timeout)
+	// The timeout is applied via Transport.DialContext, not Client.Timeout.
+	if tr.httpClient.Timeout != 0 {
+		t.Error("expected no client timeout for SSE (long-lived stream)")
+	}
+	if tr.httpClient.Transport == nil {
+		t.Error("expected transport with dial timeout to be set")
 	}
 }
 

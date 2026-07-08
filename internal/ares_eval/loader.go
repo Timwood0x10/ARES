@@ -18,17 +18,46 @@ func NewLoader() *Loader {
 	return &Loader{}
 }
 
+// sensitiveSystemDirs lists directory names that must never be reachable via
+// user-supplied suite paths, whether through absolute paths or relative
+// traversal.
+var sensitiveSystemDirs = []string{"etc", "proc", "sys", "dev", "boot", "root"}
+
+// validateSuitePath rejects paths that traverse into sensitive system
+// directories. Relative paths without traversal components are always allowed
+// so legitimate project-relative paths (e.g. "../../test/eval/basic.yaml")
+// continue to work. Absolute paths and paths containing ".." are checked
+// against the sensitive directory list.
+func validateSuitePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("invalid path: must not be empty")
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	hasTraversal := strings.Contains(cleaned, "..")
+	isAbsolute := strings.HasPrefix(cleaned, "/")
+	// Relative paths without traversal cannot reach system directories.
+	if !hasTraversal && !isAbsolute {
+		return nil
+	}
+	for _, dir := range sensitiveSystemDirs {
+		if strings.Contains(cleaned, "/"+dir+"/") ||
+			strings.HasSuffix(cleaned, "/"+dir) ||
+			cleaned == "/"+dir {
+			return fmt.Errorf("invalid path: system directory access not allowed")
+		}
+	}
+	return nil
+}
+
 // Load loads a test suite from a YAML file.
 func (l *Loader) Load(path string) (*TestSuite, error) {
-	// Validate path to prevent directory traversal outside of test directories
-	// Allow relative paths like ../../test/eval/ but block dangerous paths like ../../../etc/
-	if strings.Contains(path, "/etc/") || strings.Contains(path, "\\etc\\") {
-		return nil, fmt.Errorf("invalid path: system directory access not allowed")
+	if err := validateSuitePath(path); err != nil {
+		return nil, err
 	}
 
-	data, err := os.ReadFile(path) // #nosec G304 -- Path validated above to prevent traversal
+	data, err := os.ReadFile(path) // #nosec G304 -- path validated by validateSuitePath
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read suite file %q: %w", path, err)
 	}
 
 	var suite TestSuite

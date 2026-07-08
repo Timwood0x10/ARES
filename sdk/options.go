@@ -210,11 +210,13 @@ type agentConfig struct {
 	instruction string
 	tools       []tools.Tool
 	humanInput  HumanInputFunc
+	maxIter     int
 }
 
 func defaultAgentConfig() *agentConfig {
 	return &agentConfig{
 		instruction: "",
+		maxIter:     defaultMaxIterations,
 	}
 }
 
@@ -240,5 +242,16 @@ func WithTools(tt ...tools.Tool) AgentOption {
 func WithHumanInput(fn HumanInputFunc) AgentOption {
 	return func(c *agentConfig) {
 		c.humanInput = fn
+	}
+}
+
+// WithMaxIterations caps the number of ReAct (tool-calling) iterations the
+// agent will run before returning a "max iterations reached" result. Values
+// <= 0 fall back to the default (defaultMaxIterations).
+func WithMaxIterations(n int) AgentOption {
+	return func(c *agentConfig) {
+		if n > 0 {
+			c.maxIter = n
+		}
 	}
 }

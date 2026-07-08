@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -54,10 +56,19 @@ func NewSSETransport(config SSEConfig) *SSETransport {
 		timeout = defaultSSETimeout
 	}
 
+	// SSE connections are long-lived, so we must NOT set http.Client.Timeout
+	// (which would kill the stream after the timeout elapses). Instead, use a
+	// Transport with a DialContext timeout for connection establishment only.
+	dialer := &net.Dialer{Timeout: timeout}
+	transport := &http.Transport{
+		DialContext: dialer.DialContext,
+	}
+
 	return &SSETransport{
 		config: config,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Transport: transport,
+			// No Timeout: SSE streams are long-lived and must not be killed.
 		},
 		msgCh:   make(chan *JSONRPCMessage, defaultSSEMessageBuffer),
 		postURL: config.URL, // Set default POST URL; may be overridden by "endpoint" SSE event.
@@ -171,9 +182,17 @@ func (t *SSETransport) receiveLoop(ctx context.Context) error {
 func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data string) {
 	switch eventType {
 	case sseEventTypeEndpoint:
-		// Server provides the POST URL for sending messages.
+		// Server provides the POST URL for sending messages. Validate the URL
+		// host matches the SSE source host to prevent SSRF: a malicious server
+		// could otherwise redirect POSTs to an internal endpoint.
+		endpoint := strings.TrimSpace(data)
+		if !t.isSameHostEndpoint(endpoint) {
+			log.Warn("mcp: rejecting endpoint URL with mismatched host (SSRF protection)",
+				"sse_url", t.config.URL, "endpoint_url", endpoint)
+			return
+		}
 		t.mu.Lock()
-		t.postURL = strings.TrimSpace(data)
+		t.postURL = endpoint
 		t.mu.Unlock()
 	case sseEventTypeMessage:
 		var msg JSONRPCMessage
@@ -195,6 +214,28 @@ func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data strin
 		case <-ctx.Done():
 		}
 	}
+}
+
+// isSameHostEndpoint validates that the endpoint URL targets the same host as
+// the configured SSE URL. Relative URLs are resolved against the SSE URL and
+// are always allowed. Absolute URLs must share the same host (and port).
+func (t *SSETransport) isSameHostEndpoint(endpoint string) bool {
+	if endpoint == "" {
+		return false
+	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	// Resolve relative endpoints against the SSE base URL.
+	baseURL, err := url.Parse(t.config.URL)
+	if err != nil {
+		return false
+	}
+	resolved := baseURL.ResolveReference(endpointURL)
+	// Compare host (includes port). An empty host on the endpoint means it was
+	// relative, which is safe after resolution.
+	return resolved.Host == baseURL.Host
 }
 
 // Send sends a JSON-RPC message to the server via HTTP POST.

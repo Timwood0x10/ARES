@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Timwood0x10/ares/api/tools"
@@ -121,7 +122,11 @@ var readFileTool = tools.ToolFunc{
 	ToolDesc: "Read a text file",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
 		path, _ := params["filename"].(string)
-		data, err := os.ReadFile(path)
+		safePath, err := safeFilePath(path)
+		if err != nil {
+			return nil, err
+		}
+		data, err := os.ReadFile(safePath)
 		if err != nil {
 			return nil, fmt.Errorf("read: %w", err)
 		}
@@ -134,11 +139,43 @@ var deleteFileTool = tools.ToolFunc{
 	ToolDesc: "Delete a file permanently",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
 		path, _ := params["filename"].(string)
-		if err := os.Remove(path); err != nil {
+		safePath, err := safeFilePath(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Remove(safePath); err != nil {
 			return nil, fmt.Errorf("delete: %w", err)
 		}
 		return fmt.Sprintf("deleted %s", path), nil
 	},
+}
+
+// safeFilePath resolves path relative to the working directory and rejects
+// paths that escape it (path traversal protection).
+func safeFilePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("filename is required")
+	}
+	cleaned := filepath.Clean(path)
+	if filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
+	}
+	absPath, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	rel, err := filepath.Rel(wd, absPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve relative path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path %s is outside the working directory", path)
+	}
+	return absPath, nil
 }
 
 var sendPaymentTool = tools.ToolFunc{

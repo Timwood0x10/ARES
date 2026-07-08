@@ -5,7 +5,10 @@ package graph
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -264,9 +267,32 @@ func (n *FuncNode) ID() string {
 }
 
 // hashInput generates a deterministic hash from tool input parameters.
+// json.Marshal sorts object keys (including nested maps) lexicographically,
+// so the hash is stable regardless of Go's non-deterministic map iteration
+// order. The previous fmt.Sprintf("%v", map) form produced different hashes
+// across runs for the same input, which broke tool_call_id correlation and
+// caching.
 func hashInput(params map[string]any) string {
-	data := fmt.Sprintf("%v", params)
-	h := sha256.Sum256([]byte(data))
+	data, err := json.Marshal(params)
+	if err != nil {
+		// Fallback: deterministic best-effort serialization keyed by sorted keys.
+		// json.Marshal fails here only for unsupported types (e.g. channels or
+		// funcs), which should not appear in tool params.
+		keys := make([]string, 0, len(params))
+		for k := range params {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var sb strings.Builder
+		for _, k := range keys {
+			sb.WriteString(k)
+			sb.WriteString("=")
+			sb.WriteString(fmt.Sprintf("%v", params[k]))
+			sb.WriteString(";")
+		}
+		data = []byte(sb.String())
+	}
+	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h[:8])
 }
 

@@ -323,9 +323,9 @@ func (ad *AdaptiveDistribution) Report() string {
 //  1. Compute win rate for each mutation type (capped by WinRateWindow).
 //  2. Adjust each probability toward the direction indicated by its win rate.
 //  3. Parameter mutation is the safe fallback: it trends toward 0.70 by default.
-//  4. Clamp all probabilities to their configured [min, max] bounds.
-//  5. Enforce exploration floor to prevent any type from being completely starved.
-//  6. Normalize so the three probabilities sum to approximately 1.0.
+//  4. Enforce exploration floor to prevent any type from being completely starved.
+//  5. Normalize so the three probabilities sum to exactly 1.0 while keeping each
+//     within its configured [min, max] bounds (bounded proportional fitting).
 func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	totalAttempts := 0
 	for _, o := range ad.outcomes {
@@ -396,29 +396,106 @@ func (ad *AdaptiveDistribution) adjustProbabilitiesLocked() {
 	ad.promptProb = math.Max(ad.promptProb, floor)
 	ad.toolProb = math.Max(ad.toolProb, floor)
 
-	// Clamp to configured bounds.
-	ad.paramProb = Clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
-	ad.promptProb = Clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
-	ad.toolProb = Clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
-
-	// Normalize to sum to 1.0.
-	total := ad.paramProb + ad.promptProb + ad.toolProb
-	if total > 0 {
-		ad.paramProb /= total
-		ad.promptProb /= total
-		ad.toolProb /= total
-	}
-
-	// Re-clamp after normalization to handle floating-point drift.
-	ad.paramProb = Clamp(ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb)
-	ad.promptProb = Clamp(ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb)
-	ad.toolProb = Clamp(ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb)
+	// Normalize to sum to 1.0 while keeping each probability within its
+	// configured [min, max] bounds. This replaces the previous "clamp then
+	// normalize" sequence, which could not satisfy both invariants at once:
+	// normalization can push a clamped value above its max (when the
+	// pre-normalization sum is below 1.0), and re-clamping after normalization
+	// breaks the sum-to-1.0 invariant.
+	ad.normalizeBoundedLocked()
 
 	log.Debug("adaptive distribution adjusted",
 		"param_prob", ad.paramProb,
 		"prompt_prob", ad.promptProb,
 		"tool_prob", ad.toolProb,
 	)
+}
+
+// normalizeBoundedLocked scales the three probabilities so they sum to exactly
+// 1.0 while respecting each one's configured [min, max] bounds. It uses
+// iterative proportional fitting:
+//  1. Clamp each value to its bounds.
+//  2. If the sum already equals 1.0, stop.
+//  3. If the sum exceeds 1.0, subtract the surplus proportionally from values
+//     still above their min, clamping at the min.
+//  4. If the sum is below 1.0, add the deficit proportionally to values still
+//     below their max, clamping at the max.
+//  5. Repeat until the sum is 1.0 (within floating-point tolerance) or no
+//     further adjustment is possible.
+//
+// Because the redistribution share is computed from the available room, a
+// value can never be pushed past its bound, so a single pass is exact in real
+// arithmetic; extra iterations guard against floating-point drift.
+//
+// Caller must hold ad.mu write lock.
+func (ad *AdaptiveDistribution) normalizeBoundedLocked() {
+	const epsilon = 1e-9
+
+	type probSlot struct {
+		val *float64
+		min float64
+		max float64
+	}
+	slots := []probSlot{
+		{&ad.paramProb, ad.cfg.MinParamProb, ad.cfg.MaxParamProb},
+		{&ad.promptProb, ad.cfg.MinPromptProb, ad.cfg.MaxPromptProb},
+		{&ad.toolProb, ad.cfg.MinToolProb, ad.cfg.MaxToolProb},
+	}
+
+	// Step 1: clamp each value to its configured bounds.
+	for _, s := range slots {
+		*s.val = Clamp(*s.val, s.min, s.max)
+	}
+
+	for iter := 0; iter < len(slots); iter++ {
+		total := 0.0
+		for _, s := range slots {
+			total += *s.val
+		}
+		if math.Abs(total-1.0) < epsilon {
+			return
+		}
+
+		if total > 1.0 {
+			// Distribute surplus among values still above their min.
+			surplus := total - 1.0
+			movable := 0.0
+			for _, s := range slots {
+				if *s.val > s.min+epsilon {
+					movable += *s.val - s.min
+				}
+			}
+			if movable <= epsilon {
+				return // cannot reduce further without breaching a min.
+			}
+			reduce := math.Min(surplus, movable)
+			for _, s := range slots {
+				if *s.val > s.min+epsilon {
+					share := (*s.val - s.min) / movable
+					*s.val = Clamp(*s.val-reduce*share, s.min, s.max)
+				}
+			}
+		} else { // total < 1.0
+			// Distribute deficit among values still below their max.
+			deficit := 1.0 - total
+			movable := 0.0
+			for _, s := range slots {
+				if *s.val < s.max-epsilon {
+					movable += s.max - *s.val
+				}
+			}
+			if movable <= epsilon {
+				return // cannot grow further without breaching a max.
+			}
+			grow := math.Min(deficit, movable)
+			for _, s := range slots {
+				if *s.val < s.max-epsilon {
+					share := (s.max - *s.val) / movable
+					*s.val = Clamp(*s.val+grow*share, s.min, s.max)
+				}
+			}
+		}
+	}
 }
 
 // Clamp restricts a value to the [min, max] range.

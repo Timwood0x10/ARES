@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/monitoring/dag"
 )
 
@@ -24,8 +25,9 @@ var (
 )
 
 // WSHub abstracts a WebSocket broadcast hub for pushing real-time updates.
-// The dashboard.WSHub (internal/dashboard/ws_hub.go) satisfies this interface
-// via a thin adapter, since it uses *WSMessage rather than any for msg parameters.
+// The dashboard.WSHub (internal/dashboard/ws_hub.go) uses *WSMessage rather
+// than any for msg parameters, so it does not directly satisfy this interface.
+// Use NewDashboardWSHubAdapter to wrap a *dashboard.WSHub.
 // Subscribe/Unsubscribe are client-level concerns on the dashboard hub and are
 // therefore excluded from this hub-level interface.
 type WSHub interface {
@@ -35,6 +37,40 @@ type WSHub interface {
 	BroadcastAll(msg any)
 	// ClientCount returns the number of connected WebSocket clients.
 	ClientCount() int
+}
+
+// DashboardWSHubAdapter adapts a *dashboard.WSHub to the WSHub interface.
+// Each message is wrapped in a *dashboard.WSMessage before broadcasting,
+// bridging the type mismatch between monitoring (plain values) and dashboard
+// (which requires *WSMessage).
+type DashboardWSHubAdapter struct {
+	hub *dashboard.WSHub
+}
+
+// NewDashboardWSHubAdapter wraps a dashboard WSHub for use with the Publisher.
+func NewDashboardWSHubAdapter(hub *dashboard.WSHub) *DashboardWSHubAdapter {
+	return &DashboardWSHubAdapter{hub: hub}
+}
+
+// BroadcastToChannel wraps msg in a *dashboard.WSMessage and forwards it.
+func (a *DashboardWSHubAdapter) BroadcastToChannel(channel string, msg any) {
+	a.hub.BroadcastToChannel(channel, &dashboard.WSMessage{
+		Type: "update",
+		Data: msg,
+	})
+}
+
+// BroadcastAll wraps msg in a *dashboard.WSMessage and forwards it.
+func (a *DashboardWSHubAdapter) BroadcastAll(msg any) {
+	a.hub.BroadcastAll(&dashboard.WSMessage{
+		Type: "update",
+		Data: msg,
+	})
+}
+
+// ClientCount delegates to the underlying hub.
+func (a *DashboardWSHubAdapter) ClientCount() int {
+	return a.hub.ClientCount()
 }
 
 // SnapshotFunc returns the current console snapshot.

@@ -67,13 +67,20 @@ type LazyGraph struct {
 
 // NewLazyGraph creates a LazyGraph from a regular WorkingGraph.
 // The expandFn is called when a node is expanded; if nil, nodes are
-// considered already fully loaded (not lazy).
+// considered already fully loaded (not lazy). When expandFn is non-nil,
+// nodes start unexpanded so that Expand() actually invokes expandFn;
+// previously expanded was hard-coded to true, which made Expand() return
+// ErrNodeAlreadyExpanded and the expandFn unreachable.
 func NewLazyGraph(graph *knowledge.WorkingGraph, expandFn func(ctx context.Context, id string) (*knowledge.KnowledgeObject, error)) *LazyGraph {
 	lg := &LazyGraph{
 		Nodes: make(map[string]*LazyNode, len(graph.Nodes)),
 		Edges: graph.Edges,
 	}
 
+	// When no expandFn is provided, nodes are considered already fully
+	// loaded (not lazy). When expandFn is provided, nodes must start
+	// unexpanded so Expand() actually calls expandFn.
+	expanded := expandFn == nil
 	for id, obj := range graph.Nodes {
 		summary := obj.Summary
 		if summary == "" {
@@ -83,7 +90,7 @@ func NewLazyGraph(graph *knowledge.WorkingGraph, expandFn func(ctx context.Conte
 			ID:       id,
 			Summary:  summary,
 			Loaded:   true,
-			expanded: true, // Already loaded since we have the full object
+			expanded: expanded,
 		}
 	}
 

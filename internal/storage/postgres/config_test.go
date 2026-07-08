@@ -34,10 +34,27 @@ func TestConfig_DSN(t *testing.T) {
 		User:     "user",
 		Password: "password",
 		Database: "testdb",
+		SSLMode:  "disable",
 	}
 
 	dsn := cfg.DSN()
 	expected := "postgresql://user:password@localhost:5432/testdb?sslmode=disable&client_encoding=UTF8"
+	if dsn != expected {
+		t.Errorf("expected %s, got %s", expected, dsn)
+	}
+}
+
+func TestConfig_DSN_DefaultSSLRequire(t *testing.T) {
+	cfg := &Config{
+		Host:     "localhost",
+		Port:     5432,
+		User:     "user",
+		Password: "password",
+		Database: "testdb",
+	}
+
+	dsn := cfg.DSN()
+	expected := "postgresql://user:password@localhost:5432/testdb?sslmode=require&client_encoding=UTF8"
 	if dsn != expected {
 		t.Errorf("expected %s, got %s", expected, dsn)
 	}

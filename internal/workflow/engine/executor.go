@@ -361,7 +361,15 @@ func (e *Executor) runSteps(
 			continue
 		}
 
-		sem <- struct{}{}
+		// Acquire semaphore with cancellation support so the scheduler
+		// doesn't block forever on a full semaphore when ctx is cancelled.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			close(resultChan)
+			return
+		}
 		stepIndex++
 
 		e.dispatchStepGoroutine(ctx, step, stepID, execution, workflow, initialInput,

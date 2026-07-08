@@ -1,6 +1,7 @@
 package ares_security
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -145,15 +146,51 @@ func (s *Sanitizer) Sanitize(input string) string {
 	return result
 }
 
-// SanitizeJSON sanitizes a JSON string, preserving structure.
+// SanitizeJSON sanitizes a JSON string, preserving its structure. It parses
+// the JSON, applies Sanitize to each string value, and re-serializes. This
+// avoids corrupting JSON structure (quotes, braces, keys) that a raw regex
+// pass over the full string would cause.
 func (s *Sanitizer) SanitizeJSON(jsonStr string) string {
 	if jsonStr == "" {
 		return jsonStr
 	}
 
-	// Sanitize the JSON string to remove sensitive data while preserving structure
-	result := s.Sanitize(jsonStr)
-	return result
+	var data interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		// Not valid JSON; fall back to plain string sanitization.
+		return s.Sanitize(jsonStr)
+	}
+
+	sanitized := s.sanitizeValue(data)
+	result, err := json.Marshal(sanitized)
+	if err != nil {
+		// Should not happen for data we just unmarshaled; fall back.
+		return s.Sanitize(jsonStr)
+	}
+	return string(result)
+}
+
+// sanitizeValue recursively walks a decoded JSON value and sanitizes strings.
+func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case string:
+		return s.Sanitize(val)
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(val))
+		for k, vv := range val {
+			result[k] = s.sanitizeValue(vv)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(val))
+		for i, vv := range val {
+			result[i] = s.sanitizeValue(vv)
+		}
+		return result
+	default:
+		// Numbers, booleans, nil — no sanitization needed.
+		return v
+	}
 }
 
 // maskAPIKey masks an API key while preserving some context.

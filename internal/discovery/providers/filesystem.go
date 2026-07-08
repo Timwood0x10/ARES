@@ -4,11 +4,21 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/Timwood0x10/ares/internal/discovery"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+// maxConfigFileSize bounds how many bytes may be read from a single config
+// file. This prevents unbounded memory allocation on malformed or hostile
+// files.
+const maxConfigFileSize = 10 * 1024 * 1024 // 10MB
+
+// log is the package-level structured logger.
+var log = logger.Module("discovery.providers")
 
 // FilesystemProvider scans local config files for MCP server definitions.
 type FilesystemProvider struct {
@@ -88,6 +98,7 @@ func (p *FilesystemProvider) Discover(_ context.Context) ([]discovery.DiscoveryR
 	for _, path := range p.configPaths {
 		recs, err := scanConfigFile(path, p.name, p.confidence)
 		if err != nil {
+			log.Debug("filesystem provider: skipping config file", "path", path, "error", err)
 			continue
 		}
 		records = append(records, recs...)
@@ -97,7 +108,15 @@ func (p *FilesystemProvider) Discover(_ context.Context) ([]discovery.DiscoveryR
 
 // scanConfigFile reads a config file and extracts MCP server definitions.
 func scanConfigFile(path, source string, conf discovery.Confidence) ([]discovery.DiscoveryRecord, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // reading MCP config files
+	// Bound file size before reading to prevent unbounded memory allocation.
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxConfigFileSize {
+		return nil, fmt.Errorf("config file %s too large: %d bytes (max %d)", path, info.Size(), maxConfigFileSize)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // size already bounded above
 	if err != nil {
 		return nil, err
 	}

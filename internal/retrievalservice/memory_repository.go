@@ -4,6 +4,7 @@ package retrievalservice
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -203,14 +204,10 @@ func (r *MemoryRepository) SearchKnowledge(ctx context.Context, request *core.Re
 		})
 	}
 
-	// Sort by score (descending)
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Score > results[i].Score {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	// Sort by score (descending) using sort.Slice for O(n log n) performance.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 
 	// Limit results
 	topK := request.Config.TopK

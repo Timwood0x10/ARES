@@ -1,4 +1,3 @@
-// nolint: errcheck // Operations may ignore return values
 // Package postgres provides PostgreSQL database operations for the storage system.
 package postgres
 
@@ -262,52 +261,80 @@ func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, taskID string) error
 
 // MarkFailed marks a task as failed and updates retry count.
 // This implements exponential backoff for retries.
+//
+// The read-then-write sequence (SELECT retry_count then UPDATE) is wrapped in
+// a single transaction with SELECT ... FOR UPDATE to prevent lost updates when
+// two workers fail the same task concurrently. Without the row lock, both
+// workers could read the same retry_count and the increment would be lost,
+// causing infinite retries.
 // Args:
 // ctx - database operation context.
 // taskID - task identifier.
 // errMessage - error message to store.
 // Returns error if update fails or task exceeded max retries.
 func (q *EmbeddingQueue) MarkFailed(ctx context.Context, taskID string, errMessage string) error {
-	// Get current retry count
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return errors.Wrap(err, "begin mark failed transaction")
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				log.Error("Failed to rollback mark failed transaction", "error", rbErr)
+			}
+		}
+	}()
+
+	// Lock the row for the duration of this transaction so concurrent
+	// MarkFailed calls block until we commit, preventing lost updates.
 	var retryCount int
-	err := q.db.QueryRow(ctx, `
-		SELECT retry_count FROM embedding_queue WHERE task_id = $1
+	err = tx.QueryRowContext(ctx, `
+		SELECT retry_count FROM embedding_queue WHERE task_id = $1 FOR UPDATE
 	`, taskID).Scan(&retryCount)
 
+	if err == sql.ErrNoRows {
+		return errors.Wrap(errors.ErrRecordNotFound, "get retry count")
+	}
 	if err != nil {
 		return errors.Wrap(err, "get retry count")
 	}
 
-	// Use configured max retries
+	// Use configured max retries.
 	maxRetries := q.embeddingConfig.MaxRetries
 	if retryCount >= maxRetries {
-		// Move to dead letter queue
-		_, err := q.db.Exec(ctx, `
-			INSERT INTO embedding_dead_letter 
+		// Move to dead letter queue.
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO embedding_dead_letter
 			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, error_message, retry_count, created_at)
 			SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, created_at
 			FROM embedding_queue WHERE task_id = $2
 		`, errMessage, taskID)
-
 		if err != nil {
 			return errors.Wrap(err, "move to dead letter")
 		}
 
-		// Delete from main queue
-		_, err = q.db.Exec(ctx, `DELETE FROM embedding_queue WHERE task_id = $1`, taskID)
-		return err
+		// Delete from main queue.
+		_, err = tx.ExecContext(ctx, `DELETE FROM embedding_queue WHERE task_id = $1`, taskID)
+		if err != nil {
+			return errors.Wrap(err, "delete from queue")
+		}
+	} else {
+		// Increment retry count and re-queue for processing.
+		_, err = tx.ExecContext(ctx, `
+			UPDATE embedding_queue
+			SET status = 'pending', retry_count = retry_count + 1, error_message = $1
+			WHERE task_id = $2
+		`, errMessage, taskID)
+		if err != nil {
+			return errors.Wrap(err, "mark task failed")
+		}
 	}
 
-	// Increment retry count
-	_, err = q.db.Exec(ctx, `
-		UPDATE embedding_queue
-		SET status = 'pending', retry_count = retry_count + 1, error_message = $1
-		WHERE task_id = $2
-	`, errMessage, taskID)
-
-	if err != nil {
-		return errors.Wrap(err, "mark task failed")
+	if err := tx.Commit(); err != nil {
+		return errors.Wrap(err, "commit mark failed transaction")
 	}
+	committed = true
 
 	return nil
 }

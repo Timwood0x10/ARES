@@ -39,6 +39,10 @@ type ProviderConfig struct {
 	Namespace  string        `yaml:"namespace"`
 	IntentTags []string      `yaml:"intent_tags"`
 	Mapping    ColumnMapping `yaml:"mapping"`
+	// Table is the source table (or view) name used by SQL-based providers
+	// when building SELECT queries. Required for providers that issue SQL
+	// against an external database.
+	Table string `yaml:"table"`
 }
 
 // ColumnMapping defines how a database table maps to KnowledgeObject fields.

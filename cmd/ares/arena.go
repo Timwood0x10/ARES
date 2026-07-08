@@ -189,10 +189,17 @@ var arenaServeCmd = &cobra.Command{
 		inj := arena.NewInjector(nil, nil)
 		svc := arena.NewService(inj, nil)
 		handler := arena.NewHandler(svc)
+		// Enable API key auth when configured via env or flag.
+		if arenaServeAPIKey != "" {
+			handler.SetAPIKey(arenaServeAPIKey)
+		} else if key := os.Getenv("ARENA_API_KEY"); key != "" {
+			handler.SetAPIKey(key)
+		}
 
 		mux := http.NewServeMux()
 		handler.RegisterRoutes(mux)
-		wrapped := arena.RecoverMiddleware(mux)
+		authWrapped := handler.APIKeyAuthMiddleware(mux)
+		wrapped := arena.RecoverMiddleware(authWrapped)
 
 		server := &http.Server{
 			Addr:         arenaServeAddr,
@@ -203,6 +210,11 @@ var arenaServeCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Arena server listening on %s\n", arenaServeAddr)
+		if arenaServeAPIKey != "" || os.Getenv("ARENA_API_KEY") != "" {
+			fmt.Printf("Auth: API key enabled (header: X-API-Key)\n")
+		} else {
+			fmt.Printf("Auth: WARNING no API key set (set ARENA_API_KEY or --api-key)\n")
+		}
 		fmt.Printf("Endpoints:\n")
 		fmt.Printf("  POST /arena/scenario/run       Run a scenario\n")
 		fmt.Printf("  POST /arena/scenario/validate   Validate a scenario\n")
@@ -280,7 +292,11 @@ var arenaInspectCmd = &cobra.Command{
 		fmt.Println("  Arena Inspection Report")
 		fmt.Println(strings.Repeat("=", 59))
 
-		score := getScore(baseURL)
+		// Bound the inspection requests so a hanging server cannot block forever.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		score := getScore(ctx, baseURL)
 		if score != nil {
 			s, _ := score["score"].(float64)
 			g, _ := score["grade"].(string)
@@ -304,7 +320,7 @@ var arenaInspectCmd = &cobra.Command{
 			fmt.Println("  ⚠ Score data unavailable")
 		}
 
-		metrics := getMetrics(baseURL)
+		metrics := getMetrics(ctx, baseURL)
 		if metrics != nil {
 			fmt.Print("\n  Metrics:\n")
 			if avg, ok := metrics["avg_recovery_time"].(string); ok && avg != "" && avg != "0" {
@@ -325,10 +341,10 @@ var arenaInspectCmd = &cobra.Command{
 		}
 
 		if arenaInspectTimeline {
-			printInspectTimeline(baseURL)
+			printInspectTimeline(ctx, baseURL)
 		}
 		if arenaInspectDiagnostics {
-			printInspectDiagnostics(baseURL)
+			printInspectDiagnostics(ctx, baseURL)
 		}
 
 		fmt.Println()
@@ -342,6 +358,7 @@ var (
 	arenaValidateRemote     bool
 	arenaValidateAddr       string
 	arenaServeAddr          string
+	arenaServeAPIKey        string
 	arenaSurvivalAddr       string
 	arenaSurvivalDuration   time.Duration
 	arenaSurvivalInterval   time.Duration
@@ -364,6 +381,7 @@ func init() {
 
 	arenaCmd.AddCommand(arenaServeCmd)
 	arenaServeCmd.Flags().StringVar(&arenaServeAddr, "addr", ":8080", "Listen address")
+	arenaServeCmd.Flags().StringVar(&arenaServeAPIKey, "api-key", "", "API key required for all arena endpoints (also via ARENA_API_KEY env)")
 
 	arenaCmd.AddCommand(arenaSurvivalCmd)
 	arenaSurvivalCmd.Flags().StringVar(&arenaSurvivalAddr, "addr", "http://localhost:8080", "Arena server address")
@@ -421,16 +439,16 @@ func pollSurvival(ctx context.Context, baseURL string) error {
 		select {
 		case <-ctx.Done():
 			fmt.Println("\nSurvival stopped.")
-			printFinalScore(baseURL)
+			printFinalScore(ctx, baseURL)
 			return nil
 		case <-ticker.C:
-			printSurvivalStatus(baseURL)
+			printSurvivalStatus(ctx, baseURL)
 		}
 	}
 }
 
-func printSurvivalStatus(baseURL string) {
-	s := getSurvivalStatus(baseURL)
+func printSurvivalStatus(ctx context.Context, baseURL string) {
+	s := getSurvivalStatus(ctx, baseURL)
 	if s == nil {
 		return
 	}
@@ -446,50 +464,20 @@ func printSurvivalStatus(baseURL string) {
 	fmt.Printf("\r  Status: %-20s", statusMsg)
 }
 
-func getSurvivalStatus(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/survival/status") //nolint:noctx
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-	return result
+func getSurvivalStatus(ctx context.Context, baseURL string) map[string]any {
+	return getJSON(ctx, baseURL+"/arena/survival/status")
 }
 
-func getScore(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/score") //nolint:noctx
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-	return result
+func getScore(ctx context.Context, baseURL string) map[string]any {
+	return getJSON(ctx, baseURL+"/arena/score")
 }
 
-func getMetrics(baseURL string) map[string]any {
-	resp, err := http.Get(baseURL + "/arena/metrics") //nolint:noctx
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-	return result
+func getMetrics(ctx context.Context, baseURL string) map[string]any {
+	return getJSON(ctx, baseURL+"/arena/metrics")
 }
 
-func printFinalScore(baseURL string) {
-	score := getScore(baseURL)
+func printFinalScore(ctx context.Context, baseURL string) {
+	score := getScore(ctx, baseURL)
 	if score == nil {
 		return
 	}
@@ -498,15 +486,9 @@ func printFinalScore(baseURL string) {
 	fmt.Printf("\n\nFinal Score: %.1f (%s)\n", s, g)
 }
 
-func printInspectTimeline(baseURL string) {
-	resp, err := http.Get(baseURL + "/arena/flight/timeline") //nolint:noctx
-	if err != nil {
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var tlData map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&tlData); err != nil {
+func printInspectTimeline(ctx context.Context, baseURL string) {
+	tlData := getJSON(ctx, baseURL+"/arena/flight/timeline")
+	if tlData == nil {
 		return
 	}
 
@@ -526,15 +508,9 @@ func printInspectTimeline(baseURL string) {
 	}
 }
 
-func printInspectDiagnostics(baseURL string) {
-	resp, err := http.Get(baseURL + "/arena/flight/diagnostics") //nolint:noctx
-	if err != nil {
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var diagData map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&diagData); err != nil {
+func printInspectDiagnostics(ctx context.Context, baseURL string) {
+	diagData := getJSON(ctx, baseURL+"/arena/flight/diagnostics")
+	if diagData == nil {
 		return
 	}
 
@@ -552,6 +528,27 @@ func printInspectDiagnostics(baseURL string) {
 			}
 		}
 	}
+}
+
+// getJSON performs an HTTP GET with the given context and decodes the JSON
+// response body into a map. Returns nil on any error. The context provides
+// cancellation/timeout control and supersedes the legacy http.Get calls.
+func getJSON(ctx context.Context, url string) map[string]any {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+	return result
 }
 
 func printReport(report *arena.ScenarioReport) {

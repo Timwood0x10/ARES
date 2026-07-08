@@ -76,6 +76,16 @@ func (t *MCPTool) ServerName() string {
 	return t.serverName
 }
 
+// Close releases the underlying MCP client connection. Callers should invoke
+// this when the tool is no longer needed to avoid leaking the transport
+// connection. It is safe to call multiple times.
+func (t *MCPTool) Close() error {
+	if t.client != nil {
+		return t.client.Close()
+	}
+	return nil
+}
+
 // MCPTName returns the original tool name on the MCP server (without namespace).
 func (t *MCPTool) MCPTName() string {
 	return t.toolDef.Name

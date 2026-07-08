@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
@@ -26,13 +25,13 @@ func createAgents(
 	toolBinder sub.ToolBinder,
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
-) (leader.Agent, []sub.Agent) {
+) (leader.Agent, []sub.Agent, error) {
 	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 	if err != nil {
-		log.Fatalf("create leader: %v", err)
+		return nil, nil, fmt.Errorf("create leader: %w", err)
 	}
 	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store)
-	return leaderAgent, subAgents
+	return leaderAgent, subAgents, nil
 }
 
 func createLeaderAgent(

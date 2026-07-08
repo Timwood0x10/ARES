@@ -99,8 +99,15 @@ func (tr *stdioTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jso
 }
 
 func (tr *stdioTransport) close() error {
-	if tr.cmd != nil && tr.cmd.Process != nil {
-		return tr.cmd.Process.Kill()
+	if tr.cmd == nil || tr.cmd.Process == nil {
+		return nil
 	}
+	// Close stdin to signal the child to exit, then kill to force-terminate.
+	_ = tr.stdin.Close()
+	if err := tr.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("kill process: %w", err)
+	}
+	// Wait reaps the child process, preventing zombies.
+	_ = tr.cmd.Wait()
 	return nil
 }

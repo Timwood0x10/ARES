@@ -94,10 +94,16 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 
 	// Stage 1: Normalize (Raw → Normalized).
 	for _, norm := range p.normalizers {
-		obj, err = norm.Normalize(ctx, obj)
-		if err != nil {
-			log.Warn("normalizer failed (skipping)", "normalizer", norm.Name(), "error", err)
+		if obj == nil {
+			break
+		}
+		normalized, nErr := norm.Normalize(ctx, obj)
+		if nErr != nil {
+			log.Warn("normalizer failed (skipping)", "normalizer", norm.Name(), "error", nErr)
 			continue
+		}
+		if normalized != nil {
+			obj = normalized
 		}
 	}
 

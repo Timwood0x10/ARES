@@ -254,7 +254,9 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		ch, err := client.GenerateStream(ctx, prompt)
+		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
+		ch, err := client.GenerateStream(cctx, prompt)
+		cancel()
 		if err == nil {
 			fc.clearCooldown(key)
 			return ch, nil

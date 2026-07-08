@@ -434,7 +434,7 @@ func TestTruncateStr(t *testing.T) {
 
 	long := "this is a very long string that exceeds the limit"
 	truncated := truncate.WithEllipsis(long, 10)
-	if len(truncated) > 13 { // 10 + "..."
+	if len(truncated) > 10 { // maxLen includes ellipsis
 		t.Errorf("truncated string too long: %q (%d chars)", truncated, len(truncated))
 	}
 	if truncated[len(truncated)-3:] != "..." {

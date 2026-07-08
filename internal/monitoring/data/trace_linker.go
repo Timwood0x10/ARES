@@ -12,12 +12,20 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/eventutil"
 )
 
+// openSpanRef locates an open span within the spans slice. Storing an index
+// (instead of a pointer into the slice's backing array) is safe across
+// reallocations caused by append.
+type openSpanRef struct {
+	traceID string
+	index   int
+}
+
 // TraceLinker builds a span tree from events.
 // All methods are safe for concurrent use.
 type TraceLinker struct {
 	mu          sync.RWMutex
 	spans       map[string][]monitoring.TraceSpan // traceID -> spans
-	openSpans   map[string]*monitoring.TraceSpan  // closeKey -> open span pointer
+	openSpans   map[string]openSpanRef            // closeKey -> location of open span
 	spanCounter atomic.Int64
 }
 
@@ -25,7 +33,7 @@ type TraceLinker struct {
 func NewTraceLinker() *TraceLinker {
 	return &TraceLinker{
 		spans:     make(map[string][]monitoring.TraceSpan),
-		openSpans: make(map[string]*monitoring.TraceSpan),
+		openSpans: make(map[string]openSpanRef),
 	}
 }
 
@@ -121,8 +129,7 @@ func (tl *TraceLinker) handleAgentStarted(evt *ares_events.Event) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	tl.spans[traceID] = append(tl.spans[traceID], span)
-	last := &tl.spans[traceID][len(tl.spans[traceID])-1]
-	tl.openSpans["agent:"+agentID] = last
+	tl.openSpans["agent:"+agentID] = openSpanRef{traceID: traceID, index: len(tl.spans[traceID]) - 1}
 }
 
 // handleAgentStopped closes the "agent.start" span.
@@ -136,13 +143,29 @@ func (tl *TraceLinker) handleAgentStopped(evt *ares_events.Event) {
 
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
-	span, ok := tl.openSpans[key]
+	ref, ok := tl.openSpans[key]
 	if !ok {
 		return
 	}
-	span.EndTime = now
-	span.Duration = now.Sub(span.StartTime)
+	if !tl.closeSpan(ref, now, "") {
+		return
+	}
 	delete(tl.openSpans, key)
+}
+
+// closeSpan writes EndTime/Duration on the span located by ref. Returns false
+// if the ref no longer points at a valid span. Caller must hold tl.mu.
+func (tl *TraceLinker) closeSpan(ref openSpanRef, now time.Time, status string) bool {
+	spans := tl.spans[ref.traceID]
+	if ref.index < 0 || ref.index >= len(spans) {
+		return false
+	}
+	spans[ref.index].EndTime = now
+	spans[ref.index].Duration = now.Sub(spans[ref.index].StartTime)
+	if status != "" {
+		spans[ref.index].Status = status
+	}
+	return true
 }
 
 // handleToolCallStarted creates a "tool.call.{name}" span.
@@ -167,8 +190,7 @@ func (tl *TraceLinker) handleToolCallStarted(evt *ares_events.Event) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	tl.spans[traceID] = append(tl.spans[traceID], span)
-	last := &tl.spans[traceID][len(tl.spans[traceID])-1]
-	tl.openSpans[toolCloseKey(agentID, toolName)] = last
+	tl.openSpans[toolCloseKey(agentID, toolName)] = openSpanRef{traceID: traceID, index: len(tl.spans[traceID]) - 1}
 }
 
 // handleToolCallCompleted closes the matching tool span.
@@ -183,12 +205,13 @@ func (tl *TraceLinker) handleToolCallCompleted(evt *ares_events.Event) {
 
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
-	span, ok := tl.openSpans[key]
+	ref, ok := tl.openSpans[key]
 	if !ok {
 		return
 	}
-	span.EndTime = now
-	span.Duration = now.Sub(span.StartTime)
+	if !tl.closeSpan(ref, now, "") {
+		return
+	}
 	delete(tl.openSpans, key)
 }
 
@@ -237,8 +260,7 @@ func (tl *TraceLinker) handleTaskCreated(evt *ares_events.Event) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	tl.spans[traceID] = append(tl.spans[traceID], span)
-	last := &tl.spans[traceID][len(tl.spans[traceID])-1]
-	tl.openSpans["task:"+taskID] = last
+	tl.openSpans["task:"+taskID] = openSpanRef{traceID: traceID, index: len(tl.spans[traceID]) - 1}
 }
 
 // handleTaskClosed closes the matching task span with the given status.
@@ -252,13 +274,13 @@ func (tl *TraceLinker) handleTaskClosed(evt *ares_events.Event, status string) {
 
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
-	span, ok := tl.openSpans[key]
+	ref, ok := tl.openSpans[key]
 	if !ok {
 		return
 	}
-	span.EndTime = now
-	span.Duration = now.Sub(span.StartTime)
-	span.Status = status
+	if !tl.closeSpan(ref, now, status) {
+		return
+	}
 	delete(tl.openSpans, key)
 }
 

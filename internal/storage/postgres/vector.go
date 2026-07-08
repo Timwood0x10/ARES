@@ -9,6 +9,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage"
 )
 
+// defaultVectorDimension matches the VECTOR(1024) dimension used by the
+// knowledge_chunks_1024 / experiences_1024 migrations. The previous
+// hardcoded 1536 caused runtime failures because inserts did not match the
+// migration schema. Override via CreateCollection when a different dimension
+// is required.
+const defaultVectorDimension = 1024
+
 // VectorSearcher handles vector similarity search.
 type VectorSearcher struct {
 	db              DBTX
@@ -194,16 +201,17 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 
 // CreateVectorTable creates a table with vector support.
 // This is a simplified implementation - in production use proper pgvector setup.
+// The vector dimension defaults to defaultVectorDimension (1024) to match the
+// migrations; callers needing a different dimension should use CreateCollection.
 func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, metadataSchema string) error {
 	// Validate table name to prevent SQL injection
 	if err := sanitizeSQLTable(table); err != nil {
 		return errors.Wrap(err, "invalid table name")
 	}
 
-	// Validate dimension (should be between 1 and 2000)
-	// Default dimension for common embedding models (OpenAI: 1536, e5-large: 1024)
-	// This should be configurable based on the model being used
-	dim := 1536
+	// Use the migration-consistent dimension (1024). The previous hardcoded
+	// 1536 caused runtime failures because the migrations create VECTOR(1024).
+	dim := defaultVectorDimension
 	if dim < 1 || dim > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
 	}

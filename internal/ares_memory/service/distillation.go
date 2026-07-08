@@ -44,6 +44,8 @@ const (
 
 // Experience represents a problem-solution pair extracted from conversation.
 type Experience struct {
+	// ID is the unique identifier.
+	ID string `json:"id"`
 	// Problem is the problem description.
 	Problem string `json:"problem"`
 	// Solution is the solution description.
@@ -52,6 +54,8 @@ type Experience struct {
 	Confidence float64 `json:"confidence"`
 	// ExtractionMethod is how the experience was extracted.
 	ExtractionMethod ExtractionMethod `json:"extraction_method"`
+	// Vector is the embedding vector for similarity search.
+	Vector []float64 `json:"vector,omitempty"`
 }
 
 // DistilledMemory represents a distilled memory from agent experience.

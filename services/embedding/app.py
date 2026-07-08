@@ -2,6 +2,7 @@
 Embedding Service - Provides vector embeddings for AI agent framework.
 This service supports multiple backends: sentence-transformers and Ollama.
 """
+import asyncio
 import os
 import json
 import logging
@@ -242,12 +243,13 @@ async def embed(request: EmbedRequest):
     
     # Generate embedding based on backend type
     if BACKEND_TYPE == "ollama":
-        embedding = model.embed(text_with_prefix)
+        raw = await asyncio.to_thread(model.embed, text_with_prefix)
         # Normalize to unit vector for accurate cosine similarity
-        embedding = normalize_vector(embedding)
+        embedding = normalize_vector(raw)
     else:
         # sentence-transformers backend
-        embedding = model.encode(text_with_prefix).tolist()
+        raw = await asyncio.to_thread(model.encode, text_with_prefix)
+        embedding = raw.tolist()
     
     # Cache the result
     if redis_client:
@@ -291,33 +293,54 @@ async def embed_batch(request: BatchEmbedRequest):
         for text in texts_with_prefix
     ]
     
-    # Generate embeddings based on backend type
-    if BACKEND_TYPE == "ollama":
-        embeddings = model.embed_batch(texts_with_prefix)
-        # Normalize all vectors to unit length
-        embeddings = [normalize_vector(e) for e in embeddings]
-    else:
-        # sentence-transformers backend
-        embeddings = model.encode(texts_with_prefix).tolist()
-    
-    # Try to cache results
+    # Check cache first — only generate embeddings for uncached texts
     cached_count = 0
+    embeddings = [None] * len(normalized_texts)
+    uncached_indices: List[int] = []
+    uncached_texts: List[str] = []
+
     if redis_client:
         for i, text in enumerate(normalized_texts):
             cache_key = generate_cache_key(text, request.prefix)
             try:
                 cached_data = redis_client.get(cache_key)
                 if cached_data:
+                    embeddings[i] = json.loads(cached_data)
                     cached_count += 1
                 else:
-                    # Cache non-cached results
+                    uncached_indices.append(i)
+                    uncached_texts.append(texts_with_prefix[i])
+            except Exception as e:
+                logger.warning(f"Cache lookup failed for text {i}: {e}")
+                uncached_indices.append(i)
+                uncached_texts.append(texts_with_prefix[i])
+    else:
+        uncached_indices = list(range(len(normalized_texts)))
+        uncached_texts = texts_with_prefix
+
+    # Generate embeddings only for uncached texts (offloaded to thread)
+    if uncached_texts:
+        if BACKEND_TYPE == "ollama":
+            raw_batch = await asyncio.to_thread(model.embed_batch, uncached_texts)
+            new_embeddings = [normalize_vector(e) for e in raw_batch]
+        else:
+            # sentence-transformers backend
+            raw_batch = await asyncio.to_thread(model.encode, uncached_texts)
+            new_embeddings = raw_batch.tolist()
+
+        # Merge into result array and cache each new embedding
+        for j, idx in enumerate(uncached_indices):
+            embeddings[idx] = new_embeddings[j]
+            if redis_client:
+                cache_key = generate_cache_key(normalized_texts[idx], request.prefix)
+                try:
                     redis_client.setex(
                         cache_key,
                         CACHE_TTL,
-                        json.dumps(embeddings[i])
+                        json.dumps(embeddings[idx])
                     )
-            except Exception as e:
-                logger.warning(f"Cache operation failed for text {i}: {e}")
+                except Exception as e:
+                    logger.warning(f"Cache write failed for text {idx}: {e}")
     
     return BatchEmbedResponse(
         embeddings=embeddings,
@@ -380,15 +403,19 @@ def normalize_text(text: str) -> str:
 def generate_cache_key(text: str, prefix: str) -> str:
     """
     Generate cache key for storing embeddings.
-    
+
+    The cache key includes the active model name so that changing the model
+    (e.g. OLLAMA_MODEL) invalidates stale entries.
+
     Args:
         text: Text content to embed.
         prefix: Model-specific prefix.
-    
+
     Returns:
         Cache key as hex string.
     """
-    key_data = f"{prefix}|{text}|{MODEL_NAME}"
+    model_name = OLLAMA_MODEL if BACKEND_TYPE == "ollama" else MODEL_NAME
+    key_data = f"{prefix}|{text}|{model_name}"
     hash_obj = hashlib.sha256(key_data.encode())
     return f"embed:{hash_obj.hexdigest()[:16]}"
 

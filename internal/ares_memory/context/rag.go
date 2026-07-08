@@ -70,20 +70,26 @@ func NewVectorIndex() *VectorIndex {
 }
 
 // Add adds a knowledge entry.
+// The lock is acquired BEFORE the persistent write so that concurrent Add
+// callers cannot interleave in-memory and pgvector state. The previous
+// implementation wrote to pgvector before acquiring the lock, which allowed a
+// concurrent caller to observe inconsistent state between the in-memory index
+// and the persistent store.
 func (r *RAG) Add(ctx context.Context, entry *KnowledgeEntry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if len(r.entries) >= r.maxSize {
-		r.evictOldest()
+		r.evictOldestLocked()
 	}
 
-	// Persist to pgvector first to ensure consistency
+	// Persist to pgvector while holding the lock to keep in-memory and
+	// persistent state consistent.
 	if r.usePersistent && r.vectorSearch != nil {
 		if err := r.vectorSearch.AddEmbedding(ctx, r.tableName, entry.ID, entry.Embedding, entry.Metadata); err != nil {
 			return err
 		}
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	r.entries[entry.ID] = entry
 	r.index.entries = append(r.index.entries, entry)
@@ -218,8 +224,9 @@ func (r *RAG) IsPersistent() bool {
 	return r.usePersistent
 }
 
-// evictOldest removes entries when capacity is reached.
-func (r *RAG) evictOldest() {
+// evictOldestLocked removes entries when capacity is reached.
+// Caller MUST hold r.mu.
+func (r *RAG) evictOldestLocked() {
 	if len(r.index.entries) == 0 {
 		return
 	}

@@ -112,7 +112,10 @@ func runServe() error {
 	memMgr.SetEventStore(store, "memory")
 
 	// --- LLM adapter with fallback ---
-	llmAdapter := createLLMAdapterWithFallback(cfg)
+	llmAdapter, err := createLLMAdapterWithFallback(cfg)
+	if err != nil {
+		return fmt.Errorf("create llm adapter: %w", err)
+	}
 
 	// --- Tool registry (public API) ---
 	registry, err := newToolRegistry()
@@ -144,7 +147,10 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create agents ---
-	leaderAgent, subAgents := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	if err != nil {
+		return fmt.Errorf("create agents: %w", err)
+	}
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
@@ -156,7 +162,7 @@ func runServe() error {
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s
@@ -260,7 +266,7 @@ func runServe() error {
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.
-func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
+func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, error) {
 	factory := output.NewFactory()
 
 	// Try primary
@@ -276,7 +282,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg)
 	if err == nil {
 		log.Printf("LLM adapter created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
-		return adapter
+		return adapter, nil
 	}
 	log.Printf("primary LLM failed, trying fallbacks: %v", err)
 
@@ -296,7 +302,7 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 		adapter, err = factory.Create(fbCfg.Provider, fbCfg)
 		if err == nil {
 			log.Printf("LLM fallback adapter created: provider=%s model=%s", fbCfg.Provider, fbCfg.Model)
-			return adapter
+			return adapter, nil
 		}
 		log.Printf("fallback LLM failed: provider=%s error=%v", fbCfg.Provider, err)
 	}
@@ -312,10 +318,10 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) output.LLMAdapter {
 	}
 	adapter, err = factory.Create("ollama", ollamaCfg)
 	if err != nil {
-		log.Fatalf("no LLM adapter available: %v", err)
+		return nil, fmt.Errorf("no LLM adapter available: %w", err)
 	}
 	log.Printf("LLM fallback to ollama: model=llama3.2")
-	return adapter
+	return adapter, nil
 }
 
 // agentMeta holds metadata for enriching events from real agents.

@@ -118,11 +118,16 @@ func (h *SignalHandler) handleSignal(sig os.Signal) {
 	}
 }
 
-// AddSignal adds a signal to listen for.
+// AddSignal adds a signal to listen for. If the handler is already started,
+// the new signal is registered with signal.Notify immediately.
 func (h *SignalHandler) AddSignal(sig os.Signal) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.signals = append(h.signals, sig)
+	// If already started, register the new signal so it is delivered to sigChan.
+	if h.mu.started && h.sigChan != nil {
+		signal.Notify(h.sigChan, sig)
+	}
 }
 
 // SetContext sets the context for signal handling.

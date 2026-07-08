@@ -550,7 +550,7 @@ func TestClient_SendNotification(t *testing.T) {
 		},
 	}
 	c := &Client{name: "test", transport: mock}
-	err := c.sendNotification(jsonrpcNotification{
+	err := c.sendNotification(context.Background(), jsonrpcNotification{
 		JSONRPC: jsonrpcVersion,
 		Method:  "notifications/initialized",
 	})

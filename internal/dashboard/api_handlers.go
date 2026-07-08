@@ -10,6 +10,7 @@ package dashboard
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -414,9 +415,12 @@ func (a *APIv2) handleArenaAgentFault(w http.ResponseWriter, r *http.Request) {
 
 	var body map[string]any
 	if r.Body != nil {
-		// Body may be absent or empty; decode failure means no metadata,
-		// which is safe to ignore for optional fault-injection parameters.
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// Body is optional for fault-injection parameters. EOF means no
+		// body was sent; any other decode error is a client error.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errResp("invalid request body: "+err.Error()))
+			return
+		}
 	}
 
 	action := ArenaAction{Type: actionType, TargetID: id}
@@ -458,7 +462,10 @@ func (a *APIv2) handleArenaSurvivalStop(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if stopper, ok := a.survival.(interface{ StopSurvival() error }); ok {
-		_ = stopper.StopSurvival()
+		if err := stopper.StopSurvival(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to stop survival: "+err.Error()))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"stopped": true})
 }

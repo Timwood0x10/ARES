@@ -48,24 +48,31 @@ type SimpleRetrievalService struct {
 // When set, Search uses the pipeline with canonical query specs instead of calling
 // the embedding client directly.
 func (s *SimpleRetrievalService) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.pipeline = pipeline
 }
 
 // embedQuery generates a query embedding using the pipeline when available,
 // falling back to direct embedder call.
 func (s *SimpleRetrievalService) embedQuery(ctx context.Context, query string) ([]float64, error) {
-	if s.pipeline != nil {
-		spec, err := s.pipeline.BuildSpec(memembed.KindMemoryQuery, query)
+	s.mu.RLock()
+	pipeline := s.pipeline
+	config := s.config
+	s.mu.RUnlock()
+
+	if pipeline != nil {
+		spec, err := pipeline.BuildSpec(memembed.KindMemoryQuery, query)
 		if err != nil {
 			return nil, errors.Wrap(err, "build query spec")
 		}
-		vec, err := s.pipeline.Embed(ctx, spec)
+		vec, err := pipeline.Embed(ctx, spec)
 		if err != nil {
 			return nil, errors.Wrap(err, "embed via pipeline")
 		}
 		return vec, nil
 	}
-	return s.embedding.EmbedWithPrefix(ctx, query, s.config.QueryPrefix)
+	return s.embedding.EmbedWithPrefix(ctx, query, config.QueryPrefix)
 }
 
 // NewSimpleRetrievalService creates a new simple retrieval service

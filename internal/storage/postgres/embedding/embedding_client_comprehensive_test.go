@@ -74,6 +74,25 @@ func (m *MockRedisClient) Keys(ctx context.Context, pattern string) ([]string, e
 	return keys, nil
 }
 
+// Scan simulates the Redis SCAN command for cursor-based key iteration.
+// The mock returns all matching keys in a single batch (cursor 0) since it
+// holds data in a plain map.
+func (m *MockRedisClient) Scan(ctx context.Context, cursor uint64, match string, count int64) (uint64, []string, error) {
+	if m.failMode {
+		return 0, nil, fmt.Errorf("redis failure")
+	}
+	if cursor != 0 {
+		return 0, nil, nil
+	}
+	var keys []string
+	for key := range m.data {
+		if strings.Contains(key, match) {
+			keys = append(keys, key)
+		}
+	}
+	return 0, keys, nil
+}
+
 func (m *MockRedisClient) SetFailMode(fail bool) {
 	m.failMode = fail
 }

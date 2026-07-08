@@ -10,6 +10,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
+	"gopkg.in/yaml.v3"
 )
 
 // SecretFormat defines supported import/export formats.
@@ -33,15 +34,15 @@ func NewSecretAdapter() *SecretAdapter {
 // ImportData represents the structure for importing secrets.
 // This is the internal JSON format used by the repository layer.
 type ImportData struct {
-	Secrets []SecretImportItem `json:"secrets"`
+	Secrets []SecretImportItem `json:"secrets" yaml:"secrets"`
 }
 
 // SecretImportItem represents a single secret for import.
 type SecretImportItem struct {
-	Key       string                 `json:"key"`
-	Value     string                 `json:"value"`
-	ExpiresAt string                 `json:"expires_at,omitempty"`
-	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Key       string                 `json:"key" yaml:"key"`
+	Value     string                 `json:"value" yaml:"value"`
+	ExpiresAt string                 `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // ParseFrom converts various input formats to standard JSON format.
@@ -74,47 +75,13 @@ func (a *SecretAdapter) parseJSON(data []byte) ([]byte, error) {
 	return data, nil
 }
 
-// parseYAML parses YAML input format and converts to JSON.
+// parseYAML parses YAML input format and converts to JSON using gopkg.in/yaml.v3.
+// This properly handles YAML syntax (nested structures, quoted strings, multi-line
+// values, etc.) instead of the fragile line-by-line approach.
 func (a *SecretAdapter) parseYAML(data []byte) ([]byte, error) {
-	// Convert YAML to JSON structure
-	// Note: For simplicity, we're using a basic YAML-to-JSON conversion
-	// In production, use gopkg.in/yaml.v3 for proper YAML parsing
-
-	// Basic YAML parsing (simplified for demonstration)
-	yamlStr := string(data)
-	lines := strings.Split(yamlStr, "\n")
-
-	importData := ImportData{
-		Secrets: make([]SecretImportItem, 0),
-	}
-
-	currentSecret := &SecretImportItem{}
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		switch {
-		case strings.HasPrefix(line, "- key:"):
-			// Start new secret
-			if currentSecret.Key != "" {
-				importData.Secrets = append(importData.Secrets, *currentSecret)
-			}
-			currentSecret = &SecretImportItem{
-				Key: strings.TrimSpace(strings.TrimPrefix(line, "- key:")),
-			}
-		case strings.HasPrefix(line, "value:"):
-			currentSecret.Value = strings.TrimSpace(strings.TrimPrefix(line, "value:"))
-		case strings.HasPrefix(line, "expires_at:"):
-			currentSecret.ExpiresAt = strings.TrimSpace(strings.TrimPrefix(line, "expires_at:"))
-		}
-	}
-
-	// Add last secret
-	if currentSecret.Key != "" {
-		importData.Secrets = append(importData.Secrets, *currentSecret)
+	var importData ImportData
+	if err := yaml.Unmarshal(data, &importData); err != nil {
+		return nil, errors.Wrap(err, "invalid YAML format")
 	}
 
 	// Convert to JSON

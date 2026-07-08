@@ -270,7 +270,9 @@ func parseDuration(action Action, defaultDuration time.Duration) (time.Duration,
 		}
 		return d, nil
 	case float64:
-		return time.Duration(v), nil
+		// JSON numbers decode as float64; interpret the value as seconds so
+		// that 5.0 means 5s rather than 5ns (time.Duration is int64 nanoseconds).
+		return time.Duration(v * float64(time.Second)), nil
 	default:
 		return 0, fmt.Errorf("arena: unsupported duration type %T", durVal)
 	}

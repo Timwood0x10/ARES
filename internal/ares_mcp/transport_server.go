@@ -325,6 +325,12 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 
 // handlePOSTRequest handles an incoming JSON-RPC request via POST.
 func (t *SSEServerTransport) handlePOSTRequest(w http.ResponseWriter, r *http.Request) {
+	// Reject requests during shutdown to avoid sending on a closed/stale channel.
+	if t.closing.Load() {
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
 	var msg JSONRPCMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -440,7 +446,10 @@ func (t *SSEServerTransport) Close() error {
 		log.Warn("mcp-server: sse transport goroutine error", "error", err)
 	}
 
-	close(t.requestCh)
+	// Do NOT close t.requestCh: a concurrent handlePOSTRequest goroutine could
+	// still be sending, and send-on-closed-channel panics. The channel will be
+	// garbage collected once the transport is unreferenced. Accept() exits via
+	// its context cancellation, not channel close.
 
 	t.clientsMu.Lock()
 	for _, ch := range t.clients {

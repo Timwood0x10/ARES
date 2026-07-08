@@ -36,10 +36,18 @@ type SearXNGResponse struct {
 }
 
 // WebSearch performs searches using the SearXNG meta search engine.
+//
+// SECURITY: The SearXNG base URL is validated against an allowlist to prevent
+// SSRF. The default allowlist contains only the local SearXNG instance. Use
+// SetAllowedBaseURLs to permit additional trusted instances.
 type WebSearch struct {
 	*base.BaseTool
-	client *http.Client
+	client           *http.Client
+	allowedBaseURLs  map[string]bool
 }
+
+// defaultSearXNGBaseURL is the default allowed SearXNG instance.
+const defaultSearXNGBaseURL = "http://localhost:5605"
 
 // NewWebSearch creates a new WebSearch tool.
 func NewWebSearch() *WebSearch {
@@ -78,8 +86,8 @@ func NewWebSearch() *WebSearch {
 			},
 			"searxng_base_url": {
 				Type:        "string",
-				Description: "SearXNG instance base URL",
-				Default:     "http://localhost:5605",
+				Description: "SearXNG instance base URL (must be in the configured allowlist)",
+				Default:     defaultSearXNGBaseURL,
 			},
 		},
 		Required: []string{"query"},
@@ -94,9 +102,26 @@ func NewWebSearch() *WebSearch {
 			params,
 		),
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: SSRFCheckRedirect,
 		},
+		allowedBaseURLs: map[string]bool{defaultSearXNGBaseURL: true},
 	}
+}
+
+// SetAllowedBaseURLs configures the set of SearXNG base URLs that users are
+// permitted to query. This is the SSRF allowlist for the web_search tool.
+func (t *WebSearch) SetAllowedBaseURLs(urls []string) {
+	allowed := make(map[string]bool, len(urls))
+	for _, u := range urls {
+		allowed[u] = true
+	}
+	t.allowedBaseURLs = allowed
+}
+
+// isBaseURLAllowed reports whether the given SearXNG base URL is in the allowlist.
+func (t *WebSearch) isBaseURLAllowed(baseURL string) bool {
+	return t.allowedBaseURLs[baseURL]
 }
 
 // Execute performs a web search.
@@ -108,7 +133,12 @@ func (t *WebSearch) Execute(ctx context.Context, params map[string]interface{}) 
 
 	baseURL := getString(params, "searxng_base_url")
 	if baseURL == "" {
-		baseURL = "http://localhost:5605"
+		baseURL = defaultSearXNGBaseURL
+	}
+
+	// SSRF defense: only allow pre-approved SearXNG base URLs.
+	if !t.isBaseURLAllowed(baseURL) {
+		return core.NewErrorResult(fmt.Sprintf("searxng_base_url %q is not in the allowlist; contact the operator to add it", baseURL)), nil
 	}
 
 	// Build query parameters
@@ -173,12 +203,12 @@ func (t *WebSearch) Execute(ctx context.Context, params map[string]interface{}) 
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxHTTPResponseBytes))
 		return core.NewErrorResult(fmt.Sprintf("SearXNG returned status %d: %s", resp.StatusCode, string(body))), nil
 	}
 
-	// Parse response
-	body, err := io.ReadAll(resp.Body)
+	// Parse response with size cap to prevent memory exhaustion.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxHTTPResponseBytes))
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to read response: %v", err)), nil
 	}

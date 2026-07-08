@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/dashboard"
@@ -15,18 +16,31 @@ import (
 
 const fieldAction = "action"
 
+// bearerPrefix is the expected Authorization header prefix for API key auth.
+const bearerPrefix = "Bearer "
+
 // HTTPServer exposes the monitoring plugin over a Gin-based HTTP server.
 // It also mounts dashboard routes (arena, flight, ws, intel) for unified serving.
 type HTTPServer struct {
 	engine  *gin.Engine
 	plugin  *MonitorPlugin
 	dashAPI *dashboard.APIv2 // optional, mounts dashboard routes when set
+	apiKey  string           // optional API key protecting destructive endpoints
 }
 
 // WithDashboardAPI attaches a dashboard API whose routes are mounted on /api.
 func WithDashboardAPI(api *dashboard.APIv2) HTTPServerOption {
 	return func(s *HTTPServer) {
 		s.dashAPI = api
+	}
+}
+
+// WithAPIKey sets the API key required to invoke destructive endpoints
+// (kill/resume/retry/MCP tool calls). If no key is configured, those
+// endpoints deny all requests by default.
+func WithAPIKey(key string) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.apiKey = key
 	}
 }
 
@@ -37,6 +51,29 @@ type HTTPServerOption func(*HTTPServer)
 func WithGinMode(mode string) HTTPServerOption {
 	return func(_ *HTTPServer) {
 		gin.SetMode(mode)
+	}
+}
+
+// requireAPIKey is a Gin middleware that enforces API key auth on a route.
+// When no key is configured on the server, every request is denied (deny by
+// default) to prevent unauthenticated access to destructive operations.
+func (s *HTTPServer) requireAPIKey() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.apiKey == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "API key not configured"})
+			return
+		}
+		auth := c.GetHeader("Authorization")
+		if !strings.HasPrefix(auth, bearerPrefix) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid Authorization header"})
+			return
+		}
+		token := strings.TrimPrefix(auth, bearerPrefix)
+		if token == "" || token != s.apiKey {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
+			return
+		}
+		c.Next()
 	}
 }
 
@@ -94,13 +131,17 @@ func (s *HTTPServer) registerRoutes() {
 	// Agents
 	api.GET("/agents", s.handleListAgents)
 	api.GET("/agents/:id", s.handleGetAgent)
-	api.POST("/agents/:id/kill", s.handleKillAgent)
-	api.POST("/agents/:id/resume", s.handleResumeAgent)
-	api.POST("/agents/:id/retry", s.handleRetryAgent)
+	// Destructive agent actions require API key auth.
+	protectedAgents := api.Group("", s.requireAPIKey())
+	protectedAgents.POST("/agents/:id/kill", s.handleKillAgent)
+	protectedAgents.POST("/agents/:id/resume", s.handleResumeAgent)
+	protectedAgents.POST("/agents/:id/retry", s.handleRetryAgent)
 
 	// MCP
 	api.GET("/mcp/tools", s.handleListMCPTools)
-	api.POST("/mcp/tools/:name/call", s.handleCallMCPTool)
+	// Invoking MCP tools requires API key auth.
+	protectedMCP := api.Group("", s.requireAPIKey())
+	protectedMCP.POST("/mcp/tools/:name/call", s.handleCallMCPTool)
 
 	// Tabs
 	api.GET("/tabs/:name", s.handleTab)
@@ -360,15 +401,17 @@ func (s *HTTPServer) handleSubscribe(c *gin.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	ctx := c.Request.Context()
+
 	// Send initial snapshot immediately.
-	s.writeSSESnapshot(c.Writer, flusher)
+	s.writeSSESnapshot(ctx, c.Writer, flusher)
 
 	for {
 		select {
-		case <-c.Request.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.writeSSESnapshot(c.Writer, flusher) {
+			if !s.writeSSESnapshot(ctx, c.Writer, flusher) {
 				return
 			}
 		}
@@ -376,11 +419,13 @@ func (s *HTTPServer) handleSubscribe(c *gin.Context) {
 }
 
 // writeSSESnapshot writes a single SSE event with the current console snapshot.
-// Returns false if the write failed (client disconnected).
-func (s *HTTPServer) writeSSESnapshot(w gin.ResponseWriter, flusher http.Flusher) bool {
-	snap, err := s.plugin.Snapshot(context.Background())
+// Returns false if the write failed (client disconnected). The caller's ctx is
+// respected so the snapshot stops when the client disconnects.
+func (s *HTTPServer) writeSSESnapshot(ctx context.Context, w gin.ResponseWriter, flusher http.Flusher) bool {
+	snap, err := s.plugin.Snapshot(ctx)
 	if err != nil {
-		if _, err := fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error()); err != nil {
+		payload, _ := json.Marshal(map[string]string{"error": err.Error()})
+		if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload); err != nil {
 			return false
 		}
 		flusher.Flush()

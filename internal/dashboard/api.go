@@ -10,6 +10,7 @@ package dashboard
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -84,6 +85,7 @@ type APIv2 struct {
 	arena    ArenaProvider
 	survival SurvivalProvider
 	upgrader *websocket.Upgrader
+	apiKey   string // optional API key protecting destructive endpoints
 }
 
 // NewAPIv2 creates a new unified API.
@@ -96,16 +98,40 @@ func NewAPIv2(orch *Orchestrator, mcp MCPStatusProvider, hub *WSHub) *APIv2 {
 		upgrader: &websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					return true
-				}
-				host := r.Host
-				return strings.Contains(origin, host) || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "https://localhost")
-			},
+			CheckOrigin:     checkWSOrigin,
 		},
 	}
+}
+
+// SetAPIKey configures the API key required to invoke destructive endpoints
+// (chaos/arena actions). If no key is configured, those endpoints deny all
+// requests by default.
+func (a *APIv2) SetAPIKey(key string) {
+	a.apiKey = key
+}
+
+// checkWSOrigin implements a strict WebSocket origin check.
+//
+// Empty Origin (non-browser clients) is allowed. Otherwise the origin's
+// host:port must exactly match the Host header of the request. This replaces
+// the previous substring match (strings.Contains) which was bypassable
+// (e.g. https://evil.com/?target=realhost).
+func checkWSOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u == nil {
+		return false
+	}
+	originHost := u.Host
+	if originHost == "" {
+		return false
+	}
+	// url.Host always includes the port if the URL had one; r.Host also
+	// includes the port when present, so a direct comparison is sufficient.
+	return originHost == r.Host
 }
 
 // SetArena attaches an arena provider for chaos operations.
@@ -148,21 +174,22 @@ func (a *APIv2) Handler() http.Handler {
 	mux.HandleFunc("/ws", a.handleWS)
 
 	// ── Arena ────────────────────────────────────
-	mux.HandleFunc("/arena/leader/kill", a.handleArenaKillLeader)
-	mux.HandleFunc("/arena/agent/", a.handleArenaAgentFault) // catch-all: kill/pause/resume/slow/partition/tool-timeout/memory-corrupt/mcp-disconnect/llm-failure
-	mux.HandleFunc("/arena/node/", a.handleArenaRemoveNode)
-	mux.HandleFunc("/arena/edge/remove", a.handleArenaRemoveEdge)
-	mux.HandleFunc("/arena/stats", a.handleArenaStats)
-	mux.HandleFunc("/arena/history", a.handleArenaHistory)
-	mux.HandleFunc("/arena/score", a.handleArenaScore)
-	mux.HandleFunc("/arena/survival", a.handleArenaSurvival)
-	mux.HandleFunc("/arena/survival/status", a.handleArenaSurvivalStatus)
+	// All arena endpoints (chaos actions + status) require API key auth.
+	mux.HandleFunc("/arena/leader/kill", a.requireAPIKeyHTTP(a.handleArenaKillLeader))
+	mux.HandleFunc("/arena/agent/", a.requireAPIKeyHTTP(a.handleArenaAgentFault)) // catch-all: kill/pause/resume/slow/partition/tool-timeout/memory-corrupt/mcp-disconnect/llm-failure
+	mux.HandleFunc("/arena/node/", a.requireAPIKeyHTTP(a.handleArenaRemoveNode))
+	mux.HandleFunc("/arena/edge/remove", a.requireAPIKeyHTTP(a.handleArenaRemoveEdge))
+	mux.HandleFunc("/arena/stats", a.requireAPIKeyHTTP(a.handleArenaStats))
+	mux.HandleFunc("/arena/history", a.requireAPIKeyHTTP(a.handleArenaHistory))
+	mux.HandleFunc("/arena/score", a.requireAPIKeyHTTP(a.handleArenaScore))
+	mux.HandleFunc("/arena/survival", a.requireAPIKeyHTTP(a.handleArenaSurvival))
+	mux.HandleFunc("/arena/survival/status", a.requireAPIKeyHTTP(a.handleArenaSurvivalStatus))
 
 	// ── Arena extended fault injection ──────
-	mux.HandleFunc("/arena/orchestrator/kill", a.handleArenaKillOrchestrator)
-	mux.HandleFunc("/arena/survival/stop", a.handleArenaSurvivalStop)
-	mux.HandleFunc("/arena/metrics", a.handleArenaMetrics)
-	mux.HandleFunc("/arena/stream", a.handleArenaStream)
+	mux.HandleFunc("/arena/orchestrator/kill", a.requireAPIKeyHTTP(a.handleArenaKillOrchestrator))
+	mux.HandleFunc("/arena/survival/stop", a.requireAPIKeyHTTP(a.handleArenaSurvivalStop))
+	mux.HandleFunc("/arena/metrics", a.requireAPIKeyHTTP(a.handleArenaMetrics))
+	mux.HandleFunc("/arena/stream", a.requireAPIKeyHTTP(a.handleArenaStream))
 
 	// ── Flight Recorder ─────────────────────────
 	mux.HandleFunc("/flight/timeline", a.handleFlightTimeline)
@@ -213,20 +240,21 @@ func (a *APIv2) MountGinRoutes(rg *gin.RouterGroup) {
 	// ── WebSocket ──
 	rg.GET("/ws", a.wrapGinWS)
 
-	// ── Arena ──
-	rg.POST("/arena/leader/kill", a.wrapGin(a.handleArenaKillLeader))
-	rg.POST("/arena/agent/:id/:action", a.wrapGin(a.handleArenaAgentFault))
-	rg.POST("/arena/node/:id", a.wrapGin(a.handleArenaRemoveNode))
-	rg.POST("/arena/edge/remove", a.wrapGin(a.handleArenaRemoveEdge))
-	rg.GET("/arena/stats", a.wrapGin(a.handleArenaStats))
-	rg.GET("/arena/history", a.wrapGin(a.handleArenaHistory))
-	rg.GET("/arena/score", a.wrapGin(a.handleArenaScore))
-	rg.POST("/arena/survival", a.wrapGin(a.handleArenaSurvival))
-	rg.GET("/arena/survival/status", a.wrapGin(a.handleArenaSurvivalStatus))
-	rg.POST("/arena/orchestrator/kill", a.wrapGin(a.handleArenaKillOrchestrator))
-	rg.POST("/arena/survival/stop", a.wrapGin(a.handleArenaSurvivalStop))
-	rg.GET("/arena/metrics", a.wrapGin(a.handleArenaMetrics))
-	rg.GET("/arena/stream", a.wrapGin(a.handleArenaStream))
+	// ── Arena ── (all require API key auth)
+	arenaAuth := a.requireAPIKeyGin()
+	rg.POST("/arena/leader/kill", arenaAuth, a.wrapGin(a.handleArenaKillLeader))
+	rg.POST("/arena/agent/:id/:action", arenaAuth, a.wrapGin(a.handleArenaAgentFault))
+	rg.POST("/arena/node/:id", arenaAuth, a.wrapGin(a.handleArenaRemoveNode))
+	rg.POST("/arena/edge/remove", arenaAuth, a.wrapGin(a.handleArenaRemoveEdge))
+	rg.GET("/arena/stats", arenaAuth, a.wrapGin(a.handleArenaStats))
+	rg.GET("/arena/history", arenaAuth, a.wrapGin(a.handleArenaHistory))
+	rg.GET("/arena/score", arenaAuth, a.wrapGin(a.handleArenaScore))
+	rg.POST("/arena/survival", arenaAuth, a.wrapGin(a.handleArenaSurvival))
+	rg.GET("/arena/survival/status", arenaAuth, a.wrapGin(a.handleArenaSurvivalStatus))
+	rg.POST("/arena/orchestrator/kill", arenaAuth, a.wrapGin(a.handleArenaKillOrchestrator))
+	rg.POST("/arena/survival/stop", arenaAuth, a.wrapGin(a.handleArenaSurvivalStop))
+	rg.GET("/arena/metrics", arenaAuth, a.wrapGin(a.handleArenaMetrics))
+	rg.GET("/arena/stream", arenaAuth, a.wrapGin(a.handleArenaStream))
 
 	// ── Flight Recorder ──
 	rg.GET("/flight/timeline", a.wrapGin(a.handleFlightTimeline))
@@ -247,4 +275,42 @@ func (a *APIv2) wrapGin(fn http.HandlerFunc) gin.HandlerFunc {
 // wrapGinWS handles WebSocket upgrade via Gin.
 func (a *APIv2) wrapGinWS(c *gin.Context) {
 	a.handleWS(c.Writer, c.Request)
+}
+
+// requireAPIKeyHTTP wraps an http.HandlerFunc with API key auth. When no key
+// is configured on the server, every request is denied (deny by default).
+func (a *APIv2) requireAPIKeyHTTP(fn http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.checkAPIKey(r) {
+			writeJSON(w, http.StatusUnauthorized, errResp("invalid or missing API key"))
+			return
+		}
+		fn(w, r)
+	}
+}
+
+// requireAPIKeyGin returns a Gin middleware that enforces the same API key
+// auth as requireAPIKeyHTTP.
+func (a *APIv2) requireAPIKeyGin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !a.checkAPIKey(c.Request) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing API key"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// checkAPIKey reports whether r carries the configured API key. With no key
+// configured, all requests are refused (deny by default).
+func (a *APIv2) checkAPIKey(r *http.Request) bool {
+	if a.apiKey == "" {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return strings.TrimPrefix(auth, prefix) == a.apiKey
 }

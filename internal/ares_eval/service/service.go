@@ -15,8 +15,21 @@ import (
 // Service orchestrates evaluation runs: loading suites, running tests via
 // internal/ares_eval runners, and persisting results through the repository.
 type Service struct {
-	repo   EvalResultRepository
-	loader *ares_eval.Loader
+	repo           EvalResultRepository
+	loader         *ares_eval.Loader
+	agentExecutor  ares_eval.AgentExecutor
+}
+
+// Option configures a Service at construction time.
+type Option func(*Service)
+
+// WithAgentExecutor injects a real AgentExecutor so the service can actually
+// run agents during evaluation. Without this, RunEval fails each config with
+// a clear error instead of silently returning stubbed results.
+func WithAgentExecutor(exec ares_eval.AgentExecutor) Option {
+	return func(s *Service) {
+		s.agentExecutor = exec
+	}
 }
 
 // NewService creates a new ares_eval service instance.
@@ -24,19 +37,26 @@ type Service struct {
 // Args:
 //
 //	repo - ares_eval result repository for persistence (must not be nil).
+//	opts - optional configuration (e.g. WithAgentExecutor).
 //
 // Returns:
 //
 //	*Service - the initialized service instance.
 //	error - ErrNilRepository if repo is nil.
-func NewService(repo EvalResultRepository) (*Service, error) {
+func NewService(repo EvalResultRepository, opts ...Option) (*Service, error) {
 	if repo == nil {
 		return nil, ErrNilRepository
 	}
-	return &Service{
+	s := &Service{
 		repo:   repo,
 		loader: ares_eval.NewLoader(),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s, nil
 }
 
 // RunEval starts an asynchronous evaluation run. It loads the test suite,
@@ -228,18 +248,15 @@ func (s *Service) runSingleConfig(
 	cfgRef AgentConfigRef,
 	runStart time.Time,
 ) []*EvalResult {
-	// Convert API AgentConfigRef to internal AgentConfig.
-	internalCfg := ares_eval.AgentConfig{
-		Name:         cfgRef.Name,
-		Model:        cfgRef.Model,
-		Parameters:   cfgRef.Parameters,
-		SystemPrompt: cfgRef.SystemPrompt,
+	// Use the injected agent executor. Without one, evaluation cannot run
+	// real agents — fail explicitly rather than silently stubbing results.
+	if s.agentExecutor == nil {
+		log.Error("agent executor not configured, skipping config run",
+			"run_id", runID, "config", cfgRef.Name)
+		return singleErrorResult(runID, cfgRef, suite,
+			"no agent executor configured: provide one via WithAgentExecutor")
 	}
-	// Create a real test runner with the agent executor.
-	innerExec := &serviceAgentExecutor{
-		cfg: internalCfg,
-	}
-	runner, err := ares_eval.NewAgentTestRunner(innerExec)
+	runner, err := ares_eval.NewAgentTestRunner(s.agentExecutor)
 	if err != nil {
 		log.Warn("failed to create agent test runner, falling back to placeholder",
 			"config", cfgRef.Name, "error", err)
@@ -377,19 +394,6 @@ func (r *placeholderRunner) RunSingle(ctx context.Context, testCase ares_eval.Te
 
 // Ensure compile-time interface check.
 var _ ares_eval.TestRunner = (*placeholderRunner)(nil)
-
-// serviceAgentExecutor adapts the service-level AgentConfig to ares_eval.AgentExecutor.
-type serviceAgentExecutor struct {
-	cfg ares_eval.AgentConfig
-}
-
-// Execute runs the agent with the given input by delegating to an AgentExecutor.
-func (e *serviceAgentExecutor) Execute(ctx context.Context, input string) (string, []string, int, error) {
-	// For now, return a basic execution result.
-	// In production, this would launch a real agent via the runtime.
-	// TODO: integrate with ares_runtime.Manager for real agent execution.
-	return "executed: " + input, nil, 0, nil
-}
 
 // singleErrorResult builds a single error EvalResult for failure reporting.
 func singleErrorResult(runID string, cfgRef AgentConfigRef, suite *ares_eval.TestSuite, errMsg string) []*EvalResult {

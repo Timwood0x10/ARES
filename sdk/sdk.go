@@ -151,6 +151,7 @@ type Agent struct {
 	tools       []tools.Tool
 	runtime     *Runtime
 	humanInput  HumanInputFunc
+	maxIter     int
 }
 
 // HumanInputFunc is called when the agent needs human approval before executing
@@ -452,6 +453,7 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 		tools:       ac.tools,
 		runtime:     r,
 		humanInput:  ac.humanInput,
+		maxIter:     ac.maxIter,
 	}
 }
 
@@ -484,7 +486,10 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	toolCallCount := 0
-	const maxIter = 10
+	maxIter := a.maxIter
+	if maxIter <= 0 {
+		maxIter = defaultMaxIterations
+	}
 
 	for iter := 0; iter < maxIter; iter++ {
 		if a.runtime.trace {

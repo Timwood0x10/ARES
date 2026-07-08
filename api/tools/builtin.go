@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,8 +55,8 @@ func RegisterBuiltinTools(r *Registry) error {
 	legacyTools := []Tool{
 		&regexTool{},
 		&jsonTool{},
-		&webSearchTool{client: &http.Client{Timeout: 10 * time.Second}},
-		&fileTool{},
+		newWebSearchTool(),
+		newFileTool(),
 	}
 	for _, t := range legacyTools {
 		if err := r.Register(t); err != nil {
@@ -248,6 +249,10 @@ func parsePrimary(tokens []string, pos int) (float64, int, error) {
 
 // ── Regex ────────────────────────────────────────────────
 
+// regexInputLimit caps the size of inputs accepted by the regex tool to
+// prevent denial-of-service via pathological patterns or very large inputs.
+const regexInputLimit = 1 << 20 // 1 MiB
+
 type regexTool struct{}
 
 func (t *regexTool) Name() string           { return "regex" }
@@ -262,8 +267,14 @@ func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, e
 	if pattern == "" {
 		return Result{Success: false, Data: "pattern is required"}, nil
 	}
+	if len(pattern) > regexInputLimit {
+		return Result{Success: false, Data: "pattern exceeds maximum length (1 MiB)"}, nil
+	}
 	if text == "" {
 		return Result{Success: false, Data: "text is required"}, nil
+	}
+	if len(text) > regexInputLimit {
+		return Result{Success: false, Data: "text exceeds maximum length (1 MiB)"}, nil
 	}
 
 	re, err := regexp.Compile(pattern)
@@ -349,6 +360,68 @@ type webSearchTool struct {
 	baseURL string
 }
 
+// newWebSearchTool creates a web search tool with a default HTTP client and
+// SSRF-safe dialer that blocks requests to private/loopback networks.
+func newWebSearchTool() *webSearchTool {
+	return &webSearchTool{
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				DialContext: ssrfSafeDialContext,
+			},
+		},
+	}
+}
+
+// ssrfSafeDialContext blocks dialing private/loopback/link-local addresses
+// to mitigate Server-Side Request Forgery (SSRF) risk.
+func ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("ssrf: invalid address %q: %w", addr, err)
+	}
+	// Resolve the host first so we inspect the actual IP we would dial.
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("ssrf: resolve %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip.IP) {
+			return nil, fmt.Errorf("ssrf: refusing to dial private/loopback address %s for %s", ip.IP, host)
+		}
+	}
+	dialer := &net.Dialer{}
+	return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+}
+
+// isPrivateIP reports whether the given IP is in a private, loopback, or
+// link-local range. Requests to such addresses are blocked by default.
+func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		// RFC 1918 private ranges.
+		if ip4[0] == 10 {
+			return true
+		}
+		if ip4[0] == 172 && ip4[1]&0xf0 == 16 {
+			return true
+		}
+		if ip4[0] == 192 && ip4[1] == 168 {
+			return true
+		}
+		// 0.0.0.0/8.
+		if ip4[0] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
 	return "Search the web using SearXNG meta search engine"
@@ -367,6 +440,15 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 	}
 	if override, ok := params["searxng_base_url"].(string); ok && override != "" {
 		baseURL = override
+	}
+
+	// Validate the SearXNG base URL to mitigate SSRF.
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return Result{Success: false, Data: fmt.Sprintf("invalid base url: %v", err)}, nil
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return Result{Success: false, Data: fmt.Sprintf("unsupported scheme %q (only http/https allowed)", parsed.Scheme)}, nil
 	}
 
 	maxResults := 10
@@ -435,35 +517,90 @@ func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Res
 
 // ── File Tools ───────────────────────────────────────────
 
-type fileTool struct{}
+// fileToolOption configures a fileTool at construction time.
+type fileToolOption func(*fileTool)
+
+// WithAllowedDir restricts file operations to paths under the given directory.
+// When set, any path that resolves outside the allowed directory is rejected.
+// This mitigates path-traversal attacks when the tool is exposed to untrusted
+// callers. When unset, the tool behaves as before (no sandbox).
+func WithAllowedDir(dir string) fileToolOption {
+	return func(t *fileTool) {
+		t.allowedDir = dir
+	}
+}
+
+// newFileTool creates a file tool with default options (no sandbox).
+// Pass WithAllowedDir(...) to restrict file operations to a directory.
+func newFileTool(opts ...fileToolOption) *fileTool {
+	t := &fileTool{}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
+type fileTool struct {
+	allowedDir string
+}
 
 func (t *fileTool) Name() string           { return "file_tools" }
 func (t *fileTool) Description() string    { return "File operations: read, write, list, exists, delete" }
 func (t *fileTool) Capabilities() []string { return nil }
 
+// validatePath resolves the path to an absolute, cleaned form and enforces
+// containment within t.allowedDir when set. Returns the resolved path or an
+// error describing why access was denied.
+func (t *fileTool) validatePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	if t.allowedDir == "" {
+		return absPath, nil
+	}
+	absDir, err := filepath.Abs(filepath.Clean(t.allowedDir))
+	if err != nil {
+		return "", fmt.Errorf("resolve allowed dir: %w", err)
+	}
+	// Use Rel to robustly detect containment (handles .., symlinks-relative, etc.).
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s: %w", absPath, absDir, err)
+	}
+	if strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s", absPath, absDir)
+	}
+	return absPath, nil
+}
+
 func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, error) {
 	operation, _ := params["operation"].(string)
 	path, _ := params["path"].(string)
 
-	if path == "" {
-		return Result{Success: false, Data: "path is required"}, nil
+	resolvedPath, err := t.validatePath(path)
+	if err != nil {
+		return Result{Success: false, Data: err.Error()}, nil
 	}
 
 	switch operation {
 	case "read":
-		data, err := os.ReadFile(path) // #nosec G304 - file tool is intentionally allowed to read user-specified paths
+		data, err := os.ReadFile(resolvedPath) // #nosec G304 - path is validated against allowedDir
 		if err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "content": string(data), "size": len(data)}}, nil
 	case "write":
 		content, _ := params["content"].(string)
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(resolvedPath, []byte(content), 0o600); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "bytes": len(content)}}, nil
 	case "list":
-		entries, err := os.ReadDir(path)
+		entries, err := os.ReadDir(resolvedPath)
 		if err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
@@ -474,15 +611,15 @@ func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, er
 		}
 		return Result{Success: true, Data: map[string]any{"path": path, "count": len(files), "files": files}}, nil
 	case "exists":
-		_, err := os.Stat(path)
+		_, err := os.Stat(resolvedPath)
 		return Result{Success: true, Data: map[string]any{"path": path, "exists": err == nil}}, nil
 	case "delete":
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(resolvedPath); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil
 	case "mkdir":
-		if err := os.MkdirAll(path, 0o750); err != nil {
+		if err := os.MkdirAll(resolvedPath, 0o750); err != nil {
 			return Result{Success: false, Data: err.Error()}, nil
 		}
 		return Result{Success: true, Data: map[string]any{"path": path}}, nil

@@ -128,7 +128,16 @@ func (m *MCPManager) ConnectServer(ctx context.Context, name string) error {
 	}
 
 	onChange := func() {
-		if err := m.RefreshTools(ctx, name); err != nil {
+		// Use a fresh background-derived context instead of the caller's ctx,
+		// which may be a short-lived request context that gets cancelled before
+		// the refresh completes. Derive the timeout from the server config.
+		refreshTimeout := sc.Timeout
+		if refreshTimeout == 0 {
+			refreshTimeout = 30 * time.Second
+		}
+		refreshCtx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+		defer cancel()
+		if err := m.RefreshTools(refreshCtx, name); err != nil {
 			log.Warn("mcp: failed to refresh tools", "server", name, "error", err)
 		}
 	}

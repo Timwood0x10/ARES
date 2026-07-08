@@ -37,6 +37,12 @@ func NewHandler(dlq DLQFunc, alertFunc AlertFunc) *Handler {
 
 // HandleError handles an error with retry logic.
 func (h *Handler) HandleError(ctx context.Context, appErr *AppError, retryCount int) {
+	// Guard against nil AppError or nil Code to prevent nil-pointer panic
+	// when accessing appErr.Code.Code below.
+	if appErr == nil || appErr.Code == nil {
+		return
+	}
+
 	code := appErr.Code.Code
 
 	// Check if should alert
@@ -59,8 +65,15 @@ func (h *Handler) HandleError(ctx context.Context, appErr *AppError, retryCount 
 	}
 }
 
-// RetryWithBackoff performs retry with exponential backoff.
+// RetryWithBackoff performs a single retry attempt with exponential backoff.
+// The caller is expected to invoke this in a loop, incrementing attempt each
+// iteration, until it returns nil or a non-retryable error. This function does
+// NOT loop internally; it applies the backoff delay (for attempt > 0) and then
+// calls fn exactly once.
 func (h *Handler) RetryWithBackoff(ctx context.Context, appErr *AppError, attempt int, fn func() error) error {
+	if appErr == nil || appErr.Code == nil {
+		return appErr
+	}
 	if !appErr.ShouldRetry(attempt) {
 		return appErr
 	}
@@ -96,6 +109,10 @@ func FormatError(err error) string {
 		return "<nil>"
 	}
 	if appErr, ok := err.(*AppError); ok {
+		// Guard against nil Code which would panic when accessing Code.Code.
+		if appErr.Code == nil {
+			return appErr.Error()
+		}
 		var sb strings.Builder
 		sb.WriteString("[")
 		sb.WriteString(appErr.Code.Code)

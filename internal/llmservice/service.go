@@ -93,6 +93,11 @@ func NewService(config *Config) (*Service, error) {
 		if config.Tracer != nil {
 			fc.SetTracer(config.Tracer)
 		}
+		if config.CallbackRegistry != nil {
+			for _, c := range fc.Clients() {
+				llm.WithCallbacks(config.CallbackRegistry)(c)
+			}
+		}
 		client = fc
 	} else {
 		c, err := llm.NewClient(internalConfig)

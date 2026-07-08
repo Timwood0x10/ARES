@@ -78,7 +78,10 @@ func NewYAMLFileLoader(opts ...FileLoaderOption) *FileLoader {
 
 // Load loads a workflow from a file.
 func (l *FileLoader) Load(ctx context.Context, source string) (*Workflow, error) {
-	// Security: validate path is within allowed directory
+	// Security: validate path is within allowed directory.
+	// filepath.Rel is used instead of strings.HasPrefix because the prefix
+	// check is vulnerable to sibling-directory attacks (e.g. /safe/dir-evil
+	// passes a /safe/dir prefix check).
 	if l.allowedDir != "" {
 		absPath, err := filepath.Abs(source)
 		if err != nil {
@@ -88,7 +91,11 @@ func (l *FileLoader) Load(ctx context.Context, source string) (*Workflow, error)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get absolute directory: %s", l.allowedDir)
 		}
-		if !strings.HasPrefix(absPath, absDir) {
+		rel, err := filepath.Rel(absDir, absPath)
+		if err != nil {
+			return nil, fmt.Errorf("path %s is outside allowed directory %s", source, l.allowedDir)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("path %s is outside allowed directory %s", source, l.allowedDir)
 		}
 	}
