@@ -198,6 +198,8 @@ func (c *ConflictResolver) extractExperiences(rankedExperiences []*RankedExperie
 // Returns cosine similarity (0.0 to 1.0).
 func (c *ConflictResolver) cosineSimilarity(vec1, vec2 []float64) float64 {
 	if len(vec1) != len(vec2) {
+		slog.Warn("conflict resolver: vector dimension mismatch",
+			"len1", len(vec1), "len2", len(vec2))
 		return 0.0
 	}
 

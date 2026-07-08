@@ -159,10 +159,6 @@ type ArenaAdapter struct {
 	successfulActions int
 	failedActions     int
 	resurrectionTotal int
-	// pausedAgents tracks agents that have been paused.
-	pausedAgents map[string]bool
-	// slowAgents tracks agents that have been slowed down.
-	slowAgents map[string]bool
 	// history records every Execute result.
 	history []dashboard.ArenaResult
 }
@@ -171,6 +167,8 @@ type ArenaAdapter struct {
 func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResult {
 	start := time.Now()
 	success := false
+	var errMsg string
+
 	switch action.Type {
 	case dashboard.ArenaActionKillLeader:
 		// Cancel first non-completed/failed agent to simulate leader kill.
@@ -181,48 +179,14 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 				break
 			}
 		}
+
 	case dashboard.ArenaActionKillAgent:
 		// Cancel specific agent by ID.
 		if action.TargetID != "" {
 			success = a.Orch.CancelAgent(action.TargetID)
 			log.Info("arena: killed agent", "id", action.TargetID, "success", success)
 		}
-	case dashboard.ArenaActionPauseAgent:
-		// Pause agent: track paused state in map only.
-		// The orchestrator does not natively support pause, so this is a
-		// tracking-only operation. success=true reflects that the map write
-		// succeeded; callers should treat this as "recorded" not "paused".
-		if action.TargetID != "" {
-			a.mu.Lock()
-			if a.pausedAgents == nil {
-				a.pausedAgents = make(map[string]bool)
-			}
-			a.pausedAgents[action.TargetID] = true
-			a.mu.Unlock()
-			success = true
-			log.Warn("arena: pause requested for agent (tracking-only, no native pause support)",
-				"id", action.TargetID, "reason", "orchestrator_has_no_native_pause")
-		}
-	case dashboard.ArenaActionResumeAgent:
-		// Resume is a no-op under cancel model; auto-resurrection handles it.
-		success = true
-		log.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
-	case dashboard.ArenaActionSlowAgent:
-		// Inject latency: track slowed state in map only.
-		// The orchestrator does not natively support slowdown, so this is a
-		// tracking-only operation. success=true reflects that the map write
-		// succeeded; callers should treat this as "recorded" not "slowed".
-		if action.TargetID != "" {
-			a.mu.Lock()
-			if a.slowAgents == nil {
-				a.slowAgents = make(map[string]bool)
-			}
-			a.slowAgents[action.TargetID] = true
-			a.mu.Unlock()
-			success = true
-			log.Warn("arena: slow agent injected (tracking-only, no native slowdown support)",
-				"id", action.TargetID, "note", "actual_slowdown_requires_proxy_or_middleware")
-		}
+
 	case dashboard.ArenaActionKillOrchestrator:
 		// Cancel ALL running agents to simulate orchestrator failure.
 		for _, ag := range a.Orch.ListAgents() {
@@ -234,64 +198,40 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 				}
 			}
 		}
+
+	case dashboard.ArenaActionPauseAgent:
+		// Pause is not supported by the orchestrator. Return an explicit error
+		// rather than silently tracking state in a map (P1-7).
+		errMsg = "arena: pause not supported — orchestrator has no native pause"
+
+	case dashboard.ArenaActionResumeAgent:
+		// Resume is a no-op under cancel model; auto-resurrection handles it.
+		success = true
+		log.Info("arena: resume requested (auto-resurrection handles)", "id", action.TargetID)
+
+	case dashboard.ArenaActionSlowAgent:
+		// Slowdown is not supported by the orchestrator. Return an explicit error
+		// rather than silently tracking state in a map (P1-7).
+		errMsg = "arena: slow not supported — orchestrator has no native slowdown"
+
 	case dashboard.ArenaActionNetworkPartition:
-		// Simulate network isolation: cancel agent with higher severity logging.
-		if action.TargetID != "" {
-			success = a.Orch.CancelAgent(action.TargetID)
-			log.Info("arena: network partition injected on agent",
-				"id", action.TargetID, "success", success,
-				"severity", "high", "fault_type", "network_isolation")
-		}
+		errMsg = "arena: network partition not supported — use CancelAgent directly"
+
 	case dashboard.ArenaActionToolTimeout:
-		// Simulate tool timeout: cancel with specific reason.
-		if action.TargetID != "" {
-			success = a.Orch.CancelAgent(action.TargetID)
-			log.Info("arena: tool timeout simulated on agent",
-				"id", action.TargetID, "success", success,
-				"reason", "tool_timeout")
-		}
+		errMsg = "arena: tool timeout not supported — use CancelAgent directly"
+
 	case dashboard.ArenaActionMemoryCorrupt:
-		// Simulate memory corruption: cancel with reason and severity.
-		if action.TargetID != "" {
-			success = a.Orch.CancelAgent(action.TargetID)
-			log.Info("arena: memory corruption simulated on agent",
-				"id", action.TargetID, "success", success,
-				"reason", "memory_corrupt", "severity", "critical")
-		}
+		errMsg = "arena: memory corruption not supported — use CancelAgent directly"
+
 	case dashboard.ArenaActionMCPDisconnect:
-		// Simulate MCP disconnect: adapter exists but we cannot safely
-		// disconnect it mid-operation, so fall back to cancel in all cases.
-		if action.TargetID != "" {
-			if a.mcpAdapter != nil && a.mcpAdapter.Client != nil {
-				// Adapter available but unsafe to null-out mid-operation.
-				success = a.Orch.CancelAgent(action.TargetID)
-				log.Warn("arena: MCP disconnect simulated (adapter available, fell back to cancel)",
-					"id", action.TargetID, "success", success,
-					"reason", "mcp_disconnect", "has_adapter", true)
-			} else {
-				success = a.Orch.CancelAgent(action.TargetID)
-				log.Info("arena: MCP disconnect simulated (no adapter, fallback to cancel)",
-					"id", action.TargetID, "success", success,
-					"reason", "mcp_disconnect")
-			}
-		}
+		errMsg = "arena: MCP disconnect not supported — use CancelAgent directly"
+
 	case dashboard.ArenaActionLLMFailure:
-		// Simulate LLM failure: adapter exists but we cannot safely fail it
-		// mid-operation, so fall back to cancel in all cases.
-		if action.TargetID != "" {
-			if a.llmAdapter != nil && a.llmAdapter.Adapter != nil {
-				// Adapter available but unsafe to corrupt mid-operation.
-				success = a.Orch.CancelAgent(action.TargetID)
-				log.Warn("arena: LLM failure simulated (adapter available, fell back to cancel)",
-					"id", action.TargetID, "success", success,
-					"reason", "llm_failure", "has_adapter", true)
-			} else {
-				success = a.Orch.CancelAgent(action.TargetID)
-				log.Info("arena: LLM failure simulated (no adapter, fallback to cancel)",
-					"id", action.TargetID, "success", success,
-					"reason", "llm_failure")
-			}
-		}
+		errMsg = "arena: LLM failure not supported — use CancelAgent directly"
+	}
+
+	if errMsg != "" {
+		log.Warn(errMsg, "target_id", action.TargetID, "action", action.Type)
 	}
 	if a.Store != nil {
 		evt := &ares_events.Event{
@@ -303,7 +243,7 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 			log.Warn("arena: failed to record action event", "error", err)
 		}
 	}
-	result := dashboard.ArenaResult{Success: success, Action: action, Duration: time.Since(start)}
+	result := dashboard.ArenaResult{Success: success, Action: action, Duration: time.Since(start), Error: errMsg}
 
 	// Track stats and history under lock.
 	a.mu.Lock()
@@ -323,20 +263,10 @@ func (a *ArenaAdapter) Execute(action dashboard.ArenaAction) dashboard.ArenaResu
 func (a *ArenaAdapter) Stats() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	pausedCount := 0
-	slowCount := 0
-	if a.pausedAgents != nil {
-		pausedCount = len(a.pausedAgents)
-	}
-	if a.slowAgents != nil {
-		slowCount = len(a.slowAgents)
-	}
 	return map[string]any{
 		"total_actions":      a.totalActions,
 		"successful_actions": a.successfulActions,
 		"failed_actions":     a.failedActions,
-		"paused_agents":      pausedCount,
-		"slow_agents":        slowCount,
 	}
 }
 

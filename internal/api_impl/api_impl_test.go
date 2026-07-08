@@ -742,12 +742,6 @@ func TestArenaAdapter_Stats_Empty(t *testing.T) {
 	if stats["failed_actions"] != 0 {
 		t.Errorf("failed_actions = %v, want 0", stats["failed_actions"])
 	}
-	if stats["paused_agents"] != 0 {
-		t.Errorf("paused_agents = %v, want 0", stats["paused_agents"])
-	}
-	if stats["slow_agents"] != 0 {
-		t.Errorf("slow_agents = %v, want 0", stats["slow_agents"])
-	}
 }
 
 func TestArenaAdapter_History_Empty(t *testing.T) {
@@ -947,12 +941,8 @@ func TestArenaAdapter_Execute_KillAgent_NotFound(t *testing.T) {
 func TestArenaAdapter_Execute_PauseAgent(t *testing.T) {
 	adapter := &ArenaAdapter{}
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionPauseAgent, TargetID: "agent-1"})
-	if !result.Success {
-		t.Error("expected PauseAgent to succeed (tracking-only)")
-	}
-	stats := adapter.Stats()
-	if stats["paused_agents"] != 1 {
-		t.Errorf("paused_agents = %v, want 1", stats["paused_agents"])
+	if result.Success {
+		t.Error("expected PauseAgent to fail (orchestrator has no native pause)")
 	}
 }
 
@@ -975,12 +965,8 @@ func TestArenaAdapter_Execute_ResumeAgent(t *testing.T) {
 func TestArenaAdapter_Execute_SlowAgent(t *testing.T) {
 	adapter := &ArenaAdapter{}
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionSlowAgent, TargetID: "agent-1"})
-	if !result.Success {
-		t.Error("expected SlowAgent to succeed")
-	}
-	stats := adapter.Stats()
-	if stats["slow_agents"] != 1 {
-		t.Errorf("slow_agents = %v, want 1", stats["slow_agents"])
+	if result.Success {
+		t.Error("expected SlowAgent to fail (orchestrator has no native slowdown)")
 	}
 }
 
@@ -1028,8 +1014,8 @@ func TestArenaAdapter_Execute_NetworkPartition(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionNetworkPartition, TargetID: id})
-	if !result.Success {
-		t.Error("expected NetworkPartition to succeed")
+	if result.Success {
+		t.Error("expected NetworkPartition to fail (not supported, P1-7)")
 	}
 }
 
@@ -1043,8 +1029,8 @@ func TestArenaAdapter_Execute_ToolTimeout(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionToolTimeout, TargetID: id})
-	if !result.Success {
-		t.Error("expected ToolTimeout to succeed")
+	if result.Success {
+		t.Error("expected ToolTimeout to fail (not supported, P1-7)")
 	}
 }
 
@@ -1058,8 +1044,8 @@ func TestArenaAdapter_Execute_MemoryCorrupt(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionMemoryCorrupt, TargetID: id})
-	if !result.Success {
-		t.Error("expected MemoryCorrupt to succeed")
+	if result.Success {
+		t.Error("expected MemoryCorrupt to fail (not supported, P1-7)")
 	}
 }
 
@@ -1073,8 +1059,8 @@ func TestArenaAdapter_Execute_MCPDisconnect(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionMCPDisconnect, TargetID: id})
-	if !result.Success {
-		t.Error("expected MCPDisconnect to succeed")
+	if result.Success {
+		t.Error("expected MCPDisconnect to fail (not supported, P1-7)")
 	}
 }
 
@@ -1092,8 +1078,8 @@ func TestArenaAdapter_Execute_MCPDisconnect_WithAdapter(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionMCPDisconnect, TargetID: id})
-	if !result.Success {
-		t.Error("expected MCPDisconnect with adapter to succeed")
+	if result.Success {
+		t.Error("expected MCPDisconnect with adapter to fail (not supported, P1-7)")
 	}
 }
 
@@ -1107,8 +1093,8 @@ func TestArenaAdapter_Execute_LLMFailure(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionLLMFailure, TargetID: id})
-	if !result.Success {
-		t.Error("expected LLMFailure to succeed")
+	if result.Success {
+		t.Error("expected LLMFailure to fail (not supported, P1-7)")
 	}
 }
 
@@ -1124,8 +1110,8 @@ func TestArenaAdapter_Execute_LLMFailure_WithAdapter(t *testing.T) {
 		Steps: []dashboard.AgentStep{{Tool: "mock_tool"}},
 	})
 	result := adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionLLMFailure, TargetID: id})
-	if !result.Success {
-		t.Error("expected LLMFailure with adapter to succeed")
+	if result.Success {
+		t.Error("expected LLMFailure with adapter to fail (not supported, P1-7)")
 	}
 }
 
@@ -1153,23 +1139,18 @@ func TestArenaAdapter_Stats_AfterActions(t *testing.T) {
 	adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionResumeAgent})                // success
 	adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionPauseAgent, TargetID: "a1"}) // success
 	adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionKillAgent})                  // fail (no target)
-	adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionSlowAgent, TargetID: "a2"})  // success
+	adapter.Execute(dashboard.ArenaAction{Type: dashboard.ArenaActionSlowAgent, TargetID: "a2"})  // fail (not supported)
 
 	stats := adapter.Stats()
 	if stats["total_actions"] != 4 {
 		t.Errorf("total_actions = %v, want 4", stats["total_actions"])
 	}
-	if stats["successful_actions"] != 3 {
-		t.Errorf("successful_actions = %v, want 3", stats["successful_actions"])
+	// ResumeAgent succeeds; Pause/KillAgent(no target)/SlowAgent fail.
+	if stats["successful_actions"] != 1 {
+		t.Errorf("successful_actions = %v, want 1", stats["successful_actions"])
 	}
-	if stats["failed_actions"] != 1 {
-		t.Errorf("failed_actions = %v, want 1", stats["failed_actions"])
-	}
-	if stats["paused_agents"] != 1 {
-		t.Errorf("paused_agents = %v, want 1", stats["paused_agents"])
-	}
-	if stats["slow_agents"] != 1 {
-		t.Errorf("slow_agents = %v, want 1", stats["slow_agents"])
+	if stats["failed_actions"] != 3 {
+		t.Errorf("failed_actions = %v, want 3", stats["failed_actions"])
 	}
 }
 

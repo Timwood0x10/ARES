@@ -14,6 +14,7 @@ type EventType string
 const (
 	EventAgentStart EventType = "agent.start"
 	EventAgentEnd   EventType = "agent.end"
+	EventTaskEnd    EventType = "task.end"
 	EventToolCall   EventType = "tool.call"
 	EventToolResult EventType = "tool.result"
 	EventLLMCall    EventType = "llm.call"

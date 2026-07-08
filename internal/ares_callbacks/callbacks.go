@@ -2,6 +2,7 @@
 package ares_callbacks
 
 import (
+	"context"
 	"sync"
 	"time"
 )

@@ -55,10 +55,14 @@ func (b *BridgeEventStore) Emit(ctx *Context) {
 		payload[k] = v
 	}
 
-	// Use a short-lived background context so that event emission is not
-	// tied to (or blocked by) the caller's request lifecycle, while still
-	// having a timeout to prevent indefinite blocking.
-	emitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Use the caller's Go context for trace propagation; fall back to a
+	// short-lived background context if none was provided, so that event
+	// emission never blocks the caller indefinitely.
+	emitCtx := ctx.GoCtx
+	if emitCtx == nil {
+		emitCtx = context.Background()
+	}
+	emitCtx, cancel := context.WithTimeout(emitCtx, 5*time.Second)
 	defer cancel()
 	if !ares_events.Emit(emitCtx, b.store, b.agentID, eventType, "callbacks", payload) {
 		log.Warn("failed to emit event", "event_type", eventType, "stream_id", b.agentID)

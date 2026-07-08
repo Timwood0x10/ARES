@@ -165,9 +165,9 @@ func TestSafeFormatTable(t *testing.T) {
 		table    string
 		expected string
 	}{
-		{"Valid table", "users", "users"},
-		{"Valid with underscore", "user_profiles", "user_profiles"},
-		{"Valid with hyphen", "user-profiles", "user-profiles"},
+		{"Valid table", "users", `"users"`},
+		{"Valid with underscore", "user_profiles", `"user_profiles"`},
+		{"Valid with hyphen", "user-profiles", `"user-profiles"`},
 		{"Invalid - empty", "", ""},
 		{"Invalid - injection", "users; DROP", ""},
 		{"Invalid - schema qualified", "public.users", ""},

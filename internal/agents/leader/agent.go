@@ -210,10 +210,12 @@ func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
 	a.mu.Unlock()
 
 	a.cleanupOnce.Do(func() {
-		// Signal all goroutines to stop.
-		a.distillMu.Lock()
+		// Signal all goroutines to stop under a.mu, which is the lock used for
+		// both creation (Start) and reads (checkAgentRunning, ProcessStream).
+		// Previously this used distillMu, creating a data race (P0-6).
+		a.mu.Lock()
 		close(a.stopCh)
-		a.distillMu.Unlock()
+		a.mu.Unlock()
 
 		// Wait for background goroutines to complete and collect their errors.
 		a.distillWg.Wait()

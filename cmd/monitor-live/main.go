@@ -128,19 +128,13 @@ func main() {
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
 
-	// Register sub agents
+	// Register sub agents using pre-created instances. The factory returns
+	// the already-created agent directly rather than calling createAgents
+	// again, which would rebuild all agents (leader + subs) on every restart
+	// and leak connections (P0-5).
 	for _, sa := range subAgents {
 		subAgent := sa
-		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
-			for _, s := range subs {
-				if s.ID() == subAgent.ID() {
-					return s
-				}
-			}
-			return subAgent
-		}
-		mgr.RegisterAgent(subAgent, subFactory)
+		mgr.RegisterAgent(subAgent, func() base.Agent { return subAgent })
 	}
 
 	// --- PluginBus + MonitorPlugin ---

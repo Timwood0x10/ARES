@@ -1,6 +1,7 @@
 package evalapi
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/Timwood0x10/ares/api/router"
@@ -17,7 +18,10 @@ import (
 //
 // Returns error is always nil (kept for future extensibility).
 func RegisterRoutes(r *router.Router, h *Handler) error {
-	mux := r.Handler().(*http.ServeMux)
+	mux, ok := r.Handler().(*http.ServeMux)
+	if !ok {
+		return fmt.Errorf("router: expected *http.ServeMux, got %T", r.Handler())
+	}
 
 	// Evaluation run endpoints.
 	mux.HandleFunc("POST /api/v1/eval/run", h.HandleRunEval)

@@ -190,7 +190,10 @@ func (tl *TraceLinker) handleToolCallStarted(evt *ares_events.Event) {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
 	tl.spans[traceID] = append(tl.spans[traceID], span)
-	tl.openSpans[toolCloseKey(agentID, toolName)] = openSpanRef{traceID: traceID, index: len(tl.spans[traceID]) - 1}
+	// Include tool_call_id in the key so concurrent calls to the same tool
+	// by the same agent do not collide (P0-5).
+	callID := eventutil.ExtractString(evt, "tool_call_id")
+	tl.openSpans[toolCloseKey(agentID, toolName, callID)] = openSpanRef{traceID: traceID, index: len(tl.spans[traceID]) - 1}
 }
 
 // handleToolCallCompleted closes the matching tool span.
@@ -200,7 +203,8 @@ func (tl *TraceLinker) handleToolCallCompleted(evt *ares_events.Event) {
 	if toolName == "" {
 		toolName = "unknown"
 	}
-	key := toolCloseKey(agentID, toolName)
+	callID := eventutil.ExtractString(evt, "tool_call_id")
+	key := toolCloseKey(agentID, toolName, callID)
 	now := resolveTimestamp(evt)
 
 	tl.mu.Lock()
@@ -309,6 +313,6 @@ func (tl *TraceLinker) nextSpanID() string {
 }
 
 // toolCloseKey builds the open-span map key for a tool call.
-func toolCloseKey(agentID, toolName string) string {
-	return fmt.Sprintf("tool:%s:%s", agentID, toolName)
+func toolCloseKey(agentID, toolName, callID string) string {
+	return fmt.Sprintf("tool:%s:%s:%s", agentID, toolName, callID)
 }

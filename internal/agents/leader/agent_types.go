@@ -97,7 +97,6 @@ type leaderAgent struct {
 	lastInteractionTime time.Time
 
 	stopCh       chan struct{}
-	distillMu    sync.Mutex
 	distillWg    sync.WaitGroup
 	distillEg    *errgroup.Group
 	streamEg     *errgroup.Group

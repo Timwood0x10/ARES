@@ -197,8 +197,11 @@ func (c *Collector) handleTaskStart(evt *ares_events.Event) {
 }
 
 func (c *Collector) handleTaskEnd(evt *ares_events.Event) {
-	evtType := EventAgentEnd
-	if evt.Type == ares_events.EventTaskFailed {
+	var evtType EventType
+	switch evt.Type {
+	case ares_events.EventTaskCompleted:
+		evtType = EventTaskEnd
+	case ares_events.EventTaskFailed:
 		evtType = EventError
 
 		// Auto-diagnose failures.

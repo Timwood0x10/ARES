@@ -424,22 +424,10 @@ func (p *MonitorPlugin) AgentEvolution(_ context.Context, agentID string) (*Agen
 }
 
 // MCPToolCalls returns MCP tool call records. Delegates to MCP manager.
-func (p *MonitorPlugin) MCPToolCalls(_ context.Context, agentID string, _ int) ([]MCPToolCall, error) {
-	if p.mcp == nil {
-		return nil, fmt.Errorf("MCP tool calls: %w", ErrNotImplemented)
-	}
-	tools, err := p.mcp.ListTools(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	records := make([]MCPToolCall, 0, len(tools))
-	for _, t := range tools {
-		records = append(records, MCPToolCall{
-			AgentID:  agentID,
-			ToolName: t.Name,
-		})
-	}
-	return records, nil
+func (p *MonitorPlugin) MCPToolCalls(_ context.Context, _ string, _ int) ([]MCPToolCall, error) {
+	// MCP call history is not yet tracked per-agent. Returning the registered
+	// tool list here would misleadingly present it as real call records.
+	return nil, fmt.Errorf("MCP tool calls: %w", ErrNotImplemented)
 }
 
 // LLMCalls returns LLM call records. Delegates to cost bar data.

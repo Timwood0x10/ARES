@@ -160,10 +160,12 @@ func containsSQLInjectionPatterns(input string) bool {
 }
 
 // safeFormatTable safely formats a table name into SQL.
-// Returns the validated table name or an error if the name is invalid.
+// Returns a properly quoted identifier so hyphens and other special characters
+// in the name do not break SQL syntax. Compare with validateTable in
+// base_repository.go for whitelist-based validation.
 func safeFormatTable(table string) (string, error) {
 	if err := sanitizeSQLTable(table); err != nil {
 		return "", err
 	}
-	return table, nil
+	return `"` + strings.ReplaceAll(table, `"`, `""`) + `"`, nil
 }
