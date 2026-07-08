@@ -126,8 +126,10 @@ func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, ba
 		// Calculate recency boost
 		recencyBoost := s.calculateRecencyBoost(exp.CreatedAt, now)
 
-		// Final score
-		finalScore := semanticScore + usageBoost + recencyBoost
+		// Final score: includes semantic match, usage frequency, recency,
+		// and the persisted Score (bandit feedback signal from RecordFailure,
+		// P1-9). A negative Score reduces rank (poor history).
+		finalScore := semanticScore + usageBoost + recencyBoost + exp.Score
 
 		ranked[i] = &RankedExperience{
 			Experience:      exp,

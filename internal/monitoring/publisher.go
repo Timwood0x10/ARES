@@ -330,10 +330,22 @@ func (p *Publisher) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing trace ID"})
 		return
 	}
-	// Trace data is not yet wired; return placeholder.
+	// Delegate to the trace linker for real span data (P1).
+	linker := p.mainPage.Linker()
+	if linker == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"trace_id": traceID,
+			"spans":    []any{},
+		})
+		return
+	}
+	spans := linker.GetTrace(traceID)
+	if spans == nil {
+		spans = []TraceSpan{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"trace_id": traceID,
-		"spans":    []any{},
+		"spans":    spans,
 	})
 }
 

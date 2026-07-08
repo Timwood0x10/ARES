@@ -101,6 +101,21 @@ func (a *leaderAgent) setStatus(status models.AgentStatus) {
 	a.status = status
 }
 
+// ensureInitialized lazily initializes lifecycle fields so that Process and
+// ProcessStream never panic on nil errgroup even when called without a prior
+// Start (e.g. after RestoreState/ReplayEvents set a non-Offline status, P0-5).
+// Safe to call multiple times — subsequent calls are no-ops.
+func (a *leaderAgent) ensureInitialized() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.stopCh != nil {
+		return
+	}
+	a.stopCh = make(chan struct{})
+	a.distillEg = &errgroup.Group{}
+	a.streamEg = &errgroup.Group{}
+}
+
 // Start starts the leader agent.
 func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	a.mu.Lock()
@@ -181,6 +196,11 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 //
 //	err - joined errors from distillation/streaming goroutines, or status error.
 func (a *leaderAgent) Stop(ctx context.Context) (retErr error) {
+	// Serialize with concurrent Process/ProcessStream to prevent races on
+	// distillEg/streamEg lifecycle (P0-6).
+	a.processingMu.Lock()
+	defer a.processingMu.Unlock()
+
 	a.mu.Lock()
 	if a.status == models.AgentStatusOffline {
 		a.mu.Unlock()
@@ -285,6 +305,9 @@ func (a *leaderAgent) checkAgentRunning() error {
 }
 
 func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
+	// Ensure lifecycle fields are initialized (P0-5).
+	a.ensureInitialized()
+
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	a.processingMu.Lock()
 	defer a.processingMu.Unlock()
@@ -607,6 +630,9 @@ func (a *leaderAgent) Snapshot() (map[string]any, error) {
 //
 //nolint:gocyclo // Complex stream processing with multiple agent phases
 func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base.AgentEvent, error) {
+	// Ensure lifecycle fields are initialized (P0-5).
+	a.ensureInitialized()
+
 	// Ensure mutual exclusion: only one Process/ProcessStream at a time.
 	// The lock is held for the lifetime of the streaming goroutine to prevent
 	// concurrent Process/ProcessStream calls from racing on status/memory/feedback.

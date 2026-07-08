@@ -18,9 +18,11 @@ import (
 
 // EvolutionComponents holds evolution-related components.
 type EvolutionComponents struct {
-	Adapter    interface{}
-	Scheduler  interface{}
-	DreamCycle interface{}
+	Adapter           interface{}
+	Scheduler         interface{}
+	DreamCycle        interface{}
+	FeedbackService   *experience.FeedbackService
+	EvaluatorRegistry *ares_eval.EvaluatorRegistry
 }
 
 // ProvideEvolution wires the full evolution system: adapter, scheduler, dream cycle,
@@ -65,41 +67,44 @@ func ProvideEvolution(
 	var dreamCycle *evolution.DreamCycle
 
 	// 4. Evaluators
-	if err := setupEvaluators(llmClient); err != nil {
+	evalRegistry, err := setupEvaluators(llmClient)
+	if err != nil {
 		return nil, fmt.Errorf("bootstrap: setup evaluators: %w", err)
 	}
 
 	// 5. Feedback service (best-effort)
-	setupFeedbackService(expRepo)
+	feedbackSvc := setupFeedbackService(expRepo)
 
 	return &EvolutionComponents{
-		Adapter:    adapter,
-		Scheduler:  scheduler,
-		DreamCycle: dreamCycle,
+		Adapter:           adapter,
+		Scheduler:         scheduler,
+		DreamCycle:        dreamCycle,
+		FeedbackService:   feedbackSvc,
+		EvaluatorRegistry: evalRegistry,
 	}, nil
 }
 
-func setupEvaluators(llmClient ares_eval.LLMClient) error {
+func setupEvaluators(llmClient ares_eval.LLMClient) (*ares_eval.EvaluatorRegistry, error) {
 	if llmClient == nil {
-		return nil
+		return nil, nil
 	}
 	judge, err := ares_eval.NewLLMJudgeEvaluator(llmClient,
 		ares_eval.WithChinesePrompt(),
 		ares_eval.WithScale(ares_eval.ScaleOneToTen),
 	)
 	if err != nil {
-		return fmt.Errorf("create llm judge: %w", err)
+		return nil, fmt.Errorf("create llm judge: %w", err)
 	}
 	registry := ares_eval.NewEvaluatorRegistry()
 	if err := registry.Register("llm_judge", judge); err != nil {
-		return fmt.Errorf("register llm judge: %w", err)
+		return nil, fmt.Errorf("register llm judge: %w", err)
 	}
-	return nil
+	return registry, nil
 }
 
-func setupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) {
+func setupFeedbackService(expRepo repositories.ExperienceRepositoryInterface) *experience.FeedbackService {
 	if expRepo == nil {
-		return
+		return nil
 	}
-	_ = experience.NewFeedbackService(expRepo)
+	return experience.NewFeedbackService(expRepo)
 }

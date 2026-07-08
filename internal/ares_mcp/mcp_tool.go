@@ -76,13 +76,10 @@ func (t *MCPTool) ServerName() string {
 	return t.serverName
 }
 
-// Close releases the underlying MCP client connection. Callers should invoke
-// this when the tool is no longer needed to avoid leaking the transport
-// connection. It is safe to call multiple times.
+// Close is a no-op. The underlying client connection lifecycle is owned by
+// MCPManager — closing one MCPTool must not cut the shared connection for
+// other tools on the same server (P0-4). Safe to call multiple times.
 func (t *MCPTool) Close() error {
-	if t.client != nil {
-		return t.client.Close()
-	}
 	return nil
 }
 

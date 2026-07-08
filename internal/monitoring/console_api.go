@@ -44,8 +44,10 @@ type ConsoleAPI interface {
 	// Actions returns available actions for a specific node.
 	Actions(ctx context.Context, nodeID string) ([]NodeAction, error)
 
-	// ExecuteAction performs an action on a node and returns the result.
-	ExecuteAction(ctx context.Context, actionID string) (*ActionResult, error)
+	// ExecuteAction performs an action on a specific node/agent.
+	// nodeID identifies the target agent or node; actionID specifies the action
+	// (e.g. "kill", "resume", "retry"). Empty nodeID indicates a global action.
+	ExecuteAction(ctx context.Context, nodeID, actionID string) (*ActionResult, error)
 
 	// Interactions returns recent interactions between agents.
 	Interactions(ctx context.Context, limit int) ([]Interaction, error)

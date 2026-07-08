@@ -4,6 +4,8 @@ package ares_mcp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -150,6 +152,16 @@ func (t *StdioServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) er
 	return nil
 }
 
+// generateSessionID creates a unique session identifier for SSE client routing.
+func generateSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID on RNG failure.
+		return fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 // Close shuts down the stdio transport.
 //
 // Returns:
@@ -177,22 +189,37 @@ var _ ServerTransport = (*StdioServerTransport)(nil)
 
 // --- SSEServerTransport ---
 
+// clientSession represents a single SSE client connection with its session ID.
+type clientSession struct {
+	id    string
+	msgCh chan *JSONRPCMessage
+}
+
+// sessionRequest pairs an incoming POST message with its originating session.
+type sessionRequest struct {
+	msg       *JSONRPCMessage
+	sessionID string
+}
+
 // SSEServerTransport implements ServerTransport using HTTP with SSE.
 // It serves an SSE endpoint for sending responses to clients and accepts
 // POST requests for receiving client requests.
 type SSEServerTransport struct {
 	addr       string
 	server     *http.Server
-	requestCh  chan *JSONRPCMessage      // incoming POST requests
-	sseClients chan chan *JSONRPCMessage // SSE client streams
-	clients    []chan *JSONRPCMessage
-	clientsMu  sync.Mutex
+	requestCh  chan *sessionRequest      // incoming POST requests with session info
+	sessions   map[string]*clientSession // active sessions by ID
+	sessionsMu sync.Mutex
 	mu         sync.Mutex
 	started    bool
 	cancel     context.CancelFunc
 	eg         errgroup.Group
 	srvCtx     context.Context
 	closing    atomic.Bool
+
+	// currentSession is set by Accept and used by Send to route the response
+	// to the correct SSE client (P0-3).
+	currentSession string
 }
 
 // NewSSEServerTransport creates a new SSE-based server transport.
@@ -204,9 +231,9 @@ type SSEServerTransport struct {
 //   - *SSEServerTransport: the new transport instance
 func NewSSEServerTransport(addr string) *SSEServerTransport {
 	return &SSEServerTransport{
-		addr:       addr,
-		requestCh:  make(chan *JSONRPCMessage, 64),
-		sseClients: make(chan chan *JSONRPCMessage, 16),
+		addr:      addr,
+		requestCh: make(chan *sessionRequest, 64),
+		sessions:  make(map[string]*clientSession),
 	}
 }
 
@@ -279,22 +306,23 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Connection", "keep-alive")
 
 	msgCh := make(chan *JSONRPCMessage, 64)
+	sessionID := generateSessionID()
+	sess := &clientSession{id: sessionID, msgCh: msgCh}
 
-	t.clientsMu.Lock()
-	t.clients = append(t.clients, msgCh)
-	t.clientsMu.Unlock()
+	t.sessionsMu.Lock()
+	t.sessions[sessionID] = sess
+	t.sessionsMu.Unlock()
 
 	defer func() {
-		// Remove this client channel from the active list to prevent
-		// Send() from iterating over a closed/stale channel.
-		t.removeClient(msgCh)
-		// Drain any remaining messages to avoid blocking senders.
+		t.sessionsMu.Lock()
+		delete(t.sessions, sessionID)
+		t.sessionsMu.Unlock()
 		for range msgCh {
 		}
 	}()
 
-	// Send endpoint event with POST URL.
-	postURL := fmt.Sprintf("http://%s/mcp", t.addr)
+	// Send endpoint event with session-scoped POST URL.
+	postURL := fmt.Sprintf("http://%s/mcp?session_id=%s", t.addr, sessionID)
 	if _, err := fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL); err != nil {
 		log.Warn("mcp-server: sse write endpoint error", "error", err)
 		return
@@ -325,7 +353,7 @@ func (t *SSEServerTransport) handleSSEConnect(w http.ResponseWriter, r *http.Req
 
 // handlePOSTRequest handles an incoming JSON-RPC request via POST.
 func (t *SSEServerTransport) handlePOSTRequest(w http.ResponseWriter, r *http.Request) {
-	// Reject requests during shutdown to avoid sending on a closed/stale channel.
+	// Reject requests during shutdown.
 	if t.closing.Load() {
 		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
 		return
@@ -337,8 +365,11 @@ func (t *SSEServerTransport) handlePOSTRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Extract session ID from query parameter for response routing (P0-3).
+	sessionID := r.URL.Query().Get("session_id")
+
 	select {
-	case t.requestCh <- &msg:
+	case t.requestCh <- &sessionRequest{msg: &msg, sessionID: sessionID}:
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
@@ -346,73 +377,45 @@ func (t *SSEServerTransport) handlePOSTRequest(w http.ResponseWriter, r *http.Re
 }
 
 // Accept returns the next incoming JSON-RPC request from POST.
-//
-// Args:
-//   - ctx: context for cancellation
-//
-// Returns:
-//   - *JSONRPCMessage: the parsed request message
-//   - error: non-nil if context is cancelled
 func (t *SSEServerTransport) Accept(ctx context.Context) (*JSONRPCMessage, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case msg := <-t.requestCh:
-		return msg, nil
+	case sr := <-t.requestCh:
+		// Store the session ID so Send can route the response (P0-3).
+		t.sessionsMu.Lock()
+		t.currentSession = sr.sessionID
+		t.sessionsMu.Unlock()
+		return sr.msg, nil
 	}
 }
 
-// Send sends a response or notification to all connected SSE clients.
-//
-// Args:
-//   - ctx: context for cancellation
-//   - msg: the message to broadcast to all SSE clients
-//
-// Returns:
-//   - error: non-nil on context cancellation before delivery
+// Send sends a response to the SSE client that originated the current request.
+// If the client has disconnected (session not found), the response is silently
+// dropped to avoid accidentally broadcasting to other clients (P0-3).
 func (t *SSEServerTransport) Send(ctx context.Context, msg *JSONRPCMessage) error {
 	if t.closing.Load() {
 		return fmt.Errorf("transport is closing")
 	}
 
-	t.clientsMu.Lock()
-	clients := make([]chan *JSONRPCMessage, len(t.clients))
-	copy(clients, t.clients)
-	t.clientsMu.Unlock()
+	t.sessionsMu.Lock()
+	sessionID := t.currentSession
+	sess, ok := t.sessions[sessionID]
+	t.sessionsMu.Unlock()
 
-	for _, ch := range clients {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Warn("mcp-server: client broadcast panic", "recover", r)
-				}
-			}()
-			select {
-			case ch <- msg:
-			case <-ctx.Done():
-				return
-			default:
-				// Client buffer full or closed; skip.
-			}
-		}()
+	if !ok || sess == nil {
+		// Client disconnected — drop silently instead of broadcasting (P0-3).
+		return nil
 	}
 
+	select {
+	case sess.msgCh <- msg:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		// Client buffer full; drop to avoid blocking the server loop.
+	}
 	return nil
-}
-
-// removeClient removes a client channel from the active clients list.
-// This must be called when an SSE connection is closed to prevent
-// stale channel accumulation and goroutine leaks.
-func (t *SSEServerTransport) removeClient(ch chan *JSONRPCMessage) {
-	t.clientsMu.Lock()
-	defer t.clientsMu.Unlock()
-
-	for i, c := range t.clients {
-		if c == ch {
-			t.clients = append(t.clients[:i], t.clients[i+1:]...)
-			break
-		}
-	}
 }
 
 // Close shuts down the SSE transport and HTTP server.
@@ -451,14 +454,13 @@ func (t *SSEServerTransport) Close() error {
 	// garbage collected once the transport is unreferenced. Accept() exits via
 	// its context cancellation, not channel close.
 
-	t.clientsMu.Lock()
-	for _, ch := range t.clients {
-		close(ch)
+	// Clean up any remaining sessions (P0-3).
+	t.sessionsMu.Lock()
+	for _, sess := range t.sessions {
+		close(sess.msgCh)
 	}
-	t.clients = nil
-	t.clientsMu.Unlock()
-
-	close(t.sseClients)
+	t.sessions = nil
+	t.sessionsMu.Unlock()
 
 	log.Debug("mcp-server: sse transport closed")
 	return nil

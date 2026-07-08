@@ -193,7 +193,7 @@ func TestMonitorPlugin_ExecuteAction(t *testing.T) {
 	t.Run("no interaction engine", func(t *testing.T) {
 		p := NewConsole()
 		ctx := context.Background()
-		_, err := p.ExecuteAction(ctx, "kill")
+		_, err := p.ExecuteAction(ctx, "", "kill")
 		assert.Error(t, err)
 	})
 }

@@ -60,6 +60,11 @@ func (h *Handler) HandleRunEval(w http.ResponseWriter, r *http.Request) {
 
 	// Run evaluation asynchronously in a background goroutine.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("async eval run panicked", "run_id", runID, "panic", r)
+			}
+		}()
 		evalCtx := context.Background()
 		evalCtx, evalCancel := context.WithTimeout(evalCtx, 30*time.Minute)
 		defer evalCancel()

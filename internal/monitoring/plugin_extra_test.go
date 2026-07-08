@@ -125,7 +125,7 @@ func TestMonitorPlugin_Start_CollectorError_Propagates(t *testing.T) {
 func TestMonitorPlugin_ExecuteAction_NoEngine_ReturnsError(t *testing.T) {
 	p := NewConsole()
 	ctx := context.Background()
-	_, err := p.ExecuteAction(ctx, "kill")
+	_, err := p.ExecuteAction(ctx, "", "kill")
 	assert.ErrorIs(t, err, ErrInteractionNil)
 }
 

@@ -368,12 +368,13 @@ func (p *MonitorPlugin) Actions(_ context.Context, _ string) ([]NodeAction, erro
 	}, nil
 }
 
-// ExecuteAction performs an action on a node.
-func (p *MonitorPlugin) ExecuteAction(ctx context.Context, actionID string) (*ActionResult, error) {
+// ExecuteAction performs an action on a specific node/agent.
+// nodeID identifies the target; actionID specifies the action (e.g. "kill", "resume", "retry").
+func (p *MonitorPlugin) ExecuteAction(ctx context.Context, nodeID, actionID string) (*ActionResult, error) {
 	if p.interEngine == nil {
 		return nil, fmt.Errorf("execute action: %w", ErrInteractionNil)
 	}
-	result, err := p.interEngine.ExecuteAction(ctx, "", actionID)
+	result, err := p.interEngine.ExecuteAction(ctx, nodeID, actionID)
 	if err != nil {
 		return nil, err
 	}

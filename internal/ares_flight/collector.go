@@ -181,12 +181,8 @@ func (c *Collector) handleAgentEnd(evt *ares_events.Event) {
 		Metadata: evt.Payload,
 	})
 
-	// Update graph node status.
-	if node, ok := c.graph.GetNode(agentID); ok {
-		node.Status = StatusCompleted
-		node.EndAt = evt.Timestamp
-		node.Duration = evt.Timestamp.Sub(node.StartAt)
-	}
+	// Update graph node status under the Graph write lock (P0-2).
+	c.graph.UpdateNodeStatus(agentID, StatusCompleted, evt.Timestamp)
 }
 
 func (c *Collector) handleTaskStart(evt *ares_events.Event) {

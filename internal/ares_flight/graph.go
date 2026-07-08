@@ -79,6 +79,20 @@ func (g *Graph) GetNode(id string) (*GraphNode, bool) {
 	return n, ok
 }
 
+// UpdateNodeStatus atomically updates the status, end time, and duration of a node.
+// Duration is computed from the node's StartAt field under the write lock,
+// avoiding the data race of calling GetNode (read lock) then mutating fields
+// outside the lock (P0-2).
+func (g *Graph) UpdateNodeStatus(id string, status NodeStatus, endAt time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if n, ok := g.nodes[id]; ok {
+		n.Status = status
+		n.EndAt = endAt
+		n.Duration = endAt.Sub(n.StartAt)
+	}
+}
+
 // Root returns the root node.
 func (g *Graph) Root() *GraphNode {
 	g.mu.RLock()

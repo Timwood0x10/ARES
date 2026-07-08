@@ -179,10 +179,12 @@ func (c *ConsoleClient) Actions(_ context.Context, _ string) ([]monitoring.NodeA
 	return nil, fmt.Errorf("actions: %w", monitoring.ErrNotImplemented)
 }
 
-// ExecuteAction performs an action on a node.
-func (c *ConsoleClient) ExecuteAction(ctx context.Context, actionID string) (*monitoring.ActionResult, error) {
+// ExecuteAction performs an action on a specific agent.
+// nodeID identifies the target agent; actionID specifies the action (e.g. "kill", "resume", "retry").
+func (c *ConsoleClient) ExecuteAction(ctx context.Context, nodeID, actionID string) (*monitoring.ActionResult, error) {
 	var result monitoring.ActionResult
-	if err := c.doRequest(ctx, http.MethodPost, "/api/agents/"+actionID+"/kill", nil, &result); err != nil {
+	url := fmt.Sprintf("/api/agents/%s/%s", nodeID, actionID)
+	if err := c.doRequest(ctx, http.MethodPost, url, nil, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

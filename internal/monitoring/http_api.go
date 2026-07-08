@@ -311,8 +311,10 @@ func (s *HTTPServer) handleRetryAgent(c *gin.Context) {
 }
 
 // executeNodeAction dispatches an action on a node.
+// The agent ID is extracted from the Gin URL parameter ":id" (P1-8).
 func (s *HTTPServer) executeNodeAction(c *gin.Context, action string) {
-	result, err := s.plugin.ExecuteAction(c.Request.Context(), action)
+	nodeID := c.Param("id")
+	result, err := s.plugin.ExecuteAction(c.Request.Context(), nodeID, action)
 	if err != nil {
 		c.JSON(http.StatusNotImplemented, gin.H{
 			fieldAction: action,
