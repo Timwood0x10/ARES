@@ -43,6 +43,21 @@ func NewMutableDAG(steps []*Step) (*MutableDAG, error) {
 	}, nil
 }
 
+// ReadDeps returns a copy of the dependency list for a step, safe for use
+// outside the DAG's mutex. This replaces direct access to m.mu/step.DependsOn
+// from external goroutines (e.g. the executor), which violates encapsulation.
+func (m *MutableDAG) ReadDeps(stepID string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	step, ok := m.steps[stepID]
+	if !ok {
+		return nil
+	}
+	deps := make([]string, len(step.DependsOn))
+	copy(deps, step.DependsOn)
+	return deps
+}
+
 // AddNode adds a step as a new node. Validates dependencies exist, checks for cycles.
 func (m *MutableDAG) AddNode(ctx context.Context, step *Step) error {
 	if err := ctx.Err(); err != nil {

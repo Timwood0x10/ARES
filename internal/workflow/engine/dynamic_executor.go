@@ -450,13 +450,9 @@ func (e *DynamicExecutor) runDynamicSteps(
 				continue
 			}
 
-			// Read dependencies under DAG read lock to avoid data race
-			// with ReplaceNode (which modifies step.DependsOn under the
-			// DAG write lock during recovery).
-			mutableDAG.mu.RLock()
-			depsCopy := make([]string, len(step.DependsOn))
-			copy(depsCopy, step.DependsOn)
-			mutableDAG.mu.RUnlock()
+			// Read dependencies via the DAG's public method instead of
+			// accessing the mutex directly, which breaks encapsulation.
+			depsCopy := mutableDAG.ReadDeps(step.ID)
 
 			mu.Lock()
 			canExec := e.canExecuteWithDeps(depsCopy, completed)

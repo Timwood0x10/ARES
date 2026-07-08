@@ -421,6 +421,8 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 			memory := memories[idx]
 			var embedding []float64
 			var err error
+			var spec memembed.EmbeddingSpec
+			var embeddingText string
 			if d.pipeline != nil {
 				problem, _ := memory.Metadata["problem"].(string)
 				solution, _ := memory.Metadata["solution"].(string)
@@ -441,10 +443,26 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 				embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
 			}
 			if err != nil {
-				log.WarnContext(embedCtx, "[Memory Distillation] Failed to generate embedding",
+				// Retry once after a short delay to handle transient embedder failures.
+				log.WarnContext(embedCtx, "[Memory Distillation] Initial embedding failed, retrying once",
 					"conversation_id", conversationID, "memory_index", idx, "error", err)
-				embedded[idx] = memWithEmbedding{valid: false}
-				return nil
+				select {
+				case <-time.After(100 * time.Millisecond):
+				case <-embedCtx.Done():
+					embedded[idx] = memWithEmbedding{valid: false}
+					return nil
+				}
+				if d.pipeline != nil {
+					embedding, err = d.pipeline.Embed(embedCtx, spec)
+				} else {
+					embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
+				}
+				if err != nil {
+					log.WarnContext(embedCtx, "[Memory Distillation] Retry embedding also failed, discarding memory",
+						"conversation_id", conversationID, "memory_index", idx, "error", err)
+					embedded[idx] = memWithEmbedding{valid: false}
+					return nil
+				}
 			}
 			memory.Vector = embedding
 			embedded[idx] = memWithEmbedding{mem: memory, valid: true}
@@ -514,6 +532,12 @@ func (d *Distiller) resolveConflictsPhase(ctx context.Context, conversationID, t
 			case ReplaceOld:
 				finalMemories = append(finalMemories, memory)
 			case KeepBoth:
+				// NOTE: oldMemory reuses the existing Vector from the conflict
+				// record without re-embedding. A full fix should run it through
+				// embedPhase again to detect secondary conflicts, but that
+				// requires refactoring the resolve → embed → resolve loop.
+				// TODO: re-embed oldMemory and verify it doesn't create new
+				// conflicts with existing memories (expected 2026-09).
 				oldMemory := Memory{
 					ID:         uuid.New().String(),
 					Content:    conflict.Problem,
@@ -668,9 +692,9 @@ func (d *Distiller) DistillConversation(ctx context.Context, conversationID stri
 	return finalMemories, nil
 }
 
-// enforceSolutionCap enforces the global cap on solution memories per tenant.
-// If the number of solution memories exceeds the cap, the lowest importance
-// memories are marked for removal.
+// enforceSolutionCap enforces the global cap on knowledge (solution) memories per tenant.
+// Solution memories are stored with type MemoryKnowledge. If the count exceeds
+// MaxSolutionsPerTenant, the lowest-importance memories are pruned.
 //
 // Args:
 //

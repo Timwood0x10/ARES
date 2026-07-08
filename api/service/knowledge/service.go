@@ -29,6 +29,8 @@ type Service struct {
 	apiKey string // optional API key for auth
 }
 
+const keyError = "error"
+
 // New creates a knowledge API service.
 func New(rt *runtime.KnowledgeRuntime, comp compiler.Compiler, ret *retriever.Retriever) *Service {
 	return &Service{
@@ -57,7 +59,7 @@ func (s *Service) RegisterRoutes(rg *gin.RouterGroup) {
 func (s *Service) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.GetHeader("Authorization") != "Bearer "+s.apiKey {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing API key"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{keyError: "invalid or missing API key"})
 			return
 		}
 		c.Next()
@@ -98,7 +100,7 @@ type distillRequest struct {
 func (s *Service) handleBuild(c *gin.Context) {
 	var req buildRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
 
@@ -116,7 +118,7 @@ func (s *Service) handleBuild(c *gin.Context) {
 
 	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("build: %v", err)})
 		return
 	}
 
@@ -141,7 +143,7 @@ func (s *Service) handleBuild(c *gin.Context) {
 func (s *Service) handleContext(c *gin.Context) {
 	var req contextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
 
@@ -159,7 +161,7 @@ func (s *Service) handleContext(c *gin.Context) {
 
 	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("build: %v", err)})
 		return
 	}
 
@@ -173,7 +175,7 @@ func (s *Service) handleContext(c *gin.Context) {
 
 	compiled, err := s.comp.Compile(c.Request.Context(), graph, compiler.CompileConfig{Formats: formats})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("compile: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("compile: %v", err)})
 		return
 	}
 
@@ -187,7 +189,7 @@ func (s *Service) handleContext(c *gin.Context) {
 func (s *Service) handleQuery(c *gin.Context) {
 	var req queryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
 
@@ -209,7 +211,7 @@ func (s *Service) handleQuery(c *gin.Context) {
 		Formats:    formats,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("query: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("query: %v", err)})
 		return
 	}
 
@@ -223,7 +225,7 @@ func (s *Service) handleQuery(c *gin.Context) {
 func (s *Service) handleDistill(c *gin.Context) {
 	var req distillRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
 

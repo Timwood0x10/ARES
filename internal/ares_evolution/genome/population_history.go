@@ -13,9 +13,6 @@ func copyRecoveryActions(src map[string]int) map[string]int {
 }
 
 func (p *Population) appendHistoryLocked() {
-	if p.HistoryMaxSize == 0 {
-		return
-	}
 	entry := GenerationHistoryEntry{
 		Generation:     p.Generation,
 		PopulationSize: len(p.Agents),

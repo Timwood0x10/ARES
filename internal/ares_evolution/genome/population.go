@@ -75,7 +75,11 @@ type Population struct {
 	// When HistoryEnabled is true, each evolution cycle appends a snapshot.
 	history []GenerationHistoryEntry
 
-	// HistoryMaxSize limits the number of historical entries (0 = unlimited).
+	// HistoryMaxSize limits the number of historical entries stored.
+	// When set to a positive value, older entries are trimmed when the limit
+	// is exceeded. When set to 0, entries are recorded without limit.
+	// Default: HistoryEnabled = false, so history is not recorded unless
+	// explicitly enabled (see WithHistory).
 	HistoryMaxSize int
 }
 
@@ -412,14 +416,14 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 				return nil, fmt.Errorf("select parents: %w", err)
 			}
 			switch len(winners) {
-			case 2, 3, 4, 5, 6, 7, 8, 9, 10:
-				parentA = winners[0]
-				parentB = winners[1]
+			case 0:
+				return nil, fmt.Errorf("select returned empty winners")
 			case 1:
 				parentA = winners[0]
 				parentB = parentPool[p.rng.Intn(len(parentPool))] // Fallback
 			default:
-				return nil, fmt.Errorf("selection returned no winners")
+				parentA = winners[0]
+				parentB = winners[1]
 			}
 		} else {
 			// Original random selection (backward compatible).
@@ -650,15 +654,12 @@ func (p *Population) Best() *mutation.Strategy {
 // Delegates to doEvolve with idle-specific configuration: configurable survival rate,
 // top BreedingPoolRatio of survivors as breeding pool, and configured elite count.
 //
-// This is the zero-token evolution loop specified in the design document:
-// it uses pre-computed task scores (no LLM calls needed) and performs
-// selection → crossover → mutation purely as data operations.
-//
-// This method is designed to be called from Callback EventAgentEnd handler,
-// requiring no additional LLM API calls (zero token cost for evolution itself).
-//
-// Pre-condition: all agents in the population must have been evaluated (Score >= 0)
-// before calling this method. Call ScoreAgents first if needed.
+// This method uses pre-computed task scores to perform selection → crossover →
+// mutation as data operations. The evolution step itself requires no LLM API calls,
+// but the caller must have already evaluated all agent scores (e.g. via ScoreAgents).
+// If the scorer uses an LLM, the scoring step incurs token cost regardless of this
+// method's name — the "zero token" claim refers only to the selection/crossover/mutation
+// operations within evolve, not to the prerequisite scoring pass.
 //
 // Args:
 //
