@@ -25,6 +25,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
@@ -115,7 +116,11 @@ func main() {
 	lg.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Create agents ---
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	var feedbackSvc *experience.FeedbackService
+	if comp.Evolution != nil {
+		feedbackSvc = comp.Evolution.FeedbackService
+	}
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 	if err != nil {
 		cancel()
 		log.Fatalf("create agents: %v", err)
@@ -123,7 +128,7 @@ func main() {
 
 	// Register leader
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)

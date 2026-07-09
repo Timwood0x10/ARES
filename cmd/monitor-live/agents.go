@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -25,8 +26,9 @@ func createAgents(
 	toolBinder sub.ToolBinder,
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
+	feedbackSvc *experience.FeedbackService,
 ) (leader.Agent, []sub.Agent, error) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create leader: %w", err)
 	}
@@ -41,6 +43,7 @@ func createLeaderAgent(
 	toolBinder sub.ToolBinder,
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
+	feedbackSvc *experience.FeedbackService,
 ) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		llmAdapter,
@@ -115,6 +118,7 @@ func createLeaderAgent(
 		memMgr,
 		leaderCfg,
 		leader.WithEventStore(store),
+		leader.WithFeedbackService(feedbackSvc),
 	)
 }
 

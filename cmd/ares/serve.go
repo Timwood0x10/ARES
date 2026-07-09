@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
@@ -147,14 +148,18 @@ func runServe() error {
 	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
 
 	// --- Create agents ---
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+	var feedbackSvc *experience.FeedbackService
+	if comp.Evolution != nil {
+		feedbackSvc = comp.Evolution.FeedbackService
+	}
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 	if err != nil {
 		return fmt.Errorf("create agents: %w", err)
 	}
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
@@ -162,7 +167,7 @@ func runServe() error {
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store)
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s

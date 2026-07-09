@@ -794,7 +794,7 @@ flowchart TB
 | **Main Contributors** | 1,200+ | 300+ | ~50 | 2 | ~20 |
 | **License** | MIT | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 | **First Release** | Oct 2022 | 2023 | 2024 | 2025 | 2025 |
-| **Current Version** | v0.3.x (Python) | v0.8x+ | v0.x | v0.2.6 | v0.x |
+| **Current Version** | v0.3.x (Python) | v0.8x+ | v0.x | v0.3.0 | v0.x |
 | **Integration Ecosystem** | 1,000+ official + community | 50+ built-in tools | Limited | Extensible plugin | MCP tools, function tools, 20+ built-in tools |
 | **Monthly Downloads** | >15M | >5M | Unknown | Unknown | Unknown |
 | **Funding** | Benchmark A $25-35M | Independent development | Alibaba Group | Open source project | tRPC Group (Tencent) |
@@ -865,12 +865,16 @@ flowchart TB
 - **Mutable DAG**: Runtime DAG mutation (AddNode/RemoveNode/AddEdge/RemoveEdge/ReplaceNode) with BFS cycle detection and GraphEventHub — only framework with live graph mutation
 
 **Weaknesses**:
-- **Early stage project**: v0.2.3, 2 contributors, ecosystem far from established
-- **State checkpointing**: Added in v0.2.6 (step-level + graph-level persistence) but still maturing — no checkpoint replay or resume-from-crash yet
+- **Early stage project**: v0.3.0, 2 contributors, ecosystem far from established
+- **State checkpointing**: Added in v0.2.6 (step-level + graph-level persistence), `ExecuteFromCheckpoint` supports resume-from-crash. `saveGraphCheckpoint` persists per-node state via pluggable `CheckpointStore`
 - **Controlled loops**: Added in v0.2.6 (`LoopConfig` with MaxIterations/UntilCondition) but only supports bounded iteration — no LangGraph-style arbitrary cycles
-- **Conditional edges**: Added in v0.2.6 (`Step.Condition` for pre-execution skip, `Step.Router` for post-execution dynamic routing) covering most branching needs
+- **Conditional edges**: Added in v0.2.6 (`Step.Condition` for pre-execution skip, `Step.Router` for post-execution dynamic routing) covering most branching needs. `graph.Condition` + `NodeRouter` provide conditional branching and additive dynamic routing
 - **Small community**: Few learning resources, third-party integrations, or plugin ecosystem
 - **GA/Evolution still early**: GA pipeline exists but needs more real-world validation and optimization
+- **Data race fixes**: v0.3.0 resolved `SetHTTPHandler` race, `NewCollector` nil-vs-error contract, `Configure` lock, and `Rank` silent-error path
+- **Storage hardening**: v0.3.0 unified table validation to whitelist + quote, replaced `redis.Keys` with `SCAN` cursor iteration, fixed 5 occurrences of bypassed SQL injection prevention
+- **FeedbackService wired**: v0.3.0 connects `FeedbackService` from bootstrap `EvolutionComponents` to `leader.New()` via `WithFeedbackService()`, closing the bandit feedback loop
+- **Scheduler variety**: 5 pluggable schedulers (FIFO/Priority/ShortJob/RoundRobin/WeightedFair), all thread-safe
 
 ### 10.5 tRPC-Agent-Go
 
