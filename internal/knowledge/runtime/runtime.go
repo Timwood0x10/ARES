@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
@@ -23,6 +24,9 @@ type KnowledgeRuntime struct {
 	pipeline  *knowledge.KnowledgePipeline
 	linkers   []Linker
 	reducers  []Reducer
+
+	patchRegMu sync.RWMutex
+	patchReg   *patch.Registry
 }
 
 // New creates a KnowledgeRuntime with the given components.
@@ -52,6 +56,14 @@ func New(
 		linkers:   linkers,
 		reducers:  reducers,
 	}
+}
+
+// WithPatchRegistry sets the runtime's patch registry for dynamic knowledge config changes.
+func (r *KnowledgeRuntime) WithPatchRegistry(pr *patch.Registry) *KnowledgeRuntime {
+	r.patchRegMu.Lock()
+	defer r.patchRegMu.Unlock()
+	r.patchReg = pr
+	return r
 }
 
 // Config holds optional runtime configuration.

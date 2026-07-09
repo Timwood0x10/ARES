@@ -7,6 +7,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 type ApplyMode int
@@ -40,6 +41,7 @@ type DynamicExecutor struct {
 	pluginBus          *ares_runtime.PluginBus
 	checkpointStore    ares_runtime.CheckpointStore
 	executionCollector *ares_runtime.ExecutionCollector
+	patchRegistry      *patch.Registry
 }
 
 func NewDynamicExecutor(registry *AgentRegistry, applyMode ApplyMode, opts ...ExecutorOption) *DynamicExecutor {
@@ -79,5 +81,9 @@ func (e *DynamicExecutor) WithCheckpointStore(store ares_runtime.CheckpointStore
 }
 func (e *DynamicExecutor) WithExecutionCollector(c *ares_runtime.ExecutionCollector) *DynamicExecutor {
 	e.executionCollector = c
+	return e
+}
+func (e *DynamicExecutor) WithPatchRegistry(pr *patch.Registry) *DynamicExecutor {
+	e.patchRegistry = pr
 	return e
 }

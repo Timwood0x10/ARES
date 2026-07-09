@@ -8,8 +8,11 @@ import (
 	"math/rand"
 
 	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
+
+var wfLog = logger.Module("genome.workflow")
 
 // Genome name constants.
 const (
@@ -129,11 +132,14 @@ func (g *WorkflowGenome) Crossover(_ context.Context, other Genome) (Genome, err
 	// Uniform crossover: randomly replace nodes with the other parent's version.
 	for id, step := range otherSteps {
 		if rand.Float64() < 0.5 {
-			// If the node already exists, replace it; otherwise add it.
 			if child.dag.StepIndex()[id] != nil {
-				_ = child.dag.ReplaceNode(context.Background(), id, step)
+				if err := child.dag.ReplaceNode(context.Background(), id, step); err != nil {
+					wfLog.Warn("crossover replace failed", "node", id, "error", err)
+				}
 			} else if child.dag.NodeCount() < child.config.MaxNodes {
-				_ = child.dag.AddNode(context.Background(), step)
+				if err := child.dag.AddNode(context.Background(), step); err != nil {
+					wfLog.Warn("crossover add failed", "node", id, "error", err)
+				}
 			}
 		}
 	}
@@ -206,7 +212,9 @@ func (g *WorkflowGenome) mutateInsertNode() {
 		step.DependsOn = []string{dep.ID}
 	}
 
-	_ = g.dag.AddNode(context.Background(), step)
+	if err := g.dag.AddNode(context.Background(), step); err != nil {
+		wfLog.Warn("insert node mutation failed", "node", stepID, "error", err)
+	}
 }
 
 func (g *WorkflowGenome) mutateRemoveNode() {
@@ -225,14 +233,18 @@ func (g *WorkflowGenome) mutateRemoveNode() {
 
 	for _, step := range steps {
 		if !referenced[step.ID] {
-			_ = g.dag.RemoveNode(context.Background(), step.ID)
+			if err := g.dag.RemoveNode(context.Background(), step.ID); err != nil {
+				wfLog.Warn("remove leaf node failed", "node", step.ID, "error", err)
+			}
 			return
 		}
 	}
 
-	// Fallback: remove random node (error swallowed if it has dependents).
+	// Fallback: remove random node.
 	target := steps[rand.Intn(len(steps))]
-	_ = g.dag.RemoveNode(context.Background(), target.ID)
+	if err := g.dag.RemoveNode(context.Background(), target.ID); err != nil {
+		wfLog.Warn("remove node fallback failed", "node", target.ID, "error", err)
+	}
 }
 
 func (g *WorkflowGenome) mutateReplaceNode() {
@@ -250,7 +262,9 @@ func (g *WorkflowGenome) mutateReplaceNode() {
 		Input:     oldStep.Input,
 		DependsOn: oldStep.DependsOn,
 	}
-	_ = g.dag.ReplaceNode(context.Background(), oldStep.ID, newStep)
+	if err := g.dag.ReplaceNode(context.Background(), oldStep.ID, newStep); err != nil {
+		wfLog.Warn("replace node mutation failed", "node", oldStep.ID, "error", err)
+	}
 }
 
 func (g *WorkflowGenome) mutateParallelize() {
@@ -275,7 +289,10 @@ func (g *WorkflowGenome) mutateParallelize() {
 		Input:     b.Input,
 		DependsOn: []string{a.ID},
 	}
-	_ = g.dag.AddNode(context.Background(), b2)
+	if err := g.dag.AddNode(context.Background(), b2); err != nil {
+		wfLog.Warn("parallelize add node failed", "node", b2.ID, "error", err)
+		return
+	}
 	if g.dag.StepIndex()[c.ID] != nil {
 		c.DependsOn = append(c.DependsOn, b2.ID)
 	}
@@ -299,10 +316,26 @@ func (g *WorkflowGenome) mutateSerialize() {
 // because Steps() returns in non-deterministic map order, which would
 // cause NewMutableDAG to reject the steps if dependents appear before deps.
 func (g *WorkflowGenome) clone() *WorkflowGenome {
-	cloneDag, err := engine.NewMutableDAG(sortByDeps(g.dag.Steps()))
+	steps := g.dag.Steps()
+	cloneDag, err := engine.NewMutableDAG(sortByDeps(steps))
 	if err != nil {
-		// Fallback: share the parent DAG (uncommon — only on deep clone failure).
-		cloneDag = g.dag
+		// Last resort: rebuild from step positions to get deterministic order.
+		ordered := make([]*engine.Step, 0, len(steps))
+		for _, step := range steps {
+			if len(step.DependsOn) == 0 {
+				ordered = append(ordered, step)
+			}
+		}
+		for _, step := range steps {
+			if len(step.DependsOn) > 0 {
+				ordered = append(ordered, step)
+			}
+		}
+		cloneDag, err = engine.NewMutableDAG(ordered)
+		if err != nil {
+			// Absolute fallback: share parent (mutation may be no-op).
+			cloneDag = g.dag
+		}
 	}
 	return &WorkflowGenome{
 		dag:    cloneDag,

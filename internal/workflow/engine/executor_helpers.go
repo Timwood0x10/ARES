@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // recomputeOrder checks if the DAG version changed and updates the execution
@@ -272,6 +273,19 @@ func (e *DynamicExecutor) handleStepFailure(
 				"replacement_step_id": decision.NewStep.ID,
 				"strategy":            decision.Strategy,
 			})
+		}
+
+		// Emit a recovery patch to the evolution system when a registry is wired.
+		if e.patchRegistry != nil && decision.NewStep != nil {
+			recoveryPatch := patch.RuntimePatch{
+				Type:   patch.PatchReplaceNode,
+				Target: result.StepID,
+				Value:  decision.NewStep.AgentType,
+				Reason: "recovery: replace_node after step failure",
+				Source: "engine.recovery",
+			}
+			// Best-effort: the patch registry may not have an executor for this target.
+			_ = e.patchRegistry.Apply(ctx, recoveryPatch)
 		}
 
 		return true
