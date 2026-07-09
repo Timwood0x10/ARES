@@ -9,8 +9,15 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	stderrors "errors"
+
 	"github.com/Timwood0x10/ares/internal/errors"
 )
+
+// ErrMissingTenantID is returned when a tenant-aware query is called with an
+// empty tenant ID. This prevents silent data leaks across tenants when RLS
+// policies are enforced via app.tenant_id (P1-11).
+var ErrMissingTenantID = stderrors.New("storage: missing tenant ID")
 
 // Pool represents a database connection pool with "get usage release" pattern.
 type Pool struct {
@@ -159,6 +166,64 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...any) (sql.Result,
 	}
 
 	return result, execErr
+}
+
+// ExecWithTenant executes a query with a mandatory tenant context on the same
+// connection. Begins a transaction, sets tenant_id via set_config (transaction-
+// scoped, is_local=true), executes the query, and commits. This ensures RLS
+// policies see the correct app.tenant_id and no data leaks across tenants (P1-11).
+// Fails with ErrMissingTenantID if tenantID is empty.
+func (p *Pool) ExecWithTenant(ctx context.Context, tenantID string, query string, args ...any) (sql.Result, error) {
+	if tenantID == "" {
+		return nil, ErrMissingTenantID
+	}
+	var result sql.Result
+	err := p.WithConnection(ctx, func(conn *sql.Conn) error {
+		// Begin transaction so set_config is visible to the query.
+		tx, txErr := conn.BeginTx(ctx, nil)
+		if txErr != nil {
+			return errors.Wrap(txErr, "begin transaction")
+		}
+		defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+		if _, setErr := tx.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID); setErr != nil {
+			return errors.Wrap(setErr, "set tenant context")
+		}
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query, args...)
+		if execErr != nil {
+			return execErr
+		}
+		return tx.Commit()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// QueryWithTenant executes a query with a mandatory tenant context on the same
+// connection. Sets tenant_id on the connection before querying so RLS policies
+// are enforced. The connection is held open until ManagedRows.Close().
+func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query string, args ...any) (*ManagedRows, error) {
+	if tenantID == "" {
+		return nil, ErrMissingTenantID
+	}
+	conn, err := p.Get(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "get connection")
+	}
+	// Set tenant context directly on this connection (not via the pool).
+	if _, setErr := conn.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID); setErr != nil {
+		conn.Close()
+		return nil, errors.Wrap(setErr, "set tenant context")
+	}
+	rows, queryErr := conn.QueryContext(ctx, query, args...)
+	if queryErr != nil {
+		conn.Close()
+		return nil, queryErr
+	}
+	return &ManagedRows{Rows: rows, conn: conn, pool: p}, nil
 }
 
 // Query executes a query and returns rows.

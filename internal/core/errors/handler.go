@@ -2,6 +2,7 @@ package errors
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -35,11 +36,15 @@ func NewHandler(dlq DLQFunc, alertFunc AlertFunc) *Handler {
 	}
 }
 
-// HandleError handles an error with retry logic.
-func (h *Handler) HandleError(ctx context.Context, appErr *AppError, retryCount int) {
-	// Guard against nil AppError or nil Code to prevent nil-pointer panic
-	// when accessing appErr.Code.Code below.
-	if appErr == nil || appErr.Code == nil {
+// HandleError handles an error with retry logic. Uses errors.As internally to
+// handle both bare *AppError and wrapped errors (P1-11).
+func (h *Handler) HandleError(ctx context.Context, err error, retryCount int) {
+	// Guard against nil.
+	if err == nil {
+		return
+	}
+	var appErr *AppError
+	if !errors.As(err, &appErr) || appErr.Code == nil {
 		return
 	}
 
@@ -108,7 +113,8 @@ func FormatError(err error) string {
 	if err == nil {
 		return "<nil>"
 	}
-	if appErr, ok := err.(*AppError); ok {
+	var appErr *AppError
+	if errors.As(err, &appErr) {
 		// Guard against nil Code which would panic when accessing Code.Code.
 		if appErr.Code == nil {
 			return appErr.Error()
@@ -123,9 +129,11 @@ func FormatError(err error) string {
 	return err.Error()
 }
 
-// IsRetryable checks if an error is retryable.
+// IsRetryable checks if an error is retryable by traversing the error chain
+// with errors.As. Handles both bare *AppError and wrapped errors (P1-11).
 func IsRetryable(err error) bool {
-	if appErr, ok := err.(*AppError); ok {
+	var appErr *AppError
+	if errors.As(err, &appErr) {
 		return appErr.IsRetryable()
 	}
 	return false
