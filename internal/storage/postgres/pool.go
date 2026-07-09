@@ -215,12 +215,12 @@ func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query strin
 	}
 	// Set tenant context directly on this connection (not via the pool).
 	if _, setErr := conn.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, true)", tenantID); setErr != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, errors.Wrap(setErr, "set tenant context")
 	}
 	rows, queryErr := conn.QueryContext(ctx, query, args...)
 	if queryErr != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, queryErr
 	}
 	return &ManagedRows{Rows: rows, conn: conn, pool: p}, nil

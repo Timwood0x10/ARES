@@ -30,7 +30,7 @@ func (p *defaultPlanner) Plan(_ context.Context, goal string, budget knowledge.T
 		return nil, fmt.Errorf("goal cannot be empty")
 	}
 
-	reqs := generateRequirements(goal)
+	reqs := generateRequirements(goal, budget)
 	plan := &KnowledgePlan{
 		Requirements: reqs,
 		TokenBudget:  budget,
@@ -39,61 +39,70 @@ func (p *defaultPlanner) Plan(_ context.Context, goal string, budget knowledge.T
 }
 
 // generateRequirements creates KnowledgeRequirements based on task goal keywords.
-// This is a simple keyword-based implementation; a production version could use
-// LLM-based intent analysis for more accurate requirement generation.
-func generateRequirements(goal string) []KnowledgeRequirement {
+// MaxResults for each requirement are computed dynamically from the token budget
+// so that the total loaded KnowledgeObjects fit within ForGraph (P1-11).
+func generateRequirements(goal string, budget knowledge.TokenBudget) []KnowledgeRequirement {
 	goalLower := strings.ToLower(goal)
+
+	// Compute per-requirement limits proportional to budget.
+	maxTotal := budget.ForGraph / 50 // est 50 tokens/node
+	if maxTotal <= 0 {
+		maxTotal = 10
+	}
+	if maxTotal > 200 {
+		maxTotal = 200 // safety cap
+	}
+
 	reqs := make([]KnowledgeRequirement, 0, 5)
 
 	// Always include decision relevance.
-	reqs = append(reqs, KnowledgeRequirement{
-		Need:        NeedDecision,
-		Description: fmt.Sprintf("Decisions related to: %s", goal),
-		Priority:    1,
-		MaxResults:  20,
-	})
+	needs := []struct {
+		need     NeedType
+		weight   int
+		keywords []string
+	}{
+		{NeedDecision, 3, nil}, // always included
+		{NeedArchitecture, 2, []string{"architect", "design", "stack", "infrastructure", "deploy"}},
+		{NeedCode, 2, []string{"code", "implement", "function", "api", "class", "method"}},
+		{NeedIssue, 2, []string{"bug", "fix", "issue", "problem", "error"}},
+		{NeedPerformance, 1, []string{"performance", "slow", "latency", "benchmark", "optimize"}},
+	}
 
-	// Match keywords to need types.
-	if containsAny(goalLower, []string{"architect", "design", "stack", "infrastructure", "deploy"}) {
-		reqs = append(reqs, KnowledgeRequirement{
-			Need:        NeedArchitecture,
-			Description: fmt.Sprintf("Architecture decisions for: %s", goal),
-			Priority:    2,
-			MaxResults:  15,
-		})
+	var totalWeight int
+	var matched []struct {
+		need   NeedType
+		weight int
 	}
-	if containsAny(goalLower, []string{"code", "implement", "function", "api", "class", "method"}) {
-		reqs = append(reqs, KnowledgeRequirement{
-			Need:        NeedCode,
-			Description: fmt.Sprintf("Code implementation for: %s", goal),
-			Priority:    2,
-			MaxResults:  25,
-		})
-	}
-	if containsAny(goalLower, []string{"bug", "fix", "issue", "problem", "error"}) {
-		reqs = append(reqs, KnowledgeRequirement{
-			Need:        NeedIssue,
-			Description: fmt.Sprintf("Issues and fixes for: %s", goal),
-			Priority:    2,
-			MaxResults:  20,
-		})
-	}
-	if containsAny(goalLower, []string{"performance", "slow", "latency", "benchmark", "optimize"}) {
-		reqs = append(reqs, KnowledgeRequirement{
-			Need:        NeedPerformance,
-			Description: fmt.Sprintf("Performance data for: %s", goal),
-			Priority:    3,
-			MaxResults:  15,
-		})
+	for _, n := range needs {
+		if n.keywords == nil || containsAny(goalLower, n.keywords) {
+			matched = append(matched, struct {
+				need   NeedType
+				weight int
+			}{n.need, n.weight})
+			totalWeight += n.weight
+		}
 	}
 
 	// Always include history as fallback.
-	reqs = append(reqs, KnowledgeRequirement{
-		Need:        NeedHistory,
-		Description: fmt.Sprintf("History related to: %s", goal),
-		Priority:    4,
-		MaxResults:  30,
-	})
+	matched = append(matched, struct {
+		need   NeedType
+		weight int
+	}{NeedHistory, 1})
+	totalWeight++
+
+	for _, m := range matched {
+		// Distribute maxTotal proportionally to weight.
+		limit := maxTotal * m.weight / totalWeight
+		if limit < 3 {
+			limit = 3
+		}
+		reqs = append(reqs, KnowledgeRequirement{
+			Need:        m.need,
+			Description: fmt.Sprintf("%s related to: %s", m.need, goal),
+			Priority:    1,
+			MaxResults:  limit,
+		})
+	}
 
 	return reqs
 }
