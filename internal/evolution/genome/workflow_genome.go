@@ -215,15 +215,22 @@ func (g *WorkflowGenome) mutateRemoveNode() {
 		return // keep at least one node
 	}
 
-	// Pick a leaf node (no dependents) to remove safely.
+	// Find nodes that no other step depends on (true leaf nodes).
+	referenced := make(map[string]bool)
+	for _, s := range steps {
+		for _, dep := range s.DependsOn {
+			referenced[dep] = true
+		}
+	}
+
 	for _, step := range steps {
-		dependsOn := g.dag.ReadDeps(step.ID)
-		if len(dependsOn) == 0 {
+		if !referenced[step.ID] {
 			_ = g.dag.RemoveNode(context.Background(), step.ID)
 			return
 		}
 	}
-	// Fallback: remove random node.
+
+	// Fallback: remove random node (error swallowed if it has dependents).
 	target := steps[rand.Intn(len(steps))]
 	_ = g.dag.RemoveNode(context.Background(), target.ID)
 }
@@ -288,11 +295,66 @@ func (g *WorkflowGenome) mutateSerialize() {
 }
 
 // clone creates a deep copy of the WorkflowGenome.
-// Uses MutableDAG.SnapshotWithSteps to clone the internal DAG.
+// Steps are sorted topologically before passing to NewMutableDAG
+// because Steps() returns in non-deterministic map order, which would
+// cause NewMutableDAG to reject the steps if dependents appear before deps.
 func (g *WorkflowGenome) clone() *WorkflowGenome {
-	cloneDag, _ := engine.NewMutableDAG(g.dag.Steps())
+	cloneDag, err := engine.NewMutableDAG(sortByDeps(g.dag.Steps()))
+	if err != nil {
+		// Fallback: share the parent DAG (uncommon — only on deep clone failure).
+		cloneDag = g.dag
+	}
 	return &WorkflowGenome{
 		dag:    cloneDag,
 		config: g.config,
 	}
+}
+
+// sortByDeps returns steps in topological order (dependencies before dependents).
+func sortByDeps(steps []*engine.Step) []*engine.Step {
+	// Build in-degree map.
+	inDegree := make(map[string]int, len(steps))
+	stepMap := make(map[string]*engine.Step, len(steps))
+	for _, s := range steps {
+		inDegree[s.ID] = len(s.DependsOn)
+		stepMap[s.ID] = s
+	}
+
+	// Find roots (no dependencies).
+	var queue []string
+	for _, s := range steps {
+		if len(s.DependsOn) == 0 {
+			queue = append(queue, s.ID)
+		}
+	}
+
+	// Kahn's algorithm.
+	result := make([]*engine.Step, 0, len(steps))
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		result = append(result, stepMap[id])
+
+		// Decrease in-degree of nodes depending on this one.
+		for _, s := range steps {
+			if contains(s.DependsOn, id) {
+				inDegree[s.ID]--
+				if inDegree[s.ID] == 0 {
+					queue = append(queue, s.ID)
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// contains reports whether a slice contains the given string.
+func contains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

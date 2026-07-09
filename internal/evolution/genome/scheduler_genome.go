@@ -145,9 +145,9 @@ func (g *SchedulerGenome) Fitness(ctx context.Context) (float64, error) {
 	return sum / float64(count), nil
 }
 
-// Snapshot returns the current scheduler type name as the serializable state.
+// Snapshot returns the current scheduler. Used by the Diff Engine.
 func (g *SchedulerGenome) Snapshot(_ context.Context) (any, error) {
-	return fmt.Sprintf("%T", g.current), nil
+	return g.current, nil
 }
 
 // ── Mutation implementations ─────────────────

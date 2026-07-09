@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -18,7 +19,7 @@ func NewWorkflowDiffer() *WorkflowDiffer {
 }
 
 // Name returns the differ identifier, matching the WorkflowGenome name.
-func (d *WorkflowDiffer) Name() string { return "workflow" }
+func (d *WorkflowDiffer) Name() string { return genome.WorkflowGenomeName }
 
 // Diff compares old and new DAG snapshots, producing DAG topology patches.
 func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimePatch, error) {
@@ -40,7 +41,7 @@ func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimeP
 				Type:   patch.PatchInsertNode,
 				Target: nodeID,
 				Value:  node.StepID,
-				Source: "diff.workflow",
+				Source: srcWorkflow,
 			})
 		}
 	}
@@ -51,7 +52,7 @@ func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimeP
 			patches = append(patches, patch.RuntimePatch{
 				Type:   patch.PatchRemoveNode,
 				Target: nodeID,
-				Source: "diff.workflow",
+				Source: srcWorkflow,
 			})
 		}
 	}
@@ -66,7 +67,7 @@ func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimeP
 					Type:   patch.PatchAddEdge,
 					Target: fromID,
 					Value:  toID,
-					Source: "diff.workflow",
+					Source: srcWorkflow,
 				})
 			}
 		}
@@ -82,7 +83,7 @@ func (d *WorkflowDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimeP
 					Type:   patch.PatchRemoveEdge,
 					Target: fromID,
 					Value:  toID,
-					Source: "diff.workflow",
+					Source: srcWorkflow,
 				})
 			}
 		}

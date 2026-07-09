@@ -6,10 +6,11 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // SchedulerDiffer computes scheduler type differences between two genome snapshots.
-// Snapshots must be strings (scheduler type names like "*graph.DefaultScheduler").
+// Snapshots must be graph.Scheduler values.
 type SchedulerDiffer struct{}
 
 // NewSchedulerDiffer creates a new SchedulerDiffer.
@@ -20,19 +21,19 @@ func NewSchedulerDiffer() *SchedulerDiffer {
 // Name returns the differ identifier, matching the SchedulerGenome name.
 func (d *SchedulerDiffer) Name() string { return genome.SchedulerGenomeName }
 
-// Diff compares old and new scheduler type snapshots.
+// Diff compares old and new scheduler snapshots.
 func (d *SchedulerDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimePatch, error) {
-	oldType, ok := old.(string)
+	oldSched, ok := old.(graph.Scheduler)
 	if !ok {
-		return nil, fmt.Errorf("scheduler differ: old snapshot is %T, want string", old)
+		return nil, fmt.Errorf("scheduler differ: old snapshot is %T, want graph.Scheduler", old)
 	}
-	newType, ok := new.(string)
+	newSched, ok := new.(graph.Scheduler)
 	if !ok {
-		return nil, fmt.Errorf("scheduler differ: new snapshot is %T, want string", new)
+		return nil, fmt.Errorf("scheduler differ: new snapshot is %T, want graph.Scheduler", new)
 	}
 
 	// Same scheduler type — no patch needed.
-	if oldType == newType {
+	if fmt.Sprintf("%T", oldSched) == fmt.Sprintf("%T", newSched) {
 		return nil, nil
 	}
 
@@ -40,9 +41,9 @@ func (d *SchedulerDiffer) Diff(_ context.Context, old, new any) ([]patch.Runtime
 		{
 			Type:   patch.PatchChangeScheduler,
 			Target: "graph.scheduler",
-			Value:  newType,
-			Reason: fmt.Sprintf("scheduler: %s → %s", oldType, newType),
-			Source: "diff.scheduler",
+			Value:  newSched,
+			Reason: fmt.Sprintf("scheduler: %T → %T", oldSched, newSched),
+			Source: srcScheduler,
 		},
 	}, nil
 }

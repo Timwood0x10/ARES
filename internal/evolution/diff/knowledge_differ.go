@@ -39,7 +39,7 @@ func (d *KnowledgeDiffer) Diff(_ context.Context, old, new any) ([]patch.Runtime
 			Target: "knowledge.planner.max_results",
 			Value:  newCfg.MaxResults,
 			Reason: fmt.Sprintf("knowledge: MaxResults %d → %d", oldCfg.MaxResults, newCfg.MaxResults),
-			Source: "diff.knowledge",
+			Source: srcKnowledge,
 		})
 	}
 
@@ -49,7 +49,7 @@ func (d *KnowledgeDiffer) Diff(_ context.Context, old, new any) ([]patch.Runtime
 			Target: "knowledge.planner.reducer",
 			Value:  newCfg.ReducerStrategy,
 			Reason: fmt.Sprintf("knowledge: Reducer %s → %s", oldCfg.ReducerStrategy, newCfg.ReducerStrategy),
-			Source: "diff.knowledge",
+			Source: srcKnowledge,
 		})
 	}
 
@@ -59,7 +59,7 @@ func (d *KnowledgeDiffer) Diff(_ context.Context, old, new any) ([]patch.Runtime
 			Target: "knowledge.planner.strategy",
 			Value:  newCfg.PlannerStrategy,
 			Reason: fmt.Sprintf("knowledge: Planner %s → %s", oldCfg.PlannerStrategy, newCfg.PlannerStrategy),
-			Source: "diff.knowledge",
+			Source: srcKnowledge,
 		})
 	}
 
@@ -69,7 +69,7 @@ func (d *KnowledgeDiffer) Diff(_ context.Context, old, new any) ([]patch.Runtime
 			Target: "knowledge.planner.summarizer",
 			Value:  newCfg.SummarizerType,
 			Reason: fmt.Sprintf("knowledge: Summarizer %s → %s", oldCfg.SummarizerType, newCfg.SummarizerType),
-			Source: "diff.knowledge",
+			Source: srcKnowledge,
 		})
 	}
 

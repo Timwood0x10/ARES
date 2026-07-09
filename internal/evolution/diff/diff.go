@@ -19,6 +19,14 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
+// Diff source constants.
+const (
+	srcWorkflow  = "diff.workflow"
+	srcKnowledge = "diff.knowledge"
+	srcScheduler = "diff.scheduler"
+	srcRecovery  = "diff.recovery"
+)
+
 // Differ computes the difference between two genome snapshots
 // and produces RuntimePatches to transition from old to new.
 type Differ interface {
@@ -38,8 +46,8 @@ type SnapshotPair struct {
 
 // Registry manages pluggable Differ implementations.
 type Registry struct {
-	mu     sync.RWMutex
-	diffs  map[string]Differ
+	mu    sync.RWMutex
+	diffs map[string]Differ
 }
 
 // NewRegistry creates a new Diff Registry.
