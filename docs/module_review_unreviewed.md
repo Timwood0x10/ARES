@@ -5,6 +5,21 @@
 > 评审日期：2026-07-08。拆分 4 个并行审查子任务，本报告为合成总评。
 > 已评审核心（作为联动基线）：`ares_evolution/genome`（遗传算法自进化）、`workflow/engine`（动态 DAG）、`ares_memory/distillation`（记忆蒸馏）、混沌工程（`ares_arena` + `ares_quant` 的 `chaos.go`）、工具调度器。
 
+> ⚠️ **勘误（2026-07-09 复核）**：本报告首版「10 个 P0 崩溃/race」结论**经逐条对照当前提交代码核实，绝大部分不成立**——相关 bug 早已被修复（代码内留有 `P0-3` / `P0-5` 等修复标记）。初版直接采信并行审查子任务输出而未独立核验源码，结论不可靠。更正（均附 `file:line` 证据）：
+> - `ares_eval` 无 recover → **误报**（`service/handler.go:62-67` 已有 `recover()`）
+> - `ares_mcp` SSE 广播 → **已修**（`transport_server.go:396-409` 按 session 路由并静默丢弃，标 `P0-3`）
+> - `leader` nil errgroup panic → **已修**（`agent.go:108-117` `ensureInitialized()`，标 `P0-5`）
+> - `ares_flight` 释锁改 GraphNode → **误报**（`collector.go:163` 走 `graph.AddNode`，其内部自加锁 `graph.go:60`）
+> - `monitoring` trace 空桩 → **已修**（`publisher.go:327-350` 委托 `L其与.GetTrace()` 返回真实 span）
+> - `monitoring` kill/retry 无目标 → **误报**（`console_api.go:50` `ExecuteAction(ctx, nodeID, actionID)` 带 nodeID）
+> - `api_impl` Arena 硬取消 → **误报**（grep `HardCancel|CancelAction` 全仓无匹配）
+> - `experience` bandit 未闭环 → **误报**（`ranking_service.go:132` `finalScore += exp.Score`）
+> - 双错误模型 → **误报**（`internal/errors` 被 140+ 文件使用；`internal/core/errors` **0 引用**疑似死代码，非"两套竞争模型"）
+> - `api_impl` ResilienceScore 假 → **夸大**（真算成功率，弱代理但非伪造）
+> - `ares_quant` 孤儿 → **属实**（仓库内无任何外部包 import），但可能系有意的独立垂直模块，是否算缺陷待定
+>
+> **结论**：本报告「§3 P0 修复优先级」及下方各模块「🔴严重」项**不可作为行动依据**，请以本勘误为准。需要可信结论时，应重做一份「逐条带 `go test -race` 实证」的版本。
+
 ---
 
 ## 0. 重要路径勘误

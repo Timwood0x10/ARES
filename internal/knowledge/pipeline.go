@@ -174,14 +174,10 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 				}
 			}
 		}
-
-		// Record this object as a candidate for future resolution passes.
-		p.mu.Lock()
-		p.resolvedObjects[obj.ID] = obj
-		p.mu.Unlock()
 	}
 
-	// Stage 3: Summarize (Normalized → Summary).
+	// Stage 3: Summarize (Normalized → Summary) — runs regardless of
+	// whether matchers are configured.
 	for _, sum := range p.summarizers {
 		if obj == nil {
 			return nil, fmt.Errorf("pipeline: summarizer %s received nil", sum.Name())
@@ -194,6 +190,15 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 		if obj == nil {
 			return nil, fmt.Errorf("pipeline: summarizer %s returned nil", sum.Name())
 		}
+	}
+
+	// Record this object as a candidate for future resolution passes.
+	// Must happen after Summarize so concurrent goroutines in the same
+	// pipeline never read a partially-processed object via resolvedObjects.
+	if len(p.matchers) > 0 {
+		p.mu.Lock()
+		p.resolvedObjects[obj.ID] = obj
+		p.mu.Unlock()
 	}
 
 	return obj, nil
