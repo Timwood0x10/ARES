@@ -60,19 +60,8 @@ type SearchResult = storage.SearchResult
 // Search performs a vector similarity search.
 // This is a simplified implementation that uses pgvector if available.
 func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []float64, limit int) ([]*SearchResult, error) {
-	// Validate table name to prevent SQL injection
-	if err := sanitizeSQLTable(table); err != nil {
-		return nil, errors.Wrap(err, "invalid table name")
-	}
-
-	// Validate limit to prevent excessive results
-	// Use configured max vector search limit
-	maxLimit := v.embeddingConfig.MaxVectorSearchLimit
-	if limit <= 0 || limit > maxLimit {
-		return nil, fmt.Errorf("invalid limit: %d (must be 1-%d)", limit, maxLimit)
-	}
-
-	safeTable, err := safeFormatTable(table)
+	// Validate table name against whitelist (consistent with base_repository.go).
+	safeTable, err := validateTable(table)
 	if err != nil {
 		return nil, errors.Wrap(err, "format table name")
 	}
@@ -124,8 +113,8 @@ func (v *VectorSearcher) Search(ctx context.Context, table string, embedding []f
 
 // AddEmbedding adds a vector embedding to the specified table.
 func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, embedding []float64, metadata map[string]any) error {
-	// Validate table name to prevent SQL injection
-	if err := sanitizeSQLTable(table); err != nil {
+	safeTable, err := validateTable(table)
+	if err != nil {
 		return errors.Wrap(err, "invalid table name")
 	}
 
@@ -154,15 +143,10 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	safeTable, err := safeFormatTable(table)
-	if err != nil {
-		return errors.Wrap(err, "format table name")
-	}
-
 	query := fmt.Sprintf(`
-		INSERT INTO %s (id, embedding, metadata)
-		VALUES ($1, $2, $3)
-	`, safeTable)
+	   INSERT INTO %s (id, embedding, metadata)
+	  VALUES ($1, $2, $3)
+	 `, safeTable)
 
 	_, err = v.db.ExecContext(ctx, query, id, embeddingJSON, metadataJSON)
 	if err != nil {
@@ -174,19 +158,14 @@ func (v *VectorSearcher) AddEmbedding(ctx context.Context, table, id string, emb
 
 // DeleteEmbedding deletes a vector embedding.
 func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) error {
-	// Validate table name to prevent SQL injection
-	if err := sanitizeSQLTable(table); err != nil {
+	safeTable, err := validateTable(table)
+	if err != nil {
 		return errors.Wrap(err, "invalid table name")
 	}
 
 	// Validate id
 	if err := validateSQLIdentifier(id); err != nil {
 		return errors.Wrap(err, "invalid id")
-	}
-
-	safeTable, err := safeFormatTable(table)
-	if err != nil {
-		return errors.Wrap(err, "format table name")
 	}
 
 	query := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, safeTable)
@@ -204,8 +183,8 @@ func (v *VectorSearcher) DeleteEmbedding(ctx context.Context, table, id string) 
 // The vector dimension defaults to defaultVectorDimension (1024) to match the
 // migrations; callers needing a different dimension should use CreateCollection.
 func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, metadataSchema string) error {
-	// Validate table name to prevent SQL injection
-	if err := sanitizeSQLTable(table); err != nil {
+	safeTable, err := validateTable(table)
+	if err != nil {
 		return errors.Wrap(err, "invalid table name")
 	}
 
@@ -214,11 +193,6 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 	dim := defaultVectorDimension
 	if dim < 1 || dim > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
-	}
-
-	safeTable, err := safeFormatTable(table)
-	if err != nil {
-		return errors.Wrap(err, "format table name")
 	}
 
 	query := fmt.Sprintf(`
@@ -241,16 +215,12 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 
 // CreateCollection creates a vector collection. Implements storage.VectorStore.
 func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dimension int) error {
-	if err := sanitizeSQLTable(name); err != nil {
+	safeName, err := validateTable(name)
+	if err != nil {
 		return errors.Wrap(err, "invalid collection name")
 	}
 	if dimension < 1 || dimension > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
-	}
-
-	safeName, err := safeFormatTable(name)
-	if err != nil {
-		return errors.Wrap(err, "format collection name")
 	}
 
 	query := fmt.Sprintf(`

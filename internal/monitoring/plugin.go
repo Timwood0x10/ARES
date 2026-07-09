@@ -230,12 +230,15 @@ func (p *MonitorPlugin) Start(ctx context.Context, bus ares_runtime.EventBus) er
 
 	// Create and start collector (only if bus is provided).
 	if bus != nil {
-		p.collector = NewCollector(bus, p.mainPage)
-		if p.collector != nil {
-			if err := p.collector.Start(ctx); err != nil {
-				cancel()
-				return err
-			}
+		var createErr error
+		p.collector, createErr = NewCollector(bus, p.mainPage)
+		if createErr != nil {
+			cancel()
+			return fmt.Errorf("create collector: %w", createErr)
+		}
+		if err := p.collector.Start(ctx); err != nil {
+			cancel()
+			return err
 		}
 	}
 

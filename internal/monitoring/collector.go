@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -28,9 +29,13 @@ func WithCollectorLogger(logger *slog.Logger) CollectorOption {
 }
 
 // NewCollector creates a Collector that dispatches events to the given MainPage.
-func NewCollector(bus ares_runtime.EventBus, mainPage *MainPage, opts ...CollectorOption) *Collector {
-	if bus == nil || mainPage == nil {
-		return nil
+// Returns an error if bus or mainPage is nil.
+func NewCollector(bus ares_runtime.EventBus, mainPage *MainPage, opts ...CollectorOption) (*Collector, error) {
+	if bus == nil {
+		return nil, fmt.Errorf("collector: event bus must not be nil")
+	}
+	if mainPage == nil {
+		return nil, fmt.Errorf("collector: main page must not be nil")
 	}
 	c := &Collector{
 		bus:      bus,
@@ -40,7 +45,7 @@ func NewCollector(bus ares_runtime.EventBus, mainPage *MainPage, opts ...Collect
 	for _, opt := range opts {
 		opt(c)
 	}
-	return c
+	return c, nil
 }
 
 // Start subscribes to all events on the bus and dispatches them to the

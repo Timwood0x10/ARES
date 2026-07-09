@@ -1065,13 +1065,10 @@ func TestArenaAdapter_Execute_MCPDisconnect(t *testing.T) {
 }
 
 func TestArenaAdapter_Execute_MCPDisconnect_WithAdapter(t *testing.T) {
-	ctx := context.Background()
-	client := newMockClient(ctx, t, nil)
 	orch := dashboard.NewOrchestrator(&mockMCPExecutor{}, &mockLLMExecutor{})
 	t.Cleanup(orch.Stop)
 	adapter := &ArenaAdapter{
-		Orch:       orch,
-		mcpAdapter: &MCPAdapter{Client: client},
+		Orch: orch,
 	}
 	id, _ := orch.CreateAgent(dashboard.AgentRequest{
 		Name:  "target",
@@ -1102,8 +1099,7 @@ func TestArenaAdapter_Execute_LLMFailure_WithAdapter(t *testing.T) {
 	orch := dashboard.NewOrchestrator(&mockMCPExecutor{}, &mockLLMExecutor{})
 	t.Cleanup(orch.Stop)
 	adapter := &ArenaAdapter{
-		Orch:       orch,
-		llmAdapter: &LLMAdapter{Adapter: &mockLLMAdapter{}},
+		Orch: orch,
 	}
 	id, _ := orch.CreateAgent(dashboard.AgentRequest{
 		Name:  "target",
@@ -1247,9 +1243,13 @@ func TestService_RunReview(t *testing.T) {
 
 func TestService_SetHTTPHandler(t *testing.T) {
 	mux := http.NewServeMux()
-	s := &Service{httpServer: &http.Server{}}
+	s := &Service{httpServer: &http.Server{}, handler: http.NotFoundHandler()}
 	s.SetHTTPHandler(mux)
-	if s.httpServer.Handler != mux {
+	// Verify through handler field that it was replaced.
+	s.handlerMu.RLock()
+	h := s.handler
+	s.handlerMu.RUnlock()
+	if h != mux {
 		t.Error("SetHTTPHandler did not set handler")
 	}
 }

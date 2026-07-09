@@ -852,7 +852,11 @@ func (s *RetrievalService) applyExperienceRanking(ctx context.Context, experienc
 	}
 
 	// Apply ranking
-	ranked := s.rankingService.Rank(ctx, apiExperiences, baseScores)
+	ranked, rankErr := s.rankingService.Rank(ctx, apiExperiences, baseScores)
+	if rankErr != nil {
+		log.Error("rank experiences failed, returning empty results", "error", rankErr)
+		return []*SearchResult{}
+	}
 
 	// Apply conflict resolution if enabled
 	var resolved []*experience.Experience

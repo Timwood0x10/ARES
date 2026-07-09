@@ -149,11 +149,9 @@ func (b *MCPStatusBridge) ListServers() []dashboard.MCPServerStatusView {
 
 // ArenaAdapter implements dashboard.ArenaProvider.
 type ArenaAdapter struct {
-	Orch       *dashboard.Orchestrator
-	Store      ares_events.EventStore
-	llmAdapter *LLMAdapter
-	mcpAdapter *MCPAdapter
-	mu         sync.Mutex
+	Orch  *dashboard.Orchestrator
+	Store ares_events.EventStore
+	mu    sync.Mutex
 	// stats counters — updated on each Execute call.
 	totalActions      int
 	successfulActions int

@@ -14,20 +14,25 @@ import (
 func TestNewCollector(t *testing.T) {
 	t.Run("nil bus", func(t *testing.T) {
 		mp := NewMainPage()
-		c := NewCollector(nil, mp)
+		c, err := NewCollector(nil, mp)
+		assert.Error(t, err)
 		assert.Nil(t, c)
+		assert.Contains(t, err.Error(), "event bus must not be nil")
 	})
 
 	t.Run("nil main page", func(t *testing.T) {
 		bus := ares_runtime.NewPluginBus()
-		c := NewCollector(bus, nil)
+		c, err := NewCollector(bus, nil)
+		assert.Error(t, err)
 		assert.Nil(t, c)
+		assert.Contains(t, err.Error(), "main page must not be nil")
 	})
 
 	t.Run("valid", func(t *testing.T) {
 		bus := ares_runtime.NewPluginBus()
 		mp := NewMainPage()
-		c := NewCollector(bus, mp)
+		c, err := NewCollector(bus, mp)
+		require.NoError(t, err)
 		require.NotNil(t, c)
 		assert.Equal(t, bus, c.bus)
 		assert.Equal(t, mp, c.mainPage)
@@ -36,7 +41,8 @@ func TestNewCollector(t *testing.T) {
 	t.Run("with logger", func(t *testing.T) {
 		bus := ares_runtime.NewPluginBus()
 		mp := NewMainPage()
-		c := NewCollector(bus, mp, WithCollectorLogger(nil))
+		c, err := NewCollector(bus, mp, WithCollectorLogger(nil))
+		require.NoError(t, err)
 		require.NotNil(t, c)
 	})
 }
@@ -44,12 +50,13 @@ func TestNewCollector(t *testing.T) {
 func TestCollector_StartStop(t *testing.T) {
 	bus := ares_runtime.NewPluginBus()
 	mp := NewMainPage()
-	c := NewCollector(bus, mp)
+	c, err := NewCollector(bus, mp)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := c.Start(ctx)
+	err = c.Start(ctx)
 	require.NoError(t, err)
 
 	c.Stop()
@@ -58,12 +65,13 @@ func TestCollector_StartStop(t *testing.T) {
 func TestCollector_DispatchesEvents(t *testing.T) {
 	bus := ares_runtime.NewPluginBus()
 	mp := NewMainPage()
-	c := NewCollector(bus, mp)
+	c, err := NewCollector(bus, mp)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := c.Start(ctx)
+	err = c.Start(ctx)
 	require.NoError(t, err)
 
 	// Emit an event via the bus.
@@ -84,12 +92,13 @@ func TestCollector_DispatchesEvents(t *testing.T) {
 func TestCollector_StopIdempotent(t *testing.T) {
 	bus := ares_runtime.NewPluginBus()
 	mp := NewMainPage()
-	c := NewCollector(bus, mp)
+	c, err := NewCollector(bus, mp)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := c.Start(ctx)
+	err = c.Start(ctx)
 	require.NoError(t, err)
 
 	c.Stop()
@@ -100,11 +109,12 @@ func TestCollector_StopIdempotent(t *testing.T) {
 func TestCollector_ContextCancel(t *testing.T) {
 	bus := ares_runtime.NewPluginBus()
 	mp := NewMainPage()
-	c := NewCollector(bus, mp)
+	c, err := NewCollector(bus, mp)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	err := c.Start(ctx)
+	err = c.Start(ctx)
 	require.NoError(t, err)
 
 	cancel()
@@ -127,12 +137,13 @@ func TestCollector_ContextCancel(t *testing.T) {
 func TestCollector_DispatchesToCostBar(t *testing.T) {
 	bus := ares_runtime.NewPluginBus()
 	mp := NewMainPage()
-	c := NewCollector(bus, mp)
+	c, err := NewCollector(bus, mp)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := c.Start(ctx)
+	err = c.Start(ctx)
 	require.NoError(t, err)
 
 	bus.Emit(ctx, "s1", ares_events.EventLLMCall, "test", map[string]any{

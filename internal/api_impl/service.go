@@ -38,6 +38,8 @@ type Service struct {
 	hub        *dashboard.WSHub
 	eventStore *EventStore
 	httpServer *http.Server
+	handler    http.Handler
+	handlerMu  sync.RWMutex
 	ctx        context.Context
 	cancel     context.CancelFunc
 	mu         sync.RWMutex
@@ -141,6 +143,7 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 
 	// --- Hub + EventStore ---
 	hub := dashboard.NewWSHub()
+	s.handler = http.NotFoundHandler() // initialize before httpServer uses wrapper
 	s.g.Go(func() error {
 		// Run hub's main loop — exits when hub.Stop() closes h.done.
 		hub.Run()
@@ -208,7 +211,8 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 
 	// Create unified Gin server with dashboard + monitoring routes.
 	monSrv := monitoring.NewHTTPServer(nil, monitoring.WithDashboardAPI(dashAPI))
-	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: monSrv, ReadHeaderTimeout: 30 * time.Second} // nosec G112
+	s.handler = monSrv
+	s.httpServer = &http.Server{Addr: cfg.Dashboard.Addr, Handler: s.handlerWrapper(), ReadHeaderTimeout: 30 * time.Second} // nosec G112
 	s.g.Go(func() error {
 		log.Info("dashboard started", "url", "http://localhost"+cfg.Dashboard.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -295,13 +299,24 @@ func (s *Service) HTTPServer() *http.Server {
 	return s.httpServer
 }
 
-// SetHTTPHandler replaces the HTTP server's handler.
-// Protected by mutex to prevent data race when called concurrently.
-// Must be called before Wait or Stop; behavior after server start is undefined.
+// SetHTTPHandler replaces the HTTP server's handler atomically.
+// Safe to call before or after ListenAndServe starts.
 func (s *Service) SetHTTPHandler(handler http.Handler) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.httpServer.Handler = handler
+	s.handlerMu.Lock()
+	s.handler = handler
+	s.handlerMu.Unlock()
+}
+
+// handlerWrapper returns an http.Handler that delegates to the currently set
+// handler under handlerMu read lock. This avoids data races between
+// SetHTTPHandler and the http.Server's internal reads during request processing.
+func (s *Service) handlerWrapper() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.handlerMu.RLock()
+		h := s.handler
+		s.handlerMu.RUnlock()
+		h.ServeHTTP(w, r)
+	})
 }
 
 // Wait blocks until the service context is cancelled (e.g., by Stop or OS signal).

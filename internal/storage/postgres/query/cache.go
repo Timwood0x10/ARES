@@ -153,12 +153,23 @@ func (c *QueryCache) Clear(ctx context.Context) error {
 		return nil
 	}
 
-	// Try to clear Redis
+	// Try to clear Redis using SCAN to avoid blocking on large key spaces.
 	if c.redis != nil {
-		keys, err := c.redis.Keys(ctx, "query_cache:*")
-		if err == nil && len(keys) > 0 {
-			if err := c.redis.Del(ctx, keys...); err != nil {
-				log.Warn("cache invalidation failed", "key", keys, "error", err)
+		var cursor uint64
+		for {
+			nextCursor, keys, err := c.redis.Scan(ctx, cursor, "query_cache:*", 1000)
+			if err != nil {
+				log.Warn("cache invalidation scan failed", "error", err)
+				break
+			}
+			if len(keys) > 0 {
+				if err := c.redis.Del(ctx, keys...); err != nil {
+					log.Warn("cache invalidation failed", "keys", keys, "error", err)
+				}
+			}
+			cursor = nextCursor
+			if cursor == 0 {
+				break
 			}
 		}
 	}
@@ -303,6 +314,7 @@ type RedisClient interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
 	Del(ctx context.Context, keys ...string) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
+	Scan(ctx context.Context, cursor uint64, match string, count int64) (uint64, []string, error)
 }
 
 // Simple string functions to avoid external dependencies

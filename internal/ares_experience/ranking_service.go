@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"sync"
 	"time"
 )
 
 // RankingService provides multi-signal ranking for experiences.
 // This implements a lightweight bandit system using usage and recency signals.
 type RankingService struct {
+	mu     sync.RWMutex
 	logger *slog.Logger
 	// Default weights
 	usageWeight   float64
@@ -54,6 +56,7 @@ func DefaultRankingWeights() *RankingWeights {
 }
 
 // Configure updates the ranking weights.
+// Thread-safe via mu write lock.
 // Args:
 // weights - new ranking weights configuration.
 // Returns error if weights are invalid.
@@ -74,9 +77,11 @@ func (s *RankingService) Configure(weights *RankingWeights) error {
 		return fmt.Errorf("recency days must be positive, got %f", weights.RecencyDays)
 	}
 
+	s.mu.Lock()
 	s.usageWeight = weights.UsageWeight
 	s.recencyWeight = weights.RecencyWeight
 	s.recencyDays = weights.RecencyDays
+	s.mu.Unlock()
 
 	s.logger.Info("Ranking weights configured",
 		"usage_weight", s.usageWeight,
@@ -99,21 +104,24 @@ func (s *RankingService) Configure(weights *RankingWeights) error {
 // ctx - operation context.
 // experiences - experiences to rank.
 // baseScores - base semantic similarity scores (from vector search).
-// Returns ranked experiences with scores.
-func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, baseScores []float64) []*RankedExperience {
+// Returns ranked experiences with scores, or error if input lengths mismatch.
+func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, baseScores []float64) ([]*RankedExperience, error) {
 	if len(experiences) == 0 {
-		return []*RankedExperience{}
+		return []*RankedExperience{}, nil
 	}
 
 	if len(experiences) != len(baseScores) {
-		s.logger.Error("Experience count does not match base scores count",
-			"experiences", len(experiences),
-			"scores", len(baseScores),
-		)
-		return []*RankedExperience{}
+		return nil, fmt.Errorf("experience count %d does not match base scores count %d",
+			len(experiences), len(baseScores))
 	}
 
 	now := time.Now()
+
+	s.mu.RLock()
+	usageWeight := s.usageWeight
+	recencyWeight := s.recencyWeight
+	recencyDays := s.recencyDays
+	s.mu.RUnlock()
 
 	// Calculate scores for each experience
 	ranked := make([]*RankedExperience, len(experiences))
@@ -121,14 +129,13 @@ func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, ba
 		semanticScore := baseScores[i]
 
 		// Calculate usage boost
-		usageBoost := s.calculateUsageBoost(exp.GetUsageCount())
+		usageBoost := s.calculateUsageBoost(exp.GetUsageCount(), usageWeight)
 
 		// Calculate recency boost
-		recencyBoost := s.calculateRecencyBoost(exp.CreatedAt, now)
+		recencyBoost := s.calculateRecencyBoost(exp.CreatedAt, now, recencyWeight, recencyDays)
 
 		// Final score: includes semantic match, usage frequency, recency,
-		// and the persisted Score (bandit feedback signal from RecordFailure,
-		// P1-9). A negative Score reduces rank (poor history).
+		// and the persisted Score (bandit feedback signal from RecordFailure).
 		finalScore := semanticScore + usageBoost + recencyBoost + exp.Score
 
 		ranked[i] = &RankedExperience{
@@ -152,7 +159,7 @@ func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, ba
 		"bottom_score", ranked[len(ranked)-1].FinalScore,
 	)
 
-	return ranked
+	return ranked, nil
 }
 
 // calculateUsageBoost calculates the usage count boost.
@@ -160,14 +167,15 @@ func (s *RankingService) Rank(ctx context.Context, experiences []*Experience, ba
 // The boost is capped at 0.2 to prevent old experiences from dominating.
 // Args:
 // usageCount - number of times the experience was successfully used.
+// usageWeight - weight multiplier for usage signal.
 // Returns usage boost score.
-func (s *RankingService) calculateUsageBoost(usageCount int) float64 {
+func (s *RankingService) calculateUsageBoost(usageCount int, usageWeight float64) float64 {
 	if usageCount <= 0 {
 		return 0.0
 	}
 
 	// Logarithmic scaling: log(1 + count)
-	boost := math.Log1p(float64(usageCount)) * s.usageWeight
+	boost := math.Log1p(float64(usageCount)) * usageWeight
 
 	// Cap at 0.2 to prevent dominance
 	maxBoost := 0.2
@@ -183,8 +191,10 @@ func (s *RankingService) calculateUsageBoost(usageCount int) float64 {
 // Args:
 // createdAt - time when the experience was created.
 // now - current time.
+// recencyWeight - weight multiplier for recency signal.
+// recencyDays - half-life in days for decay.
 // Returns recency boost score.
-func (s *RankingService) calculateRecencyBoost(createdAt time.Time, now time.Time) float64 {
+func (s *RankingService) calculateRecencyBoost(createdAt time.Time, now time.Time, recencyWeight, recencyDays float64) float64 {
 	if createdAt.IsZero() {
 		return 0.0
 	}
@@ -194,10 +204,10 @@ func (s *RankingService) calculateRecencyBoost(createdAt time.Time, now time.Tim
 	ageDays := ageHours / 24.0
 
 	// Exponential decay: exp(-age / half_life)
-	decay := math.Exp(-ageDays / s.recencyDays)
+	decay := math.Exp(-ageDays / recencyDays)
 
 	// Apply weight
-	boost := decay * s.recencyWeight
+	boost := decay * recencyWeight
 
 	return boost
 }
