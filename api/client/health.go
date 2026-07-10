@@ -131,7 +131,7 @@ func buildHealthReport(
 		MemoryStatus:    memory,
 		RetrievalStatus: retrieval,
 		WorkflowStatus:  workflow,
-		Healthy:     allHealthy,
+		Healthy:         allHealthy,
 		Timestamp:       time.Now().UTC(),
 	}
 }

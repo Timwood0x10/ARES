@@ -323,7 +323,7 @@ if oldAgent != nil {
 
 逻辑正确（用开头快照停旧实例），但变量名 `oldAgent` 没强调"是开头的快照而非当前 s.agents[id]"。若 factory 返回同一实例（实现不规范的 factory），会自停新 agent。建议加 nil check + instance identity check。
 
-### M7 ⬜ `internal/ares_evolution/scheduler/scheduler.go:355-419` — TriggerEvolution 与 Stop 的锁交互模糊
+### M7 ✅ `internal/ares_evolution/scheduler/scheduler.go:355-419` — TriggerEvolution 与 Stop 的锁交互模糊
 
 `TriggerEvolution` 持 `s.mu` 调 `s.evolutionWg.Add(1)`，goroutine 内 `defer s.evolutionWg.Done()`。`Stop()` 释放 `s.mu` 后调 `s.evolutionWg.Wait()`。若 Stop 在 TriggerEvolution 释放锁后、goroutine 启动前调用，Wait 会等到 goroutine 完成 — 逻辑串联回去 OK，但 `s.eg` 被覆盖（Stop 清 nil，TriggerEvolution 又新建）的状态机不清晰，边界场景难审。
 
@@ -344,18 +344,61 @@ if evaluator == nil {
 
 ---
 
-## 已检查但未发现 bug 的模块
+## 第二轮 review 新增
 
-- `api/core/` — 全是接口和类型定义，无实现逻辑
-- `api/discovery/discovery.go` — 薄包装，正确委托给 internal
-- `api/flight/flight.go` — 薄包装，正确委托
-- `api/agents/agents.go` — stub 明确返回 `ErrNotImplemented`（不像 evolution 那样返回 nil）
-- `internal/ares_arena/service.go` 的 `Execute` — switch 完整，错误处理正确
-- `internal/ares_events/memory_store.go` 的并发 append — mutex 正确，version overflow 检查到位（除 -1 语义 bug 见 C3）
+### C6 ✅ `cmd/ares/serve.go:267` — HTTP 服务无优雅关闭，SIGTERM 时不会停止
+
+`runServe` 中 `httpSrv.ListenAndServe()` 是阻塞调用。SIGINT/SIGTERM 信号处理 goroutine 只调用了 `cancel()`，但 `ListenAndServe` 不检查 context，一直阻塞到进程被 `SIGKILL` 或操作系统强杀。
+
+```go
+g.Go(func() error {
+    select {
+    case <-sigCh:
+        fmt.Println("\nShutting down...")
+        cancel()  // 只 cancel 了 context，没停 HTTP server
+    case <-ctx.Done():
+    }
+    return nil
+})
+// ...
+httpSrv := &http.Server{Addr: addr, Handler: handler, ...}
+if err := httpSrv.ListenAndServe(); err != nil {  // 永久阻塞
+    return err
+}
+```
+
+修复：信号处理 goroutine 应在 cancel 后调 `httpSrv.Shutdown(ctx)`，并将 `ListenAndServe` 放到另一个 goroutine，`select` 等待 shutdown 或 error。
+
+### 新模块 review 结果
+
+#### `internal/agents/leader/` — 通过，无 bug
+- `Process`（127 行）和 `ProcessStream`（206 行）超了 code_rules.md 的 100 行限制，但逻辑上不好拆分
+- 并发安全：所有 `ch <-` 用 `select`+`ctx.Done()`+`a.stopCh` 三路防护，`Stop` 有 `cleanupOnce.Do`，errgroup 生命周期管理正确
+- 状态机：`mu` + `processingMu` 双层锁的获取顺序一致（`processingMu → a.mu`），无死锁
+
+#### `internal/storage/postgres/` — 通过，无 bug
+- `validateSQLIdentifier` SQL 注入防护正确（防 schema 名、注释注入、长度控制）
+- `safeFormatTable` 双引号转义 + identifier 双重校验
+- `tenant_guard` 用 `set_config(is_local=true)` 实现事务级租户隔离，参数化查询
+- `circuit_breaker` 实现标准，有 cleanupLoop 防 inflight 泄漏，half-open 状态用 CAS 控制并发
+- `write_buffer` 的 `Write` 与 `Stop` 通过同一 mutex 序列化，防 send-on-closed-channel
+- `ExecWithTenant` 事务内设置 tenant context，`defer tx.Rollback()` 在 Commit 后安全 no-op
+- `Query` 有 `runtime.SetFinalizer` 防连接泄漏
+
+#### `cmd/` — 发现 1 个 bug（C6）
 
 ---
 
-## 未细看的高风险区域（建议后续单独 review）
+## 修复优先级建议（更新版）
+
+按 ROI 排序，先修 Critical：
+
+1. **C3 ✅** expectedVersion=-1 — 已修
+2. **C1 ✅** 路径穿越 — 已修
+3. **C4 ✅** stub 返回 nil — 已修
+4. **C2 ✅** bootstrap nil 依赖 — 已修
+5. **C5 ✅** agent service stub — 已修
+6. **C6 ✅** serve.go 无优雅关闭 — 已修
 
 - `internal/agents/leader/` 的 dispatcher / planner / aggregator / event_recovery — 复杂编排逻辑，并发和状态机风险高
 - `internal/ares_evolution/genome/` 的 `guided_pipeline.go` / `meta_evolution.go` / `multi_objective.go` — 高级 GA 特性，边界条件多

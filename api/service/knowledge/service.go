@@ -112,58 +112,58 @@ func (s *Service) handleBuild(c *gin.Context) {
 		budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
 	}
 	if budget.ForGraph <= 0 {
-	  budget.ForGraph = budget.MaxTokens * 60 / 100
-	 }
-	 budget.Reserved = budget.MaxTokens - budget.ForGraph
-	 if budget.Reserved < 0 {
-	  budget.Reserved = 0
-	 }
-
-	 graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
-	 if err != nil {
-	  c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("build: %v", err)})
-	  return
-	 }
-
-	 nodeSummaries := make([]map[string]any, 0, len(graph.Nodes))
-	 for id, obj := range graph.Nodes {
-	  nodeSummaries = append(nodeSummaries, map[string]any{
-	   "id":         id,
-	   "type":       obj.Type,
-	   "summary":    obj.Summary,
-	   "confidence": obj.Confidence,
-	  })
-	 }
-
-	 c.JSON(http.StatusOK, gin.H{
-	  "nodes":      nodeSummaries,
-	  "edges":      graph.Edges,
-	  "node_count": len(graph.Nodes),
-	  "edge_count": len(graph.Edges),
-	 })
+		budget.ForGraph = budget.MaxTokens * 60 / 100
+	}
+	budget.Reserved = budget.MaxTokens - budget.ForGraph
+	if budget.Reserved < 0 {
+		budget.Reserved = 0
 	}
 
-	func (s *Service) handleContext(c *gin.Context) {
-	 var req contextRequest
-	 if err := c.ShouldBindJSON(&req); err != nil {
-	  c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
-	  return
-	 }
+	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{keyError: fmt.Sprintf("build: %v", err)})
+		return
+	}
 
-	 budget := knowledge.TokenBudget{
-	  MaxTokens: req.MaxTokens,
-	  ForGraph:  req.ForGraph,
-	 }
-	 if budget.MaxTokens <= 0 {
-	  budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
-	 }
-	 if budget.ForGraph <= 0 {
-	  budget.ForGraph = budget.MaxTokens * 60 / 100
-	 }
-	 budget.Reserved = budget.MaxTokens - budget.ForGraph
-	 if budget.Reserved < 0 {
-	  budget.Reserved = 0
-	 }
+	nodeSummaries := make([]map[string]any, 0, len(graph.Nodes))
+	for id, obj := range graph.Nodes {
+		nodeSummaries = append(nodeSummaries, map[string]any{
+			"id":         id,
+			"type":       obj.Type,
+			"summary":    obj.Summary,
+			"confidence": obj.Confidence,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"nodes":      nodeSummaries,
+		"edges":      graph.Edges,
+		"node_count": len(graph.Nodes),
+		"edge_count": len(graph.Edges),
+	})
+}
+
+func (s *Service) handleContext(c *gin.Context) {
+	var req contextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	budget := knowledge.TokenBudget{
+		MaxTokens: req.MaxTokens,
+		ForGraph:  req.ForGraph,
+	}
+	if budget.MaxTokens <= 0 {
+		budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
+	}
+	if budget.ForGraph <= 0 {
+		budget.ForGraph = budget.MaxTokens * 60 / 100
+	}
+	budget.Reserved = budget.MaxTokens - budget.ForGraph
+	if budget.Reserved < 0 {
+		budget.Reserved = 0
+	}
 
 	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
 	if err != nil {

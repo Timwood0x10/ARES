@@ -126,6 +126,28 @@ type SampleCounter interface {
 	GetNewSampleCount(ctx context.Context) int
 }
 
+// SchedulerState represents the lifecycle state of the scheduler.
+type SchedulerState int
+
+const (
+	StateStopped  SchedulerState = iota
+	StateRunning
+	StateStopping
+)
+
+func (s SchedulerState) String() string {
+	switch s {
+	case StateStopped:
+		return "stopped"
+	case StateRunning:
+		return "running"
+	case StateStopping:
+		return "stopping"
+	default:
+		return "unknown"
+	}
+}
+
 // DefaultScheduler implements the Scheduler interface with background
 // idle monitoring and evolution triggering.
 type DefaultScheduler struct {
@@ -135,15 +157,18 @@ type DefaultScheduler struct {
 	sampleCounter SampleCounter
 
 	mu              sync.RWMutex
+	state           SchedulerState
 	lastEvolution   time.Time
 	idleStartTime   time.Time
-	running         bool
 	evolutionActive bool
 
-	eg          *errgroup.Group
-	egCtx       context.Context
-	egCancel    context.CancelFunc
-	evolutionWg sync.WaitGroup // tracks running evolution goroutines
+	// monitorEg tracks the monitorLoop goroutine.
+	monitorEg    *errgroup.Group
+	monitorCtx   context.Context
+	monitorCancel context.CancelFunc
+
+	// evolutionWg tracks evolution goroutines spawned by TriggerEvolution.
+	evolutionWg sync.WaitGroup
 }
 
 // NewDefaultScheduler creates a new DefaultScheduler with the given configuration.
@@ -180,7 +205,7 @@ func (s *DefaultScheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.running {
+	if s.state != StateStopped {
 		return ErrSchedulerAlreadyRunning
 	}
 
@@ -190,17 +215,17 @@ func (s *DefaultScheduler) Start(ctx context.Context) error {
 	}
 
 	// Create errgroup with derived context for graceful shutdown.
-	egCtx, egCancel := context.WithCancel(ctx)
-	eg, egCtx := errgroup.WithContext(egCtx)
+	monitorCtx, monitorCancel := context.WithCancel(ctx)
+	monitorEg, monitorCtx := errgroup.WithContext(monitorCtx)
 
-	s.eg = eg
-	s.egCtx = egCtx
-	s.egCancel = egCancel
-	s.running = true
+	s.monitorEg = monitorEg
+	s.monitorCtx = monitorCtx
+	s.monitorCancel = monitorCancel
+	s.state = StateRunning
 
 	// Start the background idle monitoring goroutine.
-	eg.Go(func() error {
-		return s.monitorLoop(egCtx)
+	monitorEg.Go(func() error {
+	 return s.monitorLoop(monitorCtx)
 	})
 
 	log.InfoContext(ctx, "[Scheduler] Started idle-time evolution scheduler",
@@ -222,7 +247,7 @@ func (s *DefaultScheduler) monitorLoop(ctx context.Context) error {
 			log.InfoContext(ctx, "[Scheduler] Monitor loop stopped")
 			// Mark scheduler as not running when context is cancelled.
 			s.mu.Lock()
-			s.running = false
+			s.state = StateStopped
 			s.mu.Unlock()
 			return ctx.Err()
 		case <-ticker.C:
@@ -303,30 +328,29 @@ func (s *DefaultScheduler) checkAndTrigger(ctx context.Context) {
 //	error - ErrSchedulerNotStarted if not running, nil on success.
 func (s *DefaultScheduler) Stop() error {
 	s.mu.Lock()
-	if !s.running {
+	if s.state != StateRunning {
 		s.mu.Unlock()
 		return ErrSchedulerNotStarted
 	}
 
 	log.Info("[Scheduler] Stopping scheduler")
 
-	eg := s.eg
-	egCancel := s.egCancel
+	monitorCancel := s.monitorCancel
+	monitorEg := s.monitorEg
 
-	s.running = false
-	s.eg = nil
-	s.egCancel = nil
+	s.state = StateStopping
+	s.monitorCancel = nil
 	s.mu.Unlock()
 
-	// Cancel context after releasing lock to avoid deadlock.
+	// Cancel the monitor context after releasing lock to avoid deadlock.
 	// The monitor loop may be in checkAndTrigger trying to acquire the lock.
-	if egCancel != nil {
-		egCancel()
+	if monitorCancel != nil {
+		monitorCancel()
 	}
 
-	// Wait for errgroup to finish after releasing lock.
-	if eg != nil {
-		if err := eg.Wait(); err != nil {
+	// Wait for monitor errgroup to finish after releasing lock.
+	if monitorEg != nil {
+		if err := monitorEg.Wait(); err != nil {
 			log.Warn("evolution scheduler: wait", "error", err)
 		}
 	}
@@ -337,6 +361,9 @@ func (s *DefaultScheduler) Stop() error {
 	// Reset idle period tracking after all goroutines have stopped.
 	s.mu.Lock()
 	s.idleStartTime = time.Time{}
+	s.state = StateStopped
+	s.monitorEg = nil
+	s.monitorCtx = nil
 	s.mu.Unlock()
 
 	log.Info("[Scheduler] Scheduler stopped")
@@ -355,6 +382,11 @@ func (s *DefaultScheduler) Stop() error {
 func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Guard against triggering during shutdown to prevent goroutine leaks.
+	if s.state == StateStopping {
+		return ErrSchedulerNotStarted
+	}
 
 	if !s.config.Enabled {
 		return ErrDisabled
@@ -378,30 +410,18 @@ func (s *DefaultScheduler) TriggerEvolution(ctx context.Context) error {
 	}
 
 	s.evolutionActive = true
-	s.evolutionWg.Add(1) // Track evolution goroutine
+	s.evolutionWg.Add(1)
 
-	// Run evolution with timeout in background goroutine via errgroup.
+	// Run evolution with timeout in a tracked goroutine.
 	evolutionCtx, evolutionCancel := context.WithTimeout(ctx, s.config.MaxEvolutionDuration)
 
-	eg, egCtx := errgroup.WithContext(evolutionCtx)
-
-	eg.Go(func() error {
+	go func() {
+		defer s.evolutionWg.Done()
 		defer evolutionCancel()
-		err := s.runner.RunEvolution(egCtx)
+
+		err := s.runner.RunEvolution(evolutionCtx)
 		if err != nil {
 			log.ErrorContext(ctx, "[Scheduler] Evolution run failed",
-				"error", err)
-			return err
-		}
-		return nil
-	})
-
-	// Wait for evolution to complete and update state.
-	go func() {
-		defer s.evolutionWg.Done() // Mark evolution goroutine complete
-
-		if err := eg.Wait(); err != nil {
-			log.ErrorContext(ctx, "[Scheduler] Evolution goroutine exited with error",
 				"error", err)
 		} else {
 			log.InfoContext(ctx, "[Scheduler] Evolution completed successfully")
@@ -480,9 +500,9 @@ func (s *DefaultScheduler) GetNextEvolutionTime(ctx context.Context) (time.Time,
 		return time.Time{}, ErrDisabled
 	}
 
-	if !s.running {
-		return time.Time{}, ErrSchedulerNotStarted
-	}
+	if s.state != StateRunning {
+	  return time.Time{}, ErrSchedulerNotStarted
+	 }
 
 	// If evolution is active, return when it might finish (approximate).
 	if s.evolutionActive {
@@ -514,7 +534,7 @@ func (s *DefaultScheduler) GetNextEvolutionTime(ctx context.Context) (time.Time,
 func (s *DefaultScheduler) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.running
+	return s.state == StateRunning
 }
 
 // LastEvolutionTime returns the timestamp of the last evolution cycle.

@@ -87,15 +87,28 @@ func runServe() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Declare httpSrv here so the signal handler below can reference it.
+	// The actual server is constructed after bootstrap/agent setup is complete.
+	var httpSrv *http.Server
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		select {
-		case <-sigCh:
-			fmt.Println("\nShutting down...")
-			cancel()
-		case <-ctx.Done():
-		}
-		return nil
+	 select {
+	 case <-sigCh:
+	  fmt.Println("\nShutting down...")
+	  if httpSrv != nil {
+	   // Create a fresh context for shutdown with a timeout so the
+	   // server does not hang indefinitely if connections refuse to close.
+	   shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	   defer shutdownCancel()
+	   if err := httpSrv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
+	    fmt.Fprintf(os.Stderr, "HTTP server shutdown error: %v\n", err)
+	   }
+	  }
+	  cancel()
+	 case <-ctx.Done():
+	 }
+	 return nil
 	})
 
 	// --- Bootstrap: infrastructure components via single wiring hub ---
@@ -257,17 +270,23 @@ func runServe() error {
 	server := monitoring.NewHTTPServer(plugin)
 	handler := &actionHandler{inner: server, mgr: mgr, tools: registry}
 
-	httpSrv := &http.Server{
+	httpSrv = &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if err := httpSrv.ListenAndServe(); err != nil {
-		return err
-	}
-	return nil
+	// Start HTTP server; gracefully shut down on signal.
+	g.Go(func() error {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("HTTP server error: %w", err)
+		}
+		return nil
+	})
+
+	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
+	return g.Wait()
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.
