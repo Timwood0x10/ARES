@@ -566,15 +566,25 @@ func (t *fileTool) validatePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve allowed dir: %w", err)
 	}
-	// Use Rel to robustly detect containment (handles .., symlinks-relative, etc.).
-	rel, err := filepath.Rel(absDir, absPath)
+	// Resolve symlinks before containment check to prevent traversal via symlinks
+	// pointing outside the allowed directory.
+	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s: %w", absPath, absDir, err)
+		return "", fmt.Errorf("resolve symlinks for path %s: %w", absPath, err)
+	}
+	realDir, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlinks for allowed dir %s: %w", absDir, err)
+	}
+	// Use Rel to robustly detect containment (handles .., symlinks-relative, etc.).
+	rel, err := filepath.Rel(realDir, realPath)
+	if err != nil {
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s: %w", realPath, realDir, err)
 	}
 	if strings.HasPrefix(rel, "..") || rel == ".." {
-		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s", absPath, absDir)
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s", realPath, realDir)
 	}
-	return absPath, nil
+	return realPath, nil
 }
 
 func (t *fileTool) Execute(_ context.Context, params map[string]any) (Result, error) {

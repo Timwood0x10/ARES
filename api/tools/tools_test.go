@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRegistry(t *testing.T) {
@@ -1147,4 +1150,35 @@ func TestPlannerProvider_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent tool")
 	}
+}
+
+func TestFileTool_ValidatePathBlocksSymlinkTraversal(t *testing.T) {
+	// Create a temp dir structure: allowedDir/safe.txt, and a symlink -> /etc
+	tmpDir := t.TempDir()
+	allowedDir := filepath.Join(tmpDir, "allowed")
+	require.NoError(t, os.MkdirAll(allowedDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(allowedDir, "safe.txt"), []byte("safe"), 0644))
+
+	// Create a symlink inside allowedDir pointing outside.
+	symlinkPath := filepath.Join(allowedDir, "escape")
+	require.NoError(t, os.Symlink("/etc", symlinkPath))
+
+	ft := newFileTool(WithAllowedDir(allowedDir))
+
+	// Accessing the symlink should be rejected.
+	result, err := ft.Execute(context.Background(), map[string]any{
+		"operation": "read",
+		"path":      symlinkPath,
+	})
+	require.NoError(t, err, "Execute itself should not fail")
+	assert.False(t, result.Success, "symlink escape should be blocked")
+	assert.Contains(t, result.Data.(string), "access denied", "error should mention access denied")
+
+	// Accessing a normal file inside allowedDir should succeed.
+	result, err = ft.Execute(context.Background(), map[string]any{
+		"operation": "read",
+		"path":      filepath.Join(allowedDir, "safe.txt"),
+	})
+	require.NoError(t, err, "Execute itself should not fail")
+	assert.True(t, result.Success, "normal file inside allowed dir should be accessible")
 }

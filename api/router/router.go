@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/Timwood0x10/ares/api/handler"
-	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 // Router provides HTTP routing for the API.
@@ -31,9 +30,6 @@ func NewRouter() *Router {
 		streamH: handler.NewStreamHandler(),
 	}
 }
-
-// AgentProcessorFunc is an adapter to allow using a function as AgentProcessor.
-type AgentProcessorFunc func(ctx any, input any) (<-chan base.AgentEvent, error)
 
 // RegisterStreamEndpoint registers the streaming endpoint with a processor.
 func (r *Router) RegisterStreamEndpoint(processor handler.AgentProcessor) {

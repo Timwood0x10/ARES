@@ -28,8 +28,8 @@ type HealthReport struct {
 	RetrievalStatus ServiceStatus `json:"retrieval"`
 	// WorkflowStatus reports the health of the workflow service.
 	WorkflowStatus ServiceStatus `json:"workflow"`
-	// OverallStatus is true when all configured services are healthy.
-	OverallStatus bool `json:"overall_status"`
+	// Healthy is true when all configured services are healthy.
+	Healthy bool `json:"healthy"`
 	// Timestamp records when this report was generated.
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -131,7 +131,7 @@ func buildHealthReport(
 		MemoryStatus:    memory,
 		RetrievalStatus: retrieval,
 		WorkflowStatus:  workflow,
-		OverallStatus:   allHealthy,
+		Healthy:     allHealthy,
 		Timestamp:       time.Now().UTC(),
 	}
 }

@@ -58,16 +58,14 @@ func (s *MemoryEventStore) Append(_ context.Context, streamID string, events []*
 
 	currentVersion := s.versions[streamID]
 
-	// Optimistic concurrency: if expectedVersion > 0, check it matches.
+	// Optimistic concurrency control.
+	// expectedVersion < 0: no check, append after current version.
+	// expectedVersion == 0: auto-detect, append after current version (no conflict).
+	// expectedVersion > 0: must match current version, otherwise ErrVersionConflict.
 	if expectedVersion > 0 && currentVersion != expectedVersion {
 		return ErrVersionConflict
 	}
-
-	// If expectedVersion == 0, append after current version (auto-detect).
-	startVersion := expectedVersion
-	if startVersion == 0 {
-		startVersion = currentVersion
-	}
+	startVersion := currentVersion
 
 	for i, event := range events {
 		if event == nil {

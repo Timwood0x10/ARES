@@ -523,10 +523,16 @@ func (p *Population) Snapshot() ([]*mutation.Strategy, int) {
 //
 //	scorer - function that takes an agent (read-only) and returns its fitness score.
 func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// Copy agents under read lock to avoid holding the write lock during external scorer calls
+	// (scorer may be an LLM call or network I/O that blocks for seconds).
+	p.mu.RLock()
+	agents := make([]*mutation.Strategy, len(p.Agents))
+	copy(agents, p.Agents)
+	p.mu.RUnlock()
 
-	for i, agent := range p.Agents {
+	// Score each agent outside the lock.
+	scores := make([]float64, len(agents))
+	for i, agent := range agents {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -538,11 +544,20 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 						"mutation_type", agent.StrategyMutationType,
 						"panic_value", r,
 					)
-					agent.Score = ScoreUnevaluated
+					scores[i] = ScoreUnevaluated
 				}
 			}()
-			agent.Score = scorer(agent)
+			scores[i] = scorer(agent)
 		}()
+	}
+
+	// Write scores back under write lock.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, agent := range p.Agents {
+		if i < len(scores) && agent.ID == agents[i].ID {
+			agent.Score = scores[i]
+		}
 	}
 
 	p.updateBestEverLocked()

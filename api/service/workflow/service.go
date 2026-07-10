@@ -267,12 +267,19 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 			if res.err != nil {
 				errMsg = res.err.Error()
 			}
-			events <- core.WorkflowEvent{
+			// gctx is already cancelled after g.Wait() — use execCtx for cancellation check
+			// so the Failed event can still be emitted when execution completes normally
+			// but the result is an error.
+			select {
+			case events <- core.WorkflowEvent{
 				Type:       core.WorkflowEventFailed,
 				WorkflowID: req.WorkflowID,
 				Status:     core.WorkflowStatusFailed,
 				Error:      errMsg,
 				Timestamp:  time.Now(),
+			}:
+			case <-execCtx.Done():
+				return
 			}
 			return
 		}
@@ -285,7 +292,8 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 				evType = core.WorkflowEventStepFailed
 				status = core.WorkflowStatusFailed
 			}
-			events <- core.WorkflowEvent{
+			select {
+			case events <- core.WorkflowEvent{
 				Type:        evType,
 				ExecutionID: res.result.ExecutionID,
 				WorkflowID:  req.WorkflowID,
@@ -295,16 +303,23 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 				Output:      stepRes.Output,
 				Error:       stepRes.Error,
 				Timestamp:   time.Now(),
+			}:
+			case <-execCtx.Done():
+				return
 			}
 		}
 
 		// Emit workflow completed event.
-		events <- core.WorkflowEvent{
+		select {
+		case events <- core.WorkflowEvent{
 			Type:        core.WorkflowEventCompleted,
 			ExecutionID: res.result.ExecutionID,
 			WorkflowID:  req.WorkflowID,
 			Status:      core.WorkflowStatusCompleted,
 			Timestamp:   time.Now(),
+		}:
+		case <-execCtx.Done():
+			return
 		}
 	}()
 

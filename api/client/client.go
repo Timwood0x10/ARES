@@ -194,7 +194,7 @@ func (c *Client) GetConfig() *ConfigFile {
 // Health returns a structured health report.
 func (c *Client) Health(ctx context.Context) (*HealthReport, error) {
 	return &HealthReport{
-		OverallStatus: !c.closed,
+		Healthy:   !c.closed,
 		Timestamp:     time.Now(),
 	}, nil
 }

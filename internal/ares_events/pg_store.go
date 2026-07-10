@@ -37,7 +37,8 @@ func NewPostgresEventStore(pool *postgres.Pool) (*PostgresEventStore, error) {
 
 // Append persists events to the given stream with optimistic concurrency control.
 // expectedVersion semantics:
-//   - 0: stream must be empty or not yet created.
+//   - < 0: no check, append after current version.
+//   - 0: auto-detect, append after current version (no conflict).
 //   - positive: must match the stream's current max version.
 //
 // Returns ErrVersionConflict on mismatch.

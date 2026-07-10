@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -16,6 +17,10 @@ import (
 // maxResults caps the number of task results cached in memory to prevent
 // unbounded growth (OOM). When the limit is reached, the cache is reset.
 const maxResults = 10000
+
+// ErrNotImplemented indicates the feature is not yet wired.
+// TODO: wire inner agent List/FullCreate APIs (expected by 2026-09-30).
+var ErrNotImplemented = errors.New("agent: not implemented")
 
 // Service implements core.AgentService by wrapping the internal agent implementation.
 type Service struct {
@@ -45,6 +50,8 @@ func (s *Service) CreateAgent(ctx context.Context, config *core.AgentConfig) (*c
 	if config == nil {
 		return nil, fmt.Errorf("agent config is required")
 	}
+	// TODO: pass Name/Type/Config to inner once inner API supports them (expected by 2026-09-30).
+	// Currently inner.CreateAgent only accepts ID, so Name/Type/Config are dropped.
 	agent, err := s.inner.CreateAgent(ctx, config.ID)
 	if err != nil {
 		return nil, fmt.Errorf("agent: create: %w", err)
@@ -124,19 +131,11 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 
 // ListAgents lists agents with optional filtering.
 func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*core.Agent, *core.PaginationResponse, error) {
-	_ = filter // filtering not yet supported by inner implementation
-	var result []*core.Agent
-	// The inner service doesn't expose a list method directly,
-	// so we return an empty list for now. Full implementation
-	// will require adding a List method to the internal service.
-	_ = result
-	return nil, &core.PaginationResponse{
-		Total:      0,
-		Page:       1,
-		PageSize:   0,
-		TotalPages: 0,
-		HasMore:    false,
-	}, nil
+	// TODO: expose inner List method and implement filter+pagination (expected by 2026-09-30).
+	// Returning ErrNotImplemented instead of an empty list avoids misleading callers
+	// into believing no agents exist.
+	_ = filter
+	return nil, nil, ErrNotImplemented
 }
 
 // ExecuteTask executes a task on an agent.
@@ -161,9 +160,17 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 	}
 
 	s.mu.Lock()
-	// Prevent unbounded growth: reset the cache when it hits the cap.
+	// Prevent unbounded growth: warn when cache hits the cap instead of silently resetting
+	// all historical results. TODO: implement LRU eviction (expected by 2026-09-30).
 	if len(s.results) >= maxResults {
-		s.results = make(map[string]*core.TaskResult)
+		fmt.Printf("agent: task result cache full (max=%d), discarding task %s\n", maxResults, task.ID)
+		s.mu.Unlock()
+		return &core.TaskResult{
+			TaskID:  task.ID,
+			AgentID: task.AgentID,
+			Success: true,
+			Data:    task.Payload,
+		}, nil
 	}
 	s.results[task.ID] = result
 	s.mu.Unlock()

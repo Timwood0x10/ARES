@@ -4,6 +4,7 @@ package evolution
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	evolve "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -11,6 +12,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 )
+
+// ErrNotImplemented indicates the feature is not yet wired.
+// TODO: implement evolution mutator/promoter public adapter (expected by 2026-09-30).
+var ErrNotImplemented = errors.New("evolution: not implemented")
 
 // ---------------------------------------------------------------------------
 // Strategy & Lineage
@@ -189,8 +194,12 @@ type Mutator interface {
 	Mutate(ctx context.Context, parent *Strategy) (*Strategy, error)
 }
 
-func NewMutator(model string, cfg MutationConfig) Mutator {
-	return nil // returns nil — caller configures internal mutator directly
+// NewMutator constructs a public Mutator.
+// TODO: wire internal mutator adapter (expected by 2026-09-30).
+// Currently returns ErrNotImplemented — callers MUST handle this error and not
+// assume a nil-safe Mutator.
+func NewMutator(model string, cfg MutationConfig) (Mutator, error) {
+	return nil, ErrNotImplemented
 }
 
 // ---------------------------------------------------------------------------
@@ -228,13 +237,15 @@ type promoterAdapter struct {
 }
 
 func (p *promoterAdapter) Evaluate(ctx context.Context, strategyID string, successRate, confidence float64) (string, error) {
-	return "", nil
+	// TODO: wire internal promoter Evaluate (expected by 2026-09-30).
+	return "", ErrNotImplemented
 }
 func (p *promoterAdapter) Promote(ctx context.Context, strategyID string) error {
 	return p.inner.Promote(ctx, strategyID)
 }
 func (p *promoterAdapter) Demote(ctx context.Context, strategyID string) error {
-	return nil
+	// TODO: wire internal promoter Demote (expected by 2026-09-30).
+	return ErrNotImplemented
 }
 
 func NewPromoter(criteria *PromotionCriteria) Promoter {

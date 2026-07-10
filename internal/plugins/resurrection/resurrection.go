@@ -547,11 +547,18 @@ func (s *Supervisor) resurrect(agentID string) {
 	// the first read and here, causing a double-stop or resource leak.
 	oldAgent := w.agent
 	if oldAgent != nil {
-		stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
-		if err := oldAgent.Stop(stopCtx); err != nil {
-			log.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
-		}
-		stopCancel()
+	 // Guard against factory returning the same pointer — if oldAgent and
+	 // newAgent are the same instance, skip stopping to avoid self-inflicted shutdown.
+	 if oldAgent == newAgent {
+	  log.Warn("resurrection: factory returned same instance as old agent",
+	   "agent_id", agentID)
+	 } else {
+	  stopCtx, stopCancel := ares_ctxutil.WithDetachedTimeout("resurrection:stop-old", 10*time.Second)
+	  if err := oldAgent.Stop(stopCtx); err != nil {
+	   log.Warn("resurrection: failed to stop old agent", "agent_id", agentID, "error", err)
+	  }
+	  stopCancel()
+	 }
 	}
 
 	// Replace old agent with new one.

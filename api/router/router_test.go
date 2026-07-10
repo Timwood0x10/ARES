@@ -2,12 +2,9 @@ package router
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/Timwood0x10/ares/internal/agents/base"
 )
 
 func TestNewRouter(t *testing.T) {
@@ -44,11 +41,4 @@ func TestRegisterStreamEndpoint(t *testing.T) {
 func TestRegisterEvolutionEndpoints(t *testing.T) {
 	r := NewRouter()
 	r.RegisterEvolutionEndpoints(nil)
-}
-
-func TestAgentProcessorFuncType(t *testing.T) {
-	fn := AgentProcessorFunc(func(ctx any, input any) (<-chan base.AgentEvent, error) {
-		return nil, errors.New("not implemented")
-	})
-	_ = fn
 }

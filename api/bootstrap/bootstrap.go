@@ -119,12 +119,15 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	var dash *dashsvc.Dashboard
 	if cfg.Dashboard != nil && cfg.Dashboard.Enabled {
-		dash = dashsvc.New(nil, nil)
+		// NOTE: wiring real MCP/LLM executors requires interface adaptation from
+		// comp.MCP / comp.LLM — skipped for now to avoid nil-dependent panic.
+		// TODO: wire dashboard with actual MCP/LLM executors (expected by 2026-09-30).
+		log.Println("bootstrap: dashboard enabled but MCP/LLM executors not wired — skipping")
 	}
 
 	var flightRec *flightsvc.Recorder
 	if cfg.Flight != nil {
-		flightRec = flightsvc.New(nil)
+		flightRec = flightsvc.New(comp.EventStore)
 	}
 
 	return &ARES{
@@ -164,12 +167,16 @@ func (a *ARES) Stop() error {
 		a.Dashboard.Stop()
 	}
 	if a.Memory != nil {
-		if err := a.Memory.Stop(context.Background()); err != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		if err := a.Memory.Stop(stopCtx); err != nil {
 			log.Printf("bootstrap: memory stop: %v", err)
 		}
 	}
 	if a.MCP != nil {
-		if err := a.MCP.Stop(context.Background()); err != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		if err := a.MCP.Stop(stopCtx); err != nil {
 			log.Printf("bootstrap: mcp stop: %v", err)
 		}
 	}
@@ -240,17 +247,21 @@ func (s *runtimeEvoService) Propose(ctx context.Context, proposal core.RuntimePr
 // runEvolutionCycle runs one iteration of Mutate → Diff → Submit → Evaluate.
 func runEvolutionCycle(ctx context.Context, c *ares_bootstrap.NewEvolutionComponents) (*core.RuntimeCycleResult, error) {
 	snapshots := make(map[string]diff.SnapshotPair)
+	var failures []string
 	for _, name := range c.GenomeReg.List() {
 		gm, err := c.GenomeReg.Get(name)
 		if err != nil {
 			continue
 		}
-		snap, _ := gm.Snapshot(ctx)
+		snap, err := gm.Snapshot(ctx)
+		if err != nil {
+			failures = append(failures, name+": snapshot failed")
+			continue
+		}
 		snapshots[name] = diff.SnapshotPair{Old: snap}
 	}
 
 	var changes []core.GenomeChange
-	var failures []string
 	totalProposed := 0
 
 	for _, name := range c.GenomeReg.List() {
@@ -263,7 +274,11 @@ func runEvolutionCycle(ctx context.Context, c *ares_bootstrap.NewEvolutionCompon
 			continue
 		}
 		best := children[0]
-		newSnap, _ := best.Snapshot(ctx)
+		newSnap, err := best.Snapshot(ctx)
+		if err != nil {
+			failures = append(failures, name+": child snapshot failed")
+			continue
+		}
 		pair := snapshots[name]
 		pair.New = newSnap
 		patches, err := c.DiffReg.DiffAll(ctx, map[string]diff.SnapshotPair{name: pair})

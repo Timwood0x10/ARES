@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	"github.com/stretchr/testify/assert"
 )
 
 type stubMutator struct{}
@@ -54,4 +55,24 @@ func TestLineageStruct(t *testing.T) {
 	if l.ParentID != "parent" {
 		t.Fatal("expected ParentID to be set")
 	}
+}
+
+func TestNewMutatorReturnsErrNotImplemented(t *testing.T) {
+	_, err := NewMutator("test-model", MutationConfig{})
+	assert.ErrorIs(t, err, ErrNotImplemented)
+}
+
+func TestPromoterEvaluateReturnsErrNotImplemented(t *testing.T) {
+	criteria := DefaultPromotionCriteria()
+	adapter := NewPromoter(&criteria)
+	// adapter is a promoterAdapter with inner=nil, Evaluate returns ErrNotImplemented.
+	_, err := adapter.Evaluate(context.Background(), "test-strategy", 0.9, 0.8)
+	assert.ErrorIs(t, err, ErrNotImplemented)
+}
+
+func TestPromoterDemoteReturnsErrNotImplemented(t *testing.T) {
+	criteria := DefaultPromotionCriteria()
+	adapter := NewPromoter(&criteria)
+	err := adapter.Demote(context.Background(), "test-strategy")
+	assert.ErrorIs(t, err, ErrNotImplemented)
 }

@@ -62,6 +62,32 @@ func TestMemoryEventStore_AutoDetectVersion(t *testing.T) {
 	assert.Equal(t, int64(2), version)
 }
 
+func TestMemoryEventStore_AppendWithNegativeOne(t *testing.T) {
+	store := NewMemoryEventStore()
+	ctx := context.Background()
+
+	// expectedVersion = -1: no OCC check, append after current version.
+	// First append to empty stream.
+	err := store.Append(ctx, "s1", []*Event{{Type: EventAgentStarted}}, -1)
+	require.NoError(t, err)
+	version, err := store.StreamVersion(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), version, "first append with -1 should set version 1")
+
+	// Second append with -1: append after current, no conflict check.
+	err = store.Append(ctx, "s1", []*Event{{Type: EventAgentStopped}}, -1)
+	require.NoError(t, err)
+	version, _ = store.StreamVersion(ctx, "s1")
+	assert.Equal(t, int64(2), version, "second append with -1 should continue version sequence")
+
+	// Verify events are readable.
+	events, err := store.Read(ctx, "s1", ReadOptions{})
+	require.NoError(t, err)
+	assert.Len(t, events, 2)
+	assert.Equal(t, int64(1), events[0].Version)
+	assert.Equal(t, int64(2), events[1].Version)
+}
+
 func TestMemoryEventStore_ReadAscending(t *testing.T) {
 	store := NewMemoryEventStore()
 	ctx := context.Background()

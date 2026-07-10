@@ -336,7 +336,7 @@ func Example_health() {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("Health: %v\n", report.OverallStatus)
+	fmt.Printf("Health: %v\n", report.Healthy)
 
 	// Output:
 	// Ping: true

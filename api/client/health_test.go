@@ -11,8 +11,8 @@ import (
 // TestHealthReport_Structure verifies HealthReport fields are zero-valued correctly.
 func TestHealthReport_Structure(t *testing.T) {
 	report := HealthReport{}
-	if report.OverallStatus {
-		t.Errorf("expected OverallStatus to be false")
+	if report.Healthy {
+		t.Errorf("expected Healthy to be false")
 	}
 	if !report.Timestamp.IsZero() {
 		t.Errorf("expected Timestamp to be zero")
@@ -93,8 +93,8 @@ func TestBuildHealthReport_AllHealthy(t *testing.T) {
 		ServiceStatus{Available: true},
 		ServiceStatus{Available: true},
 	)
-	if !report.OverallStatus {
-		t.Errorf("expected OverallStatus to be true")
+	if !report.Healthy {
+		t.Errorf("expected Healthy to be true")
 	}
 	if report.Timestamp.IsZero() {
 		t.Errorf("expected Timestamp to be non-zero")
@@ -109,8 +109,8 @@ func TestBuildHealthReport_OneUnhealthy(t *testing.T) {
 		ServiceStatus{Available: true},
 		ServiceStatus{Available: true},
 	)
-	if report.OverallStatus {
-		t.Errorf("expected OverallStatus to be false")
+	if report.Healthy {
+		t.Errorf("expected Healthy to be false")
 	}
 	if report.MemoryStatus.Error != "memory down" {
 		t.Errorf("expected 'memory down', got %q", report.MemoryStatus.Error)
@@ -129,13 +129,13 @@ func TestBuildHealthReport_UnconfiguredSkipsService(t *testing.T) {
 	)
 	// A service with non-empty Error is included in the configured list.
 	// If it's not available, overall status is false.
-	if report.OverallStatus {
-		t.Errorf("expected OverallStatus to be false when a configured service is unavailable")
+	if report.Healthy {
+		t.Errorf("expected Healthy to be false when a configured service is unavailable")
 	}
 }
 
-// TestClientHealth_ReportsOverallStatus tests the Health method returns overall status based on closed state.
-func TestClientHealth_ReportsOverallStatus(t *testing.T) {
+// TestClientHealth_ReportsHealthy tests the Health method returns overall status based on closed state.
+func TestClientHealth_ReportsHealthy(t *testing.T) {
 	client, err := NewClient(&Config{
 		BaseConfig: &core.BaseConfig{
 			RequestTimeout: 30 * time.Second,
@@ -156,22 +156,22 @@ func TestClientHealth_ReportsOverallStatus(t *testing.T) {
 		t.Fatal("expected non-nil report")
 	}
 
-	// Client not closed => OverallStatus is true
-	if !report.OverallStatus {
-		t.Errorf("expected OverallStatus to be true when client is open")
+	// Client not closed => Healthy is true
+	if !report.Healthy {
+		t.Errorf("expected Healthy to be true when client is open")
 	}
 	if report.Timestamp.IsZero() {
 		t.Errorf("expected Timestamp to be set")
 	}
 
-	// After closing, OverallStatus should be false
+	// After closing, Healthy should be false
 	_ = client.Close(ctx)
 	report, err = client.Health(ctx)
 	if err != nil {
 		t.Fatalf("Health() error = %v", err)
 	}
-	if report.OverallStatus {
-		t.Errorf("expected OverallStatus to be false after Close()")
+	if report.Healthy {
+		t.Errorf("expected Healthy to be false after Close()")
 	}
 }
 

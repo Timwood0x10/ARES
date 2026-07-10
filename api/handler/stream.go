@@ -118,18 +118,19 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 			return
 		}
 
-		// Set SSE headers
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-
-		// Flush helper
+		// Flush helper — check BEFORE setting SSE headers so we can fall back to
+		// plain http.Error on failure without content-type conflict.
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 			return
 		}
+
+		// Set SSE headers
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
 
 		// Create context that cancels when client disconnects
 		ctx, cancel := context.WithCancel(r.Context())
@@ -138,9 +139,8 @@ func (h *StreamHandler) HandleStream(processor AgentProcessor) http.HandlerFunc 
 		// Start processing
 		eventCh, err := processor.ProcessStream(ctx, req.Query)
 		if err != nil {
-			if err := h.sendSSE(w, flusher, "error", map[string]string{"message": err.Error()}); err != nil {
-				fmt.Printf("stream: send SSE error: %v\n", err)
-			}
+			// SSE headers already set — write a plain error event via sendSSE.
+			h.sendErrorSSE(w, flusher, err.Error())
 			return
 		}
 
@@ -212,6 +212,23 @@ func (h *StreamHandler) isOriginAllowed(origin string) bool {
 		}
 	}
 	return false
+}
+
+// sendErrorSSE sends an error event as SSE (called after headers are set).
+func (h *StreamHandler) sendErrorSSE(w io.Writer, flusher http.Flusher, message string) {
+	errPayload := map[string]string{"message": message}
+	data, err := json.Marshal(errPayload)
+	if err != nil {
+		fmt.Fprintf(w, "event: error\ndata: {\"message\":\"internal error\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // sendSSE sends a single SSE event.

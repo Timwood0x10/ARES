@@ -62,7 +62,7 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	return c, nil
 }
 
-func (tr *stdioTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -93,7 +93,13 @@ func (tr *stdioTransport) roundTrip(_ context.Context, req jsonrpcRequest) (*jso
 	select {
 	case r := <-ch:
 		return r.resp, r.err
+	case <-ctx.Done():
+		// Context cancelled — close stdin to unblock the scan goroutine.
+		_ = tr.stdin.Close()
+		return nil, ctx.Err()
 	case <-time.After(30 * time.Second):
+		// Timeout — close stdin to unblock the scan goroutine, preventing leak.
+		_ = tr.stdin.Close()
 		return nil, fmt.Errorf("timeout waiting for response")
 	}
 }
