@@ -66,14 +66,20 @@ make examples          # build all 24 examples
 ## CLI
 
 ```bash
-ares init        # Scaffold a new project (main.go + ares.yaml)
-ares run         # Run agent from config file
-ares bench       # Quick performance benchmark
-ares doctor      # Diagnose environment (LLM key, Ollama, Git)
-ares version     # Show version
-ares arena       # Chaos engineering scenarios
-ares flight      # Inspect and replay task recordings
-ares evolution   # Runtime evolution: status, run
+ares serve              # Start full agent monitoring (LLM + MCP + dashboard)
+ares agent list         # List all registered agents
+ares arena run/validate/list/serve/survival/inspect  # Chaos engineering scenarios
+ares evolution run/status         # Runtime evolution
+ares flight inspect/replay        # Inspect and replay task recordings
+ares workflow run <id> <input>    # Execute a workflow
+ares knowledge build <goal>       # Build a knowledge graph (via HTTP API)
+ares mcp-null serve     # Start minimal MCP null server (stdio)
+ares db migrate/setup-test/create-table/check-rls  # Database management
+ares init               # Scaffold a new project (main.go + ares.yaml)
+ares run                # Run agent from config file
+ares bench              # Quick performance benchmark
+ares doctor             # Diagnose environment (LLM key, Ollama, Git)
+ares version            # Show version
 ```
 
 ## SDK

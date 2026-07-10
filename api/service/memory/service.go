@@ -3,16 +3,88 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	internal "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
-// Config re-exports internal's memory config.
-type Config = internal.MemoryConfig
+// Config holds configuration for the memory service.
+// This is a public type that wraps the internal MemoryConfig to avoid
+// leaking internal package types into the public API.
+type Config struct {
+	// Enabled enables memory features.
+	Enabled bool
+	// Storage type: "memory" or "postgres".
+	Storage string
+	// MaxHistory is the maximum number of turns to keep in context.
+	MaxHistory int
+	// MaxSessions is the maximum number of sessions to store.
+	MaxSessions int
+	// MaxTasks is the maximum number of tasks to store.
+	MaxTasks int
+	// MaxDistilledTasks is the maximum number of distilled tasks to store.
+	MaxDistilledTasks int
+	// SessionTTL is the time-to-live for sessions.
+	SessionTTL time.Duration
+	// TaskTTL is time-to-live for tasks.
+	TaskTTL time.Duration
+	// DistilledTaskTTL is time-to-live for distilled tasks.
+	DistilledTaskTTL time.Duration
+	// VectorDim is the dimension of the vector (for local embedding).
+	VectorDim int
+	// EnablePostgres enables PostgreSQL storage.
+	EnablePostgres bool
+	// PostgresDSN is the PostgreSQL connection string.
+	PostgresDSN string
+}
+
+// toInternal converts the public Config to the internal MemoryConfig type.
+func (c *Config) toInternal() *internal.MemoryConfig {
+	if c == nil {
+		return nil
+	}
+	return &internal.MemoryConfig{
+		Enabled:           c.Enabled,
+		Storage:           c.Storage,
+		MaxHistory:        c.MaxHistory,
+		MaxSessions:       c.MaxSessions,
+		MaxTasks:          c.MaxTasks,
+		MaxDistilledTasks: c.MaxDistilledTasks,
+		SessionTTL:        c.SessionTTL,
+		TaskTTL:           c.TaskTTL,
+		DistilledTaskTTL:  c.DistilledTaskTTL,
+		VectorDim:         c.VectorDim,
+		EnablePostgres:    c.EnablePostgres,
+		PostgresDSN:       c.PostgresDSN,
+	}
+}
 
 // Message represents a single message in a session.
-type Message = internal.Message
+type Message struct {
+	// Role is the message role (user, assistant, system, tool).
+	Role string
+	// Content is the message content.
+	Content string
+	// Time is the timestamp when the message was created.
+	Time time.Time
+}
+
+// toPublicMessages converts a slice of internal Messages to public Messages.
+func toPublicMessages(msgs []internal.Message) []Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = Message{
+			Role:    m.Role,
+			Content: m.Content,
+			Time:    m.Time,
+		}
+	}
+	return out
+}
 
 // Service wraps internal/ares_memory.MemoryManager for public consumption.
 type Service struct {
@@ -20,12 +92,13 @@ type Service struct {
 }
 
 // New creates a new memory service with the given config.
-// When cfg is nil, DefaultMemoryConfig() is used.
+// When cfg is nil, default configuration is used.
 func New(cfg *Config) (*Service, error) {
-	if cfg == nil {
-		cfg = internal.DefaultMemoryConfig()
+	internalCfg := cfg.toInternal()
+	if internalCfg == nil {
+		internalCfg = internal.DefaultMemoryConfig()
 	}
-	mgr, err := internal.NewMemoryManager(cfg)
+	mgr, err := internal.NewMemoryManager(internalCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +117,11 @@ func (s *Service) AddMessage(ctx context.Context, sessionID, role, content strin
 
 // GetMessages retrieves all messages from the session.
 func (s *Service) GetMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	return s.inner.GetMessages(ctx, sessionID)
+	msgs, err := s.inner.GetMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return toPublicMessages(msgs), nil
 }
 
 // DeleteSession deletes a session and all its messages immediately.

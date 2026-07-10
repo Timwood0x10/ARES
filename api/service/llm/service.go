@@ -8,8 +8,32 @@ import (
 	internal "github.com/Timwood0x10/ares/internal/llmservice"
 )
 
-// Config re-exports internal's LLM service config.
-type Config = internal.Config
+// Config holds configuration for the LLM service.
+// This is a public type that wraps the internal Config to avoid
+// leaking internal package types into the public API.
+type Config struct {
+	// BaseConfig is the base configuration (timeout, retries, etc.).
+	BaseConfig *core.BaseConfig
+	// LLMConfig is the LLM provider configuration.
+	LLMConfig *core.LLMConfig
+	// Repo is the LLM repository (optional, for logging/audit).
+	Repo core.LLMRepository
+	// EmbeddingClient is the embedding service client (optional).
+	EmbeddingClient any
+}
+
+// toInternal converts the public Config to the internal Config type.
+func (c *Config) toInternal() *internal.Config {
+	if c == nil {
+		return nil
+	}
+	return &internal.Config{
+		BaseConfig:      c.BaseConfig,
+		LLMConfig:       c.LLMConfig,
+		Repo:            c.Repo,
+		EmbeddingClient: c.EmbeddingClient,
+	}
+}
 
 // Service wraps internal/llmservice.Service for public consumption.
 type Service struct {
@@ -18,7 +42,7 @@ type Service struct {
 
 // NewService creates a new LLM service with the given config.
 func NewService(cfg *Config) (*Service, error) {
-	s, err := internal.NewService(cfg)
+	s, err := internal.NewService(cfg.toInternal())
 	if err != nil {
 		return nil, err
 	}

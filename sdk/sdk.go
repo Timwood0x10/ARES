@@ -282,11 +282,15 @@ func New(opts ...Option) (*Runtime, error) {
 	// ---- MCP ----
 	var mcpClients []*mcp.Client
 	for _, conn := range cfg.mcpConns {
-		client, err := mcp.ConnectStdio(context.Background(), conn.Name, conn.Command, conn.Args)
+		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
+		connectCancel()
 		if err != nil {
 			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
 		}
-		tools, listErr := client.ListTools(context.Background())
+		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		tools, listErr := client.ListTools(listCtx)
+		listCancel()
 		if listErr != nil {
 			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
 		}
@@ -362,7 +366,9 @@ func New(opts ...Option) (*Runtime, error) {
 func (r *Runtime) Close() {
 	r.llmSvc.Close()
 	if r.memSvc != nil {
-		_ = r.memSvc.Stop(context.Background())
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		_ = r.memSvc.Stop(stopCtx)
 	}
 	for _, c := range r.mcpClients {
 		_ = c.Close()

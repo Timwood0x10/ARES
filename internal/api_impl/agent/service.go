@@ -3,6 +3,8 @@ package agentapi
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -152,6 +154,95 @@ func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent
 		})
 	}
 	return out, nil
+}
+
+// UpdateAgent updates an existing agent's mutable fields (name, type, status).
+// Returns a copy of the updated agent or error if the agent does not exist.
+// Args:
+// ctx - operation context.
+// agentID - agent identifier.
+// updates - map of field names to new values. Supported keys: "name", "type", "status".
+// Returns updated agent copy or error.
+func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*Agent, error) {
+	if agentID == "" {
+		return nil, ErrInvalidAgentID
+	}
+
+	s.agentsMu.Lock()
+	defer s.agentsMu.Unlock()
+
+	agent, exists := s.agents[agentID]
+	if !exists {
+		return nil, ErrAgentNotFound
+	}
+
+	// Apply supported field updates.
+	for key, val := range updates {
+		switch key {
+		case "name":
+			if v, ok := val.(string); ok {
+				agent.Name = v
+			}
+		case "type":
+			if v, ok := val.(string); ok {
+				agent.Type = v
+			}
+		case "status":
+			if v, ok := val.(string); ok {
+				agent.Status = Status(v)
+			}
+		}
+	}
+
+	// Return a copy to avoid external modification.
+	return &Agent{
+		ID:        agent.ID,
+		Name:      agent.Name,
+		Type:      agent.Type,
+		SessionID: agent.SessionID,
+		Status:    agent.Status,
+		CreatedAt: agent.CreatedAt,
+	}, nil
+}
+
+// ExecuteTask creates a task for the agent via the memory manager and returns the
+// created task ID. The agent's session ID is used as the task session context.
+// Args:
+// ctx - operation context.
+// agentID - agent identifier.
+// taskID - caller-assigned task identifier for tracking.
+// payload - optional task data (serialized to JSON for storage).
+// Returns created task ID or error.
+func (s *Service) ExecuteTask(ctx context.Context, agentID, taskID string, payload map[string]interface{}) (string, error) {
+	if agentID == "" {
+		return "", ErrInvalidAgentID
+	}
+
+	s.agentsMu.RLock()
+	agent, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+
+	if !exists {
+		return "", ErrAgentNotFound
+	}
+
+	// Serialize payload to string for storage.
+	input := ""
+	if len(payload) > 0 {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("marshal task payload: %w", err)
+		}
+		input = string(data)
+	}
+
+	// Create task via memory manager.
+	createdTaskID, err := s.memoryMgr.CreateTask(ctx, agent.SessionID, agentID, input)
+	if err != nil {
+		return "", fmt.Errorf("create task: %w", err)
+	}
+
+	return createdTaskID, nil
 }
 
 // Agent filter fields.

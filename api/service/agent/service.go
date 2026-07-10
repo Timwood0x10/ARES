@@ -3,8 +3,8 @@
 package agent
 
 import (
+	"container/list"
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,17 +15,14 @@ import (
 )
 
 // maxResults caps the number of task results cached in memory to prevent
-// unbounded growth (OOM). When the limit is reached, the cache is reset.
+// unbounded growth (OOM). When the limit is reached, oldest entries are evicted.
 const maxResults = 10000
-
-// ErrNotImplemented indicates the feature is not yet wired.
-// TODO: wire inner agent List/FullCreate APIs (expected by 2026-09-30).
-var ErrNotImplemented = errors.New("agent: not implemented")
 
 // Service implements core.AgentService by wrapping the internal agent implementation.
 type Service struct {
 	inner   *agentapi.Service
 	results map[string]*core.TaskResult
+	order   *list.List // tracks insertion order for LRU eviction; values are task IDs
 	mu      sync.RWMutex
 }
 
@@ -42,6 +39,7 @@ func New(memoryMgr memory.MemoryManager) (*Service, error) {
 	return &Service{
 		inner:   agentapi.NewService(memoryMgr),
 		results: make(map[string]*core.TaskResult),
+		order:   list.New(),
 	}, nil
 }
 
@@ -72,50 +70,36 @@ func (s *Service) GetAgent(ctx context.Context, agentID string) (*core.Agent, er
 	}
 	return &core.Agent{
 		ID:        agent.ID,
+		Name:      agent.Name,
+		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    core.AgentStatus(agent.Status),
 		CreatedAt: agent.CreatedAt,
 	}, nil
 }
 
-// UpdateAgent updates an existing agent's configuration.
+// UpdateAgent updates an existing agent's configuration and persists changes.
+// Supported update keys: "name", "type", "status".
 func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*core.Agent, error) {
-	// Verify the agent exists.
-	agent, err := s.inner.GetAgent(ctx, agentID)
+	if agentID == "" {
+		return nil, fmt.Errorf("agent: update: agentID is required")
+	}
+
+	// Delegate to the inner service which persists the update and returns the
+	// updated agent.
+	agent, err := s.inner.UpdateAgent(ctx, agentID, updates)
 	if err != nil {
 		return nil, fmt.Errorf("agent: update: %w", err)
 	}
 
-	// Build the updated agent. The inner service does not yet support
-	// persisting field-level updates, so changes are applied in-memory only.
 	result := &core.Agent{
 		ID:        agent.ID,
+		Name:      agent.Name,
+		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    core.AgentStatus(agent.Status),
 		CreatedAt: agent.CreatedAt,
 		UpdatedAt: time.Now().Unix(),
-	}
-
-	// Apply supported field updates instead of silently ignoring them.
-	for key, val := range updates {
-		switch key {
-		case "name":
-			if v, ok := val.(string); ok {
-				result.Name = v
-			}
-		case "type":
-			if v, ok := val.(string); ok {
-				result.Type = v
-			}
-		case "status":
-			if v, ok := val.(string); ok {
-				result.Status = core.AgentStatus(v)
-			}
-		case "session_id":
-			if v, ok := val.(string); ok {
-				result.SessionID = v
-			}
-		}
 	}
 
 	return result, nil
@@ -129,7 +113,7 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
-// ListAgents lists agents with optional filtering.
+// ListAgents lists agents with optional filtering and pagination.
 func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*core.Agent, *core.PaginationResponse, error) {
 	// Convert public filter to internal filter.
 	innerFilter := &agentapi.AgentFilter{}
@@ -148,26 +132,69 @@ func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*
 	for i, a := range agents {
 		out[i] = &core.Agent{
 			ID:        a.ID,
+			Name:      a.Name,
+			Type:      a.Type,
 			SessionID: a.SessionID,
 			Status:    core.AgentStatus(string(a.Status)),
 			CreatedAt: a.CreatedAt,
 		}
 	}
 
-	// Build pagination response.
+	// Apply pagination.
 	total := int64(len(out))
-	pageSize := len(out)
 	page := 1
-	totalPages := 1
-	if total < 1 {
+	pageSize := int(total)
+	if pageSize < 1 {
 		pageSize = 0
 	}
+
+	if filter != nil && filter.Pagination != nil {
+		p := filter.Pagination
+		// Calculate offset and limit.
+		offset := p.Offset
+		limit := p.Limit
+		if limit <= 0 {
+			limit = 20 // default page size
+		}
+		if p.Page > 0 && p.PageSize > 0 {
+			offset = (p.Page - 1) * p.PageSize
+			limit = p.PageSize
+		}
+
+		// Apply offset and limit.
+		if offset > 0 && offset < len(out) {
+			out = out[offset:]
+		} else if offset >= len(out) {
+			out = nil
+		}
+		if limit > 0 && limit < len(out) {
+			out = out[:limit]
+		}
+
+		pageSize = limit
+		if pageSize < 1 {
+			pageSize = 0
+		}
+		if p.Page > 0 {
+			page = p.Page
+		}
+	}
+
+	totalPages := 1
+	if pageSize > 0 {
+		totalPages = int(total) / pageSize
+		if int(total)%pageSize > 0 {
+			totalPages++
+		}
+	}
+	hasMore := page < totalPages
+
 	return out, &core.PaginationResponse{
 		Total:      total,
 		Page:       page,
 		PageSize:   pageSize,
 		TotalPages: totalPages,
-		HasMore:    false,
+		HasMore:    hasMore,
 	}, nil
 }
 
@@ -178,34 +205,34 @@ func (s *Service) ExecuteTask(ctx context.Context, task *core.Task) (*core.TaskR
 		return nil, fmt.Errorf("agent: execute: task is required")
 	}
 
-	// Verify the agent exists.
-	_, err := s.inner.GetAgent(ctx, task.AgentID)
+	if task.ID == "" {
+		return nil, fmt.Errorf("agent: execute: task ID is required")
+	}
+
+	// Delegate to the inner service which creates the task via the memory manager.
+	createdTaskID, err := s.inner.ExecuteTask(ctx, task.AgentID, task.ID, task.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("agent: execute: agent %q: %w", task.AgentID, err)
+		return nil, fmt.Errorf("agent: execute: %w", err)
 	}
 
 	result := &core.TaskResult{
-		TaskID:      task.ID,
+		TaskID:      createdTaskID,
 		AgentID:     task.AgentID,
 		Success:     true,
-		Data:        task.Payload,
 		CompletedAt: time.Now().Unix(),
 	}
 
 	s.mu.Lock()
-	// Prevent unbounded growth: warn when cache hits the cap instead of silently resetting
-	// all historical results. TODO: implement LRU eviction (expected by 2026-09-30).
+	// LRU eviction: remove oldest entries when the cache exceeds the cap.
 	if len(s.results) >= maxResults {
-		fmt.Printf("agent: task result cache full (max=%d), discarding task %s\n", maxResults, task.ID)
-		s.mu.Unlock()
-		return &core.TaskResult{
-			TaskID:  task.ID,
-			AgentID: task.AgentID,
-			Success: true,
-			Data:    task.Payload,
-		}, nil
+		if front := s.order.Front(); front != nil {
+			oldestID := front.Value.(string)
+			delete(s.results, oldestID)
+			s.order.Remove(front)
+		}
 	}
 	s.results[task.ID] = result
+	s.order.PushBack(task.ID)
 	s.mu.Unlock()
 
 	return result, nil

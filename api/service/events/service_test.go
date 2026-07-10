@@ -4,8 +4,6 @@ package events
 import (
 	"context"
 	"testing"
-
-	internal "github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 func TestNewInMemory(t *testing.T) {
@@ -19,16 +17,15 @@ func TestAppendAndRead(t *testing.T) {
 	s := NewInMemory()
 	ctx := context.Background()
 
-	evt := &internal.Event{
-		StreamID: "test",
-		Type:     "test.event",
+	evt := &Event{
+		Type: "test.event",
 	}
-	err := s.Append(ctx, "test", []*internal.Event{evt}, 0)
+	err := s.Append(ctx, "test", []*Event{evt}, 0)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
-	evts, err := s.Read(ctx, "test", internal.ReadOptions{})
+	evts, err := s.Read(ctx, "test", ReadOptions{})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -41,7 +38,7 @@ func TestReadAll(t *testing.T) {
 	s := NewInMemory()
 	ctx := context.Background()
 
-	evts, err := s.ReadAll(ctx, internal.ReadOptions{})
+	evts, err := s.ReadAll(ctx, ReadOptions{})
 	if err != nil {
 		t.Fatalf("read all: %v", err)
 	}
@@ -55,7 +52,7 @@ func TestSubscribe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	ch, err := s.Subscribe(ctx, internal.EventFilter{})
+	ch, err := s.Subscribe(ctx, EventFilter{})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

@@ -142,12 +142,15 @@ func TestExecuteAndGetTaskResult(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, taskResult)
 	assert.True(t, taskResult.Success)
-	assert.Equal(t, "my-task", taskResult.TaskID)
+	// The inner service creates a new task ID via the memory manager,
+	// so the result's TaskID is the memory-manager-assigned ID, not the input ID.
+	assert.NotEmpty(t, taskResult.TaskID)
+	assert.NotEqual(t, "my-task", taskResult.TaskID, "should use memory-manager-assigned task ID")
 
-	// Retrieve the result.
+	// Retrieve the result by the original task ID (used as cache key).
 	retrieved, err := s.GetTaskResult(context.Background(), "my-task")
 	require.NoError(t, err)
 	require.NotNil(t, retrieved)
-	assert.Equal(t, "my-task", retrieved.TaskID)
+	assert.Equal(t, taskResult.TaskID, retrieved.TaskID)
 	assert.True(t, retrieved.Success)
 }

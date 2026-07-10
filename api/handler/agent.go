@@ -34,6 +34,14 @@ type CreateAgentRequest struct {
 	Config map[string]interface{} `json:"config,omitempty"`
 }
 
+// UpdateAgentRequest is the request body for PUT /api/v1/agents/{id}.
+type UpdateAgentRequest struct {
+	Name   string                 `json:"name,omitempty"`
+	Type   string                 `json:"type,omitempty"`
+	Status string                 `json:"status,omitempty"`
+	Config map[string]interface{} `json:"config,omitempty"`
+}
+
 // HandleCreate creates a new agent.
 func (h *AgentHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	if h.agent == nil {
@@ -106,6 +114,45 @@ func (h *AgentHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, agents)
+}
+
+// HandleUpdate updates an existing agent by ID.
+func (h *AgentHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
+	if h.agent == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "agent service not initialized")
+		return
+	}
+
+	agentID := r.PathValue("id")
+	if agentID == "" {
+		writeJSONError(w, http.StatusBadRequest, "agent id is required")
+		return
+	}
+
+	var req UpdateAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+
+	updates := make(map[string]interface{})
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.Type != "" {
+		updates["type"] = req.Type
+	}
+	if req.Status != "" {
+		updates["status"] = req.Status
+	}
+
+	agent, err := h.agent.UpdateAgent(r.Context(), agentID, updates)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("update agent failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agent)
 }
 
 // HandleDelete deletes an agent by ID.

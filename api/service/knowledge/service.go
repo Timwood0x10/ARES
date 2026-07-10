@@ -95,18 +95,14 @@ type distillRequest struct {
 	Type    string   `json:"type"`
 }
 
-// ── handlers ──
+// ── helpers ──
 
-func (s *Service) handleBuild(c *gin.Context) {
-	var req buildRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
-		return
-	}
-
+// resolveBudget resolves a TokenBudget from request parameters, applying defaults
+// when values are zero. Shared by handleBuild and handleContext to avoid duplication.
+func resolveBudget(maxTokens, forGraph int) knowledge.TokenBudget {
 	budget := knowledge.TokenBudget{
-		MaxTokens: req.MaxTokens,
-		ForGraph:  req.ForGraph,
+		MaxTokens: maxTokens,
+		ForGraph:  forGraph,
 	}
 	if budget.MaxTokens <= 0 {
 		budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
@@ -118,6 +114,17 @@ func (s *Service) handleBuild(c *gin.Context) {
 	if budget.Reserved < 0 {
 		budget.Reserved = 0
 	}
+	return budget
+}
+
+func (s *Service) handleBuild(c *gin.Context) {
+	var req buildRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{keyError: fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	budget := resolveBudget(req.MaxTokens, req.ForGraph)
 
 	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
 	if err != nil {
@@ -150,20 +157,7 @@ func (s *Service) handleContext(c *gin.Context) {
 		return
 	}
 
-	budget := knowledge.TokenBudget{
-		MaxTokens: req.MaxTokens,
-		ForGraph:  req.ForGraph,
-	}
-	if budget.MaxTokens <= 0 {
-		budget = knowledge.TokenBudget{MaxTokens: 5000, ForGraph: 3000, Reserved: 2000}
-	}
-	if budget.ForGraph <= 0 {
-		budget.ForGraph = budget.MaxTokens * 60 / 100
-	}
-	budget.Reserved = budget.MaxTokens - budget.ForGraph
-	if budget.Reserved < 0 {
-		budget.Reserved = 0
-	}
+	budget := resolveBudget(req.MaxTokens, req.ForGraph)
 
 	graph, err := s.rt.Execute(c.Request.Context(), req.Goal, budget, nil)
 	if err != nil {
@@ -259,6 +253,9 @@ func (s *Service) handleDistill(c *gin.Context) {
 // ── helpers ──
 
 func nodeIDs(g *knowledge.WorkingGraph) []string {
+	if g == nil {
+		return nil
+	}
 	ids := make([]string, 0, len(g.Nodes))
 	for id := range g.Nodes {
 		ids = append(ids, id)
