@@ -93,22 +93,22 @@ func runServe() error {
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-	 select {
-	 case <-sigCh:
-	  fmt.Println("\nShutting down...")
-	  if httpSrv != nil {
-	   // Create a fresh context for shutdown with a timeout so the
-	   // server does not hang indefinitely if connections refuse to close.
-	   shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	   defer shutdownCancel()
-	   if err := httpSrv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
-	    fmt.Fprintf(os.Stderr, "HTTP server shutdown error: %v\n", err)
-	   }
-	  }
-	  cancel()
-	 case <-ctx.Done():
-	 }
-	 return nil
+		select {
+		case <-sigCh:
+			fmt.Println("\nShutting down...")
+			if httpSrv != nil {
+				// Create a fresh context for shutdown with a timeout so the
+				// server does not hang indefinitely if connections refuse to close.
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer shutdownCancel()
+				if err := httpSrv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
+					fmt.Fprintf(os.Stderr, "HTTP server shutdown error: %v\n", err)
+				}
+			}
+			cancel()
+		case <-ctx.Done():
+		}
+		return nil
 	})
 
 	// --- Bootstrap: infrastructure components via single wiring hub ---

@@ -27,12 +27,14 @@ func NewService(memoryMgr memory.MemoryManager) *Service {
 	}
 }
 
-// CreateAgent creates a new agent with default configuration.
+// CreateAgent creates a new agent with the given properties.
 // Args:
 // ctx - operation context.
 // agentID - unique identifier for the agent.
+// name - display name; may be empty.
+// agentType - agent type; may be empty.
 // Returns new agent instance or error.
-func (s *Service) CreateAgent(ctx context.Context, agentID string) (*Agent, error) {
+func (s *Service) CreateAgent(ctx context.Context, agentID, name, agentType string) (*Agent, error) {
 	if agentID == "" {
 		return nil, ErrInvalidAgentID
 	}
@@ -45,6 +47,8 @@ func (s *Service) CreateAgent(ctx context.Context, agentID string) (*Agent, erro
 
 	agent := &Agent{
 		ID:        agentID,
+		Name:      name,
+		Type:      agentType,
 		SessionID: sessionID,
 		Status:    StatusReady,
 		CreatedAt: getCurrentTimestamp(),
@@ -79,6 +83,8 @@ func (s *Service) GetAgent(ctx context.Context, agentID string) (*Agent, error) 
 	// Return a copy to avoid external modification
 	return &Agent{
 		ID:        agent.ID,
+		Name:      agent.Name,
+		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    agent.Status,
 		CreatedAt: agent.CreatedAt,
@@ -118,9 +124,47 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
+// ListAgents returns all agents, optionally filtered by type/status.
+// Args:
+// ctx - operation context.
+// filter - optional filter (only Type and Status are supported; Pagination is handled by the caller).
+// Returns list of agent copies or error.
+func (s *Service) ListAgents(ctx context.Context, filter *AgentFilter) ([]*Agent, error) {
+	s.agentsMu.RLock()
+	defer s.agentsMu.RUnlock()
+
+	out := make([]*Agent, 0, len(s.agents))
+	for _, a := range s.agents {
+		if filter != nil {
+			if filter.Type != "" && string(a.Status) != filter.Type {
+				continue
+			}
+			if filter.Status != "" && a.Status != filter.Status {
+				continue
+			}
+		}
+		// Return a copy to avoid external modification.
+		out = append(out, &Agent{
+			ID:        a.ID,
+			SessionID: a.SessionID,
+			Status:    a.Status,
+			CreatedAt: a.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// Agent filter fields.
+type AgentFilter struct {
+	Type   string
+	Status Status
+}
+
 // Agent represents an AI agent with session management.
 type Agent struct {
 	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Type      string `json:"type,omitempty"`
 	SessionID string `json:"session_id"`
 	Status    Status `json:"status"`
 	CreatedAt int64  `json:"created_at"`

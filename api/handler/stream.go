@@ -219,13 +219,13 @@ func (h *StreamHandler) sendErrorSSE(w io.Writer, flusher http.Flusher, message 
 	errPayload := map[string]string{"message": message}
 	data, err := json.Marshal(errPayload)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"message\":\"internal error\"}\n\n")
+		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"message\":\"internal error\"}\n\n")
 		if flusher != nil {
 			flusher.Flush()
 		}
 		return
 	}
-	fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", data)
 	if flusher != nil {
 		flusher.Flush()
 	}

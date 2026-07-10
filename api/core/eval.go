@@ -29,6 +29,9 @@ type EvaluatorRegistry interface {
 	// name - evaluator name.
 	// Returns the evaluator or nil if not found.
 	Get(name string) Evaluator
+
+	// Names returns all registered evaluator names.
+	Names() []string
 }
 
 // LLMClient defines the LLM client interface used by evaluators.

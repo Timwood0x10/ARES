@@ -61,10 +61,10 @@ func main() {
 
 	// ── 3. Register all Genomes ──
 	genomeReg := genome.NewRegistry()
-	genomeReg.Register(genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig()))
-	genomeReg.Register(genome.NewSchedulerGenome(graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig()))
-	genomeReg.Register(genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig()))
-	genomeReg.Register(genome.NewRecoveryGenome(
+	mustRegisterGenome(genomeReg, genome.NewWorkflowGenome(dag, genome.DefaultWorkflowGenomeConfig()))
+	mustRegisterGenome(genomeReg, genome.NewSchedulerGenome(graph.NewDefaultScheduler(), genome.DefaultSchedulerGenomeConfig()))
+	mustRegisterGenome(genomeReg, genome.NewKnowledgeGenome(nil, genome.DefaultKnowledgeGenomeConfig()))
+	mustRegisterGenome(genomeReg, genome.NewRecoveryGenome(
 		&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
 		genome.DefaultRecoveryGenomeConfig(),
 	))
@@ -72,10 +72,10 @@ func main() {
 
 	// ── 4. Register all Differs ──
 	diffReg := diff.NewRegistry()
-	diffReg.Register(diff.NewWorkflowDiffer())
-	diffReg.Register(diff.NewSchedulerDiffer())
-	diffReg.Register(diff.NewKnowledgeDiffer())
-	diffReg.Register(diff.NewRecoveryDiffer())
+	mustRegisterDiffer(diffReg, diff.NewWorkflowDiffer())
+	mustRegisterDiffer(diffReg, diff.NewSchedulerDiffer())
+	mustRegisterDiffer(diffReg, diff.NewKnowledgeDiffer())
+	mustRegisterDiffer(diffReg, diff.NewRecoveryDiffer())
 	fmt.Printf("3. Registered differs: %v\n", diffReg.List())
 
 	// ── 5. Register all Executors ──
@@ -239,4 +239,16 @@ func main() {
 	fmt.Printf("Patches failed:    %d ❌\n", failCount)
 	fmt.Println()
 	fmt.Println("═══ Done ═══")
+}
+
+func mustRegisterGenome(r *genome.Registry, g genome.Genome) {
+	if err := r.Register(g); err != nil {
+		panic(fmt.Sprintf("register genome: %v", err))
+	}
+}
+
+func mustRegisterDiffer(r *diff.Registry, d diff.Differ) {
+	if err := r.Register(d); err != nil {
+		panic(fmt.Sprintf("register differ: %v", err))
+	}
 }

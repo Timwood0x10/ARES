@@ -50,14 +50,14 @@ func (s *Service) CreateAgent(ctx context.Context, config *core.AgentConfig) (*c
 	if config == nil {
 		return nil, fmt.Errorf("agent config is required")
 	}
-	// TODO: pass Name/Type/Config to inner once inner API supports them (expected by 2026-09-30).
-	// Currently inner.CreateAgent only accepts ID, so Name/Type/Config are dropped.
-	agent, err := s.inner.CreateAgent(ctx, config.ID)
+	agent, err := s.inner.CreateAgent(ctx, config.ID, config.Name, config.Type)
 	if err != nil {
 		return nil, fmt.Errorf("agent: create: %w", err)
 	}
 	return &core.Agent{
 		ID:        agent.ID,
+		Name:      agent.Name,
+		Type:      agent.Type,
 		SessionID: agent.SessionID,
 		Status:    core.AgentStatus(agent.Status),
 		CreatedAt: agent.CreatedAt,
@@ -131,11 +131,44 @@ func (s *Service) DeleteAgent(ctx context.Context, agentID string) error {
 
 // ListAgents lists agents with optional filtering.
 func (s *Service) ListAgents(ctx context.Context, filter *core.AgentFilter) ([]*core.Agent, *core.PaginationResponse, error) {
-	// TODO: expose inner List method and implement filter+pagination (expected by 2026-09-30).
-	// Returning ErrNotImplemented instead of an empty list avoids misleading callers
-	// into believing no agents exist.
-	_ = filter
-	return nil, nil, ErrNotImplemented
+	// Convert public filter to internal filter.
+	innerFilter := &agentapi.AgentFilter{}
+	if filter != nil {
+		innerFilter.Type = filter.Type
+		innerFilter.Status = agentapi.Status(filter.Status)
+	}
+
+	agents, err := s.inner.ListAgents(ctx, innerFilter)
+	if err != nil {
+		return nil, nil, fmt.Errorf("agent: list: %w", err)
+	}
+
+	// Convert internal agents to public core.Agent type.
+	out := make([]*core.Agent, len(agents))
+	for i, a := range agents {
+		out[i] = &core.Agent{
+			ID:        a.ID,
+			SessionID: a.SessionID,
+			Status:    core.AgentStatus(string(a.Status)),
+			CreatedAt: a.CreatedAt,
+		}
+	}
+
+	// Build pagination response.
+	total := int64(len(out))
+	pageSize := len(out)
+	page := 1
+	totalPages := 1
+	if total < 1 {
+		pageSize = 0
+	}
+	return out, &core.PaginationResponse{
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+		HasMore:    false,
+	}, nil
 }
 
 // ExecuteTask executes a task on an agent.

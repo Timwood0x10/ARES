@@ -21,6 +21,7 @@ type mockEvaluatorRegistry struct{}
 
 func (m *mockEvaluatorRegistry) Register(_ string, _ Evaluator) error { return nil }
 func (m *mockEvaluatorRegistry) Get(_ string) Evaluator               { return nil }
+func (m *mockEvaluatorRegistry) Names() []string                      { return nil }
 
 // ── mockLLMClient ───────────────────────────────────
 

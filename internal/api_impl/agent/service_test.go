@@ -179,7 +179,7 @@ func TestCreateAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockMgr.createErr = tt.createErr
 
-			agent, err := svc.CreateAgent(ctx, tt.agentID)
+			agent, err := svc.CreateAgent(ctx, tt.agentID, "", "")
 
 			if tt.wantErr != nil {
 				if err == nil {
@@ -227,7 +227,7 @@ func TestCreateAgentConcurrent(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			agentID := "agent-" + string(rune('0'+index))
-			_, err := svc.CreateAgent(ctx, agentID)
+			_, err := svc.CreateAgent(ctx, agentID, "", "")
 			if err != nil {
 				t.Errorf("Concurrent CreateAgent() failed: %v", err)
 			}
@@ -253,7 +253,7 @@ func TestGetAgent(t *testing.T) {
 
 	// Create a test agent
 	testAgentID := "agent-123"
-	createdAgent, err := svc.CreateAgent(ctx, testAgentID)
+	createdAgent, err := svc.CreateAgent(ctx, testAgentID, "", "")
 	if err != nil {
 		t.Fatalf("Failed to create test agent: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestDeleteAgent(t *testing.T) {
 		{
 			name: "successful deletion",
 			setup: func(svc *Service) (string, error) {
-				agent, err := svc.CreateAgent(ctx, "agent-123")
+				agent, err := svc.CreateAgent(ctx, "agent-123", "", "")
 				return agent.ID, err
 			},
 			deleteErr: nil,
@@ -362,7 +362,7 @@ func TestDeleteAgent(t *testing.T) {
 		{
 			name: "delete with session deletion failure",
 			setup: func(svc *Service) (string, error) {
-				agent, err := svc.CreateAgent(ctx, "agent-456")
+				agent, err := svc.CreateAgent(ctx, "agent-456", "", "")
 				return agent.ID, err
 			},
 			deleteErr: errors.New("session deletion failed"),

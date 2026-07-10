@@ -130,7 +130,7 @@ type SampleCounter interface {
 type SchedulerState int
 
 const (
-	StateStopped  SchedulerState = iota
+	StateStopped SchedulerState = iota
 	StateRunning
 	StateStopping
 )
@@ -163,8 +163,8 @@ type DefaultScheduler struct {
 	evolutionActive bool
 
 	// monitorEg tracks the monitorLoop goroutine.
-	monitorEg    *errgroup.Group
-	monitorCtx   context.Context
+	monitorEg     *errgroup.Group
+	monitorCtx    context.Context
 	monitorCancel context.CancelFunc
 
 	// evolutionWg tracks evolution goroutines spawned by TriggerEvolution.
@@ -225,7 +225,7 @@ func (s *DefaultScheduler) Start(ctx context.Context) error {
 
 	// Start the background idle monitoring goroutine.
 	monitorEg.Go(func() error {
-	 return s.monitorLoop(monitorCtx)
+		return s.monitorLoop(monitorCtx)
 	})
 
 	log.InfoContext(ctx, "[Scheduler] Started idle-time evolution scheduler",
@@ -501,8 +501,8 @@ func (s *DefaultScheduler) GetNextEvolutionTime(ctx context.Context) (time.Time,
 	}
 
 	if s.state != StateRunning {
-	  return time.Time{}, ErrSchedulerNotStarted
-	 }
+		return time.Time{}, ErrSchedulerNotStarted
+	}
 
 	// If evolution is active, return when it might finish (approximate).
 	if s.evolutionActive {

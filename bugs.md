@@ -71,7 +71,7 @@ func (p *promoterAdapter) Demote(ctx context.Context, strategyID string) error {
 
 修复：要么返回明确的 `ErrNotImplemented`，要么真正委托给 inner。
 
-### C5 ✅ `api/service/agent/service.go:48,126-140` — 创建/列表接口丢字段、永远空
+### C5 ✅ `api/service/agent/service.go:48,126-140` — 创建/列表接口丢字段、永远空（ListAgents 已通过 internal 层真实实现，CLI 命令已添加）
 
 两处：
 

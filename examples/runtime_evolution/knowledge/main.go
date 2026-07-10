@@ -105,7 +105,9 @@ func main() {
 	}
 
 	diffReg := diff.NewRegistry()
-	diffReg.Register(diff.NewKnowledgeDiffer())
+	if err := diffReg.Register(diff.NewKnowledgeDiffer()); err != nil {
+		log.Fatalf("register knowledge differ: %v", err)
+	}
 
 	patches, err := diffReg.DiffAll(ctx, map[string]diff.SnapshotPair{
 		"knowledge": {Old: oldSnap, New: newSnap},

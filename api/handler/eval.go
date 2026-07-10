@@ -73,7 +73,5 @@ func (h *EvalHandler) HandleListEvaluators(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// core.EvaluatorRegistry interface doesn't expose Names() yet,
-	// so we return an empty list. TODO: add Names() to core.EvaluatorRegistry (expected by 2026-09-30).
-	writeJSON(w, http.StatusOK, []string{})
+	writeJSON(w, http.StatusOK, h.evaluators.Names())
 }
