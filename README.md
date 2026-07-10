@@ -13,6 +13,8 @@
 
 Build resilient, self-evolving AI agents in Go. Unified SDK, DAG workflow, chaos engineering, MCP support.
 
+**Runtime Evolution**: ARES continuously evolves its DAG topology, scheduler, knowledge planner, and recovery strategies — all in production, without restarts. LLM is a participant in evolution, not the leader.
+
 ## Quick Start
 
 ```go
@@ -52,7 +54,8 @@ make examples          # build all 24 examples
 | Feature | Description |
 |---|---|
 | **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution |
-| **Self Evolution** | Genetic algorithm optimizes prompts and strategies automatically |
+| **Runtime Evolution** | Genome + Diff Engine + Coordinator evolve DAG, scheduler, planner, recovery in production |
+| **Evidence-Driven** | Every runtime event (flight, chaos, fitness) feeds into evolution decisions |
 | **DAG Workflow** | Dynamic graphs with conditional branching and recovery |
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
@@ -70,6 +73,7 @@ ares doctor      # Diagnose environment (LLM key, Ollama, Git)
 ares version     # Show version
 ares arena       # Chaos engineering scenarios
 ares flight      # Inspect and replay task recordings
+ares evolution   # Runtime evolution: status, run
 ```
 
 ## SDK
@@ -160,11 +164,20 @@ graph TB
         SCORE["Scoring"]
     end
 
+    subgraph RuntimeEvo ["Runtime Evolution"]
+        GENOME["Genomes<br/>Workflow / Scheduler / Knowledge / Recovery"]
+        DIFF["Diff Engine"]
+        COORD["Coordinator"]
+        LLM_ADAPT["LLM Adapter"]
+        EXEC["Executors<br/>Graph / Scheduler / Knowledge / Recovery"]
+    end
+
     subgraph CLI ["CLI (cmd/ares/)"]
         INIT["ares init"]
         RUN["ares run"]
         BENCH["ares bench"]
         DOCTOR["ares doctor"]
+        EVO["ares evolution"]
     end
 
     subgraph EX ["Examples (24)"]
@@ -182,6 +195,7 @@ graph TB
     style Tools fill:#1a2332,stroke:#64748b
     style Memory fill:#1a2332,stroke:#64748b
     style Evo fill:#1a2332,stroke:#64748b
+    style RuntimeEvo fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style CLI fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style EX fill:#1a3a2a,stroke:#22c55e
 ```
@@ -202,11 +216,72 @@ graph TB
 
 ```
 ├── sdk/           # Unified SDK (package sdk)
-├── cmd/ares/      # CLI entry point
-├── examples/      # 24 runnable examples
+├── cmd/ares/      # CLI entry point (evolution status/run)
+├── examples/      # 24+ runnable examples
+│   └── runtime_evolution/  # Evolution demos (basic / knowledge / full)
 ├── docs/          # Documentation and articles
 ├── api/           # Public API interfaces
-└── internal/      # Internal implementations
+└── internal/
+    ├── evolution/         # Runtime evolution system
+    │   ├── genome/        # 5 Genome implementations (Workflow/Scheduler/Knowledge/Recovery/Prompt)
+    │   ├── diff/          # Diff Engine (4 Differ implementations)
+    │   ├── coordinator/   # Evolution Coordinator (7 PatchSources, PolicyGenome)
+    │   ├── patch/         # RuntimePatch type + Registry + Apply/ApplySet
+    │   └── llm_adapter.go # LLM participant adapter
+    ├── evidence/          # Evidence data primitive + MemoryStore
+    ├── workflow/
+    │   ├── graph/         # GraphPatchExecutor (7 patch types)
+    │   └── engine/        # RecoveryPatchExecutor
+    ├── knowledge/
+    │   └── runtime/       # KnowledgePatchExecutor
+    └── ares_bootstrap/    # Assembly wiring (ProvideNewEvolution)
+```
+
+## Runtime Evolution
+
+ARES's runtime evolution system is **evidence-driven**: every execution, fault, and insight produces `Evidence`, which feeds into the evolution cycle. The system evolves DAG topology, scheduler selection, knowledge planner parameters, and recovery strategies — all in production, without restarts.
+
+### Architecture
+
+```
+Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch → Coordinator → Apply
+```
+
+| Component | Role | Sources |
+|-----------|------|---------|
+| **5 Genomes** | Generate candidate configurations via mutation + crossover | workflow, scheduler, knowledge, recovery, prompt |
+| **4 Differs** | Compare old vs new snapshots → produce RuntimePatches | workflow, knowledge, scheduler, recovery |
+| **Coordinator** | Decides Apply/Reject/Delay for each PatchProposal | GA, Chaos, AKF, LLM, Human, K8s, Rule |
+| **3 Executors** | Apply patches to live runtime | Graph, Knowledge, Recovery |
+| **LLM Adapter** | Converts natural-language suggestions into PatchProposals | parsed format → Coordinator |
+
+**Key design**: LLM is a **participant**, not the leader. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
+
+### Benchmarks (Apple M3 Max)
+
+```
+BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
+BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
+BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
+BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
+BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
+BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+```
+
+### CLI
+
+```bash
+ares evolution status   # Show genomes, differs, coordinator state
+ares evolution run      # Run one evolution cycle
+```
+
+### Examples
+
+```bash
+go run examples/runtime_evolution/basic/      # Full end-to-end evolution demo
+go run examples/runtime_evolution/knowledge/  # Knowledge parameter evolution
+go run examples/runtime_evolution/full/       # All 4 genomes + real executors
 ```
 
 ## License

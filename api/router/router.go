@@ -49,6 +49,13 @@ func (r *Router) RegisterEvolutionEndpoints(evolutionHandler *handler.EvolutionH
 	r.mux.HandleFunc("GET /api/v1/evolution/status", r.evoH.HandleStatus)
 }
 
+// RegisterRuntimeEvolutionEndpoints registers runtime evolution HTTP endpoints.
+func (r *Router) RegisterRuntimeEvolutionEndpoints(handler *handler.RuntimeEvolutionHandler) {
+	r.mux.HandleFunc("POST /api/v1/evolution/runtime/cycle", handler.HandleCycle)
+	r.mux.HandleFunc("GET /api/v1/evolution/runtime/status", handler.HandleRuntimeStatus)
+	r.mux.HandleFunc("POST /api/v1/evolution/runtime/propose", handler.HandlePropose)
+}
+
 // RegisterWorkflowEndpoints registers workflow HTTP endpoints.
 func (r *Router) RegisterWorkflowEndpoints(workflowHandler *handler.WorkflowHandler) {
 	r.workflowH = workflowHandler

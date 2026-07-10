@@ -31,6 +31,8 @@ type Service struct {
 	metrics  *MetricsCollector
 	bridge   *FlightBridge
 
+	evolutionBridge *EvolutionBridge
+
 	survival survivalState
 }
 
@@ -53,6 +55,11 @@ func NewService(injector *Injector, store EventStore) *Service {
 // SetFlightBridge attaches a flight bridge for arena-flight integration.
 func (s *Service) SetFlightBridge(b *FlightBridge) {
 	s.bridge = b
+}
+
+// SetEvolutionBridge attaches an evolution bridge for chaos→Coordinator integration.
+func (s *Service) SetEvolutionBridge(b *EvolutionBridge) {
+	s.evolutionBridge = b
 }
 
 // Execute runs the given action, records the result, and emits an event.
@@ -162,6 +169,10 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 
 	if s.bridge != nil {
 		s.bridge.OnActionExecuted(action, result)
+	}
+
+	if s.evolutionBridge != nil {
+		s.evolutionBridge.OnActionExecuted(action, result)
 	}
 
 	return result

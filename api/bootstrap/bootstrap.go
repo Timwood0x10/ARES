@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
+	"github.com/Timwood0x10/ares/api/core"
 	arenasvc "github.com/Timwood0x10/ares/api/service/arena"
 	dashsvc "github.com/Timwood0x10/ares/api/service/dashboard"
 	evosvc "github.com/Timwood0x10/ares/api/service/evolution"
@@ -20,6 +22,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	ares_mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/evidence"
+	"github.com/Timwood0x10/ares/internal/evolution"
+	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
+	"github.com/Timwood0x10/ares/internal/evolution/diff"
 )
 
 // ARES is the top-level container for all ARES modules.
@@ -32,6 +38,9 @@ type ARES struct {
 	Dashboard  *dashsvc.Dashboard
 	Flight     *flightsvc.Recorder
 	EventStore ares_events.EventStore
+
+	// RuntimeEvolution is the new genome/diff/coordinator/patch system.
+	RuntimeEvolution core.RuntimeEvolution
 }
 
 // Config holds the configuration for creating an ARES instance.
@@ -127,6 +136,9 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		Dashboard:  dash,
 		Flight:     flightRec,
 		EventStore: comp.EventStore,
+		RuntimeEvolution: &runtimeEvoService{
+			components: comp.NewEvolution,
+		},
 	}, nil
 }
 
@@ -205,4 +217,117 @@ func (a *ARES) ExecuteArenaAction(ctx context.Context, action arenasvc.Action) a
 		return arenasvc.Result{Success: false, Error: "arena not initialized"}
 	}
 	return a.Arena.Execute(ctx, action)
+}
+
+// runtimeEvoService implements core.RuntimeEvolution by wrapping
+// the bootstrap's NewEvolutionComponents.
+type runtimeEvoService struct {
+	components *ares_bootstrap.NewEvolutionComponents
+}
+
+func (s *runtimeEvoService) RunCycle(ctx context.Context) (*core.RuntimeCycleResult, error) {
+	return runEvolutionCycle(ctx, s.components)
+}
+
+func (s *runtimeEvoService) Status() (*core.RuntimeEvolutionStatus, error) {
+	return getEvolutionStatus(s.components)
+}
+
+func (s *runtimeEvoService) Propose(ctx context.Context, proposal core.RuntimeProposal) error {
+	return submitProposal(ctx, proposal, s.components)
+}
+
+// runEvolutionCycle runs one iteration of Mutate → Diff → Submit → Evaluate.
+func runEvolutionCycle(ctx context.Context, c *ares_bootstrap.NewEvolutionComponents) (*core.RuntimeCycleResult, error) {
+	snapshots := make(map[string]diff.SnapshotPair)
+	for _, name := range c.GenomeReg.List() {
+		gm, err := c.GenomeReg.Get(name)
+		if err != nil {
+			continue
+		}
+		snap, _ := gm.Snapshot(ctx)
+		snapshots[name] = diff.SnapshotPair{Old: snap}
+	}
+
+	var changes []core.GenomeChange
+	var failures []string
+	totalProposed := 0
+
+	for _, name := range c.GenomeReg.List() {
+		gm, err := c.GenomeReg.Get(name)
+		if err != nil {
+			continue
+		}
+		children, err := gm.Mutate(ctx, 3)
+		if err != nil || len(children) == 0 {
+			continue
+		}
+		best := children[0]
+		newSnap, _ := best.Snapshot(ctx)
+		pair := snapshots[name]
+		pair.New = newSnap
+		patches, err := c.DiffReg.DiffAll(ctx, map[string]diff.SnapshotPair{name: pair})
+		if err != nil {
+			failures = append(failures, name+": diff failed")
+			continue
+		}
+		if len(patches) > 0 {
+			gc := core.GenomeChange{Name: name, Patches: len(patches), FirstType: patches[0].Type.String()}
+			changes = append(changes, gc)
+			totalProposed += len(patches)
+			for _, p := range patches {
+				c.Coordinator.Submit(coordinator.PatchProposal{
+					Patch: p, Source: coordinator.SourceGA,
+					Reason: "evolution cycle", Priority: 5, Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	c.Coordinator.Evaluate(ctx)
+	history := c.Coordinator.PatchHistory()
+	applied := 0
+	for _, r := range history {
+		if r.Error == nil {
+			applied++
+		}
+	}
+
+	return &core.RuntimeCycleResult{
+		GenomesEvaluated: len(c.GenomeReg.List()),
+		GenomesChanged:   len(changes),
+		PatchesProposed:  totalProposed,
+		PatchesApplied:   applied,
+		Failures:         failures,
+		Details:          changes,
+	}, nil
+}
+
+func getEvolutionStatus(c *ares_bootstrap.NewEvolutionComponents) (*core.RuntimeEvolutionStatus, error) {
+	evs, _ := c.EvidenceStore.Query(context.Background(), evidence.Filter{Limit: 1000})
+	return &core.RuntimeEvolutionStatus{
+		Genomes:          c.GenomeReg.List(),
+		Differs:          c.DiffReg.List(),
+		PendingProposals: c.Coordinator.PendingCount(),
+		DecisionsMade:    len(c.Coordinator.DecisionHistory()),
+		PatchesApplied:   len(c.Coordinator.PatchHistory()),
+		EvidenceEntries:  len(evs),
+	}, nil
+}
+
+func submitProposal(ctx context.Context, p core.RuntimeProposal, c *ares_bootstrap.NewEvolutionComponents) error {
+	adapter := evolution.NewLLMAdapter()
+	results, err := adapter.Parse(ctx, p.Text)
+	if err != nil {
+		return fmt.Errorf("bootstrap: parse proposal: %w", err)
+	}
+	for _, r := range results {
+		prop := r.Proposal
+		if p.Priority > 0 {
+			prop.Priority = p.Priority
+		}
+		c.Coordinator.Submit(prop)
+	}
+	c.Coordinator.Evaluate(ctx)
+	return nil
 }

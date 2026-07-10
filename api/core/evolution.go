@@ -148,3 +148,42 @@ type DreamCycleStatus struct {
 	// LastResult is the result of the last cycle.
 	LastResult *EvolutionResult
 }
+
+// RuntimeEvolution defines the interface for the runtime evolution system.
+// This is the NEW system (Genome + Diff + Coordinator + Patch), distinct from
+// the old GA-based Evolution interface above.
+type RuntimeEvolution interface {
+	RunCycle(ctx context.Context) (*RuntimeCycleResult, error)
+	Status() (*RuntimeEvolutionStatus, error)
+	Propose(ctx context.Context, proposal RuntimeProposal) error
+}
+
+type RuntimeCycleResult struct {
+	GenomesEvaluated int            `json:"genomes_evaluated"`
+	GenomesChanged   int            `json:"genomes_changed"`
+	PatchesProposed  int            `json:"patches_proposed"`
+	PatchesApplied   int            `json:"patches_applied"`
+	Failures         []string       `json:"failures,omitempty"`
+	Details          []GenomeChange `json:"details,omitempty"`
+}
+
+type GenomeChange struct {
+	Name      string `json:"name"`
+	Patches   int    `json:"patches"`
+	FirstType string `json:"first_patch_type,omitempty"`
+}
+
+type RuntimeEvolutionStatus struct {
+	Genomes          []string `json:"genomes"`
+	Differs          []string `json:"differs"`
+	PendingProposals int      `json:"pending_proposals"`
+	DecisionsMade    int      `json:"decisions_made"`
+	PatchesApplied   int      `json:"patches_applied"`
+	EvidenceEntries  int      `json:"evidence_entries"`
+}
+
+type RuntimeProposal struct {
+	Source   string `json:"source"`
+	Text     string `json:"text"`
+	Priority int    `json:"priority"`
+}

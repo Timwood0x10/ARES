@@ -16,13 +16,14 @@ import (
 
 // Components holds all assembled system components.
 type Components struct {
-	MCP        *ares_mcp.MCPManager
-	Dashboard  *DashboardComponents
-	LLM        *LLMComponents
-	Evolution  *EvolutionComponents
-	Runtime    *ares_runtime.Manager
-	Memory     ares_memory.MemoryManager
-	EventStore ares_events.EventStore
+	MCP          *ares_mcp.MCPManager
+	Dashboard    *DashboardComponents
+	LLM          *LLMComponents
+	Evolution    *EvolutionComponents
+	NewEvolution *NewEvolutionComponents
+	Runtime      *ares_runtime.Manager
+	Memory       ares_memory.MemoryManager
+	EventStore   ares_events.EventStore
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -134,6 +135,15 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		}
 		comp.Evolution = evol
 	}
+
+	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
+	// Always created; uses internal defaults when no DAG/runtime is available.
+	newEvol, err := ProvideNewEvolution(nil, nil)
+	if err != nil {
+		runCleanups()
+		return nil, err
+	}
+	comp.NewEvolution = newEvol
 
 	return &comp, nil
 }

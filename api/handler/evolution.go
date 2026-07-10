@@ -133,3 +133,76 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 func writeJSONError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
+
+// RuntimeEvolutionHandler handles HTTP requests for the runtime evolution system.
+type RuntimeEvolutionHandler struct {
+	runtimeEvo core.RuntimeEvolution
+}
+
+// NewRuntimeEvolutionHandler creates a new runtime evolution handler.
+func NewRuntimeEvolutionHandler(runtimeEvo core.RuntimeEvolution) *RuntimeEvolutionHandler {
+	return &RuntimeEvolutionHandler{runtimeEvo: runtimeEvo}
+}
+
+// HandleCycle runs one evolution cycle.
+func (h *RuntimeEvolutionHandler) HandleCycle(w http.ResponseWriter, r *http.Request) {
+	if h.runtimeEvo == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
+		return
+	}
+	result, err := h.runtimeEvo.RunCycle(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("run cycle: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HandleRuntimeStatus returns the runtime evolution system status.
+func (h *RuntimeEvolutionHandler) HandleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	if h.runtimeEvo == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
+		return
+	}
+	status, err := h.runtimeEvo.Status()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("get status: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// ProposeRequest is the request body for POST /api/v1/evolution/runtime/propose.
+type ProposeRequest struct {
+	Source   string `json:"source"`
+	Text     string `json:"text"`
+	Priority int    `json:"priority"`
+}
+
+// HandlePropose submits a human/LLM proposal to the coordinator.
+func (h *RuntimeEvolutionHandler) HandlePropose(w http.ResponseWriter, r *http.Request) {
+	if h.runtimeEvo == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
+		return
+	}
+	var req ProposeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+		return
+	}
+	if req.Source == "" {
+		req.Source = "human"
+	}
+	if req.Priority <= 0 {
+		req.Priority = 5
+	}
+	if err := h.runtimeEvo.Propose(r.Context(), core.RuntimeProposal{
+		Source:   req.Source,
+		Text:     req.Text,
+		Priority: req.Priority,
+	}); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("propose: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{keyStatus: "submitted"})
+}

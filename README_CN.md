@@ -13,6 +13,8 @@
 
 用 Go 构建高韧性、自进化的 AI Agent。统一 SDK、DAG 工作流、混沌工程、MCP 支持。
 
+**运行时进化**：ARES 持续进化 DAG 拓扑、调度器、知识规划器和恢复策略 —— 全部在生产环境中运行，无需重启。LLM 是进化的参与者，而非主导者。
+
 ## 快速开始
 
 ```go
@@ -52,7 +54,8 @@ make examples          # 构建全部 24 个示例
 | 特性 | 说明 |
 |---|---|
 | **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化 |
-| **自我进化** | 遗传算法自动优化提示词和策略 |
+| **运行时进化** | Genome + Diff Engine + Coordinator 持续进化 DAG、调度器、规划器、恢复策略 |
+| **证据驱动** | 每次执行事件、故障、洞察都产生 Evidence，驱动进化决策 |
 | **DAG 工作流** | 动态图编排，支持条件分支和自动恢复 |
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
@@ -70,6 +73,7 @@ ares doctor      # 诊断环境（LLM key、Ollama、Git）
 ares version     # 显示版本
 ares arena       # 混沌工程场景
 ares flight      # 检查与回放任务记录
+ares evolution   # 运行时进化：status / run
 ```
 
 ## SDK 用法
@@ -147,11 +151,20 @@ graph TB
         SCORE["评分"]
     end
 
+    subgraph RuntimeEvo ["运行时进化"]
+        GENOME["Genomes<br/>Workflow / Scheduler / Knowledge / Recovery"]
+        DIFF["Diff Engine"]
+        COORD["Coordinator"]
+        LLM_ADAPT["LLM Adapter"]
+        EXEC["Executors<br/>Graph / Scheduler / Knowledge / Recovery"]
+    end
+
     subgraph CLI ["CLI 命令"]
         INIT["ares init"]
         RUN["ares run"]
         BENCH["ares bench"]
         DOCTOR["ares doctor"]
+        EVO["ares evolution"]
     end
 
     subgraph EX ["示例 (24 个)"]
@@ -169,6 +182,7 @@ graph TB
     style Tools fill:#1a2332,stroke:#64748b
     style Memory fill:#1a2332,stroke:#64748b
     style Evo fill:#1a2332,stroke:#64748b
+    style RuntimeEvo fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style CLI fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style EX fill:#1a3a2a,stroke:#22c55e
 ```
@@ -210,14 +224,71 @@ go run examples/06-chaos-resilience/main.go
 
 ```
 ├── sdk/           # 统一 SDK（package sdk）
-├── cmd/ares/      # CLI 入口
+├── cmd/ares/      # CLI 入口（evolution status/run）
 ├── evaluation/    # 评估框架
-├── examples/      # 24 个可运行示例
+├── examples/      # 24+ 个可运行示例
+│   └── runtime_evolution/  # 进化演示（basic / knowledge / full）
 ├── docs/          # 文档和文章
 ├── api/           # 公开 API 接口
-└── internal/      # 内部实现
+└── internal/
+    ├── evolution/         # 运行时进化系统
+    │   ├── genome/        # 5 个 Genome 实现（Workflow/Scheduler/Knowledge/Recovery/Prompt）
+    │   ├── diff/          # Diff Engine（4 个 Differ 实现）
+    │   ├── coordinator/   # Evolution Coordinator（7 个 PatchSource、PolicyGenome）
+    │   ├── patch/         # RuntimePatch 类型 + Registry + Apply/ApplySet
+    │   └── llm_adapter.go # LLM 参与者适配器
+    ├── evidence/          # Evidence 数据原语 + MemoryStore
+    ├── workflow/
+    │   ├── graph/         # GraphPatchExecutor（7 种 Patch 类型）
+    │   └── engine/        # RecoveryPatchExecutor
+    ├── knowledge/
+    │   └── runtime/       # KnowledgePatchExecutor
+    └── ares_bootstrap/    # 装配中心（ProvideNewEvolution）
 ```
 
-## 许可证
+## 运行时进化
 
-Apache 2.0
+ARES 的运行时进化系统是**证据驱动**的：每次执行、故障和洞察都产生 `Evidence`，驱动进化循环。系统持续进化 DAG 拓扑、调度器选择、知识规划器参数和恢复策略——全部生产环境运行，无需重启。
+
+### 架构
+
+```
+Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch → Coordinator → Apply
+```
+
+| 组件 | 作用 | 来源 |
+|------|------|------|
+| **5 个 Genome** | 通过变异+交叉产生候选配置 | workflow, scheduler, knowledge, recovery, prompt |
+| **4 个 Differ** | 比较新旧快照 → 生成 RuntimePatch | workflow, knowledge, scheduler, recovery |
+| **Coordinator** | 决策 Apply/Reject/Delay | GA, Chaos, AKF, LLM, Human, K8s, Rule |
+| **3 个 Executor** | 将 Patch 应用到运行时代码 | Graph, Knowledge, Recovery |
+| **LLM Adapter** | 将自然语言建议转为 PatchProposal | 解析后 → Coordinator |
+
+**关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
+
+### 基准测试（Apple M3 Max）
+
+```
+BenchmarkWorkflowGenome_Mutate     309k   7.1µs  11.4KB  155 allocs
+BenchmarkSchedulerGenome_Mutate    3.3M   0.4µs   719B    15 allocs
+BenchmarkKnowledgeGenome_Mutate    2.8M   0.4µs   960B    11 allocs
+BenchmarkRecoveryGenome_Mutate     2.2M   0.5µs  1.1KB    21 allocs
+BenchmarkDiffEngine_Workflow       2.9M   0.4µs   256B     3 allocs
+BenchmarkCoordinator_Evaluate      217M   5.4ns     0B      0 allocs
+BenchmarkFullEvolutionCycle        206k   5.3µs  8.0KB   109 allocs
+```
+
+### CLI
+
+```bash
+ares evolution status   # 查看 genomes、differs、coordinator 状态
+ares evolution run      # 运行一个进化周期
+```
+
+### 示例
+
+```bash
+go run examples/runtime_evolution/basic/      # 完整端到端进化演示
+go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
+go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
+```
