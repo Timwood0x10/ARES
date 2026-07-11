@@ -80,6 +80,29 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		return nil, fmt.Errorf("register knowledge genome: %w", err)
 	}
 
+	// Planner genome — evolves planning strategy.
+	plannerGenome := genome.NewPlannerGenome(genome.PlannerGenomeConfig{
+		Strategy:      "balanced",
+		MaxSources:    10,
+		MinRelevance:  0.5,
+		EvidenceStore: evStore,
+	})
+	if err := genomeReg.Register(plannerGenome); err != nil {
+		return nil, fmt.Errorf("register planner genome: %w", err)
+	}
+
+	// Memory genome — evolves memory management parameters.
+	memoryGenome := genome.NewMemoryGenome(genome.MemoryGenomeConfig{
+		MaxHistory:            10,
+		MaxSessions:           100,
+		MaxDistilledTasks:     5000,
+		UseStructuredCleaning: false,
+		EvidenceStore:         evStore,
+	})
+	if err := genomeReg.Register(memoryGenome); err != nil {
+		return nil, fmt.Errorf("register memory genome: %w", err)
+	}
+
 	// 3. Diff Registry — register all differs.
 	diffReg := diff.NewRegistry()
 	for _, d := range []diff.Differ{

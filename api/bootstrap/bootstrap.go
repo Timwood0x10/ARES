@@ -345,8 +345,18 @@ func submitProposal(ctx context.Context, p core.RuntimeProposal, c *ares_bootstr
 	if err != nil {
 		return fmt.Errorf("bootstrap: parse proposal: %w", err)
 	}
+	if len(results) == 0 {
+		// Parse returned no results — the text couldn't be interpreted as a proposal.
+		// This is expected for non-LLM sources (Human/K8s/Rule) with unstructured text.
+		return nil
+	}
 	for _, r := range results {
 		prop := r.Proposal
+		// Preserve the original source from the request.
+		// The LLMAdapter defaults to SourceLLM; override with the caller's source.
+		if p.Source != "" {
+			prop.Source = coordinator.PatchSource(p.Source)
+		}
 		if p.Priority > 0 {
 			prop.Priority = p.Priority
 		}

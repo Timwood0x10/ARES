@@ -1,6 +1,7 @@
 package arena
 
 import (
+	"context"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
@@ -27,6 +28,8 @@ func NewEvolutionBridge(coord *coordinator.EvolutionCoordinator) *EvolutionBridg
 
 // OnActionExecuted is called after every arena action completes.
 // Failed actions (faults) are converted to PatchProposals and submitted.
+// High-priority faults (>= 9) bypass the normal decision process and apply
+// immediately via ApplyEmergency for self-healing.
 func (b *EvolutionBridge) OnActionExecuted(action Action, result Result) {
 	if b.coordinator == nil {
 		return
@@ -39,15 +42,38 @@ func (b *EvolutionBridge) OnActionExecuted(action Action, result Result) {
 	}
 
 	proposal := b.buildProposal(action, result)
-	if proposal != nil {
-		b.coordinator.Submit(*proposal)
-		log.Info("evolution bridge: submitted patch proposal",
+	if proposal == nil {
+		return
+	}
+
+	// High-priority faults (priority >= 9) bypass the decision process
+	// and apply immediately via ApplyEmergency. This enables self-healing
+	// for critical scenarios like leader/agent death.
+	if proposal.Priority >= 9 {
+		if err := b.coordinator.ApplyEmergency(context.Background(), proposal.Patch); err != nil {
+			log.Error("evolution bridge: emergency apply failed",
+				"action_type", action.Type,
+				"target", action.TargetID,
+				"error", err,
+			)
+			return
+		}
+		log.Info("evolution bridge: emergency apply succeeded",
 			"action_type", action.Type,
 			"target", action.TargetID,
 			"patch_type", proposal.Patch.Type,
-			"priority", proposal.Priority,
 		)
+		return
 	}
+
+	// Normal priority — submit to the Coordinator for evaluation.
+	b.coordinator.Submit(*proposal)
+	log.Info("evolution bridge: submitted patch proposal",
+		"action_type", action.Type,
+		"target", action.TargetID,
+		"patch_type", proposal.Patch.Type,
+		"priority", proposal.Priority,
+	)
 }
 
 // buildProposal converts a failed arena action into a PatchProposal.

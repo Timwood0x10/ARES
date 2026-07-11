@@ -47,7 +47,6 @@ const (
 	DecisionApply  Decision = iota // Apply the patch now
 	DecisionReject                 // Reject the patch
 	DecisionDelay                  // Revisit later
-	DecisionCanary                 // Apply in canary mode (limited scope)
 )
 
 // String returns a human-readable name for the decision.
@@ -59,8 +58,6 @@ func (d Decision) String() string {
 		return "reject"
 	case DecisionDelay:
 		return "delay"
-	case DecisionCanary:
-		return "canary"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(d))
 	}
@@ -144,6 +141,35 @@ func (ec *EvolutionCoordinator) UpdatePolicy(p PolicyGenome) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.policy = p
+}
+
+// ApplyEmergency applies a patch immediately, bypassing the decision process.
+// Used for self-healing scenarios where a critical fault needs instant response.
+// Returns the patch result or an error if the patch cannot be applied.
+func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.RuntimePatch) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	proposal := PatchProposal{
+		Patch:     patch,
+		Source:    SourceChaos,
+		Reason:    "emergency: self-healing immediate apply",
+		Priority:  10, // Maximum priority
+		Timestamp: time.Now(),
+	}
+
+	err := ec.patchReg.Apply(ctx, patch)
+	ec.decisions = append(ec.decisions, PatchDecision{
+		Proposal: proposal,
+		Decision: DecisionApply,
+		Reason:   "emergency: bypassed decision process",
+	})
+	ec.patchHistory = append(ec.patchHistory, PatchResult{
+		Proposal:  proposal,
+		AppliedAt: time.Now(),
+		Error:     err,
+	})
+	return err
 }
 
 // Submit receives a patch proposal from any source.
@@ -278,8 +304,6 @@ func decisionReason(d Decision, proposal PatchProposal) string {
 		return fmt.Sprintf("rejected patch %s from %s: rate limited or blacklisted", proposal.Patch.Type, proposal.Source)
 	case DecisionDelay:
 		return fmt.Sprintf("delayed patch %s from %s: too many recent patches", proposal.Patch.Type, proposal.Source)
-	case DecisionCanary:
-		return fmt.Sprintf("canary patch %s from %s (priority %d)", proposal.Patch.Type, proposal.Source, proposal.Priority)
 	default:
 		return "unknown decision"
 	}

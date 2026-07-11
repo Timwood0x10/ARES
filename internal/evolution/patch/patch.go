@@ -35,6 +35,11 @@ const (
 	PatchChangeRecoveryStrategy // Change recovery strategy (retry/replace/fail)
 	PatchChangeMaxRetries       // Change max retry count
 	PatchChangeBackoff          // Change backoff duration
+
+	// ── Graph structure evolution mutations ────────
+	PatchSwapNodes  // Swap two nodes in the DAG
+	PatchSplitNode  // Split a node into two
+	PatchMergeNodes // Merge two nodes into one
 )
 
 // String returns a human-readable name for the patch type.
@@ -64,6 +69,12 @@ func (pt PatchType) String() string {
 		return "change_max_retries"
 	case PatchChangeBackoff:
 		return "change_backoff"
+	case PatchSwapNodes:
+		return "swap_nodes"
+	case PatchSplitNode:
+		return "split_node"
+	case PatchMergeNodes:
+		return "merge_nodes"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(pt))
 	}

@@ -31,9 +31,12 @@ const (
 	wfOpReplaceNode
 	wfOpParallelize
 	wfOpSerialize
+	wfOpSwap
+	wfOpSplit
+	wfOpMerge
 )
 
-var wfOps = []wfMutationOp{wfOpInsertNode, wfOpRemoveNode, wfOpReplaceNode, wfOpParallelize, wfOpSerialize}
+var wfOps = []wfMutationOp{wfOpInsertNode, wfOpRemoveNode, wfOpReplaceNode, wfOpParallelize, wfOpSerialize, wfOpSwap, wfOpSplit, wfOpMerge}
 
 // WorkflowGenomeConfig controls the DAG topology evolution behaviour.
 type WorkflowGenomeConfig struct {
@@ -113,6 +116,12 @@ func (g *WorkflowGenome) Mutate(_ context.Context, n int) ([]Genome, error) {
 			child.mutateParallelize()
 		case wfOpSerialize:
 			child.mutateSerialize()
+		case wfOpSwap:
+			child.mutateSwapNodes()
+		case wfOpSplit:
+			child.mutateSplitNode()
+		case wfOpMerge:
+			child.mutateMergeNodes()
 		}
 		children = append(children, child)
 	}
@@ -322,6 +331,105 @@ func (g *WorkflowGenome) mutateSerialize() {
 	}
 }
 
+func (g *WorkflowGenome) mutateSwapNodes() {
+	// Swap the dependencies of two random nodes in the DAG.
+	steps := g.dag.Steps()
+	if len(steps) < 2 {
+		return
+	}
+	i, j := rand.Intn(len(steps)), rand.Intn(len(steps))
+	if i == j {
+		j = (j + 1) % len(steps)
+	}
+	// Swap the dependency lists of the two nodes via the DAG.
+	depsI := g.dag.ReadDeps(steps[i].ID)
+	depsJ := g.dag.ReadDeps(steps[j].ID)
+	steps[i].DependsOn = depsJ
+	steps[j].DependsOn = depsI
+}
+
+func (g *WorkflowGenome) mutateSplitNode() {
+	// Split a random node into two sequential nodes.
+	steps := g.dag.Steps()
+	if len(steps) == 0 || g.dag.NodeCount()+1 > g.config.MaxNodes {
+		return
+	}
+	target := steps[rand.Intn(len(steps))]
+	splitID := target.ID + "-split"
+	splitStep := &engine.Step{
+		ID:        splitID,
+		Name:      splitID,
+		AgentType: target.AgentType,
+		Input:     target.Input,
+		DependsOn: []string{target.ID},
+	}
+	if err := g.dag.AddNode(context.Background(), splitStep); err != nil {
+		wfLog.Warn("split add node failed", "node", splitID, "error", err)
+		return
+	}
+	// Update downstream nodes to depend on the split node.
+	for _, s := range steps {
+		for idx, dep := range s.DependsOn {
+			if dep == target.ID {
+				s.DependsOn[idx] = splitID
+			}
+		}
+	}
+}
+
+func (g *WorkflowGenome) mutateMergeNodes() {
+	// Merge two consecutive nodes into one.
+	steps := g.dag.Steps()
+	if len(steps) < 2 {
+		return
+	}
+	// Find two nodes where one depends on the other.
+	for i := 0; i < len(steps); i++ {
+		for j := 0; j < len(steps); j++ {
+			if i == j {
+				continue
+			}
+			if contains(steps[j].DependsOn, steps[i].ID) {
+				// Merge j into i: remove j, update i's deps.
+				steps[i].DependsOn = mergeDeps(steps[i].DependsOn, steps[j].DependsOn)
+				steps[i].Input = steps[i].Input + " | " + steps[j].Input
+				// Remove j from the DAG.
+				_ = g.dag.RemoveNode(context.Background(), steps[j].ID)
+				return
+			}
+		}
+	}
+}
+
+// contains checks if a string is in a slice.
+func contains(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeDeps combines two dependency lists, removing duplicates.
+func mergeDeps(a, b []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(a)+len(b))
+	for _, d := range a {
+		if !seen[d] {
+			seen[d] = true
+			result = append(result, d)
+		}
+	}
+	for _, d := range b {
+		if !seen[d] {
+			seen[d] = true
+			result = append(result, d)
+		}
+	}
+	return result
+}
+
 // clone creates a deep copy of the WorkflowGenome.
 // Steps are sorted topologically before passing to NewMutableDAG
 // because Steps() returns in non-deterministic map order, which would
@@ -391,14 +499,4 @@ func sortByDeps(steps []*engine.Step) []*engine.Step {
 	}
 
 	return result
-}
-
-// contains reports whether a slice contains the given string.
-func contains(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

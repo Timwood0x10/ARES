@@ -3,6 +3,7 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
@@ -10,6 +11,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
+	"github.com/Timwood0x10/ares/internal/evolution/diff"
+	evogenome "github.com/Timwood0x10/ares/internal/evolution/genome"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // WiredEvolutionSystem holds a fully wired autonomous evolution system.
@@ -33,6 +38,12 @@ type WiredEvolutionSystem struct {
 	Reflector     *genome.LLMReflector        `json:"-"`
 	HypothesisGen *genome.HypothesisGenerator `json:"-"`
 	MetaCtrl      *genome.MetaController      `json:"-"`
+
+	// Phase 6: Diff Engine + Coordinator for graph structure evolution.
+	// When set, each generation's mutation is diffed and patches submitted.
+	DiffReg     *diff.Registry                    `json:"-"`
+	Coordinator *coordinator.EvolutionCoordinator `json:"-"`
+	GenomeReg   *evogenome.Registry               `json:"-"`
 
 	// AfterGeneration is called after each idle evolution generation with
 	// the generation index and the system. When non-nil, it receives the
@@ -721,6 +732,28 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 			genome.ApplyMetaToPopulation(system.Population, system.MetaCtrl)
 		}
 
+		// Phase 6: Diff Engine — compare old/new snapshots, generate patches,
+		// and submit to Coordinator for evaluation and application.
+		if system.DiffReg != nil && system.Coordinator != nil && system.GenomeReg != nil {
+			diffPatches, dErr := generateDiffPatches(ctx, system.GenomeReg, system.DiffReg)
+			if dErr != nil {
+				el.Warn(ctx, "RunIdleEvolution", "diff engine failed, continuing", "error", dErr)
+			} else {
+				for _, dp := range diffPatches {
+					system.Coordinator.Submit(coordinator.PatchProposal{
+						Patch:     dp,
+						Source:    coordinator.SourceGA,
+						Reason:    "GA: evolution generated structural change",
+						Priority:  6, // Medium-high: structural evolution
+						Timestamp: time.Now(),
+					})
+				}
+				if len(diffPatches) > 0 {
+					system.Coordinator.Evaluate(ctx)
+				}
+			}
+		}
+
 		// Run the post-generation hook (promotion, report, etc.).
 		if system.AfterGeneration != nil {
 			if err := system.AfterGeneration(ctx, gen, system); err != nil {
@@ -740,4 +773,42 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 	}
 
 	return nil
+}
+
+// generateDiffPatches iterates over all registered genomes, snapshots their
+// current state, and uses the Diff Engine to produce RuntimePatches for any
+// changes detected since the last snapshot.
+func generateDiffPatches(ctx context.Context, genomeReg *evogenome.Registry, diffReg *diff.Registry) ([]patch.RuntimePatch, error) {
+	var allPatches []patch.RuntimePatch
+
+	for _, name := range genomeReg.List() {
+		g, err := genomeReg.Get(name)
+		if err != nil {
+			continue
+		}
+
+		differ, err := diffReg.Get(name)
+		if err != nil {
+			continue
+		}
+
+		snap, err := g.Snapshot(ctx)
+		if err != nil {
+			el.Warn(ctx, "generateDiffPatches", "snapshot failed, skipping", "genome", name, "error", err)
+			continue
+		}
+		if snap == nil {
+			continue
+		}
+
+		patches, err := differ.Diff(ctx, nil, snap)
+		if err != nil {
+			el.Warn(ctx, "generateDiffPatches", "diff failed, skipping", "genome", name, "error", err)
+			continue
+		}
+
+		allPatches = append(allPatches, patches...)
+	}
+
+	return allPatches, nil
 }

@@ -10,7 +10,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
-const defaultReducer = "default"
+const (
+	defaultReducer     = "default"
+	plannerBalanced    = "balanced"
+	plannerArchFirst   = "architecture-first"
+	plannerMemoryFirst = "memory-first"
+)
 
 // KnowledgeGenomeConfig controls the AKF knowledge retrieval parameters.
 type KnowledgeGenomeConfig struct {
@@ -36,7 +41,7 @@ func DefaultKnowledgeGenomeConfig() KnowledgeGenomeConfig {
 	return KnowledgeGenomeConfig{
 		MaxResults:      100,
 		ReducerStrategy: defaultReducer,
-		PlannerStrategy: "balanced",
+		PlannerStrategy: plannerBalanced,
 		SummarizerType:  "truncation",
 	}
 }
@@ -178,7 +183,7 @@ func (g *KnowledgeGenome) mutateReducerStrategy() {
 }
 
 func (g *KnowledgeGenome) mutatePlannerStrategy() {
-	strategies := []string{"architecture-first", "memory-first", "balanced"}
+	strategies := []string{plannerArchFirst, plannerMemoryFirst, plannerBalanced}
 	g.config.PlannerStrategy = strategies[rand.Intn(len(strategies))]
 }
 
