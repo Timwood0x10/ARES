@@ -5,12 +5,16 @@ package evolution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	evolve "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	internalmutation "github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
+
+	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 )
 
 // ErrNotImplemented indicates the feature is not yet wired.
@@ -163,12 +167,12 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 }
 
 func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
-	// Convert public Strategy to internal mutation.Strategy
-	s := &mutation.Strategy{
-		ID:     base.ID,
-		Score:  base.Score,
-		Params: base.Params,
-	}
+  // Convert public Strategy to internal mutation.Strategy
+  s := &internalmutation.Strategy{
+   ID:     base.ID,
+   Score:  base.Score,
+   Params: base.Params,
+  }
 	inner, err := genome.NewPopulation(context.Background(), s, nil,
 		genome.WithPopulationSize(cfg.Size),
 		genome.WithEliteCount(cfg.EliteCount),
@@ -194,12 +198,72 @@ type Mutator interface {
 	Mutate(ctx context.Context, parent *Strategy) (*Strategy, error)
 }
 
-// NewMutator constructs a public Mutator.
-// TODO: wire internal mutator adapter (expected by 2026-09-30).
-// Currently returns ErrNotImplemented — callers MUST handle this error and not
-// assume a nil-safe Mutator.
+// NewMutator constructs a public Mutator by wrapping the internal mutation engine.
+// The model parameter is reserved for future LLM-guided mutation and may be empty.
+// If cfg is zero-valued, sensible defaults are used.
 func NewMutator(model string, cfg MutationConfig) (Mutator, error) {
-	return nil, ErrNotImplemented
+	paramRanges := map[string][]any{
+		"temperature":        {0.1, 0.3, 0.5, 0.7, 0.9},
+		"top_k":              {10, 20, 40, 80},
+		"max_steps":          {5, 10, 15, 20},
+		"memory_limit":       {3, 5, 10},
+		"conflict_threshold": {0.85, 0.90, 0.95},
+	}
+
+	mutCfg := pubmutation.MutatorConfig{
+		ParamRanges:        paramRanges,
+		ParamMutationProb:  cfg.ParamMutationProb,
+		PromptMutationProb: cfg.PromptMutationProb,
+	}
+
+	if mutCfg.ParamMutationProb <= 0 {
+		mutCfg.ParamMutationProb = 0.3
+	}
+	if mutCfg.PromptMutationProb <= 0 {
+		mutCfg.PromptMutationProb = 0.3
+	}
+
+	inner, err := pubmutation.NewMutator(mutCfg)
+	if err != nil {
+		return nil, fmt.Errorf("new mutator: %w", err)
+	}
+
+	return &mutatorAdapter{inner: inner}, nil
+}
+
+// mutatorAdapter wraps the public mutation.Mutator to implement the local Mutator interface.
+type mutatorAdapter struct {
+	inner *pubmutation.Mutator
+}
+
+func (a *mutatorAdapter) Mutate(ctx context.Context, parent *Strategy) (*Strategy, error) {
+	if parent == nil {
+		return nil, fmt.Errorf("parent strategy must not be nil")
+	}
+
+	pubStrat := &pubmutation.Strategy{
+		ID:             parent.ID,
+		Version:        parent.Version,
+		Score:          parent.Score,
+		ParentID:       parent.ParentID,
+		PromptTemplate: parent.PromptTemplate,
+		Params:         parent.Params,
+	}
+
+	child, err := a.inner.Mutate(ctx, pubStrat)
+	if err != nil {
+		return nil, fmt.Errorf("mutate: %w", err)
+	}
+
+	return &Strategy{
+		ID:             child.ID,
+		Version:        child.Version,
+		Score:          child.Score,
+		ParentID:       child.ParentID,
+		PromptTemplate: child.PromptTemplate,
+		Params:         child.Params,
+		MutationType:   string(child.MutationType),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -237,15 +301,26 @@ type promoterAdapter struct {
 }
 
 func (p *promoterAdapter) Evaluate(ctx context.Context, strategyID string, successRate, confidence float64) (string, error) {
-	// TODO: wire internal promoter Evaluate (expected by 2026-09-30).
-	return "", ErrNotImplemented
+	ev := experience.Evidence{
+		StrategyID:  strategyID,
+		SuccessRate: successRate,
+		Confidence:  confidence,
+		ErrorRate:   1.0 - successRate,
+		SampleCount: 1,
+		LastUpdated: time.Now(),
+	}
+
+	state, reason, err := p.inner.Evaluate(ctx, strategyID, ev)
+	if err != nil {
+		return "", fmt.Errorf("promoter evaluate: %w", err)
+	}
+	return fmt.Sprintf("%s: %s", state, reason), nil
 }
 func (p *promoterAdapter) Promote(ctx context.Context, strategyID string) error {
 	return p.inner.Promote(ctx, strategyID)
 }
 func (p *promoterAdapter) Demote(ctx context.Context, strategyID string) error {
-	// TODO: wire internal promoter Demote (expected by 2026-09-30).
-	return ErrNotImplemented
+	return p.inner.Demote(ctx, strategyID, "demoted by public API")
 }
 
 func NewPromoter(criteria *PromotionCriteria) Promoter {

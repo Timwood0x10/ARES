@@ -57,22 +57,56 @@ func TestLineageStruct(t *testing.T) {
 	}
 }
 
-func TestNewMutatorReturnsErrNotImplemented(t *testing.T) {
-	_, err := NewMutator("test-model", MutationConfig{})
-	assert.ErrorIs(t, err, ErrNotImplemented)
+func TestNewMutator(t *testing.T) {
+	mut, err := NewMutator("test-model", MutationConfig{
+		ParamMutationProb:  0.3,
+		PromptMutationProb: 0.3,
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, mut)
+
+	parent := &Strategy{
+		ID:     "parent-1",
+		Score:  0.5,
+		Params: map[string]any{"temperature": 0.7},
+	}
+	child, err := mut.Mutate(context.Background(), parent)
+	assert.NoError(t, err)
+	assert.NotNil(t, child)
+	assert.NotEqual(t, parent.ID, child.ID)
 }
 
-func TestPromoterEvaluateReturnsErrNotImplemented(t *testing.T) {
-	criteria := DefaultPromotionCriteria()
-	adapter := NewPromoter(&criteria)
-	// adapter is a promoterAdapter with inner=nil, Evaluate returns ErrNotImplemented.
-	_, err := adapter.Evaluate(context.Background(), "test-strategy", 0.9, 0.8)
-	assert.ErrorIs(t, err, ErrNotImplemented)
+func TestNewMutatorDefaults(t *testing.T) {
+	mut, err := NewMutator("", MutationConfig{})
+	assert.NoError(t, err)
+	assert.NotNil(t, mut)
 }
 
-func TestPromoterDemoteReturnsErrNotImplemented(t *testing.T) {
+func TestPromoterEvaluate(t *testing.T) {
 	criteria := DefaultPromotionCriteria()
 	adapter := NewPromoter(&criteria)
-	err := adapter.Demote(context.Background(), "test-strategy")
-	assert.ErrorIs(t, err, ErrNotImplemented)
+	result, err := adapter.Evaluate(context.Background(), "test-strategy", 0.9, 0.8)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "candidate")
+}
+
+func TestPromoterDemote(t *testing.T) {
+	criteria := DefaultPromotionCriteria()
+	adapter := NewPromoter(&criteria)
+	_, err := adapter.Evaluate(context.Background(), "test-strategy-demote", 0.5, 0.3)
+	assert.NoError(t, err)
+
+	err = adapter.Demote(context.Background(), "test-strategy-demote")
+	assert.NoError(t, err)
+}
+
+func TestPromoterPromote(t *testing.T) {
+	criteria := DefaultPromotionCriteria()
+	adapter := NewPromoter(&criteria)
+	_, err := adapter.Evaluate(context.Background(), "test-strategy-promote", 0.9, 0.8)
+	assert.NoError(t, err)
+
+	err = adapter.Promote(context.Background(), "test-strategy-promote")
+	assert.NoError(t, err)
 }

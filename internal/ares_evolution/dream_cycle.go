@@ -14,6 +14,20 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// EvolutionMode selects the strategy evolution algorithm used by DreamCycle.
+type EvolutionMode int
+
+const (
+	// ModeEvolutionStrategy uses the current (1+λ) evolution strategy:
+	// mutate parent → test candidates → deploy best.
+	ModeEvolutionStrategy EvolutionMode = iota
+
+	// ModeGeneticAlgorithm uses the full genetic algorithm pipeline:
+	// population → selection → crossover → mutation → score → next generation.
+	// Requires genome.Population to be initialized via GA config fields.
+	ModeGeneticAlgorithm
+)
+
 // ErrAllCandidatesRejected is returned by findWinner when no candidate
 // passes the win-rate threshold during quick-reject or full evaluation.
 // Callers should treat this as "no winner" rather than a hard error.
@@ -47,9 +61,49 @@ type DreamCycleConfig struct {
 	// Candidates below MinWinRate after this many runs are discarded without full eval.
 	// Default 5. Set to 0 to skip quick rejection.
 	QuickRejectRuns int
+
+	// EvolutionMode selects the evolution algorithm: ModeEvolutionStrategy or ModeGeneticAlgorithm.
+	// Default: ModeEvolutionStrategy (backward compatible).
+	EvolutionMode EvolutionMode
+
+	// GA config (only used when EvolutionMode == ModeGeneticAlgorithm):
+
+	// PopulationSize is the number of individuals in the GA population.
+	// Default: 20.
+	PopulationSize int
+
+	// EliteCount is the number of top individuals preserved each generation.
+	// Default: 3.
+	EliteCount int
+
+	// MutationRate is the probability of mutating each offspring [0, 1].
+	// Default: 0.2.
+	MutationRate float64
+
+	// SurvivalRate is the fraction of population that survives each generation [0, 1].
+	// Default: 0.6.
+	SurvivalRate float64
+
+	// SelectionStrategy selects the parent selection algorithm.
+	// Supported: "tournament", "rank", "roulette", "sus", "truncation", "" (random).
+	// Default: "tournament".
+	SelectionStrategy string
+
+	// TournamentSize is the number of competitors per tournament (only for tournament selection).
+	// Default: 3.
+	TournamentSize int
+
+	// MaxGenerations is the maximum number of GA generations to run.
+	// 0 means unlimited (run until manually stopped).
+	MaxGenerations int
+
+	// TargetFitness stops evolution when the best score reaches this threshold.
+	// 0 means no target (run until MaxGenerations).
+	TargetFitness float64
 }
 
 // DefaultDreamCycleConfig returns sensible defaults for dream cycle configuration.
+// ES mode is the default for backward compatibility.
 func DefaultDreamCycleConfig() DreamCycleConfig {
 	return DreamCycleConfig{
 		Enabled:              false,
@@ -60,6 +114,17 @@ func DefaultDreamCycleConfig() DreamCycleConfig {
 		Cooldown:             5 * time.Minute,
 		TaskSampleSize:       50,
 		QuickRejectRuns:      5,
+
+		// GA defaults (used when EvolutionMode == ModeGeneticAlgorithm)
+		EvolutionMode:      ModeEvolutionStrategy,
+		PopulationSize:     20,
+		EliteCount:         3,
+		MutationRate:       0.2,
+		SurvivalRate:       0.6,
+		SelectionStrategy:  "tournament",
+		TournamentSize:     3,
+		MaxGenerations:     0, // unlimited
+		TargetFitness:      0, // no target
 	}
 }
 
@@ -85,6 +150,7 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // DreamCycle orchestrates the full autonomous evolution loop.
 // It connects: Callback trigger -> Flight->Exp Adapter -> Scheduler ->
 // Mutator -> Arena Regression -> Genealogy recording.
+// In GA mode, it uses genome.Population for full genetic algorithm cycles.
 type DreamCycle struct {
 	scheduler       *EvolutionScheduler
 	mutator         MutatorInterface
@@ -97,6 +163,7 @@ type DreamCycle struct {
 	metrics         MetricsRecorder
 	hintProvider    mutation.HintProvider
 	population      *genome.Population
+	crosser         *genome.Crossover
 	config          DreamCycleConfig
 	mu              sync.Mutex
 	runMu           sync.Mutex // serializes Run() to prevent double-evolution (EV-01)
@@ -109,6 +176,9 @@ type DreamCycle struct {
 // All dependencies must be non-nil except genealogy which is optional (lineage
 // recording will be skipped if nil).
 //
+// When EvolutionMode is ModeGeneticAlgorithm, a genome.Population is initialized
+// automatically from the GA configuration fields in DreamCycleConfig.
+//
 // Args:
 //
 //	scheduler - the evolution scheduler that triggers this cycle.
@@ -120,7 +190,7 @@ type DreamCycle struct {
 // Returns:
 //
 //	*DreamCycle - the configured dream cycle instance.
-//	error - non-nil if required dependencies are missing.
+//	error - non-nil if required dependencies are missing or GA initialization fails.
 func NewDreamCycle(
 	scheduler *EvolutionScheduler,
 	mutator MutatorInterface,
@@ -149,22 +219,27 @@ func NewDreamCycle(
 		}
 	}
 
+	// Initialize GA population and crosser if in GA mode.
+	if dc.config.EvolutionMode == ModeGeneticAlgorithm {
+		if err := dc.initGAPopulation(context.Background()); err != nil {
+			return nil, fmt.Errorf("init GA population: %w", err)
+		}
+		crosser, err := genome.NewCrossover()
+		if err != nil {
+			return nil, fmt.Errorf("new crossover: %w", err)
+		}
+		dc.crosser = crosser
+	}
+
 	return dc, nil
 }
 
 // Run executes one full dream cycle when triggered by the scheduler.
-// This is the main orchestration method that coordinates all evolution components:
 //
-//  1. Collect recent task score trends (from experience system or flight recorder).
-//  2. Decide whether evolution is needed (delegated to shouldEvolve heuristic).
-//  3. If not needed, return nil quickly (fast path).
-//  4. If needed:
-//     a. Get current active strategy.
-//     b. Call Mutator.Mutate() to generate N candidate variants.
-//     c. For each candidate, call Tester.Run() for arena regression testing.
-//     d. Select highest-scoring candidate with WinRate > threshold.
-//     e. If winner exists, record Genealogy and return winning strategy.
-//     f. If no winner, record failure experience and return nil (no change).
+// In ES mode (default): mutate parent → test candidates → deploy best.
+// In GA mode: score population → evolve (selection/crossover/mutation) → deploy best.
+//
+// This is the main orchestration method that coordinates all evolution components.
 //
 // Args:
 //
@@ -229,13 +304,54 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		return nil
 	}
 
+	// Route to GA or ES path based on EvolutionMode.
+	if dc.config.EvolutionMode == ModeGeneticAlgorithm {
+		return dc.runGAEvolution(ctx, cycleCtx, data)
+	}
+
+	return dc.runESEvolution(ctx, cycleCtx, data, taskCount)
+}
+
+// candidateResult holds an evaluated candidate strategy with its test results.
+type candidateResult struct {
+	strategy         Strategy
+	winRate          float64
+	scoreImprovement float64
+}
+
+// initGAPopulation initializes a genome.Population from the current active strategy
+// and GA configuration. Called during NewDreamCycle when EvolutionMode is GA.
+func (dc *DreamCycle) initGAPopulation(ctx context.Context) error {
+	parent, err := dc.getCurrentStrategy(ctx)
+	if err != nil {
+		return fmt.Errorf("get current strategy for GA population: %w", err)
+	}
+
+	base := evolutionToMutationStrategy(parent)
+	genMutator := &genomeMutatorAdapter{inner: dc.mutator}
+	pop, err := genome.NewPopulation(ctx, &base, genMutator,
+		genome.WithPopulationSize(dc.config.PopulationSize),
+		genome.WithEliteCount(dc.config.EliteCount),
+		genome.WithMutationRate(dc.config.MutationRate),
+		genome.WithSurvivalRate(dc.config.SurvivalRate),
+	)
+	if err != nil {
+		return fmt.Errorf("new population: %w", err)
+	}
+	dc.population = pop
+	return nil
+}
+
+// runESEvolution executes the existing (1+λ) evolution strategy path.
+// Mutate parent → test candidates → deploy best.
+func (dc *DreamCycle) runESEvolution(ctx context.Context, cycleCtx context.Context, data CallbackData, taskCount int64) error {
 	popGen := 0
 	popSize := 0
 	if dc.population != nil {
 		popGen = dc.population.CurrentGeneration()
 		popSize = len(dc.population.Agents)
 	}
-	slog.InfoContext(ctx, "[DreamCycle] Starting evolution cycle",
+	slog.InfoContext(ctx, "[DreamCycle] Starting ES evolution cycle",
 		"agent_id", data.AgentID,
 		"task_count", taskCount,
 		"trigger", dc.scheduler.TriggerMode().String(),
@@ -243,8 +359,6 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		"population_size", popSize)
 
 	// Pre-evolution guardrail check.
-	// Pass taskCount as totalPop so the unevaluated ratio check is meaningful.
-	// Generation is not tracked yet; currentBest is sourced from active strategy.
 	var currentBest float64
 	if dc.stateManager != nil {
 		if cur := dc.stateManager.Current(); cur != nil {
@@ -312,7 +426,7 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		return nil
 	}
 
-	// Step 4: Record lineage if genealogy recorder is available.
+	// Step 4: Record lineage.
 	if dc.genealogy != nil {
 		lineage := StrategyLineage{
 			ParentID:         parent.ID,
@@ -330,7 +444,25 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		}
 	}
 
-	// Step 5: Post-evolution guardrail check.
+	// Convert parent Strategy to mutation.Strategy for deployWinner.
+	parentMut := evolutionToMutationStrategy(parent)
+	return dc.deployWinner(ctx, cycleCtx, data, winner, parentMut)
+}
+
+// deployWinner handles the common deployment logic for both ES and GA paths.
+// It runs post-evolution guardrails, shadow evaluation, and deploys via stateManager.
+func (dc *DreamCycle) deployWinner(
+	ctx context.Context,
+	cycleCtx context.Context,
+	data CallbackData,
+	winner *candidateResult,
+	parent mutation.Strategy,
+) error {
+	if winner == nil {
+		return nil
+	}
+
+	// Post-evolution guardrail check.
 	if dc.guardrails != nil {
 		gen := 0
 		var lineageShares map[string]int
@@ -345,26 +477,22 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			slog.WarnContext(ctx, "[DreamCycle] Post-evolution guardrails block deploy",
 				"winner_id", winner.strategy.ID,
 				"win_rate", winner.winRate,
-				"score", winner.winRate,
-				"events", len(postResult.Events),
-				"generation", gen)
+				"events", len(postResult.Events))
 			return nil
 		}
 	}
 
-	// Step 6: Shadow evaluation before deployment.
+	// Shadow evaluation before deployment.
 	if dc.shadowEvaluator != nil {
 		mtnWinner := winnerToMutationStrategy(winner)
 		if mtnWinner == nil {
 			slog.ErrorContext(ctx, "[DreamCycle] winnerToMutationStrategy returned nil, skipping shadow")
 			return nil
 		}
-		// Set active strategy for comparison and start shadow evaluation.
-		parentMutation := evolutionToMutationStrategy(parent)
-		dc.shadowEvaluator.SetActiveStrategy(&parentMutation)
+		parentMutation := parent
+		   dc.shadowEvaluator.SetActiveStrategy(&parentMutation)
 		dc.shadowEvaluator.StartShadow(mtnWinner)
 
-		// Use independent scorer if available, otherwise fall back to manual scores.
 		if dc.shadowEvaluator.HasIndependentScorer() {
 			dc.shadowEvaluator.Evaluate(ctx)
 		} else {
@@ -384,17 +512,12 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			}
 			return nil
 		}
-		slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation approves deployment",
-			"candidate_id", winner.strategy.ID,
-			"active_id", parent.ID,
-			"win_rate", report.WinRate,
-			"threshold", dc.shadowEvaluator.minWinRate)
 		if dc.metrics != nil {
 			dc.metrics.RecordEvolutionShadow("promoted")
 		}
 	}
 
-	// Step 7: Deploy via ActiveStrategyManager.
+	// Deploy via ActiveStrategyManager.
 	if dc.stateManager != nil {
 		mtnWinner := winnerToMutationStrategy(winner)
 		if mtnWinner == nil {
@@ -409,8 +532,7 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		}
 		if err := dc.stateManager.Deploy(cycleCtx, mtnWinner); err != nil {
 			slog.ErrorContext(ctx, "[DreamCycle] Failed to deploy winning strategy",
-				"winner_id", winner.strategy.ID,
-				"error", err)
+				"winner_id", winner.strategy.ID, "error", err)
 			return nil
 		}
 		slog.InfoContext(ctx, "[DreamCycle] Winning strategy deployed",
@@ -421,14 +543,14 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 			dc.metrics.SetEvolutionScore(winner.strategy.ID, winner.winRate)
 		}
 
-		// Record successful outcome for hint provider learning.
+		// Record outcome for hint provider.
 		if dc.hintProvider != nil {
 			outcome := mutation.StrategyOutcome{
 				StrategyID:   winner.strategy.ID,
 				TaskType:     data.AgentID,
 				Success:      true,
 				Score:        winner.winRate,
-				MutationType: "dream_cycle",
+				MutationType: "ga_evolution",
 				Timestamp:    time.Now(),
 			}
 			if err := dc.hintProvider.RecordStrategyOutcome(cycleCtx, outcome); err != nil {
@@ -446,18 +568,9 @@ func (dc *DreamCycle) Run(ctx context.Context, data CallbackData) error {
 		"winner_id", winner.strategy.ID,
 		"win_rate", winner.winRate,
 		"score_improvement", winner.scoreImprovement,
-		"trigger", dc.scheduler.TriggerMode().String(),
-		"generation", 0,
-		"population_size", 0)
+		"trigger", dc.scheduler.TriggerMode().String())
 
 	return nil
-}
-
-// candidateResult holds an evaluated candidate strategy with its test results.
-type candidateResult struct {
-	strategy         Strategy
-	winRate          float64
-	scoreImprovement float64
 }
 
 // WithDreamCycleGuardrails attaches a guardrail checker to the dream cycle.
