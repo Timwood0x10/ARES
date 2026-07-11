@@ -37,6 +37,7 @@ type PatchProposal struct {
 	Source    PatchSource        `json:"source"`
 	Reason    string             `json:"reason"`   // why this patch was proposed
 	Priority  int                `json:"priority"` // 1-10, higher = more urgent
+	Fitness   float64            `json:"fitness"`  // GA fitness score (0-100), 0 = unknown
 	Timestamp time.Time          `json:"timestamp"`
 }
 
@@ -77,13 +78,25 @@ type PolicyGenome struct {
 
 	// MaxPatchesPerMinute: rate limit to prevent cascade failures.
 	MaxPatchesPerMinute int
+
+	// MinFitnessThreshold: GA patches with fitness below this are rejected.
+	// Scale: 0-100, matching population BestScore. 0 = no threshold.
+	// Only applies to SourceGA. Other sources bypass fitness checks.
+	MinFitnessThreshold float64
+
+	// ApplyFitnessThreshold: GA patches with fitness >= this are auto-applied.
+	// Scale: 0-100, matching population BestScore. 0 = disabled.
+	// Only applies to SourceGA. Other sources bypass fitness checks.
+	ApplyFitnessThreshold float64
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
 func DefaultPolicy() PolicyGenome {
 	return PolicyGenome{
-		AutoApplyThreshold:  8,
-		MaxPatchesPerMinute: 4,
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   4,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
 	}
 }
 
@@ -217,23 +230,39 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 }
 
 // decide implements the decision policy.
+// Source-specific routing:
+//   - SourceGA: fitness-gated (apply ≥ ApplyFitnessThreshold, reject < MinFitnessThreshold)
+//   - SourceChaos: emergency bypass via ApplyEmergency, not here
+//   - SourceHuman/SourceLLM/other: fallback to priority + rate-limit rules
+//   - Fitness == 0 (unset): treated as "no information" → fallback to priority rules
 func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 	ec.mu.RLock()
 	policy := ec.policy
 	ec.mu.RUnlock()
 
-	// Rate limiting.
+	// Rate limiting applies to all sources.
 	recentCount := ec.countRecentPatches(1 * time.Minute)
 	if recentCount >= policy.MaxPatchesPerMinute {
 		return DecisionDelay
 	}
 
-	// Auto-apply high-priority patches.
+	// GA source: fitness-gated decision.
+	if proposal.Source == SourceGA && proposal.Fitness > 0 {
+		if proposal.Fitness >= policy.ApplyFitnessThreshold {
+			return DecisionApply
+		}
+		if proposal.Fitness < policy.MinFitnessThreshold {
+			return DecisionReject
+		}
+		// Fitness between threshold and floor: delay for review.
+		return DecisionDelay
+	}
+
+	// Non-GA sources or Fitness == 0: fallback to priority rules.
 	if proposal.Priority >= policy.AutoApplyThreshold {
 		return DecisionApply
 	}
 
-	// Default: apply with caution.
 	return DecisionApply
 }
 
@@ -256,10 +285,19 @@ func (ec *EvolutionCoordinator) countRecentPatches(d time.Duration) int {
 func decisionReason(d Decision, proposal PatchProposal) string {
 	switch d {
 	case DecisionApply:
+		if proposal.Source == SourceGA && proposal.Fitness > 0 {
+			return fmt.Sprintf("applying patch %s from %s: fitness %.1f >= threshold", proposal.Patch.Type, proposal.Source, proposal.Fitness)
+		}
 		return fmt.Sprintf("applying patch %s from %s (priority %d)", proposal.Patch.Type, proposal.Source, proposal.Priority)
 	case DecisionReject:
+		if proposal.Source == SourceGA && proposal.Fitness > 0 {
+			return fmt.Sprintf("rejected patch %s from %s: fitness %.1f < min threshold %.0f", proposal.Patch.Type, proposal.Source, proposal.Fitness, 30.0)
+		}
 		return fmt.Sprintf("rejected patch %s from %s: rate limited or blacklisted", proposal.Patch.Type, proposal.Source)
 	case DecisionDelay:
+		if proposal.Source == SourceGA && proposal.Fitness > 0 {
+			return fmt.Sprintf("delayed patch %s from %s: fitness %.1f between threshold and floor", proposal.Patch.Type, proposal.Source, proposal.Fitness)
+		}
 		return fmt.Sprintf("delayed patch %s from %s: too many recent patches", proposal.Patch.Type, proposal.Source)
 	default:
 		return "unknown decision"

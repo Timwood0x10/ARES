@@ -744,7 +744,8 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 						Patch:     dp,
 						Source:    coordinator.SourceGA,
 						Reason:    "GA: evolution generated structural change",
-						Priority:  6, // Medium-high: structural evolution
+						Priority:  6,
+						Fitness:   system.Population.Stats().BestScore,
 						Timestamp: time.Now(),
 					})
 				}

@@ -4,6 +4,9 @@ package ares_bootstrap
 import (
 	"fmt"
 
+	"github.com/Timwood0x10/ares/compat"
+	compatllm "github.com/Timwood0x10/ares/compat/llm"
+	"github.com/Timwood0x10/ares/compat/llm/openai"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
@@ -27,6 +30,12 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: LLM client: %w", err)
 	}
+
+	// Register the LLM provider in the compat layer for ecosystem access.
+	compat.RegisterLLM(cfg.Provider, func(config map[string]any) (compatllm.LLMProvider, error) {
+		return openai.New(config)
+	})
+
 	return &LLMComponents{
 		Client:      client,
 		CallbackReg: reg,

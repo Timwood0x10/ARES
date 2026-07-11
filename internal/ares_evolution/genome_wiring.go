@@ -580,12 +580,16 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 		el.Warn(ctx, "submitToCoordinator", "diff engine failed", "error", err)
 		return
 	}
+
+	bestScore := a.pop.Stats().BestScore
+
 	for _, p := range patches {
 		a.coordinator.Submit(coordinator.PatchProposal{
 			Patch:     p,
 			Source:    coordinator.SourceGA,
 			Reason:    "GA: population evolution result",
 			Priority:  6,
+			Fitness:   bestScore,
 			Timestamp: time.Now(),
 		})
 	}

@@ -120,7 +120,7 @@ func (g *PromptGenome) Fitness(_ context.Context) (float64, error) {
 		return 0.5, nil
 	}
 	score := g.scorer(g.strategy)
-	if !aresgenome.IsScoreEvaluated(score) {
+	if !IsScoreEvaluated(score) {
 		return 0.0, nil
 	}
 	return score, nil

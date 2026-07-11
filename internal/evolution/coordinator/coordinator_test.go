@@ -36,6 +36,8 @@ func TestDefaultPolicy(t *testing.T) {
 	p := DefaultPolicy()
 	assert.Equal(t, 8, p.AutoApplyThreshold)
 	assert.Equal(t, 4, p.MaxPatchesPerMinute)
+	assert.Equal(t, 30.0, p.MinFitnessThreshold)
+	assert.Equal(t, 60.0, p.ApplyFitnessThreshold)
 }
 
 // ── EvolutionCoordinator ────────────────────
@@ -131,6 +133,148 @@ func TestCoordinator_Evaluate_DelaysOnRateLimit(t *testing.T) {
 	require.Len(t, decisions, 1)
 	assert.Equal(t, DecisionDelay, decisions[0].Decision,
 		"should delay when rate limit is 0")
+}
+
+// ── Fitness-gated evaluation ───────────────
+
+func TestCoordinator_Evaluate_GA_FitnessAboveThreshold_Applies(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("ga-fit", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+
+	// GA patch with fitness 80 >= 60 → apply.
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-fit"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  80.0,
+	})
+
+	coord.Evaluate(context.Background())
+	decisions := coord.DecisionHistory()
+	require.Len(t, decisions, 1)
+	assert.Equal(t, DecisionApply, decisions[0].Decision,
+		"GA patch with fitness >= threshold should apply")
+	assert.Len(t, exec.applied, 1)
+}
+
+func TestCoordinator_Evaluate_GA_FitnessBelowFloor_Rejects(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("ga-poor", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+
+	// GA patch with fitness 20 < 30 → reject.
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-poor"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  20.0,
+	})
+
+	coord.Evaluate(context.Background())
+	decisions := coord.DecisionHistory()
+	require.Len(t, decisions, 1)
+	assert.Equal(t, DecisionReject, decisions[0].Decision,
+		"GA patch with fitness < floor should reject")
+	assert.Len(t, exec.applied, 0, "rejected patch should not be applied")
+}
+
+func TestCoordinator_Evaluate_GA_FitnessMiddleGround_Delays(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("ga-ok", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+
+	// GA patch with fitness 45 between 30 and 60 → delay.
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-ok"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  45.0,
+	})
+
+	coord.Evaluate(context.Background())
+	decisions := coord.DecisionHistory()
+	require.Len(t, decisions, 1)
+	assert.Equal(t, DecisionDelay, decisions[0].Decision,
+		"GA patch with fitness between threshold and floor should delay")
+	assert.Len(t, exec.applied, 0, "delayed patch should not be applied")
+}
+
+func TestCoordinator_Evaluate_NonGA_FitnessZero_FallsBackToPriority(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("human", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+
+	// Human source with Fitness=0 → should NOT be rejected by fitness gate.
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "human"},
+		Source:   SourceHuman,
+		Priority: 5,
+		Fitness:  0,
+	})
+
+	coord.Evaluate(context.Background())
+	decisions := coord.DecisionHistory()
+	require.Len(t, decisions, 1)
+	assert.Equal(t, DecisionApply, decisions[0].Decision,
+		"non-GA source with Fitness=0 should fall back to priority rules")
+	assert.Len(t, exec.applied, 1)
+}
+
+func TestCoordinator_Evaluate_GA_FitnessZero_FallsBackToPriority(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("ga-zero", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+
+	// GA source with Fitness=0 (unset) → should fall back to priority rules.
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-zero"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  0,
+	})
+
+	coord.Evaluate(context.Background())
+	decisions := coord.DecisionHistory()
+	require.Len(t, decisions, 1)
+	assert.Equal(t, DecisionApply, decisions[0].Decision,
+		"GA patch with Fitness=0 should fall back to priority rules")
+	assert.Len(t, exec.applied, 1)
 }
 
 func TestCoordinator_DecisionHistory(t *testing.T) {
