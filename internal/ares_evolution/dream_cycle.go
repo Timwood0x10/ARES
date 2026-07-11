@@ -100,6 +100,33 @@ type DreamCycleConfig struct {
 	// TargetFitness stops evolution when the best score reaches this threshold.
 	// 0 means no target (run until MaxGenerations).
 	TargetFitness float64
+
+	// CrossoverType selects the parameter recombination strategy for GA evolution.
+	// Supported: "uniform", "two_point", "segment". Default: "uniform".
+	CrossoverType string
+
+	// SteadyState enables steady-state GA mode: each generation replaces only
+	// a fraction of the population (SteadyStateReplaceRate) instead of full
+	// generational replacement. Default: false (full generational GA).
+	SteadyState bool
+
+	// SteadyStateReplaceRate is the fraction of the population replaced each
+	// generation in steady-state mode [0, 1]. Default: 0.3.
+	// Only used when SteadyState is true.
+	SteadyStateReplaceRate float64
+}
+
+// parseCrossoverType converts a string to the corresponding genome.CrossoverType.
+// Returns CrossoverUniform for unknown values (safe default).
+func parseCrossoverType(s string) genome.CrossoverType {
+	switch s {
+	case "two_point":
+		return genome.CrossoverTwoPoint
+	case "segment":
+		return genome.CrossoverSegment
+	default:
+		return genome.CrossoverUniform
+	}
 }
 
 // DefaultDreamCycleConfig returns sensible defaults for dream cycle configuration.
@@ -122,9 +149,12 @@ func DefaultDreamCycleConfig() DreamCycleConfig {
 		MutationRate:      0.2,
 		SurvivalRate:      0.6,
 		SelectionStrategy: "tournament",
-		TournamentSize:    3,
-		MaxGenerations:    0, // unlimited
-		TargetFitness:     0, // no target
+		   TournamentSize:    3,
+		   MaxGenerations:    0, // unlimited
+		   TargetFitness:     0, // no target
+		   CrossoverType:     "uniform",
+		   SteadyState:       false,
+		   SteadyStateReplaceRate: 0.3,
 	}
 }
 
@@ -224,7 +254,7 @@ func NewDreamCycle(
 		if err := dc.initGAPopulation(context.Background()); err != nil {
 			return nil, fmt.Errorf("init GA population: %w", err)
 		}
-		crosser, err := genome.NewCrossover()
+		crosser, err := genome.NewCrossover(genome.WithCrossoverType(parseCrossoverType(dc.config.CrossoverType)))
 		if err != nil {
 			return nil, fmt.Errorf("new crossover: %w", err)
 		}
@@ -334,6 +364,8 @@ func (dc *DreamCycle) initGAPopulation(ctx context.Context) error {
 		genome.WithEliteCount(dc.config.EliteCount),
 		genome.WithMutationRate(dc.config.MutationRate),
 		genome.WithSurvivalRate(dc.config.SurvivalRate),
+		genome.WithSelectionStrategy(dc.config.SelectionStrategy),
+		genome.WithTournamentSelection(dc.config.TournamentSize),
 	)
 	if err != nil {
 		return fmt.Errorf("new population: %w", err)

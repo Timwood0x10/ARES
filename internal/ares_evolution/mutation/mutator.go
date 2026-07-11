@@ -195,6 +195,152 @@ func (m *Mutator) mutateOneWithProbs(parent *Strategy, index int, paramProb, pro
 	return child, nil
 }
 
+// mutateParameter applies a parameter-level mutation to the parent strategy.
+// It randomly selects one of the available sub-operators: single-value mutation,
+// swap, inversion, or scramble.
+func (m *Mutator) mutateParameter(parent *Strategy) (*Strategy, error) {
+	// Randomly select sub-operator: 70% standard, 10% swap, 10% inversion, 10% scramble.
+	sub := m.rng.Float64()
+	switch {
+	case sub < 0.70:
+		return m.mutateSingleParam(parent)
+	case sub < 0.80:
+		return m.mutateSwap(parent)
+	case sub < 0.90:
+		return m.mutateInversion(parent)
+	default:
+		return m.mutateScramble(parent)
+	}
+}
+
+// mutateSingleParam changes a single parameter value (original parameter mutation).
+func (m *Mutator) mutateSingleParam(parent *Strategy) (*Strategy, error) {
+	child := parent.Clone()
+
+	candidates := m.mutableParamNames(child.Params)
+	if len(candidates) == 0 {
+		child.MutationDesc = "no mutable parameters available"
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	m.shuffleStrings(candidates)
+	paramName := candidates[0]
+	rangeDef, ok := m.paramRanges[paramName]
+	if !ok {
+		child.MutationDesc = fmt.Sprintf("parameter %q has no range definition", paramName)
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	newVal := m.pickDifferentValue(rangeDef.Values, child.Params[paramName])
+	if newVal == nil {
+		child.MutationDesc = fmt.Sprintf("no alternative value for parameter %q", paramName)
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	child.Params[paramName] = newVal
+	child.MutationDesc = fmt.Sprintf("parameter %q changed to %v", paramName, newVal)
+	child.StrategyMutationType = MutationParameter
+
+	return child, nil
+}
+
+// mutateSwap swaps the values of two randomly selected parameters.
+func (m *Mutator) mutateSwap(parent *Strategy) (*Strategy, error) {
+	child := parent.Clone()
+
+	candidates := m.mutableParamNames(child.Params)
+	if len(candidates) < 2 {
+		child.MutationDesc = "not enough parameters for swap"
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	m.shuffleStrings(candidates)
+	paramA, paramB := candidates[0], candidates[1]
+	child.Params[paramA], child.Params[paramB] = child.Params[paramB], child.Params[paramA]
+	child.MutationDesc = fmt.Sprintf("swap %q <-> %q", paramA, paramB)
+	child.StrategyMutationType = MutationParameter
+
+	return child, nil
+}
+
+// mutateInversion reverses the order of a contiguous block of parameter values.
+// Parameter keys are sorted, a random sub-sequence is inverted.
+func (m *Mutator) mutateInversion(parent *Strategy) (*Strategy, error) {
+	child := parent.Clone()
+
+	candidates := m.mutableParamNames(child.Params)
+	if len(candidates) < 3 {
+		child.MutationDesc = "not enough parameters for inversion"
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	sort.Strings(candidates)
+	start := m.rng.Intn(len(candidates) - 1)
+	end := m.rng.Intn(len(candidates)-start) + start
+	if end-start < 2 {
+		end = start + 2
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+	}
+
+	// Invert the sub-sequence.
+	values := make([]any, end-start)
+	for i := 0; i < end-start; i++ {
+		values[i] = child.Params[candidates[start+i]]
+	}
+	for i := 0; i < end-start; i++ {
+		child.Params[candidates[start+i]] = values[end-start-1-i]
+	}
+
+	child.MutationDesc = fmt.Sprintf("inversion params[%d:%d]", start, end)
+	child.StrategyMutationType = MutationParameter
+
+	return child, nil
+}
+
+// mutateScramble randomly shuffles the values of a subset of parameters.
+func (m *Mutator) mutateScramble(parent *Strategy) (*Strategy, error) {
+	child := parent.Clone()
+
+	candidates := m.mutableParamNames(child.Params)
+	if len(candidates) < 3 {
+		child.MutationDesc = "not enough parameters for scramble"
+		child.StrategyMutationType = MutationParameter
+		return child, nil
+	}
+
+	m.shuffleStrings(candidates)
+
+	// Pick a random subset (at least 2, at most all).
+	subsetSize := m.rng.Intn(len(candidates)-1) + 2
+	subset := candidates[:subsetSize]
+
+	// Extract values, shuffle, reassign.
+	  values := make([]any, subsetSize)
+	  for i, k := range subset {
+	   values[i] = child.Params[k]
+	  }
+	  // Fisher-Yates shuffle on values.
+	  for i := len(values) - 1; i > 0; i-- {
+	   j := m.rng.Intn(i + 1)
+	   values[i], values[j] = values[j], values[i]
+	  }
+	  for i, k := range subset {
+		child.Params[k] = values[i]
+	}
+
+	child.MutationDesc = fmt.Sprintf("scramble %d parameters", subsetSize)
+	child.StrategyMutationType = MutationParameter
+
+	return child, nil
+}
+
 // fillChildMetadata populates the metadata fields (ID, ParentID, Version,
 // Score, CreatedAt) on a newly mutated child strategy.
 func (m *Mutator) fillChildMetadata(child *Strategy, parent *Strategy, index int) {
@@ -213,47 +359,6 @@ func (m *Mutator) fillChildMetadata(child *Strategy, parent *Strategy, index int
 	child.Version = parent.Version + 1
 	child.Score = -1
 	child.CreatedAt = now
-}
-
-// mutateParameter changes one random parameter to a different value from its range.
-// Selects a parameter uniformly at random, then picks a value != current.
-// Returns a deep copy of parent if no valid mutation exists for any parameter.
-func (m *Mutator) mutateParameter(parent *Strategy) (*Strategy, error) {
-	child := parent.Clone()
-
-	// Collect mutable parameter names that exist in both config and parent params.
-	candidates := m.mutableParamNames(child.Params)
-	if len(candidates) == 0 {
-		// No mutable params found; return copy with description.
-		child.MutationDesc = "no mutable parameters available"
-		child.StrategyMutationType = MutationParameter
-		return child, nil
-	}
-
-	// Shuffle candidates to pick a random one.
-	m.shuffleStrings(candidates)
-	paramName := candidates[0]
-	rangeDef, ok := m.paramRanges[paramName]
-	if !ok {
-		child.MutationDesc = fmt.Sprintf("parameter %q has no range definition", paramName)
-		child.StrategyMutationType = MutationParameter
-		return child, nil
-	}
-
-	// Pick a different value from the range.
-	newVal := m.pickDifferentValue(rangeDef.Values, child.Params[paramName])
-	if newVal == nil {
-		// All values are identical to current; return copy.
-		child.MutationDesc = fmt.Sprintf("no alternative value for parameter %q", paramName)
-		child.StrategyMutationType = MutationParameter
-		return child, nil
-	}
-
-	child.Params[paramName] = newVal
-	child.MutationDesc = fmt.Sprintf("parameter %q changed to %v", paramName, newVal)
-	child.StrategyMutationType = MutationParameter
-
-	return child, nil
 }
 
 // mutatePrompt replaces the prompt template with a different one from the pool.

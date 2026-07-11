@@ -34,6 +34,20 @@ const (
 	PromptUniform
 )
 
+// CrossoverType defines how parameters are recombined between two parents.
+type CrossoverType int
+
+const (
+	// CrossoverUniform: each parameter is independently selected from either parent.
+	CrossoverUniform CrossoverType = iota
+	// CrossoverTwoPoint: two cut points divide the sorted parameter list into three segments;
+	// the middle segment is swapped between parents.
+	CrossoverTwoPoint
+	// CrossoverSegment: a contiguous block of parameters is selected from parent B;
+	// the rest come from parent A.
+	CrossoverSegment
+)
+
 // Crossover combines two parent strategies into a child strategy using
 // uniform crossover by default. Each parameter is independently selected
 // from either parent A or parent B with equal probability.
@@ -42,6 +56,7 @@ type Crossover struct {
 	deterministicIDs bool         // When true, use counter-based IDs instead of UUID.
 	idCounter        atomic.Int64 // Monotonic counter for deterministic ID generation (thread-safe).
 	promptMode       PromptCrossoverMode
+	crossType        CrossoverType // Parameter recombination strategy.
 }
 
 // Validate checks the internal configuration state of the Crossover instance
@@ -158,6 +173,19 @@ func WithPromptMode(mode PromptCrossoverMode) CrossoverOption {
 	}
 }
 
+// WithCrossoverType sets the parameter recombination strategy.
+// Default: CrossoverUniform (each parameter independently selected from either parent).
+// Supported: CrossoverUniform, CrossoverTwoPoint, CrossoverSegment.
+func WithCrossoverType(t CrossoverType) CrossoverOption {
+	return func(c *Crossover) error {
+		if t < CrossoverUniform || t > CrossoverSegment {
+			return fmt.Errorf("invalid crossover type: %d", int(t))
+		}
+		c.crossType = t
+		return nil
+	}
+}
+
 // Crossover performs uniform crossover on two parent strategies.
 // For each parameter key present in either parent, the child inherits
 // from parent A or B with 50% probability each. The PromptTemplate
@@ -184,7 +212,17 @@ func (c *Crossover) Crossover(ctx context.Context, a, b *mutation.Strategy) (*mu
 	default:
 	}
 
-	childParams, desc := c.uniformCrossParams(a.Params, b.Params)
+	var desc string
+	var childParams map[string]any
+
+	switch c.crossType {
+	case CrossoverTwoPoint:
+		childParams, desc = c.twoPointCrossParams(a.Params, b.Params)
+	case CrossoverSegment:
+		childParams, desc = c.segmentCrossParams(a.Params, b.Params)
+	default: // CrossoverUniform
+		childParams, desc = c.uniformCrossParams(a.Params, b.Params)
+	}
 
 	var promptTemplate string
 	switch c.promptMode {
@@ -259,6 +297,131 @@ func (c *Crossover) uniformCrossParams(paramsA, paramsB map[string]any) (map[str
 	}
 
 	desc := buildInheritanceDesc(fromA, fromB, "uniform")
+	return childParams, desc
+}
+
+// twoPointCrossParams applies two-point crossover to the parameter maps.
+// The sorted parameter list is divided into three segments by two cut points;
+// the middle segment is swapped between parents.
+//
+// Example with 6 params, cut at 2 and 4:
+//
+//	Parent A: [p1, p2, p3, p4, p5, p6]
+//	Parent B: [q1, q2, q3, q4, q5, q6]
+//	Child:    [p1, p2, q3, q4, p5, p6]  (middle segment from B)
+func (c *Crossover) twoPointCrossParams(paramsA, paramsB map[string]any) (map[string]any, string) {
+	allKeys := collectParamKeys(paramsA, paramsB)
+	sort.Strings(allKeys)
+	n := len(allKeys)
+	if n < 3 {
+		// Fall back to uniform for small parameter sets.
+		return c.uniformCrossParams(paramsA, paramsB)
+	}
+
+	points := generateCrossoverPoints(c.rng, 2, n)
+	if len(points) < 2 {
+		return c.uniformCrossParams(paramsA, paramsB)
+	}
+	// points[0] and points[1] are the two cut positions (1-indexed).
+	// The middle segment (points[0] to points[1]-1) comes from parent B.
+	// Outer segments (before points[0] and after points[1]-1) come from parent A.
+	cut1, cut2 := points[0], points[1]
+
+	childParams := make(map[string]any, n)
+	var fromA, fromB []string
+
+	for i, key := range allKeys {
+		valA, existsA := paramsA[key]
+		valB, existsB := paramsB[key]
+
+		// Middle segment: from parent B.
+		if i >= cut1 && i < cut2 {
+			if existsB {
+				childParams[key] = valB
+				fromB = append(fromB, key)
+			} else if existsA {
+				childParams[key] = valA
+				fromA = append(fromA, key)
+			}
+			continue
+		}
+
+		// Outer segments: from parent A.
+		if existsA {
+			childParams[key] = valA
+			fromA = append(fromA, key)
+		} else if existsB {
+			childParams[key] = valB
+			fromB = append(fromB, key)
+		}
+	}
+
+	desc := buildInheritanceDesc(fromA, fromB, "two_point")
+	return childParams, desc
+}
+
+// segmentCrossParams applies segment crossover: a contiguous block of parameters
+// is taken from parent B, and the rest from parent A. The segment start and length
+// are randomly chosen.
+//
+// Example with 6 params, segment at 2-3:
+//
+//	Parent A: [p1, p2, p3, p4, p5, p6]
+//	Parent B: [q1, q2, q3, q4, q5, q6]
+//	Child:    [p1, p2, q3, q4, p5, p6]  (segment 2-3 from B)
+func (c *Crossover) segmentCrossParams(paramsA, paramsB map[string]any) (map[string]any, string) {
+	allKeys := collectParamKeys(paramsA, paramsB)
+	sort.Strings(allKeys)
+	n := len(allKeys)
+	if n < 2 {
+		return c.uniformCrossParams(paramsA, paramsB)
+	}
+
+	// Randomly choose segment start and end.
+	start := c.rng.Intn(n)
+	end := c.rng.Intn(n)
+	if start > end {
+		start, end = end, start
+	}
+	if end-start < 1 {
+		// Ensure at least 1 param in the segment, or fall back.
+		if start < n-1 {
+			end = start + 1
+		} else {
+			start = end - 1
+		}
+	}
+
+	childParams := make(map[string]any, n)
+	var fromA, fromB []string
+
+	for i, key := range allKeys {
+		valA, existsA := paramsA[key]
+		valB, existsB := paramsB[key]
+
+		// Segment range: from parent B.
+		if i >= start && i <= end {
+			if existsB {
+				childParams[key] = valB
+				fromB = append(fromB, key)
+			} else if existsA {
+				childParams[key] = valA
+				fromA = append(fromA, key)
+			}
+			continue
+		}
+
+		// Outside segment: from parent A.
+		if existsA {
+			childParams[key] = valA
+			fromA = append(fromA, key)
+		} else if existsB {
+			childParams[key] = valB
+			fromB = append(fromB, key)
+		}
+	}
+
+	desc := buildInheritanceDesc(fromA, fromB, "segment")
 	return childParams, desc
 }
 

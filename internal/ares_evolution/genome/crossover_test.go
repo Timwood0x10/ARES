@@ -520,6 +520,152 @@ func TestCrossoverInterface(t *testing.T) {
 	})
 }
 
+// ── TwoPoint Crossover Tests ─────────────────
+
+func TestTwoPointCrossover(t *testing.T) {
+	t.Run("recombines with middle segment from parent B", func(t *testing.T) {
+		c, err := NewCrossover(WithSeed(42), WithCrossoverType(CrossoverTwoPoint))
+		if err != nil {
+			t.Fatalf("NewCrossover error = %v", err)
+		}
+
+		a := makeTestStrategy("a", 0.8, 1, map[string]any{
+			"p1": 1.0, "p2": 2.0, "p3": 3.0, "p4": 4.0, "p5": 5.0,
+		}, "pa")
+		b := makeTestStrategy("b", 0.6, 2, map[string]any{
+			"p1": 10.0, "p2": 20.0, "p3": 30.0, "p4": 40.0, "p5": 50.0,
+		}, "pb")
+
+		child, err := c.Crossover(context.Background(), a, b)
+		if err != nil {
+			t.Fatalf("Crossover error = %v", err)
+		}
+		if child == nil {
+			t.Fatal("child should not be nil")
+		}
+		if child.MutationDesc == "" {
+			t.Error("MutationDesc should not be empty")
+		}
+		// Verify all 5 params are present.
+		for _, k := range []string{"p1", "p2", "p3", "p4", "p5"} {
+			if _, ok := child.Params[k]; !ok {
+				t.Errorf("child missing param %s", k)
+			}
+		}
+		// Verify at least one param from each parent (two-point guarantees middle from B).
+		hasFromA := false
+		hasFromB := false
+		for k, v := range child.Params {
+			if a.Params[k] == v {
+				hasFromA = true
+			}
+			if b.Params[k] == v {
+				hasFromB = true
+			}
+		}
+		if !hasFromA {
+			t.Error("child should have at least one param from parent A")
+		}
+		if !hasFromB {
+			t.Error("child should have at least one param from parent B")
+		}
+	})
+
+	t.Run("falls back to uniform for small param sets", func(t *testing.T) {
+		c, err := NewCrossover(WithSeed(42), WithCrossoverType(CrossoverTwoPoint))
+		if err != nil {
+			t.Fatalf("NewCrossover error = %v", err)
+		}
+
+		a := makeTestStrategy("a", 0.5, 1, map[string]any{"x": 1.0}, "pa")
+		b := makeTestStrategy("b", 0.5, 1, map[string]any{"x": 2.0}, "pb")
+
+		child, err := c.Crossover(context.Background(), a, b)
+		if err != nil {
+			t.Fatalf("Crossover error = %v", err)
+		}
+		if child == nil {
+			t.Fatal("child should not be nil")
+		}
+	})
+}
+
+// ── Segment Crossover Tests ─────────────────
+
+func TestSegmentCrossover(t *testing.T) {
+	t.Run("recombines with contiguous block from parent B", func(t *testing.T) {
+		c, err := NewCrossover(WithSeed(42), WithCrossoverType(CrossoverSegment))
+		if err != nil {
+			t.Fatalf("NewCrossover error = %v", err)
+		}
+
+		a := makeTestStrategy("a", 0.8, 1, map[string]any{
+			"p1": 1.0, "p2": 2.0, "p3": 3.0, "p4": 4.0,
+		}, "pa")
+		b := makeTestStrategy("b", 0.6, 2, map[string]any{
+			"p1": 10.0, "p2": 20.0, "p3": 30.0, "p4": 40.0,
+		}, "pb")
+
+		child, err := c.Crossover(context.Background(), a, b)
+		if err != nil {
+			t.Fatalf("Crossover error = %v", err)
+		}
+		if child == nil {
+			t.Fatal("child should not be nil")
+		}
+		// Verify all 4 params are present.
+		for _, k := range []string{"p1", "p2", "p3", "p4"} {
+			if _, ok := child.Params[k]; !ok {
+				t.Errorf("child missing param %s", k)
+			}
+		}
+		// With segment crossover, we expect params from both parents.
+		hasFromA := false
+		hasFromB := false
+		for k, v := range child.Params {
+			if a.Params[k] == v {
+				hasFromA = true
+			}
+			if b.Params[k] == v {
+				hasFromB = true
+			}
+		}
+		if !hasFromA {
+			t.Error("child should have at least one param from parent A")
+		}
+		if !hasFromB {
+			t.Error("child should have at least one param from parent B")
+		}
+	})
+
+	t.Run("falls back to uniform for single param", func(t *testing.T) {
+		c, err := NewCrossover(WithSeed(42), WithCrossoverType(CrossoverSegment))
+		if err != nil {
+			t.Fatalf("NewCrossover error = %v", err)
+		}
+
+		a := makeTestStrategy("a", 0.5, 1, map[string]any{"x": 1.0}, "pa")
+		b := makeTestStrategy("b", 0.5, 1, map[string]any{"x": 2.0}, "pb")
+
+		child, err := c.Crossover(context.Background(), a, b)
+		if err != nil {
+			t.Fatalf("Crossover error = %v", err)
+		}
+		if child == nil {
+			t.Fatal("child should not be nil")
+		}
+	})
+}
+
+// ── WithCrossoverType Tests ────────────────
+
+func TestWithCrossoverType_Invalid(t *testing.T) {
+	_, err := NewCrossover(WithCrossoverType(CrossoverType(99)))
+	if err == nil {
+		t.Fatal("expected error for invalid crossover type")
+	}
+}
+
 func TestCollectParamKeys(t *testing.T) {
 	tests := []struct {
 		name string
