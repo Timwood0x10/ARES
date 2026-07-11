@@ -12,11 +12,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
+	"github.com/Timwood0x10/ares/internal/evolution/diff"
+	evogenome "github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -76,6 +80,12 @@ type GenomePopulationAdapter struct {
 
 	// Metrics records Prometheus counters for evolution events (optional).
 	metrics *ares_observability.PrometheusMetrics
+
+	// Coordinator bridge — when set, Run() submits evolution results
+	// to the new system's coordinator for decision and deployment.
+	coordinator *coordinator.EvolutionCoordinator
+	diffReg     *diff.Registry
+	genomeReg   *evogenome.Registry
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -242,6 +252,27 @@ func WithAdapterFeedbackRecorder(fr *FeedbackRecorder) GenomeAdapterOption {
 func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.metrics = metrics
+	}
+}
+
+// WithAdapterCoordinator attaches the new system's coordinator bridge to the adapter.
+// When set, Run() generates diff patches from the GA population's evolution results
+// and submits them to the coordinator for decision and deployment.
+//
+// Args:
+//
+//	coord - the evolution coordinator to submit patches to.
+//	diffReg - the diff registry for generating patches from genome snapshots.
+//	genomeReg - the genome registry with all registered genomes.
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithAdapterCoordinator(coord *coordinator.EvolutionCoordinator, diffReg *diff.Registry, genomeReg *evogenome.Registry) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.coordinator = coord
+		a.diffReg = diffReg
+		a.genomeReg = genomeReg
 	}
 }
 
@@ -426,6 +457,11 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		}
 	}
 
+	// Submit evolution results to the new system's coordinator for decision.
+	if a.coordinator != nil && a.diffReg != nil && a.genomeReg != nil {
+		a.submitToCoordinator(ctx)
+	}
+
 	stats := a.pop.Stats()
 	el.Info(ctx, "Run", "evolution cycle completed", "generation", stats.Generation,
 		"population_size", stats.Size,
@@ -534,6 +570,28 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 		}
 	}
 	return n
+}
+
+// submitToCoordinator generates diff patches from all registered genomes and
+// submits them to the coordinator for decision and deployment.
+func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
+	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg)
+	if err != nil {
+		el.Warn(ctx, "submitToCoordinator", "diff engine failed", "error", err)
+		return
+	}
+	for _, p := range patches {
+		a.coordinator.Submit(coordinator.PatchProposal{
+			Patch:     p,
+			Source:    coordinator.SourceGA,
+			Reason:    "GA: population evolution result",
+			Priority:  6,
+			Timestamp: time.Now(),
+		})
+	}
+	if len(patches) > 0 {
+		a.coordinator.Evaluate(ctx)
+	}
 }
 
 // computeLineageShares computes ParentID distribution from a population snapshot.

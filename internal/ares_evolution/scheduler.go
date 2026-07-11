@@ -205,6 +205,18 @@ func (s *EvolutionScheduler) RecordScore(score float64) {
 	s.scores = append(s.scores, score)
 }
 
+// SetAdapter replaces the evolution adapter at runtime.
+// Used by bootstrap to wire the GA population adapter after construction.
+//
+// Args:
+//
+//	adapter - the new adapter to use for evolution cycles.
+func (s *EvolutionScheduler) SetAdapter(adapter AdapterRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapter = adapter
+}
+
 // OnAgentEnd handles agent completion events as a callback handler.
 // It checks if an evolution cycle should be triggered and runs the adapter if so.
 //

@@ -3,15 +3,19 @@ package ares_bootstrap
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 // Components holds all assembled system components.
@@ -137,13 +141,51 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
-	// Always created; uses internal defaults when no DAG/runtime is available.
-	newEvol, err := ProvideNewEvolution(nil, nil, nil)
+	// Always created; uses a basic MutableDAG for workflow/scheduler/recovery genomes.
+	dag, dagErr := engine.NewMutableDAG(nil)
+	if dagErr != nil {
+		runCleanups()
+		return nil, fmt.Errorf("create mutable dag: %w", dagErr)
+	}
+	newEvol, err := ProvideNewEvolution(dag, nil, nil)
 	if err != nil {
 		runCleanups()
 		return nil, err
 	}
 	comp.NewEvolution = newEvol
+
+	// 9. Wire GA population adapter into the scheduler's evolution path.
+	// This connects the old system's scheduler (event-driven) to the new
+	// system's coordinator: when agents complete tasks, the scheduler triggers
+	// the GA population adapter which runs evolution and submits results to
+	// the coordinator for decision and deployment.
+	if comp.Evolution != nil && comp.Evolution.Scheduler != nil {
+		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
+			base := &mutation.Strategy{
+				ID:     "bootstrap-root",
+				Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
+			}
+			cfg := evolution.DefaultSystemConfig()
+			cfg.EnableScheduler = false
+			cfg.EnableDreamCycle = false
+			wired, wErr := evolution.NewWiredEvolutionSystem(base, cfg)
+			if wErr != nil {
+				runCleanups()
+				return nil, fmt.Errorf("wire GA population adapter: %w", wErr)
+			}
+
+			// Attach the coordinator bridge to the population adapter.
+			popAdapter := wired.PopAdapter
+			evolution.WithAdapterCoordinator(
+				newEvol.Coordinator,
+				newEvol.DiffReg,
+				newEvol.GenomeReg,
+			)(popAdapter)
+
+			// Replace the scheduler's adapter with the GA population adapter.
+			sched.SetAdapter(popAdapter)
+		}
+	}
 
 	return &comp, nil
 }
