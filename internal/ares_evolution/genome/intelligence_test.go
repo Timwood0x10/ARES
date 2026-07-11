@@ -353,73 +353,6 @@ func TestApplyHypothesis(t *testing.T) {
 	}
 }
 
-// --- GuidedPipeline Tests ---
-
-// mockReflector returns a fixed reflection for testing.
-type mockReflector struct {
-	ref *Reflection
-	err error
-}
-
-func (m *mockReflector) Reflect(ctx context.Context, history []GenerationHistoryEntry, agents []*mutation.Strategy) (*Reflection, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	return m.ref, nil
-}
-
-func TestHypothesisHintProvider(t *testing.T) {
-	t.Parallel()
-
-	ref := &Reflection{
-		Summary: "Test reflection",
-		Recommendations: []Recommendation{
-			{
-				Target:     "param:temperature",
-				Action:     "decrease",
-				Rationale:  "test rationale",
-				Confidence: 0.8,
-			},
-		},
-	}
-
-	reflector := &mockReflector{ref: ref}
-	hg := NewHypothesisGenerator(0.3)
-	kb := NewKnowledgeBase()
-	pipeline := NewGuidedPipeline(reflector, hg, kb)
-	pop := &Population{}
-
-	provider := NewHypothesisHintProvider(pipeline, pop, 0.4)
-	ctx := context.Background()
-
-	hints, err := provider.HintsForTask(ctx, "test", 5)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(hints) != 1 {
-		t.Fatalf("expected 1 hint, got %d", len(hints))
-	}
-	if hints[0].Confidence != 0.8 {
-		t.Errorf("expected confidence 0.8, got %f", hints[0].Confidence)
-	}
-}
-
-func TestHypothesisHintProvider_NoReflection(t *testing.T) {
-	t.Parallel()
-
-	pipeline := NewGuidedPipeline(nil, nil, nil)
-	provider := NewHypothesisHintProvider(pipeline, &Population{}, 0.4)
-	ctx := context.Background()
-
-	hints, err := provider.HintsForTask(ctx, "test", 5)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(hints) != 0 {
-		t.Errorf("expected 0 hints without reflector, got %d", len(hints))
-	}
-}
-
 // --- ParetoRank Tests ---
 
 func TestParetoRank_SingleFront(t *testing.T) {
@@ -773,61 +706,6 @@ func TestLLMReflector_ValidJSON(t *testing.T) {
 	}
 }
 
-// --- GuidedPipeline RunReflectionCycle Tests ---
-
-func TestRunReflectionCycle(t *testing.T) {
-	t.Parallel()
-
-	ref := &Reflection{
-		Summary: "cycle test",
-		Recommendations: []Recommendation{
-			{Target: "param:temp", Action: "increase", Confidence: 0.9},
-		},
-	}
-	pipeline := NewGuidedPipeline(&mockReflector{ref: ref}, NewHypothesisGenerator(0.3), NewKnowledgeBase())
-	ctx := context.Background()
-
-	hyps := pipeline.RunReflectionCycle(ctx, &Population{})
-	if len(hyps) != 1 {
-		t.Errorf("expected 1 hypothesis, got %d", len(hyps))
-	}
-}
-
-func TestRunReflectionCycle_NilReflector(t *testing.T) {
-	t.Parallel()
-
-	pipeline := NewGuidedPipeline(nil, NewHypothesisGenerator(0.3), NewKnowledgeBase())
-	ctx := context.Background()
-	hyps := pipeline.RunReflectionCycle(ctx, nil)
-	if len(hyps) != 0 {
-		t.Errorf("expected 0 hypotheses without reflector, got %d", len(hyps))
-	}
-}
-
-func TestRunReflectionCycle_NilGenerator(t *testing.T) {
-	t.Parallel()
-
-	ref := &Reflection{Summary: "nil gen test"}
-	pipeline := NewGuidedPipeline(&mockReflector{ref: ref}, nil, NewKnowledgeBase())
-	ctx := context.Background()
-	hyps := pipeline.RunReflectionCycle(ctx, nil)
-	if len(hyps) != 0 {
-		t.Errorf("expected 0 hypotheses without generator, got %d", len(hyps))
-	}
-}
-
-func TestRunReflectionCycle_NilPop(t *testing.T) {
-	t.Parallel()
-
-	ref := &Reflection{Summary: "nil pop test"}
-	pipeline := NewGuidedPipeline(&mockReflector{ref: ref}, NewHypothesisGenerator(0.3), NewKnowledgeBase())
-	ctx := context.Background()
-	hyps := pipeline.RunReflectionCycle(ctx, nil)
-	if len(hyps) != 0 {
-		t.Errorf("expected 0 hypotheses for nil pop, got %d", len(hyps))
-	}
-}
-
 func TestApplyHypothesis_Clamping(t *testing.T) {
 	t.Parallel()
 
@@ -1115,19 +993,6 @@ func TestLLMReflector_ArrayOfReflections(t *testing.T) {
 }
 
 // --- RecordStrategyOutcome no-op test ---
-
-func TestRecordStrategyOutcome(t *testing.T) {
-	t.Parallel()
-
-	pipeline := NewGuidedPipeline(nil, nil, nil)
-	provider := NewHypothesisHintProvider(pipeline, &Population{}, 0.4)
-	ctx := context.Background()
-
-	err := provider.RecordStrategyOutcome(ctx, mutation.StrategyOutcome{})
-	if err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
-}
 
 // --- clampParam with new keys ---
 

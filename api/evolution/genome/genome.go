@@ -25,7 +25,7 @@ const (
 type PromptCrossoverMode int
 
 const (
-	PromptInherit   PromptCrossoverMode = iota
+	PromptInherit PromptCrossoverMode = iota
 	PromptHalfSplit
 	PromptUniform
 )

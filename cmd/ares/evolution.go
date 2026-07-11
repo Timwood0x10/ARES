@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
+	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
@@ -102,7 +103,11 @@ func runEvolutionCycle() error {
 		var bestGenome interface{ Name() string }
 		var bestFit float64
 		for _, child := range children {
-			fit, fErr := child.Fitness(ctx)
+			f, ok := child.(genome.FitnessGenome)
+			if !ok {
+				continue
+			}
+			fit, fErr := f.Fitness(ctx)
 			if fErr != nil {
 				continue
 			}

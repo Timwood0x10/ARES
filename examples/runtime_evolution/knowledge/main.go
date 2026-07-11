@@ -88,7 +88,11 @@ func main() {
 	var bestChild genome.Genome
 	var bestFit float64
 	for _, child := range children {
-		fit, _ := child.Fitness(ctx)
+		f, ok := child.(genome.FitnessGenome)
+		if !ok {
+			continue
+		}
+		fit, _ := f.Fitness(ctx)
 		kgChild := child.(*genome.KnowledgeGenome)
 		fmt.Printf("   Candidate fitness=%.2f  MaxResults=%d Reducer=%s Planner=%s\n",
 			fit, kgChild.Config().MaxResults, kgChild.Config().ReducerStrategy, kgChild.Config().PlannerStrategy)

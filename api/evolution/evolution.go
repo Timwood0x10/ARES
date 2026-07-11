@@ -167,12 +167,12 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 }
 
 func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
-  // Convert public Strategy to internal mutation.Strategy
-  s := &internalmutation.Strategy{
-   ID:     base.ID,
-   Score:  base.Score,
-   Params: base.Params,
-  }
+	// Convert public Strategy to internal mutation.Strategy
+	s := &internalmutation.Strategy{
+		ID:     base.ID,
+		Score:  base.Score,
+		Params: base.Params,
+	}
 	inner, err := genome.NewPopulation(context.Background(), s, nil,
 		genome.WithPopulationSize(cfg.Size),
 		genome.WithEliteCount(cfg.EliteCount),

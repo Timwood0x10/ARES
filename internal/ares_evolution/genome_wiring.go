@@ -17,7 +17,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
-	newgenome "github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -880,50 +879,4 @@ func RecordPopulationLineage(
 	}
 
 	return count, nil
-}
-
-// RegisterPromptGenome bridges the old GA population into the new evolution genome Registry.
-// It wraps the best strategy from the population as a PromptGenome and registers it.
-//
-// Args:
-//
-//	pop - the existing genome population (must not be nil).
-//	mutator - the strategy mutator (must not be nil).
-//	crosser - the strategy crossover engine (must not be nil).
-//	scorer - optional scoring function; when nil, Fitness returns 0.5.
-//	newReg - the new evolution genome registry to register into.
-//
-// Returns:
-//
-//	error - non-nil if registration fails or required deps are nil.
-func RegisterPromptGenome(
-	pop *genome.Population,
-	mutator *mutation.Mutator,
-	crosser *genome.Crossover,
-	scorer func(*mutation.Strategy) float64,
-	newReg *newgenome.Registry,
-) error {
-	if pop == nil {
-		return fmt.Errorf("population must not be nil")
-	}
-	if mutator == nil {
-		return fmt.Errorf("mutator must not be nil")
-	}
-	if newReg == nil {
-		return fmt.Errorf("new genome registry must not be nil")
-	}
-
-	// Pick the best strategy from the existing population.
-	best := pop.BestStrategy()
-	if best == nil {
-		return fmt.Errorf("population has no strategies")
-	}
-
-	// Wrap as PromptGenome and register.
-	pg := newgenome.NewPromptGenome(best, newgenome.PromptGenomeConfig{
-		Mutator: mutator,
-		Crosser: crosser,
-		Scorer:  scorer,
-	})
-	return newReg.Register(pg)
 }

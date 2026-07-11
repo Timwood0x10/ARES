@@ -149,7 +149,11 @@ foundMutation:
 	var bestChild genome.Genome
 	var bestFit float64
 	for _, child := range children {
-		fit, _ := child.Fitness(ctx)
+		f, ok := child.(genome.FitnessGenome)
+		if !ok {
+			continue
+		}
+		fit, _ := f.Fitness(ctx)
 		fmt.Printf("   Candidate %q fitness: %.2f\n", child.Name(), fit)
 		if fit > bestFit {
 			bestFit = fit

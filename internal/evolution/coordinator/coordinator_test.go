@@ -36,7 +36,6 @@ func TestDefaultPolicy(t *testing.T) {
 	p := DefaultPolicy()
 	assert.Equal(t, 8, p.AutoApplyThreshold)
 	assert.Equal(t, 4, p.MaxPatchesPerMinute)
-	assert.False(t, p.RequireMultiSource)
 }
 
 // ── EvolutionCoordinator ────────────────────
@@ -97,25 +96,6 @@ func TestCoordinator_Evaluate_AppliesPatches(t *testing.T) {
 	assert.Len(t, exec.applied, 1)
 }
 
-func TestCoordinator_Evaluate_RejectsBlacklistedSource(t *testing.T) {
-	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(PolicyGenome{
-		Blacklist: []PatchSource{SourceChaos},
-	}, patchReg)
-
-	coord.Submit(PatchProposal{
-		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "test"},
-		Source:   SourceChaos,
-		Reason:   "chaos test",
-		Priority: 10,
-	})
-
-	coord.Evaluate(context.Background())
-	decisions := coord.DecisionHistory()
-	require.Len(t, decisions, 1)
-	assert.Equal(t, DecisionReject, decisions[0].Decision)
-}
-
 func TestCoordinator_Evaluate_AutoApplyHighPriority(t *testing.T) {
 	patchReg := patch.NewRegistry()
 	exec := &recordingExecutor{}
@@ -153,25 +133,6 @@ func TestCoordinator_Evaluate_DelaysOnRateLimit(t *testing.T) {
 		"should delay when rate limit is 0")
 }
 
-func TestCoordinator_Policy(t *testing.T) {
-	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
-
-	p := coord.Policy()
-	assert.Equal(t, 4, p.MaxPatchesPerMinute)
-}
-
-func TestCoordinator_UpdatePolicy(t *testing.T) {
-	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
-
-	newPolicy := PolicyGenome{AutoApplyThreshold: 3}
-	coord.UpdatePolicy(newPolicy)
-
-	p := coord.Policy()
-	assert.Equal(t, 3, p.AutoApplyThreshold)
-}
-
 func TestCoordinator_DecisionHistory(t *testing.T) {
 	patchReg := patch.NewRegistry()
 	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
@@ -199,30 +160,6 @@ func TestCoordinator_PatchHistory(t *testing.T) {
 	coord.Evaluate(context.Background())
 
 	assert.Len(t, coord.PatchHistory(), 1)
-}
-
-// ── Run (non-blocking test) ─────────────────
-
-func TestCoordinator_Run_ContextCancellation(t *testing.T) {
-	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // immediate cancellation
-
-	// Run should return immediately when context is cancelled.
-	done := make(chan struct{})
-	go func() {
-		coord.Run(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// OK — exited cleanly.
-	case <-time.After(time.Second):
-		t.Fatal("coordinator.Run did not exit after context cancellation")
-	}
 }
 
 // ── Mock executor ───────────────────────────

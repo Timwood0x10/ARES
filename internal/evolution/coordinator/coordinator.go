@@ -77,12 +77,6 @@ type PolicyGenome struct {
 
 	// MaxPatchesPerMinute: rate limit to prevent cascade failures.
 	MaxPatchesPerMinute int
-
-	// RequireMultiSource: if true, require >= 2 sources to agree.
-	RequireMultiSource bool
-
-	// Blacklist: sources to temporarily ignore.
-	Blacklist []PatchSource
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
@@ -90,7 +84,6 @@ func DefaultPolicy() PolicyGenome {
 	return PolicyGenome{
 		AutoApplyThreshold:  8,
 		MaxPatchesPerMinute: 4,
-		RequireMultiSource:  false,
 	}
 }
 
@@ -127,20 +120,6 @@ func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *Evo
 		policy:   policy,
 		patchReg: patchReg,
 	}
-}
-
-// Policy returns the current decision policy.
-func (ec *EvolutionCoordinator) Policy() PolicyGenome {
-	ec.mu.RLock()
-	defer ec.mu.RUnlock()
-	return ec.policy
-}
-
-// UpdatePolicy replaces the decision policy at runtime.
-func (ec *EvolutionCoordinator) UpdatePolicy(p PolicyGenome) {
-	ec.mu.Lock()
-	defer ec.mu.Unlock()
-	ec.policy = p
 }
 
 // ApplyEmergency applies a patch immediately, bypassing the decision process.
@@ -237,33 +216,11 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 	}
 }
 
-// Run is the Coordinator's main loop. Call it in a goroutine.
-func (ec *EvolutionCoordinator) Run(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			ec.Evaluate(ctx)
-		}
-	}
-}
-
 // decide implements the decision policy.
 func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 	ec.mu.RLock()
 	policy := ec.policy
 	ec.mu.RUnlock()
-
-	// Check blacklist.
-	for _, bl := range policy.Blacklist {
-		if proposal.Source == bl {
-			return DecisionReject
-		}
-	}
 
 	// Rate limiting.
 	recentCount := ec.countRecentPatches(1 * time.Minute)

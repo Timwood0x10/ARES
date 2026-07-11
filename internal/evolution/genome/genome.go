@@ -8,8 +8,14 @@
 //
 //	Genome → Generate Candidate → Diff Engine → RuntimePatch
 //
-// Genome's only responsibilities are Mutation, Crossover, and Fitness.
+// Genome's only responsibilities are Mutation, Snapshot, and optional Fitness.
 // Deployment is handled by Diff Engine + Coordinator.
+//
+// NOTE: Crossover and Fitness were removed from the core interface in 2026-07
+// because they had zero production callers. They are available as optional
+// interfaces: CrossoverGenome, FitnessGenome. Use type assertions to check:
+//
+//	if f, ok := child.(FitnessGenome); ok { score, err := f.Fitness(ctx) }
 package genome
 
 import (
@@ -19,8 +25,11 @@ import (
 )
 
 // Genome is the plugin interface for evolvable runtime components.
-// The GA pipeline operates on Genome instances without knowing what
+// The evolution pipeline operates on Genome instances without knowing what
 // subsystem they represent — this enables pluggable evolution.
+//
+// Required methods: Name, Mutate, Snapshot.
+// Optional capabilities: CrossoverGenome, FitnessGenome.
 type Genome interface {
 	// Name returns the genome identifier, used for registry lookup.
 	Name() string
@@ -29,17 +38,26 @@ type Genome interface {
 	// Each candidate represents a possible runtime configuration.
 	Mutate(ctx context.Context, n int) ([]Genome, error)
 
-	// Crossover recombines this genome with another to produce a child.
-	// Returns an error if the other genome is incompatible.
-	Crossover(ctx context.Context, other Genome) (Genome, error)
-
-	// Fitness evaluates this genome's quality in the current runtime context.
-	// Higher scores indicate better configurations. Range is [0, 1].
-	Fitness(ctx context.Context) (float64, error)
-
 	// Snapshot returns a serializable representation of this genome's
 	// current state. Used by Diff Engine to compute changes.
 	Snapshot(ctx context.Context) (any, error)
+}
+
+// FitnessGenome is an optional extension for genomes that support fitness evaluation.
+// Genomes that implement this interface can be scored by the coordinator.
+type FitnessGenome interface {
+	// Fitness evaluates this genome's quality in the current runtime context.
+	// Higher scores indicate better configurations. Range is [0, 1].
+	Fitness(ctx context.Context) (float64, error)
+}
+
+// CrossoverGenome is an optional extension for genomes that support recombination.
+// Genomes that implement this interface can be crossed with another genome
+// of the same type to produce a child genome.
+type CrossoverGenome interface {
+	// Crossover recombines this genome with another to produce a child.
+	// Returns an error if the other genome is incompatible.
+	Crossover(ctx context.Context, other Genome) (Genome, error)
 }
 
 // Registry manages pluggable genome implementations.

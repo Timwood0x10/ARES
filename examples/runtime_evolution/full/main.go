@@ -160,7 +160,11 @@ func main() {
 		var best genome.Genome
 		var bestFit float64
 		for _, child := range children {
-			fit, _ := child.Fitness(ctx)
+			f, ok := child.(genome.FitnessGenome)
+			if !ok {
+				continue
+			}
+			fit, _ := f.Fitness(ctx)
 			if fit > bestFit {
 				bestFit = fit
 				best = child
