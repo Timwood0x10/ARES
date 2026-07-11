@@ -135,7 +135,7 @@ func TestServiceWithBridge(t *testing.T) {
 		},
 	}
 	inj := NewInjector(rt, nil)
-	svc := NewService(inj, nil)
+	svc := NewService(inj, nil, nil)
 
 	recorder := flight.NewFlightRecorder(flight.FlightRecorderConfig{})
 	bridge := NewFlightBridge(recorder)

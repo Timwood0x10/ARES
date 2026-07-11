@@ -24,7 +24,7 @@ func TestRunScenario_Success(t *testing.T) {
 		},
 	}
 	inj := NewInjector(rt, nil)
-	svc := NewService(inj, nil)
+	svc := NewService(inj, nil, nil)
 
 	scenario := Scenario{
 		Name: "test_scenario",

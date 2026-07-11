@@ -106,7 +106,7 @@ func TestDefaultRegressionConfig(t *testing.T) {
 
 // TestNewRegressionTester_ValidArgs verifies successful creation.
 func TestNewRegressionTester_ValidArgs(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 	scorer := newMockScorer(map[int]float64{0: 1.0})
 
 	tester, err := NewRegressionTester(service, scorer)
@@ -142,7 +142,7 @@ func TestNewRegressionTester_NilArena(t *testing.T) {
 
 // TestNewRegressionTester_NilScorer checks nil scorer rejection.
 func TestNewRegressionTester_NilScorer(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 
 	tester, err := NewRegressionTester(service, nil)
 	if err == nil {
@@ -158,7 +158,7 @@ func TestNewRegressionTester_NilScorer(t *testing.T) {
 
 // TestRun_NewBetterStrategy verifies high win rate and confidence when new is better.
 func TestRun_NewBetterStrategy(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 
 	// Use separate scorers for each strategy to avoid race conditions.
 	oldScorer := newMockScorer(map[int]float64{
@@ -216,7 +216,7 @@ func TestRun_NewBetterStrategy(t *testing.T) {
 
 // TestRun_OldBetterStrategy verifies low win rate when new is worse.
 func TestRun_OldBetterStrategy(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 
 	oldScorer := newMockScorer(map[int]float64{
 		0: 85.0, 1: 88.0, 2: 82.0, 3: 90.0, 4: 86.0,
@@ -263,7 +263,7 @@ func TestRun_OldBetterStrategy(t *testing.T) {
 
 // TestRun_EqualStrategies verifies win rate ~0.5 when strategies are equal.
 func TestRun_EqualStrategies(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 
 	// Both strategies return identical scores.
 	baseScore := 70.0
@@ -366,7 +366,7 @@ func TestComputeSignificance_EmptySlices(t *testing.T) {
 
 // TestRun_CancelByContext verifies context cancellation propagation.
 func TestRun_CancelByContext(t *testing.T) {
-	service := NewService(nil, nil)
+	service := NewService(nil, nil, nil)
 
 	// Scorer that simulates slow scoring.
 	slowScorer := &slowScorer{delay: 100 * time.Millisecond}
@@ -454,7 +454,7 @@ func TestRun_InvalidConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			service := NewService(nil, nil)
+			service := NewService(nil, nil, nil)
 			scorer := newMockScorer(map[int]float64{0: 1.0})
 			tester, err := NewRegressionTester(service, scorer)
 			if err != nil {

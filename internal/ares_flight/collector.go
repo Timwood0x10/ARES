@@ -5,36 +5,45 @@ import (
 	"sync"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // Collector subscribes to the EventStore and populates flight recorder data structures.
 type Collector struct {
-	eventStore ares_events.EventStore
-	timeline   *Timeline
-	graph      *Graph
-	decisions  *DecisionLog
-	diag       *DiagnosticsEngine
-	pipelines  map[string]*MemoryPipeline
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.RWMutex
+	eventStore        ares_events.EventStore
+	evidenceStore     evidence.Store      // optional: unified Evidence Store
+	evidenceCollector *evidence.Collector // optional: evidence emitter
+	timeline          *Timeline
+	graph             *Graph
+	decisions         *DecisionLog
+	diag              *DiagnosticsEngine
+	pipelines         map[string]*MemoryPipeline
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	mu                sync.RWMutex
 }
 
 // CollectorConfig holds dependencies for the collector.
 type CollectorConfig struct {
-	EventStore ares_events.EventStore
+	EventStore    ares_events.EventStore
+	EvidenceStore evidence.Store // optional: unified Evidence Store
 }
 
 // NewCollector creates a new flight data collector.
 func NewCollector(cfg CollectorConfig) *Collector {
-	return &Collector{
-		eventStore: cfg.EventStore,
-		timeline:   NewTimeline(),
-		graph:      NewGraph(),
-		decisions:  NewDecisionLog(),
-		diag:       NewDiagnosticsEngine(),
-		pipelines:  make(map[string]*MemoryPipeline),
+	c := &Collector{
+		eventStore:    cfg.EventStore,
+		evidenceStore: cfg.EvidenceStore,
+		timeline:      NewTimeline(),
+		graph:         NewGraph(),
+		decisions:     NewDecisionLog(),
+		diag:          NewDiagnosticsEngine(),
+		pipelines:     make(map[string]*MemoryPipeline),
 	}
+	if cfg.EvidenceStore != nil {
+		c.evidenceCollector = evidence.NewCollector(cfg.EvidenceStore, "flight")
+	}
+	return c
 }
 
 // Start begins collecting ares_events from the event store.
@@ -116,6 +125,18 @@ func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Even
 func (c *Collector) processEvent(evt *ares_events.Event) {
 	if evt == nil {
 		return
+	}
+
+	// Emit evidence to the unified Evidence Store.
+	if c.evidenceCollector != nil {
+		_ = c.evidenceCollector.EmitWithMeta(context.Background(), evidence.KindExecutionTrace,
+			map[string]any{
+				"event_type": evt.Type,
+				"stream_id":  evt.StreamID,
+				"version":    evt.Version,
+			},
+			"event_type", string(evt.Type),
+		)
 	}
 
 	switch evt.Type {

@@ -5,6 +5,7 @@ import (
 	"context"
 
 	internal "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // Service wraps internal/ares_arena.Service for public consumption.
@@ -13,8 +14,8 @@ type Service struct {
 }
 
 // New creates a new Arena service with the given injector and event store.
-func New(injector *internal.Injector, store internal.EventStore) *Service {
-	inner := internal.NewService(injector, store)
+func New(injector *internal.Injector, store internal.EventStore, evStore evidence.Store) *Service {
+	inner := internal.NewService(injector, store, evStore)
 	return &Service{inner: inner}
 }
 

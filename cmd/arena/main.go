@@ -340,7 +340,7 @@ func runServe(args []string) error {
 
 	// Create a minimal service for the HTTP handler.
 	inj := arena.NewInjector(nil, nil)
-	svc := arena.NewService(inj, nil)
+	svc := arena.NewService(inj, nil, nil)
 	handler := arena.NewHandler(svc)
 
 	mux := http.NewServeMux()

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // EventStore is the subset of event store capabilities needed by the arena.
@@ -25,6 +26,7 @@ const (
 type Service struct {
 	injector *Injector
 	store    EventStore
+	evStore  evidence.Store // optional: unified Evidence Store
 	actions  []Result
 	stats    Stats
 	mu       sync.RWMutex
@@ -37,7 +39,7 @@ type Service struct {
 }
 
 // NewService creates a Service with the given injector and optional event store.
-func NewService(injector *Injector, store EventStore) *Service {
+func NewService(injector *Injector, store EventStore, evStore evidence.Store) *Service {
 	if injector == nil {
 		log.Warn("NewService: nil injector")
 	}
@@ -47,6 +49,7 @@ func NewService(injector *Injector, store EventStore) *Service {
 	return &Service{
 		injector: injector,
 		store:    store,
+		evStore:  evStore,
 		actions:  make([]Result, 0),
 		metrics:  NewMetricsCollector(),
 	}

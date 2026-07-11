@@ -17,7 +17,7 @@ import (
 
 func setupHandler(rt RuntimeProvider, dag DAGProvider) (*Handler, *Service) {
 	inj := NewInjector(rt, dag)
-	svc := NewService(inj, nil)
+	svc := NewService(inj, nil, nil)
 	h := NewHandler(svc)
 	return h, svc
 }

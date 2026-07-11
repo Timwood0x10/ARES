@@ -187,7 +187,7 @@ var arenaServeCmd = &cobra.Command{
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inj := arena.NewInjector(nil, nil)
-		svc := arena.NewService(inj, nil)
+		svc := arena.NewService(inj, nil, nil)
 		handler := arena.NewHandler(svc)
 		// Enable API key auth when configured via env or flag.
 		if arenaServeAPIKey != "" {

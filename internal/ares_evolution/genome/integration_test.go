@@ -913,7 +913,7 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 				// to ensure full test isolation — no shared mutable state between
 				// parallel populations, even though mockArenaScorer is stateless.
 				scorer := newMockArenaScorer()
-				arenaSvc := arena.NewService(nil, nil)
+				arenaSvc := arena.NewService(nil, nil, nil)
 				rt, err := arena.NewRegressionTester(arenaSvc, scorer)
 				if err != nil {
 					results <- popResult{index: i, err: fmt.Errorf("create regression tester: %w", err)}
@@ -971,7 +971,7 @@ func TestConcurrentEvolutionSafety(t *testing.T) {
 		ctx := context.Background()
 
 		scorer := newMockArenaScorer()
-		arenaSvc := arena.NewService(nil, nil)
+		arenaSvc := arena.NewService(nil, nil, nil)
 		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
 		if err != nil {
 			t.Fatalf("create regression tester: %v", err)
@@ -1054,7 +1054,7 @@ func TestArenaRegressionScoring(t *testing.T) {
 		ctx := context.Background()
 
 		scorer := newMockArenaScorer()
-		arenaSvc := arena.NewService(nil, nil)
+		arenaSvc := arena.NewService(nil, nil, nil)
 		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
 		if err != nil {
 			t.Fatalf("create regression tester: %v", err)
@@ -1159,7 +1159,7 @@ func TestArenaRegressionScoring(t *testing.T) {
 		ctx := context.Background()
 
 		scorer := newMockArenaScorer()
-		arenaSvc := arena.NewService(nil, nil)
+		arenaSvc := arena.NewService(nil, nil, nil)
 		rt, err := arena.NewRegressionTester(arenaSvc, scorer)
 		if err != nil {
 			t.Fatalf("create regression tester: %v", err)
@@ -1202,7 +1202,7 @@ func TestArenaRegressionScoring(t *testing.T) {
 		ctx := context.Background()
 
 		scorer := newMockArenaScorer()
-		arenaSvc := arena.NewService(nil, nil)
+		arenaSvc := arena.NewService(nil, nil, nil)
 		arenaRT, err := arena.NewRegressionTester(arenaSvc, scorer)
 		if err != nil {
 			t.Fatalf("create arena tester: %v", err)

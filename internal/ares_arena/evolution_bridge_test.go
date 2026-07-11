@@ -141,7 +141,7 @@ func TestEvolutionBridge_ChaosPriority(t *testing.T) {
 }
 
 func TestService_SetEvolutionBridge(t *testing.T) {
-	s := NewService(NewInjector(nil, nil), nil)
+	s := NewService(NewInjector(nil, nil), nil, nil)
 	coord := newTestCoordinator(t)
 	bridge := NewEvolutionBridge(coord)
 
@@ -152,7 +152,7 @@ func TestService_SetEvolutionBridge(t *testing.T) {
 func TestService_Execute_WithEvolutionBridge(t *testing.T) {
 	// End-to-end: Service.Execute should trigger the evolution bridge
 	// when an action fails.
-	s := NewService(NewInjector(nil, nil), nil)
+	s := NewService(NewInjector(nil, nil), nil, nil)
 	coord := newTestCoordinator(t)
 	bridge := NewEvolutionBridge(coord)
 	s.SetEvolutionBridge(bridge)

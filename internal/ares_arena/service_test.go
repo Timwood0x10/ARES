@@ -46,7 +46,7 @@ func (m *mockEventStore) Subscribe(_ context.Context, _ ares_events.EventFilter)
 
 func newTestService(rt RuntimeProvider, dag DAGProvider, store EventStore) *Service {
 	inj := NewInjector(rt, dag)
-	return NewService(inj, store)
+	return NewService(inj, store, nil)
 }
 
 func TestExecute_KillAgent(t *testing.T) {

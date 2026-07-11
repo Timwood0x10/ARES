@@ -6,6 +6,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/evidence"
 )
 
 // FlightRecorder is the unified entry point for all flight data.
@@ -21,15 +22,17 @@ type FlightRecorder struct {
 
 // FlightRecorderConfig holds dependencies for the flight recorder.
 type FlightRecorderConfig struct {
-	EventStore ares_events.EventStore
-	MemManager memory.MemoryManager
-	Genealogy  *Genealogy // optional, for agent genealogy tracking
+	EventStore    ares_events.EventStore
+	EvidenceStore evidence.Store // optional: unified Evidence Store
+	MemManager    memory.MemoryManager
+	Genealogy     *Genealogy // optional, for agent genealogy tracking
 }
 
 // NewFlightRecorder creates a new flight recorder.
 func NewFlightRecorder(cfg FlightRecorderConfig) *FlightRecorder {
 	collector := NewCollector(CollectorConfig{
-		EventStore: cfg.EventStore,
+		EventStore:    cfg.EventStore,
+		EvidenceStore: cfg.EvidenceStore,
 	})
 
 	return &FlightRecorder{

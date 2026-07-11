@@ -113,7 +113,7 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 		}
 	}
 
-	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore)
+	arenaSvc := arenasvc.New(cfg.ArenaInjector, comp.EventStore, comp.NewEvolution.EvidenceStore)
 
 	// MCP manager — always use from Bootstrap to avoid double instances.
 	mcpMgr := comp.MCP
