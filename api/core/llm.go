@@ -1,7 +1,10 @@
 // Package core provides core abstractions for LLM operations.
 package core
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // LLMProvider represents the LLM provider type.
 type LLMProvider string
@@ -51,6 +54,8 @@ type LLMMessage struct {
 	ToolCalls []ToolCall
 	// ToolCallID contains the tool call ID (for tool messages).
 	ToolCallID string
+	// Name is an optional participant name (OpenAI v2+).
+	Name string
 }
 
 // ToolCall represents a tool/function call.
@@ -85,6 +90,20 @@ type GenerateRequest struct {
 	Stream bool
 	// Tools are available tools for function calling.
 	Tools []Tool
+	// TopP is nucleus sampling parameter (OpenAI v2+).
+	TopP *float64 `json:"top_p,omitempty"`
+	// Stop sequences where the model will stop generating.
+	Stop []string `json:"stop,omitempty"`
+	// Seed for deterministic sampling.
+	Seed *int64 `json:"seed,omitempty"`
+	// User identifier for the end-user.
+	User string `json:"user,omitempty"`
+	// Metadata for the request (OpenAI v2+).
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// ToolChoice controls which tool is called (OpenAI v2+).
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	// ResponseFormat controls the output format (OpenAI v2+).
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 // Tool represents a tool/function available to the LLM.
