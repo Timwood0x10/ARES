@@ -411,7 +411,7 @@ func (a *componentExecutorAdapter) Apply(ctx context.Context, p patch.RuntimePat
 		return nil, err
 	}
 	if coreResult == nil {
-		return nil, nil
+		return nil, fmt.Errorf("no patch result from component %q", p.Target)
 	}
 	return &patch.RuntimePatch{
 		Type:   patch.PatchType(coreResult.Type),

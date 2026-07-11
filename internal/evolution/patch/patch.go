@@ -144,7 +144,7 @@ func (c *ExecutorComponent) Name() string { return c.name }
 
 // Snapshot returns a nil snapshot. Components that support diffing should
 // implement RuntimeComponent directly instead of using this adapter.
-func (c *ExecutorComponent) Snapshot(_ context.Context) (any, error) { return nil, nil }
+func (c *ExecutorComponent) Snapshot(_ context.Context) (any, error) { return nil, ErrNoSnapshot }
 
 // Apply delegates to the wrapped Executor.
 func (c *ExecutorComponent) Apply(ctx context.Context, patch RuntimePatch) (*RuntimePatch, error) {
@@ -155,6 +155,12 @@ func (c *ExecutorComponent) Apply(ctx context.Context, patch RuntimePatch) (*Run
 func (c *ExecutorComponent) CanApply(ctx context.Context, patch RuntimePatch) error {
 	return c.executor.CanApply(ctx, patch)
 }
+
+// sentinel errors for the patch package.
+var (
+	// ErrNoSnapshot is returned by Snapshot when no snapshot is available.
+	ErrNoSnapshot = fmt.Errorf("patch: no snapshot available")
+)
 
 // Ensure ExecutorComponent implements RuntimeComponent.
 var _ RuntimeComponent = (*ExecutorComponent)(nil)

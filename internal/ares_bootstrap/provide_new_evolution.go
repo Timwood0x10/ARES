@@ -169,7 +169,9 @@ type noopKnowledgeExecutor struct{}
 
 func (e *noopKnowledgeExecutor) Name() string { return "knowledge.planner" }
 
-func (e *noopKnowledgeExecutor) Snapshot(_ context.Context) (any, error) { return nil, nil }
+func (e *noopKnowledgeExecutor) Snapshot(_ context.Context) (any, error) {
+	return nil, fmt.Errorf("noop: no snapshot")
+}
 
 func (e *noopKnowledgeExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	return &patch.RuntimePatch{

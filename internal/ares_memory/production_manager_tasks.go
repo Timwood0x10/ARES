@@ -14,6 +14,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/services"
 )
 
+// Repeated string constants for goconst compliance.
+const (
+	agentID        = "style-agent"
+	embeddingModel = "intfloat/e5-large"
+	keyTaskID      = "task_id"
+	keyOutput      = "output"
+	keyInput       = "input"
+	keyScore       = "score"
+	keyContent     = "content"
+)
+
 // CreateTask creates a new task and returns the task ID.
 // Args:
 // ctx - database operation context.
@@ -38,11 +49,11 @@ func (m *ProductionMemoryManager) CreateTask(ctx context.Context, sessionID, use
 		TenantID:         tenantID,
 		SessionID:        sessionID,
 		TaskType:         "user_request",
-		AgentID:          "style-agent",
-		Input:            map[string]interface{}{"content": input},
+		AgentID:          agentID,
+		Input:            map[string]interface{}{keyContent: input},
 		Output:           nil,
 		Embedding:        nil, // No embedding for task results
-		EmbeddingModel:   "intfloat/e5-large",
+		EmbeddingModel:   embeddingModel,
 		EmbeddingVersion: 1,
 		Status:           "pending",
 		Metadata:         make(map[string]interface{}),
@@ -126,7 +137,7 @@ func (m *ProductionMemoryManager) DistillTask(ctx context.Context, taskID string
 		inputCount = len(content)
 	}
 	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
-		"task_id":     taskID,
+		keyTaskID:     taskID,
 		"input_count": inputCount,
 	})
 
@@ -159,12 +170,12 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	// Extract problem and solution from distilled payload.
 	inputStr, ok := distilled.Payload["input"].(string)
 	if !ok {
-		log.Warn("StoreProductionMemory: missing or invalid input", "task_id", taskID)
+		log.Warn("StoreProductionMemory: missing or invalid input", keyTaskID, taskID)
 		inputStr = ""
 	}
-	outputStr, ok := distilled.Payload["output"].(string)
+	outputStr, ok := distilled.Payload[keyOutput].(string)
 	if !ok {
-		log.Warn("StoreProductionMemory: missing or invalid output", "task_id", taskID)
+		log.Warn("StoreProductionMemory: missing or invalid output", keyTaskID, taskID)
 		outputStr = ""
 	}
 
@@ -181,9 +192,9 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 		SpecDim:    0,
 		SpecHash:   spec.Hash,
 		Metadata: map[string]interface{}{
-			"output":   outputStr,
+			keyOutput:  outputStr,
 			"type":     "solution",
-			"agent_id": "style-agent",
+			"agent_id": agentID,
 		},
 	}
 
@@ -193,11 +204,11 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 
 	// Emit memory distilled event.
 	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
-		"task_id":      taskID,
+		keyTaskID:      taskID,
 		"output_count": 1,
 	})
 
-	log.Debug("Distilled task queued for async embedding", "task_id", taskID)
+	log.Debug("Distilled task queued for async embedding", keyTaskID, taskID)
 	return nil
 }
 
@@ -248,9 +259,9 @@ func (m *ProductionMemoryManager) SearchSimilarTasks(ctx context.Context, query 
 				TaskID:   result.ID,
 				TaskType: models.AgentType("experience"),
 				Payload: map[string]any{
-					"input":  result.Content,
-					"output": result.Metadata["output"],
-					"score":  result.Score,
+					keyInput:  result.Content,
+					keyOutput: result.Metadata[keyOutput],
+					keyScore:  result.Score,
 				},
 				Priority:  int(result.Score * 100), // Convert score to priority
 				CreatedAt: result.CreatedAt,

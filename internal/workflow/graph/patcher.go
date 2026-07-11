@@ -30,7 +30,7 @@ func (e *GraphPatchExecutor) Name() string { return "workflow.graph" }
 // Snapshot returns the current graph structure as a serializable snapshot.
 func (e *GraphPatchExecutor) Snapshot(_ context.Context) (any, error) {
 	if e.graph == nil {
-		return nil, nil
+		return nil, patch.ErrNoSnapshot
 	}
 	return e.graph, nil
 }

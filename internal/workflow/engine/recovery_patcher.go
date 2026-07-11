@@ -26,7 +26,7 @@ func (e *RecoveryPatchExecutor) Name() string { return "recovery" }
 // Snapshot returns the current recovery configuration as a snapshot.
 func (e *RecoveryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 	if e.dag == nil {
-		return nil, nil
+		return nil, patch.ErrNoSnapshot
 	}
 	return e.dag, nil
 }
