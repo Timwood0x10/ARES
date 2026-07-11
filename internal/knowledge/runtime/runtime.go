@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
@@ -27,6 +28,9 @@ type KnowledgeRuntime struct {
 
 	patchRegMu sync.RWMutex
 	patchReg   *patch.Registry
+
+	evStore evidence.Store      // optional: unified Evidence Store
+	evColl  *evidence.Collector // optional: evidence emitter
 }
 
 // New creates a KnowledgeRuntime with the given components.
@@ -63,6 +67,15 @@ func (r *KnowledgeRuntime) WithPatchRegistry(pr *patch.Registry) *KnowledgeRunti
 	r.patchRegMu.Lock()
 	defer r.patchRegMu.Unlock()
 	r.patchReg = pr
+	return r
+}
+
+// WithEvidenceStore sets the runtime's evidence store for emitting AKF insights.
+func (r *KnowledgeRuntime) WithEvidenceStore(store evidence.Store) *KnowledgeRuntime {
+	r.evStore = store
+	if store != nil {
+		r.evColl = evidence.NewCollector(store, "akf")
+	}
 	return r
 }
 
@@ -125,6 +138,19 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		log.Info("lazy loading requested but not yet implemented; returning full graph",
 			"nodes", len(graph.Nodes),
 			"budget", budget.ForGraph)
+	}
+
+	// Emit insight evidence to the unified Evidence Store.
+	if r.evColl != nil {
+		_ = r.evColl.EmitWithMeta(ctx, evidence.KindInsight,
+			map[string]any{
+				"goal":        goal,
+				"node_count":  len(graph.Nodes),
+				"edge_count":  len(graph.Edges),
+				"budget_used": budget.ForGraph,
+			},
+			"goal", goal,
+		)
 	}
 
 	return graph, nil

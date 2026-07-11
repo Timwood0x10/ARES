@@ -47,6 +47,7 @@ const (
 	DecisionApply  Decision = iota // Apply the patch now
 	DecisionReject                 // Reject the patch
 	DecisionDelay                  // Revisit later
+	DecisionCanary                 // Apply in canary mode (limited scope)
 )
 
 // String returns a human-readable name for the decision.
@@ -58,6 +59,8 @@ func (d Decision) String() string {
 		return "reject"
 	case DecisionDelay:
 		return "delay"
+	case DecisionCanary:
+		return "canary"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(d))
 	}
@@ -275,6 +278,8 @@ func decisionReason(d Decision, proposal PatchProposal) string {
 		return fmt.Sprintf("rejected patch %s from %s: rate limited or blacklisted", proposal.Patch.Type, proposal.Source)
 	case DecisionDelay:
 		return fmt.Sprintf("delayed patch %s from %s: too many recent patches", proposal.Patch.Type, proposal.Source)
+	case DecisionCanary:
+		return fmt.Sprintf("canary patch %s from %s (priority %d)", proposal.Patch.Type, proposal.Source, proposal.Priority)
 	default:
 		return "unknown decision"
 	}
