@@ -32,9 +32,11 @@ import (
 )
 
 const (
-	defaultEndpoint  = "chat/completions"
-	streamObject     = "chat.completion.chunk"
-	finishReasonStop = "stop"
+	defaultEndpoint   = "chat/completions"
+	responsesEndpoint = "responses"
+	streamObject      = "chat.completion.chunk"
+	finishReasonStop  = "stop"
+	roleAssistant     = "assistant"
 )
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -79,7 +81,7 @@ func (a *Adapter) Serve(ctx context.Context, raw []byte) ([]byte, error) {
 		return a.handleEmbeddings(ctx, raw)
 	case "completions":
 		return a.handleLegacyCompletions(ctx, raw)
-	case "responses":
+	case responsesEndpoint:
 		return a.handleResponses(ctx, raw)
 	case "images/generations":
 		return a.handleImageGeneration(ctx, raw)
@@ -131,12 +133,12 @@ func detectEndpoint(raw []byte) string {
 	if len(env.Input) > 0 {
 		// Responses API: input is a string (not array), has instructions, no messages.
 		if env.Instructions != "" {
-			return "responses"
+			return responsesEndpoint
 		}
 		// Check if input is a plain string (Responses) vs array (Embeddings).
 		var inputStr string
 		if json.Unmarshal(env.Input, &inputStr) == nil && inputStr != "" {
-			return "responses"
+			return responsesEndpoint
 		}
 		return "embeddings"
 	}
@@ -599,7 +601,7 @@ func mapResponseFormat(rf *responseFormatObj) json.RawMessage {
 func buildChatResponse(genResp *core.GenerateResponse, model string, cfg *core.LLMConfig) chatResponse {
 	now := time.Now().Unix()
 	respMsg := responseMsg{
-		Role:    "assistant",
+		Role:    roleAssistant,
 		Content: genResp.Content,
 	}
 	if len(genResp.ToolCalls) > 0 {
@@ -673,7 +675,7 @@ func (a *Adapter) handleStreamingChat(ctx context.Context, genReq *core.Generate
 		Created: now,
 		Model:   model,
 		Choices: []streamChoice{
-			{Index: 0, Delta: streamDelta{Role: "assistant"}},
+			{Index: 0, Delta: streamDelta{Role: roleAssistant}},
 		},
 		SystemFingerprint: fmt.Sprintf("fp_%x", now),
 	}
@@ -902,7 +904,7 @@ func (a *Adapter) handleResponses(ctx context.Context, raw []byte) ([]byte, erro
 				Type:   "message",
 				ID:     fmt.Sprintf("msg_%x", now+1),
 				Status: "completed",
-				Role:   "assistant",
+				Role:   roleAssistant,
 				Content: []responsesContentBlock{
 					{Type: "output_text", Text: genResp.Content},
 				},

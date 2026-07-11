@@ -47,7 +47,7 @@ func init() {
 func getNewEvolution() *ares_bootstrap.NewEvolutionComponents {
 	// Components are cached so the expensive ProvideNewEvolution runs once.
 	if cachedComponents == nil {
-		comp, err := ares_bootstrap.ProvideNewEvolution(nil, nil)
+		comp, err := ares_bootstrap.ProvideNewEvolution(nil, nil, nil)
 		if err != nil {
 			log.Fatalf("bootstrap evolution: %v", err)
 		}

@@ -65,6 +65,15 @@ type ProductionMemoryManager struct {
 	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
 	eventStore ares_events.EventStore
 	streamID   string // Stream ID used when appending ares_events.
+
+	// Evidence collector: optional, for emitting evidence to the unified Evidence Store.
+	evidenceCollector EvidenceCollector
+}
+
+// EvidenceCollector is the minimal interface for emitting evidence.
+// This avoids a direct import of internal/evidence to prevent cycles.
+type EvidenceCollector interface {
+	Emit(ctx context.Context, kind string, payload any, keysAndValues ...string) error
 }
 
 // SessionData holds session information with optional caching.
@@ -198,6 +207,12 @@ func (m *ProductionMemoryManager) SetTenantID(tenantID string) error {
 func (m *ProductionMemoryManager) SetEventStore(store ares_events.EventStore, streamID string) {
 	m.eventStore = store
 	m.streamID = streamID
+}
+
+// SetEvidenceCollector configures an optional evidence collector.
+// When set, memory operations emit evidence to the unified Evidence Store.
+func (m *ProductionMemoryManager) SetEvidenceCollector(ec EvidenceCollector) {
+	m.evidenceCollector = ec
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit.

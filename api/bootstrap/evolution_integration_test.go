@@ -16,7 +16,7 @@ import (
 // ProvideNewEvolution(nil, nil) — a minimal but fully wired evolution system.
 func newTestEvolutionService(t *testing.T) (*runtimeEvoService, *ares_bootstrap.NewEvolutionComponents) {
 	t.Helper()
-	comps, err := ares_bootstrap.ProvideNewEvolution(nil, nil)
+	comps, err := ares_bootstrap.ProvideNewEvolution(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("ProvideNewEvolution: %v", err)
 	}

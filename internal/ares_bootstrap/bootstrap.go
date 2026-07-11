@@ -138,7 +138,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
 	// Always created; uses internal defaults when no DAG/runtime is available.
-	newEvol, err := ProvideNewEvolution(nil, nil)
+	newEvol, err := ProvideNewEvolution(nil, nil, nil)
 	if err != nil {
 		runCleanups()
 		return nil, err

@@ -202,6 +202,16 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 		return errors.Wrap(err, "write to buffer")
 	}
 
+	// Emit evidence to the unified Evidence Store.
+	if m.evidenceCollector != nil {
+		_ = m.evidenceCollector.Emit(ctx, "knowledge", map[string]any{
+			keyTaskID:  taskID,
+			keyInput:   inputStr,
+			keyOutput:  outputStr,
+			"agent_id": agentID,
+		}, "source", "memory", "type", "distillation")
+	}
+
 	// Emit memory distilled event.
 	m.emitEvent(ctx, ares_events.EventMemoryDistilled, map[string]any{
 		keyTaskID:      taskID,

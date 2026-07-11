@@ -129,6 +129,12 @@ type (
 	ToolCallFunction = memctx.ToolCallFunction
 )
 
+// Storage type constants.
+const (
+	StorageMemory   = "memory"
+	StoragePostgres = "postgres"
+)
+
 // Role constants re-exported for convenience.
 const (
 	RoleUser       = memctx.RoleUser
@@ -322,7 +328,7 @@ func DefaultMemoryConfig() *MemoryConfig {
 	opts := core.DefaultCleanOptions()
 	return &MemoryConfig{
 		Enabled:               true,
-		Storage:               "memory",
+		Storage:               StorageMemory,
 		MaxHistory:            10,
 		MaxSessions:           100,
 		MaxTasks:              1000,
