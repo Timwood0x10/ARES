@@ -153,6 +153,23 @@ func (s *Service) Execute(ctx context.Context, action Action) Result {
 
 	s.emitEvent(ctx, action, result)
 
+	// Emit failure evidence to the unified Evidence Store.
+	if !result.Success && s.evStore != nil {
+		_ = s.evStore.Append(ctx, evidence.NewEvidence(
+			"chaos",
+			evidence.KindFailure,
+			map[string]any{
+				"action_id":   action.ID,
+				"action_type": string(action.Type),
+				"target_id":   action.TargetID,
+				"error":       result.Error,
+				"duration_ms": duration.Milliseconds(),
+			},
+			evidence.WithMetadata("action_type", string(action.Type)),
+			evidence.WithMetadata("target_id", action.TargetID),
+		))
+	}
+
 	if result.Success {
 		log.Info("arena: action executed",
 			"action_id", action.ID,

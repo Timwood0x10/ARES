@@ -139,7 +139,19 @@ func (g *KnowledgeGenome) Fitness(ctx context.Context) (float64, error) {
 	if tokenPenalty > 0.3 {
 		tokenPenalty = 0.3
 	}
-	return baseFit - tokenPenalty, nil
+	fitness := baseFit - tokenPenalty
+
+	// Emit fitness evidence.
+	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
+		KnowledgeGenomeName,
+		evidence.KindFitness,
+		fitness,
+		evidence.WithMetadata("type", "knowledge"),
+		evidence.WithMetadata("max_results", fmt.Sprintf("%d", g.config.MaxResults)),
+		evidence.WithMetadata("reducer", g.config.ReducerStrategy),
+	))
+
+	return fitness, nil
 }
 
 // Snapshot returns the current config as the serializable state.

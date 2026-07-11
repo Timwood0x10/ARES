@@ -123,16 +123,28 @@ func (g *RecoveryGenome) Fitness(ctx context.Context) (float64, error) {
 	}
 
 	// Heuristic: favour replace_node and retry over fail_fast.
+	var fitness float64
 	switch g.policy.Strategy {
 	case engine.RecoveryReplaceNode:
-		return 0.8, nil
+		fitness = 0.8
 	case engine.RecoveryRetry:
-		return 0.7, nil
+		fitness = 0.7
 	case engine.RecoveryFailFast:
-		return 0.4, nil
+		fitness = 0.4
 	default:
-		return 0.5, nil
+		fitness = 0.5
 	}
+
+	// Emit fitness evidence.
+	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
+		"recovery",
+		evidence.KindFitness,
+		fitness,
+		evidence.WithMetadata("type", "recovery"),
+		evidence.WithMetadata("strategy", string(g.policy.Strategy)),
+	))
+
+	return fitness, nil
 }
 
 // Snapshot returns the current recovery policy as the serializable state.

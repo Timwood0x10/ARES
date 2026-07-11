@@ -180,7 +180,18 @@ func (g *WorkflowGenome) Fitness(ctx context.Context) (float64, error) {
 	if count == 0 {
 		return 0.5, nil
 	}
-	return sum / float64(count), nil
+	fitness := sum / float64(count)
+
+	// Emit fitness evidence so other subsystems can consume GA results.
+	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
+		WorkflowGenomeName,
+		evidence.KindFitness,
+		fitness,
+		evidence.WithMetadata("type", "workflow"),
+		evidence.WithMetadata("version", fmt.Sprintf("%d", g.dag.Version())),
+	))
+
+	return fitness, nil
 }
 
 // Snapshot returns a serializable snapshot of the current DAG state.

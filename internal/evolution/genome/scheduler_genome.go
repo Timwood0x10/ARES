@@ -142,7 +142,17 @@ func (g *SchedulerGenome) Fitness(ctx context.Context) (float64, error) {
 	if count == 0 {
 		return 0.5, nil
 	}
-	return sum / float64(count), nil
+	fitness := sum / float64(count)
+
+	// Emit fitness evidence.
+	_ = g.config.EvidenceStore.Append(ctx, evidence.NewEvidence(
+		"scheduler",
+		evidence.KindFitness,
+		fitness,
+		evidence.WithMetadata("type", "scheduler"),
+	))
+
+	return fitness, nil
 }
 
 // Snapshot returns the current scheduler. Used by the Diff Engine.
