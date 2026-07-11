@@ -10,6 +10,7 @@ import (
 
 // RecoveryPatchExecutor handles recovery-related runtime patches.
 // It wraps a MutableDAG and applies ChangeRecoveryStrategy/ChangeMaxRetries.
+// Implements patch.RuntimeComponent for unified runtime evolution.
 type RecoveryPatchExecutor struct {
 	dag *MutableDAG
 }
@@ -18,6 +19,20 @@ type RecoveryPatchExecutor struct {
 func NewRecoveryPatchExecutor(dag *MutableDAG) *RecoveryPatchExecutor {
 	return &RecoveryPatchExecutor{dag: dag}
 }
+
+// Name returns "recovery" as the component identifier for patch routing.
+func (e *RecoveryPatchExecutor) Name() string { return "recovery" }
+
+// Snapshot returns the current recovery configuration as a snapshot.
+func (e *RecoveryPatchExecutor) Snapshot(_ context.Context) (any, error) {
+	if e.dag == nil {
+		return nil, nil
+	}
+	return e.dag, nil
+}
+
+// Ensure RecoveryPatchExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*RecoveryPatchExecutor)(nil)
 
 // Apply applies a runtime patch to the DAG's recovery configuration.
 func (e *RecoveryPatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {

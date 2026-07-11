@@ -52,6 +52,7 @@ func (p *configurablePlanner) Plan(ctx context.Context, goal string, budget know
 
 // KnowledgePatchExecutor handles knowledge-related runtime patches.
 // It wraps a *KnowledgeRuntime and applies ChangePlanner/ChangeBudget/ChangeReducer.
+// Implements patch.RuntimeComponent for unified runtime evolution.
 type KnowledgePatchExecutor struct {
 	runtime *KnowledgeRuntime
 }
@@ -60,6 +61,17 @@ type KnowledgePatchExecutor struct {
 func NewKnowledgePatchExecutor(r *KnowledgeRuntime) *KnowledgePatchExecutor {
 	return &KnowledgePatchExecutor{runtime: r}
 }
+
+// Name returns "knowledge" as the component identifier for patch routing.
+func (e *KnowledgePatchExecutor) Name() string { return "knowledge" }
+
+// Snapshot returns the current plan configuration as a snapshot for diffing.
+func (e *KnowledgePatchExecutor) Snapshot(_ context.Context) (any, error) {
+	return PlanConfig{}, nil
+}
+
+// Ensure KnowledgePatchExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*KnowledgePatchExecutor)(nil)
 
 // Apply applies a runtime patch to the knowledge runtime.
 func (e *KnowledgePatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {

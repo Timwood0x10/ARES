@@ -14,6 +14,7 @@ import (
 
 // GraphPatchExecutor handles DAG-related runtime patches.
 // It wraps a *Graph and applies InsertNode/RemoveNode/ReplaceNode/AddEdge/RemoveEdge/ChangeScheduler.
+// Implements patch.RuntimeComponent for unified runtime evolution.
 type GraphPatchExecutor struct {
 	graph *Graph
 }
@@ -22,6 +23,20 @@ type GraphPatchExecutor struct {
 func NewGraphPatchExecutor(g *Graph) *GraphPatchExecutor {
 	return &GraphPatchExecutor{graph: g}
 }
+
+// Name returns "workflow.graph" as the component identifier for patch routing.
+func (e *GraphPatchExecutor) Name() string { return "workflow.graph" }
+
+// Snapshot returns the current graph structure as a serializable snapshot.
+func (e *GraphPatchExecutor) Snapshot(_ context.Context) (any, error) {
+	if e.graph == nil {
+		return nil, nil
+	}
+	return e.graph, nil
+}
+
+// Ensure GraphPatchExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*GraphPatchExecutor)(nil)
 
 // Apply applies a runtime patch to the graph.
 func (e *GraphPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {

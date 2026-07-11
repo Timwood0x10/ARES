@@ -184,3 +184,47 @@ func (h *RuntimeEvolutionHandler) HandlePropose(w http.ResponseWriter, r *http.R
 	}
 	writeJSON(w, http.StatusOK, map[string]string{keyStatus: "submitted"})
 }
+
+// HandleEvidenceQuery returns evidence matching the query parameters.
+func (h *RuntimeEvolutionHandler) HandleEvidenceQuery(w http.ResponseWriter, r *http.Request) {
+	if h.runtimeEvo == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
+		return
+	}
+
+	filter := core.EvidenceFilter{
+		Source: r.URL.Query().Get("source"),
+		Kind:   core.EvidenceKind(r.URL.Query().Get("kind")),
+		Limit:  100,
+	}
+	if r.URL.Query().Get("limit") != "" {
+		if v, err := fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &filter.Limit); err != nil || v != 1 {
+			filter.Limit = 100
+		}
+	}
+
+	evidence, err := h.runtimeEvo.QueryEvidence(r.Context(), filter)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("query evidence: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, evidence)
+}
+
+// HandleRegisterComponent registers a new runtime component for evolution.
+func (h *RuntimeEvolutionHandler) HandleRegisterComponent(w http.ResponseWriter, r *http.Request) {
+	if h.runtimeEvo == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "runtime evolution not initialized")
+		return
+	}
+
+	// Component registration requires a name query parameter.
+	// The component must be registered programmatically via the SDK;
+	// this endpoint is a placeholder for future REST-based registration.
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "component name is required")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{keyStatus: "component registration requires SDK, use RegisterComponent()"})
+}

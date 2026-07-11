@@ -123,26 +123,26 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		}
 
 		graphExec := wfgraph.NewGraphPatchExecutor(g)
-		_ = patchReg.Register("workflow.graph", graphExec)
+		_ = patchReg.RegisterComponent(graphExec)
 		_ = patchReg.Register("graph.scheduler", graphExec)
 
 		// Recovery executor.
 		recoveryExec := engine.NewRecoveryPatchExecutor(dag)
-		_ = patchReg.Register("recovery.strategy", recoveryExec)
+		_ = patchReg.RegisterComponent(recoveryExec)
 		_ = patchReg.Register("recovery.max_attempts", recoveryExec)
 		_ = patchReg.Register("recovery.replacement_agent", recoveryExec)
 		_ = patchReg.Register("recovery.max_retries", recoveryExec)
 	}
 
 	// Knowledge executor — works with or without a real runtime.
-	var knowledgeExec patch.Executor
+	var knowledgeExec patch.RuntimeComponent
 	if rt != nil {
 		knowledgeExec = knowledgeruntime.NewKnowledgePatchExecutor(rt)
 	} else {
 		// No runtime available — use a no-op executor for knowledge patches.
 		knowledgeExec = &noopKnowledgeExecutor{}
 	}
-	_ = patchReg.Register("knowledge.planner", knowledgeExec)
+	_ = patchReg.RegisterComponent(knowledgeExec)
 	_ = patchReg.Register("knowledge.planner.max_results", knowledgeExec)
 	_ = patchReg.Register("knowledge.planner.reducer", knowledgeExec)
 	_ = patchReg.Register("knowledge.planner.strategy", knowledgeExec)
@@ -162,7 +162,14 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 
 // ── noopKnowledgeExecutor ─────────────────────
 
+// noopKnowledgeExecutor is a no-op implementation of patch.RuntimeComponent
+// used when no KnowledgeRuntime is available. It accepts all knowledge patches
+// but does nothing — enabling the evolution pipeline to function without AKF.
 type noopKnowledgeExecutor struct{}
+
+func (e *noopKnowledgeExecutor) Name() string { return "knowledge.planner" }
+
+func (e *noopKnowledgeExecutor) Snapshot(_ context.Context) (any, error) { return nil, nil }
 
 func (e *noopKnowledgeExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	return &patch.RuntimePatch{
@@ -179,3 +186,6 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 		return fmt.Errorf("knowledge noop executor: unsupported patch type %s", p.Type)
 	}
 }
+
+// Ensure noopKnowledgeExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)

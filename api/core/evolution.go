@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -156,6 +157,12 @@ type RuntimeEvolution interface {
 	RunCycle(ctx context.Context) (*RuntimeCycleResult, error)
 	Status() (*RuntimeEvolutionStatus, error)
 	Propose(ctx context.Context, proposal RuntimeProposal) error
+
+	// QueryEvidence returns evidence matching the filter.
+	QueryEvidence(ctx context.Context, filter EvidenceFilter) ([]Evidence, error)
+
+	// RegisterComponent registers a runtime component for evolution.
+	RegisterComponent(ctx context.Context, comp RuntimeComponent) error
 }
 
 type RuntimeCycleResult struct {
@@ -186,4 +193,132 @@ type RuntimeProposal struct {
 	Source   string `json:"source"`
 	Text     string `json:"text"`
 	Priority int    `json:"priority"`
+}
+
+// ── RuntimeComponent ──────────────────────────
+
+// RuntimeComponent is the unified interface for evolvable runtime subsystems.
+// Each subsystem (DAG, Scheduler, Planner, Knowledge, Recovery) implements this
+// interface to participate in runtime evolution.
+type RuntimeComponent interface {
+	// Name returns the component identifier, used for registry lookup.
+	Name() string
+
+	// Snapshot returns a serializable representation of the component's current state.
+	Snapshot(ctx context.Context) (any, error)
+
+	// Apply applies a runtime patch and returns a rollback patch.
+	Apply(ctx context.Context, patch RuntimePatch) (*RuntimePatch, error)
+
+	// CanApply returns nil if the patch can be applied, or an error explaining why.
+	CanApply(ctx context.Context, patch RuntimePatch) error
+}
+
+// ── PatchType ─────────────────────────────────
+
+// PatchType classifies a runtime mutation.
+type PatchType int
+
+const (
+	PatchInsertNode  PatchType = iota // Insert a new node into the DAG
+	PatchRemoveNode                   // Remove a node from the DAG
+	PatchReplaceNode                  // Replace a node with another
+	PatchAddEdge                      // Add a directed edge between nodes
+	PatchRemoveEdge                   // Remove a directed edge
+
+	PatchChangeScheduler // Replace the current scheduler
+
+	PatchChangePlanner // Change planner strategy
+	PatchChangeReducer // Change reducer strategy
+	PatchChangeBudget  // Change knowledge budget (e.g. TopK)
+
+	PatchChangeRecoveryStrategy // Change recovery strategy (retry/replace/fail)
+	PatchChangeMaxRetries       // Change max retry count
+	PatchChangeBackoff          // Change backoff duration
+)
+
+// String returns a human-readable name for the patch type.
+func (pt PatchType) String() string {
+	switch pt {
+	case PatchInsertNode:
+		return "insert_node"
+	case PatchRemoveNode:
+		return "remove_node"
+	case PatchReplaceNode:
+		return "replace_node"
+	case PatchAddEdge:
+		return "add_edge"
+	case PatchRemoveEdge:
+		return "remove_edge"
+	case PatchChangeScheduler:
+		return "change_scheduler"
+	case PatchChangePlanner:
+		return "change_planner"
+	case PatchChangeReducer:
+		return "change_reducer"
+	case PatchChangeBudget:
+		return "change_budget"
+	case PatchChangeRecoveryStrategy:
+		return "change_recovery_strategy"
+	case PatchChangeMaxRetries:
+		return "change_max_retries"
+	case PatchChangeBackoff:
+		return "change_backoff"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(pt))
+	}
+}
+
+// ── RuntimePatch ──────────────────────────────
+
+// RuntimePatch is the universal mutation unit.
+// Source identifies who proposed it (genome / chaos / llm / human / k8s).
+// If Rollback is non-nil, Runtime can undo the patch on failure.
+type RuntimePatch struct {
+	Type     PatchType     `json:"type"`
+	Target   string        `json:"target"`
+	Value    any           `json:"value,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Source   string        `json:"source,omitempty"`
+	Rollback *RuntimePatch `json:"rollback,omitempty"`
+}
+
+// ── Evidence ──────────────────────────────────
+
+// EvidenceKind classifies the type of evidence.
+type EvidenceKind string
+
+const (
+	EvidenceExecutionTrace EvidenceKind = "execution_trace" // Flight Recorder
+	EvidenceFailure        EvidenceKind = "failure"         // Chaos Engineering
+	EvidenceKnowledge      EvidenceKind = "knowledge"       // Memory Distillation
+	EvidenceInsight        EvidenceKind = "insight"         // AKF
+	EvidenceFitness        EvidenceKind = "fitness"         // GA
+	EvidenceCritique       EvidenceKind = "critique"        // LLM Reflection
+)
+
+// Evidence is the universal data primitive in ARES.
+// Source identifies the producer. Kind classifies the content.
+type Evidence struct {
+	ID        string            `json:"id"`
+	Source    string            `json:"source"`
+	Kind      EvidenceKind      `json:"kind"`
+	Payload   []byte            `json:"payload,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	Timestamp time.Time         `json:"timestamp"`
+}
+
+// EvidenceFilter specifies criteria for evidence queries.
+type EvidenceFilter struct {
+	Source string       `json:"source,omitempty"`
+	Kind   EvidenceKind `json:"kind,omitempty"`
+	Since  time.Time    `json:"since,omitempty"`
+	Until  time.Time    `json:"until,omitempty"`
+	Limit  int          `json:"limit,omitempty"`
+}
+
+// EvidenceStore persists and queries evidence.
+type EvidenceStore interface {
+	Append(ctx context.Context, e Evidence) error
+	Query(ctx context.Context, filter EvidenceFilter) ([]Evidence, error)
 }

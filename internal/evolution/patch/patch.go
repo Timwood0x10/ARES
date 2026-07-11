@@ -101,7 +101,65 @@ type Executor interface {
 	CanApply(ctx context.Context, patch RuntimePatch) error
 }
 
-// Registry manages patch executors by target component name.
+// RuntimeComponent is the unified interface for all evolvable runtime subsystems.
+// It extends Executor with Name and Snapshot, enabling the Coordinator to discover
+// and snapshot any component without knowing its concrete type.
+//
+// Every subsystem (DAG, Scheduler, Planner, Knowledge, Recovery) implements this
+// interface to participate in runtime evolution.
+type RuntimeComponent interface {
+	// Name returns the component identifier, used for registry lookup.
+	Name() string
+
+	// Snapshot returns a serializable representation of the component's current
+	// state. Used by Diff Engine to compute changes between generations.
+	Snapshot(ctx context.Context) (any, error)
+
+	// Apply applies the patch and returns a rollback patch.
+	// If the patch cannot be applied, Apply returns an error.
+	// The rollback patch can be used to undo the change.
+	Apply(ctx context.Context, patch RuntimePatch) (*RuntimePatch, error)
+
+	// CanApply returns nil if the patch can be applied, or an error explaining why not.
+	CanApply(ctx context.Context, patch RuntimePatch) error
+}
+
+// ExecutorComponent wraps an Executor as a RuntimeComponent.
+// This adapter allows existing Executor implementations to participate in the
+// RuntimeComponent ecosystem without immediate migration.
+// Snapshot returns (nil, nil) by default — concrete implementations should
+// override by implementing RuntimeComponent directly.
+type ExecutorComponent struct {
+	name     string
+	executor Executor
+}
+
+// NewExecutorComponent creates a RuntimeComponent adapter from an Executor.
+func NewExecutorComponent(name string, ex Executor) *ExecutorComponent {
+	return &ExecutorComponent{name: name, executor: ex}
+}
+
+// Name returns the component name passed at construction time.
+func (c *ExecutorComponent) Name() string { return c.name }
+
+// Snapshot returns a nil snapshot. Components that support diffing should
+// implement RuntimeComponent directly instead of using this adapter.
+func (c *ExecutorComponent) Snapshot(_ context.Context) (any, error) { return nil, nil }
+
+// Apply delegates to the wrapped Executor.
+func (c *ExecutorComponent) Apply(ctx context.Context, patch RuntimePatch) (*RuntimePatch, error) {
+	return c.executor.Apply(ctx, patch)
+}
+
+// CanApply delegates to the wrapped Executor.
+func (c *ExecutorComponent) CanApply(ctx context.Context, patch RuntimePatch) error {
+	return c.executor.CanApply(ctx, patch)
+}
+
+// Ensure ExecutorComponent implements RuntimeComponent.
+var _ RuntimeComponent = (*ExecutorComponent)(nil)
+
+// Registry manages patch executors and runtime components by target name.
 type Registry struct {
 	executors map[string]Executor
 }
@@ -126,6 +184,15 @@ func (r *Registry) Register(target string, ex Executor) error {
 	}
 	r.executors[target] = ex
 	return nil
+}
+
+// RegisterComponent registers a RuntimeComponent by its Name.
+// This is the preferred registration method for new code.
+func (r *Registry) RegisterComponent(comp RuntimeComponent) error {
+	if comp == nil {
+		return fmt.Errorf("patch: component must not be nil")
+	}
+	return r.Register(comp.Name(), comp)
 }
 
 // Apply dispatches a patch to the appropriate executor.

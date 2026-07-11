@@ -26,6 +26,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
 )
 
 // ARES is the top-level container for all ARES modules.
@@ -244,6 +245,14 @@ func (s *runtimeEvoService) Propose(ctx context.Context, proposal core.RuntimePr
 	return submitProposal(ctx, proposal, s.components)
 }
 
+func (s *runtimeEvoService) QueryEvidence(ctx context.Context, filter core.EvidenceFilter) ([]core.Evidence, error) {
+	return queryEvidence(ctx, s.components, filter)
+}
+
+func (s *runtimeEvoService) RegisterComponent(ctx context.Context, comp core.RuntimeComponent) error {
+	return registerComponent(ctx, s.components, comp)
+}
+
 // runEvolutionCycle runs one iteration of Mutate → Diff → Submit → Evaluate.
 func runEvolutionCycle(ctx context.Context, c *ares_bootstrap.NewEvolutionComponents) (*core.RuntimeCycleResult, error) {
 	snapshots := make(map[string]diff.SnapshotPair)
@@ -346,3 +355,80 @@ func submitProposal(ctx context.Context, p core.RuntimeProposal, c *ares_bootstr
 	c.Coordinator.Evaluate(ctx)
 	return nil
 }
+
+func queryEvidence(ctx context.Context, c *ares_bootstrap.NewEvolutionComponents, filter core.EvidenceFilter) ([]core.Evidence, error) {
+	internalFilter := evidence.Filter{
+		Source: filter.Source,
+		Kind:   evidence.EvidenceKind(filter.Kind),
+		Since:  filter.Since,
+		Until:  filter.Until,
+		Limit:  filter.Limit,
+	}
+	results, err := c.EvidenceStore.Query(ctx, internalFilter)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: query evidence: %w", err)
+	}
+
+	out := make([]core.Evidence, len(results))
+	for i, e := range results {
+		out[i] = core.Evidence{
+			ID:        e.ID,
+			Source:    e.Source,
+			Kind:      core.EvidenceKind(e.Kind),
+			Payload:   e.Payload,
+			Metadata:  e.Metadata,
+			Timestamp: e.Timestamp,
+		}
+	}
+	return out, nil
+}
+
+func registerComponent(ctx context.Context, c *ares_bootstrap.NewEvolutionComponents, comp core.RuntimeComponent) error {
+	adapter := &componentExecutorAdapter{comp: comp}
+	return c.PatchReg.RegisterComponent(adapter)
+}
+
+// componentExecutorAdapter adapts a core.RuntimeComponent to patch.RuntimeComponent.
+type componentExecutorAdapter struct {
+	comp core.RuntimeComponent
+}
+
+func (a *componentExecutorAdapter) Name() string { return a.comp.Name() }
+
+func (a *componentExecutorAdapter) Snapshot(ctx context.Context) (any, error) {
+	return a.comp.Snapshot(ctx)
+}
+
+func (a *componentExecutorAdapter) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	coreResult, err := a.comp.Apply(ctx, core.RuntimePatch{
+		Type:   core.PatchType(p.Type),
+		Target: p.Target,
+		Value:  p.Value,
+		Reason: p.Reason,
+		Source: p.Source,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if coreResult == nil {
+		return nil, nil
+	}
+	return &patch.RuntimePatch{
+		Type:   patch.PatchType(coreResult.Type),
+		Target: coreResult.Target,
+		Value:  coreResult.Value,
+		Reason: coreResult.Reason,
+		Source: coreResult.Source,
+	}, nil
+}
+
+func (a *componentExecutorAdapter) CanApply(ctx context.Context, p patch.RuntimePatch) error {
+	return a.comp.CanApply(ctx, core.RuntimePatch{
+		Type:   core.PatchType(p.Type),
+		Target: p.Target,
+		Value:  p.Value,
+	})
+}
+
+// Ensure componentExecutorAdapter implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*componentExecutorAdapter)(nil)
