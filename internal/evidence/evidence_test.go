@@ -18,7 +18,6 @@ func TestEvidenceKind(t *testing.T) {
 	assert.Equal(t, EvidenceKind("knowledge"), KindKnowledge)
 	assert.Equal(t, EvidenceKind("insight"), KindInsight)
 	assert.Equal(t, EvidenceKind("fitness"), KindFitness)
-	assert.Equal(t, EvidenceKind("critique"), KindCritique)
 }
 
 func TestNewMemoryStore(t *testing.T) {

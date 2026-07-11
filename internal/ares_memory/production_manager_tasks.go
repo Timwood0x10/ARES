@@ -9,6 +9,7 @@ import (
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/services"
@@ -180,7 +181,7 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 	}
 
 	// Build canonical memory experience spec for unified embedding.
-	spec := memembed.BuildMemoryExperienceSpec("knowledge", inputStr, outputStr, m.embeddingClient.GetModel(), 1, 0)
+	spec := memembed.BuildMemoryExperienceSpec(string(evidence.KindKnowledge), inputStr, outputStr, m.embeddingClient.GetModel(), 1, 0)
 
 	// Use write buffer for async embedding chain (write backpressure layer per design standard)
 	writeItem := &postgres.WriteItem{
@@ -204,7 +205,7 @@ func (m *ProductionMemoryManager) StoreDistilledTask(ctx context.Context, taskID
 
 	// Emit evidence to the unified Evidence Store.
 	if m.evidenceCollector != nil {
-		_ = m.evidenceCollector.Emit(ctx, "knowledge", map[string]any{
+		_ = m.evidenceCollector.Emit(ctx, string(evidence.KindKnowledge), map[string]any{
 			keyTaskID:  taskID,
 			keyInput:   inputStr,
 			keyOutput:  outputStr,
