@@ -12,6 +12,10 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
+	"github.com/Timwood0x10/ares/internal/knowledge/planner"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
@@ -233,3 +237,35 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 
 // Ensure noopKnowledgeExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)
+
+// buildKnowledgeRuntime creates a minimal KnowledgeRuntime for the evolution
+// system. This enables the KnowledgePatchExecutor to process knowledge/planner
+// patches meaningfully instead of being a no-op.
+func buildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
+	knowPipe := knowledge.NewKnowledgePipeline(
+		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
+		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.6}},
+		[]knowledge.Validator{&pipeline.DefaultValidator{}},
+		[]knowledge.Summarizer{&pipeline.DefaultSummarizer{MaxSummaryLen: 200}},
+	)
+	knowDiscovery := planner.NewSourceDiscovery(
+		provider.NewProviderRegistry(),
+		planner.NewQueryPlanner(),
+	)
+	return knowledgeruntime.New(
+		planner.NewKnowledgePlanner(),
+		knowDiscovery,
+		provider.NewProviderRegistry(),
+		knowPipe,
+		[]knowledgeruntime.Linker{&knowledgeruntime.DefaultLinker{}},
+		[]knowledgeruntime.Reducer{&knowledgeruntime.DefaultReducer{}},
+	)
+}
+
+// buildMemoryManager creates a lightweight ProductionMemoryManager for the
+// evolution system that works without a database pool. The MemoryPatchExecutor
+// only needs the config field — it reads/writes memory configuration values
+// (max_history, max_tasks, session_ttl, etc.) without touching the database.
+func buildMemoryManager() *aresmemory.ProductionMemoryManager {
+	return aresmemory.NewMinimalMemoryManager()
+}

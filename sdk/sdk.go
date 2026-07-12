@@ -27,8 +27,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +51,8 @@ import (
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 )
+
+const strategyPriority = "priority"
 
 // ---- public types ----
 
@@ -140,15 +140,6 @@ func (s *memStrategyStore) GetHistory(_ context.Context, _ string, n int) ([]*ar
 
 // save records a new evolved strategy as both the active strategy and appends
 // it to the history for lineage tracking.
-func (s *memStrategyStore) save(strategy *ares_evolution.Strategy) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.active = strategy
-	s.history = append(s.history, strategy)
-}
-
-// Agent is a named agent with a fixed instruction and tool set, bound to a
-// Runtime. Create one via Runtime.NewAgent.
 type Agent struct {
 	name        string
 	instruction string
@@ -494,9 +485,9 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 // evolvableParams returns the parameter ranges for meaningful evolution dimensions.
 func evolvableParams() map[string]mutation.ParamRange {
 	return map[string]mutation.ParamRange{
-		"tool_selector":      {Values: []any{"auto", "manual", "priority"}},
+		"tool_selector":      {Values: []any{"auto", "manual", strategyPriority}},
 		"search_depth":       {Values: []any{1, 2, 3, 4, 5}},
-		"scheduler_strategy": {Values: []any{"fifo", "priority", "round_robin"}},
+		"scheduler_strategy": {Values: []any{"fifo", strategyPriority, "round_robin"}},
 		"memory_threshold":   {Values: []any{0.3, 0.5, 0.7, 0.9}},
 		"recovery_strategy":  {Values: []any{"retry", "replace", "fallback"}},
 	}
@@ -581,125 +572,6 @@ func applyEvolvedParams(agent *Agent, params map[string]any) {
 }
 
 // generatePromptVariants uses the LLM to create N variants of the instruction.
-// These variants form the prompt pool for GA mutation, ensuring mutatePrompt
-// has more than 1 element and can produce diverse prompts.
-func generatePromptVariants(ctx context.Context, r *Runtime, instruction, task string, n int) []string {
-	msg := []*core.LLMMessage{
-		{Role: roleSystem, Content: "You are an evolution engine. Generate improved versions of the given agent instruction."},
-		{Role: roleUser, Content: fmt.Sprintf(
-			`Original instruction: %s
-Task to optimize for: %s
-Generate %d different improved versions of the instruction. Each version should be specific, actionable, and vary in style.
-Respond with one version per line, numbered 1-%d, like:
-1: <version 1>
-2: <version 2>`, instruction, task, n, n)},
-	}
-
-	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{Messages: msg})
-	if err != nil {
-		log.Printf("[ares:evolve] variant generation failed: %v", err)
-		return nil
-	}
-
-	return parseVariants(resp.Content, n)
-}
-
-// parseVariants extracts numbered variants from LLM response text.
-// Supports "1: content", "1. content", "- content", leading number patterns.
-func parseVariants(text string, n int) []string {
-	var variants []string
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Match "1: content", "1. content", "1) content", "- content", "* content".
-		var content string
-		if idx := strings.IndexAny(line, ":.)"); idx >= 0 && idx <= 4 && len(line) > idx+1 {
-			content = strings.TrimSpace(line[idx+1:])
-		} else if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
-			content = strings.TrimSpace(line[2:])
-		}
-		if content != "" {
-			variants = append(variants, content)
-		}
-	}
-	if len(variants) > n {
-		variants = variants[:n]
-	}
-	if len(variants) > 0 {
-		log.Printf("[ares:evolve] parsed %d prompt variants from LLM response (%d expected)",
-			len(variants), n)
-	}
-	return variants
-}
-
-// fallbackSingleLLMRewrite uses the original single-LLM-rewrite approach
-// when GA variant generation fails. At least returns a modified instruction
-// instead of silently running a pointless GA with a single-element pool.
-func fallbackSingleLLMRewrite(ctx context.Context, r *Runtime, agent *Agent, task string) (string, error) {
-	evolveMsg := []*core.LLMMessage{
-		{Role: roleSystem, Content: "You are an evolution engine. Improve the following agent instruction to get better results."},
-		{Role: roleUser, Content: fmt.Sprintf(
-			`Original instruction: %s
-Task to optimize for: %s
-Generate an improved version of the instruction. Be specific and actionable.
-Respond with ONLY the new instruction text.`, agent.instruction, task)},
-	}
-	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{Messages: evolveMsg})
-	if err != nil {
-		return "", fmt.Errorf("fallback LLM rewrite: %w", err)
-	}
-	log.Printf("[ares:evolve] fallback LLM rewrite produced: %s", resp.Content)
-	return resp.Content, nil
-}
-
-// scoreStrategy uses the LLM to evaluate a strategy variant for a given task.
-// Returns a score in [0, 100].
-func scoreStrategy(ctx context.Context, r *Runtime, agent *Agent, task string, s *mutation.Strategy) float64 {
-	evolveMsg := []*core.LLMMessage{
-		{Role: roleSystem, Content: "You are an evolution judge. Rate the following agent instruction on a scale of 0-100 based on how well it would perform the given task. Consider clarity, specificity, and actionability."},
-		{Role: roleUser, Content: fmt.Sprintf(
-			`Instruction: %s
-Task: %s
-
-Rate this instruction from 0-100. Respond with ONLY a number.`,
-			s.PromptTemplate, task)},
-	}
-
-	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{
-		Messages: evolveMsg,
-	})
-	if err != nil {
-		log.Printf("[ares:evolve] scoring failed: %v", err)
-		return 50.0 // fallback
-	}
-
-	// Parse the score from the LLM response using regex to handle
-	// formats like "85", "Rating: 85", "85/100", etc.
-	return parseScore(resp.Content)
-}
-
-// parseScore extracts the first float from a string, handling formats like
-// "85", "Rating: 85", "85/100", "Score: 92.5 out of 100".
-func parseScore(text string) float64 {
-	// Match optional non-digit prefix, then a float, then optional suffix.
-	re := regexp.MustCompile(`(\d+\.?\d*)`)
-	matches := re.FindStringSubmatch(text)
-	if len(matches) < 2 {
-		return 50.0
-	}
-	score, err := strconv.ParseFloat(matches[1], 64)
-	if err != nil {
-		return 50.0
-	}
-	if score < 0 || score > 100 {
-		return 50.0
-	}
-	return score
-}
-
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
 // an optional system instruction, and an optional set of tools.
 func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {

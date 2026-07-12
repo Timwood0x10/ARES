@@ -91,6 +91,11 @@ type GenomePopulationAdapter struct {
 	coordinator *coordinator.EvolutionCoordinator
 	diffReg     *diff.Registry
 	genomeReg   *evogenome.Registry
+
+	// runMu serializes concurrent Run() calls from the background ticker and
+	// the scheduler's OnAgentEnd callback to prevent race conditions on shared
+	// mutable state (scorer, coordinator, population).
+	runMu sync.Mutex
 }
 
 // NewGenomePopulationAdapter creates an adapter around a genome population.
@@ -346,6 +351,9 @@ func WithAdapterBatchScoring(bs BatchScorer) GenomeAdapterOption {
 //
 //	error - non-nil if evolution fails.
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
+	a.runMu.Lock()
+	defer a.runMu.Unlock()
+
 	scorer := a.buildRunScorer(ctx)
 	if a.tieredScorer != nil {
 		// Log scoring stats once the cycle returns (mirrors prior defer semantics).

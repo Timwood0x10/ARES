@@ -16,6 +16,7 @@ bin/
 
 # Local config overrides — copy from config.example.yml and edit.
 config.yml
+.mcp.json
 
 /**/.venv/
 

@@ -4,6 +4,8 @@ package ares_bootstrap
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -18,6 +20,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
+// DAG step identifiers used in the minimal evolution graph.
+const dagStepProcess = "process"
+
 // Components holds all assembled system components.
 type Components struct {
 	MCP          *ares_mcp.MCPManager
@@ -28,6 +33,7 @@ type Components struct {
 	Runtime      *ares_runtime.Manager
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
+	wg           sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -141,13 +147,19 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
-	// Always created; uses a basic MutableDAG for workflow/scheduler/recovery genomes.
-	dag, dagErr := engine.NewMutableDAG(nil)
+	// Always created; uses a minimal MutableDAG so workflow/scheduler/recovery
+	// genomes have something to evolve (not an empty graph).
+	dagSteps := []*engine.Step{
+		{ID: "input", Name: "Input", AgentType: "parser", Input: "parse input"},
+		{ID: dagStepProcess, Name: "Process", AgentType: "processor", Input: dagStepProcess, DependsOn: []string{"input"}},
+		{ID: "output", Name: "Output", AgentType: "formatter", Input: "format", DependsOn: []string{dagStepProcess}},
+	}
+	dag, dagErr := engine.NewMutableDAG(dagSteps)
 	if dagErr != nil {
 		runCleanups()
 		return nil, fmt.Errorf("create mutable dag: %w", dagErr)
 	}
-	newEvol, err := ProvideNewEvolution(dag, nil, nil)
+	newEvol, err := ProvideNewEvolution(dag, buildKnowledgeRuntime(), buildMemoryManager())
 	if err != nil {
 		runCleanups()
 		return nil, err
@@ -198,6 +210,30 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
 			sched.SetAdapter(popAdapter)
 		}
+	}
+
+	// Start a background ticker that triggers evolution even when no
+	// agents are running (event-driven scheduler won't fire without agents).
+	// This ensures the GA continuously evolves over time.
+	{
+		comp.wg.Add(1)
+		go func() {
+			ctx := ctx
+			evoTicker := time.NewTicker(5 * time.Minute)
+			defer evoTicker.Stop()
+			defer comp.wg.Done()
+			for {
+				select {
+				case <-evoTicker.C:
+					if err := popAdapter.Run(ctx); err != nil {
+						log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
+							"error", err)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	}
 
 	return &comp, nil

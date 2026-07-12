@@ -25,6 +25,17 @@ func NewMemoryPatchExecutor(mgr *ProductionMemoryManager) *MemoryPatchExecutor {
 	return &MemoryPatchExecutor{mgr: mgr}
 }
 
+// NewMinimalMemoryManager creates a lightweight ProductionMemoryManager that
+// works without a database pool or embedding client. The MemoryPatchExecutor
+// only needs the config field — it reads/writes memory configuration values
+// without touching the database. Use this when the full ProductionMemoryManager
+// is not available (e.g., default bootstrap path).
+func NewMinimalMemoryManager() *ProductionMemoryManager {
+	return &ProductionMemoryManager{
+		config: DefaultMemoryConfig(),
+	}
+}
+
 // Name returns the component identifier.
 func (e *MemoryPatchExecutor) Name() string { return "memory" }
 
