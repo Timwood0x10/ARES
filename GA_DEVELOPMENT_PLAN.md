@@ -15,15 +15,15 @@ stateManager.Deploy(winner)   → 挑最好的部署
 
 | GA 组件 | 活跃路径实际行为 | 状态 |
 |---------|----------------|------|
-| 种群 Population | 单亲→3 子代，无 N 个体共进化 | ❌ |
-| 适应度 Fitness | arena 测试 win rate，但非 GA 评分驱动选择 | ⚠️ 半残 |
-| 选择 Selection | 无，直接按 win rate 排序取最优 | ❌ |
-| 交叉 Crossover | 从不调用，接口是死代码 | ❌ |
-| 变异 Mutation | 8 种 DAG 算子，可用 | ✅ |
-| 精英 Elitism | 无，parent 直接被替换 | ❌ |
-| 代际替换 | 单次变异→测试→提交，无 t→t+1 | ❌ |
-| 终止条件 | 30s ticker 无限跑，无目标适应度概念 | ❌ |
-| 可配置旋钮 | 无，硬编码 | ❌ |
+| 种群 Population | 多个体共进化，N=20 默认 | ✅ |
+| 适应度 Fitness | arena 测试 + tiered scorer 驱动选择 | ✅ |
+| 选择 Selection | 6 种选择算子（tournament/rank/roulette/sus/truncation/nsga2） | ✅ |
+| 交叉 Crossover | 3 种交叉（uniform/two_point/segment） | ✅ |
+| 变异 Mutation | 6 种变异算子（param/prompt/tool + swap/inversion/scramble） | ✅ |
+| 精英 Elitism | EliteCount 机制保留最优个体 | ✅ |
+| 代际替换 | 完整 t→t+1 代际循环 + 稳态模式 | ✅ |
+| 终止条件 | MaxGenerations + TargetFitness 双条件 | ✅ |
+| 可配置旋钮 | 16 个参数，统一 config.yaml | ✅ |
 
 ### 死代码：genome.Population（内部 GA 引擎）
 
@@ -230,7 +230,7 @@ genome/guided_pipeline.go     → 反思→假设→知识蒸馏
 
 ## 五、优先级排序与里程碑
 
-### 里程碑 M1：GA 通跑（2 周）
+### 里程碑 M1：GA 通跑（已完成 ✅）
 
 ```
 GA-1.1  DreamCycle 持有 population
@@ -239,18 +239,14 @@ GA-1.4  Crossover 接入
 GA-1.5  PopSize & Elite 配置
 ```
 
-**验证标准：** DreamCycle 跑一代完整的 GA 循环（选择→交叉→变异→评分→部署），种群数量 N 个个体，代际递增。
-
-### 里程碑 M2：GA 可配置（1 周）
+### 里程碑 M2：GA 可配置（已完成 ✅）
 
 ```
 GA-1.3  Selection 配置
 GA-1.6  终止条件
 ```
 
-**验证标准：** 可配置 tournament/rank/roulette 选择，可设置 max_generations 和 target_fitness。
-
-### 里程碑 M3：GA 增强（2 周）
+### 里程碑 M3：GA 增强（已完成 ✅）
 
 ```
 GA-2.1  新增交叉算子
@@ -258,9 +254,7 @@ GA-2.2  新增变异算子
 GA-2.3  稳态 GA 模式
 ```
 
-**验证标准：** 支持 two_point/segment 交叉，swap/inversion/scramble 变异，稳态模式。
-
-### 里程碑 M4：GA 高级功能（2 周）
+### 里程碑 M4：GA 高级功能（已完成 ✅）
 
 ```
 GA-2.4  完整 NSGA-II
@@ -268,8 +262,6 @@ GA-2.5  回调系统
 GA-2.6  历史追踪
 GA-2.7  可视化数据
 ```
-
-**验证标准：** 多目标优化可用，回调触发，历史数据可导出。
 
 ---
 

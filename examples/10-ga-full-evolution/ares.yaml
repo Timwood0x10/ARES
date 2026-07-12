@@ -1,0 +1,31 @@
+# 10-ga-full-evolution — 完整 GA 进化示例配置
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: false
+
+tools:
+  builtin: true
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: true
+  population_size: 20
+  elite_count: 2
+  survival_rate: 0.6
+  mutation_rate: 0.2
+  min_mutation_rate: 0.05
+  max_mutation_rate: 0.5
+  generations: 15
+  breeding_pool_ratio: 0.5
+  min_interval: "5m"
+  selection_strategy: "tournament"
+  tournament_size: 3
+  crossover_type: "uniform"
+  target_fitness: 0
+  steady_state: false
+  steady_state_replace_rate: 0.3

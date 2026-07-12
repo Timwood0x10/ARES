@@ -192,10 +192,11 @@ func applyPatches(coord *coordinator.EvolutionCoordinator, patches []patch.Runti
 			Source:    coordinator.SourceGA,
 			Reason:    "GA evaluation: fitness improved",
 			Priority:  5,
+			Fitness:   85.0, // Example fitness score (0-100 scale)
 			Timestamp: time.Now(),
 		})
 	}
-	fmt.Printf("8. Submitted %d patch proposals to coordinator\n", len(patches))
+	fmt.Printf("8. Submitted %d patch proposals to coordinator (with fitness scores)\n", len(patches))
 }
 
 func printSummary(coord *coordinator.EvolutionCoordinator) {
@@ -207,7 +208,11 @@ func printSummary(coord *coordinator.EvolutionCoordinator) {
 		if r.Error != nil {
 			status = fmt.Sprintf("ERROR: %v", r.Error)
 		}
-		fmt.Printf("   • %s from %s → %s\n", r.Proposal.Patch.Type, r.Proposal.Source, status)
+		fmt.Printf("   • %s from %s → %s", r.Proposal.Patch.Type, r.Proposal.Source, status)
+		if r.Proposal.Fitness > 0 {
+			fmt.Printf(" (fitness: %.1f)", r.Proposal.Fitness)
+		}
+		fmt.Println()
 	}
 
 	decisions := coord.DecisionHistory()

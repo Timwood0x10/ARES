@@ -831,9 +831,6 @@ func (s *NondominatedSortingSelection) Select(ctx context.Context, population []
 		fronts[ranks[i]] = append(fronts[ranks[i]], agent)
 	}
 
-	// Compute crowding distance for each front (for tiebreaking).
-	crowdingDist := CrowdingDistance(population)
-
 	// Select from fronts in order.
 	result := make([]*mutation.Strategy, 0, n)
 	for _, front := range fronts {
@@ -842,26 +839,19 @@ func (s *NondominatedSortingSelection) Select(ctx context.Context, population []
 			continue
 		}
 		// Need to select a subset of this front.
-		// Sort by crowding distance descending (prefer isolated individuals).
+		// NSGA-II computes crowding distance WITHIN the front (not across the
+		// whole population): boundary points of the front get infinite distance,
+		// and normalization uses the front-local min/max. Computing it globally
+		// distorts the tiebreak because interior points of this front would be
+		// normalized against other fronts' ranges.
 		remaining := n - len(result)
-		sort.Slice(front, func(i, j int) bool {
-			ci := crowdingDist[indexOf(population, front[i])]
-			cj := crowdingDist[indexOf(population, front[j])]
-			return ci > cj
+		frontCD := CrowdingDistance(front)
+		sort.SliceStable(front, func(i, j int) bool {
+			return frontCD[i] > frontCD[j]
 		})
 		result = append(result, front[:remaining]...)
 		break
 	}
 
 	return result, nil
-}
-
-// indexOf finds the index of a strategy in a slice by pointer identity.
-func indexOf(strategies []*mutation.Strategy, target *mutation.Strategy) int {
-	for i, s := range strategies {
-		if s == target {
-			return i
-		}
-	}
-	return 0
 }

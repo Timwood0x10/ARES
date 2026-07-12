@@ -4,7 +4,6 @@ package evolution
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -16,10 +15,6 @@ import (
 
 	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 )
-
-// ErrNotImplemented indicates the feature is not yet wired.
-// TODO: implement evolution mutator/promoter public adapter (expected by 2026-09-30).
-var ErrNotImplemented = errors.New("evolution: not implemented")
 
 // ---------------------------------------------------------------------------
 // Strategy & Lineage
@@ -122,14 +117,18 @@ type PopulationConfig struct {
 	SurvivalRate      float64
 	SelectionStrategy string
 	TournamentSize    int
+	CrossoverType     string
 }
 
 func DefaultPopulationConfig() PopulationConfig {
 	return PopulationConfig{
-		Size:         20,
-		EliteCount:   3,
-		MutationRate: 0.2,
-		SurvivalRate: 0.6,
+		Size:              20,
+		EliteCount:        3,
+		MutationRate:      0.2,
+		SurvivalRate:      0.6,
+		SelectionStrategy: "tournament",
+		TournamentSize:    3,
+		CrossoverType:     "uniform",
 	}
 }
 
@@ -163,7 +162,28 @@ func (p *populationAdapter) Size() int              { return p.inner.Size }
 func (p *populationAdapter) CurrentGeneration() int { return p.inner.CurrentGeneration() }
 func (p *populationAdapter) BestScore() float64     { return p.inner.BestEverScore() }
 func (p *populationAdapter) Evolve(ctx context.Context) error {
-	return p.inner.EvolveOnIdle(ctx, nil, nil)
+	// Create a default mutator with basic parameter ranges.
+	mut, err := internalmutation.NewMutator(
+		internalmutation.WithParamRanges(defaultParamRanges()),
+	)
+	if err != nil {
+		return fmt.Errorf("create mutator: %w", err)
+	}
+	// Create a default crossover.
+	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	if err != nil {
+		return fmt.Errorf("create crossover: %w", err)
+	}
+	return p.inner.Evolve(ctx, mut, crosser)
+}
+
+// defaultParamRanges returns basic parameter ranges for public API users.
+func defaultParamRanges() map[string]internalmutation.ParamRange {
+	return map[string]internalmutation.ParamRange{
+		"temperature": {Values: []any{0.1, 0.3, 0.5, 0.7, 0.9}},
+		"top_k":       {Values: []any{10, 20, 40, 60, 80, 100}},
+		"max_tokens":  {Values: []any{1024, 2048, 4096, 8192}},
+	}
 }
 
 func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
@@ -173,12 +193,18 @@ func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
 		Score:  base.Score,
 		Params: base.Params,
 	}
-	inner, err := genome.NewPopulation(context.Background(), s, nil,
+
+	// Build options from config.
+	opts := []genome.PopulationOption{
 		genome.WithPopulationSize(cfg.Size),
 		genome.WithEliteCount(cfg.EliteCount),
 		genome.WithMutationRate(cfg.MutationRate),
 		genome.WithSurvivalRate(cfg.SurvivalRate),
-	)
+		genome.WithSelectionStrategy(cfg.SelectionStrategy),
+		genome.WithTournamentSelection(cfg.TournamentSize),
+	}
+
+	inner, err := genome.NewPopulation(context.Background(), s, nil, opts...)
 	if err != nil {
 		return nil, err
 	}

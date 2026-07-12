@@ -120,6 +120,7 @@ type PopulationConfig struct {
 	DisablePromptDiversityGuard bool                  `json:"disable_prompt_diversity_guard,omitempty"`
 	AgentMaxAge                 int                   `json:"agent_max_age"`
 	Callbacks                   EvolveCallbacks       `json:"-"`
+	AllowDuplicate              bool                  `json:"allow_duplicate"`
 }
 
 func DefaultPopulationConfig() PopulationConfig {
@@ -142,8 +143,9 @@ func DefaultPopulationConfig() PopulationConfig {
 		DiversitySampleSize:         200,
 		DisablePromptDiversityGuard: false,
 		PerLineageElites:            true,
-		PerLineageEliteCount:        1,
-		AgentMaxAge:                 0,
+		   PerLineageEliteCount:        1,
+		   AgentMaxAge:                 0,
+		   AllowDuplicate:              true,
 	}
 }
 
