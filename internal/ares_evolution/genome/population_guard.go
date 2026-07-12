@@ -96,7 +96,13 @@ func (p *Population) injectFreshMutantsLocked(eliteCount int) {
 				perturbation := f * (0.2 + p.rng.Float64()*1.6)
 				template.Params[k] = perturbation
 			} else if iVal, ok := v.(int); ok {
-				delta := p.rng.Intn(max(iVal, 1)+iVal) - iVal/2
+				// Perturb int values: ensure the random range is at least 2
+				// so that iVal=0 can still get a non-zero delta.
+				base := max(iVal, 1)
+				if base < 1 {
+					base = 1
+				}
+				delta := p.rng.Intn(base*2+1) - base
 				template.Params[k] = iVal + delta
 			}
 		}
@@ -423,7 +429,10 @@ func (p *Population) applyFitnessSharingExact(
 		}
 		if crowdCount > 0 {
 			penalty := shareSigma * float64(crowdCount)
-			p.Agents[i].Score /= (1.0 + penalty)
+			if p.Agents[i].SelectionScore == 0 {
+				p.Agents[i].SelectionScore = p.Agents[i].Score
+			}
+			p.Agents[i].SelectionScore /= (1.0 + penalty)
 		}
 	}
 }
@@ -486,7 +495,10 @@ func (p *Population) applyFitnessSharingSampled(
 
 		if crowdCount > 0 {
 			penalty := shareSigma * float64(crowdCount)
-			p.Agents[i].Score /= (1.0 + penalty)
+			if p.Agents[i].SelectionScore == 0 {
+				p.Agents[i].SelectionScore = p.Agents[i].Score
+			}
+			p.Agents[i].SelectionScore /= (1.0 + penalty)
 		}
 	}
 }
@@ -539,7 +551,10 @@ func (p *Population) applyFitnessSharingSpatial(
 
 		if crowdCount > 0 {
 			penalty := shareSigma * float64(crowdCount)
-			p.Agents[i].Score /= (1.0 + penalty)
+			if p.Agents[i].SelectionScore == 0 {
+				p.Agents[i].SelectionScore = p.Agents[i].Score
+			}
+			p.Agents[i].SelectionScore /= (1.0 + penalty)
 		}
 	}
 }

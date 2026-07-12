@@ -39,9 +39,9 @@ func main() {
 			"temperature":   0.7,
 			"top_k":         40,
 			"max_tokens":    4096,
-			"tool_selector": "auto",    // 工具选择策略：auto/manual/priority
-			"search_depth":  3,         // 搜索深度
-			"batch_size":    5,         // 批处理大小
+			"tool_selector": "auto", // 工具选择策略：auto/manual/priority
+			"search_depth":  3,      // 搜索深度
+			"batch_size":    5,      // 批处理大小
 		},
 		PromptTemplate: "You are a helpful assistant. Complete the task efficiently.",
 		Score:          -1,

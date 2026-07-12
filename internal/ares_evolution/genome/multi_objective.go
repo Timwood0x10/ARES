@@ -8,6 +8,25 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 )
 
+// DimDirection indicates whether a dimension should be maximized or minimized.
+type DimDirection int
+
+const (
+	// Maximize means higher values are better (default).
+	Maximize DimDirection = iota
+	// Minimize means lower values are better.
+	Minimize
+)
+
+// DefaultDimensionDirections maps dimension names to their optimization direction.
+// cost and latency are minimized; success_rate and quality are maximized.
+var DefaultDimensionDirections = map[string]DimDirection{
+	"success_rate": Maximize,
+	"quality":      Maximize,
+	"cost":         Minimize,
+	"latency":      Minimize,
+}
+
 // DefaultDimensionWeights are the default weights for aggregating multi-objective
 // fitness dimensions into a single Score. These should be calibrated per domain.
 // Keys: dimension name, Values: weight (must sum to 1.0).
@@ -20,7 +39,7 @@ var DefaultDimensionWeights = map[string]float64{
 
 // ParetoDominance returns true if a Pareto-dominates b across all dimensions.
 // a dominates b iff a is strictly better in at least one dimension and
-// no worse in all others.
+// no worse in all others. Dimension direction (maximize/minimize) is respected.
 func ParetoDominance(a, b *mutation.Strategy) bool {
 	if a.DimensionScores == nil || b.DimensionScores == nil {
 		if (a.DimensionScores == nil) != (b.DimensionScores == nil) {
@@ -38,11 +57,22 @@ func ParetoDominance(a, b *mutation.Strategy) bool {
 		if !ok {
 			continue
 		}
-		if va < vb {
-			return false
-		}
-		if va > vb {
-			better = true
+		dir := dimensionDirection(k)
+		// For maximize: a > b is better; for minimize: a < b is better.
+		if dir == Maximize {
+			if va < vb {
+				return false
+			}
+			if va > vb {
+				better = true
+			}
+		} else {
+			if va > vb {
+				return false
+			}
+			if va < vb {
+				better = true
+			}
 		}
 	}
 	return better
@@ -171,6 +201,7 @@ func CrowdingDistance(strategies []*mutation.Strategy) []float64 {
 }
 
 // AggregateDimensions computes a weighted sum of dimension scores.
+// Minimized dimensions are inverted (1 - normalized) so higher is always better.
 // Uses DefaultDimensionWeights for dimensions not in the provided weights.
 func AggregateDimensions(dims map[string]float64, weights map[string]float64) float64 {
 	if len(dims) == 0 {
@@ -179,9 +210,23 @@ func AggregateDimensions(dims map[string]float64, weights map[string]float64) fl
 	w := mergeWeights(weights)
 	var total float64
 	for k, v := range dims {
-		total += v * w[k]
+		val := v
+		// Invert minimized dimensions so higher is always better in the aggregate.
+		if dimensionDirection(k) == Minimize {
+			val = -val
+		}
+		total += val * w[k]
 	}
 	return total
+}
+
+// dimensionDirection returns the optimization direction for a dimension.
+// Defaults to Maximize if the dimension is not in the default directions map.
+func dimensionDirection(name string) DimDirection {
+	if dir, ok := DefaultDimensionDirections[name]; ok {
+		return dir
+	}
+	return Maximize
 }
 
 // NormalizeDimensions normalizes dimension values to [0, 1] range using given bounds.
@@ -230,4 +275,15 @@ func mergeWeights(weights map[string]float64) map[string]float64 {
 		result[k] = v
 	}
 	return result
+}
+
+// DefaultDimensionBounds returns typical [min, max] bounds for known dimensions.
+// Used by NormalizeDimensions when no caller-provided bounds exist.
+func DefaultDimensionBounds() map[string][2]float64 {
+	return map[string][2]float64{
+		"success_rate": {0, 100},
+		"quality":      {0, 100},
+		"cost":         {0, 100},
+		"latency":      {0, 100},
+	}
 }

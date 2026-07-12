@@ -143,9 +143,9 @@ func DefaultPopulationConfig() PopulationConfig {
 		DiversitySampleSize:         200,
 		DisablePromptDiversityGuard: false,
 		PerLineageElites:            true,
-		   PerLineageEliteCount:        1,
-		   AgentMaxAge:                 0,
-		   AllowDuplicate:              true,
+		PerLineageEliteCount:        1,
+		AgentMaxAge:                 0,
+		AllowDuplicate:              true,
 	}
 }
 
@@ -179,4 +179,7 @@ type evolveConfig struct {
 	parentPoolFn func([]*mutation.Strategy) []*mutation.Strategy
 	eliteFn      func([]*mutation.Strategy) []*mutation.Strategy
 	logLabel     string
+	// maxOffspring limits the number of offspring generated per generation.
+	// 0 means unlimited (fill to Size - eliteCount). Used by steady-state GA.
+	maxOffspring int
 }

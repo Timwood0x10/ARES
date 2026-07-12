@@ -203,17 +203,17 @@ func (p *Population) Evolve(ctx context.Context, mutator MutatorInterface, cross
 	})
 }
 
-// EvolveSteadyState runs one generation of steady-state GA: only a fraction
-// of the population (replaceRate) is replaced by new offspring, preserving
-// the majority of the existing population. This is useful for online learning
-// where the population should remain mostly stable.
+// EvolveSteadyState runs one generation of steady-state GA: only a small number
+// of offspring (replaceRate × populationSize) are generated each generation,
+// replacing the worst individuals. The majority of the population persists
+// unchanged, making this suitable for online learning scenarios.
 //
 // Args:
 //
 //	ctx - context for cancellation.
 //	mutator - the mutation operator.
 //	crosser - the crossover operator.
-//	replaceRate - fraction of the population to replace [0.0, 1.0].
+//	replaceRate - fraction of the population to replace [0.0, 0.5].
 //	             Default: 0.3. Clamped to [0.1, 0.5] for stability.
 //
 // Returns:
@@ -227,18 +227,20 @@ func (p *Population) EvolveSteadyState(ctx context.Context, mutator MutatorInter
 		replaceRate = 0.1
 	}
 
-	// Convert replaceRate to an effective survival rate for doEvolve.
-	// In steady-state, survivalRate = 1 - replaceRate means we keep
-	// (1-replaceRate) of the population and replace the rest.
-	survivalRate := 1.0 - replaceRate
+	// In steady-state, we keep the elite and replace only the worst individuals.
+	// The number of offspring is replaceRate * populationSize.
+	offspringCount := max(1, int(float64(p.Size)*replaceRate))
 
 	return p.doEvolve(ctx, mutator, crosser, evolveConfig{
-		survivalRate: survivalRate,
+		survivalRate: 1.0 - replaceRate,
 		parentPoolFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
 			return survivors
 		},
 		eliteFn:  p.preserveElites,
 		logLabel: "steady-state evolution completed",
+		// Limit offspring count for steady-state: only generate offspringCount
+		// individuals instead of filling to Size - eliteCount.
+		maxOffspring: offspringCount,
 	})
 }
 
@@ -307,8 +309,12 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	elites = p.preservePromptDiversityLocked(elites, sorted)
 
 	// Step 3: Generate offspring using method-specific parent pool.
-	parentPool := cfg.parentPoolFn(survivors)
-	remainingSlots := p.Size - len(elites)
+	  parentPool := cfg.parentPoolFn(survivors)
+	  remainingSlots := p.Size - len(elites)
+	  // If maxOffspring is set (steady-state), limit offspring count.
+	  if cfg.maxOffspring > 0 && cfg.maxOffspring < remainingSlots {
+	   remainingSlots = cfg.maxOffspring
+	  }
 	if remainingSlots <= 0 && len(elites) >= p.Size {
 		// No room for offspring; use elites as next gen (trim if needed).
 		nextGen := elites[:min(len(elites), p.Size)]
@@ -614,6 +620,11 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	for i, agent := range p.Agents {
 		if i < len(scores) && agent.ID == agents[i].ID {
 			agent.Score = scores[i]
+			// Reset selection-adjusted score each generation. SelectionScore is
+			// derived from Score by fitness sharing; without this reset, survivors
+			// carried across generations would keep a stale (possibly penalty-laden)
+			// value, and crowding penalties would compound across generations.
+			agent.SelectionScore = 0
 			// Invoke fitness callback if set.
 			if p.cfg.Callbacks.OnFitness != nil {
 				p.cfg.Callbacks.OnFitness(context.Background(), agent, scores[i])
@@ -658,11 +669,13 @@ func (p *Population) ScoreAgentsMulti(scorer MultiObjectiveScorerFunc) {
 					)
 					agent.Score = ScoreUnevaluated
 					agent.DimensionScores = nil
+					agent.SelectionScore = 0
 				}
 			}()
 			dims, agg := scorer(agent)
 			agent.DimensionScores = dims
 			agent.Score = agg
+			agent.SelectionScore = 0
 		}()
 	}
 	p.updateBestEverLocked()

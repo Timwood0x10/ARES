@@ -495,21 +495,31 @@ func TestApplyFitnessSharingExact(t *testing.T) {
 
 	pop.applyFitnessSharing(1)
 
-	// Elite should be unchanged
-	if pop.Agents[0].Score != 100 {
-		t.Errorf("elite score changed from 100 to %.2f", pop.Agents[0].Score)
-	}
+	  // Elite should be unchanged
+	  if pop.Agents[0].Score != 100 {
+	   t.Errorf("elite score changed from 100 to %.2f", pop.Agents[0].Score)
+	  }
 
-	// Crowded agents (close1, close2) near elite should be penalized
-	if pop.Agents[1].Score >= 80 {
-		t.Errorf("close1 score not penalized: %.2f", pop.Agents[1].Score)
-	}
-	if pop.Agents[2].Score >= 70 {
-		t.Errorf("close2 score not penalized: %.2f", pop.Agents[2].Score)
-	}
+	  // Crowded agents (close1, close2) near elite should have SelectionScore penalized.
+	  // Score (canonical) should remain unchanged.
+	  if pop.Agents[1].Score != 80 {
+	   t.Errorf("close1 canonical score changed: %.2f", pop.Agents[1].Score)
+	  }
+	  if pop.Agents[1].SelectionScore >= 80 {
+	   t.Errorf("close1 selection score not penalized: %.2f", pop.Agents[1].SelectionScore)
+	  }
+	  if pop.Agents[2].Score != 70 {
+	   t.Errorf("close2 canonical score changed: %.2f", pop.Agents[2].Score)
+	  }
+	  if pop.Agents[2].SelectionScore >= 70 {
+	   t.Errorf("close2 selection score not penalized: %.2f", pop.Agents[2].SelectionScore)
+	  }
 
-	t.Logf("scores after fitness sharing: elite=%.2f, close1=%.2f, close2=%.2f, far=%.2f",
-		pop.Agents[0].Score, pop.Agents[1].Score, pop.Agents[2].Score, pop.Agents[3].Score)
+	  t.Logf("scores after fitness sharing: elite=%.2f, close1=%.2f/%.2f, close2=%.2f/%.2f, far=%.2f",
+	   pop.Agents[0].Score,
+	   pop.Agents[1].Score, pop.Agents[1].SelectionScore,
+	   pop.Agents[2].Score, pop.Agents[2].SelectionScore,
+	   pop.Agents[3].Score)
 }
 
 func TestApplyFitnessSharingSampled(t *testing.T) {

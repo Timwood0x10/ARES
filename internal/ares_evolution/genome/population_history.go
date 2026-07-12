@@ -13,10 +13,15 @@ func copyRecoveryActions(src map[string]int) map[string]int {
 }
 
 func (p *Population) appendHistoryLocked() {
+	diversity := p.measureDiversityReportLocked()
 	entry := GenerationHistoryEntry{
-		Generation:     p.Generation,
-		PopulationSize: len(p.Agents),
-		Diversity:      p.measureDiversityReportLocked().Overall,
+		Generation:           p.Generation,
+		PopulationSize:       len(p.Agents),
+		Diversity:            diversity.Overall,
+		NumericDiversity:     diversity.Numeric,
+		CategoricalDiversity: diversity.Categorical,
+		LineageDiversity:     diversity.Lineage,
+		DominantLineageShare: diversity.DominantLineageShare,
 	}
 	if len(p.Agents) > 0 {
 		entry.BestScore, entry.AvgScore, entry.WorstScore = p.computeStatsLocked()

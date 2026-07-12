@@ -36,9 +36,7 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	if err := compat.RegisterLLM(cfg.Provider, func(config map[string]any) (compatllm.LLMProvider, error) {
 		return openai.New(config)
 	}); err != nil {
-		// Non-fatal: the provider may already be registered (process-wide singleton).
-		// Log and continue.
-		_ = err
+		log.Warn("bootstrap: compat LLM registration skipped", "provider", cfg.Provider, "error", err)
 	}
 
 	return &LLMComponents{

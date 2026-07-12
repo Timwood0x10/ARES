@@ -14,8 +14,9 @@ import (
 func TestParetoDominance(t *testing.T) {
 	t.Parallel()
 
+	// cost and latency are minimize (lower is better), quality is maximize (higher is better).
 	a := &mutation.Strategy{
-		DimensionScores: map[string]float64{"cost": 0.8, "quality": 0.7, "latency": 0.6},
+		DimensionScores: map[string]float64{"cost": 0.3, "quality": 0.9, "latency": 0.2},
 		Score:           0.7,
 	}
 	b := &mutation.Strategy{
@@ -24,7 +25,7 @@ func TestParetoDominance(t *testing.T) {
 	}
 
 	if !ParetoDominance(a, b) {
-		t.Error("a should dominate b: all dims >= and cost is better")
+		t.Error("a should dominate b: lower cost, higher quality, lower latency")
 	}
 	if ParetoDominance(b, a) {
 		t.Error("b should NOT dominate a")
@@ -48,18 +49,21 @@ func TestParetoDominance_NoDim(t *testing.T) {
 func TestParetoFront(t *testing.T) {
 	t.Parallel()
 
-	// Strategies 2 and 3 are dominated by 1 (better in all dims).
-	// Strategy 4 is also Pareto-optimal (best latency).
+	// cost and latency are minimize (lower is better), quality is maximize (higher is better).
+	// Strategy A dominates B (all dims better or equal).
+	// Strategy C is Pareto-optimal (different trade-off).
+	// Strategy D is dominated by A.
 	strategies := []*mutation.Strategy{
-		{DimensionScores: map[string]float64{"cost": 0.9, "quality": 0.9, "latency": 0.3}},
-		{DimensionScores: map[string]float64{"cost": 0.4, "quality": 0.4, "latency": 0.2}},
-		{DimensionScores: map[string]float64{"cost": 0.3, "quality": 0.3, "latency": 0.1}},
-		{DimensionScores: map[string]float64{"cost": 0.3, "quality": 0.3, "latency": 0.9}},
+		{DimensionScores: map[string]float64{"cost": 0.2, "quality": 0.9, "latency": 0.1}}, // A: best overall
+		{DimensionScores: map[string]float64{"cost": 0.5, "quality": 0.5, "latency": 0.5}}, // B: dominated by A
+		{DimensionScores: map[string]float64{"cost": 0.1, "quality": 0.6, "latency": 0.3}}, // C: best cost, but lower quality than A
+		{DimensionScores: map[string]float64{"cost": 0.8, "quality": 0.3, "latency": 0.9}}, // D: dominated by A and C
 	}
 
 	front := ParetoFront(strategies)
+	// Expected: A (index 0) and C (index 2) are Pareto-optimal.
 	if len(front) != 2 {
-		t.Fatalf("expected 2 Pareto-optimal (1 and 4), got %d", len(front))
+		t.Fatalf("expected 2 Pareto-optimal (A and C), got %d", len(front))
 	}
 }
 
@@ -85,15 +89,17 @@ func TestCrowdingDistance(t *testing.T) {
 func TestAggregateDimensions(t *testing.T) {
 	t.Parallel()
 
-	dims := map[string]float64{"success_rate": 0.9, "quality": 0.8, "cost": 0.7}
+	// cost is minimize (lower is better), so higher raw cost values are penalized.
+	dims := map[string]float64{"success_rate": 0.9, "quality": 0.8, "cost": 0.2}
 	score := AggregateDimensions(dims, nil)
 	if score <= 0 {
 		t.Errorf("expected positive aggregate, got %f", score)
 	}
 	// Default weights: success_rate=0.4, quality=0.25, cost=0.2, latency=0.15
-	// 0.9*0.4 + 0.8*0.25 + 0.7*0.2 + 0*0.15 = 0.36 + 0.20 + 0.14 + 0 = 0.70
-	if score < 0.69 || score > 0.71 {
-		t.Errorf("expected aggregate ~0.70, got %f", score)
+	// cost is minimized so it's inverted: 0.9*0.4 + 0.8*0.25 + (-0.2)*0.2 + 0*0.15
+	// = 0.36 + 0.20 - 0.04 + 0 = 0.52
+	if score < 0.51 || score > 0.53 {
+		t.Errorf("expected aggregate ~0.52, got %f", score)
 	}
 }
 
@@ -358,9 +364,11 @@ func TestApplyHypothesis(t *testing.T) {
 func TestParetoRank_SingleFront(t *testing.T) {
 	t.Parallel()
 
+	// cost is minimize (lower is better), quality is maximize (higher is better).
+	// Both strategies are non-dominated: each has a different trade-off.
 	strategies := []*mutation.Strategy{
-		{DimensionScores: map[string]float64{"cost": 0.9, "quality": 0.3}},
-		{DimensionScores: map[string]float64{"cost": 0.3, "quality": 0.9}},
+		{DimensionScores: map[string]float64{"cost": 0.9, "quality": 0.9}}, // high cost, high quality
+		{DimensionScores: map[string]float64{"cost": 0.3, "quality": 0.3}}, // low cost, low quality
 	}
 
 	ranks := ParetoRank(strategies)

@@ -113,7 +113,15 @@ type Strategy struct {
 	// In single-objective mode, this holds the aggregate score.
 	// In multi-objective mode, DimensionScores holds per-dimension values
 	// and Score is AggregateDimensions(DimensionScores, weights).
+	// This is the canonical fitness — never modified by temporary adjustments.
 	Score float64 `json:"score"`
+
+	// SelectionScore holds the fitness-adjusted score used for parent selection.
+	// Unlike Score (canonical fitness), this may be modified by fitness sharing
+	// or other diversity-preserving mechanisms. Defaults to Score when not set.
+	// Consumers should use SelectionScore for selection decisions and Score
+	// for reporting/history.
+	SelectionScore float64 `json:"selection_score,omitempty"`
 
 	// DimensionScores holds per-objective scores for multi-objective evaluation.
 	// Keys are dimension names (e.g. "success_rate", "cost", "latency", "quality").

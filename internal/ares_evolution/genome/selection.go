@@ -190,14 +190,14 @@ func (ts *TournamentSelection) runTournament(population []*mutation.Strategy) (*
 	indices := ts.pickUniqueIndices(len(population), k)
 	bestIdx := indices[0]
 	for _, idx := range indices[1:] {
-		if population[idx].Score > population[bestIdx].Score {
+		if effectiveScore(population[idx]) > effectiveScore(population[bestIdx]) {
 			bestIdx = idx
 		}
 	}
 
 	el.DebugContext(context.Background(), "runTournament completed",
 		"competitors", k,
-		"winner_score", population[bestIdx].Score)
+		"winner_score", effectiveScore(population[bestIdx]))
 
 	return population[bestIdx], nil
 }
@@ -230,7 +230,14 @@ func (ts *TournamentSelection) pickUniqueIndices(poolSize, n int) []int {
 //	strategies - strategies to sort (modified in-place, may be nil or empty).
 func SortByScore(strategies []*mutation.Strategy) {
 	sort.SliceStable(strategies, func(i, j int) bool {
-		si, sj := strategies[i].Score, strategies[j].Score
+		si := strategies[i].Score
+		if strategies[i].SelectionScore != 0 {
+			si = strategies[i].SelectionScore
+		}
+		sj := strategies[j].Score
+		if strategies[j].SelectionScore != 0 {
+			sj = strategies[j].SelectionScore
+		}
 
 		// Unevaluated strategies (score == -1) always sort last.
 		if !IsScoreEvaluated(si) && !IsScoreEvaluated(sj) {
@@ -248,6 +255,18 @@ func SortByScore(strategies []*mutation.Strategy) {
 }
 
 // --- Helper functions ---
+	// effectiveScore returns the score used for selection decisions: the
+	// selection-adjusted SelectionScore when set, otherwise the canonical Score.
+	// This lets fitness sharing (which writes SelectionScore) influence every
+	// selection operator, not just the sort-based ones, without polluting the
+	// canonical Score field used for reporting and history.
+	func effectiveScore(s *mutation.Strategy) float64 {
+		if s.SelectionScore != 0 {
+			return s.SelectionScore
+		}
+		return s.Score
+	}
+
 
 // validateSelectInputs performs common input validation for all Select methods.
 func validateSelectInputs(ctx context.Context, population []*mutation.Strategy, n int) error {
@@ -265,10 +284,10 @@ func validateSelectInputs(ctx context.Context, population []*mutation.Strategy, 
 
 // findMinScore returns the minimum Score value in the population.
 func findMinScore(population []*mutation.Strategy) float64 {
-	min := population[0].Score
+	min := effectiveScore(population[0])
 	for i := 1; i < len(population); i++ {
-		if population[i].Score < min {
-			min = population[i].Score
+		if effectiveScore(population[i]) < min {
+			min = effectiveScore(population[i])
 		}
 	}
 	return min
@@ -369,7 +388,7 @@ func (sus *SUSSelection) Select(ctx context.Context, population []*mutation.Stra
 	totalWeight := 0.0
 	weights := make([]float64, len(scored))
 	for i, s := range scored {
-		w := s.Score - minScore + 1e-9
+		w := effectiveScore(s) - minScore + 1e-9
 		weights[i] = w
 		totalWeight += w
 	}
@@ -676,7 +695,7 @@ func (rw *RouletteWheelSelection) Select(ctx context.Context, population []*muta
 	weights := make([]float64, len(scored))
 	totalWeight := 0.0
 	for i, s := range scored {
-		w := s.Score - minScore + 1e-9
+		w := effectiveScore(s) - minScore + 1e-9
 		weights[i] = w
 		totalWeight += w
 	}
