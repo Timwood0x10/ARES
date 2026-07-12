@@ -451,17 +451,17 @@ func (c *Config) setDefaults() {
 		c.Evolution.BreedingPoolRatio = 0.5
 	}
 	if c.Evolution.MinInterval == "" {
-	   c.Evolution.MinInterval = "5m"
-	  }
-	  if c.Evolution.SelectionStrategy == "" {
-	   c.Evolution.SelectionStrategy = "tournament"
-	  }
-	  if c.Evolution.TournamentSize == 0 {
-	   c.Evolution.TournamentSize = 3
-	  }
-	  if c.Evolution.CrossoverType == "" {
-	   c.Evolution.CrossoverType = "uniform"
-	  }
+		c.Evolution.MinInterval = "5m"
+	}
+	if c.Evolution.SelectionStrategy == "" {
+		c.Evolution.SelectionStrategy = "tournament"
+	}
+	if c.Evolution.TournamentSize == 0 {
+		c.Evolution.TournamentSize = 3
+	}
+	if c.Evolution.CrossoverType == "" {
+		c.Evolution.CrossoverType = "uniform"
+	}
 }
 
 // Validate validates the configuration values.

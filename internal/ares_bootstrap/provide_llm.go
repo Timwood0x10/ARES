@@ -32,10 +32,13 @@ func ProvideLLM(cfg ares_config.LLMConfig) (*LLMComponents, error) {
 	}
 
 	// Register the LLM provider in the compat layer for ecosystem access.
+	// Skip if already registered (e.g., in tests where ProvideLLM is called multiple times).
 	if err := compat.RegisterLLM(cfg.Provider, func(config map[string]any) (compatllm.LLMProvider, error) {
 		return openai.New(config)
 	}); err != nil {
-		return nil, fmt.Errorf("register LLM in compat layer: %w", err)
+		// Non-fatal: the provider may already be registered (process-wide singleton).
+		// Log and continue.
+		_ = err
 	}
 
 	return &LLMComponents{

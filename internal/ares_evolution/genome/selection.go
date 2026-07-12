@@ -748,3 +748,120 @@ func PickParent(ctx context.Context, population []*mutation.Strategy, sel Select
 	idx := rng.Intn(len(selected))
 	return selected[idx], nil
 }
+
+// ── NSGA-II Nondominated Sorting Selection ─────
+
+// NondominatedSortingSelection implements NSGA-II's selection strategy:
+// non-dominated sorting (Pareto rank) + crowding distance as tiebreaker.
+// Selects individuals from the best fronts first; within the same front,
+// those with larger crowding distance (more isolated) are preferred.
+//
+// This selection requires DimensionScores to be set on each strategy.
+// If no DimensionScores are available, it falls back to single-objective
+// tournament selection.
+type NondominatedSortingSelection struct {
+	rng *rand.Rand
+}
+
+// NewNondominatedSortingSelection creates an NSGA-II selection operator.
+//
+// Args:
+//
+//	seed - random seed for deterministic behavior in tests.
+//
+// Returns:
+//
+//	*NondominatedSortingSelection - the initialized selector.
+func NewNondominatedSortingSelection(seed int64) *NondominatedSortingSelection {
+	return &NondominatedSortingSelection{
+		rng: rand.New(rand.NewSource(seed)), // #nosec G404
+	}
+}
+
+// Select implements the Selection interface using NSGA-II's crowded tournament.
+// It first partitions the population into Pareto fronts, then selects from the
+// best fronts. Within the same front, individuals with higher crowding distance
+// (more diversity) are preferred.
+func (s *NondominatedSortingSelection) Select(ctx context.Context, population []*mutation.Strategy, n int) ([]*mutation.Strategy, error) {
+	if len(population) == 0 {
+		return nil, fmt.Errorf("empty population for NSGA-II selection")
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("invalid selection count: %d", n)
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Check if multi-objective data is available.
+	hasMultiObjective := false
+	for _, p := range population {
+		if len(p.DimensionScores) > 0 {
+			hasMultiObjective = true
+			break
+		}
+	}
+
+	if !hasMultiObjective {
+		// Fall back to tournament selection for single-objective cases.
+		ts, err := NewTournamentSelection(WithTournamentSeed(s.rng.Int63()))
+		if err != nil {
+			return nil, fmt.Errorf("nsga2 fallback tournament: %w", err)
+		}
+		return ts.Select(ctx, population, n)
+	}
+
+	// Compute Pareto ranks for all individuals.
+	ranks := ParetoRank(population)
+
+	// Find the maximum rank.
+	maxRank := 0
+	for _, r := range ranks {
+		if r > maxRank {
+			maxRank = r
+		}
+	}
+
+	// Group individuals by front (rank).
+	fronts := make([][]*mutation.Strategy, maxRank+1)
+	for i, agent := range population {
+		fronts[ranks[i]] = append(fronts[ranks[i]], agent)
+	}
+
+	// Compute crowding distance for each front (for tiebreaking).
+	crowdingDist := CrowdingDistance(population)
+
+	// Select from fronts in order.
+	result := make([]*mutation.Strategy, 0, n)
+	for _, front := range fronts {
+		if len(result)+len(front) <= n {
+			result = append(result, front...)
+			continue
+		}
+		// Need to select a subset of this front.
+		// Sort by crowding distance descending (prefer isolated individuals).
+		remaining := n - len(result)
+		sort.Slice(front, func(i, j int) bool {
+			ci := crowdingDist[indexOf(population, front[i])]
+			cj := crowdingDist[indexOf(population, front[j])]
+			return ci > cj
+		})
+		result = append(result, front[:remaining]...)
+		break
+	}
+
+	return result, nil
+}
+
+// indexOf finds the index of a strategy in a slice by pointer identity.
+func indexOf(strategies []*mutation.Strategy, target *mutation.Strategy) int {
+	for i, s := range strategies {
+		if s == target {
+			return i
+		}
+	}
+	return 0
+}

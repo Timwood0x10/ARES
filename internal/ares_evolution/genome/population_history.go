@@ -68,6 +68,47 @@ func (p *Population) CurrentGeneration() int {
 	return p.Generation
 }
 
+// HistoryData is a flat-format structure for exporting evolution history
+// to external visualization tools (e.g., plotting libraries).
+type HistoryData struct {
+	Generations     []int     `json:"generations"`
+	BestScores      []float64 `json:"best_scores"`
+	AvgScores       []float64 `json:"avg_scores"`
+	WorstScores     []float64 `json:"worst_scores"`
+	Diversities     []float64 `json:"diversities"`
+	PopulationSizes []int     `json:"population_sizes"`
+}
+
+// ExportHistory returns the evolution history as a flat-format HistoryData
+// suitable for JSON export and external plotting. Returns nil when no history
+// has been recorded.
+func (p *Population) ExportHistory() *HistoryData {
+	history := p.History()
+	if len(history) == 0 {
+		return nil
+	}
+
+	data := &HistoryData{
+		Generations:     make([]int, 0, len(history)),
+		BestScores:      make([]float64, 0, len(history)),
+		AvgScores:       make([]float64, 0, len(history)),
+		WorstScores:     make([]float64, 0, len(history)),
+		Diversities:     make([]float64, 0, len(history)),
+		PopulationSizes: make([]int, 0, len(history)),
+	}
+
+	for _, h := range history {
+		data.Generations = append(data.Generations, h.Generation)
+		data.BestScores = append(data.BestScores, h.BestScore)
+		data.AvgScores = append(data.AvgScores, h.AvgScore)
+		data.WorstScores = append(data.WorstScores, h.WorstScore)
+		data.Diversities = append(data.Diversities, h.Diversity)
+		data.PopulationSizes = append(data.PopulationSizes, h.PopulationSize)
+	}
+
+	return data
+}
+
 func (p *Population) StagnantGenerations() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

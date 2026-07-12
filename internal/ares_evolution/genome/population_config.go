@@ -79,6 +79,21 @@ type MutatorInterface interface {
 	Mutate(ctx context.Context, parent *mutation.Strategy, n int) ([]*mutation.Strategy, error)
 }
 
+// GenerationCallback is called after each generation completes.
+type GenerationCallback func(ctx context.Context, stats PopulationStats)
+
+// FitnessCallback is called after each agent is scored.
+type FitnessCallback func(ctx context.Context, agent *mutation.Strategy, fitness float64)
+
+// EvolveCallbacks groups all optional lifecycle hooks for the evolution loop.
+// All fields are optional — nil callbacks are silently skipped.
+type EvolveCallbacks struct {
+	OnGeneration GenerationCallback
+	OnFitness    FitnessCallback
+	OnMutation   FitnessCallback
+	OnCrossover  FitnessCallback
+}
+
 // PopulationConfig holds configuration for creating a population.
 type PopulationConfig struct {
 	Size                        int                   `json:"size"`
@@ -104,6 +119,7 @@ type PopulationConfig struct {
 	AdaptiveConfig              *AdaptiveConfig       `json:"adaptive_config,omitempty"`
 	DisablePromptDiversityGuard bool                  `json:"disable_prompt_diversity_guard,omitempty"`
 	AgentMaxAge                 int                   `json:"agent_max_age"`
+	Callbacks                   EvolveCallbacks       `json:"-"`
 }
 
 func DefaultPopulationConfig() PopulationConfig {

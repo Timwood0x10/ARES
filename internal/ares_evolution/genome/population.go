@@ -203,6 +203,45 @@ func (p *Population) Evolve(ctx context.Context, mutator MutatorInterface, cross
 	})
 }
 
+// EvolveSteadyState runs one generation of steady-state GA: only a fraction
+// of the population (replaceRate) is replaced by new offspring, preserving
+// the majority of the existing population. This is useful for online learning
+// where the population should remain mostly stable.
+//
+// Args:
+//
+//	ctx - context for cancellation.
+//	mutator - the mutation operator.
+//	crosser - the crossover operator.
+//	replaceRate - fraction of the population to replace [0.0, 1.0].
+//	             Default: 0.3. Clamped to [0.1, 0.5] for stability.
+//
+// Returns:
+//
+//	error - non-nil if evolution fails.
+func (p *Population) EvolveSteadyState(ctx context.Context, mutator MutatorInterface, crosser CrossoverInterface, replaceRate float64) error {
+	if replaceRate <= 0 || replaceRate > 0.5 {
+		replaceRate = 0.3
+	}
+	if replaceRate < 0.1 {
+		replaceRate = 0.1
+	}
+
+	// Convert replaceRate to an effective survival rate for doEvolve.
+	// In steady-state, survivalRate = 1 - replaceRate means we keep
+	// (1-replaceRate) of the population and replace the rest.
+	survivalRate := 1.0 - replaceRate
+
+	return p.doEvolve(ctx, mutator, crosser, evolveConfig{
+		survivalRate: survivalRate,
+		parentPoolFn: func(survivors []*mutation.Strategy) []*mutation.Strategy {
+			return survivors
+		},
+		eliteFn:  p.preserveElites,
+		logLabel: "steady-state evolution completed",
+	})
+}
+
 // doEvolve runs the core evolution loop shared by Evolve and EvolveOnIdle.
 // It performs: validate → lock → sort → select → elite → crossover → mutate → assemble → increment.
 //
@@ -373,6 +412,12 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 		"mutation_rate", p.currentMutationRate,
 	)
 
+	// Invoke generation callback if set.
+	if p.cfg.Callbacks.OnGeneration != nil {
+		stats := p.Stats()
+		p.cfg.Callbacks.OnGeneration(ctx, *stats)
+	}
+
 	return nil
 }
 
@@ -436,6 +481,11 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			return nil, fmt.Errorf("crossover failed: %w", err)
 		}
 
+		// Invoke crossover callback if set.
+		if p.cfg.Callbacks.OnCrossover != nil {
+			p.cfg.Callbacks.OnCrossover(context.Background(), child, 0)
+		}
+
 		// Apply mutation based on configured rate.
 		// The Mutate call is only triggered when the probability check passes,
 		// ensuring mutators with side effects (e.g., counters) are not invoked
@@ -454,6 +504,11 @@ func (p *Population) generateOffspring(ctx context.Context, parentPool []*mutati
 			}
 			// If len(mutated) == 0, the mutator returned no variants;
 			// keep the unmutated crossover child as-is.
+
+			// Invoke mutation callback if set.
+			if p.cfg.Callbacks.OnMutation != nil {
+				p.cfg.Callbacks.OnMutation(context.Background(), child, 0)
+			}
 		}
 
 		// Record the generation when this offspring enters the population.
@@ -487,6 +542,8 @@ func (p *Population) buildSelector() (Selection, error) {
 		return NewTruncationSelection(), nil
 	case "lineage_rank":
 		return NewLineageRankSelection()
+	case "nsga2", "nondominated":
+		return NewNondominatedSortingSelection(p.rng.Int63()), nil
 	default:
 		return nil, fmt.Errorf("unsupported selection strategy: %s", p.cfg.SelectionStrategy)
 	}
@@ -557,6 +614,10 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 	for i, agent := range p.Agents {
 		if i < len(scores) && agent.ID == agents[i].ID {
 			agent.Score = scores[i]
+			// Invoke fitness callback if set.
+			if p.cfg.Callbacks.OnFitness != nil {
+				p.cfg.Callbacks.OnFitness(context.Background(), agent, scores[i])
+			}
 		}
 	}
 
