@@ -255,18 +255,17 @@ func SortByScore(strategies []*mutation.Strategy) {
 }
 
 // --- Helper functions ---
-	// effectiveScore returns the score used for selection decisions: the
-	// selection-adjusted SelectionScore when set, otherwise the canonical Score.
-	// This lets fitness sharing (which writes SelectionScore) influence every
-	// selection operator, not just the sort-based ones, without polluting the
-	// canonical Score field used for reporting and history.
-	func effectiveScore(s *mutation.Strategy) float64 {
-		if s.SelectionScore != 0 {
-			return s.SelectionScore
-		}
-		return s.Score
+// effectiveScore returns the score used for selection decisions: the
+// selection-adjusted SelectionScore when set, otherwise the canonical Score.
+// This lets fitness sharing (which writes SelectionScore) influence every
+// selection operator, not just the sort-based ones, without polluting the
+// canonical Score field used for reporting and history.
+func effectiveScore(s *mutation.Strategy) float64 {
+	if s.SelectionScore != 0 {
+		return s.SelectionScore
 	}
-
+	return s.Score
+}
 
 // validateSelectInputs performs common input validation for all Select methods.
 func validateSelectInputs(ctx context.Context, population []*mutation.Strategy, n int) error {

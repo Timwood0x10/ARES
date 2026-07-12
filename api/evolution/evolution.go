@@ -16,6 +16,8 @@ import (
 	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 )
 
+const paramKeyTemperature = "temperature"
+
 // ---------------------------------------------------------------------------
 // Strategy & Lineage
 // ---------------------------------------------------------------------------
@@ -180,9 +182,9 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 // defaultParamRanges returns basic parameter ranges for public API users.
 func defaultParamRanges() map[string]internalmutation.ParamRange {
 	return map[string]internalmutation.ParamRange{
-		"temperature": {Values: []any{0.1, 0.3, 0.5, 0.7, 0.9}},
-		"top_k":       {Values: []any{10, 20, 40, 60, 80, 100}},
-		"max_tokens":  {Values: []any{1024, 2048, 4096, 8192}},
+		paramKeyTemperature: {Values: []any{0.1, 0.3, 0.5, 0.7, 0.9}},
+		"top_k":             {Values: []any{10, 20, 40, 60, 80, 100}},
+		"max_tokens":        {Values: []any{1024, 2048, 4096, 8192}},
 	}
 }
 

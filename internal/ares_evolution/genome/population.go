@@ -309,12 +309,12 @@ func (p *Population) doEvolve(ctx context.Context, mutator MutatorInterface, cro
 	elites = p.preservePromptDiversityLocked(elites, sorted)
 
 	// Step 3: Generate offspring using method-specific parent pool.
-	  parentPool := cfg.parentPoolFn(survivors)
-	  remainingSlots := p.Size - len(elites)
-	  // If maxOffspring is set (steady-state), limit offspring count.
-	  if cfg.maxOffspring > 0 && cfg.maxOffspring < remainingSlots {
-	   remainingSlots = cfg.maxOffspring
-	  }
+	parentPool := cfg.parentPoolFn(survivors)
+	remainingSlots := p.Size - len(elites)
+	// If maxOffspring is set (steady-state), limit offspring count.
+	if cfg.maxOffspring > 0 && cfg.maxOffspring < remainingSlots {
+		remainingSlots = cfg.maxOffspring
+	}
 	if remainingSlots <= 0 && len(elites) >= p.Size {
 		// No room for offspring; use elites as next gen (trim if needed).
 		nextGen := elites[:min(len(elites), p.Size)]

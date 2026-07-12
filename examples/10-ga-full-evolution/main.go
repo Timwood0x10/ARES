@@ -150,8 +150,6 @@ func main() {
 func runGeneration(ctx context.Context, pop *genome.Population,
 	mutator genome.MutatorInterface, crosser genome.CrossoverInterface,
 	hintProvider *mockHintProvider, gen int) {
-
-	// 多目标评分：质量 + 成本 + 延迟
 	scorer := func(s *mutation.Strategy) float64 {
 		return multiObjectiveScore(s, hintProvider)
 	}
@@ -375,7 +373,6 @@ func registerEvolutionComponents(dag *engine.MutableDAG) (
 // submitDAGEvolution submits DAG evolution results to the coordinator.
 func submitDAGEvolution(ctx context.Context, coord *coordinator.EvolutionCoordinator,
 	genomeReg *evogenome.Registry, diffReg *diff.Registry, pop *genome.Population) {
-
 	for _, name := range genomeReg.List() {
 		gm, err := genomeReg.Get(name)
 		if err != nil {
@@ -481,5 +478,5 @@ func toolPool() []string {
 // ── 默认随机数种子 ──
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
+	_ = rand.New(rand.NewSource(time.Now().UnixNano()))
 }
