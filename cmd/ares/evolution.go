@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 var evolutionCmd = &cobra.Command{
@@ -48,7 +49,13 @@ func init() {
 func getNewEvolution() *ares_bootstrap.NewEvolutionComponents {
 	// Components are cached so the expensive ProvideNewEvolution runs once.
 	if cachedComponents == nil {
-		comp, err := ares_bootstrap.ProvideNewEvolution(nil, nil, nil)
+		// Create a minimal MutableDAG so workflow/scheduler/recovery genomes
+		// and their executors are properly registered (not nil).
+		dag, err := engine.NewMutableDAG(nil)
+		if err != nil {
+			log.Fatalf("create mutable dag: %v", err)
+		}
+		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, nil)
 		if err != nil {
 			log.Fatalf("bootstrap evolution: %v", err)
 		}

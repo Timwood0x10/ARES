@@ -240,6 +240,7 @@ go run examples/06-chaos-resilience/main.go
     │   ├── coordinator/   # Evolution Coordinator（7 个 PatchSource、PolicyGenome）
     │   ├── patch/         # RuntimePatch 类型 + Registry + Apply/ApplySet
     │   └── llm_adapter.go # LLM 参与者适配器
+    ├── ares_evolution/    # 策略级 GA（种群、NSGA-II、交叉、变异、经验系统）
     ├── evidence/          # Evidence 数据原语 + MemoryStore
     ├── workflow/
     │   ├── graph/         # GraphPatchExecutor（7 种 Patch 类型）
@@ -294,6 +295,42 @@ ares evolution run      # 运行一个进化周期
 go run examples/runtime_evolution/basic/      # 完整端到端进化演示
 go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
 go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
+```
+
+## 策略进化（GA）
+
+除了运行时级别的进化，ARES 还包含一套**策略级别的遗传算法**，通过基于种群的搜索优化 Agent 推理参数（temperature、top_k、提示词模板、工具配置）。系统跨代使用选择、交叉和变异操作进化策略种群，支持零成本后台进化循环。
+
+### 核心特性
+
+| 特性 | 说明 |
+|---|---|
+| **NSGA-II 多目标优化** | 4 个默认维度（success_rate 0.40, quality 0.25, cost 0.20, latency 0.15），方向感知帕累托支配 |
+| **稳态 GA** | 可配置替换率（0.1–0.5，默认 0.3）—— 每代只替换最差的个体 |
+| **Score / SelectionScore** | 规范分数保持不变；选择分数通过适应度共享调整以保持多样性 |
+| **适应度共享** | 3 种策略——全量 O(n²)、蓄水池采样、空间网格索引（>500 个体时） |
+| **3 种交叉类型** | 均匀（逐基因）、两点（交换片段）、段（连续块） |
+| **6 种变异类型** | 参数、提示词、工具、交换、逆序、洗牌 |
+| **进化回调** | OnGeneration / OnFitness / OnMutation / OnCrossover |
+| **终止条件** | MaxGenerations + TargetFitness（BestEverScore ≥ 目标值时停止） |
+| **世代历史** | 每代快照及元数据 |
+| **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
+
+### 基准测试（Apple M3 Max）
+
+```
+BenchmarkPopulation_Init-10           100   11.7ms    2.5MB   32 allocs
+BenchmarkPopulation_Select-10         300    4.1ms    1.1MB   12 allocs
+BenchmarkPopulation_Mutate-10         500    2.5ms    708KB   10 allocs
+BenchmarkDreamCycle_FullCycle-10       50   24.3ms    5.8MB   55 allocs
+BenchmarkNondominatedSort-10         1000    1.8ms    256KB    8 allocs
+```
+
+### 示例
+
+```bash
+go run examples/10-ga-full-evolution/main.go   # 完整 GA 进化演示
+go run examples/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
 ```
 
 ## 许可证

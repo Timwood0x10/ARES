@@ -139,6 +139,7 @@ type Population interface {
 	Size() int
 	CurrentGeneration() int
 	BestScore() float64
+	BestStrategy() *Strategy
 	Evolve(ctx context.Context) error
 }
 
@@ -150,6 +151,7 @@ type Agent struct {
 
 type populationAdapter struct {
 	inner *genome.Population
+	cfg   PopulationConfig
 }
 
 func (p *populationAdapter) Agents() []Agent {
@@ -163,6 +165,18 @@ func (p *populationAdapter) Agents() []Agent {
 func (p *populationAdapter) Size() int              { return p.inner.Size }
 func (p *populationAdapter) CurrentGeneration() int { return p.inner.CurrentGeneration() }
 func (p *populationAdapter) BestScore() float64     { return p.inner.BestEverScore() }
+func (p *populationAdapter) BestStrategy() *Strategy {
+	best := p.inner.BestStrategy()
+	if best == nil {
+		return nil
+	}
+	return &Strategy{
+		ID:             best.ID,
+		Score:          best.Score,
+		Params:         best.Params,
+		PromptTemplate: best.PromptTemplate,
+	}
+}
 func (p *populationAdapter) Evolve(ctx context.Context) error {
 	// Create a default mutator with basic parameter ranges.
 	mut, err := internalmutation.NewMutator(
@@ -171,12 +185,28 @@ func (p *populationAdapter) Evolve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create mutator: %w", err)
 	}
-	// Create a default crossover.
-	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	// Create a crossover using the configured crossover type.
+	crossType := parseCrossoverType(p.cfg.CrossoverType)
+	crosser, err := genome.NewCrossover(
+		genome.WithSeed(42),
+		genome.WithCrossoverType(crossType),
+	)
 	if err != nil {
 		return fmt.Errorf("create crossover: %w", err)
 	}
 	return p.inner.Evolve(ctx, mut, crosser)
+}
+
+// parseCrossoverType converts a string to the corresponding genome.CrossoverType.
+func parseCrossoverType(s string) genome.CrossoverType {
+	switch s {
+	case "two_point":
+		return genome.CrossoverTwoPoint
+	case "segment":
+		return genome.CrossoverSegment
+	default:
+		return genome.CrossoverUniform
+	}
 }
 
 // defaultParamRanges returns basic parameter ranges for public API users.
@@ -196,6 +226,15 @@ func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
 		Params: base.Params,
 	}
 
+	// Create a default mutator so the population has a mutation operator
+	// from the start (not nil).
+	mut, err := internalmutation.NewMutator(
+		internalmutation.WithParamRanges(defaultParamRanges()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create mutator: %w", err)
+	}
+
 	// Build options from config.
 	opts := []genome.PopulationOption{
 		genome.WithPopulationSize(cfg.Size),
@@ -206,11 +245,11 @@ func NewPopulation(base *Strategy, cfg PopulationConfig) (Population, error) {
 		genome.WithTournamentSelection(cfg.TournamentSize),
 	}
 
-	inner, err := genome.NewPopulation(context.Background(), s, nil, opts...)
+	inner, err := genome.NewPopulation(context.Background(), s, mut, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &populationAdapter{inner: inner}, nil
+	return &populationAdapter{inner: inner, cfg: cfg}, nil
 }
 
 // ---------------------------------------------------------------------------

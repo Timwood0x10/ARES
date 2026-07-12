@@ -237,6 +237,7 @@ graph TB
     │   ├── coordinator/   # Evolution Coordinator (7 PatchSources, PolicyGenome)
     │   ├── patch/         # RuntimePatch type + Registry + Apply/ApplySet
     │   └── llm_adapter.go # LLM participant adapter
+    ├── ares_evolution/    # Strategy-level GA (population, NSGA-II, crossover, mutation, experience)
     ├── evidence/          # Evidence data primitive + MemoryStore
     ├── workflow/
     │   ├── graph/         # GraphPatchExecutor (7 patch types)
@@ -291,6 +292,42 @@ ares evolution run      # Run one evolution cycle
 go run examples/runtime_evolution/basic/      # Full end-to-end evolution demo
 go run examples/runtime_evolution/knowledge/  # Knowledge parameter evolution
 go run examples/runtime_evolution/full/       # All 4 genomes + real executors
+```
+
+## Strategy Evolution (GA)
+
+Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorithm** that optimizes agent inference parameters (temperature, top_k, prompt templates, tool configs) through population-based search. The system evolves a population of strategies across generations using selection, crossover, and mutation, with zero-cost background evolution cycles.
+
+### Key Features
+
+| Feature | Description |
+|---|---|
+| **NSGA-II Multi-Objective** | 4 default dimensions (success_rate 0.40, quality 0.25, cost 0.20, latency 0.15) with direction-aware Pareto dominance |
+| **Steady-State GA** | Configurable replace rate (0.1–0.5, default 0.3) — replaces only the worst individuals each generation |
+| **Score / SelectionScore** | Canonical score preserved; selection score adjusted by fitness sharing for diversity |
+| **Fitness Sharing** | 3 strategies — full O(n²), reservoir sampling, spatial grid index (for >500 individuals) |
+| **3 Crossover Types** | Uniform (per-gene), Two-Point (swap segment), Segment (contiguous block) |
+| **6 Mutation Types** | Parameter, Prompt, Tool, Swap, Inversion, Scramble |
+| **Evolution Callbacks** | OnGeneration / OnFitness / OnMutation / OnCrossover |
+| **Termination** | MaxGenerations + TargetFitness (stops when BestEverScore ≥ target) |
+| **Generation History** | Per-generation snapshots with metadata |
+| **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
+
+### Benchmarks (Apple M3 Max)
+
+```
+BenchmarkPopulation_Init-10           100   11.7ms    2.5MB   32 allocs
+BenchmarkPopulation_Select-10         300    4.1ms    1.1MB   12 allocs
+BenchmarkPopulation_Mutate-10         500    2.5ms    708KB   10 allocs
+BenchmarkDreamCycle_FullCycle-10       50   24.3ms    5.8MB   55 allocs
+BenchmarkNondominatedSort-10         1000    1.8ms    256KB    8 allocs
+```
+
+### Examples
+
+```bash
+go run examples/10-ga-full-evolution/main.go   # Full GA evolution demo
+go run examples/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
 ```
 
 ## License
