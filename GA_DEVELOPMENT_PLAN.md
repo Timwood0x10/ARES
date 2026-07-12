@@ -303,3 +303,71 @@ GA-2.7  可视化数据
 **决策：** DreamCycle 持有 genome.Population 作为内部字段，不直接暴露给 API 调用者。
 
 **理由：** 封装实现细节，API 层只看到 `BestStrategy()` 和 `Stats()`。
+## 八、PyGAD 功能对比与借鉴
+
+[PyGAD](https://github.com/ahmedfgad/GeneticAlgorithmPython) 是 Ahmed F. Gad 开发的 Python 遗传算法库，本项目参考了其设计。
+
+### 功能对比
+
+| PyGAD 功能 | 本项目现状 | 差距 |
+|-----------|-----------|------|
+| `num_parents_mating` | 硬编码在 `Evolve()` 里 | 可配置参数 |
+| `keep_parents` | 已有 `EliteCount` | 已覆盖 |
+| `allow_duplicate` | 无 | 防止基因重复 |
+| `gene_type` / `init_range` | 只有 `ParamRange` | 基因空间约束 |
+| 回调 `on_generation` / `on_fitness` | 无 | 扩展性 |
+| 可视化 `plot_fitness` | 无 | 调试/分析 |
+| 自适应变异 `mutation_type="adaptive"` | 已有 `adaptive_distribution.go` | 已覆盖 |
+| 稳态选择 `parent_selection_type="sss"` | 只有配置，没实现方法 | 需实现 `EvolveSteadyState()` |
+
+### 已借鉴的设计
+
+- **交叉算子类型**：uniform（默认）、two_point、segment — 对应 PyGAD 的 `crossover_type`
+- **变异算子**：swap、inversion、scramble — 对应 PyGAD 的 `mutation_type`
+- **选择算子**：tournament、rank、roulette、sus、truncation — 对应 PyGAD 的 `parent_selection_type`
+- **多目标优化**：Pareto 排序 + 拥挤距离 — 对应 PyGAD 的 NSGA-II 支持
+
+### 差距最大的三个功能（待实现）
+
+1. **回调系统** — PyGAD 的 `on_generation`/`on_fitness`，任何框架级 GA 标配
+2. **可视化数据导出** — 适应度序列、基因值分布，调试必备
+3. **稳态 GA 模式** — `EvolveSteadyState()` 方法，PyGAD 的 "sss" 选择
+
+---
+
+## 九、配置文件参考
+
+以下是一个完整的 evolution 配置示例，展示所有可配置参数及其含义：
+
+```yaml
+evolution:
+  enabled: true                     # 是否启用进化管道（默认 false）
+  population_size: 20               # 每代种群个体数（默认 20）
+  elite_count: 2                    # 每代保留的最优个体数（默认 2）
+  survival_rate: 0.6                # 每代存活比例 [0.0, 1.0]（默认 0.6）
+  mutation_rate: 0.2                # 基因变异概率 [0.0, 1.0]（默认 0.2）
+  min_mutation_rate: 0.05           # 自适应变异率下限（默认 0.05）
+  max_mutation_rate: 0.5            # 自适应变异率上限（默认 0.5）
+  generations: 15                   # 最大进化代数，0=无限（默认 15）
+  breeding_pool_ratio: 0.5          # 用于交叉的种群比例 [0.0, 1.0]（默认 0.5）
+  min_interval: "5m"                # 调度器最小运行间隔（默认 5m）
+  selection_strategy: "tournament"  # 选择算子：tournament/rank/roulette/sus/truncation/random
+  tournament_size: 3                # 锦标赛选择参赛人数（默认 3）
+  crossover_type: "uniform"         # 交叉类型：uniform/two_point/segment
+  target_fitness: 0                 # 目标适应度，0=不限制（默认 0）
+  steady_state: false               # 是否启用稳态 GA（默认 false）
+  steady_state_replace_rate: 0.3    # 稳态模式下每代替换比例 [0.0, 1.0]（默认 0.3）
+```
+
+### 参数说明
+
+| 参数 | 说明 | 调优建议 |
+|------|------|---------|
+| `population_size` | 种群越大搜索越广，但每代计算成本越高 | 20-50 适合大多数场景 |
+| `elite_count` | 保证最优解不丢失，值越大收敛越快但多样性降低 | 2-5 |
+| `survival_rate` | 越高保留越多低分个体，增加多样性但减慢收敛 | 0.5-0.8 |
+| `mutation_rate` | 越高探索越强，但可能破坏已有成果 | 0.1-0.3 |
+| `selection_strategy` | 不同选择策略影响选择压力 | tournament 最常用 |
+| `tournament_size` | 越大选择压力越大，收敛越快 | 2-5 |
+| `crossover_type` | 影响参数重组方式 | uniform 最通用 |
+| `steady_state` | 每次只替换部分个体，适合在线学习 | 稳定场景建议开启 |

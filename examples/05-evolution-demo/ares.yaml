@@ -12,5 +12,22 @@ tools:
 reflection:
   enabled: false
 
+# GA evolution configuration
+# All fields have defaults — only set what you need to override.
 evolution:
-  enabled: true
+  enabled: true                     # Enable the evolution pipeline
+  population_size: 20               # Agents per generation
+  elite_count: 2                    # Top agents preserved unchanged
+  survival_rate: 0.6                # Fraction surviving selection [0, 1]
+  mutation_rate: 0.2                # Gene mutation probability [0, 1]
+  min_mutation_rate: 0.05           # Adaptive mutation rate floor
+  max_mutation_rate: 0.5            # Adaptive mutation rate ceiling
+  generations: 15                   # Max generations (0 = unlimited)
+  breeding_pool_ratio: 0.5          # Crossover parent pool fraction
+  min_interval: "5m"                # Scheduler minimum interval
+  selection_strategy: "tournament"  # tournament/rank/roulette/sus/truncation/random
+  tournament_size: 3                # Tournament competitors (only for tournament)
+  crossover_type: "uniform"         # uniform/two_point/segment
+  target_fitness: 0                 # Stop when best fitness >= target (0 = no target)
+  steady_state: false               # Steady-state GA mode
+  steady_state_replace_rate: 0.3    # Replacement fraction in steady-state mode

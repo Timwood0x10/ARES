@@ -293,3 +293,13 @@ go run examples/runtime_evolution/full/       # All 4 genomes + real executors
 ## License
 
 Apache 2.0
+
+## Acknowledgments
+
+ARES's genetic algorithm implementation was inspired by the design and features of **[PyGAD](https://github.com/ahmedfgad/GeneticAlgorithmPython)** — the Python genetic algorithm library by [Ahmed F. Gad](https://github.com/ahmedfgad). PyGAD's architecture, operator design, and multi-objective optimization capabilities served as a valuable reference for building the GA engine in this project.
+
+We recommend PyGAD for anyone looking for a mature, well-documented GA library in Python:
+- GitHub: [github.com/ahmedfgad/GeneticAlgorithmPython](https://github.com/ahmedfgad/GeneticAlgorithmPython)
+- Documentation: [pygad.readthedocs.io](https://pygad.readthedocs.io/)
+
+Additional GA concepts and terminology follow the standard definitions from the [Genetic Algorithm](https://en.wikipedia.org/wiki/Genetic_algorithm) article on Wikipedia.

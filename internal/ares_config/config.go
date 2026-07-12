@@ -451,8 +451,17 @@ func (c *Config) setDefaults() {
 		c.Evolution.BreedingPoolRatio = 0.5
 	}
 	if c.Evolution.MinInterval == "" {
-		c.Evolution.MinInterval = "5m"
-	}
+	   c.Evolution.MinInterval = "5m"
+	  }
+	  if c.Evolution.SelectionStrategy == "" {
+	   c.Evolution.SelectionStrategy = "tournament"
+	  }
+	  if c.Evolution.TournamentSize == 0 {
+	   c.Evolution.TournamentSize = 3
+	  }
+	  if c.Evolution.CrossoverType == "" {
+	   c.Evolution.CrossoverType = "uniform"
+	  }
 }
 
 // Validate validates the configuration values.
@@ -751,38 +760,75 @@ type DashboardAppConfig struct {
 // during bootstrap — no scheduler, no dream cycle, no GA overhead.
 // This makes the genome/mutation libraries available as pure utilities while
 // keeping the expensive evolution orchestration opt-in.
+// EvolutionConfig controls the GA evolution pipeline.
+// All fields have sensible defaults — only set what you need to override.
 type EvolutionConfig struct {
 	// Enabled activates the full evolution pipeline (scheduler + dream cycle + GA).
 	// Default: false — must be explicitly enabled in YAML.
 	Enabled bool `yaml:"enabled"`
 
 	// PopulationSize is the number of agents in each GA generation.
-	// Only used when Enabled is true.
+	// Larger = more diverse search, slower per generation. Default: 20.
 	PopulationSize int `yaml:"population_size"`
 
 	// EliteCount is the number of top agents preserved unchanged per generation.
+	// Prevents loss of the best solutions. Default: 2.
 	EliteCount int `yaml:"elite_count"`
 
 	// SurvivalRate is the fraction of population that survives selection [0.0, 1.0].
+	// Higher = more diversity, slower convergence. Default: 0.6.
 	SurvivalRate float64 `yaml:"survival_rate"`
 
 	// MutationRate is the base probability of gene mutation per agent.
+	// Higher = more exploration, less stability. Default: 0.2.
 	MutationRate float64 `yaml:"mutation_rate"`
 
 	// MinMutationRate is the floor for adaptive mutation rate decay.
+	// Prevents mutation from dropping too low. Default: 0.05.
 	MinMutationRate float64 `yaml:"min_mutation_rate"`
 
 	// MaxMutationRate is the ceiling for adaptive mutation rate bursts.
+	// Prevents excessive random search. Default: 0.5.
 	MaxMutationRate float64 `yaml:"max_mutation_rate"`
 
 	// Generations is the maximum number of GA generations to run.
+	// 0 means unlimited (run until manually stopped). Default: 15.
 	Generations int `yaml:"generations"`
 
 	// BreedingPoolRatio is the fraction of population used as crossover parents.
+	// Higher = more offspring from top individuals. Default: 0.5.
 	BreedingPoolRatio float64 `yaml:"breeding_pool_ratio"`
 
 	// MinInterval is the minimum time between evolution scheduler runs.
-	// Format: duration string (e.g., "5m", "10m").
-	// Default: "5m" if not specified.
+	// Format: duration string (e.g., "5m", "10m"). Default: "5m".
 	MinInterval string `yaml:"min_interval"`
+
+	// SelectionStrategy selects the parent selection algorithm.
+	// Supported: "tournament", "rank", "roulette", "sus", "truncation", "random".
+	// Default: "tournament".
+	SelectionStrategy string `yaml:"selection_strategy"`
+
+	// TournamentSize is the number of competitors per tournament selection round.
+	// Larger = stronger selection pressure (faster convergence, less diversity).
+	// Only used when selection_strategy is "tournament". Default: 3.
+	TournamentSize int `yaml:"tournament_size"`
+
+	// CrossoverType selects the parameter recombination strategy.
+	// Supported: "uniform", "two_point", "segment".
+	// Default: "uniform".
+	CrossoverType string `yaml:"crossover_type"`
+
+	// TargetFitness stops evolution when the best fitness reaches this threshold.
+	// 0 means no target (run until Generations). Scale: 0-100.
+	TargetFitness float64 `yaml:"target_fitness"`
+
+	// SteadyState enables steady-state GA: each generation replaces only a fraction
+	// of the population instead of full generational replacement.
+	// Default: false.
+	SteadyState bool `yaml:"steady_state"`
+
+	// SteadyStateReplaceRate is the fraction of population replaced each generation
+	// in steady-state mode [0.0, 1.0]. Only used when steady_state is true.
+	// Default: 0.3.
+	SteadyStateReplaceRate float64 `yaml:"steady_state_replace_rate"`
 }
