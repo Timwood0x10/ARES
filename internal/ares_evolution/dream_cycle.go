@@ -143,18 +143,18 @@ func DefaultDreamCycleConfig() DreamCycleConfig {
 		QuickRejectRuns:      5,
 
 		// GA defaults (used when EvolutionMode == ModeGeneticAlgorithm)
-		EvolutionMode:     ModeEvolutionStrategy,
-		PopulationSize:    20,
-		EliteCount:        3,
-		MutationRate:      0.2,
-		SurvivalRate:      0.6,
-		SelectionStrategy: "tournament",
-		   TournamentSize:    3,
-		   MaxGenerations:    0, // unlimited
-		   TargetFitness:     0, // no target
-		   CrossoverType:     "uniform",
-		   SteadyState:       false,
-		   SteadyStateReplaceRate: 0.3,
+		EvolutionMode:          ModeEvolutionStrategy,
+		PopulationSize:         20,
+		EliteCount:             3,
+		MutationRate:           0.2,
+		SurvivalRate:           0.6,
+		SelectionStrategy:      "tournament",
+		TournamentSize:         3,
+		MaxGenerations:         0, // unlimited
+		TargetFitness:          0, // no target
+		CrossoverType:          "uniform",
+		SteadyState:            false,
+		SteadyStateReplaceRate: 0.3,
 	}
 }
 

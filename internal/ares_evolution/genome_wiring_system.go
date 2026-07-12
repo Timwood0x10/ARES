@@ -142,6 +142,12 @@ func DefaultSystemConfig() SystemConfig {
 			DiversityThreshold:     0.15,
 			BreedingPoolRatio:      0.6,
 		},
+		ScoringConfig: ScoringConfig{
+			MemoryAwareScoringConfig: scoring.DefaultMemoryAwareScoringConfig(),
+		},
+		MutationConfig: MutationConfig{
+			EnableExperienceGuidedMutation: true,
+		},
 		SchedulerConfig: SchedulerConfig{
 			EnableDreamCycle:     false,
 			EnableScheduler:      false,

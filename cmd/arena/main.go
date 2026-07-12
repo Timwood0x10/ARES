@@ -24,6 +24,8 @@ import (
 	"time"
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
 func main() {
@@ -341,6 +343,13 @@ func runServe(args []string) error {
 	// Create a minimal service for the HTTP handler.
 	inj := arena.NewInjector(nil, nil)
 	svc := arena.NewService(inj, nil, nil)
+
+	// Wire the evolution bridge: chaos fault detection → coordinator.
+	if ev := getArenaEvolution(); ev != nil && ev.Coordinator != nil {
+		bridge := arena.NewEvolutionBridge(ev.Coordinator)
+		svc.SetEvolutionBridge(bridge)
+	}
+
 	handler := arena.NewHandler(svc)
 
 	mux := http.NewServeMux()
@@ -890,4 +899,19 @@ func printReport(report *arena.ScenarioReport) {
 		fmt.Printf("  Avg Recovery: %s\n", report.Score.AvgRecoveryTime.Truncate(time.Millisecond))
 	}
 	fmt.Println()
+}
+
+// getArenaEvolution creates the evolution system for the arena bridge.
+// Uses a basic MutableDAG for genome registration.
+// Returns nil on error so the arena can still serve without evolution.
+func getArenaEvolution() *ares_bootstrap.NewEvolutionComponents {
+	dag, err := engine.NewMutableDAG(nil)
+	if err != nil {
+		return nil
+	}
+	ev, err := ares_bootstrap.ProvideNewEvolution(dag, nil, nil)
+	if err != nil {
+		return nil
+	}
+	return ev
 }

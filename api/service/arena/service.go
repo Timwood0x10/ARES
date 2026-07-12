@@ -19,6 +19,11 @@ func New(injector *internal.Injector, store internal.EventStore, evStore evidenc
 	return &Service{inner: inner}
 }
 
+// SetEvolutionBridge attaches an evolution bridge for chaos→Coordinator integration.
+func (s *Service) SetEvolutionBridge(b *internal.EvolutionBridge) {
+	s.inner.SetEvolutionBridge(b)
+}
+
 // Execute runs a chaos engineering action.
 func (s *Service) Execute(ctx context.Context, action Action) Result {
 	ia := internal.Action{

@@ -322,16 +322,16 @@ func (m *Mutator) mutateScramble(parent *Strategy) (*Strategy, error) {
 	subset := candidates[:subsetSize]
 
 	// Extract values, shuffle, reassign.
-	  values := make([]any, subsetSize)
-	  for i, k := range subset {
-	   values[i] = child.Params[k]
-	  }
-	  // Fisher-Yates shuffle on values.
-	  for i := len(values) - 1; i > 0; i-- {
-	   j := m.rng.Intn(i + 1)
-	   values[i], values[j] = values[j], values[i]
-	  }
-	  for i, k := range subset {
+	values := make([]any, subsetSize)
+	for i, k := range subset {
+		values[i] = child.Params[k]
+	}
+	// Fisher-Yates shuffle on values.
+	for i := len(values) - 1; i > 0; i-- {
+		j := m.rng.Intn(i + 1)
+		values[i], values[j] = values[j], values[i]
+	}
+	for i, k := range subset {
 		child.Params[k] = values[i]
 	}
 

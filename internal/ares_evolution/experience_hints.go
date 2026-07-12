@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_evolution/experience"
 	aresExperience "github.com/Timwood0x10/ares/internal/ares_experience"
 )
 
@@ -162,4 +163,59 @@ func extractToolNames(solution string) []string {
 	}
 
 	return tools
+}
+
+// FuncGuidanceProvider adapts functions to the GuidanceProvider interface.
+// Useful for injecting simple implementations in bootstrap without creating
+// a full struct type.
+type FuncGuidanceProvider struct {
+	HintsFunc  func(ctx context.Context, taskType string, limit int) ([]EvolutionHint, error)
+	RecordFunc func(ctx context.Context, outcome StrategyOutcome) error
+}
+
+// HintsForTask delegates to the wrapped HintsFunc.
+func (p *FuncGuidanceProvider) HintsForTask(ctx context.Context, taskType string, limit int) ([]EvolutionHint, error) {
+	if p.HintsFunc == nil {
+		return nil, nil
+	}
+	return p.HintsFunc(ctx, taskType, limit)
+}
+
+// RecordStrategyOutcome delegates to the wrapped RecordFunc.
+func (p *FuncGuidanceProvider) RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error {
+	if p.RecordFunc == nil {
+		return nil
+	}
+	return p.RecordFunc(ctx, outcome)
+}
+
+// HintFromNormalizedExperience converts a NormalizedExperience into an EvolutionHint.
+// This is a simpler conversion than HintFromRankedExperience, using the experience's
+// Score directly as the confidence.
+func HintFromNormalizedExperience(exp experience.NormalizedExperience) EvolutionHint {
+	confidence := exp.Score
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+
+	var constraints []string
+	if strings.TrimSpace(exp.Problem) != "" {
+		constraints = append(constraints, exp.Problem)
+	}
+
+	preferredTools := extractToolNames(exp.Solution)
+
+	return EvolutionHint{
+		ID:                  exp.ID,
+		TaskType:            exp.TaskType,
+		Problem:             exp.Problem,
+		Solution:            exp.Solution,
+		Constraints:         constraints,
+		Confidence:          confidence,
+		SourceExperienceIDs: []string{exp.ID},
+		PreferredTools:      preferredTools,
+	}
 }

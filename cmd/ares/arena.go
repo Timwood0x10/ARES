@@ -186,16 +186,16 @@ var arenaServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start arena HTTP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-	   inj := arena.NewInjector(nil, nil)
-	   svc := arena.NewService(inj, nil, nil)
+		inj := arena.NewInjector(nil, nil)
+		svc := arena.NewService(inj, nil, nil)
 
-	   // Wire the evolution bridge: chaos fault detection → coordinator.
-	   if ev := getNewEvolution(); ev != nil && ev.Coordinator != nil {
-	    bridge := arena.NewEvolutionBridge(ev.Coordinator)
-	    svc.SetEvolutionBridge(bridge)
-	   }
+		// Wire the evolution bridge: chaos fault detection → coordinator.
+		if ev := getNewEvolution(); ev != nil && ev.Coordinator != nil {
+			bridge := arena.NewEvolutionBridge(ev.Coordinator)
+			svc.SetEvolutionBridge(bridge)
+		}
 
-	   handler := arena.NewHandler(svc)
+		handler := arena.NewHandler(svc)
 		// Enable API key auth when configured via env or flag.
 		if arenaServeAPIKey != "" {
 			handler.SetAPIKey(arenaServeAPIKey)
