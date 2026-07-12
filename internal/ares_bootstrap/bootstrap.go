@@ -154,35 +154,48 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 	comp.NewEvolution = newEvol
 
-	// 9. Wire GA population adapter into the scheduler's evolution path.
-	// This connects the old system's scheduler (event-driven) to the new
-	// system's coordinator: when agents complete tasks, the scheduler triggers
-	// the GA population adapter which runs evolution and submits results to
-	// the coordinator for decision and deployment.
+	// 9. Wire the GA population adapter so evolution actually runs and its
+	// best strategy is deployed to the runtime. The GA engine is built
+	// independently of the old evolution system: in the default configuration
+	// (no EventStore/ExpRepo, so comp.Evolution is nil) it builds its own
+	// scheduler driven by the always-present LLM callback registry, so the
+	// bridge no longer depends on the old system. When the old system exists,
+	// the GA adapter is attached to its scheduler instead (preserving prior
+	// behavior). The deployed strategy is persisted to an in-memory store so
+	// the live agent can consume it.
+	memStore := evolution.NewMemoryStrategyStore(0)
+	newEvol.StrategyStore = memStore
+
+	base := &mutation.Strategy{
+		ID:     "bootstrap-root",
+		Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
+	}
+	gaCfg := evolution.DefaultSystemConfig()
+	gaCfg.EnableDreamCycle = false
+	gaCfg.EnableScheduler = comp.Evolution == nil
+	gaCfg.Callbacks = comp.LLM.CallbackReg
+	gaCfg.StrategyStore = memStore
+	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
+
+	wired, wErr := evolution.NewWiredEvolutionSystem(base, gaCfg)
+	if wErr != nil {
+		runCleanups()
+		return nil, fmt.Errorf("wire GA population adapter: %w", wErr)
+	}
+
+	// Attach the coordinator bridge to the population adapter.
+	popAdapter := wired.PopAdapter
+	evolution.WithAdapterCoordinator(
+		newEvol.Coordinator,
+		newEvol.DiffReg,
+		newEvol.GenomeReg,
+	)(popAdapter)
+
+	// In the full configuration, attach the GA adapter to the existing
+	// old-system scheduler; otherwise the GA system's own scheduler
+	// (registered above on the LLM callback registry) drives it.
 	if comp.Evolution != nil && comp.Evolution.Scheduler != nil {
 		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
-			base := &mutation.Strategy{
-				ID:     "bootstrap-root",
-				Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
-			}
-			cfg := evolution.DefaultSystemConfig()
-			cfg.EnableScheduler = false
-			cfg.EnableDreamCycle = false
-			wired, wErr := evolution.NewWiredEvolutionSystem(base, cfg)
-			if wErr != nil {
-				runCleanups()
-				return nil, fmt.Errorf("wire GA population adapter: %w", wErr)
-			}
-
-			// Attach the coordinator bridge to the population adapter.
-			popAdapter := wired.PopAdapter
-			evolution.WithAdapterCoordinator(
-				newEvol.Coordinator,
-				newEvol.DiffReg,
-				newEvol.GenomeReg,
-			)(popAdapter)
-
-			// Replace the scheduler's adapter with the GA population adapter.
 			sched.SetAdapter(popAdapter)
 		}
 	}

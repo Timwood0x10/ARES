@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -59,6 +60,16 @@ func WithEventStore(store ares_events.EventStore) LeaderOption {
 		a.eventStore = store
 		if pp, ok := a.parser.(*profileParser); ok {
 			pp.WithEventStore(store)
+		}
+	}
+}
+
+// WithStrategySource injects a live evolution StrategySource into the leader's
+// profile parser so the active strategy can steer prompt + LLM params at runtime.
+func WithStrategySource(src agents.StrategySource) LeaderOption {
+	return func(a *leaderAgent) {
+		if pp, ok := a.parser.(*profileParser); ok {
+			pp.WithStrategySource(src)
 		}
 	}
 }

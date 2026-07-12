@@ -44,14 +44,41 @@ func (c *Client) promptMaxLength() int {
 	return maxPromptLength
 }
 
-// Generate sends a text generation request to the LLM.
+// Generate sends a text generation request using the configured defaults.
+// It delegates to GenerateWithParams with no overrides.
+//
 // Args:
 //
 //	ctx - operation context.
 //	prompt - the prompt text.
 //
-// Returns generated text or error.
+// Returns:
+//
+//	generated text or error.
 func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
+	return c.generateWithParams(ctx, prompt, requestOverrides{})
+}
+
+// GenerateWithParams sends a text generation request with per-call overrides
+// (temperature, max_tokens, top_k) drawn from an evolution strategy's
+// Params map. A nil or empty params map uses the configured defaults.
+//
+// Args:
+//
+//	ctx - operation context.
+//	prompt - the prompt text.
+//	params - optional evolution strategy parameter overrides.
+//
+// Returns:
+//
+//	generated text or error.
+func (c *Client) GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error) {
+	return c.generateWithParams(ctx, prompt, extractOverrides(params))
+}
+
+// generateWithParams is the shared implementation behind Generate and
+// GenerateWithParams. The overrides are applied per-provider below.
+func (c *Client) generateWithParams(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	start := time.Now()
 	model := ""
 	if c.config != nil {
@@ -93,11 +120,11 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 
 	switch ProviderType(c.config.Provider) {
 	case ProviderOpenAI, ProviderOpenRouter:
-		result, err = c.generateOpenRouter(ctx, prompt)
+		result, err = c.generateOpenRouter(ctx, prompt, o)
 	case ProviderOllama:
-		result, err = c.generateOllama(ctx, prompt)
+		result, err = c.generateOllama(ctx, prompt, o)
 	case ProviderAnthropic:
-		result, err = c.generateAnthropic(ctx, prompt)
+		result, err = c.generateAnthropic(ctx, prompt, o)
 	default:
 		err = fmt.Errorf("unsupported provider: %s", c.config.Provider)
 	}
@@ -127,12 +154,12 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 }
 
 // generateOpenRouter generates text using OpenRouter API.
-func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string, error) {
+func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	if c.config.APIKey == "" {
 		return "", fmt.Errorf("API key is required for OpenRouter")
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
@@ -145,7 +172,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 				"content": prompt,
 			},
 		},
-		"temperature": 0.7,
+		"temperature": o.applyTemperature(0.7),
 		"max_tokens":  maxTokens,
 	}
 
@@ -207,14 +234,15 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string) (string,
 }
 
 // generateOllama generates text using Ollama API.
-func (c *Client) generateOllama(ctx context.Context, prompt string) (string, error) {
+func (c *Client) generateOllama(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	requestBody := map[string]interface{}{
 		"model":  c.config.Model,
 		"prompt": prompt,
 		"stream": false,
 		"options": map[string]interface{}{
-			"temperature": 0.7,
-			"num_predict": defaultMaxTokens,
+			"temperature": o.applyTemperature(0.7),
+			"num_predict": o.applyMaxTokens(defaultMaxTokens),
+			"top_k":       o.applyTopK(defaultOllamaTopK),
 		},
 	}
 
@@ -269,12 +297,12 @@ func (c *Client) generateOllama(ctx context.Context, prompt string) (string, err
 
 // generateAnthropic generates text using Anthropic API.
 // Anthropic uses a different API format: /v1/messages endpoint with required max_tokens.
-func (c *Client) generateAnthropic(ctx context.Context, prompt string) (string, error) {
+func (c *Client) generateAnthropic(ctx context.Context, prompt string, o requestOverrides) (string, error) {
 	if c.config.APIKey == "" {
 		return "", fmt.Errorf("API key is required for Anthropic")
 	}
 
-	anthropicMaxTokens := c.config.MaxTokens
+	anthropicMaxTokens := o.applyMaxTokens(c.config.MaxTokens)
 	if anthropicMaxTokens <= 0 {
 		anthropicMaxTokens = 1024
 	}
@@ -288,6 +316,7 @@ func (c *Client) generateAnthropic(ctx context.Context, prompt string) (string, 
 			},
 		},
 		"max_tokens": anthropicMaxTokens,
+		"top_k":      o.applyTopK(0),
 	}
 
 	jsonBody, err := json.Marshal(requestBody)

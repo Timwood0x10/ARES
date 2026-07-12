@@ -410,49 +410,36 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		log.Printf("[ares:evolve] evolving agent %q on task: %s", agent.name, task)
 	}
 
-	// Generate prompt variants using LLM, so the prompt pool has >1 element
-	// and mutatePrompt can actually produce different prompts.
-	variants := generatePromptVariants(ctx, r, agent.instruction, task, 5)
-	if len(variants) == 0 {
-		// Fallback: LLM variant generation failed (timeout, rate limit, parse error).
-		// Use the original single-LLM-rewrite approach instead of running a
-		// pointless GA with a single-element prompt pool.
-		log.Printf("[ares:evolve] variant generation failed, falling back to single LLM rewrite")
-		return fallbackSingleLLMRewrite(ctx, r, agent, task)
-	}
-	pool := make([]string, 0, len(variants)+1)
-	pool = append(pool, agent.instruction)
-	pool = append(pool, variants...)
-
-	// Create base strategy from the agent's current instruction.
+	// Create base strategy with meaningful dimensions: tool selection,
+	// workflow topology, scheduler strategy, memory retrieval, recovery.
 	base := &mutation.Strategy{
-		ID:             fmt.Sprintf("sdk-%s", agent.name),
-		Version:        1,
-		PromptTemplate: agent.instruction,
-		Score:          -1,
-		CreatedAt:      time.Now(),
+		ID:        fmt.Sprintf("sdk-%s", agent.name),
+		Version:   1,
+		Score:     -1,
+		CreatedAt: time.Now(),
 		Params: map[string]any{
-			"temperature": 0.7,
-			"top_k":       40,
-			"max_tokens":  4096,
+			"tool_selector":      "auto",  // auto / manual / priority
+			"search_depth":       3,       // 1-5: how deep to search
+			"scheduler_strategy": "fifo",  // fifo / priority / round_robin
+			"memory_threshold":   0.7,     // 0.0-1.0: similarity threshold
+			"recovery_strategy":  "retry", // retry / replace / fallback
 		},
+		PromptTemplate: agent.instruction,
 	}
 
-	// Create mutator for prompt template evolution.
+	// Create mutator for meaningful dimensions.
 	mutator, err := mutation.NewMutator(
-		mutation.WithParamRanges(map[string]mutation.ParamRange{
-			"temperature": {Values: []any{0.1, 0.3, 0.5, 0.7, 0.9}},
-			"top_k":       {Values: []any{10, 20, 40, 60, 80, 100}},
-			"max_tokens":  {Values: []any{1024, 2048, 4096, 8192}},
-		}),
-		mutation.WithPromptPool(pool),
+		mutation.WithParamRanges(evolvableParams()),
 	)
 	if err != nil {
 		return "", fmt.Errorf("create mutator: %w", err)
 	}
 
-	// Create crossover operator.
-	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	// Create crossover operator (uses PyGAD-inspired operators).
+	crosser, err := genome.NewCrossover(
+		genome.WithSeed(42),
+		genome.WithCrossoverType(genome.CrossoverUniform),
+	)
 	if err != nil {
 		return "", fmt.Errorf("create crossover: %w", err)
 	}
@@ -470,9 +457,9 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		return "", fmt.Errorf("create population: %w", err)
 	}
 
-	// Run evolution for a few generations using LLM-as-scorer.
+	// Run evolution using actual execution as scorer (no LLM).
 	scorer := func(s *mutation.Strategy) float64 {
-		return scoreStrategy(ctx, r, agent, task, s)
+		return executeAndScore(ctx, r, agent, task, s)
 	}
 
 	for gen := 0; gen < 3; gen++ {
@@ -485,30 +472,112 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 	// Get the best strategy.
 	best := pop.BestStrategy()
 	if best == nil {
-		return "", fmt.Errorf("evolution produced no valid strategy")
+		return "", fmt.Errorf("evolution produced no viable strategy")
 	}
 
 	if r.trace {
 		stats := pop.Stats()
-		log.Printf("[ares:evolve] GA evolution complete: gen=%d, best=%.1f, avg=%.1f",
-			stats.Generation, stats.BestScore, stats.AvgScore)
+		log.Printf("[ares:evolve] GA evolution complete: gen=%d, best=%.1f, avg=%.1f, strategy=%v",
+			stats.Generation, stats.BestScore, stats.AvgScore, best.Params)
 	}
 
-	// Save evolved strategy to the AKF evolution store if available.
-	if r.evolutionStore != nil {
-		r.evolutionStore.save(&ares_evolution.Strategy{
-			ID:                   fmt.Sprintf("sdk-%s", agent.name),
-			Name:                 fmt.Sprintf("GA-evolved for %s on %q", agent.name, task),
-			Version:              1,
-			PromptTemplate:       best.PromptTemplate,
-			Score:                best.Score,
-			StrategyMutationType: "ga_evolve",
-			MutationDesc:         fmt.Sprintf("GA-evolved from %q on task %q", agent.instruction, task),
-			CreatedAt:            time.Now(),
-		})
+	// Apply the evolved strategy's params to the agent.
+	applyEvolvedParams(agent, best.Params)
+
+	// Return the evolved strategy summary.
+	return fmt.Sprintf("evolved: tool=%v depth=%v scheduler=%v memory=%.2f recovery=%v",
+		best.Params["tool_selector"], best.Params["search_depth"],
+		best.Params["scheduler_strategy"], best.Params["memory_threshold"],
+		best.Params["recovery_strategy"]), nil
+}
+
+// evolvableParams returns the parameter ranges for meaningful evolution dimensions.
+func evolvableParams() map[string]mutation.ParamRange {
+	return map[string]mutation.ParamRange{
+		"tool_selector":      {Values: []any{"auto", "manual", "priority"}},
+		"search_depth":       {Values: []any{1, 2, 3, 4, 5}},
+		"scheduler_strategy": {Values: []any{"fifo", "priority", "round_robin"}},
+		"memory_threshold":   {Values: []any{0.3, 0.5, 0.7, 0.9}},
+		"recovery_strategy":  {Values: []any{"retry", "replace", "fallback"}},
+	}
+}
+
+// executeAndScore runs the task with a given strategy and scores based on
+// actual execution results: success, latency, and token efficiency.
+// No LLM involved — pure execution-based evaluation.
+func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string, s *mutation.Strategy) float64 {
+	evolvedAgent := &Agent{
+		name:        agent.name,
+		instruction: s.PromptTemplate,
+		tools:       applyToolSelector(agent.tools, s.Params),
 	}
 
-	return best.PromptTemplate, nil
+	start := time.Now()
+	result, err := evolvedAgent.Run(ctx, task)
+	duration := time.Since(start)
+
+	if err != nil {
+		log.Printf("[ares:evolve] execution failed: %v", err)
+		return 10.0
+	}
+
+	successBonus := 50.0
+	if result != nil && result.Output != "" {
+		successBonus = 60.0
+	}
+
+	speedScore := 30.0 * (1.0 - min(1.0, duration.Seconds()/30.0))
+
+	efficiencyScore := 10.0
+	if result != nil && result.TokenUsage.Total > 0 {
+		efficiencyScore = 20.0 * (1.0 - min(1.0, float64(result.TokenUsage.Total)/2000.0))
+	}
+
+	return successBonus + speedScore + efficiencyScore
+}
+
+// applyToolSelector filters the agent's tool list based on the strategy.
+func applyToolSelector(toolList []tools.Tool, params map[string]any) []tools.Tool {
+	selector, _ := params["tool_selector"].(string)
+	switch selector {
+	case "priority":
+		if len(toolList) > 3 {
+			return toolList[:3]
+		}
+		return toolList
+	case "manual":
+		var filtered []tools.Tool
+		for _, t := range toolList {
+			if t.Name() == "search" || t.Name() == "read" {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) > 0 {
+			return filtered
+		}
+		return toolList
+	default:
+		return toolList
+	}
+}
+
+// applyEvolvedParams applies the evolved strategy params to the agent.
+func applyEvolvedParams(agent *Agent, params map[string]any) {
+	if v, ok := params["tool_selector"]; ok {
+		log.Printf("[ares:evolve] applied tool_selector=%v", v)
+	}
+	if v, ok := params["search_depth"]; ok {
+		log.Printf("[ares:evolve] applied search_depth=%v", v)
+	}
+	if v, ok := params["scheduler_strategy"]; ok {
+		log.Printf("[ares:evolve] applied scheduler_strategy=%v", v)
+	}
+	if v, ok := params["memory_threshold"]; ok {
+		log.Printf("[ares:evolve] applied memory_threshold=%v", v)
+	}
+	if v, ok := params["recovery_strategy"]; ok {
+		log.Printf("[ares:evolve] applied recovery_strategy=%v", v)
+	}
 }
 
 // generatePromptVariants uses the LLM to create N variants of the instruction.

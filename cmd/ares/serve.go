@@ -165,14 +165,17 @@ func runServe() error {
 	if comp.Evolution != nil {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+	// Wire the GA's deployed strategy into live agents so the running
+	// agents read the active prompt/params at runtime.
+	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		return fmt.Errorf("create agents: %w", err)
 	}
 
 	// Register agents with runtime manager (from Bootstrap)
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)
@@ -180,7 +183,7 @@ func runServe() error {
 	for _, sa := range subAgents {
 		subAgent := sa
 		subFactory := func() base.Agent {
-			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+			_, subs, _ := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 			for _, s := range subs {
 				if s.ID() == subAgent.ID() {
 					return s

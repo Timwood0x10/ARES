@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -12,12 +13,13 @@ import (
 
 // profileParser parses user profile from natural language input.
 type profileParser struct {
-	llmAdapter output.LLMAdapter
-	template   *output.TemplateEngine
-	promptTpl  string
-	validator  *output.Validator
-	maxRetries int
-	eventStore ares_events.EventStore
+	llmAdapter     output.LLMAdapter
+	template       *output.TemplateEngine
+	promptTpl      string
+	validator      *output.Validator
+	maxRetries     int
+	eventStore     ares_events.EventStore
+	strategySource agents.StrategySource // Optional: live strategy overrides (prompt + LLM params)
 }
 
 // NewProfileParser creates a new ProfileParser with LLM support.
@@ -43,6 +45,12 @@ func NewProfileParser(
 // WithEventStore sets the event store for LLM call tracking.
 func (p *profileParser) WithEventStore(store ares_events.EventStore) {
 	p.eventStore = store
+}
+
+// WithStrategySource injects a live evolution StrategySource so the active
+// strategy can override the prompt template and supply per-call LLM params.
+func (p *profileParser) WithStrategySource(src agents.StrategySource) {
+	p.strategySource = src
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
@@ -89,8 +97,25 @@ func (p *profileParser) getDefaultProfile() *models.UserProfile {
 }
 
 func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.UserProfile, error) {
+	// Apply live evolution strategy: override the prompt template if the
+	// active strategy provides one, and collect per-call LLM param overrides.
+	tpl := p.promptTpl
+	params := map[string]any{}
+	if p.strategySource != nil {
+		if st, err := p.strategySource.GetActiveStrategy(ctx); err != nil {
+			log.Warn("failed to read active strategy", "error", err)
+		} else if st != nil {
+			if st.Prompt != "" {
+				tpl = st.Prompt
+			}
+			for k, v := range st.Params {
+				params[k] = v
+			}
+		}
+	}
+
 	// Render prompt
-	prompt, err := p.template.Render(p.promptTpl, map[string]string{
+	prompt, err := p.template.Render(tpl, map[string]string{
 		"input": input,
 	})
 	if err != nil {
@@ -98,7 +123,7 @@ func (p *profileParser) parseOnce(ctx context.Context, input string) (*models.Us
 	}
 
 	// Call LLM
-	response, err := p.llmAdapter.Generate(ctx, prompt)
+	response, err := p.llmAdapter.GenerateWithParams(ctx, prompt, params)
 	if err != nil {
 		p.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 			"purpose": "profile_parsing",

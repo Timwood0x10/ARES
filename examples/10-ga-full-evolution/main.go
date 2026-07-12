@@ -1,12 +1,12 @@
-// GA Full Evolution Demo — 综合演示完整 GA 进化能力
+// GA Full Evolution Demo — comprehensive GA evolution demonstration.
 //
-// 演示内容：
-//  1. 工具选择策略进化 — 根据任务类型自动选择最优工具组合
-//  2. 工作流 DAG 拓扑进化 — 演化工作流节点结构与执行顺序
-//  3. 记忆引导变异 — 历史经验偏置变异方向
-//  4. 多目标 fitness — 质量 + 成本 + 延迟 综合评分
+// Demonstrates:
+//  1. Tool selection strategy evolution — optimal tool combinations per task type
+//  2. Workflow DAG topology evolution — evolves node structure and execution order
+//  3. Memory-guided mutation — historical experience biases mutation direction
+//  4. Multi-objective fitness — quality + cost + latency combined scoring
 //
-// 运行：go run examples/10-ga-full-evolution/main.go
+// Run: go run examples/10-ga-full-evolution/main.go
 package main
 
 import (
@@ -31,7 +31,7 @@ func main() {
 	fmt.Println("═══ GA Full Evolution Demo ═══")
 	fmt.Println()
 
-	// ── 1. 创建基础策略（含工具选择、参数、prompt）──
+	// ── 1. Create base strategy (tools, params, prompt) ──
 	base := &mutation.Strategy{
 		ID:      "root-strategy",
 		Version: 1,
@@ -39,16 +39,16 @@ func main() {
 			"temperature":   0.7,
 			"top_k":         40,
 			"max_tokens":    4096,
-			"tool_selector": "auto", // 工具选择策略：auto/manual/priority
-			"search_depth":  3,      // 搜索深度
-			"batch_size":    5,      // 批处理大小
+			"tool_selector": "auto", // tool selection strategy: auto/manual/priority
+			"search_depth":  3,      // search depth
+			"batch_size":    5,      // batch size
 		},
 		PromptTemplate: "You are a helpful assistant. Complete the task efficiently.",
 		Score:          -1,
 		CreatedAt:      time.Now(),
 	}
 
-	// ── 2. 创建变异器（配置参数范围 + 工具池）──
+	// ── 2. Create mutator (param ranges + tool pool) ──
 	mutator, err := mutation.NewMutator(
 		mutation.WithParamRanges(mutableParams()),
 		mutation.WithPromptPool(promptPool()),
@@ -58,7 +58,7 @@ func main() {
 		panic(err)
 	}
 
-	// ── 3. 创建交叉器（支持 uniform/two_point/segment）──
+	// ── 3. Create crossover (uniform/two_point/segment) ──
 	crosser, err := genome.NewCrossover(
 		genome.WithSeed(42),
 		genome.WithCrossoverType(genome.CrossoverUniform),
@@ -67,7 +67,7 @@ func main() {
 		panic(err)
 	}
 
-	// ── 4. 创建种群（GA 核心引擎）──
+	// ── 4. Create population (GA core engine) ──
 	pop, err := genome.NewPopulation(ctx, base, mutator,
 		genome.WithPopulationSize(20),
 		genome.WithEliteCount(3),
@@ -79,17 +79,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("1. 种群初始化为 %d 个个体\n", pop.Size)
+	fmt.Printf("1. Population initialized with %d individuals\n", pop.Size)
 
-	// ── 5. 创建工作流 DAG（可进化拓扑）──
+	// ── 5. Create workflow DAG (evolvable topology) ──
 	dag := buildInitialDAG()
-	fmt.Printf("2. 初始 DAG: %d 个节点\n", dag.NodeCount())
+	fmt.Printf("2. Initial DAG: %d nodes\n", dag.NodeCount())
 
-	// ── 6. 注册进化计算组件（Genome + Diff + Coordinator）──
+	// ── 6. Register evolution components (Genome + Diff + Coordinator) ──
 	coord, genomeReg, diffReg := registerEvolutionComponents(dag)
-	fmt.Println("3. 进化组件注册完成")
+	fmt.Println("3. Evolution components registered")
 
-	// ── 7. 创建记忆引导提供者（模拟历史经验）──
+	// ── 7. Create memory-guided provider (mock experience) ──
 	hintProvider := &mockHintProvider{
 		hints: []evolutionHint{
 			{taskType: "code", tool: "search", confidence: 0.85},
@@ -98,42 +98,77 @@ func main() {
 			{taskType: "data", tool: "exec", confidence: 0.65},
 		},
 	}
-	fmt.Println("4. 记忆引导提供者已加载 (4 条经验)")
+	fmt.Println("4. Memory-guided provider loaded (4 experiences)")
 
-	// ── 8. 运行 GA 进化（5 代）──
-	fmt.Println("\n═══ 开始 GA 进化 ═══")
+	// ── 8. Run GA evolution (5 generations) ──
+	fmt.Println("\n═══ Starting GA Evolution ═══")
 	for gen := 0; gen < 5; gen++ {
 		runGeneration(ctx, pop, mutator, crosser, hintProvider, gen)
 		printGenerationStats(pop, gen)
 	}
 
-	// ── 9. 展示进化结果──
-	fmt.Println("\n═══ 进化结果 ═══")
+	// Step 9: Show evolution results — what GA learned.
+	fmt.Println("\n═══ Evolution Results: What GA Learned ═══")
 	best := pop.BestStrategy()
 	if best != nil {
-		fmt.Printf("最佳策略: %s (score: %.2f)\n", best.ID, best.Score)
-		fmt.Printf("  参数: %v\n", best.Params)
-		fmt.Printf("  prompt: %s\n", best.PromptTemplate)
+		fmt.Printf("✅ Tool selection: %v", best.Params["tool_selector"])
+		if best.Params["tool_selector"] == "priority" {
+			fmt.Println(" → prioritize high-frequency tools, reduce irrelevant calls")
+		} else {
+			fmt.Println("")
+		}
+
+		fmt.Printf("✅ Search depth: %v", best.Params["search_depth"])
+		if d, ok := best.Params["search_depth"].(int); ok && d >= 3 {
+			fmt.Println(" → deeper search provides more comprehensive information")
+		} else {
+			fmt.Println(" → shallow search suitable for simple tasks")
+		}
+
+		fmt.Printf("✅ Scheduler: %v", best.Params["scheduler_strategy"])
+		if best.Params["scheduler_strategy"] == "priority" {
+			fmt.Println(" → priority scheduling reduces critical path latency")
+		} else {
+			fmt.Println("")
+		}
+
+		fmt.Printf("✅ Memory threshold: %.2f", best.Params["memory_threshold"])
+		if t, ok := best.Params["memory_threshold"].(float64); ok && t >= 0.7 {
+			fmt.Println(" → high threshold recalls precise memories")
+		} else {
+			fmt.Println(" → low threshold recalls more candidates")
+		}
+
+		fmt.Printf("✅ Recovery strategy: %v", best.Params["recovery_strategy"])
+		if best.Params["recovery_strategy"] == "retry" {
+			fmt.Println(" → retry on failure, suitable for transient faults")
+		} else {
+			fmt.Println("")
+		}
+
 		if best.DimensionScores != nil {
-			fmt.Printf("  多目标评分: %v\n", best.DimensionScores)
+			fmt.Printf("\n📊 Multi-objective scores:\n")
+			for k, v := range best.DimensionScores {
+				fmt.Printf("   %s: %.1f\n", k, v)
+			}
 		}
 	}
 
-	// ── 10. 导出进化历史──
+	// ── 10. Export evolution history ──
 	history := pop.ExportHistory()
 	if history != nil {
 		data, _ := json.MarshalIndent(history, "", "  ")
-		fmt.Printf("\n进化历史 (%d 代):\n", len(history.Generations))
+		fmt.Printf("\nEvolution history (%d generations):\n", len(history.Generations))
 		fmt.Println(string(data))
 	}
 
-	// ── 11. 提交 DAG 进化结果到 Coordinator──
-	fmt.Println("\n═══ Coordinator 决策 ═══")
+	// ── 11. Submit DAG evolution results to Coordinator ──
+	fmt.Println("\n═══ Coordinator Decisions ═══")
 	submitDAGEvolution(ctx, coord, genomeReg, diffReg, pop)
 
-	// ── 12. 展示最终决策结果──
+	// ── 12. Show final decision results ──
 	decisions := coord.DecisionHistory()
-	fmt.Printf("\n决策历史: %d 条\n", len(decisions))
+	fmt.Printf("\nDecision history: %d entries\n", len(decisions))
 	for _, d := range decisions {
 		status := "✅"
 		if d.Decision != coordinator.DecisionApply {
@@ -143,7 +178,7 @@ func main() {
 			status, d.Decision, d.Reason, d.Proposal.Fitness)
 	}
 
-	fmt.Println("\n✅ GA 完整进化演示完成")
+	fmt.Println("\n✅ GA full evolution demo completed")
 }
 
 // runGeneration runs one generation of GA evolution.
@@ -154,10 +189,10 @@ func runGeneration(ctx context.Context, pop *genome.Population,
 		return multiObjectiveScore(s, hintProvider)
 	}
 
-	// 评分所有个体
+	// Score all agents
 	pop.ScoreAgents(scorer)
 
-	// 执行一代进化
+	// Run one generation of evolution
 	if err := pop.Evolve(ctx, mutator, crosser); err != nil {
 		panic(err)
 	}
@@ -173,7 +208,7 @@ func printGenerationStats(pop *genome.Population, gen int) {
 			toolSel = fmt.Sprintf("%v", v)
 		}
 	}
-	fmt.Printf("  第 %d 代: best=%.1f, avg=%.1f, pop=%d, tool=%s\n",
+	fmt.Printf("  Gen %d: best=%.1f, avg=%.1f, pop=%d, tool=%s\n",
 		gen+1, stats.BestScore, stats.AvgScore, stats.Size, toolSel)
 }
 
@@ -183,14 +218,14 @@ func multiObjectiveScore(s *mutation.Strategy, hp *mockHintProvider) float64 {
 	cost := scoreCost(s)
 	latency := scoreLatency(s)
 
-	// 记忆引导的置信度加成
+	// Memory-guided confidence bonus
 	confidence := hp.confidenceForStrategy(s)
 	quality += confidence * 5.0
 
-	// 多目标聚合：质量优先，成本和延迟做惩罚
+	// Multi-objective aggregation: quality prioritized, cost/latency penalized
 	finalScore := quality*0.6 - cost*0.25 - latency*0.15
 
-	// 记录维度评分
+	// Record dimension scores
 	s.DimensionScores = map[string]float64{
 		"quality": quality,
 		"cost":    cost,
@@ -413,7 +448,7 @@ func submitDAGEvolution(ctx context.Context, coord *coordinator.EvolutionCoordin
 	coord.Evaluate(ctx)
 }
 
-// ── 记忆引导提供者（模拟历史经验）──
+// ── Memory-guided provider (mock experience) ──
 
 type evolutionHint struct {
 	taskType   string
@@ -437,7 +472,7 @@ func (m *mockHintProvider) confidenceForStrategy(s *mutation.Strategy) float64 {
 	return confidence
 }
 
-// ── 配置辅助函数 ──
+// ── Config helper functions ──
 
 func mutableParams() map[string]mutation.ParamRange {
 	return map[string]mutation.ParamRange{
@@ -475,7 +510,7 @@ func toolPool() []string {
 	return []string{"search", "read", "write", "exec", "calculate", "code"}
 }
 
-// ── 默认随机数种子 ──
+// ── Default random seed ──
 
 func init() {
 	_ = rand.New(rand.NewSource(time.Now().UnixNano()))

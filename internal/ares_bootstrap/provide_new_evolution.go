@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
@@ -23,6 +24,10 @@ type NewEvolutionComponents struct {
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
 	Coordinator   *coordinator.EvolutionCoordinator
+	// StrategyStore persists the best-evolved strategy deployed by the GA
+	// engine so the live agent can consume it at runtime. Set by the
+	// bootstrap bridge after the store is created.
+	StrategyStore evolution.StrategyStore
 }
 
 // ProvideNewEvolution wires the new evolution system:

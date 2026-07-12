@@ -73,7 +73,7 @@ func TestChat_OpenAI_WithTools(t *testing.T) {
 		},
 	}
 
-	resp, err := client.Chat(context.Background(), messages, tools)
+	resp, err := client.Chat(context.Background(), messages, tools, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -124,7 +124,7 @@ func TestChat_OpenAI_TextOnly(t *testing.T) {
 
 	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -179,7 +179,7 @@ func TestChat_OpenRouter_WithTools(t *testing.T) {
 		{Role: "user", Content: "Search for test"},
 	}, []core.Tool{
 		{Type: "function", Function: core.FunctionDefinition{Name: "search", Description: "Search the web"}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -202,7 +202,7 @@ func TestChat_OpenAI_NoAPIKey(t *testing.T) {
 
 	_, err = client.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing API key")
 	}
@@ -276,7 +276,7 @@ func TestChat_Anthropic_WithTools(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -342,7 +342,7 @@ func TestChat_Anthropic_SystemMessage(t *testing.T) {
 	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -392,7 +392,7 @@ func TestChat_Anthropic_ToolResult(t *testing.T) {
 			{ID: "toolu_123", Type: "function", Function: core.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
 		}},
 		{Role: "tool", ToolCallID: "toolu_123", Content: "Sunny, 72F"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -435,7 +435,7 @@ func TestChat_Anthropic_NoAPIKey(t *testing.T) {
 
 	_, err = client.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing API key")
 	}
@@ -479,7 +479,7 @@ func TestChat_Ollama_WithTools(t *testing.T) {
 		{Role: "user", Content: "What is 2+2?"},
 	}, []core.Tool{
 		{Type: "function", Function: core.FunctionDefinition{Name: "calculate", Description: "Calculate math"}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -504,7 +504,7 @@ func TestChat_UnsupportedProvider(t *testing.T) {
 
 	_, err = client.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported provider")
 	}
@@ -520,7 +520,7 @@ func TestChat_EmptyMessages(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	_, err = client.Chat(context.Background(), nil, nil)
+	_, err = client.Chat(context.Background(), nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty messages")
 	}
@@ -568,7 +568,7 @@ func TestChat_OpenAI_ToolResultMessage(t *testing.T) {
 			{ID: "call_123", Type: "function", Function: core.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
 		}},
 		{Role: "tool", ToolCallID: "call_123", Content: "Sunny, 72F"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -634,7 +634,7 @@ func TestFailoverClient_Chat_AllProviders(t *testing.T) {
 
 	resp, err := fc.Chat(context.Background(), []*core.LLMMessage{
 		{Role: "user", Content: "Hello"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("FailoverClient.Chat() error = %v", err)
 	}

@@ -14,6 +14,10 @@ const (
 type LLMAdapter interface {
 	// Generate generates text from prompt.
 	Generate(ctx context.Context, prompt string) (string, error)
+	// GenerateWithParams generates text from prompt with per-call overrides
+	// (temperature, max_tokens, top_k) drawn from an evolution strategy.
+	// A nil or empty params map falls back to the configured defaults.
+	GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error)
 	// GenerateStructured generates structured output.
 	GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error)
 	// GenerateStream generates text as a stream of chunks.

@@ -300,18 +300,20 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 
 // Chat tries each LLM client in order and returns the first successful chat
 // response with tool support. Failed providers are cooled down with the same
-// policy as Generate.
+// policy as Generate. Per-call parameter overrides are forwarded
+// to each underlying client unchanged.
 // Args:
 //
 //	ctx - operation context.
 //	messages - conversation messages.
 //	tools - available tools for function calling.
+//	params - optional per-call parameter overrides.
 //
 // Returns:
 //
 //	*core.GenerateResponse - the chat response including optional tool_calls.
 //	error - all clients failed or no provider available.
-func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
 	var lastErr error
 
 	for _, client := range fc.clients {
@@ -326,7 +328,7 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage,
 		}
 
 		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
-		resp, err := client.Chat(cctx, messages, tools)
+		resp, err := client.Chat(cctx, messages, tools, params)
 		cancel()
 
 		if err == nil {
@@ -427,7 +429,7 @@ type FailoverScorer = FailoverClient
 var _ interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error)
-	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string

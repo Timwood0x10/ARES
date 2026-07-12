@@ -17,7 +17,7 @@ import (
 type LLMClient interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
-	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string
@@ -189,7 +189,14 @@ func (s *Service) hasToolMessages(messages []*core.LLMMessage) bool {
 
 // generateWithChat routes the request through the Chat API with tool support.
 func (s *Service) generateWithChat(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
-	resp, err := s.client.Chat(ctx, request.Messages, request.Tools)
+	params := map[string]any{}
+	if request.Temperature != nil {
+		params["temperature"] = *request.Temperature
+	}
+	if request.MaxTokens != nil {
+		params["max_tokens"] = *request.MaxTokens
+	}
+	resp, err := s.client.Chat(ctx, request.Messages, request.Tools, params)
 	if err != nil {
 		return nil, errors.Wrap(err, "chat with tools")
 	}

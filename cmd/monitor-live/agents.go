@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/leader"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
@@ -19,6 +20,7 @@ import (
 )
 
 // createAgents builds the leader and sub agents with real LLM + tools.
+// strategySrc, when non-nil, lets live agents consume the active GA strategy.
 func createAgents(
 	cfg *ares_config.Config,
 	llmAdapter output.LLMAdapter,
@@ -27,12 +29,13 @@ func createAgents(
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
+	strategySrc agents.StrategySource,
 ) (leader.Agent, []sub.Agent, error) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create leader: %w", err)
 	}
-	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store)
+	subAgents := createSubAgents(cfg, llmAdapter, chatClient, toolBinder, store, strategySrc)
 	return leaderAgent, subAgents, nil
 }
 
@@ -44,6 +47,7 @@ func createLeaderAgent(
 	memMgr memory.MemoryManager,
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
+	strategySrc agents.StrategySource,
 ) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		llmAdapter,
@@ -81,7 +85,7 @@ func createLeaderAgent(
 	// Also wire event store to each executor so LLM/tool events have a stream_id.
 	for _, subCfg := range cfg.Agents.Sub {
 		agentType := models.AgentType(subCfg.Type)
-		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg)
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
 		// Type-assert to the internal interface that has SetEventStore.
 		if setter, ok := executor.(interface {
 			SetEventStore(ares_events.EventStore, string)
@@ -119,6 +123,7 @@ func createLeaderAgent(
 		leaderCfg,
 		leader.WithEventStore(store),
 		leader.WithFeedbackService(feedbackSvc),
+		leader.WithStrategySource(strategySrc),
 	)
 }
 
@@ -128,11 +133,12 @@ func createSubAgents(
 	chatClient sub.ChatClient,
 	toolBinder sub.ToolBinder,
 	store ares_events.EventStore,
+	strategySrc agents.StrategySource,
 ) []sub.Agent {
 	agents := make([]sub.Agent, 0, len(cfg.Agents.Sub))
 
 	for _, subCfg := range cfg.Agents.Sub {
-		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg)
+		executor := createExecutor(llmAdapter, chatClient, toolBinder, cfg, subCfg, strategySrc)
 
 		hbMon := ahp.NewHeartbeatMonitor(ahp.DefaultHeartbeatConfig())
 		msgQueue := ahp.NewMessageQueue(subCfg.ID, &ahp.QueueOptions{MaxSize: 500})
@@ -170,6 +176,7 @@ func createExecutor(
 	toolBinder sub.ToolBinder,
 	cfg *ares_config.Config,
 	subCfg ares_config.SubAgentConfig,
+	strategySrc agents.StrategySource,
 ) sub.TaskExecutor {
 	return sub.NewTaskExecutorWithValidation(
 		toolBinder,
@@ -181,6 +188,7 @@ func createExecutor(
 		cfg.Validation.RetryOnFail,
 		cfg.Validation.StrictMode,
 		sub.WithChatClient(chatClient),
+		sub.WithStrategySource(strategySrc),
 	)
 }
 

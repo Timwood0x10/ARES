@@ -106,6 +106,12 @@ func (a *OpenRouterAdapter) Generate(ctx context.Context, prompt string) (string
 	return result.Choices[0].Message.Content, nil
 }
 
+// GenerateWithParams generates text; per-call parameter overrides are
+// not supported by this adapter, so it delegates to Generate.
+func (a *OpenRouterAdapter) GenerateWithParams(ctx context.Context, prompt string, _ map[string]any) (string, error) {
+	return a.Generate(ctx, prompt)
+}
+
 // GenerateStructured generates structured output.
 func (a *OpenRouterAdapter) GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error) {
 	messages := []map[string]interface{}{

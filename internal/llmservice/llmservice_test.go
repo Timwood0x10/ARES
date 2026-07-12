@@ -36,7 +36,7 @@ func (m *mockLLMClient) GenerateStream(ctx context.Context, prompt string) (<-ch
 	return ch, nil
 }
 
-func (m *mockLLMClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (m *mockLLMClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
 	if m.chatFunc != nil {
 		return m.chatFunc(ctx, messages, tools)
 	}

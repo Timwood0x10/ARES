@@ -507,6 +507,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 			return nil, fmt.Errorf("build active strategy manager: %w", err)
 		}
 		system.ActiveStrategyManager = asm
+		popAdapter.activeStrategyMgr = asm
 		if system.DreamCycle != nil {
 			system.DreamCycle.stateManager = asm
 		}

@@ -120,7 +120,10 @@ func main() {
 	if comp.Evolution != nil {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
-	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+	// Wire the GA's deployed strategy into live agents so the running
+	// agents read the active prompt/params at runtime.
+	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
+	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
 		cancel()
 		log.Fatalf("create agents: %v", err)
@@ -128,7 +131,7 @@ func main() {
 
 	// Register leader
 	leaderFactory := func() base.Agent {
-		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc)
+		a, _ := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 		return a
 	}
 	mgr.RegisterAgent(leaderAgent, leaderFactory)

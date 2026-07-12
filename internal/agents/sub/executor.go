@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -22,9 +23,11 @@ type FallbackHandler func(ctx context.Context, task *models.Task) ([]*models.Rec
 
 // ChatClient sends chat messages with tool support to the LLM.
 // When set on the executor, the agent can use native tool calling
-// instead of text-only prompt generation.
+// instead of text-only prompt generation. The optional params map carries
+// per-call overrides (temperature, max_tokens, top_k) from the active
+// evolution strategy so the live agent can be steered at runtime.
 type ChatClient interface {
-	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error)
+	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
 }
 
 const defaultMaxToolRounds = 5
@@ -33,8 +36,9 @@ const defaultMaxToolRounds = 5
 type taskExecutor struct {
 	toolBinder       ToolBinder
 	llmAdapter       output.LLMAdapter
-	chatClient       ChatClient // Optional: enables native tool calling via Chat API
-	maxToolRounds    int        // Max tool-calling iterations (default 5)
+	chatClient       ChatClient            // Optional: enables native tool calling via Chat API
+	strategySource   agents.StrategySource // Optional: live strategy overrides (prompt + LLM params)
+	maxToolRounds    int                   // Max tool-calling iterations (default 5)
 	template         *output.TemplateEngine
 	promptTpl        string
 	validator        *output.Validator
@@ -74,6 +78,16 @@ func WithChatClient(client ChatClient) TaskExecutorOption {
 func WithMaxToolRounds(n int) TaskExecutorOption {
 	return func(e *taskExecutor) {
 		e.maxToolRounds = n
+	}
+}
+
+// WithStrategySource returns a TaskExecutorOption that injects a live
+// evolution StrategySource. When set, the active strategy can override the
+// prompt template and supply per-call LLM parameter overrides (temperature,
+// max_tokens, top_k) so the running agent is steered by the GA at runtime.
+func WithStrategySource(src agents.StrategySource) TaskExecutorOption {
+	return func(e *taskExecutor) {
+		e.strategySource = src
 	}
 }
 
@@ -345,7 +359,20 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 		promptData["style"] = profile.Style
 	}
 
-	prompt, err := e.template.Render(e.promptTpl, promptData)
+	// Apply live evolution strategy: override the prompt template if the
+	// active strategy provides one, and collect per-call LLM param overrides.
+	tpl := e.promptTpl
+	params := map[string]any{}
+	if st := e.activeStrategy(ctx); st != nil {
+		if st.Prompt != "" {
+			tpl = st.Prompt
+		}
+		for k, v := range st.Params {
+			params[k] = v
+		}
+	}
+
+	prompt, err := e.template.Render(tpl, promptData)
 	if err != nil {
 		return nil, errors.Wrap(err, "render prompt")
 	}
@@ -355,17 +382,31 @@ func (e *taskExecutor) executeWithLLMSingle(ctx context.Context, task *models.Ta
 	if e.chatClient != nil && e.toolBinder != nil {
 		schemas := e.toolBinder.GetToolSchemas()
 		if len(schemas) > 0 {
-			return e.executeWithChatAndTools(ctx, prompt, schemas)
+			return e.executeWithChatAndTools(ctx, prompt, schemas, params)
 		}
 	}
 
 	// Fall back to text-only generation.
-	return e.executeWithLLMTextOnly(ctx, prompt)
+	return e.executeWithLLMTextOnly(ctx, prompt, params)
+}
+
+// activeStrategy fetches the currently-deployed evolution strategy, if any.
+// Errors are logged and ignored so a missing store never breaks execution.
+func (e *taskExecutor) activeStrategy(ctx context.Context) *agents.ActiveStrategy {
+	if e.strategySource == nil {
+		return nil
+	}
+	st, err := e.strategySource.GetActiveStrategy(ctx)
+	if err != nil {
+		log.Warn("failed to read active strategy", "error", err)
+		return nil
+	}
+	return st
 }
 
 // executeWithChatAndTools uses the Chat API with native tool calling.
 // Implements the agentic loop: LLM → tool_calls → execute → result → LLM → final answer.
-func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, schemas []resources.ToolSchema) ([]*models.RecommendItem, error) {
+func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt string, schemas []resources.ToolSchema, params map[string]any) ([]*models.RecommendItem, error) {
 	// Convert tool schemas to LLM format.
 	llmTools := make([]core.Tool, 0, len(schemas))
 	for _, s := range schemas {
@@ -391,7 +432,7 @@ func (e *taskExecutor) executeWithChatAndTools(ctx context.Context, prompt strin
 			"msg_count":  len(messages),
 		})
 
-		resp, err := e.chatClient.Chat(ctx, messages, llmTools)
+		resp, err := e.chatClient.Chat(ctx, messages, llmTools, params)
 		if err != nil {
 			return nil, errors.Wrap(err, "chat API call failed")
 		}
@@ -469,12 +510,13 @@ func (e *taskExecutor) executeToolCall(ctx context.Context, tc core.ToolCall) (s
 }
 
 // executeWithLLMTextOnly performs a text-only LLM generation (original behavior).
-func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string) ([]*models.RecommendItem, error) {
+// params carries optional per-call LLM overrides from the active strategy.
+func (e *taskExecutor) executeWithLLMTextOnly(ctx context.Context, prompt string, params map[string]any) ([]*models.RecommendItem, error) {
 	e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 		KeyAgentID: e.agentID,
 		"prompt":   prompt[:min(200, len(prompt))],
 	})
-	response, err := e.llmAdapter.Generate(ctx, prompt)
+	response, err := e.llmAdapter.GenerateWithParams(ctx, prompt, params)
 	if err != nil {
 		e.emitEvent(ctx, ares_events.EventLLMCall, map[string]any{
 			KeyAgentID: e.agentID,

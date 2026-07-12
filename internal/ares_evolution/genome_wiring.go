@@ -78,6 +78,11 @@ type GenomePopulationAdapter struct {
 	// records outcome feedback after each evolution cycle.
 	feedbackRecorder *FeedbackRecorder
 
+	// ActiveStrategyManager deploys the best-evolved strategy to the
+	// runtime so the live agent can consume it. When set, Run() deploys
+	// the current best strategy after each evolution cycle. Optional.
+	activeStrategyMgr *ActiveStrategyManager
+
 	// Metrics records Prometheus counters for evolution events (optional).
 	metrics *ares_observability.PrometheusMetrics
 
@@ -255,6 +260,24 @@ func WithAdapterMetrics(metrics *ares_observability.PrometheusMetrics) GenomeAda
 	}
 }
 
+// WithActiveStrategyManager attaches an ActiveStrategyManager to the adapter.
+// When set, Run() deploys the current best strategy to the active strategy
+// store after each evolution cycle, enabling the live agent to consume it.
+// Without this, evolved strategies are never persisted for runtime use.
+//
+// Args:
+//
+//	mgr - the active strategy manager (must not be nil).
+//
+// Returns:
+//
+//	GenomeAdapterOption - the configuration function.
+func WithActiveStrategyManager(mgr *ActiveStrategyManager) GenomeAdapterOption {
+	return func(a *GenomePopulationAdapter) {
+		a.activeStrategyMgr = mgr
+	}
+}
+
 // WithAdapterCoordinator attaches the new system's coordinator bridge to the adapter.
 // When set, Run() generates diff patches from the GA population's evolution results
 // and submits them to the coordinator for decision and deployment.
@@ -308,69 +331,25 @@ func WithAdapterBatchScoring(bs BatchScorer) GenomeAdapterOption {
 // Returns:
 //
 //	error - non-nil if evolution fails.
+//
+// Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
+// triggered by scheduler. The atomic API handles pre-scoring, evolution, and
+// post-scoring in a single call, eliminating the risk of evolving unevaluated agents.
+// After evolution, the best strategy is deployed to the active strategy store
+// (when an ActiveStrategyManager is wired) so the live agent can consume it.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//
+// Returns:
+//
+//	error - non-nil if evolution fails.
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
-	var scorer genome.ScorerFunc
-
+	scorer := a.buildRunScorer(ctx)
 	if a.tieredScorer != nil {
-		// Use tiered scorer pipeline: cache → LLM(budget-gated) → heuristic.
-		// Reset per-generation budget at start of each cycle.
-		a.tieredScorer.ResetForGeneration()
-
-		// Pre-fill cache with batch-scored values before tiered scoring runs.
-		// This turns N per-agent LLM calls into ceil(N/batchSize) batched calls.
-		if a.batchScorer != nil && a.scoreCache != nil {
-			agents, ver := a.pop.Snapshot()
-			if len(agents) > 0 {
-				scores := a.batchScorer(ctx, agents)
-				n := min(len(scores), len(agents))
-				for i := 0; i < n; i++ {
-					hash, err := scoring.StrategyHash(agents[i])
-					if err == nil {
-						a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
-					}
-				}
-				el.Debug(ctx, "Run", "pre-filled score cache via batch scorer", "count", n,
-					"version", ver,
-					"scored", len(scores),
-				)
-			}
-		}
-
-		scorer = func(s *mutation.Strategy) float64 {
-			// When memory-aware scorer is set, delegate through it to get
-			// evidence-based bonuses and cost/latency penalties.
-			if a.memoryScorer != nil {
-				score, _, err := a.memoryScorer.Score(ctx, s)
-				if err != nil {
-					el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
-						"strategy_id", s.ID,
-					)
-					return 50.0
-				}
-				return score
-			}
-			score, _, err := a.tieredScorer.Score(ctx, s)
-			if err != nil {
-				el.Warn(ctx, "Run", "tiered scorer failed, using baseline", "error", err,
-					"strategy_id", s.ID,
-				)
-				return 50.0 // fallback baseline on error
-			}
-			return score
-		}
-		// Log scoring stats after evolution.
-		defer func() {
-			stats := a.tieredScorer.Stats()
-			used, max, cacheHits, fallbacks := a.budget.Usage()
-			el.Info(ctx, "Run", "tiered scoring stats", "llm_used", used,
-				"llm_max", max,
-				"cache_hits", cacheHits,
-				"fallbacks", fallbacks,
-				"tier_stats", stats,
-			)
-		}()
-	} else {
-		scorer = buildScorer(a.scorer)
+		// Log scoring stats once the cycle returns (mirrors prior defer semantics).
+		defer a.logTieredStats(ctx)
 	}
 
 	// Capture pre-evolution snapshot for outcome recording when feedback
@@ -381,35 +360,8 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		agentsBefore, _ = a.pop.Snapshot()
 	}
 
-	// --- Pre-evolution guardrails checkpoint ---
-	if a.guardrails != nil {
-		preStats := a.pop.Stats()
-		agents, _ := a.pop.Snapshot()
-		unevaluated := countUnevaluated(agents)
-
-		preResult := a.guardrails.PreEvolveCheck(ctx,
-			preStats.BestScore,
-			preStats.Generation,
-			preStats.Size,
-			unevaluated,
-		)
-
-		// Log all pre-check events
-		for _, evt := range preResult.Events {
-			el.Warn(ctx, "Run", "pre-evolve guardrail triggered", "rule", evt.Rule,
-				"level", evt.Level,
-				"message", evt.Message,
-				"suggested_action", evt.SuggestedAction,
-			)
-			if a.metrics != nil {
-				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
-			}
-		}
-
-		if preResult.ShouldStop {
-			return fmt.Errorf("adapter.Run: pre-evolve guardrail check failed (generation %d): %d event(s), best_score=%.2f, unevaluated=%d/%d",
-				preStats.Generation, len(preResult.Events), preStats.BestScore, unevaluated, preStats.Size)
-		}
+	if err := a.runPreGuardrails(ctx); err != nil {
+		return err
 	}
 
 	if err := a.pop.EvolveAfterScoring(ctx, scorer, a.mutator, a.crosser); err != nil {
@@ -423,43 +375,18 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		a.recordOutcomesLocked(ctx, agentsBefore)
 	}
 
-	// --- Post-evolution guardrails checkpoint ---
-	if a.guardrails != nil {
-		postStats := a.pop.Stats()
-		agents, _ := a.pop.Snapshot()
-		lineageShares := computeLineageShares(agents)
-
-		postResult := a.guardrails.PostEvolveCheck(ctx,
-			postStats.BestScore,
-			postStats.Generation,
-			lineageShares,
-		)
-
-		// Log all post-check events
-		for _, evt := range postResult.Events {
-			el.Warn(ctx, "Run", "post-evolve guardrail triggered", "rule", evt.Rule,
-				"level", evt.Level,
-				"message", evt.Message,
-				"suggested_action", evt.SuggestedAction,
-			)
-			if a.metrics != nil {
-				a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
-			}
-		}
-
-		if postResult.ShouldStop {
-			// Evolution already completed; log warning but still return error.
-			el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed", "generation", postStats.Generation,
-				"event_count", len(postResult.Events),
-			)
-			return fmt.Errorf("adapter.Run: post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
-				postStats.Generation, len(postResult.Events), postStats.BestScore)
-		}
+	if err := a.runPostGuardrails(ctx); err != nil {
+		return err
 	}
 
 	// Submit evolution results to the new system's coordinator for decision.
 	if a.coordinator != nil && a.diffReg != nil && a.genomeReg != nil {
 		a.submitToCoordinator(ctx)
+	}
+
+	// Deploy the best-evolved strategy so the live agent can consume it.
+	if a.activeStrategyMgr != nil {
+		a.deployBestStrategy(ctx)
 	}
 
 	stats := a.pop.Stats()
@@ -469,6 +396,197 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 		"avg_score", stats.AvgScore,
 	)
 	return nil
+}
+
+// buildRunScorer constructs the scorer used for this evolution cycle.
+// It prefers the tiered (cache + budget-gated LLM + heuristic) pipeline and
+// falls back to the plain configured scorer when no tiered pipeline exists.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//
+// Returns:
+//
+//	genome.ScorerFunc - the scorer to use for evolution.
+func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.ScorerFunc {
+	if a.tieredScorer == nil {
+		return buildScorer(a.scorer)
+	}
+
+	// Reset per-generation budget at the start of each cycle.
+	a.tieredScorer.ResetForGeneration()
+
+	// Pre-fill cache with batch-scored values before tiered scoring runs.
+	// This turns N per-agent LLM calls into ceil(N/batchSize) batched calls.
+	if a.batchScorer != nil && a.scoreCache != nil {
+		agents, ver := a.pop.Snapshot()
+		if len(agents) > 0 {
+			scores := a.batchScorer(ctx, agents)
+			n := min(len(scores), len(agents))
+			for i := 0; i < n; i++ {
+				hash, err := scoring.StrategyHash(agents[i])
+				if err == nil {
+					a.scoreCache.Put(hash, scoring.MakeEntry(hash, scores[i], "batch", 1, 0.9))
+				}
+			}
+			el.Debug(ctx, "Run", "pre-filled score cache via batch scorer", "count", n,
+				"version", ver,
+				"scored", len(scores),
+			)
+		}
+	}
+
+	return func(s *mutation.Strategy) float64 {
+		// When memory-aware scorer is set, delegate through it to get
+		// evidence-based bonuses and cost/latency penalties.
+		if a.memoryScorer != nil {
+			score, _, err := a.memoryScorer.Score(ctx, s)
+			if err != nil {
+				el.Warn(ctx, "Run", "memory-aware scorer failed, using heuristic", "error", err,
+					"strategy_id", s.ID,
+				)
+				return 50.0
+			}
+			return score
+		}
+		score, _, err := a.tieredScorer.Score(ctx, s)
+		if err != nil {
+			el.Warn(ctx, "Run", "tiered scorer failed, using baseline", "error", err,
+				"strategy_id", s.ID,
+			)
+			return 50.0 // fallback baseline on error
+		}
+		return score
+	}
+}
+
+// logTieredStats logs tiered scorer statistics after an evolution cycle.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+func (a *GenomePopulationAdapter) logTieredStats(ctx context.Context) {
+	stats := a.tieredScorer.Stats()
+	used, max, cacheHits, fallbacks := a.budget.Usage()
+	el.Info(ctx, "Run", "tiered scoring stats", "llm_used", used,
+		"llm_max", max,
+		"cache_hits", cacheHits,
+		"fallbacks", fallbacks,
+		"tier_stats", stats,
+	)
+}
+
+// runPreGuardrails executes the pre-evolution safety checkpoint.
+// Returns an error (aborting the cycle) when the guardrails demand a stop.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//
+// Returns:
+//
+//	error - non-nil when the pre-evolve guardrail demands a stop.
+func (a *GenomePopulationAdapter) runPreGuardrails(ctx context.Context) error {
+	if a.guardrails == nil {
+		return nil
+	}
+
+	preStats := a.pop.Stats()
+	agents, _ := a.pop.Snapshot()
+	unevaluated := countUnevaluated(agents)
+
+	preResult := a.guardrails.PreEvolveCheck(ctx,
+		preStats.BestScore,
+		preStats.Generation,
+		preStats.Size,
+		unevaluated,
+	)
+
+	for _, evt := range preResult.Events {
+		el.Warn(ctx, "Run", "pre-evolve guardrail triggered", "rule", evt.Rule,
+			"level", evt.Level,
+			"message", evt.Message,
+			"suggested_action", evt.SuggestedAction,
+		)
+		if a.metrics != nil {
+			a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+		}
+	}
+
+	if preResult.ShouldStop {
+		return fmt.Errorf("adapter.Run: pre-evolve guardrail check failed (generation %d): %d event(s), best_score=%.2f, unevaluated=%d/%d",
+			preStats.Generation, len(preResult.Events), preStats.BestScore, unevaluated, preStats.Size)
+	}
+	return nil
+}
+
+// runPostGuardrails executes the post-evolution safety checkpoint.
+// Returns an error when the guardrails demand a stop after evolution.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+//
+// Returns:
+//
+//	error - non-nil when the post-evolve guardrail demands a stop.
+func (a *GenomePopulationAdapter) runPostGuardrails(ctx context.Context) error {
+	if a.guardrails == nil {
+		return nil
+	}
+
+	postStats := a.pop.Stats()
+	agents, _ := a.pop.Snapshot()
+	lineageShares := computeLineageShares(agents)
+
+	postResult := a.guardrails.PostEvolveCheck(ctx,
+		postStats.BestScore,
+		postStats.Generation,
+		lineageShares,
+	)
+
+	for _, evt := range postResult.Events {
+		el.Warn(ctx, "Run", "post-evolve guardrail triggered", "rule", evt.Rule,
+			"level", evt.Level,
+			"message", evt.Message,
+			"suggested_action", evt.SuggestedAction,
+		)
+		if a.metrics != nil {
+			a.metrics.RecordEvolutionGuardrail(string(evt.ErrorCode))
+		}
+	}
+
+	if postResult.ShouldStop {
+		// Evolution already completed; log warning but still return error.
+		el.Warn(ctx, "Run", "post-evolve guardrail signals stop, but evolution already completed", "generation", postStats.Generation,
+			"event_count", len(postResult.Events),
+		)
+		return fmt.Errorf("adapter.Run: post-evolve guardrail check failed after evolution completed (generation %d): %d event(s), best_score=%.2f",
+			postStats.Generation, len(postResult.Events), postStats.BestScore)
+	}
+	return nil
+}
+
+// deployBestStrategy persists the current best-evolved strategy to the active
+// strategy store so the live agent can consume it. It is a no-op when no
+// ActiveStrategyManager is wired or no evaluated strategy exists.
+//
+// Args:
+//
+//	ctx - operation context for cancellation.
+func (a *GenomePopulationAdapter) deployBestStrategy(ctx context.Context) {
+	if a.activeStrategyMgr == nil {
+		return
+	}
+	best := a.pop.BestStrategy()
+	if best == nil {
+		el.Debug(ctx, "deployBestStrategy", "no evaluated strategy to deploy")
+		return
+	}
+	if err := a.activeStrategyMgr.Deploy(ctx, best); err != nil {
+		el.Warn(ctx, "deployBestStrategy", "deploy failed", "strategy_id", best.ID, "error", err)
+	}
 }
 
 // recordOutcomesLocked records strategy outcomes to the adaptive distribution

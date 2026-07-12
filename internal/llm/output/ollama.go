@@ -113,6 +113,12 @@ func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, er
 	return response, nil
 }
 
+// GenerateWithParams generates text; per-call parameter overrides are
+// not supported by this adapter, so it delegates to Generate.
+func (a *OllamaAdapter) GenerateWithParams(ctx context.Context, prompt string, _ map[string]any) (string, error) {
+	return a.Generate(ctx, prompt)
+}
+
 // GenerateStructured generates structured output.
 func (a *OllamaAdapter) GenerateStructured(ctx context.Context, prompt string, schema string) (*models.RecommendResult, error) {
 	fullPrompt := prompt + "\n\nRespond with valid JSON matching this schema:\n" + schema

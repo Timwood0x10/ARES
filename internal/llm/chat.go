@@ -15,24 +15,27 @@ import (
 )
 
 // Chat sends a chat request with tool support to the LLM.
-// Accepts structured messages and optional tools, returning a rich response
-// that may include tool_calls. Supported by all providers.
+// Accepts structured messages, optional tools, and optional per-call
+// parameter overrides (temperature, max_tokens, top_k) drawn from an
+// evolution strategy. A nil or empty params map uses the defaults.
 // Args:
 //
 //	ctx - operation context.
 //	messages - conversation messages.
 //	tools - available tools for function calling (may be empty).
+//	params - optional evolution strategy parameter overrides.
 //
 // Returns:
 //
 //	*core.GenerateResponse - the chat response including optional tool_calls.
 //	error - request, decode, or unsupported provider error.
-func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
 	start := time.Now()
 	model := ""
 	if c.config != nil {
 		model = c.config.Model
 	}
+	overrides := extractOverrides(params)
 
 	// Validate input messages.
 	if len(messages) == 0 {
@@ -68,11 +71,11 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 
 	switch ProviderType(c.config.Provider) {
 	case ProviderOllama:
-		result, err = c.chatOllama(ctx, messages, tools)
+		result, err = c.chatOllama(ctx, messages, tools, overrides)
 	case ProviderOpenAI, ProviderOpenRouter:
-		result, err = c.chatOpenAI(ctx, messages, tools)
+		result, err = c.chatOpenAI(ctx, messages, tools, overrides)
 	case ProviderAnthropic:
-		result, err = c.chatAnthropic(ctx, messages, tools)
+		result, err = c.chatAnthropic(ctx, messages, tools, overrides)
 	default:
 		err = fmt.Errorf("chat: unsupported provider: %s", c.config.Provider)
 	}
@@ -116,19 +119,21 @@ func summarizeMessages(messages []*core.LLMMessage) string {
 //	ctx - operation context.
 //	messages - conversation messages to send.
 //	tools - available tools for function calling (may be empty).
+//	o - per-call parameter overrides from an evolution strategy.
 //
 // Returns:
 //
 //	*core.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
 	body := map[string]any{
 		"model":    c.config.Model,
 		"messages": buildOpenAIChatMessages(messages),
 		"stream":   false,
 		"options": map[string]any{
-			"temperature": 0.7,
-			"num_predict": defaultMaxTokens,
+			"temperature": o.applyTemperature(0.7),
+			"num_predict": o.applyMaxTokens(defaultMaxTokens),
+			"top_k":       o.applyTopK(defaultOllamaTopK),
 		},
 	}
 	if len(tools) > 0 {
@@ -213,17 +218,18 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 //	ctx - operation context.
 //	messages - conversation messages to send.
 //	tools - available tools for function calling (may be empty).
+//	o - per-call parameter overrides from an evolution strategy.
 //
 // Returns:
 //
 //	*core.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
 	if c.config.APIKey == "" {
 		return nil, fmt.Errorf("API key is required for OpenAI/OpenRouter chat")
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
@@ -231,7 +237,7 @@ func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, to
 	reqBody := map[string]any{
 		"model":       c.config.Model,
 		"messages":    buildOpenAIChatMessages(messages),
-		"temperature": 0.7,
+		"temperature": o.applyTemperature(0.7),
 		"max_tokens":  maxTokens,
 	}
 	if len(tools) > 0 {
@@ -386,17 +392,18 @@ func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
 //	ctx - operation context.
 //	messages - conversation messages to send.
 //	tools - available tools for function calling (may be empty).
+//	o - per-call parameter overrides from an evolution strategy.
 //
 // Returns:
 //
 //	*core.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool) (*core.GenerateResponse, error) {
+func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
 	if c.config.APIKey == "" {
 		return nil, fmt.Errorf("API key is required for Anthropic chat")
 	}
 
-	maxTokens := c.config.MaxTokens
+	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
@@ -407,6 +414,7 @@ func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage,
 		"model":      c.config.Model,
 		"messages":   chatMsgs,
 		"max_tokens": maxTokens,
+		"top_k":      o.applyTopK(0),
 	}
 	if systemPrompt != "" {
 		reqBody["system"] = systemPrompt
