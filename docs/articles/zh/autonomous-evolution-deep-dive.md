@@ -1918,6 +1918,275 @@ graph TD
 
 相比旧版本的 JSON 文件快照，当前方案放弃了"文件级断点续跑"的能力（实际线上场景很少用），换来了更轻量、更实时、与监控体系集成的运行时快照。
 
+### 9.11 多目标优化：NSGA-II 选择
+
+基本的选择算子（Truncation、Tournament、RouletteWheel、Rank）都优化单一分数。但策略质量不是一个维度——高成功率的策略可能成本很高，低成本策略可能很慢。多目标优化通过在多个维度上维护帕累托最优权衡来解决这个问题。
+
+实现位于 `internal/ares_evolution/genome/multi_objective.go`，提供完整的 NSGA-II 流水线：
+
+```go
+// 四个默认维度，带方向和权重
+var DefaultDimensionDirections = map[string]DimDirection{
+    "success_rate": Maximize,    // 成功率越高越好
+    "quality":      Maximize,    // 输出质量越高越好
+    "cost":         Minimize,    // 成本越低越好
+    "latency":      Minimize,    // 延迟越低越好
+}
+
+var DefaultDimensionWeights = map[string]float64{
+    "success_rate": 0.40,    // 成功率权重最高
+    "quality":      0.25,    // 输出质量第二
+    "cost":         0.20,    // 成本效率第三
+    "latency":      0.15,    // 延迟权重最低
+}
+```
+
+**工作原理：**
+
+| 步骤 | 函数 | 描述 |
+|------|------|------|
+| 1 | `ParetoDominance(a, b)` | 方向感知：如果 a 在所有维度不差于 b 且至少一个维度严格更好，返回 true |
+| 2 | `ParetoFront(strategies)` | 提取第 0 级帕累托前沿（非支配解集） |
+| 3 | `ParetoRank(strategies)` | 完整非支配排序——为每个策略分配整数等级（0 = 最佳前沿） |
+| 4 | `CrowdingDistance(strategies)` | 在每个前沿内测量解密度；边界点获得无限距离以保留极端值 |
+| 5 | `NondominatedSortingSelection` | 组合等级 + 拥挤距离进行选择：优先选低等级，同级选高拥挤距离 |
+
+`NondominatedSortingSelection` 通过 `buildSelector()` 接入——将 `"nsga2"` 或 `"nondominated"` 作为选择策略字符串即可激活。选择器先按帕累托等级排序，再按拥挤距离降序排列，取前 N 个。
+
+**何时使用 NSGA-II：** 当你关心多个冲突的目标时。无需手动调整成功率与成本之间的权重，NSGA-II 会维护一组多样化的权衡解。权重（0.40/0.25/0.20/0.15）在需要单一标量分数时用于聚合，但选择过程本身基于完整的帕累托排序。
+
+### 9.12 稳态 GA：不全部替换的进化
+
+标准的代际 GA 每代替换整个种群——旧代死亡，新代接管。稳态 GA 采用不同的方法：大多数个体存活，只替换最差的部分。
+
+`population.go` 实现了 `EvolveSteadyState()`：
+
+```go
+func (p *Population) EvolveSteadyState(ctx context.Context, 
+    mutator MutatorInterface, 
+    crosser CrossoverInterface, 
+    replaceRate float64) error
+```
+
+**关键机制：**
+- `replaceRate` 被限制在 [0.1, 0.5] 范围内；默认 0.3
+- 每代后代数 = `max(1, int(float64(p.Size) * replaceRate))`
+- 每代只替换 10-50% 的种群
+- 存活率 = `1.0 - replaceRate`
+- `doEvolve()` 函数尊重 `evolveConfig.maxOffspring` 来限制后代数量
+
+**为什么稳态重要：** 在线学习场景中——代理同时服务请求和进化——你希望种群持续存在。稳态进化的优势：
+- 保留探索历史（跨代的多样性）
+- 从不中断活跃策略集
+- 收敛更平滑（没有突然的种群翻转）
+- 比批量代际替换更适合持续在线适应
+
+与完整代际 `Evolve()` 对比：
+| 属性 | 完整代际 | 稳态 |
+|------|---------|------|
+| 替换率 | 100%——SurvivalRate 控制幸存者，但所有非精英都被替换 | 10-50%——由 replaceRate 控制 |
+| 收敛速度 | 快，可能过冲 | 平滑，渐进 |
+| 多样性 | 每代重置 | 跨代维持 |
+| 使用场景 | 离线优化 | 在线（生产环境）自适应 |
+
+### 9.13 分离规范/选择分数：无污染适应度共享
+
+一个微妙但重要的设计改进：**规范适应度（`Score`）与选择压力（`SelectionScore`）的分离。**
+
+在 `mutation.Strategy` 类型中（`mutation/types.go`）：
+
+```go
+type Strategy struct {
+    // ... 其他字段 ...
+    Score          float64             // 规范适应度——从不被临时调整修改
+    SelectionScore float64             // 由适应度共享调整——每代重置为 0
+    DimensionScores map[string]float64 // 每个维度的分数（用于多目标）
+    GenerationCreated int              // 该个体被创建时的代数
+}
+```
+
+**解决的问题：** 适应度共享通过惩罚参数空间中拥挤区域的个体来促进多样性。没有分离，这些调整会污染规范的 `Score`——而 `Score` 用于报告、历史记录和 `BestStrategy()`。更糟的是，如果个体存活多代，惩罚会不断累积。
+
+**工作原理：**
+
+1. `Score` 由评分者设置，**从不修改**。它是规范的、客观的适应度。
+2. `SelectionScore` 每代从 0 开始。适应度共享从 `Score` 初始化它并应用惩罚。
+3. `effectiveScore()` 在 `selection.go` 中选择正确的值：
+
+```go
+func effectiveScore(s *mutation.Strategy) float64 {
+    if s.SelectionScore != 0 {
+        return s.SelectionScore
+    }
+    return s.Score
+}
+```
+
+所有选择算子（Tournament、Roulette、SUS、Rank、Truncation、LineageRank）都使用 `effectiveScore()`，因此适应度共享影响所有选择方式。
+
+**适应度共享实现**（`population_guard.go:432-557`）：
+- 通过参数相似性计算拥挤度（欧几里得距离 < `FitnessNicheRadius` = 0.15）
+- 惩罚每个拥挤的个体：`SelectionScore /= (1.0 + shareSigma * crowdCount)`，其中 `shareSigma = 0.3`
+- 三种策略适配不同种群规模：
+  - **小规模**：`applyFitnessSharingLocked()` — 完整 O(n²) 两两对比
+  - **中规模**：`applyFitnessSharingSampled()` — 蓄水池采样 O(m × sampleSize × k)
+  - **大规模（>500）**：`applyFitnessSharingSpatial()` — 空间网格索引避免 O(n²)
+- 精英个体（`EliteCount` 以内）**免于惩罚**
+
+### 9.14 经验系统：数据驱动的进化指导
+
+经验系统连接工具调用可观测性与进化方向。它提供了从原始执行轨迹到可执行进化提示的结构化流水线。
+
+**流水线：**
+
+```
+ToolCallRecord → RawExperience → NormalizedExperience → MemoryExperienceStore
+                                      ↓
+                                AggregateEvidence
+                                      ↓
+                                EvolutionHint（用于突变指导）
+```
+
+**核心组件：**
+
+`tool_call_collector.go` — 将工具调用捕获为 `ToolCallRecord`，包含策略 ID、任务类型、工具名、延迟、成功状态、错误码和结果大小。通过规范化器去重并过滤噪声（高延迟异常值、高错误率记录）。
+
+`memory_store.go` — `MemoryExperienceStore` 提供索引存储，对 `strategy_id` 和 `task_type` 建立字典索引：
+
+| 方法 | 用途 |
+|------|------|
+| `Append(ctx, exp)` | 单个经验写入，带验证和容量检查 |
+| `AppendBatch(ctx, exps)` | 批量插入，原子验证 |
+| `Query(ctx, strategyID, start, end)` | 索引过滤，时间倒序 |
+| `QueryByTaskType(ctx, taskType, limit)` | 按分数降序，可设限制 |
+| `GetStatistics(ctx, strategyID)` | 聚合指标（总数、平均分、成功率） |
+
+`experience_hints.go` — `GuidanceProvider` 接口桥接经验与进化：
+
+```go
+type GuidanceProvider interface {
+    HintsForTask(ctx context.Context, taskType string, limit int) ([]EvolutionHint, error)
+    RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error
+}
+
+type EvolutionHint struct {
+    ID, TaskType, Problem, Solution  string
+    Constraints, FailedPatterns      []string
+    PreferredTools, PromptSnippets   []string
+    ParamHints                       map[string]float64
+    Confidence                       float64
+    SourceExperienceIDs              []string
+}
+```
+
+`AggregateEvidence()` 从一组规范化经验计算成功率、p50/p95 延迟、错误率和置信度。高置信度经验（成功率 > 0.8、样本数 > 10）派生的提示优先用于突变指导。
+
+证据包（`internal/evidence/`）提供类型安全的证据种类：`KindExecutionTrace`、`KindFailure`、`KindKnowledge`、`KindInsight`、`KindFitness`。每个 `MemoryGenome` 和 `PlannerGenome` 在评估时发出 `KindFitness` 证据，将适应度分数与基因组元数据关联。
+
+**相关文件：**
+- `internal/ares_evolution/experience/types.go` — 数据类型
+- `internal/ares_evolution/experience/tool_call_collector.go` — 收集器
+- `internal/ares_evolution/experience/memory_store.go` — 存储层
+- `internal/ares_evolution/experience_hints.go` — GuidanceProvider + EvolutionHint
+
+### 9.15 内存进化：运行时参数自调优
+
+Genome 包的种群进化不限于策略参数。两种基因组类型将进化扩展到内存和规划器子系统：
+
+**MemoryGenome**（`internal/evolution/genome/memory_genome.go`）：
+
+```go
+type MemoryGenomeConfig struct {
+    MaxHistory            int    // [3, 50]   默认 10
+    MaxSessions           int    // [20, 500] 默认 100
+    MaxDistilledTasks     int    // [500, 20000] 默认 5000
+    UseStructuredCleaning bool   // 切换开关
+}
+```
+
+参数通过 Mutate/Crossover/Fitness 进化：
+- **Mutate**：在各自范围内调整参数（如 MaxHistory ±5）
+- **Crossover**：50% 概率混合双亲的每个参数
+- **Fitness**：基于内存使用证据的启发式计算——MaxHistory 在 [5,20] 内得 0.8，会话惩罚上限 0.3。发出含元数据的 `KindFitness` 证据。
+
+**PlannerGenome**（`internal/evolution/genome/planner_genome.go`）：
+
+```go
+type PlannerGenomeConfig struct {
+    Strategy       string   // "balanced" / "architecture-first" / "memory-first"
+    MaxSources     int      // [3, 30]  默认 10
+    MinRelevance   float64  // [0.1, 0.9] 默认 0.5
+}
+```
+
+- **Fitness**：平衡策略 = 0.8，极端策略 = 0.6；源惩罚上限 0.3
+- **策略效果**：控制 Planner 偏好的知识源（架构、记忆或平衡）
+
+**内存补丁器**（`memory_patcher.go`）：实现 `patch.RuntimeComponent` 接口，提供 `Snapshot()`/`Apply()`/`CanApply()`——使 GA 进化出的参数能够在运行时部署。支持三种补丁类型：
+- `PatchChangePlanner`：更新 `max_history`、`max_tasks`、`max_sessions`
+- `PatchChangeBudget`：更新 `max_distilled_tasks`、`session_ttl`
+- `PatchChangeReducer`：切换 `use_structured_cleaning`
+
+这意味着 GA 不仅仅调优策略参数——它也在同一个 `RunIdleEvolution()` 循环中进化内存配置和规划行为。
+
+### 9.16 第三至六阶段集成：WiredEvolutionSystem 的升级
+
+最初的 `genome_wiring.go` 连接了 DreamCycle → Genome Population → StrategyStore。新的 `genome_wiring_system.go` 将其扩展为具备第三至六阶段能力的自主进化循环：
+
+```go
+type WiredEvolutionSystem struct {
+    // 核心 GA 组件
+    Scheduler             *EvolutionScheduler
+    DreamCycle            *DreamCycle
+    Population            *genome.Population
+    Genealogy             *PopulationGenealogyRecorder
+    StrategyStore         StrategyStore
+
+    // 第三至五阶段：LLM 增强的元进化
+    Reflector     *genome.LLMReflector        // 反思进化模式
+    HypothesisGen *genome.HypothesisGenerator  // 从反思生成假设
+    MetaCtrl      *genome.MetaController       // 自我调整超参数
+
+    // 第六阶段：结构化进化
+    DiffReg       *diff.Registry               // 差异引擎，检测结构化变更
+    Coordinator   *coordinator.EvolutionCoordinator  // 协调结构化补丁
+    GenomeReg     *evogenome.Registry          // 可进化基因组类型注册表
+
+    // 评分基础设施
+    ScoreCache    *scoring.ScoreCache
+    TieredScorer  *scoring.TieredScorer
+    Budget        *scoring.Budget
+
+    // 运营组件
+    ActiveStrategyManager *ActiveStrategyManager
+    ShadowEvaluator       *ShadowEvaluator
+    FeedbackRecorder      *FeedbackRecorder
+    AdaptiveDist          *mutation.AdaptiveDistribution
+    Metrics               *ares_observability.PrometheusMetrics
+}
+```
+
+**反思循环（第三至五阶段）：**
+
+在每个 `RunIdleEvolution()` 循环中，种群进化之后：
+1. `Reflector.Reflect(history, agents)` — 分析进化轨迹：哪些策略出现、哪些失败、收敛模式
+2. `HypothesisGen.Generate(reflection)` — 生成可执行的假设（如"突变率对稳定收敛来说太高"）
+3. `MetaCtrl.ApplyToPopulation(population)` — 自我调整超参数：突变率、交叉率、选择压力
+
+**差异引擎（第六阶段）：**
+
+当 `DiffReg`、`Coordinator` 和 `GenomeReg` 都已初始化时，`RunIdleEvolution()` 运行额外的第六阶段流水线：
+
+1. 对每个注册的基因组类型（memory、planner 等）进行快照
+2. 与注册表进行差异对比，检测结构化变更
+3. 为每个检测到的变更生成 `patch.RuntimePatch`
+4. 作为 `PatchProposal` 提交，`Source: SourceGA`、`Priority: 6`
+5. `Coordinator.Evaluate()` 将经过验证的补丁应用于运行中的组件
+
+这填补了最后的空白：之前，GA 只能调优数值参数。有了第六阶段，进化系统可以将结构化变更传播到内存配置、规划行为，以及注册到基因组注册表的任何运行时组件。
+
+**服务桥接**（`service/service_bridge.go`）：提供 API 层类型与内部 `mutation.Strategy` 类型之间的类型安全转换——`toAPIStrategy()`、`toInternalStrategy()`、`cloneParams()`、`cloneDimensionScores()`。适配器 `apiGuidanceBridge`、`apiMemoryBridge` 和 `llmClientAdapter` 使外部系统能够通过清晰的 API 边界与进化子系统交互。
+
 ### 教训
 
 genome 包的开发让我重新理解了一件事：**遗传算法不是"更聪明的随机搜索"，而是一个完全不同的范式。**

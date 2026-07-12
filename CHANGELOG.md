@@ -5,7 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## \[0.2.6] - 2026-07-07
+## [0.2.7] - 2026-07-12
+
+### New Features
+
+- **NSGA-II Multi-Objective Selection**: Pareto-based multi-objective optimization for strategy evolution. `NondominatedSortingSelection` with non-dominated sorting, crowding distance computation, and Pareto front ranking. Four default optimization dimensions: `success_rate` (maximize, 0.40 weight), `quality` (maximize, 0.25), `cost` (minimize, 0.20), `latency` (minimize, 0.15). Direction-aware Pareto dominance ensures proper handling of minimize vs maximize objectives. Configurable via `WithSelectionStrategy("nsga2")` or `WithSelectionStrategy("nondominated")`.
+- **Split Canonical/Selection Score**: `Score` field represents canonical fitness (never modified by GA internals), `SelectionScore` field is adjusted by fitness sharing per epoch. `effectiveScore()` falls back to `Score` when `SelectionScore` is zero, enabling backward compatibility with existing scoring pipelines.
+- **Fitness Sharing with 3 Strategies**: Diversity-preserving fitness sharing with three automatic scaling strategies: full O(n²) pairwise for small populations (< 100), reservoir sampling for medium populations, spatial grid index for large populations (> 500). `shareSigma = 0.3`, `FitnessNicheRadius = 0.15`. Elites are exempt from sharing penalty. Configurable via `WithFitnessSharing(true)`.
+- **Steady-State GA**: `EvolveSteadyState()` method replaces only `max(1, int(float64(p.Size) * replaceRate))` worst individuals per generation (default 30%). Enables online learning — population persists across generations, only bottom performers are replaced by new candidates. Ideal for production deployments where the system learns continuously without full generation resets. Configurable via `WithSteadyState(true)` and `WithReplaceRate(rate)`.
+- **Experience-Guided Mutation System**: Three-tier evolution experience pipeline: `ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint`. `GuidanceProvider` interface provides directional hints for mutation. `ToolCallExperienceCollector` captures tool call outcomes. `MemoryExperienceStore` with dictionary-based indexing stores and retrieves evolution hints. `AggregateEvidence` computes success rate, p50/p95 latency, and confidence scores for cross-task evidence aggregation.
+- **Memory Evolution Genome**: `MemoryGenomeConfig` with configurable parameters: `MaxHistory` [3–50], `MaxSessions` [20–500], `MaxDistilledTasks` [500–20000], `UseStructuredCleaning`. Implements `Mutate()`, `Crossover()`, `Fitness()` with heuristic fitness based on evidence quality. Works alongside the strategy genome in the evolution pipeline.
+- **Planner Evolution Genome**: `PlannerGenomeConfig` with strategy selection: `balanced`, `architecture-first`, `memory-first`. Configurable `MaxSources` [3–30] and `MinRelevance` [0.1–0.9]. Heuristic fitness assessment based on evidence coverage and consistency. Evolves planning behavior alongside strategy parameters.
+- **Memory Patcher**: `RuntimeComponent` implementation with `Snapshot()`, `Apply()`, `CanApply()` lifecycle. Supports `PatchChangePlanner`, `PatchChangeBudget`, `PatchChangeReducer` for controlled memory system changes. Enables the evolution system to propose and apply memory configuration patches.
+- **Phase 3-6 WiredEvolutionSystem Integration**: `genome_wiring_system.go` unifies all evolution phases into a single `WiredEvolutionSystem` with `Reflector`, `HypothesisGen`, `MetaCtrl` (Phase 3-5), `DiffReg`, `Coordinator`, `GenomeReg` (Phase 6). `RunIdleEvolution()` Phase 6 generates diff patches as `PatchProposal` with `SourceGA` and `Priority 6`. Full reflection loop and diff engine integration.
+- **Service Bridge**: `service_bridge.go` provides bidirectional conversion between API and internal strategy representations: `toAPIStrategy()`, `toInternalStrategy()`, `cloneParams()`, `cloneDimensionScores()`. Enables the evolution system to integrate with the HTTP API layer without exposing internal types.
+
+### Documentation
+
+- **GA Deep-Dive Articles**: Updated `docs/articles/en/autonomous-evolution-deep-dive.md` and `docs/articles/zh/autonomous-evolution-deep-dive.md` with 6 new subsections (9.11-9.16) covering NSGA-II, steady-state GA, split score, experience system, memory evolution, and Phase 3-6 integration.
+- **GA-in-the-Trenches**: Updated `docs/articles/en/ga-in-the-trenches.md` and `docs/articles/zh/ga-in-the-trenches.md` with steady-state GA, NSGA-II, split score lessons, and new Lesson 6 on experience systems.
+- **Overview Update**: Updated `docs/articles/zh/autonomous-evolution-overview.md` with service bridge, memory evolution, and experience hints coverage.
+- **Feature Doc Update**: Updated `docs/en/features/autonomous-evolution.md` and `docs/zh/features/autonomous-evolution.md` with all new GA features.
+- **Analysis Plan Sync**: Updated `GA_ANALYSIS.md` and `GA_DEVELOPMENT_PLAN.md` to reflect completed implementation status.
+
+### Code Quality
+
+- **NSGA-II Validation Gap**: `WithSelectionStrategy("nsga2")` is handled in `buildSelector()` but not yet registered in `validSelectionStrategies` validation map. Workaround: skip validation or use `nondominated` string.
+
+## [0.2.6] - 2026-07-07
 
 ### New Features
 

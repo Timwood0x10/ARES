@@ -156,21 +156,26 @@ pop, err := genome.NewPopulation(ctx, baseStrategy, mutator,
 | `BestStrategy()` | Returns deep-cloned best strategy for deployment |
 | `Snapshot()` | Thread-safe copy of all agents + current generation |
 
-**`Crossover`** — Recombines parent strategies:
+**`CrossoverInterface`** — Recombines parent strategies:
 
 ```go
 type CrossoverInterface interface {
     Crossover(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error)
 }
+```
 
-// Uniform crossover: each param independently from A or B (50% each)
-crosser.Crossover(ctx, parentA, parentB)
+Three crossover types are supported:
 
-// Multi-point crossover: k split points with contiguous segments
-crosser.MultiPointCrossover(ctx, parentA, parentB, k)
+| Type | Description |
+|------|-------------|
+| `uniform` | Each parameter independently from A or B (50% each) — default |
+| `two_point` | Two cut points selected; middle segment from parent B, outer segments from parent A |
+| `segment` | A random contiguous block from parent B, remainder from parent A |
 
-// Half-split prompt crossover: first half from A, second half from B
-crosser.CrossoverWithHalfSplit(ctx, parentA, parentB)
+```go
+crosser, _ := genome.NewCrossover(genome.WithCrossoverType("two_point"))
+// or use the selected type directly
+child, _ := crosser.Crossover(ctx, parentA, parentB)
 ```
 
 **Adaptive Features:**
@@ -203,12 +208,15 @@ type Strategy struct {
 
 **Mutation Types:**
 
-| Type | Probability | Description |
-|------|-------------|-------------|
-| `MutationParameter` | ~70% | Change one parameter value (e.g., temperature 0.7 → 0.5) |
-| `MutationPrompt` | ~15% | Replace prompt template from pool |
-| `MutationTool` | ~15% | Replace tool configuration from pool |
-| `MutationCrossover` | — | Created via crossover recombination |
+| Type | Category | Probability | Description |
+|------|----------|-------------|-------------|
+| `MutationParameter` | Core | ~70% | Change one parameter value (e.g., temperature 0.7 → 0.5) |
+| `MutationPrompt` | Core | ~15% | Replace prompt template from pool |
+| `MutationTool` | Core | ~15% | Replace tool configuration from pool |
+| `MutationSwap` | Structural | ~10% | Swap two parameter values |
+| `MutationInversion` | Structural | ~10% | Reverse a contiguous block of parameters |
+| `MutationScramble` | Structural | ~10% | Shuffle a random subset of parameters |
+| `MutationCrossover` | — | — | Created via crossover recombination (not a mutation type per se) |
 
 **Default Parameter Ranges:**
 
@@ -390,6 +398,334 @@ The GA includes built-in adaptive mechanisms:
 
 ---
 
+## Advanced GA Features
+
+### 1. NSGA-II Multi-Objective Optimization
+
+The system implements a complete NSGA-II (Non-dominated Sorting Genetic Algorithm II) for multi-objective optimization, enabling simultaneous optimization of multiple competing objectives.
+
+**Architecture:**
+
+```mermaid
+graph LR
+    subgraph "NSGA-II Selection"
+        A[Population] --> B[Pareto Non-dominated Sort]
+        B --> C[Front 1]
+        B --> D[Front 2]
+        B --> E[Front N]
+        C --> F[Crowding Distance]
+        D --> F
+        E --> F
+        F --> G[Selection by Rank<br/>+ Crowding Distance]
+    end
+```
+
+**4 Default Dimensions:**
+
+| Dimension | Direction | Weight | Description |
+|-----------|-----------|--------|-------------|
+| `success_rate` | Maximize (↓ cost) | 0.40 | Task completion success rate |
+| `quality` | Maximize (↓ cost) | 0.25 | Output quality score |
+| `cost` | Minimize (spend less) | 0.20 | Total cost (inverse) |
+| `latency` | Minimize (spend less) | 0.15 | Response time (inverse) |
+
+**Direction-aware Pareto dominance** correctly handles both maximize and minimize objectives. The best found Pareto front is preserved across generations.
+
+**Usage:**
+
+```go
+// Enable NSGA-II selection
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithSelectionStrategy("nsga2"),
+    genome.WithNSGADimensions([]genome.NSGADimension{
+        {Name: "success_rate", Maximize: true, Weight: 0.40},
+        {Name: "quality",      Maximize: true, Weight: 0.25},
+        {Name: "cost",         Maximize: false, Weight: 0.20},
+        {Name: "latency",      Maximize: false, Weight: 0.15},
+    }),
+)
+```
+
+**Available selection strategies:** `tournament`, `rank`, `roulette`, `sus`, `truncation`, `nsga2`, `nondominated`
+
+### 2. Steady-State GA Mode
+
+In contrast to the standard generational GA (which replaces the entire population each generation), **steady-state GA** replaces only a subset of the worst individuals per generation. This is ideal for online learning scenarios where the system must maintain stable performance while continuously improving.
+
+| Aspect | Generational GA | Steady-State GA |
+|--------|----------------|-----------------|
+| Individuals replaced per gen | All | `max(1, int(size × replaceRate))` |
+| Default replace rate | — | 0.3 |
+| Replace rate range | — | [0.1, 0.5] |
+| Best for | Batch optimization | Online/continuous learning |
+| Population stability | Low (full churn) | High (mostly persists) |
+
+```go
+// Enable steady-state mode
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithSteadyState(true),
+    genome.WithSteadyStateReplaceRate(0.3),
+)
+```
+
+### 3. Score / SelectionScore Separation & Fitness Sharing
+
+The system separates **canonical fitness** from **selection-adjusted fitness** to enable diversity preservation:
+
+| Field | Role | Modified by |
+|-------|------|-------------|
+| `Score` | Canonical fitness (never modified) | External evaluation |
+| `SelectionScore` | Adjusted for selection (reset to 0 each epoch) | Fitness sharing |
+
+```go
+// effectiveScore() returns SelectionScore if > 0, otherwise Score
+score := pop.effectiveScore(agent)
+```
+
+**Fitness Sharing** penalizes individuals that are too similar to others, preventing premature convergence:
+
+- **Full O(n²)**: For small populations (<100), computes exact pairwise distances
+- **Reservoir sampling**: For medium populations, samples a representative subset
+- **Spatial grid index**: For large populations (≥500), uses grid-based spatial hashing for O(n) approximation
+
+Configuration:
+- `FitnessNicheRadius = 0.15` — Similarity threshold for sharing penalty
+- `shareSigma = 0.3` — Sharing function sigma parameter
+- Elite individuals are exempt from fitness sharing penalties
+
+### 4. Expanded Crossover Types
+
+Beyond the original uniform and multi-point crossover, two additional types are available:
+
+| Type | Description |
+|------|-------------|
+| `uniform` | Each parameter independently from parent A or B (50/50) — default |
+| `two_point` | Two cut points selected; middle segment from parent B, outer segments from parent A |
+| `segment` | A random contiguous block from parent B, remainder from parent A |
+
+Configure via:
+
+```go
+crosser, _ := genome.NewCrossover(
+    genome.WithCrossoverType("two_point"), // or "segment", "uniform"
+    genome.WithSeed(42),
+)
+```
+
+### 5. Expanded Mutation Types
+
+The mutation engine now supports 6 mutation types:
+
+| Type | Category | Description |
+|------|----------|-------------|
+| `param` | Core | Change one parameter value (temperature 0.7→0.5) |
+| `prompt` | Core | Replace prompt template from pool |
+| `tool` | Core | Replace tool configuration from pool |
+| `swap` | Structural | Swap two parameter values |
+| `inversion` | Structural | Reverse a contiguous block of parameters |
+| `scramble` | Structural | Shuffle a random subset of parameters |
+
+The structural mutations (`swap`, `inversion`, `scramble`) operate on the parameter sequence itself rather than individual values, enabling broader search space exploration.
+
+### 6. Evolution Callbacks
+
+The GA engine emits callbacks at key lifecycle events, enabling monitoring, logging, and custom side effects:
+
+| Callback | Trigger timing | Signature |
+|----------|---------------|-----------|
+| `OnGeneration` | End of each generation | `func(stats *GenerationStats)` |
+| `OnFitness` | After individual scoring | `func(agent *Strategy, score float64)` |
+| `OnMutation` | After individual mutation | `func(parent, child *Strategy)` |
+| `OnCrossover` | After crossover | `func(parentA, parentB, child *Strategy)` |
+
+```go
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithCallbacks(genome.EvolveCallbacks{
+        OnGeneration: func(stats *GenerationStats) {
+            slog.Info("Generation complete", "gen", stats.Generation,
+                "best", stats.BestScore, "avg", stats.AvgScore)
+        },
+        OnMutation: func(parent, child *Strategy) {
+            genealogy.Record(ctx, StrategyLineage{
+                ParentID: parent.ID,
+                ChildID:  child.ID,
+                Type:     "mutation",
+            })
+        },
+    }),
+)
+```
+
+### 7. Termination Conditions
+
+Two termination conditions are supported, checked at the start of each generation:
+
+| Condition | Config field | Behavior |
+|-----------|-------------|----------|
+| Max generations | `MaxGenerations` | Stops after N generations |
+| Target fitness | `TargetFitness` | Stops when `BestEverScore() >= TargetFitness` |
+
+Both conditions can be used simultaneously (whichever triggers first):
+
+```go
+dc := &DreamCycle{
+    config: DreamCycleConfig{
+        MaxGenerations: 50,
+        TargetFitness:  95.0, // Stop early if reached
+    },
+}
+```
+
+### 8. Generation History Tracking
+
+Each generation's statistics are recorded in a `GenerationHistoryEntry` and accessible for analysis and visualization:
+
+```go
+type GenerationHistoryEntry struct {
+    Generation     int       // Generation number
+    BestScore      float64   // Best fitness in generation
+    AvgScore       float64   // Average fitness
+    WorstScore     float64   // Worst fitness
+    Diversity      float64   // Population diversity metric
+    BestStrategyID string    // ID of best strategy
+    // ... additional internal fields
+}
+
+// Access history
+history := pop.History()
+for _, entry := range history {
+    fmt.Printf("Gen %d: best=%.2f avg=%.2f diversity=%.2f\n",
+        entry.Generation, entry.BestScore, entry.AvgScore, entry.Diversity)
+}
+```
+
+History supports JSON serialization for export and external visualization.
+
+---
+
+## Evolution Experience System
+
+Beyond the bandit feedback loop documented above, the system includes a three-tier **experience-guided evolution** pipeline that captures tool call patterns and converts them into actionable evolution hints.
+
+### Pipeline
+
+```mermaid
+graph LR
+    A[ToolCallRecord] --> B[RawExperience]
+    B --> C[NormalizedExperience]
+    C --> D[EvolutionHint]
+    D --> E[GuidanceProvider]
+    E --> F[Mutation Guidance]
+```
+
+### Key Components
+
+| Component | Role |
+|-----------|------|
+| `ToolCallRecord` | Raw tool execution data (tool name, params, duration, success) |
+| `RawExperience` | Aggregated view over multiple tool calls |
+| `NormalizedExperience` | Scored and normalized experience with context |
+| `EvolutionHint` | Concrete guidance for GA mutation direction |
+| `GuidanceProvider` | Interface that provides hints for evolution direction |
+
+```go
+// GuidanceProvider interface
+type GuidanceProvider interface {
+    GetHints(ctx context.Context) ([]EvolutionHint, error)
+}
+
+// EvolutionHint directs the GA toward promising regions
+type EvolutionHint struct {
+    Parameter string      // Which parameter to adjust
+    Direction HintDirection // Increase / Decrease / SetTo
+    Value     float64     // Target value
+    Confidence float64    // [0, 1] confidence level
+    Source    string      // Origin of the hint (experience, analysis, etc.)
+}
+```
+
+### Experience Store
+
+`MemoryExperienceStore` provides dictionary-indexed storage with:
+
+- **AggregateEvidence** — Computes success rate, p50/p95 latency, confidence scores
+- **Frequency-based ranking** — Most-used experiences float to top
+- **TTL-based expiration** — Stale experiences are automatically pruned
+
+---
+
+## Memory & Planner Genome Evolution
+
+The evolution system extends beyond strategy parameters to optimize **memory subsystem** and **planner subsystem** configurations through dedicated genome types.
+
+### MemoryGenomeConfig
+
+Optimizes the agent's memory management parameters:
+
+| Parameter | Type | Range | Description |
+|-----------|------|-------|-------------|
+| `MaxHistory` | int | [3, 50] | Maximum conversation history entries |
+| `MaxSessions` | int | [20, 500] | Maximum stored sessions |
+| `MaxDistilledTasks` | int | [500, 20000] | Maximum distilled task records |
+| `UseStructuredCleaning` | bool | — | Enable structured memory cleanup |
+
+Fitness is computed heuristically based on memory hit rate, cleaning efficiency, and resource usage.
+
+### PlannerGenomeConfig
+
+Optimizes the planner subsystem:
+
+| Parameter | Type | Range | Description |
+|-----------|------|-------|-------------|
+| `Strategy` | enum | balanced / architecture-first / memory-first | Planning strategy |
+| `MaxSources` | int | [3, 30] | Maximum information sources |
+| `MinRelevance` | float | [0.1, 0.9] | Minimum relevance threshold |
+
+Both genome types implement `Mutate()`, `Crossover()`, and `Fitness()` methods, making them first-class citizens in the GA population.
+
+---
+
+## WiredEvolutionSystem Integration (Phases 3–6)
+
+The `WiredEvolutionSystem` has been extended with full Phase 3–6 integration for end-to-end autonomous evolution:
+
+### Phase 3: Reflection Loop
+
+| Component | Role |
+|-----------|------|
+| `Reflector` | Analyzes evolution outcomes, generates insights |
+| `ReflectionStore` | Stores reflection data for future reference |
+
+### Phase 4: Hypothesis Generation
+
+| Component | Role |
+|-----------|------|
+| `HypothesisGen` | Generates testable hypotheses from reflection data |
+| `MetaCtrl` | Meta-controller for hypothesis prioritization |
+
+### Phase 5: Self-Improvement
+
+| Component | Role |
+|-----------|------|
+| `DiffReg` | Diff registry tracking changes |
+| `Coordinator` | Coordinates multi-phase evolution activities |
+
+### Phase 6: Autonomous Patching
+
+| Component | Role |
+|-----------|------|
+| `GenomeReg` | Genome registry for code-level evolution |
+| `PatchProposal` | Auto-generated code patches from GA discoveries |
+
+The `RunIdleEvolution()` function in Phase 6 generates diff patches from evolution results and submits them as `PatchProposal` with `SourceGA` and `Priority 6` for self-modification.
+
+```go
+// Run idle evolution with full Phase 3-6 pipeline
+err := evolution.RunIdleEvolution(ctx, system, 10)
+```
+
+---
+
 ## API Reference
 
 ### System Configuration
@@ -411,6 +747,12 @@ type SystemConfig struct {
     MaxMutationRate         float64   // Adaptive mutation ceiling (default: 0.5)
     MaxStagnantGenerations  int       // Stagnation reset threshold (default: 10)
     DiversityThreshold      float64   // Min diversity before aggressive mode (default: 0.15)
+    SelectionStrategy       string    // Selection strategy (default: "tournament")
+    CrossoverType           string    // Crossover type (default: "uniform")
+    SteadyState             bool      // Enable steady-state GA (default: false)
+    SteadyStateReplaceRate  float64   // Steady-state replace rate (default: 0.3)
+    TargetFitness           float64   // Early stop fitness target (default: 0)
+    NSGADimensions          []NSGADimension // NSGA-II dimensions (default: 4 dims)
 }
 
 func DefaultSystemConfig() SystemConfig
@@ -429,6 +771,13 @@ func WithMinMutationRate(rate float64) PopulationOption
 func WithMaxMutationRate(rate float64) PopulationOption
 func WithMaxStagnantGenerations(n int) PopulationOption
 func WithDiversityThreshold(threshold float64) PopulationOption
+func WithSelectionStrategy(strategy string) PopulationOption
+func WithCrossoverType(crossType string) PopulationOption
+func WithSteadyState(enabled bool) PopulationOption
+func WithSteadyStateReplaceRate(rate float64) PopulationOption
+func WithTargetFitness(target float64) PopulationOption
+func WithNSGADimensions(dims []NSGADimension) PopulationOption
+func WithCallbacks(cbs EvolveCallbacks) PopulationOption
 ```
 
 ### Mutator Options
@@ -446,6 +795,7 @@ func WithDeterministicIDs(enabled bool) MutatorOption
 ```go
 func WithSeed(seed int64) CrossoverOption
 func WithDeterministicIDs(enabled bool) CrossoverOption
+func WithCrossoverType(crossType string) CrossoverOption
 ```
 
 ### Population Statistics
@@ -458,6 +808,19 @@ type PopulationStats struct {
     BestScore  float64   // Highest score in population
     WorstScore float64   // Lowest score in population
 }
+
+// GenerationHistoryEntry records per-generation statistics
+type GenerationHistoryEntry struct {
+    Generation     int       // Generation number
+    BestScore      float64   // Best fitness in generation
+    AvgScore       float64   // Average fitness
+    WorstScore     float64   // Worst fitness
+    Diversity      float64   // Population diversity metric
+    BestStrategyID string    // ID of best strategy
+}
+
+// Access full evolution history
+history := pop.History()  // Returns []GenerationHistoryEntry
 ```
 
 ---
@@ -477,6 +840,12 @@ type PopulationStats struct {
 | `MaxMutationRate` | 0.5 | 0.0–1.0 | Ceiling for adaptive mutation rate |
 | `MaxStagnantGenerations` | 10 | 0–100+ | Generations without improvement before reset |
 | `DiversityThreshold` | 0.15 | 0.0–1.0 | Minimum diversity before aggressive mode |
+| `SelectionStrategy` | `tournament` | 7 strategies | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated` |
+| `CrossoverType` | `uniform` | 3 types | `uniform` / `two_point` / `segment` |
+| `SteadyState` | `false` | bool | Enable steady-state GA (partial replacement per gen) |
+| `SteadyStateReplaceRate` | 0.3 | 0.1–0.5 | Fraction of individuals replaced per gen in steady-state mode |
+| `TargetFitness` | 0 | 0.0+ | Stop evolution early when BestEverScore ≥ TargetFitness (0=disabled) |
+| `Callbacks` | nil | — | `EvolveCallbacks` struct with `OnGeneration`, `OnFitness`, `OnMutation`, `OnCrossover` |
 
 ### Dream Cycle Parameters
 

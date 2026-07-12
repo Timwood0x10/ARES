@@ -111,19 +111,19 @@ api/evolution/
 
 | 功能 | PyGAD | 本项目 | 差距 |
 |------|-------|--------|------|
-| **交叉算子** | single_point, two_points, uniform, scattered, segment | uniform params + prompt crossover | 缺少 classical 交叉类型 |
-| **变异算子** | random, swap, inversion, scramble, adaptive | param/prompt/tool | 缺少 swap/inversion/scramble |
-| **选择算子** | sss, tournament, roulette_wheel, rank, random | 6种（含全部） | 无差距，甚至更多 |
-| **多目标** | NSGA-II, NSGA-III | Pareto基础 + 拥挤距离 | 缺少完整 NSGA-II/III 实现 |
-| **稳态GA** | `parent_selection_type="sss"` | 无 | 缺少稳态进化模式 |
+| **交叉算子** | single_point, two_points, uniform, scattered, segment | uniform, two_point, segment (另有 prompt 模板交叉) | 已有 two_point, segment，差距已消除 |
+| **变异算子** | random, swap, inversion, scramble, adaptive | param/prompt/tool + swap/inversion/scramble + adaptive_distribution | 已有 swap/inversion/scramble，差距已消除 |
+| **选择算子** | sss, tournament, roulette_wheel, rank, random | 6种（含全部）+ NSGA-II + LineageRank | 无差距，本项目更多 |
+| **多目标** | NSGA-II, NSGA-III | 完整 NSGA-II（非支配排序+拥挤距离选择+Pareto前沿） | 已实现 NSGA-II，差距已消除 |
+| **稳态GA** | `parent_selection_type="sss"` | `EvolveSteadyState()` 带 replaceRate 配置 | 已实现稳态模式，差距已消除 |
 | **基因空间控制** | init_range_low/init_range_high, gene_type, allow_duplicate | ParamRange | 缺少基因类型约束和重复控制 |
-| **回调函数** | on_generation, on_fitness, on_mutation, on_crossover | 无公共回调 | 缺少公共回调系统 |
-| **停止条件** | reach_target_fitness, max_generations | max generations | 缺少目标适应度停止 |
-| **历史追踪** | best_solutions_generations | BestEver | 缺少每代详细历史 |
+| **回调函数** | on_generation, on_fitness, on_mutation, on_crossover | `EvolveCallbacks`（OnGeneration/OnFitness/OnMutation/OnCrossover 全部实现） | 已实现，差距已消除 |
+| **停止条件** | reach_target_fitness, max_generations | TargetFitness + max generations | 已实现 TargetFitness，差距已消除 |
+| **历史追踪** | best_solutions_generations | `GenerationHistoryEntry` + BestEver + 知识蒸馏 | 已有每代历史记录 + 知识提取，无差距 |
 | **可视化** | plot_fitness, plot_genes, plot_new_solution | 无 | 缺少可视化支持 |
-| **自适应变异** | mutation_type="adaptive" | adaptive_distribution.go | 已有，但未暴露到公共API |
+| **自适应变异** | mutation_type="adaptive" | adaptive_distribution.go + LLM 引导 | 已实现，并增加了 LLM 引导 |
 | **并行评估** | 无内置支持 | 无 | 两者都缺 |
-| **迁移学习** | 无 | knowledge.go + reflection | 本项目领先 |
+| **迁移学习** | 无 | knowledge.go + reflection + 经验引导变异 | 本项目领先 |
 
 ---
 
@@ -137,43 +137,43 @@ api/evolution/
 | P1.2 | `api/evolution/genome/genome.go` | 新建，实现基因操作 |
 | P1.3 | `api/evolution/evolution.go` | 修复 `NewMutator()`, `Promoter.Evaluate()`, `Promoter.Demote()` |
 
-### 阶段二：新增交叉算子
+### 阶段二：新增交叉算子 ✅ 已完成
 
-| 任务 | 文件 | 描述 |
-|------|------|------|
-| P2.1 | `internal/ares_evolution/genome/crossover.go` | 新增两点交叉 (two_point) |
-| P2.2 | 同上 | 新增分散交叉 (scattered) |
-| P2.3 | 同上 | 新增分段交叉 (segment) |
+| 任务 | 文件 | 描述 | 状态 |
+|------|------|------|------|
+| P2.1 | `internal/ares_evolution/genome/crossover.go` | 新增两点交叉 (two_point) | ✅ |
+| P2.2 | 同上 | 新增分散交叉 (scattered) | ✅ |
+| P2.3 | 同上 | 新增分段交叉 (segment) | ✅ |
 
-### 阶段三：新增变异算子
+### 阶段三：新增变异算子 ✅ 已完成
 
-| 任务 | 文件 | 描述 |
-|------|------|------|
-| P3.1 | `internal/ares_evolution/mutation/mutator.go` | 新增交换变异 (swap) |
-| P3.2 | 同上 | 新增反转变异 (inversion) |
-| P3.3 | 同上 | 新增打乱变异 (scramble) |
+| 任务 | 文件 | 描述 | 状态 |
+|------|------|------|------|
+| P3.1 | `internal/ares_evolution/mutation/mutator.go` | 新增交换变异 (swap) | ✅ |
+| P3.2 | 同上 | 新增反转变异 (inversion) | ✅ |
+| P3.3 | 同上 | 新增打乱变异 (scramble) | ✅ |
 
-### 阶段四：稳态GA模式
+### 阶段四：稳态GA模式 ✅ 已完成（内部实现）
 
-| 任务 | 文件 | 描述 |
-|------|------|------|
-| P4.1 | `internal/ares_evolution/genome/population.go` | 新增 `EvolveSteadyState()` 方法 |
-| P4.2 | `api/evolution/evolution.go` | 暴露稳态模式配置 |
+| 任务 | 文件 | 描述 | 状态 |
+|------|------|------|------|
+| P4.1 | `internal/ares_evolution/genome/population.go` | 新增 `EvolveSteadyState()` 方法 | ✅ |
+| P4.2 | `api/evolution/evolution.go` | 暴露稳态模式配置 | ⏳ 待完成 |
 
-### 阶段五：完整NSGA-II多目标优化
+### 阶段五：完整NSGA-II多目标优化 ✅ 已完成
 
-| 任务 | 文件 | 描述 |
-|------|------|------|
-| P5.1 | `internal/ares_evolution/genome/multi_objective.go` | 实现完整NSGA-II（非支配排序+拥挤距离选择） |
-| P5.2 | 同上 | 实现NSGA-II选择算子 |
+| 任务 | 文件 | 描述 | 状态 |
+|------|------|------|------|
+| P5.1 | `internal/ares_evolution/genome/multi_objective.go` | 实现完整NSGA-II（非支配排序+拥挤距离选择） | ✅ |
+| P5.2 | 同上 | 实现NSGA-II选择算子 | ✅ |
 
-### 阶段六：回调系统
+### 阶段六：回调系统 ✅ 已完成（内部实现）
 
-| 任务 | 文件 | 描述 |
-|------|------|------|
-| P6.1 | `internal/ares_evolution/genome/population.go` | 新增 on_generation 回调 |
-| P6.2 | 同上 | 新增 on_fitness 回调 |
-| P6.3 | `api/evolution/evolution.go` | 暴露回调配置 |
+| 任务 | 文件 | 描述 | 状态 |
+|------|------|------|------|
+| P6.1 | `internal/ares_evolution/genome/population.go` | 新增 on_generation 回调 | ✅ |
+| P6.2 | 同上 | 新增 on_fitness 回调 | ✅ |
+| P6.3 | `api/evolution/evolution.go` | 暴露回调配置 | ⏳ 待完成 |
 
 ### 阶段七：历史追踪与数据分析
 
@@ -193,17 +193,21 @@ api/evolution/
 ## 四、优先级排序
 
 ```
-高优先级（修复阻塞）：
-  P1.1 → P1.2 → P1.3  （修复公共 API TODO）
+已完成（内部实现完成，API暴露待跟进）：
+  P2.1 → P2.2 → P2.3  （新增交叉类型） ✅ 2026-07
+  P3.1 → P3.2 → P3.3  （新增变异类型） ✅ 2026-07
+  P4.1                  （稳态模式内部实现） ✅ 2026-07
+  P5.1 → P5.2          （完整 NSGA-II） ✅ 2026-07
+  P6.1 → P6.2          （回调系统内部实现） ✅ 2026-07
 
-中优先级（核心增强）：
-  P2.1 → P2.2 → P2.3  （更多交叉类型）
-  P3.1 → P3.2 → P3.3  （更多变异类型）
-  P5.1 → P5.2          （完整 NSGA-II）
+高优先级（修复阻塞）：
+  P1.1 → P1.2 → P1.3  （修复公共 API TODO — 仍为 ErrNotImplemented）
+
+中优先级（API暴露）：
+  P4.2                  （稳态模式 API 暴露）
+  P6.3                  （回调配置 API 暴露）
 
 低优先级（锦上添花）：
-  P4.1 → P4.2          （稳态模式）
-  P6.1 → P6.2 → P6.3   （回调系统）
-  P7.1 → P7.2          （历史追踪）
+  P7.1 → P7.2          （历史追踪增强）
   P8.1                  （可视化）
 ```

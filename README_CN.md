@@ -55,6 +55,7 @@ make examples          # 构建全部 24 个示例
 |---|---|
 | **统一 SDK** | 单一 `sdk.MustNew()` API，统一管理 LLM、工具、记忆、进化 |
 | **运行时进化** | Genome + Diff Engine + Coordinator 持续进化 DAG、调度器、规划器、恢复策略 |
+| **策略 GA** | 基于种群的策略优化 — NSGA-II 多目标、稳态 GA、三种交叉类型、六种变异类型 |
 | **证据驱动** | 每次执行事件、故障、洞察都产生 Evidence，驱动进化决策 |
 | **DAG 工作流** | 动态图编排，支持条件分支和自动恢复 |
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
@@ -147,8 +148,10 @@ graph TB
 
     subgraph Evo ["进化"]
         GA["遗传算法"]
-        MUT["变异"]
-        SCORE["评分"]
+        NSGA["NSGA-II / 稳态 GA"]
+        CROSS["三种交叉类型"]
+        MUT["六种变异类型"]
+        SCORE["经验引导评分"]
     end
 
     subgraph RuntimeEvo ["运行时进化"]
@@ -292,3 +295,17 @@ go run examples/runtime_evolution/basic/      # 完整端到端进化演示
 go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
 go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
 ```
+
+## 许可证
+
+Apache 2.0
+
+## 致谢
+
+ARES 的遗传算法实现参考了 **[PyGAD](https://github.com/ahmedfgad/GeneticAlgorithmPython)** —— [Ahmed F. Gad](https://github.com/ahmedfgad) 开发的 Python 遗传算法库。PyGAD 的架构设计、算子实现和多目标优化能力为本项目的 GA 引擎提供了重要参考。
+
+如果您需要成熟、文档完善的 Python GA 库，推荐使用 PyGAD：
+- GitHub: [github.com/ahmedfgad/GeneticAlgorithmPython](https://github.com/ahmedfgad/GeneticAlgorithmPython)
+- 文档: [pygad.readthedocs.io](https://pygad.readthedocs.io/)
+
+额外的 GA 概念和术语遵循 [Genetic Algorithm](https://en.wikipedia.org/wiki/Genetic_algorithm) 维基百科条目的标准定义。

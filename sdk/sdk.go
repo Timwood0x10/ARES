@@ -27,6 +27,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +41,8 @@ import (
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -406,44 +410,225 @@ func (r *Runtime) Evolve(ctx context.Context, agent *Agent, task string) (string
 		log.Printf("[ares:evolve] evolving agent %q on task: %s", agent.name, task)
 	}
 
-	// Generate a variant of the instruction.
-	evolveMsg := []*core.LLMMessage{
-		{Role: roleSystem, Content: "You are an evolution engine. Improve the following agent instruction to get better results."},
-		{Role: roleUser, Content: fmt.Sprintf(
-			`Original instruction: %s
+	// Generate prompt variants using LLM, so the prompt pool has >1 element
+	// and mutatePrompt can actually produce different prompts.
+	variants := generatePromptVariants(ctx, r, agent.instruction, task, 5)
+	if len(variants) == 0 {
+		// Fallback: LLM variant generation failed (timeout, rate limit, parse error).
+		// Use the original single-LLM-rewrite approach instead of running a
+		// pointless GA with a single-element prompt pool.
+		log.Printf("[ares:evolve] variant generation failed, falling back to single LLM rewrite")
+		return fallbackSingleLLMRewrite(ctx, r, agent, task)
+	}
+	pool := make([]string, 0, len(variants)+1)
+	pool = append(pool, agent.instruction)
+	pool = append(pool, variants...)
 
-Task to optimize for: %s
-
-Generate an improved version of the instruction. Be specific and actionable.
-Respond with ONLY the new instruction text.`, agent.instruction, task)},
+	// Create base strategy from the agent's current instruction.
+	base := &mutation.Strategy{
+		ID:             fmt.Sprintf("sdk-%s", agent.name),
+		Version:        1,
+		PromptTemplate: agent.instruction,
+		Score:          -1,
+		CreatedAt:      time.Now(),
+		Params: map[string]any{
+			"temperature": 0.7,
+			"top_k":       40,
+			"max_tokens":  4096,
+		},
 	}
 
-	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{
-		Messages: evolveMsg,
-	})
+	// Create mutator for prompt template evolution.
+	mutator, err := mutation.NewMutator(
+		mutation.WithParamRanges(map[string]mutation.ParamRange{
+			"temperature": {Values: []any{0.1, 0.3, 0.5, 0.7, 0.9}},
+			"top_k":       {Values: []any{10, 20, 40, 60, 80, 100}},
+			"max_tokens":  {Values: []any{1024, 2048, 4096, 8192}},
+		}),
+		mutation.WithPromptPool(pool),
+	)
 	if err != nil {
-		return "", fmt.Errorf("evolve: %w", err)
+		return "", fmt.Errorf("create mutator: %w", err)
+	}
+
+	// Create crossover operator.
+	crosser, err := genome.NewCrossover(genome.WithSeed(42))
+	if err != nil {
+		return "", fmt.Errorf("create crossover: %w", err)
+	}
+
+	// Create GA population.
+	pop, err := genome.NewPopulation(ctx, base, mutator,
+		genome.WithPopulationSize(10),
+		genome.WithEliteCount(2),
+		genome.WithMutationRate(0.3),
+		genome.WithSurvivalRate(0.5),
+		genome.WithSelectionStrategy("tournament"),
+		genome.WithTournamentSelection(3),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create population: %w", err)
+	}
+
+	// Run evolution for a few generations using LLM-as-scorer.
+	scorer := func(s *mutation.Strategy) float64 {
+		return scoreStrategy(ctx, r, agent, task, s)
+	}
+
+	for gen := 0; gen < 3; gen++ {
+		pop.ScoreAgents(scorer)
+		if err := pop.Evolve(ctx, mutator, crosser); err != nil {
+			return "", fmt.Errorf("evolve generation %d: %w", gen, err)
+		}
+	}
+
+	// Get the best strategy.
+	best := pop.BestStrategy()
+	if best == nil {
+		return "", fmt.Errorf("evolution produced no valid strategy")
 	}
 
 	if r.trace {
-		log.Printf("[ares:evolve] evolved instruction: %s", resp.Content)
+		stats := pop.Stats()
+		log.Printf("[ares:evolve] GA evolution complete: gen=%d, best=%.1f, avg=%.1f",
+			stats.Generation, stats.BestScore, stats.AvgScore)
 	}
 
 	// Save evolved strategy to the AKF evolution store if available.
 	if r.evolutionStore != nil {
 		r.evolutionStore.save(&ares_evolution.Strategy{
 			ID:                   fmt.Sprintf("sdk-%s", agent.name),
-			Name:                 fmt.Sprintf("Evolved instruction for %s on %q", agent.name, task),
+			Name:                 fmt.Sprintf("GA-evolved for %s on %q", agent.name, task),
 			Version:              1,
-			PromptTemplate:       resp.Content,
-			Score:                -1, // unevaluated
-			StrategyMutationType: "llm_evolve",
-			MutationDesc:         fmt.Sprintf("LLM-evolved from %q on task %q", agent.instruction, task),
+			PromptTemplate:       best.PromptTemplate,
+			Score:                best.Score,
+			StrategyMutationType: "ga_evolve",
+			MutationDesc:         fmt.Sprintf("GA-evolved from %q on task %q", agent.instruction, task),
 			CreatedAt:            time.Now(),
 		})
 	}
 
+	return best.PromptTemplate, nil
+}
+
+// generatePromptVariants uses the LLM to create N variants of the instruction.
+// These variants form the prompt pool for GA mutation, ensuring mutatePrompt
+// has more than 1 element and can produce diverse prompts.
+func generatePromptVariants(ctx context.Context, r *Runtime, instruction, task string, n int) []string {
+	msg := []*core.LLMMessage{
+		{Role: roleSystem, Content: "You are an evolution engine. Generate improved versions of the given agent instruction."},
+		{Role: roleUser, Content: fmt.Sprintf(
+			`Original instruction: %s
+Task to optimize for: %s
+Generate %d different improved versions of the instruction. Each version should be specific, actionable, and vary in style.
+Respond with one version per line, numbered 1-%d, like:
+1: <version 1>
+2: <version 2>`, instruction, task, n, n)},
+	}
+
+	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{Messages: msg})
+	if err != nil {
+		log.Printf("[ares:evolve] variant generation failed: %v", err)
+		return nil
+	}
+
+	return parseVariants(resp.Content, n)
+}
+
+// parseVariants extracts numbered variants from LLM response text.
+// Supports "1: content", "1. content", "- content", leading number patterns.
+func parseVariants(text string, n int) []string {
+	var variants []string
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Match "1: content", "1. content", "1) content", "- content", "* content".
+		var content string
+		if idx := strings.IndexAny(line, ":.)"); idx >= 0 && idx <= 4 && len(line) > idx+1 {
+			content = strings.TrimSpace(line[idx+1:])
+		} else if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			content = strings.TrimSpace(line[2:])
+		}
+		if content != "" {
+			variants = append(variants, content)
+		}
+	}
+	if len(variants) > n {
+		variants = variants[:n]
+	}
+	if len(variants) > 0 {
+		log.Printf("[ares:evolve] parsed %d prompt variants from LLM response (%d expected)",
+			len(variants), n)
+	}
+	return variants
+}
+
+// fallbackSingleLLMRewrite uses the original single-LLM-rewrite approach
+// when GA variant generation fails. At least returns a modified instruction
+// instead of silently running a pointless GA with a single-element pool.
+func fallbackSingleLLMRewrite(ctx context.Context, r *Runtime, agent *Agent, task string) (string, error) {
+	evolveMsg := []*core.LLMMessage{
+		{Role: roleSystem, Content: "You are an evolution engine. Improve the following agent instruction to get better results."},
+		{Role: roleUser, Content: fmt.Sprintf(
+			`Original instruction: %s
+Task to optimize for: %s
+Generate an improved version of the instruction. Be specific and actionable.
+Respond with ONLY the new instruction text.`, agent.instruction, task)},
+	}
+	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{Messages: evolveMsg})
+	if err != nil {
+		return "", fmt.Errorf("fallback LLM rewrite: %w", err)
+	}
+	log.Printf("[ares:evolve] fallback LLM rewrite produced: %s", resp.Content)
 	return resp.Content, nil
+}
+
+// scoreStrategy uses the LLM to evaluate a strategy variant for a given task.
+// Returns a score in [0, 100].
+func scoreStrategy(ctx context.Context, r *Runtime, agent *Agent, task string, s *mutation.Strategy) float64 {
+	evolveMsg := []*core.LLMMessage{
+		{Role: roleSystem, Content: "You are an evolution judge. Rate the following agent instruction on a scale of 0-100 based on how well it would perform the given task. Consider clarity, specificity, and actionability."},
+		{Role: roleUser, Content: fmt.Sprintf(
+			`Instruction: %s
+Task: %s
+
+Rate this instruction from 0-100. Respond with ONLY a number.`,
+			s.PromptTemplate, task)},
+	}
+
+	resp, err := r.llmSvc.Generate(ctx, &core.GenerateRequest{
+		Messages: evolveMsg,
+	})
+	if err != nil {
+		log.Printf("[ares:evolve] scoring failed: %v", err)
+		return 50.0 // fallback
+	}
+
+	// Parse the score from the LLM response using regex to handle
+	// formats like "85", "Rating: 85", "85/100", etc.
+	return parseScore(resp.Content)
+}
+
+// parseScore extracts the first float from a string, handling formats like
+// "85", "Rating: 85", "85/100", "Score: 92.5 out of 100".
+func parseScore(text string) float64 {
+	// Match optional non-digit prefix, then a float, then optional suffix.
+	re := regexp.MustCompile(`(\d+\.?\d*)`)
+	matches := re.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 50.0
+	}
+	score, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 50.0
+	}
+	if score < 0 || score > 100 {
+		return 50.0
+	}
+	return score
 }
 
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,

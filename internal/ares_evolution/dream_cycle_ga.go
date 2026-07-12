@@ -68,8 +68,14 @@ func (dc *DreamCycle) runGAEvolution(ctx context.Context, cycleCtx context.Conte
 
 	// Step 2: Run one GA generation (selection → crossover → mutation).
 	genMutator := &genomeMutatorAdapter{inner: dc.mutator}
-	if err := dc.population.Evolve(ctx, genMutator, dc.crosser); err != nil {
-		return fmt.Errorf("GA evolve: %w", err)
+	if dc.config.SteadyState {
+		if err := dc.population.EvolveSteadyState(ctx, genMutator, dc.crosser, dc.config.SteadyStateReplaceRate); err != nil {
+			return fmt.Errorf("GA steady-state evolve: %w", err)
+		}
+	} else {
+		if err := dc.population.Evolve(ctx, genMutator, dc.crosser); err != nil {
+			return fmt.Errorf("GA evolve: %w", err)
+		}
 	}
 
 	// Step 3: Get the best strategy from the population.

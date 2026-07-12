@@ -156,21 +156,26 @@ pop, err := genome.NewPopulation(ctx, baseStrategy, mutator,
 | `BestStrategy()` | 返回用于部署的深拷贝最优策略 |
 | `Snapshot()` | 所有 Agent 的线程安全副本 + 当前代数 |
 
-**`Crossover`** — 重组父代策略：
+**`CrossoverInterface`** — 重组父代策略：
 
 ```go
 type CrossoverInterface interface {
     Crossover(ctx context.Context, a, b *mutation.Strategy) (*mutation.Strategy, error)
 }
+```
 
-// 均匀交叉：每个参数独立地从 A 或 B 中选择（各 50% 概率）
-crosser.Crossover(ctx, parentA, parentB)
+支持三种交叉类型：
 
-// 多点交叉：在 k 个分割点处交替父代来源
-crosser.MultiPointCrossover(ctx, parentA, parentB, k)
+| 类型 | 描述 |
+|------|------|
+| `uniform` | 每个参数从父代 A 或 B 中独立选择（各 50%）— 默认 |
+| `two_point` | 选取两个切割点；中间段来自父代 B，两端来自父代 A |
+| `segment` | 随机连续段来自父代 B，其余来自父代 A |
 
-// 半分割提示词交叉：前半部分来自 A，后半部分来自 B
-crosser.CrossoverWithHalfSplit(ctx, parentA, parentB)
+```go
+crosser, _ := genome.NewCrossover(genome.WithCrossoverType("two_point"))
+// 或直接用选定的类型
+child, _ := crosser.Crossover(ctx, parentA, parentB)
 ```
 
 **自适应特性：**
@@ -203,12 +208,15 @@ type Strategy struct {
 
 **变异类型：**
 
-| 类型 | 概率 | 描述 |
-|------|------|------|
-| `MutationParameter` | ~70% | 修改一个参数值（如 temperature 0.7 → 0.5） |
-| `MutationPrompt` | ~15% | 从池中替换提示词模板 |
-| `MutationTool` | ~15% | 从池中替换工具配置 |
-| `MutationCrossover` | — | 通过交叉重组创建 |
+| 类型 | 类别 | 概率 | 描述 |
+|------|------|------|------|
+| `MutationParameter`（`param`） | 核心 | ~70% | 修改一个参数值（如 temperature 0.7 → 0.5） |
+| `MutationPrompt`（`prompt`） | 核心 | ~15% | 从池中替换提示词模板 |
+| `MutationTool`（`tool`） | 核心 | ~15% | 从池中替换工具配置 |
+| `MutationSwap`（`swap`） | 结构性 | ~10% | 交换两个参数值 |
+| `MutationInversion`（`inversion`） | 结构性 | ~10% | 反转一个连续参数块 |
+| `MutationScramble`（`scramble`） | 结构性 | ~10% | 打乱随机子集参数 |
+| `MutationCrossover` | — | — | 通过交叉重组创建（非严格意义上的变异类型） |
 
 **默认参数范围：**
 
@@ -390,6 +398,334 @@ flowchart TD
 
 ---
 
+## 高级进化特性（Advanced GA Features）
+
+### 1. NSGA-II 多目标优化
+
+系统实现了完整的 NSGA-II（Non-dominated Sorting Genetic Algorithm II）多目标优化，能够同时优化多个相互竞争的目标。
+
+**架构：**
+
+```mermaid
+graph LR
+    subgraph "NSGA-II 选择"
+        A[种群] --> B[帕累托非支配排序]
+        B --> C[前沿 1]
+        B --> D[前沿 2]
+        B --> E[前沿 N]
+        C --> F[拥挤距离]
+        D --> F
+        E --> F
+        F --> G[按等级<br/>+ 拥挤距离选择]
+    end
+```
+
+**4 个默认维度：**
+
+| 维度 | 方向 | 权重 | 描述 |
+|------|------|------|------|
+| `success_rate` | 最大化（↓ 成本） | 0.40 | 任务完成成功率 |
+| `quality` | 最大化（↓ 成本） | 0.25 | 输出质量得分 |
+| `cost` | 最小化（更少花费） | 0.20 | 总成本（取反） |
+| `latency` | 最小化（更少花费） | 0.15 | 响应时间（取反） |
+
+**方向感知的帕累托支配**正确处理最大化与最小化目标。最优帕累托前沿会被跨代保留。
+
+**使用示例：**
+
+```go
+// 启用 NSGA-II 选择
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithSelectionStrategy("nsga2"),
+    genome.WithNSGADimensions([]genome.NSGADimension{
+        {Name: "success_rate", Maximize: true, Weight: 0.40},
+        {Name: "quality",      Maximize: true, Weight: 0.25},
+        {Name: "cost",         Maximize: false, Weight: 0.20},
+        {Name: "latency",      Maximize: false, Weight: 0.15},
+    }),
+)
+```
+
+**可用的选择策略：** `tournament`、`rank`、`roulette`、`sus`、`truncation`、`nsga2`、`nondominated`
+
+### 2. 稳态 GA 模式（Steady-State GA）
+
+与标准的世代 GA（每代替换全部种群）不同，**稳态 GA** 每代只替换最差个体的一部分。这非常适合在线学习场景，系统需要在持续改进的同时保持稳定的性能。
+
+| 方面 | 世代 GA | 稳态 GA |
+|------|---------|---------|
+| 每代替换个体数 | 全部 | `max(1, int(size × replaceRate))` |
+| 默认替换率 | — | 0.3 |
+| 替换率范围 | — | [0.1, 0.5] |
+| 最适合 | 批量优化 | 在线/持续学习 |
+| 种群稳定性 | 低（完全更换） | 高（大部分保留） |
+
+```go
+// 启用稳态模式
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithSteadyState(true),
+    genome.WithSteadyStateReplaceRate(0.3),
+)
+```
+
+### 3. Score / SelectionScore 分离与适应度共享
+
+系统将**规范适应度**与**选择调整后的适应度**分离，以支持多样性保护：
+
+| 字段 | 角色 | 修改者 |
+|------|------|--------|
+| `Score` | 规范适应度（永不修改） | 外部评估 |
+| `SelectionScore` | 为选择调整（每轮重置为 0） | 适应度共享 |
+
+```go
+// effectiveScore() 返回 SelectionScore（若 > 0），否则返回 Score
+score := pop.effectiveScore(agent)
+```
+
+**适应度共享（Fitness Sharing）** 惩罚与其他个体过于相似的个体，防止过早收敛：
+
+- **全量 O(n²)**：小种群（<100）时，计算精确成对距离
+- **蓄水池采样**：中等种群时，采样代表性子集
+- **空间网格索引**：大种群（≥500）时，使用基于网格的空间哈希实现 O(n) 近似
+
+配置参数：
+- `FitnessNicheRadius = 0.15` — 共享惩罚的相似度阈值
+- `shareSigma = 0.3` — 共享函数的 sigma 参数
+- 精英个体免除适应度共享惩罚
+
+### 4. 扩展的交叉类型
+
+除原有的均匀交叉和多点交叉外，新增两种类型：
+
+| 类型 | 描述 |
+|------|------|
+| `uniform` | 每个参数独立从父代 A 或 B 中选择（50/50）— 默认 |
+| `two_point` | 选取两个切割点；中间段来自父代 B，两端来自父代 A |
+| `segment` | 随机连续段来自父代 B，其余来自父代 A |
+
+通过以下方式配置：
+
+```go
+crosser, _ := genome.NewCrossover(
+    genome.WithCrossoverType("two_point"), // 或 "segment"、"uniform"
+    genome.WithSeed(42),
+)
+```
+
+### 5. 扩展的变异类型
+
+变异引擎现支持 6 种变异类型：
+
+| 类型 | 类别 | 描述 |
+|------|------|------|
+| `param` | 核心 | 修改一个参数值（如 temperature 0.7 → 0.5） |
+| `prompt` | 核心 | 从池中替换提示词模板 |
+| `tool` | 核心 | 从池中替换工具配置 |
+| `swap` | 结构性 | 交换两个参数值 |
+| `inversion` | 结构性 | 反转一个连续参数块 |
+| `scramble` | 结构性 | 打乱随机子集参数 |
+
+结构性变异（`swap`、`inversion`、`scramble`）操作于参数序列本身而非单个值，从而实现更广泛的搜索空间探索。
+
+### 6. 进化回调（Evolution Callbacks）
+
+GA 引擎在关键生命周期事件中发出回调，支持监控、日志记录和自定义副作用：
+
+| 回调 | 触发时机 | 签名 |
+|------|---------|------|
+| `OnGeneration` | 每代结束时 | `func(stats *GenerationStats)` |
+| `OnFitness` | 个体评分后 | `func(agent *Strategy, score float64)` |
+| `OnMutation` | 个体变异后 | `func(parent, child *Strategy)` |
+| `OnCrossover` | 交叉后 | `func(parentA, parentB, child *Strategy)` |
+
+```go
+pop, _ := genome.NewPopulation(ctx, base, mutator,
+    genome.WithCallbacks(genome.EvolveCallbacks{
+        OnGeneration: func(stats *GenerationStats) {
+            slog.Info("世代完成", "gen", stats.Generation,
+                "best", stats.BestScore, "avg", stats.AvgScore)
+        },
+        OnMutation: func(parent, child *Strategy) {
+            genealogy.Record(ctx, StrategyLineage{
+                ParentID: parent.ID,
+                ChildID:  child.ID,
+                Type:     "mutation",
+            })
+        },
+    }),
+)
+```
+
+### 7. 终止条件（Termination Conditions）
+
+支持两个终止条件，在每代开始时检查：
+
+| 条件 | 配置字段 | 行为 |
+|------|---------|------|
+| 最大代数 | `MaxGenerations` | N 代后停止 |
+| 目标适应度 | `TargetFitness` | 当 `BestEverScore() >= TargetFitness` 时停止 |
+
+两个条件可以同时使用（以先触发的为准）：
+
+```go
+dc := &DreamCycle{
+    config: DreamCycleConfig{
+        MaxGenerations: 50,
+        TargetFitness:  95.0, // 若达到则提前停止
+    },
+}
+```
+
+### 8. 世代历史追踪（Generation History）
+
+每代的统计数据被记录在 `GenerationHistoryEntry` 中，可供分析和可视化：
+
+```go
+type GenerationHistoryEntry struct {
+    Generation     int       // 代数
+    BestScore      float64   // 本代最优适应度
+    AvgScore       float64   // 平均适应度
+    WorstScore     float64   // 最差适应度
+    Diversity      float64   // 种群多样性指标
+    BestStrategyID string    // 最优策略 ID
+    // ... 其他内部字段
+}
+
+// 访问历史
+history := pop.History()
+for _, entry := range history {
+    fmt.Printf("第 %d 代: 最佳=%.2f 平均=%.2f 多样性=%.2f\n",
+        entry.Generation, entry.BestScore, entry.AvgScore, entry.Diversity)
+}
+```
+
+历史记录支持 JSON 序列化，可用于导出和外部可视化。
+
+---
+
+## 进化经验系统（Evolution Experience System）
+
+除了上述基于强盗反馈循环的机制外，系统还包含一套**经验引导进化**的三层管道，将工具调用模式转化为可执行的进化提示。
+
+### 管道
+
+```mermaid
+graph LR
+    A[ToolCallRecord] --> B[RawExperience]
+    B --> C[NormalizedExperience]
+    C --> D[EvolutionHint]
+    D --> E[GuidanceProvider]
+    E --> F[Mutation Guidance]
+```
+
+### 核心组件
+
+| 组件 | 角色 |
+|------|------|
+| `ToolCallRecord` | 原始工具执行数据（工具名、参数、耗时、成功状态） |
+| `RawExperience` | 对多次工具调用的聚合视图 |
+| `NormalizedExperience` | 评分并归一化的经验，附带上文信息 |
+| `EvolutionHint` | GA 变异方向的具体指导 |
+| `GuidanceProvider` | 为进化方向提供提示的接口 |
+
+```go
+// GuidanceProvider 接口
+type GuidanceProvider interface {
+    GetHints(ctx context.Context) ([]EvolutionHint, error)
+}
+
+// EvolutionHint 将 GA 引导至有前景的区域
+type EvolutionHint struct {
+    Parameter   string         // 要调整的参数
+    Direction   HintDirection  // 增加 / 减少 / 设为
+    Value       float64        // 目标值
+    Confidence  float64        // [0, 1] 置信度
+    Source      string         // 提示来源（经验、分析等）
+}
+```
+
+### 经验存储
+
+`MemoryExperienceStore` 提供基于字典索引的存储，具备以下功能：
+
+- **AggregateEvidence** — 计算成功率、p50/p95 延迟、置信度分数
+- **基于频率的排序** — 最常用的经验排在前面
+- **TTL 过期** — 过期的经验自动清除
+
+---
+
+## 记忆与规划器基因组进化（Memory & Planner Genome Evolution）
+
+进化系统将策略参数优化扩展到**记忆子系统**和**规划器子系统**的配置优化，通过专门的基因组类型实现。
+
+### MemoryGenomeConfig
+
+优化 Agent 的记忆管理参数：
+
+| 参数 | 类型 | 范围 | 描述 |
+|------|------|------|------|
+| `MaxHistory` | int | [3, 50] | 最大对话历史条目数 |
+| `MaxSessions` | int | [20, 500] | 最大存储会话数 |
+| `MaxDistilledTasks` | int | [500, 20000] | 最大蒸馏任务记录数 |
+| `UseStructuredCleaning` | bool | — | 启用结构化记忆清理 |
+
+适应度基于记忆命中率、清理效率和资源使用情况进行启发式计算。
+
+### PlannerGenomeConfig
+
+优化规划器子系统：
+
+| 参数 | 类型 | 范围 | 描述 |
+|------|------|------|------|
+| `Strategy` | 枚举 | balanced / architecture-first / memory-first | 规划策略 |
+| `MaxSources` | int | [3, 30] | 最大信息源数量 |
+| `MinRelevance` | float | [0.1, 0.9] | 最低相关性阈值 |
+
+两种基因组类型均实现了 `Mutate()`、`Crossover()` 和 `Fitness()` 方法，成为 GA 种群中的一等公民。
+
+---
+
+## WiredEvolutionSystem 集成（Phases 3–6）
+
+`WiredEvolutionSystem` 已扩展了完整的 Phase 3–6 集成，实现端到端的自主进化：
+
+### Phase 3：反思循环（Reflection Loop）
+
+| 组件 | 角色 |
+|------|------|
+| `Reflector` | 分析进化结果，生成洞察 |
+| `ReflectionStore` | 存储反思数据，供未来参考 |
+
+### Phase 4：假设生成（Hypothesis Generation）
+
+| 组件 | 角色 |
+|------|------|
+| `HypothesisGen` | 从反思数据生成可测试的假设 |
+| `MetaCtrl` | 假设优先级排序的元控制器 |
+
+### Phase 5：自我改进（Self-Improvement）
+
+| 组件 | 角色 |
+|------|------|
+| `DiffReg` | 追踪变更的差异注册表 |
+| `Coordinator` | 协调多阶段进化活动 |
+
+### Phase 6：自主补丁（Autonomous Patching）
+
+| 组件 | 角色 |
+|------|------|
+| `GenomeReg` | 代码级进化的基因组注册表 |
+| `PatchProposal` | 从 GA 发现自动生成的代码补丁 |
+
+`RunIdleEvolution()` 函数在 Phase 6 中从进化结果生成差异补丁，并将其作为 `PatchProposal`（`SourceGA`，`Priority 6`）提交，用于自我修改。
+
+```go
+// 使用完整的 Phase 3–6 管道运行空闲进化
+err := evolution.RunIdleEvolution(ctx, system, 10)
+```
+
+---
+
 ## API 参考
 
 ### 系统配置
@@ -411,6 +747,12 @@ type SystemConfig struct {
     MaxMutationRate         float64   // 自适应变异率上限（默认: 0.5）
     MaxStagnantGenerations  int       // 停滞重置阈值（默认: 10）
     DiversityThreshold      float64   // 进入激进模式的最低多样性（默认: 0.15）
+    SelectionStrategy       string    // 选择策略（默认: "tournament"）
+    CrossoverType           string    // 交叉类型（默认: "uniform"）
+    SteadyState             bool      // 启用稳态 GA（默认: false）
+    SteadyStateReplaceRate  float64   // 稳态替换率（默认: 0.3）
+    TargetFitness           float64   // 提前停止的目标适应度（默认: 0）
+    NSGADimensions          []NSGADimension // NSGA-II 维度（默认: 4 维）
 }
 
 func DefaultSystemConfig() SystemConfig
@@ -429,6 +771,13 @@ func WithMinMutationRate(rate float64) PopulationOption
 func WithMaxMutationRate(rate float64) PopulationOption
 func WithMaxStagnantGenerations(n int) PopulationOption
 func WithDiversityThreshold(threshold float64) PopulationOption
+func WithSelectionStrategy(strategy string) PopulationOption
+func WithCrossoverType(crossType string) PopulationOption
+func WithSteadyState(enabled bool) PopulationOption
+func WithSteadyStateReplaceRate(rate float64) PopulationOption
+func WithTargetFitness(target float64) PopulationOption
+func WithNSGADimensions(dims []NSGADimension) PopulationOption
+func WithCallbacks(cbs EvolveCallbacks) PopulationOption
 ```
 
 ### 变异器选项
@@ -446,6 +795,7 @@ func WithDeterministicIDs(enabled bool) MutatorOption
 ```go
 func WithSeed(seed int64) CrossoverOption
 func WithDeterministicIDs(enabled bool) CrossoverOption
+func WithCrossoverType(crossType string) CrossoverOption
 ```
 
 ### 种群统计信息
@@ -458,6 +808,19 @@ type PopulationStats struct {
     BestScore  float64   // 种群最高分
     WorstScore float64   // 种群最低分
 }
+
+// GenerationHistoryEntry 记录每代的统计数据
+type GenerationHistoryEntry struct {
+    Generation     int       // 代数
+    BestScore      float64   // 本代最优适应度
+    AvgScore       float64   // 平均适应度
+    WorstScore     float64   // 最差适应度
+    Diversity      float64   // 种群多样性指标
+    BestStrategyID string    // 最优策略 ID
+}
+
+// 访问完整进化历史
+history := pop.History()  // 返回 []GenerationHistoryEntry
 ```
 
 ---
@@ -477,6 +840,12 @@ type PopulationStats struct {
 | `MaxMutationRate` | 0.5 | 0.0–1.0 | 自适应变异率上限 |
 | `MaxStagnantGenerations` | 10 | 0–100+ | 无改进后触发生重置的代数 |
 | `DiversityThreshold` | 0.15 | 0.0–1.0 | 进入激进模式的最低多样性 |
+| `SelectionStrategy` | `tournament` | 7 种策略 | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated` |
+| `CrossoverType` | `uniform` | 3 种类型 | `uniform` / `two_point` / `segment` |
+| `SteadyState` | `false` | bool | 启用稳态 GA（每代部分替换） |
+| `SteadyStateReplaceRate` | 0.3 | 0.1–0.5 | 稳态模式下每代替换的个体比例 |
+| `TargetFitness` | 0 | 0.0+ | 当 BestEverScore ≥ TargetFitness 时提前停止进化（0=禁用） |
+| `Callbacks` | nil | — | `EvolveCallbacks` 结构体，包含 `OnGeneration`、`OnFitness`、`OnMutation`、`OnCrossover` |
 
 ### 梦境循环参数
 

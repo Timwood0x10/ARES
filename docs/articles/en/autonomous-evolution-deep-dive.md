@@ -1707,6 +1707,275 @@ mutation.Mutator --> GenomeMutatorAdapter --> genome.Population
 
 Six layers deep, each with a clear responsibility. The genome layer (pure computation, zero I/O), the wiring layer (adapters and orchestration), the persistence layer (database via repository pattern), and the infrastructure layer (runtime snapshots and genealogy auditing). Each layer can be tested, replaced, or upgraded independently.
 
+### 9.11 Multi-Objective Optimization: NSGA-II Selection
+
+The basic selection operators (Truncation, Tournament, RouletteWheel, Rank) optimize a single score. But strategy quality isn't one-dimensional — a high-success-rate strategy might be expensive, and a low-cost strategy might be slow. Multi-objective optimization addresses this by maintaining Pareto-optimal trade-offs across multiple dimensions simultaneously.
+
+The implementation lives in `internal/ares_evolution/genome/multi_objective.go` and provides a complete NSGA-II pipeline:
+
+```go
+// Four default dimensions with direction and weight
+var DefaultDimensionDirections = map[string]DimDirection{
+    "success_rate": Maximize,    // Higher success rate is better
+    "quality":      Maximize,    // Higher output quality is better
+    "cost":         Minimize,    // Lower cost is better
+    "latency":      Minimize,    // Lower latency is better
+}
+
+var DefaultDimensionWeights = map[string]float64{
+    "success_rate": 0.40,    // Success rate is weighted most
+    "quality":      0.25,    // Output quality is second
+    "cost":         0.20,    // Cost efficiency is third
+    "latency":      0.15,    // Latency is least weighted
+}
+```
+
+**How It Works:**
+
+| Step | Function | Description |
+|------|----------|-------------|
+| 1 | `ParetoDominance(a, b)` | Direction-aware: returns true if `a` is no worse than `b` in all dims and strictly better in at least one |
+| 2 | `ParetoFront(strategies)` | Extracts rank-0 Pareto front (non-dominated solutions) |
+| 3 | `ParetoRank(strategies)` | Full non-dominated sorting — assigns integer rank to each strategy (0 = best front) |
+| 4 | `CrowdingDistance(strategies)` | Within each front, measures solution density; boundary points get infinite distance to preserve extremes |
+| 5 | `NondominatedSortingSelection` | Combines rank + crowding distance to select: prefer lower rank first, then higher crowding distance within same rank |
+
+The `NondominatedSortingSelection` in `selection.go` is wired into `buildSelector()` — passing `"nsga2"` or `"nondominated"` as the selection strategy activates it. The selector first sorts by Pareto rank, then within each rank by crowding distance (descending), then selects the top N.
+
+**When to use NSGA-II:** When you care about multiple conflicting objectives. Instead of manually tuning the weight between success rate and cost, NSGA-II maintains a diverse set of trade-off solutions. The weights (0.40/0.25/0.20/0.15) are used for aggregation when a single scalar score is needed, but the selection itself operates on the full Pareto ordering.
+
+### 9.12 Steady-State GA: Evolution Without Full Replacement
+
+Standard generational GA replaces the entire population each epoch — the old generation dies, the new generation takes over. Steady-state GA takes a different approach: most of the population survives, only the worst individuals are replaced.
+
+`population.go` implements `EvolveSteadyState()`:
+
+```go
+func (p *Population) EvolveSteadyState(ctx context.Context, 
+    mutator MutatorInterface, 
+    crosser CrossoverInterface, 
+    replaceRate float64) error
+```
+
+**Key mechanics:**
+- `replaceRate` is clamped to [0.1, 0.5]; default 0.3
+- Offspring per generation = `max(1, int(float64(p.Size) * replaceRate))`
+- Only 10-50% of the population is replaced each generation
+- Survival rate = `1.0 - replaceRate`
+- The `doEvolve()` function respects `evolveConfig.maxOffspring` to limit offspring count
+
+**Why steady-state matters:** In online learning scenarios — where the agent is actively serving requests and evolving simultaneously — you want the population to persist. Steady-state evolution:
+- Preserves exploration history (diversity across generations)
+- Never disrupts the active strategy set
+- Converges more smoothly (no sudden population flips)
+- Is more suitable for continuous online adaptation than batch generational replacement
+
+Compare with full generational `Evolve()`:
+| Property | Full Generational | Steady-State |
+|----------|-------------------|--------------|
+| Replacement rate | 100% — SurvivalRate controls survivors, but all non-elite are replaced | 10-50% — controlled by replaceRate |
+| Convergence | Fast, can overshoot | Smooth, gradual |
+| Diversity | Resets each generation | Maintained across generations |
+| Use case | Offline optimization | Online (in-production) adaptation |
+
+### 9.13 Split Canonical/Selection Score: Fitness Sharing Without Pollution
+
+One subtle but important design improvement: the **separation of canonical fitness (`Score`) from selection pressure (`SelectionScore`).**
+
+In the `mutation.Strategy` type (`mutation/types.go`):
+
+```go
+type Strategy struct {
+    // ... other fields ...
+    Score          float64             // Canonical fitness — never modified by temporary adjustments
+    SelectionScore float64             // Adjusted by fitness sharing — reset to 0 each epoch
+    DimensionScores map[string]float64 // Per-dimension scores (for multi-objective)
+    GenerationCreated int              // Generation number when this individual was created
+}
+```
+
+**The problem this solves:** Fitness sharing adjusts scores to penalize individuals in crowded regions of the parameter space, promoting diversity. Without the split, these adjustments would corrupt the canonical `Score` — which is used for reporting, history, and `BestStrategy()`. Worse, if an individual survived multiple generations, the penalty would accumulate.
+
+**How it works:**
+
+1. `Score` is set by the scorer and **never modified** by temporary adjustments. It's the canonical, objective fitness.
+2. `SelectionScore` starts at 0 each generation. Fitness sharing initializes it from `Score` and applies the penalty.
+3. `effectiveScore()` in `selection.go` selects the right value:
+
+```go
+func effectiveScore(s *mutation.Strategy) float64 {
+    if s.SelectionScore != 0 {
+        return s.SelectionScore
+    }
+    return s.Score
+}
+```
+
+All selection operators (Tournament, Roulette, SUS, Rank, Truncation, LineageRank) use `effectiveScore()`, so fitness sharing affects all of them.
+
+**Fitness sharing implementation** (`population_guard.go:432-557`):
+- Computes crowding by parameter similarity (Euclidean distance < `FitnessNicheRadius` = 0.15)
+- Penalizes each crowded individual: `SelectionScore /= (1.0 + shareSigma * crowdCount)`, where `shareSigma = 0.3`
+- Three strategies for population scaling:
+  - **Small**: `applyFitnessSharingLocked()` — full O(n²) pairwise comparison
+  - **Medium**: `applyFitnessSharingSampled()` — reservoir sampling O(m × sampleSize × k)
+  - **Large (>500)**: `applyFitnessSharingSpatial()` — spatial grid index avoids O(n²) entirely
+- Elite individuals (within `EliteCount`) are **exempt** from penalization
+
+### 9.14 Experience System: Data-Driven Evolution Guidance
+
+The experience system connects tool-call observability to evolution direction. It provides a structured pipeline from raw execution traces to actionable evolution hints.
+
+**Pipeline:**
+
+```
+ToolCallRecord → RawExperience → NormalizedExperience → MemoryExperienceStore
+                                      ↓
+                                AggregateEvidence
+                                      ↓
+                                EvolutionHint (for mutation guidance)
+```
+
+**Core Components:**
+
+`tool_call_collector.go` — Captures tool calls as `ToolCallRecord` with strategy ID, task type, tool name, latency, success status, error codes, and result sizes. Runs through a normalizer that deduplicates and filters noise (high latency outliers, high error rate records).
+
+`memory_store.go` — `MemoryExperienceStore` provides indexed storage with dict-based indexes on `strategy_id` and `task_type`:
+
+| Method | Purpose |
+|--------|---------|
+| `Append(ctx, exp)` | Single experience with validation and capacity check |
+| `AppendBatch(ctx, exps)` | Bulk insert with atomic validation |
+| `Query(ctx, strategyID, start, end)` | Indexed filtering with reverse-chronological sort |
+| `QueryByTaskType(ctx, taskType, limit)` | Score-descending with optional limit |
+| `GetStatistics(ctx, strategyID)` | Aggregate metrics (total, avg_score, success_rate) |
+
+`experience_hints.go` — The `GuidanceProvider` interface bridges experiences to evolution:
+
+```go
+type GuidanceProvider interface {
+    HintsForTask(ctx context.Context, taskType string, limit int) ([]EvolutionHint, error)
+    RecordStrategyOutcome(ctx context.Context, outcome StrategyOutcome) error
+}
+
+type EvolutionHint struct {
+    ID, TaskType, Problem, Solution  string
+    Constraints, FailedPatterns      []string
+    PreferredTools, PromptSnippets   []string
+    ParamHints                       map[string]float64
+    Confidence                       float64
+    SourceExperienceIDs              []string
+}
+```
+
+`AggregateEvidence()` computes success rate, p50/p95 latency, error rate, and confidence from a set of normalized experiences. Hints derived from high-confidence experiences (success rate > 0.8, sample count > 10) are preferred for mutation guidance.
+
+The evidence package (`internal/evidence/`) provides type-safe evidence kinds: `KindExecutionTrace`, `KindFailure`, `KindKnowledge`, `KindInsight`, `KindFitness`. Each `MemoryGenome` and `PlannerGenome` emits `KindFitness` evidence during evaluation, linking fitness scores to genome metadata.
+
+**Related files:**
+- `internal/ares_evolution/experience/types.go` — Data types
+- `internal/ares_evolution/experience/tool_call_collector.go` — Collector
+- `internal/ares_evolution/experience/memory_store.go` — Store
+- `internal/ares_evolution/experience_hints.go` — GuidanceProvider + EvolutionHint
+
+### 9.15 Memory Evolution: Runtime Parameter Self-Tuning
+
+The Genome package's population evolution isn't limited to strategy parameters. Two genome types extend evolution to memory and planner subsystems:
+
+**MemoryGenome** (`internal/evolution/genome/memory_genome.go`):
+
+```go
+type MemoryGenomeConfig struct {
+    MaxHistory            int    // [3, 50]   Default 10
+    MaxSessions           int    // [20, 500] Default 100
+    MaxDistilledTasks     int    // [500, 20000] Default 5000
+    UseStructuredCleaning bool   // Toggle
+}
+```
+
+Parameters evolve through Mutate/Crossover/Fitness:
+- **Mutate**: Adjusts each parameter within its range (e.g., MaxHistory ±5)
+- **Crossover**: 50% probability of mixing each parameter between parents
+- **Fitness**: Heuristic based on memory usage evidence — MaxHistory [5,20] scores 0.8, session penalty caps at 0.3. Emits `KindFitness` evidence with metadata.
+
+**PlannerGenome** (`internal/evolution/genome/planner_genome.go`):
+
+```go
+type PlannerGenomeConfig struct {
+    Strategy       string   // "balanced" / "architecture-first" / "memory-first"
+    MaxSources     int      // [3, 30]  Default 10
+    MinRelevance   float64  // [0.1, 0.9] Default 0.5
+}
+```
+
+- **Fitness**: Balanced strategy = 0.8, extremes = 0.6; source penalty caps at 0.3
+- **Strategy effect**: Controls which Planner sources are preferred (architecture, memory, or balanced)
+
+**Memory Patcher** (`memory_patcher.go`): Implements `patch.RuntimeComponent` with `Snapshot()`/`Apply()`/`CanApply()` — enabling GA-evolved parameters to be deployed at runtime. Supports three patch types:
+- `PatchChangePlanner`: Updates `max_history`, `max_tasks`, `max_sessions`
+- `PatchChangeBudget`: Updates `max_distilled_tasks`, `session_ttl`
+- `PatchChangeReducer`: Toggles `use_structured_cleaning`
+
+This means the GA doesn't just tune strategy parameters — it evolves memory configuration and planning behavior too, all within the same `RunIdleEvolution()` cycle.
+
+### 9.16 Phase 3-6 Integration: The WiredEvolutionSystem Grows Up
+
+The original `genome_wiring.go` connected DreamCycle → Genome Population → StrategyStore. The new `genome_wiring_system.go` extends this into an autonomous evolution loop with Phase 3-6 capabilities:
+
+```go
+type WiredEvolutionSystem struct {
+    // Core GA components
+    Scheduler             *EvolutionScheduler
+    DreamCycle            *DreamCycle
+    Population            *genome.Population
+    Genealogy             *PopulationGenealogyRecorder
+    StrategyStore         StrategyStore
+
+    // Phase 3-5: LLM-augmented meta-evolution
+    Reflector     *genome.LLMReflector        // Reflects on evolution patterns
+    HypothesisGen *genome.HypothesisGenerator  // Generates hypotheses from reflection
+    MetaCtrl      *genome.MetaController       // Self-adjusts hyperparameters
+
+    // Phase 6: Structural evolution
+    DiffReg       *diff.Registry               // Diff engine for structural changes
+    Coordinator   *coordinator.EvolutionCoordinator  // Coordinates structural patches
+    GenomeReg     *evogenome.Registry          // Registry of evolvable genome types
+
+    // Scoring infrastructure
+    ScoreCache    *scoring.ScoreCache
+    TieredScorer  *scoring.TieredScorer
+    Budget        *scoring.Budget
+
+    // Operational
+    ActiveStrategyManager *ActiveStrategyManager
+    ShadowEvaluator       *ShadowEvaluator
+    FeedbackRecorder      *FeedbackRecorder
+    AdaptiveDist          *mutation.AdaptiveDistribution
+    Metrics               *ares_observability.PrometheusMetrics
+}
+```
+
+**The Reflection Loop (Phase 3-5):**
+
+In each `RunIdleEvolution()` cycle, after the population evolves:
+1. `Reflector.Reflect(history, agents)` — Analyzes evolution trajectory: what strategies emerged, what failed, convergence patterns
+2. `HypothesisGen.Generate(reflection)` — Generates actionable hypotheses (e.g., "mutation rate is too high for stable convergence")
+3. `MetaCtrl.ApplyToPopulation(population)` — Self-adjusts hyperparameters: mutation rate, crossover rate, selection pressure
+
+**The Diff Engine (Phase 6):**
+
+When `DiffReg`, `Coordinator`, and `GenomeReg` are initialized, `RunIdleEvolution()` runs an additional Phase 6 pipeline:
+
+1. Snapshots each registered genome type (memory, planner, etc.)
+2. Diffs against the registry, detecting structural changes
+3. Generates `patch.RuntimePatch` for each detected change
+4. Submits as `PatchProposal` with `Source: SourceGA`, `Priority: 6`
+5. `Coordinator.Evaluate()` applies validated patches to running components
+
+This closes the final gap: previously, GA could only tune numeric parameters. With Phase 6, the evolution system can propagate structural changes to memory configuration, planning behavior, and any other runtime component registered in the genome registry.
+
+**Service Bridge** (`service/service_bridge.go`): Provides type-safe conversion between API-layer types and internal `mutation.Strategy` types — `toAPIStrategy()`, `toInternalStrategy()`, `cloneParams()`, `cloneDimensionScores()`. Adapters `apiGuidanceBridge`, `apiMemoryBridge`, and `llmClientAdapter` enable external systems to interact with the evolution subsystem through clean API boundaries.
+
 ---
 
 ### Lessons Learned

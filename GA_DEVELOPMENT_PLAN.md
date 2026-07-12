@@ -71,158 +71,113 @@ genome/guided_pipeline.go     → 反思→假设→知识蒸馏
 
 ---
 
-## 三、阶段一：GA 接线（Wiring）— 把 genome.Population 接入 DreamCycle
+## 三、阶段一：GA 接线（Wiring）— ✅ 已完成
 
-这是最核心的任务。把已有的 GA 引擎从"死代码"变成"活跃路径"。
+**任务 GA-1.1：DreamCycle 持有 genome.Population** ✅
 
-### 任务 GA-1.1：DreamCycle 持有 genome.Population
-
-**目标：** DreamCycle 内部维护一个 `*genome.Population`，而不是只持有一个 `parent Strategy`。
-
-**改动点：**
-- `internal/ares_evolution/dream_cycle.go` — `DreamCycle` 结构体已有 `population *genome.Population` 字段（第 99 行），但 `Run()` 方法中并未使用它来执行进化。需要改为：
-  1. 初始化时用 `genome.NewPopulation()` 创建种群
-  2. `Run()` 中调用 `population.Evolve()` 而不是 `mutator.Mutate()`
-  3. 进化后取 `population.BestStrategy()` 部署
+`DreamCycle` 结构体已有 `population *genome.Population` 字段，`Run()` 方法中通过 `dc.population.Evolve()` 执行种群进化，使用 `dc.population.BestStrategy()` 部署最优个体。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`, `genome_wiring.go`
 
-### 任务 GA-1.2：评分闭环
+**任务 GA-1.2：评分闭环** ✅
 
-**目标：** 在 `Evolve()` 之前给所有个体评分，形成选择→交叉→变异→评分的完整闭环。
-
-**当前问题：** `genome.Population.Evolve()` 要求调用前所有个体已评分（`ensureEvaluatedBeforeSelection()` 守卫），但 DreamCycle 没有评分逻辑。
-
-**改动点：**
-- `DreamCycle.Run()` 中：
-  1. 调用 `population.ScoreAgents(scorer)` 扫描所有个体
-  2. 调用 `population.Evolve(ctx, mutator, crosser)` 执行一代进化
-  3. 调用 `population.BestStrategy()` 取最优部署
-- 评分函数 `scorer` 复用已有的 arena tester 逻辑
+`DreamCycle.Run()` 中：
+1. 调用 `population.ScoreAgents(scorer)` 扫描所有个体
+2. 调用 `population.Evolve(ctx, mutator, crosser)` 执行一代进化
+3. 调用 `population.BestStrategy()` 取最优部署
+评分函数复用 arena tester 逻辑。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`, `genome_wiring.go`
 
-### 任务 GA-1.3：Selection 配置
+**任务 GA-1.3：Selection 配置** ✅
 
-**目标：** 让 DreamCycle 可配置选择算子类型。
-
-**改动点：**
-- `DreamCycleConfig` 新增 `SelectionStrategy` 字段（支持 tournament/rank/roulette/sus/truncation）
-- 初始化 population 时传入 `genome.WithSelectionStrategy()`
-- 默认使用 tournament（size=3）
+`DreamCycleConfig` 已有 `SelectionStrategy` 字段，支持 tournament/rank/roulette/sus/truncation/nsga2/nondominated。初始化 population 时传入 `genome.WithSelectionStrategy()`。默认使用 tournament（size=3）。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`, `genome/population_options.go`
 
-### 任务 GA-1.4：Crossover 接入
+**任务 GA-1.4：Crossover 接入** ✅
 
-**目标：** 在 `generateOffspring` 中调用交叉算子，而不是只变异。
-
-**当前问题：** `genome.Population.generateOffspring()` 已经调用了 `crosser.Crossover()`（第 434 行），但 DreamCycle 传入的 crosser 是 nil。
-
-**改动点：**
-- `DreamCycle` 初始化时创建 `genome.NewCrossover()`
-- 传入 `population.Evolve()` 的 crosser 参数
+`genome.Population.generateOffspring()` 已调用 `crosser.Crossover()`。`DreamCycle` 初始化时创建 `genome.NewCrossover()`，传入 `population.Evolve()` 的 crosser 参数。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`, `genome_wiring.go`
 
-### 任务 GA-1.5：PopSize & Elite 配置
+**任务 GA-1.5：PopSize & Elite 配置** ✅
 
-**目标：** DreamCycle 可配置种群大小、精英数、变异率、生存率。
-
-**改动点：**
-- `DreamCycleConfig` 新增 `PopulationSize`, `EliteCount`, `MutationRate`, `SurvivalRate` 字段
-- 初始化 population 时传入配置
+`DreamCycleConfig` 已配置 `PopulationSize`, `EliteCount`, `MutationRate`, `SurvivalRate` 等字段，初始化 population 时传入配置。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`
 
-### 任务 GA-1.6：终止条件
+**任务 GA-1.6：终止条件** ✅
 
-**目标：** 支持 max_generations 和 target_fitness 两种终止条件。
-
-**改动点：**
-- `DreamCycleConfig` 新增 `MaxGenerations`, `TargetFitness` 字段
-- `Run()` 中检查是否达到终止条件，达标则停止进化
+`DreamCycleConfig` 已配置 `MaxGenerations`, `TargetFitness` 字段。`Run()` 中检查是否达到终止条件，达标则停止进化。
 
 **文件：** `internal/ares_evolution/dream_cycle.go`
-
-### 接线阶段测试计划
-
-| 测试 | 方法 |
-|------|------|
-| DreamCycle 持有 population | 验证 `NewDreamCycle()` 后 population 非 nil |
-| 评分闭环 | mock scorer，验证 `ScoreAgents` 被调用 |
-| 代际推进 | 验证 `Evolve()` 后 `CurrentGeneration()` 增加 |
-| 最优部署 | 验证 `BestStrategy()` 返回的个体被部署 |
-| 终止条件 | 验证 `MaxGenerations` 达到后停止进化 |
 
 ---
 
-## 四、阶段二：GA 优化（Optimization）— 基于 PyGAD 增强
+## 四、阶段二：GA 优化（Optimization）— ✅ 大部分已完成
 
-### 任务 GA-2.1：新增交叉算子
+### 任务 GA-2.1：新增交叉算子 ✅
 
-**目标：** 在 `genome/crossover.go` 中新增 two_point、segment 交叉。
+已实现：uniform（默认）、two_point、segment 三种交叉类型。
 
-| 类型 | 说明 | 优先级 |
-|------|------|--------|
-| TwoPoint | 两个切分点，中间段来自 parent B，两侧来自 parent A | P0 |
-| Segment | 随机连续块来自 parent B，其余来自 parent A | P1 |
+| 类型 | 说明 | 状态 |
+|------|------|------|
+| TwoPoint | 两个切分点，中间段来自 parent B，两侧来自 parent A | ✅ |
+| Segment | 随机连续块来自 parent B，其余来自 parent A | ✅ |
 
 **文件：** `internal/ares_evolution/genome/crossover.go`
 
-### 任务 GA-2.2：新增变异算子
+### 任务 GA-2.2：新增变异算子 ✅
 
-**目标：** 在 `mutation/mutator.go` 中新增 swap、inversion、scramble 变异。
+已实现：swap、inversion、scramble 三种变异类型，加上原有的 param/prompt/tool 共 6 种。
 
-| 类型 | 说明 | 优先级 |
-|------|------|--------|
-| Swap | 交换两个参数的值 | P0 |
-| Inversion | 反转参数序列中一段的顺序 | P1 |
-| Scramble | 随机打乱参数序列中一段 | P1 |
+| 类型 | 说明 | 状态 |
+|------|------|------|
+| Swap | 交换两个参数的值 | ✅ |
+| Inversion | 反转参数序列中一段的顺序 | ✅ |
+| Scramble | 随机打乱参数序列中一段 | ✅ |
 
 **文件：** `internal/ares_evolution/mutation/mutator.go`
 
-### 任务 GA-2.3：稳态 GA 模式（Steady-State）
+### 任务 GA-2.3：稳态 GA 模式（Steady-State） ✅
 
-**目标：** 每次只替换部分个体（如 2 个），而非整个世代。
-
-**当前：** 每次 Evolve() 替换整个种群。
-**目标：** 新增 `EvolveSteadyState()` 方法，每次只生成少量 offspring，替换最差的个体。
+已实现 `EvolveSteadyState()` 方法，每次只生成 `max(1, int(float64(p.Size)*replaceRate))` 个 offspring，替换最差的个体。`replaceRate` 默认 0.3，范围 [0.1, 0.5]。
 
 **文件：** `internal/ares_evolution/genome/population.go`
 
-### 任务 GA-2.4：完整 NSGA-II 多目标选择
+### 任务 GA-2.4：完整 NSGA-II 多目标选择 ✅
 
-**目标：** 实现基于非支配排序 + 拥挤距离的 NSGA-II 选择算子。
-
-**当前：** 有 Pareto 排序和拥挤距离计算，但没有 NSGA-II 选择算子。
-**目标：** 新增 `NondominatedSortingSelection` 选择算子。
+已实现完整 NSGA-II：
+- `NondominatedSortingSelection` 选择算子（支持 "nsga2" 和 "nondominated" 字符串）
+- Pareto 非支配排序 + 拥挤距离计算
+- 4 个默认维度：success_rate（最大化，权重 0.40）、quality（最大化，0.25）、cost（最小化，0.20）、latency（最小化，0.15）
+- 方向感知的 Pareto 支配关系
+- NOTE: "nsga2" 和 "nondominated" 尚未加入 `validSelectionStrategies` 校验映射，使用 `WithSelectionStrategy("nsga2")` 会校验失败
 
 **文件：** `internal/ares_evolution/genome/selection.go`, `multi_objective.go`
 
-### 任务 GA-2.5：回调系统
+### 任务 GA-2.5：回调系统 ✅
 
-**目标：** 支持 on_generation、on_fitness 回调。
-
-**改动点：**
-- `PopulationConfig` 新增 `Callbacks` 字段
-- `doEvolve()` 在每代结束时调用回调
-- 回调类型：`OnGenerationFunc`, `OnFitnessFunc`
+已实现：
+- `PopulationConfig.Callbacks` — `EvolveCallbacks` 结构体
+- 回调类型：`OnGeneration` (每代结束时)、`OnFitness` (个体评分后)、`OnMutation` (变异后)、`OnCrossover` (交叉后)
+- 在 `population.go` 中各关键节点调用回调
 
 **文件：** `internal/ares_evolution/genome/population.go`, `population_config.go`
 
-### 任务 GA-2.6：历史追踪增强
+### 任务 GA-2.6：历史追踪增强 ✅
 
-**目标：** 每代记录完整统计数据，支持导出。
+已实现：
+- `GenerationHistoryEntry` 结构体 — 每代完整统计数据（最佳/平均/最差适应度、多样性等）
+- `Population.History()` 方法返回完整历史
+- 支持 JSON 序列化（`MarshalJSON`/`UnmarshalJSON`）
 
-**当前：** `GenerationHistoryEntry` 已定义，但未在 DreamCycle 中暴露。
-**目标：** 新增 `History()` 方法返回完整历史，支持 JSON 序列化。
-
-**文件：** `internal/ares_evolution/genome/population.go`, `api/evolution/evolution.go`
+**文件：** `internal/ares_evolution/genome/population.go`, `population_history.go`, `api/evolution/evolution.go`
 
 ### 任务 GA-2.7：适应度曲线可视化数据
 
-**目标：** 导出适应度/多样性/基因值的时序数据，供外部绘图。
+待实现。需要导出适应度/多样性/基因值的时序数据，供外部绘图。
 
 **文件：** 新增 `api/evolution/viz.go`
 
@@ -307,23 +262,23 @@ GA-2.7  可视化数据
 | `keep_parents` | 已有 `EliteCount` | 已覆盖 |
 | `allow_duplicate` | 无 | 防止基因重复 |
 | `gene_type` / `init_range` | 只有 `ParamRange` | 基因空间约束 |
-| 回调 `on_generation` / `on_fitness` | 无 | 扩展性 |
+| 回调 `on_generation` / `on_fitness` | ✅ 已实现，`EvolveCallbacks` 支持 4 种回调 | 已覆盖 |
 | 可视化 `plot_fitness` | 无 | 调试/分析 |
 | 自适应变异 `mutation_type="adaptive"` | 已有 `adaptive_distribution.go` | 已覆盖 |
-| 稳态选择 `parent_selection_type="sss"` | 只有配置，没实现方法 | 需实现 `EvolveSteadyState()` |
+| 稳态选择 `parent_selection_type="sss"` | ✅ 已实现 `EvolveSteadyState()` | 已覆盖 |
 
 ### 已借鉴的设计
 
 - **交叉算子类型**：uniform（默认）、two_point、segment — 对应 PyGAD 的 `crossover_type`
 - **变异算子**：swap、inversion、scramble — 对应 PyGAD 的 `mutation_type`
-- **选择算子**：tournament、rank、roulette、sus、truncation — 对应 PyGAD 的 `parent_selection_type`
+- **选择算子**：tournament、rank、roulette、sus、truncation、nsga2 — 对应 PyGAD 的 `parent_selection_type`
 - **多目标优化**：Pareto 排序 + 拥挤距离 — 对应 PyGAD 的 NSGA-II 支持
 
 ### 差距最大的三个功能（待实现）
 
-1. **回调系统** — PyGAD 的 `on_generation`/`on_fitness`，任何框架级 GA 标配
-2. **可视化数据导出** — 适应度序列、基因值分布，调试必备
-3. **稳态 GA 模式** — `EvolveSteadyState()` 方法，PyGAD 的 "sss" 选择
+1. **可视化数据导出** — 适应度序列、基因值分布，调试必备
+2. **基因空间约束** — `gene_type`/`init_range` 等价物，防止无效基因组合
+3. **重复基因防护** — `allow_duplicate` 等价物
 
 ---
 

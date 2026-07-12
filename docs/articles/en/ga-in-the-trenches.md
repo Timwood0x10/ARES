@@ -64,6 +64,19 @@ Results preview:
 
 The numbers tell a different story now. Let's dive in.
 
+**Steady-state GA: online evolution without full replacement.**
+
+All three experiments use full generational evolution — the entire population is replaced each generation. But for online scenarios (agent actively serving requests while evolving), the framework now supports **steady-state GA** via `EvolveSteadyState()` in `internal/ares_evolution/genome/population.go`.
+
+In steady-state mode, only a fraction of the population is replaced each generation, controlled by `replaceRate` (clamped to [0.1, 0.5], default 0.3). Most individuals survive, preserving exploration history and avoiding sudden population flips. This is ideal for continuous in-production adaptation where you want smooth convergence without disrupting active strategies.
+
+| Property | Full Generational | Steady-State |
+|----------|-------------------|--------------|
+| Replacement rate | 100% controlled by SurvivalRate | 10-50% controlled by replaceRate |
+| Convergence | Fast, can overshoot | Smooth, gradual |
+| Diversity | Resets each generation | Maintained across generations |
+| Use case | Offline optimization | Online (in-production) adaptation |
+
 ---
 
 ## First Run: Pure Autonomous Evolution (Scenario 6 / Non-Wired / Rank Selection)
@@ -302,6 +315,21 @@ Total:                 100
 
 Diversity experienced collapses at Gen 3 (0.141) and Gen 6 (0.147), but the system self-corrected both times.
 
+**What's next?** All three experiments optimize a single score — success rate, or some scalar combination. But real-world strategy quality isn't one-dimensional. A high-success-rate strategy might be expensive; a low-cost strategy might be slow.
+
+The GA framework now supports **multi-objective optimization via NSGA-II** (`internal/ares_evolution/genome/multi_objective.go`). Instead of ranking strategies by a single score, NSGA-II ranks them by Pareto dominance across four default dimensions:
+
+| Dimension | Direction | Weight | Meaning |
+|-----------|-----------|--------|---------|
+| `success_rate` | Maximize | 0.40 | Higher execution success → better |
+| `quality` | Maximize | 0.25 | Higher output quality → better |
+| `cost` | Minimize | 0.20 | Lower API cost → better |
+| `latency` | Minimize | 0.15 | Lower response time → better |
+
+Selection follows the NSGA-II pipeline: non-dominated sorting assigns Pareto ranks (0 = best front), then crowding distance within each rank preserves diversity at the Pareto frontier. Pass `"nsga2"` or `"nondominated"` as the selection strategy to activate it.
+
+The benefit: you don't need to manually tune the weight between success rate and cost. NSGA-II maintains a diverse set of trade-off solutions. The weights are used only when a single scalar score is needed for reporting; the selection itself operates on the full Pareto ordering.
+
 ---
 
 ## The Bug That Cost 26.97 Points
@@ -402,6 +430,12 @@ However, the LLM scorer in the loop (Scenario 8) underperforms both. The reason 
 
 **If you have LLM budget, use it for validation, not evaluation.** A single LLM call at Gen 15 to validate the top candidate is more valuable than 100 LLM calls distributed across generations.
 
+**A design refinement: Split canonical fitness from selection pressure.**
+
+The GA now separates `Score` (canonical fitness, set by the scorer, never modified) from `SelectionScore` (adjusted by fitness sharing, reset each epoch). All selection operators use `effectiveScore()`, which picks `SelectionScore` if non-zero, otherwise falls back to `Score`. This means fitness sharing — which penalizes individuals in crowded parameter-space regions to promote diversity — can adjust selection pressure without corrupting the true fitness value used for reporting and history.
+
+Three scaling strategies handle population size: O(n²) pairwise for small populations, reservoir sampling for medium, and spatial grid indexing for large (>500). Elite individuals are exempt from the penalty.
+
 ### 3. Lineage Improvement Rate Is Still Valuable — But Interpret It Differently
 
 Scenario 6's lineage improvement rate was 100%. Scenario 7's was 3.7%. Old me: "Wired mode is broken." New me: "Wired mode selects more aggressively."
@@ -429,6 +463,24 @@ The LLM scored Scenario 7's 85.90 strategy at 70 points. It scored the old buggy
 This confirms a pattern: **LLMs have a narrow scoring range for strategy evaluation.** They cluster scores around 60-80, regardless of actual performance. The deterministic scorer has a much wider dynamic range.
 
 But here's the thing: **it doesn't matter anymore.** The LLM-Guided system won. The LLM's compressed scoring range didn't prevent it from selecting the right strategy. The LLM's value came from its ability to distinguish "plausible" from "implausible" at the final validation stage — not from precise score assignment.
+
+### 6. Data-Driven Evolution: Connect Real Execution to the GA Loop
+
+The fifth lesson hints at a powerful idea: if the LLM can validate candidates, what else can observe and guide evolution? The **Experience System** answers this by closing the loop from production execution back to the GA.
+
+The pipeline: `ToolCallRecord → RawExperience → NormalizedExperience → MemoryExperienceStore → AggregateEvidence → EvolutionHint`
+
+Three key components:
+
+- **ToolCallExperienceCollector** (`internal/ares_evolution/experience/tool_call_collector.go`): Captures every tool call made by production agents — including strategy ID, task type, tool name, latency, success/failure, and error codes. The normalizer deduplicates and filters high-latency outliers and high-error-rate records.
+
+- **MemoryExperienceStore** (`internal/ares_evolution/experience/memory_store.go`): Stores experiences with indexed lookup by `strategy_id` and `task_type`. Supports `Append`, `AppendBatch`, `Query` (by strategy ID, with time range), and `QueryByTaskType` (score-descending). `GetStatistics()` aggregates metrics including total count, average score, and success rate.
+
+- **GuidanceProvider** (`internal/ares_evolution/experience_hints.go`): The bridge from raw data to evolution guidance. `HintsForTask()` returns `EvolutionHint` structs containing identified problems, solutions, preferred tools, prompt snippets, parameter hints, and a confidence score. `RecordStrategyOutcome()` logs deployment results so the system learns from successes and failures.
+
+In practice, this means: if a strategy consistently fails on a particular task type (say, database schema migration), the experience system captures the failure pattern, normalizes it into a hint ("use explicit transaction blocks for DDL"), and surfaces that hint to the GA's mutation operator. Future mutations are biased toward solutions that avoid the known failure pattern.
+
+The evidence package (`internal/evidence/`) provides typed evidence kinds: `KindExecutionTrace`, `KindFailure`, `KindKnowledge`, `KindInsight`, `KindFitness`. Each `MemoryGenome` and `PlannerGenome` emits `KindFitness` evidence during evaluation, linking fitness scores to genome metadata.
 
 ---
 

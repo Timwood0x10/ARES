@@ -55,6 +55,7 @@ make examples          # build all 24 examples
 |---|---|
 | **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution |
 | **Runtime Evolution** | Genome + Diff Engine + Coordinator evolve DAG, scheduler, planner, recovery in production |
+| **Strategy GA** | Population-based strategy optimization — NSGA-II multi-objective, steady-state, uniform/two-point/segment crossover, 6 mutation types |
 | **Evidence-Driven** | Every runtime event (flight, chaos, fitness) feeds into evolution decisions |
 | **DAG Workflow** | Dynamic graphs with conditional branching and recovery |
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
@@ -166,8 +167,10 @@ graph TB
 
     subgraph Evo ["Evolution"]
         GA["Genetic Algorithm"]
-        MUT["Mutation"]
-        SCORE["Scoring"]
+        NSGA["NSGA-II / Steady-State"]
+        CROSS["Uniform / Two-Point / Segment"]
+        MUT["6 Mutation Types"]
+        SCORE["Experience-Guided Scoring"]
     end
 
     subgraph RuntimeEvo ["Runtime Evolution"]
