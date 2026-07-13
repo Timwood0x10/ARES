@@ -405,6 +405,12 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		)
 	}
 
+	// Create supervisor for sub-agent resurrection.
+	supervisor := NewAgentSupervisor(ChaosConfig{Enabled: true})
+	for i, sub := range subs {
+		supervisor.RegisterAgent(fmt.Sprintf("importer-%d", i+1), sub)
+	}
+
 	team := rt.NewTeam("import-team", leader, subs)
 	team.WithTeamConfig(sdk.TeamConfig{
 		Mode: sdk.ModeAutoSplit, VerifierIndex: 7, MaxConcurrency: 3,
@@ -414,6 +420,13 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 	result, err := team.Run(ctx, task)
 	if err != nil {
 		return err
+	}
+
+	// Report resurrection status.
+	if failed := supervisor.FailedAgents(); len(failed) > 0 {
+		slog.Warn("sub-agents failed during import", "count", len(failed), "agents", failed)
+	} else {
+		slog.Info("all sub-agents completed successfully")
 	}
 	slog.Info("Team import done", "duration", result.Duration, "passed", result.Passed)
 	return nil
