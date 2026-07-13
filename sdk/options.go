@@ -20,6 +20,7 @@ type config struct {
 	evoCfg   evolutionCfg
 	knlCfg   knowledgeCfg
 	mcpConns []MCPConn
+	fallbacks []*core.LLMConfig
 	trace    bool
 }
 
@@ -132,6 +133,17 @@ func WithAPIKey(key string) Option {
 func WithLLMConfig(cfg *core.LLMConfig) Option {
 	return func(c *config) error {
 		c.llmCfg = cfg
+		return nil
+	}
+}
+
+// WithFallbackLLM adds a fallback LLM provider for automatic failover.
+// When the primary provider fails (timeout, rate limit, network error),
+// the Runtime automatically tries fallbacks in order. Call multiple times
+// to add multiple fallbacks.
+func WithFallbackLLM(cfg *core.LLMConfig) Option {
+	return func(c *config) error {
+		c.fallbacks = append(c.fallbacks, cfg)
 		return nil
 	}
 }

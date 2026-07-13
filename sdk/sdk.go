@@ -255,11 +255,12 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- LLM ----
-	llmCfg := &llm.Config{
-		BaseConfig: cfg.baseCfg,
-		LLMConfig:  cfg.llmCfg,
-	}
-	llmSvc, err := llm.NewService(llmCfg)
+	  llmCfg := &llm.Config{
+	   BaseConfig: cfg.baseCfg,
+	   LLMConfig:  cfg.llmCfg,
+	   Fallbacks:  cfg.fallbacks,
+	  }
+	  llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
 		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
 	}

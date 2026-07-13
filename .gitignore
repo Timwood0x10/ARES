@@ -15,7 +15,7 @@ plan/
 bin/
 
 # Local config overrides — copy from config.example.yml and edit.
-config.yml
+config.yaml
 .mcp.json
 
 /**/.venv/
@@ -35,6 +35,7 @@ examples/quant-trading/workflow/config.yml
 .reasonix/
 
 examples/autonomous-evolution/config/config.y*ml
+examples/11-knowledge-import/config.yaml
 
 examples/finetune/config/server.y*ml
 

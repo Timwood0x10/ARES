@@ -5,7 +5,8 @@ import (
 	"context"
 
 	"github.com/Timwood0x10/ares/api/core"
-	internal "github.com/Timwood0x10/ares/internal/llmservice"
+	"github.com/Timwood0x10/ares/internal/llm"
+	llmservice "github.com/Timwood0x10/ares/internal/llmservice"
 )
 
 // Config holds configuration for the LLM service.
@@ -16,6 +17,9 @@ type Config struct {
 	BaseConfig *core.BaseConfig
 	// LLMConfig is the LLM provider configuration.
 	LLMConfig *core.LLMConfig
+	// Fallbacks is a list of fallback LLM configs for failover.
+	// When non-empty, a FailoverClient is created instead of a single Client.
+	Fallbacks []*core.LLMConfig
 	// Repo is the LLM repository (optional, for logging/audit).
 	Repo core.LLMRepository
 	// EmbeddingClient is the embedding service client (optional).
@@ -23,13 +27,23 @@ type Config struct {
 }
 
 // toInternal converts the public Config to the internal Config type.
-func (c *Config) toInternal() *internal.Config {
+func (c *Config) toInternal() *llmservice.Config {
 	if c == nil {
 		return nil
 	}
-	return &internal.Config{
+	// Convert fallback configs.
+	var fallbacks []*llm.Config
+	for _, f := range c.Fallbacks {
+	  fallbacks = append(fallbacks, &llm.Config{
+	   Provider: string(f.Provider), Model: f.Model,
+	   BaseURL: f.BaseURL, APIKey: f.APIKey,
+	   Timeout: f.Timeout, MaxTokens: f.MaxTokens,
+	  })
+	}
+	return &llmservice.Config{
 		BaseConfig:      c.BaseConfig,
 		LLMConfig:       c.LLMConfig,
+		Fallbacks:       fallbacks,
 		Repo:            c.Repo,
 		EmbeddingClient: c.EmbeddingClient,
 	}
@@ -37,12 +51,12 @@ func (c *Config) toInternal() *internal.Config {
 
 // Service wraps internal/llmservice.Service for public consumption.
 type Service struct {
-	inner *internal.Service
+	inner *llmservice.Service
 }
 
 // NewService creates a new LLM service with the given config.
 func NewService(cfg *Config) (*Service, error) {
-	s, err := internal.NewService(cfg.toInternal())
+	s, err := llmservice.NewService(cfg.toInternal())
 	if err != nil {
 		return nil, err
 	}

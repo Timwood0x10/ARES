@@ -47,6 +47,19 @@ type LLMConfig struct {
 	Model     string `yaml:"model"`
 	Timeout   int    `yaml:"timeout"`
 	MaxTokens int    `yaml:"max_tokens"`
+	// Backup is an optional fallback LLM (OpenAI-compatible) used when
+	// the primary provider is unavailable.
+	Backup *LLMBackupConfig `yaml:"backup"`
+}
+
+// LLMBackupConfig holds settings for a backup LLM provider.
+type LLMBackupConfig struct {
+	Provider  string `yaml:"provider"`
+	APIKey    string `yaml:"api_key"`
+	BaseURL   string `yaml:"base_url"`
+	Model     string `yaml:"model"`
+	Timeout   int    `yaml:"timeout"`
+	MaxTokens int    `yaml:"max_tokens"`
 }
 
 // MemoryConfig is preserved for config-structure compatibility with the other

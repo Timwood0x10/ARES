@@ -35,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/google/uuid"
@@ -54,6 +55,11 @@ type cliOptions struct {
 	chat       bool
 	team       bool
 	list       bool
+	// Chaos engineering
+	chaosFailRate  float64
+	chaosLatency   time.Duration
+	chaosKillAfter int
+	chaosHTTP      string
 }
 
 func main() {
@@ -99,16 +105,45 @@ func parseFlags() cliOptions {
 	flag.BoolVar(&opts.chat, "chat", false, "Start interactive chat with RAG + tools")
 	flag.BoolVar(&opts.team, "team", false, "Multi-agent team import from directory")
 	flag.BoolVar(&opts.list, "list", false, "List stored documents")
+	flag.Float64Var(&opts.chaosFailRate, "chaos-fail", 0, "Chaos: tool failure rate [0,1]")
+	flag.DurationVar(&opts.chaosLatency, "chaos-latency", 0, "Chaos: tool latency (e.g. 500ms)")
+	flag.IntVar(&opts.chaosKillAfter, "chaos-kill", 0, "Chaos: kill agent after N tool calls")
+	flag.StringVar(&opts.chaosHTTP, "chaos-http", "", "Chaos: HTTP endpoint address (e.g. :8081)")
 	flag.Parse()
 	return opts
 }
 
 func dispatch(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
+	// Build chaos config from CLI flags.
+	chaosCfg := DefaultChaosConfig()
+	if opts.chaosFailRate > 0 || opts.chaosLatency > 0 || opts.chaosKillAfter > 0 || opts.chaosHTTP != "" {
+		chaosCfg = ChaosConfig{
+			Enabled:        true,
+			InjectFailRate: opts.chaosFailRate,
+			InjectLatency:  opts.chaosLatency,
+			KillAgentAfter: opts.chaosKillAfter,
+		}
+		slog.Warn("🧨 chaos enabled", "fail_rate", chaosCfg.InjectFailRate,
+			"latency", chaosCfg.InjectLatency, "kill_after", chaosCfg.KillAgentAfter)
+	}
+
+	// Start chaos HTTP endpoint if configured.
+	if opts.chaosHTTP != "" {
+		go func() {
+			if err := ArenaHTTPServer(ctx, opts.chaosHTTP); err != nil {
+				slog.Warn("chaos http server stopped", "error", err)
+			}
+		}()
+	}
+
+	// Build tool wrapper for fault injection.
+	toolWrapper := NewToolWrapper(chaosCfg)
+
 	switch {
 	case opts.chat:
-		return runChat(ctx, kb, opts)
+		return runChat(ctx, kb, opts, toolWrapper)
 	case opts.team:
-		return runTeam(ctx, kb, opts)
+		return runTeam(ctx, kb, opts, toolWrapper)
 	case opts.file != "":
 		return runIngestFile(ctx, kb, opts)
 	case opts.dir != "":
@@ -192,14 +227,89 @@ func printUsage() {
 
 // ── Chat mode ─────────────────────────────────────────────────────────────
 
-func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
-	rt, err := sdk.New(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
+// sdkOptions creates SDK Runtime options from the example's config.yaml.
+// Uses primary LLM config first, falls back to backup if primary is empty.
+func sdkOptions(cfg *Config) []sdk.Option {
+	opts := []sdk.Option{sdk.WithTrace(true)}
+
+	// Determine which LLM config to use (primary or backup).
+	llmCfg := &cfg.LLM
+	useBackup := (llmCfg.Provider == "" || llmCfg.Model == "") && cfg.LLM.Backup != nil &&
+		cfg.LLM.Backup.Provider != "" && cfg.LLM.Backup.Model != ""
+
+	var target *LLMBackupConfig
+	if useBackup {
+		target = cfg.LLM.Backup
+	} else {
+		target = &LLMBackupConfig{
+			Provider: llmCfg.Provider, Model: llmCfg.Model,
+			BaseURL: llmCfg.BaseURL, APIKey: llmCfg.APIKey,
+			Timeout: llmCfg.Timeout, MaxTokens: llmCfg.MaxTokens,
+		}
+	}
+
+	// Register the backup as a fallback via SDK option.
+	switch target.Provider {
+	case "ollama":
+		opts = append(opts, sdk.WithOllama(target.Model))
+	case "openai":
+		opts = append(opts, sdk.WithOpenAI(target.Model))
+	case "anthropic":
+		opts = append(opts, sdk.WithAnthropic(target.Model))
+	case "openrouter":
+		opts = append(opts, sdk.WithOpenRouter(target.Model))
+	}
+	if target.BaseURL != "" {
+		opts = append(opts, sdk.WithBaseURL(target.BaseURL))
+	}
+	if target.APIKey != "" {
+		opts = append(opts, sdk.WithAPIKey(target.APIKey))
+	}
+
+	// If backup is configured and different from primary, register as fallback.
+	if !useBackup && cfg.LLM.Backup != nil && cfg.LLM.Backup.Provider != "" && cfg.LLM.Backup.Model != "" {
+		b := cfg.LLM.Backup
+		fallbackCfg := &core.LLMConfig{
+			Provider:  providerName(b.Provider),
+			Model:     b.Model,
+			BaseURL:   b.BaseURL,
+			APIKey:    b.APIKey,
+			Timeout:   b.Timeout,
+			MaxTokens: b.MaxTokens,
+		}
+		opts = append(opts, sdk.WithFallbackLLM(fallbackCfg))
+	}
+
+	// GA evolution + AKG knowledge fabric.
+	opts = append(opts, sdk.WithEvolution(), sdk.WithKnowledge())
+
+	return opts
+}
+
+// providerName converts the yaml provider string to core.LLMProvider format.
+func providerName(s string) core.LLMProvider {
+	switch s {
+	case "openai":
+		return core.LLMProviderOpenAI
+	case "ollama":
+		return core.LLMProviderOllama
+	case "anthropic":
+		return core.LLMProviderAnthropic
+	case "openrouter":
+		return core.LLMProviderOpenRouter
+	default:
+		return core.LLMProvider(s)
+	}
+}
+
+func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWrapper) error {
+	rt, err := sdk.New(sdkOptions(kb.cfg)...)
 	if err != nil {
 		return fmt.Errorf("SDK: %v", err)
 	}
 	defer rt.Close()
 
-	registerTools(rt, kb, opts.tenantID)
+	registerTools(rt, kb, opts.tenantID, tw)
 
 	var memMgr ares_memory.MemoryManager
 	var sessionID string
@@ -265,7 +375,7 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 
 // ── Team mode ─────────────────────────────────────────────────────────────
 
-func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
+func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWrapper) error {
 	dir := opts.dir
 	if dir == "" {
 		dir = "examples/11-knowledge-import/notes"
@@ -274,13 +384,13 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 		// Not a path, treat as relative.
 	}
 
-	rt, err := sdk.New(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
+	rt, err := sdk.New(sdkOptions(kb.cfg)...)
 	if err != nil {
 		return fmt.Errorf("SDK: %v", err)
 	}
 	defer rt.Close()
 
-	registerTools(rt, kb, opts.tenantID)
+	registerTools(rt, kb, opts.tenantID, tw)
 
 	leader := rt.NewAgent("leader",
 		sdk.WithInstruction("You are the team leader. Discover files and coordinate the import."),
@@ -322,7 +432,7 @@ func toolList() []tools.Tool {
 	return []tools.Tool{dirTool, fileTool, impTool, qryTool}
 }
 
-func registerTools(rt *sdk.Runtime, kb *KnowledgeBase, tenantID string) {
+func registerTools(rt *sdk.Runtime, kb *KnowledgeBase, tenantID string, tw *ToolWrapper) {
 	dirTool = tools.ToolFunc{
 		ToolName: "read_directory",
 		ToolDesc: "Recursively find all .md files under a directory.",
