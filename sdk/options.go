@@ -14,14 +14,14 @@ type Option func(*config) error
 
 // config holds the internal configuration state while options are applied.
 type config struct {
-	llmCfg   *core.LLMConfig
-	baseCfg  *core.BaseConfig
-	memCfg   memoryCfg
-	evoCfg   evolutionCfg
-	knlCfg   knowledgeCfg
-	mcpConns []MCPConn
+	llmCfg    *core.LLMConfig
+	baseCfg   *core.BaseConfig
+	memCfg    memoryCfg
+	evoCfg    evolutionCfg
+	knlCfg    knowledgeCfg
+	mcpConns  []MCPConn
 	fallbacks []*core.LLMConfig
-	trace    bool
+	trace     bool
 }
 
 type memoryCfg struct {

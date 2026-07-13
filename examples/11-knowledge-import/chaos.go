@@ -42,9 +42,9 @@ func (c ChaosConfig) ChaosEnabled() bool {
 // ToolWrapper wraps the SDK tool execution with fault injection.
 // It implements a subset of what ares_arena.Injector does at the tool layer.
 type ToolWrapper struct {
-	cfg      ChaosConfig
+	cfg       ChaosConfig
 	callCount map[string]int // per-agent tool call counter
-	mu       sync.Mutex
+	mu        sync.Mutex
 }
 
 // NewToolWrapper creates a tool wrapper with the given chaos config.
@@ -165,13 +165,13 @@ func (s *AgentSupervisor) FailedAgents() []string {
 func ArenaHTTPServer(ctx context.Context, addr string) error {
 	mux := &http.ServeMux{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `{"status":"ok","service":"knowledge-base"}`)
+		_, _ = fmt.Fprintf(w, `{"status":"ok","service":"knowledge-base"}`)
 	})
 	server := &http.Server{Addr: addr, Handler: mux}
 	slog.Info("arena health endpoint", "addr", addr)
 	go func() {
 		<-ctx.Done()
-		server.Shutdown(context.Background())
+		_ = server.Shutdown(context.Background())
 	}()
 	return server.ListenAndServe()
 }

@@ -28,8 +28,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -55,6 +57,9 @@ type cliOptions struct {
 	chat       bool
 	team       bool
 	list       bool
+	evolve     string // task description for GA evolution
+	demo       bool   // full pipeline demo
+	logFile    string // path to write debug log output
 	// Chaos engineering
 	chaosFailRate  float64
 	chaosLatency   time.Duration
@@ -71,7 +76,20 @@ func main() {
 
 func run() error {
 	opts := parseFlags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	// Log file output.
+	if opts.logFile != "" {
+		f, err := os.Create(opts.logFile)
+		if err != nil {
+			return fmt.Errorf("create log file: %w", err)
+		}
+		defer f.Close()
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, f),
+			&slog.HandlerOptions{Level: slog.LevelInfo})))
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
+			&slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
 
 	cfg, err := LoadConfig(opts.configPath)
 	if err != nil {
@@ -105,6 +123,9 @@ func parseFlags() cliOptions {
 	flag.BoolVar(&opts.chat, "chat", false, "Start interactive chat with RAG + tools")
 	flag.BoolVar(&opts.team, "team", false, "Multi-agent team import from directory")
 	flag.BoolVar(&opts.list, "list", false, "List stored documents")
+	flag.BoolVar(&opts.demo, "demo", false, "Run full pipeline: evolve + kill + AKG + ask")
+	flag.StringVar(&opts.evolve, "evolve", "", "Run GA evolution on the import agent with the given task")
+	flag.StringVar(&opts.logFile, "log-file", "", "Path to write debug log output (e.g. examples/11-knowledge-import/run.log)")
 	flag.Float64Var(&opts.chaosFailRate, "chaos-fail", 0, "Chaos: tool failure rate [0,1]")
 	flag.DurationVar(&opts.chaosLatency, "chaos-latency", 0, "Chaos: tool latency (e.g. 500ms)")
 	flag.IntVar(&opts.chaosKillAfter, "chaos-kill", 0, "Chaos: kill agent after N tool calls")
@@ -148,10 +169,14 @@ func dispatch(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
 		return runIngestFile(ctx, kb, opts)
 	case opts.dir != "":
 		return runIngestDir(ctx, kb, opts)
+	case opts.evolve != "":
+		return runEvolve(ctx, kb, opts)
 	case strings.TrimSpace(opts.question) != "":
 		return runAsk(ctx, kb, opts)
 	case opts.list:
 		return runList(ctx, kb, opts)
+	case opts.demo:
+		return runDemo(ctx, kb, opts)
 	default:
 		printUsage()
 		return nil
@@ -325,7 +350,7 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		}
 	}
 
-	slog.Info("Chat started. Ask questions or say: 把 xxx 目录导入知识库")
+	slog.Info("Chat started. Ask questions or say: import <path> to import knowledge")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("\nYou: ")
@@ -338,7 +363,7 @@ func runChat(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		}
 
 		// Import request: use agent with tools.
-		if strings.Contains(input, "导入") || strings.Contains(input, "import") || strings.Contains(input, "存") {
+		if strings.Contains(input, "import") || strings.Contains(input, "store") {
 			agt := rt.NewAgent("assistant",
 				sdk.WithInstruction("You are a knowledge base import assistant. To import files: first call read_directory to discover .md files, then for each file call read_note_file to get the content, then call import_knowledge with the file path and content."),
 				sdk.WithTools(toolList()...),
@@ -382,6 +407,7 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 	}
 	if !strings.HasPrefix(dir, "/") && !strings.HasPrefix(dir, ".") && !strings.Contains(dir, ":") {
 		// Not a path, treat as relative.
+		dir = "./" + dir
 	}
 
 	rt, err := sdk.New(sdkOptions(kb.cfg)...)
@@ -429,6 +455,102 @@ func runTeam(ctx context.Context, kb *KnowledgeBase, opts cliOptions, tw *ToolWr
 		slog.Info("all sub-agents completed successfully")
 	}
 	slog.Info("Team import done", "duration", result.Duration, "passed", result.Passed)
+	return nil
+}
+
+// ── GA Evolution ─────────────────────────────────────────────────────────
+
+// runEvolve runs GA evolution on the import agent to optimize its parameters.
+func runEvolve(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
+	cfg, err := LoadConfig(opts.configPath)
+	if err != nil {
+		return err
+	}
+
+	sdkOpts := sdkOptions(cfg)
+	rt, err := sdk.New(sdkOpts...)
+	if err != nil {
+		return fmt.Errorf("SDK: %w", err)
+	}
+	defer rt.Close()
+
+	registerTools(rt, kb, opts.tenantID, NewToolWrapper(DefaultChaosConfig()))
+
+	agent := rt.NewAgent("evolver",
+		sdk.WithInstruction("You are a knowledge import specialist. Read files and import them."),
+		sdk.WithTools(toolList()...),
+	)
+
+	task := opts.evolve
+	if task == "" {
+		task = "Read markdown files from notes and import them into the knowledge base"
+	}
+
+	slog.Info("🧬 GA evolution started", "task", task)
+	start := time.Now()
+	result, err := rt.Evolve(ctx, agent, task)
+	if err != nil {
+		return fmt.Errorf("evolve: %w", err)
+	}
+	elapsed := time.Since(start)
+
+	slog.Info("🧬 GA evolution complete",
+		"duration", elapsed.Round(time.Millisecond),
+		"result", result,
+	)
+	fmt.Printf("\n🧬 Evolved Strategy: %s\n", result)
+	return nil
+}
+
+// ── Demo pipeline ─────────────────────────────────────────────────────────
+
+// runDemo runs the full pipeline: evolve → kill → AKG → ask.
+func runDemo(ctx context.Context, kb *KnowledgeBase, opts cliOptions) error {
+	slog.Info("=== DEMO: Full Pipeline ===")
+
+	// 1. GA Evolution.
+	slog.Info("--- Phase 1: GA Evolution ---")
+	if err := runEvolve(ctx, kb, opts); err != nil {
+		slog.Warn("evolution failed (continuing)", "error", err)
+	}
+
+	// 2. Chaos kill + resurrection (Team mode with kill).
+	slog.Info("--- Phase 2: Chaos Kill + Resurrection ---")
+	if err := runTeam(ctx, kb, cliOptions{
+		tenantID:       opts.tenantID,
+		dir:            opts.dir,
+		chaosFailRate:  0.0,
+		chaosKillAfter: 3,
+		configPath:     opts.configPath,
+	}, NewToolWrapper(ChaosConfig{
+		Enabled:        true,
+		KillAgentAfter: 3,
+	})); err != nil {
+		slog.Warn("team with chaos failed (continuing)", "error", err)
+	}
+
+	// 3. AKG Build (run as subprocess).
+	slog.Info("--- Phase 3: AKG Build ---")
+	akgCmd := exec.CommandContext(ctx, "go", "run", "examples/11-knowledge-import/akg/")
+	akgOut, err := akgCmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("AKG build failed (continuing)", "error", err)
+	} else {
+		fmt.Print(string(akgOut))
+	}
+
+	// 4. Ask query.
+	slog.Info("--- Phase 4: RAG Query ---")
+	askOpts := cliOptions{
+		tenantID:   opts.tenantID,
+		question:   "What are the key differences between zk-SNARK and zk-STARK?",
+		configPath: opts.configPath,
+	}
+	if err := runAsk(ctx, kb, askOpts); err != nil {
+		slog.Warn("ask failed (continuing)", "error", err)
+	}
+
+	slog.Info("=== DEMO: Complete ===")
 	return nil
 }
 

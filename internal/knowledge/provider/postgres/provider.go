@@ -241,6 +241,10 @@ func (p *PGProvider) scanRow(rows *sql.Rows) (*knowledge.KnowledgeObject, error)
 	if timeCol.Valid {
 		obj.CreatedAt = timeCol.Time
 	}
+	// Populate Tags from the configured tag column (e.g. source path).
+	if tagCol.Valid && tagCol.String != "" {
+		obj.Tags = []string{tagCol.String}
+	}
 
 	return obj, nil
 }

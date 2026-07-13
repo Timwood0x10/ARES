@@ -25,10 +25,6 @@ func wrapf(err error, format string, args ...any) error {
 }
 
 // sha256Hex returns the hex-encoded SHA-256 digest of s.
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
 
 // hashWithIndex combines content with chunk index to ensure unique hashes
 // within a batch, avoiding PostgreSQL ON CONFLICT errors when two chunks

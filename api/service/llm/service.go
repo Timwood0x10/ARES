@@ -34,11 +34,11 @@ func (c *Config) toInternal() *llmservice.Config {
 	// Convert fallback configs.
 	var fallbacks []*llm.Config
 	for _, f := range c.Fallbacks {
-	  fallbacks = append(fallbacks, &llm.Config{
-	   Provider: string(f.Provider), Model: f.Model,
-	   BaseURL: f.BaseURL, APIKey: f.APIKey,
-	   Timeout: f.Timeout, MaxTokens: f.MaxTokens,
-	  })
+		fallbacks = append(fallbacks, &llm.Config{
+			Provider: string(f.Provider), Model: f.Model,
+			BaseURL: f.BaseURL, APIKey: f.APIKey,
+			Timeout: f.Timeout, MaxTokens: f.MaxTokens,
+		})
 	}
 	return &llmservice.Config{
 		BaseConfig:      c.BaseConfig,

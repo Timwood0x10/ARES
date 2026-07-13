@@ -72,9 +72,10 @@ type ToolCapable interface {
 // AssistantMsg represents an assistant message with optional tool calls.
 // This is used to carry the raw message for conversation continuation.
 type AssistantMsg struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content,omitempty"`
-	ToolCalls []AssistantToolCall `json:"tool_calls,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content,omitempty"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []AssistantToolCall `json:"tool_calls,omitempty"`
 }
 
 // toMap converts AssistantMsg to the OpenAI API message format.
@@ -82,6 +83,9 @@ func (m *AssistantMsg) toMap() map[string]interface{} {
 	msg := map[string]interface{}{
 		keyRole:    m.Role,
 		keyContent: m.Content,
+	}
+	if m.ReasoningContent != "" {
+		msg["reasoning_content"] = m.ReasoningContent
 	}
 	if len(m.ToolCalls) > 0 {
 		calls := make([]map[string]interface{}, 0, len(m.ToolCalls))

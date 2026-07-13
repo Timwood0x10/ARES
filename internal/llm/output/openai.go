@@ -328,9 +328,10 @@ type Choice struct {
 
 // Message represents a chat message.
 type Message struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"` // DeepSeek thinking mode.
 }
 
 // Usage represents token usage.
@@ -436,8 +437,9 @@ func parseToolCallsFromResponse(choice *Choice) (*ToolCallResponse, error) {
 	msg := choice.Message
 
 	assistantMsg := &AssistantMsg{
-		Role:    msg.Role,
-		Content: msg.Content,
+		Role:             msg.Role,
+		Content:          msg.Content,
+		ReasoningContent: msg.ReasoningContent,
 	}
 
 	resp := &ToolCallResponse{

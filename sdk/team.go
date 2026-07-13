@@ -199,7 +199,7 @@ func (t *Team) explicitPlan(input string) (string, []string, error) {
 				names[j] = t.members[idx].name
 			}
 		}
-		b.WriteString(fmt.Sprintf("Group %q (%s): %s\n", g.Name, strings.Join(names, ", "), g.Task))
+		fmt.Fprintf(&b, "Group %q (%s): %s\n", g.Name, strings.Join(names, ", "), g.Task)
 	}
 	return b.String(), nil, nil
 }

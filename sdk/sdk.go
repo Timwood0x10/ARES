@@ -39,6 +39,7 @@ import (
 	"github.com/Timwood0x10/ares/api/service/llm"
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
+	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
@@ -80,6 +81,7 @@ type Runtime struct {
 	knowledgeRT      *khruntime.KnowledgeRuntime
 	knowledgeStore   *memstore.Store
 	evolutionStore   *memStrategyStore
+	eventStore       ares_events.EventStore
 	mcpClients       []*mcp.Client
 	trace            bool
 }
@@ -255,12 +257,12 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- LLM ----
-	  llmCfg := &llm.Config{
-	   BaseConfig: cfg.baseCfg,
-	   LLMConfig:  cfg.llmCfg,
-	   Fallbacks:  cfg.fallbacks,
-	  }
-	  llmSvc, err := llm.NewService(llmCfg)
+	llmCfg := &llm.Config{
+		BaseConfig: cfg.baseCfg,
+		LLMConfig:  cfg.llmCfg,
+		Fallbacks:  cfg.fallbacks,
+	}
+	llmSvc, err := llm.NewService(llmCfg)
 	if err != nil {
 		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
@@ -359,6 +361,7 @@ func New(opts ...Option) (*Runtime, error) {
 		knowledgeRT:      knowledgeRT,
 		knowledgeStore:   knowledgeStore,
 		evolutionStore:   evoStore,
+		eventStore:       ares_events.NewMemoryEventStore(),
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
 	}, nil
@@ -515,6 +518,9 @@ func executeAndScore(ctx context.Context, r *Runtime, agent *Agent, task string,
 		name:        agent.name,
 		instruction: s.PromptTemplate,
 		tools:       applyToolSelector(agent.tools, s.Params),
+		runtime:     agent.runtime,
+		humanInput:  agent.humanInput,
+		maxIter:     agent.maxIter,
 	}
 
 	start := time.Now()
@@ -710,6 +716,14 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 			}
 
 			toolCallCount++
+			if a.runtime.eventStore != nil {
+				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
+					Type:     ares_events.EventToolCallStarted,
+					StreamID: a.name,
+					Payload:  map[string]any{roleTool: tc.Function.Name, "args": tc.Function.Arguments},
+					Version:  int64(toolCallCount),
+				}}, int64(toolCallCount-1))
+			}
 			if a.runtime.trace {
 				log.Printf("[ares:trace] %s → tool call: %s(%s)",
 					a.name, tc.Function.Name, tc.Function.Arguments)
@@ -728,6 +742,20 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 				ToolCallID: tc.ID,
 				Content:    resultContent,
 			})
+
+			if a.runtime.eventStore != nil {
+				_ = a.runtime.eventStore.Append(ctx, a.name, []*ares_events.Event{{
+					Type:     ares_events.EventToolCallCompleted,
+					StreamID: a.name,
+					Payload: map[string]any{
+						"tool":    tc.Function.Name,
+						"args":    tc.Function.Arguments,
+						"result":  resultContent,
+						"success": err == nil,
+					},
+					Version: int64(toolCallCount),
+				}}, int64(toolCallCount-1))
+			}
 		}
 
 		// Continue loop — the LLM will either call more tools or produce a final answer

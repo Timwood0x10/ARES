@@ -304,43 +304,6 @@ func (kb *KnowledgeBase) IngestFile(ctx context.Context, tenantID, path string) 
 }
 
 // storeChunk embeds one chunk and writes it. Deprecated: use IngestFile with batch.
-func (kb *KnowledgeBase) storeChunk(
-	ctx context.Context,
-	tenantID, docID string,
-	doc *Document,
-	c Chunk,
-) (bool, error) {
-	vec, err := kb.embedder.EmbedWithPrefix(ctx, c.Content, kb.cfg.Knowledge.PassagePrefix)
-	if err != nil {
-		slog.Warn("embed chunk failed", "file", doc.Path, "index", c.Index, "error", err)
-		return false, nil
-	}
-	if len(vec) != kb.cfg.Embedding.Dimensions {
-		return false, wrapf(os.ErrInvalid,
-			"embedding dim %d != configured %d (model %q)",
-			len(vec), kb.cfg.Embedding.Dimensions, kb.cfg.Embedding.Model)
-	}
-
-	chunk := &models.KnowledgeChunk{
-		TenantID:         tenantID,
-		Content:          c.Content,
-		Embedding:        postgres.NormalizeVector(vec),
-		EmbeddingModel:   kb.cfg.Embedding.Model,
-		EmbeddingVersion: 1,
-		EmbeddingStatus:  models.EmbeddingStatusCompleted,
-		SourceType:       "markdown",
-		Source:           doc.Path,
-		DocumentID:       docID,
-		ChunkIndex:       c.Index,
-		ContentHash:      hashWithIndex(c.Content, c.Index),
-		Metadata:         chunkMetadata(c, doc),
-	}
-	if err := kb.repo.Create(ctx, chunk); err != nil {
-		slog.Warn("store chunk failed", "file", doc.Path, "index", c.Index, "error", err)
-		return false, nil
-	}
-	return true, nil
-}
 
 // retryWithBackoff retries fn up to maxAttempts with exponential backoff.
 func retryWithBackoff(ctx context.Context, maxAttempts int, fn func() error) error {
