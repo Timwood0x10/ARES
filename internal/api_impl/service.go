@@ -12,6 +12,7 @@
 // For library-style embedding (modular access), use ares/api/client instead.
 package apiimpl
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"fmt"

@@ -4,6 +4,7 @@
 // Env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
 package main
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"database/sql"

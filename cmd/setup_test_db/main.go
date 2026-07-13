@@ -3,6 +3,7 @@
 // Default: postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable
 package main
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"database/sql"

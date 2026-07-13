@@ -227,8 +227,8 @@ func nodeIDs(g *knowledge.WorkingGraph) []string {
 }
 
 // handleQueryKnowledge performs a text/type/tag query via the runtime.
-// TODO: when a KnowledgeStore is available, query it directly instead of
-// rebuilding the graph (expected 2026-08).
+// Rebuilds the graph from the runtime each call — when a KnowledgeStore is
+// wired into AKFService, this can query the store directly for better performance.
 func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (string, error) {
 	var params queryKnowledgeParams
 	if err := json.Unmarshal([]byte(input), &params); err != nil {

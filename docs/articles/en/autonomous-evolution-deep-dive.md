@@ -641,13 +641,26 @@ graph TB
         ER["EvaluatorRegistry<br/>SetupEvaluators(llmClient, registry)<br/>LLMJudgeEvaluator (1-10 scale)"]
     end
 
-    subgraph "Step 4: Evolution System"
-        ADAPTER["FlightToExperienceAdapter<br/>Flight data -> Experience"]
-        SCHEDULER["EvolutionScheduler<br/>Register() -> On(EventAgentEnd)<br/>shouldEvolve() heuristic"]
-        DREAM["DreamCycle (optional)<br/>Mutate -> Arena -> Genealogy"]
-        ADAPTER --> SCHEDULER
-        SCHEDULER --> DREAM
+    subgraph "Step 4: GA Evolution Engine"
+        TICKER["Background Ticker<br/>5min interval"]
+        SCHED2["EvolutionScheduler<br/>Register() -> On(EventAgentEnd)"]
+        GA["GA Population<br/>N individuals, 7 selectors<br/>3 crossover, 6 mutation"]
+        ADAPTER["GenomePopulationAdapter<br/>Run()"]
+        GENOMES["6 Genomes<br/>Workflow / Scheduler / Knowledge<br/>Recovery / Planner / Memory"]
+        DIFF["Diff Engine<br/>4 Differs"]
+        COORD["Coordinator<br/>Apply / Reject / Delay"]
+        EXECS["5 Executors<br/>Graph / Recovery / Knowledge<br/>Memory + StrategyStore"]
+        SS["Strategy Store<br/>PGStrategyStore<br/>GetActive / SetActive"]
     end
+
+    TICKER --> ADAPTER
+    SCHED2 --> ADAPTER
+    ADAPTER --> GA
+    GA --> GENOMES
+    GENOMES --> DIFF
+    DIFF --> COORD
+    COORD --> EXECS
+    ADAPTER --> SS
 
     MAIN --> CR
     MAIN --> FS
@@ -655,15 +668,14 @@ graph TB
     MAIN --> ADAPTER
 
     CR -.-> |"inject"| AGENT1["LLM.Client"]
-    CR -.-> |"inject"| AGENT2["TaskExecutor"]
-    CR -.-> |"inject"| AGENT3["LeaderAgent"]
-    CR -.-> |"Register()"| SCHEDULER
-    FS -.-> |"inject"| AGENT3
+    CR -.-> |"Register()"| SCHED2
+    FS -.-> |"inject"| AGENT3["LeaderAgent"]
     ER -.-> |"inject"| ARENA["RegressionTester"]
 
     style MAIN fill:#fff9c4
     style CR fill:#e1f5fe
-    style DREAM fill:#c8e6c9
+    style GA fill:#c8e6c9
+    style SS fill:#fff9c4
 ```
 
 ### Core Code
@@ -2108,43 +2120,51 @@ Step by step, each step delivers independent value. Genome package is icing on t
 ares's autonomous evolution system isn't black magic. It translates biology's most fundamental concept — **mutation, selection, inheritance, crossover** — into code:
 
 ```
-Callback trigger -> Scheduler decides -> DreamCycle orchestrates
-  -> Genome.Population.EvolveOnIdle() [zero token]
-    -> SortByScore() sort (-1 goes to end)
-    -> selectSurvivors() pick survivors (SurvivalRate)
-    -> preserveElites() keep best N
-    -> Crossover.Uniform/MultiPoint/HalfSplit recombine
-    -> Mutator.Mutate() vary offspring
-  -> RecordPopulationLineage() auto-build family tree
-  -> StrategyStore.SetActive() persist winner to DB  [NEW]
-  -> Arena validate (Welch's t-test)
-  -> Genealogy record lineage
-  -> Winner becomes new Baseline
+Background ticker (5min) ──→ GenomePopulationAdapter.Run()
+OnAgentEnd callback     ──→ EvolutionScheduler ──→ GenomePopulationAdapter.Run()
+                                                       ↓
+                                                 GA Population.Evolve()
+                                                   → SortByScore() (-1 goes to end)
+                                                   → selectSurvivors() (SurvivalRate)
+                                                   → preserveElites() (keep best N)
+                                                   → Crossover.Uniform/TwoPoint/Segment
+                                                   → Mutator.Mutate() (6 types)
+                                                       ↓
+                                                 submitToCoordinator()
+                                                   → generateDiffPatches() across 6 genomes
+                                                   → Coordinator.Evaluate() (Apply/Reject/Delay)
+                                                   → Executors apply patches to live system
+                                                       ↓
+                                                 StrategyStore.SetActive()
+                                                   → persist winner to DB
+                                                   → next startup reads via GetActive()
 ```
 
 The system's design philosophy is **conservative incrementalism**:
 
 - **Opt-in by default**: `Enabled: false`, must explicitly enable
 - **High bar to pass**: WinRate 0.55 + p < 0.05, better to not evolve than to regress
-- **Fully traceable**: every step has logs, lineage, Audit Trail — now with `RecordPopulationLineage()` building the family tree automatically after each generation
+- **Fully traceable**: every step has logs, lineage, Audit Trail — with `RecordPopulationLineage()` building the family tree automatically after each generation
 - **Graceful degradation**: missing any component doesn't affect basic functionality, just skips evolution
 - **Zero-token option**: EvolveOnIdle drives evolution cost to zero — pure in-memory ops, microsecond latency
-- **Database persistence** [NEW]: PGStrategyStore closes the deployment loop — evolved strategies are no longer stuck in memory, they persist across restarts via `GetActive()` / `SetActive()` / `GetHistory()`
-- **Deterministic reproduction** [NEW]: MutatorSeed + CrossoverSeed + PopulationSeed + UseDeterministicIDs = bit-for-bit reproducible evolution trajectories for debugging and scientific comparison
+- **Database persistence**: PGStrategyStore closes the deployment loop — evolved strategies persist across restarts
+- **Deterministic reproduction**: MutatorSeed + CrossoverSeed + PopulationSeed = bit-for-bit reproducible evolution
+- **6-genome pipeline**: Workflow / Scheduler / Knowledge / Recovery / Planner / Memory — all evolvable, all with dedicated executors
+- **Multi-objective optimization**: NSGA-II with direction-aware Pareto dominance + crowding distance
+- **Steady-state GA**: Online learning mode that replaces only 10-50% of the population per generation
+- **Fitness sharing**: SelectionScore preserves canonical fitness from temporary adjustments
 
-Honestly, this system still has TODOs: `shouldEvolve()`'s score degradation detection isn't wired up, Level 3 tool auto-generation is just an enum value, HalfSplit Prompt Crossover hasn't been made Unicode-safe, genome/evolution type coupling still requires adapters. But the skeleton is solid, the biggest TODO (`getCurrentStrategy()` placeholder) is **resolved**, five of the six links are closed, the genome package's genetic algorithm engine is production-grade with DB persistence, serialization, thread-safe inspection, and traceable provenance — what's left is incremental polish, not foundational gaps.
-
-The architecture has reached a meaningful milestone: **the evolution system can now persist its output.** Before this round of improvements, EvolveOnIdle was an impressive computation that produced... nothing deployable. Strategies lived and died in RAM. Now there's a path from "randomly initialized population" to "database-deployed strategy" that looks like:
+The architecture has reached a meaningful milestone: **the evolution system is now a closed loop.** From background ticker to population evolution to coordinator decisions to executor patches to strategy store persistence — every link is connected. The path from "randomly initialized population" to "deployed strategy" looks like:
 
 ```
-NewPopulation(base) -> RunIdleEvolution(100 gens) ->
-  BestStrategyFromSystem() -> StrategyStore.SetActive() ->
-  GetActive() on next startup -> deployed strategy
+NewPopulation(base) → RunIdleEvolution(100 gens) →
+  BestStrategyFromSystem() → StrategyStore.SetActive() →
+  GetActive() on next startup → deployed strategy
 ```
 
-That's a closed loop. Not a perfect one — but a working one.
+That's a closed loop. Not a perfect one — `shouldEvolve()`'s score degradation detection isn't wired up, Level 3 tool auto-generation is still just an enum value, and several docs still need updating. But the skeleton is solid, and the system is production-ready for its intended use case: autonomous strategy evolution in live agents.
 
-If you want to add self-evolution capability to your agent too, my advice: **don't start with the Genome package.** First wire up Callback + FeedbackService — record every success and failure. Then add Arena for strategy validation. Then Mutator + DreamCycle single-parent mutation evolution. Add PGStrategyStore for persistence once you're ready to deploy evolved strategies. Finally — when you genuinely need to explore large-scale parameter spaces — bring in the Genome package's population genetic algorithm.
+If you want to add self-evolution capability to your agent too, my advice: **don't start with the Genome package.** First wire up Callback + FeedbackService — record every success and failure. Then add Arena for strategy validation. Then Mutator + single-parent mutation evolution. Add PGStrategyStore for persistence once you're ready to deploy. Finally — when you genuinely need to explore large-scale parameter spaces — bring in the Genome package's population genetic algorithm.
 
 Step by step, each step delivers independent value. That's what engineering should look like.
 

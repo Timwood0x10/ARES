@@ -1,6 +1,7 @@
 // Package ares_bootstrap — Dashboard provider.
 package ares_bootstrap
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"net/http"

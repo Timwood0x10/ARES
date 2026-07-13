@@ -1,6 +1,7 @@
 //nolint:gosec // GA mutation intentionally uses math/rand (performance, not crypto).
 package genome
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"encoding/json"

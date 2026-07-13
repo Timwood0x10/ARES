@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"reflect" // used for nil-pointer check on generic interface{} values (lines 416-417)
 	"sync"
 	"time"
 

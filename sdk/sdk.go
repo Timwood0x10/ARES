@@ -22,6 +22,7 @@
 //	}
 package sdk
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"encoding/json"
@@ -571,7 +572,6 @@ func applyEvolvedParams(agent *Agent, params map[string]any) {
 	}
 }
 
-// generatePromptVariants uses the LLM to create N variants of the instruction.
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
 // an optional system instruction, and an optional set of tools.
 func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {

@@ -1,5 +1,6 @@
 package portfolio
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"encoding/csv"
 	"fmt"

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -248,6 +249,8 @@ func (c *QueryCache) sortFilters(filters map[string]interface{}) map[string]inte
 
 // serializeResults serializes search results to bytes.
 func (c *QueryCache) serializeResults(results []*SearchResult) ([]byte, error) {
+	registerGobTypes()
+
 	// Use gob encoding for Go types
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
@@ -261,6 +264,8 @@ func (c *QueryCache) serializeResults(results []*SearchResult) ([]byte, error) {
 
 // deserializeResults deserializes search results from bytes.
 func (c *QueryCache) deserializeResults(data []byte) ([]*SearchResult, error) {
+	registerGobTypes()
+
 	var results []*SearchResult
 
 	dec := gob.NewDecoder(bytes.NewReader(data))
@@ -347,10 +352,13 @@ func trimSpace(s string) string {
 	return s[start:end]
 }
 
-// Register types for gob encoding
-// This init function registers types with the gob encoder for serialization.
-// It is required for proper encoding/decoding of SearchResult and map[string]interface{} types.
-func init() {
-	gob.Register(&SearchResult{})
-	gob.Register(map[string]interface{}{})
+// Register types for gob encoding.
+// Must be called before any gob encode/decode of SearchResult.
+var registerGobOnce sync.Once
+
+func registerGobTypes() {
+	registerGobOnce.Do(func() {
+		gob.Register(&SearchResult{})
+		gob.Register(map[string]interface{}{})
+	})
 }

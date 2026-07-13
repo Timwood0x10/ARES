@@ -134,11 +134,12 @@ Deep dives into ARES internals:
 graph TB
     User["User / CLI"] --> SDK
 
-    subgraph sdk ["SDK Layer (sdk/)"]
+    subgraph SDK ["SDK Layer (sdk/)"]
         RT["Runtime<br/>MustNew / New"]
         A["Agent<br/>Run / Stream"]
         T["Team<br/>Multi-Agent"]
         CFG["Config<br/>YAML + Options"]
+        EV["Evolve()<br/>GA Strategy Evolution"]
     end
 
     SDK --> LLM
@@ -154,32 +155,60 @@ graph TB
     end
 
     subgraph Tools ["Tool System"]
-        BT["Built-in<br/>calculator, web_search..."]
+        BT["Built-in<br/>calculator, search..."]
         MCP["MCP Servers<br/>Stdio / SSE"]
         CT["Custom Tools<br/>ToolFunc"]
     end
 
-    subgraph Memory ["Memory"]
+    subgraph Memory ["Memory System"]
         SES["Session Context"]
         DIST["Task Distillation"]
         VEC["Vector Search"]
+        CONF["Config<br/>max_history, session_ttl..."]
+        MP["Memory Patch Executor<br/>Runtime Evolution"]
     end
 
-    subgraph Evo ["Evolution"]
-        GA["Genetic Algorithm"]
-        NSGA["NSGA-II / Steady-State"]
-        CROSS["Uniform / Two-Point / Segment"]
-        MUT["6 Mutation Types"]
-        SCORE["Experience-Guided Scoring"]
+    subgraph Evo ["GA Evolution Engine"]
+        direction TB
+        POP["Population<br/>N individuals"]
+        SEL["7 Selection Operators<br/>tournament/rank/nsga2..."]
+        CROSS["3 Crossover Types<br/>uniform/two_point/segment"]
+        MUT["6 Mutation Types<br/>param/swap/inversion/scramble..."]
+        SCORE["Experience-Guided Scoring<br/>multi-objective"]
+        SS["Steady-State GA<br/>online learning mode"]
+        SHARE["Fitness Sharing<br/>SelectionScore preservation"]
     end
 
-    subgraph RuntimeEvo ["Runtime Evolution"]
-        GENOME["Genomes<br/>Workflow / Scheduler / Knowledge / Recovery"]
-        DIFF["Diff Engine"]
-        COORD["Coordinator"]
-        LLM_ADAPT["LLM Adapter"]
-        EXEC["Executors<br/>Graph / Scheduler / Knowledge / Recovery"]
+    POP --> SEL --> CROSS --> MUT --> SCORE
+    SCORE --> POP
+    SS -.-> POP
+
+    subgraph RuntimeEvo ["Runtime Evolution Pipeline"]
+        direction TB
+        TICKER["Background Ticker<br/>5min interval"]
+        SCHED["Scheduler<br/>OnAgentEnd callback"]
+        ADAPTER["GenomePopulationAdapter<br/>Run()"]
+        GENOME["Genomes<br/>Workflow / Scheduler / Knowledge<br/>Recovery / Planner / Memory"]
+        DIFF["Diff Engine<br/>4 Differs"]
+        COORD["Coordinator<br/>Apply / Reject / Delay"]
+        EXEC["Executors<br/>Graph / Recovery / Knowledge / Memory"]
+        STORE["Strategy Store<br/>Active Strategy"]
+        AGENT["Live Agent<br/>consume evolved params"]
     end
+
+    TICKER --> ADAPTER
+    SCHED --> ADAPTER
+    ADAPTER --> GENOME
+    GENOME --> DIFF
+    DIFF --> COORD
+    COORD --> EXEC
+    ADAPTER --> STORE
+    STORE --> AGENT
+
+    Evo --> ADAPTER
+    AGENT --> LLM
+    AGENT --> Tools
+    AGENT --> Memory
 
     subgraph CLI ["CLI (cmd/ares/)"]
         INIT["ares init"]
@@ -187,19 +216,21 @@ graph TB
         BENCH["ares bench"]
         DOCTOR["ares doctor"]
         EVO["ares evolution"]
+        ARENA["ares arena"]
     end
 
-    subgraph EX ["Examples (24)"]
-        QS["quickstart"]
-        TC["tool-calling"]
-        DAG["dag-workflow"]
-        MA["multi-agent"]
-        EVO["evolution-demo"]
-        CHAOS["chaos-resilience"]
-        HIL["human-in-loop"]
+    subgraph EX ["Examples"]
+        QS["01 Quickstart"]
+        TC["02 Tool Calling"]
+        DAG["03 DAG Workflow"]
+        MA["04 Multi-Agent"]
+        EVO_DEMO["05 Evolution Demo"]
+        CHAOS["06 Chaos Resilience"]
+        HIL["07 Human-in-Loop"]
+        GA_FULL["10 GA Full Evolution"]
     end
 
-    style sdk fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style SDK fill:#1e3a5f,stroke:#3b82f6,color:#fff
     style LLM fill:#1a2332,stroke:#64748b
     style Tools fill:#1a2332,stroke:#64748b
     style Memory fill:#1a2332,stroke:#64748b
@@ -207,6 +238,43 @@ graph TB
     style RuntimeEvo fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style CLI fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style EX fill:#1a3a2a,stroke:#22c55e
+```
+
+## Data Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as SDK
+    participant A as Agent
+    participant GA as GA Engine
+    participant C as Coordinator
+    participant E as Executors
+    participant M as Memory
+
+    U->>S: rt.Evolve(agent, task)
+    S->>GA: Create Population(10)
+    loop 3 generations
+        GA->>GA: ScoreAgents(execution results)
+        GA->>GA: Evolve(selection → crossover → mutation)
+    end
+    GA->>S: BestStrategy params
+    S->>A: applyEvolvedParams(tool_selector, search_depth, scheduler...)
+
+    Note over S,A: Strategy params applied to live agent
+
+    U->>A: agent.Run(task)
+    A->>M: Read strategy, load tools
+    A->>A: Execute with evolved params
+    A->>C: Submit evidence
+    C->>E: Apply patches if needed
+
+    Note over GA,C: Background: ticker + scheduler trigger evolution
+    loop Every 5min
+        GA->>GA: Run evolution cycle
+        GA->>C: submitToCoordinator(patches)
+        C->>E: Evaluate & Apply
+    end
 ```
 
 ## Cookbook

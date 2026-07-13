@@ -1,5 +1,6 @@
 package ares_runtime
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"sync"

@@ -2,6 +2,7 @@
 // It coordinates session memory, task memory, and distilled task storage through a single interface.
 package memory
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"fmt"

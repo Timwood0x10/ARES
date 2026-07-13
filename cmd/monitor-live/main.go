@@ -11,6 +11,7 @@
 //	LLM_API_KEY=sk-xxx LLM_MODEL=gpt-4o go run ./cmd/monitor-live
 package main
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"fmt"

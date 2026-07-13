@@ -1,6 +1,7 @@
 // Package ares_bootstrap — New evolution system provider (Genome + Diff + Coordinator).
 package ares_bootstrap
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"fmt"

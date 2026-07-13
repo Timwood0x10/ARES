@@ -3,7 +3,7 @@ package output
 import (
 	"errors"
 	"fmt"
-	"reflect"
+	"reflect" // used for comparing arbitrary values via reflect.DeepEqual in validation
 	"regexp"
 	"sync"
 

@@ -129,8 +129,8 @@ func newStubRetrieval() *stubRetrieval { return &stubRetrieval{} }
 func (s *stubRetrieval) Search(_ context.Context, _, query string) ([]*core.RetrievalResult, error) {
 	return []*core.RetrievalResult{{Content: "result for " + query, Score: 0.95}}, nil
 }
-func (s *stubRetrieval) SearchWithConfig(_ context.Context, req *core.RetrievalRequest) ([]*core.RetrievalResult, error) {
-	return s.Search(context.TODO(), req.TenantID, req.Query)
+func (s *stubRetrieval) SearchWithConfig(ctx context.Context, req *core.RetrievalRequest) ([]*core.RetrievalResult, error) {
+	return s.Search(ctx, req.TenantID, req.Query)
 }
 func (s *stubRetrieval) AddKnowledge(_ context.Context, item *core.KnowledgeItem) (*core.KnowledgeItem, error) {
 	item.ID = fmt.Sprintf("item-%d", len(s.items)+1)

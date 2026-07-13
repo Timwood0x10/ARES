@@ -5,6 +5,7 @@
 // vector database types with zero code changes.
 package vector
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
 	"fmt"

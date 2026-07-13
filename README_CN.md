@@ -115,11 +115,12 @@ teamResult, _ := team.Run(ctx, "调研并撰写报告")
 graph TB
     User["用户 / CLI"] --> SDK
 
-    subgraph sdk ["SDK 层 (sdk/)"]
+    subgraph SDK ["SDK 层 (sdk/)"]
         RT["Runtime<br/>MustNew / New"]
         A["Agent<br/>Run / Stream"]
         T["Team<br/>多 Agent"]
         CFG["配置<br/>YAML + Options"]
+        EV["Evolve()<br/>GA 策略进化"]
     end
 
     SDK --> LLM
@@ -140,47 +141,77 @@ graph TB
         CT["自定义工具<br/>ToolFunc"]
     end
 
-    subgraph Memory ["记忆"]
+    subgraph Memory ["记忆系统"]
         SES["会话上下文"]
         DIST["任务蒸馏"]
         VEC["向量检索"]
+        CONF["配置<br/>max_history, session_ttl..."]
+        MP["记忆补丁执行器<br/>运行时进化"]
     end
 
-    subgraph Evo ["进化"]
-        GA["遗传算法"]
-        NSGA["NSGA-II / 稳态 GA"]
-        CROSS["三种交叉类型"]
-        MUT["六种变异类型"]
-        SCORE["经验引导评分"]
+    subgraph Evo ["GA 进化引擎"]
+        direction TB
+        POP["种群<br/>N 个个体"]
+        SEL["7 种选择算子<br/>tournament/rank/nsga2..."]
+        CROSS["3 种交叉类型<br/>uniform/two_point/segment"]
+        MUT["6 种变异类型<br/>param/swap/inversion/scramble..."]
+        SCORE["经验引导评分<br/>多目标"]
+        SS["稳态 GA<br/>在线学习模式"]
+        SHARE["适应度共享<br/>SelectionScore 保护"]
     end
 
-    subgraph RuntimeEvo ["运行时进化"]
-        GENOME["Genomes<br/>Workflow / Scheduler / Knowledge / Recovery"]
-        DIFF["Diff Engine"]
-        COORD["Coordinator"]
-        LLM_ADAPT["LLM Adapter"]
-        EXEC["Executors<br/>Graph / Scheduler / Knowledge / Recovery"]
+    POP --> SEL --> CROSS --> MUT --> SCORE
+    SCORE --> POP
+    SS -.-> POP
+
+    subgraph RuntimeEvo ["运行时进化管线"]
+        direction TB
+        TICKER["后台定时器<br/>5 分钟间隔"]
+        SCHED["调度器<br/>OnAgentEnd 回调"]
+        ADAPTER["GenomePopulationAdapter<br/>Run()"]
+        GENOME["基因组<br/>Workflow / Scheduler / Knowledge<br/>Recovery / Planner / Memory"]
+        DIFF["差异引擎<br/>4 个 Differ"]
+        COORD["协调器<br/>Apply / Reject / Delay"]
+        EXEC["执行器<br/>Graph / Recovery / Knowledge / Memory"]
+        STORE["策略存储<br/>活跃策略"]
+        AGENT["运行中 Agent<br/>消费进化后的参数"]
     end
 
-    subgraph CLI ["CLI 命令"]
+    TICKER --> ADAPTER
+    SCHED --> ADAPTER
+    ADAPTER --> GENOME
+    GENOME --> DIFF
+    DIFF --> COORD
+    COORD --> EXEC
+    ADAPTER --> STORE
+    STORE --> AGENT
+
+    Evo --> ADAPTER
+    AGENT --> LLM
+    AGENT --> Tools
+    AGENT --> Memory
+
+    subgraph CLI ["CLI 命令 (cmd/ares/)"]
         INIT["ares init"]
         RUN["ares run"]
         BENCH["ares bench"]
         DOCTOR["ares doctor"]
         EVO["ares evolution"]
+        ARENA["ares arena"]
     end
 
-    subgraph EX ["示例 (24 个)"]
+    subgraph EX ["示例"]
         QS["01 快速开始"]
         TC["02 工具调用"]
         DAG["03 DAG 工作流"]
         MA["04 多 Agent"]
-        EVO["05 进化演示"]
+        EVO_DEMO["05 进化演示"]
         CHAOS["06 混沌测试"]
         HIL["07 人工审批"]
+        GA_FULL["10 GA 完整进化"]
     end
 
-    style sdk fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style SDK fill:#1e3a5f,stroke:#3b82f6,color:#fff
     style LLM fill:#1a2332,stroke:#64748b
     style Tools fill:#1a2332,stroke:#64748b
     style Memory fill:#1a2332,stroke:#64748b
@@ -190,6 +221,42 @@ graph TB
     style EX fill:#1a3a2a,stroke:#22c55e
 ```
 
+## 数据流
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant S as SDK
+    participant A as Agent
+    participant GA as GA 引擎
+    participant C as 协调器
+    participant E as 执行器
+    participant M as 记忆
+
+    U->>S: rt.Evolve(agent, task)
+    S->>GA: 创建种群(10)
+    loop 3 代进化
+        GA->>GA: ScoreAgents(执行结果)
+        GA->>GA: Evolve(选择 → 交叉 → 变异)
+    end
+    GA->>S: 最佳策略参数
+    S->>A: applyEvolvedParams(tool_selector, search_depth, scheduler...)
+
+    Note over S,A: 策略参数应用到运行中 Agent
+
+    U->>A: agent.Run(task)
+    A->>M: 读取策略，加载工具
+    A->>A: 使用进化后的参数执行
+    A->>C: 提交证据
+    C->>E: 必要时应用补丁
+
+    Note over GA,C: 后台：定时器 + 调度器触发进化
+    loop 每 5 分钟
+        GA->>GA: 运行进化周期
+        GA->>C: submitToCoordinator(补丁)
+        C->>E: 评估与执行
+    end
+```
 ## 评估框架
 
 5 个场景直接检验 ARES 核心能力：

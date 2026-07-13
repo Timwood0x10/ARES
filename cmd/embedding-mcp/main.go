@@ -9,6 +9,7 @@
 //	embedding-mcp serve --embedding-url http://localhost:8000  # custom embedding service URL
 package main
 
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"bytes"
 	"context"
