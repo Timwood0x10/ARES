@@ -68,16 +68,16 @@ type Tool interface {
 
 // ToolFunc is a convenience type for creating tools from functions.
 type ToolFunc struct {
-	ToolName string
-	ToolDesc string
+	ToolName   string
+	ToolDesc   string
 	ToolParams map[string]any // JSON Schema for parameters (optional)
-	Fn        func(ctx context.Context, params map[string]any) (any, error)
+	Fn         func(ctx context.Context, params map[string]any) (any, error)
 }
 
-func (f ToolFunc) Name() string           { return f.ToolName }
-func (f ToolFunc) Description() string    { return f.ToolDesc }
+func (f ToolFunc) Name() string               { return f.ToolName }
+func (f ToolFunc) Description() string        { return f.ToolDesc }
 func (f ToolFunc) Parameters() map[string]any { return f.ToolParams }
-func (f ToolFunc) Capabilities() []string { return nil }
+func (f ToolFunc) Capabilities() []string     { return nil }
 func (f ToolFunc) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	data, err := f.Fn(ctx, params)
 	if err != nil {

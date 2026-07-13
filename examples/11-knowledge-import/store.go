@@ -241,32 +241,69 @@ func (kb *KnowledgeBase) IngestFile(ctx context.Context, tenantID, path string) 
 
 	docID := uuid.New().String()
 	stored, skipped := 0, 0
+
+	// Build all chunk models first.
+	chunkModels := make([]*models.KnowledgeChunk, 0, len(chunks))
 	for _, c := range chunks {
-		select {
-		case <-ctx.Done():
-			return stored, skipped, wrapf(ctx.Err(), "ingest file cancelled")
-		default:
+		m := &models.KnowledgeChunk{
+			TenantID: tenantID, DocumentID: docID,
+			SourceType: "markdown", Source: doc.Path,
+			ChunkIndex: c.Index, Content: c.Content,
+			ContentHash:      hashWithIndex(c.Content, c.Index),
+			EmbeddingVersion: 1,
+			EmbeddingStatus:  models.EmbeddingStatusPending,
+			Metadata:         chunkMetadata(c, doc),
 		}
-		ok, ferr := kb.storeChunk(ctx, tenantID, docID, doc, c)
-		if ferr != nil {
-			return stored, skipped, ferr
-		}
-		if ok {
-			stored++
-		} else {
-			skipped++
-		}
+		chunkModels = append(chunkModels, m)
 	}
 
-	if stored == 0 {
-		return 0, skipped, wrapf(os.ErrInvalid, "no chunks stored for %q", path)
+	// Embed all chunks.
+	for i, m := range chunkModels {
+		select {
+		case <-ctx.Done():
+			return stored, skipped, wrapf(ctx.Err(), "ingest cancelled")
+		default:
+		}
+		vec, err := kb.embedder.EmbedWithPrefix(ctx, m.Content, kb.cfg.Knowledge.PassagePrefix)
+		if err != nil {
+			slog.Warn("embed failed", "file", path, "index", i, "error", err)
+			skipped++
+			chunkModels[i] = nil // mark for removal
+			continue
+		}
+		if len(vec) != kb.cfg.Embedding.Dimensions {
+			skipped++
+			chunkModels[i] = nil
+			continue
+		}
+		m.Embedding = postgres.NormalizeVector(vec)
+		m.EmbeddingStatus = models.EmbeddingStatusCompleted
 	}
+
+	// Filter out failed embeddings.
+	toStore := make([]*models.KnowledgeChunk, 0, len(chunkModels))
+	for _, m := range chunkModels {
+		if m != nil {
+			toStore = append(toStore, m)
+		}
+	}
+	if len(toStore) == 0 {
+		return 0, skipped, wrapf(os.ErrInvalid, "no chunks embedded for %q", path)
+	}
+
+	// Batch insert with retry.
+	if err := retryWithBackoff(ctx, 3, func() error {
+		return kb.repo.CreateBatch(ctx, toStore)
+	}); err != nil {
+		return 0, skipped, wrapf(err, "batch insert %q", path)
+	}
+
+	stored = len(toStore)
 	slog.Info("imported file", "file", path, "stored", stored, "skipped", skipped)
 	return stored, skipped, nil
 }
 
-// storeChunk embeds one chunk and writes it. It returns (false, nil) for a
-// recoverable persistence error and (false, err) for a fatal dimension error.
+// storeChunk embeds one chunk and writes it. Deprecated: use IngestFile with batch.
 func (kb *KnowledgeBase) storeChunk(
 	ctx context.Context,
 	tenantID, docID string,
@@ -295,7 +332,7 @@ func (kb *KnowledgeBase) storeChunk(
 		Source:           doc.Path,
 		DocumentID:       docID,
 		ChunkIndex:       c.Index,
-		ContentHash:      sha256Hex(c.Content),
+		ContentHash:      hashWithIndex(c.Content, c.Index),
 		Metadata:         chunkMetadata(c, doc),
 	}
 	if err := kb.repo.Create(ctx, chunk); err != nil {
@@ -303,6 +340,31 @@ func (kb *KnowledgeBase) storeChunk(
 		return false, nil
 	}
 	return true, nil
+}
+
+// retryWithBackoff retries fn up to maxAttempts with exponential backoff.
+func retryWithBackoff(ctx context.Context, maxAttempts int, fn func() error) error {
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(100<<uint(attempt-1)) * time.Millisecond
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+			slog.Warn("retrying", "attempt", attempt+1, "backoff", backoff)
+		}
+		if err := fn(); err != nil {
+			lastErr = err
+			slog.Warn("attempt failed", "attempt", attempt+1, "error", err)
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 // ListDocuments returns the distinct stored documents for a tenant.

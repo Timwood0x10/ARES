@@ -1,4 +1,4 @@
-//nolint: errcheck // best-effort: Close/Start/Stop/AddMessage errors are not actionable
+// nolint: errcheck // best-effort: Close/Start/Stop/AddMessage errors are not actionable
 // Command knowledge-import — structure-aware markdown knowledge base
 // with RAG, multi-agent team import, and dialog-based chat.
 //
@@ -12,12 +12,13 @@
 //   - Default: --team --dir <path> when no mode specified
 //
 // Usage:
-//   go run examples/11-knowledge-import/main.go --dir ./notes
-//   go run examples/11-knowledge-import/main.go --save ./notes/arch.md
-//   go run examples/11-knowledge-import/main.go --ask "how does it work?"
-//   go run examples/11-knowledge-import/main.go --chat
-//   go run examples/11-knowledge-import/main.go --team --dir ./notes
-//   go run examples/11-knowledge-import/main.go --list
+//
+//	go run examples/11-knowledge-import/main.go --dir ./notes
+//	go run examples/11-knowledge-import/main.go --save ./notes/arch.md
+//	go run examples/11-knowledge-import/main.go --ask "how does it work?"
+//	go run examples/11-knowledge-import/main.go --chat
+//	go run examples/11-knowledge-import/main.go --team --dir ./notes
+//	go run examples/11-knowledge-import/main.go --list
 //
 // --dir is the default mode when no other flag is provided.
 package main
@@ -34,6 +35,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/google/uuid"
 
 	"github.com/Timwood0x10/ares/api/tools"
@@ -380,15 +383,50 @@ func registerTools(rt *sdk.Runtime, kb *KnowledgeBase, tenantID string) {
 			if path == "" || content == "" {
 				return nil, fmt.Errorf("path and content required")
 			}
-			// Use 12's parser + chunker to parse and chunk the content.
 			doc := ParseContent(path, content)
 			chunks := ChunkDocument(doc, kb.cfg.Knowledge)
 			docID := uuid.New().String()
-			ok := 0
+
+			// Build chunk models.
+			var chunkModels []*models.KnowledgeChunk
 			for _, c := range chunks {
-				if ok_, _ := kb.storeChunk(ctx, tenantID, docID, doc, c); ok_ {
-					ok++
+				m := &models.KnowledgeChunk{
+					TenantID: tenantID, DocumentID: docID,
+					SourceType: "markdown", Source: doc.Path,
+					ChunkIndex: c.Index, Content: c.Content,
+					ContentHash:      hashWithIndex(c.Content, c.Index),
+					EmbeddingVersion: 1,
+					EmbeddingStatus:  models.EmbeddingStatusPending,
+					Metadata:         chunkMetadata(c, doc),
 				}
+				chunkModels = append(chunkModels, m)
+			}
+
+			// Embed all chunks.
+			var lastErr error
+			ok := 0
+			for _, m := range chunkModels {
+				vec, err := kb.embedder.EmbedWithPrefix(ctx, m.Content, kb.cfg.Knowledge.PassagePrefix)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if len(vec) != kb.cfg.Embedding.Dimensions {
+					continue
+				}
+				m.Embedding = postgres.NormalizeVector(vec)
+				m.EmbeddingStatus = models.EmbeddingStatusCompleted
+				ok++
+			}
+			if ok == 0 {
+				return nil, fmt.Errorf("no chunks embedded: %v", lastErr)
+			}
+
+			// Batch insert.
+			if err := retryWithBackoff(ctx, 3, func() error {
+				return kb.repo.CreateBatch(ctx, chunkModels)
+			}); err != nil {
+				return nil, fmt.Errorf("batch insert: %w", err)
 			}
 			return fmt.Sprintf("✅ Imported %d/%d sections from %s", ok, len(chunks), path), nil
 		},

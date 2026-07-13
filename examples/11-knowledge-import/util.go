@@ -24,9 +24,16 @@ func wrapf(err error, format string, args ...any) error {
 	return fmt.Errorf("%s: %w", msg, err)
 }
 
-// sha256Hex returns the hex-encoded SHA-256 digest of s. It is used to build a
-// stable content hash so re-imports are idempotent.
+// sha256Hex returns the hex-encoded SHA-256 digest of s.
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// hashWithIndex combines content with chunk index to ensure unique hashes
+// within a batch, avoiding PostgreSQL ON CONFLICT errors when two chunks
+// have identical content (e.g. empty sections).
+func hashWithIndex(content string, index int) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", index, content)))
+	return hex.EncodeToString(h[:])
 }

@@ -810,29 +810,29 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 }
 
 func (a *Agent) toCoreTools(tt []tools.Tool) []core.Tool {
-  if len(tt) == 0 {
-   return nil
-  }
-  out := make([]core.Tool, 0, len(tt))
-  for _, t := range tt {
-   params := t.Parameters()
-   if params == nil {
-    params = map[string]interface{}{
-     "type":       "object",
-     "properties": map[string]interface{}{},
-    }
-   }
-   out = append(out, core.Tool{
-    Type: "function",
-    Function: core.FunctionDefinition{
-     Name:        t.Name(),
-     Description: t.Description(),
-     Parameters:  params,
-    },
-   })
-  }
-  return out
- }
+	if len(tt) == 0 {
+		return nil
+	}
+	out := make([]core.Tool, 0, len(tt))
+	for _, t := range tt {
+		params := t.Parameters()
+		if params == nil {
+			params = map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			}
+		}
+		out = append(out, core.Tool{
+			Type: "function",
+			Function: core.FunctionDefinition{
+				Name:        t.Name(),
+				Description: t.Description(),
+				Parameters:  params,
+			},
+		})
+	}
+	return out
+}
 
 // parseArgs unmarshals a JSON arguments string into a map.
 func parseArgs(raw string) map[string]any {
@@ -854,10 +854,10 @@ type mcpToolAdapter struct {
 	client *mcp.Client
 }
 
-func (a mcpToolAdapter) Name() string           { return a.name }
-func (a mcpToolAdapter) Description() string    { return a.desc }
+func (a mcpToolAdapter) Name() string               { return a.name }
+func (a mcpToolAdapter) Description() string        { return a.desc }
 func (a mcpToolAdapter) Parameters() map[string]any { return nil }
-func (a mcpToolAdapter) Capabilities() []string { return nil }
+func (a mcpToolAdapter) Capabilities() []string     { return nil }
 func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (tools.Result, error) {
 	result, err := a.client.CallTool(ctx, a.name, params)
 	if err != nil {
