@@ -51,6 +51,7 @@ import (
 	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 )
 
 const strategyPriority = "priority"
@@ -77,6 +78,7 @@ type Runtime struct {
 	evoEnabled       bool
 	knowledgeEnabled bool
 	knowledgeRT      *khruntime.KnowledgeRuntime
+	knowledgeStore   *memstore.Store
 	evolutionStore   *memStrategyStore
 	mcpClients       []*mcp.Client
 	trace            bool
@@ -307,6 +309,7 @@ func New(opts ...Option) (*Runtime, error) {
 
 	// ---- AKF Knowledge Fabric ----
 	var knowledgeRT *khruntime.KnowledgeRuntime
+	var knowledgeStore *memstore.Store
 	var evoStore *memStrategyStore
 	if cfg.knlCfg.Enabled {
 		reg := provider.NewProviderRegistry()
@@ -326,6 +329,8 @@ func New(opts ...Option) (*Runtime, error) {
 				return nil, fmt.Errorf("knowledge: register evolution provider: %w", err)
 			}
 		}
+
+		knowledgeStore = memstore.New()
 
 		knowledgeRT = khruntime.New(
 			planner.NewKnowledgePlanner(),
@@ -351,6 +356,7 @@ func New(opts ...Option) (*Runtime, error) {
 		evoEnabled:       cfg.evoCfg.Enabled,
 		knowledgeEnabled: cfg.knlCfg.Enabled,
 		knowledgeRT:      knowledgeRT,
+		knowledgeStore:   knowledgeStore,
 		evolutionStore:   evoStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
@@ -385,6 +391,12 @@ func (r *Runtime) GetModel() string {
 // GetProvider returns the LLM provider name used by this Runtime.
 func (r *Runtime) GetProvider() string {
 	return string(r.llmSvc.GetProvider())
+}
+
+// KnowledgeStore returns the in-memory knowledge store, or nil if knowledge
+// is not enabled. Use this to save and query KnowledgeObjects directly.
+func (r *Runtime) KnowledgeStore() *memstore.Store {
+	return r.knowledgeStore
 }
 
 // Evolve runs an evolution cycle to improve an agent's instruction. It uses the
@@ -798,25 +810,29 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 }
 
 func (a *Agent) toCoreTools(tt []tools.Tool) []core.Tool {
-	if len(tt) == 0 {
-		return nil
-	}
-	out := make([]core.Tool, 0, len(tt))
-	for _, t := range tt {
-		out = append(out, core.Tool{
-			Type: "function",
-			Function: core.FunctionDefinition{
-				Name:        t.Name(),
-				Description: t.Description(),
-				Parameters: map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				},
-			},
-		})
-	}
-	return out
-}
+  if len(tt) == 0 {
+   return nil
+  }
+  out := make([]core.Tool, 0, len(tt))
+  for _, t := range tt {
+   params := t.Parameters()
+   if params == nil {
+    params = map[string]interface{}{
+     "type":       "object",
+     "properties": map[string]interface{}{},
+    }
+   }
+   out = append(out, core.Tool{
+    Type: "function",
+    Function: core.FunctionDefinition{
+     Name:        t.Name(),
+     Description: t.Description(),
+     Parameters:  params,
+    },
+   })
+  }
+  return out
+ }
 
 // parseArgs unmarshals a JSON arguments string into a map.
 func parseArgs(raw string) map[string]any {
@@ -840,6 +856,7 @@ type mcpToolAdapter struct {
 
 func (a mcpToolAdapter) Name() string           { return a.name }
 func (a mcpToolAdapter) Description() string    { return a.desc }
+func (a mcpToolAdapter) Parameters() map[string]any { return nil }
 func (a mcpToolAdapter) Capabilities() []string { return nil }
 func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (tools.Result, error) {
 	result, err := a.client.CallTool(ctx, a.name, params)

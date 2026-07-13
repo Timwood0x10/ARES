@@ -55,6 +55,9 @@ type Tool interface {
 	Name() string
 	// Description returns a human-readable description.
 	Description() string
+	// Parameters returns the JSON Schema for the tool's parameters.
+	// Return nil if the tool has no parameters.
+	Parameters() map[string]any
 	// Execute runs the tool with the given parameters.
 	Execute(ctx context.Context, params map[string]any) (Result, error)
 	// Capabilities returns the capabilities this tool provides.
@@ -67,11 +70,13 @@ type Tool interface {
 type ToolFunc struct {
 	ToolName string
 	ToolDesc string
-	Fn       func(ctx context.Context, params map[string]any) (any, error)
+	ToolParams map[string]any // JSON Schema for parameters (optional)
+	Fn        func(ctx context.Context, params map[string]any) (any, error)
 }
 
 func (f ToolFunc) Name() string           { return f.ToolName }
 func (f ToolFunc) Description() string    { return f.ToolDesc }
+func (f ToolFunc) Parameters() map[string]any { return f.ToolParams }
 func (f ToolFunc) Capabilities() []string { return nil }
 func (f ToolFunc) Execute(ctx context.Context, params map[string]any) (Result, error) {
 	data, err := f.Fn(ctx, params)
@@ -343,7 +348,44 @@ func (a *toolAdapter) Capabilities() []core.Capability {
 	}
 	return result
 }
-func (a *toolAdapter) Parameters() *core.ParameterSchema { return nil }
+func (a *toolAdapter) Parameters() *core.ParameterSchema {
+	params := a.tool.Parameters()
+	if params == nil {
+		return nil
+	}
+	props, _ := params["properties"].(map[string]any)
+	required, _ := params["required"].([]string)
+	typ, _ := params["type"].(string)
+	if typ == "" {
+		typ = "object"
+	}
+	s := &core.ParameterSchema{
+		Type:       typ,
+		Properties: make(map[string]*core.Parameter),
+		Required:   required,
+	}
+	for k, v := range props {
+		p, _ := v.(map[string]any)
+		if p == nil {
+			continue
+		}
+		param := &core.Parameter{
+			Type:        getString(p, "type"),
+			Description: getString(p, "description"),
+		}
+		if def, ok := p["default"]; ok {
+			param.Default = def
+		}
+		s.Properties[k] = param
+	}
+	return s
+}
+
+func getString(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
 func (a *toolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	res, err := a.tool.Execute(ctx, params)
 	if err != nil {

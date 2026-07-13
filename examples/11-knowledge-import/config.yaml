@@ -1,0 +1,36 @@
+database:
+  host: 127.0.0.1
+  port: 5433
+  user: postgres
+  password: postgres
+  database: goagent
+  sslmode: disable
+
+embedding:
+  service_url: http://localhost:8000
+  model: qwen3-embedding:0.6b
+  dimensions: 1024
+  timeout: 30
+
+llm:
+  provider: ollama
+  api_key: ""
+  base_url: http://localhost:11434
+  model: llama3.2:latest
+  timeout: 120
+  max_tokens: 2048
+
+memory:
+  enabled: true
+  max_history: 10
+  max_sessions: 100
+  enable_distillation: true
+  distillation_threshold: 3
+
+knowledge:
+  chunk_size: 1500
+  chunk_overlap: 120
+  top_k: 6
+  min_score: 0.35
+  passage_prefix: "passage:"
+  query_prefix: "query:"

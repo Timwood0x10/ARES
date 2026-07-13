@@ -20,46 +20,33 @@ import (
 type RunMode int
 
 const (
-	// ModeAutoSplit instructs the leader to automatically break the task
-	// into sub-tasks and delegate them to members.
+	// ModeAutoSplit instructs the leader to automatically discover files,
+	// divide them among members, and verify results.
 	ModeAutoSplit RunMode = iota
-	// ModeExplicit uses pre-configured GroupConfig assignments. The leader
-	// skips planning and routes each group's task directly.
+	// ModeExplicit uses pre-configured GroupConfig assignments.
 	ModeExplicit
 )
 
 // ── Group config ───────────────────────────────────────────────────────────
 
-// GroupConfig assigns a specific task description to a subset of team members.
+// GroupConfig assigns a specific task to a subset of team members.
 type GroupConfig struct {
-	// Name is a human-readable label (e.g. "data-collectors").
-	Name string
-	// Indices are the 0-based member indices belonging to this group.
-	// Example: []int{0,1,2} for members[0..2].
+	Name    string
 	Indices []int
-	// Task describes what this group should do. In ModeAutoSplit this is
-	// optional (the leader generates it); in ModeExplicit it is required.
-	Task string
+	Task    string
 }
 
 // ── Team config ────────────────────────────────────────────────────────────
 
 // TeamConfig controls the team orchestration behaviour.
 type TeamConfig struct {
-	// Mode selects auto-split or explicit assignment.
-	Mode RunMode
-	// Groups defines explicit sub-task assignments (ModeExplicit only).
-	Groups []GroupConfig
-	// VerifierIndex is the 0-based member index of the verifier agent.
-	// Set to -1 to skip verification.
-	VerifierIndex int
-	// MaxConcurrency caps the number of members that run simultaneously.
-	// 0 means unlimited (all members at once).
-	MaxConcurrency int
+	Mode           RunMode
+	Groups         []GroupConfig
+	VerifierIndex  int // -1 to skip verification
+	MaxConcurrency int // 0 = unlimited
 }
 
-// DefaultTeamConfig returns a sensible default: auto-split, no verifier,
-// unlimited concurrency.
+// DefaultTeamConfig returns sensible defaults.
 func DefaultTeamConfig() TeamConfig {
 	return TeamConfig{
 		Mode:           ModeAutoSplit,
@@ -71,8 +58,11 @@ func DefaultTeamConfig() TeamConfig {
 // ── Team ───────────────────────────────────────────────────────────────────
 
 // Team orchestrates a leader agent and multiple member agents.
-// The leader plans tasks, delegates to members, and synthesizes results.
-// With TeamConfig you can control concurrency, grouping, and verification.
+// In ModeAutoSplit:
+//  1. Leader runs with tools to discover files and plan.
+//  2. File list is divided among members, who run concurrently.
+//  3. Verifier reviews results (if configured).
+//  4. Leader synthesises final output.
 type Team struct {
 	name    string
 	leader  *Agent
@@ -82,7 +72,6 @@ type Team struct {
 }
 
 // NewTeam creates a Team with a leader and member agents.
-// Use WithTeamConfig to control orchestration behaviour.
 func (r *Runtime) NewTeam(name string, leader *Agent, members []*Agent) *Team {
 	return &Team{
 		name:    name,
@@ -121,20 +110,12 @@ type TeamResult struct {
 
 // ── Run ────────────────────────────────────────────────────────────────────
 
-// Run executes the team orchestration.
+// Run executes the team orchestration:
 //
-// In ModeAutoSplit:
-//  1. Leader plans the task.
-//  2. Sub-tasks are delegated to members (optionally grouped).
-//  3. Groups execute concurrently.
-//  4. Verifier reviews results (if configured).
-//  5. Leader synthesises the final result.
-//
-// In ModeExplicit:
-//  1. Pre-configured groups receive their tasks directly.
-//  2. Groups execute concurrently.
-//  3. Verifier reviews results (if configured).
-//  4. Leader synthesises the final result.
+// Phase 1 — Leader runs with tools to discover and plan.
+// Phase 2 — Members execute concurrently with their assigned work.
+// Phase 3 — Verifier checks results (if configured).
+// Phase 4 — Leader synthesises final output.
 func (t *Team) Run(ctx context.Context, input string) (*TeamResult, error) {
 	start := time.Now()
 
@@ -142,25 +123,22 @@ func (t *Team) Run(ctx context.Context, input string) (*TeamResult, error) {
 		log.Printf("[team:trace] %s → mode=%v input=%q", t.name, t.cfg.Mode, truncate(input, 120))
 	}
 
-	// ── 1. Plan ──────────────────────────────────────────────────
-	plan, err := t.plan(ctx, input)
+	// ── Phase 1: Leader discovers and plans ──────────────────────
+	plan, fileList, err := t.leaderDiscover(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("team plan: %w", err)
+		return nil, fmt.Errorf("team discover: %w", err)
 	}
 
-	// ── 2. Build sub-task assignments ────────────────────────────
-	assignments, err := t.buildAssignments(ctx, input, plan)
-	if err != nil {
-		return nil, fmt.Errorf("team build assignments: %w", err)
-	}
+	// ── Phase 2: Build sub-task assignments from file list ───────
+	assignments := t.buildAssignments(input, fileList)
 
-	// ── 3. Execute concurrently ─────────────────────────────────
+	// ── Phase 3: Execute concurrently ────────────────────────────
 	subResults := t.executeConcurrent(ctx, assignments)
 
-	// ── 4. Verify ────────────────────────────────────────────────
-	verification, passed := t.verify(ctx, input, plan, subResults)
+	// ── Phase 4: Verify ──────────────────────────────────────────
+	verification, passed := t.verify(ctx, input, fileList, subResults)
 
-	// ── 5. Synthesise ────────────────────────────────────────────
+	// ── Phase 5: Synthesise ──────────────────────────────────────
 	output, err := t.synthesize(ctx, input, plan, subResults, verification)
 	if err != nil {
 		return nil, fmt.Errorf("team synthesize: %w", err)
@@ -180,58 +158,58 @@ func (t *Team) Run(ctx context.Context, input string) (*TeamResult, error) {
 	}, nil
 }
 
-// ── Plan ───────────────────────────────────────────────────────────────────
+// ── Phase 1: Leader discover ───────────────────────────────────────────────
 
-func (t *Team) plan(ctx context.Context, input string) (string, error) {
+// leaderDiscover runs the leader as a real agent (with tool execution) to
+// discover files and produce a plan. Returns the plan text and the parsed
+// file list.
+func (t *Team) leaderDiscover(ctx context.Context, input string) (plan string, files []string, err error) {
 	if t.cfg.Mode == ModeExplicit {
-		// In explicit mode the leader still produces a lightweight
-		// coordination plan, but groups already know their tasks.
-		groupSummary := make([]string, len(t.cfg.Groups))
-		for i, g := range t.cfg.Groups {
-			names := make([]string, len(g.Indices))
-			for j, idx := range g.Indices {
-				if idx < len(t.members) {
-					names[j] = t.members[idx].name
-				}
-			}
-			groupSummary[i] = fmt.Sprintf("Group %q (%s): %s", g.Name, strings.Join(names, ", "), g.Task)
-		}
-		return strings.Join(groupSummary, "\n"), nil
+		return t.explicitPlan(input)
 	}
 
-	// Auto-split: leader plans the task.
-	memberNames := make([]string, len(t.members))
-	for i, m := range t.members {
-		memberNames[i] = m.name
-	}
-
-	planPrompt := fmt.Sprintf(
-		`You are the team leader "%s". Break down the following task into sub-tasks for your team members: %s.
-Task: %s
-Respond with a numbered plan, one sub-task per member.`, t.name, strings.Join(memberNames, ", "), input)
-
-	planResp, err := t.runtime.llmSvc.Generate(ctx, &core.GenerateRequest{
-		Messages: []*core.LLMMessage{
-			{Role: roleSystem, Content: t.leader.instruction},
-			{Role: roleUser, Content: planPrompt},
-		},
-	})
+	// Run the leader with its tools to discover files.
+	leaderResult, err := t.leader.Run(ctx, input)
 	if err != nil {
-		return "", err
+		return "", nil, fmt.Errorf("leader run: %w", err)
 	}
-	return planResp.Content, nil
+	plan = leaderResult.Output
+
+	// Parse the leader's output to extract file paths.
+	// The leader should have called read_directory and listed files.
+	// We extract any lines that look like file paths (contain .md).
+	files = extractFilePaths(plan)
+
+	// If no files found in the leader's output, use the raw input.
+	if len(files) == 0 {
+		if t.runtime.trace {
+			log.Printf("[team:trace] %s → leader returned no files, using raw input", t.name)
+		}
+	}
+
+	return plan, files, nil
 }
 
-// ── Build assignments ──────────────────────────────────────────────────────
-
-type memberAssignment struct {
-	member *Agent
-	task   string
+func (t *Team) explicitPlan(input string) (string, []string, error) {
+	var b strings.Builder
+	for _, g := range t.cfg.Groups {
+		names := make([]string, len(g.Indices))
+		for j, idx := range g.Indices {
+			if idx < len(t.members) {
+				names[j] = t.members[idx].name
+			}
+		}
+		b.WriteString(fmt.Sprintf("Group %q (%s): %s\n", g.Name, strings.Join(names, ", "), g.Task))
+	}
+	return b.String(), nil, nil
 }
 
-func (t *Team) buildAssignments(ctx context.Context, input, plan string) ([]memberAssignment, error) {
+// ── Phase 2: Build assignments ─────────────────────────────────────────────
+
+func (t *Team) buildAssignments(input string, files []string) []memberAssignment {
+	var assignments []memberAssignment
+
 	if t.cfg.Mode == ModeExplicit && len(t.cfg.Groups) > 0 {
-		var assignments []memberAssignment
 		for _, g := range t.cfg.Groups {
 			for _, idx := range g.Indices {
 				if idx >= len(t.members) {
@@ -243,29 +221,41 @@ func (t *Team) buildAssignments(ctx context.Context, input, plan string) ([]memb
 				})
 			}
 		}
-		return assignments, nil
+		return assignments
 	}
 
-	// Auto-split: each member gets the plan and their index.
-	var assignments []memberAssignment
-	for i, member := range t.members {
-		// Skip verifier during delegation.
-		if i == t.cfg.VerifierIndex {
-			continue
+	// Auto-split: divide files among members, skipping the verifier.
+	available := make([]*Agent, 0, len(t.members))
+	for i, m := range t.members {
+		if i != t.cfg.VerifierIndex {
+			available = append(available, m)
 		}
-		taskPrompt := fmt.Sprintf(
-			`You are "%s". Execute your assigned part of the plan.
-Plan:
-%s
-
-Your task (#%d): Focus on what you can contribute based on the plan above.`,
-			member.name, plan, i+1)
-		assignments = append(assignments, memberAssignment{member: member, task: taskPrompt})
 	}
-	return assignments, nil
+
+	if len(files) == 0 {
+		// No files found — each member works on the original input.
+		for _, m := range available {
+			assignments = append(assignments, memberAssignment{member: m, task: input})
+		}
+		return assignments
+	}
+
+	// Distribute files round-robin.
+	for i, f := range files {
+		idx := i % len(available)
+		task := fmt.Sprintf("Read and import the file: %s\n\nOriginal task: %s", f, input)
+		assignments = append(assignments, memberAssignment{member: available[idx], task: task})
+	}
+
+	return assignments
 }
 
-// ── Concurrent execution ───────────────────────────────────────────────────
+type memberAssignment struct {
+	member *Agent
+	task   string
+}
+
+// ── Phase 3: Concurrent execution ──────────────────────────────────────────
 
 func (t *Team) executeConcurrent(ctx context.Context, assignments []memberAssignment) []SubResult {
 	var (
@@ -276,7 +266,7 @@ func (t *Team) executeConcurrent(ctx context.Context, assignments []memberAssign
 	)
 
 	for _, a := range assignments {
-		a := a // capture
+		a := a
 		eg.Go(func() error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -286,31 +276,48 @@ func (t *Team) executeConcurrent(ctx context.Context, assignments []memberAssign
 				log.Printf("[team:trace] %s → executing %s", t.name, a.member.name)
 			}
 
+			messages := []*core.LLMMessage{
+				{Role: roleSystem, Content: a.member.instruction},
+				{Role: roleUser, Content: a.task},
+			}
+			coreTools := a.member.toCoreTools(a.member.tools)
+
 			resp, err := t.runtime.llmSvc.Generate(ectx, &core.GenerateRequest{
-				Messages: []*core.LLMMessage{
-					{Role: roleSystem, Content: a.member.instruction},
-					{Role: roleUser, Content: a.task},
-				},
-				Tools: a.member.toCoreTools(a.member.tools),
+				Messages: messages,
+				Tools:    coreTools,
 			})
 
-			mu.Lock()
-			sr := SubResult{
-				MemberName: a.member.name,
-				Duration:   time.Since(subStart).Round(time.Millisecond).String(),
-			}
+			var output string
 			if err != nil {
-				sr.Error = err.Error()
+				output = fmt.Sprintf("Error: %v", err)
 			} else {
-				sr.Output = resp.Content
+				output = resp.Content
+				for _, tc := range resp.ToolCalls {
+					if t.runtime.trace {
+						log.Printf("[team:trace] %s → tool call: %s(%s)", t.name, tc.Function.Name, tc.Function.Arguments)
+					}
+					args := parseArgs(tc.Function.Arguments)
+					result, tErr := t.runtime.toolReg.Execute(ectx, tc.Function.Name, args)
+					if tErr != nil {
+						output += fmt.Sprintf("\n[tool %s] error: %v", tc.Function.Name, tErr)
+					} else {
+						output += fmt.Sprintf("\n[tool %s] %v", tc.Function.Name, result.Data)
+					}
+				}
 			}
-			results = append(results, sr)
+
+			mu.Lock()
+			results = append(results, SubResult{
+				MemberName: a.member.name,
+				Output:     output,
+				Duration:   time.Since(subStart).Round(time.Millisecond).String(),
+			})
 			mu.Unlock()
 			return nil
 		})
 	}
 
-	_ = eg.Wait() // Collect all errors; individual errors are recorded per SubResult.
+	_ = eg.Wait()
 	return results
 }
 
@@ -321,9 +328,9 @@ func (t *Team) semaphoreSize() int {
 	return t.cfg.MaxConcurrency
 }
 
-// ── Verification ───────────────────────────────────────────────────────────
+// ── Phase 4: Verification ──────────────────────────────────────────────────
 
-func (t *Team) verify(ctx context.Context, input, plan string, results []SubResult) (string, bool) {
+func (t *Team) verify(ctx context.Context, input string, files []string, results []SubResult) (string, bool) {
 	if t.cfg.VerifierIndex < 0 || t.cfg.VerifierIndex >= len(t.members) {
 		return "", true
 	}
@@ -331,19 +338,22 @@ func (t *Team) verify(ctx context.Context, input, plan string, results []SubResu
 	verifier := t.members[t.cfg.VerifierIndex]
 
 	var b strings.Builder
-	b.WriteString("Review the following team execution results and decide if they pass.\n\n")
+	b.WriteString("Review the following team execution results.\n\n")
 	b.WriteString("Original task: ")
 	b.WriteString(input)
-	b.WriteString("\n\nPlan:\n")
-	b.WriteString(plan)
+	if len(files) > 0 {
+		b.WriteString("\n\nFiles to import:\n")
+		for _, f := range files {
+			fmt.Fprintf(&b, "  - %s\n", f)
+		}
+	}
 	b.WriteString("\n\nResults:\n")
 	for _, r := range results {
-		b.WriteString(fmt.Sprintf("\n[%s]", r.MemberName))
-		if r.Error != "" {
-			b.WriteString(fmt.Sprintf(" ERROR: %s", r.Error))
-		} else {
-			b.WriteString(fmt.Sprintf(" %s", truncate(r.Output, 300)))
+		d := r.Output
+		if len(d) > 300 {
+			d = d[:300] + "..."
 		}
+		fmt.Fprintf(&b, "\n[%s]\n%s", r.MemberName, d)
 	}
 	b.WriteString("\n\nRespond with PASS or FAIL followed by your reasoning.")
 
@@ -363,42 +373,29 @@ func (t *Team) verify(ctx context.Context, input, plan string, results []SubResu
 	return content, passed
 }
 
-// ── Synthesize ─────────────────────────────────────────────────────────────
+// ── Phase 5: Synthesize ────────────────────────────────────────────────────
 
 func (t *Team) synthesize(ctx context.Context, input, plan string, results []SubResult, verification string) (string, error) {
-	// Collect output lines.
 	var b strings.Builder
 	b.WriteString("Sub-results:\n")
 	for _, r := range results {
-		b.WriteString(fmt.Sprintf("\n[%s]", r.MemberName))
+		fmt.Fprintf(&b, "\n[%s]", r.MemberName)
 		if r.Error != "" {
-			b.WriteString(fmt.Sprintf(" ERROR: %s", r.Error))
+			fmt.Fprintf(&b, " ERROR: %s", r.Error)
 		} else {
-			b.WriteString(fmt.Sprintf(" %s", r.Output))
+			fmt.Fprintf(&b, " %s", r.Output)
 		}
 	}
 	if verification != "" {
-		b.WriteString(fmt.Sprintf("\n\nVerification:\n%s", verification))
+		fmt.Fprintf(&b, "\n\nVerification:\n%s", verification)
 	}
-	subResultsBlock := b.String()
-
-	synthPrompt := fmt.Sprintf(
-		`You are the team leader "%s". Synthesize the following sub-results into a final answer.
-
-Original task: %s
-
-Plan:
-%s
-
-%s
-
-Provide a concise, unified final answer.`,
-		t.name, input, plan, subResultsBlock)
 
 	synthResp, err := t.runtime.llmSvc.Generate(ctx, &core.GenerateRequest{
 		Messages: []*core.LLMMessage{
 			{Role: roleSystem, Content: t.leader.instruction},
-			{Role: roleUser, Content: synthPrompt},
+			{Role: roleUser, Content: fmt.Sprintf(
+				"Synthesize the following sub-results into a final answer.\n\nOriginal task: %s\n\n%s",
+				input, b.String())},
 		},
 	})
 	if err != nil {
@@ -408,6 +405,28 @@ Provide a concise, unified final answer.`,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+func extractFilePaths(s string) []string {
+	lines := strings.Split(s, "\n")
+	var files []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Look for lines containing .md (likely file paths from read_directory).
+		if strings.Contains(line, ".md") && !strings.HasPrefix(line, "[") && !strings.HasPrefix(line, "(") {
+			// Extract the path part before " (N bytes)" if present.
+			if idx := strings.Index(line, " ("); idx > 0 {
+				line = line[:idx]
+			}
+			// Clean up markdown list markers.
+			line = strings.TrimLeft(line, "- *")
+			line = strings.TrimSpace(line)
+			if line != "" && strings.Contains(line, ".") {
+				files = append(files, line)
+			}
+		}
+	}
+	return files
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

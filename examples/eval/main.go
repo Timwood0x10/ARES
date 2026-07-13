@@ -246,6 +246,7 @@ type simpleTool struct {
 
 func (t *simpleTool) Name() string           { return t.name }
 func (t *simpleTool) Description() string    { return t.desc }
+func (t *simpleTool) Parameters() map[string]any { return nil }
 func (t *simpleTool) Capabilities() []string { return nil }
 func (t *simpleTool) Execute(_ context.Context, params map[string]any) (tools.Result, error) {
 	input, _ := params["input"].(string)

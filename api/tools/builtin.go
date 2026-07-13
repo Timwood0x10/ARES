@@ -78,6 +78,31 @@ type coreAdapter struct {
 
 func (a *coreAdapter) Name() string        { return a.inner.Name() }
 func (a *coreAdapter) Description() string { return a.inner.Description() }
+func (a *coreAdapter) Parameters() map[string]any {
+	s := a.inner.Parameters()
+	if s == nil {
+		return nil
+	}
+	props := make(map[string]any, len(s.Properties))
+	for k, p := range s.Properties {
+		prop := map[string]any{
+			"type":        p.Type,
+			"description": p.Description,
+		}
+		if p.Default != nil {
+			prop["default"] = p.Default
+		}
+		if len(p.Enum) > 0 {
+			prop["enum"] = p.Enum
+		}
+		props[k] = prop
+	}
+	return map[string]any{
+		"type":       s.Type,
+		"properties": props,
+		"required":   s.Required,
+	}
+}
 func (a *coreAdapter) Capabilities() []string {
 	caps := a.inner.Capabilities()
 	if len(caps) == 0 {
@@ -108,6 +133,7 @@ func (t *calculatorTool) Name() string { return "calculator" }
 func (t *calculatorTool) Description() string {
 	return "Mathematical calculator with expression evaluation"
 }
+func (t *calculatorTool) Parameters() map[string]any { return nil }
 func (t *calculatorTool) Capabilities() []string { return nil }
 
 func (t *calculatorTool) Execute(_ context.Context, params map[string]any) (Result, error) {
@@ -257,6 +283,7 @@ type regexTool struct{}
 
 func (t *regexTool) Name() string           { return "regex" }
 func (t *regexTool) Description() string    { return "Regex matching, extraction, and replacement" }
+func (t *regexTool) Parameters() map[string]any { return nil }
 func (t *regexTool) Capabilities() []string { return nil }
 
 func (t *regexTool) Execute(_ context.Context, params map[string]any) (Result, error) {
@@ -313,6 +340,7 @@ type jsonTool struct{}
 
 func (t *jsonTool) Name() string           { return "json_tools" }
 func (t *jsonTool) Description() string    { return "JSON parse, transform, and validation" }
+func (t *jsonTool) Parameters() map[string]any { return nil }
 func (t *jsonTool) Capabilities() []string { return nil }
 
 func (t *jsonTool) Execute(_ context.Context, params map[string]any) (Result, error) {
@@ -426,6 +454,7 @@ func (t *webSearchTool) Name() string { return "web_search" }
 func (t *webSearchTool) Description() string {
 	return "Search the web using SearXNG meta search engine"
 }
+func (t *webSearchTool) Parameters() map[string]any { return nil }
 func (t *webSearchTool) Capabilities() []string { return nil }
 
 func (t *webSearchTool) Execute(ctx context.Context, params map[string]any) (Result, error) {
@@ -546,6 +575,7 @@ type fileTool struct {
 
 func (t *fileTool) Name() string           { return "file_tools" }
 func (t *fileTool) Description() string    { return "File operations: read, write, list, exists, delete" }
+func (t *fileTool) Parameters() map[string]any { return nil }
 func (t *fileTool) Capabilities() []string { return nil }
 
 // validatePath resolves the path to an absolute, cleaned form and enforces
