@@ -5,9 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.7] - 2026-07-12
+## [0.2.7] - 2026-07-13
 
-> This is a **major milestone release** — 264 commits, 99 features, 27 fixes, 74 refactors since v0.2.5.
+> This is a **major milestone release** — 270 commits, 99 features, 27 fixes, 74 refactors since v0.2.5.
 > Four big themes: **all pipelines connected, all modules closed-loop, GA evolved again, dynamic workflow.**
 
 ### Theme 1: All Pipelines Connected
@@ -54,11 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Feature Doc Update**: Updated `docs/en/features/autonomous-evolution.md` and `docs/zh/features/autonomous-evolution.md` with all new GA features.
 - **Analysis Plan Sync**: Updated `GA_ANALYSIS.md` and `GA_DEVELOPMENT_PLAN.md` to reflect completed implementation status.
 
-### Code Quality
+### Integrated Examples & Infrastructure Fixes
 
-- **NSGA-II Validation Gap**: `WithSelectionStrategy("nsga2")` is handled in `buildSelector()` but not yet registered in `validSelectionStrategies` validation map. Workaround: skip validation or use `nondominated` string.
-- **Evidence Logic Cleanup**: `AggregateEvidence` refactored for clarity; cross-task evidence aggregation now filters mixed-task noise with `AggregateEvidenceCrossTask`.
-- **FIXME Cleanup (22 files)**: Removed stale FIXME comments in `internal/ares_quant/`, `internal/api_impl/`, `api/client/`, `internal/ares_events/`, `internal/storage/postgres/services/`. All had already been implemented but comments were not updated.
+- **Knowledge Base Example** (`examples/11-knowledge-import/`): Complete structure-aware markdown knowledge base with CLI import/query, multi-agent team import, and dialog-based chat. Integrates parser (6 BlockTypes), section-first chunker, PostgreSQL + pgvector embedding, batch transactions, and retry with exponential backoff.
+- **AKG Knowledge Graph Builder** (`examples/11-knowledge-import/akg/`): Builds working knowledge graphs from the knowledge base via `KnowledgeRuntime.Execute()`. 147 nodes, 27K edges, 73ms build. Uses the existing PGProvider (tag column bug fixed), planner, linkers (DecisionLinker, ArchitectureLinker, TimelineLinker, SimilarityLinker), and reducer — zero custom infrastructure.
+- **LLM Failover**: `FailoverClient` wired through SDK's `WithFallbackLLM()` option. Automatic 30s timeout → cooldown → fallback. Verified with ollama chain.
+- **GA Evolution Integration**: `--evolve` CLI command calls `Runtime.Evolve()` with population (10 agents × 3 generations). `executeAndScore` bug fixed (nil pointer on `runtime` field). Best strategy scored 99.5/100.
+- **Event Store Tool Chain Recording**: `Agent.Run()` now emits `EventToolCallStarted`/`EventToolCallCompleted` events to `ares_events.EventStore` for every tool call, capturing tool name, arguments, result, and success status.
+- **Chaos Engineering + Resurrection**: `ToolWrapper` with fault injection (failure rate, latency, kill-after-N-calls) and `AgentSupervisor` for health monitoring. `--chaos-fail/--chaos-latency/--chaos-kill` flags.
+- **SDK AKG Context Injection**: `buildMessages()` queries `KnowledgeRuntime` before each agent run and injects compiled knowledge graph context into the system prompt. Enabled via `WithEvolution()` + `WithKnowledge()`.
+- **DeepSeek ReasoningContent Support**: Added `ReasoningContent` field to `Message` and `AssistantMsg` structs, wired through `toMap()` for proper round-trip serialization of DeepSeek thinking mode responses.
+- **PGProvider Bug Fix**: `scanRow()` scanned the tag column via SQL but never assigned it to `obj.Tags`. Fixed — tag column data now properly populates `KnowledgeObject.Tags`.
+- **14 Lint Fixes**: errcheck, noctx, gosec G114, goconst, staticcheck SA9003/QF1012, unused dead code — all resolved across 8 files. Zero warnings on `go build` + `go vet`.
+
+
 
 ## [0.2.6] - 2026-07-07
 

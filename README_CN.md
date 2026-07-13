@@ -359,6 +359,13 @@ ares evolution run      # 运行一个进化周期
 ### 示例
 
 ```bash
+go run examples/11-knowledge-import/ --dir ./notes          # 导入 markdown 到 pgvector
+go run examples/11-knowledge-import/ --ask "question"       # RAG 查询知识库
+go run examples/11-knowledge-import/ --evolve "task"        # GA 进化导入策略
+go run examples/11-knowledge-import/ --chat                 # 交互式对话 + 工具
+go run examples/11-knowledge-import/ --team --dir ./notes   # 多 Agent 团队导入
+go run examples/11-knowledge-import/ --chaos-fail 0.3       # 故障注入测试
+go run examples/11-knowledge-import/akg/                    # 从知识库构建 AKG 图
 go run examples/runtime_evolution/basic/      # 完整端到端进化演示
 go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
 go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor

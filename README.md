@@ -357,6 +357,13 @@ ares evolution run      # Run one evolution cycle
 ### Examples
 
 ```bash
+go run examples/11-knowledge-import/ --dir ./notes          # Ingest markdown into pgvector
+go run examples/11-knowledge-import/ --ask "question"       # RAG query against KB
+go run examples/11-knowledge-import/ --evolve "task"        # GA evolution on import
+go run examples/11-knowledge-import/ --chat                 # Interactive chat with tools
+go run examples/11-knowledge-import/ --team --dir ./notes   # Multi-agent import
+go run examples/11-knowledge-import/ --chaos-fail 0.3       # With fault injection
+go run examples/11-knowledge-import/akg/                    # Build AKG from KB
 go run examples/runtime_evolution/basic/      # Full end-to-end evolution demo
 go run examples/runtime_evolution/knowledge/  # Knowledge parameter evolution
 go run examples/runtime_evolution/full/       # All 4 genomes + real executors
