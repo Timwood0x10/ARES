@@ -12,9 +12,9 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -128,7 +128,7 @@ type Distiller struct {
 	scorer      *ImportanceScorer
 	resolver    *ConflictResolver
 	noiseFilter *NoiseFilter
-	embedder    embedding.EmbeddingService
+	embedder    apiembed.EmbeddingService
 	pipeline    memembed.EmbeddingPipeline
 	repo        ExperienceRepository
 	expStore    ExperienceStore // Optional: writes distilled memories to experience store
@@ -153,7 +153,7 @@ type Distiller struct {
 // Returns:
 //
 //	*Distiller - configured distiller instance.
-func NewDistiller(config *DistillationConfig, embedder embedding.EmbeddingService, repo ExperienceRepository) *Distiller {
+func NewDistiller(config *DistillationConfig, embedder apiembed.EmbeddingService, repo ExperienceRepository) *Distiller {
 	if config == nil {
 		config = DefaultDistillationConfig()
 	}

@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	"github.com/Timwood0x10/ares/api/embedding"
+	pgembed "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // ============================================================
@@ -23,7 +24,7 @@ func newRealEmbedder(t *testing.T) embedding.EmbeddingService {
 	baseURL := "http://localhost:8000"
 	model := "qwen3-embedding:0.6b"
 
-	client := embedding.NewEmbeddingClient(baseURL, model, nil, 30*time.Second)
+	client := pgembed.NewEmbeddingClient(baseURL, model, nil, 30*time.Second)
 
 	// Health check
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

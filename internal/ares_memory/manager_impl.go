@@ -14,13 +14,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -36,7 +36,7 @@ type memoryManager struct {
 
 	// Distillation components (nil when using NewMemoryManager without distiller).
 	distiller *distillation.Distiller
-	embedder  embedding.EmbeddingService
+	embedder  apiembed.EmbeddingService
 	expRepo   distillation.ExperienceRepository
 
 	// EmbeddingPipeline: unified embedding generation for memory and query paths.
@@ -97,7 +97,7 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 //
 //	MemoryManager - configured memory manager instance.
 //	error - any error encountered.
-func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder embedding.EmbeddingService, expRepo distillation.ExperienceRepository) (MemoryManager, error) {
+func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.EmbeddingService, expRepo distillation.ExperienceRepository) (MemoryManager, error) {
 	if config == nil {
 		config = DefaultMemoryConfig()
 	}

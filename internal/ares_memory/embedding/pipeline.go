@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/errors"
-	pgembed "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // EmbeddingPipeline centralizes embedding generation and spec metadata.
@@ -23,13 +23,13 @@ type EmbeddingPipeline interface {
 }
 
 type embeddingPipeline struct {
-	svc   pgembed.EmbeddingService
+	svc   embedding.EmbeddingService
 	model string
 	dim   int
 }
 
 // NewEmbeddingPipeline creates a pipeline wrapping the given service.
-func NewEmbeddingPipeline(svc pgembed.EmbeddingService) (EmbeddingPipeline, error) {
+func NewEmbeddingPipeline(svc embedding.EmbeddingService) (EmbeddingPipeline, error) {
 	if svc == nil {
 		return nil, fmt.Errorf("embedding service is nil")
 	}

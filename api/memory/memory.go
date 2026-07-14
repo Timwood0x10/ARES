@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/api/embedding"
 	aresmem "github.com/Timwood0x10/ares/internal/ares_memory"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
+	pgembed "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // Role constants.
@@ -161,7 +162,7 @@ func NewManager(cfg *Config) (Manager, error) {
 }
 
 // NewProductionManager creates a PostgreSQL-backed memory manager.
-func NewProductionManager(pool *postgres.Pool, client *embedding.EmbeddingClient, cfg *Config) (Manager, error) {
+func NewProductionManager(pool *postgres.Pool, client *pgembed.EmbeddingClient, cfg *Config) (Manager, error) {
 	inner, err := aresmem.NewProductionMemoryManager(pool, client, toConfig(cfg))
 	if err != nil {
 		return nil, err

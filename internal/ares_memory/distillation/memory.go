@@ -1,107 +1,78 @@
-// Package distillation provides memory distillation functionality for agent experience extraction.
+// Package distillation provides memory distillation functionality for
+// agent experience extraction.
+//
+// Public DTOs and the ExperienceRepository interface live in the
+// api/experience package. This internal file re-exports them as type
+// aliases so existing internal call sites continue to compile without
+// churn. New internal code should prefer the api/experience types
+// directly.
 package distillation
 
 import (
-	"context"
-	"time"
+	"github.com/Timwood0x10/ares/api/experience"
 )
 
-// MemoryType defines the four types of memory.
-type MemoryType string
+// Public type aliases. These keep the internal package's existing API
+// surface stable while routing all canonical definitions through
+// api/experience.
+type (
+	// MemoryType is the classified memory type.
+	MemoryType = experience.MemoryType
 
+	// Memory is a single distilled knowledge fragment.
+	Memory = experience.Memory
+
+	// ExtractionMethod indicates how an experience was extracted.
+	ExtractionMethod = experience.ExtractionMethod
+
+	// Experience is a problem-solution pair extracted from conversation.
+	Experience = experience.Experience
+
+	// ResolutionStrategy defines how to resolve memory conflicts.
+	ResolutionStrategy = experience.ResolutionStrategy
+
+	// StoredExperience is the write DTO for ExperienceStore.
+	StoredExperience = experience.StoredExperience
+
+	// ExperienceRepository is the storage-agnostic contract for
+	// experience persistence. External modules implement this with any
+	// vector database (PostgreSQL pgvector, SQLite-vec, Weaviate, Qdrant,
+	// Milvus, etc.).
+	ExperienceRepository = experience.ExperienceRepository
+
+	// ExperienceStore writes experiences to an external experience
+	// system. The distiller uses it when configured via
+	// WithExperienceStore.
+	ExperienceStore = experience.ExperienceStore
+)
+
+// Re-exported constants for backwards-compatible internal access.
 const (
-	MemoryKnowledge   MemoryType = "knowledge"
-	MemoryPreference  MemoryType = "preference"
-	MemoryInteraction MemoryType = "interaction"
-	MemoryProfile     MemoryType = "profile"
+	// MemoryKnowledge represents distilled factual knowledge.
+	MemoryKnowledge = experience.MemoryKnowledge
+	// MemoryPreference represents distilled user preferences.
+	MemoryPreference = experience.MemoryPreference
+	// MemoryInteraction represents distilled interaction patterns.
+	MemoryInteraction = experience.MemoryInteraction
+	// MemoryProfile represents distilled user profile information.
+	MemoryProfile = experience.MemoryProfile
+
+	// ExtractionDirect indicates a direct user-assistant pair extraction.
+	ExtractionDirect = experience.ExtractionDirect
+	// ExtractionCrossTurn indicates a multi-turn conversation extraction.
+	ExtractionCrossTurn = experience.ExtractionCrossTurn
+
+	// ReplaceOld replaces the old memory with the new one.
+	ReplaceOld = experience.ReplaceOld
+	// KeepBoth keeps both versions (used for competing solutions).
+	KeepBoth = experience.KeepBoth
+	// Merge merges the memories (reserved for future use).
+	Merge = experience.Merge
 )
 
-// Memory represents a distilled memory from agent experience.
-type Memory struct {
-	ID         string
-	Type       MemoryType
-	Content    string
-	Importance float64
-	Source     string
-	Vector     []float64
-	TTL        time.Duration
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
-	Metadata   map[string]interface{}
-}
-
-// ExtractionMethod defines how an experience was extracted.
-type ExtractionMethod string
-
-const (
-	ExtractionDirect    ExtractionMethod = "direct"     // Direct user-assistant pair
-	ExtractionCrossTurn ExtractionMethod = "cross-turn" // Multi-turn conversation
+// Compile-time guard: ensure the aliases satisfy the public interface
+// contracts expected by external callers.
+var (
+	_ ExperienceRepository = (ExperienceRepository)(nil)
+	_ ExperienceStore      = (ExperienceStore)(nil)
 )
-
-// Experience represents a problem-solution pair extracted from conversation.
-type Experience struct {
-	ID               string
-	Problem          string
-	Solution         string
-	Confidence       float64
-	ExtractionMethod ExtractionMethod
-	Vector           []float64
-}
-
-// ResolutionStrategy defines how to resolve memory conflicts.
-type ResolutionStrategy string
-
-const (
-	ReplaceOld ResolutionStrategy = "replace" // Replace old memory with new
-	KeepBoth   ResolutionStrategy = "version" // Keep both versions (for solutions)
-	Merge      ResolutionStrategy = "merge"   // Merge memories (future)
-)
-
-// ExperienceRepository defines the interface for experience storage and retrieval.
-type ExperienceRepository interface {
-	// SearchByVector searches for similar experiences by vector.
-	SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]Experience, error)
-
-	// GetByMemoryType retrieves experiences by memory type.
-	GetByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) ([]Experience, error)
-
-	// CountByMemoryType returns the number of experiences for the given tenant and memory type.
-	CountByMemoryType(ctx context.Context, tenantID string, memoryType MemoryType) (int, error)
-
-	// Update updates an existing experience.
-	Update(ctx context.Context, experience *Experience) error
-
-	// Delete deletes an experience by ID.
-	Delete(ctx context.Context, id string) error
-
-	// DeleteBatch deletes multiple experiences by their IDs in a single operation.
-	DeleteBatch(ctx context.Context, ids []string) error
-
-	// Create creates a new experience.
-	Create(ctx context.Context, experience *Experience) error
-}
-
-// ExperienceStore defines the interface for writing experiences to the experience store.
-// This is used by the distiller to sync distilled memories to the experience system.
-type ExperienceStore interface {
-	// Create persists a new experience entry.
-	Create(ctx context.Context, exp *StoredExperience) error
-}
-
-// StoredExperience represents an experience entry to be stored in the experience store.
-type StoredExperience struct {
-	// TenantID is the tenant identifier for multi-tenancy isolation.
-	TenantID string
-	// Type is the experience type (e.g., "solution", "heuristic", "strategy", "failure", "general").
-	Type string
-	// Problem is the abstract problem statement.
-	Problem string
-	// Solution is the concise solution approach.
-	Solution string
-	// Score is the importance score (0-1).
-	Score float64
-	// Source indicates where this experience originated from.
-	Source string
-	// Metadata holds additional structured data.
-	Metadata map[string]interface{}
-}

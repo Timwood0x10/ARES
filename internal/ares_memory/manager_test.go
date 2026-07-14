@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/api/core"
+	"github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 )
 
 // testEmbedder is a minimal EmbeddingService mock for tests.
