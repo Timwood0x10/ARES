@@ -10,7 +10,7 @@ server:
 
 llm:
   provider: "openai"
-  api_key: "sk-hyOasqzOhwaAhrs2Rv7REBzwuchXXdbv"
+  api_key: "sk-hyOasqzOhwaAhrs2Kv7REBzwuchXXdbv"
   base_url: "https://token.sensenova.cn/v1"
   model: "sensenova-6.7-flash-lite"
   timeout: 120
@@ -142,3 +142,7 @@ memory:
     enabled: false
   task_distillation:
     enabled: false
+    # threshold controls round gating when enabled: 0 = ungated (fire every
+    # event), N = fire every N conversation rounds. Left commented to preserve
+    # the disabled default. See examples/12-yaml-driven-flags for semantics.
+    # threshold: 3
