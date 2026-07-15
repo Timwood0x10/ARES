@@ -14,18 +14,25 @@ type Option func(*config) error
 
 // config holds the internal configuration state while options are applied.
 type config struct {
-	llmCfg    *core.LLMConfig
-	baseCfg   *core.BaseConfig
-	memCfg    memoryCfg
-	evoCfg    evolutionCfg
-	knlCfg    knowledgeCfg
-	mcpConns  []MCPConn
-	fallbacks []*core.LLMConfig
-	trace     bool
+	llmCfg      *core.LLMConfig
+	baseCfg     *core.BaseConfig
+	memCfg      memoryCfg
+	evoCfg      evolutionCfg
+	knlCfg      knowledgeCfg
+	dbCfg       databaseCfg     // optional PostgreSQL connection
+	embedCfg    embeddingCfg    // optional external embedding service
+	distillCfg  distillationCfg // optional memory distillation
+	knowledgeRT knowledgeRTCfg  // optional retrieval tuning
+	mcpConns    []MCPConn
+	fallbacks   []*core.LLMConfig
+	trace       bool
 }
 
+// memoryCfg holds memory subsystem configuration.
 type memoryCfg struct {
-	Enabled bool
+	Enabled     bool
+	MaxHistory  int // 0 → component default
+	MaxSessions int // 0 → component default
 }
 
 type evolutionCfg struct {
@@ -34,6 +41,39 @@ type evolutionCfg struct {
 
 type knowledgeCfg struct {
 	Enabled bool
+}
+
+// databaseCfg holds PostgreSQL connection parameters. Empty host signals
+// in-memory storage fallback.
+type databaseCfg struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
+}
+
+// embeddingCfg holds an external embedding service endpoint. Empty URL signals
+// default embedding fallback.
+type embeddingCfg struct {
+	ServiceURL string
+	Model      string
+}
+
+// distillationCfg holds memory distillation knobs. Zero threshold signals
+// component default; enabled=false disables the distiller.
+type distillationCfg struct {
+	Enabled   bool
+	Threshold int
+}
+
+// knowledgeRTCfg tunes retrieval chunking and similarity bounds. Zero values
+// signal component defaults.
+type knowledgeRTCfg struct {
+	ChunkSize    int
+	ChunkOverlap int
+	TopK         int
+	MinScore     float64
 }
 
 func defaultConfig() *config {
@@ -52,6 +92,8 @@ func defaultConfig() *config {
 		memCfg: memoryCfg{Enabled: false},
 		evoCfg: evolutionCfg{Enabled: false},
 		trace:  true,
+		// dbCfg, embedCfg, distillCfg, knowledgeRT default to zero values,
+		// signalling component defaults downstream.
 	}
 }
 
@@ -153,6 +195,109 @@ func WithFallbackLLM(cfg *core.LLMConfig) Option {
 func WithDefaultMemory() Option {
 	return func(c *config) error {
 		c.memCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithMemoryConfig overrides default memory sizing. Fields left at zero fall
+// back to the component default, mirroring the yaml-driven philosophy.
+//
+// Args:
+//
+//	maxHistory - max conversation turns retained per session; 0 → default.
+//	maxSessions - max concurrent sessions tracked; 0 → default.
+func WithMemoryConfig(maxHistory, maxSessions int) Option {
+	return func(c *config) error {
+		if maxHistory < 0 || maxSessions < 0 {
+			return fmt.Errorf("memory config: %w", ErrInvalidRange)
+		}
+		c.memCfg.Enabled = true
+		c.memCfg.MaxHistory = maxHistory
+		c.memCfg.MaxSessions = maxSessions
+		return nil
+	}
+}
+
+// WithDistillation enables memory distillation. The threshold controls how
+// many conversation rounds accumulate before distillation fires. A threshold
+// of 0 falls back to the component default. Mirrors v0.2.4
+// examples/knowledge-base config.yaml distillation_threshold semantics.
+//
+// Args:
+//
+//	threshold - conversation rounds between distillation triggers; 0 → default.
+func WithDistillation(threshold int) Option {
+	return func(c *config) error {
+		if threshold < 0 {
+			return fmt.Errorf("distillation threshold %d: %w", threshold, ErrInvalidRange)
+		}
+		c.distillCfg.Enabled = true
+		c.distillCfg.Threshold = threshold
+		return nil
+	}
+}
+
+// WithEmbeddingService injects an external embedding service endpoint. Empty
+// url signals the sdk to fall back to default embedding behaviour.
+//
+// Args:
+//
+//	url   - embedding service URL, required when this option is used.
+//	model - embedding model name, required when this option is used.
+func WithEmbeddingService(url, model string) Option {
+	return func(c *config) error {
+		if url == "" {
+			return fmt.Errorf("embedding service: %w", ErrMissingValue)
+		}
+		if model == "" {
+			return fmt.Errorf("embedding model: %w", ErrMissingValue)
+		}
+		c.embedCfg.ServiceURL = url
+		c.embedCfg.Model = model
+		return nil
+	}
+}
+
+// WithPostgres enables PostgreSQL-backed memory. Empty host signals in-memory
+// storage fallback; when host is set, the sdk wires a pool to the Runtime.
+//
+// Args:
+//
+//	cfg - database connection parameters; host is the trigger field.
+func WithPostgres(cfg DatabaseFileConfig) Option {
+	return func(c *config) error {
+		if cfg.Host == "" {
+			return fmt.Errorf("postgres host: %w", ErrMissingValue)
+		}
+		if cfg.Port < 1 || cfg.Port > 65535 {
+			return fmt.Errorf("postgres port %d: %w", cfg.Port, ErrInvalidRange)
+		}
+		c.dbCfg = databaseCfg(cfg)
+		return nil
+	}
+}
+
+// WithKnowledgeConfig tunes retrieval chunking and similarity bounds. Zero
+// fields fall back to component defaults.
+//
+// Args:
+//
+//	cfg - knowledge retrieval parameters; chunk_size > 0 signals the section is active.
+func WithKnowledgeConfig(cfg KnowledgeFileConfig) Option {
+	return func(c *config) error {
+		if cfg.ChunkSize > 0 {
+			if cfg.ChunkOverlap < 0 || cfg.ChunkOverlap >= cfg.ChunkSize {
+				return fmt.Errorf("knowledge chunk_overlap %d vs chunk_size %d: %w",
+					cfg.ChunkOverlap, cfg.ChunkSize, ErrInvalidRange)
+			}
+			if cfg.TopK < 1 {
+				return fmt.Errorf("knowledge top_k %d: %w", cfg.TopK, ErrInvalidRange)
+			}
+			if cfg.MinScore < 0 || cfg.MinScore > 1 {
+				return fmt.Errorf("knowledge min_score %v: %w", cfg.MinScore, ErrInvalidRange)
+			}
+		}
+		c.knowledgeRT = knowledgeRTCfg(cfg)
 		return nil
 	}
 }

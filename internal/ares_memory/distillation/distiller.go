@@ -64,6 +64,12 @@ type DistillationConfig struct {
 
 	// PrecisionOverRecall prioritizes precision over recall.
 	PrecisionOverRecall bool
+
+	// DistillationThreshold is the number of conversation rounds that accumulate
+	// before distillation fires in the event subscription path. A value of 0
+	// disables round gating: every EventMessageAdded triggers distillation.
+	// Mirrors v0.2.4 examples/knowledge-base config.yaml distillation_threshold.
+	DistillationThreshold int
 }
 
 // DefaultDistillationConfig returns the default configuration for distillation.
@@ -84,6 +90,9 @@ func DefaultDistillationConfig() *DistillationConfig {
 		TopNBeforeConflict:         true,
 		ConflictSearchLimit:        5,
 		PrecisionOverRecall:        true,
+		// DistillationThreshold 0 means event-driven ungated firing
+		// (preserves existing behaviour when no threshold is configured).
+		DistillationThreshold: 0,
 	}
 }
 
@@ -140,6 +149,14 @@ type Distiller struct {
 	// If set, the distiller invokes it with the task ID from the event payload.
 	// The handler should trigger the full distillation pipeline for the task.
 	OnTaskCompleted func(ctx context.Context, taskID string)
+
+	// OnMessageAdded is called when a message-added event passes the round gate
+	// (i.e. after DistillationThreshold gating in SubscribeAndDistill, or
+	// immediately when no threshold is configured). If set, the distiller
+	// invokes it with the stream ID and role from the event payload. This is
+	// the observable hook for the round-gate behaviour; without it, message
+	// events only produce a debug log.
+	OnMessageAdded func(ctx context.Context, streamID, role string)
 }
 
 // NewDistiller creates a new Distiller instance.

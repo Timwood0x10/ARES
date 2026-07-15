@@ -40,6 +40,11 @@ type Config struct {
 	EnableCodeFilter           bool
 	EnableCrossTurnExtraction  bool
 	PrecisionOverRecall        bool
+	// DistillationThreshold gates the event subscription path: when > 0,
+	// EventMessageAdded events accumulate until this many rounds are reached
+	// before distillation fires. 0 preserves legacy ungated behaviour.
+	// Mirrors v0.2.4 examples/knowledge-base config.yaml distillation_threshold.
+	DistillationThreshold int
 }
 
 // DefaultConfig returns sensible defaults.
@@ -52,6 +57,8 @@ func DefaultConfig() *Config {
 		EnableCodeFilter:           true,
 		EnableCrossTurnExtraction:  true,
 		PrecisionOverRecall:        true,
+		// DistillationThreshold 0 preserves legacy ungated behaviour.
+		DistillationThreshold: 0,
 	}
 }
 
@@ -101,6 +108,7 @@ func New(config *Config, embedder embedding.EmbeddingService, repo distillation.
 		icfg.EnableCodeFilter = config.EnableCodeFilter
 		icfg.EnableCrossTurnExtraction = config.EnableCrossTurnExtraction
 		icfg.PrecisionOverRecall = config.PrecisionOverRecall
+		icfg.DistillationThreshold = config.DistillationThreshold
 	}
 	return &distillerAdapter{
 		inner: distillation.NewDistiller(icfg, embedder, repo),

@@ -3,6 +3,8 @@ package distillation
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -339,4 +341,159 @@ func TestSubscribeAndDistill_FilteredEventTypes(t *testing.T) {
 	streamEvents, err := store.Read(context.Background(), "stream-1", ares_events.ReadOptions{})
 	require.NoError(t, err)
 	assert.Len(t, streamEvents, 4, "store should have all 4 ares_events")
+}
+
+// recordingMessageHook captures OnMessageAdded invocations with a mutex so
+// the test can read the call count concurrently without racing the subscriber
+// goroutine.
+type recordingMessageHook struct {
+	mu    sync.Mutex
+	calls int
+	roles []string
+}
+
+func (r *recordingMessageHook) onMessage(ctx context.Context, streamID, role string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.roles = append(r.roles, role)
+}
+
+func (r *recordingMessageHook) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// TestSubscribeAndDistill_RoundGateHoldsAndFires verifies that when
+// DistillationThreshold > 0, OnMessageAdded fires only on every threshold-th
+// message event, not on every one. Mirrors v0.2.4 examples/knowledge-base
+// config.yaml distillation_threshold semantics.
+func TestSubscribeAndDistill_RoundGateHoldsAndFires(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+
+	config := DefaultDistillationConfig()
+	config.DistillationThreshold = 3
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	hook := &recordingMessageHook{}
+	distiller.OnMessageAdded = hook.onMessage
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	distiller.SubscribeAndDistill(ctx, store)
+
+	// Wait for subscription goroutine to start.
+	startCtx, startCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer startCancel()
+	<-startCtx.Done()
+
+	// Publish 5 message events with threshold 3: expect fires at round 3 only.
+	err := store.Append(context.Background(), "stream-gate", []*ares_events.Event{
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "user"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "assistant"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "user"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "assistant"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "user"}},
+	}, 0)
+	require.NoError(t, err)
+
+	// Wait for the subscriber to drain the channel.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer drainCancel()
+	<-drainCtx.Done()
+
+	// Threshold 3 with 5 events: fire at round 3 only (rounds 1,2 held, round 3 fires, rounds 4,5 held).
+	if got := hook.count(); got != 1 {
+		t.Errorf("OnMessageAdded fired %d times, want 1 (gate should fire only at round 3)", got)
+	}
+}
+
+// TestSubscribeAndDistill_RoundGateZeroFiresEveryEvent verifies the legacy
+// ungated behaviour: threshold 0 forwards every EventMessageAdded immediately.
+func TestSubscribeAndDistill_RoundGateZeroFiresEveryEvent(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+
+	config := DefaultDistillationConfig()
+	// DistillationThreshold 0 is the default, asserted here for clarity.
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	hook := &recordingMessageHook{}
+	distiller.OnMessageAdded = hook.onMessage
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	distiller.SubscribeAndDistill(ctx, store)
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer startCancel()
+	<-startCtx.Done()
+
+	err := store.Append(context.Background(), "stream-ungated", []*ares_events.Event{
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "user"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "assistant"}},
+	}, 0)
+	require.NoError(t, err)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer drainCancel()
+	<-drainCtx.Done()
+
+	if got := hook.count(); got != 2 {
+		t.Errorf("OnMessageAdded fired %d times, want 2 (ungated mode fires every event)", got)
+	}
+}
+
+// TestSubscribeAndDistill_TaskBypassesGate verifies that EventTaskCompleted
+// fires OnTaskCompleted immediately, bypassing the round gate.
+func TestSubscribeAndDistill_TaskBypassesGate(t *testing.T) {
+	store := ares_events.NewMemoryEventStore()
+	defer func() { _ = store.Close() }()
+
+	config := DefaultDistillationConfig()
+	config.DistillationThreshold = 10 // high gate would hold message events
+	embedder := NewMockEmbeddingService()
+	repo := NewMockExperienceRepository([]Experience{})
+	distiller := NewDistiller(config, embedder, repo)
+
+	var taskCalls int32
+	var taskMu sync.Mutex
+	distiller.OnTaskCompleted = func(ctx context.Context, taskID string) {
+		taskMu.Lock()
+		defer taskMu.Unlock()
+		atomic.AddInt32(&taskCalls, 1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	distiller.SubscribeAndDistill(ctx, store)
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer startCancel()
+	<-startCtx.Done()
+
+	// Send two message events (held by gate) then a task event (must bypass).
+	err := store.Append(context.Background(), "stream-bypass", []*ares_events.Event{
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "user"}},
+		{Type: ares_events.EventMessageAdded, Payload: map[string]any{"role": "assistant"}},
+		{Type: ares_events.EventTaskCompleted, Payload: map[string]any{"task_id": "task-bypass-1"}},
+	}, 0)
+	require.NoError(t, err)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer drainCancel()
+	<-drainCtx.Done()
+
+	if got := atomic.LoadInt32(&taskCalls); got != 1 {
+		t.Errorf("OnTaskCompleted fired %d times, want 1 (task must bypass gate)", got)
+	}
 }

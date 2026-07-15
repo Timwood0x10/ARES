@@ -1,0 +1,19 @@
+# Example 12 — YAML-driven flags
+#
+# One yaml + one go file starts an agent. Each section is optional:
+# leaving a section out (or its fields at zero) causes the sdk to fall
+# back to the corresponding component default, mirroring the
+# "yaml-drives-all-components; missing means default" philosophy
+# established by examples/knowledge-base in v0.2.4.
+
+llm:
+  provider: ollama
+  model: llama3.2:latest
+
+memory:
+  enabled: true
+  # max_history and max_sessions left at 0 → component defaults.
+  enable_distillation: true
+  # distillation_threshold 3 → distillation fires every 3 conversation
+  # rounds. 0 would mean "fire on every event" (legacy ungated).
+  distillation_threshold: 3

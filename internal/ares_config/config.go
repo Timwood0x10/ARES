@@ -237,6 +237,11 @@ type DistillConfig struct {
 	Storage     string `yaml:"storage"`      // Where to store distilled info: "memory" or "postgres"
 	VectorStore bool   `yaml:"vector_store"` // Store distilled results as vectors in pgvector
 	Prompt      string `yaml:"prompt"`       // Custom prompt for distillation
+	// Threshold is the number of conversation rounds that accumulate before
+	// distillation fires in the event subscription path. 0 preserves legacy
+	// ungated behaviour. Mirrors v0.2.4 examples/knowledge-base config.yaml
+	// distillation_threshold semantics.
+	Threshold int `yaml:"threshold"`
 }
 
 // Load reads configuration from a YAML file.
@@ -599,6 +604,11 @@ func (c *Config) validateStorage() error {
 func (c *Config) validateMemory() error {
 	if c.Memory.SessionMemory.MaxHistory < 0 {
 		return fmt.Errorf("invalid session memory max history: %d, must be non-negative", c.Memory.SessionMemory.MaxHistory)
+	}
+	// Distillation threshold semantics: 0 preserves legacy ungated behaviour
+	// (fires on every event), negative is invalid. Positive gates rounds.
+	if c.Memory.TaskDistillation.Threshold < 0 {
+		return fmt.Errorf("invalid task_distillation threshold: %d, must be non-negative", c.Memory.TaskDistillation.Threshold)
 	}
 	return nil
 }
