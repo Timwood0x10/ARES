@@ -37,6 +37,7 @@ func main() {
 	rt := runtime.New(nil, nil, nil, nil, nil, nil)
 	svc, err := service.NewServiceAdapter(rt)
 	if err != nil {
+		cancel()
 		log.Fatalf("create knowledge service: %v", err)
 	}
 
@@ -70,6 +71,7 @@ func main() {
 	}
 	compiled, err := svc.CompileContext(ctx, demoGraph)
 	if err != nil {
+		cancel()
 		log.Fatalf("compile context: %v", err)
 	}
 	fmt.Println("Compiled context:")
@@ -79,6 +81,7 @@ func main() {
 	rawMemory := []byte("User asked why we use Redis. Answer: latency + TTL.")
 	objs, err := svc.Distill(ctx, rawMemory, "tenant-1")
 	if err != nil {
+		cancel()
 		log.Fatalf("distill: %v", err)
 	}
 	fmt.Printf("Distilled %d KnowledgeObject(s)\n", len(objs))
