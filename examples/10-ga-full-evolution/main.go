@@ -1,40 +1,54 @@
-// GA Full Evolution Demo — comprehensive GA evolution demonstration.
+// Command 10-ga-full-evolution demonstrates a comprehensive GA evolution
+// pipeline using ONLY the public api/evolution building blocks — no internal/
+// imports. This is the AI-assistant-safe version: external modules and AI
+// assistants must never import internal/.
 //
-// Demonstrates:
+// Demonstrates (api/evolution coverage):
 //  1. Tool selection strategy evolution — optimal tool combinations per task type
-//  2. Workflow DAG topology evolution — evolves node structure and execution order
-//  3. Memory-guided mutation — historical experience biases mutation direction
-//  4. Multi-objective fitness — quality + cost + latency combined scoring
+//  2. Memory-guided mutation — historical experience biases mutation direction
+//  3. Multi-objective fitness — quality + cost + latency combined scoring
+//
+// Removed vs. the legacy version (requires internal/, not yet public):
+//   - Workflow DAG topology evolution (needs coordinator/patch/diff/graph blocks)
+//   - Population.Stats / ExportHistory / Strategy.DimensionScores (not in public API)
 //
 // Run: go run examples/10-ga-full-evolution/main.go
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
-	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
-	"github.com/Timwood0x10/ares/internal/evolution/diff"
-	evogenome "github.com/Timwood0x10/ares/internal/evolution/genome"
-	"github.com/Timwood0x10/ares/internal/evolution/patch"
-	"github.com/Timwood0x10/ares/internal/workflow/engine"
-	"github.com/Timwood0x10/ares/internal/workflow/graph"
+	pubevolution "github.com/Timwood0x10/ares/api/evolution"
+	pubmutation "github.com/Timwood0x10/ares/api/evolution/mutation"
 )
 
+// exitf logs a formatted message and exits with code 1, canceling the
+// context first to avoid the gocritic exitAfterDefer warning.
+func exitf(cancel context.CancelFunc, format string, args ...any) {
+	cancel()
+	fmt.Printf(format+"\n", args...)
+	os.Exit(1)
+}
+
 func main() {
-	ctx := context.Background()
-	fmt.Println("═══ GA Full Evolution Demo ═══")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fmt.Println("═══ GA Full Evolution Demo (public API only) ═══")
 	fmt.Println()
 
 	// ── 1. Create base strategy (tools, params, prompt) ──
-	base := &mutation.Strategy{
-		ID:      "root-strategy",
-		Version: 1,
+	//    Score=-1 marks the seed as unevaluated; ScoreAgents will fill it.
+	//    Uses the mutation sub-package Strategy because Mutator lives there;
+	//    converted to the top-level evolution.Strategy when fed to Population.
+	base := &pubmutation.Strategy{
+		ID:             "root-strategy",
+		Version:        1,
+		PromptTemplate: "You are a helpful assistant. Complete the task efficiently.",
 		Params: map[string]any{
 			"temperature":   0.7,
 			"top_k":         40,
@@ -43,53 +57,72 @@ func main() {
 			"search_depth":  3,      // search depth
 			"batch_size":    5,      // batch size
 		},
-		PromptTemplate: "You are a helpful assistant. Complete the task efficiently.",
-		Score:          -1,
-		CreatedAt:      time.Now(),
 	}
+	fmt.Printf("Seed strategy: id=%s params=%v\n", base.ID, base.Params)
 
-	// ── 2. Create mutator (param ranges + tool pool) ──
-	mutator, err := mutation.NewMutator(
-		mutation.WithParamRanges(mutableParams()),
-		mutation.WithPromptPool(promptPool()),
-		mutation.WithToolPool(toolPool()),
-	)
+	// ── 2. Create mutator with param ranges + prompt pool + tool pool ──
+	//    Mutator lives in the evolution/mutation sub-package so it can carry
+	//    the full MutatorConfig (ranges/pools/probabilities). The top-level
+	//    evolution.NewMutator only takes probabilities, not ranges — sub-package
+	//    is the right entry point for external callers who need custom ranges.
+	mutator, err := pubmutation.NewMutator(pubmutation.MutatorConfig{
+		ParamRanges: map[string][]any{
+			"temperature":   {0.1, 0.3, 0.5, 0.7, 0.9},
+			"top_k":         {10, 20, 40, 60, 80, 100},
+			"max_tokens":    {1024, 2048, 4096, 8192},
+			"tool_selector": {"auto", "manual", "priority"},
+			"search_depth":  {1, 2, 3, 4, 5},
+			"batch_size":    {1, 3, 5, 10},
+		},
+		PromptPool: []string{
+			"You are a helpful assistant. Complete the task efficiently.",
+			"You are an expert programmer. Write clean, efficient code.",
+			"You are a data analyst. Analyze data thoroughly and report findings.",
+			"You are a system architect. Design robust and scalable solutions.",
+		},
+		ToolPool: []string{"search", "read", "write", "exec", "calculate", "code"},
+		// Mutation probabilities — tune how aggressive evolution is.
+		ParamMutationProb:  0.4,
+		PromptMutationProb: 0.2,
+	})
 	if err != nil {
-		panic(err)
+		exitf(cancel, "create mutator: %v", err)
 	}
+	fmt.Println("Mutator configured with 6 param ranges, 4 prompts, 6 tools")
 
-	// ── 3. Create crossover (uniform/two_point/segment) ──
-	crosser, err := genome.NewCrossover(
-		genome.WithSeed(42),
-		genome.WithCrossoverType(genome.CrossoverUniform),
-	)
+	// ── 3. Mutate the base once to preview a child ──
+	previewChild, err := mutator.Mutate(ctx, base)
 	if err != nil {
-		panic(err)
+		exitf(cancel, "mutate preview: %v", err)
 	}
+	fmt.Printf("Preview child: id=%s version=%d mutation=%s params=%v\n",
+		previewChild.ID, previewChild.Version, previewChild.MutationType, previewChild.Params)
 
 	// ── 4. Create population (GA core engine) ──
-	pop, err := genome.NewPopulation(ctx, base, mutator,
-		genome.WithPopulationSize(20),
-		genome.WithEliteCount(3),
-		genome.WithMutationRate(0.2),
-		genome.WithSurvivalRate(0.6),
-		genome.WithSelectionStrategy("tournament"),
-		genome.WithTournamentSelection(3),
-	)
-	if err != nil {
-		panic(err)
+	//    Population lives at the top-level evolution package and consumes the
+	//    top-level Strategy — convert the mutation.Strategy seed here.
+	pubBase := &pubevolution.Strategy{
+		ID:             base.ID,
+		Version:        base.Version,
+		PromptTemplate: base.PromptTemplate,
+		Params:         base.Params,
 	}
-	fmt.Printf("1. Population initialized with %d individuals\n", pop.Size)
+	popCfg := pubevolution.DefaultPopulationConfig()
+	popCfg.Size = 20
+	popCfg.EliteCount = 3
+	popCfg.MutationRate = 0.2
+	popCfg.SurvivalRate = 0.6
+	popCfg.SelectionStrategy = "tournament"
+	popCfg.TournamentSize = 3
+	population, err := pubevolution.NewPopulation(pubBase, popCfg)
+	if err != nil {
+		exitf(cancel, "create population: %v", err)
+	}
+	fmt.Printf("Population initialized with %d individuals\n", population.Size())
 
-	// ── 5. Create workflow DAG (evolvable topology) ──
-	dag := buildInitialDAG()
-	fmt.Printf("2. Initial DAG: %d nodes\n", dag.NodeCount())
-
-	// ── 6. Register evolution components (Genome + Diff + Coordinator) ──
-	coord, genomeReg, diffReg := registerEvolutionComponents(dag)
-	fmt.Println("3. Evolution components registered")
-
-	// ── 7. Create memory-guided provider (mock experience) ──
+	// ── 5. Memory-guided provider (mock experience) ──
+	//    In production this would come from api/experience FeedbackService;
+	//    here we mock it to show how historical bias guides mutation scoring.
 	hintProvider := &mockHintProvider{
 		hints: []evolutionHint{
 			{taskType: "code", tool: "search", confidence: 0.85},
@@ -98,145 +131,87 @@ func main() {
 			{taskType: "data", tool: "exec", confidence: 0.65},
 		},
 	}
-	fmt.Println("4. Memory-guided provider loaded (4 experiences)")
+	fmt.Println("Memory-guided provider loaded (4 experiences)")
 
-	// ── 8. Run GA evolution (5 generations) ──
+	// ── 6. Run GA evolution (5 generations) ──
 	fmt.Println("\n═══ Starting GA Evolution ═══")
 	for gen := 0; gen < 5; gen++ {
-		runGeneration(ctx, pop, mutator, crosser, hintProvider, gen)
-		printGenerationStats(pop, gen)
-	}
+		// Score every agent with the multi-objective scorer before evolving —
+		// Evolve rejects agents with score=-1 (unevaluated).
+		population.ScoreAgents(func(s *pubevolution.Strategy) float64 {
+			return multiObjectiveScore(s, hintProvider)
+		})
 
-	// Step 9: Show evolution results — what GA learned.
-	fmt.Println("\n═══ Evolution Results: What GA Learned ═══")
-	best := pop.BestStrategy()
-	if best != nil {
-		fmt.Printf("✅ Tool selection: %v", best.Params["tool_selector"])
-		if best.Params["tool_selector"] == "priority" {
-			fmt.Println(" → prioritize high-frequency tools, reduce irrelevant calls")
-		} else {
-			fmt.Println("")
+		if err := population.Evolve(ctx); err != nil {
+			exitf(cancel, "evolve generation %d: %v", gen+1, err)
 		}
 
-		fmt.Printf("✅ Search depth: %v", best.Params["search_depth"])
-		if d, ok := best.Params["search_depth"].(int); ok && d >= 3 {
-			fmt.Println(" → deeper search provides more comprehensive information")
-		} else {
-			fmt.Println(" → shallow search suitable for simple tasks")
-		}
-
-		fmt.Printf("✅ Scheduler: %v", best.Params["scheduler_strategy"])
-		if best.Params["scheduler_strategy"] == "priority" {
-			fmt.Println(" → priority scheduling reduces critical path latency")
-		} else {
-			fmt.Println("")
-		}
-
-		fmt.Printf("✅ Memory threshold: %.2f", best.Params["memory_threshold"])
-		if t, ok := best.Params["memory_threshold"].(float64); ok && t >= 0.7 {
-			fmt.Println(" → high threshold recalls precise memories")
-		} else {
-			fmt.Println(" → low threshold recalls more candidates")
-		}
-
-		fmt.Printf("✅ Recovery strategy: %v", best.Params["recovery_strategy"])
-		if best.Params["recovery_strategy"] == "retry" {
-			fmt.Println(" → retry on failure, suitable for transient faults")
-		} else {
-			fmt.Println("")
-		}
-
-		if best.DimensionScores != nil {
-			fmt.Printf("\n📊 Multi-objective scores:\n")
-			for k, v := range best.DimensionScores {
-				fmt.Printf("   %s: %.1f\n", k, v)
+		best := population.BestStrategy()
+		toolSel := "auto"
+		if best != nil {
+			if v, ok := best.Params["tool_selector"]; ok {
+				toolSel = fmt.Sprintf("%v", v)
 			}
 		}
+		fmt.Printf("  Gen %d: best=%.1f, pop=%d, tool=%s\n",
+			gen+1, population.BestScore(), population.Size(), toolSel)
 	}
 
-	// ── 10. Export evolution history ──
-	history := pop.ExportHistory()
-	if history != nil {
-		data, _ := json.MarshalIndent(history, "", "  ")
-		fmt.Printf("\nEvolution history (%d generations):\n", len(history.Generations))
-		fmt.Println(string(data))
+	// ── 7. Show evolution results — what GA learned ──
+	fmt.Println("\n═══ Evolution Results: What GA Learned ═══")
+	best := population.BestStrategy()
+	if best != nil {
+		fmt.Printf("✅ Tool selection: %v\n", best.Params["tool_selector"])
+		fmt.Printf("✅ Search depth: %v\n", best.Params["search_depth"])
+		fmt.Printf("✅ Prompt template: %q\n", best.PromptTemplate)
+		fmt.Printf("✅ Best score: %.2f\n", population.BestScore())
+		fmt.Printf("✅ Generation: %d\n", population.CurrentGeneration())
 	}
 
-	// ── 11. Submit DAG evolution results to Coordinator ──
-	fmt.Println("\n═══ Coordinator Decisions ═══")
-	submitDAGEvolution(ctx, coord, genomeReg, diffReg, pop)
-
-	// ── 12. Show final decision results ──
-	decisions := coord.DecisionHistory()
-	fmt.Printf("\nDecision history: %d entries\n", len(decisions))
-	for _, d := range decisions {
-		status := "✅"
-		if d.Decision != coordinator.DecisionApply {
-			status = "⏳"
+	// ── 8. Build a Promoter and evaluate the champion's fate ──
+	promoter := pubevolution.NewPromoter(&pubevolution.PromotionCriteria{
+		MinSampleCount:     1,
+		MinSuccessRate:     0.5,
+		MinConfidence:      0.5,
+		ChampionHoldPeriod: 1,
+		DemotionThreshold:  0.2,
+		MaxChampionTenure:  10,
+	})
+	if best != nil {
+		decision, err := promoter.Evaluate(ctx, best.ID, population.BestScore(), 0.85)
+		if err != nil {
+			exitf(cancel, "promoter evaluate: %v", err)
 		}
-		fmt.Printf("  %s %s: %s (fitness: %.1f)\n",
-			status, d.Decision, d.Reason, d.Proposal.Fitness)
+		fmt.Printf("\nPromoter decision for champion: %s\n", decision)
+		if err := promoter.Promote(ctx, best.ID); err != nil {
+			exitf(cancel, "promote champion: %v", err)
+		}
+		fmt.Println("Champion promoted.")
 	}
 
 	fmt.Println("\n✅ GA full evolution demo completed")
 }
 
-// runGeneration runs one generation of GA evolution.
-func runGeneration(ctx context.Context, pop *genome.Population,
-	mutator genome.MutatorInterface, crosser genome.CrossoverInterface,
-	hintProvider *mockHintProvider, gen int) {
-	scorer := func(s *mutation.Strategy) float64 {
-		return multiObjectiveScore(s, hintProvider)
-	}
-
-	// Score all agents
-	pop.ScoreAgents(scorer)
-
-	// Run one generation of evolution
-	if err := pop.Evolve(ctx, mutator, crosser); err != nil {
-		panic(err)
-	}
-}
-
-// printGenerationStats prints statistics for a generation.
-func printGenerationStats(pop *genome.Population, gen int) {
-	stats := pop.Stats()
-	best := pop.BestStrategy()
-	toolSel := "auto"
-	if best != nil {
-		if v, ok := best.Params["tool_selector"]; ok {
-			toolSel = fmt.Sprintf("%v", v)
-		}
-	}
-	fmt.Printf("  Gen %d: best=%.1f, avg=%.1f, pop=%d, tool=%s\n",
-		gen+1, stats.BestScore, stats.AvgScore, stats.Size, toolSel)
-}
+// ── Multi-objective scorer ───────────────────────────────────────────
 
 // multiObjectiveScore computes fitness from quality, cost, and latency.
-func multiObjectiveScore(s *mutation.Strategy, hp *mockHintProvider) float64 {
+// Memory-guided confidence from the hint provider biases quality upward.
+func multiObjectiveScore(s *pubevolution.Strategy, hp *mockHintProvider) float64 {
 	quality := scoreQuality(s)
 	cost := scoreCost(s)
 	latency := scoreLatency(s)
 
-	// Memory-guided confidence bonus
+	// Memory-guided confidence bonus — historical evidence biases the score.
 	confidence := hp.confidenceForStrategy(s)
 	quality += confidence * 5.0
 
-	// Multi-objective aggregation: quality prioritized, cost/latency penalized
+	// Multi-objective aggregation: quality prioritized, cost/latency penalized.
 	finalScore := quality*0.6 - cost*0.25 - latency*0.15
-
-	// Record dimension scores
-	s.DimensionScores = map[string]float64{
-		"quality": quality,
-		"cost":    cost,
-		"latency": latency,
-	}
-
 	return max(0, finalScore)
 }
 
 // scoreQuality estimates strategy quality based on params.
-func scoreQuality(s *mutation.Strategy) float64 {
+func scoreQuality(s *pubevolution.Strategy) float64 {
 	score := 50.0
 	if v, ok := s.Params["temperature"]; ok {
 		if t := toFloat64(v); t >= 0.5 && t <= 0.8 {
@@ -264,7 +239,7 @@ func scoreQuality(s *mutation.Strategy) float64 {
 }
 
 // scoreCost estimates computational cost of a strategy.
-func scoreCost(s *mutation.Strategy) float64 {
+func scoreCost(s *pubevolution.Strategy) float64 {
 	cost := 10.0
 	if v, ok := s.Params["max_tokens"]; ok {
 		cost += float64(toInt(v)) / 500
@@ -279,7 +254,7 @@ func scoreCost(s *mutation.Strategy) float64 {
 }
 
 // scoreLatency estimates execution latency of a strategy.
-func scoreLatency(s *mutation.Strategy) float64 {
+func scoreLatency(s *pubevolution.Strategy) float64 {
 	latency := 5.0
 	if v, ok := s.Params["search_depth"]; ok {
 		latency += float64(toInt(v)) * 8
@@ -289,6 +264,34 @@ func scoreLatency(s *mutation.Strategy) float64 {
 	}
 	return min(100, latency)
 }
+
+// ── Memory-guided provider (mock) ────────────────────────────────────
+
+type evolutionHint struct {
+	taskType   string
+	tool       string
+	confidence float64
+}
+
+type mockHintProvider struct {
+	hints []evolutionHint
+}
+
+// confidenceForStrategy returns the highest confidence hint matching the
+// strategy's current tool_selector. Zero means no historical evidence.
+func (m *mockHintProvider) confidenceForStrategy(s *pubevolution.Strategy) float64 {
+	confidence := 0.0
+	if sel, ok := s.Params["tool_selector"]; ok {
+		for _, h := range m.hints {
+			if fmt.Sprintf("%v", sel) == h.tool {
+				confidence = max(confidence, h.confidence)
+			}
+		}
+	}
+	return confidence
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
 
 // toFloat64 safely converts an any value to float64.
 func toFloat64(v any) float64 {
@@ -322,196 +325,7 @@ func toInt(v any) int {
 	}
 }
 
-// buildInitialDAG creates a simple workflow DAG.
-func buildInitialDAG() *engine.MutableDAG {
-	steps := []*engine.Step{
-		{ID: "input", Name: "Input Parser", AgentType: "parser", Input: "parse input"},
-		{ID: "search", Name: "Search Tool", AgentType: "search", Input: "search", DependsOn: []string{"input"}},
-		{ID: "process", Name: "Process Data", AgentType: "processor", Input: "process", DependsOn: []string{"search"}},
-		{ID: "output", Name: "Output Format", AgentType: "formatter", Input: "format", DependsOn: []string{"process"}},
-	}
-	dag, err := engine.NewMutableDAG(steps)
-	if err != nil {
-		panic(err)
-	}
-	return dag
-}
-
-// registerEvolutionComponents creates coordinator, genome registry, and diff registry.
-func registerEvolutionComponents(dag *engine.MutableDAG) (
-	*coordinator.EvolutionCoordinator,
-	*evogenome.Registry,
-	*diff.Registry,
-) {
-	// Genome registry
-	genomeReg := evogenome.NewRegistry()
-	wfGenome := evogenome.NewWorkflowGenome(dag, evogenome.DefaultWorkflowGenomeConfig())
-	if err := genomeReg.Register(wfGenome); err != nil {
-		panic(err)
-	}
-	schedGenome := evogenome.NewSchedulerGenome(
-		graph.NewDefaultScheduler(),
-		evogenome.DefaultSchedulerGenomeConfig(),
-	)
-	if err := genomeReg.Register(schedGenome); err != nil {
-		panic(err)
-	}
-
-	// Diff registry
-	diffReg := diff.NewRegistry()
-	if err := diffReg.Register(diff.NewWorkflowDiffer()); err != nil {
-		panic(err)
-	}
-	if err := diffReg.Register(diff.NewSchedulerDiffer()); err != nil {
-		panic(err)
-	}
-
-	// Patch registry with executor
-	patchReg := patch.NewRegistry()
-	g, gErr := graph.NewGraph("ga-evolution")
-	if gErr != nil {
-		panic(gErr)
-	}
-	for _, step := range dag.Steps() {
-		fn, fErr := graph.NewFuncNode(step.ID,
-			func(_ context.Context, _ *graph.State) error { return nil })
-		if fErr != nil {
-			panic(fErr)
-		}
-		if _, nErr := g.Node(step.ID, fn); nErr != nil {
-			panic(nErr)
-		}
-	}
-	for _, step := range dag.Steps() {
-		for _, dep := range step.DependsOn {
-			if _, eErr := g.Edge(dep, step.ID); eErr != nil {
-				panic(eErr)
-			}
-		}
-	}
-	if _, sErr := g.Start("input"); sErr != nil {
-		panic(sErr)
-	}
-	graphExec := graph.NewGraphPatchExecutor(g)
-	_ = patchReg.Register("workflow.graph", graphExec)
-	_ = patchReg.Register("graph.scheduler", graphExec)
-	recoveryExec := engine.NewRecoveryPatchExecutor(dag)
-	_ = patchReg.Register("recovery.strategy", recoveryExec)
-
-	// Coordinator
-	coord := coordinator.NewEvolutionCoordinator(
-		coordinator.DefaultPolicy(), patchReg)
-
-	return coord, genomeReg, diffReg
-}
-
-// submitDAGEvolution submits DAG evolution results to the coordinator.
-func submitDAGEvolution(ctx context.Context, coord *coordinator.EvolutionCoordinator,
-	genomeReg *evogenome.Registry, diffReg *diff.Registry, pop *genome.Population) {
-	for _, name := range genomeReg.List() {
-		gm, err := genomeReg.Get(name)
-		if err != nil {
-			continue
-		}
-		oldSnap, _ := gm.Snapshot(ctx)
-		children, mErr := gm.Mutate(ctx, 3)
-		if mErr != nil {
-			continue
-		}
-		for _, child := range children {
-			newSnap, sErr := child.Snapshot(ctx)
-			if sErr != nil {
-				continue
-			}
-			patches, dErr := diffReg.DiffAll(ctx, map[string]diff.SnapshotPair{
-				name: {Old: oldSnap, New: newSnap},
-			})
-			if dErr != nil {
-				continue
-			}
-			for _, p := range patches {
-				bestScore := 0.0
-				if best := pop.BestStrategy(); best != nil {
-					bestScore = best.Score
-				}
-				coord.Submit(coordinator.PatchProposal{
-					Patch:     p,
-					Source:    coordinator.SourceGA,
-					Reason:    fmt.Sprintf("GA: %s evolved", name),
-					Priority:  6,
-					Fitness:   bestScore,
-					Timestamp: time.Now(),
-				})
-			}
-		}
-	}
-	coord.Evaluate(ctx)
-}
-
-// ── Memory-guided provider (mock experience) ──
-
-type evolutionHint struct {
-	taskType   string
-	tool       string
-	confidence float64
-}
-
-type mockHintProvider struct {
-	hints []evolutionHint
-}
-
-func (m *mockHintProvider) confidenceForStrategy(s *mutation.Strategy) float64 {
-	confidence := 0.0
-	for _, h := range m.hints {
-		if sel, ok := s.Params["tool_selector"]; ok {
-			if sel == h.tool {
-				confidence = max(confidence, h.confidence)
-			}
-		}
-	}
-	return confidence
-}
-
-// ── Config helper functions ──
-
-func mutableParams() map[string]mutation.ParamRange {
-	return map[string]mutation.ParamRange{
-		"temperature": {
-			Values: []any{0.1, 0.3, 0.5, 0.7, 0.9},
-		},
-		"top_k": {
-			Values: []any{10, 20, 40, 60, 80, 100},
-		},
-		"max_tokens": {
-			Values: []any{1024, 2048, 4096, 8192},
-		},
-		"tool_selector": {
-			Values: []any{"auto", "manual", "priority"},
-		},
-		"search_depth": {
-			Values: []any{1, 2, 3, 4, 5},
-		},
-		"batch_size": {
-			Values: []any{1, 3, 5, 10},
-		},
-	}
-}
-
-func promptPool() []string {
-	return []string{
-		"You are a helpful assistant. Complete the task efficiently.",
-		"You are an expert programmer. Write clean, efficient code.",
-		"You are a data analyst. Analyze data thoroughly and report findings.",
-		"You are a system architect. Design robust and scalable solutions.",
-	}
-}
-
-func toolPool() []string {
-	return []string{"search", "read", "write", "exec", "calculate", "code"}
-}
-
-// ── Default random seed ──
-
 func init() {
+	// Seed the global rand so mutation/crossover vary across runs.
 	_ = rand.New(rand.NewSource(time.Now().UnixNano()))
 }
