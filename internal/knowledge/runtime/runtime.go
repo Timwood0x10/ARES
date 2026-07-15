@@ -88,6 +88,9 @@ type Config struct {
 
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
+	if r == nil || r.planner == nil {
+		return nil, fmt.Errorf("runtime: planner is not configured")
+	}
 	if cfg == nil {
 		cfg = &Config{MaxConcurrentProviders: 5}
 	}

@@ -138,6 +138,28 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 	}, nil
 }
 
+// GetConfig returns the current MemoryConfig pointer.
+// The caller must hold the lock (Lock()) before reading the returned config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) GetConfig() *MemoryConfig {
+	return m.config
+}
+
+// Lock acquires the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) Lock() {
+	m.mu.Lock()
+}
+
+// Unlock releases the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *memoryManager) Unlock() {
+	m.mu.Unlock()
+}
+
+// Ensure memoryManager implements MemoryConfigStore.
+var _ MemoryConfigStore = (*memoryManager)(nil)
+
 // Start starts the memory manager and background workers.
 func (m *memoryManager) Start(ctx context.Context) error {
 	m.mu.Lock()

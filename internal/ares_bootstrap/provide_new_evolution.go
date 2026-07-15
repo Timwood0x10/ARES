@@ -42,10 +42,10 @@ type NewEvolutionComponents struct {
 //
 //	dag - optional MutableDAG for WorkflowGenome and executors (may be nil).
 //	rt  - optional KnowledgeRuntime for KnowledgePatchExecutor (may be nil).
-//	memoryMgr - optional ProductionMemoryManager for MemoryPatchExecutor (may be nil).
+//	memoryStore - optional MemoryConfigStore for MemoryPatchExecutor (may be nil).
 //
-// When dag, rt, or memoryMgr is nil, their corresponding executors are skipped.
-func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryMgr *aresmemory.ProductionMemoryManager) (*NewEvolutionComponents, error) {
+// When dag, rt, or memoryStore is nil, their corresponding executors are skipped.
+func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore) (*NewEvolutionComponents, error) {
 	// 1. Evidence Store — central logging for all runtime evidence.
 	evStore := evidence.NewMemoryStore()
 
@@ -183,11 +183,11 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	_ = patchReg.Register("knowledge.planner.strategy", knowledgeExec)
 	_ = patchReg.Register("knowledge.planner.summarizer", knowledgeExec)
 
-	// Memory executor — wraps ProductionMemoryManager as a RuntimeComponent.
+	// Memory executor — wraps a MemoryConfigStore as a RuntimeComponent.
 	// Accepts patches for memory configuration (history depth, TTL, task limits).
-	// When memoryMgr is nil, the executor is skipped.
-	if memoryMgr != nil {
-		memoryExec := aresmemory.NewMemoryPatchExecutor(memoryMgr)
+	// When memoryStore is nil, the executor is skipped.
+	if memoryStore != nil {
+		memoryExec := aresmemory.NewMemoryPatchExecutor(memoryStore)
 		_ = patchReg.RegisterComponent(memoryExec)
 		_ = patchReg.Register("memory.config.max_history", memoryExec)
 		_ = patchReg.Register("memory.config.max_tasks", memoryExec)

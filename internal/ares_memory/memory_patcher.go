@@ -11,18 +11,43 @@ import (
 
 const errPrefix = "memory: "
 
+// MemoryConfigStore is the contract MemoryPatchExecutor depends on.
+// Any memory manager that exposes a mutable, lockable MemoryConfig
+// can implement this interface, decoupling the patch executor from a
+// concrete struct (ProductionMemoryManager or memoryManager).
+//
+// Implementations must guarantee:
+//   - GetConfig returns a non-nil pointer under the caller's lock.
+//   - Lock/Unlock serialize config mutations.
+type MemoryConfigStore interface {
+	// GetConfig returns the current MemoryConfig pointer.
+	// The caller must hold the lock before reading the returned config.
+	GetConfig() *MemoryConfig
+	// Lock acquires the exclusive lock protecting the config.
+	Lock()
+	// Unlock releases the exclusive lock protecting the config.
+	Unlock()
+}
+
 // ── MemoryPatchExecutor ────────────────────────────────────
 
 // MemoryPatchExecutor implements patch.RuntimeComponent for the Memory subsystem,
 // enabling runtime evolution of memory configuration (history depth, session TTL,
 // distilled task limits, etc.).
 type MemoryPatchExecutor struct {
-	mgr *ProductionMemoryManager
+	store MemoryConfigStore
 }
 
-// NewMemoryPatchExecutor creates a RuntimeComponent adapter for ProductionMemoryManager.
-func NewMemoryPatchExecutor(mgr *ProductionMemoryManager) *MemoryPatchExecutor {
-	return &MemoryPatchExecutor{mgr: mgr}
+// NewMemoryPatchExecutor creates a RuntimeComponent adapter that reads and
+// writes the MemoryConfig exposed by store.
+//
+// Args:
+//   - store - the MemoryConfigStore backing the patch executor (must not be nil).
+//
+// Returns:
+//   - *MemoryPatchExecutor - the configured executor.
+func NewMemoryPatchExecutor(store MemoryConfigStore) *MemoryPatchExecutor {
+	return &MemoryPatchExecutor{store: store}
 }
 
 // NewMinimalMemoryManager creates a lightweight ProductionMemoryManager that
@@ -41,12 +66,19 @@ func (e *MemoryPatchExecutor) Name() string { return "memory" }
 
 // Snapshot returns the current memory config as a snapshot.
 func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	if e.mgr == nil || e.mgr.config == nil {
+	if e.store == nil {
+		return nil, fmt.Errorf(errPrefix + "no config store available")
+	}
+	e.store.Lock()
+	defer e.store.Unlock()
+
+	cfg := e.store.GetConfig()
+	if cfg == nil {
 		return nil, fmt.Errorf(errPrefix + "no config available")
 	}
 	// Return a copy to avoid mutation via the snapshot.
-	cfg := *e.mgr.config
-	return &cfg, nil
+	out := *cfg
+	return &out, nil
 }
 
 // Apply patches the memory configuration. Supported patch types:
@@ -54,28 +86,33 @@ func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 //   - PatchChangeBudget  — change max_distilled_tasks or session_ttl
 //   - PatchChangeReducer — change clean_options
 func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
-	if e.mgr == nil {
-		return nil, fmt.Errorf(errPrefix + "manager is nil")
+	if e.store == nil {
+		return nil, fmt.Errorf(errPrefix + "no config store available")
 	}
 
-	e.mgr.mu.Lock()
-	defer e.mgr.mu.Unlock()
+	e.store.Lock()
+	defer e.store.Unlock()
+
+	cfg := e.store.GetConfig()
+	if cfg == nil {
+		return nil, fmt.Errorf(errPrefix + "no config available")
+	}
 
 	// Build rollback = snapshot of current config before mutation.
-	rollbackCfg := *e.mgr.config
+	rollbackCfg := *cfg
 
 	switch p.Type {
 	case patch.PatchChangePlanner:
 		// Value is expected as a map: {"max_history": 50, "max_tasks": 1000}
 		if v, ok := p.Value.(map[string]any); ok {
 			if h, ok := v["max_history"].(int); ok && h > 0 {
-				e.mgr.config.MaxHistory = h
+				cfg.MaxHistory = h
 			}
 			if t, ok := v["max_tasks"].(int); ok && t > 0 {
-				e.mgr.config.MaxTasks = t
+				cfg.MaxTasks = t
 			}
 			if s, ok := v["max_sessions"].(int); ok && s > 0 {
-				e.mgr.config.MaxSessions = s
+				cfg.MaxSessions = s
 			}
 		}
 
@@ -83,14 +120,14 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 		// Value is expected as a map: {"max_distilled_tasks": 500, "session_ttl": "24h"}
 		if v, ok := p.Value.(map[string]any); ok {
 			if d, ok := v["max_distilled_tasks"].(int); ok && d > 0 {
-				e.mgr.config.MaxDistilledTasks = d
+				cfg.MaxDistilledTasks = d
 			}
 			if t, ok := v["session_ttl"].(string); ok && t != "" {
 				dur, err := fmtDuration(t)
 				if err != nil {
 					return nil, fmt.Errorf(errPrefix+"invalid session_ttl: %w", err)
 				}
-				e.mgr.config.SessionTTL = dur
+				cfg.SessionTTL = dur
 			}
 		}
 
@@ -98,7 +135,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 		// Value is expected as a map: {"use_structured_cleaning": true}
 		if v, ok := p.Value.(map[string]any); ok {
 			if s, ok := v["use_structured_cleaning"].(bool); ok {
-				e.mgr.config.UseStructuredCleaning = s
+				cfg.UseStructuredCleaning = s
 			}
 		}
 

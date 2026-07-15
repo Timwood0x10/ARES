@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apiworkflow "github.com/Timwood0x10/ares/api/workflow"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -27,7 +28,9 @@ type Service struct {
 // Config represents service configuration.
 type Config struct {
 	// AgentRegistry is the agent type registry for step execution.
-	AgentRegistry *engine.AgentRegistry
+	// Use api/workflow.NewAgentRegistry() to create an empty registry,
+	// then Register() custom agent factories.
+	AgentRegistry *apiworkflow.AgentRegistry
 	// RequestTimeout is the default workflow execution timeout.
 	RequestTimeout time.Duration
 	// MaxParallel is the maximum number of parallel steps.

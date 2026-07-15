@@ -701,7 +701,7 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 // submitToCoordinator generates diff patches from all registered genomes and
 // submits them to the coordinator for decision and deployment.
 func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
-	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg)
+	patches, err := generateDiffPatches(ctx, a.genomeReg, a.diffReg, 3)
 	if err != nil {
 		el.Warn(ctx, "submitToCoordinator", "diff engine failed", "error", err)
 		return

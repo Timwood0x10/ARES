@@ -149,6 +149,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator)
 	// Always created; uses a minimal MutableDAG so workflow/scheduler/recovery
 	// genomes have something to evolve (not an empty graph).
+	//
+	// Closure fix (Step 2): pass the LIVE memory manager (comp.Memory) so
+	// evolution patches mutate the real agent's config, not an isolated
+	// Minimal copy. comp.Memory is a *memoryManager which implements
+	// MemoryConfigStore (GetConfig/Lock/Unlock).
 	dagSteps := []*engine.Step{
 		{ID: "input", Name: "Input", AgentType: "parser", Input: "parse input"},
 		{ID: dagStepProcess, Name: "Process", AgentType: "processor", Input: dagStepProcess, DependsOn: []string{"input"}},
@@ -159,7 +164,20 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		runCleanups()
 		return nil, fmt.Errorf("create mutable dag: %w", dagErr)
 	}
-	newEvol, err := ProvideNewEvolution(dag, buildKnowledgeRuntime(), buildMemoryManager())
+
+	// Type-assert comp.Memory to MemoryConfigStore. Both *memoryManager and
+	// *ProductionMemoryManager implement MemoryConfigStore. If the assertion
+	// fails (should not happen), fall back to the minimal manager.
+	var liveMemoryStore ares_memory.MemoryConfigStore
+	if store, ok := comp.Memory.(ares_memory.MemoryConfigStore); ok {
+		liveMemoryStore = store
+	} else {
+		// Defensive fallback — preserves prior behavior if a future
+		// custom MemoryManager does not implement MemoryConfigStore.
+		liveMemoryStore = buildMemoryManager()
+	}
+
+	newEvol, err := ProvideNewEvolution(dag, buildKnowledgeRuntime(), liveMemoryStore)
 	if err != nil {
 		runCleanups()
 		return nil, err

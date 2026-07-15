@@ -185,6 +185,28 @@ func NewProductionMemoryManager(
 	}, nil
 }
 
+// GetConfig returns the current MemoryConfig pointer.
+// The caller must hold the lock (Lock()) before reading the returned config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) GetConfig() *MemoryConfig {
+	return m.config
+}
+
+// Lock acquires the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) Lock() {
+	m.mu.Lock()
+}
+
+// Unlock releases the exclusive lock protecting the config.
+// This method implements the MemoryConfigStore interface.
+func (m *ProductionMemoryManager) Unlock() {
+	m.mu.Unlock()
+}
+
+// Ensure ProductionMemoryManager implements MemoryConfigStore.
+var _ MemoryConfigStore = (*ProductionMemoryManager)(nil)
+
 // SetTenantID sets the current tenant ID for multi-tenant operations.
 // Args:
 // tenantID - tenant identifier.
