@@ -1,117 +1,113 @@
 # GoAgent API Architecture
 
-## 概述
+## Overview
 
-GoAgent API 采用分层架构设计，提供统一、清晰、可扩展的API接口。本文档详细说明了API层的结构和使用方法。
+GoAgent API uses a layered architecture, providing a unified, clear, extensible
+interface surface. This document describes the structure of the `api/` layer
+and how to use it.
 
-## 架构设计
+The hard rule: **external modules and AI assistants never import `internal/`**.
+Everything reachable from outside goes through `api/`.
 
-### 分层结构
+## Layered Structure
 
 ```
 api/
-├── core/              # 核心抽象层（接口定义）
-│   ├── types.go      # 公共类型定义
-│   ├── agent.go      # Agent核心接口
-│   ├── memory.go     # Memory核心接口
-│   ├── retrieval.go  # Retrieval核心接口
-│   └── llm.go        # LLM核心接口
+├── core/              # Core abstractions (interface definitions, public types)
+│   ├── agent.go       # Agent / AgentConfig / AgentService / AgentRepository
+│   ├── memory.go      # MemoryService / Message types
+│   ├── retrieval.go   # RetrievalService interface
+│   ├── llm.go         # LLMService / GenerateRequest / EmbeddingRequest
+│   └: callbacks.go, arena.go, cleaning.go, dashboard.go, eval.go
 │
-├── service/          # 服务层（业务逻辑实现）
-│   ├── agent/        # Agent服务实现
-│   │   ├── service.go
-│   │   └── errors.go
-│   ├── memory/       # Memory服务实现
-│   │   ├── service.go
-│   │   └── errors.go
-│   ├── retrieval/    # Retrieval服务实现
-│   │   ├── service.go
-│   │   └── errors.go
-│   └── llm/          # LLM服务实现
-│       ├── service.go
-│       └── errors.go
+├── client/            # Unified client (external entry point)
+│   ├── client.go      # NewClient / Agent() / Memory() / LLM() / Workflow()
+│   └: config.go, doc.go
 │
-├── client/           # 客户端层（对外暴露）
-│   ├── unified.go    # 统一客户端入口
-│   └── errors.go
+├── service/           # Service layer (business logic implementations)
+│   ├── agent/         # Agent service: Create/Get/Update/Delete/List/Execute
+│   ├── memory/        # Memory service: sessions, messages, distillation
+│   ├── llm/           # LLM service: Generate / GenerateSimple / Embedding
+│   ├── retrieval/     # Retrieval service (knowledge search)
+│   ├── evolution/     # Evolution executor (Evolve / BestStrategy / Stats)
+│   ├── knowledge/     # Knowledge service (HTTP handlers)
+│   ├── runtime/        # Runtime service
+│   ├── workflow/        # Workflow service
+│   └: arena, callbacks, dashboard, eval, events, flight
 │
-└── errors/           # 统一错误定义
-    └── common.go     # 通用错误
+├── agent/             # Agent public interface (type aliases, AgentEvent)
+├── graph/             # Dynamic DAG orchestration (Graph, Node, Edge)
+├── knowledge/         # AKG knowledge graph (KnowledgeService, WorkingGraph)
+├── evolution/         # Evolution building blocks (Strategy, Population, Mutator, Promoter)
+├── embedding/         # Embedding service
+├── experience/        # Experience repository + feedback
+├── memory/            # Memory manager + distiller
+├── llm/               # LLM service interface
+├── mcp/               # MCP client
+├── tools/             # Tool registry
+├── workflow/          # Static workflow engine
+├── bootstrap/         # Bootstrap helpers (wires internal components)
+├── discovery/         # Discovery API
+├── flight/            # Flight API
+├── handler/           # HTTP handlers
+├── integration/       # Integration API
+├── router/            # Router API
+└── README.md          # This file
 ```
 
-### 各层职责
+### Layer Responsibilities
 
-#### 1. Core Layer（核心抽象层）
+#### 1. Core Layer (`api/core/`)
 
-**职责**：
-- 定义所有模块的核心接口（Repository和Service接口）
-- 定义公共数据结构
-- 提供类型安全和抽象
+**Responsibilities**:
+- Define core interfaces (Repository and Service interfaces) for every module
+- Define public data structures
+- Provide type safety and abstraction
 
-**特点**：
-- 纯接口定义，不包含具体实现
-- 所有类型都在core包中定义
-- 服务层和客户端层都依赖core层
+**Properties**:
+- Pure interface definitions, no concrete implementations
+- All types defined in `core/`
+- Both `service/` and `client/` depend on `core/`
 
-**主要接口**：
-- `AgentRepository` / `AgentService`
-- `MemoryRepository` / `MemoryService`
-- `RetrievalRepository` / `RetrievalService`
-- `LLMRepository` / `LLMService`
+**Main interfaces**: `AgentRepository` / `AgentService`, `MemoryService`,
+`RetrievalService`, `LLMService`, `WorkflowService`, `Arena`, `Evaluator`.
 
-#### 2. Service Layer（服务层）
+#### 2. Service Layer (`api/service/`)
 
-**职责**：
-- 实现core层定义的Service接口
-- 编排业务逻辑
-- 处理数据验证和转换
-- 管理与internal层的交互
+**Responsibilities**:
+- Implement the `core/` Service interfaces
+- Orchestrate business logic
+- Handle data validation and conversion
+- Bridge to `internal/` implementations
 
-**特点**：
-- 依赖core层的接口
-- 依赖internal层的具体实现
-- 不对外暴露，只通过client层访问
+**Properties**:
+- Depends on `core/` interfaces
+- Depends on `internal/` concrete implementations
+- Not exposed directly to external callers — accessed via `client/`
 
-**主要功能**：
-- Agent服务：创建、查询、更新、删除Agent
-- Memory服务：会话管理、消息管理、任务蒸馏
-- Retrieval服务：知识库检索、知识项管理
-- LLM服务：文本生成、嵌入生成
+#### 3. Client Layer (`api/client/`)
 
-#### 3. Client Layer（客户端层）
+**Responsibilities**:
+- Provide a unified client interface
+- Manage lifetimes of all services
+- Provide convenient access methods
 
-**职责**：
-- 提供统一的客户端接口
-- 管理所有服务的生命周期
-- 提供便捷的访问方法
+**Usage**:
 
-**特点**：
-- 对外暴露的最终接口
-- 聚合所有服务
-- 提供统一配置和初始化
-
-**使用方式**：
 ```go
-client := client.NewClient(config)
-agentSvc := client.Agent()
-memorySvc := client.Memory()
+client, err := client.NewClient(config)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close(context.Background())
+
+agentSvc, err := client.Agent()
+memorySvc, err := client.Memory()
 ```
 
-#### 4. Errors Layer（错误层）
+## Usage Guide
 
-**职责**：
-- 统一错误定义
-- 提供错误包装和上下文
-- 标准化错误处理
-
-**特点**：
-- 所有错误都继承自统一的错误类型
-- 支持错误链和上下文
-- 提供详细的错误信息
-
-## 使用指南
-
-### 1. 初始化客户端
+### 1. Initialize the Client
 
 ```go
 package main
@@ -119,289 +115,227 @@ package main
 import (
     "context"
     "log"
-    
-    "ares/api/client"
-    "ares/api/core"
-    "ares/api/service/agent"
-    "ares/api/service/memory"
-    "ares/api/service/retrieval"
-    "ares/api/service/llm"
+    "time"
+
+    "github.com/Timwood0x10/ares/api/client"
+    "github.com/Timwood0x10/ares/api/core"
 )
 
 func main() {
-    // 创建配置
     config := &client.Config{
         BaseConfig: &core.BaseConfig{
             RequestTimeout: 30 * time.Second,
             MaxRetries:     3,
             RetryDelay:     1 * time.Second,
         },
-        Agent: &agent.Config{
-            // Agent服务配置
-        },
-        Memory: &memory.Config{
-            // Memory服务配置
-        },
-        Retrieval: &retrieval.Config{
-            // Retrieval服务配置
-        },
-        LLM: &llm.Config{
-            LLMConfig: &core.LLMConfig{
-                Provider: core.LLMProviderOllama,
-                BaseURL:  "http://localhost:11434",
-                Model:    "llama3",
-                Timeout:  60,
-            },
-        },
+        // Agent, Memory, Retrieval, LLM, Workflow sub-configs...
     }
-    
-    // 创建客户端
-    client, err := client.NewClient(config)
+
+    c, err := client.NewClient(config)
     if err != nil {
-        slog.Error(err)
+        log.Fatal(err)
     }
-    defer client.Close(context.Background())
+    defer c.Close(context.Background())
 }
 ```
 
-### 2. 使用Agent服务
+### 2. Agent Service
 
 ```go
-// 获取Agent服务
-agentSvc, err := client.Agent()
+agentSvc, err := c.Agent()
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 创建Agent
+// Create an agent.
 agent, err := agentSvc.CreateAgent(ctx, &core.AgentConfig{
     ID:   "agent-001",
     Name: "My Agent",
     Type: "sub",
 })
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 查询Agent
-agent, err = agentSvc.GetAgent(ctx, "agent-001")
-if err != nil {
-    slog.Error(err)
-}
-
-// 列出所有Agents
+// List all agents of a given type.
 agents, pagination, err := agentSvc.ListAgents(ctx, &core.AgentFilter{
     Type: "sub",
 })
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 ```
 
-### 3. 使用Memory服务
+### 3. Memory Service
 
 ```go
-// 获取Memory服务
-memorySvc, err := client.Memory()
+memorySvc, err := c.Memory()
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 创建会话
-sessionID, err := memorySvc.CreateSession(ctx, &core.SessionConfig{
-    UserID:   "user-001",
-    TenantID: "tenant-001",
-    ExpiresIn: 24 * time.Hour,
-})
+// Create a session.
+sessionID, err := memorySvc.CreateSession(ctx, "user-001")
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 添加消息
-err = memorySvc.AddMessage(ctx, sessionID, core.MessageRoleUser, "Hello")
+// Add a message.
+err = memorySvc.AddMessage(ctx, sessionID, "user", "Hello")
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 获取消息
-messages, err := memorySvc.GetMessages(ctx, sessionID, &core.PaginationRequest{
-    Page:     1,
-    PageSize: 10,
-})
+// Retrieve messages.
+messages, err := memorySvc.GetMessages(ctx, sessionID)
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 ```
 
-### 4. 使用Retrieval服务
+### 4. LLM Service
 
 ```go
-// 获取Retrieval服务
-retrievalSvc, err := client.Retrieval()
+llmSvc, err := c.LLM()
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 
-// 搜索知识
-results, err := retrievalSvc.Search(ctx, "tenant-001", "如何使用GoAgent")
+// Generate text.
+response, err := llmSvc.GenerateSimple(ctx, "Write a short poem about spring.")
 if err != nil {
-    slog.Error(err)
-}
-
-// 添加知识
-item, err := retrievalSvc.AddKnowledge(ctx, &core.KnowledgeItem{
-    TenantID: "tenant-001",
-    Content:  "GoAgent是一个强大的AI Agent框架",
-    Source:   "docs",
-    Category: "getting-started",
-})
-if err != nil {
-    slog.Error(err)
-}
-```
-
-### 5. 使用LLM服务
-
-```go
-// 获取LLM服务
-llmSvc, err := client.LLM()
-if err != nil {
-    slog.Error(err)
-}
-
-// 生成文本
-response, err := llmSvc.GenerateSimple(ctx, "写一首关于春天的诗")
-if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
 println(response)
 
-// 生成嵌入
+// Generate embeddings.
 embeddingResp, err := llmSvc.GenerateEmbedding(ctx, &core.EmbeddingRequest{
-    Input: "这是一段测试文本",
+    Input: "Some text to embed.",
 })
 if err != nil {
-    slog.Error(err)
+    log.Fatal(err)
 }
-println(embeddingResp.Embedding)
+println(len(embeddingResp.Embedding))
 ```
 
-## 错误处理
+## Error Handling
 
-所有API调用都返回错误，应该正确处理：
+All API calls return errors. Handle them explicitly:
 
 ```go
 agent, err := agentSvc.CreateAgent(ctx, config)
 if err != nil {
-    if errors.Is(err, errors.ErrInvalidConfig) {
-        // 处理配置错误
-    } else if errors.Is(err, errors.ErrAgentAlreadyExists) {
-        // 处理已存在错误
+    if errors.Is(err, core.ErrInvalidConfig) {
+        // Handle invalid configuration.
+    } else if errors.Is(err, core.ErrAgentAlreadyExists) {
+        // Handle duplicate agent.
     } else {
-        // 处理其他错误
-        slog.Error(err)
+        log.Fatal(err)
     }
 }
 ```
 
-## 最佳实践
+## Best Practices
 
-### 1. 依赖注入
+### 1. Dependency Injection
 
-所有服务都应该通过构造函数注入依赖：
+Inject dependencies via constructors:
 
 ```go
 func NewService(config *Config) (*Service, error) {
     if config == nil {
-        return nil, errors.ErrInvalidConfig
+        return nil, core.ErrInvalidConfig
     }
     // ...
 }
 ```
 
-### 2. 接口依赖
+### 2. Depend on Interfaces
 
-业务逻辑应该依赖接口而不是具体实现：
+Business logic should depend on interfaces, not concrete types:
 
 ```go
 type Service struct {
-    repo core.AgentRepository // 依赖接口
+    repo core.AgentRepository // depend on the interface
     // ...
 }
 ```
 
-### 3. 上下文传播
+### 3. Context Propagation
 
-所有异步操作都应该传递context：
+All async operations must propagate `context.Context`:
 
 ```go
 func (s *Service) CreateAgent(ctx context.Context, config *core.AgentConfig) (*core.Agent, error) {
-    // 使用ctx进行超时控制、取消等
+    // use ctx for timeout control and cancellation
 }
 ```
 
-### 4. 错误包装
+### 4. Error Wrapping
 
-使用`fmt.Errorf`和`%w`包装错误以保留错误链：
+Use `fmt.Errorf` with `%w` to preserve the error chain:
 
 ```go
 return nil, fmt.Errorf("create agent: %w", err)
 ```
 
-### 5. 并发安全
+### 5. Concurrency Safety
 
-使用适当的同步机制保护共享状态：
+Use appropriate synchronization to protect shared state:
 
 ```go
-mu sync.Mutex
+var mu sync.Mutex
 
-func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[string]interface{}) (*core.Agent, error) {
+func (s *Service) UpdateAgent(ctx context.Context, agentID string, updates map[string]any) (*core.Agent, error) {
     mu.Lock()
     defer mu.Unlock()
     // ...
 }
 ```
 
-## 扩展指南
+## Extension Guide
 
-### 添加新的服务模块
+### Adding a new service module
 
-1. 在`core/`中定义接口
-2. 在`service/`中实现服务
-3. 在`client/unified.go`中添加客户端访问方法
+1. Define the interface in `api/core/`
+2. Implement the service in `api/service/<module>/`
+3. Add a client accessor in `api/client/client.go`
 
-### 添加新的Repository实现
+### Adding a new Repository implementation
 
-1. 实现`core`包中定义的Repository接口
-2. 在Service配置中传入实现
+1. Implement the `Repository` interface defined in `core/`
+2. Inject the implementation via the Service config
 
-## 迁移指南
+## Migration Guide
 
-从旧API迁移到新API：
+From the legacy API to the new layered API:
 
-1. 更新导入路径
-2. 使用新的Client初始化方式
-3. 更新错误处理代码
-4. 测试所有功能
+1. Update import paths
+2. Use the new `client.NewClient` initialization
+3. Update error handling code
+4. Test all functionality end-to-end
 
-## 注意事项
+## Notes
 
-1. **向后兼容**：旧API仍然可用，但建议逐步迁移到新API
-2. **性能考虑**：新API增加了抽象层，但性能影响很小
-3. **测试覆盖**：确保所有服务都有单元测试
-4. **文档更新**：及时更新API文档
+1. **Backward compatibility**: the legacy API remains usable, but migration is recommended.
+2. **Performance**: the new abstraction layer adds negligible overhead.
+3. **Test coverage**: every service must have unit tests.
+4. **Docs**: keep this file in sync with the actual `api/` structure.
 
-## 贡献指南
+## Contributing
 
-在贡献代码时，请遵循以下规范：
+When contributing code:
 
-1. 遵循`code_rules.md`中的编码规范
-2. 为新功能添加单元测试
-3. 更新相关文档
-4. 确保通过所有lint检查
+1. Follow `plan/rules/code_rules.md`
+2. Add unit tests for new features
+3. Update relevant documentation
+4. Ensure all lint checks pass (`make check`)
 
-## 参考资料
+## References
 
-- [编码规范](../plan/code_rules.md)
-- [架构文档](../docs/arch.md)
-- [API示例](../examples/)
+- [Code Rules](../plan/rules/code_rules.md)
+- [Uber Go Style](../plan/rules/uber_go_style.md)
+- [Skills](../plan/rules/skills.md)
+- [Architecture](../docs/en/architecture/arch.md)
+- [Examples](../examples/)
+- [External API Guide](../plan/EXTERNAL_API_GUIDE.md)

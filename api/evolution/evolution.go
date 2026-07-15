@@ -134,12 +134,21 @@ func DefaultPopulationConfig() PopulationConfig {
 	}
 }
 
+// ScorerFunc scores a strategy to drive population evolution.
+// External callers implement this to plug their own evaluator (LLM judge,
+// benchmark harness, success rate counter) into the public Population.
+type ScorerFunc func(agent *Strategy) float64
+
 type Population interface {
 	Agents() []Agent
 	Size() int
 	CurrentGeneration() int
 	BestScore() float64
 	BestStrategy() *Strategy
+	// ScoreAgents scores every agent in the population using the provided scorer.
+	// Must be called before Evolve — agents with unevaluated score (-1) are
+	// rejected by Evolve's pre-validation.
+	ScoreAgents(scorer ScorerFunc)
 	Evolve(ctx context.Context) error
 }
 
@@ -177,6 +186,29 @@ func (p *populationAdapter) BestStrategy() *Strategy {
 		PromptTemplate: best.PromptTemplate,
 	}
 }
+
+// ScoreAgents scores every agent via the public ScorerFunc, bridging to
+// the internal genome.Population.ScoreAgents which accepts an internal
+// mutation.Strategy scorer. We snapshot internal agents, call the public
+// scorer on each (converted to public Strategy), and write scores back.
+func (p *populationAdapter) ScoreAgents(scorer ScorerFunc) {
+	if scorer == nil {
+		return
+	}
+	inner := func(s *internalmutation.Strategy) float64 {
+		pub := &Strategy{
+			ID:             s.ID,
+			Version:        s.Version,
+			Score:          s.Score,
+			ParentID:       s.ParentID,
+			PromptTemplate: s.PromptTemplate,
+			Params:         s.Params,
+		}
+		return scorer(pub)
+	}
+	p.inner.ScoreAgents(inner)
+}
+
 func (p *populationAdapter) Evolve(ctx context.Context) error {
 	// Create a default mutator with basic parameter ranges.
 	mut, err := internalmutation.NewMutator(
