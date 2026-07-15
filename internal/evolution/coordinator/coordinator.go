@@ -88,6 +88,17 @@ type PolicyGenome struct {
 	// Scale: 0-100, matching population BestScore. 0 = disabled.
 	// Only applies to SourceGA. Other sources bypass fitness checks.
 	ApplyFitnessThreshold float64
+
+	// SelfHealingEnabled enables automatic repair patch generation when
+	// chaos faults are detected. When enabled, the Coordinator monitors
+	// patch failures and generated repair proposals.
+	// Default: false (disabled, must be explicitly enabled).
+	SelfHealingEnabled bool `json:"self_healing_enabled" yaml:"self_healing_enabled"`
+
+	// SelfHealingMaxRetries is the maximum number of self-healing attempts
+	// before the Coordinator stops trying to repair a failing component.
+	// Default: 3.
+	SelfHealingMaxRetries int `json:"self_healing_max_retries" yaml:"self_healing_max_retries"`
 }
 
 // DefaultPolicy returns a sensible default Coordinator policy.
@@ -97,6 +108,8 @@ func DefaultPolicy() PolicyGenome {
 		MaxPatchesPerMinute:   4,
 		MinFitnessThreshold:   30.0,
 		ApplyFitnessThreshold: 60.0,
+		SelfHealingEnabled:    false,
+		SelfHealingMaxRetries: 3,
 	}
 }
 
@@ -125,13 +138,29 @@ type EvolutionCoordinator struct {
 	decisions    []PatchDecision // decision history
 	patchHistory []PatchResult   // apply results
 	patchReg     *patch.Registry // registry for applying patches
+
+	// Self-healing state.
+	healingAttempts map[string]int // target -> number of healing attempts
+	healingResults  []HealingAttempt
+}
+
+// HealingAttempt records a self-healing attempt by the Coordinator.
+type HealingAttempt struct {
+	Target    string    `json:"target"`
+	PatchType string    `json:"patch_type"`
+	Attempt   int       `json:"attempt"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewEvolutionCoordinator creates a new EvolutionCoordinator.
 func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *EvolutionCoordinator {
 	return &EvolutionCoordinator{
-		policy:   policy,
-		patchReg: patchReg,
+		policy:          policy,
+		patchReg:        patchReg,
+		healingAttempts: make(map[string]int),
+		healingResults:  make([]HealingAttempt, 0),
 	}
 }
 
@@ -194,6 +223,81 @@ func (ec *EvolutionCoordinator) PatchHistory() []PatchResult {
 	results := make([]PatchResult, len(ec.patchHistory))
 	copy(results, ec.patchHistory)
 	return results
+}
+
+// NotifySelfHealingAttempt records a self-healing attempt. Returns true if
+// the Coordinator should proceed, false if disabled or max retries exceeded.
+// Once exceeded, the refusal is sticky: subsequent calls for the same target
+// return false without appending another record, so healingResults is bounded.
+func (ec *EvolutionCoordinator) NotifySelfHealingAttempt(target string, patchType string) bool {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if !ec.policy.SelfHealingEnabled {
+		return false
+	}
+
+	// Sticky refusal: once exceeded, do not grow history further.
+	if ec.healingAttempts[target] > ec.policy.SelfHealingMaxRetries {
+		return false
+	}
+
+	ec.healingAttempts[target]++
+	attempt := ec.healingAttempts[target]
+	if attempt > ec.policy.SelfHealingMaxRetries {
+		ec.healingResults = append(ec.healingResults, HealingAttempt{
+			Target:    target,
+			PatchType: patchType,
+			Attempt:   attempt,
+			Success:   false,
+			Error:     "max retries exceeded",
+			Timestamp: time.Now(),
+		})
+		return false
+	}
+	return true
+}
+
+// NotifySelfHealingOutcome records the result of a self-healing attempt.
+// No-op when SelfHealingEnabled is false. The caller MUST have called
+// NotifySelfHealingAttempt first for this target; if not, the outcome is
+// recorded with an explicit "outcome recorded without attempt" marker so
+// the misuse is observable in SelfHealingHistory rather than silently
+// emitting Attempt: 0.
+func (ec *EvolutionCoordinator) NotifySelfHealingOutcome(target string, patchType string, success bool, errMsg string) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if !ec.policy.SelfHealingEnabled {
+		return
+	}
+
+	attempt := ec.healingAttempts[target]
+	err := errMsg
+	if attempt == 0 {
+		if err != "" {
+			err += "; "
+		}
+		err += "outcome recorded without attempt"
+	}
+
+	ec.healingResults = append(ec.healingResults, HealingAttempt{
+		Target:    target,
+		PatchType: patchType,
+		Attempt:   attempt,
+		Success:   success,
+		Error:     err,
+		Timestamp: time.Now(),
+	})
+}
+
+// SelfHealingHistory returns all self-healing attempts for observability.
+func (ec *EvolutionCoordinator) SelfHealingHistory() []HealingAttempt {
+	ec.mu.RLock()
+	defer ec.mu.RUnlock()
+	out := make([]HealingAttempt, len(ec.healingResults))
+	copy(out, ec.healingResults)
+	return out
 }
 
 // Evaluate processes all pending proposals and applies accepted patches.

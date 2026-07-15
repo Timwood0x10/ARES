@@ -22,12 +22,21 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	apiknowledge "github.com/Timwood0x10/ares/api/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/knowledge/service"
 )
+
+// exitf logs a formatted message and exits with code 1, canceling the
+// context first to avoid the gocritic exitAfterDefer warning.
+func exitf(cancel context.CancelFunc, format string, args ...any) {
+	cancel()
+	log.Printf(format+"\n", args...)
+	os.Exit(1)
+}
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -37,8 +46,7 @@ func main() {
 	rt := runtime.New(nil, nil, nil, nil, nil, nil)
 	svc, err := service.NewServiceAdapter(rt)
 	if err != nil {
-		cancel()
-		log.Fatalf("create knowledge service: %v", err)
+		exitf(cancel, "create knowledge service: %v", err)
 	}
 
 	// 2. Build a knowledge graph from a user intent.
@@ -71,8 +79,7 @@ func main() {
 	}
 	compiled, err := svc.CompileContext(ctx, demoGraph)
 	if err != nil {
-		cancel()
-		log.Fatalf("compile context: %v", err)
+		exitf(cancel, "compile context: %v", err)
 	}
 	fmt.Println("Compiled context:")
 	fmt.Println(compiled)
@@ -81,8 +88,7 @@ func main() {
 	rawMemory := []byte("User asked why we use Redis. Answer: latency + TTL.")
 	objs, err := svc.Distill(ctx, rawMemory, "tenant-1")
 	if err != nil {
-		cancel()
-		log.Fatalf("distill: %v", err)
+		exitf(cancel, "distill: %v", err)
 	}
 	fmt.Printf("Distilled %d KnowledgeObject(s)\n", len(objs))
 	for _, o := range objs {

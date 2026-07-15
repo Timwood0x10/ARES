@@ -184,6 +184,13 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 	comp.NewEvolution = newEvol
 
+	// Register the minimal DAG with the runtime manager so the evolution
+	// system can apply workflow patches to the live DAG (v0.5.0 DAG reflux).
+	// When a real agent DAG is registered later, it replaces this minimal one.
+	if comp.Runtime != nil && dag != nil {
+		comp.Runtime.RegisterAgentDAG("evolution", dag)
+	}
+
 	// 9. Wire the GA population adapter so evolution actually runs and its
 	// best strategy is deployed to the runtime. The GA engine is built
 	// independently of the old evolution system: in the default configuration
