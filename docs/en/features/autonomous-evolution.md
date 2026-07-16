@@ -1145,4 +1145,4 @@ All dependencies use mock implementations — no external services required.
 
 **Version**: 1.0
 **Last Updated**: 2026-06-21
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

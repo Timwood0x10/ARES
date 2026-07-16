@@ -1,6 +1,6 @@
 # Error Handling Guidelines
 
-This document defines the three error handling mechanisms used in GoAgent and when to use each.
+This document defines the three error handling mechanisms used in ARES and when to use each.
 
 ## Three Error Handling Mechanisms
 

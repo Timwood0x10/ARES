@@ -1,6 +1,6 @@
 # 模块评审报告（第二批 · 未评审模块 15 个）
 
-> 评审对象：ARES / goagent（Go，Apache-2.0）中尚未评审的 15 个模块。
+> 评审对象：ARES / ARES（Go，Apache-2.0）中尚未评审的 15 个模块。
 > 评审方式：**只读源码走读 + `go test`（无 `-race`）**，不修改任何代码、不生成除本报告外的文件。
 > 评审日期：2026-07-08。拆分 4 个并行审查子任务，本报告为合成总评。
 > 已评审核心（作为联动基线）：`ares_evolution/genome`（遗传算法自进化）、`workflow/engine`（动态 DAG）、`ares_memory/distillation`（记忆蒸馏）、混沌工程（`ares_arena` + `ares_quant` 的 `chaos.go`）、工具调度器。

@@ -4,7 +4,7 @@
 
 ## Introduction
 
-This document introduces how to test the GoAgent framework, including unit tests, integration tests, and coverage reports.
+This document introduces how to test the ARES framework, including unit tests, integration tests, and coverage reports.
 
 ## Running Tests
 
@@ -185,7 +185,7 @@ func TestNewPool(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -218,7 +218,7 @@ func TestPool_WithConnection(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -249,7 +249,7 @@ func TestPool_Stats(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -354,7 +354,7 @@ func TestEndToEndFlow(t *testing.T) {
 			Port:     5433,
 			User:     "postgres",
 			Password: "postgres",
-			Database: "goagent",
+			Database: "ARES",
 		},
 	}
 
@@ -466,7 +466,7 @@ func BenchmarkPool_WithConnection(b *testing.B) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -497,7 +497,7 @@ func BenchmarkPool_ParallelQueries(b *testing.B) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -569,7 +569,7 @@ Set up local test environment:
 docker run -d \
   --name ares-test-db \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=goagent \
+  -e POSTGRES_DB=ARES \
   -p 5433:5432 \
   pgvector/pgvector:pg15
 
@@ -606,7 +606,7 @@ jobs:
         image: pgvector/pgvector:pg15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: goagent
+          POSTGRES_DB: ARES
         ports:
           - 5433:5432
 
@@ -885,4 +885,4 @@ func (m *MockLLMClient) Generate(ctx context.Context, prompt string) (string, er
 
 **Version**: 1.0  
 **Last Updated**: 2026-03-24  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

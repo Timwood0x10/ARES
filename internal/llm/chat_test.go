@@ -157,8 +157,8 @@ func TestChat_OpenRouter_WithTools(t *testing.T) {
 	}`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Title") != "GoAgent" {
-			t.Errorf("expected X-Title header GoAgent, got %s", r.Header.Get("X-Title"))
+		if r.Header.Get("X-Title") != "ARES" {
+			t.Errorf("expected X-Title header ARES, got %s", r.Header.Get("X-Title"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, responseBody)

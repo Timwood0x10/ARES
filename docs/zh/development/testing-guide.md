@@ -4,7 +4,7 @@
 
 ## 简介
 
-本文档介绍如何对 GoAgent 框架进行测试，包括单元测试、集成测试、覆盖率报告等内容。
+本文档介绍如何对 ARES 框架进行测试，包括单元测试、集成测试、覆盖率报告等内容。
 
 ## 运行测试
 
@@ -185,7 +185,7 @@ func TestNewPool(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -218,7 +218,7 @@ func TestPool_WithConnection(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -249,7 +249,7 @@ func TestPool_Stats(t *testing.T) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -354,7 +354,7 @@ func TestEndToEndFlow(t *testing.T) {
 			Port:     5433,
 			User:     "postgres",
 			Password: "postgres",
-			Database: "goagent",
+			Database: "ARES",
 		},
 	}
 
@@ -466,7 +466,7 @@ func BenchmarkPool_WithConnection(b *testing.B) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -497,7 +497,7 @@ func BenchmarkPool_ParallelQueries(b *testing.B) {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,
@@ -569,7 +569,7 @@ go tool cover -func=coverage.out | grep total
 docker run -d \
   --name ares-test-db \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=goagent \
+  -e POSTGRES_DB=ARES \
   -p 5433:5432 \
   pgvector/pgvector:pg15
 
@@ -606,7 +606,7 @@ jobs:
         image: pgvector/pgvector:pg15
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: goagent
+          POSTGRES_DB: ARES
         ports:
           - 5433:5432
 
@@ -885,4 +885,4 @@ func (m *MockLLMClient) Generate(ctx context.Context, prompt string) (string, er
 
 **版本**: 1.0  
 **最后更新**: 2026-03-24  
-**维护者**: GoAgent 团队
+**维护者**: ARES 团队

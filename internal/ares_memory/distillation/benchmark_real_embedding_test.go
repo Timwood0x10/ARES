@@ -519,7 +519,7 @@ func TestRealEmbed_GenerateReport(t *testing.T) {
 
 	// Collect all scenario outputs by running them manually
 	// This test generates a comprehensive report file
-	reportPath := "/Users/scc/go/src/goagent/internal/memory/distillation/report_real_embedding.md"
+	reportPath := "/Users/scc/go/src/ARES/internal/memory/distillation/report_real_embedding.md"
 
 	var buf bytes.Buffer
 

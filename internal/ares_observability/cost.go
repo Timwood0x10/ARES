@@ -422,7 +422,7 @@ func (d *CostDashboard) GenerateDashboardHTML() string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GoAgent Cost Dashboard</title>
+<title>ARES Cost Dashboard</title>
 <style>
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 2rem; background: #f8f9fa; }
 h1 { color: #1a1a2e; }
@@ -435,7 +435,7 @@ tr:hover { background: #f5f5f5; }
 </style>
 </head>
 <body>
-<h1>GoAgent Cost Dashboard</h1>
+<h1>ARES Cost Dashboard</h1>
 <table>
 <thead>
 <tr><th>Session ID</th><th>Total Cost (USD)</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Last Activity</th></tr>

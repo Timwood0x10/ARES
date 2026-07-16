@@ -1,6 +1,6 @@
 # Advanced Examples
 
-Working examples demonstrating GoAgent v2 features. Each example is self-contained and runnable with `go run`.
+Working examples demonstrating ARES v2 features. Each example is self-contained and runnable with `go run`.
 
 ## Prerequisites
 

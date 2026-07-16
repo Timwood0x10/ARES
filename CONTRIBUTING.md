@@ -72,12 +72,12 @@ We welcome feature suggestions! Please:
    ```bash
    docker run -d --name ares-db \
      -e POSTGRES_PASSWORD=postgres \
-     -e POSTGRES_DB=goagent \
+     -e POSTGRES_DB=ARES \
      -p 5433:5432 \
      pgvector/pgvector:pg16
 
    # Enable pgvector extension
-   docker exec -it ares-db psql -U postgres -d goagent -c "CREATE EXTENSION IF NOT EXISTS vector;"
+   docker exec -it ares-db psql -U postgres -d ARES -c "CREATE EXTENSION IF NOT EXISTS vector;"
    ```
 
 3. **Run database migrations**:

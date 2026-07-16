@@ -1,4 +1,4 @@
-// Package client provides a library-style entry point for embedding GoAgent
+// Package client provides a library-style entry point for embedding ARES
 // into other Go applications.
 //
 // All service fields in Config accept api/core interfaces, with zero direct

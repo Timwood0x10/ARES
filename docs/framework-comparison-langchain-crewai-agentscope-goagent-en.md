@@ -1,18 +1,18 @@
 # Multi-Agent Framework Deep Comparison
 
-> LangChain vs CrewAI vs AgentScope vs GoAgent (ARES) vs tRPC-Agent-Go
+> LangChain vs CrewAI vs AgentScope vs ARES (ARES) vs tRPC-Agent-Go
 
 ---
 
 ## 1. Overview
 
-This document provides a thorough, honest technical comparison of five mainstream AI Agent frameworks: **LangChain (incl. LangGraph)**, **CrewAI**, **AgentScope**, **GoAgent (ARES)**, and **tRPC-Agent-Go**. The comparison covers tech stack, architecture, workflow orchestration, multi-agent collaboration, memory systems, production reliability, deployment, and community maturity.
+This document provides a thorough, honest technical comparison of five mainstream AI Agent frameworks: **LangChain (incl. LangGraph)**, **CrewAI**, **AgentScope**, **ARES (ARES)**, and **tRPC-Agent-Go**. The comparison covers tech stack, architecture, workflow orchestration, multi-agent collaboration, memory systems, production reliability, deployment, and community maturity.
 
 ---
 
 ## 2. Tech Stack Comparison
 
-| Dimension | LangChain / LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Dimension | LangChain / LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |-----------|----------------------|--------|------------|----------------|---------------|
 | **Primary Language** | Python, JavaScript/TypeScript | Python | Python | Go (1.26+) | Go (1.21+) |
 | **Core Dependencies** | pydantic, langchain-core, langgraph, langserve | pydantic, crewaillm, langchain | alibaba/mpip (Kubernetes), Flask, etcd | pgx, gorilla/websocket, sqlite, mmh3, blake2b | openai-go v1.12.0, otel v1.29.0, trpc-a2a-go, trpc-mcp-go, ants/v2, zap |
@@ -30,7 +30,7 @@ This document provides a thorough, honest technical comparison of five mainstrea
 
 **AgentScope** leverages Alibaba's tech stack with built-in distributed communication (RPC, messaging) and good Kubernetes support.
 
-**GoAgent** is pure Go with zero Python dependencies. It takes advantage of Go's static compilation and goroutine concurrency, resulting in millisecond-level startup overhead.
+**ARES** is pure Go with zero Python dependencies. It takes advantage of Go's static compilation and goroutine concurrency, resulting in millisecond-level startup overhead.
 
 ---
 
@@ -43,7 +43,7 @@ This document provides a thorough, honest technical comparison of five mainstrea
 | **LangGraph** | StateGraph (cyclic directed graph) | Graph computation model, node=function, edge=transition | Stateful graph execution engine |
 | **CrewAI** | Crew + Agent + Task | Team collaboration metaphor, role-driven | Linear/hierarchical pipeline |
 | **AgentScope** | Agent + Service Hub | Distributed message passing, service-oriented | Distributed message-driven |
-| **GoAgent (ARES)** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Leader-subordinate architecture |
+| **ARES (ARES)** | Leader-Sub Agent + DAG + AHP | Distributed task orchestration, protocol-driven | Leader-subordinate architecture |
 | **tRPC-Agent-Go** | GraphAgent + Runner + Agent | Service-friendly, tRPC-native agent architecture | Go-native agent runtime with Pregel-style graph workflows |
 
 ### 3.2 Architecture Diagrams
@@ -97,7 +97,7 @@ flowchart LR
 
 AgentScope uses Service Hub for message routing and decoupling between agents. Supports single-node multi-process and distributed multi-node deployments. Built-in Pipeline pattern for DAG execution.
 
-#### GoAgent — Leader-Sub with AHP
+#### ARES — Leader-Sub with AHP
 
 ```mermaid
 flowchart TB
@@ -145,7 +145,7 @@ flowchart TB
     Core --- Chaos
 ```
 
-GoAgent uses a Leader-Sub architecture communicating via the AHP (Agent Heartbeat Protocol). The Leader handles planning, dispatching, and aggregation; Sub-Agents execute tasks in parallel.
+ARES uses a Leader-Sub architecture communicating via the AHP (Agent Heartbeat Protocol). The Leader handles planning, dispatching, and aggregation; Sub-Agents execute tasks in parallel.
 
 ### tRPC-Agent-Go — Go-Native Agent Runtime + Graph Workflows
 
@@ -202,7 +202,7 @@ flowchart TB
 
 **AgentScope**'s distributed architecture suits enterprise deployments. But the community is small and documentation is primarily Chinese.
 
-**GoAgent**'s Leader-Sub pattern is best for deterministic task distribution. The AHP protocol provides **protocol-level reliability guarantees** (heartbeat + dead letter queue) absent from all three other frameworks.
+**ARES**'s Leader-Sub pattern is best for deterministic task distribution. The AHP protocol provides **protocol-level reliability guarantees** (heartbeat + dead letter queue) absent from all three other frameworks.
 
 **tRPC-Agent-Go**'s Runner + GraphAgent architecture is the most service-friendly, integrating natively with tRPC-Go microservices. The Pregel-style graph engine with 6 node types offers full workflow coverage while remaining type-safe and deterministic.
 
@@ -212,7 +212,7 @@ flowchart TB
 
 ### 4.1 Workflow Capabilities
 
-| Capability | LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Capability | LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |-----------|-----------|--------|------------|----------------|---------------|
 | **DAG Support** | Native | Sequential/Hierarchical only | Pipeline mode | Native DAG | GraphAgent (Pregel-style graph, 6 node types) |
 | **Conditional Edges** | `add_conditional_edges` | None | Pipeline condition nodes | `Step.Condition` + `Step.Router` (runtime dynamic routing) | `ConditionalFunc` / `MultiConditionalFunc` routing |
@@ -229,9 +229,9 @@ flowchart TB
 | **MCP Support** | Via LangChain MCP | Not native | Not native | Native WithMCP | Native mcptool integration |
 | **Protocol Support** | LangServe | None | gRPC | AHP | tRPC, A2A, AG-UI, MCP, OpenAI-compatible, Evaluation, PromptIter |
 
-### 4.2 GoAgent DAG Features
+### 4.2 ARES DAG Features
 
-GoAgent's DAG engine has unique characteristics:
+ARES's DAG engine has unique characteristics:
 - **Explicit cycle detection**: DFS + recursion stack at build time
 - **Kahn's topological sort**: Explicit computation of execution order
 - **Semaphore concurrency control**: Same-level independent nodes execute in parallel
@@ -240,7 +240,7 @@ GoAgent's DAG engine has unique characteristics:
 
 #### Conditional Edges & Dynamic Routing (v0.2.6+)
 
-GoAgent supports two mechanisms for conditional execution:
+ARES supports two mechanisms for conditional execution:
 
 | Mechanism | When Evaluated | Behavior on false |
 |-----------|---------------|-------------------|
@@ -332,9 +332,9 @@ func (d *DAG) GetExecutionOrder() ([]string, error) {
 }
 ```
 
-#### Mutable DAG — Runtime Graph Mutation (GoAgent Exclusive)
+#### Mutable DAG — Runtime Graph Mutation (ARES Exclusive)
 
-GoAgent supports **live DAG mutation** during execution — no other framework allows modifying the workflow graph at runtime:
+ARES supports **live DAG mutation** during execution — no other framework allows modifying the workflow graph at runtime:
 
 | Mutation Operation | Description | Safety Check |
 |-------------------|-------------|-------------|
@@ -385,11 +385,11 @@ LangGraph's state management is the most advanced among the four:
 - **Human-in-the-loop**: Pause via `interrupt_before`/`interrupt_after` for manual input
 - **3 durability modes**: `durable`, `recent`, `off`
 
-This is GoAgent's main gap—state is in-memory and lost on crash. **Addressed in v0.2.6**: `saveCheckpoint` persist step results via pluggable `CheckpointStore` (PostgreSQL/SQLite/Redis) after each step. The graph package also saves state per-node via `saveGraphCheckpoint`.
+This is ARES's main gap—state is in-memory and lost on crash. **Addressed in v0.2.6**: `saveCheckpoint` persist step results via pluggable `CheckpointStore` (PostgreSQL/SQLite/Redis) after each step. The graph package also saves state per-node via `saveGraphCheckpoint`.
 
-### 4.4 Dynamic Executor & Step Recovery (GoAgent Exclusive)
+### 4.4 Dynamic Executor & Step Recovery (ARES Exclusive)
 
-GoAgent's DynamicExecutor provides runtime workflow mutation that no other framework offers:
+ARES's DynamicExecutor provides runtime workflow mutation that no other framework offers:
 
 ```go
 type ApplyMode int
@@ -412,7 +412,7 @@ type StepRecoveryHandler struct {
 
 #### Human-in-the-Loop (HITL)
 
-GoAgent's HITL system uses `InterruptPoint` + `InterruptStore` for crash-resilient pauses:
+ARES's HITL system uses `InterruptPoint` + `InterruptStore` for crash-resilient pauses:
 
 ```go
 type InterruptPoint struct {
@@ -431,7 +431,7 @@ type InterruptPoint struct {
 
 ### 5.1 Collaboration Patterns
 
-| Pattern | LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Pattern | LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |---------|-----------|--------|------------|----------------|---------------|
 | **Supervisor/Orchestrator** | Subgraph composition | Hierarchical Process | Service Hub | Leader Agent | Runner + chain/parallel/cycle agent composition |
 | **Peer-to-peer** | Shared state nodes | Task output chaining | Message routing | AHP point-to-point | Sub-agent composition, A2A remote agent protocol |
@@ -441,7 +441,7 @@ type InterruptPoint struct {
 
 ### 5.2 Collaboration Determinism
 
-**GoAgent** has the highest determinism:
+**ARES** has the highest determinism:
 - Agent selection based on **trigger keywords** (`trigger_on`)
 - Planning based on **rules**, not LLM
 - Aggregation uses **deterministic algorithms** (dedup + sort)
@@ -457,7 +457,7 @@ type InterruptPoint struct {
 
 ### 5.3 AHP Protocol
 
-GoAgent's AHP protocol is the **only protocol-level communication guarantee** among the four:
+ARES's AHP protocol is the **only protocol-level communication guarantee** among the four:
 
 | Message Type | Purpose | Frequency |
 |-------------|---------|-----------|
@@ -476,7 +476,7 @@ GoAgent's AHP protocol is the **only protocol-level communication guarantee** am
 
 ### 6.1 Memory Capabilities
 
-| Dimension | LangChain/LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Dimension | LangChain/LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |-----------|-------------------|--------|------------|----------------|---------------|
 | **Short-term** | Checkpointed state | Current run context | Session message history | Session Memory (in-memory) | Session state (10+ backends) |
 | **Long-term** | Store (PostgresStore, etc.) | LanceDB vector store | Built-in storage | PostgreSQL + pgvector | Memory service with 12 backends |
@@ -486,9 +486,9 @@ GoAgent's AHP protocol is the **only protocol-level communication guarantee** am
 | **Distillation** | Not supported | Not supported | Not supported | 6-step automated pipeline | Not documented |
 | **Multi-tenancy** | namespace tuple | Not supported | Not supported | PostgreSQL `SET LOCAL` | Session isolation, per-user/per-app segmentation |
 
-### 6.2 GoAgent Memory Distillation Pipeline
+### 6.2 ARES Memory Distillation Pipeline
 
-GoAgent's automated distillation pipeline is a unique differentiator:
+ARES's automated distillation pipeline is a unique differentiator:
 
 ```mermaid
 flowchart LR
@@ -513,14 +513,14 @@ score = 0.5 * semantic_similarity + 0.3 * recency_decay + 0.2 * llm_importance
 ```
 
 **Key Differences**:
-- GoAgent's memory is an **automated pipeline** (rule-driven, nanosecond latency), CrewAI's is **LLM-assisted** (more accurate but slower and costlier)
-- GoAgent has **multi-tenant isolation** (PostgreSQL `SET LOCAL`), others don't
+- ARES's memory is an **automated pipeline** (rule-driven, nanosecond latency), CrewAI's is **LLM-assisted** (more accurate but slower and costlier)
+- ARES has **multi-tenant isolation** (PostgreSQL `SET LOCAL`), others don't
 - LangGraph's Store is most flexible (namespace tuples), but has no automated distillation
 - AgentScope's memory is the most basic
 
-### 6.4 Autonomous Evolution (GoAgent Exclusive)
+### 6.4 Autonomous Evolution (ARES Exclusive)
 
-GoAgent is the **only framework** with a built-in Genetic Algorithm (GA) pipeline for autonomous agent evolution. The `ares_evolution` package enables agents to self-improve through selection, crossover, mutation, and scoring cycles.
+ARES is the **only framework** with a built-in Genetic Algorithm (GA) pipeline for autonomous agent evolution. The `ares_evolution` package enables agents to self-improve through selection, crossover, mutation, and scoring cycles.
 
 #### Selection: TournamentSelection
 
@@ -618,7 +618,7 @@ flowchart LR
 
 ### 7.1 Error Handling Mechanisms
 
-| Mechanism | LangGraph | CrewAI | AgentScope | GoAgent | tRPC-Agent-Go |
+| Mechanism | LangGraph | CrewAI | AgentScope | ARES | tRPC-Agent-Go |
 |-----------|-----------|--------|------------|---------|---------------|
 | **Retry** | None built-in | `max_retry_limit=2` | Basic retry | 3x exponential backoff | Supported via evolution pipeline |
 | **Timeout** | None built-in | `max_execution_time` | None built-in | Tiered (LLM 120s, DB 30s, Vector 10s) | Not documented |
@@ -629,7 +629,7 @@ flowchart LR
 | **Human-in-the-loop** | `interrupt()` | `human_input=True` | Supported | InterruptPoint + InterruptStore (crash-resilient) | Supported |
 | **Chaos Engineering** | Not supported | Not supported | Not supported | 13 fault types, Survival/Scenario modes | Not documented |
 
-### 7.2 GoAgent Circuit Breaker
+### 7.2 ARES Circuit Breaker
 
 ```go
 func (cb *CircuitBreaker) AllowRequest() bool {
@@ -648,7 +648,7 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 }
 ```
 
-### 7.3 GoAgent Retry with Validation
+### 7.3 ARES Retry with Validation
 
 ```go
 func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
@@ -666,11 +666,11 @@ func (e *taskExecutor) executeWithLLM(ctx context.Context, task *models.Task) (*
 }
 ```
 
-**Verdict: GoAgent leads by a significant margin in tool calling reliability**. Circuit breaker, DLQ, tiered timeouts, and automatic fallback are completely absent from the other three frameworks.
+**Verdict: ARES leads by a significant margin in tool calling reliability**. Circuit breaker, DLQ, tiered timeouts, and automatic fallback are completely absent from the other three frameworks.
 
-### 7.4 Chaos Engineering (GoAgent Exclusive)
+### 7.4 Chaos Engineering (ARES Exclusive)
 
-GoAgent is the **only framework** with built-in Chaos Engineering for multi-agent systems. The `ares_arena` package provides systematic fault injection for testing resilience of agent workflows.
+ARES is the **only framework** with built-in Chaos Engineering for multi-agent systems. The `ares_arena` package provides systematic fault injection for testing resilience of agent workflows.
 
 **13 Fault Injection Types**:
 
@@ -722,7 +722,7 @@ scenario:
 
 ### 8.1 Production-Grade Features
 
-| Feature | LangChain/LangGraph | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Feature | LangChain/LangGraph | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |---------|--------------------|--------|------------|----------------|---------------|
 | **Language** | Python | Python | Python | Go | Go |
 | **Concurrency** | asyncio | asyncio | asyncio + multi-process | goroutine + channel | goroutine + channel + goroutine pool (ants/v2) |
@@ -739,7 +739,7 @@ scenario:
 | **Startup Overhead** | High (LangChain ecosystem load) | Medium | Medium | Low (native Go binary) | Low (native Go binary) |
 | **Error Wrapping** | None specific | None specific | None specific | Error wrapping (69ns/op, 0 alloc) | tRPC error handling conventions |
 
-### 8.2 GoAgent Protection Stack
+### 8.2 ARES Protection Stack
 
 ```mermaid
 flowchart TB
@@ -782,13 +782,13 @@ flowchart TB
 
 **AgentScope**: Basic logging and monitoring.
 
-**GoAgent**: Built-in OpenTelemetry tracing + Prometheus metrics (counters/histograms/gauges/summary) + cost tracking. All open source and free.
+**ARES**: Built-in OpenTelemetry tracing + Prometheus metrics (counters/histograms/gauges/summary) + cost tracking. All open source and free.
 
 ---
 
 ## 9. Community & Ecosystem Maturity
 
-| Metric | LangChain | CrewAI | AgentScope | GoAgent (ARES) | tRPC-Agent-Go |
+| Metric | LangChain | CrewAI | AgentScope | ARES (ARES) | tRPC-Agent-Go |
 |--------|----------|--------|------------|----------------|---------------|
 | **GitHub Stars** | ~100,000+ | ~40,000 | ~4,000 | Private/early | ~1,500 |
 | **Main Contributors** | 1,200+ | 300+ | ~50 | 2 | ~20 |
@@ -851,7 +851,7 @@ flowchart TB
 - Basic memory system
 - Difficult to integrate outside Alibaba ecosystem
 
-### 10.4 GoAgent (ARES)
+### 10.4 ARES (ARES)
 
 **Strengths**:
 - **Go-native concurrency**: goroutines + channels, full multi-core utilization, no GIL
@@ -916,16 +916,16 @@ flowchart TD
     Q3 -->|Yes| AgentScope[AgentScope]
 
     Start --> Q4{High concurrency / multi-tenancy production?}
-    Q4 -->|Yes| GoAgent1[GoAgent]
+    Q4 -->|Yes| ARES1[ARES]
 
     Start --> Q5{Chaos Engineering / fault injection?}
-    Q5 -->|Yes| GoAgent2[GoAgent - only framework]
+    Q5 -->|Yes| ARES2[ARES - only framework]
 
     Start --> Q6{Self-improving / autonomous evolution?}
-    Q6 -->|Yes| GoAgent3[GoAgent - only GA pipeline]
+    Q6 -->|Yes| ARES3[ARES - only GA pipeline]
 
     Start --> Q7{Runtime DAG mutation / live graph editing?}
-    Q7 -->|Yes| GoAgent4[GoAgent - only MutableDAG]
+    Q7 -->|Yes| ARES4[ARES - only MutableDAG]
 
     Start --> Q8{Maximum ecosystem / and flexibility?}
     Q8 -->|Yes| LangChain[LangChain/LangGraph]
@@ -933,10 +933,10 @@ flowchart TD
     Start --> Q9{tRPC ecosystem / full protocol support?}
     Q9 -->|Yes| TRPC[tRPC-Agent-Go]
 
-    style GoAgent1 fill:#e1f5fe
-    style GoAgent2 fill:#e1f5fe
-    style GoAgent3 fill:#e1f5fe
-    style GoAgent4 fill:#e1f5fe
+    style ARES1 fill:#e1f5fe
+    style ARES2 fill:#e1f5fe
+    style ARES3 fill:#e1f5fe
+    style ARES4 fill:#e1f5fe
     style TRPC fill:#e8f5e9
 ```
 
@@ -947,7 +947,7 @@ flowchart TD
 | **LangChain/LangGraph** | Largest-ecosystem graph compute engine | Complex stateful workflows, RAG pipelines | Lightweight scenarios (overkill) |
 | **CrewAI** | Team collaboration simulator | Rapid prototyping, role-play scenarios | Production, high determinism |
 | **AgentScope** | Distributed agent framework | Alibaba ecosystem, multi-node deployment | Non-Alibaba environments, international teams |
-| **GoAgent** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication, Chaos Engineering, Autonomous Evolution, Mutable DAG | Scenarios needing cycles/state rollback |
+| **ARES** | Distributed Agent orchestration engine | High concurrency, multi-tenancy, protocol-level communication, Chaos Engineering, Autonomous Evolution, Mutable DAG | Scenarios needing cycles/state rollback |
 | **tRPC-Agent-Go** | tRPC-native Go agent framework with full protocol support | tRPC ecosystem teams, Go-native graph workflows, A2A/MCP protocol bridging | Non-tRPC environments, document-heavy scenarios |
 
 ---
@@ -956,23 +956,23 @@ flowchart TD
 
 | Trend | Description |
 |-------|-------------|
-| **Python → Multi-language** | SK already supports C#/Python/Java, GoAgent's choice aligns with the direction |
-| **Single-node → Distributed** | AutoGen 0.4 added distributed runtime, GoAgent's AHP natively supports it |
+| **Python → Multi-language** | SK already supports C#/Python/Java, ARES's choice aligns with the direction |
+| **Single-node → Distributed** | AutoGen 0.4 added distributed runtime, ARES's AHP natively supports it |
 | **Conversation → Workflow** | CrewAI expanded from Crew to Flow, graph model is the ultimate form |
-| **Memory becomes core** | All frameworks adding Memory, only GoAgent has automated distillation |
+| **Memory becomes core** | All frameworks adding Memory, only ARES has automated distillation |
 | **Observability as standard** | LangSmith binds LangGraph, open-source alternatives emerging |
 | **Security from optional to mandatory** | PII redaction, injection detection, sandbox execution becoming standard |
-| **Chaos Engineering** | Automated fault injection for agent systems — GoAgent is the only framework with built-in support (13 fault types, Survival/Scenario modes) |
-| **Autonomous Evolution (GA)** | Self-improving agent pipelines via genetic algorithms — GoAgent is the pioneer with TournamentSelection, UniformCrossover, TieredScorer, DreamCycle |
-| **Live Graph Mutation** | Runtime DAG mutation without restart — GoAgent introduces 5 mutation operations with BFS cycle detection and GraphEventHub |
+| **Chaos Engineering** | Automated fault injection for agent systems — ARES is the only framework with built-in support (13 fault types, Survival/Scenario modes) |
+| **Autonomous Evolution (GA)** | Self-improving agent pipelines via genetic algorithms — ARES is the pioneer with TournamentSelection, UniformCrossover, TieredScorer, DreamCycle |
+| **Live Graph Mutation** | Runtime DAG mutation without restart — ARES introduces 5 mutation operations with BFS cycle detection and GraphEventHub |
 
-### GoAgent's Differentiation Strategy
+### ARES's Differentiation Strategy
 
 Leverage Go's concurrency advantages and play the **"production-grade reliability"** card. Don't compete with LangGraph on graph computation flexibility, don't compete with CrewAI on out-of-box experience, don't compete with AgentScope on Alibaba ecosystem depth. Focus on:
 
 > **High-reliability, multi-tenant, protocol-level distributed Agent orchestration engine.**
 
-GoAgent's differentiation — **circuit breaker, heartbeat, DLQ, automated distillation, multi-tenant isolation, Chaos Engineering, Autonomous Evolution, Mutable DAG, Conditional Edges, Controlled Loops, Subgraph Nesting, and State Checkpointing** — are characteristics that competitors cannot easily replicate.
+ARES's differentiation — **circuit breaker, heartbeat, DLQ, automated distillation, multi-tenant isolation, Chaos Engineering, Autonomous Evolution, Mutable DAG, Conditional Edges, Controlled Loops, Subgraph Nesting, and State Checkpointing** — are characteristics that competitors cannot easily replicate.
 
 ---
 

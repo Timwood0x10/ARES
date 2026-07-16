@@ -2,7 +2,7 @@
 
 ## 1. 概述
 
-`api/client` 包是一个库式嵌入接口，允许 Go 应用程序将 GoAgent 作为库嵌入使用，而无需将其作为独立服务运行。它将 5 个核心服务（Agent、Memory、Retrieval、LLM、Workflow）封装在统一的 `Client` 结构体之后。
+`api/client` 包是一个库式嵌入接口，允许 Go 应用程序将 ARES 作为库嵌入使用，而无需将其作为独立服务运行。它将 5 个核心服务（Agent、Memory、Retrieval、LLM、Workflow）封装在统一的 `Client` 结构体之后。
 
 ### 核心设计原则
 
@@ -103,7 +103,7 @@ retrieval:
 
 llm:
   provider: openai
-  api_key: ${GOAGENT_LLM_API_KEY}
+  api_key: ${ARES_LLM_API_KEY}
   model: gpt-4
 
 workflow:
@@ -124,7 +124,7 @@ workflow:
 
 ### 4.3 环境变量覆盖
 
-支持通过环境变量覆盖配置值，例如 `GOAGENT_LLM_API_KEY` 可以覆盖 LLM 配置中的 API Key。
+支持通过环境变量覆盖配置值，例如 `ARES_LLM_API_KEY` 可以覆盖 LLM 配置中的 API Key。
 
 ### 4.4 配置验证
 
@@ -253,13 +253,13 @@ if err != nil {
 ### 9.1 基础用法
 
 ```go
-import "github.com/user/goagent/api/client"
+import "github.com/user/ARES/api/client"
 
 // 从配置文件加载
 cfg := &client.Config{
     LLM: &core.LLMConfig{
         Provider: "openai",
-        APIKey:   os.Getenv("GOAGENT_LLM_API_KEY"),
+        APIKey:   os.Getenv("ARES_LLM_API_KEY"),
         Model:    "gpt-4",
     },
 }

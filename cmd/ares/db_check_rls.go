@@ -19,7 +19,7 @@ var dbCheckRLSCmd = &cobra.Command{
 	Long: `Inspects Row-Level Security policies and column structure
 of the distilled_memories table.
 Env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
-Default: postgres://postgres:postgres@localhost:5432/goagent?sslmode=disable`,
+Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbCheckRLS()
 	},
@@ -35,7 +35,7 @@ func runDbCheckRLS() error {
 		Port:            5433,
 		User:            "postgres",
 		Password:        "postgres",
-		Database:        "goagent",
+		Database:        "ARES",
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 5 * time.Minute,

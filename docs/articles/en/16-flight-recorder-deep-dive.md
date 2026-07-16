@@ -1,4 +1,4 @@
-# ares Architecture Deep Dive (XIII): Flight Recorder — Agent Black Box and Execution Trace Replay
+# ares Architecture Deep Dive (XVI): Flight Recorder — Agent Black Box and Execution Trace Replay
 
 > Ever had this happen…
 > An Agent mysteriously froze in production. You check the logs — nothing. You check the metrics — normal. You stare at the screen and ask yourself: *"What the hell just happened in those few seconds?"*

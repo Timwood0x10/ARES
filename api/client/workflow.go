@@ -26,7 +26,7 @@ type WorkflowClient struct {
 
 // NewWorkflowClient creates a new workflow client.
 // Args:
-// client - underlying GoAgent client.
+// client - underlying ARES client.
 // Returns workflow client or error.
 func NewWorkflowClient(client *Client) (*WorkflowClient, error) {
 	loader := engine.NewYAMLFileLoader()

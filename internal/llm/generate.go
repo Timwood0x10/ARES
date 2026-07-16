@@ -188,7 +188,7 @@ func (c *Client) generateOpenRouter(ctx context.Context, prompt string, o reques
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	req.Header.Set("X-Title", "GoAgent")
+	req.Header.Set("X-Title", "ARES")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -1,8 +1,8 @@
-# GoAgent API Architecture
+# ARES API Architecture
 
 ## Overview
 
-GoAgent API uses a layered architecture, providing a unified, clear, extensible
+ARES API uses a layered architecture, providing a unified, clear, extensible
 interface surface. This document describes the structure of the `api/` layer
 and how to use it.
 

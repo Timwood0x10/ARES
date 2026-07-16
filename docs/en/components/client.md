@@ -2,11 +2,11 @@
 
 ## 1. Overview
 
-The `api/client/` package provides a library-style embedding interface that allows Go applications to embed GoAgent as a library rather than running it as a standalone service. Behind a unified `Client` struct, it wraps 5 core services: Agent, Memory, Retrieval, LLM, and Workflow.
+The `api/client/` package provides a library-style embedding interface that allows Go applications to embed ARES as a library rather than running it as a standalone service. Behind a unified `Client` struct, it wraps 5 core services: Agent, Memory, Retrieval, LLM, and Workflow.
 
 ### Core Philosophy
 
-- **Library Embedding**: Embed GoAgent directly into your Go application, no separate server process required
+- **Library Embedding**: Embed ARES directly into your Go application, no separate server process required
 - **Modular Services**: Each service (Agent, Memory, Retrieval, LLM, Workflow) is independently configurable
 - **Graceful Lifecycle**: Centralised `NewClient` -> accessors -> `Close` pattern with idempotent shutdown
 - **Configurable with Fallbacks**: Sensible defaults for timeouts, retries, and retry delays
@@ -191,7 +191,7 @@ type ConfigLoader struct {
 
 | Function | Description |
 |----------|-------------|
-| `NewConfigLoader(opts ...ConfigLoaderOption)` | Creates a loader with default paths: `./config.yaml`, `./config/server.yaml`, `./examples/simple_newapi/config/server.yaml`. Default env prefix is `GOAGENT`. |
+| `NewConfigLoader(opts ...ConfigLoaderOption)` | Creates a loader with default paths: `./config.yaml`, `./config/server.yaml`, `./examples/simple_newapi/config/server.yaml`. Default env prefix is `ARES`. |
 | `Load(path string)` | Loads YAML, applies env override, sets defaults, validates. Returns `(*ConfigFile, error)`. |
 | `LoadConfigFile(path)` | **Deprecated.** Convenience function using default loader. |
 | `NewClientFromConfigPath(configPath)` | Loads config from path, converts to `Config`, creates `Client`. |
@@ -210,12 +210,12 @@ func WithEnvPrefix(prefix string) ConfigLoaderOption
 
 | Environment Variable | Config Field |
 |----------------------|--------------|
-| `GOAGENT_LLM_API_KEY` / `LLM_API_KEY` | `LLM.APIKey` |
-| `GOAGENT_LLM_BASE_URL` / `LLM_BASE_URL` | `LLM.BaseURL` |
-| `GOAGENT_LLM_MODEL` / `LLM_MODEL` | `LLM.Model` |
-| `GOAGENT_LLM_PROVIDER` / `LLM_PROVIDER` | `LLM.Provider` |
-| `GOAGENT_DB_PASSWORD` / `DB_PASSWORD` | `Database.Password` |
-| `GOAGENT_DB_HOST` / `DB_HOST` | `Database.Host` |
+| `ARES_LLM_API_KEY` / `LLM_API_KEY` | `LLM.APIKey` |
+| `ARES_LLM_BASE_URL` / `LLM_BASE_URL` | `LLM.BaseURL` |
+| `ARES_LLM_MODEL` / `LLM_MODEL` | `LLM.Model` |
+| `ARES_LLM_PROVIDER` / `LLM_PROVIDER` | `LLM.Provider` |
+| `ARES_DB_PASSWORD` / `DB_PASSWORD` | `Database.Password` |
+| `ARES_DB_HOST` / `DB_HOST` | `Database.Host` |
 
 ### 6.6 Default Values
 
@@ -230,7 +230,7 @@ func WithEnvPrefix(prefix string) ConfigLoaderOption
 | `LLM.Model` | Provider-specific: Ollama -> `llama3.2`, OpenRouter -> `meta-llama/llama-3.1-8b-instruct`, OpenAI -> `gpt-4o` |
 | `Database.Port` | 5432 |
 | `Database.User` | `postgres` |
-| `Database.DBName` | `goagent` |
+| `Database.DBName` | `ARES` |
 | `Memory.Session.MaxHistory` | 50 |
 
 ### 6.7 Validation Rules
@@ -256,9 +256,9 @@ if err != nil {
 defer client.Close(ctx)
 
 // Custom loader with path traversal protection
-client.SetAllowedConfigDir("/etc/goagent")
+client.SetAllowedConfigDir("/etc/ARES")
 loader := client.NewConfigLoader(
-    client.WithDefaultPaths("/etc/goagent/config.yaml"),
+    client.WithDefaultPaths("/etc/ARES/config.yaml"),
     client.WithEnvPrefix("MYAPP"),
 )
 cfg, err := loader.Load("")
@@ -266,7 +266,7 @@ cfg, err := loader.Load("")
 
 ## 7. SimpleClient
 
-`SimpleClient` in `api/client/simple.go` provides the simplest possible API for GoAgent.
+`SimpleClient` in `api/client/simple.go` provides the simplest possible API for ARES.
 
 ```go
 type SimpleClient struct {

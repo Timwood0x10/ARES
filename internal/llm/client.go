@@ -642,7 +642,7 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	req.Header.Set("X-Title", "GoAgent")
+	req.Header.Set("X-Title", "ARES")
 
 	resp, err := c.streamClient.Do(req)
 	if err != nil {

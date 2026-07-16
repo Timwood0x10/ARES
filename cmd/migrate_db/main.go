@@ -1,6 +1,6 @@
 // Package main creates and migrates the production ares database.
 // It reads DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME env vars.
-// Default: postgres://postgres:postgres@localhost:5432/goagent?sslmode=disable
+// Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable
 package main
 
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
@@ -23,7 +23,7 @@ func main() {
 	port := getEnv("DB_PORT", "5433")
 	user := getEnv("DB_USER", "postgres")
 	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_NAME", "goagent")
+	dbname := getEnv("DB_NAME", "ARES")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		url.QueryEscape(user), url.QueryEscape(password),

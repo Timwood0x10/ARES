@@ -1,0 +1,30 @@
+# Normalize line endings across platforms
+* text=auto eol=lf
+
+# Binary files — never diff/merge as text
+*.db binary
+*.db-shm binary
+*.db-wal binary
+*.lbug binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.bin binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.excalidraw binary
+
+# Generated files — hide from GitHub linguist stats
+go.sum linguist-generated=true
+*.pb.go linguist-generated=true
+*_gen.go linguist-generated=true
+docs/**/* linguist-documentation=true

@@ -29,7 +29,7 @@ storage:
   port: 5432
   username: "postgres"
   password: "postgres"
-  database: "goagent"
+  database: "ARES"
   ssl_mode: "disable"
 
   pgvector:

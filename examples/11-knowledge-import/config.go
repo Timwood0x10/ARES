@@ -154,7 +154,7 @@ func (c *Config) applyDatabaseDefaults() {
 		c.Database.User = "postgres"
 	}
 	if c.Database.Database == "" {
-		c.Database.Database = "goagent"
+		c.Database.Database = "ARES"
 	}
 	if c.Database.SSLMode == "" {
 		c.Database.SSLMode = "disable"

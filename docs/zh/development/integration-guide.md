@@ -4,10 +4,10 @@
 
 ## 简介
 
-本文档介绍如何将 GoAgent 框架集成到现有项目中，支持两种集成模式：
+本文档介绍如何将 ARES 框架集成到现有项目中，支持两种集成模式：
 
-1. **库模式**: 直接使用 GoAgent 作为依赖库
-2. **服务模式**: 将 GoAgent 作为独立服务运行
+1. **库模式**: 直接使用 ARES 作为依赖库
+2. **服务模式**: 将 ARES 作为独立服务运行
 
 ## 集成方式
 
@@ -22,7 +22,7 @@
 
 #### 步骤 1: 添加依赖
 
-在你的项目中添加 GoAgent 作为依赖：
+在你的项目中添加 ARES 作为依赖：
 
 ```bash
 go get github.com/Timwood0x10/ares@latest
@@ -110,7 +110,7 @@ storage:
 - 需要 REST API 集成
 - 需要分布式部署
 
-#### 步骤 1: 启动 GoAgent 服务
+#### 步骤 1: 启动 ARES 服务
 
 ```bash
 # 克隆项目
@@ -130,7 +130,7 @@ go run cmd/server/main.go
 
 #### 步骤 2: 通过 API 调用
 
-使用 REST API 与 GoAgent 交互：
+使用 REST API 与 ARES 交互：
 
 ```bash
 # 创建会话
@@ -248,7 +248,7 @@ cfg := &service.Config{
         Port:     5433,
         User:     "postgres",
         Password: "postgres",
-        Database: "goagent",
+        Database: "ARES",
     },
 }
 
@@ -314,7 +314,7 @@ storage:
     port: 5433
     user: "postgres"
     password: "postgres"
-    database: "goagent"
+    database: "ARES"
   
   # pgvector 配置
   pgvector:
@@ -328,7 +328,7 @@ storage:
 
 ### 场景 1: Web 应用集成
 
-将 GoAgent 集成到 Web 应用中：
+将 ARES 集成到 Web 应用中：
 
 ```go
 // Web 服务器端点
@@ -620,4 +620,4 @@ func TestEndToEndIntegration(t *testing.T) {
 
 **版本**: 1.0  
 **最后更新**: 2026-03-23  
-**维护者**: GoAgent 团队
+**维护者**: ARES 团队

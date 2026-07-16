@@ -58,12 +58,12 @@ database:
   port: 5433  # Make sure port is correct
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
 ```
 
 4. Check pgvector extension:
 ```bash
-psql -d goagent -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+psql -d ARES -c "SELECT extname FROM pg_extension WHERE extname='vector';"
 # Should return: vector
 ```
 
@@ -94,7 +94,7 @@ make install
 
 2. Enable extension:
 ```bash
-psql -d goagent -c "CREATE EXTENSION vector;"
+psql -d ARES -c "CREATE EXTENSION vector;"
 ```
 
 **Code Location**: `internal/storage/postgres/migrate.go:50-100` (Database migration)
@@ -116,7 +116,7 @@ database:
   port: 5433            # Database port
   user: postgres        # Username
   password: postgres    # Password
-  database: goagent     # Database name
+  database: ARES     # Database name
 ```
 
 **Code Location**: `internal/storage/postgres/pool.go:35-50` (Connection pool initialization)
@@ -183,11 +183,11 @@ Failed to create knowledge base: create database pool: failed to ping database
 1. Check database connection (see Q2)
 2. Check if database is created:
 ```bash
-psql -l | grep goagent
+psql -l | grep ARES
 ```
 3. Check if tables are migrated:
 ```bash
-psql -d goagent -c "\dt"
+psql -d ARES -c "\dt"
 # Should see: knowledge_chunks_1024, distilled_memories, etc.
 ```
 
@@ -249,7 +249,7 @@ curl http://localhost:11434/api/embeddings
 
 3. Check pgvector configuration:
 ```bash
-psql -d goagent -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
+psql -d ARES -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
 ```
 
 **Code Location**: `internal/storage/postgres/repositories/knowledge_repository.go:100-120` (Vector search)

@@ -1,4 +1,4 @@
-// Package handler provides HTTP handlers for the GoAgent API.
+// Package handler provides HTTP handlers for the ARES API.
 package handler
 
 import (

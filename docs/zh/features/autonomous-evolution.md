@@ -1146,4 +1146,4 @@ cd examples/autonomous-evolution && go run main.go
 
 **版本**: 1.0
 **最后更新**: 2026-06-21
-**维护者**: GoAgent Team
+**维护者**: ARES Team

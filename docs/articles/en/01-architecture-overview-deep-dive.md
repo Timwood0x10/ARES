@@ -183,6 +183,17 @@ This series walks through each layer in detail:
 | X | Retrieval System | How to find relevant memories |
 | XI | Autonomous Evolution | How agents improve themselves |
 | XII | Security Hardening | How to defend against threats |
+| XIII | Bootstrap & API Layer | How to wire without pain |
+| XIV | Plugin System | How to extend without touching |
+| XV | MCP Integration | How to teach agents to use tools |
+| XVI | Flight Recorder | How to record and replay execution |
+| 00 | SDK Layer | One line of code to start an agent |
+| 00 | Knowledge Graph Build | From markdown to 27K edges (AKG) |
+| 00 | Storage Layer | postgres/embedding/models/query/repositories/services |
+| 00 | LLM Client Layer | Failover, DeepSeek Reasoning, multi-provider abstraction |
+| 00 | Evaluation Framework | EvaluatorRegistry, LLMJudge, Bench |
+| 00 | Config System | ares.yaml schema, YAML-driven flags |
+| 00 | Quant Trading Module | The experiment we keep honest about |
 
 Each article follows the same pattern: **the problem → the design journey → the trade-offs → the honest reflection.**
 

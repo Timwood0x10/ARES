@@ -468,8 +468,8 @@ func TestEnterprise_GenerateReport(t *testing.T) {
 	input := "Can you help me with my current issue?"
 
 	// ===== 日志文件 =====
-	logPath := "/Users/scc/go/src/goagent/internal/memory/distillation/enterprise_benchmark_log.txt"
-	reportPath := "/Users/scc/go/src/goagent/internal/memory/distillation/report_enterprise.md"
+	logPath := "/Users/scc/go/src/ARES/internal/memory/distillation/enterprise_benchmark_log.txt"
+	reportPath := "/Users/scc/go/src/ARES/internal/memory/distillation/report_enterprise.md"
 
 	var logBuf bytes.Buffer
 	logBuf.WriteString("============================================================\n")

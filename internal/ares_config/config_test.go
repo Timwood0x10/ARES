@@ -61,7 +61,7 @@ storage:
   port: 5432
   username: "postgres"
   password: "postgres"
-  database: "goagent"
+  database: "ARES"
   ssl_mode: "disable"
   pgvector:
     enabled: true
@@ -445,7 +445,7 @@ func TestValidate(t *testing.T) {
 			Type:     "postgres",
 			Host:     "localhost",
 			Port:     5432,
-			Database: "goagent",
+			Database: "ARES",
 		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
@@ -740,7 +740,7 @@ func TestValidateStorageEnabled(t *testing.T) {
 			Type:     "postgres",
 			Host:     "", // Missing required field
 			Port:     5432,
-			Database: "goagent",
+			Database: "ARES",
 		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
@@ -854,7 +854,7 @@ func TestConfigStructs(t *testing.T) {
 		Port:     5432,
 		Username: "postgres",
 		Password: "postgres",
-		Database: "goagent",
+		Database: "ARES",
 		SSLMode:  "disable",
 		PGVector: PGVectorConfig{
 			Enabled:   true,

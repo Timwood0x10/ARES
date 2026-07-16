@@ -3,7 +3,7 @@ database:
   port: 5433
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
   sslmode: disable
 
 embedding:

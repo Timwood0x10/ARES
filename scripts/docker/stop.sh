@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-echo "=== Stopping GoAgent Docker services ==="
+echo "=== Stopping ARES Docker services ==="
 docker compose -f "$ROOT/docker-compose.yml" down
 
 echo ""

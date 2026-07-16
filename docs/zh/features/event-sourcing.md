@@ -386,7 +386,7 @@ processor.StartAutoRetry(ctx, 30*time.Second)
 pool, err := postgres.NewPool(ctx, &postgres.Config{
     Host:     "localhost",
     Port:     5433,
-    Database: "goagent",
+    Database: "ARES",
     User:     "postgres",
     Password: "postgres",
 })

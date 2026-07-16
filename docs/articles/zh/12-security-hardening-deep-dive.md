@@ -550,7 +550,7 @@ func (ow *OperationWhitelist) IsAllowed(tool, operation string) bool {
 CodeRunner 是攻击面最大的工具——它能执行任意代码。Permission Guard 对它实施了最严格的控制：
 
 ```go
-// 展示 CodeRunner 的多层安全防护（来自 tool-system-deep-dive.md）
+// 展示 CodeRunner 的多层安全防护（来自 05-tool-system-deep-dive.md）
 // 安全层              措施                    实现
 // ──────────────────────────────────────────────────────
 // 静态分析           危险模式检测（18 种）    strings.Contains 匹配
@@ -1662,7 +1662,7 @@ ares 的安全加固体系不是什么黑科技。它就是把信息安全领域
 | 限流接口/工厂 | `internal/ratelimit/limiter.go`              | Limiter 接口 + Factory 模式            |
 | 限流常量    | `internal/ratelimit/constants.go`            | 默认配置常量                             |
 | 限流测试    | `internal/ratelimit/ratelimit_test.go`       | 限流器单元测试                            |
-| 工具安全策略  | （见 tool-system-deep-dive.md）                 | CodeRunner 沙箱、FileTools 路径隔离       |
+| 工具安全策略  | （见 05-tool-system-deep-dive.md）                 | CodeRunner 沙箱、FileTools 路径隔离       |
 
 ***
 

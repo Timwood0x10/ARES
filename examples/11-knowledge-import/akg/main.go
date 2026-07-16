@@ -76,7 +76,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	dsn := "postgres://postgres:postgres@127.0.0.1:5433/goagent?sslmode=disable"
+	dsn := "postgres://postgres:postgres@127.0.0.1:5433/ARES?sslmode=disable"
 
 	// ── 1. Use existing PGProvider ─────────────────────────────
 	inner, err := pg.NewPGProvider(dsn, provider.ProviderConfig{

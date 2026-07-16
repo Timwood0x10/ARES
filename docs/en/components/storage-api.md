@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Storage module is the core data persistence layer of GoAgent, implemented based on PostgreSQL 15+ with pgvector, providing high-performance vector storage, retrieval, and multi-tenant isolation capabilities.
+The Storage module is the core data persistence layer of ARES, implemented based on PostgreSQL 15+ with pgvector, providing high-performance vector storage, retrieval, and multi-tenant isolation capabilities.
 
 ### Core Capabilities
 
@@ -264,7 +264,7 @@ config := &postgres.Config{
     Port:            5433,
     User:            "postgres",
     Password:        "postgres",
-    Database:        "goagent",
+    Database:        "ARES",
     MaxOpenConns:    25,
     MaxIdleConns:    10,
     ConnMaxLifetime: 5 * time.Minute,
@@ -577,4 +577,4 @@ slog.Info("Query executed",
 
 **Version**: 1.0  
 **Last Updated**: 2026-03-24  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

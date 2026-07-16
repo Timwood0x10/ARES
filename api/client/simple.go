@@ -1,4 +1,4 @@
-// Package client provides simple, fool-proof API for GoAgent.
+// Package client provides simple, fool-proof API for ARES.
 package client
 
 import (
@@ -9,7 +9,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
-// SimpleClient provides the simplest possible API for GoAgent.
+// SimpleClient provides the simplest possible API for ARES.
 // Just configure and call!
 type SimpleClient struct {
 	client *Client
@@ -17,7 +17,7 @@ type SimpleClient struct {
 }
 
 // NewSimpleClient creates a simple client from config file.
-// This is the easiest way to use GoAgent - just load config and go!
+// This is the easiest way to use ARES - just load config and go!
 // Args:
 // configPath - path to config file (empty string for default).
 // Returns simple client or error.

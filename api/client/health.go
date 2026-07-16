@@ -1,4 +1,4 @@
-// Package client provides health check types and logic for the GoAgent API client.
+// Package client provides health check types and logic for the ARES API client.
 package client
 
 import (

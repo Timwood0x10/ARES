@@ -17,7 +17,7 @@ var dbCreateTableCmd = &cobra.Command{
 	Short: "Create distilled_memories table",
 	Long: `Creates the distilled_memories table with indexes and RLS.
 Env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
-Default: postgres://postgres:postgres@localhost:5432/goagent?sslmode=disable`,
+Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbCreateTable()
 	},
@@ -32,7 +32,7 @@ func runDbCreateTable() error {
 	port := getEnv("DB_PORT", "5433")
 	user := getEnv("DB_USER", "postgres")
 	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_NAME", "goagent")
+	dbname := getEnv("DB_NAME", "ARES")
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		url.QueryEscape(user), url.QueryEscape(password),

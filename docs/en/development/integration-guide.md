@@ -4,10 +4,10 @@
 
 ## Introduction
 
-This document describes how to integrate the GoAgent framework into existing projects, supporting two integration modes:
+This document describes how to integrate the ARES framework into existing projects, supporting two integration modes:
 
-1. **Library Mode**: Use GoAgent directly as a dependency library
-2. **Service Mode**: Run GoAgent as a standalone service
+1. **Library Mode**: Use ARES directly as a dependency library
+2. **Service Mode**: Run ARES as a standalone service
 
 ## Integration Modes
 
@@ -22,7 +22,7 @@ Best for:
 
 #### Step 1: Add Dependency
 
-Add GoAgent as a dependency in your project:
+Add ARES as a dependency in your project:
 
 ```bash
 go get github.com/Timwood0x10/ares@latest
@@ -110,7 +110,7 @@ Best for:
 - Need REST API integration
 - Need distributed deployment
 
-#### Step 1: Start GoAgent Service
+#### Step 1: Start ARES Service
 
 ```bash
 # Clone project
@@ -130,7 +130,7 @@ Service will start at `http://localhost:8080`.
 
 #### Step 2: Call via API
 
-Use REST API to interact with GoAgent:
+Use REST API to interact with ARES:
 
 ```bash
 # Create session
@@ -248,7 +248,7 @@ cfg := &service.Config{
         Port:     5433,
         User:     "postgres",
         Password: "postgres",
-        Database: "goagent",
+        Database: "ARES",
     },
 }
 
@@ -314,7 +314,7 @@ storage:
     port: 5433
     user: "postgres"
     password: "postgres"
-    database: "goagent"
+    database: "ARES"
   
   # pgvector configuration
   pgvector:
@@ -328,7 +328,7 @@ storage:
 
 ### Scenario 1: Web Application Integration
 
-Integrate GoAgent into a web application:
+Integrate ARES into a web application:
 
 ```go
 // Web server endpoint
@@ -620,4 +620,4 @@ For questions or help:
 
 **Version**: 1.0  
 **Last Updated**: 2026-03-23  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

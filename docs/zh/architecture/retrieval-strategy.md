@@ -2,7 +2,7 @@
 
 ## Overview
 
-The GoAgent Storage module provides two retrieval strategies to accommodate different use cases:
+The ARES Storage module provides two retrieval strategies to accommodate different use cases:
 
 1. **Simple Retrieval** - Pure vector similarity search
 2. **Advanced Retrieval** - Multi-source hybrid search with advanced features

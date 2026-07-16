@@ -1,4 +1,4 @@
-// Package core provides core abstractions and interfaces for the GoAgent API layer.
+// Package core provides core abstractions and interfaces for the ARES API layer.
 package core
 
 import (

@@ -60,7 +60,7 @@ start_pgvector() {
             --name pgvector \
             -e POSTGRES_PASSWORD=postgres \
             -e POSTGRES_USER=postgres \
-            -e POSTGRES_DB=goagent \
+            -e POSTGRES_DB=ARES \
             -p 5433:5432 \
             pgvector/pgvector:pg16
         print_status "pgvector started on port 5433"

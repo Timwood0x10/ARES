@@ -444,8 +444,8 @@ if pop.StagnantGenerations() > 20 {
 
 ## References
 
-- [GA Benchmark Report](file:///Users/scc/go/src/goagent/benchmarks/ga_benchmark_report.md)
-- [Autonomous Evolution Guide](file:///Users/scc/go/src/goagent/docs/en/features/autonomous-evolution.md)
+- [GA Benchmark Report](file:///Users/scc/go/src/ARES/benchmarks/ga_benchmark_report.md)
+- [Autonomous Evolution Guide](file:///Users/scc/go/src/ARES/docs/en/features/autonomous-evolution.md)
 
 ---
 

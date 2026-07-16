@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// PrometheusMetrics holds all Prometheus metric definitions for GoAgent.
+// PrometheusMetrics holds all Prometheus metric definitions for ARES.
 type PrometheusMetrics struct {
 	// Counters
 	LLMCallsTotal           *prometheus.CounterVec
@@ -40,28 +40,28 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 	m := &PrometheusMetrics{
 		LLMCallsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_llm_calls_total",
+				Name: "ARES_llm_calls_total",
 				Help: "Total number of LLM calls",
 			},
 			[]string{"model", "status"},
 		),
 		ToolCallsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_tool_calls_total",
+				Name: "ARES_tool_calls_total",
 				Help: "Total number of tool calls",
 			},
 			[]string{"tool", "status"},
 		),
 		AgentErrorsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_agent_errors_total",
+				Name: "ARES_agent_errors_total",
 				Help: "Total number of agent errors",
 			},
 			[]string{"agent", "phase"},
 		),
 		LLMCallDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "goagent_llm_call_duration_seconds",
+				Name:    "ARES_llm_call_duration_seconds",
 				Help:    "LLM call duration in seconds",
 				Buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 			},
@@ -69,7 +69,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		),
 		AgentStepDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "goagent_agent_step_duration_seconds",
+				Name:    "ARES_agent_step_duration_seconds",
 				Help:    "Agent step duration in seconds",
 				Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 			},
@@ -77,20 +77,20 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		),
 		ActiveAgents: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "goagent_active_agents",
+				Name: "ARES_active_agents",
 				Help: "Number of currently active agents",
 			},
 		),
 		LLMTokensTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "goagent_llm_tokens_total",
+				Name: "ARES_llm_tokens_total",
 				Help: "Total LLM tokens used",
 			},
 			[]string{"model", "direction"},
 		),
 		CostUSDTotal: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
-				Name:       "goagent_cost_usd_total",
+				Name:       "ARES_cost_usd_total",
 				Help:       "Total cost in USD",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			},
@@ -98,28 +98,28 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		),
 		EvolutionDeployTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_evolution_deploy_total",
+				Name: "ARES_evolution_deploy_total",
 				Help: "Total number of strategy deployments",
 			},
 			[]string{"status"},
 		),
 		EvolutionGuardrailTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_evolution_guardrail_total",
+				Name: "ARES_evolution_guardrail_total",
 				Help: "Total number of guardrail triggers",
 			},
 			[]string{"code"},
 		),
 		EvolutionShadowTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_evolution_shadow_total",
+				Name: "ARES_evolution_shadow_total",
 				Help: "Total number of shadow evaluation results",
 			},
 			[]string{"result"},
 		),
 		EvolutionScoreGauge: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "goagent_evolution_score",
+				Name: "ARES_evolution_score",
 				Help: "Current evolution score by strategy ID",
 			},
 			[]string{"strategy_id"},

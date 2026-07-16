@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use ARES in your research, please cite it as below."
+title: "ARES: Agent Runtime & Evolution System"
+type: software
+authors:
+  - family-names: Timwood
+    given-names: "0x10"
+    orcid: "https://github.com/Timwood0x10"
+repository-code: "https://github.com/Timwood0x10/ares"
+url: "https://github.com/Timwood0x10/ares"
+abstract: >-
+  ARES is a Go framework for building resilient, self-evolving AI agents.
+  It provides a unified SDK, DAG workflow engine, chaos engineering,
+  memory distillation, knowledge fabric, and MCP tool integration.
+  The runtime continuously evolves its DAG topology, scheduler, knowledge
+  planner, and recovery strategies in production without restarts.
+keywords:
+  - agent-framework
+  - go
+  - self-evolving
+  - mcp
+  - dag-workflow
+  - chaos-engineering
+license: Apache-2.0
+version: "0.2.8"
+date-released: "2026-07-16"

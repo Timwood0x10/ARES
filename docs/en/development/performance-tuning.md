@@ -4,7 +4,7 @@
 
 ## Introduction
 
-This document describes how to optimize the performance of the GoAgent framework, including database connection pooling, concurrency control, caching strategies, and more.
+This document describes how to optimize the performance of the ARES framework, including database connection pooling, concurrency control, caching strategies, and more.
 
 ## Database Connection Pool Optimization
 
@@ -19,7 +19,7 @@ storage:
     port: 5433
     user: "postgres"
     password: "postgres"
-    database: "goagent"
+    database: "ARES"
     
     # Connection pool configuration
     pool:
@@ -635,4 +635,4 @@ Cache Hit Rate: 85%
 
 **Version**: 1.0  
 **Last Updated**: 202-2026-03-23  
-**Maintainer**: GoAgent Team
+**Maintainer**: ARES Team

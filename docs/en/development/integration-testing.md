@@ -18,7 +18,7 @@ Integration tests validate end-to-end behavior with real PostgreSQL. They cover 
 Set `TEST_POSTGRES_DSN` to connect to your test database:
 
 ```bash
-export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+export TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
 ```
 
 If the variable is not set, integration tests are automatically skipped.
@@ -29,7 +29,7 @@ If the variable is not set, integration tests are automatically skipped.
 docker run -d \
   --name ares-test-db \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=goagent_test \
+  -e POSTGRES_DB=ARES_test \
   -p 5432:5432 \
   pgvector/pgvector:pg15
 ```
@@ -128,13 +128,13 @@ integration:
       image: pgvector/pgvector:pg15
       env:
         POSTGRES_PASSWORD: postgres
-        POSTGRES_DB: goagent_test
+        POSTGRES_DB: ARES_test
       ports:
         - 5432:5432
   steps:
     - name: Integration tests
       env:
-        TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/goagent_test?sslmode=disable"
+        TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
       run: go test -race -count=1 -timeout=300s ./internal/integration/...
 ```
 

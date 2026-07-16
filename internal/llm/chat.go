@@ -256,7 +256,7 @@ func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, to
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	req.Header.Set("X-Title", "GoAgent")
+	req.Header.Set("X-Title", "ARES")
 
 	return c.decodeOpenAIChatResponse(ctx, req)
 }

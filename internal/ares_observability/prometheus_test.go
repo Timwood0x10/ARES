@@ -22,28 +22,28 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 	m := &PrometheusMetrics{
 		LLMCallsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_llm_calls_total",
+				Name: "ARES_llm_calls_total",
 				Help: "Total number of LLM calls",
 			},
 			[]string{"model", "status"},
 		),
 		ToolCallsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_tool_calls_total",
+				Name: "ARES_tool_calls_total",
 				Help: "Total number of tool calls",
 			},
 			[]string{"tool", "status"},
 		),
 		AgentErrorsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "goagent_agent_errors_total",
+				Name: "ARES_agent_errors_total",
 				Help: "Total number of agent errors",
 			},
 			[]string{"agent", "phase"},
 		),
 		LLMCallDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "goagent_llm_call_duration_seconds",
+				Name:    "ARES_llm_call_duration_seconds",
 				Help:    "LLM call duration in seconds",
 				Buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 			},
@@ -51,7 +51,7 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 		),
 		AgentStepDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "goagent_agent_step_duration_seconds",
+				Name:    "ARES_agent_step_duration_seconds",
 				Help:    "Agent step duration in seconds",
 				Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 			},
@@ -59,20 +59,20 @@ func newTestMetrics(t *testing.T) (*PrometheusMetrics, http.Handler) {
 		),
 		ActiveAgents: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "goagent_active_agents",
+				Name: "ARES_active_agents",
 				Help: "Number of currently active agents",
 			},
 		),
 		LLMTokensTotal: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
-				Name: "goagent_llm_tokens_total",
+				Name: "ARES_llm_tokens_total",
 				Help: "Total LLM tokens used",
 			},
 			[]string{"model", "direction"},
 		),
 		CostUSDTotal: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
-				Name:       "goagent_cost_usd_total",
+				Name:       "ARES_cost_usd_total",
 				Help:       "Total cost in USD",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			},
@@ -167,13 +167,13 @@ func TestPrometheusMetrics_RecordLLMCall(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, `goagent_llm_calls_total{model="gpt-4o",status="success"} 1`) {
+	if !strings.Contains(body, `ARES_llm_calls_total{model="gpt-4o",status="success"} 1`) {
 		t.Errorf("expected LLM calls counter for gpt-4o success in output:\n%s", body)
 	}
-	if !strings.Contains(body, `goagent_llm_calls_total{model="gpt-4o",status="error"} 1`) {
+	if !strings.Contains(body, `ARES_llm_calls_total{model="gpt-4o",status="error"} 1`) {
 		t.Errorf("expected LLM calls counter for gpt-4o error in output:\n%s", body)
 	}
-	if !strings.Contains(body, "goagent_llm_call_duration_seconds") {
+	if !strings.Contains(body, "ARES_llm_call_duration_seconds") {
 		t.Error("expected LLM call duration histogram in output")
 	}
 }
@@ -186,10 +186,10 @@ func TestPrometheusMetrics_RecordToolCall(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, `goagent_tool_calls_total{status="success",tool="search_api"} 1`) {
+	if !strings.Contains(body, `ARES_tool_calls_total{status="success",tool="search_api"} 1`) {
 		t.Errorf("expected tool call counter in output:\n%s", body)
 	}
-	if !strings.Contains(body, `goagent_tool_calls_total{status="error",tool="weather_api"} 1`) {
+	if !strings.Contains(body, `ARES_tool_calls_total{status="error",tool="weather_api"} 1`) {
 		t.Errorf("expected tool call error counter in output:\n%s", body)
 	}
 }
@@ -202,10 +202,10 @@ func TestPrometheusMetrics_RecordAgentError(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, `goagent_agent_errors_total{agent="leader-1",phase="planning"} 1`) {
+	if !strings.Contains(body, `ARES_agent_errors_total{agent="leader-1",phase="planning"} 1`) {
 		t.Errorf("expected agent error counter in output:\n%s", body)
 	}
-	if !strings.Contains(body, `goagent_agent_errors_total{agent="sub-agent-1",phase="execution"} 1`) {
+	if !strings.Contains(body, `ARES_agent_errors_total{agent="sub-agent-1",phase="execution"} 1`) {
 		t.Errorf("expected sub-agent error counter in output:\n%s", body)
 	}
 }
@@ -218,7 +218,7 @@ func TestPrometheusMetrics_RecordAgentStepDuration(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, "goagent_agent_step_duration_seconds") {
+	if !strings.Contains(body, "ARES_agent_step_duration_seconds") {
 		t.Error("expected step duration histogram in output")
 	}
 	if !strings.Contains(body, `phase="planning"`) {
@@ -239,7 +239,7 @@ func TestPrometheusMetrics_ActiveAgentsGauge(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, "goagent_active_agents 4") {
+	if !strings.Contains(body, "ARES_active_agents 4") {
 		t.Errorf("expected active_agents=4 after set(3)+inc+inc-dec, got:\n%s", body)
 	}
 }
@@ -252,10 +252,10 @@ func TestPrometheusMetrics_RecordLLMTokens(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, `goagent_llm_tokens_total{direction="input",model="gpt-4o"} 5000`) {
+	if !strings.Contains(body, `ARES_llm_tokens_total{direction="input",model="gpt-4o"} 5000`) {
 		t.Errorf("expected input token gauge in output:\n%s", body)
 	}
-	if !strings.Contains(body, `goagent_llm_tokens_total{direction="output",model="gpt-4o"} 2000`) {
+	if !strings.Contains(body, `ARES_llm_tokens_total{direction="output",model="gpt-4o"} 2000`) {
 		t.Errorf("expected output token gauge in output:\n%s", body)
 	}
 }
@@ -268,7 +268,7 @@ func TestPrometheusMetrics_RecordCost(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, "goagent_cost_usd_total") {
+	if !strings.Contains(body, "ARES_cost_usd_total") {
 		t.Error("expected cost summary in output")
 	}
 	if !strings.Contains(body, `model="gpt-4o"`) {
@@ -385,7 +385,7 @@ func TestPrometheusMetrics_CounterIncrementMultiple(t *testing.T) {
 
 	body := collectMetrics(t, handler)
 
-	if !strings.Contains(body, `goagent_llm_calls_total{model="gpt-4o",status="success"} 3`) {
+	if !strings.Contains(body, `ARES_llm_calls_total{model="gpt-4o",status="success"} 3`) {
 		t.Errorf("expected counter value 3 after 3 increments, got:\n%s", body)
 	}
 }

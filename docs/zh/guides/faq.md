@@ -58,12 +58,12 @@ database:
   port: 5433  # 确认端口正确
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
 ```
 
 4. 检查 pgvector 扩展：
 ```bash
-psql -d goagent -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+psql -d ARES -c "SELECT extname FROM pg_extension WHERE extname='vector';"
 # 应该返回: vector
 ```
 
@@ -94,7 +94,7 @@ make install
 
 2. 启用扩展：
 ```bash
-psql -d goagent -c "CREATE EXTENSION vector;"
+psql -d ARES -c "CREATE EXTENSION vector;"
 ```
 
 **代码位置**: `internal/storage/postgres/migrate.go:50-100`（数据库迁移）
@@ -116,7 +116,7 @@ database:
   port: 5433            # 数据库端口
   user: postgres        # 用户名
   password: postgres    # 密码
-  database: goagent     # 数据库名
+  database: ARES     # 数据库名
 ```
 
 **代码位置**: `internal/storage/postgres/pool.go:35-50`（连接池初始化）
@@ -183,11 +183,11 @@ Failed to create knowledge base: create database pool: failed to ping database
 1. 检查数据库连接（见 Q2）
 2. 检查数据库是否创建：
 ```bash
-psql -l | grep goagent
+psql -l | grep ARES
 ```
 3. 检查表是否迁移：
 ```bash
-psql -d goagent -c "\dt"
+psql -d ARES -c "\dt"
 # 应该看到: knowledge_chunks_1024, distilled_memories 等
 ```
 
@@ -249,7 +249,7 @@ curl http://localhost:11434/api/embeddings
 
 3. 检查 pgvector 配置：
 ```bash
-psql -d goagent -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
+psql -d ARES -c "SELECT extversion FROM pg_extension WHERE extname='vector';"
 ```
 
 **代码位置**: `internal/storage/postgres/repositories/knowledge_repository.go:100-120`（向量搜索）

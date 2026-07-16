@@ -111,13 +111,13 @@ go mod download
 
 ```bash
 # 创建数据库
-createdb goagent
+createdb ARES
 
 # 启动 PostgreSQL
 pg_ctl start
 
 # 安装 pgvector 扩展
-psql -d goagent -c "CREATE EXTENSION vector;"
+psql -d ARES -c "CREATE EXTENSION vector;"
 ```
 
 #### 方式 2: 使用 Docker（推荐）
@@ -127,7 +127,7 @@ psql -d goagent -c "CREATE EXTENSION vector;"
 docker run -d \
   --name ares-db \
   -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=goagent \
+  -e POSTGRES_DB=ARES \
   -p 5433:5432 \
   pgvector/pgvector:pg15
 
@@ -135,7 +135,7 @@ docker run -d \
 sleep 5
 
 # 验证连接
-docker exec -it ares-db psql -U postgres -d goagent -c "SELECT version();"
+docker exec -it ares-db psql -U postgres -d ARES -c "SELECT version();"
 ```
 
 ### 4. 配置示例
@@ -150,7 +150,7 @@ database:
   port: 5433  # 如果使用 Docker，默认是 5433
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
 
 embedding_service_url: http://localhost:11434
 embedding_model: nomic-embed-text
@@ -222,7 +222,7 @@ go run main.go
 
 ```bash
 # 连接到数据库
-psql -h localhost -p 5433 -U postgres -d goagent
+psql -h localhost -p 5433 -U postgres -d ARES
 
 # 检查表
 \dt

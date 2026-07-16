@@ -399,7 +399,7 @@ database:
   port: 5432
   user: postgres
   password: postgres
-  database: goagent
+  database: ARES
   max_open_conns: 25
   max_idle_conns: 10
   conn_max_lifetime: 5m

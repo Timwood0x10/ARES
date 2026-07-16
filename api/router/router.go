@@ -1,4 +1,4 @@
-// Package router provides HTTP routing for the GoAgent API.
+// Package router provides HTTP routing for the ARES API.
 package router
 
 import (

@@ -1,4 +1,4 @@
-# GoAgent API Reference
+# ARES API Reference
 
 ## Phase 3: Plugin Tool System
 
