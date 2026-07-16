@@ -64,6 +64,12 @@ make examples          # build all 24 examples
 | **Multi-Agent** | Leader/sub orchestration with automatic failover |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
 
+## Module Map
+
+> Start from "I want to use capability X" and find the code in one step.
+
+- [Capability–Module Map (English)](docs/CAPABILITY-MAP.en.md)
+
 ## CLI
 
 ```bash
