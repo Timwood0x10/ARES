@@ -127,9 +127,24 @@ func (a *leaderAgent) Start(ctx context.Context) (startErr error) {
 	// Initialize lifecycle channels and errgroups inside the lock so that a
 	// concurrent Stop() observes a non-nil stopCh. Creating stopCh after the
 	// lock is released lets Stop close a nil channel and panic.
-	a.stopCh = make(chan struct{})
-	a.distillEg = &errgroup.Group{}
-	a.streamEg = &errgroup.Group{}
+	// Only initialize if not already set up by ensureInitialized for the
+	// current lifecycle. Re-creating them would leak the previous channels
+	// and errgroups (LD-3). After a prior Stop, stopCh is closed but non-nil,
+	// so detect that and create fresh fields.
+	createFields := true
+	if a.stopCh != nil {
+		select {
+		case <-a.stopCh:
+			// closed by a previous Stop: need fresh fields
+		default:
+			createFields = false // open: already initialized by ensureInitialized
+		}
+	}
+	if createFields {
+		a.stopCh = make(chan struct{})
+		a.distillEg = &errgroup.Group{}
+		a.streamEg = &errgroup.Group{}
+	}
 	a.mu.Unlock()
 
 	// Reset status to Offline if startup fails for any reason.
@@ -298,6 +313,11 @@ func (a *leaderAgent) checkStepLimit(stepCount, maxSteps int) error {
 }
 
 func (a *leaderAgent) checkAgentRunning() error {
+	// Hold a.mu.RLock to safely read the stopCh field, which is written under
+	// a.mu in Start/ensureInitialized/Stop. The chan receive itself is safe
+	// without a lock (closing is synchronized), but the field read is not (LD-5).
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	select {
 	case <-a.stopCh:
 		return errors.ErrAgentNotRunning
@@ -370,7 +390,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	if err := a.checkAgentRunning(); err != nil {
 		return a.fail(err)
 	}
-	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{"step": "parse"})
+	a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{"step": "parse", "task_id": taskID})
 	profile, err := a.parser.Parse(ctx, strInput)
 	if err != nil {
 		return a.fail(err)
@@ -384,7 +404,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	if err := a.checkAgentRunning(); err != nil {
 		return a.fail(err)
 	}
-	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "plan"})
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "plan", "task_id": taskID})
 	tasks, err := a.planner.Plan(ctx, profile, strInput)
 	if err != nil {
 		return a.fail(err)
@@ -399,7 +419,7 @@ func (a *leaderAgent) Process(ctx context.Context, input any) (any, error) {
 	if err := a.checkAgentRunning(); err != nil {
 		return a.fail(err)
 	}
-	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "dispatch"})
+	a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{"step": "dispatch", "task_id": taskID})
 	log.Info("Leader dispatching tasks", "module", "leader")
 	results, err := a.dispatcher.Dispatch(ctx, tasks)
 	if err != nil {
@@ -527,6 +547,7 @@ func (a *leaderAgent) RestoreState(state map[string]any) error {
 //   - EventSessionCreated: restores session_id
 //   - EventMessageAdded: updates last_message_role and message count
 //   - EventTaskCreated: restores last_task_id
+//   - EventTaskDispatched: updates last_task_id (dispatch progression)
 //   - EventTaskCompleted: restores last_completed_task_id
 //   - EventAgentStarted/Stopped: updates agent status
 //
@@ -563,6 +584,13 @@ func (a *leaderAgent) ReplayEvents(evts []*ares_events.Event) error {
 			}
 
 		case ares_events.EventTaskCreated:
+			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
+				a.lastTaskID = tid
+			}
+
+		case ares_events.EventTaskDispatched:
+			// A dispatched task has progressed past creation; update lastTaskID
+			// so recovery can resume from the dispatched task (LD-2).
 			if tid, ok := ev.Payload["task_id"].(string); ok && tid != "" {
 				a.lastTaskID = tid
 			}
@@ -712,7 +740,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		// Parse profile.
 		a.emitEvent(ctx, ares_events.EventTaskCreated, map[string]any{
-			"step": "parse",
+			"step":    "parse",
+			"task_id": taskID,
 		})
 
 		profile, err := a.parser.Parse(ctx, strInput)
@@ -732,7 +761,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 
 		// Plan tasks.
 		a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
-			"step": "plan",
+			"step":    "plan",
+			"task_id": taskID,
 		})
 
 		tasks, err := a.planner.Plan(ctx, profile, strInput)
@@ -762,7 +792,8 @@ func (a *leaderAgent) ProcessStream(ctx context.Context, input any) (<-chan base
 		}
 
 		a.emitEvent(ctx, ares_events.EventTaskDispatched, map[string]any{
-			"step": "dispatch",
+			"step":    "dispatch",
+			"task_id": taskID,
 		})
 
 		results, err := a.dispatcher.Dispatch(ctx, tasks)

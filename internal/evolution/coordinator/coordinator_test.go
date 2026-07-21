@@ -135,6 +135,40 @@ func TestCoordinator_Evaluate_DelaysOnRateLimit(t *testing.T) {
 		"should delay when rate limit is 0")
 }
 
+// TestCoordinator_Evaluate_DelayedProposalRequeued verifies that a delayed
+// proposal is re-queued for later review rather than silently discarded, and
+// that it is permanently dropped (not retried forever) once the retry cap is
+// reached.
+func TestCoordinator_Evaluate_DelayedProposalRequeued(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("delayed", exec))
+
+	// GA patch with fitness in the delay band (30 < 50 < 60).
+	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "delayed"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  50.0,
+	})
+
+	// First evaluation: delayed, re-queued (not applied, not dropped).
+	coord.Evaluate(context.Background())
+	assert.Equal(t, 1, coord.PendingCount(), "delayed proposal should be re-queued")
+	assert.Len(t, exec.applied, 0, "delayed proposal must not be applied")
+	require.Len(t, coord.DecisionHistory(), 1)
+	assert.Equal(t, DecisionDelay, coord.DecisionHistory()[0].Decision)
+
+	// Subsequent evaluations re-review it until the retry cap is reached, then
+	// it is permanently dropped (no infinite delay loop).
+	for i := 0; i < maxProposalRetries; i++ {
+		coord.Evaluate(context.Background())
+	}
+	assert.Equal(t, 0, coord.PendingCount(), "proposal must be dropped after retry cap")
+	assert.Len(t, exec.applied, 0, "delayed proposal must never be applied")
+}
+
 // ── Fitness-gated evaluation ───────────────
 
 func TestCoordinator_Evaluate_GA_FitnessAboveThreshold_Applies(t *testing.T) {

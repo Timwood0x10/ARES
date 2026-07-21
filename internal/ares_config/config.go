@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,6 +42,20 @@ type Config struct {
 	MCP        MCPConfig          `yaml:"mcp"`
 	Dashboard  DashboardAppConfig `yaml:"dashboard"`
 	Evolution  EvolutionConfig    `yaml:"evolution"`
+	Embedding  EmbeddingConfig    `yaml:"embedding"`
+}
+
+// EmbeddingConfig holds configuration for the embedding client used by
+// experience distillation. Distillation requires an embedding client to
+// vectorize distilled experiences; the rest of the system can run without it.
+// When Enabled is false, experience distillation is not wired (graceful skip).
+type EmbeddingConfig struct {
+	Enabled   bool   `yaml:"enabled"`    // Enable embedding client + experience distillation
+	BaseURL   string `yaml:"base_url"`   // Embedding service base URL
+	Model     string `yaml:"model"`      // Embedding model name
+	RedisAddr string `yaml:"redis_addr"` // Optional Redis for embedding cache (empty = no cache)
+	Dimension int    `yaml:"dimension"`  // Vector dimension (0 = use model default)
+	Timeout   int    `yaml:"timeout"`    // Request timeout in seconds (0 = 30s default)
 }
 
 // ServerConfig holds server configuration.
@@ -841,4 +856,10 @@ type EvolutionConfig struct {
 	// in steady-state mode [0.0, 1.0]. Only used when steady_state is true.
 	// Default: 0.3.
 	SteadyStateReplaceRate float64 `yaml:"steady_state_replace_rate"`
+
+	// Deployment configures safe promotion of evolution patches to the live
+	// runtime via the DeploymentPipeline. Disabled by default — when enabled,
+	// accepted patches are promoted through staging → live instead of applied
+	// directly by the Coordinator.
+	Deployment deployment.DeploymentConfig `yaml:"deployment"`
 }

@@ -70,12 +70,28 @@ var (
 	NewValidationError     = core.NewValidationError
 	ResultWithTiming       = core.ResultWithTiming
 	NewResultList          = core.NewResultList
-	GlobalRegistry         = core.GlobalRegistry
-	Register               = core.Register
-	Get                    = core.Get
-	List                   = core.List
-	Execute                = core.Execute
-	ErrNilTool             = core.ErrNilTool
+	// Deprecated: GlobalRegistry aliases core.GlobalRegistry, which is no
+	// longer populated by production code after the P2.1 DI change. Use a
+	// *Registry instance created via NewRegistry and passed through dependency
+	// injection instead.
+	GlobalRegistry = core.GlobalRegistry
+	// Deprecated: Register operates on the empty GlobalRegistry. Use a
+	// *Registry instance created via NewRegistry and passed through dependency
+	// injection instead.
+	Register = core.Register
+	// Deprecated: Get operates on the empty GlobalRegistry. Use a *Registry
+	// instance created via NewRegistry and passed through dependency injection
+	// instead.
+	Get = core.Get
+	// Deprecated: List operates on the empty GlobalRegistry. Use a *Registry
+	// instance created via NewRegistry and passed through dependency injection
+	// instead.
+	List = core.List
+	// Deprecated: Execute operates on the empty GlobalRegistry. Use a
+	// *Registry instance created via NewRegistry and passed through dependency
+	// injection instead.
+	Execute    = core.Execute
+	ErrNilTool = core.ErrNilTool
 )
 
 // Base functions

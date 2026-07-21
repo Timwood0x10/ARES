@@ -86,6 +86,13 @@ type APIv2 struct {
 	survival SurvivalProvider
 	upgrader *websocket.Upgrader
 	apiKey   string // optional API key protecting destructive endpoints
+
+	// Optional service muxes mounted by the wiring layer (ares_eval, memory,
+	// retrieval). They are *http.ServeMux instances built by the launcher
+	// (internal/api_impl) and forwarded here so routes are served under /api.
+	evalMux      *http.ServeMux
+	memoryMux    *http.ServeMux
+	retrievalMux *http.ServeMux
 }
 
 // NewAPIv2 creates a new unified API.
@@ -142,6 +149,25 @@ func (a *APIv2) SetArena(arena ArenaProvider) {
 // SetSurvival attaches a survival provider for resilience testing.
 func (a *APIv2) SetSurvival(survival SurvivalProvider) {
 	a.survival = survival
+}
+
+// SetEvalMux mounts the evaluation service HTTP mux built by the wiring layer.
+// The mux must already contain the registered eval routes (e.g. via
+// evalapi.RegisterRoutes). Routes are served under /api/v1/eval/*.
+func (a *APIv2) SetEvalMux(mux *http.ServeMux) {
+	a.evalMux = mux
+}
+
+// SetMemoryMux mounts the memory service HTTP mux built by the wiring layer.
+// Routes are served under /api/v1/sessions/*.
+func (a *APIv2) SetMemoryMux(mux *http.ServeMux) {
+	a.memoryMux = mux
+}
+
+// SetRetrievalMux mounts the retrieval service HTTP mux built by the wiring layer.
+// Routes are served under /api/v1/knowledge/*.
+func (a *APIv2) SetRetrievalMux(mux *http.ServeMux) {
+	a.retrievalMux = mux
 }
 
 // SetIntelligence attaches the intelligence engine for health/anomaly endpoints.
@@ -263,6 +289,20 @@ func (a *APIv2) MountGinRoutes(rg *gin.RouterGroup) {
 	rg.GET("/flight/decisions", a.wrapGin(a.handleFlightDecisions))
 	rg.GET("/flight/diagnostics", a.wrapGin(a.handleFlightDiagnostics))
 	rg.GET("/flight/genealogy", a.wrapGin(a.handleFlightGenealogy))
+
+	// ── Wired services (eval / memory / retrieval) ──
+	// Forwarded from pre-built *http.ServeMux instances supplied by the
+	// wiring layer (internal/api_impl). The full original path is preserved
+	// when forwarded, so the service muxes match their own route patterns.
+	if a.evalMux != nil {
+		rg.Any("/v1/eval/*path", gin.WrapH(a.evalMux))
+	}
+	if a.memoryMux != nil {
+		rg.Any("/v1/sessions/*path", gin.WrapH(a.memoryMux))
+	}
+	if a.retrievalMux != nil {
+		rg.Any("/v1/knowledge/*path", gin.WrapH(a.retrievalMux))
+	}
 }
 
 // wrapGin converts a standard http.HandlerFunc to a gin.HandlerFunc.

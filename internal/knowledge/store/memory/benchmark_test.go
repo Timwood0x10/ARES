@@ -11,10 +11,10 @@ import (
 // makeObject builds a single KnowledgeObject with a realistic payload.
 func makeObject(i int) *knowledge.KnowledgeObject {
 	return &knowledge.KnowledgeObject{
-		ID:        fmt.Sprintf("obj-%d", i),
-		Type:      knowledge.ObjectDecision,
-		Summary:   fmt.Sprintf("Decision %d: use Redis for session caching", i),
-		Tags:      []string{"cache", "redis", "session"},
+		ID:         fmt.Sprintf("obj-%d", i),
+		Type:       knowledge.ObjectDecision,
+		Summary:    fmt.Sprintf("Decision %d: use Redis for session caching", i),
+		Tags:       []string{"cache", "redis", "session"},
 		Confidence: 0.9,
 		Normalized: fmt.Sprintf("normalized text for object %d", i),
 		Raw:        []byte(fmt.Sprintf("raw bytes for object %d with some content", i)),

@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience"
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
@@ -52,32 +53,9 @@ func init() {
 
 func runServe() error {
 	// --- Config ---
-	configPath := serveConfigPath
-	if configPath == "" {
-		for _, p := range []string{
-			"cmd/monitor-live/config.yaml",
-			"./cmd/monitor-live/config.yaml",
-		} {
-			if _, err := os.Stat(p); err == nil {
-				configPath = p
-				break
-			}
-		}
-		if configPath == "" {
-			configPath = "cmd/monitor-live/config.yaml"
-		}
-	}
-
-	cfg, err := ares_config.Load(configPath)
+	cfg, err := loadServeConfig()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if err := ares_config.LoadFromEnv(cfg); err != nil {
-		return fmt.Errorf("load env: %w", err)
-	}
-
-	if servePort > 0 {
-		cfg.Server.Port = servePort
+		return err
 	}
 
 	// --- Context with signal handling ---
@@ -91,19 +69,27 @@ func runServe() error {
 	// The actual server is constructed after bootstrap/agent setup is complete.
 	var httpSrv *http.Server
 
+	// Graceful shutdown coordinator (internal/ares_shutdown). Real teardown
+	// hooks (HTTP server, MCP, runtime) are registered below once those
+	// components are initialized.
+	shutdownMgr := ares_shutdown.NewManager(30 * time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhasePreShutdown, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful, 20*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		select {
 		case <-sigCh:
 			fmt.Println("\nShutting down...")
-			if httpSrv != nil {
-				// Create a fresh context for shutdown with a timeout so the
-				// server does not hang indefinitely if connections refuse to close.
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer shutdownCancel()
-				if err := httpSrv.Shutdown(shutdownCtx); err != nil && err != http.ErrServerClosed {
-					fmt.Fprintf(os.Stderr, "HTTP server shutdown error: %v\n", err)
-				}
+			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
+			// bounded overall timeout. cancel() afterwards stops background
+			// goroutines (event bridge, task submission) that wait on ctx.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer shutdownCancel()
+			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
 			}
 			cancel()
 		case <-ctx.Done():
@@ -288,8 +274,61 @@ func runServe() error {
 		return nil
 	})
 
+	// Register graceful-shutdown hooks now that the server, MCP, and runtime
+	// are initialized. Each hook performs a real teardown (no no-ops).
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
+		if httpSrv != nil {
+			return httpSrv.Shutdown(ctx)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("register http shutdown hook: %w", err)
+	}
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, comp.MCP.Stop); err != nil {
+		return fmt.Errorf("register mcp shutdown hook: %w", err)
+	}
+	if err := shutdownMgr.AddCallback(ares_shutdown.PhaseGraceful, func(ctx context.Context) error {
+		return mgr.Stop()
+	}); err != nil {
+		return fmt.Errorf("register runtime shutdown hook: %w", err)
+	}
+
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	return g.Wait()
+}
+
+// loadServeConfig resolves the config path (falling back to the bundled
+// monitor-live config), loads it, applies environment overrides, and applies
+// the --port flag. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
+func loadServeConfig() (*ares_config.Config, error) {
+	configPath := serveConfigPath
+	if configPath == "" {
+		for _, p := range []string{
+			"cmd/monitor-live/config.yaml",
+			"./cmd/monitor-live/config.yaml",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				configPath = p
+				break
+			}
+		}
+		if configPath == "" {
+			configPath = "cmd/monitor-live/config.yaml"
+		}
+	}
+
+	cfg, err := ares_config.Load(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if err := ares_config.LoadFromEnv(cfg); err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+	if servePort > 0 {
+		cfg.Server.Port = servePort
+	}
+	return cfg, nil
 }
 
 // createLLMAdapterWithFallback creates an LLM adapter with fallback chain.

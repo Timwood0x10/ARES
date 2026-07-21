@@ -42,6 +42,8 @@ type LLMConfig struct {
 	FrequencyPenalty float64
 	// PresencePenalty penalizes new tokens.
 	PresencePenalty float64
+	// MaxPromptLength limits the prompt character count. 0 = internal default (8192).
+	MaxPromptLength int `yaml:"max_prompt_length"`
 }
 
 // Message represents a message in a conversation.

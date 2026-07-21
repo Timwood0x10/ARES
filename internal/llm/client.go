@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
@@ -97,9 +98,10 @@ type Client struct {
 	httpClient     *http.Client
 	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
 	tracer         ares_observability.Tracer
-	ares_callbacks ares_callbacks.Emitter // Optional: emits lifecycle events for LLM calls.
-	limiter        ares_ratelimit.Limiter // Optional: rate limiter for API calls.
-	closeOnce      sync.Once              // Ensures Close() is idempotent and safe for concurrent calls.
+	ares_callbacks ares_callbacks.Emitter   // Optional: emits lifecycle events for LLM calls.
+	limiter        ares_ratelimit.Limiter   // Optional: rate limiter for API calls.
+	sanitizer      *ares_security.Sanitizer // Optional: masks secrets in recorded prompts/responses.
+	closeOnce      sync.Once                // Ensures Close() is idempotent and safe for concurrent calls.
 }
 
 // Option configures a Client instance during construction.
@@ -128,6 +130,16 @@ func WithCallbacks(emitter ares_callbacks.Emitter) Option {
 func WithRateLimiter(limiter ares_ratelimit.Limiter) Option {
 	return func(c *Client) {
 		c.limiter = limiter
+	}
+}
+
+// WithSanitizer sets an optional sanitizer that masks sensitive data
+// (API keys, tokens, passwords, etc.) in prompts and responses before they
+// are recorded by the tracer/event store. This prevents secret leakage into
+// logs and traces without altering the live request sent to the provider.
+func WithSanitizer(s *ares_security.Sanitizer) Option {
+	return func(c *Client) {
+		c.sanitizer = s
 	}
 }
 
@@ -201,6 +213,13 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 
 // recordLLMCall records an LLM call via the tracer if set.
 func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tokens int, start time.Time, err error) {
+	// Scrub secrets from the recorded copy only — the live request to the
+	// provider is never modified, so functionality is preserved while logs
+	// and traces no longer leak credentials.
+	if c.sanitizer != nil {
+		prompt = c.sanitizer.Sanitize(prompt)
+		response = c.sanitizer.Sanitize(response)
+	}
 	if c.tracer == nil {
 		return
 	}

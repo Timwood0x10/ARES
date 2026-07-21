@@ -119,6 +119,18 @@ func (s *Service) GetSession(ctx context.Context, sessionID string) (*core.Sessi
 	return session, nil
 }
 
+// UpdateSession updates an existing session.
+// Args:
+// ctx - operation context.
+// session - the session to update.
+// Returns error if update fails.
+func (s *Service) UpdateSession(ctx context.Context, session *core.Session) error {
+	if session == nil {
+		return ErrInvalidConfig
+	}
+	return s.repo.UpdateSession(ctx, session)
+}
+
 // DeleteSession deletes a session and all its messages.
 // Args:
 // ctx - operation context.

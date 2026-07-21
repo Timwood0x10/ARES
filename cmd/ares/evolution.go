@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
@@ -55,7 +56,7 @@ func getNewEvolution() *ares_bootstrap.NewEvolutionComponents {
 		if err != nil {
 			log.Fatalf("create mutable dag: %v", err)
 		}
-		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, nil)
+		comp, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager())
 		if err != nil {
 			log.Fatalf("bootstrap evolution: %v", err)
 		}

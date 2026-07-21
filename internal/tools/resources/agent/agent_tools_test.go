@@ -64,7 +64,7 @@ func TestNewAgentTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			agentTools := NewAgentTools(tt.config)
+			agentTools := NewAgentTools(tt.config, core.GlobalRegistry)
 
 			require.NotNil(t, agentTools)
 
@@ -100,7 +100,7 @@ func TestAgentToolsExecute(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("test_agent_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	ctx := context.Background()
 	params := map[string]interface{}{
@@ -140,7 +140,7 @@ func TestAgentToolsGetTool(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("get_test_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	// Get existing tool
 	tool, exists := agentTools.GetTool("get_test_tool")
@@ -179,7 +179,7 @@ func TestAgentToolsListTools(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("list_tool2")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	tools := agentTools.ListTools()
 
@@ -218,7 +218,7 @@ func TestAgentToolsGetSchemas(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("schema_test_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	schemas := agentTools.GetSchemas()
 
@@ -263,7 +263,7 @@ func TestAgentToolsGetToolInfo(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("info_test_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	// Get info for existing tool
 	info := agentTools.GetToolInfo("info_test_tool")
@@ -311,7 +311,7 @@ func TestAgentToolsGetCapabilityExport(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("export_tool2")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	export := agentTools.GetCapabilityExport("test_agent")
 
@@ -385,7 +385,7 @@ func TestAgentToolsGenerateToolPrompt(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("prompt_test_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	prompt := agentTools.GenerateToolPrompt()
 
@@ -421,7 +421,7 @@ func TestAgentToolsMatchToolsByQuery(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("math_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	// Match with math query
 	tools := agentTools.MatchToolsByQuery("calculate 5 + 3")
@@ -464,7 +464,7 @@ func TestAgentToolsMatchToolSchemasByQuery(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("schema_match_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	// Match with text query
 	schemas := agentTools.MatchToolSchemasByQuery("parse text")
@@ -485,7 +485,7 @@ func TestAgentToolsMatchToolSchemasByQuery(t *testing.T) {
 
 // TestAgentToolsDetectCapabilities tests detecting capabilities.
 func TestAgentToolsDetectCapabilities(t *testing.T) {
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	tests := []struct {
 		name     string
@@ -556,7 +556,7 @@ func TestAgentToolsGetCapabilitySummary(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("summary_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	summary := agentTools.GetCapabilitySummary()
 
@@ -590,7 +590,7 @@ func TestAgentToolsGetToolsByCapability(t *testing.T) {
 		_ = core.GlobalRegistry.Unregister("capability_tool")
 	}()
 
-	agentTools := NewAgentTools(nil)
+	agentTools := NewAgentTools(nil, core.GlobalRegistry)
 
 	// Get tools for file capability
 	tools := agentTools.GetToolsByCapability(core.CapabilityFile)
@@ -668,7 +668,7 @@ func TestAgentToolsWithFilter(t *testing.T) {
 		Enabled: []string{"filter_tool1"},
 	}
 
-	agentTools := NewAgentTools(config)
+	agentTools := NewAgentTools(config, core.GlobalRegistry)
 
 	tools := agentTools.ListTools()
 	if len(tools) != 1 {
@@ -684,7 +684,7 @@ func TestAgentToolsWithFilter(t *testing.T) {
 		Disabled: []string{"filter_tool2"},
 	}
 
-	agentTools = NewAgentTools(config)
+	agentTools = NewAgentTools(config, core.GlobalRegistry)
 
 	tools = agentTools.ListTools()
 	found := false
@@ -754,4 +754,50 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestNewAgentTools_ReadsProvidedRegistry verifies that NewAgentTools reads
+// tools from the explicitly-provided registry (dependency injection) rather
+// than relying on the package-global registry. This is the fix for TL-1.
+func TestNewAgentTools_ReadsProvidedRegistry(t *testing.T) {
+	isolated := core.NewRegistry()
+	require.NoError(t, isolated.Register(&mockTool{
+		name:        "di_only_tool",
+		description: "registered only in the isolated registry",
+		category:    core.CategoryCore,
+	}))
+
+	// The provided registry must be the source of truth.
+	at := NewAgentTools(DefaultAgentToolConfig(), isolated)
+	require.Contains(t, at.ListTools(), "di_only_tool")
+
+	// An empty registry must expose nothing, proving the argument is honored
+	// instead of silently falling back to GlobalRegistry.
+	empty := NewAgentTools(DefaultAgentToolConfig(), core.NewRegistry())
+	require.Empty(t, empty.ListTools())
+}
+
+// TestNewAgentTools_NilRegistryFallbackIsEmpty verifies that a nil registry
+// argument no longer falls back to GlobalRegistry (which is empty in
+// production after the P2.1 DI change). The deprecated fallback must produce
+// an AgentTools backed by an empty registry rather than silently inheriting
+// whatever happens to live in GlobalRegistry.
+func TestNewAgentTools_NilRegistryFallbackIsEmpty(t *testing.T) {
+	// Seed GlobalRegistry with a sentinel tool. If NewAgentTools still fell
+	// back to GlobalRegistry it would expose this tool.
+	sentinel := &mockTool{
+		name:        "tl1_nil_fallback_sentinel",
+		description: "must NOT appear when registry is nil",
+		category:    core.CategoryCore,
+	}
+	require.NoError(t, core.Register(sentinel))
+	defer func() { _ = core.GlobalRegistry.Unregister(sentinel.Name()) }()
+
+	at := NewAgentTools(DefaultAgentToolConfig(), nil)
+	require.NotNil(t, at)
+
+	// The nil-registry fallback must produce zero tools instead of inheriting
+	// the (deprecated) GlobalRegistry contents.
+	require.Empty(t, at.ListTools(), "nil registry must not fall back to GlobalRegistry")
+	require.NotContains(t, at.ListTools(), sentinel.Name())
 }

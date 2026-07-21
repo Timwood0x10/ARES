@@ -25,6 +25,7 @@ import (
 
 	arena "github.com/Timwood0x10/ares/internal/ares_arena"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -909,7 +910,7 @@ func getArenaEvolution() *ares_bootstrap.NewEvolutionComponents {
 	if err != nil {
 		return nil
 	}
-	ev, err := ares_bootstrap.ProvideNewEvolution(dag, nil, nil)
+	ev, err := ares_bootstrap.ProvideNewEvolution(dag, nil, memory.NewMinimalMemoryManager())
 	if err != nil {
 		return nil
 	}

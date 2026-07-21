@@ -33,12 +33,13 @@ const (
 // PatchProposal is what the Coordinator receives.
 // It wraps a RuntimePatch with metadata for the decision process.
 type PatchProposal struct {
-	Patch     patch.RuntimePatch `json:"patch"`
-	Source    PatchSource        `json:"source"`
-	Reason    string             `json:"reason"`   // why this patch was proposed
-	Priority  int                `json:"priority"` // 1-10, higher = more urgent
-	Fitness   float64            `json:"fitness"`  // GA fitness score (0-100), 0 = unknown
-	Timestamp time.Time          `json:"timestamp"`
+	Patch      patch.RuntimePatch `json:"patch"`
+	Source     PatchSource        `json:"source"`
+	Reason     string             `json:"reason"`   // why this patch was proposed
+	Priority   int                `json:"priority"` // 1-10, higher = more urgent
+	Fitness    float64            `json:"fitness"`  // GA fitness score (0-100), 0 = unknown
+	Timestamp  time.Time          `json:"timestamp"`
+	RetryCount int                `json:"retry_count"` // number of times this proposal was delayed and re-queued
 }
 
 // Decision is the Coordinator's output.
@@ -49,6 +50,10 @@ const (
 	DecisionReject                 // Reject the patch
 	DecisionDelay                  // Revisit later
 )
+
+// maxProposalRetries bounds how many times a delayed proposal is re-queued for
+// review before it is permanently dropped, preventing an infinite delay loop.
+const maxProposalRetries = 3
 
 // String returns a human-readable name for the decision.
 func (d Decision) String() string {
@@ -138,6 +143,7 @@ type EvolutionCoordinator struct {
 	decisions    []PatchDecision // decision history
 	patchHistory []PatchResult   // apply results
 	patchReg     *patch.Registry // registry for applying patches
+	deployer     PatchDeployer   // optional safe-promotion pipeline (nil = direct apply)
 
 	// Self-healing state.
 	healingAttempts map[string]int // target -> number of healing attempts
@@ -162,6 +168,27 @@ func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *Evo
 		healingAttempts: make(map[string]int),
 		healingResults:  make([]HealingAttempt, 0),
 	}
+}
+
+// PatchDeployer safely promotes a patch to the live runtime. It is optional:
+// when nil or disabled, the Coordinator applies patches directly via patchReg,
+// preserving the pre-deployment behavior. This keeps the Coordinator decoupled
+// from the deployment package (it only depends on this interface).
+type PatchDeployer interface {
+	// Enabled reports whether auto-promotion to live is active.
+	Enabled() bool
+	// Deploy promotes the patch; returns a non-nil error only on catastrophic
+	// failure (a normal reject/rollback is not an error).
+	Deploy(ctx context.Context, p patch.RuntimePatch) error
+}
+
+// SetDeployer installs an optional safe-promotion pipeline. When set and
+// enabled, accepted patches are promoted through it instead of applied
+// directly. Safe to call once during wiring; nil clears it.
+func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.deployer = d
 }
 
 // ApplyEmergency applies a patch immediately, bypassing the decision process.
@@ -317,19 +344,40 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 		})
 		ec.mu.Unlock()
 
-		if decision != DecisionApply {
-			continue
+		switch decision {
+		case DecisionApply:
+			// Apply the patch. When a deployer is installed and enabled,
+			// promote through the safe-deployment pipeline (staging → live);
+			// otherwise apply directly to preserve prior behavior.
+			ec.mu.Lock()
+			d := ec.deployer
+			ec.mu.Unlock()
+			var applyErr error
+			if d != nil && d.Enabled() {
+				applyErr = d.Deploy(ctx, proposal.Patch)
+			} else {
+				applyErr = ec.patchReg.Apply(ctx, proposal.Patch)
+			}
+			ec.mu.Lock()
+			ec.patchHistory = append(ec.patchHistory, PatchResult{
+				Proposal:  proposal,
+				AppliedAt: time.Now(),
+				Error:     applyErr,
+			})
+			ec.mu.Unlock()
+		case DecisionDelay:
+			// Re-queue for later review instead of silently discarding the
+			// proposal. Bounded by maxProposalRetries to prevent an infinite
+			// delay loop.
+			if proposal.RetryCount < maxProposalRetries {
+				proposal.RetryCount++
+				ec.mu.Lock()
+				ec.proposals = append(ec.proposals, proposal)
+				ec.mu.Unlock()
+			}
+		case DecisionReject:
+			// Permanently rejected; do not re-queue.
 		}
-
-		// Apply the patch.
-		err := ec.patchReg.Apply(ctx, proposal.Patch)
-		ec.mu.Lock()
-		ec.patchHistory = append(ec.patchHistory, PatchResult{
-			Proposal:  proposal,
-			AppliedAt: time.Now(),
-			Error:     err,
-		})
-		ec.mu.Unlock()
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
+	builtintools "github.com/Timwood0x10/ares/internal/tools/resources/builtin"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -102,7 +103,11 @@ func main() {
 	}
 
 	// --- MCP servers (codegraph + codebase-memory-mcp) ---
-	internalReg := setupMCP(ctx, cfg, registry)
+	internalReg, err := setupMCP(ctx, cfg, registry)
+	if err != nil {
+		cancel()
+		log.Fatalf("setup MCP: %v", err)
+	}
 
 	// --- ToolBinder for agents (bridged from internal core.Registry for schema support) ---
 	toolBinder := newToolBinder(internalReg)
@@ -288,19 +293,28 @@ func createLLMAdapterWithFallback(cfg *ares_config.Config) (output.LLMAdapter, e
 }
 
 // setupMCP connects to MCP servers and registers their tools in the public registry.
-// Returns the internal core.Registry for use by the ToolBinder (tool schemas for LLM Chat API).
-func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) *core.Registry {
+// It returns the internal core.Registry for use by the ToolBinder (tool schemas for
+// LLM Chat API). Registration failures abort startup instead of silently leaving
+// agents with zero tools.
+func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.Registry) (*core.Registry, error) {
 	internalReg := core.NewRegistry()
+
+	// Register builtin general tools into the internal registry so sub-agents
+	// receive them through the ToolBinder (closure of the tools module, P2.1).
+	// A failure here means agents would silently receive zero tools, so we
+	// abort startup rather than continue with a broken state.
+	if err := builtintools.RegisterGeneralTools(internalReg); err != nil {
+		return internalReg, fmt.Errorf("register general tools: %w", err)
+	}
 
 	if len(cfg.MCP.Servers) == 0 {
 		lg.Info("no MCP servers configured")
-		return internalReg
+		return internalReg, nil
 	}
 
 	mcpMgr, err := ares_bootstrap.SetupMCP(ctx, &cfg.MCP, internalReg)
 	if err != nil {
-		lg.Warn("MCP setup failed", "error", err)
-		return internalReg
+		return internalReg, fmt.Errorf("MCP setup: %w", err)
 	}
 	if mcpMgr != nil {
 		lg.Info("MCP manager started", "servers", len(cfg.MCP.Servers))
@@ -313,7 +327,7 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 			continue
 		}
 		t := tool
-		_ = registry.Register(api_tools.ToolFunc{
+		if err := registry.Register(api_tools.ToolFunc{
 			ToolName: t.Name(),
 			ToolDesc: t.Description(),
 			Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -323,10 +337,12 @@ func setupMCP(ctx context.Context, cfg *ares_config.Config, registry *api_tools.
 				}
 				return res.Data, nil
 			},
-		})
+		}); err != nil {
+			lg.Warn("MCP bridge: failed to register tool", "tool", t.Name(), "error", err)
+		}
 	}
 
-	return internalReg
+	return internalReg, nil
 }
 
 // runtimeAdapterShim adapts ares_runtime.Manager to adapter.RuntimeManager.

@@ -16,10 +16,10 @@ func makeGraph(n int) *knowledge.WorkingGraph {
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("node-%d", i)
 		nodes[id] = &knowledge.KnowledgeObject{
-			ID:        id,
-			Type:      knowledge.ObjectDecision,
-			Summary:   fmt.Sprintf("Decision node %d about cache strategy", i),
-			Tags:      []string{"cache", "redis"},
+			ID:         id,
+			Type:       knowledge.ObjectDecision,
+			Summary:    fmt.Sprintf("Decision node %d about cache strategy", i),
+			Tags:       []string{"cache", "redis"},
 			Confidence: 0.9,
 		}
 	}
@@ -30,9 +30,9 @@ func makeGraph(n int) *knowledge.WorkingGraph {
 		from := fmt.Sprintf("node-%d", i)
 		to := fmt.Sprintf("node-%d", (i+1)%n)
 		edges = append(edges, knowledge.Relation{
-			From: from,
-			To:   to,
-			Name: relNames[i%len(relNames)],
+			From:  from,
+			To:    to,
+			Name:  relNames[i%len(relNames)],
 			Score: 0.85,
 		})
 	}

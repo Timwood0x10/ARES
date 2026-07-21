@@ -707,15 +707,20 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 		return
 	}
 
-	bestScore := a.pop.Stats().BestScore
-
+	// NOTE: per-genome fitness is intentionally left at 0 (unknown) so the
+	// Coordinator routes these GA patches through its fallback apply path
+	// (rate-limited by MaxPatchesPerMinute) instead of permanently delaying them.
+	// A proper per-genome fitness scorer (genome.FitnessGenome) cannot be wired
+	// yet because the genomes are currently fed synthetic/isolated runtime state
+	// (see review EV-2); doing so would make any score a phantom. TODO: wire
+	// FitnessGenome once genomes consume live runtime state.
 	for _, p := range patches {
 		a.coordinator.Submit(coordinator.PatchProposal{
 			Patch:     p,
 			Source:    coordinator.SourceGA,
 			Reason:    "GA: population evolution result",
 			Priority:  6,
-			Fitness:   bestScore,
+			Fitness:   0,
 			Timestamp: time.Now(),
 		})
 	}

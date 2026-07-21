@@ -39,9 +39,29 @@ type AgentTools struct {
 }
 
 // NewAgentTools creates a new AgentTools instance with the given configuration.
-func NewAgentTools(config *AgentToolConfig) *AgentTools {
+// The registry parameter supplies the tool registry to read from. Callers that
+// have an explicitly-populated registry (e.g. one filled by
+// builtintools.RegisterGeneralTools) MUST pass it here so the agent receives
+// those tools.
+//
+// When registry is nil, the resulting AgentTools is backed by an empty
+// registry and will expose zero tools. This nil-registry fallback is
+// DEPRECATED: previously it fell back to core.GlobalRegistry, but no
+// production code populates GlobalRegistry after the P2.1 DI change, so the
+// fallback silently produced an agent with no tools. Callers should inject an
+// explicit *core.Registry instead.
+func NewAgentTools(config *AgentToolConfig, registry *core.Registry) *AgentTools {
 	if config == nil {
 		config = DefaultAgentToolConfig()
+	}
+	if registry == nil {
+		// Deprecated: passing a nil registry silently produces an AgentTools
+		// with zero tools. Callers should inject an explicit *core.Registry
+		// (typically populated via builtintools.RegisterGeneralTools). The
+		// previous GlobalRegistry fallback was removed because no production
+		// code populates GlobalRegistry after the P2.1 DI change.
+		log.Warn("NewAgentTools called with nil registry; falling back to an empty registry (deprecated)")
+		registry = core.NewRegistry()
 	}
 
 	// Create filter
@@ -51,8 +71,8 @@ func NewAgentTools(config *AgentToolConfig) *AgentTools {
 		Categories: config.Categories,
 	}
 
-	// Apply filter to global registry
-	filteredRegistry := core.GlobalRegistry.Filter(filter)
+	// Apply filter to the provided registry
+	filteredRegistry := registry.Filter(filter)
 
 	// Create capability engine
 	capEngine := core.NewCapabilityEngine(filteredRegistry)

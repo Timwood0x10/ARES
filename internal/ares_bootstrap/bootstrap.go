@@ -5,17 +5,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -33,6 +32,7 @@ type Components struct {
 	Runtime      *ares_runtime.Manager
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
+	Distillation *aresexp.DistillationService
 	wg           sync.WaitGroup
 }
 
@@ -119,6 +119,11 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		comp.LLM = llm
 	}
 
+	// 5b + 5c. Experience distillation + auto-distill on task completion
+	// (Track A). Wired conditionally (PG + embedding); failures are non-fatal.
+	guidanceProvider := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+	subscribeDistillationEvents(ctx, &comp)
+
 	// 6. Dashboard
 	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr)
 	if err != nil {
@@ -184,6 +189,24 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	}
 	comp.NewEvolution = newEvol
 
+	// Track C (C-Safe): wire the DeploymentPipeline into the Coordinator so
+	// generated patches are safely promoted to the live runtime. Gated by
+	// cfg.Evolution.Deployment.Enabled — when disabled, the Coordinator falls
+	// back to applying patches directly (pre-deployment behavior). The live
+	// runtime is the real executor registry, so memory patches are written to
+	// the live comp.Memory; workflow/scheduler/recovery/knowledge patches hit
+	// their (still synthetic) executors — closing those requires a live DAG
+	// supply chain (Track C-Risky, deferred).
+	if cfg.Evolution.Deployment.Enabled {
+		dp := deployment.NewDeploymentPipeline(
+			cfg.Evolution.Deployment,
+			&deploymentStagingRuntime{reg: newEvol.PatchReg},
+			&deploymentLiveRuntime{reg: newEvol.PatchReg},
+		)
+		newEvol.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})
+		log.Info("bootstrap: deployment pipeline wired into coordinator", "enabled", true)
+	}
+
 	// Register the minimal DAG with the runtime manager so the evolution
 	// system can apply workflow patches to the live DAG (v0.5.0 DAG reflux).
 	// When a real agent DAG is registered later, it replaces this minimal one.
@@ -191,74 +214,12 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		comp.Runtime.RegisterAgentDAG("evolution", dag)
 	}
 
-	// 9. Wire the GA population adapter so evolution actually runs and its
-	// best strategy is deployed to the runtime. The GA engine is built
-	// independently of the old evolution system: in the default configuration
-	// (no EventStore/ExpRepo, so comp.Evolution is nil) it builds its own
-	// scheduler driven by the always-present LLM callback registry, so the
-	// bridge no longer depends on the old system. When the old system exists,
-	// the GA adapter is attached to its scheduler instead (preserving prior
-	// behavior). The deployed strategy is persisted to an in-memory store so
-	// the live agent can consume it.
-	memStore := evolution.NewMemoryStrategyStore(0)
-	newEvol.StrategyStore = memStore
-
-	base := &mutation.Strategy{
-		ID:     "bootstrap-root",
-		Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
-	}
-	gaCfg := evolution.DefaultSystemConfig()
-	gaCfg.EnableDreamCycle = false
-	gaCfg.EnableScheduler = comp.Evolution == nil
-	gaCfg.Callbacks = comp.LLM.CallbackReg
-	gaCfg.StrategyStore = memStore
-	gaCfg.RollbackPolicyConfig = evolution.RollbackPolicyConfig{Enabled: true}
-
-	wired, wErr := evolution.NewWiredEvolutionSystem(base, gaCfg)
-	if wErr != nil {
+	// 9. Wire the GA population adapter, coordinator bridge, and background
+	// evolution ticker (extracted to wireGAEvolution to keep Bootstrap's
+	// cyclomatic complexity within lint limits).
+	if err := wireGAEvolution(ctx, cfg, &comp, newEvol, guidanceProvider); err != nil {
 		runCleanups()
-		return nil, fmt.Errorf("wire GA population adapter: %w", wErr)
-	}
-
-	// Attach the coordinator bridge to the population adapter.
-	popAdapter := wired.PopAdapter
-	evolution.WithAdapterCoordinator(
-		newEvol.Coordinator,
-		newEvol.DiffReg,
-		newEvol.GenomeReg,
-	)(popAdapter)
-
-	// In the full configuration, attach the GA adapter to the existing
-	// old-system scheduler; otherwise the GA system's own scheduler
-	// (registered above on the LLM callback registry) drives it.
-	if comp.Evolution != nil && comp.Evolution.Scheduler != nil {
-		if sched, ok := comp.Evolution.Scheduler.(*evolution.EvolutionScheduler); ok {
-			sched.SetAdapter(popAdapter)
-		}
-	}
-
-	// Start a background ticker that triggers evolution even when no
-	// agents are running (event-driven scheduler won't fire without agents).
-	// This ensures the GA continuously evolves over time.
-	{
-		comp.wg.Add(1)
-		go func() {
-			ctx := ctx
-			evoTicker := time.NewTicker(5 * time.Minute)
-			defer evoTicker.Stop()
-			defer comp.wg.Done()
-			for {
-				select {
-				case <-evoTicker.C:
-					if err := popAdapter.Run(ctx); err != nil {
-						log.WarnContext(ctx, "[bootstrap] ticker-triggered evolution failed",
-							"error", err)
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+		return nil, err
 	}
 
 	return &comp, nil

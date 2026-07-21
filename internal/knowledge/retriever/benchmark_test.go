@@ -42,10 +42,10 @@ func makeBenchObjects(n int) []*knowledge.KnowledgeObject {
 	}
 	for i := 0; i < n; i++ {
 		objs[i] = &knowledge.KnowledgeObject{
-			ID:        fmt.Sprintf("obj-%d", i),
-			Type:      types[i%len(types)],
-			Summary:   fmt.Sprintf("Benchmark object %d about Redis cache strategy", i),
-			Tags:      []string{"cache", "redis", "session"},
+			ID:         fmt.Sprintf("obj-%d", i),
+			Type:       types[i%len(types)],
+			Summary:    fmt.Sprintf("Benchmark object %d about Redis cache strategy", i),
+			Tags:       []string{"cache", "redis", "session"},
 			Confidence: 0.9,
 		}
 	}

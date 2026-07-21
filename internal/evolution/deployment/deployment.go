@@ -137,6 +137,11 @@ func NewDeploymentPipeline(config DeploymentConfig, staging StagingRuntime, live
 	}
 }
 
+// IsEnabled reports whether auto-promotion to the live runtime is active.
+func (dp *DeploymentPipeline) IsEnabled() bool {
+	return dp.config.Enabled
+}
+
 // Deploy attempts to safely promote a patch through staging → live.
 //
 // Algorithm:

@@ -46,6 +46,28 @@ const (
 	EventStepRecoveryFailed    EventType = "step.recovery.failed"
 )
 
+// Event payload keys for enriched task-lifecycle events.
+// Emitters (e.g. agents/sub) populate these so that downstream consumers such
+// as the experience-distillation feedback loop can turn completed/failed tasks
+// into ranked experiences without re-deriving the task/result text.
+const (
+	// EventKeyTask carries the task instruction/request text.
+	EventKeyTask = "task"
+	// EventKeyResult carries the task result/output text.
+	EventKeyResult = "result"
+	// EventKeyTenantID scopes the distilled experience to a tenant.
+	EventKeyTenantID = "tenant_id"
+	// EventKeyUsedExperienceID carries the experience ID the task consumed
+	// (bandit feedback linkage), if any.
+	EventKeyUsedExperienceID = "used_experience_id"
+)
+
+// DefaultTenantID is the tenant scope under which single-tenant deployments
+// store distilled experiences. It must align with the GA's GuidanceProvider
+// read tenant so distilled hints are actually consumed. Multi-tenant requires
+// threading the caller's tenant through the GA request path.
+const DefaultTenantID = "default"
+
 // ReadDirection controls the order in which events are returned.
 type ReadDirection int
 
