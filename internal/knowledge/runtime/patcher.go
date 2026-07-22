@@ -22,19 +22,23 @@ type PlanConfig struct {
 // SetPlanConfig updates the planner's MaxResults and reducer strategy.
 // This is the integration point for KnowledgePatchExecutor.
 func (r *KnowledgeRuntime) SetPlanConfig(cfg PlanConfig) {
-	r.planner = &configurablePlanner{maxResults: cfg.MaxResults}
+	r.planner = &configurablePlanner{
+		maxResults:      cfg.MaxResults,
+		reducerStrategy: cfg.ReducerStrategy,
+	}
 	log.Info("knowledge runtime: plan config updated",
 		"max_results", cfg.MaxResults,
 		"reducer", cfg.ReducerStrategy)
 }
 
-// configurablePlanner wraps a KnowledgePlanner with configurable MaxResults.
+// configurablePlanner wraps a KnowledgePlanner with configurable MaxResults and ReducerStrategy.
 type configurablePlanner struct {
-	maxResults int
+	maxResults      int
+	reducerStrategy string
 }
 
 func (p *configurablePlanner) Plan(ctx context.Context, goal string, budget knowledge.TokenBudget) (*planner.KnowledgePlan, error) {
-	// Delegate to the default planner, then override MaxResults.
+	// Delegate to the default planner, then override MaxResults and reducer.
 	base := planner.NewKnowledgePlanner()
 	plan, err := base.Plan(ctx, goal, budget)
 	if err != nil {
@@ -43,6 +47,11 @@ func (p *configurablePlanner) Plan(ctx context.Context, goal string, budget know
 	if p.maxResults > 0 {
 		for i := range plan.Requirements {
 			plan.Requirements[i].MaxResults = p.maxResults
+		}
+	}
+	if p.reducerStrategy != "" {
+		for i := range plan.Requirements {
+			plan.Requirements[i].ReducerStrategy = p.reducerStrategy
 		}
 	}
 	return plan, nil

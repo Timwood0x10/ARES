@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,11 +18,16 @@ import (
 	ares_runtime "github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
 	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 	"github.com/Timwood0x10/ares/internal/monitoring"
 	"github.com/Timwood0x10/ares/internal/monitoring/adapter"
 	"github.com/Timwood0x10/ares/internal/monitoring/data"
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
+	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -127,6 +133,24 @@ func runServe() error {
 	internalReg, err := setupMCP(ctx, cfg, registry)
 	if err != nil {
 		return fmt.Errorf("MCP setup: %w", err)
+	}
+
+	// Register AKF (Knowledge Fabric) tools into the internal registry using
+	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
+	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
+	// ChangeReducer) affect the actual runtime used by the agent's knowledge
+	// tools — because both the evolution system's KnowledgePatchExecutor and
+	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
+	if comp.KnowledgeRuntime != nil {
+		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
+		for _, akfTool := range akfSvc.Tools() {
+			t := akfTool // capture
+			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
+			if err := internalReg.Register(adapted); err != nil {
+				log.Printf("AKF: failed to register tool %q: %v", t.Name, err)
+			}
+		}
+		log.Printf("AKF tools registered with shared KnowledgeRuntime: %d", len(akfSvc.Tools()))
 	}
 
 	// --- ToolBinder for agents ---
@@ -239,6 +263,37 @@ func runServe() error {
 	// --- Start runtime ---
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("start runtime: %w", err)
+	}
+
+	// Inject the live agent DAGs into the evolution system's executors,
+	// replacing the synthetic placeholder DAG created at bootstrap time.
+	// This ensures workflow/scheduler/recovery patches hit real runtime state.
+	if comp.NewEvolution != nil {
+		for _, id := range []string{leaderAgent.ID()} {
+			if dag, ok := mgr.GetAgentDAG(id); ok && dag != nil {
+				if liveDAG, dagOk := dag.(*engine.MutableDAG); dagOk {
+					// Register a LiveDAGPatchExecutor that directly mutates the
+					// agent's live MutableDAG instead of a private noop graph.
+					liveExec := newLiveDAGPatchExecutor(mgr, id)
+					// Register as component AND as fallback so workflow structure
+					// patches (insert/remove nodes/edges) with dynamic node ID
+					// targets are routed to the live DAG executor.
+					comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
+					comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
+					comp.NewEvolution.PatchReg.SetFallback(liveExec)
+
+					// Also update the existing graph executor for consistency.
+					if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+						log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
+					}
+				}
+			}
+		}
+		// Replace the evolution system's isolated KnowledgeRuntime with the
+		// agent's live KnowledgeRuntime. This ensures knowledge genome patches
+		// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
+		// used by the agent's knowledge tools, not the bootstrap placeholder.
+		comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
 	}
 
 	// --- Submit real tasks ---
@@ -427,3 +482,149 @@ func (s *runtimeAdapterShim) GetAgentInfo(agentID string) (*adapter.AgentInfo, b
 var (
 	_ adapter.RuntimeManager = (*runtimeAdapterShim)(nil)
 )
+
+// akfToolAdapter adapts an AKF MCP tool (func(ctx, input string) -> string)
+// to the core_tools.Tool interface so it can be registered in the internal
+// tool registry and used by sub-agents through the ToolBinder. This is the
+// wiring that makes knowledge genome patches affect the agent's knowledge
+// tools — because both share the same comp.KnowledgeRuntime instance.
+type akfToolAdapter struct {
+	name string
+	desc string
+	fn   func(ctx context.Context, input string) (string, error)
+}
+
+func (a *akfToolAdapter) Name() string                      { return a.name }
+func (a *akfToolAdapter) Description() string               { return a.desc }
+func (a *akfToolAdapter) Category() core_tools.ToolCategory { return core_tools.CategoryKnowledge }
+func (a *akfToolAdapter) Capabilities() []core_tools.Capability {
+	return []core_tools.Capability{core_tools.CapabilityKnowledge}
+}
+func (a *akfToolAdapter) Parameters() *core_tools.ParameterSchema { return nil }
+func (a *akfToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core_tools.Result, error) {
+	input, _ := params["input"].(string)
+	if input == "" {
+		// Serialize the whole params map as JSON input.
+		b, _ := json.Marshal(params)
+		input = string(b)
+	}
+	out, err := a.fn(ctx, input)
+	if err != nil {
+		return core_tools.NewErrorResult(err.Error()), nil
+	}
+	return core_tools.NewResult(true, map[string]interface{}{"output": out}), nil
+}
+
+// liveDAGPatchExecutor is a patch.RuntimeComponent that directly mutates the
+// agent's live engine.MutableDAG held by the runtime manager. Unlike the
+// synthetic GraphPatchExecutor (which operates on a private noop *wfgraph.Graph),
+// this executor reads the live DAG from the manager's dagStore, applies the
+// mutation, and writes it back — so genome evolution patches to workflow
+// structure (insert/remove nodes/edges) actually change the DAG the agent
+// reads at runtime.
+type liveDAGPatchExecutor struct {
+	mgr     *ares_runtime.Manager
+	agentID string
+}
+
+func newLiveDAGPatchExecutor(mgr *ares_runtime.Manager, agentID string) *liveDAGPatchExecutor {
+	return &liveDAGPatchExecutor{mgr: mgr, agentID: agentID}
+}
+
+func (e *liveDAGPatchExecutor) Name() string { return "live_dag" }
+
+func (e *liveDAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
+	return nil, nil
+}
+
+func (e *liveDAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
+	// All patch types that GraphPatchExecutor supports are supported here.
+	switch p.Type {
+	case patch.PatchInsertNode, patch.PatchRemoveNode,
+		patch.PatchReplaceNode, patch.PatchAddEdge,
+		patch.PatchRemoveEdge, patch.PatchChangeScheduler:
+		return nil
+	default:
+		return fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)
+	}
+}
+
+func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	dagAny, ok := e.mgr.GetAgentDAG(e.agentID)
+	if !ok || dagAny == nil {
+		return nil, fmt.Errorf("live DAG executor: no DAG for agent %s", e.agentID)
+	}
+	dag, dagOk := dagAny.(*engine.MutableDAG)
+	if !dagOk || dag == nil {
+		return nil, fmt.Errorf("live DAG executor: DAG for agent %s is not a MutableDAG", e.agentID)
+	}
+
+	switch p.Type {
+	case patch.PatchInsertNode:
+		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
+		if err := dag.AddNode(ctx, step); err != nil {
+			return nil, fmt.Errorf("live DAG: insert node %s: %w", p.Target, err)
+		}
+		return &patch.RuntimePatch{
+			Type:   patch.PatchRemoveNode,
+			Target: p.Target,
+			Reason: "rollback: remove inserted node",
+		}, nil
+
+	case patch.PatchRemoveNode:
+		if err := dag.RemoveNode(ctx, p.Target); err != nil {
+			return nil, fmt.Errorf("live DAG: remove node %s: %w", p.Target, err)
+		}
+		return nil, nil
+
+	case patch.PatchReplaceNode:
+		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
+		if err := dag.RemoveNode(ctx, p.Target); err != nil {
+			return nil, fmt.Errorf("live DAG: replace (remove) node %s: %w", p.Target, err)
+		}
+		if err := dag.AddNode(ctx, step); err != nil {
+			return nil, fmt.Errorf("live DAG: replace (add) node %s: %w", p.Target, err)
+		}
+		return nil, nil
+
+	case patch.PatchAddEdge:
+		val, ok := p.Value.(map[string]string)
+		if !ok {
+			return nil, fmt.Errorf("live DAG: AddEdge value must be map[string]string")
+		}
+		from, to := val["from"], val["to"]
+		if err := dag.AddEdge(ctx, from, to); err != nil {
+			return nil, fmt.Errorf("live DAG: add edge %s→%s: %w", from, to, err)
+		}
+		return &patch.RuntimePatch{
+			Type:   patch.PatchRemoveEdge,
+			Value:  map[string]string{"from": from, "to": to},
+			Reason: "rollback: remove added edge",
+		}, nil
+
+	case patch.PatchRemoveEdge:
+		val, ok := p.Value.(map[string]string)
+		if !ok {
+			return nil, fmt.Errorf("live DAG: RemoveEdge value must be map[string]string")
+		}
+		from, to := val["from"], val["to"]
+		if err := dag.RemoveEdge(ctx, from, to); err != nil {
+			return nil, fmt.Errorf("live DAG: remove edge %s→%s: %w", from, to, err)
+		}
+		return nil, nil
+
+	case patch.PatchChangeScheduler:
+			// Store the scheduler type on the live DAG so the agent's runtime
+			// scheduler selection reads the evolved config instead of the default.
+			schedType := fmt.Sprintf("%T", p.Value)
+			dag.SchedulerType = schedType
+			log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
+			return nil, nil
+
+	default:
+		return nil, fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)
+	}
+}
+
+// Ensure liveDAGPatchExecutor implements patch.RuntimeComponent.
+var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)

@@ -17,11 +17,12 @@ var (
 
 // MutableDAG extends DAG with thread-safe mutation operations.
 type MutableDAG struct {
-	mu      sync.RWMutex
-	dag     *DAG
-	steps   map[string]*Step
-	version uint64
-	hub     *GraphEventHub
+	mu            sync.RWMutex
+	dag           *DAG
+	steps         map[string]*Step
+	version       uint64
+	hub           *GraphEventHub
+	SchedulerType string // active scheduler type, set by genome evolution patches
 }
 
 // NewMutableDAG creates a MutableDAG from initial steps.

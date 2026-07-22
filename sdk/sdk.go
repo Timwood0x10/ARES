@@ -370,7 +370,9 @@ func New(opts ...Option) (*Runtime, error) {
 			}
 			knowledgeStore, err = postgresstore.New(db)
 			if err != nil {
-				db.Close()
+				if closeErr := db.Close(); closeErr != nil {
+					err = fmt.Errorf("knowledge: init postgres store: %w (also close db: %v)", err, closeErr)
+				}
 				return nil, fmt.Errorf("knowledge: init postgres store: %w", err)
 			}
 		default:

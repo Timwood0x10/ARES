@@ -16,6 +16,7 @@ import (
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
+	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
@@ -37,7 +38,13 @@ type Components struct {
 	// Discovery holds the optional service discovery engine. It is nil when
 	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
 	Discovery *DiscoveryComponents
-	wg        sync.WaitGroup
+	// KnowledgeRuntime is the shared knowledge runtime used by the evolution
+	// system's KnowledgePatchExecutor and the agent's AKF tools. It is
+	// created once during bootstrap and reused so that knowledge genome
+	// patches (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual
+	// runtime used by the agent's knowledge tools.
+	KnowledgeRuntime *knowledgeruntime.KnowledgeRuntime
+	wg               sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -186,7 +193,13 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 		liveMemoryStore = buildMemoryManager()
 	}
 
-	newEvol, err := ProvideNewEvolution(dag, buildKnowledgeRuntime(), liveMemoryStore)
+	// Create the KnowledgeRuntime once and share it between the evolution
+	// system and the agent's AKF tools so knowledge genome patches affect
+	// the actual runtime used by the agent's knowledge tools.
+	knowRt := BuildKnowledgeRuntime()
+	comp.KnowledgeRuntime = knowRt
+
+	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)
 	if err != nil {
 		runCleanups()
 		return nil, err

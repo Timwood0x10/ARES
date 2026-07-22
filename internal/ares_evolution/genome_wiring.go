@@ -388,6 +388,9 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	}
 
 	// Submit evolution results to the new system's coordinator for decision.
+	// The Coordinator evaluates and applies patches through the live PatchExecutors
+	// (wired by UpdateLiveDAG in serve.go), so genome evolution results flow
+	// directly into the running agent's DAG, scheduler, and knowledge config.
 	if a.coordinator != nil && a.diffReg != nil && a.genomeReg != nil {
 		a.submitToCoordinator(ctx)
 	}

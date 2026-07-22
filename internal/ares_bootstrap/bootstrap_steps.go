@@ -2,6 +2,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	_ "github.com/lib/pq"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and
@@ -86,7 +88,22 @@ const (
 // adapter, and starts the background evolution ticker. Extracted from Bootstrap
 // to keep its cyclomatic complexity within lint limits.
 func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Components, newEvol *NewEvolutionComponents, guidanceProvider evolution.GuidanceProvider) error {
-	memStore := evolution.NewMemoryStrategyStore(0)
+	// Create a persistent strategy store when PostgreSQL is configured,
+	// falling back to the in-memory store when no database is available.
+	// The PG store ensures evolution results survive process restarts.
+	var memStore evolution.StrategyStore
+	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Storage.Host != "" {
+		pgStore, err := newPGStrategyStore(cfg)
+		if err != nil {
+			log.WarnContext(ctx, "bootstrap: PG strategy store init failed, falling back to in-memory", "error", err)
+			memStore = evolution.NewMemoryStrategyStore(0)
+		} else {
+			memStore = pgStore
+			log.InfoContext(ctx, "bootstrap: PG strategy store wired (persistent)")
+		}
+	} else {
+		memStore = evolution.NewMemoryStrategyStore(0)
+	}
 	newEvol.StrategyStore = memStore
 
 	base := &mutation.Strategy{
@@ -263,4 +280,34 @@ func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc
 		"max_calls_per_generation", cfg.Evolution.LLMScoring.MaxCallsPerGeneration)
 
 	return scorer, heuristic, cfg.Evolution.LLMScoring.MaxCallsPerGeneration
+}
+
+// newPGStrategyStore creates a PostgreSQL-backed strategy store from config.
+// Returns nil when the database connection cannot be established, so callers
+// can fall back to the in-memory store gracefully.
+func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error) {
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
+		cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("pg strategy store: open db: %w", err)
+	}
+	// Verify the connection is alive.
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("pg strategy store: ping: %w", err)
+	}
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	store, err := evolution.NewPGStrategyStore(db, "evolution_strategies", 100)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("pg strategy store: init: %w", err)
+	}
+	return store, nil
 }

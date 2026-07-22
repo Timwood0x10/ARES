@@ -168,6 +168,11 @@ var _ RuntimeComponent = (*ExecutorComponent)(nil)
 // Registry manages patch executors and runtime components by target name.
 type Registry struct {
 	executors map[string]Executor
+	// fallback is a component that handles patches for targets that have no
+	// dedicated executor registered. This enables catch-all executors like
+	// liveDAGPatchExecutor to handle all workflow structure patches (insert/
+	// remove nodes/edges) whose targets are dynamic node IDs.
+	fallback RuntimeComponent
 }
 
 // NewRegistry creates a new patch registry.
@@ -175,6 +180,13 @@ func NewRegistry() *Registry {
 	return &Registry{
 		executors: make(map[string]Executor),
 	}
+}
+
+// SetFallback sets a fallback component that handles patches for targets
+// with no dedicated executor. When Apply cannot find an executor by target,
+// it delegates to the fallback if one is set.
+func (r *Registry) SetFallback(comp RuntimeComponent) {
+	r.fallback = comp
 }
 
 // Register registers an executor for a target component.
@@ -202,11 +214,21 @@ func (r *Registry) RegisterComponent(comp RuntimeComponent) error {
 }
 
 // Apply dispatches a patch to the appropriate executor.
-// If no executor is registered for the target, returns an error.
-// If the patch has a Rollback, it is automatically applied on failure.
+// First tries to find an executor by target name. If none is found and a
+// fallback is set, delegates to the fallback. If no fallback exists, returns
+// an error. If the patch has a Rollback, it is automatically applied on failure.
 func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 	ex, ok := r.executors[patch.Target]
 	if !ok {
+		// No executor for this target — try the fallback if one is set.
+		if r.fallback != nil {
+			rollback, err := r.fallback.Apply(ctx, patch)
+			if err != nil {
+				return fmt.Errorf("patch %s on %s (fallback): %w", patch.Type, patch.Target, err)
+			}
+			_ = rollback
+			return nil
+		}
 		return fmt.Errorf("patch: no executor registered for target %q", patch.Target)
 	}
 	rollback, err := ex.Apply(ctx, patch)
@@ -242,6 +264,25 @@ func (r *Registry) ApplySet(ctx context.Context, ps PatchSet) error {
 	for _, p := range ps.Patches {
 		ex, ok := r.executors[p.Target]
 		if !ok {
+			// Try fallback if no dedicated executor.
+			if r.fallback != nil {
+				rollback, fbErr := r.fallback.Apply(ctx, p)
+				if fbErr != nil {
+					// Rollback all previously applied patches.
+					for i := len(appliedPatches) - 1; i >= 0; i-- {
+						ap := appliedPatches[i]
+						if ap.rollback == nil {
+							continue
+						}
+						if rbEx, ok := r.executors[ap.rollback.Target]; ok {
+							_, _ = rbEx.Apply(ctx, *ap.rollback)
+						}
+					}
+					return fmt.Errorf("patch set: no executor for target %q (fallback also failed: %w)", p.Target, fbErr)
+				}
+				appliedPatches = append(appliedPatches, applied{patch: p, rollback: rollback})
+				continue
+			}
 			// Rollback all previously applied patches in reverse order.
 			for i := len(appliedPatches) - 1; i >= 0; i-- {
 				ap := appliedPatches[i]
