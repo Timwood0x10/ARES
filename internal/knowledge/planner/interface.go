@@ -34,6 +34,9 @@ type KnowledgeRequirement struct {
 	Description string   `json:"description"`
 	Priority    int      `json:"priority"`
 	MaxResults  int      `json:"max_results"`
+	// ReducerStrategy selects how query results are reduced: default / strict / relaxed.
+	// Set by genome evolution patches via KnowledgePatchExecutor.
+	ReducerStrategy string `json:"reducer_strategy,omitempty"`
 }
 
 // KnowledgePlan is the output of KnowledgePlanner. It describes what

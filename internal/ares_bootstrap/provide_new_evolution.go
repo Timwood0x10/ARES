@@ -47,6 +47,11 @@ type NewEvolutionComponents struct {
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents
 	// are created and their DAGs are registered with the runtime manager.
 	liveDAG *engine.MutableDAG
+
+	// recoveryExec is the RecoveryPatchExecutor created at bootstrap time.
+	// UpdateLiveDAG calls SetDAG on it to replace the fake DAG with the
+	// live one, since Register cannot overwrite an already-registered key.
+	recoveryExec *engine.RecoveryPatchExecutor
 }
 
 // ProvideNewEvolution wires the new evolution system:
@@ -105,6 +110,13 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	}
 
 	// Planner genome — evolves planning strategy.
+	// NOTE: This genome is registered so it participates in the population
+	// evolution cycle, but it has NO matching differ in the diff registry.
+	// The planner dimension (strategy, max_sources, min_relevance) is covered
+	// by the KnowledgeDiffer, which produces knowledge.planner.* patches.
+	// PlannerGenome's mutations never produce RuntimePatch via generateDiffPatches,
+	// so it is effectively dead code for the patch pipeline. It is retained
+	// for potential future differ integration or fitness scoring.
 	plannerGenome := genome.NewPlannerGenome(genome.PlannerGenomeConfig{
 		Strategy:      "balanced",
 		MaxSources:    10,
@@ -134,6 +146,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		diff.NewSchedulerDiffer(),
 		diff.NewKnowledgeDiffer(),
 		diff.NewRecoveryDiffer(),
+		diff.NewMemoryDiffer(),
 	} {
 		if err := diffReg.Register(d); err != nil {
 			return nil, fmt.Errorf("register differ %s: %w", d.Name(), err)
@@ -142,6 +155,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 
 	// 4. Patch Registry — register all executors.
 	patchReg := patch.NewRegistry()
+
+	// Track the recovery executor so UpdateLiveDAG can replace its DAG
+	// reference later (Register cannot overwrite already-registered keys).
+	var recoveryExec *engine.RecoveryPatchExecutor
 
 	if dag != nil {
 		// Graph executor — for workflow and scheduler patches.
@@ -176,7 +193,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		_ = patchReg.Register("graph.scheduler", graphExec)
 
 		// Recovery executor.
-		recoveryExec := engine.NewRecoveryPatchExecutor(dag)
+		recoveryExec = engine.NewRecoveryPatchExecutor(dag)
 		_ = patchReg.RegisterComponent(recoveryExec)
 		_ = patchReg.Register("recovery.max_attempts", recoveryExec)
 		_ = patchReg.Register("recovery.replacement_agent", recoveryExec)
@@ -223,6 +240,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		PatchReg:      patchReg,
 		Coordinator:   coord,
 		LLMAdapter:    evoparent.NewLLMAdapter(),
+		recoveryExec:  recoveryExec,
 	}, nil
 }
 
@@ -298,11 +316,18 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 	c.PatchReg.Register("graph.scheduler", graphExec)
 
 	// Rebuild recovery executor with the live DAG.
-	recoveryExec := engine.NewRecoveryPatchExecutor(dag)
-	c.PatchReg.RegisterComponent(recoveryExec)
-	c.PatchReg.Register("recovery.max_attempts", recoveryExec)
-	c.PatchReg.Register("recovery.replacement_agent", recoveryExec)
-	c.PatchReg.Register("recovery.max_retries", recoveryExec)
+	// Register fails on existing keys (bootstrap executors already registered),
+	// so we use SetDAG to update the existing executor's DAG reference instead.
+	if c.recoveryExec != nil {
+		c.recoveryExec.SetDAG(dag)
+	} else {
+		// Fallback: create a new executor if no existing one was stored.
+		recoveryExec := engine.NewRecoveryPatchExecutor(dag)
+		_ = c.PatchReg.RegisterComponent(recoveryExec)
+		_ = c.PatchReg.Register("recovery.max_attempts", recoveryExec)
+		_ = c.PatchReg.Register("recovery.replacement_agent", recoveryExec)
+		_ = c.PatchReg.Register("recovery.max_retries", recoveryExec)
+	}
 
 	log.Info("new evolution: live DAG injected into executors",
 		"steps", len(dag.Steps()))

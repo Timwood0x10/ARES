@@ -318,11 +318,62 @@ func (m *MutableDAG) RemoveEdge(ctx context.Context, from, to string) error {
 }
 
 // GetExecutionOrder returns topological sort under read lock.
+// The ordering strategy is determined by SchedulerType:
+//   - "" or "*graph.DefaultScheduler": FIFO topological order (default)
+//   - other: random shuffle of ready nodes at each step
 func (m *MutableDAG) GetExecutionOrder() ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	return m.dag.GetExecutionOrder()
+	inDegree := make(map[string]int)
+	for node := range m.dag.Nodes {
+		inDegree[node] = m.dag.Nodes[node].InDegree
+	}
+
+	queue := make([]string, 0)
+	for node, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, node)
+		}
+	}
+
+	// When the scheduler type is not the default, shuffle the ready queue
+	// at each step to produce a different execution order. This is how
+	// genome evolution of scheduler config actually affects the agent's
+	// runtime behavior — the PatchChangeScheduler sets SchedulerType on
+	// the live DAG, and GetExecutionOrder reads it here.
+	useRandom := m.SchedulerType != "" && m.SchedulerType != "*graph.DefaultScheduler"
+
+	result := make([]string, 0, len(m.dag.Nodes))
+	for len(queue) > 0 {
+		var node string
+		if useRandom && len(queue) > 1 {
+			// Non-default scheduler: randomize selection order.
+			idx := int(time.Now().UnixNano()) % len(queue)
+			if idx < 0 {
+				idx = -idx
+			}
+			node = queue[idx]
+			queue = append(queue[:idx], queue[idx+1:]...)
+		} else {
+			node = queue[0]
+			queue = queue[1:]
+		}
+		result = append(result, node)
+
+		for _, neighbor := range m.dag.Edges[node] {
+			inDegree[neighbor]--
+			if inDegree[neighbor] == 0 {
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	if len(result) != len(m.dag.Nodes) {
+		return nil, ErrCycleDetected
+	}
+
+	return result, nil
 }
 
 // Snapshot returns a deep copy of the current DAG.

@@ -286,6 +286,18 @@ func runServe() error {
 					if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
 						log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
 					}
+
+					// Update the WorkflowGenome's DAG reference so its evolution
+					// mutations are based on the agent's real workflow topology
+					// instead of the bootstrap 3-step placeholder. Without this,
+					// the genome generates patches against the toy structure,
+					// so the content being evolved is disconnected from reality.
+					if wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow"); gErr == nil {
+						if setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) }); ok {
+							setter.SetDAG(liveDAG)
+							log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
+						}
+					}
 				}
 			}
 		}
@@ -614,12 +626,12 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		return nil, nil
 
 	case patch.PatchChangeScheduler:
-			// Store the scheduler type on the live DAG so the agent's runtime
-			// scheduler selection reads the evolved config instead of the default.
-			schedType := fmt.Sprintf("%T", p.Value)
-			dag.SchedulerType = schedType
-			log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
-			return nil, nil
+		// Store the scheduler type on the live DAG so the agent's runtime
+		// scheduler selection reads the evolved config instead of the default.
+		schedType := fmt.Sprintf("%T", p.Value)
+		dag.SchedulerType = schedType
+		log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
+		return nil, nil
 
 	default:
 		return nil, fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)
