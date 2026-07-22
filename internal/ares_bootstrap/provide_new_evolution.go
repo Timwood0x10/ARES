@@ -18,6 +18,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	provider_code "github.com/Timwood0x10/ares/internal/knowledge/provider/code"
+	provider_memory "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
@@ -32,10 +34,8 @@ type NewEvolutionComponents struct {
 	Coordinator   *coordinator.EvolutionCoordinator
 	// LLMAdapter parses natural-language LLM suggestions into PatchProposals
 	// that the Coordinator can evaluate alongside GA/Chaos/AKF/Human sources.
-	// TODO: functionally wire LLMAdapter into the Coordinator's suggestion
-	// pipeline (LLM → Parse → PatchProposal → Coordinator.Evaluate). Currently
-	// created for package reachability closure only; the usage pattern is
-	// demonstrated in api/bootstrap/bootstrap.go.
+	// Wired into the Coordinator's suggestion pipeline in wireGAEvolution when
+	// an LLM client is available (LLM → Parse → PatchProposal → Coordinate.Evaluate).
 	LLMAdapter *evoparent.LLMAdapter
 	// StrategyStore persists the best-evolved strategy deployed by the GA
 	// engine so the live agent can consume it at runtime. Set by the
@@ -180,6 +180,10 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	// Knowledge executor — works with or without a real runtime.
 	var knowledgeExec patch.RuntimeComponent
 	if rt != nil {
+		// Wire the KnowledgeRuntime to the PatchRegistry and EvidenceStore
+		// so that runtime patches can dynamically update knowledge config and
+		// evidence emitted during AKG execution is recorded centrally.
+		rt.WithPatchRegistry(patchReg).WithEvidenceStore(evStore)
 		knowledgeExec = knowledgeruntime.NewKnowledgePatchExecutor(rt)
 	} else {
 		// No runtime available — use a no-op executor for knowledge patches.
@@ -248,9 +252,10 @@ func (e *noopKnowledgeExecutor) CanApply(_ context.Context, p patch.RuntimePatch
 // Ensure noopKnowledgeExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*noopKnowledgeExecutor)(nil)
 
-// buildKnowledgeRuntime creates a minimal KnowledgeRuntime for the evolution
-// system. This enables the KnowledgePatchExecutor to process knowledge/planner
-// patches meaningfully instead of being a no-op.
+// buildKnowledgeRuntime creates a KnowledgeRuntime for the evolution
+// system with registered providers (memory, code) that work without an
+// external database. This enables the KnowledgePatchExecutor to process
+// knowledge/planner patches meaningfully instead of being a no-op.
 func buildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
 	knowPipe := knowledge.NewKnowledgePipeline(
 		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 10240}},
@@ -258,14 +263,30 @@ func buildKnowledgeRuntime() *knowledgeruntime.KnowledgeRuntime {
 		[]knowledge.Validator{&pipeline.DefaultValidator{}},
 		[]knowledge.Summarizer{&pipeline.DefaultSummarizer{MaxSummaryLen: 200}},
 	)
+
+	reg := provider.NewProviderRegistry()
+	// Register lightweight providers that work without an external database.
+	// Memory provider — stores knowledge objects in-memory for the current session.
+	if err := reg.Register(provider_memory.New("memory-default", nil)); err != nil {
+		log.Warn("bootstrap: register memory provider for knowledge runtime", "error", err)
+	}
+	// Code provider — extracts knowledge from the local codebase (functions, types, etc.).
+	if cp, err := provider_code.New("codebase", "."); err == nil {
+		if err := reg.Register(cp); err != nil {
+			log.Warn("bootstrap: register code provider for knowledge runtime", "error", err)
+		}
+	} else {
+		log.Warn("bootstrap: create code provider for knowledge runtime", "error", err)
+	}
+
 	knowDiscovery := planner.NewSourceDiscovery(
-		provider.NewProviderRegistry(),
+		reg,
 		planner.NewQueryPlanner(),
 	)
 	return knowledgeruntime.New(
 		planner.NewKnowledgePlanner(),
 		knowDiscovery,
-		provider.NewProviderRegistry(),
+		reg,
 		knowPipe,
 		[]knowledgeruntime.Linker{&knowledgeruntime.DefaultLinker{}},
 		[]knowledgeruntime.Reducer{&knowledgeruntime.DefaultReducer{}},

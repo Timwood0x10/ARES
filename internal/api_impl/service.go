@@ -24,6 +24,8 @@ import (
 
 	"github.com/Timwood0x10/ares/api/handler"
 	"github.com/Timwood0x10/ares/api/router"
+	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	ares_config "github.com/Timwood0x10/ares/internal/ares_config"
 	evalapi "github.com/Timwood0x10/ares/internal/ares_eval/service"
 	experience "github.com/Timwood0x10/ares/internal/ares_experience/service"
 	flight "github.com/Timwood0x10/ares/internal/ares_flight"
@@ -39,8 +41,9 @@ import (
 
 // Service is the top-level application entry point. One call to StartService
 // starts everything: LLM connection, MCP servers, event bridge, orchestrator,
-// flight recorder, and HTTP dashboard. Use Stop for graceful shutdown and
-// Wait to block until the context is cancelled.
+// flight recorder, bootstrap components (runtime, memory, evolution), and HTTP
+// dashboard. Use Stop for graceful shutdown and Wait to block until the context
+// is cancelled.
 type Service struct {
 	cfg        *ServiceConfig
 	orch       *dashboard.Orchestrator
@@ -61,6 +64,10 @@ type Service struct {
 	experienceRanking   *experience.RankingService // always constructed, exposed for later wiring
 	experienceConflicts *experience.ConflictResolver
 	queryCache          *query.MemoryQueryCache // in-memory query cache (has a cleanup goroutine)
+
+	// Bootstrap components — wired via ares_bootstrap.Bootstrap for autonomous
+	// runtime, memory, evolution, and service discovery.
+	bootstrap *ares_bootstrap.Components
 }
 
 // StartService connects LLM, all MCP servers, creates orchestrator, starts
@@ -150,6 +157,28 @@ func StartService(ctx context.Context, cfg *ServiceConfig) (*Service, error) {
 		log.Info("ares_mcp server connected", "server", srv.Name, "tools", len(tools))
 	}
 	log.Info("ares_mcp tools discovered", "total_servers", len(cfg.MCP.Servers), "tools", len(allTools))
+
+	// --- Bootstrap: infrastructure components via single wiring hub ---
+	// Wires EventStore, Runtime, Memory, MCP, LLM, Evolution, NewEvolution,
+	// and service discovery — enabling autonomous agent operation without
+	// manual wiring. Uses the ares_config.Config built from ServiceConfig.
+	bootstrapCfg, bsErr := ares_configFromService(cfg)
+	if bsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("build bootstrap config: %w", bsErr)
+	}
+	comp, bsErr := ares_bootstrap.Bootstrap(ctx, bootstrapCfg, nil)
+	if bsErr != nil {
+		cancel()
+		return nil, fmt.Errorf("bootstrap: %w", bsErr)
+	}
+	s.bootstrap = comp
+	log.Info("bootstrap components initialized",
+		"runtime", comp.Runtime != nil,
+		"memory", comp.Memory != nil,
+		"evolution", comp.Evolution != nil,
+		"new_evolution", comp.NewEvolution != nil,
+	)
 
 	// Use errgroup for structured concurrency with error propagation.
 	// The derived ctx is cancelled automatically when any goroutine returns
@@ -432,6 +461,38 @@ func (s *Service) handlerWrapper() http.Handler {
 		s.handlerMu.RUnlock()
 		h.ServeHTTP(w, r)
 	})
+}
+
+// ares_configFromService converts a ServiceConfig to ares_config.Config
+// so that Bootstrap can wire the full infrastructure stack (runtime, memory,
+// evolution) from the same configuration used by the service entry point.
+func ares_configFromService(cfg *ServiceConfig) (*ares_config.Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("service config must not be nil")
+	}
+	out := &ares_config.Config{}
+	out.LLM.Provider = cfg.LLM.Provider
+	out.LLM.Model = cfg.LLM.Model
+	out.LLM.BaseURL = cfg.LLM.BaseURL
+	out.LLM.APIKey = cfg.LLM.APIKey
+	out.LLM.Timeout = cfg.LLM.Timeout
+	out.Dashboard.Addr = cfg.Dashboard.Addr
+	// Storage defaults to in-memory when no postgres config is provided.
+	out.Storage.Enabled = cfg.Postgres.Enabled
+	out.Storage.Type = "memory"
+	if cfg.Postgres.Enabled {
+		out.Storage.Type = "postgres"
+		out.Storage.Host = cfg.Postgres.Host
+		out.Storage.Port = cfg.Postgres.Port
+		out.Storage.Username = cfg.Postgres.User
+		out.Storage.Password = cfg.Postgres.Password
+		out.Storage.Database = cfg.Postgres.Database
+		out.Storage.SSLMode = cfg.Postgres.SSLMode
+	}
+	// Evolution defaults: disabled in the minimal service path unless
+	// explicitly configured via the ServiceConfig's postgres section.
+	out.Evolution.Enabled = cfg.Postgres.Enabled
+	return out, nil
 }
 
 // Wait blocks until the service context is cancelled (e.g., by Stop or OS signal).

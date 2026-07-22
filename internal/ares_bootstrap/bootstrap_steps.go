@@ -162,6 +162,51 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 			}
 		}
 	}()
+
+	// Wire the LLMAdapter into the Coordinator's suggestion pipeline.
+	// When an LLM client is available, periodically generate and submit
+	// evolution suggestions (LLM → Parse → PatchProposal → Coordinator.Evaluate).
+	if newEvol.LLMAdapter != nil && comp.LLM != nil && comp.LLM.Client != nil {
+		if llmClient, ok := comp.LLM.Client.(evoService.LLMClient); ok {
+			comp.wg.Add(1)
+			go func() {
+				suggestTicker := time.NewTicker(15 * time.Minute)
+				defer suggestTicker.Stop()
+				defer comp.wg.Done()
+				for {
+					select {
+					case <-suggestTicker.C:
+						// Generate a suggestion prompt for the LLM based on
+						// current evolution state and recent evidence.
+						prompt := "Examine the current system state and suggest one evolution improvement. " +
+							"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
+							"change scheduler, change topk, change reducer, change planner, change recovery."
+						resp, err := llmClient.Generate(ctx, prompt)
+						if err != nil {
+							log.WarnContext(ctx, "[bootstrap] LLM suggestion generation failed",
+								"error", err)
+							continue
+						}
+						results, parseErr := newEvol.LLMAdapter.Parse(ctx, resp)
+						if parseErr != nil {
+							// Parsing failures are expected when the LLM response
+							// doesn't match any known pattern — log and skip.
+							log.DebugContext(ctx, "[bootstrap] LLM suggestion parse skipped",
+								"error", parseErr)
+							continue
+						}
+						for _, r := range results {
+							newEvol.Coordinator.Submit(r.Proposal)
+						}
+						newEvol.Coordinator.Evaluate(ctx)
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+			log.InfoContext(ctx, "[bootstrap] LLM suggestion pipeline wired into Coordinator")
+		}
+	}
 	return nil
 }
 
