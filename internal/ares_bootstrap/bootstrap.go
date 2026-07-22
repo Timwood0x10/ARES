@@ -3,6 +3,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -33,7 +34,10 @@ type Components struct {
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
 	Distillation *aresexp.DistillationService
-	wg           sync.WaitGroup
+	// Discovery holds the optional service discovery engine. It is nil when
+	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
+	Discovery *DiscoveryComponents
+	wg        sync.WaitGroup
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -220,6 +224,21 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	if err := wireGAEvolution(ctx, cfg, &comp, newEvol, guidanceProvider); err != nil {
 		runCleanups()
 		return nil, err
+	}
+
+	// 10. Optional service discovery (opt-in via config.Discovery.Enabled).
+	// When disabled, ProvideDiscovery returns ErrDiscoveryDisabled and the
+	// discovery packages remain unused, preserving prior behavior.
+	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery)
+	switch {
+	case errors.Is(err, ErrDiscoveryDisabled):
+		// Discovery is disabled — not an error, just no-op.
+		comp.Discovery = nil
+	case err != nil:
+		runCleanups()
+		return nil, fmt.Errorf("bootstrap: wire discovery: %w", err)
+	default:
+		comp.Discovery = discoveryComp
 	}
 
 	return &comp, nil

@@ -25,6 +25,7 @@ package sdk
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,6 +34,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/lib/pq"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/mcp"
@@ -53,6 +55,8 @@ import (
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
+	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
+	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
 )
 
 const strategyPriority = "priority"
@@ -79,7 +83,7 @@ type Runtime struct {
 	evoEnabled       bool
 	knowledgeEnabled bool
 	knowledgeRT      *khruntime.KnowledgeRuntime
-	knowledgeStore   *memstore.Store
+	knowledgeStore   knowledge.KnowledgeStore
 	evolutionStore   *memStrategyStore
 	eventStore       ares_events.EventStore
 	mcpClients       []*mcp.Client
@@ -312,7 +316,7 @@ func New(opts ...Option) (*Runtime, error) {
 
 	// ---- AKF Knowledge Fabric ----
 	var knowledgeRT *khruntime.KnowledgeRuntime
-	var knowledgeStore *memstore.Store
+	var knowledgeStore knowledge.KnowledgeStore
 	var evoStore *memStrategyStore
 	if cfg.knlCfg.Enabled {
 		reg := provider.NewProviderRegistry()
@@ -333,7 +337,45 @@ func New(opts ...Option) (*Runtime, error) {
 			}
 		}
 
-		knowledgeStore = memstore.New()
+		// Register user-configured extra knowledge providers (code, mysql,
+		// postgres, or custom). Opt-in via WithKnowledgeProvider; defaults
+		// to none.
+		for _, p := range cfg.extraProviders {
+			if err := reg.Register(p); err != nil {
+				return nil, fmt.Errorf("knowledge: register provider %s: %w", p.Name(), err)
+			}
+		}
+
+		// Knowledge store factory: SQLite > PostgreSQL > in-memory. All
+		// opt-in via SDK options; defaults to in-memory to preserve prior
+		// behaviour.
+		switch {
+		case cfg.sqliteStorePath != "":
+			s, err := sqlitestore.New(cfg.sqliteStorePath)
+			if err != nil {
+				return nil, fmt.Errorf("knowledge: init sqlite store: %w", err)
+			}
+			knowledgeStore = s
+		case cfg.dbCfg.Host != "":
+			sslMode := cfg.dbCfg.SSLMode
+			if sslMode == "" {
+				sslMode = "disable"
+			}
+			dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+				cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
+				cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
+			db, err := sql.Open("postgres", dsn)
+			if err != nil {
+				return nil, fmt.Errorf("knowledge: open postgres store: %w", err)
+			}
+			knowledgeStore, err = postgresstore.New(db)
+			if err != nil {
+				db.Close()
+				return nil, fmt.Errorf("knowledge: init postgres store: %w", err)
+			}
+		default:
+			knowledgeStore = memstore.New()
+		}
 
 		knowledgeRT = khruntime.New(
 			planner.NewKnowledgePlanner(),
@@ -397,9 +439,11 @@ func (r *Runtime) GetProvider() string {
 	return string(r.llmSvc.GetProvider())
 }
 
-// KnowledgeStore returns the in-memory knowledge store, or nil if knowledge
-// is not enabled. Use this to save and query KnowledgeObjects directly.
-func (r *Runtime) KnowledgeStore() *memstore.Store {
+// KnowledgeStore returns the knowledge store, or nil if knowledge is not
+// enabled. The concrete type depends on the SDK options used: in-memory by
+// default, SQLite via WithSQLiteKnowledgeStore, or PostgreSQL via
+// WithPostgres. Use this to save and query KnowledgeObjects directly.
+func (r *Runtime) KnowledgeStore() knowledge.KnowledgeStore {
 	return r.knowledgeStore
 }
 

@@ -16,6 +16,8 @@ var (
 	ErrInvalidRange = errors.New("value out of valid range")
 	// ErrMissingValue signals a required companion field was left unset.
 	ErrMissingValue = errors.New("required field missing")
+	// ErrNilProvider signals a nil provider was passed to WithKnowledgeProvider.
+	ErrNilProvider = errors.New("nil provider")
 )
 
 // Provider constants used in config file parsing.
@@ -72,6 +74,7 @@ type DatabaseFileConfig struct {
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
+	SSLMode  string `yaml:"ssl_mode"`
 }
 
 // EmbeddingFileConfig declares an external embedding service endpoint. When

@@ -5,6 +5,7 @@ import (
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
+	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
 
 // ---- Runtime options ----
@@ -23,9 +24,15 @@ type config struct {
 	embedCfg    embeddingCfg    // optional external embedding service
 	distillCfg  distillationCfg // optional memory distillation
 	knowledgeRT knowledgeRTCfg  // optional retrieval tuning
-	mcpConns    []MCPConn
-	fallbacks   []*core.LLMConfig
-	trace       bool
+	// extraProviders holds user-registered GraphProviders appended via
+	// WithKnowledgeProvider (e.g. code, mysql, postgres providers).
+	extraProviders []provider.GraphProvider
+	// sqliteStorePath, when non-empty, selects the SQLite knowledge store
+	// instead of the default in-memory store.
+	sqliteStorePath string
+	mcpConns        []MCPConn
+	fallbacks       []*core.LLMConfig
+	trace           bool
 }
 
 // memoryCfg holds memory subsystem configuration.
@@ -51,6 +58,7 @@ type databaseCfg struct {
 	User     string
 	Password string
 	Database string
+	SSLMode  string
 }
 
 // embeddingCfg holds an external embedding service endpoint. Empty URL signals
@@ -321,6 +329,52 @@ func WithEvolution() Option {
 func WithKnowledge() Option {
 	return func(c *config) error {
 		c.knlCfg.Enabled = true
+		return nil
+	}
+}
+
+// WithKnowledgeProvider registers an additional GraphProvider with the AKF
+// Knowledge Fabric. Call multiple times to register multiple providers (e.g.
+// code, mysql, postgres). Providers are only wired into the runtime when
+// WithKnowledge is also enabled.
+//
+// Args:
+//
+//	p - a GraphProvider implementation; must not be nil.
+//
+// Returns:
+//
+//	An Option that appends p to the extra provider list. Returns an error
+//	wrapping ErrNilProvider when p is nil.
+func WithKnowledgeProvider(p provider.GraphProvider) Option {
+	return func(c *config) error {
+		if p == nil {
+			return fmt.Errorf("knowledge provider: %w", ErrNilProvider)
+		}
+		c.extraProviders = append(c.extraProviders, p)
+		return nil
+	}
+}
+
+// WithSQLiteKnowledgeStore selects a file-backed SQLite knowledge store instead
+// of the default in-memory store. Only takes effect when WithKnowledge is also
+// enabled. When the SQLite path is set it takes priority over the PostgreSQL
+// store configured via WithPostgres.
+//
+// Args:
+//
+//	dbPath - filesystem path to the SQLite database file; must be non-empty.
+//
+// Returns:
+//
+//	An Option that records the SQLite path. Returns an error wrapping
+//	ErrMissingValue when dbPath is empty.
+func WithSQLiteKnowledgeStore(dbPath string) Option {
+	return func(c *config) error {
+		if dbPath == "" {
+			return fmt.Errorf("sqlite knowledge store path: %w", ErrMissingValue)
+		}
+		c.sqliteStorePath = dbPath
 		return nil
 	}
 }

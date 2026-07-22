@@ -9,6 +9,7 @@ import (
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/evidence"
+	evoparent "github.com/Timwood0x10/ares/internal/evolution"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	"github.com/Timwood0x10/ares/internal/evolution/genome"
@@ -29,6 +30,13 @@ type NewEvolutionComponents struct {
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
 	Coordinator   *coordinator.EvolutionCoordinator
+	// LLMAdapter parses natural-language LLM suggestions into PatchProposals
+	// that the Coordinator can evaluate alongside GA/Chaos/AKF/Human sources.
+	// TODO: functionally wire LLMAdapter into the Coordinator's suggestion
+	// pipeline (LLM → Parse → PatchProposal → Coordinator.Evaluate). Currently
+	// created for package reachability closure only; the usage pattern is
+	// demonstrated in api/bootstrap/bootstrap.go.
+	LLMAdapter *evoparent.LLMAdapter
 	// StrategyStore persists the best-evolved strategy deployed by the GA
 	// engine so the live agent can consume it at runtime. Set by the
 	// bootstrap bridge after the store is created.
@@ -204,6 +212,7 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		DiffReg:       diffReg,
 		PatchReg:      patchReg,
 		Coordinator:   coord,
+		LLMAdapter:    evoparent.NewLLMAdapter(),
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
@@ -43,6 +44,18 @@ type Config struct {
 	Dashboard  DashboardAppConfig `yaml:"dashboard"`
 	Evolution  EvolutionConfig    `yaml:"evolution"`
 	Embedding  EmbeddingConfig    `yaml:"embedding"`
+	Discovery  DiscoveryConfig    `yaml:"discovery"`
+}
+
+// DiscoveryConfig configures the optional service discovery engine that
+// auto-detects MCP servers and agent runtimes from local config files
+// (Claude, Cursor, VSCode, ARES) and the system PATH. When Enabled is
+// false (the default), discovery is not wired and the discovery packages
+// remain unused, preserving prior behavior.
+type DiscoveryConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	Interval   time.Duration `yaml:"interval"`
+	ProjectDir string        `yaml:"project_dir"`
 }
 
 // EmbeddingConfig holds configuration for the embedding client used by
@@ -482,6 +495,16 @@ func (c *Config) setDefaults() {
 	if c.Evolution.CrossoverType == "" {
 		c.Evolution.CrossoverType = "uniform"
 	}
+	// LLM scoring defaults — MaxCallsPerGeneration caps LLM API cost per
+	// generation. When zero, use 100 (matches the tiered scorer default).
+	if c.Evolution.LLMScoring.MaxCallsPerGeneration == 0 {
+		c.Evolution.LLMScoring.MaxCallsPerGeneration = 100
+	}
+	// Discovery defaults — opt-in via Enabled (default false). When enabled
+	// but Interval is unset, default to 5 minutes between discovery cycles.
+	if c.Discovery.Interval == 0 {
+		c.Discovery.Interval = 5 * time.Minute
+	}
 }
 
 // Validate validates the configuration values.
@@ -519,6 +542,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateEvolution(); err != nil {
+		return err
+	}
+
+	if err := c.validateDiscovery(); err != nil {
 		return err
 	}
 
@@ -720,6 +747,25 @@ func (c *Config) validateEvolution() error {
 	if c.Evolution.Generations < 1 {
 		return fmt.Errorf("evolution: generations must be >= 1, got %d", c.Evolution.Generations)
 	}
+	if c.Evolution.LLMScoring.Enabled {
+		if c.Evolution.LLMScoring.MaxCallsPerGeneration < 0 {
+			return fmt.Errorf("evolution: llm_scoring.max_calls_per_generation must be >= 0, got %d",
+				c.Evolution.LLMScoring.MaxCallsPerGeneration)
+		}
+	}
+	return nil
+}
+
+// validateDiscovery validates the optional service discovery configuration.
+// When discovery is disabled (the default), no validation is performed so the
+// discovery packages remain unused and prior behavior is preserved.
+func (c *Config) validateDiscovery() error {
+	if !c.Discovery.Enabled {
+		return nil
+	}
+	if c.Discovery.Interval < 0 {
+		return fmt.Errorf("discovery: interval must be non-negative, got %s", c.Discovery.Interval)
+	}
 	return nil
 }
 
@@ -862,4 +908,31 @@ type EvolutionConfig struct {
 	// accepted patches are promoted through staging → live instead of applied
 	// directly by the Coordinator.
 	Deployment deployment.DeploymentConfig `yaml:"deployment"`
+
+	// LLMScoring configures the opt-in LLM-backed strategy scorer for the
+	// GA evolution system. When Enabled is false (the default), evolution
+	// uses the constant baseline scorer, preserving prior behavior.
+	LLMScoring LLMScoringConfig `yaml:"llm_scoring"`
+}
+
+// LLMScoringConfig configures the opt-in LLM-backed strategy scorer for the
+// GA evolution system. When Enabled is false (the default), evolution uses the
+// constant baseline scorer (ConstantScorer(50.0)), preserving prior behavior
+// and avoiding uncontrolled LLM API costs during tests.
+type LLMScoringConfig struct {
+	// Enabled activates the LLM-backed scorer. When false, the GA evolution
+	// system falls back to the constant baseline scorer. Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// Seed enables deterministic LLM scoring when > 0. Forces the LLM
+	// temperature to 0 and embeds the seed in the evaluation prompt so
+	// identical strategies always receive the same score. Default: 0
+	// (non-deterministic).
+	Seed int64 `yaml:"seed"`
+
+	// MaxCallsPerGeneration caps the number of LLM scoring calls per
+	// generation to control cost. When the budget is exhausted, remaining
+	// strategies are scored by the deterministic heuristic fallback.
+	// Default: 100 when zero.
+	MaxCallsPerGeneration int `yaml:"max_calls_per_generation"`
 }

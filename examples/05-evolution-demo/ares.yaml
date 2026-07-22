@@ -37,3 +37,12 @@ evolution:
   target_fitness: 0                 # Stop when best fitness >= target (0 = no target)
   steady_state: false               # Steady-state GA mode
   steady_state_replace_rate: 0.3    # Replacement fraction in steady-state mode
+  # LLM-backed strategy scorer (opt-in, disabled by default).
+  # When enabled, the GA scores each strategy via an LLM call instead of the
+  # constant baseline (50.0). Requires a working LLM client (llm.* above).
+  # The deterministic heuristic is used as fallback when the budget is
+  # exhausted or the LLM call fails.
+  # llm_scoring:
+  #   enabled: true                    # Opt in to LLM-backed scoring
+  #   seed: 42                         # >0 forces deterministic scoring
+  #   max_calls_per_generation: 100    # Cap LLM API cost per generation

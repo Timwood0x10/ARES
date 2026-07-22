@@ -120,6 +120,9 @@ func callLLMFull(t *testing.T, cfg enterpriseConfig, contextName, content string
 // ============================================================
 
 func TestEnterprise_ScenarioA_CrossSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping enterprise benchmark (real LLM calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -206,6 +209,9 @@ func TestEnterprise_ScenarioA_CrossSession(t *testing.T) {
 // ============================================================
 
 func TestEnterprise_ScenarioB_Unbounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping enterprise benchmark (real LLM calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -272,6 +278,9 @@ func TestEnterprise_ScenarioB_Unbounded(t *testing.T) {
 // ============================================================
 
 func TestEnterprise_ScenarioC_Density(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping enterprise benchmark (real LLM calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -360,6 +369,9 @@ func TestEnterprise_ScenarioC_Density(t *testing.T) {
 // ============================================================
 
 func TestEnterprise_ScenarioD_Growth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping enterprise benchmark (real LLM calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)

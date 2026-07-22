@@ -8,7 +8,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and
@@ -73,6 +75,12 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 	}()
 }
 
+// Parameter keys used in evolution strategy configurations.
+const (
+	paramTemperature = "temperature"
+	paramMaxTokens   = "max_tokens"
+)
+
 // wireGAEvolution wires the GA population adapter (step 9 of Bootstrap): it
 // builds the GA system, attaches the coordinator bridge to the population
 // adapter, and starts the background evolution ticker. Extracted from Bootstrap
@@ -83,7 +91,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 
 	base := &mutation.Strategy{
 		ID:     "bootstrap-root",
-		Params: map[string]any{"temperature": 0.7, "max_tokens": 4096},
+		Params: map[string]any{paramTemperature: 0.7, paramMaxTokens: 4096},
 	}
 	gaCfg := evolution.DefaultSystemConfig()
 	gaCfg.EnableDreamCycle = false
@@ -96,6 +104,20 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// distillation was successfully wired above (PG + embedding configured).
 	gaCfg.GuidanceProvider = guidanceProvider
 	gaCfg.EnableExperienceGuidedMutation = guidanceProvider != nil
+
+	// Track B closure: opt-in LLM-backed scorer. When enabled and an LLM
+	// client is available, override the default constant baseline scorer
+	// with the LLM scorer + deterministic heuristic fallback. When disabled
+	// (the default), gaCfg.Scorer stays nil and buildAdapterOptions falls
+	// back to ConstantScorer(50.0), preserving prior behavior.
+	llmScorer, llmHeuristic, llmMaxCalls := wireLLMScorer(cfg, comp)
+	if llmScorer != nil {
+		gaCfg.Scorer = llmScorer
+		gaCfg.HeuristicScorer = llmHeuristic
+		if llmMaxCalls > 0 {
+			gaCfg.MaxLLMCallsPerGeneration = llmMaxCalls
+		}
+	}
 
 	wired, wErr := evolution.NewWiredEvolutionSystem(base, gaCfg)
 	if wErr != nil {
@@ -141,4 +163,59 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		}
 	}()
 	return nil
+}
+
+// wireLLMScorer constructs the opt-in LLM-backed scorer for the GA evolution
+// system (Track B from the closure plan). It returns non-nil scorer functions
+// only when all of the following hold:
+//   - cfg.Evolution.LLMScoring.Enabled is true,
+//   - comp.LLM and comp.LLM.Client are non-nil,
+//   - comp.LLM.Client satisfies the evoService.LLMClient interface,
+//   - evoService.NewLLMScorer succeeds.
+//
+// On any failure (disabled, missing client, type mismatch, construction
+// error), the function logs a warning and returns nil scorers with a zero
+// budget. The caller then leaves gaCfg.Scorer unset, causing
+// buildAdapterOptions to fall back to ConstantScorer(50.0). This keeps
+// scoring best-effort: bootstrap never fails due to scorer wiring.
+func wireLLMScorer(cfg *ares_config.Config, comp *Components) (genome.ScorerFunc, genome.ScorerFunc, int) {
+	if cfg == nil || !cfg.Evolution.LLMScoring.Enabled {
+		return nil, nil, 0
+	}
+
+	if comp == nil || comp.LLM == nil || comp.LLM.Client == nil {
+		log.Warn("bootstrap: LLM scoring enabled but LLM client is nil, falling back to baseline scorer")
+		return nil, nil, 0
+	}
+
+	llmClient, ok := comp.LLM.Client.(evoService.LLMClient)
+	if !ok {
+		log.Warn("bootstrap: LLM client does not satisfy LLMClient interface, falling back to baseline scorer",
+			"client_type", fmt.Sprintf("%T", comp.LLM.Client))
+		return nil, nil, 0
+	}
+
+	llmScorer, err := evoService.NewLLMScorer(evoService.LLMScorerConfig{
+		Client:   llmClient,
+		Seed:     cfg.Evolution.LLMScoring.Seed,
+		Fallback: evoService.DeterministicScore,
+	})
+	if err != nil {
+		log.Warn("bootstrap: failed to create LLM scorer, falling back to baseline scorer", "error", err)
+		return nil, nil, 0
+	}
+
+	llmScorerFn := llmScorer.AsScorerFunc()
+	scorer := genome.ScorerFunc(func(agent *mutation.Strategy) float64 {
+		return llmScorerFn(evoService.ToAPIStrategy(agent))
+	})
+	heuristic := genome.ScorerFunc(func(agent *mutation.Strategy) float64 {
+		return evoService.DeterministicScore(evoService.ToAPIStrategy(agent))
+	})
+
+	log.Info("bootstrap: LLM-backed scorer wired into GA evolution",
+		"seed", cfg.Evolution.LLMScoring.Seed,
+		"max_calls_per_generation", cfg.Evolution.LLMScoring.MaxCallsPerGeneration)
+
+	return scorer, heuristic, cfg.Evolution.LLMScoring.MaxCallsPerGeneration
 }

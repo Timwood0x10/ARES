@@ -66,6 +66,13 @@ func toAPIStrategy(s *mutation.Strategy) *Strategy {
 	}
 }
 
+// ToAPIStrategy is the exported wrapper for toAPIStrategy. It converts a
+// mutation.Strategy to the service-layer Strategy type used by LLMScorer and
+// DeterministicScore. Returns nil when the input is nil.
+func ToAPIStrategy(s *mutation.Strategy) *Strategy {
+	return toAPIStrategy(s)
+}
+
 func toInternalStrategy(s *Strategy) *mutation.Strategy {
 	if s == nil {
 		return nil

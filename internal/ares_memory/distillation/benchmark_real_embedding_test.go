@@ -42,6 +42,9 @@ func newRealEmbedder(t *testing.T) embedding.EmbeddingService {
 // ============================================================
 
 func TestRealEmbed_ScenarioA_CrossSessionMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real embedding benchmark (external service calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -130,6 +133,9 @@ func TestRealEmbed_ScenarioA_CrossSessionMemory(t *testing.T) {
 // ============================================================
 
 func TestRealEmbed_ScenarioB_UnboundedHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real embedding benchmark (external service calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -208,6 +214,9 @@ func TestRealEmbed_ScenarioB_UnboundedHistory(t *testing.T) {
 // ============================================================
 
 func TestRealEmbed_ScenarioC_InformationDensity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real embedding benchmark (external service calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -279,6 +288,9 @@ func TestRealEmbed_ScenarioC_InformationDensity(t *testing.T) {
 // ============================================================
 
 func TestRealEmbed_ScenarioD_GrowthOverSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real embedding benchmark (external service calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
@@ -377,6 +389,9 @@ func TestRealEmbed_ScenarioD_GrowthOverSessions(t *testing.T) {
 // ============================================================
 
 func TestRealEmbed_RetentionAccuracy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real embedding benchmark (external service calls) in short mode")
+	}
 	ctx := context.Background()
 	embedder := newRealEmbedder(t)
 	repo := NewMockExperienceRepository(nil)
