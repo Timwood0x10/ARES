@@ -213,6 +213,30 @@ func (r *Registry) RegisterComponent(comp RuntimeComponent) error {
 	return r.Register(comp.Name(), comp)
 }
 
+// Replace registers ex for target, overwriting any existing registration.
+// Unlike Register, Replace does not error when the target is already taken.
+// Use it for live-swap paths (e.g. injecting the agent's live runtime after
+// bootstrap) where a component must be updated in place.
+func (r *Registry) Replace(target string, ex Executor) error {
+	if target == "" {
+		return fmt.Errorf("patch: target must not be empty")
+	}
+	if ex == nil {
+		return fmt.Errorf("patch: executor must not be nil")
+	}
+	r.executors[target] = ex
+	return nil
+}
+
+// ReplaceComponent replaces the component registered under comp.Name(),
+// overwriting any existing registration.
+func (r *Registry) ReplaceComponent(comp RuntimeComponent) error {
+	if comp == nil {
+		return fmt.Errorf("patch: component must not be nil")
+	}
+	return r.Replace(comp.Name(), comp)
+}
+
 // Apply dispatches a patch to the appropriate executor.
 // First tries to find an executor by target name. If none is found and a
 // fallback is set, delegates to the fallback. If no fallback exists, returns
@@ -224,9 +248,18 @@ func (r *Registry) Apply(ctx context.Context, patch RuntimePatch) error {
 		if r.fallback != nil {
 			rollback, err := r.fallback.Apply(ctx, patch)
 			if err != nil {
+				// Attempt rollback via the fallback executor itself. A
+				// fallback-originated rollback targets a fallback-only key
+				// (no exact executor exists in r.executors), so it must be
+				// applied by the fallback, not looked up by target name.
+				if rollback != nil {
+					if _, rbErr := r.fallback.Apply(ctx, *rollback); rbErr != nil {
+						return fmt.Errorf("patch %s on %s (fallback) failed (%w); rollback also failed: %v",
+							patch.Type, patch.Target, err, rbErr)
+					}
+				}
 				return fmt.Errorf("patch %s on %s (fallback): %w", patch.Type, patch.Target, err)
 			}
-			_ = rollback
 			return nil
 		}
 		return fmt.Errorf("patch: no executor registered for target %q", patch.Target)

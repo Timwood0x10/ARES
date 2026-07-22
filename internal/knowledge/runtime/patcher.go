@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -63,12 +64,25 @@ func (p *configurablePlanner) Plan(ctx context.Context, goal string, budget know
 // It wraps a *KnowledgeRuntime and applies ChangePlanner/ChangeBudget/ChangeReducer.
 // Implements patch.RuntimeComponent for unified runtime evolution.
 type KnowledgePatchExecutor struct {
+	mu      sync.Mutex
 	runtime *KnowledgeRuntime
 }
 
 // NewKnowledgePatchExecutor creates a new KnowledgePatchExecutor.
 func NewKnowledgePatchExecutor(r *KnowledgeRuntime) *KnowledgePatchExecutor {
 	return &KnowledgePatchExecutor{runtime: r}
+}
+
+// SetRuntime replaces the wrapped KnowledgeRuntime so the executor evolves the
+// live runtime instead of a bootstrap placeholder. This is the correct
+// live-swap mechanism: patch.Registry.Register cannot overwrite an already
+// registered component key, so re-registering would silently fail and the swap
+// would be a no-op. The executor holds the runtime by reference, so swapping it
+// in place makes knowledge genome patches affect the actual agent runtime.
+func (e *KnowledgePatchExecutor) SetRuntime(r *KnowledgeRuntime) {
+	e.mu.Lock()
+	e.runtime = r
+	e.mu.Unlock()
 }
 
 // Name returns "knowledge" as the component identifier for patch routing.
@@ -84,6 +98,8 @@ var _ patch.RuntimeComponent = (*KnowledgePatchExecutor)(nil)
 
 // Apply applies a runtime patch to the knowledge runtime.
 func (e *KnowledgePatchExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	switch p.Type {
 	case patch.PatchChangeBudget:
 		return e.applyChangeBudget(p)

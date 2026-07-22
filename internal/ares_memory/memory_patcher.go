@@ -85,6 +85,12 @@ func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 //   - PatchChangePlanner — change max_history or max_tasks
 //   - PatchChangeBudget  — change max_distilled_tasks or session_ttl
 //   - PatchChangeReducer — change clean_options
+//
+// Apply validates the patch before mutating config, so a malformed patch (e.g.
+// an unparseable session_ttl) leaves the config untouched instead of applying a
+// partial change. The returned rollback patch carries the previous values as a
+// map[string]any in the same shape the forward Apply consumes, so re-applying
+// the rollback actually restores the prior config.
 func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
 	if e.store == nil {
 		return nil, fmt.Errorf(errPrefix + "no config store available")
@@ -97,59 +103,95 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 	if cfg == nil {
 		return nil, fmt.Errorf(errPrefix + "no config available")
 	}
-
-	// Build rollback = snapshot of current config before mutation.
-	rollbackCfg := *cfg
+	// Snapshot the previous config so we can build a rollback and so a
+	// validation failure leaves the config untouched (validate-before-mutate).
+	prev := *cfg
 
 	switch p.Type {
 	case patch.PatchChangePlanner:
-		// Value is expected as a map: {"max_history": 50, "max_tasks": 1000}
-		if v, ok := p.Value.(map[string]any); ok {
-			if h, ok := v["max_history"].(int); ok && h > 0 {
-				cfg.MaxHistory = h
-			}
-			if t, ok := v["max_tasks"].(int); ok && t > 0 {
-				cfg.MaxTasks = t
-			}
-			if s, ok := v["max_sessions"].(int); ok && s > 0 {
-				cfg.MaxSessions = s
-			}
+		vals, ok := p.Value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(errPrefix + "PatchChangePlanner value must be map[string]any")
 		}
+		rollback := map[string]any{}
+		if h, ok := vals["max_history"].(int); ok && h > 0 {
+			rollback["max_history"] = prev.MaxHistory
+			cfg.MaxHistory = h
+		}
+		if t, ok := vals["max_tasks"].(int); ok && t > 0 {
+			rollback["max_tasks"] = prev.MaxTasks
+			cfg.MaxTasks = t
+		}
+		if s, ok := vals["max_sessions"].(int); ok && s > 0 {
+			rollback["max_sessions"] = prev.MaxSessions
+			cfg.MaxSessions = s
+		}
+		return &patch.RuntimePatch{
+			Type:   p.Type,
+			Target: p.Target,
+			Value:  rollback,
+			Reason: "rollback: restore previous memory config",
+		}, nil
 
 	case patch.PatchChangeBudget:
-		// Value is expected as a map: {"max_distilled_tasks": 500, "session_ttl": "24h"}
-		if v, ok := p.Value.(map[string]any); ok {
-			if d, ok := v["max_distilled_tasks"].(int); ok && d > 0 {
-				cfg.MaxDistilledTasks = d
-			}
-			if t, ok := v["session_ttl"].(string); ok && t != "" {
-				dur, err := fmtDuration(t)
-				if err != nil {
-					return nil, fmt.Errorf(errPrefix+"invalid session_ttl: %w", err)
-				}
-				cfg.SessionTTL = dur
-			}
+		vals, ok := p.Value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(errPrefix + "PatchChangeBudget value must be map[string]any")
 		}
+		// Validate all values before mutating, so a malformed field (e.g. an
+		// unparseable session_ttl) does not partially apply the patch.
+		rollback := map[string]any{}
+		var newDistilled int
+		distilledSet := false
+		if d, ok := vals["max_distilled_tasks"].(int); ok && d > 0 {
+			newDistilled = d
+			distilledSet = true
+		}
+		var newTTL time.Duration
+		ttlSet := false
+		if t, ok := vals["session_ttl"].(string); ok && t != "" {
+			dur, err := fmtDuration(t)
+			if err != nil {
+				return nil, fmt.Errorf(errPrefix+"invalid session_ttl: %w", err)
+			}
+			newTTL = dur
+			ttlSet = true
+		}
+		if distilledSet {
+			rollback["max_distilled_tasks"] = prev.MaxDistilledTasks
+			cfg.MaxDistilledTasks = newDistilled
+		}
+		if ttlSet {
+			rollback["session_ttl"] = prev.SessionTTL.String()
+			cfg.SessionTTL = newTTL
+		}
+		return &patch.RuntimePatch{
+			Type:   p.Type,
+			Target: p.Target,
+			Value:  rollback,
+			Reason: "rollback: restore previous memory config",
+		}, nil
 
 	case patch.PatchChangeReducer:
-		// Value is expected as a map: {"use_structured_cleaning": true}
-		if v, ok := p.Value.(map[string]any); ok {
-			if s, ok := v["use_structured_cleaning"].(bool); ok {
-				cfg.UseStructuredCleaning = s
-			}
+		vals, ok := p.Value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf(errPrefix + "PatchChangeReducer value must be map[string]any")
 		}
+		rollback := map[string]any{}
+		if s, ok := vals["use_structured_cleaning"].(bool); ok {
+			rollback["use_structured_cleaning"] = prev.UseStructuredCleaning
+			cfg.UseStructuredCleaning = s
+		}
+		return &patch.RuntimePatch{
+			Type:   p.Type,
+			Target: p.Target,
+			Value:  rollback,
+			Reason: "rollback: restore previous memory config",
+		}, nil
 
 	default:
 		return nil, fmt.Errorf(errPrefix+"unsupported patch type %s", p.Type)
 	}
-
-	// Return rollback patch.
-	return &patch.RuntimePatch{
-		Type:   p.Type,
-		Target: p.Target,
-		Value:  rollbackCfg,
-		Reason: "rollback: restore previous memory config",
-	}, nil
 }
 
 // CanApply returns nil if the patch type is supported.
