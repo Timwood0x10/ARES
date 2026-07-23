@@ -139,3 +139,41 @@ func TestAKGBuilderNilSubgraph(t *testing.T) {
 	assert.Empty(t, res.Objects)
 	assert.Equal(t, 0, res.Saved)
 }
+
+// TestAKGBuilderResolverDedupsAcrossWrites proves the cross-pipeline
+// collaborative dedup: when two producers (here, two Build calls) emit the same
+// knowledge under DIFFERENT ids, the Resolver drops the later one so the shared
+// store never accumulates a near-duplicate. Exact-ID dedup alone would miss
+// this because the ids differ.
+func TestAKGBuilderResolverDedupsAcrossWrites(t *testing.T) {
+	ctx := context.Background()
+	store := memorystore.New()
+	builder := NewAKGBuilder(store).WithResolver(NewResolver(store, 0))
+
+	// Write 1 — fact under id "f1".
+	res1, err := builder.Build(ctx, &SubGraph{Nodes: []*Node{{
+		ID: "f1", Type: NodeFact, Confidence: 0.9,
+		Attributes: map[string]any{"subject": "ARES", "predicate": "uses", "object": "Patch"},
+	}}}, "ns")
+	require.NoError(t, err)
+	assert.Equal(t, 1, res1.Saved)
+	assert.Equal(t, 1, store.Count(), "store holds the first fact")
+
+	// Write 2 — SAME fact, DIFFERENT id "f2" (as if from another pipeline).
+	res2, err := builder.Build(ctx, &SubGraph{Nodes: []*Node{{
+		ID: "f2", Type: NodeFact, Confidence: 0.9,
+		Attributes: map[string]any{"subject": "ARES", "predicate": "uses", "object": "Patch"},
+	}}}, "ns")
+	require.NoError(t, err)
+	assert.Equal(t, 0, res2.Saved, "Jaccard-duplicate must be dropped, not persisted")
+	assert.Equal(t, 1, store.Count(), "store stays deduplicated across writes")
+
+	// Write 3 — a genuinely different fact is kept.
+	res3, err := builder.Build(ctx, &SubGraph{Nodes: []*Node{{
+		ID: "f3", Type: NodeFact, Confidence: 0.9,
+		Attributes: map[string]any{"subject": "Kubernetes", "predicate": "schedules", "object": "pods"},
+	}}}, "ns")
+	require.NoError(t, err)
+	assert.Equal(t, 1, res3.Saved)
+	assert.Equal(t, 2, store.Count(), "distinct fact is added")
+}

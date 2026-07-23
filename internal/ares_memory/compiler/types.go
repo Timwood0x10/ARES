@@ -6,6 +6,7 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -245,14 +246,12 @@ func (km *KnowledgeModel) Prune(maxNodes int, minConfidence float64) int {
 		candidates = append(candidates, scored{id: id, score: n.Confidence * float64(n.AccessCount+1)})
 	}
 
-	// Sort ascending by score.
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].score < candidates[i].score {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	// Sort ascending by score (O(n log n) — replaces the previous O(n^2)
+	// bubble sort). sort.Slice is not stable, but ties share the same score
+	// and are interchangeable for pruning.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score < candidates[j].score
+	})
 
 	// Remove lowest-scored nodes until under maxNodes or no more candidates.
 	removed := 0

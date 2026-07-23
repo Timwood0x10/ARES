@@ -19,6 +19,7 @@ import (
 type AKGBuilder struct {
 	store    knowledge.KnowledgeStore     // optional, nil = build-only
 	pipeline *knowledge.KnowledgePipeline // optional, nil = skip AKG refinement
+	resolver *Resolver                    // optional, nil = no fuzzy dedup
 }
 
 // NewAKGBuilder creates an AKGBuilder. A nil store means Build will only
@@ -54,6 +55,24 @@ func NewAKGBuilder(store knowledge.KnowledgeStore) *AKGBuilder {
 //	*AKGBuilder — the same builder for chaining.
 func (b *AKGBuilder) WithAKGPipeline(p *knowledge.KnowledgePipeline) *AKGBuilder {
 	b.pipeline = p
+	return b
+}
+
+// WithResolver attaches an optional Resolver that deduplicates the projected
+// KnowledgeObjects against knowledge already persisted in the shared store
+// before saving (cross-pipeline collaborative dedup via Jaccard similarity).
+// When nil (the default), Build keeps its previous no-dedup behavior for
+// backward compatibility. A resolver with a nil backing store is a no-op.
+//
+// Args:
+//
+//	r — optional *Resolver; may be nil.
+//
+// Returns:
+//
+//	*AKGBuilder — the same builder for chaining.
+func (b *AKGBuilder) WithResolver(r *Resolver) *AKGBuilder {
+	b.resolver = r
 	return b
 }
 
@@ -124,6 +143,20 @@ func (b *AKGBuilder) Build(ctx context.Context, sub *SubGraph, namespace string)
 		objects = append(objects, obj)
 	}
 	result.Objects = objects
+
+	// Cross-pipeline collaborative dedup: drop candidates that are
+	// Jaccard-similar to knowledge already persisted in the shared store, so
+	// multiple producers writing the same namespace do not accumulate
+	// near-duplicates. Exact-ID collisions are still handled by the store's
+	// idempotent Save; this adds the fuzzy layer on top.
+	if b.resolver != nil && b.store != nil {
+		resolved, rErr := b.resolver.Resolve(ctx, namespace, objects)
+		if rErr != nil {
+			return nil, fmt.Errorf("akg builder: resolve duplicates: %w", rErr)
+		}
+		objects = resolved
+		result.Objects = objects
+	}
 
 	relations := make([]knowledge.Relation, 0, len(sub.Edges))
 	for _, e := range sub.Edges {

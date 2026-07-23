@@ -93,6 +93,22 @@ func (r *KnowledgeRuntime) Pipeline() *knowledge.KnowledgePipeline {
 	return r.pipeline
 }
 
+// RegisterProvider adds a GraphProvider to the runtime's discovery registry so
+// its objects are included in future Execute calls. Producers that persist
+// KnowledgeObjects into a store (e.g. the Conversation Compiler) register a
+// store-backed provider here to make that knowledge flow into the AKG
+// retrieval path instead of sitting in a dead-end cache. The provider is
+// registered under its Name; a duplicate name is rejected by the registry.
+func (r *KnowledgeRuntime) RegisterProvider(p provider.GraphProvider) error {
+	if r == nil || r.registry == nil {
+		return fmt.Errorf("runtime: registry is not configured")
+	}
+	if p == nil {
+		return fmt.Errorf("runtime: provider is nil")
+	}
+	return r.registry.Register(p)
+}
+
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)

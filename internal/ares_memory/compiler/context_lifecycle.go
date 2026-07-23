@@ -22,6 +22,12 @@ type LifecycleConfig struct {
 	MinConfidence float64
 	// DistillAfterCompile runs distill-and-prune after each successful compile.
 	DistillAfterCompile bool
+	// AKGMinConfidence filters facts/references projected to the shared AKG
+	// pool (0 = no filter). Used only when an AKGBuilder is attached.
+	AKGMinConfidence float64
+	// AKGMaxFacts caps the number of facts projected to the shared AKG pool
+	// (0 = no cap). Used only when an AKGBuilder is attached.
+	AKGMaxFacts int
 }
 
 // DefaultLifecycleConfig returns sensible defaults for LifecycleConfig.
@@ -32,6 +38,8 @@ func DefaultLifecycleConfig() LifecycleConfig {
 		MaxNodes:            500,
 		MinConfidence:       0.3,
 		DistillAfterCompile: true,
+		AKGMinConfidence:    0.4,
+		AKGMaxFacts:         200,
 	}
 }
 
@@ -46,6 +54,10 @@ type ContextLifecycle struct {
 	promptSel *PromptSelector
 	builder   *PromptBuilder
 	cfg       LifecycleConfig
+
+	akgBuilder *AKGBuilder
+	akgSel     *AKGSelector
+	namespace  string
 
 	mu           sync.Mutex
 	model        *KnowledgeModel
@@ -79,15 +91,38 @@ func NewContextLifecycle(compiler *Compiler, distiller *KMDistiller, cfg Lifecyc
 	if cfg.MinConfidence <= 0 {
 		cfg.MinConfidence = DefaultLifecycleConfig().MinConfidence
 	}
+	if cfg.AKGMinConfidence < 0 {
+		cfg.AKGMinConfidence = DefaultLifecycleConfig().AKGMinConfidence
+	}
+	if cfg.AKGMaxFacts < 0 {
+		cfg.AKGMaxFacts = DefaultLifecycleConfig().AKGMaxFacts
+	}
 	return &ContextLifecycle{
 		compiler:  compiler,
 		distiller: distiller,
 		selector:  DefaultMemorySelector(),
 		promptSel: NewPromptSelector(cfg.WindowSize, cfg.MaxNodes),
 		builder:   NewPromptBuilder(DefaultPromptTemplate),
+		akgSel:    NewAKGSelector(cfg.AKGMinConfidence, cfg.AKGMaxFacts),
 		cfg:       cfg,
 		model:     NewKnowledgeModel(),
 	}, nil
+}
+
+// SetAKGBuilder optionally enables AKG projection: after each successful
+// incremental compile, the compiled KM is projected into AKG KnowledgeObjects
+// and persisted to the shared KnowledgeStore via the given builder. This closes
+// the loop between the Conversation Compiler and the shared AKG pool — without
+// it the lifecycle only kept an in-memory KM for prompt injection and the
+// shared store stayed empty (a "wired but idle" gap). The namespace tags every
+// projected object. Pass nil to disable AKG projection. Call once during wiring,
+// before the lifecycle serves requests. It is guarded by the lifecycle mutex so
+// it is safe to call before the first Compile.
+func (cl *ContextLifecycle) SetAKGBuilder(b *AKGBuilder, namespace string) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.akgBuilder = b
+	cl.namespace = namespace
 }
 
 // ShouldCompile reports whether the given messages exceed the token-budget
@@ -137,6 +172,22 @@ func (cl *ContextLifecycle) Compile(ctx context.Context, messages []SourceMessag
 			return compileRes, nil, fmt.Errorf("context lifecycle: distill: %w", err)
 		}
 	}
+
+	// Phase 5 (opt-in): project the compiled KM into the shared AKG pool. This
+	// runs under the lifecycle mutex, so it serializes with concurrent Compile
+	// and RenderPrompt calls, and the in-memory store write is itself
+	// RWMutex-guarded. Failures are best-effort: the in-memory KM (used for
+	// prompt injection) is already updated above, so AKG persistence must not
+	// fail the compile. The AKG pipeline is concurrency-safe (shallow-copies
+	// its input and locks its candidate pool), so sharing it with the runtime
+	// is safe even if both call Process concurrently.
+	if cl.akgBuilder != nil {
+		akgSub := cl.akgSel.Select(cl.model)
+		if _, bErr := cl.akgBuilder.Build(ctx, akgSub, cl.namespace); bErr != nil {
+			el.WarnContext(ctx, "context lifecycle: akg projection failed", "error", bErr)
+		}
+	}
+
 	return compileRes, distillRes, nil
 }
 

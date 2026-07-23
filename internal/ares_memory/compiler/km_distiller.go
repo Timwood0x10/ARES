@@ -450,10 +450,12 @@ func rewriteEndpoints(src, tgt string, srcPruned, tgtPruned bool, memoryLink map
 }
 
 // memoryID derives a deterministic memory node ID from the summary text.
+// Uses FNV-64a so the collision risk is far lower than the previous FNV-32a
+// (important because many clusters can map to similar summaries).
 func memoryID(solution string) string {
-	h := fnv.New32a()
+	h := fnv.New64a()
 	_, _ = h.Write([]byte(solution))
-	return "memory-" + fmt.Sprintf("%x", h.Sum32())
+	return "memory-" + fmt.Sprintf("%x", h.Sum64())
 }
 
 // tokenJaccard computes the Jaccard similarity over the lowercase token sets of
