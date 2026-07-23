@@ -1,6 +1,7 @@
 // Package compiler — AKGSelector picks nodes destined for the Agent Knowledge
-// Graph: entities, facts, and references (the structural backbone). Entities
-// are always kept; facts/references are capped by confidence. Zero LLM calls.
+// Graph: entities, facts, and references (the structural backbone). Every node
+// type is filtered by MinConfidence so low-signal extractions (Phase 1 L2)
+// never pollute the retrieval graph. Zero LLM calls.
 package compiler
 
 import "sort"
@@ -8,10 +9,11 @@ import "sort"
 // AKGSelector picks the structural backbone of the KnowledgeModel for the
 // Agent Knowledge Graph. Unlike the prompt selector, it does not need a token
 // budget — the AKG is a graph store, not a prompt window — but it filters by
-// confidence so low-quality facts and references don't pollute the graph.
+// confidence so low-signal extractions (Phase 1 L2) don't pollute the graph.
+// All node types (entities, facts, references) are subject to MinConfidence.
 type AKGSelector struct {
-	// MinConfidence is the minimum confidence for Fact and Reference nodes.
-	// Entity nodes are always kept regardless of this threshold.
+	// MinConfidence is the minimum confidence for every node type (entities,
+	// facts, references). Nodes below it are excluded from the graph.
 	MinConfidence float64
 
 	// MaxFacts caps the number of Fact nodes returned (highest-confidence
@@ -34,7 +36,7 @@ func (s *AKGSelector) Select(km *KnowledgeModel) *SubGraph {
 		return &SubGraph{Metadata: map[string]any{attrSelector: extractorNameAKG, attrNodesSelected: 0}}
 	}
 
-	entities := km.GetNodesByType(NodeEntity)
+	entities := s.selectEntities(km)
 	facts := s.selectFacts(km)
 	references := s.selectReferences(km)
 
@@ -97,6 +99,26 @@ func (s *AKGSelector) selectReferences(km *KnowledgeModel) []*Node {
 	refs := km.GetNodesByType(NodeReference)
 	qualified := make([]*Node, 0, len(refs))
 	for _, n := range refs {
+		if n == nil {
+			continue
+		}
+		if n.Confidence >= s.MinConfidence {
+			qualified = append(qualified, n)
+		}
+	}
+	return qualified
+}
+
+// selectEntities returns Entity nodes whose Confidence is at least
+// MinConfidence. Phase 1 L2 removed the previous "entities always kept"
+// carve-out: weak heuristic entities (e.g. Chinese noun-phrase suffix guesses)
+// are low-signal noise in the retrieval graph and must be filtered like any
+// other node type. Strong entities (proper nouns, curated terms, quoted spans)
+// clear the threshold and remain the graph backbone.
+func (s *AKGSelector) selectEntities(km *KnowledgeModel) []*Node {
+	ents := km.GetNodesByType(NodeEntity)
+	qualified := make([]*Node, 0, len(ents))
+	for _, n := range ents {
 		if n == nil {
 			continue
 		}

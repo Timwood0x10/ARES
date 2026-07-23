@@ -214,6 +214,16 @@ func nodeToKnowledgeObject(n *Node, namespace string) *knowledge.KnowledgeObject
 		updated = now
 	}
 	summary := nodeSummary(n)
+	// Phase 1 L2: label the object with the signal tier that produced it so
+	// the evaluation harness (plan 1.3) and operators can inspect graph
+	// quality without reverse-engineering the confidence constant.
+	signal := "weak"
+	switch {
+	case n.Confidence >= confStrong:
+		signal = "strong"
+	case n.Confidence >= confMedium:
+		signal = "medium"
+	}
 	return &knowledge.KnowledgeObject{
 		ID:         n.ID,
 		Type:       nodeObjectType(n.Type),
@@ -221,8 +231,9 @@ func nodeToKnowledgeObject(n *Node, namespace string) *knowledge.KnowledgeObject
 		Normalized: summary,
 		Summary:    summary,
 		Metadata: map[string]any{
-			"node_type": string(n.Type),
-			"source":    n.Source,
+			"node_type":     string(n.Type),
+			"source":        n.Source,
+			"source_signal": signal,
 		},
 		Tags:       []string{string(n.Type)},
 		Confidence: n.Confidence,

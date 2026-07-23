@@ -3,6 +3,14 @@
 > 目标：把"压缩 → 蒸馏 → 知识图"在**消费端**真正闭环——让 leader agent 在自动检索时用到编译器沉淀进 AKG 的知识图，且**不把低质噪声塞进每次响应**。
 > 原则（协作铁律）：方向优先于接线；先质量门、再持久化、最后接线。噪声进信号 = 失败模式，故质量门是前置硬门。
 
+## 进度（截至 2026-07-23 晚）
+
+- ✅ **L1 结构门**：`validator.go:ValidateNodeForAKG` + `AKGBuilder.WithQualityGate(true)`（生产已启用，`bootstrap_steps_knowledge.go`）。单测 12 例 + 门开关测试全绿。
+- ✅ **L2 置信度语义化**：`akg_extractor.go` 引入 `confStrong=0.9/confMedium=0.7/confWeak=0.4` 三档替换全部硬编码；`akg_selector.go` 去掉"实体总保留"carve-out（新增 `selectEntities` 按阈值过滤）；默认 `AKGMinConfidence` 0.4→0.6（`config.go:496`/`context_lifecycle.go:41`/`pipeline.go:39`）；`akg_builder.go` 写入 `Metadata["source_signal"]` 观测标签。build/vet/lint/staticcheck/gofmt 干净，compiler+ares_config+ares_bootstrap+knowledge 测试全绿。
+- ⬜ **L3 去重观测 + metrics**：Resolver Jaccard(0.85) 已用，待补 `dropped_lowconf`/`confidence_histogram` 等 metrics 出口。
+- ⬜ **1.3 评测基座**：等你给脱敏真实对话样本后跑精度采样（结构通过率/精度/去重率/置信分布）。当前验收门槛提议值已你确认（结构≥95%、精度≥85%）。
+- 实测效果（合成对话，临时 demo 已删）：L1 在噪声对话 4→2、真实对话 15→14（丢停用词三元组）；L2 在弱信号密集对话 0.4 阈值选 2 节点 / 0.6 阈值选 1 节点（丢 WEAK 档中文名词短语/开放问题）。
+
 ---
 
 ## 0. 现状（已核实，file:line）

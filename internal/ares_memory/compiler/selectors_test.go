@@ -154,10 +154,13 @@ func TestAKGSelectorName(t *testing.T) {
 	}
 }
 
-func TestAKGSelectorEntitiesAlwaysKept(t *testing.T) {
+func TestAKGSelectorFiltersAllByConfidence(t *testing.T) {
 	km := NewKnowledgeModel()
-	// Entity with very low confidence must still be kept (backbone).
-	_ = km.AddNode(&Node{ID: "ent1", Type: NodeEntity, Confidence: 0.05})
+	// Phase 1 L2: MinConfidence now applies to every node type, so a weak
+	// entity below the threshold is excluded (not kept as a "backbone").
+	_ = km.AddNode(&Node{ID: "ent_low", Type: NodeEntity, Confidence: 0.05})
+	// Entity at/above threshold is kept.
+	_ = km.AddNode(&Node{ID: "ent_ok", Type: NodeEntity, Confidence: 0.8})
 	// Fact below threshold must be excluded.
 	_ = km.AddNode(&Node{ID: "fact_low", Type: NodeFact, Confidence: 0.2})
 	// Fact above threshold must be kept.
@@ -167,11 +170,14 @@ func TestAKGSelectorEntitiesAlwaysKept(t *testing.T) {
 	sg := s.Select(km)
 
 	ids := subgraphIDs(sg)
-	if !contains(ids, "ent1") {
-		t.Errorf("entity ent1 should always be kept; got %v", ids)
+	if contains(ids, "ent_low") {
+		t.Errorf("ent_low (confidence 0.05 < 0.5) should be excluded; got %v", ids)
+	}
+	if !contains(ids, "ent_ok") {
+		t.Errorf("ent_ok should be kept; got %v", ids)
 	}
 	if contains(ids, "fact_low") {
-		t.Errorf("fact_fact_low (confidence 0.2 < 0.5) should be excluded; got %v", ids)
+		t.Errorf("fact_low (confidence 0.2 < 0.5) should be excluded; got %v", ids)
 	}
 	if !contains(ids, "fact_ok") {
 		t.Errorf("fact_ok should be kept; got %v", ids)

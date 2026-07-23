@@ -36,7 +36,7 @@ func DefaultPipelineConfig() PipelineConfig {
 		MaxNodes:         500,
 		MinConfidence:    0.3,
 		PromptMaxTokens:  8000,
-		AKGMinConfidence: 0.4,
+		AKGMinConfidence: 0.6,
 		AKGMaxFacts:      200,
 		DistillMinScore:  0.4,
 	}

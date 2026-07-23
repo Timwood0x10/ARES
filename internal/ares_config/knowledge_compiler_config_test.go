@@ -23,8 +23,8 @@ func TestKnowledgeCompilerDefaults(t *testing.T) {
 	if kc.MinConfidence != 0.3 {
 		t.Errorf("MinConfidence default = %v, want 0.3", kc.MinConfidence)
 	}
-	if kc.AKGMinConfidence != 0.4 {
-		t.Errorf("AKGMinConfidence default = %v, want 0.4", kc.AKGMinConfidence)
+	if kc.AKGMinConfidence != 0.6 {
+		t.Errorf("AKGMinConfidence default = %v, want 0.6", kc.AKGMinConfidence)
 	}
 	if kc.DistillMinScore != 0.4 {
 		t.Errorf("DistillMinScore default = %v, want 0.4", kc.DistillMinScore)

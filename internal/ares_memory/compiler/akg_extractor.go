@@ -20,6 +20,23 @@ const attrChoice = "choice"
 const attrRejection = "rejection"
 const extractorNameAKG = "akg"
 
+// Confidence tiers (Phase 1 L2 semanticization). These replace the previously
+// scattered rule-hit literals so that AKGMinConfidence (raised to 0.6) filters
+// low-signal extractions instead of passing nearly everything. The tier a node
+// lands in reflects the STRENGTH OF THE SIGNAL that produced it, not whether a
+// rule fired:
+//   - confStrong: deliberate human statements (decisions, constraints,
+//     tradeoffs) and explicit spans (quoted terms, code-block languages).
+//   - confMedium: structured extractions (fact triples) and curated terms
+//     (Chinese dictionary / capitalized proper nouns).
+//   - confWeak: heuristic guesses (Chinese noun-phrase suffix runs, open
+//     questions) that are cheap to extract but often noisy.
+const (
+	confStrong = 0.9
+	confMedium = 0.7
+	confWeak   = 0.4
+)
+
 // extraChineseTerms extends the alias-table Chinese terms with vocabulary
 // specific to the knowledge-graph / distillation / compression domain. It is
 // declared before chineseTermDict because that variable's initializer reads
@@ -206,7 +223,7 @@ func extractCodeBlockEntities(content, sourceID string) []ExtractedEntity {
 				entities = append(entities, ExtractedEntity{
 					Name:       lang,
 					Type:       entityTypeLanguage,
-					Confidence: 0.9,
+					Confidence: confStrong,
 					SourceID:   sourceID,
 				})
 			}
@@ -236,7 +253,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 			entities = append(entities, ExtractedEntity{
 				Name:       lang,
 				Type:       entityTypeLanguage,
-				Confidence: 0.9,
+				Confidence: confStrong,
 				SourceID:   sourceID,
 			})
 		}
@@ -255,7 +272,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 				entities = append(entities, ExtractedEntity{
 					Name:       cleaned,
 					Type:       entityTypeConcept,
-					Confidence: 0.5,
+					Confidence: confMedium,
 					SourceID:   sourceID,
 				})
 			}
@@ -285,7 +302,7 @@ func extractChineseTermEntities(content, sourceID string, seen map[string]bool) 
 		entities = append(entities, ExtractedEntity{
 			Name:       term,
 			Type:       entityTypeConcept,
-			Confidence: 0.6,
+			Confidence: confMedium,
 			SourceID:   sourceID,
 		})
 	}
@@ -299,7 +316,7 @@ func extractChineseTermEntities(content, sourceID string, seen map[string]bool) 
 		entities = append(entities, ExtractedEntity{
 			Name:       np,
 			Type:       entityTypeConcept,
-			Confidence: 0.5,
+			Confidence: confWeak,
 			SourceID:   sourceID,
 		})
 	}
@@ -404,7 +421,7 @@ func addQuotedEntity(span, sourceID string, seen map[string]bool, entities *[]Ex
 	*entities = append(*entities, ExtractedEntity{
 		Name:       term,
 		Type:       entityTypeConcept,
-		Confidence: 0.7,
+		Confidence: confStrong,
 		SourceID:   sourceID,
 	})
 }
@@ -427,7 +444,7 @@ func (e *AKGExtractor) extractFacts(normalized *knowledge.KnowledgeObject, sourc
 				Subject:    triple.subject,
 				Predicate:  triple.predicate,
 				Object:     triple.object,
-				Confidence: 0.6,
+				Confidence: confMedium,
 				SourceID:   sourceID,
 			})
 		}
@@ -491,7 +508,7 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 			decisions = append(decisions, ExtractedEntity{
 				Name:       val,
 				Type:       "decision_" + dp.field,
-				Confidence: 0.7,
+				Confidence: confStrong,
 				SourceID:   sourceID,
 			})
 		}
@@ -541,7 +558,7 @@ func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject,
 			constraints = append(constraints, ExtractedEntity{
 				Name:       val,
 				Type:       "constraint",
-				Confidence: 0.6,
+				Confidence: confStrong,
 				SourceID:   sourceID,
 			})
 		}
@@ -590,7 +607,7 @@ func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, s
 			tradeoffs = append(tradeoffs, ExtractedEntity{
 				Name:       val,
 				Type:       "tradeoff",
-				Confidence: 0.5,
+				Confidence: confStrong,
 				SourceID:   sourceID,
 			})
 		}
@@ -645,7 +662,7 @@ func (e *AKGExtractor) extractOpenQuestions(normalized *knowledge.KnowledgeObjec
 			questions = append(questions, ExtractedEntity{
 				Name:       val,
 				Type:       "question",
-				Confidence: 0.5,
+				Confidence: confWeak,
 				SourceID:   sourceID,
 			})
 		}

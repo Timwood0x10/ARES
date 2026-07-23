@@ -38,7 +38,7 @@ func DefaultLifecycleConfig() LifecycleConfig {
 		MaxNodes:            500,
 		MinConfidence:       0.3,
 		DistillAfterCompile: true,
-		AKGMinConfidence:    0.4,
+		AKGMinConfidence:    0.6,
 		AKGMaxFacts:         200,
 	}
 }

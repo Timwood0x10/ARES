@@ -493,7 +493,7 @@ func (c *Config) setDefaults() {
 		c.KnowledgeCompiler.MinConfidence = 0.3
 	}
 	if c.KnowledgeCompiler.AKGMinConfidence == 0 {
-		c.KnowledgeCompiler.AKGMinConfidence = 0.4
+		c.KnowledgeCompiler.AKGMinConfidence = 0.6
 	}
 	if c.KnowledgeCompiler.DistillMinScore == 0 {
 		c.KnowledgeCompiler.DistillMinScore = 0.4
