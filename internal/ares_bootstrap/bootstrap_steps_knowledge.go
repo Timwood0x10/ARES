@@ -95,6 +95,18 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 		}
 	}
 
+	// TODO(tech-debt): vector-backed GraphProvider for the AKF knowledge graph.
+	// The removed internal/knowledge/provider/vector package was meant to wrap
+	// storage.VectorStore into a GraphProvider so a configured vector backend
+	// (pgvector / Qdrant / Milvus / …) could flow its contents into AKF
+	// semantic context via Runtime.RegisterProvider. It was a stub (random
+	// query vectors, no real embeddings) and was never wired into any serve
+	// path, so it was deleted. The pluggable VectorStore contract itself
+	// (storage.VectorStore interface + the compat/vector registry) is
+	// untouched and still lets external users swap vector backends freely.
+	// A future iteration should add a real provider here (with real
+	// embeddings) IF AKF needs vector-store-derived context.
+
 	// Reuse AKG's shared KnowledgePipeline — the exact instance the
 	// KnowledgeRuntime uses — so the compiler's projections are refined by
 	// AKG's Normalizer → Resolver → Summarizer and share the same entity
@@ -112,7 +124,8 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 	// store, so the live path and any other producer stay free of near-dupes.
 	akgBuilder := compiler.NewAKGBuilder(sharedAKGStore).
 		WithAKGPipeline(akgPipeline).
-		WithResolver(compiler.NewResolver(sharedAKGStore, 0))
+		WithResolver(compiler.NewResolver(sharedAKGStore, 0)).
+		WithQualityGate(true) // drop structurally invalid nodes from the AKG graph
 
 	pipeline, err := compiler.NewPipeline(
 		kmCompiler, distiller, pipelineCfg,

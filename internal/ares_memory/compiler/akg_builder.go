@@ -17,9 +17,10 @@ import (
 // knowledge.KnowledgeStore when configured. Zero LLM: summaries are derived
 // directly from node attributes, never via an LLM summarizer.
 type AKGBuilder struct {
-	store    knowledge.KnowledgeStore     // optional, nil = build-only
-	pipeline *knowledge.KnowledgePipeline // optional, nil = skip AKG refinement
-	resolver *Resolver                    // optional, nil = no fuzzy dedup
+	store       knowledge.KnowledgeStore     // optional, nil = build-only
+	pipeline    *knowledge.KnowledgePipeline // optional, nil = skip AKG refinement
+	resolver    *Resolver                    // optional, nil = no fuzzy dedup
+	qualityGate bool                         // when true, drop structurally invalid nodes
 }
 
 // NewAKGBuilder creates an AKGBuilder. A nil store means Build will only
@@ -76,12 +77,31 @@ func (b *AKGBuilder) WithResolver(r *Resolver) *AKGBuilder {
 	return b
 }
 
+// WithQualityGate enables or disables the structural quality gate. When
+// enabled, Build drops any node that fails ValidateNodeForAKG (incomplete
+// triples, stopword entities, degenerate summaries) so structurally invalid
+// knowledge never enters the AKG retrieval graph. Disabled by default to keep
+// Build backward-compatible; production wiring enables it.
+//
+// Args:
+//
+//	enable — true to enforce the gate.
+//
+// Returns:
+//
+//	*AKGBuilder — the same builder for chaining.
+func (b *AKGBuilder) WithQualityGate(enable bool) *AKGBuilder {
+	b.qualityGate = enable
+	return b
+}
+
 // BuildResult holds the built KnowledgeObjects and Relations, plus the count
 // persisted when a store is configured.
 type BuildResult struct {
 	Objects   []*knowledge.KnowledgeObject
 	Relations []knowledge.Relation
 	Saved     int
+	Dropped   int // nodes rejected by the quality gate (0 when gate disabled)
 }
 
 // Build converts the subgraph into KnowledgeObjects + relations and optionally
@@ -129,6 +149,12 @@ func (b *AKGBuilder) Build(ctx context.Context, sub *SubGraph, namespace string)
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("akg builder: context cancelled: %w", err)
+		}
+		if b.qualityGate {
+			if ok, _ := ValidateNodeForAKG(n); !ok {
+				result.Dropped++
+				continue
+			}
 		}
 		obj := nodeToKnowledgeObject(n, namespace)
 		if b.pipeline != nil {

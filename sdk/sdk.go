@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,7 +41,6 @@ import (
 	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 
@@ -51,7 +49,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	evoprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/evolution"
 	memprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/memory"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
@@ -84,7 +81,6 @@ type Runtime struct {
 	knowledgeEnabled bool
 	knowledgeRT      *khruntime.KnowledgeRuntime
 	knowledgeStore   knowledge.KnowledgeStore
-	evolutionStore   *memStrategyStore
 	eventStore       ares_events.EventStore
 	mcpClients       []*mcp.Client
 	trace            bool
@@ -119,36 +115,6 @@ func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limi
 	return out, nil
 }
 
-// memStrategyStore is an in-memory store that records evolved strategies
-// and implements evoprovider.StrategyStore so the AKF knowledge fabric can
-// consume them as decision-type KnowledgeObjects.
-type memStrategyStore struct {
-	mu      sync.Mutex
-	active  *ares_evolution.Strategy
-	history []*ares_evolution.Strategy
-}
-
-func newMemStrategyStore() *memStrategyStore {
-	return &memStrategyStore{}
-}
-
-func (s *memStrategyStore) GetActive(_ context.Context) (*ares_evolution.Strategy, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.active, nil
-}
-
-func (s *memStrategyStore) GetHistory(_ context.Context, _ string, n int) ([]*ares_evolution.Strategy, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if n > len(s.history) {
-		n = len(s.history)
-	}
-	return s.history[:n], nil
-}
-
-// save records a new evolved strategy as both the active strategy and appends
-// it to the history for lineage tracking.
 type Agent struct {
 	name        string
 	instruction string
@@ -317,7 +283,6 @@ func New(opts ...Option) (*Runtime, error) {
 	// ---- AKF Knowledge Fabric ----
 	var knowledgeRT *khruntime.KnowledgeRuntime
 	var knowledgeStore knowledge.KnowledgeStore
-	var evoStore *memStrategyStore
 	if cfg.knlCfg.Enabled {
 		reg := provider.NewProviderRegistry()
 
@@ -329,13 +294,14 @@ func New(opts ...Option) (*Runtime, error) {
 			}
 		}
 
-		// Auto-register evolution provider when evolution is also enabled.
-		if cfg.evoCfg.Enabled {
-			evoStore = newMemStrategyStore()
-			if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
-				return nil, fmt.Errorf("knowledge: register evolution provider: %w", err)
-			}
-		}
+		// TODO(tech-debt): evolution → AKF knowledge provider removed.
+		// internal/knowledge/provider/evolution (and its adapter
+		// internal/knowledge/adapter) were deleted: they were wired only via
+		// the SDK and never reached the serve path. The evolution system
+		// itself (mutation/genome/crossover in this file) is unaffected. If
+		// evolved strategies should flow into the AKF knowledge graph as
+		// decision-type objects again, re-add a provider that reads the
+		// evolution strategy store and registers it here.
 
 		// Register user-configured extra knowledge providers (code, mysql,
 		// postgres, or custom). Opt-in via WithKnowledgeProvider; defaults
@@ -404,7 +370,6 @@ func New(opts ...Option) (*Runtime, error) {
 		knowledgeEnabled: cfg.knlCfg.Enabled,
 		knowledgeRT:      knowledgeRT,
 		knowledgeStore:   knowledgeStore,
-		evolutionStore:   evoStore,
 		eventStore:       ares_events.NewMemoryEventStore(),
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
