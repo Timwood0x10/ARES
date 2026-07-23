@@ -70,6 +70,12 @@ type Components struct {
 type KnowledgeCompilerComponents struct {
 	Pipeline  *compiler.Pipeline
 	Lifecycle *compiler.ContextLifecycle
+
+	// AKGMetrics is the shared L3 quality-gate observability collector for the
+	// compiler pipeline (nil when metrics were not configured). The serve /
+	// metrics layer can read Snapshot() from it to expose what the AKG gate
+	// dropped, and the 1.3 evaluation harness uses it for baseline reports.
+	AKGMetrics *compiler.AKGMetrics
 }
 
 // LLMComponents holds LLM client and callback registry.

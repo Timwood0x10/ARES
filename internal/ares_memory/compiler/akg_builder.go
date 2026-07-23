@@ -21,6 +21,7 @@ type AKGBuilder struct {
 	pipeline    *knowledge.KnowledgePipeline // optional, nil = skip AKG refinement
 	resolver    *Resolver                    // optional, nil = no fuzzy dedup
 	qualityGate bool                         // when true, drop structurally invalid nodes
+	metrics     *AKGMetrics                  // optional, L3 observability collector
 }
 
 // NewAKGBuilder creates an AKGBuilder. A nil store means Build will only
@@ -95,6 +96,33 @@ func (b *AKGBuilder) WithQualityGate(enable bool) *AKGBuilder {
 	return b
 }
 
+// WithMetrics attaches the L3 quality-gate metrics collector. When non-nil,
+// Build records dropped_structural and objects_built (plus the confidence
+// histogram and signal tiers) there. A nil argument is a no-op and leaves
+// metrics disabled. The same instance is typically shared with the pipeline's
+// AKGSelector and Resolver so one run yields one coherent snapshot.
+//
+// Args:
+//
+//	m — optional *AKGMetrics; may be nil.
+//
+// Returns:
+//
+//	*AKGBuilder — the same builder for chaining.
+func (b *AKGBuilder) WithMetrics(m *AKGMetrics) *AKGBuilder {
+	if m != nil {
+		b.metrics = m
+	}
+	return b
+}
+
+// Metrics returns the attached L3 quality-gate collector, or nil when none was
+// configured. Callers (the evaluation harness, the Prometheus bridge) read
+// Snapshot() from it after a Build to observe what the gate did.
+func (b *AKGBuilder) Metrics() *AKGMetrics {
+	return b.metrics
+}
+
 // BuildResult holds the built KnowledgeObjects and Relations, plus the count
 // persisted when a store is configured.
 type BuildResult struct {
@@ -153,6 +181,9 @@ func (b *AKGBuilder) Build(ctx context.Context, sub *SubGraph, namespace string)
 		if b.qualityGate {
 			if ok, _ := ValidateNodeForAKG(n); !ok {
 				result.Dropped++
+				if b.metrics != nil {
+					b.metrics.RecordStructuralDrop()
+				}
 				continue
 			}
 		}
@@ -182,6 +213,18 @@ func (b *AKGBuilder) Build(ctx context.Context, sub *SubGraph, namespace string)
 		}
 		objects = resolved
 		result.Objects = objects
+	}
+
+	// Record per-object observability for everything that survived the gate and
+	// dedup. Done once on the final object slice so the confidence histogram and
+	// signal tiers reflect exactly what reached the store (post pipeline refine).
+	if b.metrics != nil {
+		for _, o := range objects {
+			if o == nil {
+				continue
+			}
+			b.metrics.RecordObjectBuilt(o.Confidence)
+		}
 	}
 
 	relations := make([]knowledge.Relation, 0, len(sub.Edges))
@@ -217,13 +260,7 @@ func nodeToKnowledgeObject(n *Node, namespace string) *knowledge.KnowledgeObject
 	// Phase 1 L2: label the object with the signal tier that produced it so
 	// the evaluation harness (plan 1.3) and operators can inspect graph
 	// quality without reverse-engineering the confidence constant.
-	signal := "weak"
-	switch {
-	case n.Confidence >= confStrong:
-		signal = "strong"
-	case n.Confidence >= confMedium:
-		signal = "medium"
-	}
+	signal := signalTierOf(n.Confidence)
 	return &knowledge.KnowledgeObject{
 		ID:         n.ID,
 		Type:       nodeObjectType(n.Type),

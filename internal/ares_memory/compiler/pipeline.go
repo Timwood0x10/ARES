@@ -55,6 +55,11 @@ type Pipeline struct {
 	akgBuilder *AKGBuilder
 	builder    *PromptBuilder
 	cfg        PipelineConfig
+
+	// akgMetrics is the optional shared L3 quality-gate collector, usually
+	// injected via WithAKGMetrics so it is shared with the builder and
+	// resolver. Exposed on PipelineResult for the evaluation harness.
+	akgMetrics *AKGMetrics
 }
 
 // PipelineOption configures a Pipeline at construction.
@@ -68,6 +73,18 @@ func WithMemoryEmitter(e *MemoryEmitter) PipelineOption {
 // WithAKGBuilder attaches an AKGBuilder to the pipeline.
 func WithAKGBuilder(b *AKGBuilder) PipelineOption {
 	return func(p *Pipeline) { p.akgBuilder = b }
+}
+
+// WithAKGMetrics attaches the L3 quality-gate metrics collector to the
+// pipeline. The same instance is propagated into the AKG selector so a single
+// Run accumulates one coherent snapshot across selector, builder, and resolver.
+func WithAKGMetrics(m *AKGMetrics) PipelineOption {
+	return func(p *Pipeline) {
+		p.akgMetrics = m
+		if p.akgSel != nil {
+			p.akgSel.WithAKGMetrics(m)
+		}
+	}
 }
 
 // NewPipeline creates a Pipeline with the given compiler, distiller, and config.
@@ -113,6 +130,11 @@ type PipelineResult struct {
 	AKGObjects      int
 	AKGRelations    int
 	KM              *KnowledgeModel
+
+	// AKGMetrics is the L3 quality-gate observability snapshot source for this
+	// run. Non-nil only when the pipeline was constructed with WithAKGMetrics.
+	// Read Snapshot() after Run to inspect what the gate dropped.
+	AKGMetrics *AKGMetrics
 }
 
 // Run executes the full coordinated flow on a batch of source messages.
@@ -195,6 +217,7 @@ func (p *Pipeline) Run(ctx context.Context, messages []SourceMessage, tenantID, 
 	}
 
 	res.KM = km
+	res.AKGMetrics = p.akgMetrics
 	return res, nil
 }
 

@@ -3,6 +3,7 @@ package ares_observability
 import (
 	"net/http"
 
+	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -28,6 +29,18 @@ type PrometheusMetrics struct {
 
 	// Summary
 	CostUSDTotal *prometheus.SummaryVec
+
+	// AKG quality-gate observability (compiler Phase 1 L3). These gauges
+	// reflect the latest compiler.AKGMetrics.Snapshot() pushed via
+	// SetAKGSnapshot; they use Set (not Add) so repeated pushes never
+	// double-count across runs.
+	AKGObjectsIn         prometheus.Gauge
+	AKGDroppedStructural prometheus.Gauge
+	AKGDroppedLowConf    prometheus.Gauge
+	AKGDedupHits         prometheus.Gauge
+	AKGObjectsBuilt      prometheus.Gauge
+	AKGConfidenceBucket  *prometheus.GaugeVec // label: confidence bucket
+	AKGSignalTier        *prometheus.GaugeVec // label: signal tier
 }
 
 // NewPrometheusMetrics creates and registers all Prometheus metrics with the
@@ -124,6 +137,50 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 			},
 			[]string{"strategy_id"},
 		),
+		AKGObjectsIn: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_objects_in",
+				Help: "AKG quality gate: candidate nodes (entities+facts+references) considered by the selector",
+			},
+		),
+		AKGDroppedStructural: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_dropped_structural",
+				Help: "AKG quality gate: nodes dropped for failing the structural gate (L1)",
+			},
+		),
+		AKGDroppedLowConf: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_dropped_lowconf",
+				Help: "AKG quality gate: nodes dropped for low confidence (L2)",
+			},
+		),
+		AKGDedupHits: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_dedup_hits",
+				Help: "AKG quality gate: near-duplicate objects discarded by the resolver (Jaccard)",
+			},
+		),
+		AKGObjectsBuilt: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_objects_built",
+				Help: "AKG quality gate: objects that survived all gates and were projected into the AKG store",
+			},
+		),
+		AKGConfidenceBucket: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_confidence_bucket",
+				Help: "AKG quality gate: surviving objects per confidence bucket (<0.4, 0.4-0.7, 0.7-0.9, 0.9-1.0)",
+			},
+			[]string{"bucket"},
+		),
+		AKGSignalTier: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "ARES_akg_signal_tier",
+				Help: "AKG quality gate: surviving objects per L2 signal tier (weak, medium, strong)",
+			},
+			[]string{"tier"},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -140,6 +197,13 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionGuardrailTotal,
 		m.EvolutionShadowTotal,
 		m.EvolutionScoreGauge,
+		m.AKGObjectsIn,
+		m.AKGDroppedStructural,
+		m.AKGDroppedLowConf,
+		m.AKGDedupHits,
+		m.AKGObjectsBuilt,
+		m.AKGConfidenceBucket,
+		m.AKGSignalTier,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -299,6 +363,34 @@ func (m *PrometheusMetrics) RecordCost(model, sessionID string, costUSD float64)
 		return
 	}
 	m.CostUSDTotal.WithLabelValues(model, sessionID).Observe(costUSD)
+}
+
+// SetAKGSnapshot pushes a compiler AKG quality-gate snapshot onto the AKG
+// Prometheus gauges. It uses Set (not Add) so repeated calls reflect the latest
+// run without double-counting across independent pipeline runs.
+//
+// The compiler package stays free of any Prometheus dependency; this method is
+// the single bridge point where the observability layer ingests a
+// compiler.AKGMetrics.Snapshot(). Call it from the serve/metrics layer after a
+// Compile (or periodically) to make the gate's effect visible on /metrics.
+//
+// Args:
+//   - s: a *compiler.AKGSnapshot; nil is a no-op.
+func (m *PrometheusMetrics) SetAKGSnapshot(s *compiler.AKGSnapshot) {
+	if m == nil || s == nil {
+		return
+	}
+	m.AKGObjectsIn.Set(float64(s.NodesIn))
+	m.AKGDroppedStructural.Set(float64(s.DroppedStructural))
+	m.AKGDroppedLowConf.Set(float64(s.DroppedLowConf))
+	m.AKGDedupHits.Set(float64(s.DedupHits))
+	m.AKGObjectsBuilt.Set(float64(s.ObjectsBuilt))
+	for bucket, n := range s.ConfidenceHistogram {
+		m.AKGConfidenceBucket.WithLabelValues(bucket).Set(float64(n))
+	}
+	for tier, n := range s.SignalTiers {
+		m.AKGSignalTier.WithLabelValues(tier).Set(float64(n))
+	}
 }
 
 // MetricsHTTPHandler returns an http.Handler that serves Prometheus metrics

@@ -125,6 +125,35 @@ func (cl *ContextLifecycle) SetAKGBuilder(b *AKGBuilder, namespace string) {
 	cl.namespace = namespace
 }
 
+// SetAKGMetrics attaches the L3 quality-gate metrics collector to the
+// lifecycle's AKG selector. The same instance should be shared with the
+// builder passed to SetAKGBuilder so a Compile accumulates one coherent
+// snapshot. Call once during wiring, before the lifecycle serves requests.
+// It is guarded by the lifecycle mutex so it is safe to call before the first
+// Compile.
+func (cl *ContextLifecycle) SetAKGMetrics(m *AKGMetrics) {
+	if m == nil {
+		return
+	}
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	if cl.akgSel != nil {
+		cl.akgSel.WithAKGMetrics(m)
+	}
+}
+
+// Metrics returns the lifecycle's L3 quality-gate collector, or nil when none
+// was configured. Callers read Snapshot() from it after a Compile to observe
+// what the gate dropped.
+func (cl *ContextLifecycle) Metrics() *AKGMetrics {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	if cl.akgSel == nil {
+		return nil
+	}
+	return cl.akgSel.metrics
+}
+
 // ShouldCompile reports whether the given messages exceed the token-budget
 // threshold, indicating that an incremental compile should be triggered.
 func (cl *ContextLifecycle) ShouldCompile(messages []SourceMessage) bool {

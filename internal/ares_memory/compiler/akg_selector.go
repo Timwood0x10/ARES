@@ -19,6 +19,30 @@ type AKGSelector struct {
 	// MaxFacts caps the number of Fact nodes returned (highest-confidence
 	// first). Zero means no cap.
 	MaxFacts int
+
+	// metrics is the optional shared L3 observability collector. When non-nil,
+	// Select records akg_objects_in and dropped_lowconf there. It is set via
+	// WithAKGMetrics and shared with the builder/resolver of the same pipeline.
+	metrics *AKGMetrics
+}
+
+// WithAKGMetrics attaches the L3 quality-gate metrics collector. Pass a
+// non-nil *AKGMetrics (typically the one shared with the pipeline's
+// AKGBuilder and Resolver) so a run accumulates a single coherent snapshot.
+// A nil argument is a no-op and leaves metrics disabled.
+//
+// Args:
+//
+//	m — optional *AKGMetrics; may be nil.
+//
+// Returns:
+//
+//	*AKGSelector — the same selector for chaining.
+func (s *AKGSelector) WithAKGMetrics(m *AKGMetrics) *AKGSelector {
+	if m != nil {
+		s.metrics = m
+	}
+	return s
 }
 
 // NewAKGSelector creates an AKGSelector with the given filters.
@@ -39,6 +63,21 @@ func (s *AKGSelector) Select(km *KnowledgeModel) *SubGraph {
 	entities := s.selectEntities(km)
 	facts := s.selectFacts(km)
 	references := s.selectReferences(km)
+
+	// L3 metrics: count akg_objects_in and dropped_lowconf across the three
+	// structural backbone types, so the gate's effect is observable.
+	if s.metrics != nil {
+		allEnts := km.GetNodesByType(NodeEntity)
+		allFacts := km.GetNodesByType(NodeFact)
+		allRefs := km.GetNodesByType(NodeReference)
+		s.metrics.RecordInput(int64(len(allEnts) + len(allFacts) + len(allRefs)))
+		dropped := int64((len(allEnts) - len(entities)) +
+			(len(allFacts) - len(facts)) +
+			(len(allRefs) - len(references)))
+		for i := int64(0); i < dropped; i++ {
+			s.metrics.RecordLowConfDrop()
+		}
+	}
 
 	candidates := make([]scoredCandidate, 0, len(entities)+len(facts)+len(references))
 	candidates = appendScored(candidates, entities, akgScore)

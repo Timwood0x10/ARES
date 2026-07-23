@@ -33,6 +33,28 @@ type Resolver struct {
 	store      knowledge.KnowledgeStore
 	threshold  float64
 	queryLimit int
+
+	// metrics is the optional shared L3 observability collector. When non-nil,
+	// Resolve records dedup_hits there. It is set via WithMetrics and typically
+	// shared with the builder/selector of the same pipeline.
+	metrics *AKGMetrics
+}
+
+// WithMetrics attaches the L3 quality-gate metrics collector. A nil argument
+// is a no-op and leaves metrics disabled.
+//
+// Args:
+//
+//	m — optional *AKGMetrics; may be nil.
+//
+// Returns:
+//
+//	*Resolver — the same resolver for chaining.
+func (r *Resolver) WithMetrics(m *AKGMetrics) *Resolver {
+	if m != nil {
+		r.metrics = m
+	}
+	return r
 }
 
 // NewResolver builds a Resolver over the given store. threshold is the Jaccard
@@ -73,6 +95,9 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, candidates []*
 			continue
 		}
 		if r.isDuplicate(c, existing) {
+			if r.metrics != nil {
+				r.metrics.RecordDedupHit()
+			}
 			continue
 		}
 		out = append(out, c)

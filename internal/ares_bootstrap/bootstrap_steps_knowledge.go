@@ -119,18 +119,26 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 		akgPipeline = comp.KnowledgeRuntime.Pipeline()
 	}
 
+	// L3 observability: a single shared quality-gate collector fed by the
+	// selector, builder, and resolver of this pipeline, so a run produces one
+	// coherent snapshot (akg_objects_in / dropped_lowconf / dropped_structural
+	// / dedup_hits / objects_built + confidence histogram + signal tiers).
+	akgMetrics := compiler.NewAKGMetrics()
+
 	// Threshold 0 → Resolver default (0.85 Jaccard). The resolver dedupes the
 	// compiler's projections against what is already persisted in the shared
 	// store, so the live path and any other producer stay free of near-dupes.
 	akgBuilder := compiler.NewAKGBuilder(sharedAKGStore).
 		WithAKGPipeline(akgPipeline).
-		WithResolver(compiler.NewResolver(sharedAKGStore, 0)).
-		WithQualityGate(true) // drop structurally invalid nodes from the AKG graph
+		WithResolver(compiler.NewResolver(sharedAKGStore, 0).WithMetrics(akgMetrics)).
+		WithQualityGate(true).  // drop structurally invalid nodes from the AKG graph
+		WithMetrics(akgMetrics) // L3: record structural drops + object histogram
 
 	pipeline, err := compiler.NewPipeline(
 		kmCompiler, distiller, pipelineCfg,
 		compiler.WithMemoryEmitter(memEmitter),
 		compiler.WithAKGBuilder(akgBuilder),
+		compiler.WithAKGMetrics(akgMetrics),
 	)
 	if err != nil {
 		log.WarnContext(ctx, "bootstrap: knowledge compiler pipeline not wired", "error", err)
@@ -156,10 +164,12 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 	// the same builder the one-shot Pipeline uses, so comp.KnowledgeStore is
 	// no longer left empty.
 	lifecycle.SetAKGBuilder(akgBuilder, compilerAKGNamespace)
+	lifecycle.SetAKGMetrics(akgMetrics) // L3: shared collector for incremental compiles
 
 	comp.KnowledgeCompiler = &KnowledgeCompilerComponents{
-		Pipeline:  pipeline,
-		Lifecycle: lifecycle,
+		Pipeline:   pipeline,
+		Lifecycle:  lifecycle,
+		AKGMetrics: akgMetrics,
 	}
 	log.InfoContext(ctx, "bootstrap: knowledge compiler pipeline wired",
 		"max_nodes", kc.MaxNodes,
