@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
@@ -49,6 +50,20 @@ type memoryManager struct {
 	// ContextCleaner: strips tool call noise and repetitive content before LLM calls.
 	ctxCleaner *memctx.ContextCleaner
 
+	// compilerLifecycle is the opt-in Conversation Compiler lifecycle. When set
+	// and config.KnowledgeCompiler.Enabled is true, BuildPromptMessages appends
+	// the compiler's rendered compressed context block as a system message. Nil
+	// means injection is disabled and prior behavior is preserved.
+	compilerLifecycle *compiler.ContextLifecycle
+
+	// compilerMu guards compilerBuf. The lifecycle is read by BuildPromptMessages
+	// (internally locked) and written by the async feedCompiler goroutine, so
+	// only the per-session buffer needs guarding here.
+	compilerMu sync.Mutex
+	// compilerBuf buffers recent SourceMessages per session until the
+	// token-window threshold triggers an incremental compile.
+	compilerBuf map[string][]compiler.SourceMessage
+
 	// defaultTenantID is the tenant ID used for search operations when none is
 	// explicitly provided. Must match the tenant used during write (StoreDistilledTask).
 	// Default: "default". Override via SetDefaultTenantID.
@@ -80,6 +95,7 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 		taskMemory:      taskMemory,
 		config:          config,
 		ctxCleaner:      memctx.NewContextCleaner(),
+		compilerBuf:     make(map[string][]compiler.SourceMessage),
 		defaultTenantID: "default",
 	}, nil
 }
@@ -274,6 +290,9 @@ func (m *memoryManager) AddMessage(ctx context.Context, sessionID, role, content
 		"role":       role,
 	})
 
+	// Feed the compiler (opt-in, async, best-effort) for prompt injection.
+	m.feedCompiler(ctx, sessionID, role, content)
+
 	log.Debug("Message added", "session_id", sessionID, "role", role)
 	return nil
 }
@@ -300,6 +319,10 @@ func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID stri
 		"session_id": sessionID,
 		"role":       msg.Role,
 	})
+
+	// Feed the compiler (opt-in, async, best-effort) for prompt injection.
+	m.feedCompiler(ctx, sessionID, msg.Role, msg.Content)
+
 	return nil
 }
 
@@ -325,6 +348,18 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 	}
 	cleaned := m.ctxCleaner.CleanWithTurns(messages, opts...)
 
+	// Opt-in injection: append the compiler's compressed context block. This is
+	// additive only — when the compiler is inactive the slice is unchanged, so
+	// prior behavior is preserved byte-for-byte (see Phase 3 acceptance gate).
+	if m.compilerActive() {
+		block, err := m.compilerLifecycle.RenderPrompt(ctx, compiler.FormatMarkdown)
+		if err != nil {
+			log.Warn("memory: render compiler context failed", "error", err)
+		} else if strings.TrimSpace(block) != "" {
+			cleaned = append(cleaned, Message{Role: memctx.RoleSystem, Content: block})
+		}
+	}
+
 	stats := m.ctxCleaner.Stats()
 	if stats.BytesSaved > 0 || stats.DroppedToolMessages > 0 {
 		log.Debug("Prompt messages cleaned", "session_id", sessionID,
@@ -335,6 +370,62 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 			"turns_processed", stats.TurnsProcessed)
 	}
 	return cleaned, nil
+}
+
+// compilerActive reports whether the opt-in compiler context injection is
+// enabled. The lifecycle is injected only when the compiler pipeline is wired
+// (i.e. cfg.KnowledgeCompiler.Enabled is true), so its presence is the enable
+// signal — no separate config flag read is needed here.
+func (m *memoryManager) compilerActive() bool {
+	return m.compilerLifecycle != nil
+}
+
+// SetKnowledgeCompiler injects the opt-in Conversation Compiler lifecycle used
+// by BuildPromptMessages to append the compressed context block. Pass nil to
+// disable injection. Call once during wiring, before the manager serves
+// requests. It is intentionally NOT part of the MemoryManager interface so the
+// 6 existing implementations/mocks need no change.
+func (m *memoryManager) SetKnowledgeCompiler(cl *compiler.ContextLifecycle) {
+	m.compilerLifecycle = cl
+}
+
+// feedCompiler buffers a message and triggers an incremental compile once the
+// token-window threshold is reached. It is best-effort: the compile runs in a
+// detached goroutine and failures are logged, never propagated (message
+// persistence is the source of truth). It is a no-op unless the compiler is
+// active.
+func (m *memoryManager) feedCompiler(ctx context.Context, sessionID, role, content string) {
+	if !m.compilerActive() {
+		return
+	}
+
+	m.compilerMu.Lock()
+	m.compilerBuf[sessionID] = append(m.compilerBuf[sessionID], compiler.SourceMessage{Role: role, Content: content})
+	buf := m.compilerBuf[sessionID]
+	trigger := m.compilerLifecycle.ShouldCompile(buf)
+	if !trigger {
+		m.compilerMu.Unlock()
+		return
+	}
+	// Snapshot and clear the buffer so the next window starts fresh.
+	toCompile := make([]compiler.SourceMessage, len(buf))
+	copy(toCompile, buf)
+	m.compilerBuf[sessionID] = nil
+	m.compilerMu.Unlock()
+
+	// Run the incremental compile in an errgroup-managed goroutine (rule 4.5:
+	// no bare `go`). We keep the request context so the goroutine is
+	// chain-aware and cancellable: if the request is cancelled mid-compile the
+	// compile aborts and is retried on the next buffered message. The compile
+	// is best-effort and fast (zero-LLM), so losing one window is harmless.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		if _, _, err := m.compilerLifecycle.Compile(gctx, toCompile); err != nil {
+			log.Warn("memory: incremental compiler compile failed",
+				"session_id", sessionID, "error", err)
+		}
+		return nil
+	})
 }
 
 // DeleteSession deletes a session and all its messages immediately.

@@ -28,6 +28,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/monitoring/tabs"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
+
+	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -68,30 +70,19 @@ func runServe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	shutdownMgr, sigCh := setupSignalHandler()
 
 	// Declare httpSrv here so the signal handler below can reference it.
 	// The actual server is constructed after bootstrap/agent setup is complete.
 	var httpSrv *http.Server
 
-	// Graceful shutdown coordinator (internal/ares_shutdown). Real teardown
-	// hooks (HTTP server, MCP, runtime) are registered below once those
-	// components are initialized.
-	shutdownMgr := ares_shutdown.NewManager(30 * time.Second)
-	shutdownMgr.RegisterPhase(ares_shutdown.PhasePreShutdown, 5*time.Second)
-	shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful, 20*time.Second)
-	shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce, 5*time.Second)
-	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
-
 	g, ctx := errgroup.WithContext(ctx)
+
+	// Add signal handler goroutine to the main errgroup.
 	g.Go(func() error {
 		select {
 		case <-sigCh:
 			fmt.Println("\nShutting down...")
-			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
-			// bounded overall timeout. cancel() afterwards stops background
-			// goroutines (event bridge, task submission) that wait on ctx.
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer shutdownCancel()
 			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
@@ -136,22 +127,8 @@ func runServe() error {
 	}
 
 	// Register AKF (Knowledge Fabric) tools into the internal registry using
-	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
-	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
-	// ChangeReducer) affect the actual runtime used by the agent's knowledge
-	// tools — because both the evolution system's KnowledgePatchExecutor and
-	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
-	if comp.KnowledgeRuntime != nil {
-		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
-		for _, akfTool := range akfSvc.Tools() {
-			t := akfTool // capture
-			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
-			if err := internalReg.Register(adapted); err != nil {
-				log.Printf("AKF: failed to register tool %q: %v", t.Name, err)
-			}
-		}
-		log.Printf("AKF tools registered with shared KnowledgeRuntime: %d", len(akfSvc.Tools()))
-	}
+	// the shared KnowledgeRuntime from bootstrap.
+	registerAKFTools(comp, internalReg)
 
 	// --- ToolBinder for agents ---
 	toolBinder := newToolBinder(internalReg)
@@ -175,8 +152,6 @@ func runServe() error {
 	if comp.Evolution != nil {
 		feedbackSvc = comp.Evolution.FeedbackService
 	}
-	// Wire the GA's deployed strategy into live agents so the running
-	// agents read the active prompt/params at runtime.
 	strategySrc := ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
 	leaderAgent, subAgents, err := createAgents(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
 	if err != nil {
@@ -205,30 +180,7 @@ func runServe() error {
 	}
 
 	// --- PluginBus + MonitorPlugin ---
-	bus := ares_runtime.NewPluginBus()
-	tracker := data.NewAgentTracker()
-	linker := data.NewTraceLinker()
-	tabMap := map[string]monitoring.Tab{
-		"events":    tabs.NewEventTab(),
-		"memory":    tabs.NewMemoryTab(),
-		"evolution": tabs.NewEvolutionTab(),
-		"arena":     tabs.NewArenaTab(),
-		"workflow":  tabs.NewWorkflowTab(),
-		"mcp":       tabs.NewMCPTab(),
-		"llm":       tabs.NewLLMTab(),
-	}
-
-	rtAdapter := adapter.NewRuntimeAdapter(&runtimeAdapterShim{mgr})
-	mcpMgr := &mcpAdapter{registry: registry}
-
-	plugin := monitoring.NewConsole(
-		monitoring.WithAgentTracker(tracker),
-		monitoring.WithTraceLinkerOption(linker),
-		monitoring.WithTabMap(tabMap),
-		monitoring.WithRuntimeManager(rtAdapter),
-		monitoring.WithMCP(mcpMgr),
-	).(*monitoring.MonitorPlugin)
-
+	plugin, bus := setupMonitorPlugin(mgr, registry)
 	if err := plugin.Start(ctx, bus); err != nil {
 		return fmt.Errorf("start monitor plugin: %w", err)
 	}
@@ -268,45 +220,7 @@ func runServe() error {
 	// Inject the live agent DAGs into the evolution system's executors,
 	// replacing the synthetic placeholder DAG created at bootstrap time.
 	// This ensures workflow/scheduler/recovery patches hit real runtime state.
-	if comp.NewEvolution != nil {
-		for _, id := range []string{leaderAgent.ID()} {
-			if dag, ok := mgr.GetAgentDAG(id); ok && dag != nil {
-				if liveDAG, dagOk := dag.(*engine.MutableDAG); dagOk {
-					// Register a LiveDAGPatchExecutor that directly mutates the
-					// agent's live MutableDAG instead of a private noop graph.
-					liveExec := newLiveDAGPatchExecutor(mgr, id)
-					// Register as component AND as fallback so workflow structure
-					// patches (insert/remove nodes/edges) with dynamic node ID
-					// targets are routed to the live DAG executor.
-					_ = comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
-					_ = comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
-					comp.NewEvolution.PatchReg.SetFallback(liveExec)
-
-					// Also update the existing graph executor for consistency.
-					if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
-						log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
-					}
-
-					// Update the WorkflowGenome's DAG reference so its evolution
-					// mutations are based on the agent's real workflow topology
-					// instead of the bootstrap 3-step placeholder. Without this,
-					// the genome generates patches against the toy structure,
-					// so the content being evolved is disconnected from reality.
-					if wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow"); gErr == nil {
-						if setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) }); ok {
-							setter.SetDAG(liveDAG)
-							log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
-						}
-					}
-				}
-			}
-		}
-		// Replace the evolution system's isolated KnowledgeRuntime with the
-		// agent's live KnowledgeRuntime. This ensures knowledge genome patches
-		// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
-		// used by the agent's knowledge tools, not the bootstrap placeholder.
-		comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
-	}
+	injectLiveDAGs(comp, mgr, leaderAgent)
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -640,3 +554,97 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 
 // Ensure liveDAGPatchExecutor implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*liveDAGPatchExecutor)(nil)
+
+// setupSignalHandler creates the signal handler and shutdown manager.
+// Returns the shutdown manager and the signal channel for later goroutine wiring.
+func setupSignalHandler() (*ares_shutdown.Manager, chan os.Signal) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	shutdownMgr := ares_shutdown.NewManager(30 * time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhasePreShutdown, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseGraceful, 20*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseForce, 5*time.Second)
+	shutdownMgr.RegisterPhase(ares_shutdown.PhaseDone, 1*time.Second)
+
+	return shutdownMgr, sigCh
+}
+
+// injectLiveDAGs injects the live agent DAGs into the evolution system's executors,
+// replacing the synthetic placeholder DAG created at bootstrap time.
+func injectLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Manager, leaderAgent base.Agent) {
+	if comp.NewEvolution == nil {
+		return
+	}
+	for _, id := range []string{leaderAgent.ID()} {
+		dag, ok := mgr.GetAgentDAG(id)
+		if !ok || dag == nil {
+			continue
+		}
+		liveDAG, dagOk := dag.(*engine.MutableDAG)
+		if !dagOk {
+			continue
+		}
+		// Register a LiveDAGPatchExecutor that directly mutates the
+		// agent's live MutableDAG instead of a private noop graph.
+		liveExec := newLiveDAGPatchExecutor(mgr, id)
+		_ = comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
+		_ = comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
+		comp.NewEvolution.PatchReg.SetFallback(liveExec)
+
+		if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+			log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
+		}
+
+		if wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow"); gErr == nil {
+			if setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) }); ok {
+				setter.SetDAG(liveDAG)
+				log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
+			}
+		}
+	}
+	comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
+}
+
+// registerAKFTools registers AKF (Knowledge Fabric) tools into the internal registry.
+func registerAKFTools(comp *ares_bootstrap.Components, internalReg *core_tools.Registry) {
+	if comp.KnowledgeRuntime == nil {
+		return
+	}
+	akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
+	for _, akfTool := range akfSvc.Tools() {
+		t := akfTool
+		adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
+		if err := internalReg.Register(adapted); err != nil {
+			log.Printf("AKF: failed to register tool %q: %v", t.Name, err)
+		}
+	}
+	log.Printf("AKF tools registered with shared KnowledgeRuntime: %d", len(akfSvc.Tools()))
+}
+
+// setupMonitorPlugin creates the monitor plugin with tabs and adapters.
+// Returns the plugin and the PluginBus for event bridging.
+func setupMonitorPlugin(mgr *ares_runtime.Manager, registry *api_tools.Registry) (*monitoring.MonitorPlugin, *ares_runtime.PluginBus) {
+	bus := ares_runtime.NewPluginBus()
+	tracker := data.NewAgentTracker()
+	linker := data.NewTraceLinker()
+	tabMap := map[string]monitoring.Tab{
+		"events":    tabs.NewEventTab(),
+		"memory":    tabs.NewMemoryTab(),
+		"evolution": tabs.NewEvolutionTab(),
+		"arena":     tabs.NewArenaTab(),
+		"workflow":  tabs.NewWorkflowTab(),
+		"mcp":       tabs.NewMCPTab(),
+		"llm":       tabs.NewLLMTab(),
+	}
+	rtAdapter := adapter.NewRuntimeAdapter(&runtimeAdapterShim{mgr})
+	mcpMgr := &mcpAdapter{registry: registry}
+	plugin := monitoring.NewConsole(
+		monitoring.WithAgentTracker(tracker),
+		monitoring.WithTraceLinkerOption(linker),
+		monitoring.WithTabMap(tabMap),
+		monitoring.WithRuntimeManager(rtAdapter),
+		monitoring.WithMCP(mcpMgr),
+	).(*monitoring.MonitorPlugin)
+	return plugin, bus
+}

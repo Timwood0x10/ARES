@@ -17,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
@@ -45,6 +46,12 @@ type Components struct {
 	// patches (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual
 	// runtime used by the agent's knowledge tools.
 	KnowledgeRuntime *knowledgeruntime.KnowledgeRuntime
+	// KnowledgeStore is the shared AKG knowledge sink. The opt-in Conversation
+	// Compiler writes its projected KnowledgeObjects here so that other AKG
+	// consumers (prompt injection, future runtime ingestion) read from a
+	// single shared pool instead of an isolated per-build store. It is nil
+	// when the compiler is disabled, preserving prior behavior.
+	KnowledgeStore knowledge.KnowledgeStore
 	// KnowledgeCompiler is the opt-in Conversation Compiler pipeline (design:
 	// CONVERSATION_COMPILER.md). It is nil when cfg.KnowledgeCompiler.Enabled is
 	// false (the default), preserving prior behavior. The pipeline is zero-LLM
@@ -277,6 +284,20 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// Failures are non-fatal: the pipeline is logged and skipped, preserving
 	// prior behavior (graceful degradation, mirroring wireDistillation).
 	wireKnowledgeCompiler(ctx, cfg, &comp)
+
+	// 11b. Phase 3 — inject the compiler lifecycle into the live memory manager
+	// so BuildPromptMessages can append the compressed context block. The
+	// MemoryManager interface is intentionally unchanged (6 impls/mocks would
+	// otherwise need edits); instead we probe for the injectable capability via
+	// a local interface so non-injectable managers degrade gracefully.
+	if comp.KnowledgeCompiler != nil && comp.KnowledgeCompiler.Lifecycle != nil {
+		type knowledgeCompilerInjectable interface {
+			SetKnowledgeCompiler(cl *compiler.ContextLifecycle)
+		}
+		if inj, ok := comp.Memory.(knowledgeCompilerInjectable); ok {
+			inj.SetKnowledgeCompiler(comp.KnowledgeCompiler.Lifecycle)
+		}
+	}
 
 	return &comp, nil
 }

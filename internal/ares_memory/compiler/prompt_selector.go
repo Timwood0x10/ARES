@@ -60,7 +60,7 @@ func NewPromptSelector(maxTokens, maxNodes int) *PromptSelector {
 // Returns a non-nil empty SubGraph for nil input.
 func (s *PromptSelector) Select(km *KnowledgeModel) *SubGraph {
 	if km == nil {
-		return &SubGraph{Metadata: map[string]any{attrSelector: "prompt", "tokens_estimated": 0, attrNodesSelected: 0}}
+		return &SubGraph{Metadata: map[string]any{attrSelector: "prompt_selector", "tokens_estimated": 0, attrNodesSelected: 0}}
 	}
 
 	candidates := s.collectCandidates(km)
@@ -73,7 +73,7 @@ func (s *PromptSelector) Select(km *KnowledgeModel) *SubGraph {
 
 	selected, tokensEstimated := s.applyBudget(candidates)
 	return buildSubGraph(km, candidatesToNodes(selected), map[string]any{
-		"selector":         "prompt",
+		attrSelector:       "prompt_selector",
 		"tokens_estimated": tokensEstimated,
 		attrNodesSelected:  len(selected),
 	})
@@ -120,7 +120,7 @@ func (s *PromptSelector) applyBudget(candidates []scoredCandidate) ([]scoredCand
 		if s.MaxNodes > 0 && len(selected) >= s.MaxNodes {
 			break
 		}
-		cost := estimateTokens(c.node)
+		cost := estimateNodeTokens(c.node)
 		if s.MaxTokens > 0 && tokens+cost > s.MaxTokens {
 			break
 		}
@@ -130,10 +130,10 @@ func (s *PromptSelector) applyBudget(candidates []scoredCandidate) ([]scoredCand
 	return selected, tokens
 }
 
-// estimateTokens returns a rough token-cost estimate for a node based on the
+// estimateNodeTokens returns a rough token-cost estimate for a node based on the
 // length of its description attribute (and falls back to the ID when no
 // description is present). Uses ~4 chars/token.
-func estimateTokens(n *Node) int {
+func estimateNodeTokens(n *Node) int {
 	if n == nil {
 		return 0
 	}

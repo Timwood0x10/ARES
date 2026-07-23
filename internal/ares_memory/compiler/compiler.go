@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode"
 )
 
 // Stage defines a single stage in the Compiler pipeline.
@@ -218,13 +219,33 @@ func ShouldCompile(messages []SourceMessage, windowSize int, threshold float64) 
 	if windowSize <= 0 || threshold <= 0 {
 		return false
 	}
-	// Estimate token count: rough heuristic of ~4 chars per token.
-	totalChars := 0
+	// Estimate token count. ASCII text is ~4 chars/token; non-ASCII runes (e.g.
+	// CJK) are closer to 1 token/char. The previous len(Content)/4 heuristic
+	// counted every CJK char (3 UTF-8 bytes) as 0 tokens, so Chinese
+	// conversations never reached the threshold — see
+	// COMPILER_INTEGRATION_PLAN §3.4.
+	totalTokens := 0
 	for _, m := range messages {
-		totalChars += len(m.Content)
+		totalTokens += estimateContentTokens(m.Content)
 	}
-	estimatedTokens := totalChars / 4
-	return float64(estimatedTokens) >= float64(windowSize)*threshold
+	return float64(totalTokens) >= float64(windowSize)*threshold
+}
+
+// estimateContentTokens returns a rough token count for s. ASCII runes
+// contribute ~1 token per 4 chars; non-ASCII runes (CJK, etc.) contribute ~1
+// token each. It is the content-level counterpart to estimateNodeTokens in
+// prompt_selector.go.
+func estimateContentTokens(s string) int {
+	asciiChars := 0
+	cjkChars := 0
+	for _, r := range s {
+		if r <= unicode.MaxASCII {
+			asciiChars++
+		} else {
+			cjkChars++
+		}
+	}
+	return asciiChars/4 + cjkChars
 }
 
 // CompileMode returns the appropriate CompileConfig based on the model state.

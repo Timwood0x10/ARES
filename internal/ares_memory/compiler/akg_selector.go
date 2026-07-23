@@ -31,7 +31,7 @@ func NewAKGSelector(minConfidence float64, maxFacts int) *AKGSelector {
 // facts and references. Returns a non-nil empty SubGraph for nil input.
 func (s *AKGSelector) Select(km *KnowledgeModel) *SubGraph {
 	if km == nil {
-		return &SubGraph{Metadata: map[string]any{"selector": extractorNameAKG, attrNodesSelected: 0}}
+		return &SubGraph{Metadata: map[string]any{attrSelector: extractorNameAKG, attrNodesSelected: 0}}
 	}
 
 	entities := km.GetNodesByType(NodeEntity)

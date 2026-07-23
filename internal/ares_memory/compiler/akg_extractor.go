@@ -20,13 +20,40 @@ const attrChoice = "choice"
 const attrRejection = "rejection"
 const extractorNameAKG = "akg"
 
+// extraChineseTerms extends the alias-table Chinese terms with vocabulary
+// specific to the knowledge-graph / distillation / compression domain. It is
+// declared before chineseTermDict because that variable's initializer reads
+// it during package initialization (Go does not infer dependencies through
+// function calls, so declaration order matters).
+var extraChineseTerms = []string{
+	"知识图谱", "记忆蒸馏", "对话压缩", "进化系统", "智能体", "编译器",
+	"蒸馏器", "检索", "进化", "压缩", "编译", "管线", "流水线",
+	"适配器", "协调器", "调度器", "恢复器", "向量检索", "实体识别",
+	"实体抽取", "关系抽取", "提示词", "上下文", "上下文窗口",
+	"多智能体", "子智能体", "知识库", "蒸馏方案", "中文NER",
+}
+
+// chineseNounSuffixes mark a preceding CJK run as a noun-phrase entity.
+var chineseNounSuffixes = []string{
+	"模块", "系统", "组件", "服务", "框架", "协议", "算法", "引擎",
+	"接口", "配置", "流程", "层", "器", "库", "表", "链", "池", "方案", "模型",
+}
+
+// chineseTermDict seeds Chinese entity extraction with project-relevant
+// technical terms. It reuses the Chinese aliases already defined in the
+// RuleNormalizer alias table (see normalizer.go) and extends them with
+// additional graph/distillation vocabulary so that extraction stays aligned
+// with the canonical names used elsewhere in the compiler.
+var chineseTermDict = buildChineseTermDict()
+
 // AKGExtractor implements the Extractor interface using AKG (Knowledge Fabric)
 // infrastructure. It extracts entities and facts from conversation messages
 // using rule-based parsing and NER, with zero LLM token cost.
 //
-// The extractor builds KnowledgeObjects from messages and runs them through
-// AKG's pipeline (normalizer, entity matcher, summarizer) to produce
-// structured entities and facts.
+// The extractor supports both English and Chinese input: English uses
+// capitalized-term and pattern heuristics, while Chinese uses a term
+// dictionary (seeded from the alias table), quoted-span detection, and
+// noun-suffix heuristics.
 type AKGExtractor struct {
 	pipeline *AKGExtractionPipeline
 }
@@ -83,8 +110,10 @@ func (e *AKGExtractor) Name() string { return extractorNameAKG }
 // The extraction process:
 //  1. Create KnowledgeObjects from each source message.
 //  2. Run through AKG normalizer for text cleaning.
-//  3. Extract entities via pattern matching (code blocks, references, keywords).
-//  4. Extract facts via structured triple extraction.
+//  3. Extract entities via pattern matching (code blocks, references, keywords,
+//     and Chinese term/quoted/noun heuristics).
+//  4. Extract facts via structured triple extraction (English and Chinese).
+//  5. Extract decisions, constraints, tradeoffs, and open questions.
 //
 // Args:
 //
@@ -187,7 +216,9 @@ func extractCodeBlockEntities(content, sourceID string) []ExtractedEntity {
 }
 
 // extractEntities extracts entities from a normalized message.
-// Uses rule-based patterns: code blocks, capitalized terms, known keywords.
+// Uses rule-based patterns: code blocks, capitalized terms (English), and
+// Chinese term/quoted/noun-phrase heuristics. The seen set is shared across
+// the English and Chinese passes to avoid duplicate entity names.
 func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
@@ -197,7 +228,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 	var entities []ExtractedEntity
 	seen := make(map[string]bool)
 
-	// Extract code block language identifiers.
+	// English path: code-block languages and capitalized terms.
 	codeBlockLangs := extractCodeBlockLanguages(content)
 	for _, lang := range codeBlockLangs {
 		if !seen[lang] {
@@ -211,7 +242,6 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		}
 	}
 
-	// Extract capitalized terms (potential named entities).
 	words := strings.Fields(content)
 	for _, word := range words {
 		cleaned := strings.Trim(word, ".,;:!?()[]{}'\"")
@@ -232,11 +262,156 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		}
 	}
 
+	// Chinese path: dictionary terms, quoted spans, and noun-phrase suffixes.
+	entities = append(entities, extractChineseTermEntities(content, sourceID, seen)...)
+	entities = append(entities, extractQuotedTermEntities(content, sourceID, seen)...)
+
 	return entities
 }
 
+// extractChineseTermEntities extracts Chinese entities from content using the
+// shared term dictionary (seeded from the alias table and project vocabulary)
+// plus a noun-phrase suffix heuristic for CJK runs ending in known suffixes.
+// The seen set is shared with the caller to avoid cross-pass duplicates.
+func extractChineseTermEntities(content, sourceID string, seen map[string]bool) []ExtractedEntity {
+	var entities []ExtractedEntity
+
+	// Dictionary match: any known Chinese technical term present in content.
+	for _, term := range chineseTermDict {
+		if seen[term] || !strings.Contains(content, term) {
+			continue
+		}
+		seen[term] = true
+		entities = append(entities, ExtractedEntity{
+			Name:       term,
+			Type:       entityTypeConcept,
+			Confidence: 0.6,
+			SourceID:   sourceID,
+		})
+	}
+
+	// Noun-phrase heuristic: CJK runs ending in a known noun suffix.
+	for _, np := range extractChineseNounPhrases(content) {
+		if seen[np] {
+			continue
+		}
+		seen[np] = true
+		entities = append(entities, ExtractedEntity{
+			Name:       np,
+			Type:       entityTypeConcept,
+			Confidence: 0.5,
+			SourceID:   sourceID,
+		})
+	}
+
+	return entities
+}
+
+// extractChineseNounPhrases returns maximal CJK runs in content that end with a
+// known noun suffix (e.g., "进化系统", "对话压缩模块"). Runs shorter than two
+// characters or without a suffix are ignored to reduce noise.
+func extractChineseNounPhrases(content string) []string {
+	var phrases []string
+	seen := make(map[string]bool)
+	runes := []rune(content)
+	n := len(runes)
+	i := 0
+	for i < n {
+		if !isCJK(runes[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < n && isCJK(runes[i]) {
+			i++
+		}
+		run := string(runes[start:i])
+		if len([]rune(run)) < 2 || seen[run] {
+			continue
+		}
+		if endsWithSuffix(run, chineseNounSuffixes) {
+			seen[run] = true
+			phrases = append(phrases, run)
+		}
+	}
+	return phrases
+}
+
+// extractQuotedTermEntities extracts Chinese-containing spans enclosed in
+// paired quotes ("…", "…", 「…」) or inline backticks. Quoted spans are
+// treated as high-confidence entities because quoting signals an intentional
+// term or concept reference. The seen set is shared with the caller.
+func extractQuotedTermEntities(content, sourceID string, seen map[string]bool) []ExtractedEntity {
+	var entities []ExtractedEntity
+	runes := []rune(content)
+	n := len(runes)
+
+	// Paired quote types: ASCII double, curly double, corner brackets.
+	for i := 0; i < n; i++ {
+		var closeRune rune
+		switch runes[i] {
+		case '"':
+			closeRune = '"'
+		case '“':
+			closeRune = '”'
+		case '「':
+			closeRune = '」'
+		default:
+			continue
+		}
+		j := i + 1
+		for j < n && runes[j] != closeRune {
+			j++
+		}
+		if j >= n {
+			continue
+		}
+		addQuotedEntity(string(runes[i+1:j]), sourceID, seen, &entities)
+		i = j
+	}
+
+	// Inline backtick code spans (skip triple-fence markers handled elsewhere).
+	for i := 0; i < n; i++ {
+		if runes[i] != '`' {
+			continue
+		}
+		if i+2 < n && runes[i+1] == '`' && runes[i+2] == '`' {
+			i += 2 // skip remaining two backticks of the triple-fence marker
+			continue
+		}
+		j := i + 1
+		for j < n && runes[j] != '`' {
+			j++
+		}
+		if j >= n {
+			continue
+		}
+		addQuotedEntity(string(runes[i+1:j]), sourceID, seen, &entities)
+		i = j
+	}
+
+	return entities
+}
+
+// addQuotedEntity appends a quoted span as an entity when it contains CJK text
+// and has not been seen before.
+func addQuotedEntity(span, sourceID string, seen map[string]bool, entities *[]ExtractedEntity) {
+	term := strings.TrimSpace(span)
+	if term == "" || !hasCJK(term) || seen[term] {
+		return
+	}
+	seen[term] = true
+	*entities = append(*entities, ExtractedEntity{
+		Name:       term,
+		Type:       entityTypeConcept,
+		Confidence: 0.7,
+		SourceID:   sourceID,
+	})
+}
+
 // extractFacts extracts structured triples from a normalized message.
-// Uses rule-based patterns: "X is Y", "X uses Y", "X implements Y".
+// Uses rule-based patterns for both English ("X uses Y") and Chinese
+// ("X实现了Y"). Object phrases are kept whole up to the next clause boundary.
 func (e *AKGExtractor) extractFacts(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedFact {
 	content := normalized.Normalized
 	if content == "" {
@@ -261,7 +436,9 @@ func (e *AKGExtractor) extractFacts(normalized *knowledge.KnowledgeObject, sourc
 }
 
 // extractDecisions extracts decision nodes from normalized content.
-// Patterns: "we chose X", "we decided to Y", "instead of A, we use B".
+// English patterns: "we chose X", "we decided to Y". Chinese patterns:
+// "我们决定", "我们选择了", "采用", etc. The extracted value is trimmed to the
+// containing clause so decisions do not bleed into unrelated text.
 func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
@@ -285,6 +462,18 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 		{"we ruled out ", attrRejection},
 		{"we abandoned ", attrRejection},
 		{"instead of ", attrRejection},
+		// Chinese decision markers (no surrounding spaces in CJK text).
+		{"我们决定", attrChoice},
+		{"我们决定采用", attrChoice},
+		{"我们选择了", attrChoice},
+		{"我们选择", attrChoice},
+		{"决定采用", attrChoice},
+		{"决定使用", attrChoice},
+		{"选用", attrChoice},
+		{"选定", attrChoice},
+		{"否决了", attrRejection},
+		{"放弃了", attrRejection},
+		{"废弃了", attrRejection},
 	}
 
 	for _, sentence := range sentences {
@@ -294,11 +483,7 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 			if idx < 0 {
 				continue
 			}
-			val := strings.TrimSpace(sentence[idx+len(dp.prefix):])
-			if puncIdx := strings.IndexAny(val, ".,;:!?"); puncIdx > 0 {
-				val = val[:puncIdx]
-			}
-			val = strings.TrimSpace(val)
+			val := trimToClauseBoundary(sentence[idx+len(dp.prefix):])
 			if val == "" || seen[val] {
 				continue
 			}
@@ -315,7 +500,8 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 }
 
 // extractConstraints extracts constraint nodes from normalized content.
-// Patterns: "must be", "cannot", "requirement", "needs to", "must not".
+// English patterns: "must be", "cannot". Chinese patterns: "必须", "不能",
+// "需要", "禁止", etc.
 func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
@@ -333,6 +519,8 @@ func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject,
 		" is required ", " are required ",
 		" is mandatory ", " are mandatory ",
 		" is necessary ", " are necessary ",
+		// Chinese constraint markers.
+		"必须", "不能", "需要", "要求", "禁止", "务必", "只允许", "不允许", "应当", "应该",
 	}
 
 	for _, sentence := range sentences {
@@ -342,7 +530,7 @@ func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject,
 			if idx < 0 {
 				continue
 			}
-			val := strings.TrimSpace(sentence)
+			val := trimToClauseBoundary(sentence)
 			if len(val) > 120 {
 				val = val[:120] + "..."
 			}
@@ -362,7 +550,8 @@ func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject,
 }
 
 // extractTradeoffs extracts tradeoff nodes from normalized content.
-// Patterns: "tradeoff between X and Y", "at the cost of", "but sacrifices".
+// English patterns: "tradeoff between X and Y", "at the cost of". Chinese
+// patterns: "不过", "然而", "代价是", "权衡", etc.
 func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
@@ -379,6 +568,8 @@ func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, s
 		" but sacrifices ", " but sacrifices ",
 		" on the other hand ",
 		" however ", " although ", " though ",
+		// Chinese tradeoff markers.
+		"不过", "然而", "但是", "代价是", "代价为", "牺牲了", "权衡", "优点是", "缺点是", "尽管如此",
 	}
 
 	for _, sentence := range sentences {
@@ -388,7 +579,7 @@ func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, s
 			if idx < 0 {
 				continue
 			}
-			val := strings.TrimSpace(sentence)
+			val := trimToClauseBoundary(sentence)
 			if len(val) > 120 {
 				val = val[:120] + "..."
 			}
@@ -408,7 +599,8 @@ func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, s
 }
 
 // extractOpenQuestions extracts open question nodes from normalized content.
-// Patterns: "we need to figure out", "open question", "TODO", "we should investigate".
+// English patterns: "we need to figure out", "TODO". Chinese patterns:
+// "待确认", "待定", "需要调研", etc.
 func (e *AKGExtractor) extractOpenQuestions(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
@@ -426,10 +618,13 @@ func (e *AKGExtractor) extractOpenQuestions(normalized *knowledge.KnowledgeObjec
 		" todo ", " todo:", " fixme ", " fixme:",
 		" not yet decided ", " not yet resolved ",
 		" remains to be seen ", " remains to be determined ",
-		// Sentence-start variants (no leading space).
+		// Sentence-start English variants (no leading space).
 		"we need to figure out ", "we need to determine ",
 		"we should investigate ", "we should explore ",
 		"not yet decided ", "not yet resolved ",
+		// Chinese open-question markers.
+		"待确认", "待定", "待解决", "待讨论", "尚未决定", "未决定",
+		"需调研", "需要调研", "需要确认", "待评审", "待办", "调研一下",
 	}
 
 	for _, sentence := range sentences {
@@ -439,7 +634,7 @@ func (e *AKGExtractor) extractOpenQuestions(normalized *knowledge.KnowledgeObjec
 			if idx < 0 {
 				continue
 			}
-			val := strings.TrimSpace(sentence)
+			val := trimToClauseBoundary(sentence)
 			if len(val) > 120 {
 				val = val[:120] + "..."
 			}
@@ -466,13 +661,18 @@ type extractedTriple struct {
 }
 
 // extractTriple extracts a subject-predicate-object triple from a sentence.
-// Supports patterns: "X <verb> Y" where verb is a known relation indicator.
+// Supports English ("X <verb> Y") and Chinese ("X<动词>Y") relation patterns.
+// The object is kept whole up to the next clause boundary so multi-word
+// objects (e.g., "Patch for runtime updates") are preserved instead of being
+// truncated to the first token.
 func extractTriple(sentence string) *extractedTriple {
-	// Known relation-indicating verbs.
 	relations := []string{
 		" uses ", " implements ", " adopts ", " provides ",
 		" supports ", " requires ", " depends on ", " integrates ",
 		" replaces ", " extends ", " contains ", " includes ",
+		// Chinese relation verbs (matched without surrounding spaces because
+		// CJK text typically omits inter-token whitespace).
+		"实现了", "采用", "依赖", "替换", "包含", "提供", "替代", "集成",
 	}
 
 	lower := strings.ToLower(sentence)
@@ -483,12 +683,7 @@ func extractTriple(sentence string) *extractedTriple {
 		}
 		subject := strings.TrimSpace(sentence[:idx])
 		rest := strings.TrimSpace(sentence[idx+len(rel):])
-		// Take the first word of the object (before space, punctuation, or end).
-		object := rest
-		if spaceIdx := strings.IndexAny(rest, " .,;:!?"); spaceIdx > 0 {
-			object = rest[:spaceIdx]
-		}
-		object = strings.TrimSpace(object)
+		object := trimToClauseBoundary(rest)
 		if subject != "" && object != "" {
 			return &extractedTriple{
 				subject:   subject,
@@ -518,21 +713,63 @@ func extractCodeBlockLanguages(content string) []string {
 	return langs
 }
 
-// splitSentences splits content into sentences.
+// splitSentences splits content into sentences using both ASCII and CJK
+// terminators. It avoids splitting on decimal points (3.14), version numbers
+// (v0.2.7), and dotted abbreviations (e.g., U.S.A.), so numeric and abbreviated
+// content is preserved intact.
 func splitSentences(content string) []string {
 	var sentences []string
 	current := strings.Builder{}
-	for _, r := range content {
+	runes := []rune(content)
+	n := len(runes)
+	for i := 0; i < n; i++ {
+		r := runes[i]
 		current.WriteRune(r)
-		if r == '.' || r == '!' || r == '?' {
-			sentences = append(sentences, current.String())
-			current.Reset()
+		if !isSentenceTerminator(r) {
+			continue
 		}
+		// A '.' that precedes a digit is a decimal/version separator.
+		if r == '.' && i+1 < n && isASCIIDigit(runes[i+1]) {
+			continue
+		}
+		// A '.' that is part of a dotted abbreviation (e.g. "e.g.", "U.S.A.")
+		// is skipped: it is preceded by a letter and either followed by
+		// "letter." or itself preceded by another dot of the same abbreviation.
+		if r == '.' && i > 0 && isASCIILetter(runes[i-1]) {
+			if (i+1 < n && isASCIILetter(runes[i+1])) || (i-2 >= 0 && runes[i-2] == '.') {
+				continue
+			}
+		}
+		s := strings.TrimSpace(current.String())
+		if s != "" {
+			sentences = append(sentences, s)
+		}
+		current.Reset()
 	}
-	if current.Len() > 0 {
-		sentences = append(sentences, current.String())
+	if s := strings.TrimSpace(current.String()); s != "" {
+		sentences = append(sentences, s)
 	}
 	return sentences
+}
+
+// isSentenceTerminator reports whether r ends a sentence in either ASCII or
+// CJK punctuation.
+func isSentenceTerminator(r rune) bool {
+	switch r {
+	case '.', '!', '?', '。', '！', '？', '；', '…':
+		return true
+	}
+	return false
+}
+
+// trimToClauseBoundary truncates s at the first clause/punctuation boundary so
+// extracted values do not run past the current clause into unrelated text.
+// Both ASCII and CJK boundary punctuation are recognized.
+func trimToClauseBoundary(s string) string {
+	if idx := strings.IndexAny(s, "。！？；，。,.!?;:"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 // isCapitalized returns true if the string starts with an uppercase letter.
@@ -542,6 +779,65 @@ func isCapitalized(s string) bool {
 	}
 	r := []rune(s)
 	return r[0] >= 'A' && r[0] <= 'Z'
+}
+
+// isASCIIDigit reports whether r is an ASCII digit (0-9).
+func isASCIIDigit(r rune) bool {
+	return r >= '0' && r <= '9'
+}
+
+// isASCIILetter reports whether r is an ASCII letter (a-z or A-Z).
+func isASCIILetter(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+// isCJK reports whether r is a CJK unified ideograph.
+func isCJK(r rune) bool {
+	return r >= 0x4E00 && r <= 0x9FFF
+}
+
+// hasCJK reports whether s contains at least one CJK unified ideograph.
+func hasCJK(s string) bool {
+	for _, r := range s {
+		if isCJK(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// endsWithSuffix reports whether s ends with any of the given suffixes.
+func endsWithSuffix(s string, suffixes []string) bool {
+	for _, suf := range suffixes {
+		if strings.HasSuffix(s, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildChineseTermDict seeds the Chinese entity dictionary from the
+// RuleNormalizer alias table (all CJK keys) plus the project-specific terms in
+// extraChineseTerms. Terms are de-duplicated and order is not significant.
+func buildChineseTermDict() []string {
+	seen := make(map[string]bool)
+	var terms []string
+	add := func(t string) {
+		if t == "" || seen[t] {
+			return
+		}
+		seen[t] = true
+		terms = append(terms, t)
+	}
+	for k := range defaultAliasTable() {
+		if hasCJK(k) {
+			add(k)
+		}
+	}
+	for _, t := range extraChineseTerms {
+		add(t)
+	}
+	return terms
 }
 
 // isCommonWord returns true for common English words that should not be entities.

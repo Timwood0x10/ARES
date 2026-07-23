@@ -80,6 +80,19 @@ func (r *KnowledgeRuntime) WithEvidenceStore(store evidence.Store) *KnowledgeRun
 	return r
 }
 
+// Pipeline returns the runtime's shared KnowledgePipeline. Producers of
+// KnowledgeObjects outside the runtime (e.g. the Conversation Compiler) reuse
+// this exact instance so their processing stays consistent with the rest of
+// AKG and shares the same entity-resolution candidate pool. It is never nil:
+// New guarantees a default pipeline when none is supplied. A nil receiver
+// returns nil so callers can guard against an uninitialized runtime.
+func (r *KnowledgeRuntime) Pipeline() *knowledge.KnowledgePipeline {
+	if r == nil {
+		return nil
+	}
+	return r.pipeline
+}
+
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)

@@ -17,7 +17,8 @@ import (
 // knowledge.KnowledgeStore when configured. Zero LLM: summaries are derived
 // directly from node attributes, never via an LLM summarizer.
 type AKGBuilder struct {
-	store knowledge.KnowledgeStore // optional, nil = build-only
+	store    knowledge.KnowledgeStore     // optional, nil = build-only
+	pipeline *knowledge.KnowledgePipeline // optional, nil = skip AKG refinement
 }
 
 // NewAKGBuilder creates an AKGBuilder. A nil store means Build will only
@@ -34,6 +35,28 @@ func NewAKGBuilder(store knowledge.KnowledgeStore) *AKGBuilder {
 	return &AKGBuilder{store: store}
 }
 
+// WithAKGPipeline attaches an optional AKG KnowledgePipeline used to refine
+// each projected KnowledgeObject (Normalizer → EntityMatcher → Validator →
+// Summarizer) before persistence. This lets the builder reuse AKG's shared
+// processing instead of persisting raw node summaries, closing the
+// broken-link-2 gap from the review (the builder previously bypassed the
+// pipeline and wrote coarse node summaries straight to the store).
+//
+// When nil (the default), Build keeps the previous build-only-direct behavior
+// for backward compatibility.
+//
+// Args:
+//
+//	p — optional *knowledge.KnowledgePipeline; may be nil.
+//
+// Returns:
+//
+//	*AKGBuilder — the same builder for chaining.
+func (b *AKGBuilder) WithAKGPipeline(p *knowledge.KnowledgePipeline) *AKGBuilder {
+	b.pipeline = p
+	return b
+}
+
 // BuildResult holds the built KnowledgeObjects and Relations, plus the count
 // persisted when a store is configured.
 type BuildResult struct {
@@ -46,6 +69,13 @@ type BuildResult struct {
 // persists them. Each Node becomes a KnowledgeObject; each Edge becomes a
 // Relation. The node's precise type is preserved in the object's Tags and
 // Metadata even when no dedicated AKG ObjectType exists.
+//
+// When an AKG KnowledgePipeline is attached via WithAKGPipeline, every
+// projected KnowledgeObject is refined through it (Normalizer → EntityMatcher
+// → Validator → Summarizer) before persistence, so the builder reuses AKG's
+// shared processing instead of writing raw node summaries. With no pipeline
+// (the default), objects are persisted exactly as projected (backward
+// compatible).
 //
 // Args:
 //
@@ -81,7 +111,17 @@ func (b *AKGBuilder) Build(ctx context.Context, sub *SubGraph, namespace string)
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("akg builder: context cancelled: %w", err)
 		}
-		objects = append(objects, nodeToKnowledgeObject(n, namespace))
+		obj := nodeToKnowledgeObject(n, namespace)
+		if b.pipeline != nil {
+			processed, pErr := b.pipeline.Process(ctx, obj)
+			if pErr != nil {
+				return nil, fmt.Errorf("akg builder: pipeline process %q: %w", obj.ID, pErr)
+			}
+			if processed != nil {
+				obj = processed
+			}
+		}
+		objects = append(objects, obj)
 	}
 	result.Objects = objects
 

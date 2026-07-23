@@ -32,7 +32,7 @@ func NewAnalyticsSelector(maxNodes int) *AnalyticsSelector {
 // ascending. Returns a non-nil empty SubGraph for nil input.
 func (s *AnalyticsSelector) Select(km *KnowledgeModel) *SubGraph {
 	if km == nil {
-		return &SubGraph{Metadata: map[string]any{"selector": "analytics_selector", attrNodesSelected: 0}}
+		return &SubGraph{Metadata: map[string]any{attrSelector: "analytics_selector", attrNodesSelected: 0}}
 	}
 
 	candidateTypes := analyticsCandidateTypes()

@@ -394,17 +394,20 @@ func TestAKGExtractorTripleExtraction(t *testing.T) {
 		t.Fatal("expected at least 1 fact")
 	}
 
-	// Check for "ARES uses RuntimePatch" fact.
+	// Check for the "ARES uses RuntimePatch ..." fact. Phase 1.1 keeps the
+	// object phrase whole (up to the clause boundary) instead of truncating to
+	// the first token, so the object is "RuntimePatch for evolution", not the
+	// single word "RuntimePatch".
 	hasARESUses := false
 	for _, f := range facts {
-		if f.Subject == "ARES" && f.Predicate == "uses" && f.Object == "RuntimePatch" {
+		if f.Subject == "ARES" && f.Predicate == "uses" && strings.Contains(f.Object, "RuntimePatch") && f.Object != "RuntimePatch" {
 			hasARESUses = true
 		}
 	}
 	if !hasARESUses {
 		// Debug: print all facts.
 		t.Logf("extracted facts: %+v", facts)
-		t.Error("expected fact: ARES uses RuntimePatch")
+		t.Error("expected multi-word fact: ARES uses RuntimePatch for evolution")
 	}
 }
 

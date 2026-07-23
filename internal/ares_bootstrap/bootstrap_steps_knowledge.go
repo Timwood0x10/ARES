@@ -5,6 +5,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 )
 
@@ -56,7 +57,28 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 	// persists distillation.Memory records; the AKGBuilder persists
 	// knowledge.KnowledgeObject graphs. Both are swappable via options.
 	memEmitter := compiler.NewMemoryEmitter(compiler.NewInMemoryMemoryStore())
-	akgBuilder := compiler.NewAKGBuilder(memorystore.New())
+
+	// Shared AKG sink: a single KnowledgeStore instance the compiler writes
+	// into. Holding it on Components makes it the shared pool that other AKG
+	// consumers (prompt injection, future runtime ingestion) read from,
+	// replacing the previous per-build isolated store that no other consumer
+	// could see.
+	sharedAKGStore := memorystore.New()
+	comp.KnowledgeStore = sharedAKGStore
+
+	// Reuse AKG's shared KnowledgePipeline — the exact instance the
+	// KnowledgeRuntime uses — so the compiler's projections are refined by
+	// AKG's Normalizer → Resolver → Summarizer and share the same entity
+	// resolution pool. This closes broken-link-2 from the review: the builder
+	// no longer writes coarse node summaries straight to the store. When the
+	// runtime is unavailable the pipeline is nil and the builder degrades to
+	// its previous build-only-direct behavior.
+	var akgPipeline *knowledge.KnowledgePipeline
+	if comp.KnowledgeRuntime != nil {
+		akgPipeline = comp.KnowledgeRuntime.Pipeline()
+	}
+
+	akgBuilder := compiler.NewAKGBuilder(sharedAKGStore).WithAKGPipeline(akgPipeline)
 
 	pipeline, err := compiler.NewPipeline(
 		kmCompiler, distiller, pipelineCfg,

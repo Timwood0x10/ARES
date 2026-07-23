@@ -218,27 +218,33 @@ const (
 	dbPostgreSQL   = "PostgreSQL"
 	platformK8s    = "Kubernetes"
 	abbrLLM        = "LLM"
+	// Alias key constants (repeated across alias table and tests).
+	aliasRust       = "rust"
+	aliasGolang     = "golang"
+	aliasK8s        = "k8s"
+	aliasKubernetes = "kubernetes"
+	aliasLLM        = "llm"
 )
 
 func defaultAliasTable() map[string]string {
 	return map[string]string{
 		// Required aliases.
-		"rust语言":     langRust,
-		"rust":       langRust,
-		"golang":     langGo,
-		"go语言":       langGo,
-		"ts":         langTypeScript,
-		"typescript": langTypeScript,
-		"js":         langJavaScript,
-		"javascript": langJavaScript,
-		"py":         langPython,
-		"python":     langPython,
-		"pg":         dbPostgreSQL,
-		"postgres":   dbPostgreSQL,
-		"postgresl":  dbPostgreSQL, // common typo
-		"k8s":        platformK8s,
-		"kubernetes": platformK8s,
-		"llm":        abbrLLM,
+		"rust语言":        langRust,
+		aliasRust:       langRust,
+		aliasGolang:     langGo,
+		"go语言":          langGo,
+		"ts":            langTypeScript,
+		"typescript":    langTypeScript,
+		"js":            langJavaScript,
+		"javascript":    langJavaScript,
+		"py":            langPython,
+		"python":        langPython,
+		"pg":            dbPostgreSQL,
+		"postgres":      dbPostgreSQL,
+		"postgresl":     dbPostgreSQL, // common typo
+		aliasK8s:        platformK8s,
+		aliasKubernetes: platformK8s,
+		aliasLLM:        abbrLLM,
 		// Known language set: title-case lowercase language identifiers.
 		"go":     "Go",
 		"java":   "Java",
