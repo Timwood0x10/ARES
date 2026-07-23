@@ -278,8 +278,8 @@ func runServe() error {
 					// Register as component AND as fallback so workflow structure
 					// patches (insert/remove nodes/edges) with dynamic node ID
 					// targets are routed to the live DAG executor.
-					comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
-					comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
+					_ = comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
+					_ = comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
 					comp.NewEvolution.PatchReg.SetFallback(liveExec)
 
 					// Also update the existing graph executor for consistency.
@@ -546,7 +546,7 @@ func newLiveDAGPatchExecutor(mgr *ares_runtime.Manager, agentID string) *liveDAG
 func (e *liveDAGPatchExecutor) Name() string { return "live_dag" }
 
 func (e *liveDAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	return nil, nil
+	return nil, patch.ErrNoSnapshot
 }
 
 func (e *liveDAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
@@ -587,7 +587,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.RemoveNode(ctx, p.Target); err != nil {
 			return nil, fmt.Errorf("live DAG: remove node %s: %w", p.Target, err)
 		}
-		return nil, nil
+		return nil, nil //nolint:nilnil // no rollback needed
 
 	case patch.PatchReplaceNode:
 		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
@@ -597,7 +597,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.AddNode(ctx, step); err != nil {
 			return nil, fmt.Errorf("live DAG: replace (add) node %s: %w", p.Target, err)
 		}
-		return nil, nil
+		return nil, nil //nolint:nilnil // no rollback needed
 
 	case patch.PatchAddEdge:
 		val, ok := p.Value.(map[string]string)
@@ -623,7 +623,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.RemoveEdge(ctx, from, to); err != nil {
 			return nil, fmt.Errorf("live DAG: remove edge %s→%s: %w", from, to, err)
 		}
-		return nil, nil
+		return nil, nil //nolint:nilnil // no rollback needed
 
 	case patch.PatchChangeScheduler:
 		// Store the scheduler type on the live DAG so the agent's runtime
@@ -631,7 +631,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		schedType := fmt.Sprintf("%T", p.Value)
 		dag.SchedulerType = schedType
 		log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
-		return nil, nil
+		return nil, nil //nolint:nilnil // no rollback needed
 
 	default:
 		return nil, fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)

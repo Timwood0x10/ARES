@@ -6,12 +6,29 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
 var pgLog = logger.New("pg_strategy_store")
+
+// ErrNoActiveStrategy is returned by GetActive when no strategy is deployed.
+var ErrNoActiveStrategy = fmt.Errorf("pg strategy store: no active strategy")
+
+// validTableName regex ensures only safe table names are used in SQL queries.
+var validTableName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// sanitizeTableName validates the table name to prevent SQL injection.
+// Panics if the table name is invalid — this is a programming error, not a
+// runtime error, because the table name is set at construction time.
+func sanitizeTableName(name string) string {
+	if !validTableName.MatchString(name) {
+		panic(fmt.Errorf("pg strategy store: invalid table name %q", name))
+	}
+	return name
+}
 
 // PGStrategyStore is a PostgreSQL-backed implementation of StrategyStore.
 // It persists strategies to a database table, enabling cross-restart continuity
@@ -63,6 +80,8 @@ func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int) (*PGStrate
 
 // createTable creates the strategy storage table if it does not exist.
 func (s *PGStrategyStore) createTable(ctx context.Context) error {
+	sanitizedTable := sanitizeTableName(s.tableName)
+	//nolint:gosec // table name is validated by sanitizeTableName
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id          BIGSERIAL PRIMARY KEY,
@@ -80,7 +99,7 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_%s_sid ON %s(strategy_id);
 		CREATE INDEX IF NOT EXISTS idx_%s_active ON %s(is_active) WHERE is_active = TRUE;
-	`, s.tableName, s.tableName, s.tableName, s.tableName, s.tableName)
+	`, sanitizedTable, sanitizedTable, sanitizedTable, sanitizedTable, sanitizedTable)
 	_, err := s.db.ExecContext(ctx, query)
 	return err
 }
@@ -88,6 +107,8 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 // GetActive returns the currently deployed strategy.
 // Returns nil (and no error) if no strategy has been stored yet.
 func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
+	sanitizedTable := sanitizeTableName(s.tableName)
+	//nolint:gosec // table name is validated by sanitizeTableName
 	query := fmt.Sprintf(`
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at
@@ -95,7 +116,7 @@ func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 		WHERE is_active = TRUE
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, s.tableName)
+	`, sanitizedTable)
 
 	row := s.db.QueryRowContext(ctx, query)
 	var (
@@ -108,7 +129,7 @@ func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 	err := row.Scan(&strategyID, &version, &name, &parentID, &promptTmpl,
 		&mutType, &mutDesc, &paramsJSON, &score, &createdAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, ErrNoActiveStrategy
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: get active: %w", err)
@@ -153,18 +174,22 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	sanitizedTable := sanitizeTableName(s.tableName)
+
 	// Deactivate all existing active strategies.
-	deactivateQuery := fmt.Sprintf(`UPDATE %s SET is_active = FALSE WHERE is_active = TRUE`, s.tableName)
+	//nolint:gosec // table name is validated by sanitizeTableName
+	deactivateQuery := fmt.Sprintf(`UPDATE %s SET is_active = FALSE WHERE is_active = TRUE`, sanitizedTable)
 	if _, err := tx.ExecContext(ctx, deactivateQuery); err != nil {
 		return fmt.Errorf("pg strategy store: deactivate: %w", err)
 	}
 
 	// Insert the new active strategy.
+	//nolint:gosec // table name is validated by sanitizeTableName
 	insertQuery := fmt.Sprintf(`
-		INSERT INTO %s (strategy_id, version, name, parent_id, prompt_template,
-		                mutation_type, mutation_desc, params, score, created_at, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
-	`, s.tableName)
+	   INSERT INTO %s (strategy_id, version, name, parent_id, prompt_template,
+	                   mutation_type, mutation_desc, params, score, created_at, is_active)
+	   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+	  `, sanitizedTable)
 	if _, err := tx.ExecContext(ctx, insertQuery,
 		strategy.ID, strategy.Version, strategy.Name, strategy.ParentID,
 		strategy.PromptTemplate, strategy.StrategyMutationType, strategy.MutationDesc,
@@ -175,16 +200,17 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 
 	// Prune history if maxHistory is set.
 	if s.maxHistory > 0 {
+		//nolint:gosec // table name is validated by sanitizeTableName
 		pruneQuery := fmt.Sprintf(`
-			DELETE FROM %s
-			WHERE strategy_id = $1
-			  AND id NOT IN (
-			      SELECT id FROM %s
-			      WHERE strategy_id = $1
-			      ORDER BY created_at DESC
-			      LIMIT $2
-			  )
-		`, s.tableName, s.tableName)
+	    DELETE FROM %s
+	    WHERE strategy_id = $1
+	      AND id NOT IN (
+	          SELECT id FROM %s
+	          WHERE strategy_id = $1
+	          ORDER BY created_at DESC
+	          LIMIT $2
+	      )
+	   `, sanitizedTable, sanitizedTable)
 		if _, err := tx.ExecContext(ctx, pruneQuery, strategy.ID, s.maxHistory); err != nil {
 			return fmt.Errorf("pg strategy store: prune: %w", err)
 		}
@@ -205,13 +231,15 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 // GetHistory returns the last n strategies for the given strategy ID,
 // ordered by version descending (newest first).
 func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*Strategy, error) {
+	sanitizedTable := sanitizeTableName(s.tableName)
+	//nolint:gosec // table name is validated by sanitizeTableName
 	query := fmt.Sprintf(`
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at
 		FROM %s
 		WHERE strategy_id = $1
 		ORDER BY created_at DESC
-	`, s.tableName)
+	`, sanitizedTable)
 	if n > 0 {
 		query += fmt.Sprintf(" LIMIT %d", n)
 	}
@@ -220,7 +248,9 @@ func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: get history: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var results []*Strategy
 	for rows.Next() {

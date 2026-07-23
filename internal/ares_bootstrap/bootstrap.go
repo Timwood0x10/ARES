@@ -14,6 +14,7 @@ import (
 	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/ares_mcp"
 	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
@@ -44,7 +45,24 @@ type Components struct {
 	// patches (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual
 	// runtime used by the agent's knowledge tools.
 	KnowledgeRuntime *knowledgeruntime.KnowledgeRuntime
-	wg               sync.WaitGroup
+	// KnowledgeCompiler is the opt-in Conversation Compiler pipeline (design:
+	// CONVERSATION_COMPILER.md). It is nil when cfg.KnowledgeCompiler.Enabled is
+	// false (the default), preserving prior behavior. The pipeline is zero-LLM
+	// and deeply binds AKG extraction + distillation classifier/scorer +
+	// knowledge graph projection.
+	KnowledgeCompiler *KnowledgeCompilerComponents
+	wg                sync.WaitGroup
+}
+
+// KnowledgeCompilerComponents holds the assembled Conversation Compiler
+// pipeline. Pipeline is the stateless one-shot orchestrator (Compile ->
+// AKG project -> Distill-and-prune -> Render prompt -> Emit memory).
+// Lifecycle is the stateful trigger layer that drives incremental compiles
+// from a token-budget window. Both share the same Compiler (extractor +
+// normalizer) and KMDistiller.
+type KnowledgeCompilerComponents struct {
+	Pipeline  *compiler.Pipeline
+	Lifecycle *compiler.ContextLifecycle
 }
 
 // LLMComponents holds LLM client and callback registry.
@@ -253,6 +271,12 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	default:
 		comp.Discovery = discoveryComp
 	}
+
+	// 11. Optional Conversation Compiler pipeline (opt-in via
+	// cfg.KnowledgeCompiler.Enabled). When disabled, this is a no-op.
+	// Failures are non-fatal: the pipeline is logged and skipped, preserving
+	// prior behavior (graceful degradation, mirroring wireDistillation).
+	wireKnowledgeCompiler(ctx, cfg, &comp)
 
 	return &comp, nil
 }

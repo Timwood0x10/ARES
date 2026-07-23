@@ -10,6 +10,7 @@ import (
 )
 
 const errPrefix = "memory: "
+const rollbackMsg = "rollback: restore previous memory config"
 
 // MemoryConfigStore is the contract MemoryPatchExecutor depends on.
 // Any memory manager that exposes a mutable, lockable MemoryConfig
@@ -62,7 +63,7 @@ func NewMinimalMemoryManager() *ProductionMemoryManager {
 }
 
 // Name returns the component identifier.
-func (e *MemoryPatchExecutor) Name() string { return "memory" }
+func (e *MemoryPatchExecutor) Name() string { return StorageMemory }
 
 // Snapshot returns the current memory config as a snapshot.
 func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
@@ -130,7 +131,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 			Type:   p.Type,
 			Target: p.Target,
 			Value:  rollback,
-			Reason: "rollback: restore previous memory config",
+			Reason: rollbackMsg,
 		}, nil
 
 	case patch.PatchChangeBudget:
@@ -169,7 +170,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 			Type:   p.Type,
 			Target: p.Target,
 			Value:  rollback,
-			Reason: "rollback: restore previous memory config",
+			Reason: rollbackMsg,
 		}, nil
 
 	case patch.PatchChangeReducer:
@@ -186,7 +187,7 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 			Type:   p.Type,
 			Target: p.Target,
 			Value:  rollback,
-			Reason: "rollback: restore previous memory config",
+			Reason: rollbackMsg,
 		}, nil
 
 	default:

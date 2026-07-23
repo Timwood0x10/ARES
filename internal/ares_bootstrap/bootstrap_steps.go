@@ -297,7 +297,10 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pingCancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
+		closeErr := db.Close()
+		if closeErr != nil {
+			return nil, fmt.Errorf("pg strategy store: ping: %w (also close db: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("pg strategy store: ping: %w", err)
 	}
 	db.SetMaxOpenConns(5)
@@ -306,7 +309,10 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 
 	store, err := evolution.NewPGStrategyStore(db, "evolution_strategies", 100)
 	if err != nil {
-		db.Close()
+		closeErr := db.Close()
+		if closeErr != nil {
+			return nil, fmt.Errorf("pg strategy store: init: %w (also close db: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("pg strategy store: init: %w", err)
 	}
 	return store, nil

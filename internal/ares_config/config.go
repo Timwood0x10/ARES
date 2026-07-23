@@ -30,21 +30,22 @@ const (
 
 // Config holds all configuration for the server.
 type Config struct {
-	Server     ServerConfig       `yaml:"server"`
-	LLM        LLMConfig          `yaml:"llm"`
-	Agents     AgentsConfig       `yaml:"agents"`
-	Tools      ToolsConfig        `yaml:"tools"`
-	Prompts    PromptsConfig      `yaml:"prompts"`
-	Output     OutputConfig       `yaml:"output"`
-	Validation ValidationConfig   `yaml:"validation"`
-	Workflow   WorkflowConfig     `yaml:"workflow"`
-	Storage    StorageConfig      `yaml:"storage"`
-	Memory     MemoryConfig       `yaml:"memory"`
-	MCP        MCPConfig          `yaml:"mcp"`
-	Dashboard  DashboardAppConfig `yaml:"dashboard"`
-	Evolution  EvolutionConfig    `yaml:"evolution"`
-	Embedding  EmbeddingConfig    `yaml:"embedding"`
-	Discovery  DiscoveryConfig    `yaml:"discovery"`
+	Server            ServerConfig            `yaml:"server"`
+	LLM               LLMConfig               `yaml:"llm"`
+	Agents            AgentsConfig            `yaml:"agents"`
+	Tools             ToolsConfig             `yaml:"tools"`
+	Prompts           PromptsConfig           `yaml:"prompts"`
+	Output            OutputConfig            `yaml:"output"`
+	Validation        ValidationConfig        `yaml:"validation"`
+	Workflow          WorkflowConfig          `yaml:"workflow"`
+	Storage           StorageConfig           `yaml:"storage"`
+	Memory            MemoryConfig            `yaml:"memory"`
+	MCP               MCPConfig               `yaml:"mcp"`
+	Dashboard         DashboardAppConfig      `yaml:"dashboard"`
+	Evolution         EvolutionConfig         `yaml:"evolution"`
+	Embedding         EmbeddingConfig         `yaml:"embedding"`
+	Discovery         DiscoveryConfig         `yaml:"discovery"`
+	KnowledgeCompiler KnowledgeCompilerConfig `yaml:"knowledge_compiler"`
 }
 
 // DiscoveryConfig configures the optional service discovery engine that
@@ -56,6 +57,48 @@ type DiscoveryConfig struct {
 	Enabled    bool          `yaml:"enabled"`
 	Interval   time.Duration `yaml:"interval"`
 	ProjectDir string        `yaml:"project_dir"`
+}
+
+// KnowledgeCompilerConfig configures the opt-in Conversation Compiler pipeline
+// (design: CONVERSATION_COMPILER.md). When Enabled is false (the default), the
+// compiler pipeline is NOT wired and the system preserves prior behavior.
+//
+// The entire pipeline is zero-LLM: extraction reuses the AKG rule-based
+// extractor, distill-and-prune reuses the distillation package's
+// MemoryClassifier + ImportanceScorer, and the AKGBuilder projects into
+// knowledge.KnowledgeObject graphs. No LLM chat/completion call is made in the
+// compile -> distill -> consume path, satisfying the constraint that
+// compression/distillation must not use the LLM.
+type KnowledgeCompilerConfig struct {
+	// Enabled activates the Conversation Compiler pipeline. Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// MaxNodes caps KnowledgeModel node retention after pruning (0 = 500).
+	MaxNodes int `yaml:"max_nodes"`
+
+	// PromptMaxTokens is the token budget for the rendered prompt context.
+	PromptMaxTokens int `yaml:"prompt_max_tokens"`
+
+	// AKGMaxFacts caps the number of facts projected into the AKG (0 = 200).
+	AKGMaxFacts int `yaml:"akg_max_facts"`
+
+	// MinConfidence is the minimum node confidence for retention.
+	MinConfidence float64 `yaml:"min_confidence"`
+
+	// AKGMinConfidence filters facts/references projected to the AKG.
+	AKGMinConfidence float64 `yaml:"akg_min_confidence"`
+
+	// DistillMinScore is the minimum importance score for memory creation.
+	DistillMinScore float64 `yaml:"distill_min_score"`
+
+	// WindowSize is the context-lifecycle token window (0 = 128000).
+	WindowSize int `yaml:"window_size"`
+
+	// Threshold is the compile trigger as a fraction of WindowSize (0 = 0.7).
+	Threshold float64 `yaml:"threshold"`
+
+	// DistillAfterCompile runs distill-and-prune after every incremental compile.
+	DistillAfterCompile bool `yaml:"distill_after_compile"`
 }
 
 // EmbeddingConfig holds configuration for the embedding client used by
@@ -434,6 +477,33 @@ func (c *Config) setDefaults() {
 	if c.Memory.TaskDistillation.Prompt == "" {
 		c.Memory.TaskDistillation.Prompt = DefaultTaskDistillationPrompt
 	}
+	// KnowledgeCompiler defaults (mirror compiler.DefaultPipelineConfig /
+	// compiler.DefaultLifecycleConfig so zero-values are explicit). When
+	// Enabled is false these are inert.
+	if c.KnowledgeCompiler.MaxNodes == 0 {
+		c.KnowledgeCompiler.MaxNodes = 500
+	}
+	if c.KnowledgeCompiler.PromptMaxTokens == 0 {
+		c.KnowledgeCompiler.PromptMaxTokens = 8000
+	}
+	if c.KnowledgeCompiler.AKGMaxFacts == 0 {
+		c.KnowledgeCompiler.AKGMaxFacts = 200
+	}
+	if c.KnowledgeCompiler.MinConfidence == 0 {
+		c.KnowledgeCompiler.MinConfidence = 0.3
+	}
+	if c.KnowledgeCompiler.AKGMinConfidence == 0 {
+		c.KnowledgeCompiler.AKGMinConfidence = 0.4
+	}
+	if c.KnowledgeCompiler.DistillMinScore == 0 {
+		c.KnowledgeCompiler.DistillMinScore = 0.4
+	}
+	if c.KnowledgeCompiler.WindowSize == 0 {
+		c.KnowledgeCompiler.WindowSize = 128000
+	}
+	if c.KnowledgeCompiler.Threshold == 0 {
+		c.KnowledgeCompiler.Threshold = 0.7
+	}
 	// Validation defaults
 	if c.Validation.SchemaType == "" {
 		c.Validation.SchemaType = "default" // "default", "travel", "custom"
@@ -546,6 +616,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateDiscovery(); err != nil {
+		return err
+	}
+
+	if err := c.validateKnowledgeCompiler(); err != nil {
 		return err
 	}
 
@@ -765,6 +839,40 @@ func (c *Config) validateDiscovery() error {
 	}
 	if c.Discovery.Interval < 0 {
 		return fmt.Errorf("discovery: interval must be non-negative, got %s", c.Discovery.Interval)
+	}
+	return nil
+}
+
+// validateKnowledgeCompiler validates the optional Conversation Compiler
+// configuration. It is a no-op when the pipeline is disabled.
+func (c *Config) validateKnowledgeCompiler() error {
+	if !c.KnowledgeCompiler.Enabled {
+		return nil
+	}
+	kc := c.KnowledgeCompiler
+	if kc.Threshold < 0 || kc.Threshold > 1 {
+		return fmt.Errorf("knowledge_compiler: threshold must be in [0,1], got %v", kc.Threshold)
+	}
+	if kc.MinConfidence < 0 || kc.MinConfidence > 1 {
+		return fmt.Errorf("knowledge_compiler: min_confidence must be in [0,1], got %v", kc.MinConfidence)
+	}
+	if kc.AKGMinConfidence < 0 || kc.AKGMinConfidence > 1 {
+		return fmt.Errorf("knowledge_compiler: akg_min_confidence must be in [0,1], got %v", kc.AKGMinConfidence)
+	}
+	if kc.DistillMinScore < 0 || kc.DistillMinScore > 1 {
+		return fmt.Errorf("knowledge_compiler: distill_min_score must be in [0,1], got %v", kc.DistillMinScore)
+	}
+	if kc.MaxNodes < 0 {
+		return fmt.Errorf("knowledge_compiler: max_nodes must be non-negative, got %d", kc.MaxNodes)
+	}
+	if kc.PromptMaxTokens < 0 {
+		return fmt.Errorf("knowledge_compiler: prompt_max_tokens must be non-negative, got %d", kc.PromptMaxTokens)
+	}
+	if kc.AKGMaxFacts < 0 {
+		return fmt.Errorf("knowledge_compiler: akg_max_facts must be non-negative, got %d", kc.AKGMaxFacts)
+	}
+	if kc.WindowSize < 0 {
+		return fmt.Errorf("knowledge_compiler: window_size must be non-negative, got %d", kc.WindowSize)
 	}
 	return nil
 }
