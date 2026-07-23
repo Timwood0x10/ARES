@@ -7,9 +7,13 @@
 
 - ✅ **L1 结构门**：`validator.go:ValidateNodeForAKG` + `AKGBuilder.WithQualityGate(true)`（生产已启用，`bootstrap_steps_knowledge.go`）。单测 12 例 + 门开关测试全绿。
 - ✅ **L2 置信度语义化**：`akg_extractor.go` 引入 `confStrong=0.9/confMedium=0.7/confWeak=0.4` 三档替换全部硬编码；`akg_selector.go` 去掉"实体总保留"carve-out（新增 `selectEntities` 按阈值过滤）；默认 `AKGMinConfidence` 0.4→0.6（`config.go:496`/`context_lifecycle.go:41`/`pipeline.go:39`）；`akg_builder.go` 写入 `Metadata["source_signal"]` 观测标签。build/vet/lint/staticcheck/gofmt 干净，compiler+ares_config+ares_bootstrap+knowledge 测试全绿。
-- ⬜ **L3 去重观测 + metrics**：Resolver Jaccard(0.85) 已用，待补 `dropped_lowconf`/`confidence_histogram` 等 metrics 出口。
-- ⬜ **1.3 评测基座**：等你给脱敏真实对话样本后跑精度采样（结构通过率/精度/去重率/置信分布）。当前验收门槛提议值已你确认（结构≥95%、精度≥85%）。
-- 实测效果（合成对话，临时 demo 已删）：L1 在噪声对话 4→2、真实对话 15→14（丢停用词三元组）；L2 在弱信号密集对话 0.4 阈值选 2 节点 / 0.6 阈值选 1 节点（丢 WEAK 档中文名词短语/开放问题）。
+- ✅ **L3 质量门观测 metrics**：新增 `compiler/metrics.go`（`AKGMetrics` 线程安全收集器 + `AKGSnapshot` + `signalTierOf`），统一接入三处落点——`AKGSelector.Select`（`akg_objects_in`+`dropped_lowconf`）、`AKGBuilder.Build`（`dropped_structural`+`objects_built`+置信直方图+信号档）、`Resolver.Resolve`（`dedup_hits`）。共享实例经 `WithMetrics`/`WithAKGMetrics`/`SetAKGMetrics` 注入，挂到 `KnowledgeCompilerComponents.AKGMetrics` 供评测基座/serve 层读取；并桥接既有 Prometheus 出口（`ares_observability.SetAKGSnapshot` → `ARES_akg_*` gauge，含置信分桶/信号档，用 Set 语义避免跨 run 累加）。新增 `metrics_test.go`(5 例)+`prometheus_akg_test.go` 全绿；build/vet/-race/gofmt/golangci-lint(0)/staticcheck(0)。
+- ✅ **1.3 评测基座（已建，待真实样本跑）**：新增 `internal/ares_memory/compiler/eval`（独立子包，**不进管线**）+ `cmd/akg-eval` CLI。基座跑真实 `AKGSelector.Select → AKGBuilder.Build`（复用既有 L1/L2/L3 + 共享 `AKGMetrics`），对每条样本算 `structural_pass_rate` / `precision`(vs gold) / `recall` / `dedup_rate` / 置信直方图+信号档，并裁决硬门：`StructureGate≥0.95`、`PrecisionGate≥0.85`（缺 gold 时跳过精度门）。`NormalizeKey` 做大小写/语序无关的精度比对（CJK 整体作为一个 token，因无分词器）。内置 4 份合成样本（`samples/`：2 份干净 + 2 份跨样本重复）已验证：全干净集 `ready_for_phase3=true`、跨样本共享 store 时重复 fact 被 `dedup_hits` 命中。带 `-fail-on-gate` 可当 CI 门禁（不过则退出码 3）。`eval_test.go` 5 例全绿。
+  - **实测暴露两个真实 Gate 行为（非 bug，已用样本验证）**：
+    1. `akgStopwords` 含 `is/are/be/...` 但**不含 `the`** → 实体 `the` 会被 L1 放行（结构门只拦 `a/an/of/to/...` 与中文停用词）。
+    2. L1 对 fact 的 predicate 是停用词（`is/are/to` 等）即判 `stopword triple` 丢弃 → 自然句 "X is Y" 会被拒。属保守策略，接真实样本后需观察是否误杀合理事实。
+  - **reference 节点无 `description` 时 `nodeSummary` 退化成节点 ID**（非 fact 类型不取 subject/predicate/object）→ 其 `source_signal` 比对 key 无法匹配 gold。当前样本已用 `description` 规避；这是后续可优化点（reference 也取三元组做 summary）。
+- 实测效果（合成对话，临时 demo 已删）：L1 在噪声对话 4→2、真实对话 15→14（丢停用词三元组）；L2 在弱信号密集对话 0.4 阈值选 2 节点 / 0.6 阈值选 1 节点（丢 WEAK 档中文名词短语/开放问题）。L3 e2e 验证：6 候选 → 丢 2 低置信(e3/f3) + 丢 2 结构(e2 停用词/f2 残缺三元组) → 留存 2(e1/f1, 均 strong)；去重独立验证命中 1。
 
 ---
 

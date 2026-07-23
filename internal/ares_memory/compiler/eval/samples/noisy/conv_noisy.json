@@ -1,0 +1,20 @@
+{
+  "id": "conv-noisy",
+  "namespace": "eval.noisy",
+  "messages": [
+    {"role": "user", "content": "Tell me about the system."},
+    {"role": "assistant", "content": "ARES stores entities. The pipeline runs the compiler. (plus some filler extractions)"}
+  ],
+  "candidates": [
+    {"id": "n1", "type": "fact", "attributes": {"subject": "ARES", "predicate": "stores", "object": "entities"}, "confidence": 0.9},
+    {"id": "n2", "type": "fact", "attributes": {"subject": "x", "predicate": "y", "object": "z"}, "confidence": 0.2},
+    {"id": "n3", "type": "fact", "attributes": {"subject": "", "predicate": "", "object": ""}, "confidence": 0.7},
+    {"id": "n4", "type": "entity", "attributes": {"name": "the"}, "confidence": 0.6},
+    {"id": "n5", "type": "entity", "attributes": {"name": "Patch"}, "confidence": 0.85},
+    {"id": "n6", "type": "fact", "attributes": {"subject": "Pipeline", "predicate": "runs", "object": "compiler"}, "confidence": 0.88}
+  ],
+  "gold": {
+    "facts": ["ares stores entities", "pipeline runs compiler"],
+    "entities": ["patch"]
+  }
+}

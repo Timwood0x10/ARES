@@ -1,0 +1,10 @@
+{
+  "id": "conv-dup-a",
+  "namespace": "eval.dup",
+  "candidates": [
+    {"id": "a1", "type": "fact", "attributes": {"subject": "ARES", "predicate": "provides", "object": "agent runtime"}, "confidence": 0.9}
+  ],
+  "gold": {
+    "facts": ["ares provides agent runtime"]
+  }
+}

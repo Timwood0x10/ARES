@@ -1,0 +1,20 @@
+{
+  "id": "conv-clean",
+  "namespace": "eval.clean",
+  "messages": [
+    {"role": "user", "content": "How does ARES persist knowledge?"},
+    {"role": "assistant", "content": "ARES compiles conversations into a Knowledge Model. Rust compiles to native code. The AKG graph stores entities and facts."}
+  ],
+  "candidates": [
+    {"id": "c1", "type": "entity", "attributes": {"name": "ARES"}, "confidence": 0.92},
+    {"id": "c2", "type": "entity", "attributes": {"name": "Rust"}, "confidence": 0.9},
+    {"id": "c3", "type": "fact", "attributes": {"subject": "Rust", "predicate": "compiles", "object": "to native code"}, "confidence": 0.88},
+    {"id": "c4", "type": "fact", "attributes": {"subject": "ARES", "predicate": "uses", "object": "AKG graph"}, "confidence": 0.85},
+    {"id": "c5", "type": "reference", "attributes": {"subject": "AKG", "predicate": "documents", "object": "https://example.com/akg", "description": "akg knowledge graph docs"}, "confidence": 0.8}
+  ],
+  "gold": {
+    "entities": ["ares", "rust"],
+    "facts": ["rust compiles to native code", "ares uses akg graph"],
+    "references": ["akg knowledge graph docs"]
+  }
+}

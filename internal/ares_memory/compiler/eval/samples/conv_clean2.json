@@ -1,0 +1,18 @@
+{
+  "id": "conv-clean2",
+  "namespace": "eval.clean2",
+  "messages": [
+    {"role": "user", "content": "What does the retriever do?"},
+    {"role": "assistant", "content": "The retriever queries the knowledge runtime by vector similarity. Go supports goroutines for concurrency."}
+  ],
+  "candidates": [
+    {"id": "d1", "type": "entity", "attributes": {"name": "Retriever"}, "confidence": 0.9},
+    {"id": "d2", "type": "entity", "attributes": {"name": "Go"}, "confidence": 0.88},
+    {"id": "d3", "type": "fact", "attributes": {"subject": "Retriever", "predicate": "queries", "object": "knowledge runtime"}, "confidence": 0.86},
+    {"id": "d4", "type": "fact", "attributes": {"subject": "Go", "predicate": "supports", "object": "goroutines"}, "confidence": 0.84}
+  ],
+  "gold": {
+    "entities": ["retriever", "go"],
+    "facts": ["retriever queries knowledge runtime", "go supports goroutines"]
+  }
+}
