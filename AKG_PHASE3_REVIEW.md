@@ -109,10 +109,10 @@ go run ./cmd/akg-eval -dir internal/ares_memory/compiler/eval/samples
 
 1. ~~**真实样本硬门缺口**（最高优先）~~ **已解决（2026-07-24）**：用本对话自身作语料跑通，修复抽取器 run-on 后 1.3 双门过（structure=1.0、precision=0.909）。见 §10。
 2. ~~**写/读耦合**~~ **已决策（2026-07-24）**：联动 `kc.Enabled`、不引入子开关。落地见 §7、§11。
-3. **延迟**：每次 leader 轮次跑 `runtime.Execute` 全管线，需预算/超时 + 失败回退（§7.1 已含）。
-4. **import 环**：leader 当前不 import `knowledge/retriever`；retriever 仅 import knowledge/compiler/runtime，leader import agents/base —— 应无环，落地时以 `go build` 验证。
-5. **检索 query 质量**：原始 `strInput` 可能含噪声，首版需观察命中质量。
-6. **monitor-live 同步**：第二个 leader 构造点需同步改动。
+3. ~~**延迟**~~ **已解决（2026-07-24）**：每次 leader 轮次跑 `runtime.Execute` 全管线，已加 `context.WithTimeout(ctx, akgRetrieveTimeout=3s)`（`agent_memory.go:initMemoryContext`）限时，失败回退原输入（§7.1 已含）。全管线卡住不再阻塞 leader 主路径。
+4. ~~**import 环**~~ **已验证（2026-07-24）**：leader 经 `WithKnowledgeRetriever(*retriever.Retriever)` 注入，retriever 仅 import knowledge/compiler/runtime；`go build ./internal/agents/leader/...` 通过，无环。
+5. **检索 query 质量**：原始 `strInput` 可能含噪声，首版需观察命中质量（可通过 AKF 指标 `ARES_akg_*` 观测）。
+6. ~~**monitor-live 同步**~~ **已完成（2026-07-24）**：`cmd/monitor-live` 的 `createAgents/createLeaderAgent` 同步接入 `comp.KnowledgeRetriever`。
 7. **recall 偏低（已知限制）**：英文真实样本 `recall_micro=0.38`（规则抽取器对自由文本/小写技术词如 postgres/sqlite/validator/retriever/Phase 2 召回不足），A2 接入后检索召回有限，不影响 1.3 门但影响覆盖面。
 
 ---

@@ -16,7 +16,7 @@ import "strings"
 var akgStopwords = map[string]struct{}{
 	"a": {}, "an": {}, "of": {}, "to": {}, "in": {}, "on": {},
 	"for": {}, "and": {}, "or": {}, "is": {}, "are": {}, "be": {}, "by": {},
-	"with": {}, "at": {}, "as": {}, "it": {}, "this": {}, "that": {}, "the": {},
+	"with": {}, "at": {}, "as": {}, "it": {}, "this": {}, "that": {}, stopwordThe: {},
 	// Chinese fillers.
 	"的": {}, "了": {}, "是": {}, "在": {}, "和": {}, "与": {}, "也": {}, "就": {}, "都": {}, "而": {},
 }
@@ -25,6 +25,12 @@ var akgStopwords = map[string]struct{}{
 // across the validator and its tests (and satisfy goconst).
 const (
 	reasonStopwordEntity = "stopword entity"
+
+	// stopwordThe is the shared literal for the most frequent English
+	// stopword. Declaring it once (instead of repeating the literal across
+	// the stopword maps) keeps goconst quiet without a per-word constant
+	// explosion.
+	stopwordThe = "the"
 )
 
 // ValidateNodeForAKG reports whether a KM node is structurally fit to be

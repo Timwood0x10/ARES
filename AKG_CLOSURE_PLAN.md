@@ -93,20 +93,25 @@
 
 ---
 
-## 3. Phase 3 — 接 A2（leader agent 自动检索，核心闭环）
+## 3. Phase 3 — 接 A2（leader agent 自动检索，核心闭环）✅ 已完成
 
-- **选注入点**：leader agent 的 prompt 构建 / 前置检索链（**非** `production_manager_tasks.go:255` 的 `SearchSimilarTasks`——那是相似任务搜索，语义不符）。确切位置 Phase 3 启动时再 grep 确认（候选：leader agent 的 retrieval/context-build 步骤）。
-- **接线**：在注入点改为/补充调用 `retriever.Retriever`（或 `KnowledgeRuntime.Execute`），带质量门（只把通过 L1/L2 的对象进检索）。
-- **配置开关**：默认关，灰度开启；与 compiler `kc.Enabled` 联动。
-- **防噪声**：检索结果经既有 reducer（`runtime/components.go` 的 token budget + 置信排序），避免低质对象挤占。
-- 测试：e2e 验证 真实对话 → compiler → AKG → leader 检索 → 响应含图贡献。
+- **选注入点**：leader agent 的 prompt 构建 / 前置检索链（**非** `production_manager_tasks.go:255` 的 `SearchSimilarTasks`——那是相似任务搜索，语义不符）。已精确命中 `internal/agents/leader/agent_memory.go:initMemoryContext` → `BuildContext` 之后（覆盖 `Process`/`ProcessStream`），详见 `AKG_PHASE3_REVIEW.md` §2/§7/§11。
+- **接线**：`retriever.Retriever` 在 `wireKnowledgeCompiler`(`kc.Enabled` 分支) 内构造并存入 `comp.KnowledgeRetriever`，经 `createAgents/createLeaderAgent` 参数流入 `cmd/ares` 与 `cmd/monitor-live` 两个生产入口，通过 `leader.WithKnowledgeRetriever` 注入；`BuildContext` 后 `Retrieve(strInput)` 把 `## Agent Knowledge Fabric (AKG) Context` 追加进 `enrichedInput`，失败仅 warn 回退。
+- **配置开关**：随 `kc.Enabled` 联动，无独立子开关；retriever 为 nil 时 leader 跳过检索（fail-safe，行为与改动前一致）。
+- **防噪声**：写时 L1/L2 门已在 `akgBuilder.Build` 过滤；读时 runtime reducer token budget 防挤占。
+- **超时加固（2026-07-24）**：`initMemoryContext` 的 A2 检索以 `context.WithTimeout(ctx, 3s)` 包裹（`agent_memory.go:akgRetrieveTimeout`），避免全管线卡住阻塞 leader 主路径（见 `AKG_PHASE3_REVIEW.md` §8.3）。
+- 测试：e2e 验证 `TestAKGClosedLoopE2E`（retriever 包，生产级 `StoreProvider`+真实 `memorystore` 种子→检索→prompt 含种子知识）证明读侧闭环；leader 注入块由 `go build` + 该 e2e 覆盖依赖。
+- 落地 commit：`0b5e2a13 feat(akg): add A2 leader agent auto-retrieval with knowledge enrichment`。
 
 ---
 
-## 4. Phase 4 — 验证与收尾
+## 4. Phase 4 — 验证与收尾 ✅ 已完成
 
-- 端到端验证闭环；性能/回归测试；在本文档标记各 Phase 状态。
+- **端到端验证闭环**：新增 `internal/knowledge/retriever/retriever_closure_e2e_test.go`（`TestAKGClosedLoopE2E`）——用生产级 `StoreProvider` + 真实 `memorystore` 种子 AKG 对象，构建 `KnowledgeRuntime`+`Retriever`，调 `Retrieve`，断言 `FormatPrompt` 含种子知识。证明"写→读→进 prompt"闭环（即 A2 注入 leader 的内容）真实成立。`go test ./internal/knowledge/retriever/...` 全绿。
+- **性能/回归**：A2 检索以 `akgRetrieveTimeout=3s` 限时（`agent_memory.go`），失败回退不阻断主流程；bootstrap 全量测试（含 `akg_store_test.go` 7 例）覆盖持久化 swap。
+- **文档状态**：本文档各 Phase 已标记 ✅；`AKG_PHASE3_REVIEW.md` 同步 §8 风险状态。
 - **不动**：`retrievalservice`（已 LIVE）、experience 底层、postgres 检索仓库（独立库）。
+- **遗留已知限制**（非阻塞）：规则抽取器 recall 偏低（真实样本 `recall_micro≈0.38`），A2 接入后检索覆盖面有限；抽取器英文实体走 lexicon-free 机制（CamelCase+结构引用+跨轮复现+形状门），残余 FP 极少（automatic/A/C/so/.dylib）。均为已知上限，不卡 1.3 门、不影响主流程。
 
 ---
 

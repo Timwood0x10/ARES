@@ -12,6 +12,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 )
 
+// akgRetrieveTimeout bounds the A2 knowledge-retrieval call so a slow or hung
+// AKF pipeline (runtime.Execute runs the full Plan→Load→Pipeline→Link→Reduce
+// chain) can never stall the leader's main request path. Retrieval is
+// best-effort and fail-safe: on timeout (or any error) the agent proceeds with
+// the un-enriched input.
+const akgRetrieveTimeout = 3 * time.Second
+
 func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (enrichedInput string, sessionID string, taskID string) {
 	if a.memoryManager == nil {
 		return strInput, "", ""
@@ -74,7 +81,12 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	// When the Conversation Compiler is disabled, a.knowledgeRetriever is nil
 	// and this block is skipped entirely.
 	if a.knowledgeRetriever != nil {
-		akgRes, rErr := a.knowledgeRetriever.Retrieve(ctx, retriever.Query{
+		// Bound the retrieval so the full AKF pipeline cannot stall the
+		// leader. The timeout is independent of the caller's ctx: even a
+		// long-lived request ctx must not let retrieval block indefinitely.
+		rctx, cancel := context.WithTimeout(ctx, akgRetrieveTimeout)
+		defer cancel()
+		akgRes, rErr := a.knowledgeRetriever.Retrieve(rctx, retriever.Query{
 			Text:    strInput,
 			Formats: []knowledgecompiler.Format{knowledgecompiler.FormatPrompt},
 		})

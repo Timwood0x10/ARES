@@ -918,7 +918,7 @@ func isASCIILetterRun(s string) bool {
 // does not promote "the", "not", or "ok". New technical vocabulary never needs
 // to be added here.
 var englishStopword = map[string]bool{
-	"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+	stopwordThe: true, "a": true, "an": true, "and": true, "or": true, "but": true,
 	"if": true, "then": true, "else": true, "for": true, "to": true, "of": true,
 	"in": true, "on": true, "at": true, "by": true, "from": true, "with": true,
 	"as": true, "is": true, "are": true, "was": true, "were": true, "be": true,
