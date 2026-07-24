@@ -28,7 +28,8 @@ const extractorNameAKG = "akg"
 //   - confStrong: deliberate human statements (decisions, constraints,
 //     tradeoffs) and explicit spans (quoted terms, code-block languages).
 //   - confMedium: structured extractions (fact triples) and curated terms
-//     (Chinese dictionary / capitalized proper nouns).
+//     (Chinese dictionary / CamelCase identifiers / structural references /
+//     cross-turn recurrence).
 //   - confWeak: heuristic guesses (Chinese noun-phrase suffix runs, open
 //     questions) that are cheap to extract but often noisy.
 const (
@@ -68,9 +69,10 @@ var chineseTermDict = buildChineseTermDict()
 // using rule-based parsing and NER, with zero LLM token cost.
 //
 // The extractor supports both English and Chinese input: English uses
-// capitalized-term and pattern heuristics, while Chinese uses a term
-// dictionary (seeded from the alias table), quoted-span detection, and
-// noun-suffix heuristics.
+// evidence-based signals (CamelCase identifiers, structural references such
+// as file paths and URLs, and cross-turn recurrence) instead of capitalization
+// heuristics, while Chinese uses a term dictionary (seeded from the alias
+// table), quoted-span detection, and noun-suffix heuristics.
 type AKGExtractor struct {
 	pipeline *AKGExtractionPipeline
 }
@@ -147,6 +149,12 @@ func (e *AKGExtractor) Extract(ctx context.Context, messages []SourceMessage) ([
 		return nil, nil, nil
 	}
 
+	// Cross-message recurrence signal (lexicon-free): which tokens recur
+	// across both user and assistant turns. Fed into extractEntities so that
+	// lowercase proper nouns the shape rules miss (windows, python) can still
+	// be promoted by a frequency/role threshold instead of a word list.
+	rec := buildRecurrence(messages)
+
 	var entities []ExtractedEntity
 	var facts []ExtractedFact
 
@@ -183,7 +191,7 @@ func (e *AKGExtractor) Extract(ctx context.Context, messages []SourceMessage) ([
 		}
 
 		// Extract entities from the normalized content.
-		msgEntities := e.extractEntities(normalized, msg.ID)
+		msgEntities := e.extractEntities(normalized, msg.ID, rec)
 		entities = append(entities, msgEntities...)
 
 		// Extract decisions, constraints, tradeoffs, and open questions.
@@ -233,10 +241,11 @@ func extractCodeBlockEntities(content, sourceID string) []ExtractedEntity {
 }
 
 // extractEntities extracts entities from a normalized message.
-// Uses rule-based patterns: code blocks, capitalized terms (English), and
-// Chinese term/quoted/noun-phrase heuristics. The seen set is shared across
-// the English and Chinese passes to avoid duplicate entity names.
-func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, sourceID string) []ExtractedEntity {
+// Uses evidence-based signals: code blocks, English CamelCase identifiers /
+// structural references / cross-turn recurrence (lexicon-free), and Chinese
+// term/quoted/noun-phrase heuristics. The seen set is shared across the
+// English and Chinese passes to avoid duplicate entity names.
+func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, sourceID string, rec *recurrence) []ExtractedEntity {
 	content := normalized.Normalized
 	if content == "" {
 		return nil
@@ -265,35 +274,35 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		if cleaned == "" {
 			continue
 		}
-		// Reject degenerate run-on tokens. When English prose sits adjacent
-		// to CJK text (or code spans) without whitespace, strings.Fields
-		// yields a single token that bleeds across a clause boundary
-		// (e.g. "SearchSimilarTasks). then you test it first"). Such tokens
-		// are not clean proper nouns, so they are dropped: mixed-script
-		// tokens (hasCJK) and tokens containing code/clause punctuation
-		// (non-ASCII identifiers) are both excluded.
-		if hasCJK(cleaned) || !isASCIIIdentifier(cleaned) {
+		// Reject degenerate run-on tokens that bleed across a CJK/code
+		// boundary (e.g. "SearchSimilarTasks). then you test it first").
+		if hasCJK(cleaned) {
 			continue
 		}
-		// English capitalizes the first word of every sentence, so a naive
-		// "capitalized word => entity" heuristic floods the graph with
-		// sentence-initial verbs and common nouns (Found, Suggest, Phase).
-		// A capitalized token is only a plausible knowledge entity when it
-		// carries a stronger signal: an internal CamelCase boundary
-		// (BuildContext, AKGStore, AKGExtractor) or an all-caps acronym
-		// (AKG, CLI). This generalizes across any technical conversation
-		// instead of matching a fixed word list.
-		if !isTechnicalIdentifier(cleaned) {
+		// Evidence-based entity signals (lexicon-free, no vocabulary list):
+		//   1. Structural references: file paths and URLs are unambiguous
+		//      concrete artifacts by their SHAPE (separators, extension,
+		//      scheme) — not by whether a word appears in a dictionary.
+		if isStructuralReference(cleaned) {
+			addEnglishEntity(&entities, seen, cleaned, sourceID)
 			continue
 		}
-		if !seen[cleaned] {
-			seen[cleaned] = true
-			entities = append(entities, ExtractedEntity{
-				Name:       cleaned,
-				Type:       entityTypeConcept,
-				Confidence: confMedium,
-				SourceID:   sourceID,
-			})
+		if !isASCIIIdentifier(cleaned) {
+			continue
+		}
+		//   2. CamelCase identifiers (BuildContext, AKGStore): a universal
+		//      programming convention, not a domain whitelist.
+		if isCamelCase(cleaned) {
+			addEnglishEntity(&entities, seen, cleaned, sourceID)
+			continue
+		}
+		//   3. Recurrence: a token mentioned across BOTH user and assistant
+		//      turns is a shared concept, promoted by a frequency/role
+		//      threshold instead of capitalization. This recovers lowercase
+		//      proper nouns (windows, python) the shape rules miss.
+		if rec != nil && rec.qualifies(cleaned) {
+			addEnglishEntity(&entities, seen, cleaned, sourceID)
+			continue
 		}
 	}
 
@@ -839,16 +848,6 @@ func isASCIIIdentifier(s string) bool {
 	return true
 }
 
-// isTechnicalIdentifier reports whether a cleaned token is a plausible
-// knowledge entity in English/code-mixed text. Bare capitalized words are
-// rejected by the caller; only tokens with an internal CamelCase shape
-// (BuildContext, AKGStore, AKGExtractor) or an all-caps acronym (AKG, CLI)
-// qualify. This generalizes across any technical conversation instead of
-// matching a fixed word list.
-func isTechnicalIdentifier(s string) bool {
-	return isCamelCase(s) || isAllCapsAcronym(s)
-}
-
 // isCamelCase reports whether s is a compound identifier mixing uppercase and
 // lowercase letters with at least two uppercase letters (e.g. BuildContext,
 // AKGStore, AKGExtractor). It requires s to be a pure ASCII-letter identifier.
@@ -871,26 +870,151 @@ func isCamelCase(s string) bool {
 	return upper >= 2 && lower
 }
 
-// isAllCapsAcronym reports whether s is a multi-character acronym of uppercase
-// letters, optionally with digits or underscores (e.g. AKG, CLI, AKG_PHASE3).
-// At least two letters are required so single-letter-plus-digit tokens such as
-// "L3" are not mistaken for acronyms.
-func isAllCapsAcronym(s string) bool {
-	if len(s) < 2 {
+// isStructuralReference reports whether s is a concrete artifact reference by
+// SHAPE alone (lexicon-free): a URL, a file path (contains a separator or a
+// dotfile prefix), or a filename with a 2-4 letter extension (README.md,
+// build.rs, config.toml). No vocabulary list is consulted. A letter must be
+// present so degenerate separators ("/", "~20") are not promoted.
+func isStructuralReference(s string) bool {
+	if s == "" || !hasLetter(s) {
 		return false
 	}
-	alpha := 0
+	if strings.Contains(s, "://") || strings.HasPrefix(s, "http") || strings.HasPrefix(s, "www.") {
+		return true
+	}
+	if strings.Contains(s, "/") || strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
+		return true
+	}
+	if idx := strings.LastIndex(s, "."); idx > 0 && idx < len(s)-1 {
+		ext := s[idx+1:]
+		if len(ext) >= 2 && len(ext) <= 4 && isASCIILetterRun(ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLetter reports whether s contains at least one ASCII letter.
+func hasLetter(s string) bool {
+	return strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+// isASCIILetterRun reports whether s consists solely of ASCII letters.
+func isASCIILetterRun(s string) bool {
+	if s == "" {
+		return false
+	}
 	for _, r := range s {
-		if isASCIILetter(r) {
-			alpha++
-			if !isUpper(r) {
-				return false
-			}
-		} else if !isASCIIDigit(r) && r != '_' {
+		if !isASCIILetter(r) {
 			return false
 		}
 	}
-	return alpha >= 2
+	return true
+}
+
+// englishStopword is a closed set of grammatical function words. It is NOT a
+// domain whitelist: it only filters universal glue words (articles,
+// conjunctions, pronouns, auxiliaries, negations) so the recurrence signal
+// does not promote "the", "not", or "ok". New technical vocabulary never needs
+// to be added here.
+var englishStopword = map[string]bool{
+	"the": true, "a": true, "an": true, "and": true, "or": true, "but": true,
+	"if": true, "then": true, "else": true, "for": true, "to": true, "of": true,
+	"in": true, "on": true, "at": true, "by": true, "from": true, "with": true,
+	"as": true, "is": true, "are": true, "was": true, "were": true, "be": true,
+	"been": true, "being": true, "this": true, "that": true, "these": true,
+	"those": true, "it": true, "its": true, "we": true, "you": true, "they": true,
+	"he": true, "she": true, "i": true, "me": true, "my": true, "your": true,
+	"our": true, "their": true, "not": true, "no": true, "yes": true, "do": true,
+	"does": true, "did": true, "can": true, "will": true, "would": true,
+	"should": true, "could": true, "may": true, "might": true, "must": true,
+	"have": true, "has": true, "had": true, "get": true, "got": true, "see": true,
+	"saw": true, "use": true, "used": true, "using": true, "via": true, "per": true,
+	"into": true, "out": true, "up": true, "down": true, "about": true, "so": true,
+	"all": true, "any": true, "each": true, "more": true, "most": true, "other": true,
+	"some": true, "such": true, "only": true, "own": true, "same": true, "than": true,
+	"too": true, "very": true, "just": true, "also": true, "what": true, "which": true,
+	"who": true, "when": true, "where": true, "why": true, "how": true,
+}
+
+// recurrence tracks cross-message token frequency and the roles that mention
+// each token. It powers the lexicon-free recurrence entity signal: a token
+// recurring across both user and assistant turns is promoted as a shared
+// concept, using a threshold rather than a word list.
+type recurrence struct {
+	freq  map[string]int
+	roles map[string]map[string]bool
+}
+
+const (
+	// recurrenceMinCount is the minimum total mentions for a token to qualify.
+	recurrenceMinCount = 3
+	// recurrenceMinRoles is the minimum distinct roles (e.g. user + assistant).
+	recurrenceMinRoles = 2
+)
+
+// buildRecurrence scans all messages and tallies lowercased token frequency
+// and the set of roles mentioning each token. Pure glue words (englishStopword)
+// are skipped so they never accumulate as "concepts".
+func buildRecurrence(messages []SourceMessage) *recurrence {
+	r := &recurrence{freq: make(map[string]int), roles: make(map[string]map[string]bool)}
+	for _, msg := range messages {
+		if msg.Content == "" {
+			continue
+		}
+		for _, w := range strings.Fields(msg.Content) {
+			tok := strings.ToLower(strings.Trim(w, ".,;:!?()[]{}'\""))
+			if tok == "" || len(tok) < 2 || englishStopword[tok] {
+				continue
+			}
+			r.freq[tok]++
+			if r.roles[tok] == nil {
+				r.roles[tok] = make(map[string]bool)
+			}
+			r.roles[tok][msg.Role] = true
+		}
+	}
+	return r
+}
+
+// qualifies reports whether token (any case) recurs often enough and across
+// enough distinct roles to be treated as a shared concept. A lexicon-free
+// shape gate (hasStructuralMark) restricts promotion to identifier-shaped
+// tokens, so pure English words — lowercase (windows, build) or uppercase
+// (DLL, OK) — are never promoted without a dictionary. This is the deliberate
+// difference from the removed all-caps rule.
+func (r *recurrence) qualifies(token string) bool {
+	key := strings.ToLower(token)
+	if r.freq[key] < recurrenceMinCount || len(r.roles[key]) < recurrenceMinRoles {
+		return false
+	}
+	return hasStructuralMark(token)
+}
+
+// hasStructuralMark reports whether s carries an identifier shape: at least one
+// letter plus a digit, an underscore, a path separator, or a CamelCase
+// boundary. Pure lowercase/uppercase English words lack any of these marks.
+func hasStructuralMark(s string) bool {
+	if !hasLetter(s) {
+		return false
+	}
+	return strings.ContainsAny(s, "0123456789_/") || isCamelCase(s)
+}
+
+// addEnglishEntity appends a confMedium English concept entity when it has not
+// been seen in this pass. confMedium keeps it above the L2 MinConfidence (0.6)
+// selector so it survives into the shared AKG store and the eval gate.
+func addEnglishEntity(entities *[]ExtractedEntity, seen map[string]bool, name, sourceID string) {
+	if seen[name] {
+		return
+	}
+	seen[name] = true
+	*entities = append(*entities, ExtractedEntity{
+		Name:       name,
+		Type:       entityTypeConcept,
+		Confidence: confMedium,
+		SourceID:   sourceID,
+	})
 }
 
 // isCJK reports whether r is a CJK unified ideograph.

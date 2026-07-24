@@ -8,6 +8,8 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	knowledgecompiler "github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 )
 
 func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (enrichedInput string, sessionID string, taskID string) {
@@ -64,6 +66,25 @@ func (a *leaderAgent) initMemoryContext(ctx context.Context, strInput string) (e
 	if err != nil {
 		log.Warn("memory operation failed, proceeding without", "operation", "BuildContext", "error", err)
 		enrichedInput = strInput
+	}
+
+	// A2: enrich the prompt with auto-retrieved Agent Knowledge Fabric (AKG)
+	// context. Best-effort and fail-safe — any error degenerates to the
+	// un-enriched input so the agent never blocks on knowledge retrieval.
+	// When the Conversation Compiler is disabled, a.knowledgeRetriever is nil
+	// and this block is skipped entirely.
+	if a.knowledgeRetriever != nil {
+		akgRes, rErr := a.knowledgeRetriever.Retrieve(ctx, retriever.Query{
+			Text:    strInput,
+			Formats: []knowledgecompiler.Format{knowledgecompiler.FormatPrompt},
+		})
+		if rErr != nil {
+			log.Warn("AKG retrieval failed, proceeding without", "error", rErr)
+		} else if akgRes != nil && akgRes.Context != nil {
+			if prompt, ok := akgRes.Context.Formats[knowledgecompiler.FormatPrompt]; ok && prompt != "" {
+				enrichedInput = enrichedInput + "\n\n## Agent Knowledge Fabric (AKG) Context\n" + prompt
+			}
+		}
 	}
 
 	if sessionID != "" {

@@ -16,6 +16,7 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	llm "github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/llm/output"
 )
@@ -31,8 +32,9 @@ func createAgents(
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
+	akgRetriever *retriever.Retriever,
 ) (leader.Agent, []sub.Agent, error) {
-	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc)
+	leaderAgent, err := createLeaderAgent(cfg, llmAdapter, chatClient, toolBinder, memMgr, store, feedbackSvc, strategySrc, akgRetriever)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create leader: %w", err)
 	}
@@ -49,6 +51,7 @@ func createLeaderAgent(
 	store ares_events.EventStore,
 	feedbackSvc *experience.FeedbackService,
 	strategySrc agents.StrategySource,
+	akgRetriever *retriever.Retriever,
 ) (leader.Agent, error) {
 	profileParser := leader.NewProfileParser(
 		llmAdapter,
@@ -122,6 +125,7 @@ func createLeaderAgent(
 		leader.WithEventStore(store),
 		leader.WithFeedbackService(feedbackSvc),
 		leader.WithStrategySource(strategySrc),
+		leader.WithKnowledgeRetriever(akgRetriever),
 	)
 }
 

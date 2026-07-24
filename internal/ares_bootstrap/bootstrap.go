@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/evolution/deployment"
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
@@ -52,6 +53,12 @@ type Components struct {
 	// single shared pool instead of an isolated per-build store. It is nil
 	// when the compiler is disabled, preserving prior behavior.
 	KnowledgeStore knowledge.KnowledgeStore
+	// KnowledgeRetriever drives A2: leader-agent auto-retrieval from the
+	// shared AKG pool. It is nil unless the Conversation Compiler is enabled
+	// (wireKnowledgeCompiler), so the read path stays coupled to the compiler
+	// write path — disabling the compiler leaves both off, preserving prior
+	// behavior. The leader agent treats a nil retriever as "no enrichment".
+	KnowledgeRetriever *retriever.Retriever
 	// KnowledgeCompiler is the opt-in Conversation Compiler pipeline (design:
 	// CONVERSATION_COMPILER.md). It is nil when cfg.KnowledgeCompiler.Enabled is
 	// false (the default), preserving prior behavior. The pipeline is zero-LLM

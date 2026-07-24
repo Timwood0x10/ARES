@@ -11,7 +11,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	knowledgecompiler "github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider/store"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
@@ -119,6 +121,16 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 		} else if err := comp.KnowledgeRuntime.RegisterProvider(storeProv); err != nil {
 			log.WarnContext(ctx, "bootstrap: knowledge compiler store provider not registered", "error", err)
 		}
+
+		// A2: leader-agent auto-retrieval from the shared AKG pool. The
+		// retriever reuses the SAME KnowledgeRuntime (now backed by the
+		// compiler's StoreProvider) and AKG's default compiler to turn the
+		// user's prompt into LLM-ready knowledge context. It is stored on
+		// Components and injected into the leader agent (nil-safe: a nil
+		// retriever means "no enrichment"). This keeps the read path coupled
+		// to the compiler write path — disabling the compiler leaves both off.
+		akfCompiler := knowledgecompiler.NewDefaultCompiler()
+		comp.KnowledgeRetriever = retriever.New(comp.KnowledgeRuntime, akfCompiler)
 	}
 
 	// TODO(tech-debt): vector-backed GraphProvider for the AKF knowledge graph.

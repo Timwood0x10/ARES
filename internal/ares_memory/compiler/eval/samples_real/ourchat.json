@@ -85,34 +85,34 @@
   ],
   "candidates": [
     {
-      "id": "e-m2-cli",
+      "id": "e-m3-plan-rules-code-rules-md",
       "type": "entity",
       "attributes": {
-        "name": "CLI"
+        "name": "plan/rules/code_rules.md"
       },
       "confidence": 0.7,
-      "source": "m2"
+      "source": "m3"
     },
     {
-      "id": "e-m4-akg",
+      "id": "e-m4-memorystore-New",
       "type": "entity",
       "attributes": {
-        "name": "AKG"
-      },
-      "confidence": 0.7,
-      "source": "m4"
-    },
-    {
-      "id": "e-m4-di",
-      "type": "entity",
-      "attributes": {
-        "name": "DI"
+        "name": "memorystore.New"
       },
       "confidence": 0.7,
       "source": "m4"
     },
     {
-      "id": "e-m4-akgstore",
+      "id": "e-m4-postgres-sqlite",
+      "type": "entity",
+      "attributes": {
+        "name": "postgres/sqlite"
+      },
+      "confidence": 0.7,
+      "source": "m4"
+    },
+    {
+      "id": "e-m4-AKGStore",
       "type": "entity",
       "attributes": {
         "name": "AKGStore"
@@ -121,7 +121,7 @@
       "source": "m4"
     },
     {
-      "id": "e-m4-akgsqlitepath",
+      "id": "e-m4-AKGSQLitePath",
       "type": "entity",
       "attributes": {
         "name": "AKGSQLitePath"
@@ -130,7 +130,7 @@
       "source": "m4"
     },
     {
-      "id": "e-m4-newsharedakgstore",
+      "id": "e-m4-newSharedAKGStore",
       "type": "entity",
       "attributes": {
         "name": "newSharedAKGStore"
@@ -139,7 +139,7 @@
       "source": "m4"
     },
     {
-      "id": "e-m4-newpostgresakgstore",
+      "id": "e-m4-newPostgresAKGStore",
       "type": "entity",
       "attributes": {
         "name": "newPostgresAKGStore"
@@ -148,7 +148,7 @@
       "source": "m4"
     },
     {
-      "id": "e-m4-newsqliteakgstore",
+      "id": "e-m4-newSQLiteAKGStore",
       "type": "entity",
       "attributes": {
         "name": "newSQLiteAKGStore"
@@ -157,7 +157,16 @@
       "source": "m4"
     },
     {
-      "id": "e-m5-searchsimilartasks",
+      "id": "e-m5-retrieval-context-build",
+      "type": "entity",
+      "attributes": {
+        "name": "retrieval/context-build"
+      },
+      "confidence": 0.7,
+      "source": "m5"
+    },
+    {
+      "id": "e-m5-SearchSimilarTasks",
       "type": "entity",
       "attributes": {
         "name": "SearchSimilarTasks"
@@ -166,7 +175,43 @@
       "source": "m5"
     },
     {
-      "id": "e-m6-buildcontext",
+      "id": "e-m5-production-manager-tasks-go",
+      "type": "entity",
+      "attributes": {
+        "name": "production_manager_tasks.go"
+      },
+      "confidence": 0.7,
+      "source": "m5"
+    },
+    {
+      "id": "e-m6-ready-for-phase3",
+      "type": "entity",
+      "attributes": {
+        "name": "ready_for_phase3"
+      },
+      "confidence": 0.7,
+      "source": "m6"
+    },
+    {
+      "id": "e-m6-AKG-PHASE3-REVIEW-md",
+      "type": "entity",
+      "attributes": {
+        "name": "AKG_PHASE3_REVIEW.md"
+      },
+      "confidence": 0.7,
+      "source": "m6"
+    },
+    {
+      "id": "e-m6-internal-agents-leader-agent-memory-go",
+      "type": "entity",
+      "attributes": {
+        "name": "internal/agents/leader/agent_memory.go"
+      },
+      "confidence": 0.7,
+      "source": "m6"
+    },
+    {
+      "id": "e-m6-BuildContext",
       "type": "entity",
       "attributes": {
         "name": "BuildContext"
@@ -175,7 +220,61 @@
       "source": "m6"
     },
     {
-      "id": "e-m8-storeprovider",
+      "id": "e-m6-agent-go",
+      "type": "entity",
+      "attributes": {
+        "name": "agent.go"
+      },
+      "confidence": 0.7,
+      "source": "m6"
+    },
+    {
+      "id": "e-m6-retriever-New",
+      "type": "entity",
+      "attributes": {
+        "name": "retriever.New"
+      },
+      "confidence": 0.7,
+      "source": "m6"
+    },
+    {
+      "id": "e-m8-cmd-akg-eval",
+      "type": "entity",
+      "attributes": {
+        "name": "/cmd/akg-eval"
+      },
+      "confidence": 0.7,
+      "source": "m8"
+    },
+    {
+      "id": "e-m8-internal-ares-memory-compiler-eval-samples",
+      "type": "entity",
+      "attributes": {
+        "name": "internal/ares_memory/compiler/eval/samples"
+      },
+      "confidence": 0.7,
+      "source": "m8"
+    },
+    {
+      "id": "e-m8-conv-clean-json",
+      "type": "entity",
+      "attributes": {
+        "name": "conv_clean.json"
+      },
+      "confidence": 0.7,
+      "source": "m8"
+    },
+    {
+      "id": "e-m8-write-read",
+      "type": "entity",
+      "attributes": {
+        "name": "write/read"
+      },
+      "confidence": 0.7,
+      "source": "m8"
+    },
+    {
+      "id": "e-m8-StoreProvider",
       "type": "entity",
       "attributes": {
         "name": "StoreProvider"
@@ -184,7 +283,7 @@
       "source": "m8"
     },
     {
-      "id": "e-m10-loaddir",
+      "id": "e-m10-LoadDir",
       "type": "entity",
       "attributes": {
         "name": "LoadDir"
@@ -193,7 +292,25 @@
       "source": "m10"
     },
     {
-      "id": "e-m12-entity-n4--the--with-confidence-0",
+      "id": "e-m10-noisy-conv-noisy-json",
+      "type": "entity",
+      "attributes": {
+        "name": "noisy/conv_noisy.json"
+      },
+      "confidence": 0.7,
+      "source": "m10"
+    },
+    {
+      "id": "e-m10-L1",
+      "type": "entity",
+      "attributes": {
+        "name": "L1"
+      },
+      "confidence": 0.7,
+      "source": "m10"
+    },
+    {
+      "id": "e-m12-Entity-n4--the--with-confidence-0",
       "type": "constraint",
       "attributes": {
         "name": "Entity n4 'the' with confidence 0",
@@ -203,7 +320,25 @@
       "source": "m12"
     },
     {
-      "id": "e-m14-nodeentity",
+      "id": "e-m14-empty-key-stopword",
+      "type": "entity",
+      "attributes": {
+        "name": "empty-key/stopword"
+      },
+      "confidence": 0.7,
+      "source": "m14"
+    },
+    {
+      "id": "e-m14-validator-go",
+      "type": "entity",
+      "attributes": {
+        "name": "validator.go"
+      },
+      "confidence": 0.7,
+      "source": "m14"
+    },
+    {
+      "id": "e-m14-NodeEntity",
       "type": "entity",
       "attributes": {
         "name": "NodeEntity"
@@ -212,7 +347,7 @@
       "source": "m14"
     },
     {
-      "id": "e-m14-reasonstopwordentity",
+      "id": "e-m14-reasonStopwordEntity",
       "type": "entity",
       "attributes": {
         "name": "reasonStopwordEntity"
@@ -221,7 +356,7 @@
       "source": "m14"
     },
     {
-      "id": "e-m16-sourcemessage",
+      "id": "e-m16-SourceMessage",
       "type": "entity",
       "attributes": {
         "name": "SourceMessage"
@@ -230,7 +365,16 @@
       "source": "m16"
     },
     {
-      "id": "e-m19-hascjk",
+      "id": "e-m19-dictionary-suffix",
+      "type": "entity",
+      "attributes": {
+        "name": "dictionary/suffix"
+      },
+      "confidence": 0.7,
+      "source": "m19"
+    },
+    {
+      "id": "e-m19-hasCJK",
       "type": "entity",
       "attributes": {
         "name": "hasCJK"
@@ -239,7 +383,7 @@
       "source": "m19"
     },
     {
-      "id": "e-m19-isasciiidentifier",
+      "id": "e-m19-isASCIIIdentifier",
       "type": "entity",
       "attributes": {
         "name": "isASCIIIdentifier"
@@ -248,68 +392,93 @@
       "source": "m19"
     },
     {
-      "id": "e-m19-akgextractor",
+      "id": "e-m19-build-vet-lint-test",
+      "type": "entity",
+      "attributes": {
+        "name": "build/vet/lint/test"
+      },
+      "confidence": 0.7,
+      "source": "m19"
+    },
+    {
+      "id": "e-m19-conversations-ourchat-json",
+      "type": "entity",
+      "attributes": {
+        "name": "conversations/ourchat.json"
+      },
+      "confidence": 0.7,
+      "source": "m19"
+    },
+    {
+      "id": "e-m19-gen-real-go",
+      "type": "entity",
+      "attributes": {
+        "name": "gen_real.go"
+      },
+      "confidence": 0.7,
+      "source": "m19"
+    },
+    {
+      "id": "e-m19-AKGExtractor",
       "type": "entity",
       "attributes": {
         "name": "AKGExtractor"
       },
       "confidence": 0.7,
       "source": "m19"
+    },
+    {
+      "id": "e-m19-samples-real-ourchat-json",
+      "type": "entity",
+      "attributes": {
+        "name": "samples_real/ourchat.json"
+      },
+      "confidence": 0.7,
+      "source": "m19"
     }
   ],
   "gold": {
-    "facts": [
-      "Phase 2 swaps memorystore with postgres or sqlite",
-      "AKG uses postgres",
-      "AKG uses sqlite",
-      "AKGExtractor extracts entities from messages",
-      "akg-eval evaluates the quality gate",
-      "Phase 3 requires a real sample hard gate",
-      "leader agent builds context via BuildContext",
-      "LoadDir is non-recursive",
-      "validator rejects stopword entities",
-      "extractor run-on is fixed by isASCIIIdentifier"
-    ],
     "entities": [
-      "AKG",
-      "Phase 2",
-      "Phase 3",
-      "postgres",
-      "sqlite",
-      "memorystore",
-      "LoadDir",
-      "validator",
-      "AKGExtractor",
+      "plan/rules/code_rules.md",
+      "memorystore.New",
+      "postgres/sqlite",
       "AKGStore",
       "AKGSQLitePath",
-      "SourceMessage",
-      "BuildContext",
-      "conversation compiler",
-      "retriever",
-      "leader agent",
-      "CLI",
-      "Prometheus",
-      "ASCII",
-      "CJK",
-      "extractor",
-      "run-on",
-      "1.3",
-      "corpus",
-      "code_rules",
-      "DI",
-      "StoreProvider",
+      "newSharedAKGStore",
+      "newPostgresAKGStore",
+      "newSQLiteAKGStore",
+      "retrieval/context-build",
       "SearchSimilarTasks",
+      "production_manager_tasks.go",
+      "ready_for_phase3",
+      "AKG_PHASE3_REVIEW.md",
+      "internal/agents/leader/agent_memory.go",
+      "BuildContext",
+      "agent.go",
+      "retriever.New",
+      "/cmd/akg-eval",
+      "internal/ares_memory/compiler/eval/samples",
+      "conv_clean.json",
+      "write/read",
+      "StoreProvider",
+      "LoadDir",
+      "noisy/conv_noisy.json",
+      "L1",
+      "empty-key/stopword",
+      "validator.go",
+      "NodeEntity",
       "reasonStopwordEntity",
+      "SourceMessage",
+      "dictionary/suffix",
       "hasCJK",
       "isASCIIIdentifier",
-      "newPostgresAKGStore",
-      "newSharedAKGStore",
-      "newSQLiteAKGStore",
-      "NodeEntity"
+      "build/vet/lint/test",
+      "conversations/ourchat.json",
+      "gen_real.go",
+      "AKGExtractor",
+      "samples_real/ourchat.json"
     ],
-    "references": [
-      "AKG_PHASE3_REVIEW.md",
-      "AKG_CLOSURE_PLAN.md"
-    ]
+    "facts": [],
+    "references": []
   }
 }

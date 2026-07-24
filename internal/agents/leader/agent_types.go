@@ -14,6 +14,7 @@ import (
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -82,25 +83,36 @@ func WithFeedbackService(svc *experience.FeedbackService) LeaderOption {
 	return func(a *leaderAgent) { a.feedbackSvc = svc }
 }
 
+// WithKnowledgeRetriever injects the A2 AKG retriever so the leader agent can
+// enrich its prompt with auto-retrieved knowledge-graph context. A nil
+// retriever is a no-op (the agent proceeds without AKG enrichment), which is
+// the default when the Conversation Compiler is disabled.
+func WithKnowledgeRetriever(ret *retriever.Retriever) LeaderOption {
+	return func(a *leaderAgent) { a.knowledgeRetriever = ret }
+}
+
 // leaderAgent implements the Leader Agent.
 type leaderAgent struct {
-	mu             sync.RWMutex
-	id             string
-	agentType      models.AgentType
-	status         models.AgentStatus
-	config         *LeaderAgentConfig
-	parser         ProfileParser
-	planner        TaskPlanner
-	dispatcher     TaskDispatcher
-	aggregator     ResultAggregator
-	messageQueue   *ahp.MessageQueue
-	heartbeatMon   *ahp.HeartbeatMonitor
-	memoryManager  memory.MemoryManager
-	feedbackSvc    *experience.FeedbackService
-	sessionID      string
-	checkpoint     *CheckpointRepository
-	eventStore     ares_events.EventStore
-	ares_callbacks ares_callbacks.Emitter
+	mu            sync.RWMutex
+	id            string
+	agentType     models.AgentType
+	status        models.AgentStatus
+	config        *LeaderAgentConfig
+	parser        ProfileParser
+	planner       TaskPlanner
+	dispatcher    TaskDispatcher
+	aggregator    ResultAggregator
+	messageQueue  *ahp.MessageQueue
+	heartbeatMon  *ahp.HeartbeatMonitor
+	memoryManager memory.MemoryManager
+	feedbackSvc   *experience.FeedbackService
+	// knowledgeRetriever drives A2: auto-retrieval of AKG context for prompt
+	// enrichment. Nil when the Conversation Compiler is disabled.
+	knowledgeRetriever *retriever.Retriever
+	sessionID          string
+	checkpoint         *CheckpointRepository
+	eventStore         ares_events.EventStore
+	ares_callbacks     ares_callbacks.Emitter
 
 	lastTaskID          string
 	lastCompletedTaskID string

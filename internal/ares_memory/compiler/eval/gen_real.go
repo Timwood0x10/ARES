@@ -30,10 +30,9 @@ type convInput struct {
 }
 
 func slug(s string) string {
-	s = strings.ToLower(s)
 	var b strings.Builder
 	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 		} else if r >= 0x4E00 && r <= 0x9FFF {
 			b.WriteRune(r)
