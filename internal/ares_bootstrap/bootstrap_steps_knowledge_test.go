@@ -17,7 +17,8 @@ func TestWireKnowledgeCompilerDisabled(t *testing.T) {
 	comp := &Components{}
 	cfg := &ares_config.Config{} // Enabled defaults to false
 
-	wireKnowledgeCompiler(context.Background(), cfg, comp)
+	var cleanups []func()
+	wireKnowledgeCompiler(context.Background(), cfg, comp, &cleanups)
 
 	assert.Nil(t, comp.KnowledgeCompiler, "disabled compiler must not wire")
 }
@@ -25,8 +26,9 @@ func TestWireKnowledgeCompilerDisabled(t *testing.T) {
 // TestWireKnowledgeCompilerNilCfg verifies the nil-cfg guard does not panic.
 func TestWireKnowledgeCompilerNilCfg(t *testing.T) {
 	comp := &Components{}
+	var cleanups []func()
 	assert.NotPanics(t, func() {
-		wireKnowledgeCompiler(context.Background(), nil, comp)
+		wireKnowledgeCompiler(context.Background(), nil, comp, &cleanups)
 	})
 	assert.Nil(t, comp.KnowledgeCompiler)
 }
@@ -51,7 +53,8 @@ func TestWireKnowledgeCompilerEnabled(t *testing.T) {
 		},
 	}
 
-	wireKnowledgeCompiler(context.Background(), cfg, comp)
+	var cleanups []func()
+	wireKnowledgeCompiler(context.Background(), cfg, comp, &cleanups)
 
 	require.NotNil(t, comp.KnowledgeCompiler, "enabled compiler must wire")
 	assert.NotNil(t, comp.KnowledgeCompiler.Pipeline, "Pipeline must be wired")
@@ -110,7 +113,8 @@ func TestWireKnowledgeCompilerSharedStoreAndPipeline(t *testing.T) {
 		},
 	}
 
-	wireKnowledgeCompiler(context.Background(), cfg, comp)
+	var cleanups []func()
+	wireKnowledgeCompiler(context.Background(), cfg, comp, &cleanups)
 
 	require.NotNil(t, comp.KnowledgeCompiler, "enabled compiler must wire")
 	require.NotNil(t, comp.KnowledgeStore, "Phase 2: a shared KnowledgeStore must be created on Components")

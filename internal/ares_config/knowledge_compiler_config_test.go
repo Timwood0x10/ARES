@@ -35,6 +35,12 @@ func TestKnowledgeCompilerDefaults(t *testing.T) {
 	if kc.Threshold != 0.7 {
 		t.Errorf("Threshold default = %v, want 0.7", kc.Threshold)
 	}
+	if kc.AKGStore != AKGStoreAuto {
+		t.Errorf("AKGStore default = %q, want %q", kc.AKGStore, AKGStoreAuto)
+	}
+	if kc.AKGSQLitePath != "data/akg.db" {
+		t.Errorf("AKGSQLitePath default = %q, want %q", kc.AKGSQLitePath, "data/akg.db")
+	}
 	if kc.Enabled {
 		t.Error("Enabled default = true, want false (opt-in)")
 	}
@@ -88,6 +94,26 @@ func TestValidateKnowledgeCompilerEnabled(t *testing.T) {
 		{name: "akg_max_facts negative", mutate: func(kc *KnowledgeCompilerConfig) { kc.AKGMaxFacts = -5 }, wantErr: true},
 		{name: "window_size negative", mutate: func(kc *KnowledgeCompilerConfig) { kc.WindowSize = -1 }, wantErr: true},
 		{name: "zero max_nodes allowed", mutate: func(kc *KnowledgeCompilerConfig) { kc.MaxNodes = 0 }, wantErr: false},
+		{name: "akg_store empty allowed", mutate: func(kc *KnowledgeCompilerConfig) { kc.AKGStore = "" }, wantErr: false},
+		{name: "akg_store auto", mutate: func(kc *KnowledgeCompilerConfig) { kc.AKGStore = AKGStoreAuto }, wantErr: false},
+		{name: "akg_store memory", mutate: func(kc *KnowledgeCompilerConfig) { kc.AKGStore = AKGStoreMemory }, wantErr: false},
+		{name: "akg_store unknown rejected", mutate: func(kc *KnowledgeCompilerConfig) { kc.AKGStore = "redis" }, wantErr: true},
+		{
+			name: "akg_store sqlite requires path",
+			mutate: func(kc *KnowledgeCompilerConfig) {
+				kc.AKGStore = AKGStoreSQLite
+				kc.AKGSQLitePath = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "akg_store sqlite with path",
+			mutate: func(kc *KnowledgeCompilerConfig) {
+				kc.AKGStore = AKGStoreSQLite
+				kc.AKGSQLitePath = "data/akg.db"
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -118,4 +144,52 @@ func TestValidateKnowledgeCompilerViaValidate(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate() expected error for invalid knowledge_compiler threshold, got nil")
 	}
+}
+
+// TestValidateKnowledgeCompilerPostgresRequiresStorage confirms the explicit
+// "postgres" backend is rejected unless the global storage is a configured
+// PostgreSQL deployment. This fails fast rather than at runtime when the
+// wiring opens an unconfigured database (plan Phase 2 hard requirement).
+func TestValidateKnowledgeCompilerPostgresRequiresStorage(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			KnowledgeCompiler: KnowledgeCompilerConfig{
+				Enabled:          true,
+				Threshold:        0.7,
+				MinConfidence:    0.3,
+				AKGMinConfidence: 0.4,
+				DistillMinScore:  0.4,
+				MaxNodes:         500,
+				PromptMaxTokens:  8000,
+				AKGMaxFacts:      200,
+				WindowSize:       128000,
+				AKGStore:         AKGStorePostgres,
+				AKGSQLitePath:    "data/akg.db",
+			},
+		}
+	}
+
+	t.Run("storage not postgres", func(t *testing.T) {
+		cfg := base()
+		cfg.Storage = StorageConfig{Enabled: true, Type: "memory", Host: "db", Port: 5432, Database: "ares"}
+		if err := cfg.validateKnowledgeCompiler(); err == nil {
+			t.Error("expected error when akg_store=postgres but storage.type != postgres")
+		}
+	})
+
+	t.Run("storage disabled", func(t *testing.T) {
+		cfg := base()
+		cfg.Storage = StorageConfig{Enabled: false, Type: "postgres"}
+		if err := cfg.validateKnowledgeCompiler(); err == nil {
+			t.Error("expected error when akg_store=postgres but storage.enabled=false")
+		}
+	})
+
+	t.Run("storage ready", func(t *testing.T) {
+		cfg := base()
+		cfg.Storage = StorageConfig{Enabled: true, Type: "postgres", Host: "db", Port: 5432, Database: "ares"}
+		if err := cfg.validateKnowledgeCompiler(); err != nil {
+			t.Errorf("expected valid when akg_store=postgres and storage ready, got %v", err)
+		}
+	})
 }

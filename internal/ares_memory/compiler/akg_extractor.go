@@ -265,17 +265,35 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		if cleaned == "" {
 			continue
 		}
-		// Heuristic: capitalized multi-char words are potential entities.
-		if len(cleaned) > 2 && isCapitalized(cleaned) && !isCommonWord(cleaned) {
-			if !seen[cleaned] {
-				seen[cleaned] = true
-				entities = append(entities, ExtractedEntity{
-					Name:       cleaned,
-					Type:       entityTypeConcept,
-					Confidence: confMedium,
-					SourceID:   sourceID,
-				})
-			}
+		// Reject degenerate run-on tokens. When English prose sits adjacent
+		// to CJK text (or code spans) without whitespace, strings.Fields
+		// yields a single token that bleeds across a clause boundary
+		// (e.g. "SearchSimilarTasks). then you test it first"). Such tokens
+		// are not clean proper nouns, so they are dropped: mixed-script
+		// tokens (hasCJK) and tokens containing code/clause punctuation
+		// (non-ASCII identifiers) are both excluded.
+		if hasCJK(cleaned) || !isASCIIIdentifier(cleaned) {
+			continue
+		}
+		// English capitalizes the first word of every sentence, so a naive
+		// "capitalized word => entity" heuristic floods the graph with
+		// sentence-initial verbs and common nouns (Found, Suggest, Phase).
+		// A capitalized token is only a plausible knowledge entity when it
+		// carries a stronger signal: an internal CamelCase boundary
+		// (BuildContext, AKGStore, AKGExtractor) or an all-caps acronym
+		// (AKG, CLI). This generalizes across any technical conversation
+		// instead of matching a fixed word list.
+		if !isTechnicalIdentifier(cleaned) {
+			continue
+		}
+		if !seen[cleaned] {
+			seen[cleaned] = true
+			entities = append(entities, ExtractedEntity{
+				Name:       cleaned,
+				Type:       entityTypeConcept,
+				Confidence: confMedium,
+				SourceID:   sourceID,
+			})
 		}
 	}
 
@@ -789,13 +807,9 @@ func trimToClauseBoundary(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// isCapitalized returns true if the string starts with an uppercase letter.
-func isCapitalized(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	r := []rune(s)
-	return r[0] >= 'A' && r[0] <= 'Z'
+// isUpper reports whether r is an ASCII uppercase letter.
+func isUpper(r rune) bool {
+	return r >= 'A' && r <= 'Z'
 }
 
 // isASCIIDigit reports whether r is an ASCII digit (0-9).
@@ -806,6 +820,77 @@ func isASCIIDigit(r rune) bool {
 // isASCIILetter reports whether r is an ASCII letter (a-z or A-Z).
 func isASCIILetter(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+// isASCIIIdentifier reports whether s consists solely of ASCII letters,
+// digits, and the connector runes '.', '_', '-'. This excludes tokens that
+// bleed into CJK text or contain clause punctuation / code-call brackets
+// (e.g. "NewAKGExtractor().Extract"), which are degenerate run-on entities
+// rather than clean knowledge nouns.
+func isASCIIIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !isASCIILetter(r) && !isASCIIDigit(r) && r != '.' && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// isTechnicalIdentifier reports whether a cleaned token is a plausible
+// knowledge entity in English/code-mixed text. Bare capitalized words are
+// rejected by the caller; only tokens with an internal CamelCase shape
+// (BuildContext, AKGStore, AKGExtractor) or an all-caps acronym (AKG, CLI)
+// qualify. This generalizes across any technical conversation instead of
+// matching a fixed word list.
+func isTechnicalIdentifier(s string) bool {
+	return isCamelCase(s) || isAllCapsAcronym(s)
+}
+
+// isCamelCase reports whether s is a compound identifier mixing uppercase and
+// lowercase letters with at least two uppercase letters (e.g. BuildContext,
+// AKGStore, AKGExtractor). It requires s to be a pure ASCII-letter identifier.
+func isCamelCase(s string) bool {
+	if !isASCIIIdentifier(s) {
+		return false
+	}
+	upper := 0
+	lower := false
+	for _, r := range s {
+		if !isASCIILetter(r) {
+			return false
+		}
+		if isUpper(r) {
+			upper++
+		} else {
+			lower = true
+		}
+	}
+	return upper >= 2 && lower
+}
+
+// isAllCapsAcronym reports whether s is a multi-character acronym of uppercase
+// letters, optionally with digits or underscores (e.g. AKG, CLI, AKG_PHASE3).
+// At least two letters are required so single-letter-plus-digit tokens such as
+// "L3" are not mistaken for acronyms.
+func isAllCapsAcronym(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	alpha := 0
+	for _, r := range s {
+		if isASCIILetter(r) {
+			alpha++
+			if !isUpper(r) {
+				return false
+			}
+		} else if !isASCIIDigit(r) && r != '_' {
+			return false
+		}
+	}
+	return alpha >= 2
 }
 
 // isCJK reports whether r is a CJK unified ideograph.
@@ -855,33 +940,6 @@ func buildChineseTermDict() []string {
 		add(t)
 	}
 	return terms
-}
-
-// isCommonWord returns true for common English words that should not be entities.
-func isCommonWord(s string) bool {
-	common := map[string]bool{
-		"The": true, "This": true, "That": true, "These": true,
-		"Those": true, "What": true, "When": true, "Where": true,
-		"Why": true, "How": true, "Which": true, "Who": true,
-		"Whom": true, "Whose": true, "Not": true, "And": true,
-		"Or": true, "But": true, "If": true, "Then": true,
-		"Else": true, "For": true, "With": true, "Without": true,
-		"From": true, "To": true, "In": true, "On": true,
-		"At": true, "By": true, "About": true, "Into": true,
-		"Through": true, "During": true, "Before": true, "After": true,
-		"Above": true, "Below": true, "Between": true, "Under": true,
-		"Again": true, "Further": true, "Once": true, "Here": true,
-		"There": true, "All": true, "Each": true, "Every": true,
-		"Both": true, "Few": true, "More": true, "Most": true,
-		"Other": true, "Some": true, "Such": true, "No": true,
-		"Nor": true, "Only": true, "Own": true, "Same": true,
-		"So": true, "Than": true, "Too": true, "Very": true,
-		"Just": true, "Because": true, "As": true, "Until": true,
-		"While": true, "Although": true, "Though": true,
-		"Please": true, "Yes": true, "Maybe": true,
-		"Also": true, "Well": true, "However": true, "Therefore": true,
-	}
-	return common[s]
 }
 
 // deduplicateEntities removes duplicate entities by name, keeping the highest confidence.

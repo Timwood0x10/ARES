@@ -14,6 +14,11 @@
     2. L1 对 fact 的 predicate 是停用词（`is/are/to` 等）即判 `stopword triple` 丢弃 → 自然句 "X is Y" 会被拒。属保守策略，接真实样本后需观察是否误杀合理事实。
   - **reference 节点无 `description` 时 `nodeSummary` 退化成节点 ID**（非 fact 类型不取 subject/predicate/object）→ 其 `source_signal` 比对 key 无法匹配 gold。当前样本已用 `description` 规避；这是后续可优化点（reference 也取三元组做 summary）。
 - 实测效果（合成对话，临时 demo 已删）：L1 在噪声对话 4→2、真实对话 15→14（丢停用词三元组）；L2 在弱信号密集对话 0.4 阈值选 2 节点 / 0.6 阈值选 1 节点（丢 WEAK 档中文名词短语/开放问题）。L3 e2e 验证：6 候选 → 丢 2 低置信(e3/f3) + 丢 2 结构(e2 停用词/f2 残缺三元组) → 留存 2(e1/f1, 均 strong)；去重独立验证命中 1。
+- ✅ **Phase 2 持久化 swap（DI 不新造存储）**：共享 AKG 池从 `memorystore.New()` 改为按配置选 postgres/sqlite/memory 实现，经 `comp.KnowledgeStore` 注入点切换（`StoreProvider` 不变，只读接口）。
+  - 配置：`KnowledgeCompilerConfig` 新增 `AKGStore`(`auto/memory/sqlite/postgres`) + `AKGSQLitePath`；`setDefaults` 补默认（`auto` / `data/akg.db`）；`validateKnowledgeCompiler` 校验（sqlite 需 path、postgres 需 `Storage.Enabled && Type=="postgres"`）。
+  - 实现：`bootstrap_steps_knowledge.go` 的 `wireKnowledgeCompiler` 加 `cleanups *[]func()` 参数；新增 `newSharedAKGStore`（switch 模式，auto 下 `Storage.Enabled && postgres` 选 postgres 否则 memory）、`newPostgresAKGStore`（复用 Storage DSN、`sql.Open("postgres")`+Ping 5s+连接池+`postgresstore.New(db)`、`%w` 错误链+close 兜底）、`newSQLiteAKGStore`（`MkdirAll`+`sql.Open("sqlite")`+`SetMaxOpenConns(1)`+`sqlitestore.NewWithDB(db)`）。
+  - 优雅降级：postgres/sqlite 打开失败 → `log.WarnContext` 显式降级 memory（不崩 bootstrap）；`storageTypePostgres` 常量消除 goconst。
+  - 测试（全绿，含 -race）：config KC 测试 19 例 + bootstrap 新增 `akg_store_test.go`(7 例：memory 显式 / auto 无 pg / sqlite 重启持久性 e2e / sqlite 空 path 报错 / postgres 不可达降级 / cleanups 注册等)。build/vet/-race/gofmt/golangci-lint(0)/staticcheck(0)。
 
 ---
 
@@ -77,9 +82,9 @@
 
 ---
 
-## 2. Phase 2 — 持久化决策与接线（中等）
+## 2. Phase 2 — 持久化决策与接线（中等） ✅ 已完成
 
-- 现状：共享池用 `memorystore.New()`（`bootstrap_steps_knowledge.go:72`）。
+- 现状（已改）：共享池经 `newSharedAKGStore(ctx, cfg)` 按 `AKGStore` 配置选 `postgresstore`/`sqlitestore`/`memorystore`，注入 `comp.KnowledgeStore`（`bootstrap_steps_knowledge.go` 的 `wireKnowledgeCompiler`）。
 - 选项：
   - **P-a（推荐）**：postgres 启用时用 `knowledge/store/postgres`（akf_objects 耐久、跨副本共享）；sqlite 作轻量持久。统一经 `comp.KnowledgeStore` 注入点切换。
   - **P-b**：维持内存（会话内临时图），接受冷启动空图——若 A2 仅作"会话级增强"可接受。

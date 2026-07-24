@@ -289,7 +289,7 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// cfg.KnowledgeCompiler.Enabled). When disabled, this is a no-op.
 	// Failures are non-fatal: the pipeline is logged and skipped, preserving
 	// prior behavior (graceful degradation, mirroring wireDistillation).
-	wireKnowledgeCompiler(ctx, cfg, &comp)
+	wireKnowledgeCompiler(ctx, cfg, &comp, &cleanups)
 
 	// 11b. Phase 3 — inject the compiler lifecycle into the live memory manager
 	// so BuildPromptMessages can append the compressed context block. The

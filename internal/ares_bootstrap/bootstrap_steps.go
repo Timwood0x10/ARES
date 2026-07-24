@@ -21,7 +21,7 @@ import (
 // leaving the system running without distillation (graceful degradation).
 func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) evolution.GuidanceProvider {
 	var guidanceProvider evolution.GuidanceProvider
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Embedding.Enabled {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Embedding.Enabled {
 		pool, _, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
 			log.Warn("bootstrap: experience distillation not wired", "error", wireErr)
@@ -92,7 +92,7 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	// falling back to the in-memory store when no database is available.
 	// The PG store ensures evolution results survive process restarts.
 	var memStore evolution.StrategyStore
-	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Storage.Host != "" {
+	if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
 		pgStore, err := newPGStrategyStore(cfg)
 		if err != nil {
 			log.WarnContext(ctx, "bootstrap: PG strategy store init failed, falling back to in-memory", "error", err)

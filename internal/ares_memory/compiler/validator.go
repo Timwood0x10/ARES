@@ -16,10 +16,16 @@ import "strings"
 var akgStopwords = map[string]struct{}{
 	"a": {}, "an": {}, "of": {}, "to": {}, "in": {}, "on": {},
 	"for": {}, "and": {}, "or": {}, "is": {}, "are": {}, "be": {}, "by": {},
-	"with": {}, "at": {}, "as": {}, "it": {}, "this": {}, "that": {},
+	"with": {}, "at": {}, "as": {}, "it": {}, "this": {}, "that": {}, "the": {},
 	// Chinese fillers.
 	"的": {}, "了": {}, "是": {}, "在": {}, "和": {}, "与": {}, "也": {}, "就": {}, "都": {}, "而": {},
 }
+
+// rejectReason constants keep quality-gate rejection reasons consistent
+// across the validator and its tests (and satisfy goconst).
+const (
+	reasonStopwordEntity = "stopword entity"
+)
 
 // ValidateNodeForAKG reports whether a KM node is structurally fit to be
 // projected into the AKG knowledge graph.
@@ -67,8 +73,13 @@ func ValidateNodeForAKG(n *Node) (ok bool, reason string) {
 		if name == "" {
 			return false, "empty entity name"
 		}
-		if isStopwordRun(name) {
-			return false, "stopword entity"
+		// An entity whose name is entirely stopwords carries no retrievable
+		// meaning and would be indexed under an empty key, polluting AKG
+		// retrieval/dedup. Drop it. This catches single tokens such as "the"
+		// and multi-token filler like "of the" — both normalize to an empty
+		// key and must never enter the knowledge graph.
+		if entityResidual(name) == "" {
+			return false, reasonStopwordEntity
 		}
 	default:
 		// decision / constraint / tradeoff / question / goal / task /
@@ -95,6 +106,22 @@ func isStopwordRun(s string) bool {
 	}
 	_, ok := akgStopwords[s]
 	return ok
+}
+
+// entityResidual returns name with every stopword token removed. An entity
+// whose name collapses to the empty string after this is pure filler (e.g.
+// "the", "of the") and must not be projected into the AKG graph: it would
+// otherwise be indexed with an empty key and pollute retrieval/dedup.
+func entityResidual(name string) string {
+	fields := strings.Fields(strings.ToLower(name))
+	kept := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if _, ok := akgStopwords[f]; ok {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return strings.Join(kept, " ")
 }
 
 // isPurePunctuation reports whether s contains no alphanumeric or CJK content.

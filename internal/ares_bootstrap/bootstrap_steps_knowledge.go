@@ -2,18 +2,28 @@ package ares_bootstrap
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_memory/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider/store"
 	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
+	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
+	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
 )
 
 // compilerAKGNamespace tags every KnowledgeObject the Conversation Compiler
 // projects into the shared AKG pool, so consumers can scope queries to the
 // compiler's contributions.
 const compilerAKGNamespace = "conversation-compiler"
+
+// storageTypePostgres is the cfg.Storage.Type value selecting PostgreSQL.
+const storageTypePostgres = "postgres"
 
 // wireKnowledgeCompiler conditionally wires the opt-in Conversation Compiler
 // pipeline (design: CONVERSATION_COMPILER.md). It is a no-op unless
@@ -32,7 +42,7 @@ const compilerAKGNamespace = "conversation-compiler"
 // remain pluggable via the Pipeline option pattern so a future iteration can
 // swap in the shared AKG store or a persistent memory store without touching
 // this wiring. No LLM chat/completion call is made anywhere in this path.
-func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *Components) {
+func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *Components, cleanups *[]func()) {
 	if cfg == nil || !cfg.KnowledgeCompiler.Enabled {
 		return
 	}
@@ -69,7 +79,23 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 	// consumers (prompt injection, future runtime ingestion) read from,
 	// replacing the previous per-build isolated store that no other consumer
 	// could see.
-	sharedAKGStore := memorystore.New()
+	//
+	// Phase 2 (AKG_CLOSURE_PLAN.md): the sink is now selected by config
+	// (cfg.KnowledgeCompiler.AKGStore) — postgres for durable cross-replica
+	// persistence, sqlite for a lightweight durable node, or in-memory for a
+	// session-scoped graph. The DB handle (when any) is registered for
+	// graceful shutdown via cleanups so connections are not leaked.
+	sharedAKGStore, storeCleanup, storeErr := newSharedAKGStore(ctx, cfg)
+	if storeErr != nil {
+		// Graceful degradation: a persistence backend that fails to open must
+		// never crash bootstrap. Fall back to in-memory so the pipeline still
+		// runs (graph survives the process but is lost on restart).
+		log.WarnContext(ctx, "bootstrap: knowledge compiler AKG store unavailable, using in-memory fallback", "error", storeErr)
+		sharedAKGStore = memorystore.New()
+	}
+	if storeCleanup != nil {
+		*cleanups = append(*cleanups, storeCleanup)
+	}
 	comp.KnowledgeStore = sharedAKGStore
 
 	// Close the read-side gap the review flagged as drift: the shared store the
@@ -176,4 +202,119 @@ func wireKnowledgeCompiler(ctx context.Context, cfg *ares_config.Config, comp *C
 		"prompt_max_tokens", kc.PromptMaxTokens,
 		"window_size", kc.WindowSize,
 		"distill_after_compile", kc.DistillAfterCompile)
+}
+
+// newSharedAKGStore selects and constructs the shared KnowledgeStore the
+// Conversation Compiler projects its AKG objects into (plan Phase 2).
+//
+// Backend selection (cfg.KnowledgeCompiler.AKGStore):
+//   - "auto" (default): postgres when cfg.Storage is a ready PostgreSQL
+//     deployment, otherwise in-memory (preserves prior behavior).
+//   - "memory":   session-scoped in-memory pool.
+//   - "sqlite":   durable single-node pool at cfg.KnowledgeCompiler.AKGSQLitePath.
+//   - "postgres": durable shared pool in the akf_objects table.
+//
+// The returned cleanup closes the underlying *sql.DB when a durable backend
+// was opened; it is nil for the in-memory backend. On any backend failure the
+// caller is expected to fall back to in-memory (graceful degradation).
+func newSharedAKGStore(ctx context.Context, cfg *ares_config.Config) (knowledge.KnowledgeStore, func(), error) {
+	kc := cfg.KnowledgeCompiler
+	mode := kc.AKGStore
+	// An empty mode means the config skipped normalization (e.g. constructed
+	// directly in tests); treat it as "auto" instead of guessing.
+	if mode == "" || mode == ares_config.AKGStoreAuto {
+		// Infer from the global storage deployment: a ready PostgreSQL
+		// deployment makes the AKG graph durable and cross-replica.
+		if cfg.Storage.Enabled && cfg.Storage.Type == storageTypePostgres && cfg.Storage.Host != "" {
+			mode = ares_config.AKGStorePostgres
+		} else {
+			mode = ares_config.AKGStoreMemory
+		}
+	}
+
+	switch mode {
+	case ares_config.AKGStoreMemory:
+		return memorystore.New(), nil, nil
+	case ares_config.AKGStorePostgres:
+		return newPostgresAKGStore(ctx, cfg)
+	case ares_config.AKGStoreSQLite:
+		return newSQLiteAKGStore(kc.AKGSQLitePath)
+	default:
+		// Defensive: an unknown mode should never reach here (validated at
+		// config load), but degrade gracefully instead of crashing bootstrap.
+		log.WarnContext(ctx, "bootstrap: unknown akg_store mode, falling back to memory", "mode", mode)
+		return memorystore.New(), nil, nil
+	}
+}
+
+// newPostgresAKGStore opens the shared PostgreSQL KnowledgeStore for the AKG
+// pool. It reuses the global storage DSN and registers the akf_objects schema
+// via the store's own migration (postgresstore.New). The cleanup closes the
+// *sql.DB on shutdown.
+func newPostgresAKGStore(ctx context.Context, cfg *ares_config.Config) (knowledge.KnowledgeStore, func(), error) {
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Storage.Host, cfg.Storage.Port, cfg.Storage.Username,
+		cfg.Storage.Password, cfg.Storage.Database, cfg.Storage.SSLMode)
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("akg postgres store: open db: %w", err)
+	}
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, nil, fmt.Errorf("akg postgres store: ping: %w (also close db: %v)", err, closeErr)
+		}
+		return nil, nil, fmt.Errorf("akg postgres store: ping: %w", err)
+	}
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	store, err := postgresstore.New(db)
+	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, nil, fmt.Errorf("akg postgres store: init: %w (also close db: %v)", err, closeErr)
+		}
+		return nil, nil, fmt.Errorf("akg postgres store: init: %w", err)
+	}
+	cleanup := func() {
+		if cErr := db.Close(); cErr != nil {
+			log.WarnContext(context.Background(), "bootstrap: close akg postgres store", "error", cErr)
+		}
+	}
+	return store, cleanup, nil
+}
+
+// newSQLiteAKGStore opens a durable single-node SQLite KnowledgeStore for the
+// AKG pool. The directory is created on demand so a relative AKGSQLitePath
+// (e.g. "data/akg.db") works from the process working directory. The cleanup
+// closes the *sql.DB on shutdown.
+func newSQLiteAKGStore(dbPath string) (knowledge.KnowledgeStore, func(), error) {
+	if dbPath == "" {
+		return nil, nil, fmt.Errorf("akg sqlite store: path must not be empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
+		return nil, nil, fmt.Errorf("akg sqlite store: make dir %q: %w", filepath.Dir(dbPath), err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("akg sqlite store: open %q: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1) // SQLite only supports a single writer.
+	db.SetMaxIdleConns(1)
+
+	store, err := sqlitestore.NewWithDB(db)
+	if err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, nil, fmt.Errorf("akg sqlite store: init: %w (also close db: %v)", err, closeErr)
+		}
+		return nil, nil, fmt.Errorf("akg sqlite store: init: %w", err)
+	}
+	cleanup := func() {
+		if cErr := db.Close(); cErr != nil {
+			log.WarnContext(context.Background(), "bootstrap: close akg sqlite store", "error", cErr)
+		}
+	}
+	return store, cleanup, nil
 }

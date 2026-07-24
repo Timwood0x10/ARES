@@ -84,20 +84,21 @@ func TestHarnessNoisy(t *testing.T) {
 	}
 	r := rep.PerSample[0]
 	// 6 candidates. n3 has an empty triple -> rejected by the L1 structural
-	// gate. n4 ("the") is NOT a stopword in akgStopwords, so it survives.
-	// n2 (conf 0.2) is dropped by the L2 confidence filter. Net: 5/6
-	// structurally valid, 1 structural drop, 1 low-conf drop, 4 built.
-	if r.StructuralPass != 5 || r.StructuralTotal != 6 {
-		t.Errorf("structural pass/total = %d/%d, want 5/6", r.StructuralPass, r.StructuralTotal)
+	// gate. n4 ("the") is a stopword entity -> now rejected by the L1 gate
+	// (it would otherwise be indexed under an empty key). n2 (conf 0.2) is
+	// dropped by the L2 confidence filter. Net: 4/6 structurally valid, 2
+	// structural drops, 1 low-conf drop, 3 built.
+	if r.StructuralPass != 4 || r.StructuralTotal != 6 {
+		t.Errorf("structural pass/total = %d/%d, want 4/6", r.StructuralPass, r.StructuralTotal)
 	}
-	if r.DroppedStructural != 1 {
-		t.Errorf("dropped structural = %d, want 1", r.DroppedStructural)
+	if r.DroppedStructural != 2 {
+		t.Errorf("dropped structural = %d, want 2", r.DroppedStructural)
 	}
 	if r.DroppedLowConf != 1 {
 		t.Errorf("dropped low-conf = %d, want 1", r.DroppedLowConf)
 	}
-	if r.ObjectsBuilt != 4 {
-		t.Errorf("objects built = %d, want 4", r.ObjectsBuilt)
+	if r.ObjectsBuilt != 3 {
+		t.Errorf("objects built = %d, want 3", r.ObjectsBuilt)
 	}
 	if !almost(r.Precision, 1.0) {
 		t.Errorf("precision = %v, want 1.0 (gold only lists the valid facts)", r.Precision)

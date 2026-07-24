@@ -54,7 +54,22 @@ func TestValidateNodeForAKG(t *testing.T) {
 		{
 			name:   "stopword entity rejected",
 			node:   &Node{ID: "e3", Type: NodeEntity, Confidence: 0.9, Attributes: map[string]any{"name": "a"}},
-			wantOK: false, reason: "stopword entity",
+			wantOK: false, reason: reasonStopwordEntity,
+		},
+		{
+			name:   "stopword entity 'the' rejected",
+			node:   &Node{ID: "e4", Type: NodeEntity, Confidence: 0.9, Attributes: map[string]any{"name": "the"}},
+			wantOK: false, reason: reasonStopwordEntity,
+		},
+		{
+			name:   "multi-token stopword entity rejected",
+			node:   &Node{ID: "e5", Type: NodeEntity, Confidence: 0.9, Attributes: map[string]any{"name": "of the"}},
+			wantOK: false, reason: reasonStopwordEntity,
+		},
+		{
+			name:   "entity with stopword prefix kept",
+			node:   &Node{ID: "e6", Type: NodeEntity, Confidence: 0.9, Attributes: map[string]any{"name": "the Beatles"}},
+			wantOK: true,
 		},
 		{
 			name:   "decision with choice passes",

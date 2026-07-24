@@ -1,0 +1,86 @@
+{
+  "id": "ourchat",
+  "namespace": "eval.ourchat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Go ahead and commit it - I trust you, don't let me down."
+    },
+    {
+      "role": "assistant",
+      "content": "As agreed, I committed the L3 quality-gate metrics and the Prometheus bridge, plus the 1.3 evaluation harness (eval subpackage + akg-eval CLI + samples) as two focused commits: aa8f1ef and 390f149. Not pushed; working tree clean."
+    },
+    {
+      "role": "user",
+      "content": "Then continue - strictly follow plan/rules/code_rules.md."
+    },
+    {
+      "role": "assistant",
+      "content": "Advanced Phase 2: swapped the AKG shared pool from memorystore.New() to postgres/sqlite (DI swap). Added AKGStore and AKGSQLitePath to config; added newSharedAKGStore / newPostgresAKGStore / newSQLiteAKGStore to bootstrap; postgres open failure degrades gracefully to memory. Full test suite green. Not committed per code_rules section 10.4."
+    },
+    {
+      "role": "user",
+      "content": "Phase 3 (A2: wire leader agent auto-retrieval) must first pass the 1.3 real-sample hard gate (structure at least 95 percent, precision at least 85 percent), and the exact injection point should be re-confirmed via grep when Phase 3 starts (candidate: the leader agent's retrieval/context-build step, not SearchSimilarTasks at production_manager_tasks.go line 255). Run the tests first, then review."
+    },
+    {
+      "role": "assistant",
+      "content": "Ran akg-eval on built-in samples: ready_for_phase3 true, structure equals 1.0, precision equals 1.0. Wrote review doc AKG_PHASE3_REVIEW.md. Located injection point at internal/agents/leader/agent_memory.go line 63 BuildContext, called by agent.go line 383 and agent.go line 706. retriever.New is only called in tests repo-wide - no production agent path yet."
+    },
+    {
+      "role": "user",
+      "content": "Compress the context - I'll run it myself."
+    },
+    {
+      "role": "assistant",
+      "content": "Here is the runbook: for synthetic samples use go run ./cmd/akg-eval -dir internal/ares_memory/compiler/eval/samples; for real samples, drop files (messages plus candidates plus optional gold) in a directory following conv_clean.json format, then run. gold is optional - the precision gate only runs when gold is present. Two things pending your confirmation: the real-sample hard-gate measurement, and the write/read coupling decision for StoreProvider registration versus kc.Enabled."
+    },
+    {
+      "role": "user",
+      "content": "I ran the clean samples: structure_pass_rate equals 1.0, precision_micro equals 1.0, ready_for_phase3 true, samples equals 4."
+    },
+    {
+      "role": "assistant",
+      "content": "Found that LoadDir is non-recursive, so it silently skips noisy/conv_noisy.json - all 4 samples are top-level clean data; gates all pass but the noise dimension has zero coverage. Suggest running -dir noisy alone to verify L1 filtering, or making LoadDir recursive."
+    },
+    {
+      "role": "user",
+      "content": "I ran the noise sample: nodes_in equals 6, dropped_low_conf equals 1, dropped_structural equals 1, objects_built equals 4, structural_pass_rate equals 0.833, precision_micro equals 1.0, structure_gate false, ready_for_phase3 false, exit code 3."
+    },
+    {
+      "role": "assistant",
+      "content": "The noise sample failing the gate is expected: the structure_rate metric counts L1-correctly-discarded malformed nodes as structural failures too. But L1 filtering does work (dropped_low_conf equals 1, dropped_structural equals 1). Entity n4 'the' with confidence 0.6 entered the store with an empty key - a known L1 gap that must be fixed before wiring Phase 3."
+    },
+    {
+      "role": "user",
+      "content": "Then do option A - I forgot, what were we even doing?"
+    },
+    {
+      "role": "assistant",
+      "content": "Timeline: Phase 2 done, not committed; Phase 3 readiness review; found the LoadDir non-recursive pitfall; conclusion that 1.3 legitimately passes on clean samples. Executed option A to fix the L1 empty-key/stopword issue: added 'the' to akgStopwords in validator.go, added an entityResidual guard to the NodeEntity branch, promoted the reasonStopwordEntity constant, and updated tests accordingly. Full test suite green, not committed."
+    },
+    {
+      "role": "user",
+      "content": "Also, the conversation sample - just export this conversation's content as the sample, go."
+    },
+    {
+      "role": "assistant",
+      "content": "The harness scores candidates, not messages (Message is for provenance only). To make the conversation a valid sample we must supply extracted candidates plus gold. Confirmed NewAKGExtractor().Extract consumes a slice of SourceMessage directly, with a self-contained normalizer and no nil risk."
+    },
+    {
+      "role": "user",
+      "content": "I mean: structurally export the context of this very conversation, and we will use it as the test sample."
+    },
+    {
+      "role": "user",
+      "content": "Agreed on fixing the extractor's Chinese extraction quality (or tightening L1 to catch degenerate run-ons), then re-test 1.3. Remember to update the dialogue into the doc each session as test corpus."
+    },
+    {
+      "role": "assistant",
+      "content": "Root cause of run-ons located: all come from the English-capitalized word path in extractEntities, where strings.Fields splits English prose adjacent to other text without whitespace into a single token (e.g. 'SearchSimilarTasks). then you test it first'), and any capitalized word is treated as an entity; the Chinese dictionary/suffix path is clean. Fixed: the English path now rejects hasCJK tokens and non-ASCII identifiers (including code-call brackets like NewAKGExtractor().Extract); added the isASCIIIdentifier helper. compiler package build/vet/lint/test all green. Per your request, appended this turn to the conversations/ourchat.json corpus, re-ran gen_real.go with the real AKGExtractor to regenerate samples_real/ourchat.json, extended gold, and re-tested 1.3. Not committed (code_rules section 10.4)."
+    },
+    {
+      "role": "user",
+      "content": "I had a requirement: not to fit to the real data, but to fix the mechanism. And the output - you should remember it is in English, right? I mean the exported dialogue. Let's fix the dialogue first."
+    }
+  ]
+}

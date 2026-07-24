@@ -99,7 +99,29 @@ type KnowledgeCompilerConfig struct {
 
 	// DistillAfterCompile runs distill-and-prune after every incremental compile.
 	DistillAfterCompile bool `yaml:"distill_after_compile"`
+
+	// AKGStore selects the backend for the shared AKG knowledge pool the
+	// compiler projects into (plan: AKG_CLOSURE_PLAN.md Phase 2).
+	// Valid values:
+	//   - "auto"     (default): postgres when Storage.Enabled && Storage.Type
+	//     == "postgres", otherwise in-memory (preserves prior behavior).
+	//   - "memory":   session-scoped in-memory pool (cold start = empty graph).
+	//   - "sqlite":   durable single-node pool at AKGSQLitePath.
+	//   - "postgres": durable shared pool in the akf_objects table.
+	AKGStore string `yaml:"akg_store"`
+
+	// AKGSQLitePath is the SQLite database file used when AKGStore is
+	// "sqlite" (0 = "data/akg.db", relative to the working directory).
+	AKGSQLitePath string `yaml:"akg_sqlite_path"`
 }
+
+// Valid AKGStore backend values for KnowledgeCompilerConfig.
+const (
+	AKGStoreAuto     = "auto"
+	AKGStoreMemory   = "memory"
+	AKGStoreSQLite   = "sqlite"
+	AKGStorePostgres = "postgres"
+)
 
 // EmbeddingConfig holds configuration for the embedding client used by
 // experience distillation. Distillation requires an embedding client to
@@ -504,6 +526,12 @@ func (c *Config) setDefaults() {
 	if c.KnowledgeCompiler.Threshold == 0 {
 		c.KnowledgeCompiler.Threshold = 0.7
 	}
+	if c.KnowledgeCompiler.AKGStore == "" {
+		c.KnowledgeCompiler.AKGStore = AKGStoreAuto
+	}
+	if c.KnowledgeCompiler.AKGSQLitePath == "" {
+		c.KnowledgeCompiler.AKGSQLitePath = "data/akg.db"
+	}
 	// Validation defaults
 	if c.Validation.SchemaType == "" {
 		c.Validation.SchemaType = "default" // "default", "travel", "custom"
@@ -873,6 +901,20 @@ func (c *Config) validateKnowledgeCompiler() error {
 	}
 	if kc.WindowSize < 0 {
 		return fmt.Errorf("knowledge_compiler: window_size must be non-negative, got %d", kc.WindowSize)
+	}
+	switch kc.AKGStore {
+	case "", AKGStoreAuto, AKGStoreMemory, AKGStoreSQLite, AKGStorePostgres:
+		// Valid backend. An empty value means the config bypassed
+		// setDefaults (e.g. constructed programmatically) and is treated
+		// as "auto" by the bootstrap wiring.
+	default:
+		return fmt.Errorf("knowledge_compiler: akg_store must be one of auto|memory|sqlite|postgres, got %q", kc.AKGStore)
+	}
+	if kc.AKGStore == AKGStoreSQLite && kc.AKGSQLitePath == "" {
+		return fmt.Errorf("knowledge_compiler: akg_sqlite_path is required when akg_store is %q", AKGStoreSQLite)
+	}
+	if kc.AKGStore == AKGStorePostgres && (!c.Storage.Enabled || c.Storage.Type != "postgres") {
+		return fmt.Errorf("knowledge_compiler: akg_store %q requires storage.enabled=true and storage.type=postgres", AKGStorePostgres)
 	}
 	return nil
 }
