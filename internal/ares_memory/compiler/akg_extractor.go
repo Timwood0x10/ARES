@@ -38,6 +38,54 @@ const (
 	confWeak   = 0.4
 )
 
+// Evidence class labels. Every extracted entity is tagged with the signal
+// class that produced it so the eval harness can measure per-class precision
+// on gold-annotated corpora. Calibrated confidence values (evidenceConfidence)
+// are derived FROM those measurements — evidence classes are the unit of
+// calibration, replacing intuition-tuned tier constants for entity signals.
+const (
+	evCamelCase     = "camelcase"
+	evStructuralRef = "structural_ref"
+	evRecurrence    = "recurrence"
+	evCodeBlock     = "code_block"
+	evQuotedSpan    = "quoted_span"
+	evChineseDict   = "chinese_dict"
+	evChineseNoun   = "chinese_noun"
+	evDecision      = "decision"
+	evConstraint    = "constraint"
+	evTradeoff      = "tradeoff"
+	evQuestion      = "question"
+)
+
+// evidenceConfidence maps an evidence class to its calibrated confidence.
+// Values are Laplace-smoothed precision (hit+1)/(built+2) measured by the 1.3
+// eval harness on the gold-annotated real corpora (samples_real/, run via
+// cmd/akg-eval — see aggregate.evidence_precision in the report). They are
+// re-derived whenever the corpus grows; see AKG_CLOSURE_PLAN.md. Classes
+// without enough gold coverage keep their tier prior (confStrong/confMedium/
+// confWeak) until measured.
+//
+// Measured 2026-07-24 (ourchat + codescope_windows_fix):
+//
+//	structural_ref  65 built / 65 hit -> smoothed 0.985
+//	camelcase       26 built / 26 hit -> smoothed 0.964
+//	recurrence       3 built /  3 hit -> smoothed 0.800 (small n)
+var evidenceConfidence = map[string]float64{
+	evCamelCase:     0.96,
+	evStructuralRef: 0.98,
+	evRecurrence:    0.8,
+}
+
+// confidenceFor returns the calibrated confidence for an evidence class,
+// falling back to the supplied tier prior when the class has not yet been
+// measured on a gold corpus.
+func confidenceFor(evidence string, prior float64) float64 {
+	if c, ok := evidenceConfidence[evidence]; ok {
+		return c
+	}
+	return prior
+}
+
 // extraChineseTerms extends the alias-table Chinese terms with vocabulary
 // specific to the knowledge-graph / distillation / compression domain. It is
 // declared before chineseTermDict because that variable's initializer reads
@@ -231,8 +279,9 @@ func extractCodeBlockEntities(content, sourceID string) []ExtractedEntity {
 				entities = append(entities, ExtractedEntity{
 					Name:       lang,
 					Type:       entityTypeLanguage,
-					Confidence: confStrong,
+					Confidence: confidenceFor(evCodeBlock, confStrong),
 					SourceID:   sourceID,
+					Evidence:   evCodeBlock,
 				})
 			}
 		}
@@ -262,8 +311,9 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 			entities = append(entities, ExtractedEntity{
 				Name:       lang,
 				Type:       entityTypeLanguage,
-				Confidence: confStrong,
+				Confidence: confidenceFor(evCodeBlock, confStrong),
 				SourceID:   sourceID,
+				Evidence:   evCodeBlock,
 			})
 		}
 	}
@@ -284,7 +334,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		//      concrete artifacts by their SHAPE (separators, extension,
 		//      scheme) — not by whether a word appears in a dictionary.
 		if isStructuralReference(cleaned) {
-			addEnglishEntity(&entities, seen, cleaned, sourceID)
+			addEnglishEntity(&entities, seen, cleaned, sourceID, evStructuralRef)
 			continue
 		}
 		if !isASCIIIdentifier(cleaned) {
@@ -293,7 +343,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		//   2. CamelCase identifiers (BuildContext, AKGStore): a universal
 		//      programming convention, not a domain whitelist.
 		if isCamelCase(cleaned) {
-			addEnglishEntity(&entities, seen, cleaned, sourceID)
+			addEnglishEntity(&entities, seen, cleaned, sourceID, evCamelCase)
 			continue
 		}
 		//   3. Recurrence: a token mentioned across BOTH user and assistant
@@ -301,7 +351,7 @@ func (e *AKGExtractor) extractEntities(normalized *knowledge.KnowledgeObject, so
 		//      threshold instead of capitalization. This recovers lowercase
 		//      proper nouns (windows, python) the shape rules miss.
 		if rec != nil && rec.qualifies(cleaned) {
-			addEnglishEntity(&entities, seen, cleaned, sourceID)
+			addEnglishEntity(&entities, seen, cleaned, sourceID, evRecurrence)
 			continue
 		}
 	}
@@ -329,8 +379,9 @@ func extractChineseTermEntities(content, sourceID string, seen map[string]bool) 
 		entities = append(entities, ExtractedEntity{
 			Name:       term,
 			Type:       entityTypeConcept,
-			Confidence: confMedium,
+			Confidence: confidenceFor(evChineseDict, confMedium),
 			SourceID:   sourceID,
+			Evidence:   evChineseDict,
 		})
 	}
 
@@ -343,8 +394,9 @@ func extractChineseTermEntities(content, sourceID string, seen map[string]bool) 
 		entities = append(entities, ExtractedEntity{
 			Name:       np,
 			Type:       entityTypeConcept,
-			Confidence: confWeak,
+			Confidence: confidenceFor(evChineseNoun, confWeak),
 			SourceID:   sourceID,
+			Evidence:   evChineseNoun,
 		})
 	}
 
@@ -448,8 +500,9 @@ func addQuotedEntity(span, sourceID string, seen map[string]bool, entities *[]Ex
 	*entities = append(*entities, ExtractedEntity{
 		Name:       term,
 		Type:       entityTypeConcept,
-		Confidence: confStrong,
+		Confidence: confidenceFor(evQuotedSpan, confStrong),
 		SourceID:   sourceID,
+		Evidence:   evQuotedSpan,
 	})
 }
 
@@ -493,31 +546,39 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 	seen := make(map[string]bool)
 	sentences := splitSentences(content)
 
+	// Each pattern carries the confidence of its cue class. Verbal speech
+	// acts ("we rejected", "决定采用") are deliberate decision statements and
+	// stay strong. Bare prepositional contrast ("instead of") appears in
+	// ordinary descriptive prose ("manual trigger instead of automatic")
+	// without any decision being made, so it is weak evidence and lands
+	// below the L2 MinConfidence gate unless corroborated. This is evidence
+	// grading by SYNTACTIC CLASS, not a vocabulary list.
 	decisionPatterns := []struct {
 		prefix string
-		field  string // attrChoice or attrRejection
+		field  string  // attrChoice or attrRejection
+		conf   float64 // cue-class confidence
 	}{
-		{"we chose ", attrChoice},
-		{"we decided to ", attrChoice},
-		{"we opted for ", attrChoice},
-		{"we selected ", attrChoice},
-		{"we picked ", attrChoice},
-		{"we rejected ", attrRejection},
-		{"we ruled out ", attrRejection},
-		{"we abandoned ", attrRejection},
-		{"instead of ", attrRejection},
+		{"we chose ", attrChoice, confStrong},
+		{"we decided to ", attrChoice, confStrong},
+		{"we opted for ", attrChoice, confStrong},
+		{"we selected ", attrChoice, confStrong},
+		{"we picked ", attrChoice, confStrong},
+		{"we rejected ", attrRejection, confStrong},
+		{"we ruled out ", attrRejection, confStrong},
+		{"we abandoned ", attrRejection, confStrong},
+		{"instead of ", attrRejection, confWeak},
 		// Chinese decision markers (no surrounding spaces in CJK text).
-		{"我们决定", attrChoice},
-		{"我们决定采用", attrChoice},
-		{"我们选择了", attrChoice},
-		{"我们选择", attrChoice},
-		{"决定采用", attrChoice},
-		{"决定使用", attrChoice},
-		{"选用", attrChoice},
-		{"选定", attrChoice},
-		{"否决了", attrRejection},
-		{"放弃了", attrRejection},
-		{"废弃了", attrRejection},
+		{"我们决定", attrChoice, confStrong},
+		{"我们决定采用", attrChoice, confStrong},
+		{"我们选择了", attrChoice, confStrong},
+		{"我们选择", attrChoice, confStrong},
+		{"决定采用", attrChoice, confStrong},
+		{"决定使用", attrChoice, confStrong},
+		{"选用", attrChoice, confStrong},
+		{"选定", attrChoice, confStrong},
+		{"否决了", attrRejection, confStrong},
+		{"放弃了", attrRejection, confStrong},
+		{"废弃了", attrRejection, confStrong},
 	}
 
 	for _, sentence := range sentences {
@@ -535,8 +596,9 @@ func (e *AKGExtractor) extractDecisions(normalized *knowledge.KnowledgeObject, s
 			decisions = append(decisions, ExtractedEntity{
 				Name:       val,
 				Type:       "decision_" + dp.field,
-				Confidence: confStrong,
+				Confidence: dp.conf,
 				SourceID:   sourceID,
+				Evidence:   evDecision,
 			})
 		}
 	}
@@ -585,8 +647,9 @@ func (e *AKGExtractor) extractConstraints(normalized *knowledge.KnowledgeObject,
 			constraints = append(constraints, ExtractedEntity{
 				Name:       val,
 				Type:       "constraint",
-				Confidence: confStrong,
+				Confidence: confidenceFor(evConstraint, confStrong),
 				SourceID:   sourceID,
+				Evidence:   evConstraint,
 			})
 		}
 	}
@@ -634,8 +697,9 @@ func (e *AKGExtractor) extractTradeoffs(normalized *knowledge.KnowledgeObject, s
 			tradeoffs = append(tradeoffs, ExtractedEntity{
 				Name:       val,
 				Type:       "tradeoff",
-				Confidence: confStrong,
+				Confidence: confidenceFor(evTradeoff, confStrong),
 				SourceID:   sourceID,
+				Evidence:   evTradeoff,
 			})
 		}
 	}
@@ -689,8 +753,9 @@ func (e *AKGExtractor) extractOpenQuestions(normalized *knowledge.KnowledgeObjec
 			questions = append(questions, ExtractedEntity{
 				Name:       val,
 				Type:       "question",
-				Confidence: confWeak,
+				Confidence: confidenceFor(evQuestion, confWeak),
 				SourceID:   sourceID,
+				Evidence:   evQuestion,
 			})
 		}
 	}
@@ -882,7 +947,10 @@ func isStructuralReference(s string) bool {
 	if strings.Contains(s, "://") || strings.HasPrefix(s, "http") || strings.HasPrefix(s, "www.") {
 		return true
 	}
-	if strings.Contains(s, "/") || strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
+	if strings.Contains(s, "/") {
+		return isPathLike(s)
+	}
+	if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
 		return true
 	}
 	if idx := strings.LastIndex(s, "."); idx > 0 && idx < len(s)-1 {
@@ -892,6 +960,52 @@ func isStructuralReference(s string) bool {
 		}
 	}
 	return false
+}
+
+// isPathLike applies shape checks to a '/'-containing token so that only
+// genuine path-shaped references qualify. Two degenerate shapes are rejected
+// (both lexicon-free, judged purely by segment structure):
+//
+//  1. Single-letter enumerations ("A/C", "B/D"): every segment is one rune,
+//     which no real path is — path components name files or directories.
+//  2. Extension enumerations (".so/.dylib" -> "so/.dylib" after punctuation
+//     trim): every segment is a bare word or dot-extension AND at least one
+//     segment starts with '.', meaning the token lists file extensions rather
+//     than referencing one artifact. Real dotfile paths (".config/app.toml")
+//     survive because their non-dot segments carry richer shape (inner dots,
+//     digits, connectors).
+func isPathLike(s string) bool {
+	segs := make([]string, 0, 4)
+	for _, seg := range strings.Split(s, "/") {
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	if len(segs) == 0 {
+		return false
+	}
+	maxLen := 0
+	bareish := true // every segment is a bare word or bare dot-extension
+	hasDotLed := false
+	for _, seg := range segs {
+		if n := len([]rune(seg)); n > maxLen {
+			maxLen = n
+		}
+		body := strings.TrimPrefix(seg, ".")
+		if strings.HasPrefix(seg, ".") {
+			hasDotLed = true
+		}
+		if !isASCIILetterRun(body) {
+			bareish = false
+		}
+	}
+	if maxLen < 2 {
+		return false // single-letter enumeration, not a path
+	}
+	if bareish && hasDotLed {
+		return false // extension enumeration (".so/.dylib"), not a path
+	}
+	return true
 }
 
 // hasLetter reports whether s contains at least one ASCII letter.
@@ -1001,10 +1115,12 @@ func hasStructuralMark(s string) bool {
 	return strings.ContainsAny(s, "0123456789_/") || isCamelCase(s)
 }
 
-// addEnglishEntity appends a confMedium English concept entity when it has not
-// been seen in this pass. confMedium keeps it above the L2 MinConfidence (0.6)
-// selector so it survives into the shared AKG store and the eval gate.
-func addEnglishEntity(entities *[]ExtractedEntity, seen map[string]bool, name, sourceID string) {
+// addEnglishEntity appends an English concept entity when it has not been
+// seen in this pass. Confidence is the calibrated per-evidence value (falling
+// back to confMedium for unmeasured classes), which keeps measured-good
+// signals above the L2 MinConfidence (0.6) selector so they survive into the
+// shared AKG store and the eval gate.
+func addEnglishEntity(entities *[]ExtractedEntity, seen map[string]bool, name, sourceID, evidence string) {
 	if seen[name] {
 		return
 	}
@@ -1012,8 +1128,9 @@ func addEnglishEntity(entities *[]ExtractedEntity, seen map[string]bool, name, s
 	*entities = append(*entities, ExtractedEntity{
 		Name:       name,
 		Type:       entityTypeConcept,
-		Confidence: confMedium,
+		Confidence: confidenceFor(evidence, confMedium),
 		SourceID:   sourceID,
+		Evidence:   evidence,
 	})
 }
 

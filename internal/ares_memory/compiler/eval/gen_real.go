@@ -47,17 +47,20 @@ func slug(s string) string {
 // constraint / tradeoff / question entities become their corresponding node
 // type (with a summary attribute so the validator's default branch has
 // content); other entity types become plain "entity" nodes keyed by name.
+// The extractor emits decision entities as "decision_choice" /
+// "decision_rejection", so decisions are matched by prefix — an exact-match
+// switch would silently demote every decision to a plain entity.
 func toCandidate(e compiler.ExtractedEntity) eval.SampleNode {
 	attrs := map[string]any{"name": e.Name}
 	nodeType := "entity"
-	switch e.Type {
-	case "decision":
+	switch {
+	case strings.HasPrefix(e.Type, "decision"):
 		nodeType = "decision"
-	case "constraint":
+	case e.Type == "constraint":
 		nodeType = "constraint"
-	case "tradeoff":
+	case e.Type == "tradeoff":
 		nodeType = "tradeoff"
-	case "question":
+	case e.Type == "question":
 		nodeType = "question"
 	}
 	if nodeType != "entity" {
@@ -66,6 +69,9 @@ func toCandidate(e compiler.ExtractedEntity) eval.SampleNode {
 	}
 	if len(e.Aliases) > 0 {
 		attrs["aliases"] = e.Aliases
+	}
+	if e.Evidence != "" {
+		attrs["evidence"] = e.Evidence
 	}
 	return eval.SampleNode{
 		ID:         "e-" + e.SourceID + "-" + slug(e.Name),
@@ -82,6 +88,7 @@ func toFactCandidate(f compiler.ExtractedFact) eval.SampleNode {
 		"subject":   f.Subject,
 		"predicate": f.Predicate,
 		"object":    f.Object,
+		"evidence":  "fact_triple",
 	}
 	return eval.SampleNode{
 		ID:         "f-" + f.SourceID + "-" + slug(f.Subject+f.Predicate+f.Object),

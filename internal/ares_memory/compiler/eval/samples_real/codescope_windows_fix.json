@@ -96,150 +96,147 @@
       "id": "e-m1-CodeScope",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "CodeScope"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m1"
     },
     {
       "id": "e-m1-LADYBUG-REQUIRED",
       "type": "entity",
       "attributes": {
+        "evidence": "recurrence",
         "name": "LADYBUG_REQUIRED"
       },
-      "confidence": 0.7,
+      "confidence": 0.8,
       "source": "m1"
     },
     {
       "id": "e-m1-LadybugDB",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "LadybugDB"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m1"
     },
     {
       "id": "e-m1-SQLite",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "SQLite"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m1"
     },
     {
       "id": "e-m1-server-build-rs",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "server/build.rs"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-cargo-config-toml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "cargo/config.toml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-build-rs",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "build.rs"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "*.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-lbug-shared-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "lbug_shared.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-README-zh-md",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "README.zh.md"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
     },
     {
       "id": "e-m1-README-md",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "README.md"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m1"
-    },
-    {
-      "id": "e-m2-A-C",
-      "type": "entity",
-      "attributes": {
-        "name": "A/C"
-      },
-      "confidence": 0.7,
-      "source": "m2"
     },
     {
       "id": "e-m2-engine-CMakeLists-txt",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "engine/CMakeLists.txt"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m2"
     },
     {
       "id": "e-m2-CMakeLists-txt",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "CMakeLists.txt"
       },
-      "confidence": 0.7,
-      "source": "m2"
-    },
-    {
-      "id": "e-m2-so--dylib",
-      "type": "entity",
-      "attributes": {
-        "name": "so/.dylib"
-      },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m2"
     },
     {
       "id": "e-m2-config-toml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "config.toml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m2"
     },
     {
       "id": "e-m2-dll-is-ignored",
       "type": "constraint",
       "attributes": {
+        "evidence": "constraint",
         "name": "dll is ignored",
         "summary": "dll is ignored"
       },
@@ -250,60 +247,67 @@
       "id": "e-m4-Users-scc-code-cppCode-CodeScope-engine-third-party-ladybug-lib-macos",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/Users/scc/code/cppCode/CodeScope/engine/third_party/ladybug/lib/macos/"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m4"
     },
     {
       "id": "e-m4-CMake",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "CMake"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-macOS",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "macOS"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-build-release",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "build-release/"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m4"
     },
     {
       "id": "e-m4-MinGW",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "MinGW"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-engine-build-release",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "engine/build-release"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m4"
     },
     {
       "id": "e-m4-Error",
       "type": "constraint",
       "attributes": {
+        "evidence": "constraint",
         "name": "Error",
         "summary": "Error"
       },
@@ -314,123 +318,137 @@
       "id": "e-m6-usr-bin-gcc",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/usr/bin/gcc"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-x86-64-w64-mingw32-gcc-g",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "x86_64-w64-mingw32-gcc/g++"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-opt-homebrew-bin-x86-64-w64-mingw32-gcc",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/opt/homebrew/bin/x86_64-w64-mingw32-gcc"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-opt-homebrew-bin-x86-64-w64-mingw32-g",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/opt/homebrew/bin/x86_64-w64-mingw32-g++"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-target-x86-64-pc-windows-gnu",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "target/x86_64-pc-windows-gnu"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m8-github-workflows----yml-yaml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "github/workflows/*.{yml,yaml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-github-workflows",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "github/workflows/"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-build-yml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "build.yml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-pr-yml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "pr.yml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-ci-yml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "_ci.yml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-WinLibs",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "WinLibs"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m8"
     },
     {
       "id": "e-m10-JavaScript",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "JavaScript"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m10"
     },
     {
       "id": "e-m10-TypeScript",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "TypeScript"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m10"
     },
     {
       "id": "e-m11-Also",
       "type": "constraint",
       "attributes": {
+        "evidence": "constraint",
         "name": "Also",
         "summary": "Also"
       },
@@ -441,222 +459,248 @@
       "id": "e-m12-github-workflows-dev-yml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "github/workflows/dev.yml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-codescope-exe",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "codescope.exe"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-target-x86-64-pc-windows-gnu-release-codescope-exe",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "target/x86_64-pc-windows-gnu/release/codescope.exe"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-kernel32-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "kernel32.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-KERNEL32-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "KERNEL32.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-ntdll-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "ntdll.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-WS2-32-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "WS2_32.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-USERENV-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "USERENV.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-bcryptprimitives-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "bcryptprimitives.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-api-ms-win-crt---dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "api-ms-win-crt-*.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-api-ms-win-core-synch-l1-2-0-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "api-ms-win-core-synch-l1-2-0.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-libstdc---6-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "libstdc++-6.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-libgcc-s-seh-1-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "libgcc_s_seh-1.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-libwinpthread-1-dll",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "libwinpthread-1.dll"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m12"
     },
     {
       "id": "e-m12-DLLs",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "DLLs"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m12"
     },
     {
       "id": "e-m14-gcc-g",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "gcc/g++"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m14"
     },
     {
       "id": "e-m17-dev-yml",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "dev.yml"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m17"
     },
     {
       "id": "e-m17-automatic",
-      "type": "entity",
+      "type": "decision",
       "attributes": {
-        "name": "automatic"
+        "evidence": "decision",
+        "name": "automatic",
+        "summary": "automatic"
       },
-      "confidence": 0.9,
+      "confidence": 0.4,
       "source": "m17"
     },
     {
       "id": "e-m18-GitHub",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "GitHub"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m18"
     },
     {
       "id": "e-m20-server-build-rs-136-9",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "server/build.rs:136:9"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m20"
     },
     {
       "id": "e-m21-Users-scc-go-src-goagent-internal-ares-memory-compiler-eval-conversations",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/Users/scc/go/src/goagent/internal/ares_memory/compiler/eval/conversations/"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m21"
     },
     {
       "id": "e-m22-ourchat-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "ourchat.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m22"
     },
     {
       "id": "e-m22-codescope-windows-fix-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "codescope_windows_fix.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m22"
     },
     {
       "id": "e-m22-Users-scc-go-src-goagent-internal-ares-memory-compiler-eval-conversations-codescope-windows-fix-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/Users/scc/go/src/goagent/internal/ares_memory/compiler/eval/conversations/codescope_windows_fix.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m22"
     },
     {
       "id": "f-m4-build-rs-line-89usesCARGO-CFG-TARGET-OS-to-detect-the-host-OS",
       "type": "fact",
       "attributes": {
+        "evidence": "fact_triple",
         "object": "CARGO_CFG_TARGET_OS to detect the host OS",
         "predicate": "uses",
         "subject": "build.rs line 89"
@@ -668,6 +712,7 @@
       "id": "f-m8-github-workflows----read-file--build-yml--pr-yml---ci-yml-Analysis----CI-Windows-job-runs-on-windows-2022-runner--NATIVE--not-cross-compile----Sets-CC-gcc--CXX-g----correct-for-native-Windows-MinGW----Alreadyusescargo-build---release---target-x86-64-pc-windows-gnu---Already-uses-WinLibs-16",
       "type": "fact",
       "attributes": {
+        "evidence": "fact_triple",
         "object": "cargo build --release --target x86_64-pc-windows-gnu - Already uses WinLibs 16",
         "predicate": "uses",
         "subject": "github/workflows/ - read_file: build.yml, pr.yml, _ci.yml Analysis: - CI Windows job runs on windows-2022 runner (NATIVE, not cross-compile) - Sets CC=gcc, CXX=g++ (correct for native Windows MinGW) - Already"
@@ -679,6 +724,7 @@
       "id": "f-m22-Tool-calls----todowrite--plan-export-task---bash--mkdir--p-target-directory---read-file--checked-existing-ourchat-json-for-format-reference---write-file--created-codescope-windows-fix-json-with-full-conversation-File-written-to--Users-scc-go-src-goagent-internal-ares-memory-compiler-eval-conversations-codescope-windows-fix-jsoncontainsall-14-turns-with-tool-call-details-embedded-in-assistant-responses",
       "type": "fact",
       "attributes": {
+        "evidence": "fact_triple",
         "object": "all 14 turns with tool call details embedded in assistant responses",
         "predicate": "contains",
         "subject": "Tool calls: - todowrite: plan export task - bash: mkdir -p target directory - read_file: checked existing ourchat.json for format reference - write_file: created codescope_windows_fix.json with full conversation File written to /Users/scc/go/src/goagent/internal/ares_memory/compiler/eval/conversations/codescope_windows_fix.json"

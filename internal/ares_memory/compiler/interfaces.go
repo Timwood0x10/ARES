@@ -11,6 +11,11 @@ type ExtractedEntity struct {
 	Properties map[string]string `json:"properties,omitempty"`
 	Confidence float64           `json:"confidence"`
 	SourceID   string            `json:"source_id"` // Source message ID
+	// Evidence names the extraction signal class that produced this entity
+	// (evCamelCase, evStructuralRef, ...). It travels with the entity into
+	// the eval harness so per-evidence precision can be measured, which is
+	// the statistical basis for confidence calibration.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // ExtractedFact is a raw fact extracted from a source message.

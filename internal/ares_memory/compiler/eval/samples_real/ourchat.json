@@ -88,231 +88,257 @@
       "id": "e-m3-plan-rules-code-rules-md",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "plan/rules/code_rules.md"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m3"
     },
     {
       "id": "e-m4-memorystore-New",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "memorystore.New"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m4"
     },
     {
       "id": "e-m4-postgres-sqlite",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "postgres/sqlite"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m4"
     },
     {
       "id": "e-m4-AKGStore",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "AKGStore"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-AKGSQLitePath",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "AKGSQLitePath"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-newSharedAKGStore",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "newSharedAKGStore"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-newPostgresAKGStore",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "newPostgresAKGStore"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m4-newSQLiteAKGStore",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "newSQLiteAKGStore"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m4"
     },
     {
       "id": "e-m5-retrieval-context-build",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "retrieval/context-build"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m5"
     },
     {
       "id": "e-m5-SearchSimilarTasks",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "SearchSimilarTasks"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m5"
     },
     {
       "id": "e-m5-production-manager-tasks-go",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "production_manager_tasks.go"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m5"
     },
     {
       "id": "e-m6-ready-for-phase3",
       "type": "entity",
       "attributes": {
+        "evidence": "recurrence",
         "name": "ready_for_phase3"
       },
-      "confidence": 0.7,
+      "confidence": 0.8,
       "source": "m6"
     },
     {
       "id": "e-m6-AKG-PHASE3-REVIEW-md",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "AKG_PHASE3_REVIEW.md"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-internal-agents-leader-agent-memory-go",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "internal/agents/leader/agent_memory.go"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-BuildContext",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "BuildContext"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m6"
     },
     {
       "id": "e-m6-agent-go",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "agent.go"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m6-retriever-New",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "retriever.New"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m6"
     },
     {
       "id": "e-m8-cmd-akg-eval",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "/cmd/akg-eval"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-internal-ares-memory-compiler-eval-samples",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "internal/ares_memory/compiler/eval/samples"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-conv-clean-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "conv_clean.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-write-read",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "write/read"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m8"
     },
     {
       "id": "e-m8-StoreProvider",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "StoreProvider"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m8"
     },
     {
       "id": "e-m10-LoadDir",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "LoadDir"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m10"
     },
     {
       "id": "e-m10-noisy-conv-noisy-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "noisy/conv_noisy.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m10"
     },
     {
       "id": "e-m10-L1",
       "type": "entity",
       "attributes": {
+        "evidence": "recurrence",
         "name": "L1"
       },
-      "confidence": 0.7,
+      "confidence": 0.8,
       "source": "m10"
     },
     {
       "id": "e-m12-Entity-n4--the--with-confidence-0",
       "type": "constraint",
       "attributes": {
+        "evidence": "constraint",
         "name": "Entity n4 'the' with confidence 0",
         "summary": "Entity n4 'the' with confidence 0"
       },
@@ -323,117 +349,130 @@
       "id": "e-m14-empty-key-stopword",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "empty-key/stopword"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m14"
     },
     {
       "id": "e-m14-validator-go",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "validator.go"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m14"
     },
     {
       "id": "e-m14-NodeEntity",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "NodeEntity"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m14"
     },
     {
       "id": "e-m14-reasonStopwordEntity",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "reasonStopwordEntity"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m14"
     },
     {
       "id": "e-m16-SourceMessage",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "SourceMessage"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m16"
     },
     {
       "id": "e-m19-dictionary-suffix",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "dictionary/suffix"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m19"
     },
     {
       "id": "e-m19-hasCJK",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "hasCJK"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m19"
     },
     {
       "id": "e-m19-isASCIIIdentifier",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "isASCIIIdentifier"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m19"
     },
     {
       "id": "e-m19-build-vet-lint-test",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "build/vet/lint/test"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m19"
     },
     {
       "id": "e-m19-conversations-ourchat-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "conversations/ourchat.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m19"
     },
     {
       "id": "e-m19-gen-real-go",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "gen_real.go"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m19"
     },
     {
       "id": "e-m19-AKGExtractor",
       "type": "entity",
       "attributes": {
+        "evidence": "camelcase",
         "name": "AKGExtractor"
       },
-      "confidence": 0.7,
+      "confidence": 0.96,
       "source": "m19"
     },
     {
       "id": "e-m19-samples-real-ourchat-json",
       "type": "entity",
       "attributes": {
+        "evidence": "structural_ref",
         "name": "samples_real/ourchat.json"
       },
-      "confidence": 0.7,
+      "confidence": 0.98,
       "source": "m19"
     }
   ],

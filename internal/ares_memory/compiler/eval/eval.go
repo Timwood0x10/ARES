@@ -112,6 +112,24 @@ type BuiltItem struct {
 	Confidence float64 `json:"confidence"`
 	Signal     string  `json:"signal"`
 	Key        string  `json:"key"`
+	// Evidence is the extraction signal class that produced the candidate
+	// (camelcase, structural_ref, recurrence, quoted, ...). It is read from
+	// the candidate node attributes and powers per-evidence precision, the
+	// statistical basis for confidence calibration.
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// EvidenceStat aggregates precision per extraction evidence class across all
+// gold-annotated samples. This is the empirical measurement that calibrated
+// confidence values are derived from (replacing hand-tuned constants).
+type EvidenceStat struct {
+	Built int `json:"built"`
+	Hit   int `json:"hit"`
+	// Precision is raw hit/built.
+	Precision float64 `json:"precision"`
+	// Smoothed is the Laplace-smoothed precision (hit+1)/(built+2), which
+	// avoids degenerate 0.0/1.0 estimates from tiny buckets.
+	Smoothed float64 `json:"smoothed"`
 }
 
 // SampleResult holds the per-sample measurements.
@@ -136,6 +154,7 @@ type SampleResult struct {
 	// raw counts for aggregation (omitted from JSON).
 	PrecHit   int `json:"-"`
 	PrecBuilt int `json:"-"`
+	RecallHit int `json:"-"` // distinct gold keys covered (recall numerator)
 	PrecGold  int `json:"-"`
 
 	Built []BuiltItem `json:"built,omitempty"`
@@ -159,6 +178,11 @@ type Aggregate struct {
 
 	ConfidenceHistogram map[string]int64 `json:"confidence_histogram"`
 	SignalTiers         map[string]int64 `json:"signal_tiers"`
+
+	// EvidencePrecision maps evidence class -> measured precision, only
+	// populated when gold annotations exist. Used to calibrate extractor
+	// confidence constants against reality instead of intuition.
+	EvidencePrecision map[string]*EvidenceStat `json:"evidence_precision,omitempty"`
 }
 
 // Gates reports the pass/fail verdict for the two hard gates.
@@ -193,11 +217,12 @@ func (h HarnessConfig) Run(ctx context.Context, samples []Sample) (*Report, erro
 		SignalTiers:         map[string]int64{},
 	}
 	var (
-		structPass, structTotal      int
-		precHit, precBuilt, precGold int
-		hasGold                      bool
-		shared                       knowledge.KnowledgeStore
+		structPass, structTotal                 int
+		precHit, precBuilt, recallHit, precGold int
+		hasGold                                 bool
+		shared                                  knowledge.KnowledgeStore
 	)
+	evStats := make(map[string]*EvidenceStat)
 	if h.SharedStore {
 		shared = memorystore.New()
 	}
@@ -218,7 +243,9 @@ func (h HarnessConfig) Run(ctx context.Context, samples []Sample) (*Report, erro
 			hasGold = true
 			precHit += r.PrecHit
 			precBuilt += r.PrecBuilt
+			recallHit += r.RecallHit
 			precGold += r.PrecGold
+			accumulateEvidence(evStats, r, s.Gold)
 		}
 		for _, b := range r.Built {
 			agg.ConfidenceHistogram[confBucket(b.Confidence)]++
@@ -231,7 +258,12 @@ func (h HarnessConfig) Run(ctx context.Context, samples []Sample) (*Report, erro
 	agg.HasGold = hasGold
 	if hasGold {
 		agg.PrecisionMicro = safeDivInt64(int64(precHit), int64(precBuilt))
-		agg.RecallMicro = safeDivInt64(int64(precHit), int64(precGold))
+		agg.RecallMicro = safeDivInt64(int64(recallHit), int64(precGold))
+		for _, st := range evStats {
+			st.Precision = safeDivInt64(int64(st.Hit), int64(st.Built))
+			st.Smoothed = float64(st.Hit+1) / float64(st.Built+2)
+		}
+		agg.EvidencePrecision = evStats
 	}
 	rep.Aggregate = agg
 
@@ -279,6 +311,17 @@ func (h HarnessConfig) runSample(ctx context.Context, s Sample, shared knowledge
 	}
 	snap := m.Snapshot()
 
+	// Candidate ID -> evidence class, so built objects (which keep the
+	// candidate node ID) can be bucketed by the signal that produced them.
+	evidenceByID := make(map[string]string, len(s.Candidates))
+	for _, c := range s.Candidates {
+		if v, ok := c.Attributes["evidence"]; ok {
+			if ev, ok := v.(string); ok && ev != "" {
+				evidenceByID[c.ID] = ev
+			}
+		}
+	}
+
 	built := make([]BuiltItem, 0, len(res.Objects))
 	for _, o := range res.Objects {
 		var nt, sig string
@@ -296,6 +339,7 @@ func (h HarnessConfig) runSample(ctx context.Context, s Sample, shared knowledge
 			Confidence: o.Confidence,
 			Signal:     sig,
 			Key:        NormalizeKey(o.Summary),
+			Evidence:   evidenceByID[o.ID],
 		})
 	}
 
@@ -321,13 +365,14 @@ func (h HarnessConfig) runSample(ctx context.Context, s Sample, shared knowledge
 		Built:              built,
 	}
 	if s.Gold != nil {
-		hit, builtN, goldN := precisionCounts(built, s.Gold)
+		hit, builtN, goldHit, goldN := precisionCounts(built, s.Gold)
 		r.HasGold = true
 		r.PrecHit = hit
 		r.PrecBuilt = builtN
+		r.RecallHit = goldHit
 		r.PrecGold = goldN
 		r.Precision = safeDivInt64(int64(hit), int64(builtN))
-		r.Recall = safeDivInt64(int64(hit), int64(goldN))
+		r.Recall = safeDivInt64(int64(goldHit), int64(goldN))
 	}
 	return r, nil
 }
@@ -357,27 +402,21 @@ func toNode(c SampleNode) *compiler.Node {
 	}
 }
 
-// precisionCounts compares built keys to gold (canonicalized). It returns the
-// number of built items that matched gold, the number of built items with a
-// usable key, and the number of distinct gold keys.
-func precisionCounts(built []BuiltItem, gold *Gold) (hit, builtN, goldN int) {
-	goldSet := make(map[string]struct{})
-	for _, g := range gold.Facts {
-		if k := NormalizeKey(g); k != "" {
-			goldSet[k] = struct{}{}
-		}
-	}
-	for _, g := range gold.Entities {
-		if k := NormalizeKey(g); k != "" {
-			goldSet[k] = struct{}{}
-		}
-	}
-	for _, g := range gold.References {
-		if k := NormalizeKey(g); k != "" {
-			goldSet[k] = struct{}{}
-		}
-	}
+// precisionCounts compares built keys to gold (canonicalized).
+//
+// Returns:
+//
+//	hit     — built items whose key matched gold (precision numerator).
+//	builtN  — built items with a usable key (precision denominator).
+//	goldHit — DISTINCT gold keys covered by at least one built item (recall
+//	          numerator). Counting distinct keys instead of per-built matches
+//	          keeps recall <= 1 when several built items collapse onto the
+//	          same gold key.
+//	goldN   — distinct gold keys (recall denominator).
+func precisionCounts(built []BuiltItem, gold *Gold) (hit, builtN, goldHit, goldN int) {
+	goldSet := goldKeySet(gold)
 	goldN = len(goldSet)
+	covered := make(map[string]struct{})
 	for _, b := range built {
 		if b.Key == "" {
 			continue
@@ -385,9 +424,49 @@ func precisionCounts(built []BuiltItem, gold *Gold) (hit, builtN, goldN int) {
 		builtN++
 		if _, ok := goldSet[b.Key]; ok {
 			hit++
+			covered[b.Key] = struct{}{}
 		}
 	}
-	return hit, builtN, goldN
+	return hit, builtN, len(covered), goldN
+}
+
+// goldKeySet canonicalizes every gold annotation (facts, entities,
+// references) into a set of NormalizeKey keys.
+func goldKeySet(gold *Gold) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, group := range [][]string{gold.Facts, gold.Entities, gold.References} {
+		for _, g := range group {
+			if k := NormalizeKey(g); k != "" {
+				set[k] = struct{}{}
+			}
+		}
+	}
+	return set
+}
+
+// accumulateEvidence tallies per-evidence-class built/hit counts for one
+// gold-annotated sample into stats. Items without an evidence label are
+// grouped under "unlabeled" so the report never silently drops them.
+func accumulateEvidence(stats map[string]*EvidenceStat, r SampleResult, gold *Gold) {
+	goldSet := goldKeySet(gold)
+	for _, b := range r.Built {
+		if b.Key == "" {
+			continue
+		}
+		ev := b.Evidence
+		if ev == "" {
+			ev = "unlabeled"
+		}
+		st := stats[ev]
+		if st == nil {
+			st = &EvidenceStat{}
+			stats[ev] = st
+		}
+		st.Built++
+		if _, ok := goldSet[b.Key]; ok {
+			st.Hit++
+		}
+	}
 }
 
 // confBucket maps a confidence score to its reporting bucket label.

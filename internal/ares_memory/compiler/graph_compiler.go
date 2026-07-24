@@ -52,21 +52,28 @@ func (g *GraphCompiler) Compile(ctx context.Context, entities []ExtractedEntity,
 	}
 
 	// Phase 1: Add entity nodes.
+	// Entity identity is case-INsensitive: filenames, library references (e.g.
+	// KERNEL32.dll vs kernel32.dll) and identifiers are resolved the same way
+	// by humans and most toolchains regardless of casing, so two case variants
+	// must collapse to a single node instead of producing duplicate keys in
+	// the downstream store. The original casing is preserved in attrName for
+	// display; only the dedup/identity key is folded.
 	entityAdded := make(map[string]bool) // Track deduplicated entities.
 	for _, e := range entities {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("graph compiler: context cancelled during entity phase: %w", err)
 		}
-		if entityAdded[e.Name] {
+		entityKey := strings.ToLower(e.Name)
+		if entityAdded[entityKey] {
 			continue // Duplicate entity name within this batch.
 		}
-		entityID := fmt.Sprintf("entity-%s", e.Name)
+		entityID := fmt.Sprintf("entity-%s", entityKey)
 		if _, exists := model.Nodes[entityID]; exists {
 			// Entity already present from a previous (incremental) compile.
-			entityAdded[e.Name] = true
+			entityAdded[entityKey] = true
 			continue
 		}
-		entityAdded[e.Name] = true
+		entityAdded[entityKey] = true
 
 		node := &Node{
 			ID:         entityID,
@@ -80,6 +87,7 @@ func (g *GraphCompiler) Compile(ctx context.Context, entities []ExtractedEntity,
 				"type":       e.Type,
 				"aliases":    e.Aliases,
 				"properties": e.Properties,
+				"evidence":   e.Evidence,
 			},
 		}
 		if err := model.AddNode(node); err != nil {
@@ -116,8 +124,9 @@ func (g *GraphCompiler) Compile(ctx context.Context, entities []ExtractedEntity,
 			return nil, fmt.Errorf("graph compiler: add fact node: %w", err)
 		}
 
-		// Link fact to subject entity if it exists.
-		subjectID := fmt.Sprintf("entity-%s", f.Subject)
+		// Link fact to subject entity if it exists. Subject/object IDs are
+		// case-folded to match the case-insensitive entity identity above.
+		subjectID := fmt.Sprintf("entity-%s", strings.ToLower(f.Subject))
 		if _, exists := model.Nodes[subjectID]; exists {
 			_ = model.AddEdge(Edge{
 				ID:        fmt.Sprintf("edge-%s-subject", factID),
@@ -130,7 +139,7 @@ func (g *GraphCompiler) Compile(ctx context.Context, entities []ExtractedEntity,
 		}
 
 		// Link fact to object entity if it exists.
-		objectID := fmt.Sprintf("entity-%s", f.Object)
+		objectID := fmt.Sprintf("entity-%s", strings.ToLower(f.Object))
 		if _, exists := model.Nodes[objectID]; exists {
 			_ = model.AddEdge(Edge{
 				ID:        fmt.Sprintf("edge-%s-object", factID),
