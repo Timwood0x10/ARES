@@ -50,9 +50,9 @@ func run() error {
 	rt := sdk.MustNew(opts...)
 	defer rt.Close()
 
-	fmt.Printf("🔌 Loaded %s — LLM provider=%s model=%s memory=%v distillation=%v\n",
+	fmt.Printf("🔌 Loaded %s — LLM provider=%s model=%s memory=%v distillation=%v rag=%v\n",
 		yamlPath, cfg.LLM.Provider, cfg.LLM.Model,
-		cfg.Memory.Enabled, cfg.Memory.EnableDistillation)
+		cfg.Memory.Enabled, cfg.Memory.EnableDistillation, cfg.Memory.EnableRAG)
 
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction("You are a helpful assistant. Answer briefly."),

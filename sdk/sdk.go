@@ -37,14 +37,15 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/Timwood0x10/ares/api/core"
+	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
-	memsvc "github.com/Timwood0x10/ares/api/service/memory"
 	"github.com/Timwood0x10/ares/api/tools"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
@@ -57,6 +58,7 @@ import (
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 const strategyPriority = "priority"
@@ -78,7 +80,8 @@ const (
 type Runtime struct {
 	llmSvc           *llm.Service
 	toolReg          *tools.Registry
-	memSvc           *memsvc.Service
+	memMgr           memory.MemoryManager
+	distillCleanup   func()
 	memEnabled       bool
 	evoEnabled       bool
 	knowledgeEnabled bool
@@ -90,11 +93,18 @@ type Runtime struct {
 	trace            bool
 }
 
-// memSearcher adapts memsvc.Service to the memory.TaskSearcher interface.
+// memSearcher adapts memory.MemoryManager to the memory.TaskSearcher
+// interface. It converts the manager's []*models.Task results into the
+// memprovider.SearchResult shape expected by the AKF memory provider.
 type memSearcher struct {
-	svc *memsvc.Service
+	svc memory.MemoryManager
 }
 
+// SearchSimilarTasks delegates to the MemoryManager and converts each
+// *models.Task into a memprovider.SearchResult. The Task.TaskID maps to
+// SearchResult.ID; the "input" payload field (set by SearchSimilarTasks
+// on the manager) maps to Summary. Tasks without an input payload fall
+// back to the TaskID as the summary.
 func (s *memSearcher) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]memprovider.SearchResult, error) {
 	results, err := s.svc.SearchSimilarTasks(ctx, query, limit)
 	if err != nil {
@@ -250,6 +260,130 @@ func MustNew(opts ...Option) *Runtime {
 	return r
 }
 
+// knowledgeWiring bundles the outputs of wireKnowledge so New() can unpack
+// a single struct instead of juggling four return values.
+type knowledgeWiring struct {
+	rt             *khruntime.KnowledgeRuntime
+	store          knowledge.KnowledgeStore
+	evolutionStore *memStrategyStore
+}
+
+// wireKnowledge constructs the AKF Knowledge Fabric runtime, store, and
+// evolution strategy store from the SDK config. When knowledge is disabled,
+// it returns a zero-value wiring (all nil). Extracted from New() to keep
+// the constructor under the 100-line limit.
+//
+// Args:
+//
+//	cfg     - fully applied SDK config; knlCfg/evoCfg/dbCfg/sqliteStorePath are read.
+//	memMgr  - memory manager; when non-nil, a memory provider is auto-registered
+//	          into the knowledge provider registry so past tasks surface in the AKG.
+//
+// Returns:
+//
+//	*knowledgeWiring - rt/store/evolutionStore are nil when knowledge is disabled.
+//	error            - wrapped error if a knowledge store or provider fails to init.
+func wireKnowledge(cfg *config, memMgr memory.MemoryManager) (*knowledgeWiring, error) {
+	if !cfg.knlCfg.Enabled {
+		return &knowledgeWiring{}, nil
+	}
+
+	reg := provider.NewProviderRegistry()
+
+	if err := registerKnowledgeProviders(reg, cfg, memMgr); err != nil {
+		return nil, err
+	}
+
+	store, err := buildKnowledgeStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var evoStore *memStrategyStore
+	if cfg.evoCfg.Enabled {
+		evoStore = newMemStrategyStore()
+	}
+
+	rt := khruntime.New(
+		planner.NewKnowledgePlanner(),
+		planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
+		reg,
+		nil, // pipeline: use defaults
+		[]khruntime.Linker{
+			&khruntime.DefaultLinker{},
+			&linker.DecisionLinker{},
+			&linker.ArchitectureLinker{},
+			&linker.TimelineLinker{},
+			&linker.SimilarityLinker{},
+		},
+		[]khruntime.Reducer{&khruntime.DefaultReducer{}},
+	)
+
+	return &knowledgeWiring{rt: rt, store: store, evolutionStore: evoStore}, nil
+}
+
+// registerKnowledgeProviders registers the memory, evolution, and
+// user-configured extra providers into the registry. Extracted to keep
+// wireKnowledge under 100 lines.
+func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager) error {
+	if memMgr != nil {
+		searcher := &memSearcher{svc: memMgr}
+		if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
+			return fmt.Errorf("knowledge: register memory provider: %w", err)
+		}
+	}
+
+	if cfg.evoCfg.Enabled {
+		evoStore := newMemStrategyStore()
+		if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
+			return fmt.Errorf("knowledge: register evolution provider: %w", err)
+		}
+	}
+
+	for _, p := range cfg.extraProviders {
+		if err := reg.Register(p); err != nil {
+			return fmt.Errorf("knowledge: register provider %s: %w", p.Name(), err)
+		}
+	}
+	return nil
+}
+
+// buildKnowledgeStore selects the knowledge store backend: SQLite >
+// PostgreSQL > in-memory. All opt-in via SDK options; defaults to
+// in-memory to preserve prior behaviour.
+func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
+	switch {
+	case cfg.sqliteStorePath != "":
+		s, err := sqlitestore.New(cfg.sqliteStorePath)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge: init sqlite store: %w", err)
+		}
+		return s, nil
+	case cfg.dbCfg.Host != "":
+		sslMode := cfg.dbCfg.SSLMode
+		if sslMode == "" {
+			sslMode = "disable"
+		}
+		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
+			cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
+		db, err := sql.Open("postgres", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge: open postgres store: %w", err)
+		}
+		store, err := postgresstore.New(db)
+		if err != nil {
+			if closeErr := db.Close(); closeErr != nil {
+				err = fmt.Errorf("knowledge: init postgres store: %w (also close db: %v)", err, closeErr)
+			}
+			return nil, fmt.Errorf("knowledge: init postgres store: %w", err)
+		}
+		return store, nil
+	default:
+		return memstore.New(), nil
+	}
+}
+
 // New creates a new Runtime. Returns an error when a required option (e.g. an
 // LLM provider) cannot be initialised.
 func New(opts ...Option) (*Runtime, error) {
@@ -274,14 +408,20 @@ func New(opts ...Option) (*Runtime, error) {
 	// ---- Tools ----
 	toolReg := tools.NewRegistry()
 
-	// ---- Memory ----
-	var memSvc *memsvc.Service
+	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
+	var memMgr memory.MemoryManager
+	var distillCleanup func()
+	var embClient apiembed.EmbeddingService
+	var expRepo repositories.ExperienceRepositoryInterface
 	if cfg.memCfg.Enabled {
-		s, err := memsvc.New(nil)
+		w, err := wireMemory(context.Background(), cfg)
 		if err != nil {
 			return nil, fmt.Errorf("memory: %w", err)
 		}
-		memSvc = s
+		memMgr = w.mgr
+		embClient = w.embClient
+		expRepo = w.expRepo
+		distillCleanup = w.cleanup
 	}
 
 	// ---- MCP ----
@@ -315,96 +455,30 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 
 	// ---- AKF Knowledge Fabric ----
-	var knowledgeRT *khruntime.KnowledgeRuntime
-	var knowledgeStore knowledge.KnowledgeStore
-	var evoStore *memStrategyStore
-	if cfg.knlCfg.Enabled {
-		reg := provider.NewProviderRegistry()
+	kw, err := wireKnowledge(cfg, memMgr)
+	if err != nil {
+		return nil, err
+	}
 
-		// Auto-register memory provider when memory is also enabled.
-		if memSvc != nil {
-			searcher := &memSearcher{svc: memSvc}
-			if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
-				return nil, fmt.Errorf("knowledge: register memory provider: %w", err)
-			}
-		}
-
-		// Auto-register evolution provider when evolution is also enabled.
-		if cfg.evoCfg.Enabled {
-			evoStore = newMemStrategyStore()
-			if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
-				return nil, fmt.Errorf("knowledge: register evolution provider: %w", err)
-			}
-		}
-
-		// Register user-configured extra knowledge providers (code, mysql,
-		// postgres, or custom). Opt-in via WithKnowledgeProvider; defaults
-		// to none.
-		for _, p := range cfg.extraProviders {
-			if err := reg.Register(p); err != nil {
-				return nil, fmt.Errorf("knowledge: register provider %s: %w", p.Name(), err)
-			}
-		}
-
-		// Knowledge store factory: SQLite > PostgreSQL > in-memory. All
-		// opt-in via SDK options; defaults to in-memory to preserve prior
-		// behaviour.
-		switch {
-		case cfg.sqliteStorePath != "":
-			s, err := sqlitestore.New(cfg.sqliteStorePath)
-			if err != nil {
-				return nil, fmt.Errorf("knowledge: init sqlite store: %w", err)
-			}
-			knowledgeStore = s
-		case cfg.dbCfg.Host != "":
-			sslMode := cfg.dbCfg.SSLMode
-			if sslMode == "" {
-				sslMode = "disable"
-			}
-			dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-				cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
-				cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
-			db, err := sql.Open("postgres", dsn)
-			if err != nil {
-				return nil, fmt.Errorf("knowledge: open postgres store: %w", err)
-			}
-			knowledgeStore, err = postgresstore.New(db)
-			if err != nil {
-				if closeErr := db.Close(); closeErr != nil {
-					err = fmt.Errorf("knowledge: init postgres store: %w (also close db: %v)", err, closeErr)
-				}
-				return nil, fmt.Errorf("knowledge: init postgres store: %w", err)
-			}
-		default:
-			knowledgeStore = memstore.New()
-		}
-
-		knowledgeRT = khruntime.New(
-			planner.NewKnowledgePlanner(),
-			planner.NewSourceDiscovery(reg, planner.NewQueryPlanner()),
-			reg,
-			nil, // pipeline: use defaults
-			[]khruntime.Linker{
-				&khruntime.DefaultLinker{},
-				&linker.DecisionLinker{},
-				&linker.ArchitectureLinker{},
-				&linker.TimelineLinker{},
-				&linker.SimilarityLinker{},
-			},
-			[]khruntime.Reducer{&khruntime.DefaultReducer{}},
-		)
+	// ---- RAG retriever wiring (best-effort, non-fatal) ----
+	// Injects MemoryRetriever + KnowledgeRetriever into the MemoryManager so
+	// BuildContext can augment the LLM prompt with retrieved context. Only
+	// fires when RAG is enabled; failures are logged, not propagated.
+	if cfg.memCfg.EnableRAG && memMgr != nil {
+		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo, kw.rt)
 	}
 
 	return &Runtime{
 		llmSvc:           llmSvc,
 		toolReg:          toolReg,
-		memSvc:           memSvc,
+		memMgr:           memMgr,
+		distillCleanup:   distillCleanup,
 		memEnabled:       cfg.memCfg.Enabled,
 		evoEnabled:       cfg.evoCfg.Enabled,
 		knowledgeEnabled: cfg.knlCfg.Enabled,
-		knowledgeRT:      knowledgeRT,
-		knowledgeStore:   knowledgeStore,
-		evolutionStore:   evoStore,
+		knowledgeRT:      kw.rt,
+		knowledgeStore:   kw.store,
+		evolutionStore:   kw.evolutionStore,
 		eventStore:       ares_events.NewMemoryEventStore(),
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
@@ -415,10 +489,13 @@ func New(opts ...Option) (*Runtime, error) {
 // store, MCP connections). Call once when the Runtime is no longer needed.
 func (r *Runtime) Close() {
 	r.llmSvc.Close()
-	if r.memSvc != nil {
+	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
-		_ = r.memSvc.Stop(stopCtx)
+		_ = r.memMgr.Stop(stopCtx)
+	}
+	if r.distillCleanup != nil {
+		r.distillCleanup()
 	}
 	for _, c := range r.mcpClients {
 		_ = c.Close()
@@ -669,8 +746,8 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	start := time.Now()
 
 	sessionID := uuid.NewString()
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		sid, err := a.runtime.memSvc.CreateSession(ctx, a.name)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		sid, err := a.runtime.memMgr.CreateSession(ctx, a.name)
 		if err == nil {
 			sessionID = sid
 		}
@@ -712,8 +789,8 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 			ToolCalls: resp.ToolCalls,
 		})
 
-		if a.runtime.memEnabled && a.runtime.memSvc != nil {
-			_ = a.runtime.memSvc.AddMessage(ctx, sessionID, "assistant", resp.Content)
+		if a.runtime.memEnabled && a.runtime.memMgr != nil {
+			_ = a.runtime.memMgr.AddMessage(ctx, sessionID, "assistant", resp.Content)
 		}
 
 		// ---- tool calling loop ----
@@ -836,8 +913,8 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 	}
 
 	// Inject memory context if available
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		ctxStr, err := a.runtime.memSvc.BuildContext(ctx, input, sessionID)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		ctxStr, err := a.runtime.memMgr.BuildContext(ctx, input, sessionID)
 		if err == nil && ctxStr != "" {
 			msgs = append(msgs, &core.LLMMessage{
 				Role:    roleSystem,
@@ -877,8 +954,8 @@ func (a *Agent) buildMessages(ctx context.Context, input, sessionID string) []*c
 		Content: input,
 	})
 
-	if a.runtime.memEnabled && a.runtime.memSvc != nil {
-		_ = a.runtime.memSvc.AddMessage(ctx, sessionID, roleUser, input)
+	if a.runtime.memEnabled && a.runtime.memMgr != nil {
+		_ = a.runtime.memMgr.AddMessage(ctx, sessionID, roleUser, input)
 	}
 
 	return msgs

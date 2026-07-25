@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -271,5 +272,214 @@ func TestWithKnowledgeConfig_InactiveChunkSizeSkipsChecks(t *testing.T) {
 	})(&config{})
 	if err != nil {
 		t.Fatalf("expected nil when chunk_size inactive, got: %v", err)
+	}
+}
+
+// TestValidate_RAG covers Validate behaviour for the memory.rag_* fields.
+// Each case exercises a single branch of the RAG validation block.
+func TestValidate_RAG(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *ConfigFile
+		wantErr bool
+	}{
+		{
+			name: "reject topK zero when rag enabled",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   true,
+					RAGTopK:     0,
+					RAGMinScore: 0.4,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject minScore below zero when rag enabled",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   true,
+					RAGTopK:     5,
+					RAGMinScore: -0.1,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject minScore above one when rag enabled",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   true,
+					RAGTopK:     5,
+					RAGMinScore: 1.5,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "accept valid rag config",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   true,
+					RAGTopK:     5,
+					RAGMinScore: 0.4,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "skip rag checks when rag disabled",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   false,
+					RAGTopK:     0,
+					RAGMinScore: 1.5,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "skip rag checks when memory disabled",
+			cfg: &ConfigFile{
+				Memory: MemoryFileConfig{
+					Enabled:     false,
+					EnableRAG:   true,
+					RAGTopK:     0,
+					RAGMinScore: -0.5,
+				},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected nil error, got: %v", err)
+			}
+			if tt.wantErr && !errors.Is(err, ErrInvalidRange) {
+				t.Fatalf("expected ErrInvalidRange wrap, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestToOptions_RAG verifies ToOptions emits a WithRAG option exactly when
+// Memory.EnableRAG is true, and that the option arms memCfg correctly.
+func TestToOptions_RAG(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           *ConfigFile
+		wantRAGOption bool
+	}{
+		{
+			name: "emit rag when enable_rag true",
+			cfg: &ConfigFile{
+				LLM: LLMFileConfig{Provider: "ollama"},
+				Memory: MemoryFileConfig{
+					Enabled:     true,
+					EnableRAG:   true,
+					RAGTopK:     5,
+					RAGMinScore: 0.4,
+				},
+			},
+			wantRAGOption: true,
+		},
+		{
+			name: "skip rag when enable_rag false",
+			cfg: &ConfigFile{
+				LLM: LLMFileConfig{Provider: "ollama"},
+				Memory: MemoryFileConfig{
+					Enabled:   true,
+					EnableRAG: false,
+				},
+			},
+			wantRAGOption: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, err := tt.cfg.ToOptions()
+			if err != nil {
+				t.Fatalf("ToOptions error: %v", err)
+			}
+			c := defaultConfig()
+			for _, opt := range opts {
+				if err := opt(c); err != nil {
+					t.Fatalf("apply option: %v", err)
+				}
+			}
+			if tt.wantRAGOption {
+				if !c.memCfg.EnableRAG {
+					t.Fatal("expected memCfg.EnableRAG=true after applying options")
+				}
+				if c.memCfg.RAGTopK != tt.cfg.Memory.RAGTopK {
+					t.Errorf("memCfg.RAGTopK = %d, want %d",
+						c.memCfg.RAGTopK, tt.cfg.Memory.RAGTopK)
+				}
+				if c.memCfg.RAGMinScore != tt.cfg.Memory.RAGMinScore {
+					t.Errorf("memCfg.RAGMinScore = %v, want %v",
+						c.memCfg.RAGMinScore, tt.cfg.Memory.RAGMinScore)
+				}
+			} else if c.memCfg.EnableRAG {
+				t.Fatal("expected memCfg.EnableRAG=false, got true")
+			}
+		})
+	}
+}
+
+// TestWithRAG covers the WithRAG option constructor argument validation.
+func TestWithRAG(t *testing.T) {
+	tests := []struct {
+		name     string
+		topK     int
+		minScore float64
+		wantErr  bool
+	}{
+		{name: "reject topK zero", topK: 0, minScore: 0.4, wantErr: true},
+		{name: "reject topK negative", topK: -1, minScore: 0.4, wantErr: true},
+		{name: "reject minScore above one", topK: 5, minScore: 1.5, wantErr: true},
+		{name: "reject minScore below zero", topK: 5, minScore: -0.1, wantErr: true},
+		{name: "accept topK one minScore zero", topK: 1, minScore: 0, wantErr: false},
+		{name: "accept topK ten minScore one", topK: 10, minScore: 1, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &config{}
+			err := WithRAG(tt.topK, tt.minScore)(c)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, ErrInvalidRange) {
+					t.Fatalf("expected ErrInvalidRange wrap, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil error, got: %v", err)
+			}
+			if !c.memCfg.Enabled {
+				t.Error("expected memCfg.Enabled=true")
+			}
+			if !c.memCfg.EnableRAG {
+				t.Error("expected memCfg.EnableRAG=true")
+			}
+			if c.memCfg.RAGTopK != tt.topK {
+				t.Errorf("memCfg.RAGTopK = %d, want %d", c.memCfg.RAGTopK, tt.topK)
+			}
+			if c.memCfg.RAGMinScore != tt.minScore {
+				t.Errorf("memCfg.RAGMinScore = %v, want %v",
+					c.memCfg.RAGMinScore, tt.minScore)
+			}
+		})
 	}
 }

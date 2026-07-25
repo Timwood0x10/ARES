@@ -64,6 +64,16 @@ type MemoryFileConfig struct {
 	MaxSessions           int  `yaml:"max_sessions"`
 	EnableDistillation    bool `yaml:"enable_distillation"`
 	DistillationThreshold int  `yaml:"distillation_threshold"`
+	// EnableRAG enables retrieval-augmented generation: past experiences and
+	// distilled memories are retrieved and injected into the LLM prompt.
+	// Default: false (opt-in).
+	EnableRAG bool `yaml:"enable_rag"`
+	// RAGTopK is the maximum number of retrieved snippets to inject.
+	// Must be >= 1 when EnableRAG is true.
+	RAGTopK int `yaml:"rag_top_k"`
+	// RAGMinScore is the minimum similarity score for a retrieved snippet to
+	// be included. Must be in [0, 1] when EnableRAG is true.
+	RAGMinScore float64 `yaml:"rag_min_score"`
 }
 
 // DatabaseFileConfig declares PostgreSQL connection parameters. When the
@@ -161,6 +171,18 @@ func (c *ConfigFile) Validate() error {
 		if c.Memory.DistillationThreshold < 0 {
 			return fmt.Errorf("memory.distillation_threshold %d: %w",
 				c.Memory.DistillationThreshold, ErrInvalidRange)
+		}
+		// RAG validation only fires when EnableRAG is true. RAGTopK must be
+		// at least 1 (zero is invalid here, unlike other memory knobs where
+		// zero means "use default"), and RAGMinScore must be a valid
+		// similarity score in [0, 1].
+		if c.Memory.EnableRAG {
+			if c.Memory.RAGTopK < 1 {
+				return fmt.Errorf("memory.rag_top_k %d: %w", c.Memory.RAGTopK, ErrInvalidRange)
+			}
+			if c.Memory.RAGMinScore < 0 || c.Memory.RAGMinScore > 1 {
+				return fmt.Errorf("memory.rag_min_score %v: %w", c.Memory.RAGMinScore, ErrInvalidRange)
+			}
 		}
 	}
 	// Database section: validate only when host is set (section present).
@@ -265,6 +287,9 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			// straight through instead of substituting a default, so users
 			// can express ungated behaviour explicitly via yaml.
 			opts = append(opts, WithDistillation(c.Memory.DistillationThreshold))
+		}
+		if c.Memory.EnableRAG {
+			opts = append(opts, WithRAG(c.Memory.RAGTopK, c.Memory.RAGMinScore))
 		}
 	}
 

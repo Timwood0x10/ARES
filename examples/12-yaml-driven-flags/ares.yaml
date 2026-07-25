@@ -17,3 +17,23 @@ memory:
   # distillation_threshold 3 → distillation fires every 3 conversation
   # rounds. 0 would mean "fire on every event" (legacy ungated).
   distillation_threshold: 3
+  # RAG: retrieve distilled experiences (and AKG knowledge when the
+  # knowledge section is active) into the LLM prompt. enable_rag=false
+  # (or omitted) preserves legacy compression-only behaviour.
+  enable_rag: true
+  # rag_top_k 5 → inject at most 5 retrieved snippets into the prompt.
+  # Must be >= 1 when enable_rag is true.
+  rag_top_k: 5
+  # rag_min_score 0.4 → drop retrieved snippets whose similarity is
+  # below 0.4. Must be in [0, 1] when enable_rag is true.
+  rag_min_score: 0.4
+
+# Knowledge section: when chunk_size > 0 the sdk wires the AKF Knowledge
+# Fabric retriever alongside the memory retriever, so RAG also surfaces
+# AKG knowledge. Omitting this section keeps RAG memory-only.
+#
+# knowledge:
+#   chunk_size: 512
+#   chunk_overlap: 64
+#   top_k: 5
+#   min_score: 0.4

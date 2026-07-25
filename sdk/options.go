@@ -2,11 +2,73 @@ package sdk
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 )
+
+// ---- Config options ----
+
+// ConfigOption configures the Runtime during construction using a YAML file.
+// Loads ares.yaml from the given path and converts it to internal options.
+type ConfigOption func(*config) error
+
+// WithConfig loads configuration from a YAML file, parses and validates it,
+// then converts it to internal options and applies them.
+//
+// Args:
+//
+//	path - filesystem path to the YAML file (ares.yaml by default)
+//
+// Returns:
+//
+//	A Runtime option that applies the loaded configuration.
+func WithConfig(path string) ConfigOption {
+	return func(c *config) error {
+		sdkCfg, err := LoadConfigFile(path)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		opts, err := sdkCfg.ToOptions()
+		if err != nil {
+			return fmt.Errorf("config to options: %w", err)
+		}
+		for _, opt := range opts {
+			if err := opt(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// WithConfigFromEnv loads configuration from a YAML file, allowing override
+// via the ARES_YAML environment variable. If ARES_YAML is set, it will be
+// used as the config path. Otherwise, it falls back to ./ares.yaml.
+func WithConfigFromEnv() ConfigOption {
+	return func(c *config) error {
+		path := "./ares.yaml"
+		if p := os.Getenv("ARES_YAML"); p != "" {
+			path = p
+		}
+		sdkCfg, err := LoadConfigFile(path)
+		if err != nil {
+			return fmt.Errorf("load config %s: %w", path, err)
+		}
+		opts, err := sdkCfg.ToOptions()
+		if err != nil {
+			return fmt.Errorf("config to options: %w", err)
+		}
+		for _, opt := range opts {
+			if err := opt(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
 
 // ---- Runtime options ----
 
@@ -40,6 +102,11 @@ type memoryCfg struct {
 	Enabled     bool
 	MaxHistory  int // 0 → component default
 	MaxSessions int // 0 → component default
+	// EnableRAG enables retrieval-augmented generation; RAGTopK and RAGMinScore
+	// tune retrieval when EnableRAG is true.
+	EnableRAG   bool
+	RAGTopK     int
+	RAGMinScore float64
 }
 
 type evolutionCfg struct {
@@ -241,6 +308,34 @@ func WithDistillation(threshold int) Option {
 		}
 		c.distillCfg.Enabled = true
 		c.distillCfg.Threshold = threshold
+		return nil
+	}
+}
+
+// WithRAG enables retrieval-augmented generation. Past experiences and distilled
+// memories are retrieved and injected into the LLM prompt.
+//
+// Args:
+//
+//	topK     - max retrieved snippets to inject; must be >= 1.
+//	minScore - minimum similarity score in [0, 1]; snippets below are filtered.
+//
+// Returns:
+//
+//	An Option that arms the memory RAG subsystem. Returns an error wrapping
+//	ErrInvalidRange when topK < 1 or minScore is outside [0, 1].
+func WithRAG(topK int, minScore float64) Option {
+	return func(c *config) error {
+		if topK < 1 {
+			return fmt.Errorf("rag top_k %d: %w", topK, ErrInvalidRange)
+		}
+		if minScore < 0 || minScore > 1 {
+			return fmt.Errorf("rag min_score %v: %w", minScore, ErrInvalidRange)
+		}
+		c.memCfg.Enabled = true
+		c.memCfg.EnableRAG = true
+		c.memCfg.RAGTopK = topK
+		c.memCfg.RAGMinScore = minScore
 		return nil
 	}
 }
