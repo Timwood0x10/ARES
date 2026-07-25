@@ -101,7 +101,7 @@ memory:
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Server.Port = %v, want 8080", cfg.Server.Port)
 	}
-	if cfg.LLM.Provider != "ollama" {
+	if cfg.LLM.Provider != defaultLLMProvider {
 		t.Errorf("LLM.Provider = %v, want ollama", cfg.LLM.Provider)
 	}
 	if cfg.LLM.Model != "llama3.2" {
@@ -160,7 +160,7 @@ func TestLoadFromEnv(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider: "ollama",
+			Provider: defaultLLMProvider,
 			Model:    "llama3",
 		},
 		Storage: StorageConfig{
@@ -183,7 +183,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if err := os.Setenv("LLM_API_KEY", "test-api-key"); err != nil {
 		t.Fatalf("Failed to set LLM_API_KEY: %v", err)
 	}
-	if err := os.Setenv("LLM_PROVIDER", "openai"); err != nil {
+	if err := os.Setenv("LLM_PROVIDER", providerOpenAI); err != nil {
 		t.Fatalf("Failed to set LLM_PROVIDER: %v", err)
 	}
 	if err := os.Setenv("LLM_BASE_URL", "https://api.openai.com"); err != nil {
@@ -260,7 +260,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.LLM.APIKey != "test-api-key" {
 		t.Errorf("LLM.APIKey = %v, want test-api-key", cfg.LLM.APIKey)
 	}
-	if cfg.LLM.Provider != "openai" {
+	if cfg.LLM.Provider != providerOpenAI {
 		t.Errorf("LLM.Provider = %v, want openai", cfg.LLM.Provider)
 	}
 	if cfg.LLM.BaseURL != "https://api.openai.com" {
@@ -290,7 +290,7 @@ func TestLoadFromEnv(t *testing.T) {
 func TestLoadFromEnvOpenRouterAPIKey(t *testing.T) {
 	cfg := &Config{
 		LLM: LLMConfig{
-			Provider: "openrouter",
+			Provider: providerOpenRouter,
 		},
 	}
 
@@ -354,7 +354,7 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Server.Port default = %v, want 8080", cfg.Server.Port)
 	}
-	if cfg.LLM.Provider != "ollama" {
+	if cfg.LLM.Provider != defaultLLMProvider {
 		t.Errorf("LLM.Provider default = %v, want ollama", cfg.LLM.Provider)
 	}
 	if cfg.LLM.Model != "llama3.2" {
@@ -412,7 +412,7 @@ func TestValidate(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -467,7 +467,7 @@ func TestValidateInvalidServerPort(t *testing.T) {
 			Port: 70000, // Invalid port
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -507,7 +507,7 @@ func TestValidateInvalidLLMTimeout(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   0, // Invalid timeout
 			MaxTokens: 4096,
@@ -587,7 +587,7 @@ func TestValidateInvalidLeaderMaxSteps(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -627,7 +627,7 @@ func TestValidateInvalidOutputFormat(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -667,7 +667,7 @@ func TestValidateInvalidSubAgent(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -715,7 +715,7 @@ func TestValidateStorageEnabled(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -762,7 +762,7 @@ func TestValidateInvalidSessionMaxHistory(t *testing.T) {
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Provider:  "ollama",
+			Provider:  defaultLLMProvider,
 			Model:     "llama3",
 			Timeout:   60,
 			MaxTokens: 4096,
@@ -807,7 +807,7 @@ func TestConfigStructs(t *testing.T) {
 
 	// Test LLMConfig
 	llmCfg := LLMConfig{
-		Provider:  "openai",
+		Provider:  providerOpenAI,
 		APIKey:    "test-key",
 		BaseURL:   "https://api.openai.com",
 		Model:     "gpt-4",
@@ -815,7 +815,7 @@ func TestConfigStructs(t *testing.T) {
 		MaxTokens: 8192,
 		Extra:     map[string]string{"custom": "value"},
 	}
-	if llmCfg.Provider != "openai" || llmCfg.APIKey != "test-key" {
+	if llmCfg.Provider != providerOpenAI || llmCfg.APIKey != "test-key" {
 		t.Error("LLMConfig initialization failed")
 	}
 
@@ -840,7 +840,7 @@ func TestConfigStructs(t *testing.T) {
 		MaxRetries: 3,
 		Timeout:    30,
 		Model:      "gpt-3.5",
-		Provider:   "openai",
+		Provider:   providerOpenAI,
 	}
 	if subCfg.Type != "top" || len(subCfg.Triggers) != 2 {
 		t.Error("SubAgentConfig initialization failed")
@@ -892,7 +892,7 @@ func TestConfigStructs(t *testing.T) {
 
 // TestValidLLMProviders tests all valid LLM providers.
 func TestValidLLMProviders(t *testing.T) {
-	validProviders := []string{"openai", "ollama", "openrouter"}
+	validProviders := []string{providerOpenAI, defaultLLMProvider, providerOpenRouter}
 
 	for _, provider := range validProviders {
 		cfg := &Config{
@@ -945,7 +945,7 @@ func TestValidOutputFormats(t *testing.T) {
 				Port: 8080,
 			},
 			LLM: LLMConfig{
-				Provider:  "ollama",
+				Provider:  defaultLLMProvider,
 				Model:     "llama3",
 				Timeout:   60,
 				MaxTokens: 4096,

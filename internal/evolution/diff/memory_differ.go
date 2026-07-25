@@ -13,6 +13,10 @@ import (
 // Snapshots must be genome.MemoryGenomeConfig values.
 type MemoryDiffer struct{}
 
+// targetMemory is the patch target identifier for the memory subsystem.
+// Kept as a constant so goconst stays quiet and the value is grep-able.
+const targetMemory = "memory"
+
 // NewMemoryDiffer creates a new MemoryDiffer.
 func NewMemoryDiffer() *MemoryDiffer {
 	return &MemoryDiffer{}
@@ -45,7 +49,7 @@ func (d *MemoryDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimePat
 		}
 		patches = append(patches, patch.RuntimePatch{
 			Type:   patch.PatchChangePlanner,
-			Target: "memory",
+			Target: targetMemory,
 			Value:  vals,
 			Reason: fmt.Sprintf("memory: MaxHistory %d→%d, MaxSessions %d→%d",
 				oldCfg.MaxHistory, newCfg.MaxHistory, oldCfg.MaxSessions, newCfg.MaxSessions),
@@ -60,7 +64,7 @@ func (d *MemoryDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimePat
 		}
 		patches = append(patches, patch.RuntimePatch{
 			Type:   patch.PatchChangeBudget,
-			Target: "memory",
+			Target: targetMemory,
 			Value:  vals,
 			Reason: fmt.Sprintf("memory: MaxDistilledTasks %d→%d", oldCfg.MaxDistilledTasks, newCfg.MaxDistilledTasks),
 			Source: srcMemory,
@@ -74,7 +78,7 @@ func (d *MemoryDiffer) Diff(_ context.Context, old, new any) ([]patch.RuntimePat
 		}
 		patches = append(patches, patch.RuntimePatch{
 			Type:   patch.PatchChangeReducer,
-			Target: "memory",
+			Target: targetMemory,
 			Value:  vals,
 			Reason: fmt.Sprintf("memory: UseStructuredCleaning %v→%v",
 				oldCfg.UseStructuredCleaning, newCfg.UseStructuredCleaning),

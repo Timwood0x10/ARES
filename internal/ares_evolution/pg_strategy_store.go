@@ -69,6 +69,7 @@ func NewPGStrategyStore(db *sql.DB, tableName string, maxHistory int) (*PGStrate
 
 // createTable creates the strategy storage table if it does not exist.
 func (s *PGStrategyStore) createTable(ctx context.Context) error {
+	//nolint:gosec // G201: tableName is application-controlled, not user input
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			id          BIGSERIAL PRIMARY KEY,
@@ -94,6 +95,7 @@ func (s *PGStrategyStore) createTable(ctx context.Context) error {
 // GetActive returns the currently deployed strategy.
 // Returns nil (and no error) if no strategy has been stored yet.
 func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
+	//nolint:gosec // G201: tableName is application-controlled, not user input
 	query := fmt.Sprintf(`
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at
@@ -160,12 +162,14 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 	defer func() { _ = tx.Rollback() }()
 
 	// Deactivate all existing active strategies.
+	//nolint:gosec // G201: tableName is application-controlled, not user input
 	deactivateQuery := fmt.Sprintf(`UPDATE %s SET is_active = FALSE WHERE is_active = TRUE`, s.tableName)
 	if _, err := tx.ExecContext(ctx, deactivateQuery); err != nil {
 		return fmt.Errorf("pg strategy store: deactivate: %w", err)
 	}
 
 	// Insert the new active strategy.
+	//nolint:gosec // G201: tableName is application-controlled, not user input
 	insertQuery := fmt.Sprintf(`
 		INSERT INTO %s (strategy_id, version, name, parent_id, prompt_template,
 		                mutation_type, mutation_desc, params, score, created_at, is_active)
@@ -181,6 +185,7 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 
 	// Prune history if maxHistory is set.
 	if s.maxHistory > 0 {
+		//nolint:gosec // G201: tableName is application-controlled, not user input
 		pruneQuery := fmt.Sprintf(`
 			DELETE FROM %s
 			WHERE strategy_id = $1
@@ -211,6 +216,7 @@ func (s *PGStrategyStore) SetActive(ctx context.Context, strategy *Strategy) err
 // GetHistory returns the last n strategies for the given strategy ID,
 // ordered by version descending (newest first).
 func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*Strategy, error) {
+	//nolint:gosec // G201: tableName is application-controlled, not user input
 	query := fmt.Sprintf(`
 		SELECT strategy_id, version, name, parent_id, prompt_template,
 		       mutation_type, mutation_desc, params, score, created_at

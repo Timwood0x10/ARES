@@ -6,19 +6,34 @@ import (
 	"time"
 )
 
+// Default string constants used across config defaults. Declared as named
+// constants (rather than inline literals) so goconst stays quiet and the
+// values are grep-able.
+const (
+	defaultServerHost   = "localhost"
+	defaultLLMProvider  = "ollama"
+	defaultLLMModel     = "llama3.2"
+	defaultOutputFormat = "simple"
+	defaultStorageType  = "postgres"
+	defaultPGVectorTbl  = "embeddings"
+	providerOpenAI      = "openai"
+	providerOpenRouter  = "openrouter"
+	providerAnthropic   = "anthropic"
+)
+
 //nolint:gocyclo // Complex default value initialization for multiple config sections
 func (c *Config) setDefaults() {
 	if c.Server.Host == "" {
-		c.Server.Host = "localhost"
+		c.Server.Host = defaultServerHost
 	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
 	if c.LLM.Provider == "" {
-		c.LLM.Provider = "ollama"
+		c.LLM.Provider = defaultLLMProvider
 	}
 	if c.LLM.Model == "" {
-		c.LLM.Model = "llama3.2"
+		c.LLM.Model = defaultLLMModel
 	}
 	if c.LLM.Timeout == 0 {
 		c.LLM.Timeout = 60
@@ -42,7 +57,7 @@ func (c *Config) setDefaults() {
 		c.Agents.Leader.MaxValidationRetry = 3
 	}
 	if c.Output.Format == "" {
-		c.Output.Format = "simple"
+		c.Output.Format = defaultOutputFormat
 	}
 	if c.Output.ItemTemplate == "" {
 		c.Output.ItemTemplate = "{{.ItemID}}: {{.Name}} ({{.Price}})"
@@ -52,7 +67,7 @@ func (c *Config) setDefaults() {
 	}
 	// Storage defaults
 	if c.Storage.Type == "" {
-		c.Storage.Type = "postgres"
+		c.Storage.Type = defaultStorageType
 	}
 	if c.Storage.Port == 0 {
 		c.Storage.Port = 5432
@@ -61,7 +76,7 @@ func (c *Config) setDefaults() {
 		c.Storage.PGVector.Dimension = 1536
 	}
 	if c.Storage.PGVector.TableName == "" {
-		c.Storage.PGVector.TableName = "embeddings"
+		c.Storage.PGVector.TableName = defaultPGVectorTbl
 	}
 	// Memory defaults
 	if c.Memory.SessionMemory.MaxHistory == 0 {

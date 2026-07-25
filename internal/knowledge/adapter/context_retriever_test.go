@@ -401,27 +401,9 @@ func TestSnippetContent_FallbackChain(t *testing.T) {
 	}
 }
 
-// TestClampScore verifies the score clamp boundaries.
-func TestClampScore(t *testing.T) {
-	tests := []struct {
-		name string
-		in   float64
-		want float64
-	}{
-		{name: "negative clamps to 0", in: -0.5, want: 0},
-		{name: "zero unchanged", in: 0, want: 0},
-		{name: "midrange unchanged", in: 0.42, want: 0.42},
-		{name: "one unchanged", in: 1, want: 1},
-		{name: "above one clamps to 1", in: 1.5, want: 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := clampScore(tt.in); got != tt.want {
-				t.Errorf("clampScore(%v) = %v, want %v", tt.in, got, tt.want)
-			}
-		})
-	}
-}
+// TestClampScore was removed: the local clampScore helper was centralized into
+// internal/scoreutil.ClampUnit, which has its own table-driven test
+// (TestClampUnit) covering the same boundaries plus the NaN edge case.
 
 // containsStr is a minimal strings.Contains helper to avoid pulling in
 // the strings package just for one test assertion.

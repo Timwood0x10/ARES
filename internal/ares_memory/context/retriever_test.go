@@ -160,8 +160,8 @@ func TestNewMemoryRetriever_Validation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if r.minScore != memoryDefaultMinScore {
-			t.Errorf("minScore = %v, want %v", r.minScore, memoryDefaultMinScore)
+		if r.minScore != DefaultMinScore {
+			t.Errorf("minScore = %v, want %v", r.minScore, DefaultMinScore)
 		}
 	})
 	t.Run("explicit tenantID and minScore preserved", func(t *testing.T) {
@@ -315,8 +315,8 @@ func TestMemoryRetriever_Retrieve_Success(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if repo.lastLimit != memoryDefaultTopK {
-			t.Errorf("limit = %d, want %d", repo.lastLimit, memoryDefaultTopK)
+		if repo.lastLimit != DefaultTopK {
+			t.Errorf("limit = %d, want %d", repo.lastLimit, DefaultTopK)
 		}
 	})
 }

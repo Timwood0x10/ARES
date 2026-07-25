@@ -12,6 +12,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/scoreutil"
 )
 
 // ContextSnippet matches context.ContextSnippet in internal/ares_memory/context.
@@ -165,7 +166,7 @@ func (r *KnowledgeRetriever) collectSnippets(
 		if obj == nil {
 			continue
 		}
-		score := clampScore(obj.Confidence)
+		score := scoreutil.ClampUnit(obj.Confidence)
 		if score < r.minScore {
 			continue
 		}
@@ -200,19 +201,6 @@ func snippetContent(obj *knowledge.KnowledgeObject) string {
 		return string(obj.Raw)
 	}
 	return fmt.Sprintf("knowledge object %s (no content)", obj.ID)
-}
-
-// clampScore clamps a Confidence score to the [0, 1] range so downstream
-// callers can rely on a normalized Score even when providers return values
-// slightly outside the expected band.
-func clampScore(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
 }
 
 // Ensure KnowledgeRetriever satisfies the local ContextRetriever interface.

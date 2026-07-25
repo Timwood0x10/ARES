@@ -37,7 +37,8 @@ func (m *ProductionMemoryManager) retrieveForPrompt(ctx context.Context, input s
 }
 
 // runRetrieval is the shared retrieval path. It snapshots retrievers under
-// the lock, checks the EnableRAG gate, and delegates to memctx.RetrieveAll.
+// the lock, checks the EnableRAG gate, and delegates to memctx.RunRetrieval
+// which applies the canonical DefaultTopK / DefaultMinScore normalization.
 func (m *ProductionMemoryManager) runRetrieval(ctx context.Context, input string) []memctx.ContextSnippet {
 	if !m.config.EnableRAG || input == "" {
 		return nil
@@ -52,16 +53,7 @@ func (m *ProductionMemoryManager) runRetrieval(ctx context.Context, input string
 		return nil
 	}
 
-	topK := m.config.RAGTopK
-	if topK <= 0 {
-		topK = 5
-	}
-	minScore := m.config.RAGMinScore
-	if minScore <= 0 {
-		minScore = 0.4
-	}
-
-	snippets, err := memctx.RetrieveAll(ctx, retrievers, input, topK, minScore)
+	snippets, err := memctx.RunRetrieval(ctx, retrievers, input, m.config.RAGTopK, m.config.RAGMinScore)
 	if err != nil {
 		log.Warn("RAG retrieval reported partial failures, proceeding with available snippets",
 			"error", err, "snippet_count", len(snippets))

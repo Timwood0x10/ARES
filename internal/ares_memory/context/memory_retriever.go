@@ -8,6 +8,7 @@ import (
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
+	"github.com/Timwood0x10/ares/internal/scoreutil"
 )
 
 // ExperienceSearcher is the minimal retrieval contract needed by
@@ -24,17 +25,30 @@ type ExperienceSearcher interface {
 	SearchByVector(ctx context.Context, vector []float64, tenantID string, limit int) ([]distillation.Experience, error)
 }
 
-// Default values for the MemoryRetriever. They are intentionally unexported
-// to keep the retriever's tuning surface in one place.
+// Default values for the MemoryRetriever. The TopK and MinScore defaults are
+// exported so that callers across packages (memory managers, bootstrap wiring)
+// reference the same canonical values instead of re-declaring magic numbers
+// that could drift over time.
+const (
+	// DefaultMinScore is the minimum Score a snippet must reach to be returned
+	// when the caller passes minScore <= 0. Experiences below this confidence
+	// are unlikely to be worth surfacing in the prompt, so we drop them rather
+	// than waste context tokens.
+	DefaultMinScore = 0.4
+	// DefaultTopK is the maximum number of snippets returned when the caller
+	// passes topK <= 0.
+	DefaultTopK = 5
+)
+
+// Internal defaults kept unexported because they are retriever-implementation
+// details with no cross-package callers.
 const (
 	// memoryDefaultTenant is used when the caller does not supply a tenantID.
 	memoryDefaultTenant = "default"
-	// memoryDefaultMinScore is used when the caller passes minScore <= 0.
-	// Experiences below this confidence are unlikely to be worth surfacing
-	// in the prompt, so we drop them rather than waste context tokens.
-	memoryDefaultMinScore = 0.4
-	// memoryDefaultTopK is used when the caller passes topK <= 0.
-	memoryDefaultTopK = 5
+	// memorySourceExperience is the Source tag for snippets derived from
+	// distilled experiences. Kept as a constant so goconst stays quiet and
+	// the value is grep-able across the context builder.
+	memorySourceExperience = "experience"
 )
 
 // MemoryRetriever retrieves past distilled experiences by vector similarity
@@ -99,7 +113,7 @@ func NewMemoryRetriever(
 		tenantID = memoryDefaultTenant
 	}
 	if minScore <= 0 {
-		minScore = memoryDefaultMinScore
+		minScore = DefaultMinScore
 	}
 
 	return &MemoryRetriever{
@@ -143,7 +157,7 @@ func (r *MemoryRetriever) Retrieve(
 		return []ContextSnippet{}, nil
 	}
 	if topK <= 0 {
-		topK = memoryDefaultTopK
+		topK = DefaultTopK
 	}
 
 	vec, err := r.embed(ctx, input)
@@ -207,9 +221,9 @@ func (r *MemoryRetriever) toSnippets(
 			continue
 		}
 		snippets = append(snippets, ContextSnippet{
-			Source:  "experience",
+			Source:  memorySourceExperience,
 			Content: content,
-			Score:   clampScore(exp.Confidence),
+			Score:   scoreutil.ClampUnit(exp.Confidence),
 			Metadata: map[string]any{
 				"id":                exp.ID,
 				"extraction_method": string(exp.ExtractionMethod),
@@ -250,18 +264,4 @@ func formatExperienceContent(problem, solution string) string {
 		b.WriteString(solution)
 	}
 	return b.String()
-}
-
-// clampScore normalizes a confidence value into [0, 1]. The experience
-// repository is contractually expected to return scores in that range, but
-// we defend against negative or >1 values so downstream sorting and
-// filtering operate on a well-defined domain.
-func clampScore(score float64) float64 {
-	if score < 0 {
-		return 0
-	}
-	if score > 1 {
-		return 1
-	}
-	return score
 }

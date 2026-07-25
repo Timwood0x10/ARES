@@ -269,49 +269,7 @@ func runServe() error {
 	// Inject the live agent DAGs into the evolution system's executors,
 	// replacing the synthetic placeholder DAG created at bootstrap time.
 	// This ensures workflow/scheduler/recovery patches hit real runtime state.
-	if comp.NewEvolution != nil {
-		for _, id := range []string{leaderAgent.ID()} {
-			if dag, ok := mgr.GetAgentDAG(id); ok && dag != nil {
-				if liveDAG, dagOk := dag.(*engine.MutableDAG); dagOk {
-					// Register a LiveDAGPatchExecutor that directly mutates the
-					// agent's live MutableDAG instead of a private noop graph.
-					liveExec := newLiveDAGPatchExecutor(mgr, id)
-					// Register as component AND as fallback so workflow structure
-					// patches (insert/remove nodes/edges) with dynamic node ID
-					// targets are routed to the live DAG executor.
-					if err := comp.NewEvolution.PatchReg.RegisterComponent(liveExec); err != nil {
-						log.Printf("serve: register live exec component: %v", err)
-					}
-					if err := comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec); err != nil {
-						log.Printf("serve: register live exec graph.scheduler: %v", err)
-					}
-					comp.NewEvolution.PatchReg.SetFallback(liveExec)
-
-					// Also update the existing graph executor for consistency.
-					if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
-						log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
-					}
-
-					// Update the WorkflowGenome's DAG reference so its evolution
-					// mutations are based on the agent's real workflow topology
-					// instead of the bootstrap 3-step placeholder. Without this,
-					// the genome generates patches against the toy structure,
-					// so the content being evolved is disconnected from reality.
-					if wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow"); gErr == nil {
-						if setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) }); ok {
-							setter.SetDAG(liveDAG)
-							log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
-						}
-					}
-				}
-			}
-		}
-		// Replace the evolution system's isolated KnowledgeRuntime with the
-		// agent's live KnowledgeRuntime. This ensures knowledge genome patches
-		// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
-		// used by the agent's knowledge tools, not the bootstrap placeholder.
-		comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
-	}
+	wireEvolutionLiveDAGs(comp, mgr, leaderAgent.ID())
 
 	// --- Submit real tasks ---
 	g.Go(func() error {
@@ -367,6 +325,66 @@ func runServe() error {
 
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	return g.Wait()
+}
+
+// wireEvolutionLiveDAGs injects the live agent DAGs into the evolution
+// system's executors, replacing the synthetic placeholder DAG created at
+// bootstrap time. This ensures workflow/scheduler/recovery patches hit real
+// runtime state. Extracted from runServe to keep its cyclomatic complexity
+// within lint limits.
+func wireEvolutionLiveDAGs(comp *ares_bootstrap.Components, mgr *ares_runtime.Manager, leaderID string) {
+	if comp.NewEvolution == nil {
+		return
+	}
+	for _, id := range []string{leaderID} {
+		dag, ok := mgr.GetAgentDAG(id)
+		if !ok || dag == nil {
+			continue
+		}
+		liveDAG, dagOk := dag.(*engine.MutableDAG)
+		if !dagOk {
+			continue
+		}
+		// Register a LiveDAGPatchExecutor that directly mutates the agent's
+		// live MutableDAG instead of a private noop graph.
+		liveExec := newLiveDAGPatchExecutor(mgr, id)
+		// Register as component AND as fallback so workflow structure patches
+		// (insert/remove nodes/edges) with dynamic node ID targets are routed
+		// to the live DAG executor.
+		if err := comp.NewEvolution.PatchReg.RegisterComponent(liveExec); err != nil {
+			log.Printf("serve: register live exec component: %v", err)
+		}
+		if err := comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec); err != nil {
+			log.Printf("serve: register live exec graph.scheduler: %v", err)
+		}
+		comp.NewEvolution.PatchReg.SetFallback(liveExec)
+
+		// Also update the existing graph executor for consistency.
+		if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
+			log.Printf("serve: update live DAG failed: agent_id=%s error=%v", id, err)
+		}
+
+		// Update the WorkflowGenome's DAG reference so its evolution mutations
+		// are based on the agent's real workflow topology instead of the
+		// bootstrap 3-step placeholder. Without this, the genome generates
+		// patches against the toy structure, so the content being evolved is
+		// disconnected from reality.
+		wfGenome, gErr := comp.NewEvolution.GenomeReg.Get("workflow")
+		if gErr != nil {
+			continue
+		}
+		setter, ok := wfGenome.(interface{ SetDAG(*engine.MutableDAG) })
+		if !ok {
+			continue
+		}
+		setter.SetDAG(liveDAG)
+		log.Printf("serve: WorkflowGenome updated with live DAG for agent %s (%d steps)", id, len(liveDAG.Steps()))
+	}
+	// Replace the evolution system's isolated KnowledgeRuntime with the
+	// agent's live KnowledgeRuntime. This ensures knowledge genome patches
+	// (ChangeBudget/ChangePlanner/ChangeReducer) affect the actual runtime
+	// used by the agent's knowledge tools, not the bootstrap placeholder.
+	comp.NewEvolution.UpdateLiveKnowledgeRuntime(comp.KnowledgeRuntime)
 }
 
 // loadServeConfig resolves the config path (falling back to the bundled

@@ -72,7 +72,12 @@ func (c *Config) validateLLM() error {
 	if c.LLM.MaxTokens < 1 {
 		return fmt.Errorf("invalid LLM max tokens: %d, must be positive", c.LLM.MaxTokens)
 	}
-	validProviders := map[string]bool{"openai": true, "ollama": true, "openrouter": true, "anthropic": true}
+	validProviders := map[string]bool{
+		providerOpenAI:     true,
+		defaultLLMProvider: true,
+		providerOpenRouter: true,
+		providerAnthropic:  true,
+	}
 	if !validProviders[c.LLM.Provider] {
 		return fmt.Errorf("invalid LLM provider: %s, must be 'openai', 'ollama', 'openrouter', or 'anthropic'", c.LLM.Provider)
 	}
@@ -118,7 +123,7 @@ func (c *Config) validateSubAgent(i int, subAgent SubAgentConfig) error {
 
 // validateOutput validates output configuration
 func (c *Config) validateOutput() error {
-	validFormats := map[string]bool{"table": true, "json": true, "simple": true}
+	validFormats := map[string]bool{"table": true, "json": true, defaultOutputFormat: true}
 	if !validFormats[c.Output.Format] {
 		return fmt.Errorf("invalid output format: %s, must be 'table', 'json', or 'simple'", c.Output.Format)
 	}

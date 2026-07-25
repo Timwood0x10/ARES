@@ -30,6 +30,7 @@ import (
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -106,7 +107,7 @@ func toDistillationExperience(e *storage_models.Experience) distillation.Experie
 		ID:         e.ID,
 		Problem:    problem,
 		Solution:   solution,
-		Confidence: clampScore(e.Score),
+		Confidence: scoreutil.ClampUnit(e.Score),
 		Vector:     e.Embedding,
 	}
 }
@@ -195,7 +196,7 @@ func wireRetrievers(
 	if embClient != nil && expRepo != nil {
 		minScore := cfg.Memory.RAGMinScore
 		if minScore <= 0 {
-			minScore = 0.4
+			minScore = memctx.DefaultMinScore
 		}
 		pipeline, err := memembed.NewEmbeddingPipeline(embClient)
 		if err != nil {
@@ -245,18 +246,4 @@ func wireRetrievers(
 	setter.SetRetrievers(retrievers)
 	log.Info("bootstrap: RAG retrievers injected into memory manager",
 		"count", len(retrievers))
-}
-
-// clampScore normalizes a confidence value into [0, 1]. The experience
-// repository is contractually expected to return scores in that range, but
-// we defend against negative or >1 values so downstream sorting and
-// filtering operate on a well-defined domain.
-func clampScore(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
 }

@@ -50,7 +50,7 @@ func RetrieveAll(
 		return []ContextSnippet{}, nil
 	}
 	if topK <= 0 {
-		topK = memoryDefaultTopK
+		topK = DefaultTopK
 	}
 	if minScore < 0 {
 		minScore = 0
@@ -134,4 +134,50 @@ func SnippetsToSystemMessages(snippets []ContextSnippet) []Message {
 	}
 	content := FormatSnippetsAsContext(snippets)
 	return []Message{{Role: RoleSystem, Content: content}}
+}
+
+// RunRetrieval is the shared entry point used by memory managers to execute
+// RAG retrieval with config-driven defaults. It centralizes the default
+// normalization (topK<=0 ⇒ DefaultTopK, minScore<=0 ⇒ DefaultMinScore) so the
+// two ProductionMemoryManager / memoryManager implementations do not each
+// re-declare the same magic numbers.
+//
+// Unlike RetrieveAll (which treats minScore<=0 as "no filter" / 0), this
+// helper applies the DefaultMinScore threshold when the caller does not
+// configure one explicitly — matching the prior per-manager behaviour while
+// removing the duplicated literals.
+//
+// Retrieval is best-effort: a non-nil error means one or more retrievers
+// failed, but partial snippets are still returned. Callers log the error and
+// proceed with whatever snippets are available.
+//
+// Args:
+//
+//	ctx        - operation context, honoured for cancellation and timeout.
+//	retrievers - retrievers to query. Nil/empty yields nil with no error.
+//	input      - query text. Empty yields nil with no error.
+//	topK       - per-retriever + global cap. <= 0 ⇒ DefaultTopK.
+//	minScore   - global minimum Score filter. <= 0 ⇒ DefaultMinScore.
+//
+// Returns:
+//
+//	[]ContextSnippet - merged, deduplicated, sorted snippets (possibly empty).
+//	error            - joined error of retriever failures, or nil.
+func RunRetrieval(
+	ctx context.Context,
+	retrievers []ContextRetriever,
+	input string,
+	topK int,
+	minScore float64,
+) ([]ContextSnippet, error) {
+	if len(retrievers) == 0 || input == "" {
+		return nil, nil
+	}
+	if topK <= 0 {
+		topK = DefaultTopK
+	}
+	if minScore <= 0 {
+		minScore = DefaultMinScore
+	}
+	return RetrieveAll(ctx, retrievers, input, topK, minScore)
 }
