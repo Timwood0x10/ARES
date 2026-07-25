@@ -137,13 +137,24 @@ func experienceToHint(exp *storage_models.Experience) evolution.EvolutionHint {
 	}
 }
 
-// handleTaskCompletedForDistillation turns a task-completed/failed event into a
-// distilled experience. The sub-agent emitter now enriches these events with
-// task text, result text, tenant_id, and the consumed experience ID, so the
-// loop is live. A guard still applies: Distill requires a non-empty tenant_id
-// plus task/result text of sufficient length, which holds for normally
-// completed tasks and any failure whose error text is long enough to be useful.
-func handleTaskCompletedForDistillation(ctx context.Context, svc *aresexp.DistillationService, ev *ares_events.Event) {
+// HandleTaskCompletedForDistillation turns a task-completed/failed event into
+// a distilled experience. The sub-agent emitter (and the SDK Runtime via
+// Agent.Run) enriches these events with task text, result text, tenant_id, and
+// the consumed experience ID, so the loop is live. A guard still applies:
+// Distill requires a non-empty tenant_id plus task/result text of sufficient
+// length, which holds for normally completed tasks and any failure whose error
+// text is long enough to be useful.
+//
+// Exported so the SDK (sdk/distill_events.go) can reuse the exact production
+// distillation payload extraction and content-length guards without duplicating
+// the logic.
+//
+// Args:
+//
+//	ctx  - lifecycle/cancellation context forwarded to DistillationService.Distill.
+//	svc  - the distillation service that consumes the event; must be non-nil.
+//	ev   - the TaskCompleted/TaskFailed event; payload fields are read by key.
+func HandleTaskCompletedForDistillation(ctx context.Context, svc *aresexp.DistillationService, ev *ares_events.Event) {
 	p := ev.Payload
 
 	taskText := stringField(p, ares_events.EventKeyTask)

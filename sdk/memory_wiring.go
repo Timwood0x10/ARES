@@ -33,12 +33,14 @@ import (
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/api/experience"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
 	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	"github.com/Timwood0x10/ares/internal/llm"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	pgembedding "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -375,12 +377,16 @@ func (a *sdkKnowledgeRetrieverAdapter) Retrieve(
 // memoryWiring bundles the outputs of wireMemory so New() can unpack a
 // single struct instead of juggling five return values. embClient and
 // expRepo are nil when distillation is disabled or its deps are missing;
-// wireSDKRetrievers handles that gracefully.
+// wireSDKRetrievers handles that gracefully. distillSvc is the standalone
+// DistillationService consumed by the event-driven distillation subscriber;
+// it is nil when distillation is disabled, deps are missing, or the service
+// could not be constructed (non-fatal: the memory manager still works).
 type memoryWiring struct {
-	mgr       memory.MemoryManager
-	embClient apiembed.EmbeddingService
-	expRepo   repositories.ExperienceRepositoryInterface
-	cleanup   func()
+	mgr        memory.MemoryManager
+	embClient  apiembed.EmbeddingService
+	expRepo    repositories.ExperienceRepositoryInterface
+	cleanup    func()
+	distillSvc *aresexp.DistillationService
 }
 
 // wireMemory constructs the production MemoryManager (compression + RAG +
@@ -433,7 +439,22 @@ func wireMemory(ctx context.Context, cfg *config) (*memoryWiring, error) {
 		}
 		return nil, fmt.Errorf("wire memory distiller: %w", err)
 	}
-	return &memoryWiring{mgr: mgr, embClient: embClient, expRepo: expRepo, cleanup: cleanup}, nil
+
+	// Build the standalone DistillationService consumed by the event-driven
+	// distillation subscriber. Non-fatal: when construction fails the memory
+	// manager still works; only event-driven distillation is disabled.
+	distillSvc, derr := buildDistillationService(cfg, embClient, expRepo)
+	if derr != nil {
+		slog.Warn("sdk: distillation service construction failed; event-driven distillation disabled",
+			"error", derr)
+	}
+	return &memoryWiring{
+		mgr:        mgr,
+		embClient:  embClient,
+		expRepo:    expRepo,
+		cleanup:    cleanup,
+		distillSvc: distillSvc,
+	}, nil
 }
 
 // buildMemoryConfig translates the SDK memoryCfg into a production
@@ -466,6 +487,11 @@ func buildMemoryConfig(cfg memoryCfg) *memory.MemoryConfig {
 // WithDistillation), so a missing config yields ErrDistillDepsMissing
 // rather than a hard failure.
 //
+// The embedding client is returned as the concrete *pgembedding.EmbeddingClient
+// (which satisfies apiembed.EmbeddingService) so it can be reused by
+// buildDistillationService, whose NewDistillationService target requires the
+// concrete type.
+//
 // Args:
 //
 //	ctx  - construction context, used for postgres pool init (ping).
@@ -473,12 +499,12 @@ func buildMemoryConfig(cfg memoryCfg) *memory.MemoryConfig {
 //
 // Returns:
 //
-//	embClient - satisfies apiembed.EmbeddingService; nil only on error.
+//	embClient - concrete embedding client; satisfies apiembed.EmbeddingService; nil only on error.
 //	expRepo   - postgres experience repository; nil only on error.
 //	cleanup   - closes the postgres pool; safe to call when non-nil. Nil on error.
 //	err       - wrapped ErrDistillDepsMissing when config is incomplete, or a
 //	            construction error otherwise.
-func wireDistillationDeps(ctx context.Context, cfg *config) (apiembed.EmbeddingService, repositories.ExperienceRepositoryInterface, func(), error) {
+func wireDistillationDeps(ctx context.Context, cfg *config) (*pgembedding.EmbeddingClient, repositories.ExperienceRepositoryInterface, func(), error) {
 	if cfg.embedCfg.ServiceURL == "" || cfg.dbCfg.Host == "" {
 		return nil, nil, nil, fmt.Errorf("distillation deps: %w", ErrDistillDepsMissing)
 	}
@@ -503,6 +529,75 @@ func wireDistillationDeps(ctx context.Context, cfg *config) (apiembed.EmbeddingS
 // caching is not wired (nil), matching the bootstrap default.
 func buildEmbeddingClient(cfg embeddingCfg) *pgembedding.EmbeddingClient {
 	return pgembedding.NewEmbeddingClient(cfg.ServiceURL, cfg.Model, nil, defaultEmbeddingTimeout)
+}
+
+// buildLLMClient constructs a standalone internal *llm.Client from the SDK
+// config. The DistillationService requires a *llm.Client (not the public
+// *llm.Service used by the agent loop), so this mirrors the internal-config
+// conversion done by llmservice.NewService: the public core.LLMConfig is
+// mapped field-by-field into the internal llm.Config. Fallbacks are not
+// applied here because distillation is a best-effort background path that
+// does not warrant a failover client.
+//
+// Args:
+//
+//	cfg - fully applied SDK config; llmCfg is read. A nil llmCfg yields an error.
+//
+// Returns:
+//
+//	*llm.Client - configured LLM client ready for DistillationService.Distill.
+//	error       - wrapped error if llmCfg is nil or llm.NewClient fails.
+func buildLLMClient(cfg *config) (*llm.Client, error) {
+	if cfg == nil || cfg.llmCfg == nil {
+		return nil, fmt.Errorf("build llm client: %w", ErrDistillDepsMissing)
+	}
+	internalCfg := &llm.Config{
+		Provider:        string(cfg.llmCfg.Provider),
+		APIKey:          cfg.llmCfg.APIKey,
+		BaseURL:         cfg.llmCfg.BaseURL,
+		Model:           cfg.llmCfg.Model,
+		Timeout:         cfg.llmCfg.Timeout,
+		MaxTokens:       cfg.llmCfg.MaxTokens,
+		MaxPromptLength: cfg.llmCfg.MaxPromptLength,
+	}
+	client, err := llm.NewClient(internalCfg)
+	if err != nil {
+		return nil, fmt.Errorf("build llm client: %w", err)
+	}
+	return client, nil
+}
+
+// buildDistillationService constructs the standalone DistillationService
+// consumed by the event-driven distillation subscriber. It builds a
+// dedicated *llm.Client (independent of the agent loop's *llm.Service) and
+// reuses the same embedding client and experience repo already wired for
+// the memory manager's distiller, so distilled experiences land in the same
+// store the RAG retriever reads from.
+//
+// Args:
+//
+//	cfg       - fully applied SDK config; llmCfg is read by buildLLMClient.
+//	embClient - embedding client shared with the memory distiller; must be non-nil.
+//	expRepo   - postgres experience repo shared with the memory distiller; must be non-nil.
+//
+// Returns:
+//
+//	*aresexp.DistillationService - ready to consume TaskCompleted/TaskFailed events.
+//	error                       - wrapped ErrDistillDepsMissing when inputs are nil,
+//	                             or the llm.NewClient error.
+func buildDistillationService(
+	cfg *config,
+	embClient *pgembedding.EmbeddingClient,
+	expRepo repositories.ExperienceRepositoryInterface,
+) (*aresexp.DistillationService, error) {
+	if embClient == nil || expRepo == nil {
+		return nil, fmt.Errorf("build distillation service: %w", ErrDistillDepsMissing)
+	}
+	llmClient, err := buildLLMClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build distillation service: %w", err)
+	}
+	return aresexp.NewDistillationService(llmClient, embClient, expRepo), nil
 }
 
 // buildPostgresPool opens and pings a postgres connection pool from the SDK

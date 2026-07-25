@@ -75,7 +75,7 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 				if !ok {
 					return
 				}
-				handleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
+				HandleTaskCompletedForDistillation(ctx, comp.Distillation, ev)
 			case <-ctx.Done():
 				return
 			}

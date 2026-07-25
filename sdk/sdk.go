@@ -29,22 +29,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Timwood0x10/ares/api/core"
 	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	"github.com/Timwood0x10/ares/api/mcp"
 	"github.com/Timwood0x10/ares/api/service/llm"
 	"github.com/Timwood0x10/ares/api/tools"
+	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
+	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -88,9 +92,23 @@ type Runtime struct {
 	knowledgeRT      *khruntime.KnowledgeRuntime
 	knowledgeStore   knowledge.KnowledgeStore
 	evolutionStore   *memStrategyStore
-	eventStore       ares_events.EventStore
-	mcpClients       []*mcp.Client
-	trace            bool
+	// evoComponents holds the new evolution system (genome/diff/patch/coordinator)
+	// wired to the live KnowledgeRuntime so evolution patches can affect the
+	// running knowledge engine. Nil when evolution or knowledge is disabled.
+	evoComponents *ares_bootstrap.NewEvolutionComponents
+	eventStore    ares_events.EventStore
+	mcpClients    []*mcp.Client
+	trace         bool
+	// ctx governs the lifetime of background goroutines (event-driven
+	// distillation subscriber). Cancelled in Close so subscribers exit cleanly.
+	ctx context.Context
+	// cancel stops background goroutines started in New.
+	cancel context.CancelFunc
+	// eg tracks background goroutines so Close can wait for in-flight work.
+	eg *errgroup.Group
+	// distillSvc consumes TaskCompleted events and distills them into long-term
+	// experiences. Nil when distillation is disabled or its deps are unavailable.
+	distillSvc *aresexp.DistillationService
 }
 
 // memSearcher adapts memory.MemoryManager to the memory.TaskSearcher
@@ -384,6 +402,48 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 	}
 }
 
+// wireMCPClients connects to each configured MCP server, lists its tools, and
+// registers them into the SDK tool registry. Extracted from New() to keep the
+// constructor under the 100-line limit.
+//
+// Args:
+//
+//	cfg     - fully applied SDK config; mcpConns is read.
+//	toolReg - the SDK tool registry; MCP tools are registered by name.
+//
+// Returns:
+//
+//	[]*mcp.Client - one client per configured MCP connection (empty when none).
+//	error         - wrapped with context if a connection, list, or register fails.
+func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error) {
+	var mcpClients []*mcp.Client
+	for _, conn := range cfg.mcpConns {
+		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
+		connectCancel()
+		if err != nil {
+			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
+		}
+		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		mcpTools, listErr := client.ListTools(listCtx)
+		listCancel()
+		if listErr != nil {
+			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
+		}
+		for _, t := range mcpTools {
+			if err := toolReg.Register(mcpToolAdapter{
+				name:   t.Name,
+				desc:   t.Description,
+				client: client,
+			}); err != nil {
+				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, t.Name, err)
+			}
+		}
+		mcpClients = append(mcpClients, client)
+	}
+	return mcpClients, nil
+}
+
 // New creates a new Runtime. Returns an error when a required option (e.g. an
 // LLM provider) cannot be initialised.
 func New(opts ...Option) (*Runtime, error) {
@@ -405,7 +465,6 @@ func New(opts ...Option) (*Runtime, error) {
 		return nil, friendlyErr("llm", cfg.llmCfg.Provider, err)
 	}
 
-	// ---- Tools ----
 	toolReg := tools.NewRegistry()
 
 	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
@@ -413,6 +472,7 @@ func New(opts ...Option) (*Runtime, error) {
 	var distillCleanup func()
 	var embClient apiembed.EmbeddingService
 	var expRepo repositories.ExperienceRepositoryInterface
+	var distillSvc *aresexp.DistillationService
 	if cfg.memCfg.Enabled {
 		w, err := wireMemory(context.Background(), cfg)
 		if err != nil {
@@ -422,36 +482,13 @@ func New(opts ...Option) (*Runtime, error) {
 		embClient = w.embClient
 		expRepo = w.expRepo
 		distillCleanup = w.cleanup
+		distillSvc = w.distillSvc
 	}
 
 	// ---- MCP ----
-	var mcpClients []*mcp.Client
-	for _, conn := range cfg.mcpConns {
-		connectCtx, connectCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		client, err := mcp.ConnectStdio(connectCtx, conn.Name, conn.Command, conn.Args)
-		connectCancel()
-		if err != nil {
-			return nil, fmt.Errorf("mcp %q: %w", conn.Name, err)
-		}
-		listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		tools, listErr := client.ListTools(listCtx)
-		listCancel()
-		if listErr != nil {
-			return nil, fmt.Errorf("mcp %q list tools: %w", conn.Name, listErr)
-		}
-		for _, t := range tools {
-			toolName := t.Name
-			toolDesc := t.Description
-			mcpClient := client
-			if err := toolReg.Register(mcpToolAdapter{
-				name:   toolName,
-				desc:   toolDesc,
-				client: mcpClient,
-			}); err != nil {
-				return nil, fmt.Errorf("mcp %q register %s: %w", conn.Name, toolName, err)
-			}
-		}
-		mcpClients = append(mcpClients, client)
+	mcpClients, err := wireMCPClients(cfg, toolReg)
+	if err != nil {
+		return nil, err
 	}
 
 	// ---- AKF Knowledge Fabric ----
@@ -460,13 +497,33 @@ func New(opts ...Option) (*Runtime, error) {
 		return nil, err
 	}
 
+	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
+	if cfg.knlCfg.Enabled && kw.rt != nil {
+		if err := registerAKFTools(toolReg, kw.rt); err != nil {
+			return nil, fmt.Errorf("akf tools: %w", err)
+		}
+	}
+
+	// ---- Evolution hot-update (wires the live KnowledgeRuntime into the
+	// evolution patch system so knowledge patches affect the running engine) ----
+	var evoComponents *ares_bootstrap.NewEvolutionComponents
+	if cfg.evoCfg.Enabled && kw.rt != nil {
+		comps, err := ares_bootstrap.ProvideNewEvolution(nil, kw.rt, nil)
+		if err != nil {
+			slog.Warn("sdk: evolution hot-update wiring failed; knowledge runtime not patchable",
+				"error", err)
+		} else {
+			evoComponents = comps
+			slog.Info("sdk: evolution hot-update wired (knowledge runtime patchable by evolution)")
+		}
+	}
+
 	// ---- RAG retriever wiring (best-effort, non-fatal) ----
-	// Injects MemoryRetriever + KnowledgeRetriever into the MemoryManager so
-	// BuildContext can augment the LLM prompt with retrieved context. Only
-	// fires when RAG is enabled; failures are logged, not propagated.
 	if cfg.memCfg.EnableRAG && memMgr != nil {
 		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo, kw.rt)
 	}
+
+	rtCtx, rtCancel, eg, eventStore := newEventBackend(distillSvc)
 
 	return &Runtime{
 		llmSvc:           llmSvc,
@@ -479,15 +536,30 @@ func New(opts ...Option) (*Runtime, error) {
 		knowledgeRT:      kw.rt,
 		knowledgeStore:   kw.store,
 		evolutionStore:   kw.evolutionStore,
-		eventStore:       ares_events.NewMemoryEventStore(),
+		evoComponents:    evoComponents,
+		eventStore:       eventStore,
 		mcpClients:       mcpClients,
 		trace:            cfg.trace,
+		ctx:              rtCtx,
+		cancel:           rtCancel,
+		eg:               eg,
+		distillSvc:       distillSvc,
 	}, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory
 // store, MCP connections). Call once when the Runtime is no longer needed.
 func (r *Runtime) Close() {
+	// Stop background goroutines (event-driven distillation subscriber) first
+	// and wait for in-flight work, so the subscriber stops accepting new events
+	// before the stores/clients it depends on are torn down. Best-effort: the
+	// subscriber returns nil on ctx cancellation.
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.eg != nil {
+		_ = r.eg.Wait()
+	}
 	r.llmSvc.Close()
 	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -800,6 +872,20 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 				log.Printf("[ares:trace] %s ✓ done (%d tools, %d total tokens, %v)",
 					a.name, toolCallCount, totalInputTokens+totalOutputTokens,
 					time.Since(start).Round(time.Millisecond))
+			}
+			// Emit TaskCompleted so the event-driven distillation subscriber
+			// can distill this conversation into a long-term experience. Gated
+			// on both the event store and distillSvc so non-distilling Runtimes
+			// pay zero overhead.
+			if a.runtime.eventStore != nil && a.runtime.distillSvc != nil {
+				ares_events.Emit(ctx, a.runtime.eventStore, sessionID,
+					ares_events.EventTaskCompleted, "runtime",
+					map[string]any{
+						ares_events.EventKeyTask:     input,
+						ares_events.EventKeyResult:   resp.Content,
+						ares_events.EventKeyTenantID: ares_events.DefaultTenantID,
+						"agent_id":                   a.name,
+					})
 			}
 			return &Result{
 				Output:     resp.Content,
