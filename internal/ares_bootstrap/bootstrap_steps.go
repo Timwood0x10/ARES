@@ -12,21 +12,27 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	evoService "github.com/Timwood0x10/ares/internal/ares_evolution/service"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	_ "github.com/lib/pq"
 )
 
 // wireDistillation conditionally wires experience distillation (Track A) and
-// returns a GuidanceProvider consumed by the GA, or nil when distillation is
-// not configured/wired. Failures are non-fatal: they are logged and skipped,
-// leaving the system running without distillation (graceful degradation).
-func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) evolution.GuidanceProvider {
+// returns a GuidanceProvider consumed by the GA, plus the embedding client
+// used by the distillation pipeline. Both return values are nil when
+// distillation is not configured/wired. Failures are non-fatal: they are
+// logged and skipped, leaving the system running without distillation
+// (graceful degradation). The returned embedding client is reused by
+// wireRetrievers to build the MemoryRetriever, avoiding a second client.
+func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Components, deps *BootstrapDeps, cleanups *[]func()) (evolution.GuidanceProvider, *embedding.EmbeddingClient) {
 	var guidanceProvider evolution.GuidanceProvider
+	var embClient *embedding.EmbeddingClient
 	if cfg.Storage.Enabled && cfg.Storage.Type == "postgres" && cfg.Embedding.Enabled {
-		pool, _, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
+		pool, client, expRepo, distSvc, guidProv, wireErr := provideDistillation(ctx, cfg, comp.LLM.Client)
 		if wireErr != nil {
 			log.Warn("bootstrap: experience distillation not wired", "error", wireErr)
 		} else {
 			guidanceProvider = guidProv
+			embClient = client
 			comp.Distillation = distSvc
 			// Feed the experience repo into the old evolution system if present.
 			if deps.ExpRepo == nil {
@@ -38,7 +44,7 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 				"embedding_model", cfg.Embedding.Model)
 		}
 	}
-	return guidanceProvider
+	return guidanceProvider, embClient
 }
 
 // subscribeDistillationEvents starts the background distillation loop that
@@ -297,7 +303,9 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pingCancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			log.Warn("pg strategy store: close db after ping failure", "error", closeErr)
+		}
 		return nil, fmt.Errorf("pg strategy store: ping: %w", err)
 	}
 	db.SetMaxOpenConns(5)
@@ -306,7 +314,9 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, error
 
 	store, err := evolution.NewPGStrategyStore(db, "evolution_strategies", 100)
 	if err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			log.Warn("pg strategy store: close db after init failure", "error", closeErr)
+		}
 		return nil, fmt.Errorf("pg strategy store: init: %w", err)
 	}
 	return store, nil

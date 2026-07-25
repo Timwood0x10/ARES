@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -18,6 +17,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/promotion"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -442,7 +442,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 	}
 
 	// Initialize scores before first generation so selection has meaningful data.
-	s.initScores()
+	s.initScores(ctx)
 
 	for i := 0; i < generations; i++ {
 		select {
@@ -478,7 +478,7 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 			}
 
 			// Re-score after each evolution so next generation selects on fresh data.
-			s.initScores()
+			s.initScores(ctx)
 
 			// Record lineages for non-wired mode: link parent→child.
 			s.recordGenealogy(prevBest)
@@ -733,7 +733,7 @@ func (s *Service) collectLineages() []StrategyLineage {
 //   - temperature: lower is better (0.0→+25, 1.0→+0)
 //   - top_k near 30 balances focus vs breadth (penalty dist²/10)
 //   - "precise" prompt template earns a bonus (+15)
-func (s *Service) scoreAgents(pop *genome.Population) {
+func (s *Service) scoreAgents(ctx context.Context, pop *genome.Population) {
 	// Fast path: deterministic scorer — no clone/concurrency overhead.
 	if s.config.Scorer == nil {
 		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
@@ -767,20 +767,21 @@ func (s *Service) scoreAgents(pop *genome.Population) {
 	}
 
 	// Slow path: per-agent scoring with concurrency limit.
+	// Use errgroup with SetLimit for structured concurrency. The ScorerFunc
+	// signature does not take a context, so goroutines cannot be interrupted
+	// mid-call; errgroup still ensures deterministic Wait and bounded
+	// parallelism equivalent to the previous semaphore+WaitGroup pattern.
 	scores := make([]float64, len(snap))
-	sem := make(chan struct{}, concurrentScoreLimit)
-	var wg sync.WaitGroup
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(concurrentScoreLimit)
 
 	for i, agent := range snap {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, a *mutation.Strategy) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			scores[idx] = s.config.Scorer(toAPIStrategy(a))
-		}(i, agent)
+		g.Go(func() error {
+			scores[i] = s.config.Scorer(toAPIStrategy(agent))
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 
 	scoreMap := make(map[string]float64, len(snap))
 	for i, a := range snap {
@@ -796,11 +797,11 @@ func (s *Service) scoreAgents(pop *genome.Population) {
 }
 
 // initScores initializes scores for all agents in the population.
-func (s *Service) initScores() {
+func (s *Service) initScores(ctx context.Context) {
 	if s.wiredSystem != nil && s.wiredSystem.Population != nil {
-		s.scoreAgents(s.wiredSystem.Population)
+		s.scoreAgents(ctx, s.wiredSystem.Population)
 	} else if s.population != nil {
-		s.scoreAgents(s.population)
+		s.scoreAgents(ctx, s.population)
 	}
 }
 

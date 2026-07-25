@@ -443,7 +443,10 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 			if d.pipeline != nil {
 				problem, _ := memory.Metadata["problem"].(string)
 				solution, _ := memory.Metadata["solution"].(string)
-				spec, specErr := d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
+				// Assign to the outer spec so the retry path below can reuse it.
+				// Using := here would shadow spec and leave the retry with a zero value.
+				var specErr error
+				spec, specErr = d.pipeline.BuildSpec(memembed.KindMemoryExperience, memembed.MemoryExperienceInput{
 					MemoryType: memory.Type.String(),
 					Problem:    problem,
 					Solution:   solution,
@@ -456,7 +459,9 @@ func (d *Distiller) embedPhase(ctx context.Context, conversationID string, memor
 				}
 				embedding, err = d.pipeline.Embed(embedCtx, spec)
 			} else {
-				embeddingText := fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
+				// Assign to the outer embeddingText so the retry path below can reuse it.
+				// Using := here would shadow embeddingText and leave the retry with empty text.
+				embeddingText = fmt.Sprintf("%s → %s", memory.Metadata["problem"], memory.Metadata["solution"])
 				embedding, err = d.embedder.EmbedWithPrefix(embedCtx, embeddingText, "memory:")
 			}
 			if err != nil {

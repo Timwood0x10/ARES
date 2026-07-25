@@ -62,6 +62,10 @@ type ProductionMemoryManager struct {
 	// Context cleaner: intelligently strips tool noise and compresses verbose content.
 	ctxCleaner *memctx.ContextCleaner
 
+	// retrievers hold optional ContextRetrievers queried in BuildContext/
+	// BuildPromptMessages when config.EnableRAG is true.
+	retrievers []memctx.ContextRetriever
+
 	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
 	eventStore ares_events.EventStore
 	streamID   string // Stream ID used when appending ares_events.
@@ -635,6 +639,12 @@ func (m *ProductionMemoryManager) BuildPromptMessages(ctx context.Context, sessi
 			"turns_processed", stats.TurnsProcessed)
 	}
 
+	// RAG injection: prepend retrieved context as a system Message when enabled.
+	retrieved := m.retrieveForPrompt(ctx, lastUserMessage(messages))
+	if len(retrieved) > 0 {
+		cleaned = append(retrieved, cleaned...)
+	}
+
 	return cleaned, nil
 }
 
@@ -693,8 +703,14 @@ func (m *ProductionMemoryManager) BuildContext(ctx context.Context, input string
 
 	// Build context string
 	var contextBuilder string
+
+	// RAG injection: prepend retrieved context before the conversation history.
+	if ragContext := m.retrieveContextString(ctx, input); ragContext != "" {
+		contextBuilder = ragContext + "\n"
+	}
+
 	if len(cleaned) > 0 {
-		contextBuilder = "Previous conversation history:\n\n"
+		contextBuilder += "Previous conversation history:\n\n"
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:

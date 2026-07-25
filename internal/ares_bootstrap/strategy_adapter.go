@@ -3,6 +3,7 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Timwood0x10/ares/internal/agents"
 	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
@@ -26,10 +27,18 @@ func NewStrategySource(store evolution.StrategyStore) agents.StrategySource {
 
 var _ agents.StrategySource = (*evolutionStrategySource)(nil)
 
-// GetActiveStrategy returns the active evolution strategy in the agents runtime view.
+// GetActiveStrategy returns the active evolution strategy in the agents
+// runtime view. A nil *ActiveStrategy with no error signals that no
+// strategy has been deployed yet — callers distinguish "empty" from
+// "failure" via the nil check, not the error.
+//
+//nolint:nilnil // nil value + nil error is the documented "no strategy" contract.
 func (s *evolutionStrategySource) GetActiveStrategy(ctx context.Context) (*agents.ActiveStrategy, error) {
 	st, err := s.store.GetActive(ctx)
 	if err != nil {
+		if errors.Is(err, evolution.ErrNoActiveStrategy) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return toActiveStrategy(st), nil

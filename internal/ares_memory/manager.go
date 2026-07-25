@@ -5,6 +5,7 @@ package memory
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -120,6 +121,20 @@ type MemoryConfig struct {
 
 	// CleanOptions configures context cleaning behavior. When nil, defaults are used.
 	CleanOptions *core.CleanOptions
+
+	// EnableRAG enables retrieval-augmented generation: past experiences and
+	// distilled memories are retrieved and injected into the LLM prompt.
+	// When false, BuildContext/BuildPromptMessages behave as before (history only).
+	EnableRAG bool
+
+	// RAGTopK is the maximum number of retrieved snippets to inject.
+	// Defaults to 5 when zero (applied lazily at retrieval time when EnableRAG is true).
+	RAGTopK int
+
+	// RAGMinScore is the minimum similarity score for a retrieved snippet to
+	// be included. Snippets below this threshold are filtered out.
+	// Defaults to 0.4 when zero (applied lazily at retrieval time when EnableRAG is true).
+	RAGMinScore float64
 }
 
 // Message, ToolCall, ToolCallFunction are type aliases for the canonical
@@ -135,6 +150,10 @@ const (
 	StorageMemory   = "memory"
 	StoragePostgres = "postgres"
 )
+
+// ErrInvalidRAGConfig is returned when MemoryConfig.EnableRAG is true but
+// RAGTopK or RAGMinScore are set to invalid values.
+var ErrInvalidRAGConfig = errors.New("invalid RAG configuration")
 
 // Role constants re-exported for convenience.
 const (
@@ -321,6 +340,19 @@ func (c *MemoryConfig) validate() error {
 	if c.VectorDim <= 0 {
 		return fmt.Errorf("VectorDim must be positive, got %d", c.VectorDim)
 	}
+	// RAG validation: only enforce constraints when RAG is opt-in. When RAG
+	// is disabled, RAGTopK/RAGMinScore may stay zero — defaults are applied
+	// lazily at retrieval time, preserving legacy behavior for existing callers.
+	if c.EnableRAG {
+		if c.RAGTopK <= 0 {
+			return fmt.Errorf("RAGTopK must be positive when EnableRAG is true, got %d: %w",
+				c.RAGTopK, ErrInvalidRAGConfig)
+		}
+		if c.RAGMinScore < 0 {
+			return fmt.Errorf("RAGMinScore must be non-negative when EnableRAG is true, got %f: %w",
+				c.RAGMinScore, ErrInvalidRAGConfig)
+		}
+	}
 	return nil
 }
 
@@ -341,5 +373,11 @@ func DefaultMemoryConfig() *MemoryConfig {
 		EnablePostgres:        false,
 		UseStructuredCleaning: false,
 		CleanOptions:          &opts,
+		// RAG is opt-in: disabled by default. TopK/MinScore are still seeded
+		// with sensible defaults so callers that flip EnableRAG to true without
+		// further configuration still get usable retrieval behavior.
+		EnableRAG:   false,
+		RAGTopK:     5,
+		RAGMinScore: 0.4,
 	}
 }

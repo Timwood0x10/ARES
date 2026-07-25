@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Normalizer converts Raw bytes into Normalized text.
@@ -205,25 +207,43 @@ func (p *KnowledgePipeline) Process(ctx context.Context, obj *KnowledgeObject) (
 }
 
 // ProcessStream processes a channel of KnowledgeObjects through the pipeline.
+// The returned channel is closed when the input channel is closed or ctx is cancelled.
 func (p *KnowledgePipeline) ProcessStream(ctx context.Context, in <-chan *KnowledgeObject) <-chan *KnowledgeObject {
 	out := make(chan *KnowledgeObject, 64)
-	go func() {
+	// Use errgroup for structured concurrency so the goroutine is
+	// ctx-cancelable and exits deterministically on either in-channel close
+	// or ctx.Done(). The errgroup is not waited on here; callers observe
+	// completion via the output channel being closed.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
 		defer close(out)
-		for obj := range in {
-			if obj == nil {
-				log.Warn("pipeline: skipping nil object in stream")
-				continue
-			}
-			processed, err := p.Process(ctx, obj)
-			if err != nil {
-				log.Warn("pipeline: skipping object", "id", obj.ID, "error", err)
-				continue
-			}
-			if processed != nil {
-				out <- processed
+		for {
+			select {
+			case <-gCtx.Done():
+				return nil
+			case obj, ok := <-in:
+				if !ok {
+					return nil
+				}
+				if obj == nil {
+					log.Warn("pipeline: skipping nil object in stream")
+					continue
+				}
+				processed, err := p.Process(gCtx, obj)
+				if err != nil {
+					log.Warn("pipeline: skipping object", "id", obj.ID, "error", err)
+					continue
+				}
+				if processed != nil {
+					select {
+					case out <- processed:
+					case <-gCtx.Done():
+						return nil
+					}
+				}
 			}
 		}
-	}()
+	})
 	return out
 }
 

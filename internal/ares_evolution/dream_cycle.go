@@ -738,6 +738,10 @@ func (dc *DreamCycle) getCurrentStrategy(ctx context.Context) (Strategy, error) 
 
 	stored, err := dc.strategyStore.GetActive(ctx)
 	if err != nil {
+		if errors.Is(err, ErrNoActiveStrategy) {
+			slog.InfoContext(ctx, "[DreamCycle] No stored strategy found; initializing with default")
+			return defaultRootStrategy(), nil
+		}
 		return Strategy{}, fmt.Errorf("get active strategy: %w", err)
 	}
 

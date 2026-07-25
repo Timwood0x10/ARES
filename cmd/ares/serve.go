@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -278,8 +279,12 @@ func runServe() error {
 					// Register as component AND as fallback so workflow structure
 					// patches (insert/remove nodes/edges) with dynamic node ID
 					// targets are routed to the live DAG executor.
-					comp.NewEvolution.PatchReg.RegisterComponent(liveExec)
-					comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec)
+					if err := comp.NewEvolution.PatchReg.RegisterComponent(liveExec); err != nil {
+						log.Printf("serve: register live exec component: %v", err)
+					}
+					if err := comp.NewEvolution.PatchReg.Register("graph.scheduler", liveExec); err != nil {
+						log.Printf("serve: register live exec graph.scheduler: %v", err)
+					}
 					comp.NewEvolution.PatchReg.SetFallback(liveExec)
 
 					// Also update the existing graph executor for consistency.
@@ -527,7 +532,7 @@ func (a *akfToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	return core_tools.NewResult(true, map[string]interface{}{"output": out}), nil
 }
 
-// liveDAGPatchExecutor is a patch.RuntimeComponent that directly mutates the
+// liveDAGPatchExecutor applies workflow structure patches directly to the
 // agent's live engine.MutableDAG held by the runtime manager. Unlike the
 // synthetic GraphPatchExecutor (which operates on a private noop *wfgraph.Graph),
 // this executor reads the live DAG from the manager's dagStore, applies the
@@ -539,6 +544,15 @@ type liveDAGPatchExecutor struct {
 	agentID string
 }
 
+// errNoSnapshot is returned by Snapshot to signal that this executor does
+// not produce a serializable snapshot. Callers should treat it as "no diff
+// available" rather than a real failure.
+var errNoSnapshot = errors.New("live DAG executor: snapshot not supported")
+
+// errNoRollback is returned by Apply when the patch succeeds but produces no
+// rollback patch (the operation is its own inverse or is irreversible).
+var errNoRollback = errors.New("live DAG executor: no rollback patch")
+
 func newLiveDAGPatchExecutor(mgr *ares_runtime.Manager, agentID string) *liveDAGPatchExecutor {
 	return &liveDAGPatchExecutor{mgr: mgr, agentID: agentID}
 }
@@ -546,7 +560,7 @@ func newLiveDAGPatchExecutor(mgr *ares_runtime.Manager, agentID string) *liveDAG
 func (e *liveDAGPatchExecutor) Name() string { return "live_dag" }
 
 func (e *liveDAGPatchExecutor) Snapshot(_ context.Context) (any, error) {
-	return nil, nil
+	return nil, errNoSnapshot
 }
 
 func (e *liveDAGPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) error {
@@ -587,7 +601,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.RemoveNode(ctx, p.Target); err != nil {
 			return nil, fmt.Errorf("live DAG: remove node %s: %w", p.Target, err)
 		}
-		return nil, nil
+		return nil, errNoRollback
 
 	case patch.PatchReplaceNode:
 		step := &engine.Step{ID: p.Target, Name: p.Target, AgentType: "processor"}
@@ -597,7 +611,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.AddNode(ctx, step); err != nil {
 			return nil, fmt.Errorf("live DAG: replace (add) node %s: %w", p.Target, err)
 		}
-		return nil, nil
+		return nil, errNoRollback
 
 	case patch.PatchAddEdge:
 		val, ok := p.Value.(map[string]string)
@@ -623,7 +637,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		if err := dag.RemoveEdge(ctx, from, to); err != nil {
 			return nil, fmt.Errorf("live DAG: remove edge %s→%s: %w", from, to, err)
 		}
-		return nil, nil
+		return nil, errNoRollback
 
 	case patch.PatchChangeScheduler:
 		// Store the scheduler type on the live DAG so the agent's runtime
@@ -631,7 +645,7 @@ func (e *liveDAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) 
 		schedType := fmt.Sprintf("%T", p.Value)
 		dag.SchedulerType = schedType
 		log.Printf("live DAG: scheduler change for agent %s: %s", e.agentID, schedType)
-		return nil, nil
+		return nil, errNoRollback
 
 	default:
 		return nil, fmt.Errorf("live DAG executor: unsupported patch type %s", p.Type)

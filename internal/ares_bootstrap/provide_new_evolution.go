@@ -331,8 +331,12 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 	}
 
 	graphExec := wfgraph.NewGraphPatchExecutor(g)
-	c.PatchReg.RegisterComponent(graphExec)
-	c.PatchReg.Register("graph.scheduler", graphExec)
+	if err := c.PatchReg.RegisterComponent(graphExec); err != nil {
+		return fmt.Errorf("register graph executor component: %w", err)
+	}
+	if err := c.PatchReg.Register("graph.scheduler", graphExec); err != nil {
+		return fmt.Errorf("register graph.scheduler: %w", err)
+	}
 
 	// Rebuild recovery executor with the live DAG.
 	// Register fails on existing keys (bootstrap executors already registered),

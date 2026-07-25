@@ -98,7 +98,22 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	comp.Runtime = rt
 
 	// 3. Memory
-	mem, err := ProvideMemory(nil)
+	// Build the memory config from defaults, then propagate RAG settings from
+	// the YAML config so the closed-loop (compression + AKG + memory distill)
+	// activates when the operator opts in via memory.enable_rag. RAGTopK /
+	// RAGMinScore keep their DefaultMemoryConfig values when the YAML leaves
+	// them zero, satisfying validate()'s positive-RAGTopK invariant.
+	memCfg := ares_memory.DefaultMemoryConfig()
+	if cfg.Memory.EnableRAG {
+		memCfg.EnableRAG = true
+		if cfg.Memory.RAGTopK > 0 {
+			memCfg.RAGTopK = cfg.Memory.RAGTopK
+		}
+		if cfg.Memory.RAGMinScore > 0 {
+			memCfg.RAGMinScore = cfg.Memory.RAGMinScore
+		}
+	}
+	mem, err := ProvideMemory(memCfg)
 	if err != nil {
 		runCleanups()
 		return nil, err
@@ -132,7 +147,9 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 
 	// 5b + 5c. Experience distillation + auto-distill on task completion
 	// (Track A). Wired conditionally (PG + embedding); failures are non-fatal.
-	guidanceProvider := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
+	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
+	// the distillation and RAG retrieval paths share one embedding client.
+	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
 	subscribeDistillationEvents(ctx, &comp)
 
 	// 6. Dashboard
@@ -198,6 +215,14 @@ func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps
 	// the actual runtime used by the agent's knowledge tools.
 	knowRt := BuildKnowledgeRuntime()
 	comp.KnowledgeRuntime = knowRt
+
+	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
+	// KnowledgeRetriever (AKG entries) into the MemoryManager so every
+	// BuildContext / BuildPromptMessages call augments the prompt with
+	// retrieved context when config.EnableRAG is true. Best-effort: skips
+	// retrievers whose dependencies (embedding client, experience repo, AKG
+	// runtime) are unavailable, so minimal configs are unaffected.
+	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt)
 
 	newEvol, err := ProvideNewEvolution(dag, knowRt, liveMemoryStore)
 	if err != nil {

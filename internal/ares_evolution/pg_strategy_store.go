@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 )
 
 var pgLog = logger.New("pg_strategy_store")
+
+// ErrNoActiveStrategy is returned by GetActive when no strategy has been
+// stored yet. Callers can errors.Is(err, ErrNoActiveStrategy) to distinguish
+// "empty store" from a real failure.
+var ErrNoActiveStrategy = errors.New("pg strategy store: no active strategy")
 
 // PGStrategyStore is a PostgreSQL-backed implementation of StrategyStore.
 // It persists strategies to a database table, enabling cross-restart continuity
@@ -108,7 +114,7 @@ func (s *PGStrategyStore) GetActive(ctx context.Context) (*Strategy, error) {
 	err := row.Scan(&strategyID, &version, &name, &parentID, &promptTmpl,
 		&mutType, &mutDesc, &paramsJSON, &score, &createdAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, ErrNoActiveStrategy
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: get active: %w", err)
@@ -220,7 +226,11 @@ func (s *PGStrategyStore) GetHistory(ctx context.Context, id string, n int) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("pg strategy store: get history: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			pgLog.Warn(ctx, "pg strategy store: close rows", "error", closeErr)
+		}
+	}()
 
 	var results []*Strategy
 	for rows.Next() {
