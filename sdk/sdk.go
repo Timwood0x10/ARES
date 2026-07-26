@@ -12,7 +12,7 @@
 //
 //	func main() {
 //	    ctx := context.Background()
-//	    rt := ares.MustNew(ares.WithOpenAI("gpt-4o-mini"))
+//	    ares := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
 //	    defer rt.Close()
 //
 //	    agent := rt.NewAgent("assistant",
@@ -77,10 +77,32 @@ const (
 	roleTool      = "tool"
 )
 
-// Runtime is the top-level ARES container. It owns the LLM client, tool
-// registry, and — optionally — memory, AKF knowledge fabric, MCP
-// connections, and evolution.
-// Create one with MustNew or New.
+// Runtime is the top-level container for an ARES agent system (a "new ARES runtime").
+//
+// It owns and manages:
+//   - LLM client (OpenAI, Ollama, Anthropic, OpenRouter, or custom)
+//   - Tool registry (built-in, custom, MCP-discovered, AKF tools)
+//   - Memory & distillation engine (session history, experience distillation, RAG)
+//   - AKG / AKF Knowledge Fabric (knowledge graph compilation + retrieval)
+//   - Strategy evolution (GA-based optimisation of agent behaviour)
+//   - MCP server connections (stdio-based external tools)
+//   - Event-driven distillation (TaskCompleted → auto-distill pipeline)
+//
+// Create one with NewRuntime or New, then call NewAgent / NewTeam to build
+// agents. Close must be called once when the Runtime is no longer needed to
+// release LLM connections, stop background goroutines, and close MCP clients.
+//
+// Quick start:
+//
+//	cfg, _ := sdk.LoadConfigFile("ares.yaml")
+//	opts, _ := cfg.ToOptions()
+//	ares := sdk.NewRuntime(opts...)       // ares = new ARES runtime
+//	defer ares.Close()
+//
+//	agent := ares.NewAgent("assistant",
+//	    sdk.WithInstruction("You are helpful."),
+//	)
+//	result, _ := agent.Run(ctx, "hello")
 type Runtime struct {
 	llmSvc           *llm.Service
 	toolReg          *tools.Registry
@@ -267,10 +289,20 @@ type TokenUsage struct {
 
 // ---- constructors ----
 
-// MustNew creates a new Runtime with the given options. It panics on error so
-// it is safe for quickstart / prototyping code. Use New for production code
-// that wants to handle errors gracefully.
-func MustNew(opts ...Option) *Runtime {
+// NewRuntime creates and returns a new ARES Runtime — the top-level container that
+// owns the LLM client, tool registry, memory/distillation engine, AKG knowledge
+// fabric, evolution system, and MCP connections.
+//
+// It panics on error so it is safe for quickstart / prototyping code.
+// Use New for production code that wants to handle errors gracefully.
+//
+// Quick start:
+//
+//	ares := sdk.NewRuntime(sdk.WithConfigFromEnv())
+//	defer ares.Close()
+//	agent := ares.NewAgent("assistant")
+//	result, _ := agent.Run(ctx, "hello")
+func NewRuntime(opts ...Option) *Runtime {
 	r, err := New(opts...)
 	if err != nil {
 		panic("ares: " + err.Error())
@@ -444,8 +476,12 @@ func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error)
 	return mcpClients, nil
 }
 
-// New creates a new Runtime. Returns an error when a required option (e.g. an
-// LLM provider) cannot be initialised.
+// New creates and returns a new ARES Runtime. It wires the LLM client, tool
+// registry, memory/distillation engine, RAG retrievers, AKG knowledge fabric,
+// MCP connections, evolution system, and event-driven distillation.
+//
+// Returns an error when a required option (e.g. an LLM provider) cannot be
+// initialised. Use NewRuntime for quickstart code that panics on error instead.
 func New(opts ...Option) (*Runtime, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {

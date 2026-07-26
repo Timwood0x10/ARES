@@ -1,5 +1,9 @@
 // Tool calling — demonstrates how to create and use multiple tools with ARES.
 //
+// Shows YAML-driven config + custom tool registration (the main customization
+// point for most projects). The runtime, LLM, memory, distillation, AKG, and
+// evolution are all configured via ares.yaml; only custom tools need Go code.
+//
 // Run:
 //
 //	go run examples/02-tool-calling/main.go
@@ -19,14 +23,21 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Create Runtime ──────────────────────────────────────
-	rt := sdk.MustNew(
-		sdk.WithOllama("llama3.2"),
-		sdk.WithDefaultMemory(),
-	)
+	// ── 1. Load ares.yaml + wire everything ────────────────────
+	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
-	// Register custom tools.
+	// ── 2. Register custom tools (the only customization needed) ─
 	for _, t := range customTools {
 		if err := rt.ToolRegistry().Register(t); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ register %s: %v\n", t.Name(), err)
@@ -34,13 +45,13 @@ func main() {
 		}
 	}
 
-	// ── 2. Create Agent ─────────────────────────────────────────
+	// ── 3. Create Agent ─────────────────────────────────────────
 	agent := rt.NewAgent("assistant",
 		sdk.WithInstruction(`You are a helpful assistant with access to tools.
 Use the calculator for math, weather for forecasts, and string_tools for text operations.`),
 	)
 
-	// ── 3. Run ──────────────────────────────────────────────────
+	// ── 4. Run ──────────────────────────────────────────────────
 	tasks := []string{
 		"Calculate (15*23 + 100) / 5",
 		"Reverse the string 'hello world' and uppercase it",
@@ -49,10 +60,6 @@ Use the calculator for math, weather for forecasts, and string_tools for text op
 		fmt.Printf("\n---\n🧑 %s\n", input)
 		result, err := agent.Run(ctx, input)
 		if err != nil {
-			if strings.Contains(err.Error(), "API key") {
-				fmt.Fprintf(os.Stderr, "❌ %v\n", err)
-				return
-			}
 			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 			continue
 		}
@@ -62,7 +69,7 @@ Use the calculator for math, weather for forecasts, and string_tools for text op
 	}
 }
 
-// ── 4. Custom Tools ──────────────────────────────────────────────
+// ── Custom Tools ─────────────────────────────────────────────
 var customTools = []tools.Tool{
 	calculatorTool,
 	weatherTool,
@@ -74,7 +81,6 @@ var calculatorTool = tools.ToolFunc{
 	ToolDesc: "Evaluate a mathematical expression",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
 		expr, _ := params["expression"].(string)
-		// Simple eval for demo purposes.
 		result, err := simpleEval(expr)
 		if err != nil {
 			return nil, fmt.Errorf("eval %q: %w", expr, err)
@@ -88,7 +94,6 @@ var weatherTool = tools.ToolFunc{
 	ToolDesc: "Get the current weather for a city",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
 		city, _ := params["city"].(string)
-		// Demo: return mock data.
 		return fmt.Sprintf("Weather in %s: 22°C, partly cloudy", city), nil
 	},
 }
@@ -120,21 +125,15 @@ var stringTool = tools.ToolFunc{
 
 // simpleEval evaluates basic arithmetic expressions for demo purposes.
 func simpleEval(expr string) (float64, error) {
-	// Remove spaces.
 	expr = strings.ReplaceAll(expr, " ", "")
 	if expr == "" {
 		return 0, fmt.Errorf("empty expression")
 	}
-	// Check characters.
 	for _, c := range expr {
 		if !strings.ContainsRune("0123456789+-*/().", c) {
 			return 0, fmt.Errorf("invalid character: %c", c)
 		}
 	}
-	// Use a basic two-pass parser.
-	// First pass: resolve * and /.
-	// Second pass: resolve + and -.
-	// This is a simplified version for demo only.
 	tokens := tokenize(expr)
 	result, err := parseExpr(tokens)
 	if err != nil {
@@ -143,7 +142,6 @@ func simpleEval(expr string) (float64, error) {
 	return result, nil
 }
 
-// tokenize splits an expression into tokens.
 func tokenize(expr string) []string {
 	var tokens []string
 	var current strings.Builder
@@ -164,8 +162,6 @@ func tokenize(expr string) []string {
 	return tokens
 }
 
-// parseExpr parses a list of tokens into a result using recursive descent.
-// Supports +, -, *, /, parentheses, and unary minus.
 func parseExpr(tokens []string) (float64, error) {
 	p := &tokenParser{tokens: tokens}
 	result, err := p.parseAddSub()
@@ -178,7 +174,6 @@ func parseExpr(tokens []string) (float64, error) {
 	return result, nil
 }
 
-// tokenParser is a simple recursive descent parser for arithmetic expressions.
 type tokenParser struct {
 	tokens []string
 	pos    int
@@ -197,7 +192,6 @@ func (p *tokenParser) consume() string {
 	return tok
 }
 
-// parseAddSub handles addition and subtraction (lowest precedence).
 func (p *tokenParser) parseAddSub() (float64, error) {
 	left, err := p.parseMulDiv()
 	if err != nil {
@@ -222,7 +216,6 @@ func (p *tokenParser) parseAddSub() (float64, error) {
 	return left, nil
 }
 
-// parseMulDiv handles multiplication and division (higher precedence).
 func (p *tokenParser) parseMulDiv() (float64, error) {
 	left, err := p.parsePrimary()
 	if err != nil {
@@ -250,7 +243,6 @@ func (p *tokenParser) parseMulDiv() (float64, error) {
 	return left, nil
 }
 
-// parsePrimary handles numbers, parenthesized expressions, and unary minus.
 func (p *tokenParser) parsePrimary() (float64, error) {
 	tok := p.peek()
 	if tok == "" {

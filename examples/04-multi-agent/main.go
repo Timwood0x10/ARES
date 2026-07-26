@@ -1,5 +1,8 @@
 // Multi-agent — demonstrates team-based leader/member orchestration with ARES.
 //
+// YAML-driven config: only agent definitions and team orchestration need Go code.
+// The runtime, LLM, memory, distillation and evolution are all in ares.yaml.
+//
 // Run:
 //
 //	go run examples/04-multi-agent/main.go
@@ -17,11 +20,18 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// ── 1. Create Runtime ──────────────────────────────────────
-	rt := sdk.MustNew(
-		sdk.WithOllama("llama3.2"),
-		sdk.WithTrace(true),
-	)
+	// ── 1. Load ares.yaml + wire everything ────────────────────
+	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
 	// ── 2. Create team members ─────────────────────────────────

@@ -221,7 +221,7 @@ func resolveAPIKey(configKey, envVar string) string {
 }
 
 // ToOptions converts a ConfigFile into a slice of Option values that can be
-// passed to New or MustNew.
+// passed to New or NewRuntime.
 func (c *ConfigFile) ToOptions() ([]Option, error) {
 	var opts []Option
 

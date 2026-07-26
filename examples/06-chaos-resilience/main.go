@@ -23,7 +23,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
+	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
 	defer rt.Close()
 
 	// Inject all chaos tools.

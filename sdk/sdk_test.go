@@ -75,11 +75,11 @@ func TestMustNewPanic(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	MustNew(WithOllama(""))
+	NewRuntime(WithOllama(""))
 }
 
 func TestToolRegistry(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	reg := rt.ToolRegistry()
 	if reg == nil {
@@ -88,7 +88,7 @@ func TestToolRegistry(t *testing.T) {
 }
 
 func TestNewAgent(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test",
 		WithInstruction("be helpful"),
@@ -100,7 +100,7 @@ func TestNewAgent(t *testing.T) {
 }
 
 func TestAgentRunNoLLM(t *testing.T) {
-	rt := MustNew(WithOllama("nonexistent"), WithTrace(false))
+	rt := NewRuntime(WithOllama("nonexistent"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("hi"))
 	_, err := agent.Run(context.Background(), "hello")
@@ -110,7 +110,7 @@ func TestAgentRunNoLLM(t *testing.T) {
 }
 
 func TestToolConversion(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("t", WithTools(calcTool))
 	coreTools := agent.toCoreTools(agent.tools)
@@ -133,7 +133,7 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestBuildMessages(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("help"))
 	msgs := agent.buildMessages(context.Background(), "hello", "sess")
@@ -185,7 +185,7 @@ func TestBuildMessagesWithKnowledge(t *testing.T) {
 }
 
 func TestBuildMessagesWithoutKnowledge(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("help"))
 	msgs := agent.buildMessages(context.Background(), "hello", "sess")
@@ -234,7 +234,7 @@ func TestToOptionsUnknownProvider(t *testing.T) {
 }
 
 func TestNewTeam(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	leader := rt.NewAgent("lead", WithInstruction("lead"))
 	member := rt.NewAgent("mem", WithInstruction("work"))
@@ -245,7 +245,7 @@ func TestNewTeam(t *testing.T) {
 }
 
 func TestTeamRunNoLLM(t *testing.T) {
-	rt := MustNew(WithOllama("nonexistent"), WithTrace(false))
+	rt := NewRuntime(WithOllama("nonexistent"), WithTrace(false))
 	defer rt.Close()
 	leader := rt.NewAgent("lead", WithInstruction("lead"))
 	member := rt.NewAgent("mem", WithInstruction("work"))
@@ -257,7 +257,7 @@ func TestTeamRunNoLLM(t *testing.T) {
 }
 
 func TestEvolveNotEnabled(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("be helpful"))
 	_, err := rt.Evolve(context.Background(), agent, "task")
@@ -267,7 +267,7 @@ func TestEvolveNotEnabled(t *testing.T) {
 }
 
 func TestEvolveNilAgent(t *testing.T) {
-	rt := MustNew(WithOllama("llama3.2"), WithEvolution(), WithTrace(false))
+	rt := NewRuntime(WithOllama("llama3.2"), WithEvolution(), WithTrace(false))
 	defer rt.Close()
 	_, err := rt.Evolve(context.Background(), nil, "task")
 	if err == nil {
@@ -283,7 +283,7 @@ func TestWithMCPMissingCommand(t *testing.T) {
 }
 
 func TestStream(t *testing.T) {
-	rt := MustNew(WithOllama("nonexistent"), WithTrace(false))
+	rt := NewRuntime(WithOllama("nonexistent"), WithTrace(false))
 	defer rt.Close()
 	agent := rt.NewAgent("test", WithInstruction("hi"))
 	ch, err := agent.Stream(context.Background(), "hello")

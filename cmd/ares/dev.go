@@ -173,7 +173,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(
+	rt := sdk.NewRuntime(
 		sdk.WithOllama("llama3.2"),
 		sdk.WithDefaultMemory(),
 	)
@@ -288,7 +288,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	rt := sdk.MustNew(opts...)
+	rt := sdk.NewRuntime(opts...)
 	defer rt.Close()
 
 	agent := rt.NewAgent("cli-agent",
@@ -373,7 +373,7 @@ func runBench(cmd *cobra.Command, _ []string) error {
 
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithTrace(false))
+	rt := sdk.NewRuntime(sdk.WithTrace(false))
 	defer rt.Close()
 
 	agent := rt.NewAgent("bench-agent",
