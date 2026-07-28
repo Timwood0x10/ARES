@@ -8,12 +8,17 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_runtime"
 )
 
 // ──────────────────────────────────────────────────────────────────────
@@ -79,10 +84,13 @@ func (e *FuncNodeExecutor) ExecuteNode(ctx context.Context, spec *NodeSpec, scop
 type Runner struct {
 	executor         NodeExecutor
 	strategy         ScheduleStrategy
-	maxParallel      int
+	initialInput     string
+	initialVariables map[string]string
 	interruptHandler func(ctx context.Context, spec *InterruptSpec, view StateView) (approved bool, err error)
 	recoveryHandler  func(ctx context.Context, nodeID NodeID, nodeErr error, spec *NodeSpec) (recovered bool, replacement map[string]any, err error)
 	condEvaluator    func(expr *ConditionExpr, view StateView) bool
+	pluginBus        *ares_runtime.PluginBus
+	checkpointStore  ares_runtime.CheckpointStore
 }
 
 // NewRunner creates a new Runner with the given NodeExecutor.
@@ -157,6 +165,41 @@ func WithConditionEvaluator(eval func(expr *ConditionExpr, view StateView) bool)
 	}
 }
 
+// WithInitialInput sets the initial workflow input string that is injected
+// into the execution scope's state before any node runs. The input is
+// accessible via StateView.Get("input") during node execution.
+func WithInitialInput(input string) RunnerOption {
+	return func(r *Runner) {
+		r.initialInput = input
+	}
+}
+
+// WithInitialVariables sets the initial workflow variables that are
+// injected into the execution scope's state before any node runs.
+func WithInitialVariables(vars map[string]string) RunnerOption {
+	return func(r *Runner) {
+		r.initialVariables = vars
+	}
+}
+
+// WithPluginBus attaches a PluginBus for BeforeStep/AfterStep hooks and event
+// emission during workflow execution. When set, the Runner invokes all
+// registered WorkflowHook plugins before and after each node executes.
+func WithPluginBus(bus *ares_runtime.PluginBus) RunnerOption {
+	return func(r *Runner) {
+		r.pluginBus = bus
+	}
+}
+
+// WithCheckpointStore attaches a CheckpointStore for crash recovery. When set,
+// the Runner saves a checkpoint after each node completes, persisting the
+// current execution state so it can be resumed after a restart.
+func WithCheckpointStore(store ares_runtime.CheckpointStore) RunnerOption {
+	return func(r *Runner) {
+		r.checkpointStore = store
+	}
+}
+
 // errInterruptApproved is a sentinel indicating the HITL interrupt was approved.
 // It is returned by handleInterrupt and is not propagated to the caller.
 var errInterruptApproved = fmt.Errorf("interrupt approved")
@@ -183,11 +226,13 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 	// Create execution scope.
 	scope := NewExecutionScope("", spec)
 	scope.InitNodeStates()
+	// Inject initial input and variables into the execution state.
+	scope.SetInitialState(r.initialInput, r.initialVariables)
 
-	// Apply MaxParallel from spec schedule.
-	r.maxParallel = spec.Schedule.MaxParallel
-	if r.maxParallel <= 0 {
-		r.maxParallel = 1 // default to sequential
+	// Read MaxParallel as execution-local variable (not shared Runner field).
+	maxParallel := spec.Schedule.MaxParallel
+	if maxParallel <= 0 {
+		maxParallel = 1 // default to sequential
 	}
 
 	// Create scheduler.
@@ -198,7 +243,6 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 	// Wire condition evaluator if set.
 	if r.condEvaluator != nil {
 		sched.SetCondEval(func(expr *ConditionExpr) bool {
-			// Create a state view that the condition evaluator can access.
 			return r.condEvaluator(expr, scope.State())
 		})
 	}
@@ -207,11 +251,23 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 	loop := spec.Loop
 	if loop != nil && loop.MaxIterations > 0 {
 		var accumulatedState map[string]any
+
+		// Build a loop-body sub-spec once (reused for iterations > 1).
+		var bodySpec *WorkflowSpec
+		if len(loop.LoopNodes) > 0 {
+			bodySpec = buildLoopBodySpec(spec, loop.LoopNodes)
+		}
+
 		for iteration := 0; iteration < loop.MaxIterations; iteration++ {
-			// Re-create scope and scheduler for each iteration.
-			scope = NewExecutionScope("", spec)
+			// Use the full spec for iteration 0 (includes setup nodes),
+			// then the body-only sub-spec for subsequent iterations.
+			iterSpec := spec
+			if iteration > 0 && bodySpec != nil {
+				iterSpec = bodySpec
+			}
+
+			scope = NewExecutionScope("", iterSpec)
 			scope.InitNodeStates()
-			// Inject accumulated state from previous iterations.
 			if accumulatedState != nil {
 				w := scope.Writer()
 				for k, v := range accumulatedState {
@@ -219,7 +275,7 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 				}
 				scope.CommitState()
 			}
-			sched, err = NewScheduler(spec, r.strategy)
+			sched, err = NewScheduler(iterSpec, r.strategy)
 			if err != nil {
 				return nil, fmt.Errorf("create scheduler for iteration %d: %w", iteration+1, err)
 			}
@@ -228,12 +284,11 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 					return r.condEvaluator(expr, scope.State())
 				})
 			}
-			r.execLoop(ctx, scope, sched)
-			// Preserve state for the next iteration.
+			r.execLoop(ctx, scope, sched, maxParallel)
 			accumulatedState = scope.StateSnapshot()
 		}
 	} else {
-		r.execLoop(ctx, scope, sched)
+		r.execLoop(ctx, scope, sched, maxParallel)
 	}
 
 	scope.MarkFinished()
@@ -249,10 +304,11 @@ type nodeResult struct {
 	err    error
 }
 
-func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Scheduler) {
+func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Scheduler, maxParallel int) {
 	resultCh := make(chan nodeResult, len(scope.Spec.Nodes))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, r.maxParallel)
+	sem := make(chan struct{}, maxParallel)
+	var running int32 // atomic counter for active goroutines
 
 	// Main scheduling loop
 	for {
@@ -262,10 +318,9 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 		}
 
 		// Dispatch all ready nodes (parallel fan-out)
-		dispatched := r.dispatchReady(ctx, scope, sched, resultCh, &wg, sem)
+		dispatched := r.dispatchReady(ctx, scope, sched, resultCh, &wg, sem, &running, maxParallel)
 
-		if dispatched == 0 {
-			// No nodes ready and nothing running: check if we're done
+		if dispatched == 0 && atomic.LoadInt32(&running) == 0 {
 			break
 		}
 
@@ -280,21 +335,24 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 	}
 
 	// Drain remaining results — may enqueue new nodes via OnNodeCompleted.
-	// Use a polling select to handle both results and completion detection
-	// without racing dispatchReady() against wg.Wait().
 	for {
 		// Dispatch any nodes that became ready from drained results.
-		for r.dispatchReady(ctx, scope, sched, resultCh, &wg, sem) > 0 {
+		for r.dispatchReady(ctx, scope, sched, resultCh, &wg, sem, &running, maxParallel) > 0 {
 		}
 
 		select {
 		case res, ok := <-resultCh:
 			if !ok {
-				return // channel closed
+				return
 			}
 			r.handleResult(res, scope, sched)
 		default:
-			// No results pending. Check if all goroutines are done.
+			if atomic.LoadInt32(&running) == 0 {
+				close(resultCh)
+				r.finaliseUnprocessed(scope, sched)
+				return
+			}
+			// Still waiting — brief poll before re-checking.
 			done := make(chan struct{}, 1)
 			go func() {
 				wg.Wait()
@@ -306,7 +364,6 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 				r.finaliseUnprocessed(scope, sched)
 				return
 			case <-time.After(50 * time.Millisecond):
-				// Still waiting for goroutines. Re-check for results.
 				continue
 			}
 		}
@@ -316,7 +373,7 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 // dispatchReady sends all currently ready nodes to goroutines.
 // Returns the number of nodes dispatched.
 func (r *Runner) dispatchReady(ctx context.Context, scope *ExecutionScope, sched *Scheduler,
-	resultCh chan nodeResult, wg *sync.WaitGroup, sem chan struct{}) int {
+	resultCh chan nodeResult, wg *sync.WaitGroup, sem chan struct{}, running *int32, maxParallel int) int {
 	dispatched := 0
 	for sched.HasReady() {
 		nodeID := sched.Next()
@@ -343,18 +400,22 @@ func (r *Runner) dispatchReady(ctx context.Context, scope *ExecutionScope, sched
 
 		// Acquire semaphore (blocking if maxParallel already reached).
 		sem <- struct{}{}
+		atomic.AddInt32(running, 1)
 		wg.Add(1)
-		go func(id NodeID, spec *NodeSpec) {
-			defer func() { <-sem }()
-			r.executeNodeGoroutine(ctx, spec, id, scope, resultCh, wg)
-		}(nodeSpec.ID, nodeSpec)
+		go func(id NodeID, spec *NodeSpec, mp int) {
+			defer func() {
+				<-sem
+				atomic.AddInt32(running, -1)
+			}()
+			r.executeNodeGoroutine(ctx, spec, id, scope, resultCh, wg, mp)
+		}(nodeSpec.ID, nodeSpec, maxParallel)
 	}
 	return dispatched
 }
 
 // executeNodeGoroutine runs a single node with HITL, retry, and recovery.
 func (r *Runner) executeNodeGoroutine(ctx context.Context, spec *NodeSpec, id NodeID,
-	scope *ExecutionScope, resultCh chan nodeResult, wg *sync.WaitGroup) {
+	scope *ExecutionScope, resultCh chan nodeResult, wg *sync.WaitGroup, maxParallel int) {
 	defer wg.Done()
 
 	// ── HITL interrupt check ──
@@ -374,17 +435,24 @@ func (r *Runner) executeNodeGoroutine(ctx context.Context, spec *NodeSpec, id No
 	var output map[string]any
 	var execErr error
 
+	// BeforeStep hook
+	startTime := time.Now()
+	r.emitBeforeStep(ctx, id, spec)
+
 	if spec.SubWorkflow != nil {
-		// Execute sub-workflow recursively.
-		subResult, subErr := r.Execute(ctx, spec.SubWorkflow)
+		// Execute sub-workflow with inherited parent scope state.
+		subResult, subErr := r.executeChildScope(ctx, spec.SubWorkflow, scope, maxParallel)
 		if subErr != nil {
 			execErr = fmt.Errorf("sub-workflow %s: %w", spec.SubWorkflow.ID, subErr)
 		} else {
-			output = subResult.State
+			output = subResult
 		}
 	} else {
 		output, execErr = r.executeSingle(ctx, spec, id, scope, resultCh)
 	}
+
+	// AfterStep hook
+	r.emitAfterStep(ctx, id, spec, output, execErr, startTime, scope)
 
 	select {
 	case resultCh <- nodeResult{id: id, output: output, err: execErr}:
@@ -434,17 +502,10 @@ func (r *Runner) handleInterruptTimeout(spec *NodeSpec, id NodeID,
 	case "approve":
 		return nil, errInterruptApproved // auto-approve
 	case "skip", "fallback":
-		select {
-		case resultCh <- nodeResult{id: id, err: fmt.Errorf("interrupt timed out, auto-skipped: %s", spec.Interrupt.Message)}:
-		case <-resultCh: // best-effort send
-		}
+		resultCh <- nodeResult{id: id, err: fmt.Errorf("interrupt timed out, auto-skipped: %s", spec.Interrupt.Message)}
 		return nil, fmt.Errorf("auto-skipped")
 	default:
-		// No auto-action configured: treat as rejected.
-		select {
-		case resultCh <- nodeResult{id: id, err: fmt.Errorf("interrupt timed out: %s", spec.Interrupt.Message)}:
-		case <-resultCh:
-		}
+		resultCh <- nodeResult{id: id, err: fmt.Errorf("interrupt timed out: %s", spec.Interrupt.Message)}
 		return nil, fmt.Errorf("timed out")
 	}
 }
@@ -469,10 +530,21 @@ func (r *Runner) executeSingle(ctx context.Context, spec *NodeSpec, id NodeID,
 			return nil, ctx.Err()
 		}
 
-		output, execErr = r.executor.ExecuteNode(ctx, spec, scope)
+		// Apply node-level timeout if configured.
+		execCtx := ctx
+		if spec.Timeout > 0 {
+			var cancel context.CancelFunc
+			execCtx, cancel = context.WithTimeout(ctx, spec.Timeout)
+			defer cancel()
+		}
+
+		output, execErr = r.executor.ExecuteNode(execCtx, spec, scope)
 		if execErr == nil {
 			return output, nil
 		}
+
+		// Record failed attempt.
+		scope.RecordAttempt(id)
 
 		if attempt < maxAttempts {
 			delay := retryBackoff(spec.Retry, attempt)
@@ -525,6 +597,44 @@ func (r *Runner) executeSingle(ctx context.Context, spec *NodeSpec, id NodeID,
 	}
 
 	return nil, execErr
+}
+
+// executeChildScope runs a sub-workflow as a child of the given parent scope,
+// inheriting the parent's state. Returns the child's final state snapshot.
+func (r *Runner) executeChildScope(ctx context.Context, subSpec *WorkflowSpec, parentScope *ExecutionScope, maxParallel int) (map[string]any, error) {
+	if subSpec == nil {
+		return nil, fmt.Errorf("sub-workflow spec must not be nil")
+	}
+	if report := Validate(subSpec); !report.Valid() {
+		return nil, fmt.Errorf("sub-workflow %q validation failed: %v", subSpec.ID, report.Errors)
+	}
+
+	childScope := NewExecutionScope("", subSpec)
+	childScope.InitNodeStates()
+
+	// Inherit parent state: copy all committed state from parent to child.
+	parentState := parentScope.StateSnapshot()
+	if parentState != nil {
+		w := childScope.Writer()
+		for k, v := range parentState {
+			w.Set(k, v)
+		}
+		childScope.CommitState()
+	}
+
+	childSched, err := NewScheduler(subSpec, r.strategy)
+	if err != nil {
+		return nil, fmt.Errorf("create child scheduler: %w", err)
+	}
+	if r.condEvaluator != nil {
+		childSched.SetCondEval(func(expr *ConditionExpr) bool {
+			return r.condEvaluator(expr, childScope.State())
+		})
+	}
+
+	r.execLoop(ctx, childScope, childSched, maxParallel)
+	childScope.MarkFinished()
+	return childScope.StateSnapshot(), nil
 }
 
 // cancelAll marks all pending nodes as Cancelled and waits for goroutines.
@@ -584,10 +694,12 @@ func (r *Runner) finaliseUnprocessed(scope *ExecutionScope, sched *Scheduler) {
 							}
 						}
 					}
-					if failedUpstream {
+					switch {
+					case sched.BranchSkipped(n.ID):
+						scope.SetNodeStatus(n.ID, NodeStatusNotSelected)
+					case failedUpstream:
 						scope.SetNodeStatus(n.ID, NodeStatusBlocked)
-					} else {
-						// All conditions evaluated false, or node is truly unreachable
+					default:
 						scope.SetNodeStatus(n.ID, NodeStatusUnreachable)
 					}
 				}
@@ -654,12 +766,171 @@ func retryBackoff(policy *RetrySpec, attempt int) time.Duration {
 	base := float64(initial) * math.Pow(multiplier, float64(attempt-1))
 	delay := time.Duration(base)
 
-	// Cap at max delay
 	if delay > maxDelay {
 		delay = maxDelay
 	}
 
-	// Add jitter (±25%)
-	jitter := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5)) //nolint:gosec // jitter does not need crypto randomness
+	jitter := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5)) //nolint:gosec
 	return jitter
+}
+
+// ── PluginBus hooks ─────────────────────────────────────────────
+
+// stepFromSpec creates an ares_runtime Step from a NodeSpec.
+func stepFromSpec(spec *NodeSpec) *ares_runtime.Step {
+	return &ares_runtime.Step{
+		ID:        string(spec.ID),
+		Name:      spec.Name,
+		AgentType: spec.AgentType,
+		Status:    ares_runtime.StepStatusRunning,
+		StartedAt: time.Now(),
+	}
+}
+
+// stepResultFromOutput creates an ares_runtime StepResult from execution output.
+func stepResultFromOutput(id NodeID, spec *NodeSpec, output map[string]any, execErr error, startTime time.Time) *ares_runtime.StepResult {
+	r := &ares_runtime.StepResult{
+		StepID:   string(id),
+		Name:     spec.Name,
+		Duration: time.Since(startTime),
+	}
+	if execErr != nil {
+		r.Status = ares_runtime.StepStatusFailed
+		r.Error = execErr.Error()
+	} else {
+		r.Status = ares_runtime.StepStatusCompleted
+	}
+	return r
+}
+
+// emitBeforeStep calls BeforeStep on all registered WorkflowHook plugins
+// and emits a step.started event.
+func (r *Runner) emitBeforeStep(ctx context.Context, id NodeID, spec *NodeSpec) {
+	if r.pluginBus == nil {
+		return
+	}
+	step := stepFromSpec(spec)
+	if err := r.pluginBus.BeforeStep(ctx, string(id), step); err != nil {
+		slog.Warn("runner: BeforeStep hook failed (continuing)",
+			"node_id", id, "error", err)
+	}
+	r.pluginBus.Emit(ctx, string(id), ares_runtime.EventStepStarted, "workflow", map[string]any{
+		ares_runtime.PayloadKeyExecutionID: string(id),
+		ares_runtime.PayloadKeyStepID:      string(id),
+	})
+}
+
+// emitAfterStep calls AfterStep on all registered WorkflowHook plugins,
+// emits a step.completed/step.failed event, and saves a checkpoint if
+// a CheckpointStore is configured.
+func (r *Runner) emitAfterStep(ctx context.Context, id NodeID, spec *NodeSpec, output map[string]any, execErr error, startTime time.Time, scope *ExecutionScope) {
+	if r.pluginBus == nil && r.checkpointStore == nil {
+		return
+	}
+
+	result := stepResultFromOutput(id, spec, output, execErr, startTime)
+
+	if r.pluginBus != nil {
+		if err := r.pluginBus.AfterStep(ctx, string(id), result); err != nil {
+			slog.Warn("runner: AfterStep hook failed (continuing)",
+				"node_id", id, "error", err)
+		}
+		// Emit step completion event.
+		eventType := ares_runtime.EventStepCompleted
+		if execErr != nil {
+			eventType = ares_runtime.EventStepFailed
+		}
+		r.pluginBus.Emit(ctx, string(id), eventType, "workflow", map[string]any{
+			ares_runtime.PayloadKeyExecutionID: string(id),
+			ares_runtime.PayloadKeyStepID:      string(id),
+			ares_runtime.PayloadKeyStatus:      string(result.Status),
+			ares_runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
+		})
+	}
+
+	// Save checkpoint after each completed node for crash recovery.
+	if r.checkpointStore != nil {
+		if err := r.saveRunnerCheckpoint(ctx, scope, id, result); err != nil {
+			slog.Warn("runner: checkpoint save failed (continuing)",
+				"node_id", id, "error", err)
+		}
+	}
+}
+
+// saveRunnerCheckpoint persists the complete execution state for crash recovery.
+// The checkpoint includes:
+//   - execution ID and spec ID
+//   - all node statuses
+//   - committed state
+//   - the current node result
+func (r *Runner) saveRunnerCheckpoint(ctx context.Context, scope *ExecutionScope, nodeID NodeID, result *ares_runtime.StepResult) error {
+	if scope == nil {
+		return fmt.Errorf("scope must not be nil")
+	}
+	// Build a snapshot of all node states.
+	nodeStates := make([]map[string]any, 0)
+	for _, ns := range scope.NodeStates() {
+		nodeStates = append(nodeStates, map[string]any{
+			"id":       string(ns.ID),
+			"status":   string(ns.Status),
+			"error":    ns.Error,
+			"attempts": ns.Attempts,
+			"output":   ns.Output,
+		})
+	}
+
+	data := map[string]any{
+		"saved_at":     time.Now(),
+		"execution_id": scope.ExecutionID,
+		"spec_id":      scope.Spec.ID,
+		"node_id":      string(nodeID),
+		"node_result": map[string]any{
+			"status":   string(result.Status),
+			"error":    result.Error,
+			"duration": result.Duration.Milliseconds(),
+		},
+		"state":       scope.StateSnapshot(),
+		"node_states": nodeStates,
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal checkpoint: %w", err)
+	}
+	return r.checkpointStore.Save(ctx, ares_runtime.CheckpointKey(scope.ExecutionID), payload)
+}
+
+// buildLoopBodySpec creates a sub-spec containing only the loop body nodes.
+func buildLoopBodySpec(fullSpec *WorkflowSpec, loopNodes []NodeID) *WorkflowSpec {
+	if fullSpec == nil || len(loopNodes) == 0 {
+		return nil
+	}
+	bodySet := make(map[NodeID]bool, len(loopNodes))
+	for _, id := range loopNodes {
+		bodySet[id] = true
+	}
+	body := NewWorkflow(fullSpec.ID + ".loop-body")
+	for _, n := range fullSpec.Nodes {
+		if bodySet[n.ID] {
+			body.AddNode(n)
+		}
+	}
+	for _, e := range fullSpec.Edges {
+		if bodySet[e.From] && bodySet[e.To] {
+			body.AddEdge(e)
+		}
+	}
+	bodyEntries := make(map[NodeID]bool)
+	for _, id := range loopNodes {
+		bodyEntries[id] = true
+	}
+	for _, e := range body.Edges {
+		if e.Kind == EdgeDataDependency {
+			delete(bodyEntries, e.To)
+		}
+	}
+	for id := range bodyEntries {
+		body.Entries = append(body.Entries, id)
+	}
+	body.Schedule = fullSpec.Schedule
+	return body
 }

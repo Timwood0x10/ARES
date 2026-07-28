@@ -84,9 +84,22 @@ func TestRunner_Conformance_BranchOne(t *testing.T) {
 	execOrder.fns["classify"] = func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
 		return map[string]any{"score": 90}, nil
 	}
-	_ = execOrder
 
-	result, err := workflow.RunWorkflow(context.Background(), spec, execOrder.fns)
+	// Condition evaluator: reads score from state.
+	condEval := func(expr *workflow.ConditionExpr, view workflow.StateView) bool {
+		if expr.Type == "expr" {
+			val, ok := view.Get("score")
+			if !ok {
+				return false
+			}
+			score, ok := val.(int)
+			return ok && score >= 60
+		}
+		return false
+	}
+
+	result, err := workflow.RunWorkflow(context.Background(), spec, execOrder.fns,
+		workflow.WithConditionEvaluator(condEval))
 	if err != nil {
 		t.Fatalf("RunWorkflow: %v", err)
 	}

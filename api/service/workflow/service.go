@@ -204,6 +204,68 @@ func (s *Service) executeWithRunner(ctx context.Context, wf *engine.Workflow, re
 	return s.buildRunnerResponse(result), nil
 }
 
+// executeStreamWithRunner runs a workflow with the unified Runner and streams events.
+func (s *Service) executeStreamWithRunner(ctx context.Context, req *core.WorkflowRequest, wf *engine.Workflow) (<-chan core.WorkflowEvent, error) {
+	spec, err := workflow.CompileFromEngine(wf) //nolint:staticcheck
+	if err != nil {
+		return nil, fmt.Errorf("compile workflow: %w", err)
+	}
+
+	exec := workflow.NewFuncNodeExecutor()
+	for _, step := range wf.Steps {
+		sid := step.ID
+		agentType := step.AgentType
+		exec.Register(workflow.NodeID(sid), func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+			agent, aErr := s.registry.CreateAgent(ctx, agentType, nil)
+			if aErr != nil {
+				return nil, fmt.Errorf("create agent %q: %w", agentType, aErr)
+			}
+			input, _ := view.Get("input")
+			result, aErr := agent.Process(ctx, input)
+			if aErr != nil {
+				return nil, fmt.Errorf("agent %q: %w", agentType, aErr)
+			}
+			return map[string]any{"output": result}, nil
+		})
+	}
+
+	events := make(chan core.WorkflowEvent, 64)
+	go func() {
+		defer close(events)
+		emitEvent := func(evType core.WorkflowEventType, status core.WorkflowStatus, stepID, errStr string) {
+			select {
+			case events <- core.WorkflowEvent{Type: evType, WorkflowID: req.WorkflowID, StepID: stepID, Status: status, Error: errStr, Timestamp: time.Now()}:
+			case <-ctx.Done():
+			}
+		}
+
+		emitEvent(core.WorkflowEventStarted, core.WorkflowStatusRunning, "", "")
+
+		runner := workflow.NewRunner(exec, workflow.WithScheduleStrategy(workflow.ScheduleFIFO))
+		result, rErr := runner.Execute(ctx, spec)
+		if rErr != nil || result == nil || result.Status == workflow.NodeStatusFailed {
+			errMsg := ""
+			if rErr != nil {
+				errMsg = rErr.Error()
+			} else if result != nil {
+				errMsg = result.Error
+			}
+			emitEvent(core.WorkflowEventFailed, core.WorkflowStatusFailed, "", errMsg)
+			return
+		}
+
+		for _, ns := range result.NodeStates {
+			s := core.WorkflowStatusCompleted
+			if ns.Status == workflow.NodeStatusFailed {
+				s = core.WorkflowStatusFailed
+			}
+			emitEvent(core.WorkflowEventStepCompleted, s, string(ns.ID), ns.Error)
+		}
+		emitEvent(core.WorkflowEventCompleted, core.WorkflowStatusCompleted, "", "")
+	}()
+	return events, nil
+}
+
 // buildRunnerResponse converts a workflow.Result to a core.WorkflowResponse.
 func (s *Service) buildRunnerResponse(result *workflow.Result) *core.WorkflowResponse {
 	if result == nil {
@@ -296,6 +358,12 @@ func (s *Service) ExecuteStream(ctx context.Context, req *core.WorkflowRequest) 
 	}
 
 	wf := s.buildEngineWorkflow(def, req.Variables)
+
+	// Route to the appropriate executor.
+	if s.config.UseRunner {
+		return s.executeStreamWithRunner(ctx, req, wf)
+	}
+
 	steps := s.buildEngineSteps(def)
 
 	mutableDAG, err := engine.NewMutableDAG(steps)

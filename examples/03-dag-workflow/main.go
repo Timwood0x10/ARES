@@ -40,12 +40,12 @@ func condEdgeDemo(ctx context.Context) {
 		AddEdge(workflow.EdgeSpec{From: "ingest", To: "gate", Kind: workflow.EdgeDataDependency}).
 		// ControlFlow with condition: gate → pass if condition matches
 		AddEdge(workflow.EdgeSpec{From: "gate", To: "pass",
-			Kind: workflow.EdgeControlFlow,
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchOne, Group: "score",
 			Cond: &workflow.ConditionExpr{Type: "state", Value: "score"},
 		}).
 		// ControlFlow unconditional fallback: gate → fail
 		AddEdge(workflow.EdgeSpec{From: "gate", To: "fail",
-			Kind: workflow.EdgeControlFlow}).
+			Kind: workflow.EdgeControlFlow, Branch: workflow.BranchOne, Group: "score"}).
 		WithEntry("ingest")
 
 	// Ingest sets a score in the state.

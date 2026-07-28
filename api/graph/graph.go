@@ -182,6 +182,9 @@ const (
 	NodeStatusFailed      = workflow.NodeStatusFailed
 	NodeStatusInterrupted = workflow.NodeStatusInterrupted
 	NodeStatusCancelled   = workflow.NodeStatusCancelled
+	NodeStatusNotSelected = workflow.NodeStatusNotSelected
+	NodeStatusUnreachable = workflow.NodeStatusUnreachable
+	NodeStatusBlocked     = workflow.NodeStatusBlocked
 )
 
 // EdgeKind constants.

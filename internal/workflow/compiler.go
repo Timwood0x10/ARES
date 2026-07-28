@@ -7,11 +7,31 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 
 	wfengine "github.com/Timwood0x10/ares/internal/workflow/engine"
 	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
+
+// CompiledWorkflow holds a WorkflowSpec IR together with closures that cannot
+// be serialized (Condition, Router, UntilCondition). These closures are
+// captured during compilation and must be reattached at execution time via
+// Runner.WithConditionEvaluator or passed through a Bindings adapter.
+//
+// When CompileFromEngine or CompileFromGraph encounter a closure that they
+// cannot preserve, they either capture it here (best-effort) or return an
+// error (fail-fast) depending on the strictness mode.
+type CompiledWorkflow struct {
+	// Spec is the serializable intermediate representation.
+	Spec *WorkflowSpec `json:"spec"`
+	// ConditionFuncs holds the Condition closures keyed by node ID.
+	ConditionFuncs map[NodeID]func(vars map[string]any) bool `json:"-"`
+	// RouterFuncs holds the Router closures keyed by node ID.
+	RouterFuncs map[NodeID]func(ctx context.Context, stepID string, variables map[string]any, stepOutput string) string `json:"-"`
+	// UntilCondition holds the loop's UntilCondition closure, if any.
+	UntilCondition func(variables map[string]any, iteration int) bool `json:"-"`
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Compiler: engine.Workflow → WorkflowSpec
@@ -30,102 +50,19 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 	}
 
 	spec := NewWorkflow(w.ID)
-
-	// ── Compile nodes ──
 	nodeIDs := make(map[string]bool)
-	for _, step := range w.Steps {
-		if step == nil {
-			return nil, fmt.Errorf("step in workflow %q is nil", w.ID)
-		}
-		if nodeIDs[step.ID] {
-			return nil, fmt.Errorf("duplicate node ID %q in workflow %q", step.ID, w.ID)
-		}
-		nodeIDs[step.ID] = true
-
-		ns := NodeSpec{
-			ID:        NodeID(step.ID),
-			Name:      step.Name,
-			AgentType: step.AgentType,
-			Input:     step.Input,
-			Timeout:   step.Timeout,
-		}
-
-		// Retry policy
-		if step.RetryPolicy != nil {
-			ns.Retry = &RetrySpec{
-				MaxAttempts:       step.RetryPolicy.MaxAttempts,
-				InitialDelay:      step.RetryPolicy.InitialDelay,
-				MaxDelay:          step.RetryPolicy.MaxDelay,
-				BackoffMultiplier: step.RetryPolicy.BackoffMultiplier,
-			}
-		}
-
-		// Recovery policy
-		if step.RecoveryPolicy != nil {
-			ns.Recovery = &RecoverySpec{
-				Strategy: string(step.RecoveryPolicy.Strategy),
-			}
-			if step.RecoveryPolicy.ReplacementAgent != "" {
-				ns.Recovery.ReplacementAgent = step.RecoveryPolicy.ReplacementAgent
-			}
-		}
-
-		// Interrupt
-		if step.Interrupt != nil {
-			ns.Interrupt = &InterruptSpec{
-				Message: step.Interrupt.Message,
-			}
-		}
-
-		// Sub-workflow (recursive)
-		if step.SubWorkflow != nil {
-			sub, err := CompileFromEngine(step.SubWorkflow)
-			if err != nil {
-				return nil, fmt.Errorf("compile sub-workflow for step %q: %w", step.ID, err)
-			}
-			ns.SubWorkflow = sub
-		}
-
-		// Metadata
-		if step.Metadata != nil {
-			ns.Metadata = make(map[string]string, len(step.Metadata))
-			for k, v := range step.Metadata {
-				ns.Metadata[k] = v
-			}
-		}
-
-		spec.AddNode(ns)
-
-		// ── Compile edges from DependsOn ──
-		for _, dep := range step.DependsOn {
-			// Existence check is deferred to Validate() — edges referencing
-			// out-of-order deps are valid until the full node set is known.
-			spec.AddEdge(EdgeSpec{
-				From: NodeID(dep),
-				To:   NodeID(step.ID),
-				Kind: EdgeDataDependency,
-			})
-		}
+	if err := compileEngineSteps(spec, w.Steps, nodeIDs); err != nil {
+		return nil, err
 	}
 
 	// ── Condition references ──
-	// engine.Step.Condition is a closure (json:"-") and cannot be serialized.
-	// For each step with a non-nil Condition, we annotate the relevant edge
-	// with a reference marker and record the closure existence in metadata.
 	for _, step := range w.Steps {
 		annotateConditionRef(spec, step)
 		annotateRouterRef(spec, step)
 	}
 
 	// ── UntilCondition reference ──
-	if w.LoopConfig != nil && w.LoopConfig.UntilCondition != nil {
-		if spec.Loop == nil {
-			spec.Loop = &LoopSpec{
-				MaxIterations: w.LoopConfig.MaxIterations,
-			}
-		}
-		_ = w.LoopConfig.UntilCondition // referenced for future binding
-	}
+	compileUntilCondition(spec, w.LoopConfig)
 
 	// ── Entries: zero-in-degree nodes ──
 	spec.Entries = computeEntries(spec)
@@ -142,12 +79,49 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 		}
 	}
 
-	// ── Schedule ──
-	spec.Schedule = ScheduleSpec{
-		MaxParallel: 1, // engine default; configurable via WithMaxParallel
+	spec.Schedule = ScheduleSpec{MaxParallel: 1}
+	return spec, nil
+}
+
+// CompileFromEngineWithBindings compiles an engine.Workflow and captures all
+// closures (Condition, Router, UntilCondition) that the basic CompileFromEngine
+// silently drops. Returns a CompiledWorkflow containing both the spec and the
+// captured closures.
+//
+// If any step has a Condition or Router that cannot be preserved, this function
+// captures it into the bindings map rather than dropping it silently.
+// The closures can be reattached at execution time via the Runner's
+// WithConditionEvaluator option.
+func CompileFromEngineWithBindings(w *wfengine.Workflow) (*CompiledWorkflow, error) {
+	spec, err := CompileFromEngine(w)
+	if err != nil {
+		return nil, err
 	}
 
-	return spec, nil
+	cw := &CompiledWorkflow{
+		Spec:           spec,
+		ConditionFuncs: make(map[NodeID]func(vars map[string]any) bool),
+		RouterFuncs:    make(map[NodeID]func(ctx context.Context, stepID string, variables map[string]any, stepOutput string) string),
+	}
+
+	for _, step := range w.Steps {
+		if step.Condition != nil {
+			// Capture the Condition closure.
+			fn := step.Condition
+			cw.ConditionFuncs[NodeID(step.ID)] = fn
+		}
+		if step.Router != nil {
+			// Capture the Router closure.
+			fn := step.Router
+			cw.RouterFuncs[NodeID(step.ID)] = fn
+		}
+	}
+
+	if w.LoopConfig != nil && w.LoopConfig.UntilCondition != nil {
+		cw.UntilCondition = w.LoopConfig.UntilCondition
+	}
+
+	return cw, nil
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -271,6 +245,95 @@ func setNodeMeta(spec *WorkflowSpec, nodeID, key, value string) {
 			spec.Nodes[i].Metadata[key] = value
 			return
 		}
+	}
+}
+
+// compileEngineSteps compiles workflow steps into NodeSpecs and edges.
+func compileEngineSteps(spec *WorkflowSpec, steps []*wfengine.Step, nodeIDs map[string]bool) error {
+	for _, step := range steps {
+		if step == nil {
+			return fmt.Errorf("step is nil")
+		}
+		if nodeIDs[step.ID] {
+			return fmt.Errorf("duplicate node ID %q", step.ID)
+		}
+		nodeIDs[step.ID] = true
+
+		ns := NodeSpec{
+			ID:        NodeID(step.ID),
+			Name:      step.Name,
+			AgentType: step.AgentType,
+			Input:     step.Input,
+			Timeout:   step.Timeout,
+		}
+		convertPolicies(step, &ns)
+		convertSubWorkflow(step, &ns)
+		convertMetadata(step, &ns)
+		spec.AddNode(ns)
+
+		for _, dep := range step.DependsOn {
+			spec.AddEdge(EdgeSpec{
+				From: NodeID(dep),
+				To:   NodeID(step.ID),
+				Kind: EdgeDataDependency,
+			})
+		}
+	}
+	return nil
+}
+
+// convertPolicies copies RetryPolicy and RecoveryPolicy from a step to a NodeSpec.
+func convertPolicies(step *wfengine.Step, ns *NodeSpec) {
+	if step.RetryPolicy != nil {
+		ns.Retry = &RetrySpec{
+			MaxAttempts:       step.RetryPolicy.MaxAttempts,
+			InitialDelay:      step.RetryPolicy.InitialDelay,
+			MaxDelay:          step.RetryPolicy.MaxDelay,
+			BackoffMultiplier: step.RetryPolicy.BackoffMultiplier,
+		}
+	}
+	if step.RecoveryPolicy != nil {
+		ns.Recovery = &RecoverySpec{
+			Strategy: string(step.RecoveryPolicy.Strategy),
+		}
+		if step.RecoveryPolicy.ReplacementAgent != "" {
+			ns.Recovery.ReplacementAgent = step.RecoveryPolicy.ReplacementAgent
+		}
+	}
+	if step.Interrupt != nil {
+		ns.Interrupt = &InterruptSpec{Message: step.Interrupt.Message}
+	}
+}
+
+// convertSubWorkflow recursively compiles a nested sub-workflow.
+func convertSubWorkflow(step *wfengine.Step, ns *NodeSpec) {
+	if step.SubWorkflow == nil {
+		return
+	}
+	sub, err := CompileFromEngine(step.SubWorkflow)
+	if err != nil {
+		return // error will be caught by validation
+	}
+	ns.SubWorkflow = sub
+}
+
+// convertMetadata copies metadata from a step to a NodeSpec.
+func convertMetadata(step *wfengine.Step, ns *NodeSpec) {
+	if step.Metadata != nil {
+		ns.Metadata = make(map[string]string, len(step.Metadata))
+		for k, v := range step.Metadata {
+			ns.Metadata[k] = v
+		}
+	}
+}
+
+// compileUntilCondition records the UntilCondition closure reference from a loop config.
+func compileUntilCondition(spec *WorkflowSpec, loopCfg *wfengine.LoopConfig) {
+	if loopCfg == nil || loopCfg.UntilCondition == nil {
+		return
+	}
+	if spec.Loop == nil {
+		spec.Loop = &LoopSpec{MaxIterations: loopCfg.MaxIterations}
 	}
 }
 

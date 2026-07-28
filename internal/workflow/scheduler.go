@@ -62,6 +62,8 @@ type Scheduler struct {
 
 	// activeBranches tracks which BranchOne groups have had a branch taken.
 	activeBranches map[branchGroupKey]bool
+	// branchSkipped tracks nodes that were skipped by BranchOne.
+	branchSkipped map[NodeID]bool
 }
 
 type branchGroupKey struct {
@@ -82,6 +84,7 @@ func NewScheduler(spec *WorkflowSpec, strategy ScheduleStrategy) (*Scheduler, er
 		completed:      make(map[NodeID]bool),
 		readySet:       make(map[NodeID]bool),
 		activeBranches: make(map[branchGroupKey]bool),
+		branchSkipped:  make(map[NodeID]bool),
 	}
 
 	// Build initial in-degree map from data-dependency edges only.
@@ -231,6 +234,12 @@ func (s *Scheduler) OnNodeCompleted(id NodeID) {
 					if condSatisfied && !s.activeBranches[groupKey] {
 						s.activeBranches[groupKey] = true
 						s.evaluateTarget(e.To)
+						// Mark all other targets in this group as skipped.
+						for _, other := range groupEdges {
+							if other.To != e.To {
+								s.branchSkipped[other.To] = true
+							}
+						}
 						break // only one branch per group
 					}
 					continue
@@ -314,6 +323,11 @@ func (s *Scheduler) OnNodeFailed(id NodeID) {
 
 // Pending returns nodes that will never become ready (unreachable/blocked).
 func (s *Scheduler) Pending() []NodeID { return s.pending }
+
+// BranchSkipped returns true if the node was skipped by a BranchOne selection.
+func (s *Scheduler) BranchSkipped(id NodeID) bool {
+	return s.branchSkipped[id]
+}
 
 // ── Helpers ──
 

@@ -295,8 +295,15 @@ func (s *ExecutionScope) SetNodeOutput(id NodeID, output map[string]any) {
 	s.SetNodeStatus(id, NodeStatusCompleted)
 }
 
-// SetNodeError records a node's failure.
+// SetNodeError records a node's failure and populates its Error field.
 func (s *ExecutionScope) SetNodeError(id NodeID, err error) {
+	s.nsMu.Lock()
+	if ns, ok := s.nodeStates[id]; ok {
+		if err != nil {
+			ns.Error = err.Error()
+		}
+	}
+	s.nsMu.Unlock()
 	s.SetNodeStatus(id, NodeStatusFailed)
 	if err != nil {
 		s.errMu.Lock()
@@ -305,6 +312,26 @@ func (s *ExecutionScope) SetNodeError(id NodeID, err error) {
 		}
 		s.errMu.Unlock()
 	}
+}
+
+// RecordAttempt increments the retry attempt counter for the given node.
+func (s *ExecutionScope) RecordAttempt(id NodeID) {
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+	if ns, ok := s.nodeStates[id]; ok {
+		ns.Attempts++
+	}
+}
+
+// SetInitialState injects the initial execution input and variables into the
+// execution scope's state. This must be called before the scheduler runs.
+func (s *ExecutionScope) SetInitialState(input string, variables map[string]string) {
+	w := s.Writer()
+	w.Set("input", input)
+	for k, v := range variables {
+		w.Set(k, v)
+	}
+	s.CommitState()
 }
 
 // ── Execution lifecycle ──
