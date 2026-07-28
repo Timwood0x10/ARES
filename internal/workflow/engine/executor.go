@@ -20,6 +20,11 @@ import (
 // OutputStore is execution-scoped (created per Execute call) rather than
 // executor-scoped, ensuring thread-safety and preventing data races
 // when multiple workflows execute concurrently.
+//
+// Deprecated: use workflow.Runner (api/graph.Runner) for new code.
+// The Runner implements the unified pipeline with HITL, retry, recovery,
+// conditional edges, BranchOne/BranchMany, and transactional state.
+// Migration path: workflow.NewRunner() + workflow.CompileFromEngine().
 type Executor struct {
 	mu              sync.RWMutex // protects hitlHandler and hitlStore during concurrent access
 	registry        *AgentRegistry

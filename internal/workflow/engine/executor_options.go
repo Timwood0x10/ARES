@@ -31,6 +31,11 @@ func WithCheckpointStore(store ares_runtime.CheckpointStore) ExecutorOption {
 	return func(e *Executor) { e.checkpointStore = store }
 }
 
+// DynamicExecutor extends Executor with dynamic DAG mutation, round-based
+// evolution, recovery, and plugin integration.
+//
+// Deprecated: use workflow.Runner (api/graph.Runner) for new code.
+// DynamicExecutor is retained for evolution system integration and legacy tests.
 type DynamicExecutor struct {
 	*Executor
 	applyMode          ApplyMode

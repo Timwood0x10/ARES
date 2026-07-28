@@ -21,7 +21,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/internal/workflow/graph"
+	"github.com/Timwood0x10/ares/api/graph"
 )
 
 func main() {

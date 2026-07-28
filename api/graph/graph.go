@@ -1,23 +1,19 @@
 // Package graph provides the public API for dynamic agent orchestration
-// with pluggable scheduling.
+// with pluggable scheduling, and the unified Runner for DAG execution.
 //
-// This package exposes the dynamic DAG (Graph/Node/Edge/State/Scheduler)
-// to external modules. The internal implementation lives in
-// internal/workflow/graph; this file re-exports its public contract
-// via type aliases so external callers can build and execute dynamic
-// graphs without importing internal packages.
+// This package re-exports types from:
+//   - internal/workflow/graph (legacy graph builder — keep for migration)
+//   - internal/workflow (unified Runner — new production path)
 //
-// Key capabilities:
-//   - Dynamic node/edge addition and removal at runtime
-//   - Pluggable scheduling strategies (FIFO, Priority, ShortJob, etc.)
-//   - Conditional edges with predicate functions
-//   - Checkpoint-based resume for fault tolerance
-//   - Dynamic routing via NodeRouter callback
+// External callers should prefer the unified types below for new code.
 package graph
 
 import (
+	"github.com/Timwood0x10/ares/internal/workflow"
 	"github.com/Timwood0x10/ares/internal/workflow/graph"
 )
+
+// ── Legacy graph builder types (internal/workflow/graph) ─────────────
 
 // State represents the shared runtime state for graph execution.
 type State = graph.State
@@ -34,7 +30,6 @@ type Condition = graph.Condition
 type NodeRouter = graph.NodeRouter
 
 // Scheduler defines the interface for node scheduling.
-// External modules can implement this to provide custom scheduling.
 type Scheduler = graph.Scheduler
 
 // DefaultScheduler provides FIFO scheduling.
@@ -87,3 +82,123 @@ var NewWeightedFairScheduler = graph.NewWeightedFairScheduler
 
 // IfFunc creates a condition from a function.
 var IfFunc = graph.IfFunc
+
+// ── Unified Runner types (internal/workflow) ─────────────────────────
+
+// WorkflowSpec is the unified intermediate representation for a workflow.
+type WorkflowSpec = workflow.WorkflowSpec
+
+// NodeSpec defines a single node in a WorkflowSpec.
+type NodeSpec = workflow.NodeSpec
+
+// EdgeSpec defines a directed edge between two nodes.
+type EdgeSpec = workflow.EdgeSpec
+
+// ConditionExpr is a serializable condition expression.
+type ConditionExpr = workflow.ConditionExpr
+
+// NodeID is a unique identifier for a workflow node.
+type NodeID = workflow.NodeID
+
+// NodeStatus represents the execution status of a workflow node.
+type NodeStatus = workflow.NodeStatus
+
+// EdgeKind classifies the type of relationship between two nodes.
+type EdgeKind = workflow.EdgeKind
+
+// BranchKind classifies how outgoing edges are evaluated.
+type BranchKind = workflow.BranchKind
+
+// JoinKind classifies how multi-incoming-edge nodes are activated.
+type JoinKind = workflow.JoinKind
+
+// LoopSpec defines controlled loop behaviour for a workflow.
+type LoopSpec = workflow.LoopSpec
+
+// ScheduleSpec defines execution constraints.
+type ScheduleSpec = workflow.ScheduleSpec
+
+// RetrySpec defines retry behaviour on transient failures.
+type RetrySpec = workflow.RetrySpec
+
+// RecoverySpec defines recovery behaviour on hard failures.
+type RecoverySpec = workflow.RecoverySpec
+
+// InterruptSpec marks a node as requiring human approval.
+type InterruptSpec = workflow.InterruptSpec
+
+// ScheduleStrategy selects the order of ready node execution.
+type ScheduleStrategy = workflow.ScheduleStrategy
+
+// NodeStatusValue tracks the runtime execution status of a single node.
+type NodeStatusValue = workflow.NodeStatusValue
+
+// NodeExecutor resolves and executes a single node.
+type NodeExecutor = workflow.NodeExecutor
+
+// Runner is the unified single execution engine.
+type Runner = workflow.Runner
+
+// NewRunner creates a new Runner.
+var NewRunner = workflow.NewRunner
+
+// RunWorkflow is the simplest entry point for workflow execution.
+var RunWorkflow = workflow.RunWorkflow
+
+// NewWorkflow creates a new workflow spec builder.
+var NewWorkflow = workflow.NewWorkflow
+
+// NewFuncNodeExecutor creates an executor from a function map.
+var NewFuncNodeExecutor = workflow.NewFuncNodeExecutor
+
+// Validate checks a WorkflowSpec for structural errors.
+var Validate = workflow.Validate
+
+// TopologicalSort returns nodes in topological order.
+var TopologicalSort = workflow.TopologicalSort
+
+// CompileFromEngine compiles an engine.Workflow to a WorkflowSpec.
+//
+//nolint:staticcheck // migration adapter — deprecated by design for legacy compat
+var CompileFromEngine = workflow.CompileFromEngine
+
+// CompileFromGraph compiles a graph.Graph to a WorkflowSpec.
+//
+//nolint:staticcheck // migration adapter — deprecated by design for legacy compat
+var CompileFromGraph = workflow.CompileFromGraph
+
+// ScheduleStrategy constants.
+const (
+	ScheduleFIFO     = workflow.ScheduleFIFO
+	SchedulePriority = workflow.SchedulePriority
+)
+
+// NodeStatus constants.
+const (
+	NodeStatusPending     = workflow.NodeStatusPending
+	NodeStatusReady       = workflow.NodeStatusReady
+	NodeStatusRunning     = workflow.NodeStatusRunning
+	NodeStatusCompleted   = workflow.NodeStatusCompleted
+	NodeStatusFailed      = workflow.NodeStatusFailed
+	NodeStatusInterrupted = workflow.NodeStatusInterrupted
+	NodeStatusCancelled   = workflow.NodeStatusCancelled
+)
+
+// EdgeKind constants.
+const (
+	EdgeDataDependency = workflow.EdgeDataDependency
+	EdgeControlFlow    = workflow.EdgeControlFlow
+)
+
+// BranchKind constants.
+const (
+	BranchOne  = workflow.BranchOne
+	BranchMany = workflow.BranchMany
+)
+
+// JoinKind constants.
+const (
+	JoinAll = workflow.JoinAll
+	JoinAny = workflow.JoinAny
+	Merge   = workflow.Merge
+)

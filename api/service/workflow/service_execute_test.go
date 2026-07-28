@@ -109,6 +109,7 @@ func newTestServiceWithRegistry(t *testing.T) (*Service, *engine.AgentRegistry) 
 		AgentRegistry:  reg,
 		RequestTimeout: 30 * time.Second,
 		MaxParallel:    5,
+		UseRunner:      false, // these tests verify the legacy DynamicExecutor path; runner tests are in runner_test.go
 	})
 	require.NoError(t, err)
 	return svc, reg

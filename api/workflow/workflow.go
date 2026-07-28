@@ -123,3 +123,5 @@ func AddStep(wf *Workflow, step *Step) *Workflow {
 	wf.Steps = append(wf.Steps, step)
 	return wf
 }
+
+//nolint:staticcheck // backward compat re-exports

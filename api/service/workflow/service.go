@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/api/core"
 	apiworkflow "github.com/Timwood0x10/ares/api/workflow"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/workflow"
 	"github.com/Timwood0x10/ares/internal/workflow/engine"
 )
 
@@ -39,6 +40,11 @@ type Config struct {
 	// routing, checkpointing, and event emission. If nil, the executor
 	// runs without plugins (backward compatible).
 	PluginBus *ares_runtime.PluginBus
+	// UseRunner switches execution to the unified Runner (P2).
+	// When true, the service uses workflow.Runner instead of the legacy
+	// engine.DynamicExecutor. The Runner path is now the default; switch to
+	// false to use the legacy executor for migration only.
+	UseRunner bool
 }
 
 // NewService creates a new workflow service instance.
@@ -123,6 +129,11 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 	// Build engine workflow from definition.
 	wf := s.buildEngineWorkflow(def, req.Variables)
 
+	// Route to the appropriate executor.
+	if s.config.UseRunner {
+		return s.executeWithRunner(ctx, wf, req)
+	}
+
 	// Build steps for MutableDAG.
 	steps := s.buildEngineSteps(def)
 
@@ -150,6 +161,120 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 	}
 
 	return s.buildResponse(result), nil
+}
+
+// executeWithRunner executes a workflow using the unified Runner.
+func (s *Service) executeWithRunner(ctx context.Context, wf *engine.Workflow, req *core.WorkflowRequest) (*core.WorkflowResponse, error) {
+	// Compile engine workflow to WorkflowSpec IR.
+	spec, err := workflow.CompileFromEngine(wf) //nolint:staticcheck // migration adapter — deprecated by design for legacy compat
+	if err != nil {
+		return nil, fmt.Errorf("compile workflow: %w", err)
+	}
+
+	// Create node executor with agent registry bindings.
+	exec := workflow.NewFuncNodeExecutor()
+	for _, step := range wf.Steps {
+		sid := step.ID
+		agentType := step.AgentType
+		exec.Register(workflow.NodeID(sid), func(ctx context.Context, view workflow.StateView) (map[string]any, error) {
+			agent, aErr := s.registry.CreateAgent(ctx, agentType, nil)
+			if aErr != nil {
+				return nil, fmt.Errorf("create agent %q: %w", agentType, aErr)
+			}
+			input, _ := view.Get("input")
+			result, aErr := agent.Process(ctx, input)
+			if aErr != nil {
+				return nil, fmt.Errorf("agent %q: %w", agentType, aErr)
+			}
+			output := map[string]any{"output": result}
+			return output, nil
+		})
+	}
+
+	// Create and run the Runner.
+	runner := workflow.NewRunner(exec, workflow.WithScheduleStrategy(workflow.ScheduleFIFO))
+	result, rErr := runner.Execute(ctx, spec)
+	if rErr != nil {
+		slog.ErrorContext(ctx, "runner execution failed",
+			"workflow_id", wf.ID,
+			"error", rErr)
+		return s.buildRunnerErrorResponse(wf.ID, result, rErr), nil
+	}
+
+	return s.buildRunnerResponse(result), nil
+}
+
+// buildRunnerResponse converts a workflow.Result to a core.WorkflowResponse.
+func (s *Service) buildRunnerResponse(result *workflow.Result) *core.WorkflowResponse {
+	if result == nil {
+		return &core.WorkflowResponse{Status: core.WorkflowStatusFailed}
+	}
+
+	stepResults := make([]*core.StepResult, 0, len(result.NodeStates))
+	for _, ns := range result.NodeStates {
+		stepResults = append(stepResults, &core.StepResult{
+			StepID:   string(ns.ID),
+			Status:   mapRunnerStatus(ns.Status),
+			Output:   fmt.Sprintf("%v", ns.Output),
+			Error:    ns.Error,
+			Duration: ns.FinishedAt.Sub(ns.StartedAt),
+		})
+	}
+
+	return &core.WorkflowResponse{
+		ExecutionID: result.ExecutionID,
+		WorkflowID:  result.SpecID,
+		Status:      mapRunnerStatus(result.Status),
+		Output:      result.State,
+		Steps:       stepResults,
+		Error:       result.Error,
+		Duration:    result.Duration,
+	}
+}
+
+// buildRunnerErrorResponse builds a response for a failed runner execution.
+func (s *Service) buildRunnerErrorResponse(workflowID string, result *workflow.Result, execErr error) *core.WorkflowResponse {
+	resp := &core.WorkflowResponse{
+		WorkflowID: workflowID,
+		Status:     core.WorkflowStatusFailed,
+		Error:      execErr.Error(),
+	}
+	if result != nil {
+		resp.ExecutionID = result.ExecutionID
+		resp.Duration = result.Duration
+		resp.Steps = make([]*core.StepResult, 0, len(result.NodeStates))
+		for _, ns := range result.NodeStates {
+			resp.Steps = append(resp.Steps, &core.StepResult{
+				StepID:   string(ns.ID),
+				Status:   mapRunnerStatus(ns.Status),
+				Error:    ns.Error,
+				Duration: ns.FinishedAt.Sub(ns.StartedAt),
+			})
+		}
+	}
+	return resp
+}
+
+// mapRunnerStatus maps workflow.NodeStatus to core.WorkflowStatus.
+func mapRunnerStatus(status workflow.NodeStatus) core.WorkflowStatus {
+	switch status {
+	case workflow.NodeStatusPending:
+		return core.WorkflowStatusPending
+	case workflow.NodeStatusReady, workflow.NodeStatusRunning:
+		return core.WorkflowStatusRunning
+	case workflow.NodeStatusCompleted:
+		return core.WorkflowStatusCompleted
+	case workflow.NodeStatusFailed:
+		return core.WorkflowStatusFailed
+	case workflow.NodeStatusCancelled:
+		return core.WorkflowStatusCancelled
+	case workflow.NodeStatusInterrupted:
+		return core.WorkflowStatusPending
+	case workflow.NodeStatusNotSelected, workflow.NodeStatusUnreachable, workflow.NodeStatusBlocked:
+		return core.WorkflowStatusCancelled
+	default:
+		return core.WorkflowStatusPending
+	}
 }
 
 // ExecuteStream runs a workflow and streams progress events.
@@ -468,6 +593,8 @@ func (s *Service) buildErrorResponse(workflowID string, result *engine.WorkflowR
 }
 
 // mapEngineStatus maps engine.WorkflowStatus or engine.StepStatus to core.WorkflowStatus.
+//
+// Deprecated: use mapRunnerStatus for the unified Runner path.
 func mapEngineStatus(status interface{}) core.WorkflowStatus {
 	switch v := status.(type) {
 	case engine.WorkflowStatus:

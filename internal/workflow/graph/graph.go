@@ -405,6 +405,60 @@ func (g *Graph) ID() string {
 	return g.id
 }
 
+// NodeIDs returns all node IDs in the graph. The order is non-deterministic.
+func (g *Graph) NodeIDs() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	ids := make([]string, 0, len(g.nodes))
+	for id := range g.nodes {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// EdgeInfo carries the serializable parts of an edge for IR compilation.
+type EdgeInfo struct {
+	From    string
+	To      string
+	HasCond bool
+}
+
+// Edges returns all edges in the graph as serializable EdgeInfo values.
+func (g *Graph) Edges() []EdgeInfo {
+	if g == nil {
+		return nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	edges := make([]EdgeInfo, 0, len(g.edges))
+	for from, targets := range g.edges {
+		for _, edge := range targets {
+			edges = append(edges, EdgeInfo{
+				From:    from,
+				To:      edge.to,
+				HasCond: edge.cond != nil,
+			})
+		}
+	}
+	return edges
+}
+
+// StartNode returns the configured start node ID, or "" if not set.
+func (g *Graph) StartNode() string {
+	if g == nil {
+		return ""
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	return g.start
+}
+
 // Result represents the result of graph execution.
 type Result struct {
 	GraphID  string

@@ -1,4 +1,6 @@
 // Package client provides workflow orchestration functionality.
+//
+//nolint:staticcheck
 package client
 
 import (
@@ -285,3 +287,5 @@ func (e *WorkflowAgentExecutor) ProcessStream(ctx context.Context, input any) (<
 
 	return ch, nil
 }
+
+//nolint:staticcheck // legacy client — uses deprecated engine types intentionally
