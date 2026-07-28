@@ -79,6 +79,31 @@ func CompileFromEngine(w *wfengine.Workflow) (*WorkflowSpec, error) {
 		}
 	}
 
+	// For steps with Conditions, attach a bound-type ConditionExpr to their first
+	// incoming data-dependency edge. This allows the runner's condition evaluator
+	// to look up the original closure via WithBindings when using CompileFromEngineWithBindings.
+	for _, step := range w.Steps {
+		if step.Condition != nil && len(step.DependsOn) > 0 {
+			// Find the first data-dependency edge from a dependency TO this step
+			for i, e := range spec.Edges {
+				// Check if this edge comes from one of the step's dependencies
+				for _, dep := range step.DependsOn {
+					if e.From == NodeID(dep) && e.To == NodeID(step.ID) && e.Kind == EdgeDataDependency {
+						// Create a bound-type expression referencing this node ID
+						spec.Edges[i].Cond = &ConditionExpr{
+							Type:  "bound",
+							Value: step.ID,
+						}
+						break // Only one edge per step
+					}
+				}
+				if spec.Edges[i].Cond != nil {
+					break
+				}
+			}
+		}
+	}
+
 	spec.Schedule = ScheduleSpec{MaxParallel: 1}
 	return spec, nil
 }

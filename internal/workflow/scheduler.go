@@ -191,8 +191,16 @@ func (s *Scheduler) removeFromQueue(id NodeID) {
 }
 
 // enqueue adds a node ID to the ready queue if not already there or completed.
-func (s *Scheduler) enqueue(id NodeID) {
-	if s.readySet[id] || s.completed[id] {
+// For Merge joins, force=true bypasses the completed check to allow re-triggering.
+func (s *Scheduler) enqueue(id NodeID, force ...bool) {
+	if s.readySet[id] {
+		return
+	}
+	if len(force) > 0 && force[0] {
+		// Merge: allow re-enqueue even if already completed
+		delete(s.completed, id)
+	}
+	if s.completed[id] {
 		return
 	}
 	s.readyQueue = append(s.readyQueue, id)
@@ -281,10 +289,10 @@ func (s *Scheduler) evaluateTarget(target NodeID) {
 
 	switch join {
 	case JoinAll, "": // empty string = default JoinAll
-		// Check if all data-dependency predecessors are completed
+		// Check if ALL predecessors (data + control flow) are completed.
 		allDone := true
 		for _, e := range s.spec.Edges {
-			if e.To == target && e.Kind == EdgeDataDependency {
+			if e.To == target {
 				if !s.completed[e.From] {
 					allDone = false
 					break
@@ -303,7 +311,7 @@ func (s *Scheduler) evaluateTarget(target NodeID) {
 
 	case Merge:
 		// Each activation triggers; enqueue even if already completed
-		s.enqueue(target)
+		s.enqueue(target, true)
 	}
 }
 

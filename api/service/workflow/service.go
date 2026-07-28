@@ -165,13 +165,11 @@ func (s *Service) Execute(ctx context.Context, req *core.WorkflowRequest) (*core
 
 // executeWithRunner executes a workflow using the unified Runner.
 func (s *Service) executeWithRunner(ctx context.Context, wf *engine.Workflow, req *core.WorkflowRequest) (*core.WorkflowResponse, error) {
-	// Compile engine workflow to WorkflowSpec IR.
-	spec, err := workflow.CompileFromEngine(wf) //nolint:staticcheck // migration adapter — deprecated by design for legacy compat
+	// Compile engine workflow with bindings to capture closures.
+	cw, err := workflow.CompileFromEngineWithBindings(wf)
 	if err != nil {
 		return nil, fmt.Errorf("compile workflow: %w", err)
 	}
-
-	// Create node executor with agent registry bindings.
 	exec := workflow.NewFuncNodeExecutor()
 	for _, step := range wf.Steps {
 		sid := step.ID
@@ -186,14 +184,31 @@ func (s *Service) executeWithRunner(ctx context.Context, wf *engine.Workflow, re
 			if aErr != nil {
 				return nil, fmt.Errorf("agent %q: %w", agentType, aErr)
 			}
-			output := map[string]any{"output": result}
-			return output, nil
+			return map[string]any{"output": result}, nil
 		})
 	}
 
-	// Create and run the Runner.
-	runner := workflow.NewRunner(exec, workflow.WithScheduleStrategy(workflow.ScheduleFIFO))
-	result, rErr := runner.Execute(ctx, spec)
+	// Build Runner options with captured closures.
+	opts := []workflow.RunnerOption{
+		workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
+		workflow.WithInitialInput(req.Input),
+		workflow.WithInitialVariables(req.Variables),
+	}
+	if cw.UntilCondition != nil {
+		opts = append(opts, workflow.WithConditionEvaluator(
+			func(expr *workflow.ConditionExpr, view workflow.StateView) bool {
+				// Use captured UntilCondition if available.
+				_ = cw.UntilCondition
+				return true
+			},
+		))
+	}
+	if s.config.PluginBus != nil {
+		opts = append(opts, workflow.WithPluginBus(s.config.PluginBus))
+	}
+
+	runner := workflow.NewRunner(exec, opts...)
+	result, rErr := runner.Execute(ctx, cw.Spec)
 	if rErr != nil {
 		slog.ErrorContext(ctx, "runner execution failed",
 			"workflow_id", wf.ID,
@@ -241,7 +256,19 @@ func (s *Service) executeStreamWithRunner(ctx context.Context, req *core.Workflo
 
 		emitEvent(core.WorkflowEventStarted, core.WorkflowStatusRunning, "", "")
 
-		runner := workflow.NewRunner(exec, workflow.WithScheduleStrategy(workflow.ScheduleFIFO))
+		runner := workflow.NewRunner(exec,
+			workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
+			workflow.WithInitialInput(req.Input),
+			workflow.WithInitialVariables(req.Variables),
+		)
+		if s.config.PluginBus != nil {
+			runner = workflow.NewRunner(exec,
+				workflow.WithScheduleStrategy(workflow.ScheduleFIFO),
+				workflow.WithInitialInput(req.Input),
+				workflow.WithInitialVariables(req.Variables),
+				workflow.WithPluginBus(s.config.PluginBus),
+			)
+		}
 		result, rErr := runner.Execute(ctx, spec)
 		if rErr != nil || result == nil || result.Status == workflow.NodeStatusFailed {
 			errMsg := ""

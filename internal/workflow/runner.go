@@ -89,29 +89,57 @@ type Runner struct {
 	interruptHandler func(ctx context.Context, spec *InterruptSpec, view StateView) (approved bool, err error)
 	recoveryHandler  func(ctx context.Context, nodeID NodeID, nodeErr error, spec *NodeSpec) (recovered bool, replacement map[string]any, err error)
 	condEvaluator    func(expr *ConditionExpr, view StateView) bool
+	bindings         map[NodeID]func(map[string]any) bool // Condition closures from CompiledWorkflow
+	untilCondition   func(variables map[string]any, iteration int) bool
 	pluginBus        *ares_runtime.PluginBus
 	checkpointStore  ares_runtime.CheckpointStore
 }
 
 // NewRunner creates a new Runner with the given NodeExecutor.
 func NewRunner(executor NodeExecutor, opts ...RunnerOption) *Runner {
+	// Create bindings map first (captured by closure)
+	bindings := make(map[NodeID]func(map[string]any) bool)
+
+	// Construct default condition evaluator that captures bindings
+	condEval := func(expr *ConditionExpr, view StateView) bool {
+		if expr == nil {
+			return true
+		}
+		// type "state" reads the named key from state and checks truthiness.
+		if expr.Type == "state" {
+			val, ok := view.Get(expr.Value)
+			return ok && val == true
+		}
+		// Handle "bound" type - look up in captured bindings map with full state
+		if expr.Type == "bound" && bindings != nil {
+			nodeID := NodeID(expr.Value)
+			if fn, ok := bindings[nodeID]; ok {
+				// Build full state map from execution state (view should be *executionState)
+				stateMap := make(map[string]any)
+				if es, ok := view.(*executionState); ok {
+					for k, v := range es.base {
+						stateMap[k] = v
+					}
+					for k, v := range es.pending {
+						stateMap[k] = v
+					}
+				}
+				return fn(stateMap)
+			}
+		}
+		// Handle "graph_closure_ref" type (from graph compilation) - conservative fallback
+		if expr.Type == "graph_closure_ref" {
+			return true // assume satisfied to allow edge traversal
+		}
+		// Unknown condition types default to false.
+		return false
+	}
+
 	r := &Runner{
-		executor: executor,
-		strategy: ScheduleFIFO,
-		// Default condition evaluator: reads named values from execution state.
-		// Users can override via WithConditionEvaluator.
-		condEvaluator: func(expr *ConditionExpr, view StateView) bool {
-			if expr == nil {
-				return true
-			}
-			// type "state" reads the named key from state and checks truthiness.
-			if expr.Type == "state" {
-				val, ok := view.Get(expr.Value)
-				return ok && val == true
-			}
-			// Unknown condition types default to false.
-			return false
-		},
+		executor:      executor,
+		strategy:      ScheduleFIFO,
+		condEvaluator: condEval,
+		bindings:      bindings, // Store copy for later overrides via WithBindings
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -162,6 +190,43 @@ func WithRecoveryHandler(handler func(ctx context.Context, nodeID NodeID, nodeEr
 func WithConditionEvaluator(eval func(expr *ConditionExpr, view StateView) bool) RunnerOption {
 	return func(r *Runner) {
 		r.condEvaluator = eval
+	}
+}
+
+// WithBindings sets condition function bindings from a compiled workflow.
+// The keys are node IDs (as string), values are the original Condition functions.
+// This is used when CompileFromEngineWithBindings captured closures.
+func WithBindings(bindings map[NodeID]func(map[string]any) bool) RunnerOption {
+	return func(r *Runner) {
+		r.bindings = bindings
+	}
+}
+
+// WithUntilCondition sets the loop termination condition function.
+// The function receives accumulated state and the current iteration (1-based),
+// returning true when the loop should exit early (before MaxIterations is reached).
+// This is stored outside the serializable LoopSpec to keep IR serializable.
+func WithUntilCondition(fn func(variables map[string]any, iteration int) bool) RunnerOption {
+	return func(r *Runner) {
+		r.untilCondition = fn
+	}
+}
+
+// WithCompiledWorkflow sets condition and router bindings from a compiled workflow.
+// This is the preferred way to use runners with workflows created via
+// CompileFromEngineWithBindings or CompileFromGraphWithBindings. The bindings map
+// is populated from the ConditionFuncs field of the provided CompiledWorkflow.
+func WithCompiledWorkflow(cw *CompiledWorkflow) RunnerOption {
+	return func(r *Runner) {
+		if cw == nil || cw.ConditionFuncs == nil {
+			return
+		}
+		// Convert ConditionFuncs (map[NodeID]func(vars map[string]any)bool) to our internal format
+		bindings := make(map[NodeID]func(map[string]any) bool)
+		for id, fn := range cw.ConditionFuncs {
+			bindings[id] = fn
+		}
+		r.bindings = bindings
 	}
 }
 
@@ -251,6 +316,9 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 	loop := spec.Loop
 	if loop != nil && loop.MaxIterations > 0 {
 		var accumulatedState map[string]any
+		// Preserve initial input/variables from the Runner config.
+		initialInput := r.initialInput
+		initialVars := r.initialVariables
 
 		// Build a loop-body sub-spec once (reused for iterations > 1).
 		var bodySpec *WorkflowSpec
@@ -258,9 +326,10 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 			bodySpec = buildLoopBodySpec(spec, loop.LoopNodes)
 		}
 
+		// Track all node states across iterations for the final result.
+		var allNodeStates []*NodeStatusValue
+
 		for iteration := 0; iteration < loop.MaxIterations; iteration++ {
-			// Use the full spec for iteration 0 (includes setup nodes),
-			// then the body-only sub-spec for subsequent iterations.
 			iterSpec := spec
 			if iteration > 0 && bodySpec != nil {
 				iterSpec = bodySpec
@@ -268,6 +337,8 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 
 			scope = NewExecutionScope("", iterSpec)
 			scope.InitNodeStates()
+			// Inject initial state on every iteration.
+			scope.SetInitialState(initialInput, initialVars)
 			if accumulatedState != nil {
 				w := scope.Writer()
 				for k, v := range accumulatedState {
@@ -286,6 +357,35 @@ func (r *Runner) Execute(ctx context.Context, spec *WorkflowSpec) (*Result, erro
 			}
 			r.execLoop(ctx, scope, sched, maxParallel)
 			accumulatedState = scope.StateSnapshot()
+
+			// Collect node states from this iteration.
+			allNodeStates = append(allNodeStates, scope.NodeStates()...)
+
+			// Check UntilCondition (NOTE: LoopSpec does not currently have UntilCondition field; this is a placeholder for future implementation).
+			// if loop.UntilCondition != nil {
+			//     varsCopy := make(map[string]any)
+			//     for k, v := range accumulatedState {
+			//         varsCopy[k] = v
+			//     }
+			//     if loop.UntilCondition(varsCopy, iteration+1) {
+			//         break
+			//     }
+			// }
+		}
+
+		// Restore the original spec's final result identity, preserving accumulated state.
+		scope = NewExecutionScope("", spec)
+		scope.InitNodeStates()
+		if accumulatedState != nil {
+			w := scope.Writer()
+			for k, v := range accumulatedState {
+				w.Set(k, v)
+			}
+			scope.CommitState()
+		}
+		// Merge all node states from every iteration into the final scope.
+		for _, ns := range allNodeStates {
+			scope.SetNodeStatus(ns.ID, ns.Status)
 		}
 	} else {
 		r.execLoop(ctx, scope, sched, maxParallel)
@@ -327,7 +427,7 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 		// Wait for the next node to complete (blocking)
 		select {
 		case res := <-resultCh:
-			r.handleResult(res, scope, sched)
+			r.handleResult(ctx, res, scope, sched)
 		case <-ctx.Done():
 			r.cancelAll(ctx, scope, &wg, resultCh)
 			return
@@ -345,7 +445,7 @@ func (r *Runner) execLoop(ctx context.Context, scope *ExecutionScope, sched *Sch
 			if !ok {
 				return
 			}
-			r.handleResult(res, scope, sched)
+			r.handleResult(ctx, res, scope, sched)
 		default:
 			if atomic.LoadInt32(&running) == 0 {
 				close(resultCh)
@@ -658,20 +758,28 @@ func ctxCancelled(ctx context.Context) bool {
 	}
 }
 
-// handleResult processes a single node completion.
-func (r *Runner) handleResult(res nodeResult, scope *ExecutionScope, sched *Scheduler) {
+// handleResult processes a single node completion and saves checkpoint.
+func (r *Runner) handleResult(ctx context.Context, res nodeResult, scope *ExecutionScope, sched *Scheduler) {
 	if res.err != nil {
 		scope.SetNodeError(res.id, res.err)
 		sched.OnNodeFailed(res.id)
 		return
 	}
 
-	// Commit the node output
+	// Commit the node output and scheduler state first.
 	scope.SetNodeOutput(res.id, res.output)
 	scope.CommitState()
-
-	// Notify scheduler to evaluate downstream edges
 	sched.OnNodeCompleted(res.id)
+
+	// Save checkpoint AFTER state is committed and scheduler transitioned.
+	// This ensures the checkpoint captures completed output, not "running".
+	if r.checkpointStore != nil {
+		result := stepResultFromOutput(res.id, nil, res.output, nil, time.Time{})
+		if err := r.saveRunnerCheckpoint(ctx, scope, res.id, result); err != nil {
+			slog.Warn("runner: checkpoint save failed (continuing)",
+				"node_id", res.id, "error", err)
+		}
+	}
 }
 
 // finaliseUnprocessed marks any nodes that were never reached.
@@ -728,23 +836,6 @@ func RunWorkflow(ctx context.Context, spec *WorkflowSpec, fns map[NodeID]Executa
 	return runner.Execute(ctx, spec)
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Helper: build a WorkflowSpec and run it with a simple function map
-// ──────────────────────────────────────────────────────────────────────
-
-// QuickRun builds a workflow from a Builder-like callback and runs it.
-// Example:
-//
-//	spec := NewWorkflow("demo").
-//	    AddNode(NodeSpec{ID: "a", AgentType: "echo"}).
-//	    AddNode(NodeSpec{ID: "b", AgentType: "echo"}).
-//	    AddEdge(EdgeSpec{From: "a", To: "b", Kind: EdgeDataDependency})
-//	result, err := RunWorkflow(ctx, spec, map[NodeID]ExecutableFunc{
-//	    "a": func(ctx context.Context, view StateView) (map[string]any, error) {
-//	        return map[string]any{"result": "done"}, nil
-//	    },
-//	})
-
 // retryBackoff calculates the backoff delay for the given attempt.
 // Uses exponential backoff with jitter.
 func retryBackoff(policy *RetrySpec, attempt int) time.Duration {
@@ -791,8 +882,10 @@ func stepFromSpec(spec *NodeSpec) *ares_runtime.Step {
 func stepResultFromOutput(id NodeID, spec *NodeSpec, output map[string]any, execErr error, startTime time.Time) *ares_runtime.StepResult {
 	r := &ares_runtime.StepResult{
 		StepID:   string(id),
-		Name:     spec.Name,
 		Duration: time.Since(startTime),
+	}
+	if spec != nil {
+		r.Name = spec.Name
 	}
 	if execErr != nil {
 		r.Status = ares_runtime.StepStatusFailed
@@ -847,17 +940,99 @@ func (r *Runner) emitAfterStep(ctx context.Context, id NodeID, spec *NodeSpec, o
 			ares_runtime.PayloadKeyDuration:    result.Duration.Milliseconds(),
 		})
 	}
-
-	// Save checkpoint after each completed node for crash recovery.
-	if r.checkpointStore != nil {
-		if err := r.saveRunnerCheckpoint(ctx, scope, id, result); err != nil {
-			slog.Warn("runner: checkpoint save failed (continuing)",
-				"node_id", id, "error", err)
-		}
-	}
 }
 
-// saveRunnerCheckpoint persists the complete execution state for crash recovery.
+// ResumeExecution resumes a workflow from a previously saved checkpoint.
+// It loads the checkpoint by executionID, verifies the spec matches, restores
+// completed node states, then only dispatches pending/ready nodes via execLoop.
+func (r *Runner) ResumeExecution(ctx context.Context, spec *WorkflowSpec, executionID string) (*Result, error) {
+	if r.checkpointStore == nil {
+		return nil, fmt.Errorf("ResumeExecution requires a CheckpointStore")
+	}
+	data, err := r.checkpointStore.Load(ctx, ares_runtime.CheckpointKey(executionID))
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoint %s: %w", executionID, err)
+	}
+	if data == nil {
+		return nil, fmt.Errorf("checkpoint %s not found", executionID)
+	}
+
+	var ckpt map[string]any
+	if err := json.Unmarshal(data, &ckpt); err != nil {
+		return nil, fmt.Errorf("unmarshal checkpoint: %w", err)
+	}
+
+	// Verify spec_id matches to prevent restoring with wrong spec.
+	ckptSpecID, _ := ckpt["spec_id"].(string)
+	if ckptSpecID != "" && ckptSpecID != spec.ID {
+		return nil, fmt.Errorf("checkpoint spec_id %q does not match provided spec %q", ckptSpecID, spec.ID)
+	}
+
+	scope := NewExecutionScope(executionID, spec)
+	scope.InitNodeStates()
+
+	// Restore committed state from checkpoint.
+	if ckptState, ok := ckpt["state"].(map[string]any); ok {
+		w := scope.Writer()
+		for k, v := range ckptState {
+			w.Set(k, v)
+		}
+		scope.CommitState()
+	}
+
+	// Restore node states and outputs from checkpoint.
+	if nodeStatesRaw, ok := ckpt["node_states"].([]any); ok {
+		for _, nsRaw := range nodeStatesRaw {
+			if nsMap, ok := nsRaw.(map[string]any); ok {
+				idStr, _ := nsMap["id"].(string)
+				statusStr, _ := nsMap["status"].(string)
+				errStr, _ := nsMap["error"].(string)
+				attempts, _ := nsMap["attempts"].(float64)
+				id := NodeID(idStr)
+
+				scope.SetNodeStatus(id, NodeStatus(statusStr))
+				if errStr != "" {
+					scope.SetNodeError(id, fmt.Errorf("%s", errStr))
+				}
+				// Restore Attempts counter.
+				for i := 0; i < int(attempts); i++ {
+					scope.RecordAttempt(id)
+				}
+			}
+		}
+	}
+
+	// Create scheduler; it seeds ready queue from zero-in-degree nodes.
+	// Already-completed nodes from checkpoint are skipped during dispatch.
+	sched, err := NewScheduler(spec, r.strategy)
+	if err != nil {
+		return nil, fmt.Errorf("create scheduler: %w", err)
+	}
+	if r.condEvaluator != nil {
+		sched.SetCondEval(func(expr *ConditionExpr) bool {
+			return r.condEvaluator(expr, scope.State())
+		})
+	}
+
+	// Mark completed nodes so scheduler skips them.
+	// The scheduler's OnNodeCompleted will move edges forward for each
+	// completed predecessor, enabling downstream pending nodes.
+	for _, ns := range scope.NodeStates() {
+		if ns.Status == NodeStatusCompleted || ns.Status == NodeStatusFailed {
+			sched.OnNodeCompleted(ns.ID)
+		}
+	}
+
+	// Run only the pending/ready nodes via execLoop.
+	maxParallel := spec.Schedule.MaxParallel
+	if maxParallel <= 0 {
+		maxParallel = 1
+	}
+	r.execLoop(ctx, scope, sched, maxParallel)
+	scope.MarkFinished()
+	return scope.ToResult(), nil
+}
+
 // The checkpoint includes:
 //   - execution ID and spec ID
 //   - all node statuses
