@@ -372,6 +372,7 @@ func (s *Scheduler) enqueue(id NodeID) {
 
 func (s *Scheduler) enqueueMerge(id NodeID) {
 	s.readyQueue = append(s.readyQueue, id)
+	s.readySet[id] = true
 }
 
 func (s *Scheduler) removeFromQueue(id NodeID) {

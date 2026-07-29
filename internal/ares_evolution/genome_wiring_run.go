@@ -14,6 +14,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/ares_evolution/scoring"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
+	evogenome "github.com/Timwood0x10/ares/internal/evolution/genome"
 )
 
 // Run executes one atomic genome evolution cycle (EvolveAfterScoring) when
@@ -401,20 +402,43 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 		return
 	}
 
-	// NOTE: per-genome fitness is intentionally left at 0 (unknown) so the
-	// Coordinator routes these GA patches through its fallback apply path
-	// (rate-limited by MaxPatchesPerMinute) instead of permanently delaying them.
-	// A proper per-genome fitness scorer (genome.FitnessGenome) cannot be wired
-	// yet because the genomes are currently fed synthetic/isolated runtime state
-	// (see review EV-2); doing so would make any score a phantom. TODO: wire
-	// FitnessGenome once genomes consume live runtime state.
+	// Query all registered genomes that implement FitnessGenome and compute
+	// an average fitness score. When no genome provides a fitness score, use
+	// a baseline of 0.5 so patches pass through the coordinator's fitness gate
+	// rather than bypassing it entirely (which Fitness=0 does).
+	var fitnessSum float64
+	var fitnessCount int
+	for _, name := range a.genomeReg.List() {
+		g, err := a.genomeReg.Get(name)
+		if err != nil {
+			continue
+		}
+		if f, ok := g.(evogenome.FitnessGenome); ok {
+			score, scoreErr := f.Fitness(ctx)
+			if scoreErr == nil {
+				fitnessSum += score
+				fitnessCount++
+			}
+		}
+	}
+	fitness := 0.5 // baseline when no FitnessGenome is available
+	if fitnessCount > 0 {
+		fitness = fitnessSum / float64(fitnessCount)
+	}
+	// Coordinator thresholds are 0-100 (see DefaultPolicy: ApplyFitnessThreshold=60,
+	// MinFitnessThreshold=30). FitnessGenome scores are [0,1], so scale up.
+	fitness *= 100.0
+	if fitness > 100.0 {
+		fitness = 100.0
+	}
+
 	for _, p := range patches {
 		a.coordinator.Submit(coordinator.PatchProposal{
 			Patch:     p,
 			Source:    coordinator.SourceGA,
 			Reason:    "GA: population evolution result",
 			Priority:  6,
-			Fitness:   0,
+			Fitness:   fitness,
 			Timestamp: time.Now(),
 		})
 	}

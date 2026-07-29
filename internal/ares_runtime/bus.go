@@ -306,20 +306,20 @@ func invokeWithTimeout(ctx context.Context, timeout time.Duration, pluginName st
 
 	done := make(chan error, 1)
 	go func() {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Default().Error("plugin panicked",
-				"plugin", pluginName,
-				"panic_value", fmt.Sprintf("%v", r),
-				"panic_type", fmt.Sprintf("%T", r),
-			)
-			done <- &PluginError{
-	    PluginName: pluginName,
-	    Err:        ErrPluginPanic,
-	    Recovered:  r,
-	   }
-	  }
-	 }()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Default().Error("plugin panicked",
+					"plugin", pluginName,
+					"panic_value", fmt.Sprintf("%v", r),
+					"panic_type", fmt.Sprintf("%T", r),
+				)
+				done <- &PluginError{
+					PluginName: pluginName,
+					Err:        ErrPluginPanic,
+					Recovered:  r,
+				}
+			}
+		}()
 		done <- fn(callCtx)
 	}()
 

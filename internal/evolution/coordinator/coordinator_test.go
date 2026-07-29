@@ -90,7 +90,7 @@ func TestCoordinator_Evaluate_AppliesPatches(t *testing.T) {
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "test-target"},
 		Source:   SourceGA,
 		Reason:   "test",
-		Priority: 5,
+		Priority: 8, // >= AutoApplyThreshold(8) so it gets applied
 	})
 
 	coord.Evaluate(context.Background())
@@ -271,7 +271,7 @@ func TestCoordinator_Evaluate_NonGA_FitnessZero_FallsBackToPriority(t *testing.T
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "human"},
 		Source:   SourceHuman,
-		Priority: 5,
+		Priority: 8, // >= AutoApplyThreshold(8) so priority fallback applies it
 		Fitness:  0,
 	})
 
@@ -299,7 +299,7 @@ func TestCoordinator_Evaluate_GA_FitnessZero_FallsBackToPriority(t *testing.T) {
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-zero"},
 		Source:   SourceGA,
-		Priority: 5,
+		Priority: 8, // above AutoApplyThreshold(8) so priority fallback applies it
 		Fitness:  0,
 	})
 
@@ -337,7 +337,9 @@ func TestCoordinator_PatchHistory(t *testing.T) {
 	})
 	coord.Evaluate(context.Background())
 
-	assert.Len(t, coord.PatchHistory(), 1)
+	// Priority(5) < AutoApplyThreshold(8): patch is delayed, not applied.
+	// This verifies the fix against the old fallthrough-to-apply behaviour.
+	assert.Len(t, coord.PatchHistory(), 0)
 }
 
 // ── Mock executor ───────────────────────────

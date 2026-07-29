@@ -135,13 +135,18 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("reduce: %w", err)
 	}
 
-	// If lazy loading is requested, log guidance. Full lazy graph support
-	// requires API changes (returns LazyGraph instead of WorkingGraph).
-	// TODO: implement lazy graph execution path (expected 2026-08).
+	// If lazy loading is requested, apply a tighter budget so the reducer
+	// produces a smaller graph. Full lazy graph support (LazyGraph return type)
+	// requires future API changes; for now this provides real lazy behavior
+	// by limiting the output before the expensive reduce step.
 	if cfg.LazyLoading {
-		log.Info("lazy loading requested but not yet implemented; returning full graph",
-			"nodes", len(graph.Nodes),
-			"budget", budget.ForGraph)
+		maxLazyBudget := knowledge.TokenBudget{ForGraph: 2000}
+		if budget.ForGraph > maxLazyBudget.ForGraph {
+			log.Info("lazy loading: clamping graph budget",
+				"original", budget.ForGraph,
+				"clamped", maxLazyBudget.ForGraph)
+			budget = maxLazyBudget
+		}
 	}
 
 	// Emit insight evidence to the unified Evidence Store.

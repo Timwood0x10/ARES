@@ -583,8 +583,13 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			// Some SSE implementations (including Anthropic) wrap JSON in
+			// "data: " prefix. Strip it so the JSON check below works.
+			line = strings.TrimPrefix(line, "data: ")
+
 			if line == "" || line[0] != '{' {
-				continue // skip SSE control lines (event:, data:, etc.)
+				continue // skip SSE control lines (event:, id:, etc.)
 			}
 
 			// Anthropic SSE format: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}

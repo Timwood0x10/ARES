@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/api/core"
@@ -22,11 +23,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	ares_mcp "github.com/Timwood0x10/ares/internal/ares_mcp"
 	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	"github.com/Timwood0x10/ares/internal/dashboard"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/evolution"
 	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
 	"github.com/Timwood0x10/ares/internal/evolution/diff"
 	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/llm"
 )
 
 // ARES is the top-level container for all ARES modules.
@@ -120,10 +123,9 @@ func New(ctx context.Context, cfg *Config) (*ARES, error) {
 
 	var dash *dashsvc.Dashboard
 	if cfg.Dashboard != nil && cfg.Dashboard.Enabled {
-		// NOTE: wiring real MCP/LLM executors requires interface adaptation from
-		// comp.MCP / comp.LLM — skipped for now to avoid nil-dependent panic.
-		// TODO: wire dashboard with actual MCP/LLM executors (expected by 2026-09-30).
-		log.Println("bootstrap: dashboard enabled but MCP/LLM executors not wired — skipping")
+		mcpExec := &dashboardMCPAdapter{mgr: mcpMgr}
+		llmExec := &dashboardLLMAdapter{client: comp.LLM.Client.(*llm.Client)}
+		dash = dashsvc.New(mcpExec, llmExec)
 	}
 
 	var flightRec *flightsvc.Recorder
@@ -442,3 +444,70 @@ func (a *componentExecutorAdapter) CanApply(ctx context.Context, p patch.Runtime
 
 // Ensure componentExecutorAdapter implements patch.RuntimeComponent.
 var _ patch.RuntimeComponent = (*componentExecutorAdapter)(nil)
+
+// dashboardMCPAdapter adapts *ares_mcp.MCPManager to dashboard.MCPExecutor.
+type dashboardMCPAdapter struct {
+	mgr *ares_mcp.MCPManager
+}
+
+func (a *dashboardMCPAdapter) CallTool(ctx context.Context, name string, args map[string]any) (*dashboard.MCPToolResult, error) {
+	for _, s := range a.mgr.ListServers() {
+		cl, ok := a.mgr.GetClient(s.Name)
+		if !ok || !cl.IsConnected() {
+			continue
+		}
+		result, err := cl.CallTool(ctx, name, args)
+		if err != nil {
+			continue
+		}
+		blocks := make([]dashboard.MCPContentBlock, len(result.Content))
+		for i, c := range result.Content {
+			blocks[i] = dashboard.MCPContentBlock{Type: c.Type, Text: c.Text}
+		}
+		return &dashboard.MCPToolResult{Content: blocks}, nil
+	}
+	return nil, fmt.Errorf("tool %q not found on any connected MCP server", name)
+}
+
+func (a *dashboardMCPAdapter) ListTools(ctx context.Context) ([]dashboard.MCPToolInfo, error) {
+	seen := make(map[string]bool)
+	var tools []dashboard.MCPToolInfo
+	for _, s := range a.mgr.ListServers() {
+		cl, ok := a.mgr.GetClient(s.Name)
+		if !ok || !cl.IsConnected() {
+			continue
+		}
+		serverTools, err := cl.ListTools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, t := range serverTools {
+			if seen[t.Name] {
+				continue
+			}
+			seen[t.Name] = true
+			tools = append(tools, dashboard.MCPToolInfo{Name: t.Name, Description: t.Description})
+		}
+	}
+	return tools, nil
+}
+
+// dashboardLLMAdapter adapts *llm.Client to dashboard.LLMExecutor.
+type dashboardLLMAdapter struct {
+	client *llm.Client
+}
+
+func (a *dashboardLLMAdapter) Generate(ctx context.Context, prompt string) (string, error) {
+	ch, err := a.client.GenerateStream(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("dashboard llm: %w", err)
+	}
+	var parts []string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			return "", fmt.Errorf("dashboard llm: %w", chunk.Err)
+		}
+		parts = append(parts, chunk.Content)
+	}
+	return strings.Join(parts, ""), nil
+}

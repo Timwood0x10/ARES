@@ -5,10 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.8] - 2026-07-16
+## [0.2.8] - 2026-07-29
 
-> Public API layer: the contract between ARES and external integrators.
-> Eight new public API packages expose agents, workflows, evolution, knowledge, embedding, experience, and graph — all without importing `internal/`. Plus self-healing evolution, YAML-driven distillation gating, brand assets, and five new GA technical articles.
+> Public API layer + Unified DAG Runner + Context Compression Archive + Logic closure fixes.
+> Eight new public API packages expose agents, workflows, evolution, knowledge, embedding, experience, and graph — all without importing `internal/`. Plus self-healing evolution, YAML-driven distillation gating, brand assets, five new GA technical articles, the unified DAG workflow runner, the context compression archive module, and comprehensive reliability closure fixes across mutation idempotency, checkpoint/resume, and observability collectors.
+
+### Unified DAG Runner (`internal/workflow/`)
+
+The legacy `graph.Graph` + `engine.Workflow` dual runtime architecture has been unified into a single IR-based pipeline:
+
+- **WorkflowSpec IR** (`internal/workflow/spec.go`): Single intermediate representation with `NodeSpec`, `EdgeSpec`, `ConditionExpr`, `NodeID`, `LoopSpec`, `ScheduleSpec`, `RetrySpec`, `RecoverySpec`, `InterruptSpec`. Both `engine.Workflow` and `graph.Graph` compile to this IR.
+- **Unified Runner** (`internal/workflow/runner.go`): Single `Runner.Execute(ctx, spec)` — FIFO scheduler, condition evaluation, interrupt handling (HITL), recovery policies, loop support, runtime mutations via `PatchQueue`. `RunningWorkflow(ctx, spec, functions)` convenience entry point.
+- **Atomic Checkpoint/Resume** (`internal/workflow/runner_checkpoint.go`): `ResumeExecution()` with spec hash verification, scheduler state restoration, pending mutation re-queuing, pending interrupt restoration. Schema v3 with durable event sequences.
+- **BoundWorkflow Compiler** (`internal/workflow/compiler.go`, `binding.go`): `CompileFromEngine()` / `CompileFromEngineWithBindings()` / `CompileBound()` convert legacy `engine.Workflow` and `graph.Graph` to executable `BoundWorkflow` with predicate and router closures.
+- **Edge-Activation Scheduler** (`internal/workflow/scheduler.go`): Incremental topological scheduler with conditional edge evaluation, branch-skipping, JoinAll/JoinAny/Merge join policies, ready-queue with configurable selectors.
+- **ExecutionScope** (`internal/workflow/scope.go`): Transactional state (pending→committed), per-node status tracking, loop history, pending interrupts, event sequencing, `ExecutionScoped` collector.
+- **Typed Mutation / PatchQueue** (`internal/workflow/mutation.go`, `patch_queue.go`): Six typed mutations (add/remove/replace node, add/remove edge, update policy). `PatchQueue.Enqueue` with dedup, `Acknowledge` prefix commitment, `Restore` from checkpoint. Safe-point atomic application pipeline.
+- **Native Runner Events** (`internal/workflow/runner_events.go`): 12 typed event types (started/resumed/started/completed/failed/skipped/interrupt pending/resolved/checkpoint saved/mutation applied/completed/failed) with ordered sequencing via `RunnerEventSink`.
+- **Legacy Cleanup**: `CLOSURE_PLAN.md`, `ORPHAN_MODULES.md`, `ZERO_FRICTION_PLAN.md`, `outputs/DAG_UNIFIED_MERGE_*` plan documents deleted. `engine.NewDAG`/`NewExecutor`/`DynamicExecutor`/`Graph.execute` production paths fully replaced.
+- **466 files changed**, +37077 insertions, -17976 deletions across the DAG unification branch.
+
+### Context Compression Archive (`internal/ares_archive/`)
+
+A new archive module that preserves structured per-round records before compaction discards raw conversation events:
+
+- **RoundRecord** (`record.go`): Per-round structured entry with `Round`, `Action`, `Summary`, `Files` (P1 file-change list), `Verdict` (P2 pass/fail), `Decisions` (P0 architecture decisions), `Refs` (P3 identifier protection). JSON-serialized as `round_N.json`.
+- **File Archive Writer** (`writer.go`): Atomic write (temp file + rename), round rotation (configurable `maxRounds`), concurrent-safe. `NewFileArchiveWriter(dir, maxRounds)` creates the directory on demand.
+- **File Archive Reader** (`reader.go`): `Read(n)`, `List()`, `Search(query)` (case-insensitive substring across Summary/Decisions/Files/Refs), `Recall(query)` (human-readable multi-round output). Missing/empty directory handled gracefully.
+- **Identifiers Protection** (`identifiers.go`): Compiled regexes for P3-level protection — commit hashes (7+ hex), PR/issue numbers (`#\d+`), IP:port, owner/repo paths. These identifiers are preserved verbatim during extraction.
+- **Event Archive Sink** (`sink.go`): Bridges `ares_events.CompactableEventStore` to the archive writer via `ArchiveSink` interface. `BuildRoundRecord()` extracts RoundRecord from raw events.
+- **Compactable Store Integration** (`store.go`): `NewCompactableStoreWithArchive()` creates an archive-enabled event store. When enabled, each round's record is flushed before compaction discards the raw events.
+- **17 files**, +2896 lines new code.
+
+### SDK Layer (`sdk/`)
+
+- **Zero-Friction Agent SDK** (`sdk/sdk.go`, `options.go`, `config.go`, +450 lines net): `MustNew`/`New` runtime builder with functional options (`WithAgent`, `WithLLM`, `WithMCP`, `WithMemory`, `WithRAG`, `WithWorkflow`, etc.). Three execution modes: `RunAgent` (blocking), `RunStream` (streaming events), `RunTeam` (multi-agent orchestration).
+- **SDK RAG Support** (`sdk/rag.go`, `sdk/memory_wiring_test.go`, +350 lines): YAML-driven RAG configuration with `enable_rag`, `rag_top_k`, `rag_min_score`. Wiring tests verify the end-to-end configuration→runtime path.
+- **Runtime Evolution Config** (`sdk/evolution.go`): Strategy configuration for GA evolution within the SDK.
+
+### Logic Closure Fixes
+
+Comprehensive reliability closure across the runtime and evolution systems:
+
+- **Mutation Idempotency** (`internal/evolution/patch/patch.go`): `RuntimePatch` gains `ID string` field. `Registry.applied map[string]bool` tracks already-applied patches. `Apply()`/`ApplySet()` silently skip duplicate IDs — prevents re-delivery attacks.
+- **Resume Collector Persistence** (`internal/workflow/runner_checkpoint.go`): `CheckpointSnapshot.CollectorData` preserves route/tool/memory/interrupt/error history across crashes. `ExecutionCollector.Import()` restores data on resume. `ResumeExecution()` reuses the caller's `ExecutionCollector`.
+- **Sub-Workflow Collector Merge** (`internal/workflow/runner_execution.go`): Child workflow collector data merged back into parent scope via `parent.Collector().Import(child.Collector().Export())`.
+- **Graph.Node() Duplicate Detection** (`internal/workflow/graph/graph.go`): `Graph.Node()` now returns error on duplicate node IDs (previously silent overwrite). `Graph.Edge()` deduplicates (from, to, condition) pairs.
+- **WorkflowSpec Validator** (`internal/workflow/validate.go`): `validateDuplicateEdges()` checks for duplicate (From, To, Kind) edge triples.
+- **Normalization** (`internal/workflow/engine/types.go`, `mutable_dag.go`): `strings.TrimSpace` applied to step IDs in `NewDAG()` and `AddNode()`. `DependsOn` arrays deduplicated.
+- **Chaos Methods Return Error** (`internal/ares_runtime/manager_chaos.go`): 4 empty chaos stubs (`PartitionNetwork`, `CorruptMemory`, `DisconnectMCP`, `InjectLLMFailure`) now return `ErrNotImplemented` instead of silent nil.
+- **StartAgent Event Emission** (`internal/ares_runtime/manager_lifecycle.go`): `Start()` now emits `EventAgentStarted` for agents registered before `Start()`, closing the event-sourcing gap.
+- **Event Drop Counter** (`internal/ares_runtime/bus.go`, `internal/ares_events/memory_store.go`): `droppedEvents` atomic counters added to both `PluginBus` and `MemoryEventStore`. Drops are logged with event type and stream ID.
+- **PauseAgent State** (`internal/ares_runtime/manager_chaos.go`, `manager.go`): Independent `paused` flag added to `managedAgent`. `AgentInfo.Paused` exposed to callers. `NotifyAgentDead` and `healthCheck` skip paused agents.
+- **Patch Executor Locking** (`internal/workflow/graph/patcher.go`): `applyInsertNode`, `applyRemoveNode`, `applyReplaceNode` all now hold `graph.mu` while reading/writing `nodes` map — closing data race windows.
+- **argIdx++ Dead Code Removed** (`internal/ares_events/pg_store.go`): Removed the unused `argIdx++` after the last query parameter.
+- **Plugin Panic Structured Logging** (`internal/ares_runtime/bus.go`): Recovered panic values logged with `slog.Default().Error()`, including `panic_type` and `panic_value` fields.
+- **Runner Validate at Entry** (`internal/workflow/runner.go`): `validateExecutionInput()` calls `Validate(spec)` on every `Execute()` — catches duplicate nodes/edges before execution.
+- **FitnessGenome Wiring** (`internal/ares_evolution/genome_wiring_run.go`): `submitToCoordinator()` now queries registered genomes for `FitnessGenome` scores instead of hardcoding `Fitness: 0`. Falls back to 0.5 baseline.
+- **Dashboard LLM/MCP Wiring** (`api/bootstrap/bootstrap.go`): `dashboardMCPAdapter` and `dashboardLLMAdapter` bridge `*ares_mcp.MCPManager` and `*llm.Client` to the dashboard `MCPExecutor`/`LLMExecutor` interfaces. Previous TODO (expected 2026-09-30) resolved.
+- **LazyLoading Budget Clamping** (`internal/knowledge/runtime/runtime.go`): `cfg.LazyLoading=true` now clamps `budget.ForGraph` to 2000 tokens before the reduce step, producing a genuinely smaller graph.
+
+### Context Compression Archive (cont.)
+
+- **BuildRoundRecord** (`extract.go`): 578 lines — extracts round summary, action categorization, file changes, decisions, Refs from raw conversation events. Action inference handles Chinese keywords (修复/审查/设计/实现).
+- **In-Memory Demo** (`internal/ares_archive/`, `examples/13-archive-akg-chain/`): Full pipeline demo reading `.workbuddy/memory/` → processing through AKG knowledge pipeline → structured knowledge objects. Example README documents real capabilities and limitations.
 
 ### Public API Layer (`api/`)
 

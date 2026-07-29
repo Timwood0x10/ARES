@@ -1,0 +1,146 @@
+// Example 13: Raw Conversation → AKG Knowledge Pipeline
+//
+//  1. Read original conversation records from .workbuddy/memory/
+//  2. Feed full content through AKG pipeline (normalize → match → validate → summarize)
+//  3. Output entity-matched and summarized knowledge objects
+//
+// Run:
+//
+//	go run ./examples/13-archive-akg-chain
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// ── Step 1: Read original conversation records ──
+	home, _ := os.UserHomeDir()
+	memDir := home + "/go/src/goagent/.workbuddy/memory"
+	entries, err := os.ReadDir(memDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot read %s: %v\n", memDir, err)
+		os.Exit(1)
+	}
+
+	type rawRecord struct {
+		date    string
+		content string
+	}
+	var records []rawRecord
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".md") || e.Name() == "MEMORY.md" {
+			continue
+		}
+		data, _ := os.ReadFile(filepath.Join(memDir, e.Name()))
+		lines := strings.Split(string(data), "\n")
+		date := strings.TrimPrefix(lines[0], "# ")
+		// Take first ~60 lines of content (avoid overloading a demo)
+		content := strings.Join(lines, "\n")
+		contentLines := strings.Split(content, "\n")
+		if len(contentLines) > 60 {
+			content = strings.Join(contentLines[:60], "\n") + "\n..."
+		}
+		records = append(records, rawRecord{date: date, content: content})
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].date < records[j].date })
+	fmt.Printf("read %d conversation records\n\n", len(records))
+
+	// ── Step 2: Build AKG pipeline ──
+	pipe := knowledge.NewKnowledgePipeline(
+		[]knowledge.Normalizer{&pipeline.DefaultNormalizer{MaxRawBytes: 20480}},
+		[]knowledge.EntityMatcher{&pipeline.DefaultEntityMatcher{MatchThreshold: 0.5}},
+		[]knowledge.Validator{&pipeline.DefaultValidator{}},
+		[]knowledge.Summarizer{&pipeline.DefaultSummarizer{MaxSummaryLen: 300}},
+	)
+
+	// ── Step 3: Process each record ──
+	var results []*knowledge.KnowledgeObject
+	for i, rec := range records {
+		obj := &knowledge.KnowledgeObject{
+			ID:   rec.date,
+			Raw:  []byte(rec.content),
+			Tags: []string{"conversation"},
+		}
+		processed, err := pipe.Process(ctx, obj)
+		if err != nil {
+			fmt.Printf("  %s: pipeline error: %v\n", rec.date, err)
+			continue
+		}
+		results = append(results, processed)
+		_ = i
+	}
+
+	// ── Step 4: Show results ──
+	fmt.Println(strings.Repeat("=", 65))
+	fmt.Println("  AKG pipeline — normalized + summarized from raw conversation")
+	fmt.Println(strings.Repeat("=", 65))
+
+	for _, ko := range results {
+		fmt.Printf("\n■ %s\n", ko.ID)
+
+		r := ko.Raw
+		if len(r) > 300 {
+			r = r[:300]
+		}
+		fmt.Printf("  raw: %s\n", truncate(string(r), 150))
+
+		if ko.Normalized != "" {
+			fmt.Printf("  normalized: %s\n", truncate(ko.Normalized, 150))
+		}
+		if ko.Summary != "" && ko.Summary != string(ko.Raw) {
+			fmt.Printf("  AKG summary: %s\n", truncate(ko.Summary, 250))
+		}
+		if ko.Confidence > 0 {
+			fmt.Printf("  confidence: %.2f\n", ko.Confidence)
+		}
+	}
+
+	// ── Step 5: Cross-record analysis ──
+	fmt.Printf("\n%s\n", strings.Repeat("=", 65))
+	fmt.Println("  cross-record analysis")
+	fmt.Println(strings.Repeat("=", 65))
+	totalChars := 0
+	totalAKG := 0
+	for _, ko := range results {
+		totalChars += len(ko.Raw)
+		totalAKG += len(ko.Summary)
+	}
+	fmt.Printf("  total raw chars: %d\n", totalChars)
+	fmt.Printf("  total AKG summary chars: %d\n", totalAKG)
+	if totalChars > 0 {
+		fmt.Printf("  compression ratio: %.1f%%\n", 100.0-float64(totalAKG)/float64(totalChars)*100.0)
+	}
+	fmt.Println()
+	// Count keywords/focus areas
+	wordCount := make(map[string]int)
+	for _, ko := range results {
+		for _, w := range []string{"review", "DAG", "AKG", "bug", "test", "evolution", "archive", "distill"} {
+			if strings.Contains(ko.Summary, w) {
+				wordCount[w]++
+			}
+		}
+	}
+	for _, w := range []string{"DAG", "review", "test", "evolution", "archive", "distill", "AKG", "bug"} {
+		fmt.Printf("  mentions of %q: %d rounds\n", w, wordCount[w])
+	}
+	fmt.Println(strings.Repeat("=", 65))
+}
+
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) > max {
+		return string(r[:max]) + "..."
+	}
+	return s
+}

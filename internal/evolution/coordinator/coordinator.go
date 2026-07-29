@@ -415,7 +415,10 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 		return DecisionApply
 	}
 
-	return DecisionApply
+	// Below auto-apply threshold: delay for review rather than silently
+	// applying. The previous fallthrough to DecisionApply meant all patches
+	// got applied regardless of quality — rendering AutoApplyThreshold dead.
+	return DecisionDelay
 }
 
 // countRecentPatches counts patch applications within the given duration.
