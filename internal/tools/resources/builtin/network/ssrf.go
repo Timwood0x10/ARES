@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // MaxHTTPResponseBytes is the default cap on response body reads to prevent
@@ -79,10 +81,17 @@ func checkHost(ctx context.Context, host string) error {
 }
 
 // isBlockedIP reports whether the IP is private, loopback, link-local, or
-// otherwise unsuitable as an outbound destination from a tool.
+// otherwise unsuitable as an outbound destination from a tool. IPv4-mapped
+// IPv6 addresses (e.g. "::ffff:127.0.0.1") are normalized to IPv4 first so
+// they cannot bypass the loopback/private checks.
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
+	}
+	// Normalize IPv4-mapped IPv6 to its 4-byte form so IsLoopback / IsPrivate
+	// classify it correctly across Go versions.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
@@ -91,6 +100,46 @@ func isBlockedIP(ip net.IP) bool {
 		return true
 	}
 	return false
+}
+
+// ssrfDialControl validates the resolved destination IP immediately before a
+// TCP connection is established. Because the dialer resolves the hostname
+// itself and then invokes Control with the resolved IP, this closes the TOCTOU
+// window between checkHost's pre-check and the actual connection: a DNS
+// rebinding attack cannot swap in a private IP after the pre-check passes.
+func ssrfDialControl(network, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("ssrf: parse dial address %q: %w", address, err)
+	}
+	if ip := net.ParseIP(host); isBlockedIP(ip) {
+		return fmt.Errorf("%w: dial to %s", ErrSSRFBlocked, ip)
+	}
+	return nil
+}
+
+// SSRFDialer returns a *net.Dialer that re-validates the resolved destination
+// IP at connect time via Control, defending against DNS rebinding. Use it (or
+// SSRFTransport) for any outbound HTTP traffic originating from tools.
+func SSRFDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: ssrfDialControl,
+	}
+}
+
+// SSRFTransport returns an *http.Transport whose DialContext is backed by
+// SSRFDialer, so every TCP connection — including each redirect hop — is
+// re-validated against the SSRF block list at connect time. It is cloned from
+// http.DefaultTransport to preserve proxy and keep-alive defaults.
+func SSRFTransport() *http.Transport {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+	t := base.Clone()
+	t.DialContext = SSRFDialer().DialContext
+	return t
 }
 
 // SSRFCheckRedirect returns an http.CheckRedirect function that caps the

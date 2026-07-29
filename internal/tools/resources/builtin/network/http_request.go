@@ -61,6 +61,7 @@ func NewHTTPRequest() *HTTPRequest {
 		client: &http.Client{
 			Timeout:       30 * time.Second,
 			CheckRedirect: SSRFCheckRedirect,
+			Transport:     SSRFTransport(),
 		},
 	}
 }

@@ -104,6 +104,7 @@ func NewWebSearch() *WebSearch {
 		client: &http.Client{
 			Timeout:       30 * time.Second,
 			CheckRedirect: SSRFCheckRedirect,
+			Transport:     SSRFTransport(),
 		},
 		allowedBaseURLs: map[string]bool{defaultSearXNGBaseURL: true},
 	}

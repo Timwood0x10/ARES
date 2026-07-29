@@ -285,6 +285,106 @@ func TestCodeRunnerExecute_CodeValidation(t *testing.T) {
 	}
 }
 
+// TestCodeRunnerImportAllowlist exercises the Python import allowlist
+// enforcement directly via validateCode. It covers the sandbox-escape
+// regressions (comma lists, `as` aliases, dotted paths, semicolon-separated
+// statements, dotted `from` imports) that the previous single-token regex
+// missed.
+func TestCodeRunnerImportAllowlist(t *testing.T) {
+	runner := NewCodeRunner()
+	// Enable Python so the runner is in a realistic state; strict allowlist
+	// remains on by default.
+	runner.EnablePython(true)
+
+	tests := []struct {
+		name    string
+		code    string
+		wantErr bool
+	}{
+		{
+			name:    "comma list with blocked module",
+			code:    "import math, os",
+			wantErr: true,
+		},
+		{
+			name:    "as alias on blocked module",
+			code:    "import os as o",
+			wantErr: true,
+		},
+		{
+			name:    "comma list all allowed",
+			code:    "import math, json",
+			wantErr: false,
+		},
+		{
+			name:    "dotted blocked module",
+			code:    "import os.path",
+			wantErr: true,
+		},
+		{
+			name:    "from blocked module",
+			code:    "from os import system",
+			wantErr: true,
+		},
+		{
+			name:    "extra spaces with blocked module",
+			code:    "import  os  ,  subprocess",
+			wantErr: true,
+		},
+		{
+			name:    "comment stripped before validation",
+			code:    "import math # comment",
+			wantErr: false,
+		},
+		{
+			name:    "semicolon separated statements",
+			code:    "import math; import os",
+			wantErr: true,
+		},
+		{
+			name:    "dotted from-import blocked module",
+			code:    "from os.path import system",
+			wantErr: true,
+		},
+		{
+			name:    "comma list with alias all allowed",
+			code:    "import math, json as j, re",
+			wantErr: false,
+		},
+		{
+			name:    "single blocked module regression",
+			code:    "import os",
+			wantErr: true,
+		},
+		{
+			name:    "single blocked subprocess regression",
+			code:    "import subprocess",
+			wantErr: true,
+		},
+		{
+			name:    "from allowed module single name",
+			code:    "from json import loads",
+			wantErr: false,
+		},
+		{
+			name:    "from allowed module multiple names",
+			code:    "from json import loads, dumps",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runner.validateCode(tt.code)
+			if tt.wantErr {
+				require.Error(t, err, "validateCode(%q) should return an error", tt.code)
+			} else {
+				require.NoError(t, err, "validateCode(%q) should not return an error", tt.code)
+			}
+		})
+	}
+}
+
 // TestCodeRunnerExecute_PythonDisabled tests Python disabled scenario.
 func TestCodeRunnerExecute_PythonDisabled(t *testing.T) {
 	runner := NewCodeRunner()
